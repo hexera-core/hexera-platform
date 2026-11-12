@@ -158,7 +158,9 @@ def place_words(cleaned: dict | None, closing: dict | None) -> list[str]:
         a, b = (list(r.get("faces") or []) + ["a face", "its neighbour"])[:2]
         by = _gap(float(r.get("moved_mm") or r.get("gap_mm") or 0.0))
         how = str(r.get("how") or "")
-        if how.startswith("extended"):
+        if how.startswith("extended") and "strip" in how:
+            did = f"{a} was extended {by} straight on past its edge to meet {b}"
+        elif how.startswith("extended"):
             did = f"{a} was extended {by} along its own surface to meet {b}"
         elif how.startswith("trimmed"):
             did = f"{a} was trimmed back {by} to the edge of {b}"

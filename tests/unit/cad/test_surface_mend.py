@@ -71,6 +71,50 @@ def test_a_web_stopping_short_of_its_plate_is_extended_onto_it():
     assert sum(s["junction_edges"] + s["shared_edges"] for s in reading["sheets"]) >= 1
 
 
+def _web_on_patches(drop: float, cuts=(100.0,)):
+    """The web of _web over a plate drawn in several patches (cut across the web's line at `cuts`)."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
+    from OCP.gp import gp_Ax1, gp_Dir, gp_Pnt, gp_Trsf
+
+    t = gp_Trsf()
+    t.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(1, 0, 0)), math.pi / 2)
+    web = BRepBuilderAPI_Transform(sx.rect(20, 0, 180, 40), t, True).Shape()
+    xs = (0.0, *cuts, 200.0)
+    plate = [sx.rect(a, -50, b, 50) for a, b in zip(xs, xs[1:], strict=False)]
+    return sx.compound([*plate, sx.moved(web, (0, 0, drop))])
+
+
+def test_a_web_stopping_short_of_a_plate_drawn_in_patches_is_extended_onto_them():
+    # 12 Nov: a wall's foot 3.4 mm short of a stamped panel, across several of its patches, lay along no one face:
+    # it was no open place at all, and the web continued down met no single patch end to end
+    reading, sewn = _read(_web_on_patches(2.0, (70.0, 130.0)), element_mm=4.0)
+    c, m = reading["cleaned"], reading["cleaned"]["mend"]
+    assert c["places_before"] == 1 and m["closed"] == 1 and m["extended"] == 1, m
+    assert len(reading["sheets"]) == 1 and c["open_places"] == 0
+    # the foot on all three patches: through the middle one (split, a junction), scored into the two it ends in
+    assert sum(s["junction_edges"] for s in reading["sheets"]) >= 1
+    assert sum(s["junction_edges"] + s["shared_edges"] for s in reading["sheets"]) >= 6
+    assert sewn.names.count("Face_2") == 2
+    assert _area(reading) == pytest.approx(200.0 * 100.0 + 160.0 * 40.0 + 160.0 * 2.0, rel=1e-6)
+
+
+def test_a_tangent_strip_continues_a_face_straight_on_past_its_edge():
+    # SURF-12: where a face's own surface does not run on, it is continued by a ruled strip tangent to it, square to
+    # the edge and away from the face, starting on the edge's own points
+    from meshpipeline.cad import midsurface as ms
+    from meshpipeline.cad import surface_mend as smd
+
+    face = sx.rect(0, 0, 50, 30)
+    edge = max((e for e in smd._edges(face) if abs(ms._box(e)[0][0] - 50.0) < 1e-6 and abs(ms._box(e)[1][0] - 50.0) < 1e-6),
+               key=ms._length)
+    strip = smd._strip(face, edge, 3.0)
+    assert strip is not None
+    assert ms._area(strip) == pytest.approx(30.0 * 3.0, rel=1e-6)
+    lo, hi = ms._box(strip)
+    assert lo[0] == pytest.approx(50.0, abs=1e-6) and hi[0] == pytest.approx(53.0, abs=1e-6)   # outward, not over it
+    assert abs(lo[2]) < 1e-6 and abs(hi[2]) < 1e-6                                            # on the face's plane
+
+
 def test_beyond_the_reach_nothing_is_changed_and_the_notes_reach_closes_it():
     """5 mm on a 220 mm strip is past 1/100 of the part: not an open place (SURF-8), nothing changed. "close gaps up to
     6 mm" lets the change reach it."""

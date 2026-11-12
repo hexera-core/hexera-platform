@@ -437,10 +437,11 @@ def _same_sheet(sas, srf, q, n) -> bool:
     return abs(m.X() * n.X() + m.Y() * n.Y() + m.Z() * n.Z()) >= np.cos(np.radians(SAME_SHEET_DEG))
 
 
-def _alongside(edge, probe: list, dists: list, feet: list, face, tol: float, own=None) -> bool:
+def _alongside(edge, probe: list, dists: list, feet: list, face, tol: float, own=None, faces_at: list | None = None) -> bool:
     """SURF-8: whether a free edge lying within reach of `face` (its probe points at `dists` from it, nearest at
     `feet`) runs alongside it - a gap, an overlap, an edge stopping short - rather than meeting it at a corner.
-    `own`: the edge's own face."""
+    `own`: the edge's own face. `faces_at`: the face nearest each probe when they are not one face (an edge stopping
+    short of a sheet drawn in several patches): each probe is judged against its own."""
     from OCP.BRep import BRep_Tool
     from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
     from OCP.BRepLProp import BRepLProp_SLProps
@@ -454,8 +455,8 @@ def _alongside(edge, probe: list, dists: list, feet: list, face, tol: float, own
     # 1. parallel: the edge's direction lies in the face's tangent plane where it is nearest
     c = BRepAdaptor_Curve(edge)
     t0, t1 = c.FirstParameter(), c.LastParameter()
-    sas = ShapeAnalysis_Surface(BRep_Tool.Surface_s(face))
-    srf = BRepAdaptor_Surface(face, False)
+    per = list(faces_at) if faces_at else [face] * len(probe)
+    sas_of = {id(f): (ShapeAnalysis_Surface(BRep_Tool.Surface_s(f)), BRepAdaptor_Surface(f, False)) for f in per}
     # the probes are taken in the edge's own direction (_edge_points): a reversed edge's run from its curve's end
     rev = edge.Orientation() == TopAbs_REVERSED
     own_sas = ShapeAnalysis_Surface(BRep_Tool.Surface_s(own)) if own is not None else None
@@ -466,6 +467,7 @@ def _alongside(edge, probe: list, dists: list, feet: list, face, tol: float, own
         c.D1(t, p, v)
         if v.Magnitude() < 1e-14:
             continue
+        sas, srf = sas_of[id(per[j])]
         uv = sas.ValueOfUV(gp_Pnt(*map(float, foot)), 1e-7)
         pr = BRepLProp_SLProps(srf, uv.X(), uv.Y(), 1, 1e-9)
         if not pr.IsNormalDefined():
@@ -477,11 +479,12 @@ def _alongside(edge, probe: list, dists: list, feet: list, face, tol: float, own
     # 2. not leaving a shared corner: the edge shares a vertex with the face and the distance grows from it
     near_ends = []
     em = ms._map(edge, TopAbs_VERTEX)
-    fv = ms._map(face, TopAbs_VERTEX)
     fpts = []
-    for k in range(1, fv.Extent() + 1):
-        w = BRep_Tool.Pnt_s(TopoDS.Vertex_s(fv.FindKey(k)))
-        fpts.append(np.array([w.X(), w.Y(), w.Z()]))
+    for f in {id(f): f for f in per}.values():
+        fv = ms._map(f, TopAbs_VERTEX)
+        for k in range(1, fv.Extent() + 1):
+            w = BRep_Tool.Pnt_s(TopoDS.Vertex_s(fv.FindKey(k)))
+            fpts.append(np.array([w.X(), w.Y(), w.Z()]))
     for k in range(1, em.Extent() + 1):
         q = BRep_Tool.Pnt_s(TopoDS.Vertex_s(em.FindKey(k)))
         qa = np.array([q.X(), q.Y(), q.Z()])
@@ -497,6 +500,59 @@ def _alongside(edge, probe: list, dists: list, feet: list, face, tol: float, own
         if hi >= FROM_CORNER * lo and slope > WEDGE_SLOPE:
             return False
     return True
+
+
+def _along_several(e, mine: int, probe: list, faces: list, boxes: list, reach: float,
+                   tol: float) -> tuple[float, int] | None:
+    """SURF-8: a free edge lying along SEVERAL faces, none of which holds all its probes within `reach`: (how far it
+    lies, the face nearest its middle) when every probe lies within reach of some other face and runs alongside it,
+    and the probes are not all nearest one face (that face was judged on its own); else None."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+    from OCP.TopAbs import TopAbs_VERTEX
+    from OCP.TopoDS import TopoDS
+
+    from meshpipeline.cad import midsurface as ms
+
+    def corners(shape) -> list[np.ndarray]:
+        vm = ms._map(shape, TopAbs_VERTEX)
+        return [np.array([(p := BRep_Tool.Pnt_s(TopoDS.Vertex_s(vm.FindKey(i)))).X(), p.Y(), p.Z()])
+                for i in range(1, vm.Extent() + 1)]
+
+    ends = corners(e)
+    meets: dict[int, bool] = {}
+    dists, feet, at = [], [], []
+    for q in probe:
+        best: tuple[float, int, np.ndarray] | None = None
+        for k, f in enumerate(faces):
+            if k == mine:
+                continue
+            lo, hi = boxes[k]
+            if np.any(q < lo - reach) or np.any(q > hi + reach):
+                continue
+            # a face the edge meets at a corner is its own sheet running on (a rim's next patch), never what it
+            # stops short of (12 Nov: a panel's outline along 6 mm bead strips read as a 3.7 mm gap)
+            if k not in meets:
+                meets[k] = any(float(np.linalg.norm(c - w)) <= 2.0 * tol for c in ends for w in corners(f))
+            if meets[k]:
+                continue
+            d = BRepExtrema_DistShapeShape(ms._vertex(q), f)
+            if not d.IsDone() or not d.NbSolution():
+                continue
+            dq = float(d.Value())
+            if dq <= reach and (best is None or dq < best[0] - 1e-12):
+                pt = d.PointOnShape2(1)
+                best = (dq, k, np.array([pt.X(), pt.Y(), pt.Z()]))
+        if best is None:
+            return None
+        dists.append(best[0])
+        at.append(best[1])
+        feet.append(best[2])
+    if len(set(at)) < 2:
+        return None
+    if not _alongside(e, probe, dists, feet, faces[at[1]], tol, faces[mine], faces_at=[faces[k] for k in at]):
+        return None
+    return max(dists), at[1]
 
 
 def open_places(sewn: Sewn, *, mm_per_unit: float, reach: float | None = None) -> list[dict]:
@@ -557,6 +613,14 @@ def open_places(sewn: Sewn, *, mm_per_unit: float, reach: float | None = None) -
                 continue
             if best is None or far < best:
                 best, near = far, k
+        if best is None:
+            # SURF-8 / SURF-12: AN EDGE STOPPING SHORT OF A SHEET DRAWN IN SEVERAL PATCHES lies along no one face over
+            # its whole length, but along the sheet: each probe within reach of its nearest other face, and running
+            # alongside it (12 Nov: a wall's foot 3.4 mm short of a stamped panel, across three of its patches, was
+            # no open place at all). The face beside it is the one nearest its middle
+            got = _along_several(e, mine, probe, sewn.faces, boxes, reach, sewn.tol)
+            if got is not None:
+                best, near = got
         if best is not None:
             found.append((e, mine, best, near))
     if not found:

@@ -140,3 +140,48 @@ def test_the_same_mesh_twice_closes_the_same():
     a, _ = smc.close(_two(2.4, shift=1.0), [_place(2.4)], reach_mm=4.0, reach_from="asked")
     b, _ = smc.close(_two(2.4, shift=1.0), [_place(2.4)], reach_mm=4.0, reach_from="asked")
     assert np.array_equal(a.xyz, b.xyz) and np.array_equal(a.quads, b.quads) and np.array_equal(a.trias, b.trias)
+
+
+def _tee(gap: float, x_wall: float = 18.0) -> ShellMesh:
+    """A T: a plate (face 1, x and y 0..40, 4 mm quads) and a wall standing on it at x = x_wall (face 2, y 4..36, 4 mm
+    quads) whose foot stops `gap` above the plate - an edge stopping short of a face's inside."""
+    xa, qa = _grid(0.0, 40.0, 10, np.linspace(0.0, 40.0, 11))
+    ys, zs = np.linspace(4.0, 36.0, 9), np.linspace(gap, gap + 12.0, 4)
+    xb = np.array([[x_wall, y, z] for z in zs for y in ys], dtype=float)
+    qb = []
+    for j in range(len(zs) - 1):
+        for i in range(len(ys) - 1):
+            a = len(xa) + j * len(ys) + i
+            qb.append([a, a + 1, a + len(ys) + 1, a + len(ys)])
+    k = len(qa) + len(qb)
+    return ShellMesh(xyz=np.vstack([xa, xb]), quads=np.vstack([qa, np.array(qb, dtype=np.int64)]),
+                     trias=np.zeros((0, 3), dtype=np.int64), wall=np.full(k, 1.2),
+                     mid=["Mid_1"] * len(qa) + ["Mid_2"] * len(qb), part=["Part_1"] * k)
+
+
+def _tee_place(gap: float) -> dict:
+    return {"at_mm": [18.0, 20.0, gap], "gap_mm": gap, "faces": [["Face_2", "Face_1"]]}
+
+
+def test_a_wall_stopping_short_of_a_plates_inside_is_joined_onto_it():
+    # SURF-13, a T: the plate has no free edge there; its row of nodes nearest the foot's line is moved onto the
+    # line, the foot's nodes onto the plate, and the two joined - one sheet, the plate's nodes still on the plate
+    out, rec = smc.close(_tee(2.5), [_tee_place(2.5)], reach_mm=4.0, reach_from="asked")
+    row = rec["places"][0]
+    assert row["closed"], row
+    assert _sheets(out) == 1 and shell_quality.measure(out)["valid"]
+    assert row["moved_mm"] <= 2.5 + 1e-9
+    low = out.xyz[:, 2] < 1.0
+    assert float(np.max(np.abs(out.xyz[low, 2]))) < 1e-9                        # the plate stays flat
+    users: dict = {}
+    for e, c in enumerate(out.elements()):
+        for i in range(len(c)):
+            a, b = int(c[i]), int(c[(i + 1) % len(c)])
+            users.setdefault((min(a, b), max(a, b)), []).append(e)
+    assert sum(1 for u in users.values() if len(u) == 3) >= 8                   # the foot is a junction, end to end
+
+
+def test_a_wall_too_far_from_the_plates_nodes_is_left_open():
+    # 0.5 mm short over 4 mm elements, the line 2 mm from the plate's nodes: no node may move that far
+    out, rec = smc.close(_tee(0.5), [_tee_place(0.5)], reach_mm=4.0, reach_from="asked")
+    assert rec["closed"] == 0 and not rec["places"][0]["closed"] and out.n_elements == _tee(0.5).n_elements

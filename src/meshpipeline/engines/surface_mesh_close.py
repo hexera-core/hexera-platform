@@ -234,30 +234,248 @@ def _near(mm: _Mesh, edges: list[tuple[int, int]], other: list[tuple[int, int]],
     return [e for e, k in zip(cand, keep.tolist(), strict=True) if k]
 
 
-def _join_pair(mm: _Mesh, mids_a: set[str], mids_b: set[str], gap: float, reach: float) -> dict[str, Any]:
-    """One side of a place closed in `mm` (changed in place): face A's free edges facing face B's across `gap`."""
+def _join_pair(mm: _Mesh, mids_a: set[str], mids_b: set[str], gap: float, reach: float,
+               onto_b: bool = False) -> dict[str, Any]:
+    """One side of a place closed in `mm` (changed in place): face A's free edges facing face B's across `gap` (met
+    half way; with `onto_b`, B's kept where they are). A free edge stopping short of the other face's inside (a T) is
+    brought onto that face (_t_line)."""
     users = mm.users()
     lim = REACH_GAPS * gap + 1e-9
     fa, fb = _side_free(mm, users, mids_a), _side_free(mm, users, mids_b)
     ea, eb = _near(mm, fa, fb, lim), _near(mm, fb, fa, lim)
     out: dict[str, Any] = {"joined": 0, "put_in": 0, "moved_mm": 0.0, "open_mm": 0.0}
-    if not ea or not eb:
-        out["why"] = "the mesh has no free edges facing each other there"
-        return out
-    out["open_mm"] = _r(sum(float(np.linalg.norm(mm.xyz[a] - mm.xyz[b])) for a, b in ea + eb))
     remap: dict[int, int] = {}
     newpos: dict[int, np.ndarray] = {}
     inserts: dict[tuple[int, int], list[tuple[float, int]]] = {}
-    # a node on both sides is already one node (the two faces sewn there): it stays where it is and is no partner of
-    # any other; and a node joined or put in once is not joined again from another run of the gap
-    shared = {n for e in ea for n in e} & {n for e in eb for n in e}
     taken: set[int] = set()
-    for cb in _paths(eb):
+    orig = mm.xyz.copy()
+    tee = not ea or not eb
+    short: list[tuple[int, int]] = []
+    other: set[str] = set()
+    if tee:
+        # A T: one side's free edge stops short of the other's INSIDE (a wall's foot short of a panel) - the panel's
+        # mesh has no free edge there. Its nodes along the foot's line are moved onto that line, and the foot's
+        # nodes onto the panel, then joined as two free edges are
+        sa_ = _near_surface(mm, fa, mids_b, lim)
+        short, other = (sa_, mids_b) if sa_ else (_near_surface(mm, fb, mids_a, lim), mids_a)
+        tee = bool(short)
+    if tee:
+        runs_b = _t_line(mm, short, other, gap, lim, out)
+        if not runs_b:
+            out["why"] = out.get("why") or "the mesh has no free edges facing each other there"
+            return out
+        out["open_mm"] = _r(sum(float(np.linalg.norm(mm.xyz[a] - mm.xyz[b])) for a, b in short))
+        # the panel stays where it is: the foot comes to it
+        _pair_runs(mm, _paths(short), runs_b, gap, lim, set(), taken, remap, newpos, inserts, out, onto_b=True)
+    elif not ea or not eb:
+        out["why"] = "the mesh has no free edges facing each other there"
+        return out
+    else:
+        out["open_mm"] = _r(sum(float(np.linalg.norm(mm.xyz[a] - mm.xyz[b])) for a, b in ea + eb))
+        # a node on both sides is already one node (the two faces sewn there): it stays where it is and is no partner
+        # of any other; and a node joined or put in once is not joined again from another run of the gap
+        shared = {n for e in ea for n in e} & {n for e in eb for n in e}
+        _pair_runs(mm, _paths(ea), _paths(eb), gap, lim, shared, taken, remap, newpos, inserts, out, onto_b=onto_b)
+    got = _apply(mm, remap, newpos, inserts, out, mids_a, mids_b, gap, lim)
+    if tee:
+        # every node's move, from where it was meshed (the line's nodes and the foot's moved before the joining)
+        got["moved_mm"] = _r(float(np.max(np.linalg.norm(mm.xyz - orig, axis=1))) if len(orig) else 0.0)
+    return got
+
+
+def _on_triangles(p: np.ndarray, a: np.ndarray, b: np.ndarray, c: np.ndarray) -> tuple[float, np.ndarray]:
+    """The nearest point to p on triangles a-b-c (m, 3): (its distance, the point)."""
+    n = np.cross(b - a, c - a)
+    nn = np.maximum(np.einsum("mi,mi->m", n, n), 1e-300)
+    t = np.einsum("mi,mi->m", p[None, :] - a, n) / nn
+    q = p[None, :] - t[:, None] * n
+    # inside: the point's barycentric weights all >= 0
+    w0 = np.einsum("mi,mi->m", np.cross(b - q, c - q), n)
+    w1 = np.einsum("mi,mi->m", np.cross(c - q, a - q), n)
+    w2 = np.einsum("mi,mi->m", np.cross(a - q, b - q), n)
+    inside = (w0 >= 0) & (w1 >= 0) & (w2 >= 0)
+    d = np.where(inside, np.linalg.norm(q - p[None, :], axis=1), np.inf)
+    best_d, best_q = float(np.min(d)) if len(d) else np.inf, q[int(np.argmin(d))] if len(d) else p
+    for s, e in ((a, b), (b, c), (c, a)):
+        ds, k, ts = _seg_nearest(p[None, :], s, e)
+        if float(ds[0]) < best_d:
+            best_d, best_q = float(ds[0]), s[int(k[0])] + float(ts[0]) * (e[int(k[0])] - s[int(k[0])])
+    return best_d, np.asarray(best_q, dtype=float)
+
+
+def _triangles(mm: _Mesh, mids: set[str]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """The elements of the faces `mids` as triangles (a quad as two): their corners a, b, c (m, 3)."""
+    mid = mm.src.mid
+    elems = [c for e, c in enumerate(mm.conn) if mid[mm.parent[e]] in mids]
+    tris = [(c[0], c[1], c[2]) for c in elems] + [(c[0], c[2], c[3]) for c in elems if len(c) == 4]
+    if not tris:
+        z = np.zeros((0, 3))
+        return z, z, z
+    return mm.xyz[[t[0] for t in tris]], mm.xyz[[t[1] for t in tris]], mm.xyz[[t[2] for t in tris]]
+
+
+def _near_surface(mm: _Mesh, edges: list[tuple[int, int]], other: set[str], lim: float) -> list[tuple[int, int]]:
+    """SURF-13, A T: the free edges of `edges` lying along the faces `other`'s mesh: both ends within `lim` of it and
+    running along it (within ALONG_DEG of the nearest element's own plane)."""
+    ta, tb, tc = _triangles(mm, other)
+    if not len(ta) or not edges:
+        return []
+    lo_t = np.minimum(np.minimum(ta, tb), tc)
+    hi_t = np.maximum(np.maximum(ta, tb), tc)
+    near_of: dict[int, tuple[float, np.ndarray] | None] = {}
+    for n in sorted({n for e in edges for n in e}):
+        p = mm.xyz[n]
+        k = np.where(np.all((lo_t <= p + lim) & (hi_t >= p - lim), axis=1))[0]
+        if not len(k):
+            near_of[n] = None
+            continue
+        d, q = _on_triangles(p, ta[k], tb[k], tc[k])
+        near_of[n] = (d, q) if d <= lim else None
+    out = []
+    for a, b in edges:
+        if near_of[a] is None or near_of[b] is None:
+            continue
+        own = mm.xyz[b] - mm.xyz[a]
+        m = 0.5 * (mm.xyz[a] + mm.xyz[b])
+        k = np.where(np.all((lo_t <= m + lim) & (hi_t >= m - lim), axis=1))[0]
+        if not len(k):
+            continue
+        # the plane of the element nearest the edge's middle
+        cen = (ta[k] + tb[k] + tc[k]) / 3.0
+        j = k[int(np.argmin(np.linalg.norm(cen - m, axis=1)))]
+        n = np.cross(tb[j] - ta[j], tc[j] - ta[j])
+        sin = abs(float(np.dot(own, n))) / max(float(np.linalg.norm(own) * np.linalg.norm(n)), 1e-300)
+        if sin <= math.sin(math.radians(ALONG_DEG)):
+            out.append((a, b))
+    return out
+
+
+def _t_line(mm: _Mesh, short: list[tuple[int, int]], other: set[str], gap: float, lim: float,
+            out: dict[str, Any]) -> list[list[int]]:
+    """SURF-13, A T: the free edges `short` (a face stopping short of another's inside) brought onto the faces
+    `other`: each node of theirs moved to the nearest point of the other faces' mesh (within `lim`), and along the line
+    they then draw, the other mesh's own nodes within the gap of it moved onto it - a row of that mesh's edges along
+    the line, which the short side's nodes are then joined to. Changes mm.xyz in place; returns the rows (node lists),
+    [] when there is none (why in `out`)."""
+    mid = mm.src.mid
+    elems = [e for e, c in enumerate(mm.conn) if mid[mm.parent[e]] in other]
+    if not elems:
+        return []
+    tris = [(c[0], c[1], c[2]) for e in elems for c in [mm.conn[e]]] + \
+        [(c[0], c[2], c[3]) for e in elems for c in [mm.conn[e]] if len(c) == 4]
+    ta = mm.xyz[[t[0] for t in tris]]
+    tb = mm.xyz[[t[1] for t in tris]]
+    tc = mm.xyz[[t[2] for t in tris]]
+    # the other mesh's edges, as a graph
+    nbr: dict[int, dict[int, float]] = {}
+    for e in elems:
+        c = mm.conn[e]
+        for i in range(len(c)):
+            p, q = c[i], c[(i + 1) % len(c)]
+            w = float(np.linalg.norm(mm.xyz[p] - mm.xyz[q]))
+            nbr.setdefault(p, {})[q] = w
+            nbr.setdefault(q, {})[p] = w
+    other_nodes = np.array(sorted(nbr), dtype=np.int64)
+    rows: list[list[int]] = []
+    moves: dict[int, np.ndarray] = {}
+    for run in _paths(short):
+        foot = []
+        for n in run:
+            lo, hi = mm.xyz[n] - lim, mm.xyz[n] + lim
+            near = np.where(np.all((np.minimum(np.minimum(ta, tb), tc) <= hi) &
+                                   (np.maximum(np.maximum(ta, tb), tc) >= lo), axis=1))[0]
+            if not len(near):
+                foot.append(None)
+                continue
+            d, q = _on_triangles(mm.xyz[n], ta[near], tb[near], tc[near])
+            foot.append(q if d <= lim else None)
+        # the longest stretch of the run with every node within reach
+        best: tuple[int, int] = (0, 0)
+        i = 0
+        while i < len(run):
+            if foot[i] is None:
+                i += 1
+                continue
+            j = i
+            while j + 1 < len(run) and foot[j + 1] is not None:
+                j += 1
+            if j - i > best[1] - best[0]:
+                best = (i, j + 1)
+            i = j + 1
+        if best[1] - best[0] < 2:
+            continue
+        nodes = run[best[0]:best[1]]
+        line = np.array([foot[k] for k in range(best[0], best[1])], dtype=float)
+        # the other mesh's nodes within the gap of the line, and the row of its edges through them from end to end
+        dn, _k, _t = _seg_nearest(mm.xyz[other_nodes], line[:-1], line[1:])
+        ok = {int(n) for n, x in zip(other_nodes.tolist(), dn.tolist(), strict=True) if x <= gap}
+        if not ok:
+            continue
+        ends = []
+        for end in (line[0], line[-1]):
+            cand = sorted(ok, key=lambda n, end=end: (float(np.linalg.norm(mm.xyz[n] - end)), n))
+            ends.append(cand[0])
+        if ends[0] == ends[1]:
+            continue
+        dist_of = {int(n): float(x) for n, x in zip(other_nodes.tolist(), dn.tolist(), strict=True)}
+        # the shortest way through those nodes, kept close to the line
+        import heapq
+
+        best_d: dict[int, float] = {ends[0]: 0.0}
+        prev: dict[int, int] = {}
+        heap = [(0.0, ends[0])]
+        while heap:
+            dd, u = heapq.heappop(heap)
+            if u == ends[1]:
+                break
+            if dd > best_d.get(u, np.inf):
+                continue
+            for v, w in sorted(nbr[u].items()):
+                if v not in ok:
+                    continue
+                nd = dd + w + 3.0 * dist_of[v]
+                if nd < best_d.get(v, np.inf) - 1e-12:
+                    best_d[v], prev[v] = nd, u
+                    heapq.heappush(heap, (nd, v))
+        if ends[1] not in prev:
+            continue
+        path = [ends[1]]
+        while path[-1] != ends[0]:
+            path.append(prev[path[-1]])
+        path.reverse()
+        _d, _k, _t = _seg_nearest(mm.xyz[path], line[:-1], line[1:])
+        for n, k, t in zip(path, _k.tolist(), _t.tolist(), strict=True):
+            moves[n] = line[k] + t * (line[k + 1] - line[k])
+        for n, q in zip(nodes, line, strict=True):
+            moves[n] = q
+        rows.append(path)
+    if not rows:
+        out["why"] = "the mesh has no row of nodes along the line the edge should meet"
+        return []
+    # nothing turned over by the moves
+    touched = [e for e, c in enumerate(mm.conn) if any(n in moves for n in c)]
+    before = {e: _normal(mm.xyz[mm.conn[e]]) for e in touched}
+    for n, q in moves.items():
+        mm.xyz[n] = q
+    for e in touched:
+        if float(np.dot(_normal(mm.xyz[mm.conn[e]]), before[e])) < math.cos(math.radians(TURN_DEG)):
+            out["why"] = "joining the mesh there would turn an element over"
+    return rows
+
+
+def _pair_runs(mm: _Mesh, runs_a: list[list[int]], runs_b: list[list[int]], gap: float, lim: float,
+               shared: set[int], taken: set[int], remap: dict[int, int], newpos: dict[int, np.ndarray],
+               inserts: dict[tuple[int, int], list[tuple[float, int]]], out: dict[str, Any],
+               onto_b: bool = False) -> None:
+    """The runs of nodes of side A paired with those of side B along the gap: nodes facing each other joined (half
+    way; at B's node with `onto_b`), a node with no partner put into the other side's edge it faces. Fills `remap`,
+    `newpos`, `inserts`, `out`."""
+    for cb in runs_b:
         bx = mm.xyz[cb]
         if len(cb) < 2:
             continue
         sb = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(bx, axis=0), axis=1))])
-        for ca in _paths(ea):
+        for ca in runs_a:
             d, sa, qa, ina = _chain_params(bx, mm.xyz[ca])
             if float(np.median(d)) > lim:
                 continue
@@ -300,7 +518,7 @@ def _join_pair(mm: _Mesh, mids_a: set[str], mids_b: set[str], gap: float, reach:
                 a, b = ca[i], cb[j]
                 if a == b:
                     continue
-                m = 0.5 * (mm.xyz[a] + mm.xyz[b])
+                m = mm.xyz[b].copy() if onto_b else 0.5 * (mm.xyz[a] + mm.xyz[b])
                 remap[a] = b
                 newpos[b] = m
                 taken |= {a, b}
@@ -314,7 +532,7 @@ def _join_pair(mm: _Mesh, mids_a: set[str], mids_b: set[str], gap: float, reach:
                 j = int(np.searchsorted(sb, sa[i]) - 1)
                 key = (min(cb[j], cb[j + 1]), max(cb[j], cb[j + 1]))
                 taken.add(a)
-                newpos[a] = 0.5 * (mm.xyz[a] + qa[i])
+                newpos[a] = qa[i].copy() if onto_b else 0.5 * (mm.xyz[a] + qa[i])
                 inserts.setdefault(key, []).append((float(sa[i]), a))
                 out["put_in"] += 1
                 out["moved_mm"] = max(out["moved_mm"], 0.5 * float(d[i]))
@@ -328,10 +546,17 @@ def _join_pair(mm: _Mesh, mids_a: set[str], mids_b: set[str], gap: float, reach:
                     i = int(np.searchsorted(ca_s, sab[j]) - 1)
                     key = (min(ca[i], ca[i + 1]), max(ca[i], ca[i + 1]))
                     taken.add(b)
-                    newpos[b] = 0.5 * (mm.xyz[b] + qb[j])
+                    newpos[b] = mm.xyz[b].copy() if onto_b else 0.5 * (mm.xyz[b] + qb[j])
                     inserts.setdefault(key, []).append((float(sab[j]), b))
                     out["put_in"] += 1
                     out["moved_mm"] = max(out["moved_mm"], 0.5 * float(db[j]))
+
+
+def _apply(mm: _Mesh, remap: dict[int, int], newpos: dict[int, np.ndarray],
+           inserts: dict[tuple[int, int], list[tuple[float, int]]], out: dict[str, Any], mids_a: set[str],
+           mids_b: set[str], gap: float, lim: float) -> dict[str, Any]:
+    """The joins and put-ins applied to `mm` (in place): nodes moved, joined nodes made one, elements cut where nodes
+    were put into their edges; `out` filled with what was done and what is left."""
     if not remap and not inserts:
         out["why"] = "no nodes face each other across the gap"
         return out
@@ -447,6 +672,26 @@ def _bad(mesh_conn: _Mesh, idx: list[int]) -> tuple[int, int]:
     return folded, past
 
 
+def _attempt(mm: _Mesh, faces: list, gap: float, reach_mm: float, onto: str) -> tuple[_Mesh, dict, str]:
+    """One try at closing a place on a copy of `mm`: each pair of its faces joined (`onto` "": half way; "b": the
+    second face kept where it is; "a": the first). Returns (the copy, the totals, the first reason given)."""
+    trial = mm.copy()
+    total: dict[str, Any] = {"joined": 0, "put_in": 0, "moved_mm": 0.0, "open_mm": 0.0, "left_mm": 0.0}
+    why = ""
+    for fa, fb in faces:
+        if fa == fb:
+            continue
+        a, b = ({_mid_of(fb)}, {_mid_of(fa)}) if onto == "a" else ({_mid_of(fa)}, {_mid_of(fb)})
+        got = _join_pair(trial, a, b, max(gap, 1e-9), reach_mm, onto_b=bool(onto))
+        for k in ("joined", "put_in"):
+            total[k] += int(got.get(k) or 0)
+        total["moved_mm"] = max(total["moved_mm"], float(got.get("moved_mm") or 0.0))
+        total["open_mm"] += float(got.get("open_mm") or 0.0)
+        total["left_mm"] += float(got.get("left_mm") or 0.0)
+        why = why or str(got.get("why") or "")
+    return trial, total, why
+
+
 def close(mesh: ShellMesh, places: list[dict], *, reach_mm: float, reach_from: str) -> tuple[ShellMesh, dict]:
     """SURF-13: the open `places` ([{"at_mm", "gap_mm", "faces": [[face a, face b], ...]}], in mm, as
     cad/surface_model names them) closed in `mesh` (mm) where the gap is under `reach_mm`. Returns (the mesh, the
@@ -465,44 +710,43 @@ def close(mesh: ShellMesh, places: list[dict], *, reach_mm: float, reach_from: s
             row["why"] = "wider than the reach"
             rows.append(row)
             continue
-        trial = mm.copy()
-        total = {"joined": 0, "put_in": 0, "moved_mm": 0.0, "open_mm": 0.0, "left_mm": 0.0}
-        why = ""
-        for fa, fb in row["faces"]:
-            if fa == fb:
-                continue
-            got = _join_pair(trial, {_mid_of(fa)}, {_mid_of(fb)}, max(gap, 1e-9), reach_mm)
-            for k in ("joined", "put_in"):
-                total[k] += int(got.get(k) or 0)
-            total["moved_mm"] = max(total["moved_mm"], float(got.get("moved_mm") or 0.0))
-            total["open_mm"] += float(got.get("open_mm") or 0.0)
-            total["left_mm"] += float(got.get("left_mm") or 0.0)
-            why = why or str(got.get("why") or "")
-        # the elements the closing changed: new ones, and those on a node it moved
-        moved = np.linalg.norm(trial.xyz - mm.xyz, axis=1) > 0.0
-        old = {tuple(c) for c in mm.conn}
-        changed = {e for e, c in enumerate(trial.conn) if tuple(c) not in old or bool(moved[c].any())}
-        row.update({k: _r(v) if isinstance(v, float) else v for k, v in total.items()})
-        if not total["joined"] and not total["put_in"]:
-            row["why"] = why or "no nodes face each other across the gap"
-            rows.append(row)
-            continue
-        folded, past = _bad(trial, sorted(changed))
-        new = {tuple(c) for c in trial.conn}
-        _f0, past0 = _bad(mm, [e for e, c in enumerate(mm.conn) if tuple(c) not in new or bool(moved[c].any())])
-        if why.startswith("joining the mesh there would turn") or folded:
-            row["why"] = "joining the mesh there would fold an element"
-        elif past > past0:
-            row["why"] = "joining the mesh there would leave elements past the solver's limits"
-        elif total["moved_mm"] > gap * (1.0 + 1e-6) + 1e-9:
-            row["why"] = "joining the mesh there would move a node farther than the gap"
-        elif total["left_mm"] > max(0.25 * total["open_mm"], 2.0 * gap):
-            row["why"] = "the mesh's edges there do not face each other along the gap"
-        else:
-            row["closed"] = True
-            mm = trial
-            done += 1
-        rows.append(row)
+        # met half way first; where that folds an element or leaves one past the limits, one side is kept where it is
+        # and the other brought the whole gap to it (each side in turn): the smaller elements are not squeezed by half
+        # the gap from both sides
+        first: dict[str, Any] | None = None
+        for onto in ("", "b", "a"):
+            trial, total, why = _attempt(mm, row["faces"], gap, reach_mm, onto)
+            verdict = dict(row)
+            verdict.update({k: _r(v) if isinstance(v, float) else v for k, v in total.items()})
+            if not total["joined"] and not total["put_in"]:
+                verdict["why"] = why or "no nodes face each other across the gap"
+                first = first or verdict
+                break
+            moved = np.linalg.norm(trial.xyz - mm.xyz, axis=1) > 0.0
+            old = {tuple(c) for c in mm.conn}
+            # the elements the closing changed: new ones, and those on a node it moved
+            changed = {e for e, c in enumerate(trial.conn) if tuple(c) not in old or bool(moved[c].any())}
+            folded, past = _bad(trial, sorted(changed))
+            new = {tuple(c) for c in trial.conn}
+            _f0, past0 = _bad(mm, [e for e, c in enumerate(mm.conn) if tuple(c) not in new or bool(moved[c].any())])
+            if why.startswith("joining the mesh there would turn") or folded:
+                verdict["why"] = "joining the mesh there would fold an element"
+            elif past > past0:
+                verdict["why"] = "joining the mesh there would leave elements past the solver's limits"
+            elif total["moved_mm"] > gap * (1.0 + 1e-6) + 1e-9:
+                verdict["why"] = "joining the mesh there would move a node farther than the gap"
+            elif total["left_mm"] > max(0.25 * total["open_mm"], 2.0 * gap):
+                verdict["why"] = "the mesh's edges there do not face each other along the gap"
+            else:
+                verdict["closed"] = True
+                mm = trial
+                done += 1
+                first = verdict
+                break
+            first = first or verdict
+            if "fold" not in verdict["why"] and "limits" not in verdict["why"]:
+                break
+        rows.append(first if first is not None else dict(row, why="no nodes face each other across the gap"))
     record = {"rule": RULE, "reach_mm": _r(reach_mm), "reach_from": reach_from, "closed": done,
               "left": sum(1 for r in rows if not r["closed"]), "places": rows}
     if not done:

@@ -72,9 +72,10 @@ def _normal_at(face, p) -> np.ndarray | None:
     return -v if face.Orientation() == TopAbs_REVERSED else v
 
 
-def _check(new, old, band: float, others: list, tol: float) -> str:
+def _check(new, old, band: float, others: list, tol: float, ends_on: list | None = None) -> str:
     """SURF-12: the result face judged: '' when it is sound, else why not. Valid; its normal side kept (at a point
-    inside the old face); its area within `band` of the old; it crosses none of `others` (beyond touching)."""
+    inside the old face); its area within `band` of the old; it crosses none of `others` (beyond touching), and the
+    faces it was cut on (`ends_on`) only along its own rim."""
     from OCP.BRepAlgoAPI import BRepAlgoAPI_Section
     from OCP.BRepCheck import BRepCheck_Analyzer
 
@@ -98,12 +99,18 @@ def _check(new, old, band: float, others: list, tol: float) -> str:
         sec.Build()
         if sec.IsDone() and _crossing(sec.Shape(), new, f, tol):
             return "the changed face would cross another face"
+    for f in ends_on or []:
+        sec = BRepAlgoAPI_Section(new, f)
+        sec.Build()
+        if sec.IsDone() and _crossing(sec.Shape(), new, f, tol, rims=(new,)):
+            return "the changed face would cross another face"
     return ""
 
 
-def _crossing(section, a, b, tol: float) -> bool:
+def _crossing(section, a, b, tol: float, rims: tuple | None = None) -> bool:
     """Whether two faces' section holds a curve that runs through the inside of either (a crossing), not only along
-    the edges they share or touch at."""
+    the edges they share or touch at. `rims`: the faces whose rim a curve must lie on (default both: a curve on one
+    face's rim across the other's inside is a T, which only the faces a continued face was cut on may have)."""
     from OCP.TopAbs import TopAbs_EDGE
     from OCP.TopoDS import TopoDS
 
@@ -116,7 +123,8 @@ def _crossing(section, a, b, tol: float) -> bool:
         if ms._length(e) <= 2.0 * tol:
             continue
         mid = sm._edge_points(e, 3)[1]
-        on_rim = all(min(ms._dist(ms._vertex(mid), TopoDS.Edge_s(x)) for x in _edges(f)) <= 2.0 * tol for f in (a, b))
+        on_rim = all(min(ms._dist(ms._vertex(mid), TopoDS.Edge_s(x)) for x in _edges(f)) <= 2.0 * tol
+                     for f in (rims or (a, b)))
         if not on_rim:
             return True
     return False
@@ -357,6 +365,127 @@ def _corner(face, edge, at, out_dir: np.ndarray, reach_uv: float):
     return gp_Pnt2d(at.X() + w[0] * reach_uv / k, at.Y() + w[1] * reach_uv / k)
 
 
+#: SURF-12: a strip continuing a face that cannot be continued on its own surface is built through this many points
+#: along the edge
+STRIP_POINTS = 33
+
+
+def _strip(face, edge, length: float):
+    """SURF-12: A STRIP CONTINUING `face` PAST `edge` by `length` when its own surface does not run on (a natural
+    B-spline patch that does not extend well, a trimmed face whose surface ends at the edge): a ruled face from the
+    edge, at every point straight on along the face's tangent plane, square to the edge and away from the face - the
+    face continued tangent to itself, as a pre-processor's "extend edge" does. Its first side runs through the edge's
+    own points, so it sews to the face at the sew tolerance. None when it cannot be built."""
+    from OCP.Approx import Approx_IsoParametric
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+    from OCP.GeomAPI import GeomAPI_PointsToBSplineSurface
+    from OCP.gp import gp_Pnt, gp_Vec
+    from OCP.TColgp import TColgp_Array2OfPnt
+    from OCP.TopoDS import TopoDS
+
+    from meshpipeline.cad import midsurface as ms
+
+    if length <= 0:
+        return None
+    try:
+        c = BRepAdaptor_Curve(TopoDS.Edge_s(edge))
+        ts = np.linspace(c.FirstParameter(), c.LastParameter(), STRIP_POINTS)
+        pts, outs = [], []
+        for t in ts:
+            p, v = gp_Pnt(), gp_Vec()
+            c.D1(float(t), p, v)
+            q = np.array([p.X(), p.Y(), p.Z()])
+            n = _normal_at(face, q)
+            tv = np.array([v.X(), v.Y(), v.Z()])
+            if n is None or float(np.linalg.norm(tv)) < 1e-14:
+                return None
+            d = np.cross(n, tv)
+            if float(np.linalg.norm(d)) < 1e-12:
+                return None
+            pts.append(q)
+            outs.append(d / float(np.linalg.norm(d)))
+        # away from the face: a step out from the edge's middle lands off it
+        mid = len(pts) // 2
+        eps = 0.25 * float(length)
+        sign = 1.0 if ms._dist(ms._vertex(pts[mid] + eps * outs[mid]), face) > \
+            ms._dist(ms._vertex(pts[mid] - eps * outs[mid]), face) else -1.0
+        arr = TColgp_Array2OfPnt(1, STRIP_POINTS, 1, 3)
+        for i, (q, d) in enumerate(zip(pts, outs, strict=True)):
+            for j, s in enumerate((0.0, 0.5, 1.0)):
+                arr.SetValue(i + 1, j + 1, gp_Pnt(*map(float, q + sign * s * float(length) * d)))
+        api = GeomAPI_PointsToBSplineSurface()
+        api.Interpolate(arr, Approx_IsoParametric, False)
+        out = BRepBuilderAPI_MakeFace(api.Surface(), 1e-7).Face()
+        # the face's own side up
+        n0, n1 = _normal_at(face, pts[mid]), _normal_at(out, pts[mid] + sign * eps * outs[mid])
+        if n0 is None or n1 is None:
+            return None
+        if float(np.dot(n0, n1)) < 0:
+            out = TopoDS.Face_s(out.Reversed())
+        return out
+    except Exception as exc:  # noqa: BLE001 - no strip: the place is told
+        logger.debug("surface mend: no strip (%s)", type(exc).__name__)
+        return None
+
+
+def _with_strip(here, p, e, k: int, nbr: int, gap: float, band: float, look: float):
+    """SURF-12: face k continued past edge e by a tangent strip (_strip) cut where it meets its neighbour's sheet,
+    added as a face of its own under face k's name, every face then fused (SURF-2's imprint) so the strip shares
+    its edge with face k and its foot with the faces it ends on: (the new Sewn or None, why not, the strip's width)."""
+    from meshpipeline.cad import midsurface as ms
+    from meshpipeline.cad import surface_model as sm
+
+    a = here.faces[k]
+    strip = _strip(a, e, EXTEND_PAST * gap)
+    if strip is None:
+        return None, "the face could not be continued past that edge", gap
+    touch = sorted(set(_cutters(here, k, strip)) | {nbr})
+    pieces = _split(strip, ms._compound([here.faces[j] for j in touch]))
+    if len(pieces) < 2:
+        return None, "the continued face does not reach its neighbour", gap
+    mid = sm._edge_points(e, 3)[1]
+    near = sorted((ms._dist(ms._vertex(mid), f), i) for i, f in enumerate(pieces))
+    piece = pieces[near[0][1]]
+    if near[0][0] > 2.0 * here.tol:
+        return None, "the continued face does not reach its neighbour", gap
+    width = ms._area(piece) / max(ms._length(e), 1e-300)
+    if width > EXTEND_PAST * gap + 2.0 * here.tol or ms._area(piece) > band:
+        return None, "continuing the face would cover more than the gap", width
+    others = [f for j, f in enumerate(here.faces) if j != k and j not in touch]
+    why = _check_strip(piece, others, [here.faces[j] for j in touch], here.tol)
+    if why:
+        return None, why, width
+    faces = list(here.faces) + [piece]
+    got = _imprint_some(sm.Sewn(faces, list(here.names) + [here.names[k]], sm._sheets(faces), here.tol, here.diag),
+                        sorted({k, len(faces) - 1} | set(touch) | set(_cutters(here, k, piece, own_too=True))))
+    if got is None:
+        return None, "the changed face would still not meet its neighbour", width
+    return got, "", width
+
+
+def _check_strip(strip, others: list, ends_on: list, tol: float) -> str:
+    """A strip judged as _check judges a changed face: valid; it crosses none of `others` and ends on `ends_on`
+    only along its own rim."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Section
+    from OCP.BRepCheck import BRepCheck_Analyzer
+
+    from meshpipeline.cad import midsurface as ms
+
+    if strip is None or strip.IsNull() or not BRepCheck_Analyzer(strip).IsValid():
+        return "the changed face would not be valid"
+    lo, hi = ms._box(strip)
+    for f, rims in [(f, None) for f in others] + [(f, (strip,)) for f in ends_on]:
+        flo, fhi = ms._box(f)
+        if np.any(flo > hi + tol) or np.any(lo > fhi + tol):
+            continue
+        sec = BRepAlgoAPI_Section(strip, f)
+        sec.Build()
+        if sec.IsDone() and _crossing(sec.Shape(), strip, f, tol, rims=rims):
+            return "the changed face would cross another face"
+    return ""
+
+
 #: SURF-12: a B-spline patch is rebuilt through this many points a side (more where it has more poles)
 GRID_MIN = 17
 #: ... and kept only when it lies on the old patch within this share of the sew tolerance
@@ -484,14 +613,133 @@ def _wall(edge, face, depth: float):
     return BRepPrimAPI_MakePrism(start, gp_Vec(*map(float, 2.0 * n * depth))).Shape()
 
 
-def _try(sewn, k: int, new, old, band: float, nbr: int, tol_join: float, length_before: float):
+def _cutters(sewn, k: int, ext, own_too: bool = False) -> list[int]:
+    """The faces a continued face `ext` (face k's) reaches: every face but k and the faces sharing an edge with k (its
+    own sheet's neighbours run on beside it, they are not what it should meet) whose box comes within the sew
+    tolerance of ext's and that ext's section with crosses or touches. `own_too`: k's neighbours as well."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Section
+    from OCP.TopAbs import TopAbs_EDGE
+
+    from meshpipeline.cad import midsurface as ms
+
+    own = ms._map(sewn.faces[k], TopAbs_EDGE)
+    lo, hi = ms._box(ext)
+    out = []
+    for j, f in enumerate(sewn.faces):
+        if j == k:
+            continue
+        flo, fhi = ms._box(f)
+        if np.any(flo > hi + sewn.tol) or np.any(lo > fhi + sewn.tol):
+            continue
+        if not own_too and any(own.Contains(x) for x in _edges(f)):
+            continue
+        sec = BRepAlgoAPI_Section(ext, f)
+        sec.Build()
+        if sec.IsDone() and ms._map(sec.Shape(), TopAbs_EDGE).Extent():
+            out.append(j)
+    return out
+
+
+def _edge_neighbours(sewn, k: int) -> list[int]:
+    """The faces sharing an edge with face k."""
+    from OCP.TopAbs import TopAbs_EDGE
+
+    from meshpipeline.cad import midsurface as ms
+
+    own = ms._map(sewn.faces[k], TopAbs_EDGE)
+    return [j for j, f in enumerate(sewn.faces) if j != k and any(own.Contains(x) for x in _edges(f))]
+
+
+def _resew_junctions(faces: list, tol: float) -> list | None:
+    """The faces sewn at `tol` with junctions kept (the sewing's non-manifold mode: an edge three faces share stays
+    one), each in its place; None when the sewing loses or merges a face."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp
+    from OCP.TopoDS import TopoDS
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+
+    from meshpipeline.cad import midsurface as ms
+
+    sewing = BRepBuilderAPI_Sewing(float(tol), True, True, True, True)
+    sewing.Add(ms._compound(faces))
+    sewing.Perform()
+    result = sewing.SewedShape()
+    if result is None or result.IsNull() or int(sewing.NbDeletedFaces()) > 0:
+        return None
+    index = TopTools_IndexedMapOfShape()
+    TopExp.MapShapes_s(result, TopAbs_FACE, index)
+    out, seen = [], set()
+    for f in faces:
+        g = sewing.ModifiedSubShape(f)
+        k = index.FindIndex(g) if g is not None and not g.IsNull() else 0
+        if k <= 0 or k in seen:
+            return None
+        seen.add(k)
+        out.append(TopoDS.Face_s(index.FindKey(k)))
+    return out
+
+
+def _imprint_some(sewn, idx: list[int]):
+    """SURF-2's imprint on a few faces only (`idx`: the face changed and those it ends on): they are fused (the sew
+    tolerance as the fuzzy value) so each that another's edge lies on is scored along it; every other face is kept
+    as it is (the fuse leaves an edge it does not cut as it was, so the faces beside still share it). Each piece keeps
+    its face's name. None when the fuse fails, loses a face or changes the area."""
+    from OCP.BOPAlgo import BOPAlgo_Builder
+    from OCP.TopoDS import TopoDS
+
+    from meshpipeline.cad import midsurface as ms
+    from meshpipeline.cad import surface_model as sm
+
+    try:
+        bop = BOPAlgo_Builder()
+        for j in idx:
+            bop.AddArgument(sewn.faces[j])
+        bop.SetRunParallel(False)
+        bop.SetNonDestructive(True)
+        bop.SetFuzzyValue(float(sewn.tol))
+        bop.Perform()
+        if bop.HasErrors():
+            return None
+        faces, names = [], []
+        chosen = set(idx)
+        after = 0.0
+        for j, (f, name) in enumerate(zip(sewn.faces, sewn.names, strict=True)):
+            if j not in chosen:
+                faces.append(f)
+                names.append(name)
+                continue
+            images = [TopoDS.Face_s(x) for x in bop.Modified(f)] or ([] if bop.IsDeleted(f) else [f])
+            if not images:
+                return None
+            faces += images
+            names += [name] * len(images)
+            after += sum(ms._area(g) for g in images)
+        before = sum(ms._area(sewn.faces[j]) for j in chosen)
+        if abs(after - before) > sm.IMPRINT_AREA * max(before, 1e-300) + 1e-9:
+            return None
+        # the fuse rebuilds the edges of the faces it cuts: those they shared with a face outside it are sewn back at
+        # the sew tolerance (only what already coincides is joined; a junction stays one edge)
+        again = _resew_junctions(faces, sewn.tol)
+        if again is None:
+            return None
+        return sm.Sewn(again, names, sm._sheets(again), sewn.tol, sewn.diag)
+    except Exception as exc:  # noqa: BLE001 - not joined: the place is told
+        logger.debug("surface mend: no local imprint (%s)", type(exc).__name__)
+        return None
+
+
+def _try(sewn, k: int, new, old, band: float, nbr: int, tol_join: float, length_before: float,
+         touch: list[int] | None = None):
     """A face replaced and the sheet sewn again: (the new Sewn, '') when face k's change is sound and the place closes
-    (the two faces now share an edge there), else (None, why)."""
+    (the two faces now share an edge there), else (None, why). `touch`: the faces the new face was cut on - it may end
+    on them (its new edge across their inside), not cross them."""
     from meshpipeline.cad import surface_clean as sc
     from meshpipeline.cad import surface_model as sm
 
-    others = [f for j, f in enumerate(sewn.faces) if j not in (k, nbr)]
-    why = _check(new, old, band, others, sewn.tol)
+    ends_on = set(touch or [])
+    others = [f for j, f in enumerate(sewn.faces) if j not in (k, nbr) and j not in ends_on]
+    why = _check(new, old, band, others, sewn.tol, ends_on=[sewn.faces[j] for j in sorted(ends_on - {nbr})])
     if why:
         return None, why
     faces = list(sewn.faces)
@@ -504,7 +752,13 @@ def _try(sewn, k: int, new, old, band: float, nbr: int, tol_join: float, length_
         got, _rec = sc._one_at_a_time(pair, tol_join, good, {"places": [], "refused": ""}, sc._free(faces)[1])
     if got is None:
         # an edge now ending ON its neighbour's inside (a web's foot extended onto its plate): joined by scoring the
-        # neighbour along it (SURF-2's imprint), as a rib's foot is
+        # neighbour along it (SURF-2's imprint), as a rib's foot is - only the faces concerned fused: the changed
+        # face, its own neighbours (so it shares its sides with them again) and those it ends on (12 Nov: the whole
+        # part fused took minutes a try on a 124-patch look-alike); the whole part when that fails
+        # (and every face the new one touches along an edge: a neighbour continued before it runs on beside it)
+        got = _imprint_some(pair, sorted({k, nbr} | ends_on | set(_edge_neighbours(sewn, k)) |
+                                         set(_cutters(sewn, k, new, own_too=True))))
+    if got is None:
         got = sm.imprint(pair)
     if got is None:
         return None, "the changed face would still not meet its neighbour"
@@ -557,6 +811,7 @@ def _close_one(here, p, e, k: int, nbr: int, gap: float, allowed: float, look: f
         else:
             nb = _normal_at(b, mid)
             same = na is not None and nb is not None and abs(float(np.dot(na, nb))) > math.cos(math.radians(SAME_SIDE_DEG))
+            touch: list[int] = []
             if same:
                 # the same sheet continued: past the gap, then cut back along the neighbour's own edge (so the new
                 # edge lies on it, corners and all); a natural patch with no edge to cut along: up to the gap
@@ -568,9 +823,18 @@ def _close_one(here, p, e, k: int, nbr: int, gap: float, allowed: float, look: f
                 pieces = _split(ext, b)
                 new = _keep_side(pieces, a, e, here.tol) if len(pieces) > 1 else None
                 if new is None:
+                    # AN EDGE STOPPING SHORT OF A SHEET DRAWN IN SEVERAL PATCHES (a wall's foot short of a panel):
+                    # the continued face is cut where it meets that sheet - every face it reaches that is not its own
+                    # neighbour - and the faces it then ends on are scored along its new edge (SURF-2's imprint)
+                    touch = _cutters(here, k, ext)
+                    if len(touch) > 1:
+                        pieces = _split(ext, ms._compound([here.faces[j] for j in touch]))
+                        new = _keep_side(pieces, a, e, here.tol) if len(pieces) > 1 else None
+                if new is None:
                     why = why or "the continued face does not reach its neighbour"
             if new is not None:
-                got, w = _try(here, k, new, a, band, nbr, max(2.0 * here.tol, 0.25 * gap), length_before)
+                got, w = _try(here, k, new, a, band, nbr, max(2.0 * here.tol, 0.25 * gap), length_before,
+                              touch=touch)
                 why = w or why
                 how = "extended along its own surface" + ("" if same else " and trimmed where it meets its neighbour")
                 if got is not None:
@@ -581,6 +845,16 @@ def _close_one(here, p, e, k: int, nbr: int, gap: float, allowed: float, look: f
                         got, why = None, "continuing the face would cover more than the gap"
                     elif not less_open(got):
                         got, why = None, why or "the change would not leave less open"
+    # 1b. CONTINUED BY A TANGENT STRIP where the face's own surface does not run on (or its continuation does not
+    # reach): an edge stopping short of a face at an angle - a wall's foot short of a sheet - only
+    if got is None and not step and na is not None and nb0 is not None and \
+            abs(float(np.dot(na, nb0))) <= math.cos(math.radians(SAME_SIDE_DEG)):
+        sgot, swhy, width = _with_strip(here, p, e, k, nbr, gap, band, look)
+        if sgot is not None and not less_open(sgot):
+            sgot, swhy = None, "the change would not leave less open"
+        if sgot is not None:
+            return sgot, "", "extended by a strip tangent to it and trimmed where it meets its neighbour", width
+        why = why or swhy
     if got is not None:
         return got, "", how, changed
     # 2. TRIMMED back to the neighbour's edge (an overlap: the face runs over its neighbour)
