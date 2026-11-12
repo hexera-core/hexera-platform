@@ -1285,7 +1285,8 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         rings: list = []                    # washers in a free face: their own ring mesh (ST.ring_mesh)
         block_preset: dict[int, int] = {}
         block_holes: set[int] = set()
-        cut_curves: set[int] = set()        # curves SHMESH-41 drew (no CAD edge)
+        cut_curves: set[int] = set()
+        square_cells: set[int] = set()      # SHMESH-45f: the cells a square ring's strips came out as        # curves SHMESH-41 drew (no CAD edge)
         grid_cells: set[int] = set()        # the cells SHMESH-41 cut faces into
         hole_lines: list[dict] = []         # SHMESH-45c: one line per hole of a flat face, in the record
         if ST.WASHERS and kind != "triangles" and structure not in ("free", "no_washers"):
@@ -1311,7 +1312,8 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                     cuts=cut_curves, low_mm=(sizing or {}).get("low_mm"), high_mm=(sizing or {}).get("high_mm"),
                     cells_out=grid_cells)
             rings = [w for w in washers if w not in gridded and w not in boxed]
-            drawn = ST.imprint(gmsh, rings + squares, tag_of, cuts=cut_curves, preset=block_preset)
+            drawn = ST.imprint(gmsh, rings + squares, tag_of, cuts=cut_curves, preset=block_preset,
+                               square_cells=square_cells)
             lost = [w for w in rings + squares if w not in drawn]
             for w in lost:
                 reason = str(w.info.get("why") or "its ring was not drawn")
@@ -1495,8 +1497,6 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                           for x in gmsh.model.getAdjacencies(1, abs(c))[0] if int(x) in grids} - bad
                 if not beside:
                     continue
-                # (only the grids along whose shared curve such an element stands: SHMESH-45f - a square washer's
-                # strips were all freed for one poor element across the face)
                 past_nodes: set[int] = set()
                 types, _tags, conns = gmsh.model.mesh.getElements(2, t)
                 for et, conn in zip(types, conns, strict=True):
@@ -1512,7 +1512,11 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                     past_nodes |= set(el[hit_].ravel().tolist())
                 if not past_nodes:
                     continue
-                for g_grid in sorted(beside):
+                # (a square ring's strips only where such an element stands on their shared curve, SHMESH-45f - one
+                # poor element across the face freed all of a ring's strips; every other grid beside it, as before)
+                strips = beside & square_cells
+                bad |= beside - strips
+                for g_grid in sorted(strips):
                     shared_c = ({abs(int(c)) for _d, c in gmsh.model.getBoundary([(2, t)], oriented=False)}
                                 & {abs(int(c)) for _d, c in gmsh.model.getBoundary([(2, g_grid)], oriented=False)})
                     for c_shared in shared_c:
