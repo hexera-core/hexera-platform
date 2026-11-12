@@ -212,7 +212,7 @@ def _square_plan(gmsh, curves: list[int], face_mm: float, mm: float, hole_size, 
     n /= float(np.linalg.norm(n))
     for i in range(4):
         u1, u2 = P[i - 1] - P[i], P[(i + 1) % 4] - P[i]
-        ang = math.degrees(math.acos(max(-1.0, min(1.0, float(u1 @ u2) / (np.linalg.norm(u1) * np.linalg.norm(u2))))))
+        ang = math.degrees(math.acos(max(-1.0, min(1.0, float(u1 @ u2) / float(np.linalg.norm(u1) * np.linalg.norm(u2))))))
         if not (70.0 <= ang <= 110.0) or float(np.cross(P[i] - P[i - 1], P[(i + 1) % 4] - P[i]) @ n) <= 0:
             return "a four-sided hole that is not near square (a corner past 70..110 degrees)"
     if max(sides) > 2.0 * min(sides):
