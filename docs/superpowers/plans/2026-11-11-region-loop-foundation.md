@@ -684,6 +684,108 @@ git commit -m "feat(repair): prove an operation inside a package against its own
 
 ---
 
+### Task 10: Several Packages Per Region, And An Author That Sees What Failed
+
+Added after running the driver on live geometry. Measured on three real parts: the shipped
+deterministic author keeps ZERO operations on `knee-demo.step` and changes nothing, while the
+baseline keeps 3; on `blade-holes.step` the baseline keeps two planar fills and closes a solid
+(0 -> 1) where the region driver keeps one and closes none.
+
+The cause is not the author's bounds. `region_loop.py:279` states it: "a region is offered exactly
+one package per run". The author calls `chosen.propose(tuple(defects), RunHistory(), shape=shape)`
+with a FRESH `RunHistory` every time, so nothing accumulates. The baseline's entire advantage is
+that its history persists across iterations: it tries `sew_faces`, marks it ineffective, and then
+proposes `fill_planar_hole` — which is the operation that actually works.
+
+Packing those attempts into one longer plan does NOT substitute, and this was tested: a predicate is
+pre-registered, so a plan of k speculative attempts must claim all k, and one failure reverts the
+operations that succeeded. Claiming fewer was also tested and behaved identically, because the
+author cannot know in advance which attempt will be the one that works. Retry has to happen across
+packages, not inside one.
+
+**Files:**
+- Modify: `src/meshpipeline/cad/repair/region_loop.py` (the region walk, `RegionRun`)
+- Modify: `src/meshpipeline/cad/repair/rules_author.py` (consume the attempts)
+- Modify: `src/meshpipeline/settings/cad_repair.py` (one new bound)
+- Test: `tests/unit/cad/test_repair_region_loop.py`, `tests/native/test_native_repair_region_loop.py`
+
+**Interfaces:**
+- The `author` seam becomes `(region, defects, attempts) -> TargetPackage | None`, where
+  `attempts: tuple[PackageVerdict, ...]` is every package already tried in THIS region this run,
+  in order. This is the change that matters beyond this task: it is the channel a model author
+  revises through, so its shape is a commitment to the next plan.
+- `CAD_REPAIR_REGION_ATTEMPTS: int` (default 3) bounds packages per region. The run's `max_ops`
+  and `timeout_s` remain the outer bounds and are unchanged.
+- `RegionRun.packages` now holds several verdicts per region; `escalated` lists a region only once.
+
+A region stops early when the author returns `None`, when no defect of its own remains, or when the
+attempt bound is reached. An all-rolled-back package still charges nothing against the run's
+allowance, as Task 9 established.
+
+- [ ] **Step 1: Write the failing tests**
+
+```python
+def test_a_region_gets_a_second_package_when_its_first_is_reverted():
+    run = run_regions(_part(), author=_author_needing_two_tries(), tolerance_mm=0.1,
+                      budget=_budget())
+    assert [p.status for p in run.packages] == ["reverted", "committed"]
+
+def test_the_author_is_told_what_already_failed_in_this_region():
+    seen = []
+    def spy(region, defects, attempts):
+        seen.append(tuple(v.reason for v in attempts))
+        return _author_needing_two_tries()(region, defects, attempts)
+    run_regions(_part(), author=spy, tolerance_mm=0.1, budget=_budget())
+    assert seen[0] == ()
+    assert "cleared defects still present" in seen[1][0]
+
+def test_the_attempt_bound_is_honoured():
+    run = run_regions(_part(), author=_author_that_never_succeeds(), tolerance_mm=0.1,
+                      budget=_budget(), attempts=2)
+    assert len([p for p in run.packages if p.region_index == 0]) == 2
+
+def test_a_region_is_escalated_once_however_many_attempts_it_took():
+    run = run_regions(_part(), author=_author_that_never_succeeds(), tolerance_mm=0.1,
+                      budget=_budget(), attempts=3)
+    assert run.escalated.count(0) == 1
+
+def test_a_committed_region_is_not_offered_another_package():
+    run = run_regions(_part(), author=_author_that_succeeds_first(), tolerance_mm=0.1,
+                      budget=_budget(), attempts=3)
+    assert len(run.packages) == len(run.regions)
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `.venv/bin/python -m pytest tests/unit/cad/test_repair_region_loop.py -k "second_package or already_failed or attempt_bound or escalated_once or not_offered" -v`
+Expected: FAIL — `author()` takes 2 positional arguments, and only one package per region exists.
+
+- [ ] **Step 3: Add the inner attempt loop and widen the author seam**
+
+Re-read the region's own defects between attempts, since a kept operation changes them. Keep the
+walk deterministic in `decompose` order.
+
+- [ ] **Step 4: Teach `rules_author` to use the attempts**
+
+Build one `RunHistory` from `attempts` — mark `(defect_fingerprint, op_name)` ineffective for every
+operation that did not survive — and propose against it. That reproduces the baseline's learning,
+which is the whole point.
+
+- [ ] **Step 5: The acceptance test, on live geometry**
+
+This task's claim is falsifiable, so prove it rather than asserting it. With the posture live and
+planar fills enabled, `blade-holes.step` must keep two `fill_planar_hole` operations and close a
+solid (`solids 0 -> 1`), matching the baseline. Record the before and after numbers in the report.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/meshpipeline/cad/repair/region_loop.py src/meshpipeline/cad/repair/rules_author.py src/meshpipeline/settings/cad_repair.py tests/unit/cad/test_repair_region_loop.py tests/native/test_native_repair_region_loop.py
+git commit -m "feat(repair): several packages per region, and an author that sees what failed"
+```
+
+---
+
 ## Not In This Plan
 
 Separate plans, each depending on this one:
