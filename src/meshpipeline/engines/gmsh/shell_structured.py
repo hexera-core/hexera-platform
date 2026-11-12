@@ -732,19 +732,6 @@ def _spread(total: int, lengths: list[float]) -> list[int] | None:
     return out
 
 
-def _across(gmsh, sides: list[list[int]], c: int) -> float:
-    """SHMESH-48u: a four-sided cell's narrowest width across the rows curve c's count makes: the least distance
-    between the two sides at either end of the side c is on (inf when c is on no side of the cell)."""
-    from scipy.spatial import cKDTree
-
-    i = next((k for k, sd in enumerate(sides) if c in sd), None)
-    if i is None:
-        return math.inf
-    a = np.vstack([_samples(gmsh, x, 16) for x in sides[(i + 1) % 4]])
-    b = np.vstack([_samples(gmsh, x, 16) for x in sides[(i + 3) % 4]])
-    return float(cKDTree(b).query(a)[0].min())
-
-
 def map_faces(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], mm: float, *, skip: set[int],
               preset: dict[int, int], low_mm: float | None = None, fine_at: dict[int, float] | None = None,
               growth: float = 1.3, arc_mm=None, high_mm: float | None = None, wish: dict[int, int] | None = None
@@ -839,12 +826,6 @@ def map_faces(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], mm: float
                     n = max(n, math.ceil(longest * mm / (0.98 * high_mm) - 1e-9))
                 if low_mm is not None:
                     n = max(1, min(n, math.floor(min(length[c] for c in cs) * mm / low_mm + 1e-9)))
-                    # SHMESH-48u: nor so many that a row comes out under it across a cell at its narrowest (the
-                    # class's count is the rows between the cell's two other sides: an O-grid's ring and box side
-                    # 2.5 mm apart took two rows from its 9.75 mm diagonal)
-                    n = max(1, min(n, math.floor(min(_across(gmsh, cand[t][0], c) for t in faces_of[r]
-                                                     for c in cs if any(c in sd for sd in cand[t][0]))
-                                                 * mm / low_mm + 1e-9)))
                 free_beside = any(s not in cand for c in cs for s in gmsh.model.getAdjacencies(1, c)[0] if s in tag_of)
                 if n > 1 and n % 2 and free_beside and (low_mm is None or min(length[c] for c in cs) * mm / (n + 1) >= low_mm):
                     n += 1
@@ -985,7 +966,7 @@ BAND_STEP = False
 
 
 def _boxed(r_mm: float, hole_mm: float, h_mm: float, low_mm: float | None = None,
-           high_mm: float | None = None) -> tuple[int, int, float, float] | None:
+           high_mm: float | None = None, rows_fit: bool = False) -> tuple[int, int, float, float] | None:
     """SHMESH-41/48: (elements round, rows, ring over hole radius, box half-side mm) of an O-grid washer in a gridded
     face, every edge of it inside a band: the user's shortest and longest edge when they gave them (the count round the
     hole is then picked to fit the band, never fewer than 8), else our own (the plan's count round the hole at least,
@@ -1001,6 +982,7 @@ def _boxed(r_mm: float, hole_mm: float, h_mm: float, low_mm: float | None = None
     seg_lo, seg_hi = max(BOX_SEG[0] * h_mm, e_lo), min(BOX_SEG[1] * h_mm, e_hi)
     own = math.ceil(2 * math.pi * r_mm / max(hole_mm, 1e-12) - 1e-9)
     n0 = WASHER_MIN if user else max(WASHER_MIN, WASHER_STEP * math.ceil(own / WASHER_STEP))
+    first: tuple[int, int, float, float] | None = None
     for n in range(n0, WASHER_MAX + 1, WASHER_STEP):
         s_hole = 2 * math.pi * r_mm / n
         if s_hole < e_lo or s_hole > e_hi:
@@ -1014,21 +996,36 @@ def _boxed(r_mm: float, hole_mm: float, h_mm: float, low_mm: float | None = None
             if r_lo > r_hi:
                 continue
             R0 = min(max(WASHER_AIM * r_mm, r_lo), r_hi)
-            # (SHMESH-48u: with the user's edges, other rings between r_lo and r_hi too, nearest the aim first)
-            tries = sorted({R0, *(float(x) for x in np.linspace(r_lo, r_hi, 9))}, key=lambda x: (abs(x - R0), x)) \
-                if user else [R0]
-            for R in tries:
+            b_lo0 = max(R0 + gap, n * seg_lo / 8)
+            if b_lo0 > b_hi + 1e-9:
+                continue
+            old = (n, rows, R0 / r_mm, min(max(n * h_mm / 8, b_lo0), b_hi))
+            if not (user and rows_fit):
+                return old
+            first = first or old
+            # (SHMESH-48u, gridded faces with the user's edges: the ring and box half-side nearest the plan's for
+            # which some count of rows between them fits the edge lines, the fewest round first; SHMESH-48w: where
+            # none does, the plan as before - its delivered rows are judged on the mesh (48f), never planned away: a
+            # round base plate's bolt holes lost their O-grids, and the plate its rings and strips)
+            for R in sorted({R0, *(float(x) for x in np.linspace(r_lo, r_hi, 9))}, key=lambda x: (abs(x - R0), x)):
                 b_lo = max(R + gap, n * seg_lo / 8)
                 if b_lo > b_hi + 1e-9:
                     continue
-                b = min(max(n * h_mm / 8, b_lo), b_hi)
-                if user:
-                    got = _box_rows(R, b, b_lo, b_hi, e_lo, e_hi)
-                    if got is None:
-                        continue
-                    b = got
-                return n, rows, R / r_mm, b
-    return None
+                got = _box_rows(R, min(max(n * h_mm / 8, b_lo), b_hi), b_lo, b_hi, e_lo, e_hi)
+                if got is not None:
+                    return n, rows, R / r_mm, got
+    return first
+
+
+def _ring_box_rows(R: float, b_in: float, b_out: float, h: float, e_lo: float, e_hi: float) -> int | None:
+    """SHMESH-48w: the count of rows between an O-grid's ring (radius R) and its box (nearest side b_in, farthest
+    corner b_out from the hole's centre) that keeps the side-middle row no shorter than e_lo and the corner row no
+    longer than e_hi - the one nearest the corner's length over the size h; None when none does."""
+    k_lo = max(1, math.ceil((b_out - R) / e_hi - 1e-9)) if math.isfinite(e_hi) else 1
+    k_hi = math.floor((b_in - R) / e_lo + 1e-9) if e_lo > 0 else 10 ** 6
+    if k_lo > k_hi:
+        return None
+    return min(max(round((b_out - R) / h), k_lo), k_hi)
 
 
 def _box_rows(R: float, b: float, b_lo: float, b_hi: float, e_lo: float, e_hi: float) -> float | None:
@@ -1420,7 +1417,8 @@ def _face_plan(gmsh, t: int, ws: list[Washer], h_mm: float, mm: float, hole_size
 
     # SHMESH-48h: a square ring (SHMESH-45f) takes a free box round its outer corners; its strips are drawn
     # in that box after the grid (imprint), so the grid is cut as for a round hole's free box
-    plans = [None if w.corners else _boxed(w.r * mm, hole_size(w.r * mm, w.owner), h_mm, low_mm, high_mm)
+    plans = [None if w.corners else _boxed(w.r * mm, hole_size(w.r * mm, w.owner), h_mm, low_mm, high_mm,
+                                           rows_fit=True)
              for w in ws]
     square_uv = {id(w): np.array([uv(q) for q in _frame_points(w)[0]]) for w in ws if w.corners}
     # SHMESH-48k: a square hole whose sides run along the frame takes its ring as cells of the grid itself - its box
@@ -2317,6 +2315,16 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                     continue
                 R = p[2] * w.r if p is not None else w.R
                 tol = 1e-4 * R
+                # SHMESH-48w: with the user's edges, the O-grid's rows from ring to box set where some count fits
+                # them (else counted as before, and the delivered rows judged on the mesh)
+                k_rb, b_out = None, 0.0
+                if p is not None and (low_mm is not None or high_mm is not None):
+                    cu_, cv_ = uv(w.centre)
+                    bx_ = boxes[j_w]
+                    b_in = min(cu_ - bx_[0], bx_[1] - cu_, cv_ - bx_[2], bx_[3] - cv_)
+                    b_out = max(math.hypot(x_ - cu_, y_ - cv_) for x_ in bx_[:2] for y_ in bx_[2:])
+                    k_rb = _ring_box_rows(R, b_in, b_out, h, float(low_mm or 0.0) / mm,
+                                          0.98 * float(high_mm) / mm if high_mm is not None else math.inf)
                 ring_c: list[int] = []
                 hole_c: list[int] = []
                 for c in curves:
@@ -2327,6 +2335,14 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                         ring_c.append(c)
                     elif p is not None and d.min() >= w.r - tol and d.max() <= R + tol and abs(d[0] - d[-1]) > 0.5 * (R - w.r):
                         preset[c] = p[1]
+                    elif p is not None and k_rb is not None and d.min() >= R - tol and d.max() <= b_out + tol and abs(
+                            d[0] - d[-1]) > 0.5 * (b_out - R):
+                        # (SHMESH-48w: a cut from the box's corner to the ring - its rows fit the user's edges)
+                        q0, q1 = smp_c[c][0], smp_c[c][-1]
+                        dr_ = (q1 - q0) / max(float(np.linalg.norm(q1 - q0)), 1e-300)
+                        rd_ = (q0 - w.centre) / max(float(np.linalg.norm(q0 - w.centre)), 1e-300)
+                        if abs(float(dr_ @ rd_)) > 0.99:
+                            preset[c] = k_rb
                 on_circle |= set(ring_c) | set(hole_c)
                 if p is not None:
                     for c in ring_c:

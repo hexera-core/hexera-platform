@@ -58,14 +58,21 @@ def test_an_o_grid_boxs_rows_from_ring_to_box_fit_the_users_edges():
     in a 17.5 mm box: one row from ring to box is 9.75 mm at the corners (over 7.35), two are 1.25 mm at the side
     middles (under 2.5) - 6.56% of its elements under the shortest edge. Now some count of rows fits both ends."""
     for r, h, lo, hi in ((10.0, 5.0, 2.5, 7.5), (9.9, 10.0, 5.0, 15.0), (12.0, 5.0, 2.5, 7.5), (20.0, 10.0, 5.0, 15.0)):
-        got = ST._boxed(r, 2 * math.pi * r / 8, h, low_mm=lo, high_mm=hi)
+        got = ST._boxed(r, 2 * math.pi * r / 8, h, low_mm=lo, high_mm=hi, rows_fit=True)
         assert got is not None
         n, rows, ratio, b = got
         R = ratio * r
-        assert any((b - R) / k >= lo - 1e-9 and (b * math.sqrt(2) - R) / k <= 0.98 * hi + 1e-9 for k in range(1, 20))
-    # with no user edges the plan is as before (no rows check)
+        k = ST._ring_box_rows(R, b, b * math.sqrt(2), h, lo, 0.98 * hi)
+        assert k is not None and (b - R) / k >= lo - 1e-9 and (b * math.sqrt(2) - R) / k <= 0.98 * hi + 1e-9
     assert ST._box_rows(15.0, 17.5, 17.5, 17.5, 2.5, 7.35) is None
     assert ST._box_rows(15.0, 17.5, 17.5, 21.0, 2.5, 7.35) == 20.0
+    # SHMESH-48w: never a plan refused that the old rule took (a round base plate's 22 mm bolt holes lost their
+    # O-grids, the plate its rings and strips); round plates (no rows_fit) keep the old plan exactly
+    for r in (9.0, 11.0, 12.0, 13.3, 16.0, 16.5, 20.0):
+        for h, lo, hi in ((10.0, 5.0, 15.0), (8.5, 5.0, 15.0), (5.0, 2.5, 7.5)):
+            old = ST._boxed(r, 5.0, h, lo, hi)
+            assert (old is None) == (ST._boxed(r, 5.0, h, lo, hi, rows_fit=True) is None)
+    assert ST._boxed(16.5, 5.0, 10.0, 5.0, 15.0) == (20, 2, 1.75, 33.875)
 
 
 def test_a_chain_takes_its_opposite_sides_count_spread_by_length():
