@@ -213,7 +213,7 @@ def test_a_round_hole_too_big_for_a_washer_is_left_to_the_field(tmp_path):
     brep, rec = _plate_with_holes(tmp_path, [(100.0, 100.0, 80.0)], size=(200.0, 200.0, 10.0))
     _m, applied = _mesh(brep, rec, _criteria())
     s = applied["quality"]["structure"]
-    assert s["washers"] == 0 and s["no_washer"] == {"larger than the washer limit": 1}
+    assert s["washers"] == 0 and s["no_washer"] == {"larger than the washer limit (6 element sizes across)": 1}
 
 
 def test_a_junction_keeps_one_node_per_point_and_a_rectangle_is_one_grid(tmp_path):
@@ -298,6 +298,24 @@ def test_a_ring_that_cannot_be_built_keeps_gmshs_mesh_there(web, monkeypatch):
     assert len(SS._loops(pairs[0][pairs[1] == 1])) == 7
 
 
+def test_gridded_steps_that_fail_keep_the_round_rings(web, monkeypatch):
+    """SHMESH-45g, the guard's middle step: when only the gridded/mapped steps fail, the part keeps its round washers
+    (the free mesh is the last step, not the first)."""
+    brep, rec = web
+    real = ST.map_faces
+
+    def broken(*a, **k):
+        raise RuntimeError("Unknown OpenCASCADE entity of dimension 2 with tag 4")
+
+    monkeypatch.setattr(ST, "map_faces", broken)
+    monkeypatch.setattr(ST, "block_faces", broken)
+    mesh, applied = _mesh(brep, rec, _criteria())
+    s = applied["quality"]["structure"]
+    assert s["guard"]["kept"] == "round rings only" and "tag 4" in s["guard"]["why"]
+    assert s["washers"] == s["holes"] > 0 and applied["quality"]["valid"]
+    assert real is not ST.map_faces
+
+
 def test_structured_steps_that_fail_fall_back_to_the_free_mesh(web, monkeypatch):
     """SHMESH-45, whole step: any failure of the structured steps gives the mesh "free mesh" gives, said."""
     brep, rec = web
@@ -312,3 +330,232 @@ def test_structured_steps_that_fail_fall_back_to_the_free_mesh(web, monkeypatch)
     assert guard["kept"] == "free mesh" and "do not face each other" in guard["why"]
     assert _sha(mesh) == _sha(free)
     assert any("SHMESH-45" in n for n in mesh.notes)
+
+
+def test_a_hole_drawn_as_several_edges_still_gets_its_washer(tmp_path):
+    """SHMESH-45b, the cause on a real column: a CAD circle split into 2 to 5 edges, unevenly, left the washer's hole
+    nodes out of step with its ring's ("a washer's hole and ring nodes do not face each other"). The round free holes
+    of flat faces are drawn again as one circle each, so every one gets its ring."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakeWire
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakePrism
+    from OCP.BRepTools import BRepTools
+    from OCP.GC import GC_MakeArcOfCircle
+    from OCP.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Pnt, gp_Vec
+
+    from meshpipeline.cad import midsurface as ms
+
+    def hole(x, y, cuts):
+        circ = gp_Circ(gp_Ax2(gp_Pnt(x, y, -1), gp_Dir(0, 0, 1), gp_Dir(1, 0, 0)), 10.0)
+        angs = [math.radians(a) for a in cuts] + [math.radians(cuts[0]) + 2 * math.pi]
+        mw = BRepBuilderAPI_MakeWire()
+        for a, b in zip(angs[:-1], angs[1:], strict=True):
+            mw.Add(BRepBuilderAPI_MakeEdge(GC_MakeArcOfCircle(circ, a, b, True).Value()).Edge())
+        return BRepPrimAPI_MakePrism(BRepBuilderAPI_MakeFace(mw.Wire()).Face(), gp_Vec(0, 0, 12)).Shape()
+
+    shape = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), 300, 200, 10).Shape()
+    for (x, y), cuts in (((60, 60), [0, 180]), ((150, 60), [0, 100, 250]), ((240, 60), [0, 72, 144, 216, 288]),
+                         ((60, 140), [0, 150]), ((150, 140), [0, 120, 240]), ((240, 140), [0, 90, 180, 270])):
+        shape = BRepAlgoAPI_Cut(shape, hole(x, y, cuts)).Shape()      # no unify: the circles stay split
+    rec, surf = ms.extract(shape, mm_per_unit=1.0)
+    brep = tmp_path / "split.brep"
+    BRepTools.Write_s(surf, str(brep))
+    for req in (_criteria(), None):
+        mesh, applied = _mesh(brep, rec, req)
+        s = applied["quality"]["structure"]
+        assert s["holes_redrawn"] == 6 and s["washers"] == 6 and s["no_washer"] == {}, s
+        assert SS.measure(mesh)["holes_ringed"] == 6 and applied["quality"]["valid"]
+
+
+def test_every_hole_has_its_line_in_the_record(web, monkeypatch):
+    """SHMESH-45c: one line per hole of a flat face - face, part, diameter, CAD edges, shared, planned ring, room, why."""
+    brep, rec = web
+    real = ST.ring_mesh
+    calls = {"n": 0}
+
+    def flaky(gmsh, w, index, xyz, mm):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ValueError("a washer's hole and ring nodes do not face each other")
+        return real(gmsh, w, index, xyz, mm)
+
+    monkeypatch.setattr(ST, "ring_mesh", flaky)
+    monkeypatch.setattr(ST, "BLOCKS", False)
+    _mesh_, applied = _mesh(brep, rec, _criteria())
+    lines = applied["quality"]["structure"]["hole_list"]
+    assert len(lines) == 6
+    for h in lines:
+        assert {"face", "part", "diameter_mm", "edges", "edges_before", "shared", "to_edge", "to_hole",
+                "washer"} <= set(h)
+        assert abs(h["diameter_mm"] - 18.0) < 0.1 and h["shared"] is False
+    refused = [h for h in lines if not h["washer"]]
+    assert len(refused) == 1 and "do not face each other" in refused[0]["why"]
+    assert all(h.get("kind") == "ring in a free face" and h["planned_round"] >= 8 for h in lines if h["washer"])
+
+
+def _bspline_hole_plate(tmp_path, holes):
+    """A 19.05 mm plate whose holes are drawn as B-spline pieces through points of a circle, each piece off the radius
+    by up to 3e-4 of it (a mid-surface's fitted hole), meeting end to end: [((x, y), diameter, [cut angles])]."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakeWire
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakePrism
+    from OCP.BRepTools import BRepTools
+    from OCP.GeomAPI import GeomAPI_PointsToBSpline
+    from OCP.gp import gp_Pnt, gp_Vec
+    from OCP.TColgp import TColgp_Array1OfPnt
+
+    from meshpipeline.cad import midsurface as ms
+
+    shape = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), 300, 200, 19.05).Shape()
+    for (x, y), d, cuts in holes:
+        r = d / 2
+        angs = [math.radians(a) for a in cuts] + [math.radians(cuts[0]) + 2 * math.pi]
+        mw = BRepBuilderAPI_MakeWire()
+        for i, (a, b) in enumerate(zip(angs[:-1], angs[1:], strict=True)):
+            arr = TColgp_Array1OfPnt(1, 9)
+            for j in range(9):
+                t = a + (b - a) * j / 8
+                rr = r if j in (0, 8) else r * (1 + 3e-4 * math.sin(3 * t + i))
+                arr.SetValue(j + 1, gp_Pnt(x + rr * math.cos(t), y + rr * math.sin(t), -1))
+            mw.Add(BRepBuilderAPI_MakeEdge(GeomAPI_PointsToBSpline(arr).Curve()).Edge())
+        tool = BRepPrimAPI_MakePrism(BRepBuilderAPI_MakeFace(mw.Wire()).Face(), gp_Vec(0, 0, 21)).Shape()
+        shape = BRepAlgoAPI_Cut(shape, tool).Shape()
+    rec, surf = ms.extract(shape, mm_per_unit=1.0)
+    brep = tmp_path / "bspline.brep"
+    BRepTools.Write_s(surf, str(brep))
+    return brep, rec
+
+
+BSPLINE_HOLES = [((60, 60), 15.47, [5, 95, 185, 275]), ((150, 60), 17.98, [0, 120, 250]),
+                 ((240, 60), 15.47, [0, 80, 200, 300]), ((60, 140), 17.98, [30, 150, 270]),
+                 ((150, 140), 15.47, [0, 90, 180, 270]), ((240, 140), 46.07, [0, 130, 250])]
+
+
+@pytest.mark.parametrize("redraw", [True, False])
+def test_holes_in_fitted_pieces_get_their_washers(tmp_path, monkeypatch, redraw):
+    """SHMESH-45d, class B of a real column: holes of 3 or 4 B-spline pieces (not exact arcs: the SHMESH-45b redraw
+    once refused them) got rings whose nodes did not face the hole's. Now the redraw takes pieces that are one circle
+    within 1e-3 of the radius; and without it the ring's nodes follow the hole's. SHMESH-45e: the 46 mm hole (4.6 sizes
+    at 10 mm, the user's global size) gets a washer, two rows."""
+    brep, rec = _bspline_hole_plate(tmp_path, BSPLINE_HOLES)
+    monkeypatch.setattr(ST, "RESEAT", redraw)
+    monkeypatch.setattr(SA_mod(), "STRUCTURED_GUARD", False)        # nothing hidden by the whole-step guard
+    mesh, applied = _mesh(brep, rec, _criteria())
+    s = applied["quality"]["structure"]
+    assert s["washers"] == 6 and s["no_washer"] == {}, s["hole_list"]
+    big = next(h for h in s["hole_list"] if h["diameter_mm"] > 40)
+    assert big["washer"] and big["planned_rows"] == 2
+    if redraw:
+        assert s["holes_redrawn"] == 6 and {h["edges_before"] for h in s["hole_list"]} == {3, 4}
+        assert {h["edges"] for h in s["hole_list"]} == {1}
+    got = SS.measure(mesh)
+    assert got["holes_ringed"] == 6 and applied["quality"]["valid"]
+
+
+def SA_mod():
+    from meshpipeline.engines.gmsh import shell_adapter as SA
+
+    return SA
+
+
+def test_a_large_hole_needs_the_users_size_for_a_washer():
+    """SHMESH-45e: the count for a 46 mm hole at 10 mm: two rows, inside the user's 5..15 mm edges."""
+    n, rows, ratio = ST._count(23.0, 10.0, 10.0, 5.0, 15.0)
+    assert rows == 2 and 2 * math.pi * 23.0 / n >= 5.0 and (ratio - 1) * 23.0 / rows >= 5.0
+    assert 2 * math.pi * 23.0 * ratio / n <= 0.98 * 15.0
+    assert ST.WASHER_ACROSS_USER * 10.0 > 46.07 > ST.WASHER_ACROSS * 10.0
+
+
+def test_a_square_hole_gets_a_square_washer(tmp_path):
+    """SHMESH-45f, class A of a real column: four-sided holes of straight edges (square, diamond; our extraction keeps
+    a round hole round - checked on plain, split, countersunk and counterbored 21 mm holes in a 19 mm plate - so these
+    are the CAD's own) get a square ring, mapped, inside the user's edges."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakePrism
+    from OCP.BRepTools import BRepTools
+    from OCP.gp import gp_Pnt, gp_Vec
+
+    from meshpipeline.cad import midsurface as ms
+
+    shape = BRepPrimAPI_MakeBox(gp_Pnt(-175, -175, 0), 350, 350, 19.05).Shape()
+    for (x, y), turn in (((-110, -110), 0), ((110, -110), 0), ((-110, 110), 45), ((110, 110), 45)):
+        poly = BRepBuilderAPI_MakePolygon()
+        for j in range(4):
+            a = math.radians(turn + 45 + 90 * j)
+            poly.Add(gp_Pnt(x + 9.3 * math.sqrt(2) * math.cos(a), y + 9.3 * math.sqrt(2) * math.sin(a), -1))
+        poly.Close()
+        tool = BRepPrimAPI_MakePrism(BRepBuilderAPI_MakeFace(poly.Wire()).Face(), gp_Vec(0, 0, 21)).Shape()
+        shape = BRepAlgoAPI_Cut(shape, tool).Shape()
+    rec, surf = ms.extract(shape, mm_per_unit=1.0)
+    brep = tmp_path / "square.brep"
+    BRepTools.Write_s(surf, str(brep))
+    mesh, applied = _mesh(brep, rec, _criteria())
+    s = applied["quality"]["structure"]
+    assert s["washers"] == 4 and s["no_washer"] == {}, s["hole_list"]
+    assert all(h["shape"] == "square" and h["kind"] == "square ring in a free face" for h in s["hole_list"])
+    q = applied["quality"]
+    assert q["valid"] and q["within_nastran"]
+    rows = {r["field"]: r for r in applied["requirements"]["rows"]}
+    assert rows["max_edge"]["met"] is True
+    # each hole's ring is a grid: every element touching a hole is a quad, and the plate's elements round the rings
+    # are no worse for it (inside Nastran's limits above)
+    pairs = SS._edges(mesh)
+    loops = SS._loops(pairs[0][pairs[1] == 1])
+    assert len(loops) == 5
+    holes = sorted(loops, key=len)[:4]
+    tri_nodes = {int(v) for t in mesh.trias for v in t}
+    # (a ring's strips beside a poor element of the free field are meshed free again, SHMESH-40's check: here at most
+    # one hole's)
+    assert sum(1 for lp in holes if not (set(lp) & tri_nodes)) >= 3
+    assert applied["quality"]["structure"]["mapped_faces"] >= 12
+
+
+def test_round_and_square_holes_on_one_face_of_a_several_face_part(tmp_path):
+    """SHMESH-45f/45g, a real column on 9e8fcbed: a face with round AND square holes was cut twice (its rings, then its
+    square rings on the face the first cut had replaced - "Unknown OpenCASCADE entity of dimension 2"), and the guard
+    kept the free mesh for every face. Now each face's washers are drawn in one cut, and a face's failure costs that
+    face only."""
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCylinder, BRepPrimAPI_MakePrism
+    from OCP.BRepTools import BRepTools
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt, gp_Vec
+    from OCP.TopoDS import TopoDS_Compound
+
+    def plate(z: float, squares: list, rounds: list):
+        p = BRepPrimAPI_MakeBox(gp_Pnt(-175, -175, z), 350, 350, 19.05).Shape()
+        for x, y in squares:
+            poly = BRepBuilderAPI_MakePolygon()
+            for j in range(4):
+                a = math.radians(45 + 90 * j)
+                poly.Add(gp_Pnt(x + 9.3 * math.sqrt(2) * math.cos(a), y + 9.3 * math.sqrt(2) * math.sin(a), z - 1))
+            poly.Close()
+            p = BRepAlgoAPI_Cut(p, BRepPrimAPI_MakePrism(BRepBuilderAPI_MakeFace(poly.Wire()).Face(),
+                                                         gp_Vec(0, 0, 21)).Shape()).Shape()
+        for x, y in rounds:
+            cyl = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(x, y, z - 1), gp_Dir(0, 0, 1)), 10.5, 21).Shape()
+            p = BRepAlgoAPI_Cut(p, cyl).Shape()
+        return p
+
+    comp = TopoDS_Compound()
+    bb = BRep_Builder()
+    bb.MakeCompound(comp)
+    bb.Add(comp, plate(0.0, [(140, -140), (-140, 140)], [(-140, -140), (140, 140)]))
+    bb.Add(comp, plate(300.0, [(110, 110)], [(-110, -110), (110, -110)]))
+    rec, surf = ms_extract(comp)
+    brep = tmp_path / "two.brep"
+    BRepTools.Write_s(surf, str(brep))
+    mesh, applied = _mesh(brep, rec, _criteria())
+    s = applied["quality"]["structure"]
+    assert "guard" not in s, s.get("guard")
+    assert s["washers"] == 7 and s["no_washer"] == {}, s["hole_list"]
+    assert sum(1 for h in s["hole_list"] if h.get("shape") == "square") == 3
+    assert applied["quality"]["valid"] and applied["quality"]["within_nastran"]
+
+
+def ms_extract(shape):
+    from meshpipeline.cad import midsurface as ms
+
+    return ms.extract(shape, mm_per_unit=1.0)
