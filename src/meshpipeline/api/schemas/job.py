@@ -85,6 +85,11 @@ class JobStatus_(BaseModel):
     # showed it from the upload it made itself, so a reload (or a run opened from a link) lost it;
     # it is read from the run's geometry source so every view of the run can name its file.
     geometry_filename: str | None = None
+    # THE CONVERSATION THE RUN CAME FROM, by id. The session's own job link is rewritten by the
+    # next run on it (agents/intake/message.py), so the durable direction is job -> session, read
+    # off the dispatch payload that has carried it since the run launched. None for a job that
+    # did not come out of an intake conversation (an API-key run has nothing to reread).
+    session_id: str | None = None
 
 
 class DisputeFlag(BaseModel):

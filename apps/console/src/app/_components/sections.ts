@@ -17,16 +17,13 @@ export type ConsoleSection = {
 };
 
 export const CONSOLE_SECTIONS: readonly ConsoleSection[] = [
-  { href: "/", label: "Overview", group: "product", available: true,
-    icon: "M3 12h5l2-5 3 10 2-5h6" },
+  // One product surface: a run is the unit of work, and /runs/new and /runs/<id> are the same
+  // workbench at different moments. The old Overview, Conversations and Usage lists each showed a
+  // slice of the same jobs; they folded into /runs (the list) and /settings/billing (the money).
   { href: "/runs", label: "Runs", group: "product", available: true,
     icon: "M4 6h16M4 12h16M4 18h10" },
-  { href: "/conversations", label: "Conversations", group: "product", available: true,
-    icon: "M4 5h16v10H9l-5 4z" },
-  { href: "/usage", label: "Usage", group: "product", available: true,
-    icon: "M12 3a9 9 0 1 0 9 9h-9z" },
-  { href: "/repair", label: "CAD repair", group: "product", available: true,
-    icon: "M14.7 6.3a4 4 0 0 0-5.4 5.4L4 17l3 3 5.3-5.3a4 4 0 0 0 5.4-5.4l-2.4 2.4-2.3-2.3z" },
+  { href: "/settings/billing", label: "Billing", group: "account", available: true,
+    icon: "M3 7h18v10H3zM3 11h18M7 15h3" },
   { href: "/settings/account", label: "Account", group: "account", available: true,
     icon: "M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM4 21a8 8 0 0 1 16 0" },
   { href: "/settings/api-keys", label: "API keys", group: "account", available: true,
@@ -36,24 +33,17 @@ export const CONSOLE_SECTIONS: readonly ConsoleSection[] = [
   // THE TEAM'S MESHING STANDARD: the requirements every run of the organisation applies under its notes
   { href: "/settings/meshing", label: "Meshing", group: "account", available: true,
     icon: "M4 4h16v16H4zM4 12h16M12 4v16M4 4l8 8M12 12l8 8" },
-  { href: "/settings/billing", label: "Billing", group: "account", available: true,
-    icon: "M3 7h18v10H3zM3 11h18M7 15h3" },
 ] as const;
 
 /** Which section's href owns this path, or "" if none does.
  *
- * Longest match wins, so "/settings/api-keys" beats a hypothetical "/settings". The root is
- * matched exactly rather than by prefix: "/" is a prefix of every path, and a naive startsWith
- * would leave Overview marked current on every page in the console.
+ * Longest match wins, so "/settings/api-keys" beats a hypothetical "/settings". No section owns
+ * "/" - it redirects to /runs - so the root correctly falls through to "".
  */
 export function currentSection(pathname: string): string {
-  if (pathname === "/") {
-    return "/";
-  }
   const matches = CONSOLE_SECTIONS.filter(
     (section) =>
-      section.href !== "/" &&
-      (pathname === section.href || pathname.startsWith(`${section.href}/`)),
+      pathname === section.href || pathname.startsWith(`${section.href}/`),
   );
   return matches.reduce((longest, section) =>
     section.href.length > longest.href.length ? section : longest,

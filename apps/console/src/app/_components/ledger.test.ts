@@ -39,3 +39,11 @@ test("any other reason is shown as written", () => {
   assert.deepEqual(ledgerReason("signup grant"), { text: "Signup grant", runId: null });
   assert.deepEqual(ledgerReason(""), { text: "", runId: null });
 });
+
+test("a uuid inside a free-text grant is not mistaken for a run", () => {
+  // Admin credits carry written reasons; "Adjustment for invoice <uuid>" must stay words, not
+  // become a link to a run that does not exist.
+  const reason = "Adjustment for invoice 8f14e45f-ceea-467a-9b1e-2c1d0e4a1b22";
+  assert.deepEqual(ledgerReason(reason), { text: reason, runId: null });
+  assert.equal(ledgerReason("mesh job not-a-uuid").runId, null);
+});

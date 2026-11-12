@@ -148,7 +148,7 @@ function Credits({ balance }: { balance: number | null }) {
   const low = balance !== null && balance <= 0;
   return (
     <div className={`sidebar__credits${low ? " sidebar__credits--low" : ""}`}>
-      <Link className="sidebar__credits-main" href="/usage" title="See usage">
+      <Link className="sidebar__credits-main" href="/settings/billing" title="See billing">
         <span>Credits</span>
         <b>{balance === null ? "—" : formatCredits(balance)}</b>
       </Link>

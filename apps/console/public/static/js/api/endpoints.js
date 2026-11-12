@@ -160,6 +160,14 @@ export async function getJob(jobId, { throwOnError = true } = {}) {
   return r.json();
 }
 
+/** The intake conversation a run came out of: {session_id, messages, job_id}. Returns null when
+ *  the session cannot be read - a missing transcript must not cost the run's own replay. */
+export async function getChatHistory(sessionId) {
+  const r = await apiFetch(`/api/v1/chat/history/${sessionId}`, { headers: headers() });
+  if (!r.ok) return null;
+  return r.json();
+}
+
 /** A NEW download link for one deliverable, minted now: {download_url, expires_in_seconds,
  *  size_bytes}. Asked at click time, so the link's whole life - which scales with the file's
  *  size - lies ahead of the download. Throws with `status` set when the API refuses. */

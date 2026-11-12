@@ -13,8 +13,8 @@
  * loads this module, and this module is the only thing index.html loads.
  */
 import { apiFetch, setNotifier, useIdentity } from "./api/client.js";
-import { addNote, finalizePartMatches, getJob, getPartMatches, getPartModel, getPartPicture, pickPartMatch }
-  from "./api/endpoints.js";
+import { addNote, finalizePartMatches, getChatHistory, getJob, getPartMatches, getPartModel,
+  getPartPicture, pickPartMatch } from "./api/endpoints.js";
 import { dispatch, resultSurface } from "./core/events.js";
 import { beginRun, get as getState, isTerminalStatus, set as setState, waitingCopy }
   from "./core/state.js";
@@ -337,6 +337,16 @@ function bootLive() {
     showRunFile(job.geometry_filename);
     Stage.clock(job.created_at, isTerminalStatus(job.status) ? job.ended_at : null);
     Stage.waiting(waitingCopy(job));
+    // THE QUESTIONS THE RUN ANSWERED. Intake ran against the session BEFORE the job existed, so
+    // the job's own event log cannot replay it - it is served beside the job and read back here,
+    // ahead of the run's events, in the order they happened. A run that began without intake
+    // (or whose session cannot be read) simply skips this.
+    if (job.session_id) {
+      const history = await getChatHistory(job.session_id);
+      for (const m of history?.messages || []) {
+        if (m.role === "user" || m.role === "assistant") Stage.chat(m.role, m.content);
+      }
+    }
     if (isTerminalStatus(job.status)) {
       // REPLAY THE WHOLE RUN FIRST. A finished job still has its event log, and the point of
       // keeping one is that a user can see HOW they got their mesh, not just that they got it.
