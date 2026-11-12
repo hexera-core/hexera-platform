@@ -998,14 +998,11 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
                 split_note = f"the closed faces were meshed whole ({exc})"
         reseated = 0
         redrawn: list = []
-        if ST.RESEAT and ST.WASHERS and SR.structure_of(requirements) not in ("free", "no_washers"):
-            # SHMESH-45b: the round free holes of flat faces drawn again as one circle each
-            seated = Path(tmp) / "reseated.brep"
-            try:
-                reseated, redrawn = ST.reseat_holes(Path(brep), seated)
-                brep = seated
-            except Exception as exc:  # noqa: BLE001 - the holes keep their own circles
-                logger.info("shell mesh: holes not drawn again (%s)", exc)
+        # SHMESH-45b/45k: a hole is drawn again as one circle only where a first mesh's ring needed it (its nodes
+        # uneven, or the ring not built): drawing every fitted or split hole again changed gmsh's paving round holes
+        # that take no washer (sh0028: a longest edge 17% past 1.5 G, 75 mm from the one hole drawn again)
+        unseated = brep
+        redraw_pass = not (ST.RESEAT and ST.WASHERS and SR.structure_of(requirements) not in ("free", "no_washers"))
         resplined = loops = 0
         started = time.monotonic()
         unmap: set[int] = set()
@@ -1039,6 +1036,19 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
                 brep = nxt
                 resplined += made
                 continue
+            wanted = applied.pop("_redraw_wanted", [])
+            if wanted and not redraw_pass and not resplined:
+                redraw_pass = True
+                seated = Path(tmp) / "reseated.brep"
+                try:
+                    n2, red2 = ST.reseat_holes(Path(unseated), seated, only=wanted)
+                except Exception as exc:  # noqa: BLE001 - the first mesh stands
+                    logger.info("shell mesh: holes not drawn again (%s)", exc)
+                    n2, red2 = 0, []
+                if n2:
+                    brep, reseated, redrawn = seated, n2, red2
+                    unmap, unmapped = set(), 0
+                    continue
             past = applied.pop("_past_spots", [])
             past_n = applied.pop("_past_n", 0)
             own: list = []
@@ -1057,6 +1067,7 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
                 except (ValueError, _Periodic) as exc:
                     logger.info("shell mesh: the spots past the solver's limits were not meshed again (%s)", exc)
                     break
+                applied2.pop("_redraw_wanted", None)
                 past2 = applied2.pop("_past_spots", [])
                 n2 = applied2.pop("_past_n", 0)
                 if n2 >= past_n:
@@ -1278,6 +1289,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                 h0 = min(h0, max(2 * math.pi * r_mm / per_turn, mesh_min))
             return min(h0, rows[k]["size_mm"])
         washers: list = []
+        washers_planned: list = []          # SHMESH-45k: every washer planned, built or not
         washer_skipped: dict[str, int] = {}
         block_skipped: dict[str, int] = {}
         gridded: list = []                  # O-grid washers inside a gridded face (SHMESH-41): mapped with it
@@ -1297,6 +1309,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                 names=names, before=list(hole_before),
                 across=ST.WASHER_ACROSS_USER if (sizing or {}).get("global_mm") is not None else ST.WASHER_ACROSS,
                 low_mm=(sizing or {}).get("low_mm"), high_mm=(sizing or {}).get("high_mm"))
+            washers_planned = list(washers)
             # SHMESH-45f: square holes take a square ring (mapped below); never gridded nor polar
             squares = [w for w in washers if w.corners] if ST.MAPPED and ST.SQUARES else []
             for w in washers:
@@ -1859,6 +1872,14 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         past = shell_quality.nastran_past(mesh) | (_min_jac(mesh) <= 0)
         out["_past_spots"] = _spots(mesh, face_of, past)
         out["_past_n"] = int(past.sum())
+    # SHMESH-45k: the holes whose ring had to follow uneven hole nodes, or could not be built or closed: _mesh_path
+    # draws them again as one circle and meshes once more
+    drawn_at = [np.asarray(c, dtype=float) for c, _e in hole_before]
+    out["_redraw_wanted"] = [
+        [float(x) for x in w.centre] for w in washers_planned
+        if (w.info.get("followed") or str(w.info.get("why", "")).startswith(("its ring could not be built",
+                                                                              "its ring did not close")))
+        and not any(float(np.linalg.norm(c - w.centre)) <= 0.25 * w.r for c in drawn_at)]
     return mesh, out
 
 

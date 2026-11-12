@@ -587,6 +587,7 @@ def ring_mesh(gmsh, w: Washer, index: np.ndarray, xyz: np.ndarray, mm: float) ->
         # circle) - each ring node is slid along the ring to its hole node's angle, so every spoke is radial
         Rm = w.R * mm
         xyz[outer] = c + Rm * (np.cos(a_in)[:, None] * e1 + np.sin(a_in)[:, None] * e2)
+        w.info["followed"] = float(f"{float(np.abs(gap).max()) / step:.3g}")      # SHMESH-45k: drawn again next pass
         gap = np.zeros_like(gap)
     rings = [inner]
     new: list[np.ndarray] = []
@@ -1217,7 +1218,7 @@ def _wire_turn(edges: list, centre: np.ndarray, axis: np.ndarray) -> float:
     return total
 
 
-def reseat_holes(brep, out) -> tuple[int, list]:
+def reseat_holes(brep, out, only: list | None = None) -> tuple[int, list]:
     """SHMESH-45b: every round hole of a flat face that no other face shares is drawn again as ONE circle starting on the
     diagonal of the face's frame (its longest straight outer edge, as block_faces reads it), the same circle exactly. A
     CAD hole's circle starts at its seam, often in the middle of an O-grid quarter, and the quarter then cannot be
@@ -1300,6 +1301,10 @@ def reseat_holes(brep, out) -> tuple[int, list]:
             if fit is None:
                 continue
             loc, radius, caxis_fit = fit
+            if only is not None and not any(
+                    float(np.linalg.norm(np.asarray(c_, dtype=float) - np.asarray(loc, dtype=float))) <= 0.25 * radius
+                    for c_ in only):
+                continue            # SHMESH-45k: only the holes a first mesh's rings asked for
             circs = [BRepAdaptor_Curve(e) for e in es]
             exact = all(cv.GetType() == GeomAbs_Circle for cv in circs)
             p0 = circs[0].Value(circs[0].FirstParameter())
