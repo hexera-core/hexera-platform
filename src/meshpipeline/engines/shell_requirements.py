@@ -342,6 +342,9 @@ def report(mesh, req: Mapping | None, sizing: Mapping | None = None) -> dict | N
                    "delivered": f"{_pct(nt, n):g}% of elements ({nt:,}) are triangles"}
         elif field == "linear":
             got = {"applied": True, "met": True, "delivered": "shell elements are 4-node quads and 3-node triangles"}
+        elif field == "shell_only":
+            # MIXED-9d: no solid patch is made; what cannot be a shell stays out of the files (the run's line says it)
+            got = {"applied": True, "met": True, "delivered": "only shell elements are in the files"}
         else:  # quadratic
             got = {"applied": False, "met": None, "delivered": "not applied - shell elements are made as 4-node quads "
                                                                "and 3-node triangles"}

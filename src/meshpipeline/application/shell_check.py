@@ -313,6 +313,27 @@ def not_shelled(summary: dict | None) -> list[dict]:
     return out
 
 
+def patch_words(summary: dict | None) -> str:
+    """MIXED-9e on the stage: the shell check's regions that stay solid, said as the run makes them - meshed as
+    solid and tied to the shell (engines/solid_patches.words); "" when nothing stays solid, or nothing is a shell."""
+    from meshpipeline.engines.solid_patches import words
+
+    s = summary or {}
+    bodies = s.get("bodies") or []
+    if not any(b.get("verdict") in ("shell", "mixed") for b in bodies):
+        return ""
+    rows: dict[str, dict] = {}
+    for reg in s.get("solid_regions") or []:
+        body = str(reg.get("body") or "")
+        row = rows.setdefault(body, {"body": body, "whole": bool(reg.get("whole")), "count": 0})
+        row["count"] += 1
+    n_more = int(s.get("solid_more") or 0)
+    patches = list(rows.values())
+    if n_more and patches:
+        patches[-1]["count"] += n_more
+    return words(patches, bodies=len(bodies))
+
+
 def _stale(status: dict | None, now: float) -> bool:
     if not status or status.get("status") != MEASURING:
         return False
@@ -361,6 +382,11 @@ def shell_view(status: dict | None, facts: dict | None, said: dict | None = None
         from meshpipeline.cad.shell_words import short_wall_words
 
         why = short_wall_words(list(summary["short_walls"]))
+    if mesh_as == pm.MESH_SHELL and isinstance(summary, dict):
+        # MIXED-9: what cannot be a shell is meshed as solid and tied to it - one line, none when nothing is solid
+        patched = patch_words(summary)
+        if patched:
+            why = f"{why} {patched}".strip()
     out: dict = {"question": QUESTION, "state": state, "said": pm.MESH_SHELL, "said_words": SAID_SHELL,
            "mesh_as": mesh_as, "label": SHELL_LABEL if mesh_as == pm.MESH_SHELL else SOLID_LABEL, "reason": why,
            "measuring_words": MEASURING_WORDS if state == MEASURING and mesh_as == pm.MESH_SHELL else ""}

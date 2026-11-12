@@ -156,7 +156,8 @@ def test_a_said_shell_follows_the_check_and_draws_the_mid_surface(live):
     s = _state(live, sid)
     assert not s["measuring"] and " ".join(s["head"].split()) == "Not in the shell 2"
     assert s["rows"] == ["S1", "O1"] and s["list"] and s["legend"] and s["legendText"] == "8 mm – 12 mm"
-    assert s["sum"] == "1 region stays solid · 1 open" and s["closed"]
+    # MIXED-9: what stays solid is meshed as solid and tied to the shell, said so
+    assert s["sum"] == "1 region solid, tied · 1 open" and s["closed"]
     # the mark of what stays solid, clicked on the part, opens its fold and lights its line
     lit = live.evaluate(f"""(() => {{
       const root = document.getElementById('gstage-{sid}');
@@ -171,6 +172,23 @@ def test_a_said_shell_follows_the_check_and_draws_the_mid_surface(live):
     assert _state(live, sid)["fetches"] == 1
     assert "fea_mesh_as" not in _proceed(live, sid)
     assert_clean(live, "the FEA stage of a said shell")
+
+
+def test_regions_meshed_solid_are_listed_as_tied_to_the_shell(live):
+    """MIXED-9: with only solid regions to list (no open place), the fold says they are solid and tied to the shell,
+    and the stage's line says so in words."""
+    sid = "feapatch"
+    view = _ready()
+    view["not_shelled"] = view["not_shelled"][:1]
+    view.update(open_edges=0, open_at_mm=[],
+                reason="1 region is too thick for a shell and is meshed as solid, tied to the shell.")
+    _open(live, sid, _check(view))
+    live.wait_for(f"window._vdbg['gstage:{sid}'].shell().shown", timeout=30, what="the mid-surface to be drawn")
+    s = _state(live, sid)
+    assert " ".join(s["head"].split()) == "Solid, tied to the shell 1" and s["rows"] == ["S1"]
+    assert s["sum"] == "1 region solid, tied"
+    assert s["why"] == "1 region is too thick for a shell and is meshed as solid, tied to the shell."
+    assert_clean(live, "the FEA stage of a shell with a solid patch")
 
 
 def test_a_shell_asked_for_later_appears_then(live):

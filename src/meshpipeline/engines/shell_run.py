@@ -69,7 +69,20 @@ def words(rec: dict) -> str:
     if walls:
         said += f", walls {min(walls):.3g} to {max(walls):.3g} mm" if len(walls) > 1 else f", wall {walls[0]:.3g} mm"
     said += ". Files: Nastran .bdf, CalculiX and Abaqus .inp, Ansys .cdb."
-    if rec.get("solid_bodies"):
+    if rec.get("patches"):
+        # MIXED-9: the regions that cannot be a shell are in the files as solid, tied to the shell
+        from meshpipeline.engines.solid_patches import left_words
+
+        said += f" {rec['patch_words']}"
+        if rec.get("left"):
+            said += f" {left_words(rec['left'])}"
+    elif rec.get("solid_bodies") and rec.get("shell_only"):
+        said += (f" {rec['solid_bodies']} part(s) or region(s) stay solid and are not in the shell files: your notes "
+                 "asked for a shell only.")
+    elif rec.get("solid_bodies") and rec.get("patch_why"):
+        said += (f" {rec['solid_bodies']} part(s) or region(s) stay solid and are not in the shell files: they could "
+                 f"not be meshed as solid and tied to the shell ({rec['patch_why']}).")
+    elif rec.get("solid_bodies"):
         said += f" {rec['solid_bodies']} part(s) or region(s) stay solid and are not in the shell files."
     if rec.get("open_edges"):
         said += f" The plates do not meet at {rec['open_edges']} edge(s): the shell has gaps there."
@@ -154,6 +167,38 @@ def parts_of(mesh, faces: list[dict]) -> list[dict]:
     return [{**p, "tags": tags.get(p["id"], [])} for p in parts_record(mesh)]
 
 
+def _patched(ws: Path, out: Path, step, record: dict, rec: dict, *, mm_per_unit: float, target: dict | None,
+             requirements: dict | None, spent_s: float = 0.0):
+    """MIXED-9: the shell with its solid patches (engines/solid_patches), or None - nothing to patch, the notes ask
+    for a shell only (said: rec["shell_only"]), or the patches could not be made (said: rec["patch_why"]); the
+    shell is then made as before."""
+    from meshpipeline.engines import mesh_requirements as MR
+    from meshpipeline.engines import solid_patches as SP
+
+    if not SP.solid_rows(record):
+        return None
+    if SP.shell_only(requirements):
+        rec["shell_only"] = True
+        return None
+    # MIXED-9g: the budget, and none at all once the run has spent long (a long extraction)
+    budget = min(SP.PATCH_BUDGET_S, SP.PATCH_LATEST_S - float(spent_s))
+    if budget < SP.PATCH_MIN_S:
+        rec["patch_why"] = (f"no time was left for them (the mid-surface took {spent_s / 60:.0f} minutes to find)")
+        return None
+    t1 = time.time()
+    try:
+        return SP.build_bounded(step, out, record, mm_per_unit=mm_per_unit, requirements=requirements, target=target,
+                                requirements_file=ws / MR.FILE, budget_s=budget)
+    except SP.Stop as stop:
+        rec["patch_why"] = str(stop)
+    except Exception as exc:  # noqa: BLE001 - the shell is still made, as before; the reason is kept
+        logger.warning("shell run: no solid patches (%s: %s)", type(exc).__name__, str(exc)[:300])
+        rec["patch_why"] = f"the solid patches could not be made ({type(exc).__name__})"
+    finally:
+        rec["patch_s"] = round(time.time() - t1, 1)
+    return None
+
+
 def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, source: str = "",
         target: dict | None = None, requirements: dict | None = None) -> dict:
     """Extract, mesh and write the shell of `step` (coordinates `mm_per_unit` mm each) into `workspace`. `target`: the
@@ -182,29 +227,51 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, source: 
             rec["why"] = no_shell_why(record)
         else:
             t1 = time.time()
-            try:
-                mesh, applied = sa.mesh_run(out, mm_per_unit=mm_per_unit, target=target, requirements=requirements)
-            except ValueError as exc:
-                # SHELL-26: a shell whose short plates the mesher could not close is made as before them, said
-                if not ms.has_plates(record):
-                    raise
-                record = ms.extract_file(step, out, mm_per_unit=mm_per_unit, plates=False)
-                verdicts = _verdicts(record)
-                rec.update(plates_left_out=PLATES_OUT, plates_mesh_error=str(exc)[:300], advice="",
-                           bodies=verdicts,
-                           open_edges=int(sum(int(r.get("open_edges") or 0) for r in record.get("sewn") or [])),
-                           solid_bodies=int(verdicts.get("solid", 0)) + sum(len(b.get("solid_regions") or [])
-                                                                            for b in record.get("bodies") or []))
-                if not record.get("surface_faces"):
-                    raise
-                mesh, applied = sa.mesh_run(out, mm_per_unit=mm_per_unit, target=target, requirements=requirements)
-            rec["mesh_s"] = round(time.time() - t1, 1)
-            name_parts(mesh, ws)
-            exports = sw.write_all(ws, mesh, units="m", source=source)
-            # THE SHELL IS THE RESULT (engines/shell_delivery): the viewer's picture of it, one group per mid-face
-            faces = write_msh(ws / MSH, mesh)
-            xyz_m = mesh.xyz / 1000.0
-            rec.update(nodes=int(len(mesh.xyz)), faces=faces, parts=parts_of(mesh, faces),
+            patched = _patched(ws, out, step, record, rec, mm_per_unit=mm_per_unit, target=target,
+                               requirements=requirements, spent_s=time.time() - started) if rec["solid_bodies"] else None
+            if patched is not None:
+                # MIXED-9: the shell and its solid patches, tied, in the shell's own files
+                from meshpipeline.engines import mixed_mesh as mm
+                from meshpipeline.engines import shell_quality as SQ
+                from meshpipeline.engines import solid_patches as SP
+
+                mesh, applied = patched.joined.shell, patched.applied
+                (out / "shell_plan.json").write_text(json.dumps(applied, indent=1, sort_keys=True, default=float))
+                name_parts(mesh, ws)
+                exports = mm.write_all(ws, patched.joined, units="m", source=source, stem="shell")
+                faces = SP.write_msh(ws / MSH, patched.joined, patched.patches)
+                # the shell's figures on the delivered shell elements, the overlap rows of the join among them
+                applied = {**applied, "quality": {**dict(applied.get("quality") or {}), **SQ.measure(mesh)}}
+                rec.update(SP.record_of(patched, bodies=len(record.get("bodies") or [])))
+                rec["mesh_s"] = round(time.time() - t1, 1)
+                import numpy as np
+
+                xyz_m = np.vstack([mesh.xyz, patched.joined.solid.xyz]) / 1000.0
+            else:
+                t1 = time.time()
+                try:
+                    mesh, applied = sa.mesh_run(out, mm_per_unit=mm_per_unit, target=target, requirements=requirements)
+                except ValueError as exc:
+                    # SHELL-26: a shell whose short plates the mesher could not close is made as before them, said
+                    if not ms.has_plates(record):
+                        raise
+                    record = ms.extract_file(step, out, mm_per_unit=mm_per_unit, plates=False)
+                    verdicts = _verdicts(record)
+                    rec.update(plates_left_out=PLATES_OUT, plates_mesh_error=str(exc)[:300], advice="",
+                               bodies=verdicts,
+                               open_edges=int(sum(int(r.get("open_edges") or 0) for r in record.get("sewn") or [])),
+                               solid_bodies=int(verdicts.get("solid", 0)) + sum(len(b.get("solid_regions") or [])
+                                                                                for b in record.get("bodies") or []))
+                    if not record.get("surface_faces"):
+                        raise
+                    mesh, applied = sa.mesh_run(out, mm_per_unit=mm_per_unit, target=target, requirements=requirements)
+                rec["mesh_s"] = round(time.time() - t1, 1)
+                name_parts(mesh, ws)
+                exports = sw.write_all(ws, mesh, units="m", source=source)
+                # THE SHELL IS THE RESULT (engines/shell_delivery): the viewer's picture of it, one group per mid-face
+                faces = write_msh(ws / MSH, mesh)
+                xyz_m = mesh.xyz / 1000.0
+            rec.update(nodes=int(len(xyz_m)), faces=faces, parts=parts_of(mesh, faces),
                        bounds_m=[float(v) for v in (*xyz_m.min(axis=0), *xyz_m.max(axis=0))] if len(xyz_m) else None)
             q = applied.get("quality") if isinstance(applied, dict) else None
             (ws / "shell_quality.json").write_text(json.dumps(applied, indent=1, sort_keys=True, default=float))

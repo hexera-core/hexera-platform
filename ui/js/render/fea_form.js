@@ -602,10 +602,12 @@ function shellSummary(s) {
   const solid = (s.not_shelled || []).filter((r) => r.kind === "solid" && r.id).length;
   const open = Number(s.open_edges) > 0 ? (s.not_shelled || []).filter((r) => r.kind === "open" && r.id).length || Number(s.open_edges) : 0;
   const bits = [];
+  // MIXED-9: what cannot be a shell is meshed as solid and tied to the shell, so it is said as "solid, tied"
   if (bodies.length > 1) {
     const sh = bodies.filter((b) => b.verdict !== "solid").length;
-    bits.push(`${sh} of ${bodies.length} parts as shell`, `${bodies.length - sh} stay solid`);
-  } else bits.push(solid ? `${plural(solid, "region")} stay${solid === 1 ? "s" : ""} solid` : "whole part");
+    bits.push(`${sh} of ${bodies.length} parts as shell`);
+    if (bodies.length > sh) bits.push(`${bodies.length - sh} solid, tied`);
+  } else bits.push(solid ? `${plural(solid, "region")} solid, tied` : "whole part");
   if (open) bits.push(`${open} open`);
   return esc(bits.join(" · "));
 }
@@ -619,8 +621,11 @@ function meshAsBody(s) {
     ? `<li class="fea-spot-row fea-shell-row ${attr(r.kind)}" data-spot="${attr(r.id)}" title="${attr(r.words)}"><span class="fea-spot-id">${esc(r.id)}</span><span>${esc(r.short || r.words)}</span></li>`
     : `<li class="fea-shell-head ${attr(r.kind)}" title="${attr(r.words)}">${esc(r.short || r.words)}</li>`).join("") : "";
   const nRows = shell ? (s.not_shelled || []).filter((r) => r.id).length : 0;
-  const list = rows ? subFoldHtml("shell-not", `Not in the shell${nRows ? ` <span class="fea-spot-n">${nRows}</span>` : ""}`,
-    `<ul class="fea-spots fea-shell-rows" aria-label="Not in the shell">${rows}</ul>`, "fea-shell-list") : "";
+  // MIXED-9: a list of solid regions only is what the run meshes as solid, tied to the shell
+  const onlySolid = shell && (s.not_shelled || []).every((r) => r.kind === "solid");
+  const title = onlySolid ? "Solid, tied to the shell" : "Not in the shell";
+  const list = rows ? subFoldHtml("shell-not", `${title}${nRows ? ` <span class="fea-spot-n">${nRows}</span>` : ""}`,
+    `<ul class="fea-spots fea-shell-rows" aria-label="${title}">${rows}</ul>`, "fea-shell-list") : "";
   const legend = shell && s.overlay ? `<div class="fea-shell-show">${shellLegendHtml(s)}</div>` : "";
   const said = shell && s.said_words ? ` <span class="fea-muted fea-meshas-said" title="${attr(s.said_words)}">· as you asked</span>` : "";
   const head = `<span class="fea-sec-t">Shell</span><span class="fea-sec-sum">${shellSummary(s)}</span>`;

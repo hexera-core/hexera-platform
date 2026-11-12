@@ -36,6 +36,10 @@ from meshpipeline.engines.shell_mesh import ShellMesh, edge_users
 OVERLAP_GROUP = "SHLINK_overlap"
 #: a shell node lies on a cut face within this share of its wall
 ON_FACE_SHARE = 2e-3
+#: MIXED-9: a shell node lies on a face of a body solid as a whole within this share of its wall - a plate's edge
+#: butting the body (its mid-face ends where its skins end: 0.03 mm short of a 30 mm hub for a 2 mm spoke); a plate
+#: lying ON the body's face, its edge half a wall off it, is not a plate ending there
+LOOSE_SHARE = 0.25
 #: the inner row is tied to the solid nodes within this share of the overlap depth of its place, along the shell
 BAND_SHARE = 0.5
 #: the tetrahedron's faces, solver order (corners 0-3; edge midpoints 4:(0,1) 5:(1,2) 6:(2,0) 7:(0,3) 8:(1,3) 9:(2,3))
@@ -110,6 +114,16 @@ class Link:
 
 
 @dataclass
+class SolidRegion:
+    """MIXED-9: one solid patch of a shell run's deck: its name (the group, SOLID_<name>), the body it is of (its
+    material), and its tetrahedra (solid.tets[first:first + count])."""
+    name: str
+    part: str
+    first: int
+    count: int
+
+
+@dataclass
 class MixedMesh:
     shell: ShellMesh
     solid: SolidPart
@@ -118,6 +132,8 @@ class MixedMesh:
     links: list[Link]
     n_overlap: int
     notes: list[str] = field(default_factory=list)
+    #: MIXED-9: the solid patches, each its own set, section and material (None: one region of `part`, as before)
+    regions: list[SolidRegion] | None = None
 
     @property
     def counts(self) -> dict:
@@ -164,12 +180,12 @@ def _normal(p: np.ndarray) -> np.ndarray:
 
 
 def join(shell: ShellMesh, solid: SolidPart, cut_faces: list, *, part: str,
-         cut_face_names: list[str] | None = None) -> MixedMesh:
+         cut_face_names: list[str] | None = None, loose_faces: list | None = None) -> MixedMesh:
     """SHLINK-4 on a shell mesh and a solid mesh of one mixed body (both mm): the link rows found on the cut faces
-    (OCC faces, mm), the overlap quads added to the shell, the ties made. The shell mesh is extended in place."""
-    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
-    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
-    from OCP.gp import gp_Pnt
+    (OCC faces, mm), the overlap quads added to the shell, the ties made. The shell mesh is extended in place.
+    `loose_faces` (MIXED-9): faces of a body that is solid as a whole, which a shell edge meets within LOOSE_SHARE of
+    its wall (a plate of another body ending on it: its mid-face stops where its two skins stop, a hair short of a
+    curved face) - their solid nodes are found as the cut faces' are."""
 
     from meshpipeline.cad import midsurface as ms
 
@@ -177,14 +193,17 @@ def join(shell: ShellMesh, solid: SolidPart, cut_faces: list, *, part: str,
     users = edge_users(shell)
     elems = shell.elements()
     free = [(k, u[0]) for k, u in users.items() if len(u) == 1]
-    cut = ms._compound(cut_faces)
+    tight = _Faces(list(cut_faces))
+    loose = _Faces(list(loose_faces or []))
+    cut = ms._compound(list(cut_faces) + list(loose_faces or []))
     on_cache: dict[int, bool] = {}
+
+    def close(n: int, faces: _Faces, share: float, e: int) -> bool:
+        return faces.within(shell.xyz[n], share * float(shell.wall[e]) + 1e-6)
 
     def on_cut(n: int, e: int) -> bool:
         if n not in on_cache:
-            v = BRepBuilderAPI_MakeVertex(gp_Pnt(*map(float, shell.xyz[n]))).Vertex()
-            d = BRepExtrema_DistShapeShape(v, cut)
-            on_cache[n] = d.IsDone() and d.Value() <= ON_FACE_SHARE * float(shell.wall[e]) + 1e-6
+            on_cache[n] = close(n, tight, ON_FACE_SHARE, e) or close(n, loose, LOOSE_SHARE, e)
         return on_cache[n]
 
     link_edges = {key: eu for key, eu in free if on_cut(key[0], eu[0]) and on_cut(key[1], eu[0])}
@@ -254,11 +273,13 @@ def join(shell: ShellMesh, solid: SolidPart, cut_faces: list, *, part: str,
     else:
         lo, hi = ms._box(cut)
         tol = ON_FACE_SHARE * float(np.min(shell.wall)) + 1e-6
-        inside = np.flatnonzero(np.all((solid.xyz >= lo - tol) & (solid.xyz <= hi + tol), axis=1))
+        every = _Faces(list(cut_faces) + list(loose_faces or []))
+        # only the solid mesh's skin can lie on a cut face (the cut faces are the region's own faces)
+        skin = np.zeros(solid.n_nodes + 1, dtype=bool)
+        skin[np.unique(boundary_triangles(solid.tets, np.ones(solid.n_nodes + 1, dtype=bool))[:, :3])] = True
+        inside = np.flatnonzero(np.all((solid.xyz >= lo - tol) & (solid.xyz <= hi + tol), axis=1) & skin[1:])
         for j in inside.tolist():
-            v = BRepBuilderAPI_MakeVertex(gp_Pnt(*map(float, solid.xyz[j]))).Vertex()
-            d = BRepExtrema_DistShapeShape(v, cut)
-            on[j + 1] = d.IsDone() and d.Value() <= tol
+            on[j + 1] = every.within(solid.xyz[j], tol)
     tri = boundary_triangles(solid.tets, on)
     face_xyz = {base + int(i): solid.xyz[int(i) - 1] for i in np.unique(tri)}
     face_area = {base + i: a for i, a in ml.face_node_areas({int(i): solid.xyz[int(i) - 1] for i in np.unique(tri)},
@@ -314,6 +335,39 @@ def join(shell: ShellMesh, solid: SolidPart, cut_faces: list, *, part: str,
     return MixedMesh(shell=ext, solid=solid, part=part, ties=ties, links=links, n_overlap=len(q), notes=notes)
 
 
+class _Faces:
+    """Faces to measure points against, each with its box: a point is tested only against the faces whose box (padded
+    by the tolerance) holds it, one face at a time - the distance to their compound, at a fraction of the cost
+    (a part with tens of solid pieces spent most of half an hour on one BRepExtrema against the whole compound for
+    each of its solid nodes)."""
+
+    def __init__(self, faces: list):
+        from meshpipeline.cad import midsurface as ms
+
+        self.faces = list(faces)
+        boxes = [ms._box(f) for f in self.faces]
+        self.lo = np.array([b[0] for b in boxes], float).reshape(-1, 3)
+        self.hi = np.array([b[1] for b in boxes], float).reshape(-1, 3)
+
+    def within(self, p, tol: float) -> bool:
+        from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
+        from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+        from OCP.gp import gp_Pnt
+
+        if not self.faces:
+            return False
+        p = np.asarray(p, float)
+        cand = np.flatnonzero(np.all((p >= self.lo - tol) & (p <= self.hi + tol), axis=1))
+        if not len(cand):
+            return False
+        v = BRepBuilderAPI_MakeVertex(gp_Pnt(*map(float, p))).Vertex()
+        for k in cand.tolist():
+            d = BRepExtrema_DistShapeShape(v, self.faces[k])
+            if d.IsDone() and d.Value() <= tol:
+                return True
+        return False
+
+
 def _segs(lk: Link) -> list[tuple[int, int]]:
     c = lk.on_face
     return [(c[i], c[(i + 1) % len(c)]) for i in range(len(c) if lk.closed else len(c) - 1)]
@@ -348,10 +402,50 @@ def _solid_material(prep: sw.ShellPrepared, part: str) -> int:
     return prep.parts.index(part) + 1 if part in prep.parts else 1
 
 
+def region_materials(prep: sw.ShellPrepared, regions: list[SolidRegion]) -> dict[str, int]:
+    """MIXED-9: each solid patch's body -> its material number: a body with shell elements keeps its shell
+    material (MAT_k, k its place among the shell's parts); a body that is solid only is numbered on after them."""
+    out = {p: i + 1 for i, p in enumerate(prep.parts)}
+    for r in regions:
+        if r.part not in out:
+            out[r.part] = len(out) + 1
+    return out
+
+
+def _patch_lines_inp(mm: MixedMesh, prep: sw.ShellPrepared) -> list[str]:
+    """MIXED-9: the solid patches of a shell run in the CalculiX / Abaqus deck: their nodes, a C3D10 set and a
+    *SOLID SECTION per patch, their faces' node sets, then the ties."""
+    s = prep.scale
+    base, e0 = len(mm.shell.xyz), mm.shell.n_elements
+    regions = mm.regions or []
+    mats = region_materials(prep, regions)
+    lines = [f"** SOLID PATCHES (MIXED-9, tied by SHLINK-4): {len(mm.solid.tets)} C3D10 in {len(regions)} patch(es), "
+             f"nodes {base + 1}..{base + mm.solid.n_nodes}; each patch's section names its part's MAT_k."]
+    lines += [f"**   MAT_{mats[p]} = {p} (solid only)" for p in sorted(mats, key=lambda p: mats[p]) if p not in prep.parts]
+    lines.append("*NODE, NSET=NSOLID")
+    lines += [f"{base + j + 1}, {x * s:.12g}, {y * s:.12g}, {z * s:.12g}" for j, (x, y, z) in enumerate(mm.solid.xyz.tolist())]
+    for r in regions:
+        lines.append(f"*ELEMENT, TYPE=C3D10, ELSET=SOLID_{r.name}")
+        lines += [f"{e0 + k + 1}, " + ", ".join(str(base + int(v)) for v in mm.solid.tets[k])
+                  for k in range(r.first, r.first + r.count)]
+    for r in regions:
+        lines.append(f"*SOLID SECTION, ELSET=SOLID_{r.name}, MATERIAL=MAT_{mats[r.part]}")
+    for name, ids in sorted(mm.solid.faces.items()):
+        lines.append(f"*NSET, NSET=SOLID_{name}")
+        lines += [", ".join(str(base + int(v)) for v in ids[i:i + 16]) for i in range(0, len(ids), 16)]
+    lines.append(f"** SHLINK-4: {len(mm.ties)} ties (translations) of the shell's link rows to the solid patches")
+    lines += sl.equations(mm.ties)
+    return lines
+
+
 def write_inp(path: Path | str, mm: MixedMesh, *, units: str = "m", source: str = "", solver: str = "calculix",
               materials: dict[int, list[str]] | None = None) -> dict:
     prep = sw.prepare(mm.shell, units=units)
     got = sw.write_inp(path, prep, units=units, source=source, solver=solver, materials=materials)
+    if mm.regions is not None:
+        with open(path, "a", encoding="ascii", newline="\n") as fh:
+            fh.write("\n".join(_patch_lines_inp(mm, prep)) + "\n")
+        return {**got, "elements": int(mm.shell.n_elements + len(mm.solid.tets)), "ties": len(mm.ties)}
     s = prep.scale
     base, e0 = len(mm.shell.xyz), mm.shell.n_elements
     mat = _solid_material(prep, mm.part)
@@ -385,6 +479,30 @@ def write_bdf(path: Path | str, mm: MixedMesh, *, units: str = "m", source: str 
     got = sw.write_bdf(path, prep, units=units, source=source)
     s = prep.scale
     base, e0 = len(mm.shell.xyz), mm.shell.n_elements
+    if mm.regions is not None:
+        # MIXED-9: a PSOLID per solid patch (its part's MAT1), its CTETRA, a group per patch, the ties as MPC set 1
+        mats = region_materials(prep, mm.regions)
+        lines = [f"$ SOLID PATCHES (MIXED-9, tied by SHLINK-4): {len(mm.solid.tets)} 10-node CTETRA in "
+                 f"{len(mm.regions)} PSOLID; the join is MPC set 1 - add MPC = 1 to the case control."]
+        lines += [f"$   MAT1 {mats[p]} = {p} (solid only)" for p in sorted(mats, key=lambda p: mats[p])
+                  if p not in prep.parts]
+        lines += [f"$ Femap Property {len(prep.props) + i + 1} : SOLID_{r.name}" for i, r in enumerate(mm.regions)]
+        for j, (x, y, z) in enumerate((mm.solid.xyz * s).tolist()):
+            lines.append(f"{'GRID*':<8}{base + j + 1:>16d}{'':>16}{_f16(x)}{_f16(y)}*")
+            lines.append(f"{'*':<8}{_f16(z)}")
+        for i, r in enumerate(mm.regions):
+            pid = len(prep.props) + i + 1
+            for k in range(r.first, r.first + r.count):
+                lines.extend(_cards("CTETRA", [e0 + k + 1, pid, *[base + int(v) for v in mm.solid.tets[k]]]))
+        for i, r in enumerate(mm.regions):
+            lines.extend(_cards("PSOLID", [len(prep.props) + i + 1, mats[r.part]]))
+        for k, r in enumerate(mm.regions, start=len(mm.shell.groups) + 1):
+            lines.append(f"$ HEXERA GROUP {k} SOLID_{r.name}")
+            lines.append(f"$   {e0 + r.first + 1} THRU {e0 + r.first + r.count}")
+        lines += sl.nastran_mpcs(mm.ties, sid=1)
+        with open(path, "a", encoding="ascii", newline="\n") as fh:
+            fh.write("\n".join(lines) + "\n")
+        return {**got, "elements": int(e0 + len(mm.solid.tets)), "ties": len(mm.ties)}
     pid = len(prep.props) + 1
     mat = _solid_material(prep, mm.part)
     lines = [f"$ MIXED (SHLINK-4): the solid region of {mm.part}, {len(mm.solid.tets)} 10-node CTETRA in PSOLID {pid}"
@@ -422,8 +540,17 @@ def write_cdb(path: Path | str, mm: MixedMesh, *, units: str = "m", source: str 
     tail = text[at + 1:] if at >= 0 else ""
     text = text[:at + 1] if at >= 0 else text
     n = mm.solid.n_nodes
-    lines = [f"! MIXED (SHLINK-4): the solid region of {mm.part}, {len(mm.solid.tets)} SOLID187 (type 2, MAT {mat}); "
-             "the join is constraint equations (CE).", "ET,2,187",
+    # MIXED-9: each solid patch's tetrahedra carry their part's material
+    mats = region_materials(prep, mm.regions) if mm.regions is not None else {}
+    mat_of = np.full(len(mm.solid.tets), mat, dtype=np.int64)
+    for r in mm.regions or []:
+        mat_of[r.first:r.first + r.count] = mats[r.part]
+    head_line = (f"! MIXED (SHLINK-4): the solid region of {mm.part}, {len(mm.solid.tets)} SOLID187 (type 2, MAT {mat}); "
+                 "the join is constraint equations (CE).") if mm.regions is None else (
+        f"! SOLID PATCHES (MIXED-9, tied by SHLINK-4): {len(mm.solid.tets)} SOLID187 (type 2) in {len(mm.regions)} "
+        "patch(es), each its part's MAT; the join is constraint equations (CE).")
+    lines = [head_line, *[f"!   MAT {mats[p]} = {p} (solid only)" for p in sorted(mats, key=lambda p: mats[p])
+                          if p not in prep.parts], "ET,2,187",
              f"NBLOCK,6,SOLID,{base + n:>10d},{n:>10d}", "(3i9,6e21.13e3)"]
     for j, (x, y, z) in enumerate((mm.solid.xyz * s).tolist()):
         lines.append(f"{base + j + 1:>9d}{0:>9d}{0:>9d}{x:21.13E}{y:21.13E}{z:21.13E}")
@@ -431,7 +558,7 @@ def write_cdb(path: Path | str, mm: MixedMesh, *, units: str = "m", source: str 
     lines += [f"EBLOCK,19,SOLID,{e0 + len(mm.solid.tets):>10d},{len(mm.solid.tets):>10d}", "(19i9)"]
     for k, row in enumerate(mm.solid.tets.tolist()):
         conn = [base + int(v) for v in row]
-        head = [mat, 2, 1, 1, 0, 0, 0, 0, 10, 0, e0 + k + 1]
+        head = [int(mat_of[k]), 2, 1, 1, 0, 0, 0, 0, 10, 0, e0 + k + 1]
         lines.append("".join(f"{v:>9d}" for v in head + conn[:8]))
         lines.append("".join(f"{v:>9d}" for v in conn[8:]))
     lines.append(f"{-1:>9d}")
@@ -442,14 +569,16 @@ def write_cdb(path: Path | str, mm: MixedMesh, *, units: str = "m", source: str 
     return {**got, "elements": int(e0 + len(mm.solid.tets)), "ties": len(mm.ties)}
 
 
-def write_all(workspace: Path | str, mm: MixedMesh, *, units: str = "m", source: str = "") -> dict:
-    """mixed.inp (CalculiX), mixed_abaqus.inp, mixed.bdf and mixed.cdb, one numbering."""
+def write_all(workspace: Path | str, mm: MixedMesh, *, units: str = "m", source: str = "",
+              stem: str = "mixed") -> dict:
+    """mixed.inp (CalculiX), mixed_abaqus.inp, mixed.bdf and mixed.cdb, one numbering. `stem`: the files' name
+    ("shell": a shell run's own files, its solid patches in them - MIXED-9)."""
     ws = Path(workspace)
-    return {"calculix": write_inp(ws / "mixed.inp", mm, units=units, source=source),
-            "abaqus": write_inp(ws / "mixed_abaqus.inp", mm, units=units, source=source, solver="abaqus"),
-            "nastran": write_bdf(ws / "mixed.bdf", mm, units=units, source=source),
-            "ansys": write_cdb(ws / "mixed.cdb", mm, units=units, source=source)}
+    return {"calculix": write_inp(ws / f"{stem}.inp", mm, units=units, source=source),
+            "abaqus": write_inp(ws / f"{stem}_abaqus.inp", mm, units=units, source=source, solver="abaqus"),
+            "nastran": write_bdf(ws / f"{stem}.bdf", mm, units=units, source=source),
+            "ansys": write_cdb(ws / f"{stem}.cdb", mm, units=units, source=source)}
 
 
-__all__ = ["Link", "MixedMesh", "OVERLAP_GROUP", "SolidPart", "boundary_triangles", "join", "read_solid_deck",
-           "write_all", "write_bdf", "write_cdb", "write_inp"]
+__all__ = ["Link", "MixedMesh", "OVERLAP_GROUP", "SolidPart", "SolidRegion", "boundary_triangles", "join",
+           "read_solid_deck", "region_materials", "write_all", "write_bdf", "write_cdb", "write_inp"]
