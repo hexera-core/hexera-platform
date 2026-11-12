@@ -1303,8 +1303,17 @@ def reseat_holes(brep, out) -> tuple[int, list]:
             p0 = circs[0].Value(circs[0].FirstParameter())
             rel = np.array([p0.X() - loc[0], p0.Y() - loc[1], p0.Z() - loc[2]])
             rel /= max(float(np.linalg.norm(rel)), 1e-300)
-            if len(es) == 1 and exact and (diag is None or float(rel @ diag) > 1 - 1e-9):
-                continue            # already one circle (starting on the diagonal when the face has one)
+            spans = [cv.LastParameter() - cv.FirstParameter() for cv in circs] if exact else []
+            if exact and len(es) in (2, 4) and max(spans) - min(spans) <= 1e-6 * 2 * math.pi:
+                # (exact arcs of one circle in 2 halves or 4 quarters take their ring as they are - a count round
+                # the hole is a multiple of WASHER_STEP - as before the redraw; fitted pieces and other splits put the
+                # ring out of step, SHMESH-45i)
+                continue
+            if len(es) == 1 and exact:
+                # already one circle: kept as the CAD drew it (moving only its seam to the frame's diagonal changed
+                # gmsh's free paving between rings in faces never gridded - the longest edge of 5 of the 80 parts past
+                # 1.5 G, SHMESH-45i; an O-grid takes a seam inside a quarter as a chain)
+                continue
             start = diag if diag is not None else rel
             caxis = caxis_fit
             if exact:
