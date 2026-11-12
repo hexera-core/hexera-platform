@@ -914,6 +914,8 @@ SQUARE_GRID = False
 CELL_MIN = 0.4
 #: SHMESH-48m: lines kept apart (no one place suits both) move apart to this many CELL_MIN, inside their limits
 GAP_MIN = 1.05
+#: SHMESH-48o: the ends of outline pieces across the frame hold the lines near them
+OUTLINE_PINS = True
 #: ... straight edges within PARALLEL_DEG of the face's frame count as running along it
 PARALLEL_DEG = 1.0
 
@@ -1103,13 +1105,23 @@ def _face_plan(gmsh, t: int, ws: list[Washer], h_mm: float, mm: float, hole_size
         pts = _samples(gmsh, c, 16)
         q = np.array([uv(p) for p in pts])
         lo, hi = np.minimum(lo, q.min(axis=0)), np.maximum(hi, q.max(axis=0))
+        along = False
         if gmsh.model.getType(1, c) == "Line":
             d = pts[-1] - pts[0]
             d = d / max(float(np.linalg.norm(d)), 1e-300)
             if abs(float(d @ u)) >= cos_par:
                 vals["v"].append((float(q[:, 1].mean()), "edge"))
+                along = True
             if abs(float(d @ v)) >= cos_par:
                 vals["u"].append((float(q[:, 0].mean()), "edge"))
+                along = True
+        if OUTLINE_PINS and not along:
+            # SHMESH-48o: an outline piece across the frame (a chamfer, an arc, a kink) holds a line that lands near
+            # its ends there (or 48m moves the line clear): a line just past its end cut a sliver of the outline into
+            # a cell ("a cell edge 0.637 mm")
+            for e_ in (q[0], q[-1]):
+                vals["u"].append((float(e_[0]), "pin"))
+                vals["v"].append((float(e_[1]), "pin"))
     boxes = []
     for j, (w, p) in enumerate(zip(ws, plans, strict=True)):
         cu, cv = uv(w.centre)

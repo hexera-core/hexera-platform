@@ -701,6 +701,45 @@ def ms_extract(shape):
     return ms.extract(shape, mm_per_unit=1.0)
 
 
+@pytest.mark.parametrize("pins", [False, True])
+def test_a_line_near_a_chamfers_end_does_not_cut_a_sliver(tmp_path, monkeypatch, pins):
+    """SHMESH-48o, a real top plate: a hole's box line landed 0.6 mm past the end of a slanted outline piece and cut
+    a sliver of the outline into a cell ("a cell edge 0.637 mm, under 4 mm"): the plate was left free. Here a corner
+    cut off at 45 degrees ends 1.6 mm short of a 19.8 mm hole's box line; the chamfer's ends now hold the lines near
+    them and the plate is gridded with every line met."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCylinder, BRepPrimAPI_MakePrism
+    from OCP.BRepTools import BRepTools
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt, gp_Vec
+
+    monkeypatch.setattr(ST, "OUTLINE_PINS", pins)
+    A, B, T_ = 457.0, 406.0, 19.0
+    shape = BRepPrimAPI_MakeBox(gp_Pnt(-A / 2, -B / 2, 0), A, B, T_).Shape()
+    for x in (-114.0, 0.0, 114.0):
+        for y in (-171.1, 171.1):
+            shape = BRepAlgoAPI_Cut(shape, BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(x, y, -1), gp_Dir(0, 0, 1)), 9.9,
+                                                                    T_ + 2).Shape()).Shape()
+    poly = BRepBuilderAPI_MakePolygon()
+    for x, y in ((-A / 2 - 1, -B / 2 - 1), (-A / 2 + 94.0, -B / 2 - 1), (-A / 2 - 1, -B / 2 + 94.0)):
+        poly.Add(gp_Pnt(x, y, -1.0))
+    poly.Close()
+    shape = BRepAlgoAPI_Cut(shape, BRepPrimAPI_MakePrism(BRepBuilderAPI_MakeFace(poly.Wire()).Face(),
+                                                         gp_Vec(0, 0, T_ + 2)).Shape()).Shape()
+    rec, surf = ms_extract(shape)
+    brep = tmp_path / "chamfer.brep"
+    BRepTools.Write_s(surf, str(brep))
+    _mesh_, applied = _mesh(brep, rec, _criteria())
+    s = applied["quality"]["structure"]
+    small = [k for k in (s.get("not_gridded") or {}) if "a cell edge" in k]
+    if not pins:
+        assert small, s.get("not_gridded")
+        return
+    assert not s.get("not_gridded"), s.get("not_gridded")
+    assert applied["quality"]["valid"] and applied["quality"]["within_nastran"]
+    assert all(r["met"] is not False for r in applied["requirements"]["rows"]), applied["requirements"]["rows"]
+
+
 def test_a_round_plate_with_a_bolt_circle_gets_rings_and_spokes(tmp_path):
     """SHMESH-49/49b: a round plate with its holes on one bolt circle is cut into a strip per hole (two lines parallel
     to its radial line, from the core to the rim) and rings round the bolt circle; each hole an O-grid in its strip,
