@@ -1239,6 +1239,12 @@ def _close_one(here, p, e, k: int, nbr: int, gap: float, allowed: float, look: f
         al = sum(float(x["length_mm"]) for x in ap)
         return not (len(ap) > len(bp) or (len(ap) == len(bp) and al >= bl - 2.0 * here.tol))
 
+    def gone(new_sewn) -> bool:
+        """The place closed whole: fewer places after (a last way that closes part of a place leaves the rest
+        harder for the mesh to close than the whole was - 12 Nov: a 1.5 mm place three faces round, which the mesh
+        closed, filled along one face only, left 0.75 mm the mesh could not)."""
+        return len(sm.open_places(new_sewn, mm_per_unit=1.0, reach=look)) < len(bp)
+
     if last:
         # THE LAST WAYS, once both faces' own continuations, trims and moves have failed (a new face, or both
         # faces changed): 1d and 1c
@@ -1246,15 +1252,15 @@ def _close_one(here, p, e, k: int, nbr: int, gap: float, allowed: float, look: f
         if not step and na is not None and nb0 is not None and \
                 abs(float(np.dot(na, nb0))) <= math.cos(math.radians(SAME_SIDE_DEG)):
             bgot, _bwhy, width = _with_both(here, p, gap, allowed, fit)
-            if bgot is not None and less_open(bgot):
+            if bgot is not None and gone(bgot):
                 return bgot, "", "extended both to meet each other and trimmed where they cross", width
         # 1c. FILLED: two faces running on into each other (a fillet and the panel beside it) leave a strip between their
         # free edges, tapering along the edge - a new face spans it (_with_fill); neither face is moved
         if in_plane and not step and na is not None and nb0 is not None and \
                 abs(float(np.dot(na, nb0))) > math.cos(math.radians(SAME_SIDE_DEG)):
             fgot, fwhy, width, _who = _with_fill(here, p, allowed, look)
-            if fgot is not None and not less_open(fgot):
-                fgot, fwhy = None, "the change would not leave less open"
+            if fgot is not None and not gone(fgot):
+                fgot, fwhy = None, "the new face would close only part of the gap"
             if fgot is not None:
                 return fgot, "", "filled with a new face", width
             why = fwhy or why

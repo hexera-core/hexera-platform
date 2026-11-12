@@ -844,6 +844,81 @@ def _attempt(mm: _Mesh, faces: list, gap: float, reach_mm: float, onto: str) -> 
     return trial, total, why
 
 
+#: SURF-13: A FLAT TRIANGLE - its third corner within this share of its longest edge's length of that edge (a seam
+#: whose two sides were meshed with a node more on one side, zipped by a triangle of no area) - is taken into the one
+#: element across its longest edge
+FLAT_SHARE = 0.05
+
+
+def absorb_flat(mesh: ShellMesh) -> tuple[ShellMesh, int]:
+    """SURF-13: every triangle past Nastran's own limits that is FLAT (FLAT_SHARE) and whose longest edge only one
+    other element holds is taken into that element: the triangle's third corner put into that element's edge (the
+    corner stays where it is), the element cut again into a quad and triangles or triangles (_pieces), the triangle
+    dropped. Kept, one at a time, only when nothing is left past the limits or folded there. Returns (the mesh, how
+    many were taken in); the mesh itself when none."""
+    from meshpipeline.engines import shell_quality as SQ
+    from meshpipeline.engines.shell_mesh import orient
+
+    mm = _Mesh(mesh)
+    done = 0
+    cand = [e for e, c in enumerate(mm.conn) if len(c) == 3 and SQ._past_one(mm.xyz, c)]
+    if not cand:
+        return mesh, 0
+    gone: set[int] = set()
+    for e in cand:
+        if e in gone:
+            continue
+        c = mm.conn[e]
+        p = mm.xyz[c]
+        sides = [(float(np.linalg.norm(p[(i + 1) % 3] - p[i])), i) for i in range(3)]
+        long_len, i = max(sides)
+        a, b, apex = c[i], c[(i + 1) % 3], c[(i + 2) % 3]
+        if long_len <= 0.0:
+            continue
+        h, _k, _t = _seg_nearest(mm.xyz[[apex]], mm.xyz[[a]], mm.xyz[[b]])
+        if float(h[0]) > FLAT_SHARE * long_len:
+            continue
+        users = mm.users()
+        across = [o for o in users.get((min(a, b), max(a, b)), []) if o != e and o not in gone]
+        if len(across) != 1:
+            continue
+        o = across[0]
+        oc = mm.conn[o]
+        poly: list[int] = []
+        for j in range(len(oc)):
+            poly.append(oc[j])
+            if {oc[j], oc[(j + 1) % len(oc)]} == {a, b}:
+                poly.append(apex)
+        if apex in oc or len(poly) != len(oc) + 1:
+            continue
+        pieces = _pieces(poly, mm.xyz)
+        n0 = _normal(mm.xyz[oc])
+        if any(SQ._past_one(mm.xyz, q) for q in pieces) or any(
+                float(np.dot(_normal(mm.xyz[q]), n0)) < math.cos(math.radians(TURN_DEG)) for q in pieces):
+            continue
+        trial = _Mesh.__new__(_Mesh)
+        trial.src, trial.xyz = mm.src, mm.xyz
+        trial.conn = list(pieces)
+        trial.parent = [mm.parent[o]] * len(pieces)
+        if _bad(trial, list(range(len(pieces))))[0]:
+            continue
+        # the element replaced by its pieces (the first in its place, the rest at the end), the triangle dropped
+        mm.conn[o] = pieces[0]
+        for q in pieces[1:]:
+            mm.conn.append(q)
+            mm.parent.append(mm.parent[o])
+        gone.add(e)
+        done += 1
+    if not done:
+        return mesh, 0
+    keep = [k for k in range(len(mm.conn)) if k not in gone]
+    mm.conn = [mm.conn[k] for k in keep]
+    mm.parent = [mm.parent[k] for k in keep]
+    out = mm.build()
+    orient(out)
+    return out, done
+
+
 def close(mesh: ShellMesh, places: list[dict], *, reach_mm: float, reach_from: str) -> tuple[ShellMesh, dict]:
     """SURF-13: the open `places` ([{"at_mm", "gap_mm", "faces": [[face a, face b], ...]}], in mm, as
     cad/surface_model names them) closed in `mesh` (mm) where the gap is under `reach_mm`. Returns (the mesh, the
@@ -910,4 +985,4 @@ def close(mesh: ShellMesh, places: list[dict], *, reach_mm: float, reach_from: s
     return out, record
 
 
-__all__ = ["REACH_GAPS", "RULE", "SNAP_EDGE", "SNAP_GAP", "close"]
+__all__ = ["FLAT_SHARE", "REACH_GAPS", "RULE", "SNAP_EDGE", "SNAP_GAP", "absorb_flat", "close"]

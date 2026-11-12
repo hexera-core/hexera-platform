@@ -389,6 +389,27 @@ def _close_in_mesh(mesh, applied, reading: dict, *, requirements: dict | None, s
     return got, record
 
 
+def _absorb_flat(mesh, applied, out: Path):
+    """SURF-13: engines/surface_mesh_close.absorb_flat on the delivered mesh, the quality measured again when any
+    flat triangle was taken in. Never raises: (the mesh, how many)."""
+    from meshpipeline.engines import shell_quality
+    from meshpipeline.engines import surface_mesh_close as smc
+    from meshpipeline.engines.shell_mesh import edge_census
+
+    try:
+        got, n = smc.absorb_flat(mesh)
+    except Exception as exc:  # noqa: BLE001 - the mesh as made
+        logger.warning("surface run: flat triangles were not taken in (%s: %s)", type(exc).__name__, str(exc)[:200])
+        return mesh, 0
+    if n and isinstance(applied, dict):
+        before: dict = applied["quality"] if isinstance(applied.get("quality"), dict) else {}
+        q = shell_quality.measure(got)
+        q["edges"] = {k: v for k, v in edge_census(got).items() if k != "free_edges"}
+        applied["quality"] = {**before, **q, "flat_absorbed": n}
+        (out / "shell_plan.json").write_text(json.dumps(applied, indent=1, sort_keys=True, default=float))
+    return got, n
+
+
 def _after_close(out: Path, record: dict, applied: dict, closing: dict) -> None:
     """SURF-13: the record and the quality as the closed mesh has them (shell.json's notes and its connected check,
     shell_plan.json's quality)."""
@@ -531,6 +552,11 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, thicknes
                 if closing.get("closed"):
                     _after_close(out, record, applied, closing)
                     rec["open_edges"] = max(0, int(rec["open_edges"]) - int(closing["closed"]))
+            # SURF-13: a flat triangle past Nastran's limits at a seam (a node more on one side, zipped by a triangle
+            # of no area) taken into the element across it
+            mesh, flat = _absorb_flat(mesh, applied, out)
+            if flat:
+                rec["flat_absorbed"] = flat
             rec["mesh_s"] = round(time.time() - t1, 1)
             if requirements and isinstance(applied, dict) and applied.get("requirements"):
                 # SURF-7: asked against delivered, said as a surface file's (its thickness is the user's, applied)

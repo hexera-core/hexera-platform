@@ -4,6 +4,7 @@ folded, nothing past Nastran's own limits; told place by place."""
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from meshpipeline.engines import shell_quality
 from meshpipeline.engines import surface_mesh_close as smc
@@ -195,3 +196,22 @@ def test_a_wall_short_of_a_plate_away_from_its_nodes_is_imprinted_on_it():
     low = out.xyz[:, 2] < 0.25
     assert float(np.max(np.abs(out.xyz[low, 2]))) < 1e-9
     assert not shell_quality.measure(out)["nastran_past"]
+
+
+def test_a_flat_triangle_zipping_a_seam_is_taken_into_the_element_across_it():
+    # a seam with a node more on one side (face 2 has a node half way, 0.02 mm off the line), zipped by a triangle of
+    # no area - past Nastran's limits: the node goes into face 1's element edge, the triangle goes
+    xyz = np.array([[0, 0, 0], [4, 0, 0], [4, 4, 0], [0, 4, 0], [2, 4.02, 0], [0, 8, 0], [2, 8, 0], [4, 8, 0]],
+                   dtype=float)
+    quads = np.array([[0, 1, 2, 3], [3, 4, 6, 5], [4, 2, 7, 6]], dtype=np.int64)
+    trias = np.array([[3, 2, 4]], dtype=np.int64)
+    mesh = ShellMesh(xyz=xyz, quads=quads, trias=trias, wall=np.full(4, 1.2),
+                     mid=["Mid_1", "Mid_2", "Mid_2", "Mid_2"], part=["Part_1"] * 4)
+    assert shell_quality.measure(mesh)["nastran_past"]
+    out, n = smc.absorb_flat(mesh)
+    assert n == 1
+    assert not shell_quality.measure(out)["nastran_past"] and shell_quality.measure(out)["valid"]
+    assert _sheets(out) == 1 and _free_length(out) == pytest.approx(_free_length(mesh), abs=0.05)
+    assert out.n_elements >= 3 and "Mid_1" in out.mid
+    again, m = smc.absorb_flat(out)
+    assert m == 0 and again is out
