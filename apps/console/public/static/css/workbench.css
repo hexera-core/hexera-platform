@@ -21,9 +21,21 @@
 :root{--drawer-w:min(440px,38vw)}
 
 #app{position:relative}
-#app>header{position:absolute;z-index:20;top:0;left:0;right:0;height:auto;padding:10px 12px;
+#app>header{position:absolute;z-index:20;inset:0;height:auto;padding:10px 12px;
   border-bottom:0;background:transparent;pointer-events:none}
 #app>header .chip{pointer-events:auto}
+/* THE FOLD IS A SEAM TAB, not a corner chip: it rides the drawer/workbench boundary at
+   mid-height, where it can never cover the upload bar or the viewer's own controls. The
+   intake's resizable split puts the seam at --intake-w and already owns a drag grip there,
+   so the tab tracks it and sits above it; collapsed, the tab hugs the left edge; stacked
+   narrow, there is no vertical seam and it rides the right edge instead. */
+#app.wb #wb-toggle{position:absolute;top:50%;left:var(--drawer-w);transform:translate(-50%,-50%);
+  z-index:35}
+#app.wb.intake #wb-toggle{left:var(--intake-w,33.333%)}
+#app.wb.wb-collapsed #wb-toggle{left:0;transform:translate(0,-50%)}
+@media(max-width:900px){
+  #app.wb #wb-toggle{left:auto;right:0;transform:translate(0,-50%)}
+}
 /* a notice still drops in below the floating chips, the way it used to sit below the bar */
 #app>#notice.show{margin-top:48px}
 
