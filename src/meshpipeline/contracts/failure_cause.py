@@ -598,6 +598,21 @@ def _describe(cause: object, facts: Mapping | None = None, *,
                     "No mesher was started, and your geometry was not the problem.",
                     "Running it again would stop the same way. Tell me what to change in this "
                     "chat - the boundaries or the engine.")
+        if f.get("priced_out") and reason:
+            # NEITHER THE FILE NOR THE APPROVED SETUP. The part is sound, what the user approved is
+            # sound, and the engine priced the mesh it would have to build against a limit of OURS
+            # and declined. The sentence below this one says "could not prepare its input from your
+            # file", which sends a customer to hunt for a fault in a file that has none - measured
+            # on the first real cold plate, where the file was perfect and the limit was a 32-bit
+            # label in our own build of OpenFOAM. The driver's own comment sets this standard:
+            # "the reason names the setting rather than blaming the part".
+            return (f"No mesh was built: {who} priced the mesh this part would need and declined "
+                    f"it before starting. {_cap(reason)}. Your file is sound and so is the setup you "
+                    "approved - this is a limit on our side, and no mesher was started, so no "
+                    "time was spent on a mesh.",
+                    "Running it again would stop the same way. Tell me if a coarser mesh would "
+                    "do, or ask about the other engines - or say so and we will look at raising "
+                    "the limit for a part like this.")
         what = (f"No mesh was built: {who} could not prepare its input from your file ({reason}), "
                 "so no mesher was started." if reason else
                 f"No mesh was built: {who} stopped while preparing the mesh, before the mesher "

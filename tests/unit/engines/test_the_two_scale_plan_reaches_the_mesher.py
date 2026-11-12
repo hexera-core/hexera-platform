@@ -160,12 +160,25 @@ def test_the_mesher_ceiling_is_actually_checked():
     below the mesher's own ceiling - so the guard could not fire at the default, and would not have
     fired at a raised one either because nothing asked it. Raising that limit is exactly what a run
     on a big machine does, which is when the ceiling starts to matter.
+
+    AND IT HAS TO BE ASKED WITH THE RANK COUNT, which is the second half of the same mistake. The
+    ceiling is per PROCESS, so a gate that asks it without saying how many processes there will be
+    answers a question nobody asked: the sizing step would approve a two-rank plan and this would
+    then decline it 70 lines later, writing "on one process" about a run that was never going to
+    be one process. Both gates take the same count, decided once.
     """
     src = _driver_source()
-    assert "B.refuse_for_octree(estimate)" in src, (
+    assert "B.refuse_for_octree(estimate, ranks=ranks)" in src, (
         "nothing calls the mesher's own ceiling, so a raised cell limit turns a refusal into a "
         "five-minute abort reported as a mesher that wrote nothing")
     assert "if octree_said:" in src
+    # the two gates must agree about how many processes there are, or one of them is answering
+    # about a run that will not happen
+    assert "ranks=ranks)" in src and src.count("ranks=ranks)") >= 2, (
+        "the rank count reaches only one of the two size gates")
+    assert "det.conjugate_ranks()" in src, (
+        "the rank count is not read from the pinned setting, so it could vary between two runs "
+        "of the same job - and parallel changes the mesh")
 
 
 def test_the_two_limits_are_different_questions():

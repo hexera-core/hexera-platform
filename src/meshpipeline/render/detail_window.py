@@ -21,12 +21,12 @@ with it so they know whether they are seeing all of it.
 from __future__ import annotations
 
 import logging
-import os
 from functools import lru_cache
 from pathlib import Path
 
 from meshpipeline.render.boundary_index import IndexUnavailable, open_index
 from meshpipeline.render.boundary_quality import QualityUnavailable, open_quality
+from meshpipeline.settings import viewer_limits as VL
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 MAX_SOURCE_FACES = 2_000_000
 #: How many faces come back. A detail view is a few cell widths across, so this is a backstop for
 #: a radius asked carelessly, not a budget anyone should meet.
-MAX_RETURN_FACES = int(os.environ.get("HEXERA_DETAIL_MAX_FACES") or 150_000)
+MAX_RETURN_FACES = VL.DETAIL_MAX_FACES
 #: How many boundaries stay parsed. A reader opens several details of ONE mesh, and the parse is
 #: the whole cost: measured on the coupon, 8.0 s to answer the first ball and 0.05 s to answer the
 #: next. Each entry is the compact form - the connectivity as one int64 array, the points as
@@ -404,7 +404,7 @@ def detail_at(workspace, *, centre, radius: float, skip_names: tuple[str, ...] =
 #: 4 mm across holds 1,372,166 delivered faces, which is where a cell first reaches 5 px - so this
 #: is set just above what the first legible view actually costs, and a view any wider is one the
 #: exact surface should be drawing instead.
-WINDOW_MAX_FACES = int(os.environ.get("HEXERA_WINDOW_MAX_FACES") or 1_500_000)
+WINDOW_MAX_FACES = VL.WINDOW_MAX_FACES
 
 
 def detail_box(workspace, *, lo, hi, skip_names: tuple[str, ...] = (),

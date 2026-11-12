@@ -232,24 +232,36 @@ def octree_ceiling_cells(ranks: int = 1) -> int:
     return int(max(1, int(ranks)) * per_rank / BOXES_PER_CELL)
 
 
-def refuse_for_octree(cells: int) -> str:
+def refuse_for_octree(cells: int, *, ranks: int = 1) -> str:
     """Why a mesh of `cells` cannot be built at all, or "" when it can.
 
-    Checked BEFORE the machine is chosen, because no machine changes the answer.
+    Checked BEFORE the machine is chosen, because no machine changes the answer - the limit is a
+    32-bit label, not memory.
+
+    `ranks` IS THE ONE THING THAT DOES CHANGE IT, and this took no argument at all until now. The
+    list that overflows is per PROCESS, which the ceiling above already knows and this gate did
+    not: it called `octree_ceiling_cells()` bare, so a plan sized honestly for two ranks was then
+    refused against a one-rank ceiling 73 lines later, and the refusal it wrote said "on one
+    process" about a run that was never going to be one process. Default 1, so every caller that
+    has not been taught about ranks keeps the behaviour it was measured with.
     """
     want = int(cells)
-    if want <= octree_ceiling_cells():
+    n = max(1, int(ranks))
+    ceiling = octree_ceiling_cells(n)
+    if want <= ceiling:
         return ""
     proven = "" if want < OCTREE_BOXES_PROVEN_ABORT else (
         f" A run of {OCTREE_BOXES_PROVEN_ABORT:,} boxes on this mesher aborted partway through "
         "with 'Negative size requested', having used a third of the machine it was on.")
-    return (f"this mesh cannot be built by this mesher on one process: about {want:,} cells is "
-            f"past the largest octree it has been shown to build, {octree_ceiling_cells():,}. The "
+    across = "on one process" if n == 1 else f"across {n} processes"
+    more = ("" if n > 1 else
+            " What does: meshing across processes, where each one counts only its own share - "
+            "every tool in this chain takes -parallel except reconstructParMesh, which is the "
+            "step that assembles the mesh back onto one process and therefore the step to skip.")
+    return (f"this mesh cannot be built by this mesher {across}: about {want:,} cells is "
+            f"past the largest octree it has been shown to build, {ceiling:,}. The "
             "limit is the 32-bit label this OpenFOAM is compiled with, so a larger machine does "
-            "not help. What does: meshing across processes, where each one counts only its own "
-            "share - every tool in this chain takes -parallel except reconstructParMesh, which is "
-            "the step that assembles the mesh back onto one process and therefore the step to "
-            f"skip. An Int64 build of OpenFOAM would lift it outright.{proven}")
+            f"not help.{more} An Int64 build of OpenFOAM would lift it outright.{proven}")
 
 
 #: HOW WELL A RETURNED WORKSPACE COMPRESSES, as a share of the mesh's written size.
@@ -603,6 +615,12 @@ def plan_two_scales(*, block_lo, block_hi, scales: dict, limit: int,
                         "fine_levels": fine_levels, "broad_cell_m": broad_cell,
                         "fine_cell_m": fine_cell, "broad_across": broad_across,
                         "fine_across": across, "estimate": est,
+                        # THE UNMARGINED COUNT TOO.  carries ESTIMATE_MARGIN, which is there
+                        # to keep a run inside a budget and is the wrong number to size a
+                        # DECOMPOSITION from: the octree ceiling is a hard label limit on the
+                        # cells that actually exist, so padding it by 25%% would ask for a rank
+                        # the mesh does not need.
+                        "raw": raw,
                         "stretch": stretch, "stretch_axis": prismatic_axis}
                 # the best plan is the one that resolves the THIN side furthest; ties go to the
                 # cheaper estimate

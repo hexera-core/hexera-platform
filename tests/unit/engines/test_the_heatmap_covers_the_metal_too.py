@@ -58,8 +58,15 @@ def _merged():
 def test_the_metal_is_measured_at_all():
     """The whole point: both regions' polyMesh directories are read, not just the coolant's."""
     src = inspect.getsource(V._paint)
-    assert "for region in (FLUID_REGION, SOLID_REGION)" in src
+    # EVERY DELIVERED REGION, not a named pair: `_regions` drops a region whose boundary is
+    # not readable and an unnamed single-region mesh, so a third region would be painted too.
+    assert "for region, polymesh in _regions(ws)" in src
+    assert "delivered_regions" in inspect.getsource(V._regions), (
+        "the loop no longer reads the delivered regions")
+    # both readers run per region: the re-derived fields, and checkMesh's own numbers for a
+    # mesh too big to re-derive (this plate's coolant is 237 M faces past that refusal)
     assert src.count("attach_quality_fields") >= 1
+    assert src.count("attach_sidecar_quality") >= 1
 
 
 def test_both_regions_patches_survive_the_merge():

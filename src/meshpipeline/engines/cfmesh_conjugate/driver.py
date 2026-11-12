@@ -9,6 +9,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import meshpipeline.engines.determinism as det
 import meshpipeline.settings.policy as polcfg
 from meshpipeline.engines.cfmesh_conjugate import budget as B
 from meshpipeline.engines.cfmesh_conjugate import plan as PL
@@ -87,10 +88,21 @@ def _say_why_before_meshing(ws, words: str, *, job_id: str) -> None:
         gate=_REFUSAL_GATE,
         cause=FailureCause.NOT_BUILT.value,
         builder_text=said,
-        facts={"reason": said, "deterministic": True, "engine": "cfmesh_conjugate",
+        facts={"reason": said, "deterministic": True,
+               # WHAT KIND OF REFUSAL THIS IS, so the sentence does not blame the customer's file.
+               # All four of these price a mesh against a limit of OURS: the file is sound, the
+               # approved setup is sound, and the number that stopped it is a 32-bit label in our
+               # build of OpenFOAM or a cell budget we chose. Without this the user reads
+               # "could not prepare its input from your file" and goes looking for a fault that is
+               # not there.
+               "priced_out": True,
                # the mesher never started, so there is no mesh to judge and nothing was spent on
                # one - the user's sentence says so and this is what entitles it to
                "meshers_started": 0},
+               # NO `engine` KEY. `describe` prefers facts["engine"] over the label the caller
+               # passes, and the caller passes the one a human reads ("Conjugate (coolant +
+               # metal)", via registry.engine_label). Putting the registry key here made the page
+               # say "cfmesh_conjugate" to a customer.
     ).write(ws)
     logger.info("conjugate: refusal recorded for the user at gate %s - job_id=%s",
                 _REFUSAL_GATE, job_id)
@@ -360,6 +372,21 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
 
     narrowest = float(rec["narrowest_m"])
     limit = int(polcfg.CELL_HARD_LIMIT)
+    # HOW MANY PROCESSES THIS MAY BE PLANNED ACROSS, decided ONCE and handed to both size gates.
+    #
+    # BOTH, or the change does nothing. The two gates ask different questions - plan_two_scales
+    # asks whether a pair of cell sizes fits, refuse_for_octree asks whether the mesher can
+    # address the result - and both priced against one process. Teaching only the first moves the
+    # refusal 73 lines down and changes nothing a user sees, because the second then declines the
+    # very plan the first just approved.
+    #
+    # PINNED, NOT READ OFF THE MACHINE. `mesh_machine.choose` runs ~150 lines below this, so the
+    # machine is not known here, and MACHINES is not monotonic in cores (8, 16, 32, 64, then 40)
+    # so walking it for a count inherits a trap. Every route has at least 8 cores, so a pinned
+    # count up to 8 is satisfiable wherever this lands. determinism.conjugate_ranks says what set
+    # it, and the plan lowers it again from the mesh's own size further down - so a part that fits
+    # on one process is still built on one process, and nothing already measured moves.
+    ranks, ranks_basis = det.conjugate_ranks()
     # THE OCTREE DEPTH IS CHOSEN, where it used to be a constant nothing varied. The old estimate
     # prices the whole block at the finest cell, which divides the background count by eight per
     # level and multiplies its own refinement factor by eight - so its answer is IDENTICAL at every
@@ -380,6 +407,10 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     fine_surface = None
     stretch_zone = None
     scales = rec.get("scales") or None
+    # BOUND ON BOTH PATHS. `two` is the two-scale plan and only the two-scale branch below sets
+    # it; the single-scale paths leave it unbound, and reading it afterwards to size the
+    # decomposition was a NameError on every part that is not two-scale - which is most of them.
+    two: dict | None = None
     if scales and rec.get("fine_surface") and area > 0.0:
         asked = B.CELLS_ACROSS_BY_FIDELITY.get((fidelity or "").strip().lower(),
                                                B.CELLS_ACROSS_BY_FIDELITY[B.DEFAULT_FIDELITY])
@@ -394,7 +425,8 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         two, two_said = B.plan_two_scales(block_lo=bounds[0], block_hi=bounds[1], scales=scales,
                                           limit=limit, asked_across=asked,
                                           prismatic_axis=(None if prismatic is None
-                                                          else int(prismatic)))
+                                                          else int(prismatic)),
+                                          ranks=ranks)
         if two is None:
             # REFUSED, and the reason is the part's own two scales rather than a cell count. Said
             # once, here, because the single-scale path would refuse the same part for a different
@@ -464,7 +496,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     # So the two are checked separately, and this one is checked LAST, because it is the one that
     # does not care what machine was chosen. Without it a raised cell limit turns a refusal into a
     # five-minute abort that reports as a mesher which stopped before writing anything.
-    octree_said = B.refuse_for_octree(estimate)
+    octree_said = B.refuse_for_octree(estimate, ranks=ranks)
     if octree_said:
         logger.info("conjugate: refusing to start - %s - job_id=%s", octree_said, job_id)
         _say_why_before_meshing(ws, octree_said, job_id=job_id)
@@ -611,6 +643,26 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         (ws / PL.BLOCK_STL).write_bytes((ws / PL.DOMAIN_STL).read_bytes())
     else:
         (ws / PL.BLOCK_STL).write_text(C.block_surface_stl(lo, hi))
+    # HOW MANY PROCESSES THE MESHER ACTUALLY GETS, which is NOT the count the gates were given.
+    #
+    # `ranks` above is a ceiling - the most this deployment will allow. This is the demand: what
+    # the mesh's own size requires to stay under the per-process label limit. `ranks_for` returns
+    # 1 for anything at or below OCTREE_BOXES_PER_PROCESS, so every part in the corpus and every
+    # mesh already delivered keeps being built on one process. That is the point of doing it here
+    # rather than passing the ceiling straight through: parallel CHANGES the mesh (measured on the
+    # coupon - one cell moves between the regions, because topoSet classifies a cell on a
+    # processor boundary differently), so a part that never needed a second process must not get
+    # one and have its measured gates quietly mean something else.
+    #
+    # PRICED ON `raw`, not on the estimate. The estimate carries ESTIMATE_MARGIN to keep a run
+    # inside a budget; the label ceiling is a hard limit on the cells that will exist, so sizing
+    # the decomposition from the padded figure would ask for a rank the mesh does not need.
+    _raw = int((two or {}).get("raw") or 0) if two else 0
+    plan = dataclasses.replace(plan, ranks=C.ranks_for(_raw or estimate, available=ranks))
+    if plan.ranks > 1:
+        logger.info("conjugate: meshing across %d processes - %s; the mesh needs it (%s cells "
+                    "against %s a process) - job_id=%s", plan.ranks, ranks_basis,
+                    f"{_raw or estimate:,}", f"{C.OCTREE_BOXES_PER_PROCESS:,}", job_id)
     PL.write_plan(ws, plan)
     run.note_authoring()
     note_native_pass(ws, 1)

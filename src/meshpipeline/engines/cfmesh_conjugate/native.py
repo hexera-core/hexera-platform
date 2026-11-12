@@ -11,6 +11,7 @@ from pathlib import Path
 from meshpipeline.engines.cfmesh_conjugate import plan as PL
 from meshpipeline.engines.cfmesh_conjugate.conjugate import ConjugateError, build
 from meshpipeline.engines.cfmesh_conjugate.foam_exec import _DEFAULT_BASHRC
+import meshpipeline.engines.determinism as det
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +70,17 @@ def _run_conjugate_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
         _write_report(ws, {"ok": False, "refused": str(exc)})
         return _result(RC_NO_PLAN, stage=_STAGE, output=f"REJECTED: {exc}")
 
+    # THE RANK COUNT GOES IN THE REPRODUCIBILITY STAMP, because it changes the mesh. Measured on
+    # the coupon: serial 29,812/29,262 cells against parallel 29,813/29,261 - one cell moves
+    # between the regions, because topoSet classifies a cell on a processor boundary differently.
+    # Two runs of the same job at different rank counts are therefore two different meshes, and
+    # until now nothing in this package called note_setting at all, so the stamp could not say
+    # which one you had. The mesh report carries a "ranks" field (further down this file), which
+    # is not the same thing: that describes the mesh, this is what makes the run repeatable.
+    _ranks = int(getattr(plan, "ranks", 1) or 1)
+    det.note_setting("conjugate_ranks", _ranks,
+                     "the plan's own count, from the mesh size against the per-process octree "
+                     "ceiling" if _ranks > 1 else "one process: the mesh fits in one")
     try:
         report = build(
             ws, block_stl=PL.BLOCK_STL, fluid_stl=PL.FLUID_STL,

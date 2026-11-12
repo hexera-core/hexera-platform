@@ -7,9 +7,10 @@ from __future__ import annotations
 
 import logging
 import math
-import os
 
 import numpy as np
+
+from meshpipeline.settings import viewer_limits as VL
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,7 @@ logger = logging.getLogger(__name__)
 #: delivered face, so a whole 36 M-face boundary would be ~3.3 GB and is out of reach - but several
 #: million faces is not. The default is unchanged so no existing page moves; a build that has been
 #: measured sets HEXERA_DRAWN_MAX_TRIANGLES.
-DRAWN_MAX_TRIANGLES = int(os.environ.get("HEXERA_DRAWN_MAX_TRIANGLES") or 800_000)
+DRAWN_MAX_TRIANGLES = VL.DRAWN_MAX_TRIANGLES
 
 #: A patch is never reduced below this. A six-face block side would otherwise vanish entirely at a
 #: coarse cluster size, and a boundary that is not drawn reads to a user as a boundary that is not

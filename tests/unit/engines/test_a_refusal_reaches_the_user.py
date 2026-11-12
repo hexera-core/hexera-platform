@@ -69,8 +69,11 @@ def test_the_users_sentence_carries_the_engines_own_words(tmp_path):
     ref = _record(tmp_path)
     what, nxt = describe(ref.cause, ref.facts, engine="Conjugate (coolant + metal)")
     assert what, "an unknown cause returns empty strings and the caller keeps its generic headline"
-    assert WORDS.rstrip(".") in what or WORDS in what, (
+    # the reason is spliced after a full stop, so it is capitalised; the SUBSTANCE must be verbatim
+    body = WORDS[1:].rstrip(".")
+    assert body in what, (
         "the engine's own sentence is not in the user's message: %r" % what)
+    assert what.count(body) == 1, "the reason is said twice"
     assert "The notes above say what it stopped on" not in what, (
         "the sentence that points at notes that do not exist is still being used")
     assert nxt, "a refusal must say what the user can do next"
@@ -82,6 +85,44 @@ def test_every_figure_a_reader_needs_is_in_the_sentence(tmp_path, figure):
     ref = _record(tmp_path)
     what, _ = describe(ref.cause, ref.facts, engine="Conjugate (coolant + metal)")
     assert figure in what, "%r is not in the user's sentence" % figure
+
+
+def test_the_sentence_does_not_blame_a_sound_file(tmp_path):
+    """All four of these price a mesh against a limit of OURS, and the file is sound.
+
+    The sentence NOT_BUILT otherwise reaches is "could not prepare its input from your file", which
+    sends a customer hunting for a fault that does not exist: measured on the first real cold
+    plate, where the file was perfect and the number that stopped it was a 32-bit label in our own
+    build of OpenFOAM. The driver's own standard, from the comment beside its archive check, is
+    "the reason names the setting rather than blaming the part".
+    """
+    ref = _record(tmp_path)
+    assert ref.facts.get("priced_out") is True
+    what, nxt = describe(ref.cause, ref.facts, engine="Conjugate (coolant + metal)")
+    assert "from your file" not in what, "the refusal still blames the customer's file: %r" % what
+    assert "limit on our side" in what
+    assert "no time was spent on a mesh" in what, "a refusal before meshing costs nothing and should say so"
+    assert nxt and "coarser" in nxt, "the way forward is not offered"
+
+
+def test_the_engine_is_named_the_way_a_human_reads_it(tmp_path):
+    """`describe` prefers facts["engine"] over the label the caller passes, and the caller passes
+    the readable one (registry.engine_label). Putting the registry key in the facts made the page
+    say "cfmesh_conjugate" to a customer."""
+    ref = _record(tmp_path)
+    assert "engine" not in ref.facts, (
+        "a registry key in the facts overrides the human label the caller supplies")
+    what, _ = describe(ref.cause, ref.facts, engine="Conjugate (coolant + metal)")
+    assert "Conjugate (coolant + metal)" in what
+    assert "cfmesh_conjugate" not in what
+
+
+def test_the_reason_reads_as_a_sentence(tmp_path):
+    """It is spliced mid-paragraph after a full stop, so it starts with a capital."""
+    ref = _record(tmp_path)
+    what, _ = describe(ref.cause, ref.facts, engine="Conjugate (coolant + metal)")
+    assert "starting. This part has two scales" in what, (
+        "the reason is spliced in lower-case after a full stop: %r" % what[:220])
 
 
 def test_a_refusal_with_no_words_writes_nothing(tmp_path):

@@ -592,6 +592,7 @@ INVENTORY: list[Group] = [
         EnvVar("MESH_DETERMINISTIC", "true", kind="bool", exposure="internal", help="pin native threads, snappy's MPI ranks and Python's hash order; off = the host decides, as before"),
         EnvVar("MESH_THREADS", "8", kind="int", exposure="internal", help="OpenMP/BLAS/VTK threads of every native run (the Cloud Run mesh job's vCPUs), never the host's core count"),
         EnvVar("MESH_CFMESH_THREADS", "", kind="int", exposure="internal", help="cfMesh's OpenMP threads; blank = MESH_THREADS. 1 = strictly serial, the only bit-repeatable cfMesh, at several times the run time"),
+        EnvVar("CONJUGATE_RANKS", "1", kind="int", exposure="internal", help="conjugate mesher MPI ranks (1-8, default 1). The octree label ceiling is per PROCESS, so ranks are the only thing that lifts it - 179M cells on one process. Not for speed; the plan lowers it again from the mesh size, so a part under the ceiling stays serial"),
         EnvVar("MESH_SNAPPY_RANKS", "", kind="int", exposure="internal", help="snappyHexMesh MPI ranks; blank = the job's CPU quota (at most 12), else MESH_THREADS; memory may still lower it (recorded in the stamp)"),
         EnvVar("AI_DECISION_CACHE", "reuse", exposure="internal", help="off | record | reuse: reuse answers a model round asked before (same step, model, prompt hash, inputs, owner) from its record"),
     ]),

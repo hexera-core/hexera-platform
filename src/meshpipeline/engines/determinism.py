@@ -59,6 +59,33 @@ MESH_CFMESH_THREADS: str = optional_env("MESH_CFMESH_THREADS", "")
 #: and the stamp then says so.
 MESH_SNAPPY_RANKS: str = optional_env("MESH_SNAPPY_RANKS", "")
 
+#: THE CONJUGATE MESHER'S MPI RANKS, and the one reason it has them is not speed.
+#:
+#: cfMesh's octree addresses its boxes with 32-bit labels and the list that overflows is PER
+#: PROCESS (budget.octree_ceiling_cells), so ranks are the only thing that lifts the ceiling:
+#: 178,956,970 cells on one process, twice that on two. The first real customer cold plate needs
+#: about 260 million and is refused on that ceiling alone - the engine already says so in its own
+#: refusal, "would build on 2 ranks".
+#:
+#: SPEED IS NOT THE REASON AND MUST NOT BE READ AS ONE. cfMesh saturates about four cores at 2.5x
+#: and MPI buys little beyond that; the smoother runs on one thread whatever this says. Two ranks
+#: is not half the time, it is a mesh that can exist at all.
+#:
+#: PINNED, NOT MEASURED FROM THE MACHINE, for two reasons. The sizing happens 148 lines before
+#: mesh_machine.choose, so the machine is not known yet; and MACHINES is not monotonic in cores
+#: (8, 16, 32, 64, then 40), so walking it for a core count inherits a trap. Every route in the
+#: fleet has at least 8 cores - the Cloud Run mesh job is 8 vCPU and every VM is 8 or more - so
+#: any count up to 8 is satisfiable wherever the run lands, without knowing where that is.
+#:
+#: 1 BY DEFAULT, so nothing already measured moves. Parallel changes the mesh: on the coupon,
+#: serial 29,812/29,262 cells against parallel 29,813/29,261 - one cell moves between the regions,
+#: because topoSet classifies a cell on a processor boundary differently. Every part that meshes
+#: today keeps meshing on one process and its gate evidence keeps meaning what it meant.
+CONJUGATE_RANKS: str = optional_env("CONJUGATE_RANKS", "1")
+
+#: The most ranks this may be set to, because it is the smallest core count any route has.
+CONJUGATE_RANKS_MAX = 8
+
 #: The decomposition snappy's ranks are cut by (decomposeParDict `method`).
 SNAPPY_DECOMPOSITION = "scotch"
 #: gmsh: one thread and a fixed seed (engines/gmsh/driver pins them; recorded here).
@@ -157,6 +184,32 @@ def snappy_ranks(cpu_quota: int | None, memory_bytes: int, *, hard_max: int = 12
                       f"({memory_bytes / (1 << 30):.0f} GiB at {gib_per_rank:g} GiB a rank)")
             ranks = by_mem
     return max(1, ranks), basis
+
+
+def conjugate_ranks() -> tuple[int, str]:
+    """How many processes the conjugate mesher may plan across, and in words what set it.
+
+    THE MOST THIS WILL EVER OFFER, not what the run gets. The plan lowers it again from the mesh's
+    own size (conjugate.ranks_for), so a part under the one-process octree ceiling stays serial
+    however this is set - which is what keeps every already-measured part building the mesh it was
+    measured building.
+
+    Nothing is read from the host. An unreadable or absurd value is the pinned default rather than
+    a guess, and says so, because a rank count that varies between two runs of the same job would
+    change the mesh between them (see CONJUGATE_RANKS).
+    """
+    raw = str(CONJUGATE_RANKS or "").strip()
+    try:
+        asked = int(raw)
+    except ValueError:
+        return 1, f"CONJUGATE_RANKS={raw!r} is not a number, so one process"
+    if asked < 1:
+        return 1, f"CONJUGATE_RANKS={asked} is below one, so one process"
+    if asked > CONJUGATE_RANKS_MAX:
+        return (CONJUGATE_RANKS_MAX,
+                f"pinned by CONJUGATE_RANKS={asked}, capped at {CONJUGATE_RANKS_MAX} - the "
+                "smallest core count any route in the fleet has")
+    return asked, f"pinned by CONJUGATE_RANKS={asked}"
 
 
 # ------------------------------------------------------------- what a run actually did --------
@@ -389,6 +442,7 @@ def comparable(a: dict, b: dict) -> list[str]:
 
 
 __all__ = [
+    "CONJUGATE_RANKS", "CONJUGATE_RANKS_MAX", "conjugate_ranks",
     "GMSH_RANDOM_SEED", "GMSH_THREADS", "MESH_CFMESH_THREADS", "MESH_DETERMINISTIC",
     "MESH_SNAPPY_RANKS", "MESH_THREADS", "SNAPPY_DECOMPOSITION", "STAMP_FILE", "comparable",
     "drain_process_notes", "native_environment", "note_setting", "note_time_limit",
