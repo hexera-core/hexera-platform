@@ -559,3 +559,32 @@ def ms_extract(shape):
     from meshpipeline.cad import midsurface as ms
 
     return ms.extract(shape, mm_per_unit=1.0)
+
+
+def test_a_round_plate_with_a_bolt_circle_gets_rings_and_spokes(tmp_path):
+    """SHMESH-49/49b: a round plate with its holes on one bolt circle is cut into a strip per hole (two lines parallel
+    to its radial line, from the core to the rim) and rings round the bolt circle; each hole an O-grid in its strip,
+    the core paved. Every washer is an O-grid, the strips are mapped, and the mesh keeps the user's edges."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
+    from OCP.BRepTools import BRepTools
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
+
+    shape = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), 250.0, 20.0).Shape()
+    for j in range(8):
+        a = math.radians(22.5 + 45 * j)
+        hole = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(190 * math.cos(a), 190 * math.sin(a), -1), gp_Dir(0, 0, 1)),
+                                        11.0, 22.0).Shape()
+        shape = BRepAlgoAPI_Cut(shape, hole).Shape()
+    rec, surf = ms_extract(shape)
+    brep = tmp_path / "round.brep"
+    BRepTools.Write_s(surf, str(brep))
+    mesh, applied = _mesh(brep, rec, _criteria())
+    s = applied["quality"]["structure"]
+    assert s["washers"] == 8 and s["washers_ogrid"] == 8 and s["grids_freed"] == 0, s
+    assert all(h["kind"] == "o-grid in a sector of a round plate" for h in s["hole_list"])
+    assert s["mapped_faces"] >= 8 * 8
+    q = applied["quality"]
+    assert q["valid"] and q["within_nastran"]
+    assert all(r["met"] is not False for r in applied["requirements"]["rows"])
+    assert SS.measure(mesh)["holes_ringed"] >= 8      # (the measure counts the rim's own loop too)

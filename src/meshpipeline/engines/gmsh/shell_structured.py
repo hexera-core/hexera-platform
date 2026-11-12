@@ -1543,26 +1543,51 @@ def polar_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
             no("the washers' sectors run past the plate")
             continue
         start = Ri if Ri > 0 else r1
-        spokes: list[float] = []
+        # SHMESH-49b: a washer's strip is bounded by two lines parallel to its radial line, b each side, from the
+        # core to the rim: as wide (2b) at the rim as at its box, so its quarter count fits all the way along (radial
+        # spokes fanned out: the arcs at the rim came out 1.2 times the box)
+        if 2 * math.asin(min(0.99, b / start)) > min(gaps) - CELL_MIN * h / start:
+            no("the washers' strips would touch")
+            continue
+        if use_o:
+            # the strip's count runs on to the rim and the core: sized by its longest arc, checked against the hole
+            n0, rows0, ratio0, b0 = next(iter(plan_of.values()))
+            # (an arc is a little longer than the box's chord: 5% over our own bound, never past the user's edge)
+            seg_hi = 1.05 * BOX_SEG[1] * size_mm[t] if high_mm is None else min(1.05 * BOX_SEG[1] * size_mm[t],
+                                                                                  0.98 * high_mm)
+            arc = 2 * start * math.asin(min(1.0, b / start))
+            q = max(n0 // 4, math.ceil(arc * mm / seg_hi - 1e-9))
+            if q > n0 // 4:
+                if min(2 * math.pi * w.r * mm / (4 * q) for w in ws) < float(low_mm or 0.0) or 4 * q > WASHER_MAX:
+                    no("a strip's elements would come out past the user's edges from the hole to the rim")
+                    continue
+                plan_of = dict.fromkeys(plan_of, (4 * q, rows0, ratio0, b0))
+        spokes: list[tuple[float, float]] = []      # (angle, offset): a line parallel to that radial line
         for i, (a, _w) in enumerate(ang):
-            spokes += [a - beta, a + beta]
+            spokes += [(a, -b), (a, b)]
             if gaps[i] * Rb > (POLAR_GAP + 2 * b / h) * h:
-                spokes.append(a + gaps[i] / 2)
+                spokes.append((a + gaps[i] / 2, 0.0))
 
-        def at(r: float, a: float, C=C, e1=e1, e2=e2) -> list[float]:
-            return [float(x) for x in C + r * (math.cos(a) * e1 + math.sin(a) * e2)]
+        def on(r: float, a: float, off: float, C=C, e1=e1, e2=e2) -> np.ndarray:
+            """The point at radius r on the line parallel to angle a's radial line, `off` to its side."""
+            u_ = math.cos(a) * e1 + math.sin(a) * e2
+            v_ = -math.sin(a) * e1 + math.cos(a) * e2
+            return C + math.sqrt(max(r * r - off * off, 0.0)) * u_ + off * v_
 
-        def sector_corners(a: float, r1=r1, r2=r2, beta=beta, at=at) -> list[np.ndarray]:
-            return [np.array(at(r, a + sg * beta)) for r, sg in ((r1, -1), (r2, -1), (r2, 1), (r1, 1))]
+        def sector_corners(a: float, r1=r1, r2=r2, b=b, on=on) -> list[np.ndarray]:
+            return [on(r, a, sg * b) for r, sg in ((r1, -1), (r2, -1), (r2, 1), (r1, 1))]
 
-        def tools(C=C, Ri=Ri, Ro=Ro, ang=ang, e1=e1, n_face=n_face, r1=r1, r2=r2, spokes=spokes, start=start,
-                  at=at, use_o=use_o, R_of=R_of, sector_corners=sector_corners) -> list[tuple[int, int]]:
+        def tools(C=C, Ri=Ri, Ro=Ro, ang=ang, n_face=n_face, r1=r1, r2=r2, spokes=spokes, start=start, on=on,
+                  use_o=use_o, R_of=R_of, sector_corners=sector_corners) -> list[tuple[int, int]]:
             out = []
             for r in sorted({r1, r2} - {Ri, Ro, 0.0}):
+                # the circle's seam on a spoke (a seam inside a strip would make its side two curves)
+                x0 = on(r, *spokes[0]) - C
                 out.append((1, occ.addCircle(*[float(x) for x in C], float(r), zAxis=[float(x) for x in n_face],
-                                             xAxis=[float(x) for x in e1])))
-            for a in spokes:
-                out.append((1, occ.addLine(occ.addPoint(*at(start, a)), occ.addPoint(*at(Ro * 1.02, a)))))
+                                             xAxis=[float(x) for x in x0])))
+            for a, off in spokes:
+                out.append((1, occ.addLine(occ.addPoint(*[float(x) for x in on(start, a, off)]),
+                                           occ.addPoint(*[float(x) for x in on(Ro * 1.02, a, off)]))))
             for a, w in ang:
                 R = R_of[id(w)]
                 if not use_o:
