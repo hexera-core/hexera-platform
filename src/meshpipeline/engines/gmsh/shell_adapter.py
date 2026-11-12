@@ -179,6 +179,16 @@ class _NoCut(Exception):
         self.why = why or {}
 
 
+class _Regrid(Exception):
+    """SHMESH-48x: faces (sewn face indices) refused for their short edges or triangles, now meshed free and no better
+    there: the mesh is made again with their grids back (kept, not judged on those two again)."""
+
+    def __init__(self, faces: set[int], why: dict[int, dict]) -> None:
+        super().__init__(f"{len(faces)} grid(s) back")
+        self.faces = faces
+        self.why = why
+
+
 class _Unmap(Exception):
     """SHMESH-40: mapped faces (gmsh surface tags) whose grid came out with a quad past the solver's own limits: the
     mesh is made again with them free."""
@@ -1025,6 +1035,9 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
         unmapped = 0
         no_cut: set[int] = set()
         refused: dict[int, dict] = {}
+        compare: dict[int, dict] = {}       # SHMESH-48x: refused grids' figures, to set against their free meshes
+        kept: set[int] = set()
+        before_guard: tuple | None = None   # (what was meshed free and how many rounds, when a guard first refused)
         passes: list[list] = []             # SHMESH-48l: each whole mesh made - what followed it, its seconds
         while True:
             t_pass = time.monotonic()
@@ -1033,18 +1046,34 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
                                            hole_before=tuple((tuple(c), e) for c, e in redrawn),
                                            correction=correction, requirements=requirements, unmap=frozenset(unmap),
                                            no_cut=frozenset(no_cut), check_maps=unmapped < UNMAP_ROUNDS,
-                                           judge_faces=True)
+                                           judge_faces=True, compare=compare, grids_kept=frozenset(kept))
                 passes.append(["made", round(time.monotonic() - t_pass, 1)])
             except _NoCut as nc:
                 passes.append(["grids left out", round(time.monotonic() - t_pass, 1)])
                 # SHMESH-47b: those faces' grids left out (their joined faces whole); counts as a round of SHMESH-40
+                if before_guard is None and any("grid_figures" in v for v in nc.why.values()):
+                    before_guard = (set(unmap), unmapped)
                 no_cut |= nc.faces
                 refused.update(nc.why)
+                compare.update({k: dict(v["grid_figures"]) for k, v in nc.why.items() if "grid_figures" in v})
                 unmapped += 1
                 if brep != unseated and not resplined:
                     # their holes drawn again for the O-grids go back to the CAD's own: the next pass draws again only
                     # what the remaining rings and O-grids ask for (SHMESH-49g)
                     brep, reseated, redrawn, redraw_pass = unseated, 0, [], redraw_off
+                continue
+            except _Regrid as rg:
+                passes.append(["grids back (no better free)", round(time.monotonic() - t_pass, 1)])
+                no_cut -= rg.faces
+                kept |= rg.faces
+                if before_guard is not None:
+                    # (the grid comes back as it was judged: the cells meshed free since belong to the free pass's
+                    # own gmsh faces)
+                    unmap, unmapped = set(before_guard[0]), before_guard[1]
+                    before_guard = None
+                for k in rg.faces:
+                    refused.pop(k, None)
+                    compare.pop(k, None)
                 continue
             except _Unmap as u:
                 passes.append(["grids meshed free", round(time.monotonic() - t_pass, 1)])
@@ -1134,6 +1163,9 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
             applied["quality"].setdefault("structure", {})["grids_freed"] = len(unmap)
             applied["quality"]["structure"]["holes_redrawn"] = reseated
             # SHMESH-48f/49g: every face a check refused (its grid or its rings and strips), why, with its numbers
+            for k_c, v_c in compare.items():
+                if k_c in refused and "free_figures" in v_c:
+                    refused[k_c]["free_figures"] = v_c["free_figures"]
             applied["quality"]["structure"]["refused"] = [
                 {"face": owners[k] if 0 <= k < len(owners) else str(k), **v} for k, v in sorted(refused.items())]
             # SHMESH-49g: each round plate meshed in rings and strips, with its triangles in the mesh delivered
@@ -1210,11 +1242,25 @@ def _classic():
         ST.WASHERS, ST.MAPPED, ST.BLOCKS, g["PLANE_ALGORITHM"] = saved_st
 
 
+def _face_figures(xyz: np.ndarray, Q: np.ndarray, T: np.ndarray, q_face, t_face, k: int,
+                  low_mm: float | None) -> dict:
+    """SHMESH-48x: a sewn face's elements, triangles and elements with an edge under the user's shortest edge."""
+    qk, tk = np.asarray(q_face, dtype=np.int64), np.asarray(t_face, dtype=np.int64)
+    n_short = 0
+    for els, fk in ((Q, qk), (T, tk)):
+        mine = els[fk == k] if len(els) else els
+        if low_mm is not None and len(mine):
+            e_min = np.linalg.norm(xyz[mine] - xyz[np.roll(mine, -1, axis=1)], axis=2).min(axis=1)
+            n_short += int((e_min < float(low_mm)).sum())
+    return {"elements": int((qk == k).sum() + (tk == k).sum()), "triangles": int((tk == k).sum()), "short": n_short}
+
+
 def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list | None, *,
                target: dict | None = None, correction: float = 1.0,
                requirements: dict | None = None, own_spots: tuple = (), unmap: frozenset = frozenset(),
                hole_before: tuple = (), no_cut: frozenset = frozenset(), judge_faces: bool = False,
-               check_maps: bool = False) -> tuple[ShellMesh, dict]:
+               check_maps: bool = False, compare: dict | None = None, grids_kept: frozenset = frozenset()
+               ) -> tuple[ShellMesh, dict]:
     """One mesh. `unmap` (SHMESH-40): gmsh surfaces left free (their grid came out past the solver's limits once);
     `check_maps`: raise _Unmap when a mapped face's grid comes out past them. `own_spots` (SHMESH-31): (sewn face, box low corner, box high corner - mm) round elements a mesh
     under the user's sizes left past the solver's own limits: inside each box the face's own rules' size, where
@@ -2005,6 +2051,26 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
     face_of = np.array(q_face + t_face, dtype=np.int64)
     seam_due = ST.RESEAT and any(not any(float(np.linalg.norm(np.asarray(c, dtype=float) - w.centre)) <= 0.25 * w.r
                                          for c, _e in hole_before) for w in gridded)
+    if compare and judge_faces:
+        # SHMESH-48x: each grid refused for its short edges or triangles, now meshed free: its grid comes back when the
+        # free mesh is no better on that face (short: the free mesh over GRID_SHORT too; triangles: the grid's no
+        # more than max(GRID_TRIAS, GRID_TRIA_SHARE, 2 x the free mesh's))
+        back: dict[int, dict] = {}
+        for k_c, g_c in sorted(compare.items()):
+            if k_c in grid_faces_made or "free_figures" in g_c:
+                continue
+            free_ = _face_figures(xyz, Q, T, q_face, t_face, k_c, (sizing or {}).get("low_mm"))
+            g_c["free_figures"] = free_
+            if not free_["elements"]:
+                continue
+            short_ok = (g_c["short"] <= ST.GRID_SHORT * g_c["elements"]
+                        or free_["short"] > ST.GRID_SHORT * free_["elements"])
+            tri_ok = g_c["triangles"] <= max(ST.GRID_TRIAS, ST.GRID_TRIA_SHARE * g_c["elements"],
+                                             2 * free_["triangles"])
+            if short_ok and tri_ok:
+                back[k_c] = {"grid_figures": dict(g_c), "free_figures": free_}
+        if back:
+            raise _Regrid(set(back), back)
     judged = polar_faces_made | (grid_faces_made if ST.GRID_CHECK else set())
     judged_now = bool(judge_faces and ST.POLAR_CHECK and judged and not seam_due)
     if judged_now:
@@ -2066,6 +2132,19 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                     hurt_p.add(kp)
                     why_p[kp].update(why="an edge over the user's longest edge", line="max_edge",
                                      worst=round(float(longest), 3), limit=float(high_p))
+        # SHMESH-48x: ... or a gridded face over GRID_SHORT of its elements under the user's shortest edge, or with
+        # more triangles than max(GRID_TRIAS, GRID_TRIA_SHARE of its elements): meshed free on the next pass and
+        # compared there (a grid that left 105 triangles on a plate its free mesh gave 6 is no expert's mesh)
+        if ST.GRID_GUARD:
+            for kp in sorted(set(grid_faces_made) & judged - hurt_p - set(grids_kept)):
+                figs = _face_figures(xyz, Q, T, q_face, t_face, kp, (sizing or {}).get("low_mm"))
+                over_short = figs["short"] > ST.GRID_SHORT * figs["elements"] and (sizing or {}).get("low_mm")
+                over_tri = figs["triangles"] > max(ST.GRID_TRIAS, ST.GRID_TRIA_SHARE * figs["elements"])
+                if over_short or over_tri:
+                    hurt_p.add(kp)
+                    why_p[kp].update(why=("too many elements under the user's shortest edge" if over_short
+                                          else "more triangles than a grid may keep") + " (set against its free mesh)",
+                                     grid_figures=figs)
         if requirements and requirements.get("limits"):
             # ... or a quality line of the user's not met on the plate's own elements (the report's own rule)
             import types as _types

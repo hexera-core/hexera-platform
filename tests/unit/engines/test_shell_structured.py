@@ -211,6 +211,13 @@ def _plate_with_holes(tmp_path, holes, size=(300.0, 200.0, 10.0)):
     return brep, rec
 
 
+@pytest.fixture(autouse=True)
+def _grids_unguarded(monkeypatch):
+    # SHMESH-48x: these tests hold the grids themselves; the guard that sets a grid against its free mesh (and may mesh
+    # the face free) is switched on where a test asks for it
+    monkeypatch.setattr(ST, "GRID_GUARD", False)
+
+
 def _mesh(brep, rec, requirements=None):
     from meshpipeline.engines.gmsh import shell_adapter as SA
 
@@ -542,7 +549,7 @@ def test_a_large_hole_needs_the_users_size_for_a_washer():
     assert ST.WASHER_ACROSS_USER * 10.0 > 46.07 > ST.WASHER_ACROSS * 10.0
 
 
-def test_a_square_hole_gets_a_square_washer(tmp_path):
+def test_a_square_hole_gets_a_square_washer(tmp_path, monkeypatch):
     """SHMESH-45f, class A of a real column: four-sided holes of straight edges (square, diamond; our extraction keeps
     a round hole round - checked on plain, split, countersunk and counterbored 21 mm holes in a 19 mm plate - so these
     are the CAD's own) get a square ring, mapped, inside the user's edges."""
@@ -554,6 +561,7 @@ def test_a_square_hole_gets_a_square_washer(tmp_path):
 
     from meshpipeline.cad import midsurface as ms
 
+    monkeypatch.setattr(ST, "GRID_GUARD", False)        # (the square rings as gridded; 48x may mesh the plate free)
     shape = BRepPrimAPI_MakeBox(gp_Pnt(-175, -175, 0), 350, 350, 19.05).Shape()
     for (x, y), turn in (((-110, -110), 0), ((110, -110), 0), ((-110, 110), 45), ((110, 110), 45)):
         poly = BRepBuilderAPI_MakePolygon()
@@ -633,17 +641,21 @@ def test_round_and_square_holes_on_one_face_of_a_several_face_part(tmp_path):
     assert applied["quality"]["valid"] and applied["quality"]["within_nastran"]
 
 
-def test_a_top_plate_with_round_and_square_holes_is_gridded(tmp_path):
+@pytest.mark.parametrize("guard", [False, True])
+def test_a_top_plate_with_round_and_square_holes_is_gridded(tmp_path, monkeypatch, guard):
     """SHMESH-48h, a real column's top plates (19 mm, 6 round and 5 four-sided holes on one face): the square rings
     were drawn after the grid and left out of it, so the grid saw holes without a washer and left the plate free. Now
     each square ring takes a free box of the grid (its strips drawn in the box), and the plate is gridded with every
-    line met."""
+    line met. SHMESH-48x (guard on): the grid is set against the plate's own free mesh - its share under the 5 mm
+    shortest edge and its triangles - and the plate is meshed free where that is better; the record says why with both
+    sets of figures, and the free mesh is no worse on either."""
     from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon
     from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCylinder, BRepPrimAPI_MakePrism
     from OCP.BRepTools import BRepTools
     from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt, gp_Vec
 
+    monkeypatch.setattr(ST, "GRID_GUARD", guard)
     T_ = 19.05
     shape = BRepPrimAPI_MakeBox(gp_Pnt(-210, -160, 0), 420, 320, T_).Shape()
     for x, y in ((-150, -100), (0, -100), (150, -100), (-150, 100), (0, 100), (150, 100)):
@@ -664,6 +676,13 @@ def test_a_top_plate_with_round_and_square_holes_is_gridded(tmp_path):
     s = applied["quality"]["structure"]
     assert "guard" not in s, s.get("guard")
     assert s["washers"] == 11 and s["no_washer"] == {}, s["hole_list"]
+    refused = [r for r in s.get("refused") or [] if "grid_figures" in r]
+    assert refused or not guard, s.get("refused")
+    if guard and refused:
+        g_, f_ = refused[0]["grid_figures"], refused[0]["free_figures"]
+        assert f_["triangles"] <= g_["triangles"] and f_["short"] * g_["elements"] <= g_["short"] * f_["elements"]
+        assert all(r["met"] is not False for r in applied["requirements"]["rows"]), applied["requirements"]["rows"]
+        return
     assert "a hole without a washer in the face" not in (s.get("not_gridded") or {}), s.get("not_gridded")
     kinds = [h["kind"] for h in s["hole_list"]]
     assert kinds.count("square ring in a free box of a gridded face") == 5, kinds

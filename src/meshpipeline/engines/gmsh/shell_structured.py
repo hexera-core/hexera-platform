@@ -38,6 +38,10 @@ WASHER_SHRUNK = 1.25
 #: between a ring and any other edge of its face at least WASHER_ROOM of the ring's outer element length is left for
 #: the field mesh
 WASHER_ROOM = 0.5
+#: SHMESH-48z: a gridded face's square rings, O-grid rows and ring-to-box rows are planned this much over the user's
+#: shortest edge where they fit so (else at it): planned at it, the smoothing after pulled them a hair under (4.3-4.9 mm
+#: under a 5 mm line round a top plate's diamond holes)
+EDGE_MARGIN = 1.1
 #: a hole's circle: its points within CIRCLE_TOL of its radius from its centre
 CIRCLE_TOL = 1e-3
 #: SHMESH-40: faces with four natural corners meshed as mapped grids
@@ -236,12 +240,16 @@ def _square_plan(gmsh, curves: list[int], face_mm: float, mm: float, hole_size, 
     r_mean = float(np.linalg.norm(P - c, axis=1).mean())
     h_hole = hole_size(r_mean * mm, owner)
     counts = [max(2, round(x * mm / max(h_hole, 1e-9))) for x in sides]
+    if low_mm is not None:
+        # (SHMESH-48z: no hole side's segment under the user's shortest edge, with the margin where the side allows)
+        counts = [max(1, min(m, math.floor(x * mm / (EDGE_MARGIN * float(low_mm)) + 1e-9)
+                             or math.floor(x * mm / float(low_mm) + 1e-9))) for x, m in zip(sides, counts, strict=True)]
     seg = float(np.mean([x * mm / m for x, m in zip(sides, counts, strict=True)]))
     width = min(seg, face_mm)
     if high_mm is not None:
         width = min(width, 0.98 * high_mm)
     if low_mm is not None:
-        width = max(width, float(low_mm))
+        width = max(width, EDGE_MARGIN * float(low_mm))
     w = Washer(face=0, owner=owner, hole=list(curves), centre=c, normal=n,
                xaxis=(P[0] - c) / np.linalg.norm(P[0] - c), r=r_mean, R=r_mean + width / mm, n=sum(counts), rows=1,
                out_mm=max(seg, width))
@@ -935,6 +943,13 @@ PIN_CLEAR = True
 #: and a line it crosses - never a box's own side - is dropped: the line ends there in a T and the two cells beside
 #: it become one; the face is tried again (up to TRIM_ROUNDS pieces) and refused only when that does not mend it
 TRIM_SHORT = True
+#: SHMESH-48x: a gridded face is set against its own free mesh (meshed free on the next pass, its grid back when the
+#: free mesh is no better) when more than GRID_SHORT of its elements are under the user's shortest edge, or it keeps
+#: more than max(GRID_TRIAS, GRID_TRIA_SHARE of its elements) triangles; it may keep up to twice the free mesh's
+GRID_GUARD = True
+GRID_SHORT = 0.03
+GRID_TRIAS = 4
+GRID_TRIA_SHARE = 0.01
 TRIM_ROUNDS = 4
 #: SHMESH-48t: the trial refuses a face only for a cell edge under CELL_HARD of CELL_MIN (one that clearly cannot
 #: mesh); between that and CELL_MIN the face is gridded and judged on its elements once meshed (48f). None: as before
@@ -966,7 +981,8 @@ BAND_STEP = False
 
 
 def _boxed(r_mm: float, hole_mm: float, h_mm: float, low_mm: float | None = None,
-           high_mm: float | None = None, rows_fit: bool = False) -> tuple[int, int, float, float] | None:
+           high_mm: float | None = None, rows_fit: bool = False, strict: bool = False
+           ) -> tuple[int, int, float, float] | None:
     """SHMESH-41/48: (elements round, rows, ring over hole radius, box half-side mm) of an O-grid washer in a gridded
     face, every edge of it inside a band: the user's shortest and longest edge when they gave them (the count round the
     hole is then picked to fit the band, never fewer than 8), else our own (the plan's count round the hole at least,
@@ -977,6 +993,11 @@ def _boxed(r_mm: float, hole_mm: float, h_mm: float, low_mm: float | None = None
     shorter than the face size over BOX_GROW. The hole's circle starts on the box's diagonal (SHMESH-45b), so any count
     a multiple of WASHER_STEP splits evenly into quarters. None when nothing fits (the washer then takes a free box)."""
     user = low_mm is not None or high_mm is not None
+    if rows_fit and low_mm is not None and not strict and EDGE_MARGIN > 1.0:
+        # (SHMESH-48z: a plan whose every edge clears the user's shortest edge by EDGE_MARGIN, where one fits)
+        planned = _boxed(r_mm, hole_mm, h_mm, EDGE_MARGIN * float(low_mm), high_mm, rows_fit=True, strict=True)
+        if planned is not None:
+            return planned
     e_lo = float(low_mm or 0.0)
     e_hi = 0.98 * float(high_mm) if high_mm is not None else math.inf
     seg_lo, seg_hi = max(BOX_SEG[0] * h_mm, e_lo), min(BOX_SEG[1] * h_mm, e_hi)
@@ -1014,7 +1035,7 @@ def _boxed(r_mm: float, hole_mm: float, h_mm: float, low_mm: float | None = None
                 got = _box_rows(R, min(max(n * h_mm / 8, b_lo), b_hi), b_lo, b_hi, e_lo, e_hi)
                 if got is not None:
                     return n, rows, R / r_mm, got
-    return first
+    return None if strict else first
 
 
 def _ring_box_rows(R: float, b_in: float, b_out: float, h: float, e_lo: float, e_hi: float) -> int | None:
@@ -2323,8 +2344,10 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                     bx_ = boxes[j_w]
                     b_in = min(cu_ - bx_[0], bx_[1] - cu_, cv_ - bx_[2], bx_[3] - cv_)
                     b_out = max(math.hypot(x_ - cu_, y_ - cv_) for x_ in bx_[:2] for y_ in bx_[2:])
-                    k_rb = _ring_box_rows(R, b_in, b_out, h, float(low_mm or 0.0) / mm,
-                                          0.98 * float(high_mm) / mm if high_mm is not None else math.inf)
+                    e_hi_ = 0.98 * float(high_mm) / mm if high_mm is not None else math.inf
+                    k_rb = _ring_box_rows(R, b_in, b_out, h, EDGE_MARGIN * float(low_mm or 0.0) / mm, e_hi_)
+                    if k_rb is None:
+                        k_rb = _ring_box_rows(R, b_in, b_out, h, float(low_mm or 0.0) / mm, e_hi_)
                 ring_c: list[int] = []
                 hole_c: list[int] = []
                 for c in curves:
