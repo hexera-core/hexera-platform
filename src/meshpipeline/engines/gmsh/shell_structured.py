@@ -58,6 +58,7 @@ class Washer:
     ring: int = 0                   # after the imprint: the ring's circle
     annulus: int = 0                # ... the surface between hole and ring
     hole_after: list[int] = field(default_factory=list)
+    info: dict = field(default_factory=dict)  # SHMESH-45c: the hole's line in the record (quality.structure.hole_list)
 
 
 def _samples(gmsh, curve: int, n: int = 24) -> np.ndarray:
@@ -115,14 +116,53 @@ def _count(r_mm: float, hole_mm: float, face_mm: float) -> tuple[int, int, float
     return None
 
 
-def plan_washers(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], hole_size, mm: float
-                 ) -> tuple[list[Washer], dict[str, int]]:
+def _loop_kind(gmsh, curves: list[int]) -> str:
+    """SHMESH-45c: what an inner loop that is not one circle is, in a few words: a slot (two straight sides and two
+    round ends), an ellipse, a polygon, a circle in pieces of different radius, or its curve types."""
+    types = [gmsh.model.getType(1, c) for c in curves]
+    lines = sum(1 for x in types if x == "Line")
+    arcs = [c for c, x in zip(curves, types, strict=True) if x == "Circle"]
+    if any(x == "Ellipse" for x in types):
+        return "an ellipse" if lines == 0 else "a loop with elliptic arcs"
+    if lines == len(curves):
+        return f"a polygon of {lines} straight edges"
+    if lines == 2 and len(arcs) == 2:
+        return "a slot (two straight sides, two round ends)"
+    if arcs and len(arcs) == len(curves):
+        radii = []
+        for c in arcs:
+            got = _circle_of(gmsh, [c]) if False else None
+            pts = _samples(gmsh, c, 8)
+            mid = pts.mean(axis=0)
+            radii.append(float(np.linalg.norm(pts - mid, axis=1).mean()) if got is None else got[1])
+        if max(radii) > 1.001 * min(radii):
+            return f"a circle in {len(arcs)} pieces of different radius"
+        return f"{len(arcs)} arcs that do not make one circle"
+    kinds: dict[str, int] = {}
+    for x in types:
+        kinds[x] = kinds.get(x, 0) + 1
+    return "a loop of " + ", ".join(f"{n} {k}" for k, n in sorted(kinds.items()))
+
+
+def plan_washers(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], hole_size, mm: float,
+                 names: dict[int, tuple[str, str]] | None = None, before: list | None = None
+                 ) -> tuple[list[Washer], dict[str, int], list[dict]]:
     """SHMESH-39: the washers to make: every inner loop of a flat face that is one round hole (a circle no other face
     shares), at most WASHER_ACROSS of the face's element size across. `size_mm`: each surface's element size;
     `hole_size(r_mm, owner)`: the element length the plan puts round a hole of that radius. Returns (the washers,
-    {why a hole has none: count})."""
+    {why a hole has none: count}, SHMESH-45c: one line per inner loop of a flat face - its face and part (`names`:
+    owner -> (mid-face, part)), diameter, CAD edges before (`before`: [(centre, edges)] from the SHMESH-45b redraw)
+    and after, whether another face shares its loop, the ring's planned count and width, the room to the nearest face
+    edge and other hole (element sizes), and why it has no washer; the washers' lines are filled in further on)."""
     skipped: dict[str, int] = {}
     found: list[Washer] = []
+    lines: list[dict] = []
+
+    def no(info: dict, reason: str) -> None:
+        skipped[reason] = skipped.get(reason, 0) + 1
+        info["washer"] = False
+        info["why"] = info.get("why") or reason
+
     for t, k in sorted(tag_of.items()):
         if gmsh.model.getType(2, t) != "Plane":
             continue
@@ -133,23 +173,46 @@ def plan_washers(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], hole_s
         # the outer loop is the longest
         length = [sum(float(gmsh.model.occ.getMass(1, c)) for c in cl) for cl in loops]
         outer = int(np.argmax(length))
+        h = size_mm[t]
+        rims = [_samples(gmsh, c, 64) for c in loops[outer]]
+        here = {}
+        for j, cl in enumerate(loops):
+            if j != outer:
+                pts = np.vstack([_samples(gmsh, c, 16) for c in cl])
+                cj = pts.mean(axis=0)
+                here[j] = (cj, float(np.linalg.norm(pts - cj, axis=1).mean()))
         for j, cl in enumerate(loops):
             if j == outer:
                 continue
-            if any(len(gmsh.model.getAdjacencies(1, c)[0]) != 1 for c in cl):
-                skipped["shared with another face"] = skipped.get("shared with another face", 0) + 1
+            mid, part = (names or {}).get(k, (str(k), ""))
+            c0, r0 = here[j]
+            edge_gap = min(float(np.linalg.norm(p - c0, axis=1).min()) for p in rims) - r0
+            hole_gap = min((float(np.linalg.norm(c - c0)) - r - r0 for jj, (c, r) in here.items() if jj != j),
+                           default=math.inf)
+            n_before = next((int(e) for cc, e in (before or [])
+                             if float(np.linalg.norm(np.asarray(cc, dtype=float) - c0)) <= 0.05 * max(r0, 1e-9)),
+                            len(cl))
+            info = {"face": mid, "part": part, "diameter_mm": float(f"{2 * r0 * mm:.4g}"),
+                    "edges_before": n_before, "edges": len(cl),
+                    "shared": any(len(gmsh.model.getAdjacencies(1, c)[0]) != 1 for c in cl),
+                    "to_edge": float(f"{edge_gap * mm / h:.3g}"),
+                    "to_hole": float(f"{hole_gap * mm / h:.3g}") if math.isfinite(hole_gap) else None}
+            lines.append(info)
+            if info["shared"]:
+                no(info, "shared with another face")
                 continue
             got = _circle_of(gmsh, cl)
             if got is None:
-                skipped["not round"] = skipped.get("not round", 0) + 1
+                info["loop"] = _loop_kind(gmsh, cl)
+                no(info, "not round")
                 continue
             centre, r, n, first = got
             if 2 * r * mm > WASHER_ACROSS * size_mm[t]:
-                skipped["larger than the washer limit"] = skipped.get("larger than the washer limit", 0) + 1
+                no(info, "larger than the washer limit")
                 continue
             plan = _count(r * mm, hole_size(r * mm, k), size_mm[t])
             if plan is None:
-                skipped["no count fits"] = skipped.get("no count fits", 0) + 1
+                no(info, "no count fits")
                 continue
             cnt, rows, ratio = plan
             # a hole drawn as many short curves (a faceted circle) carries at least one element on each
@@ -157,8 +220,9 @@ def plan_washers(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], hole_s
             xa = first - centre
             xa = xa - float(xa @ n) * n
             xa /= max(float(np.linalg.norm(xa)), 1e-300)
+            info.update(planned_round=cnt, planned_rows=rows, planned_width_mm=float(f"{(ratio - 1) * r * mm:.4g}"))
             found.append(Washer(face=t, owner=k, hole=cl, centre=centre, normal=n, xaxis=xa, r=r, R=ratio * r,
-                                n=cnt, rows=rows, out_mm=2 * math.pi * ratio * r * mm / cnt))
+                                n=cnt, rows=rows, out_mm=2 * math.pi * ratio * r * mm / cnt, info=info))
     # room: each ring against the other edges of its face and the other holes' rings
     keep: list[Washer] = []
     for w in found:
@@ -176,13 +240,15 @@ def plan_washers(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], hole_s
             limit = min(limit, d * w.r / (w.r + o.r) - 0.5 * WASHER_ROOM * w.out_mm / mm)
         if limit < w.R:
             if limit < WASHER_SHRUNK * w.r:
-                skipped["too close to an edge or another hole"] = skipped.get("too close to an edge or another hole", 0) + 1
+                no(w.info, "too close to an edge or another hole")
                 continue
             w.R, w.shrunk = limit, True
             w.rows = max(1, min(w.rows, round(math.log(w.R / w.r) / (2 * math.pi / w.n))))
             w.out_mm = 2 * math.pi * w.R * mm / w.n
+            w.info["shrunk_width_mm"] = float(f"{(w.R - w.r) * mm:.4g}")
+        w.info["washer"] = True
         keep.append(w)
-    return keep, skipped
+    return keep, skipped, lines
 
 
 def _on_hole(gmsh, w: Washer, curves: list[int]) -> bool:
@@ -874,13 +940,14 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
 RESEAT = True
 
 
-def reseat_holes(brep, out) -> int:
+def reseat_holes(brep, out) -> tuple[int, list]:
     """SHMESH-45b: every round hole of a flat face that no other face shares is drawn again as ONE circle starting on the
     diagonal of the face's frame (its longest straight outer edge, as block_faces reads it), the same circle exactly. A
     CAD hole's circle starts at its seam, often in the middle of an O-grid quarter, and the quarter then cannot be
     counted evenly; drawn again, the seam sits where the O-grid cuts anyway. Only the hole's own wire changes (edges
     shared with other faces are untouched, so every junction stays as it is); a face whose area would change is left
-    as it was. Writes `out` and returns how many holes were drawn again (0: `out` is the input unchanged)."""
+    as it was. Writes `out` and returns (how many holes were drawn again - 0: `out` is the input unchanged -, [(each
+    one's centre, how many CAD edges it had)])."""
     from OCP.BRep import BRep_Builder
     from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeWire
@@ -916,6 +983,7 @@ def reseat_holes(brep, out) -> int:
         return out_
 
     done = 0
+    redrawn: list = []
     reshape = BRepTools_ReShape()
     for f in ms._faces(shape):
         sa = BRepAdaptor_Surface(f)
@@ -970,6 +1038,7 @@ def reseat_holes(brep, out) -> int:
             if es[0].Orientation() == TopAbs_REVERSED:
                 nw.Reverse()
             swaps.append((w, nw))
+            redrawn.append(([loc.X(), loc.Y(), loc.Z()], len(es)))
         if not swaps:
             continue
         trial = BRepTools_ReShape()
@@ -983,13 +1052,13 @@ def reseat_holes(brep, out) -> int:
         done += len(swaps)
     if not done:
         BRepTools.Write_s(shape, str(out))
-        return 0
+        return 0, []
     result = reshape.Apply(shape)
     if len(ms._faces(result)) != len(ms._faces(shape)):
         BRepTools.Write_s(shape, str(out))
-        return 0
+        return 0, []
     BRepTools.Write_s(result, str(out))
-    return done
+    return done, redrawn
 
 
 __all__ = ["WASHERS", "MAPPED", "Washer", "plan_washers", "imprint", "set_counts", "ring_mesh", "map_faces", "block_faces", "reseat_holes"]

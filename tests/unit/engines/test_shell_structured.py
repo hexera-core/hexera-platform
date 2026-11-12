@@ -347,3 +347,29 @@ def test_a_hole_drawn_as_several_edges_still_gets_its_washer(tmp_path):
         s = applied["quality"]["structure"]
         assert s["holes_redrawn"] == 6 and s["washers"] == 6 and s["no_washer"] == {}, s
         assert SS.measure(mesh)["holes_ringed"] == 6 and applied["quality"]["valid"]
+
+
+def test_every_hole_has_its_line_in_the_record(web, monkeypatch):
+    """SHMESH-45c: one line per hole of a flat face - face, part, diameter, CAD edges, shared, planned ring, room, why."""
+    brep, rec = web
+    real = ST.ring_mesh
+    calls = {"n": 0}
+
+    def flaky(gmsh, w, index, xyz, mm):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ValueError("a washer's hole and ring nodes do not face each other")
+        return real(gmsh, w, index, xyz, mm)
+
+    monkeypatch.setattr(ST, "ring_mesh", flaky)
+    monkeypatch.setattr(ST, "BLOCKS", False)
+    _mesh_, applied = _mesh(brep, rec, _criteria())
+    lines = applied["quality"]["structure"]["hole_list"]
+    assert len(lines) == 6
+    for h in lines:
+        assert {"face", "part", "diameter_mm", "edges", "edges_before", "shared", "to_edge", "to_hole",
+                "washer"} <= set(h)
+        assert abs(h["diameter_mm"] - 18.0) < 0.1 and h["shared"] is False
+    refused = [h for h in lines if not h["washer"]]
+    assert len(refused) == 1 and "do not face each other" in refused[0]["why"]
+    assert all(h.get("kind") == "ring in a free face" and h["planned_round"] >= 8 for h in lines if h["washer"])

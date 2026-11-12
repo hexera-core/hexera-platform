@@ -852,6 +852,8 @@ def _mesh_shell(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log
     return mesh, applied
 
 
+#: SHMESH-45c: at most this many holes are listed one by one in the record (quality.structure.hole_list)
+HOLE_LINES = 500
 #: SHMESH-45 (washer guard, whole step): a structured mesh that fails, or comes out invalid or past Nastran's own limits,
 #: is set against the mesh with the structured steps off ("free mesh": exactly the mesh before them), and the free mesh
 #: is kept when it is valid where the other is not, or has fewer elements past Nastran's limits
@@ -967,12 +969,12 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
                 # SHMESH-11d: the closed faces' pieces would not fuse back with the rest (a 45 degree cone's pieces,
                 # exact or fuzzy): the surface is meshed as sewn, and a closed face gmsh stops on is re-made below
                 split_note = f"the closed faces were meshed whole ({exc})"
-        reseated = 0
+        reseated, redrawn = 0, []
         if ST.RESEAT and ST.WASHERS and SR.structure_of(requirements) not in ("free", "no_washers"):
             # SHMESH-45b: the round free holes of flat faces drawn again as one circle each
             seated = Path(tmp) / "reseated.brep"
             try:
-                reseated = ST.reseat_holes(Path(brep), seated)
+                reseated, redrawn = ST.reseat_holes(Path(brep), seated)
                 brep = seated
             except Exception as exc:  # noqa: BLE001 - the holes keep their own circles
                 logger.info("shell mesh: holes not drawn again (%s)", exc)
@@ -983,6 +985,7 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
         while True:
             try:
                 mesh, applied = _mesh_once(Path(brep), record, owners, float(mm_per_unit), log, target=target,
+                                           hole_before=tuple((tuple(c), e) for c, e in redrawn),
                                            correction=correction, requirements=requirements, unmap=frozenset(unmap),
                                            check_maps=unmapped < UNMAP_ROUNDS)
             except _Unmap as u:
@@ -1020,6 +1023,7 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
                 own = own + past
                 try:
                     again, applied2 = _mesh_once(Path(brep), record, owners, float(mm_per_unit), None,
+                                                 hole_before=tuple((tuple(c), e) for c, e in redrawn),
                                                  target=target, correction=correction, requirements=requirements,
                                                  own_spots=tuple(own), unmap=frozenset(unmap), check_maps=False)
                 except (ValueError, _Periodic) as exc:
@@ -1108,6 +1112,7 @@ def _classic():
 def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list | None, *,
                target: dict | None = None, correction: float = 1.0,
                requirements: dict | None = None, own_spots: tuple = (), unmap: frozenset = frozenset(),
+               hole_before: tuple = (),
                check_maps: bool = False) -> tuple[ShellMesh, dict]:
     """One mesh. `unmap` (SHMESH-40): gmsh surfaces left free (their grid came out past the solver's limits once);
     `check_maps`: raise _Unmap when a mapped face's grid comes out past them. `own_spots` (SHMESH-31): (sewn face, box low corner, box high corner - mm) round elements a mesh
@@ -1254,9 +1259,13 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         block_holes: set[int] = set()
         cut_curves: set[int] = set()        # curves SHMESH-41 drew (no CAD edge)
         grid_cells: set[int] = set()        # the cells SHMESH-41 cut faces into
+        hole_lines: list[dict] = []         # SHMESH-45c: one line per hole of a flat face, in the record
         if ST.WASHERS and kind != "triangles" and structure not in ("free", "no_washers"):
-            washers, washer_skipped = ST.plan_washers(
-                gmsh, tag_of, {t: float(rows[k]["size_mm"]) for t, k in tag_of.items()}, hole_size, mm)
+            mids_of = {m["id"]: m for m in record["mids"]}
+            names = {k: (owners[k], str(mids_of.get(owners[k], {}).get("body", ""))) for k in set(tag_of.values())}
+            washers, washer_skipped, hole_lines = ST.plan_washers(
+                gmsh, tag_of, {t: float(rows[k]["size_mm"]) for t, k in tag_of.items()}, hole_size, mm,
+                names=names, before=list(hole_before))
             if ST.BLOCKS and ST.MAPPED and structure != "free":
                 # SHMESH-41: a face whose holes all have washers is cut into a grid of cells, mapped below
                 gridded, boxed, block_preset, block_holes, block_skipped = ST.block_faces(
@@ -1269,8 +1278,17 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                 # a ring that would cut another edge of its face: that face keeps no washer
                 lost = [w for w in rings if w not in drawn]
                 washer_skipped["a ring would cut another edge"] = len(lost)
+                for w in lost:
+                    w.info.update(washer=False, why="a ring would cut another edge (a ring of its face did not come "
+                                                    "out one circle on a trial copy)")
                 washers = [w for w in washers if w not in lost]
             rings = drawn + boxed
+            for w in gridded:
+                w.info["kind"] = "o-grid in a gridded face"
+            for w in boxed:
+                w.info["kind"] = "free box in a gridded face"
+            for w in drawn:
+                w.info["kind"] = "ring in a free face"
         washer_holes = {c for w in rings for c in w.hole_after} | block_holes
         # SHMESH-1/2: a constant size per face; SHMESH-3/4/6: curves sized by curvature, grown at GROWTH
         fields = []
@@ -1461,6 +1479,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                 # SHMESH-45 (washer guard, per washer): a ring that cannot be built keeps gmsh's own mesh of its annulus
                 # (conformal: gmsh meshed it with the face), and the record says why
                 logger.info("shell mesh: a washer's own ring was not made (%s)", exc)
+                w.info.update(washer=False, why=f"its ring could not be built: {exc}"[:300])
                 washer_skipped["its ring could not be built (gmsh's mesh kept there)"] = (
                     washer_skipped.get("its ring could not be built (gmsh's mesh kept there)", 0) + 1)
                 continue
@@ -1717,7 +1736,8 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                             "around": dict(sorted(Counter(w.n for w in washers).items())),
                             "washers_ogrid": len(gridded), "washers_boxed": len(boxed),
                             "not_gridded": dict(sorted(block_skipped.items())),
-                            "switched_off": structure}
+                            "switched_off": structure,
+                            "hole_list": hole_lines[:HOLE_LINES]}
     if grids or mapped:
         mesh.notes.append(f"Mapped quads (a regular grid) on {len(grids) + len(mapped)} of {len(tag_of) - len(rings)} "
                           "face(s): every face with four sides (SHMESH-40).")
