@@ -33,6 +33,8 @@ ALGORITHM = 6
 RECOMBINATION = 1
 #: SHMESH-42: the 2D algorithm for flat faces left free (None: ALGORITHM)
 PLANE_ALGORITHM: int | None = None
+#: SHMESH-49k: gmsh's algorithm for a round plate's paved band (None: the default)
+POLAR_BAND_ALGORITHM: int | None = None
 #: SHMESH-10: cut every quad past Nastran's own limits into two triangles
 SPLIT_PAST = True
 #: SHMESH-48e: a gridded face's free boxes may carry one triangle each (inside the tria angle lines) while its
@@ -1345,6 +1347,9 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         gridded: list = []                  # O-grid washers inside a gridded face (SHMESH-41): mapped with it
         cut_of: dict[int, set[int]] = {}    # SHMESH-47b: gridded face -> the joined faces its lines cut
         polar_faces_made: set[int] = set()  # SHMESH-49g: the round plates cut into rings and strips
+        bands: list = []                    # SHMESH-49l: their bands round a central opening, meshed in rings
+        skipped_where: dict[str, list[int]] = {}  # SHMESH-48f: which face each not-gridded reason came from
+        band_known: dict[int, int] = {}
         grid_faces_made: set[int] = set()   # SHMESH-48f: the faces cut into a grid
         boxed: list = []                    # washers in a gridded face's free boxes: their own ring
         rings: list = []                    # washers in a free face: their own ring mesh (ST.ring_mesh)
@@ -1383,14 +1388,15 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                     gmsh, washers, tag_of, {t: float(rows[k]["size_mm"]) for t, k in tag_of.items()}, mm,
                     cuts=cut_curves, cells_out=grid_cells, hole_size=hole_size,
                     low_mm=(sizing or {}).get("low_mm"), high_mm=(sizing or {}).get("high_mm"), no_polar=no_cut,
-                    made_out=polar_faces_made)
+                    made_out=polar_faces_made, bands_out=bands, why_where=skipped_where)
                 washers = [w for w in washers if w not in polar_made and w not in polar_o]
             if ST.BLOCKS and ST.MAPPED and structure != "free":
                 # SHMESH-41: a face whose holes all have washers is cut into a grid of cells, mapped below
                 gridded, boxed, block_preset, block_holes, block_skipped = ST.block_faces(
                     gmsh, washers, tag_of, {t: float(rows[k]["size_mm"]) for t, k in tag_of.items()}, hole_size, mm,
                     cuts=cut_curves, low_mm=(sizing or {}).get("low_mm"), high_mm=(sizing or {}).get("high_mm"),
-                    cells_out=grid_cells, no_cut=no_cut, cut_out=cut_of, made_out=grid_faces_made)
+                    cells_out=grid_cells, no_cut=no_cut, cut_out=cut_of, made_out=grid_faces_made,
+                    why_where=skipped_where)
             for w in gridded:
                 w.info["kind"] = "o-grid in a gridded face"
             for w in boxed:
@@ -1462,6 +1468,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
             # that makes a box beside it even all round (its other sides' counts and its ring's): a box with one
             # piece left uncounted sets it, so a column of boxes is counted from its ends in
             known = {**_grid_counts, **block_preset, **{w.ring: w.n for w in boxed if w.ring}}
+            band_known = known
             in_grid = {abs(int(c)) for t in grids for _d, c in gmsh.model.getBoundary([(2, t)], oriented=False)}
             open_ = {c for c in cut_curves - in_grid - set(known)
                      if any(int(x) in tag_of for x in gmsh.model.getAdjacencies(1, c)[0])}
@@ -1576,8 +1583,15 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         gmsh.model.mesh.field.setAsBackgroundMesh(mn)
         evened = 0
         washer_curves = ST.set_counts(gmsh, rings)
+        band_of: dict[int, ST.Band] = {}
+        for bd in bands:
+            if bd.face in tag_of and bd.face not in grids and ST.band_counts(
+                    gmsh, bd, {**_grid_counts, **block_preset, **band_known},
+                    float(rows[tag_of[bd.face]]["size_mm"]), mm) is not None:
+                band_of[bd.face] = bd
         if EVEN_FACES and kind != "triangles":
             fixed = {abs(c) for t in mapped for _d, c in gmsh.model.getBoundary([(2, t)], oriented=False)}
+            fixed |= {c for bd in band_of.values() for c in bd.inner}  # SHMESH-49l: the band's count stands
             fixed |= washer_curves
             fixed |= {abs(c) for t in grids for _d, c in gmsh.model.getBoundary([(2, t)], oriented=False)}
             floors = {t: plan_rules.FLOOR_WALLS * rows[k]["wall_mm"] * min(sz, 1.0) / mm for t, k in tag_of.items()}
@@ -1591,6 +1605,11 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
             for t in sorted(tag_of):
                 if gmsh.model.getType(2, t) == "Plane" and t not in grids and t not in mapped:
                     gmsh.model.mesh.setAlgorithm(2, t, PLANE_ALGORITHM)
+        if POLAR_BAND_ALGORITHM is not None and polar_faces_made:
+            # SHMESH-49k: a round plate's free cells (the band inside its bolt circle) paved by this algorithm
+            for t in sorted(tag_of):
+                if tag_of[t] in polar_faces_made and t not in grids and t not in {w.annulus for w in rings}:
+                    gmsh.model.mesh.setAlgorithm(2, t, POLAR_BAND_ALGORITHM)
         _generate(gmsh, tag_of)
         node_tags, coords, _p = gmsh.model.mesh.getNodes()
         tags = np.asarray(node_tags, dtype=np.int64)
@@ -1733,8 +1752,20 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
             xyz = np.vstack([xyz, pts])
             quads.append(ring)
             q_face += [w.owner] * len(ring)
+        band_done: set[int] = set()
+        for t_b, bd in sorted(band_of.items()):
+            try:
+                pts_b, quads_b = ST.band_mesh(gmsh, bd, index, xyz, mm, float(rows[tag_of[t_b]]["size_mm"]))
+                # (its transition quads are tidied with the rest; the plate is judged on what is delivered)
+            except ValueError as exc:
+                logger.info("shell mesh: a round plate's band was paved (%s)", exc)
+                continue
+            band_done.add(t_b)
+            xyz = np.vstack([xyz, pts_b])
+            quads.append(quads_b)
+            q_face += [tag_of[t_b]] * len(quads_b)
         for t, k in sorted(tag_of.items()):
-            if t in ring_of:
+            if t in ring_of or t in band_done:
                 continue
             types, _tags, conns = gmsh.model.mesh.getElements(2, t)
             for et, conn in zip(types, conns, strict=True):
@@ -2050,6 +2081,9 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                             "around": dict(sorted(Counter(w.n for w in washers).items())),
                             "washers_ogrid": len(gridded), "washers_boxed": len(boxed),
                             "not_gridded": dict(sorted(block_skipped.items())),
+                            "not_gridded_faces": {why_: sorted({owners[k] if 0 <= k < len(owners) else str(k)
+                                                                for k in ks})
+                                                  for why_, ks in sorted(skipped_where.items())},
                             "switched_off": structure,
                             "hole_list": hole_lines[:HOLE_LINES]}
     if grids or mapped:

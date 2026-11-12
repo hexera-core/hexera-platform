@@ -979,7 +979,8 @@ def _remove_loose(gmsh, curves: set[int]) -> None:
 def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: dict[int, float], hole_size, mm: float,
                 cuts: set[int] | None = None, low_mm: float | None = None, high_mm: float | None = None,
                 cells_out: set[int] | None = None, no_cut: frozenset = frozenset(),
-                cut_out: dict[int, set[int]] | None = None, made_out: set[int] | None = None
+                cut_out: dict[int, set[int]] | None = None, made_out: set[int] | None = None,
+                why_where: dict[str, list[int]] | None = None
                 ) -> tuple[list[Washer], list[Washer], dict[int, int], set[int], dict[str, int]]:
     """SHMESH-41: each flat face whose inner loops are all washer holes is cut into a grid: round each hole a box
     along the face's own frame (its longest straight edge) - an O-grid's (_boxed) or a free box - every box side drawn
@@ -1002,6 +1003,9 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
 
     def no(reason: str) -> None:
         why[reason] = why.get(reason, 0) + 1
+        if why_where is not None:
+            # the record says which face each reason came from (SHMESH-48f)
+            why_where.setdefault(reason, []).append(int(tag_of.get(t, -1)))
 
     for t, ws in sorted(by_face.items()):
         if tag_of.get(t) in no_cut:
@@ -1539,10 +1543,176 @@ def _round_loop(gmsh, curves: list[int]) -> tuple[np.ndarray, float] | None:
     return (got[0], got[1]) if got is not None else None
 
 
+@dataclass
+class Band:
+    """SHMESH-49l: the band of a round plate between its central opening and its bolt circle's inner ring."""
+    face: int                       # the cell (gmsh surface)
+    owner: int                      # the sewn face
+    centre: np.ndarray
+    normal: np.ndarray
+    inner: list[int]                # the opening's curves
+    outer: list[int]                # the ring's pieces (arcs between strips, box sides across them)
+    r_in: float
+    n_in: int = 0
+
+
+#: SHMESH-49l: the band inside a bolt circle (round a central opening) meshed in rings of quads, the count dropping
+#: from the ring's to the opening's in one row of 3-to-1 groups (none: paved by gmsh). Off: the 3-to-1 quads come out
+#: with a taper of 0.50-0.57 against Nastran's 0.5 and the clean-up splits them (60-104 triangles on a look-alike plate)
+POLAR_BAND = False
+BAND_SMOOTH = 5
+BAND_AB_DEPTH = 0.65
+BAND_AB_SPREAD = 0.25
+
+
+def band_counts(gmsh, band: Band, known: dict[int, int], size_mm: float, mm: float) -> int | None:
+    """SHMESH-49l: the count round the band's opening (set on its curves), the ring's count less two for each 3-to-1
+    group so the opening's elements come out near the ring's in length; None when the ring is not all counted."""
+    if any(c not in known for c in band.outer):
+        return None
+    n_out = sum(known[c] for c in band.outer)
+    r_out = float(np.mean([np.linalg.norm(_samples(gmsh, c, 4) - band.centre, axis=1).mean() for c in band.outer]))
+    want = n_out * band.r_in / max(r_out, 1e-300)
+    n_in = n_out - 2 * max(0, round((n_out - want) / 2))
+    n_in = max(n_in, n_out - 2 * (n_out // 3), 8)
+    if (n_out - n_in) % 2:
+        n_in -= 1
+    lengths = [float(gmsh.model.occ.getMass(1, c)) for c in band.inner]
+    spread = _spread(n_in, lengths) if len(band.inner) > 1 else [n_in]
+    if spread is None:
+        return None
+    for c, m in zip(band.inner, spread, strict=True):
+        gmsh.model.mesh.setTransfiniteCurve(c, m + 1)
+    band.n_in = n_in
+    return n_in
+
+
+def band_mesh(gmsh, band: Band, index: np.ndarray, xyz: np.ndarray, mm: float, h_mm: float
+              ) -> tuple[np.ndarray, np.ndarray]:
+    """SHMESH-49l: the band's own quads - rings from the bolt circle's inner ring in to the opening, one row of 3-to-1
+    groups (four quads round two inner nodes each) spread round it. Returns (new points, quads in xyz indices: the
+    new points numbered after xyz). ValueError when the counts or the quads do not come out."""
+    def ring_nodes(curves: list[int]) -> np.ndarray:
+        got: set[int] = set()
+        for c in curves:
+            tags, _x, _p = gmsh.model.mesh.getNodes(1, c, includeBoundary=True)
+            got |= set(index[np.asarray(tags, dtype=np.int64)].tolist())
+        return np.array(sorted(got), dtype=np.int64)
+
+    C = band.centre * mm
+    n = band.normal / max(float(np.linalg.norm(band.normal)), 1e-300)
+    outer, inner = ring_nodes(band.outer), ring_nodes(band.inner)
+    if len(inner) != band.n_in or len(outer) <= len(inner) or (len(outer) - len(inner)) % 2:
+        raise ValueError(f"the band's rings carry {len(outer)} and {len(inner)} nodes")
+    e1 = xyz[outer[0]] - C
+    e1 = e1 - float(e1 @ n) * n
+    e1 /= max(float(np.linalg.norm(e1)), 1e-300)
+    e2 = np.cross(n, e1)
+
+    def polar(ids: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        d = xyz[ids] - C
+        a = np.arctan2(d @ e2, d @ e1) % (2 * math.pi)
+        o = np.argsort(a)
+        return ids[o], a[o], np.linalg.norm(d[o] - np.outer(d[o] @ n, n), axis=1)
+
+    outer, a_out, r_out = polar(outer)
+    inner, a_in, _r_in = polar(inner)
+    n_out, n_in = len(outer), len(inner)
+    groups = (n_out - n_in) // 2
+    # the outer segments that start a 3-to-1 group: spread evenly round the ring
+    starts = sorted({int(round(g * n_out / groups)) % n_out for g in range(groups)}) if groups else []
+    if len(starts) != groups or any((b - a) % n_out < 3 for a, b in zip(starts, starts[1:] + starts[:1], strict=True)
+                                    if groups > 1):
+        raise ValueError("the band's 3-to-1 groups do not fit round its ring")
+    rows = max(2, int(round(float(np.mean(r_out) - band.r_in * mm) / h_mm)))
+    t_row = rows // 2                   # the transition between ring t_row and ring t_row + 1
+    # the angles each ring's nodes sit at: the ring's own above the transition, the kept ones below it, eased to the
+    # opening's own at the opening
+    kept = [j for j in range(n_out) if not any((j - s0) % n_out in (1, 2) for s0 in starts)]
+    a_kept = a_out[kept]
+    shift = int(np.argmin(np.abs(((a_in - a_kept[0] + math.pi) % (2 * math.pi)) - math.pi)))
+    inner, a_in = np.roll(inner, -shift), np.roll(a_in, -shift)
+    a_in_u = a_kept + ((a_in - a_kept + math.pi) % (2 * math.pi) - math.pi)
+    pts: list[np.ndarray] = []
+    base = len(xyz)
+
+    def at(radius: np.ndarray, ang: np.ndarray) -> np.ndarray:
+        return C + radius[:, None] * (np.cos(ang)[:, None] * e1 + np.sin(ang)[:, None] * e2)
+
+    def add(p_: np.ndarray) -> np.ndarray:
+        start = base + sum(len(x) for x in pts)
+        pts.append(p_)
+        return np.arange(start, start + len(p_))
+
+    r_in = band.r_in * mm
+    rings: list[np.ndarray] = [outer]
+    for i in range(1, t_row + 1):
+        f = i / rows
+        rings.append(add(at((1 - f) * r_out + f * r_in, a_out)))
+    depth = (t_row + BAND_AB_DEPTH) / rows
+    mid_r = (1 - depth) * r_out + depth * r_in
+    ab = {}
+    for s0 in starts:
+        # the group's two inner nodes spread over its span and set low in the row (top side to bottom about 1.5 to
+        # 3: a middle quad at the outer nodes' own angles came out tapered past the solver's limits)
+        j0, j1, j2, j3 = ((s0 + q) % n_out for q in range(4))
+        span = (a_out[j3] - a_out[j0]) % (2 * math.pi)
+        aa = np.array([a_out[j0] + BAND_AB_SPREAD * span, a_out[j0] + (1 - BAND_AB_SPREAD) * span])
+        ab[s0] = add(at(np.array([mid_r[j1], mid_r[j2]]), aa))
+    lower: list[np.ndarray] = []
+    for i in range(t_row + 1, rows):
+        f = (i - t_row - 1) / max(rows - t_row - 1, 1)
+        ang = (1 - f) * a_kept + f * a_in_u
+        r_here = (1 - i / rows) * r_out[kept] + i / rows * r_in
+        lower.append(add(at(r_here, ang)))
+    lower.append(inner)
+    quads: list[list[int]] = []
+    for i in range(t_row):
+        up, dn = rings[i], rings[i + 1]
+        for j in range(n_out):
+            quads.append([up[j], up[(j + 1) % n_out], dn[(j + 1) % n_out], dn[j]])
+    up, dn = rings[t_row], lower[0]
+    pos = {j: q for q, j in enumerate(kept)}
+    j = 0
+    while j < n_out:
+        if j in ab:
+            a_, b_ = ab[j]
+            o0, o1, o2, o3 = (up[(j + q) % n_out] for q in range(4))
+            i0, i1 = dn[pos[j]], dn[pos[(j + 3) % n_out]]
+            quads += [[o0, o1, a_, i0], [o1, o2, b_, a_], [o2, o3, i1, b_], [a_, b_, i1, i0]]
+            j += 3
+        else:
+            quads.append([up[j], up[(j + 1) % n_out], dn[pos[(j + 1) % n_out]], dn[pos[j]]])
+            j += 1
+    for i in range(len(lower) - 1):
+        up, dn = lower[i], lower[i + 1]
+        for q in range(n_in):
+            quads.append([up[q], up[(q + 1) % n_in], dn[(q + 1) % n_in], dn[q]])
+    Q = np.array(quads, dtype=np.int64)
+    P = np.vstack(pts) if pts else np.zeros((0, 3))
+    allx = np.vstack([xyz, P])
+    # a light smoothing of the band's own new nodes (each to the mean of its neighbours, in the plate's plane)
+    nb: dict[int, set[int]] = {}
+    for q in Q:
+        for k_ in range(4):
+            nb.setdefault(int(q[k_]), set()).update((int(q[k_ - 1]), int(q[(k_ + 1) % 4])))
+    free = [v for v in nb if v >= base]
+    for _ in range(BAND_SMOOTH):
+        for v in free:
+            m_ = allx[list(nb[v])].mean(axis=0)
+            allx[v] = m_ - float((m_ - C) @ n) * n
+    # turned as the plate's normal
+    nq = np.cross(allx[Q[:, 1]] - allx[Q[:, 0]], allx[Q[:, 3]] - allx[Q[:, 0]])
+    flip = nq @ n < 0
+    Q[flip] = Q[flip][:, ::-1]
+    return allx[base:], Q
+
+
 def polar_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: dict[int, float], mm: float,
                 cuts: set[int] | None = None, cells_out: set[int] | None = None, hole_size=None,
                 low_mm: float | None = None, high_mm: float | None = None, no_polar: frozenset = frozenset(),
-                made_out: set[int] | None = None
+                made_out: set[int] | None = None, bands_out: list | None = None,
+                why_where: dict[str, list[int]] | None = None
                 ) -> tuple[list[Washer], dict[str, int], list[Washer], dict[int, int], set[int]]:
     """SHMESH-49: the round flat faces whose holes all have washers on one bolt circle, cut into rings and spokes (see
     POLAR). A face sharing an edge a line would end on, or whose cells would come out under CELL_MIN face sizes, or
@@ -1562,6 +1732,9 @@ def polar_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
 
     def no(reason: str) -> None:
         why[reason] = why.get(reason, 0) + 1
+        if why_where is not None:
+            # the record says which face each reason came from (SHMESH-48f)
+            why_where.setdefault(reason, []).append(int(tag_of.get(t, -1)))
 
     occ = gmsh.model.occ
     for t, ws in sorted(by_face.items()):
@@ -1820,6 +1993,15 @@ def polar_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
             cells_out.update(new)
         _remove_loose(gmsh, {c for got in omap[1:] for d, c in got if d == 1})
         curves = sorted({abs(int(c)) for s in new for _d, c in gmsh.model.getBoundary([(2, s)], oriented=False)})
+        if bands_out is not None and POLAR_BAND and Ri > 0 and not inner_shared and start >= r1 - 1e-9:
+            # SHMESH-49l: the band round the central opening, meshed in rings (band_mesh) once its ring is counted
+            for s_ in new:
+                bl = [abs(int(c)) for _d, c in gmsh.model.getBoundary([(2, s_)], oriented=False)]
+                on_in = [c for c in bl if np.all(np.abs(np.linalg.norm(_samples(gmsh, c, 4) - C, axis=1) - Ri)
+                                                  <= 1e-4 * Ri)]
+                if on_in and len(_curve_loops(gmsh, s_)[1]) == 2:
+                    bands_out.append(Band(face=s_, owner=k, centre=C, normal=n_face, inner=on_in,
+                                          outer=[c for c in bl if c not in on_in], r_in=Ri))
         on_circle: set[int] = set()
         for _a, w in ang:
             R = R_of[id(w)]
