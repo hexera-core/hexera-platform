@@ -141,11 +141,33 @@ def _abandoned(packages: tuple[PackageVerdict, ...], defects) -> bool:
 
     Both exist so that a difference between this driver and the baseline is attributable to how
     the packages were authored - which is the only reason `loop.py` is kept alive.
+
+    THE KEY IS THE OPERATION, NOT THE PACKAGE, and that is the whole of this function's fidelity
+    to the baseline. `loop._abandoned` reads `not v.kept` off the session log, so an attempt that
+    failed on a target marks it however the run went on. Keying on the package instead would let a
+    rolled-back operation inside a COMMITTED package contribute nothing - the package shipped, so
+    its failure would be invisible - and a run that tried and failed on a warning would be handed
+    to a customer as `resolved`, which reads as "repaired". The divergence flatters this driver,
+    which is exactly the corruption the retained baseline exists to detect, so:
+
+    * EVERY OPERATION THAT DID NOT SURVIVE is tried: one that rolled itself back, and every
+      operation of a package that was discarded whole (a `kept` operation inside a reverted
+      package left nothing behind either).
+    * MINUS WHAT A COMMITTING PACKAGE RECLASSIFIED. Reclassification is a discharge under spec
+      decision 2 - the defect remains, explained, with its rationale in the report - and it is
+      the ONLY thing that excuses a survivor at a tried fingerprint. `PackageVerdict.reclassified`
+      is already the intersection of the predicate's claim with what the scoped scan still found,
+      so this credits relabelling that really discharged something rather than what was asked for.
+      A reverted package reclassified nothing: its geometry and its claim were both thrown away.
     """
-    tried = {fingerprint for verdict in packages if not verdict.committed
-             for op in verdict.verdicts if op.op != HEAL_OP
+    tried = {fingerprint for verdict in packages
+             for op in verdict.verdicts
+             if op.op != HEAL_OP and not (op.kept and verdict.committed)
              for fingerprint in op.targets}
-    return any(d.fingerprint in tried for d in _judged(defects))
+    discharged = {fingerprint for verdict in packages if verdict.committed
+                  for fingerprint in verdict.reclassified}
+    return any(d.fingerprint in tried and d.fingerprint not in discharged
+               for d in _judged(defects))
 
 
 def _terminal(session: RepairSession, defects, *, escalated, packages,

@@ -32,7 +32,11 @@ _TOLERANCE_MM = 0.1
 #: Two defects 100 mm apart on a part whose diagonal is 200 mm. `decompose` merges boxes within
 #: 1% of the diagonal (2 mm), so 100 mm apart is two regions and the fixture is only evidence of
 #: anything if it stays that way.
-_BOXES = {"a": (0.0, 1.0), "b": (100.0, 101.0)}
+#: `z` sits 1 mm from `a`, INSIDE that 2 mm merge radius, so `a` and `z` are ONE region. That is
+#: what the two-defects-in-one-region probes below need, and it is only evidence of anything while
+#: `a`/`b` stay apart and `a`/`z` stay together. No key may be a prefix of another: the double part
+#: below reads "has this operation been applied" out of the shape's name.
+_BOXES = {"a": (0.0, 1.0), "b": (100.0, 101.0), "z": (1.5, 2.5)}
 
 
 class _Clock:
@@ -46,7 +50,7 @@ class _Clock:
 def _defect(key: str, severity=DefectSeverity.error) -> EntityDefect:
     low, high = _BOXES[key]
     return EntityDefect(code=DefectCode.small_edge, severity=severity,
-                        entity_type="edge", entity_index=1 if key == "a" else 2,
+                        entity_type="edge", entity_index={"a": 1, "b": 2, "z": 3}[key],
                         message=f"a short edge at {low}", fingerprint=f"edge:{key}",
                         location={"bbox_min": [low, low, low], "bbox_max": [high, high, high]})
 
@@ -541,3 +545,92 @@ def test_a_package_too_large_for_what_the_run_has_left_is_not_started():
     assert run.packages == ()
     assert part.ops["a"].tolerances == []          # nothing was applied
     assert run.stopped_because == "op_budget"
+
+
+# `_abandoned` KEYS ON THE OPERATION, AS THE BASELINE DOES. The two probes below are run through
+# the whole loop rather than against the helper, because what was wrong was not the predicate but
+# which log the predicate was read off: a package-level key makes a failed operation inside a
+# COMMITTED package invisible, and the resulting divergence from `loop.py` flatters this driver on
+# exactly the fixtures a benchmark would score.
+
+
+def _mixed_package(part, *, reclassify: bool):
+    """ONE package over ONE region: operation A clears `edge:a`, operation B fails on `edge:z`.
+
+    The predicate claims only what A does, so the package COMMITS with a rolled-back operation
+    inside it - the shape this file could not otherwise produce, and the only shape in which a
+    package-level key and an operation-level key disagree.
+    """
+
+    def author(region, defects):
+        cleared = frozenset({"edge:a"})
+        predicate = Predicate(
+            cleared=cleared,
+            reclassified=frozenset({"edge:z"}) if reclassify else frozenset(),
+            unchanged=frozenset(), max_area_delta_mm2=0.0, max_volume_delta_mm3=0.0)
+        plan = ({"op": part.ops["a"], "defect_code": DefectCode.small_edge,
+                 "targets": (EntityRef(entity_type="edge", fingerprint="edge:a",
+                                       entity_index=1),)},
+                {"op": part.ops["nothing"], "defect_code": DefectCode.small_edge,
+                 "targets": (EntityRef(entity_type="edge", fingerprint="edge:z",
+                                       entity_index=3),)})
+        return TargetPackage(region=region, intent="clear edge:a", plan=plan,
+                             predicate=predicate,
+                             budget=PackageBudget(max_ops=4, timeout_s=1000.0, model_calls=0,
+                                                  deviation_mm=0.0))
+
+    return author
+
+
+def test_an_operation_that_failed_inside_a_committed_package_still_blocks_resolved():
+    """THE CRITICAL. `loop._abandoned` reads `not v.kept` off the session log, so an attempt that
+    failed on a warning marks that fingerprint whatever the run did next. A package-level key
+    loses it: the package committed, so its rolled-back operation contributes nothing, and the
+    customer is told "Repaired within the conservative caps" about geometry the run tried and
+    failed on. The baseline, handed this identical operation log, reports `_abandoned` and
+    summarises a partial repair - and a silent divergence in the direction that flatters this
+    driver is what the retained `loop.py` exists to catch (spec anti-goal: losing attribution).
+    """
+    part = _Part(keys=("a", "z"), severity=DefectSeverity.warning)
+    run = _run(part, _mixed_package(part, reclassify=False))
+
+    # The shape the probe needs: one region, one committed package, one failed operation in it.
+    assert len(run.regions) == 1
+    assert [p.status for p in run.packages] == ["committed"]
+    assert [v.status for v in run.packages[0].verdicts] == ["kept", "rolled_back"]
+    assert run.packages[0].verdicts[1].reason == "target_remains"
+    assert [d.fingerprint for d in run.defects_after] == ["edge:z"]
+
+    # And the ruling: a warning this run tried and failed on is not a repaired part.
+    assert run.stopped_because == REGIONS_EXHAUSTED
+    assert run.resolved is False
+
+
+def test_a_reclassified_survivor_does_not_block_resolved():
+    """THE CONVERSE, and the one legitimate discharge. Reclassification is spec decision 2: the
+    defect remains in the report with its rationale, explained rather than hidden, so a survivor
+    the committing package's predicate reclassified must not read as abandoned. `reclassified` on
+    the verdict is already the intersection of the claim with what the scoped scan still found,
+    so this credits relabelling that really discharged something.
+    """
+    part = _Part(keys=("a", "z"), severity=DefectSeverity.warning)
+    run = _run(part, _mixed_package(part, reclassify=True))
+
+    assert [p.status for p in run.packages] == ["committed"]
+    assert run.packages[0].reclassified == frozenset({"edge:z"})
+    assert [d.fingerprint for d in run.defects_after] == ["edge:z"]
+    assert run.stopped_because == "resolved"
+    assert run.resolved is True
+
+
+def test_a_kept_operation_discarded_with_its_package_abandons_its_targets():
+    """Every operation of a non-committed package was discarded whole, so a `kept` verdict inside
+    one left nothing behind either - the same reading `as_repair_run` restamps the log with."""
+    from meshpipeline.cad.repair.region_loop import _abandoned
+
+    discarded = PackageVerdict(
+        region_index=0, status="reverted", reason="volume moved",
+        verdicts=(OpVerdict(op="fix_a", targets=("edge:a",), defect_code="small_edge",
+                            status="kept"),))
+
+    assert _abandoned((discarded,), (_defect("a", DefectSeverity.warning),)) is True
