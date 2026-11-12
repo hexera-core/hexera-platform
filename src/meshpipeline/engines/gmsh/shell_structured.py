@@ -1680,15 +1680,20 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
             # a line that ends inside an edge the face shares with another face cuts that edge: the other face is cut
             # with it (at that point only), else it would keep the edge whole - a crack at the junction
             hit: set[int] = set()
+            # SHMESH-48l: each trial curve sampled once (a joined web's thousands of curves were sampled again for
+            # every shared edge and every ring: most of the time of a mesh)
+            smp = {x: _samples(gmsh, x, 4) for x in trial}
             if shared:
                 from scipy.spatial import cKDTree
 
+                all_pts = np.vstack([smp[x] for x in trial])
+                trial_mass = np.array([float(gmsh.model.occ.getMass(1, x)) for x in trial])
                 for c in shared:
                     tree = cKDTree(_samples(gmsh, c, 256))
                     full = float(gmsh.model.occ.getMass(1, c))
-                    for x in trial:
-                        if tree.query(_samples(gmsh, x, 4))[0].max() <= 1e-3 * h + full / 256 and                             float(gmsh.model.occ.getMass(1, x)) < (1 - 1e-6) * full:
-                            hit.add(c)
+                    far = tree.query(all_pts)[0].reshape(len(trial), -1).max(axis=1)
+                    if bool(np.any((far <= 1e-3 * h + full / 256) & (trial_mass < (1 - 1e-6) * full))):
+                        hit.add(c)
             # the pieces of the lines inside the face (straight: their two ends), to cut it and its neighbours with
             outline = cKDTree(np.vstack([_samples(gmsh, c, 64) for cl in loops for c in cl])) if hit else None
             pieces: list[tuple[np.ndarray, np.ndarray]] = []
@@ -1696,7 +1701,7 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                 for x in trial:
                     if gmsh.model.getType(1, x) != "Line":
                         continue
-                    q = _samples(gmsh, x, 4)
+                    q = smp[x]
                     if outline.query(q[2])[0] > 1e-3 * h:
                         pieces.append((q[0], q[-1]))
             spoilt = False
@@ -1715,7 +1720,7 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                 if w.corners:
                     continue
                 R = p[2] * w.r if p is not None else w.R
-                on_ring = [c for c in trial if np.all(np.abs(np.linalg.norm(_samples(gmsh, c, 4) - w.centre, axis=1) - R)
+                on_ring = [c for c in trial if np.all(np.abs(np.linalg.norm(smp[c] - w.centre, axis=1) - R)
                                                       <= 1e-4 * R)]
                 if len(on_ring) != (4 if p is not None else 1):
                     small = True
@@ -1812,6 +1817,7 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                     if cell is None:
                         raise ValueError("a square hole was not found in its box")
                     w.face, w.hole, w.in_box = cell[0], cell[1], True
+            smp_c = {c: _samples(gmsh, c, 4) for c in curves}       # (sampled once, SHMESH-48l)
             for w, p in zip(ws, plans, strict=True):
                 if w.corners:
                     continue
@@ -1820,7 +1826,7 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                 ring_c: list[int] = []
                 hole_c: list[int] = []
                 for c in curves:
-                    d = np.linalg.norm(_samples(gmsh, c, 4) - w.centre, axis=1)
+                    d = np.linalg.norm(smp_c[c] - w.centre, axis=1)
                     if np.all(np.abs(d - w.r) <= CIRCLE_TOL * w.r):
                         hole_c.append(c)
                     elif np.all(np.abs(d - R) <= tol):

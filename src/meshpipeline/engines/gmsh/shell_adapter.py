@@ -1025,14 +1025,18 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
         unmapped = 0
         no_cut: set[int] = set()
         refused: dict[int, dict] = {}
+        passes: list[list] = []             # SHMESH-48l: each whole mesh made - what followed it, its seconds
         while True:
+            t_pass = time.monotonic()
             try:
                 mesh, applied = _mesh_once(Path(brep), record, owners, float(mm_per_unit), log, target=target,
                                            hole_before=tuple((tuple(c), e) for c, e in redrawn),
                                            correction=correction, requirements=requirements, unmap=frozenset(unmap),
                                            no_cut=frozenset(no_cut), check_maps=unmapped < UNMAP_ROUNDS,
                                            judge_faces=True)
+                passes.append(["made", round(time.monotonic() - t_pass, 1)])
             except _NoCut as nc:
+                passes.append(["grids left out", round(time.monotonic() - t_pass, 1)])
                 # SHMESH-47b: those faces' grids left out (their joined faces whole); counts as a round of SHMESH-40
                 no_cut |= nc.faces
                 refused.update(nc.why)
@@ -1043,6 +1047,7 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
                     brep, reseated, redrawn, redraw_pass = unseated, 0, [], redraw_off
                 continue
             except _Unmap as u:
+                passes.append(["grids meshed free", round(time.monotonic() - t_pass, 1)])
                 # SHMESH-40: a grid that came out past the solver's limits is meshed free (the rest mapped again)
                 unmap |= u.faces
                 unmapped += 1
@@ -1083,6 +1088,7 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
                 if n2:
                     brep, reseated, redrawn = seated, n2, red2
                     unmap, unmapped = set(), 0
+                    passes[-1][0] = "holes drawn again"
                     continue
             past = applied.pop("_past_spots", [])
             past_n = applied.pop("_past_n", 0)
@@ -1094,12 +1100,14 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
                 if not past:
                     break
                 own = own + past
+                t_pass = time.monotonic()
                 try:
                     again, applied2 = _mesh_once(Path(brep), record, owners, float(mm_per_unit), None,
                                                  hole_before=tuple((tuple(c), e) for c, e in redrawn),
                                                  target=target, correction=correction, requirements=requirements,
                                                  own_spots=tuple(own), unmap=frozenset(unmap),
                                                  no_cut=frozenset(no_cut), check_maps=False)
+                    passes.append(["finer at spots past the solver's limits", round(time.monotonic() - t_pass, 1)])
                 except (ValueError, _Periodic) as exc:
                     logger.info("shell mesh: the spots past the solver's limits were not meshed again (%s)", exc)
                     break
@@ -1121,6 +1129,8 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
                                   "you asked for: at your size some elements there were past the solver's own limits "
                                   "(SHMESH-31).")
             applied["quality"]["resplined_faces"] = resplined
+            # SHMESH-48l: every whole mesh this path made, in order (what followed it, seconds)
+            applied["quality"]["passes"] = passes
             applied["quality"].setdefault("structure", {})["grids_freed"] = len(unmap)
             applied["quality"]["structure"]["holes_redrawn"] = reseated
             # SHMESH-48f/49g: every face a check refused (its grid or its rings and strips), why, with its numbers
