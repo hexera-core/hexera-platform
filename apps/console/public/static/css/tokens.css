@@ -144,6 +144,15 @@ html,body{height:100%;font-family:var(--sans);font-size:14px;line-height:1.65;
   -webkit-text-size-adjust:100%;-webkit-font-smoothing:antialiased}
 #app{display:flex;flex-direction:column;height:100vh}
 
+/* THE LAPTOP STEP. The scale above is tuned for a desktop monitor; on a 13-15" panel it reads
+   a notch too large and nothing was reining it in. Below 1600px every --fs token drops one
+   step and the rem base follows, so px-sized text, rem-sized titles and rem spacing all
+   shrink in the same proportion. */
+@media (max-width:1600px){
+  :root{--fs-xs:10px;--fs-sm:11px;--fs-md:12px;--fs-base:13px;--fs-lg:14px;--fs-xl:16px}
+  html,body{font-size:13px}
+}
+
 .num{font-variant-numeric:tabular-nums;font-feature-settings:'tnum' 1}
 
 :where(a,button,input,textarea,select,[tabindex]):focus-visible{
