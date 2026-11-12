@@ -936,7 +936,7 @@ PARALLEL_DEG = 1.0
 #: SHMESH-48q: a free box's cell between its ring (n elements round) and its box is our own one row of quads, two to
 #: one (box_band): each box side n/4 + 2 segments (asked of the grid's counts, never forced), the ring's quarter facing
 #: the side's middle n/4, a kite at each corner. Where the counts or the quads' shapes do not suit, gmsh's paving stays
-FREE_BAND = False
+FREE_BAND = True
 #: ... a box side asks for its count only where its segments come out between these face sizes
 BAND_SEG = (0.6, 1.4)
 #: ... and with no user limits its quads stay inside these
