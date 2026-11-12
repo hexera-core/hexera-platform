@@ -1779,12 +1779,13 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                 if not w.box or w.annulus not in ring_of or w.box not in tag_of:
                     continue
                 try:
-                    quads_x = ST.box_band(gmsh, w, index, xyz, mm, lim, high)
+                    pts_x, quads_x = ST.box_band(gmsh, w, index, xyz, mm, lim, high)
                 except ValueError as exc:
                     w.info["box_band"] = str(exc)[:200]
                     continue
                 w.info["box_band"] = "made"
                 box_done.add(w.box)
+                xyz = np.vstack([xyz, pts_x])
                 quads.append(quads_x)
                 q_face += [w.owner] * len(quads_x)
         band_done: set[int] = set()

@@ -96,13 +96,16 @@ def test_a_side_that_cannot_reach_a_pin_moves_clear_of_it(monkeypatch):
     """SHMESH-48p, a real top plate: a box side 2.96 mm from the end of a slanted outline piece (a pin it may not
     reach) left a 2.96 mm cell edge there ("under 4 mm"); now it moves clear of the pin inside its limits, and a
     "clear" value (a pin no line may stand on) only pushes lines off, never holds one."""
-    vals = [(91.62, "pin"), (94.58, "0")]
+    vals = [(91.62, "clear"), (94.58, "0")]
     limits = {"0": (92.0, 96.5)}
     got = ST._cluster(vals, 7.5, limits, min_gap=4.2)
     side = next(g for g in got if g[2] == [0])
     assert abs(side[0] - (91.62 + 4.2)) < 1e-9
     # its limits do not allow it: it stays
     side = next(g for g in ST._cluster(vals, 7.5, {"0": (92.0, 95.5)}, min_gap=4.2) if g[2] == [0])
+    assert side[0] == 94.58
+    # a pin (48o) the side may not reach is left as it was (block_faces turns it to "clear" where it matters)
+    side = next(g for g in ST._cluster([(91.62, "pin"), (94.58, "0")], 7.5, limits, min_gap=4.2) if g[2] == [0])
     assert side[0] == 94.58
     # a "clear" value never joins a side, it only pushes it off
     got = ST._cluster([(10.0, "clear"), (11.0, "0")], 7.5, {"0": (5.0, 20.0)}, min_gap=4.2)

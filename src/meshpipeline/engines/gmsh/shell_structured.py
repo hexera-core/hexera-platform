@@ -927,15 +927,16 @@ CELL_MIN = 0.4
 GAP_MIN = 1.05
 #: SHMESH-48o: the ends of outline pieces across the frame hold the lines near them
 OUTLINE_PINS = True
-#: SHMESH-48p: a box side that cannot stand on such a pin moves clear of it (GAP_MIN * CELL_MIN), inside its limits;
-#: where it cannot, no line of the other axis runs through the pin either (that line keeps clear of it instead)
+#: SHMESH-48p: where a line stands ON such a pin and a line of the other axis is nearer the pin than GAP_MIN * CELL_MIN
+#: (a short edge along the first from the pin), the near line moves clear of the pin inside its limits; where it
+#: cannot, the line on the pin keeps clear of it instead
 PIN_CLEAR = True
 #: ... straight edges within PARALLEL_DEG of the face's frame count as running along it
 PARALLEL_DEG = 1.0
 #: SHMESH-48q: a free box's cell between its ring (n elements round) and its box is our own one row of quads, two to
 #: one (box_band): each box side n/4 + 2 segments (asked of the grid's counts, never forced), the ring's quarter facing
 #: the side's middle n/4, a kite at each corner. Where the counts or the quads' shapes do not suit, gmsh's paving stays
-FREE_BAND = True
+FREE_BAND = False
 #: ... a box side asks for its count only where its segments come out between these face sizes
 BAND_SEG = (0.6, 1.4)
 #: ... and with no user limits its quads stay inside these
@@ -943,6 +944,13 @@ BAND_AIMS = (("quad", "min_angle_quad", ">=", 40.0, 30.0, 0.0), ("quad", "max_an
              ("quad", "aspect", "<=", 4.0, 6.0, 0.0))
 #: ... of which at most BAND_SPARE quads may stand between a target and its outer limit (none past one)
 BAND_SPARE = 2
+#: ... a side with 2 (4) segments more than n/4 + 2 (a count the grid holds, e.g. a strip's) takes a second row inside:
+#: a kite at its corner's ring node for each pair; its new nodes smoothed BAND_SMOOTH times. OFF: as placed, the inner
+#: row's quads come out folded (Jacobian under 0, angles to 173 degrees) - not yet a usable template
+BAND_TWO = False
+BAND_SMOOTH = 4
+#: ... and the sides ask the grid for n/4 + 2 (off: the band takes the counts the grid gives)
+BAND_WISH = True
 
 
 def _boxed(r_mm: float, hole_mm: float, h_mm: float, low_mm: float | None = None,
@@ -1077,11 +1085,10 @@ def _cluster(values: list[tuple[float, str]], tol: float,
                 spans[i] = (spans[i][0], a - down)
                 spans[i + 1] = (b + up, spans[i + 1][1])
     if PIN_CLEAR and min_gap > 0:
-        # SHMESH-48p: a box side kept off a pin it may not reach (the end of a slanted outline piece) but nearer it
-        # than min_gap cut a sliver there ("a cell edge 2.96 mm, under 4 mm"): it moves clear of the pin inside its
-        # limits, nearer no other line than it was (nor past one); else it stays (block_faces then keeps the other
-        # axis's line off the pin)
-        rep = [x for i, (x, _e, _s) in enumerate(out) if only_pin[i]] + clear
+        # SHMESH-48p: a box side nearer than min_gap to a "clear" value (a pin it may not reach, the end of a slanted
+        # outline piece, where block_faces found a line of the other axis standing on it: "a cell edge 2.96 mm, under
+        # 4 mm") moves clear of it inside its limits, nearer no other line than it was (nor past one); else it stays
+        rep = clear
         eps_ = 1e-9 * max(1.0, min_gap)
         for i, (a, ea, sa) in enumerate(out):
             near = [p for p in rep if eps_ < abs(p - a) < min_gap - eps_]
@@ -1145,13 +1152,13 @@ def _mark_box(gmsh, w: Washer, corners: list[np.ndarray], cells: list[int], h: f
             if min(np.linalg.norm(pa - a) + np.linalg.norm(pb - b), np.linalg.norm(pa - b) + np.linalg.norm(pb - a)) > tol:
                 continue
             seg = float(gmsh.model.occ.getMass(1, c)) / k
-            if gmsh.model.getType(1, c) == "Line" and BAND_SEG[0] * h <= seg <= seg_hi:
+            if BAND_WISH and gmsh.model.getType(1, c) == "Line" and BAND_SEG[0] * h <= seg <= seg_hi:
                 wish[c] = k
             break
 
 
 def box_band(gmsh, w: Washer, index: np.ndarray, xyz: np.ndarray, mm: float, limits=None,
-             high_mm: float | None = None) -> np.ndarray:
+             high_mm: float | None = None) -> tuple[np.ndarray, np.ndarray]:
     """SHMESH-48q: a free box's own mesh between its ring and its box, in place of gmsh's paving: one row of quads, two
     to one. Each box side carries n/4 + 2 segments; the ring's quarter facing it (n/4 segments, from the ring node at
     the box corner's angle) is joined to the side's middle n/4 segments, and each corner is a kite (the ring node at
@@ -1173,8 +1180,8 @@ def box_band(gmsh, w: Washer, index: np.ndarray, xyz: np.ndarray, mm: float, lim
     box = _loop_nodes(gmsh, outer[0], index)
     n, m = w.n, w.n // 4
     N = len(box)
-    if len(ring) != n or N != n + 8:
-        raise ValueError(f"its ring and box carry {len(ring)} and {N} nodes, not {n} and {n + 8}")
+    if len(ring) != n or N < n + 8:
+        raise ValueError(f"its ring and box carry {len(ring)} and {N} nodes, not {n} and {n + 8} or more")
     c = w.centre * mm
     e1 = w.xaxis
     e2 = np.cross(w.normal, e1)
@@ -1198,22 +1205,80 @@ def box_band(gmsh, w: Washer, index: np.ndarray, xyz: np.ndarray, mm: float, lim
     if len(cidx) != 4:
         raise ValueError("the box's corners are not four nodes")
     gaps = [(cidx[(k + 1) % 4] - cidx[k]) % N for k in range(4)]
-    if any(g != m + 2 for g in gaps):
-        raise ValueError(f"its box sides carry {gaps} segments, not {m + 2} each")
+    # each side's extra segments over n/4 + 2, in pairs: one kite each in a row inside (two rows, BAND_TWO)
+    fans = [(g - m - 2) // 2 for g in gaps]
+    if any(g - m - 2 < 0 or (g - m - 2) % 2 for g in gaps) or any(f > 0 for f in fans) and (
+            not BAND_TWO or any(f > 2 for f in fans)):
+        raise ValueError(f"its box sides carry {gaps} segments, not {m + 2} (or {m + 2} + 2 a kite) each")
 
     def off(x: float) -> float:
         return abs((x + math.pi) % (2 * math.pi) - math.pi)
 
     # the ring node at each corner's angle (one turn of the ring for all four)
     first = min(range(n), key=lambda s: (sum(off(a_r[(s + k * m) % n] - a_b[cidx[k]]) for k in range(4)), s))
+    sides = [[int(box[(cidx[k] + q) % N]) for q in range(gaps[k] + 1)] for k in range(4)]
+    arcs = [[int(ring[(first + k * m + j) % n]) for j in range(m + 1)] for k in range(4)]
     quads: list[list[int]] = []
-    for k in range(4):
-        i0 = (first + k * m) % n
-        side = [int(box[(cidx[k] + q) % N]) for q in range(m + 3)]
-        quads.append([int(ring[i0]), side[1], side[0], int(box[(cidx[k] - 1) % N])])
-        for j in range(m):
-            quads.append([int(ring[(i0 + j) % n]), int(ring[(i0 + j + 1) % n]), side[j + 2], side[j + 1]])
+    new: list[np.ndarray] = []
+    base = len(xyz)
+    if not any(fans):
+        # one row: the ring's quarter to the side's middle, a kite at each corner (its tip the corner)
+        for k in range(4):
+            quads.append([arcs[k][0], sides[k][1], sides[k][0], sides[k - 1][-2]])
+            for j in range(m):
+                quads.append([arcs[k][j], arcs[k][j + 1], sides[k][j + 2], sides[k][j + 1]])
+    else:
+        # two rows: an inner row of new nodes (a node on each corner's diagonal, then each side's), the ring to it
+        # with a kite at a ring node for each pair of extra segments, it to the box with a kite at each corner
+        def add(p_: np.ndarray) -> int:
+            new.append(p_)
+            return base + len(new) - 1
+
+        corner_mid = [add(0.5 * (xyz[arcs[k][0]] + xyz[sides[k][0]])) for k in range(4)]
+        inner: list[list[int]] = []
+        for k in range(4):
+            M = gaps[k] - 2
+            row = [corner_mid[k]]
+            for i in range(1, M):
+                tau = i / M
+                pa = xyz[arcs[k][0]] + tau * (xyz[arcs[k][-1]] - xyz[arcs[k][0]])
+                ra = pa - c
+                ra = ra / max(float(np.linalg.norm(ra)), 1e-300) * float(w.R) * mm
+                row.append(add(0.5 * (c + ra) + 0.5 * xyz[sides[k][i + 1]]))
+            row.append(corner_mid[(k + 1) % 4])
+            inner.append(row)
+        for k in range(4):
+            quads.append([corner_mid[k], sides[k][1], sides[k][0], sides[k - 1][-2]])
+            for i in range(gaps[k] - 2):
+                quads.append([inner[k][i], inner[k][i + 1], sides[k][i + 2], sides[k][i + 1]])
+            # the kites stand on the ring nodes at the side's corners, where the band is widest (the first corner
+            # round, then the second)
+            at = ({0, m} if fans[k] == 2 else {0}) if fans[k] else set()
+            p = 0
+            if 0 in at:
+                quads.append([arcs[k][0], inner[k][2], inner[k][1], inner[k][0]])
+                p = 2
+            for j in range(m):
+                quads.append([arcs[k][j], arcs[k][j + 1], inner[k][p + 1], inner[k][p]])
+                p += 1
+                if j + 1 in at:
+                    quads.append([arcs[k][j + 1], inner[k][p + 2], inner[k][p + 1], inner[k][p]])
+                    p += 2
+            if p != gaps[k] - 2:
+                raise ValueError("its inner row did not close")
     Q = np.array(quads, dtype=np.int64)
+    if new:
+        xyz = np.vstack([xyz, np.array(new)])
+        # (the new nodes smoothed lightly: each to the mean of its neighbours, in the face's plane)
+        nb: dict[int, set[int]] = {}
+        for q in Q:
+            for k_ in range(4):
+                nb.setdefault(int(q[k_]), set()).update((int(q[k_ - 1]), int(q[(k_ + 1) % 4])))
+        nrm = w.normal / max(float(np.linalg.norm(w.normal)), 1e-300)
+        for _ in range(BAND_SMOOTH):
+            for v_ in range(base, len(xyz)):
+                m_ = xyz[sorted(nb[v_])].mean(axis=0)
+                xyz[v_] = m_ - float((m_ - c) @ nrm) * nrm
     meas = SQ.quad_measures(xyz, Q, extra=True)
     if SQ._quad_past(meas).any():
         raise ValueError("a quad past the solver's own limits")
@@ -1225,7 +1290,7 @@ def box_band(gmsh, w: Washer, index: np.ndarray, xyz: np.ndarray, mm: float, lim
         raise ValueError(f"{int((score > 0).sum())} of its {len(Q)} quads outside the quad lines")
     if high_mm is not None and float(meas["max_edge"].max()) > float(high_mm):
         raise ValueError("an edge over the longest edge asked")
-    return Q
+    return xyz[base:], Q
 
 
 def _face_plan(gmsh, t: int, ws: list[Washer], h_mm: float, mm: float, hole_size, low_mm: float | None,
@@ -1780,13 +1845,21 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                 # SHMESH-48p: a line nearer an outline pin than gap_ (it could neither stand on it nor move clear)
                 # leaves a short cell edge along the other axis's line through the pin ("a cell edge 2.96 mm"): that
                 # line now keeps clear of the pin instead of standing on it
+                # (only where a line of the other axis stands ON the pin: there the short edge runs along it from the
+                # pin to the near line - first the near line moves clear, else the line on the pin does)
                 turn = set()
                 for k_, pt in enumerate(fp["pins"]):
                     for i_, ax in enumerate(("u", "v")):
                         other = 1 - i_
-                        if (k_, other) in turned or (other == 0 and jt is not None):
+                        o_ax = ("u", "v")[other]
+                        near = any(1e-6 * h < abs(x - pt[i_]) < gap_ - 1e-6 * h for x in lines[ax])
+                        held = any(abs(x - pt[other]) <= 1e-6 * h for x in lines[o_ax])
+                        if not (near and held):
                             continue
-                        if any(1e-6 * h < abs(x - pt[i_]) < gap_ - 1e-6 * h for x in lines[ax]):
+                        if (k_, i_) not in turned:
+                            if not (i_ == 0 and jt is not None):
+                                turn.add((k_, i_))
+                        elif (k_, other) not in turned and not (other == 0 and jt is not None):
                             turn.add((k_, other))
                 if not turn:
                     break
