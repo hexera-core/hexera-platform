@@ -92,6 +92,25 @@ def test_lines_kept_apart_move_apart_to_no_sliver():
     assert [g[0] for g in ST._cluster(vals, 5.0, limits)] == [10.0, 10.64]
 
 
+def test_a_side_that_cannot_reach_a_pin_moves_clear_of_it(monkeypatch):
+    """SHMESH-48p, a real top plate: a box side 2.96 mm from the end of a slanted outline piece (a pin it may not
+    reach) left a 2.96 mm cell edge there ("under 4 mm"); now it moves clear of the pin inside its limits, and a
+    "clear" value (a pin no line may stand on) only pushes lines off, never holds one."""
+    vals = [(91.62, "pin"), (94.58, "0")]
+    limits = {"0": (92.0, 96.5)}
+    got = ST._cluster(vals, 7.5, limits, min_gap=4.2)
+    side = next(g for g in got if g[2] == [0])
+    assert abs(side[0] - (91.62 + 4.2)) < 1e-9
+    # its limits do not allow it: it stays
+    side = next(g for g in ST._cluster(vals, 7.5, {"0": (92.0, 95.5)}, min_gap=4.2) if g[2] == [0])
+    assert side[0] == 94.58
+    # a "clear" value never joins a side, it only pushes it off
+    got = ST._cluster([(10.0, "clear"), (11.0, "0")], 7.5, {"0": (5.0, 20.0)}, min_gap=4.2)
+    assert len(got) == 1 and got[0][1:] == (False, [0]) and abs(got[0][0] - 14.2) < 1e-9
+    monkeypatch.setattr(ST, "PIN_CLEAR", False)
+    assert next(g for g in ST._cluster(vals, 7.5, limits, min_gap=4.2) if g[2] == [0])[0] == 94.58
+
+
 # ------------------------------------------------------------------------------------------- the measure
 def _grid(nx: int, ny: int) -> ShellMesh:
     xyz = np.array([[i, j, 0.0] for j in range(ny + 1) for i in range(nx + 1)], dtype=float)
@@ -734,6 +753,45 @@ def test_a_line_near_a_chamfers_end_does_not_cut_a_sliver(tmp_path, monkeypatch,
     small = [k for k in (s.get("not_gridded") or {}) if "a cell edge" in k]
     if not pins:
         assert small, s.get("not_gridded")
+        return
+    assert not s.get("not_gridded"), s.get("not_gridded")
+    assert applied["quality"]["valid"] and applied["quality"]["within_nastran"]
+    assert all(r["met"] is not False for r in applied["requirements"]["rows"]), applied["requirements"]["rows"]
+
+
+@pytest.mark.parametrize("clear", [False, True])
+def test_a_box_side_near_a_notchs_tip_moves_clear(tmp_path, monkeypatch, clear):
+    """SHMESH-48p, a real top plate: the end of a slanted outline piece held the box's bottom line on it (48o) while
+    the box's side, which could not reach it, stood 2.96 mm away: "a cell edge 2.96 mm, under 4 mm", the plate left
+    free. Here a V notch's tip stands 3 mm outside a 19.8 mm hole's box side, level with its bottom line; the side
+    now moves clear of the tip and the plate is gridded with every line met."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCylinder, BRepPrimAPI_MakePrism
+    from OCP.BRepTools import BRepTools
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt, gp_Vec
+
+    monkeypatch.setattr(ST, "PIN_CLEAR", clear)
+    A, B, T_ = 457.0, 406.0, 19.0
+    shape = BRepPrimAPI_MakeBox(gp_Pnt(-A / 2, -B / 2, 0), A, B, T_).Shape()
+    for x in (-114.0, 0.0, 114.0):
+        for y in (-171.1, 171.1):
+            shape = BRepAlgoAPI_Cut(shape, BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(x, y, -1), gp_Dir(0, 0, 1)), 9.9,
+                                                                    T_ + 2).Shape()).Shape()
+    tu, tv = -138.0, -192.24
+    poly = BRepBuilderAPI_MakePolygon()
+    for x, y in ((tu - 14.0, -B / 2 - 1), (tu + 11.0, -B / 2 - 1), (tu, tv)):
+        poly.Add(gp_Pnt(x, y, -1.0))
+    poly.Close()
+    shape = BRepAlgoAPI_Cut(shape, BRepPrimAPI_MakePrism(BRepBuilderAPI_MakeFace(poly.Wire()).Face(),
+                                                         gp_Vec(0, 0, T_ + 2)).Shape()).Shape()
+    rec, surf = ms_extract(shape)
+    brep = tmp_path / "notch.brep"
+    BRepTools.Write_s(surf, str(brep))
+    _mesh_, applied = _mesh(brep, rec, _criteria())
+    s = applied["quality"]["structure"]
+    if not clear:
+        assert [k for k in (s.get("not_gridded") or {}) if "a cell edge" in k], s.get("not_gridded")
         return
     assert not s.get("not_gridded"), s.get("not_gridded")
     assert applied["quality"]["valid"] and applied["quality"]["within_nastran"]

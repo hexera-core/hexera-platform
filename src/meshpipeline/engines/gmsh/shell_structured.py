@@ -916,6 +916,9 @@ CELL_MIN = 0.4
 GAP_MIN = 1.05
 #: SHMESH-48o: the ends of outline pieces across the frame hold the lines near them
 OUTLINE_PINS = True
+#: SHMESH-48p: a box side that cannot stand on such a pin moves clear of it (GAP_MIN * CELL_MIN), inside its limits;
+#: where it cannot, no line of the other axis runs through the pin either (that line keeps clear of it instead)
+PIN_CLEAR = True
 #: ... straight edges within PARALLEL_DEG of the face's frame count as running along it
 PARALLEL_DEG = 1.0
 
@@ -998,6 +1001,10 @@ def _cluster(values: list[tuple[float, str]], tol: float,
     out: list[tuple[float, bool, list[int]]] = []
     group: list[tuple[float, str]] = []
     span = (-math.inf, math.inf)
+    # (SHMESH-48p: a "clear" value - a pin no line may run through - joins nothing; lines only keep clear of it)
+    clear = [x for x, k in values if k == "clear"]
+    values = [(x, k) for x, k in values if k != "clear"]
+    only_pin: list[bool] = []
 
     def fits(kind: str, val: float) -> tuple[float, float]:
         if kind in ("edge", "pin"):
@@ -1015,6 +1022,7 @@ def _cluster(values: list[tuple[float, str]], tol: float,
         out.append((at, bool(edges), [int(k) for _x, k in group if k not in ("edge", "pin")]))
         free = not edges and not pins and limits is not None and span[0] <= span[1]
         spans.append((span[0], span[1]) if free else (at, at))
+        only_pin.append(bool(pins) and not edges and not out[-1][2])
 
     spans: list[tuple[float, float]] = []
     for val, kind in sorted(values) + [(math.inf, "")]:
@@ -1046,6 +1054,34 @@ def _cluster(values: list[tuple[float, str]], tol: float,
                 out[i], out[i + 1] = (a - down, ea, sa), (b + up, eb, sb)
                 spans[i] = (spans[i][0], a - down)
                 spans[i + 1] = (b + up, spans[i + 1][1])
+    if PIN_CLEAR and min_gap > 0:
+        # SHMESH-48p: a box side kept off a pin it may not reach (the end of a slanted outline piece) but nearer it
+        # than min_gap cut a sliver there ("a cell edge 2.96 mm, under 4 mm"): it moves clear of the pin inside its
+        # limits, nearer no other line than it was (nor past one); else it stays (block_faces then keeps the other
+        # axis's line off the pin)
+        rep = [x for i, (x, _e, _s) in enumerate(out) if only_pin[i]] + clear
+        eps_ = 1e-9 * max(1.0, min_gap)
+        for i, (a, ea, sa) in enumerate(out):
+            near = [p for p in rep if eps_ < abs(p - a) < min_gap - eps_]
+            if not sa or not near:
+                continue
+            want_lo = max((p + min_gap for p in near if p < a), default=-math.inf)
+            want_hi = min((p - min_gap for p in near if p > a), default=math.inf)
+            to = min(max(a, want_lo), want_hi)
+            if not (want_lo <= to <= want_hi and spans[i][0] - eps_ <= to <= spans[i][1] + eps_):
+                continue
+            if any(eps_ < abs(p - to) < min_gap - eps_ for p in rep):
+                continue
+            ok = True
+            for k, (x, _e2, _s2) in enumerate(out):
+                if k == i or only_pin[k]:
+                    continue
+                if (x - a) * (x - to) < 0 or abs(x - to) < min(abs(x - a), min_gap) - eps_:
+                    ok = False
+                    break
+            if ok:
+                out[i] = (to, ea, sa)
+                spans[i] = (to, to)
     return out
 
 
@@ -1098,6 +1134,7 @@ def _face_plan(gmsh, t: int, ws: list[Washer], h_mm: float, mm: float, hole_size
             if all(min(abs(a), abs(b)) <= tan_par * max(abs(a), abs(b)) for a, b in d):
                 in_grid[j] = pq
     vals: dict[str, list[tuple[float, str]]] = {"u": [], "v": []}
+    pins: list[tuple[float, float]] = []        # (the outline pins as points, SHMESH-48p)
     lo = np.array([math.inf, math.inf])
     hi = -lo
     cos_par = math.cos(math.radians(PARALLEL_DEG))
@@ -1122,6 +1159,7 @@ def _face_plan(gmsh, t: int, ws: list[Washer], h_mm: float, mm: float, hole_size
             for e_ in (q[0], q[-1]):
                 vals["u"].append((float(e_[0]), "pin"))
                 vals["v"].append((float(e_[1]), "pin"))
+                pins.append((float(e_[0]), float(e_[1])))
     boxes = []
     for j, (w, p) in enumerate(zip(ws, plans, strict=True)):
         cu, cv = uv(w.centre)
@@ -1192,7 +1230,7 @@ def _face_plan(gmsh, t: int, ws: list[Washer], h_mm: float, mm: float, hole_size
                 limits[str(4 * j + hi_s)] = (max(bx[hi_s] - shrink_, inner[hi_s] + need), bx[hi_s] + grow_)
     return {"h": h, "loops": loops, "outer": outer, "frame": (o, u, v), "uv": uv, "plans": plans,
             "square_uv": square_uv, "vals": vals, "lo": lo, "hi": hi, "boxes": boxes, "limits": limits,
-            "in_grid": in_grid}
+            "in_grid": in_grid, "pins": pins}
 
 
 #: SHMESH-47c: faces joined along their grids' lines (a channel's web and flanges, and the narrow flat strips between
@@ -1583,20 +1621,45 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
             h, loops, (o, u, v), uv = fp["h"], fp["loops"], fp["frame"], fp["uv"]
             plans, square_uv, vals, lo, hi = fp["plans"], fp["square_uv"], fp["vals"], fp["lo"], fp["hi"]
             boxes, limits = fp["boxes"], fp["limits"]
-            lines: dict[str, list[float]] = {"u": [], "v": []}
-            for ax in ("u", "v"):
-                if ax == "u" and jt is not None:
-                    # SHMESH-47c: a face joined to others along its frame's lines takes the lines across them all
-                    lines["u"] = list(jt[0])
-                    for sd, at in jt[1].items():
-                        boxes[sd // 4][sd % 4] = at
-                    continue
-                for at, edge, sides in _cluster(vals[ax], SNAP * h, limits if SNAP_LIMITS else None,
-                                                GAP_MIN * CELL_MIN * h):
-                    for sd in sides:
-                        boxes[sd // 4][sd % 4] = at
-                    if not edge and sides:
-                        lines[ax].append(at)
+            boxes0 = [list(bx) for bx in boxes]
+            turned: set[tuple[int, int]] = set()
+            gap_ = GAP_MIN * CELL_MIN * h
+            for _round in range(4 if PIN_CLEAR else 1):
+                for bx, bx0 in zip(boxes, boxes0, strict=True):
+                    bx[:] = bx0
+                lines: dict[str, list[float]] = {"u": [], "v": []}
+                for ax in ("u", "v"):
+                    if ax == "u" and jt is not None:
+                        # SHMESH-47c: a face joined to others along its frame's lines takes the lines across them all
+                        lines["u"] = list(jt[0])
+                        for sd, at in jt[1].items():
+                            boxes[sd // 4][sd % 4] = at
+                        continue
+                    for at, edge, sides in _cluster(vals[ax], SNAP * h, limits if SNAP_LIMITS else None, gap_):
+                        for sd in sides:
+                            boxes[sd // 4][sd % 4] = at
+                        if not edge and sides:
+                            lines[ax].append(at)
+                if not PIN_CLEAR:
+                    break
+                # SHMESH-48p: a line nearer an outline pin than gap_ (it could neither stand on it nor move clear)
+                # leaves a short cell edge along the other axis's line through the pin ("a cell edge 2.96 mm"): that
+                # line now keeps clear of the pin instead of standing on it
+                turn = set()
+                for k_, pt in enumerate(fp["pins"]):
+                    for i_, ax in enumerate(("u", "v")):
+                        other = 1 - i_
+                        if (k_, other) in turned or (other == 0 and jt is not None):
+                            continue
+                        if any(1e-6 * h < abs(x - pt[i_]) < gap_ - 1e-6 * h for x in lines[ax]):
+                            turn.add((k_, other))
+                if not turn:
+                    break
+                for k_, i_ in sorted(turn):
+                    ax = ("u", "v")[i_]
+                    vals[ax].remove((fp["pins"][k_][i_], "pin"))
+                    vals[ax].append((fp["pins"][k_][i_], "clear"))
+                    turned.add((k_, i_))
             reason = ""
             eps = 1e-6 * h
             for j, (w, p) in enumerate(zip(ws, plans, strict=True)):
