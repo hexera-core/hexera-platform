@@ -945,9 +945,12 @@ PIN_CLEAR = True
 TRIM_SHORT = True
 #: SHMESH-48x: a gridded face is set against its own free mesh (meshed free on the next pass, its grid back when the
 #: free mesh is no better) when more than GRID_SHORT of its elements are under the user's shortest edge, or it keeps
-#: more than max(GRID_TRIAS, GRID_TRIA_SHARE of its elements) triangles; it may keep up to twice the free mesh's
+#: more than max(GRID_TRIAS, GRID_TRIA_SHARE of its elements) triangles. It stays free only when the free mesh is better:
+#: the grid's short share over GRID_SHORT and over GRID_SHORT_RATIO x the free mesh's, or its triangles over
+#: max(GRID_TRIAS, GRID_TRIA_SHARE of its elements, twice the free mesh's) - either alone
 GRID_GUARD = True
 GRID_SHORT = 0.03
+GRID_SHORT_RATIO = 1.5
 GRID_TRIAS = 4
 GRID_TRIA_SHARE = 0.01
 TRIM_ROUNDS = 4

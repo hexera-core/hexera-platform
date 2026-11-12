@@ -2054,9 +2054,9 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
     seam_due = ST.RESEAT and any(not any(float(np.linalg.norm(np.asarray(c, dtype=float) - w.centre)) <= 0.25 * w.r
                                          for c, _e in hole_before) for w in gridded)
     if compare and judge_faces:
-        # SHMESH-48x: each grid refused for its short edges or triangles, now meshed free: its grid comes back when the
-        # free mesh is no better on that face (short: the free mesh over GRID_SHORT too; triangles: the grid's no
-        # more than max(GRID_TRIAS, GRID_TRIA_SHARE, 2 x the free mesh's))
+        # SHMESH-48x: each grid refused for its short edges or triangles, now meshed free: its grid comes back unless
+        # the free mesh is better on that face (short: the grid's share over GRID_SHORT and over GRID_SHORT_RATIO x the
+        # free mesh's; triangles: the grid's over max(GRID_TRIAS, GRID_TRIA_SHARE, 2 x the free mesh's))
         back: dict[int, dict] = {}
         for k_c, g_c in sorted(compare.items()):
             if k_c in grid_faces_made or "free_figures" in g_c:
@@ -2065,8 +2065,11 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
             g_c["free_figures"] = free_
             if not free_["elements"]:
                 continue
-            short_ok = (g_c["short"] <= ST.GRID_SHORT * g_c["elements"]
-                        or free_["short"] > ST.GRID_SHORT * free_["elements"])
+            # (SHMESH-48x2: short edges refuse a grid only over GRID_SHORT AND over GRID_SHORT_RATIO x the free mesh's
+            # share - a channel's web at 3.37% against its free mesh's 2.66% keeps its straight rows)
+            g_share = g_c["short"] / max(g_c["elements"], 1)
+            f_share = free_["short"] / max(free_["elements"], 1)
+            short_ok = g_share <= ST.GRID_SHORT or g_share <= ST.GRID_SHORT_RATIO * f_share
             tri_ok = g_c["triangles"] <= max(ST.GRID_TRIAS, ST.GRID_TRIA_SHARE * g_c["elements"],
                                              2 * free_["triangles"])
             if short_ok and tri_ok:
