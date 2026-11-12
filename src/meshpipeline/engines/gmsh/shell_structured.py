@@ -789,9 +789,7 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                         gmsh.model.getBoundary([(2, s)], oriented=False)) < CELL_MIN * h for s in cells)
         # and every ring came out as drawn: one circle round a free box's hole, four quarters round an O-grid's
         trial = sorted({abs(int(c)) for s in cells for _d, c in gmsh.model.getBoundary([(2, s)], oriented=False)})
-        # a line that ends inside an edge the face shares with another face cuts that edge: the other face is cut
-        # with it (at that point only), else it would keep the edge whole - a crack at the junction
-        hit: set[int] = set()
+        # and no line cuts an edge the face shares with another (the other face would keep it whole: a crack)
         if shared:
             from scipy.spatial import cKDTree
 
@@ -800,20 +798,7 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                 full = float(gmsh.model.occ.getMass(1, c))
                 for x in trial:
                     if tree.query(_samples(gmsh, x, 4))[0].max() <= 1e-3 * h + full / 256 and                             float(gmsh.model.occ.getMass(1, x)) < (1 - 1e-6) * full:
-                        hit.add(c)
-        # the pieces of the lines inside the face (straight: their two ends), to cut it and its neighbours with
-        outline = cKDTree(np.vstack([_samples(gmsh, c, 64) for cl in loops for c in cl])) if hit else None
-        pieces: list[tuple[np.ndarray, np.ndarray]] = []
-        if hit and outline is not None:
-            for x in trial:
-                if gmsh.model.getType(1, x) != "Line":
-                    continue
-                q = _samples(gmsh, x, 4)
-                if outline.query(q[2])[0] > 1e-3 * h:
-                    pieces.append((q[0], q[-1]))
-        others = sorted({int(n) for c in hit for n in gmsh.model.getAdjacencies(1, c)[0] if int(n) != t})
-        if any(n in by_face or n not in tag_of for n in others) or any(w.face in others for w in washers):
-            small = True        # a neighbour with washers of its own is left as it is
+                        small = True
         for w, p in zip(ws, plans, strict=True):
             R = p[2] * w.r if p is not None else w.R
             on_ring = [c for c in trial if np.all(np.abs(np.linalg.norm(_samples(gmsh, c, 4) - w.centre, axis=1) - R)
@@ -827,29 +812,8 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
             no("a cell would come out too small, a ring or a shared edge cut")
             continue
         edge_pts = np.vstack([_samples(gmsh, c, 64) for cl in loops for c in cl])
-        if others:
-            occ = gmsh.model.occ
-            cutters = [(1, occ.addLine(occ.addPoint(*[float(v) for v in pa]), occ.addPoint(*[float(v) for v in pb])))
-                       for pa, pb in pieces]
-            circles: list[tuple[int, int]] = []
-            # (the rings and the cuts from the box corners to the holes are straight lines and circles inside the
-            # face: drawn again, with the pieces of the box lines)
-            for w, p in zip(ws, plans, strict=True):
-                R = p[2] * w.r if p is not None else w.R
-                xa = starts[id(w)] if p is not None else w.xaxis
-                circles.append((1, occ.addCircle(*[float(x) for x in w.centre], float(R),
-                                                 zAxis=[float(x) for x in n_face], xAxis=[float(x) for x in xa])))
-            _o, omap = occ.fragment([(2, t)] + [(2, n) for n in others], cutters + circles)
-            occ.synchronize()
-            for j, n in enumerate(others, start=1):
-                kn = tag_of.pop(n)
-                for d, s2 in omap[j]:
-                    if d == 2:
-                        tag_of[s2] = kn
-            omap = [omap[0]] + omap[1 + len(others):]
-        else:
-            _o, omap = gmsh.model.occ.fragment([(2, t)], tools())
-            gmsh.model.occ.synchronize()
+        _o, omap = gmsh.model.occ.fragment([(2, t)], tools())
+        gmsh.model.occ.synchronize()
         k = tag_of.pop(t)
         new = [s for d, s in omap[0] if d == 2]
         for s in new:
