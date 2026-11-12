@@ -37,7 +37,7 @@ def test_an_o_grid_box_matches_its_ring_and_the_users_edges():
     got = ST._boxed(9.0, 2 * math.pi * 9 / 8, 10.0)
     assert got is not None
     n, rows, ratio, b = got
-    assert n % ST.BOX_STEP == 0                                   # even quarters
+    assert n % 4 == 0 and n % ST.WASHER_STEP == 0                 # even quarters (the hole starts on the diagonal)
     seg = 2 * b / (n / 4)
     assert ST.BOX_SEG[0] * 10.0 - 1e-9 <= seg <= ST.BOX_SEG[1] * 10.0 + 1e-9
     assert b - ratio * 9.0 >= ST.BOX_GAP * 10.0 - 1e-9            # the box clear of the ring

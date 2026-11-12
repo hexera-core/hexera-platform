@@ -1304,12 +1304,36 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                     washer_skipped["square rings are off on this mesh"] = (
                         washer_skipped.get("square rings are off on this mesh", 0) + 1)
             washers = [w for w in washers if not w.corners]
+            polar_made: list = []
+            polar_o: list = []
+            polar_why: dict[str, int] = {}
+            polar_preset: dict[int, int] = {}
+            polar_holes: set[int] = set()
+            washers_all = washers
+            if ST.POLAR and ST.BLOCKS and ST.MAPPED and structure != "free":
+                # SHMESH-49: a round plate with its holes on one bolt circle in rings and spokes
+                polar_made, polar_why, polar_o, polar_preset, polar_holes = ST.polar_faces(
+                    gmsh, washers, tag_of, {t: float(rows[k]["size_mm"]) for t, k in tag_of.items()}, mm,
+                    cuts=cut_curves, cells_out=grid_cells, hole_size=hole_size,
+                    low_mm=(sizing or {}).get("low_mm"), high_mm=(sizing or {}).get("high_mm"))
+                washers = [w for w in washers if w not in polar_made and w not in polar_o]
             if ST.BLOCKS and ST.MAPPED and structure != "free":
                 # SHMESH-41: a face whose holes all have washers is cut into a grid of cells, mapped below
                 gridded, boxed, block_preset, block_holes, block_skipped = ST.block_faces(
                     gmsh, washers, tag_of, {t: float(rows[k]["size_mm"]) for t, k in tag_of.items()}, hole_size, mm,
                     cuts=cut_curves, low_mm=(sizing or {}).get("low_mm"), high_mm=(sizing or {}).get("high_mm"),
                     cells_out=grid_cells)
+            for w in gridded:
+                w.info["kind"] = "o-grid in a gridded face"
+            for w in boxed:
+                w.info["kind"] = "free box in a gridded face"
+            gridded = gridded + polar_o
+            boxed = boxed + polar_made
+            block_preset.update(polar_preset)
+            block_holes = block_holes | polar_holes
+            for key, val in polar_why.items():
+                block_skipped[key] = block_skipped.get(key, 0) + val
+            washers = washers_all
             rings = [w for w in washers if w not in gridded and w not in boxed]
             drawn = ST.imprint(gmsh, rings + squares, tag_of, cuts=cut_curves, preset=block_preset)
             lost = [w for w in rings + squares if w not in drawn]
@@ -1317,10 +1341,6 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                 reason = str(w.info.get("why") or "its ring was not drawn")
                 washer_skipped[reason] = washer_skipped.get(reason, 0) + 1
             washers = [w for w in washers + squares if w not in lost]
-            for w in gridded:
-                w.info["kind"] = "o-grid in a gridded face"
-            for w in boxed:
-                w.info["kind"] = "free box in a gridded face"
             for w in drawn:
                 w.info.setdefault("kind", "ring in a free face")
             rings = [w for w in drawn if not w.corners] + boxed

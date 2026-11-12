@@ -723,7 +723,12 @@ def map_faces(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], mm: float
             cand.pop(t)
     length = {c: float(gmsh.model.occ.getMass(1, c)) for t in cand for sd in cand[t][0] for c in sd}
     counts: dict[int, int] = {}
+    # SHMESH-47: a class whose curve stands opposite a chain of counted curves takes the chain's sum (a fillet cut at a
+    # gridded web's lines carries the web's columns on to the flange): {a curve of the class: its count}
+    forced: dict[int, int] = {}
+    rounds = 0
     while True:
+        rounds += 1
         parent: dict[int, int] = {}
 
         def root(c: int, parent: dict[int, int] = parent) -> int:
@@ -752,8 +757,9 @@ def map_faces(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], mm: float
                         faces_of.setdefault(root(c), set()).add(t)
         bad: set[int] = set()
         counts = {}
+        newly = False
         for r, cs in sorted(members.items()):
-            pre = {preset[c] for c in cs if c in preset}
+            pre = {preset[c] for c in cs if c in preset} | {forced[c] for c in cs if c in forced}
             if len(pre) > 1:
                 bad |= faces_of[r]
                 continue
@@ -791,6 +797,17 @@ def map_faces(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], mm: float
                     continue
                 known = lambda sd, counts=counts: all(c in counts or c in preset for c in sd)  # noqa: E731
                 total = lambda sd, counts=counts: sum(counts.get(c, preset.get(c, 0)) for c in sd)  # noqa: E731
+                for one, many in ((sa, sb), (sb, sa)):
+                    if (len(one) == 1 and len(many) > 1 and one[0] in single and one[0] not in preset
+                            and known(many) and total(one) != total(many)):
+                        # a single curve with a class of its own opposite a counted chain: the class takes the sum
+                        if forced.get(one[0]) not in (None, total(many)):
+                            bad.add(t)
+                        else:
+                            forced[one[0]] = total(many)
+                            newly = True
+                if newly or t in bad:
+                    continue
                 if known(sa) and known(sb):
                     if total(sa) != total(sb):
                         bad.add(t)
@@ -807,6 +824,8 @@ def map_faces(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], mm: float
                     continue
                 for c, m in zip(left, spread, strict=True):
                     counts[c] = m
+        if newly and rounds < 8:
+            continue            # counted again with the classes the chains set
         if not bad:
             break
         for t in bad:
@@ -833,6 +852,8 @@ def map_faces(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], mm: float
 #: that near an edge runs to that edge); no cell edge under CELL_MIN face sizes.
 BLOCKS = True
 BOX_STEP = 8
+#: SHMESH-48: the ring an O-grid aims at, times the hole's radius (an engineer's washer: 1.5 to 2 times its diameter)
+WASHER_AIM = 1.75
 BOX_SEG = (0.8, 1.4)
 BOX_GAP = 0.4
 BOX_GROW = 2.2
@@ -845,32 +866,44 @@ PARALLEL_DEG = 1.0
 
 def _boxed(r_mm: float, hole_mm: float, h_mm: float, low_mm: float | None = None,
            high_mm: float | None = None) -> tuple[int, int, float, float] | None:
-    """SHMESH-41: (elements round, rows, ring over hole radius, box half-side mm) of an O-grid washer in a gridded face:
-    the fewest elements round (a multiple of BOX_STEP - each quarter even: a hole's circle starts where the CAD put
-    its seam, often mid-quarter, and an even quarter keeps its nodes evenly spaced -, at least WASHER_MIN and the
-    plan's own count) and then the
-    fewest rows such that the box side (a quarter of them) comes out BOX_SEG face sizes per element (and under the
-    user's longest edge `high_mm`), the box BOX_GAP face sizes clear of the ring, the ring between WASHER_RING times the
-    hole, its rows no thinner than the user's shortest edge `low_mm`, and its outer elements no shorter than the face
-    size over BOX_GROW; None when none does (the washer then takes a free box)."""
+    """SHMESH-41/48: (elements round, rows, ring over hole radius, box half-side mm) of an O-grid washer in a gridded
+    face, every edge of it inside a band: the user's shortest and longest edge when they gave them (the count round the
+    hole is then picked to fit the band, never fewer than 8), else our own (the plan's count round the hole at least,
+    box elements BOX_SEG face sizes). Searched in a fixed order: the fewest elements round, then two rows before one,
+    then the ring nearest WASHER_AIM times the hole (an engineer's washer: 1.5 to 2 times its diameter) that leaves
+    the box clear of it, then the box side nearest one face size a segment. The box stands clear of the ring by its
+    side-middle row (no shorter than the band's low end, nor BOX_GAP face sizes); the ring's outer elements are no
+    shorter than the face size over BOX_GROW. The hole's circle starts on the box's diagonal (SHMESH-45b), so any count
+    a multiple of WASHER_STEP splits evenly into quarters. None when nothing fits (the washer then takes a free box)."""
+    user = low_mm is not None or high_mm is not None
+    e_lo = float(low_mm or 0.0)
+    e_hi = 0.98 * float(high_mm) if high_mm is not None else math.inf
+    seg_lo, seg_hi = max(BOX_SEG[0] * h_mm, e_lo), min(BOX_SEG[1] * h_mm, e_hi)
     own = math.ceil(2 * math.pi * r_mm / max(hole_mm, 1e-12) - 1e-9)
-    n0 = max(WASHER_MIN, BOX_STEP * math.ceil(own / BOX_STEP))
-    seg_hi = BOX_SEG[1] * h_mm if high_mm is None else min(BOX_SEG[1] * h_mm, 0.98 * high_mm)
-    for n in range(n0, WASHER_MAX + 1, BOX_STEP):
-        if low_mm is not None and n > n0 and 2 * math.pi * r_mm / n < low_mm:
-            break
-        q = math.exp(2 * math.pi / n)
-        hi = n * seg_hi / 8
-        for rows in range(1, WASHER_ROWS + 1):
-            r_hi = min(WASHER_RING[1] * r_mm, hi - BOX_GAP * h_mm)
-            r_lo = max(WASHER_RING[0] * r_mm, n * h_mm / (2 * math.pi * BOX_GROW),
-                       r_mm + rows * (low_mm or 0.0))
+    n0 = WASHER_MIN if user else max(WASHER_MIN, WASHER_STEP * math.ceil(own / WASHER_STEP))
+    for n in range(n0, WASHER_MAX + 1, WASHER_STEP):
+        s_hole = 2 * math.pi * r_mm / n
+        if s_hole < e_lo or s_hole > e_hi:
+            continue
+        for rows in (2, 1):
+            row_hi = min(e_hi, 1.2 * h_mm)
+            gap = max(e_lo, BOX_GAP * h_mm)
+            b_hi = n * seg_hi / 8
+            r_lo = max(WASHER_RING[0] * r_mm, r_mm + rows * e_lo, n * h_mm / (2 * math.pi * BOX_GROW))
+            r_hi = min(WASHER_RING[1] * r_mm, r_mm + rows * row_hi, n * e_hi / (2 * math.pi), b_hi - gap)
             if r_lo > r_hi:
                 continue
-            R = min(max(q ** rows * r_mm, r_lo), r_hi)
-            b = max(R + BOX_GAP * h_mm, n * BOX_SEG[0] * h_mm / 8, n * h_mm / 8)
-            return n, rows, R / r_mm, min(b, hi)
+            R = min(max(WASHER_AIM * r_mm, r_lo), r_hi)
+            b_lo = max(R + gap, n * seg_lo / 8)
+            if b_lo > b_hi + 1e-9:
+                continue
+            return n, rows, R / r_mm, min(max(n * h_mm / 8, b_lo), b_hi)
     return None
+
+
+def _diagonals(u: np.ndarray, v: np.ndarray) -> list[np.ndarray]:
+    """The four diagonal directions of a frame, in the order of a box's corners (-u-v, +u-v, +u+v, -u+v)."""
+    return [(a * u + b * v) / math.sqrt(2.0) for a, b in ((-1, -1), (1, -1), (1, 1), (-1, 1))]
 
 
 def _frame(gmsh, t: int, outer: list[int]) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
@@ -1027,10 +1060,9 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                            o + bx[0] * u + bx[3] * v] for bx in boxes]
             # each O-grid's quarters start at its first box corner's direction
             starts = {}
-            for w, p, cs in zip(ws, plans, corners_of, strict=True):
+            for w, p in zip(ws, plans, strict=True):
                 if p is not None:
-                    d0 = cs[0] - w.centre
-                    starts[id(w)] = d0 / max(float(np.linalg.norm(d0)), 1e-300)
+                    starts[id(w)] = _diagonals(u, v)[2]          # (u + v) / sqrt 2: where SHMESH-45b starts the hole
 
             def tools(o=o, u=u, v=v, lo=lo, hi=hi, pad=pad, lines=lines, ws=ws, plans=plans, corners_of=corners_of,
                       starts=starts, n_face=n_face) -> list[tuple[int, int]]:
@@ -1048,8 +1080,12 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                     out.append((1, occ.addCircle(*[float(x) for x in w.centre], float(R),
                                                  zAxis=[float(x) for x in n_face], xAxis=[float(x) for x in xa])))
                     if p is not None:
-                        for cp in cs:
-                            out.append((1, occ.addLine(occ.addPoint(*cp), occ.addPoint(*[float(x) for x in w.centre]))))
+                        # SHMESH-48: each box corner joined to the ring and the hole at the frame's own diagonal (where the
+                        # hole's circle starts, SHMESH-45b), so the ring's quarters are exact and no seam sits in a quarter
+                        for cp, dg in zip(cs, _diagonals(u, v), strict=True):
+                            q1 = occ.addPoint(*[float(x) for x in w.centre + R * dg])
+                            out.append((1, occ.addLine(occ.addPoint(*cp), q1)))
+                            out.append((1, occ.addLine(q1, occ.addPoint(*[float(x) for x in w.centre + 0.5 * w.r * dg]))))
                 return out
 
             # tried on a copy of the face first: no edge of a cell under CELL_MIN face sizes
@@ -1063,7 +1099,9 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                             gmsh.model.getBoundary([(2, s)], oriented=False)) < CELL_MIN * h for s in cells)
             # and every ring came out as drawn: one circle round a free box's hole, four quarters round an O-grid's
             trial = sorted({abs(int(c)) for s in cells for _d, c in gmsh.model.getBoundary([(2, s)], oriented=False)})
-            # and no line cuts an edge the face shares with another (the other face would keep it whole: a crack)
+            # a line that ends inside an edge the face shares with another face cuts that edge: the other face is cut
+            # with it (at that point only), else it would keep the edge whole - a crack at the junction
+            hit: set[int] = set()
             if shared:
                 from scipy.spatial import cKDTree
 
@@ -1072,7 +1110,20 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                     full = float(gmsh.model.occ.getMass(1, c))
                     for x in trial:
                         if tree.query(_samples(gmsh, x, 4))[0].max() <= 1e-3 * h + full / 256 and                             float(gmsh.model.occ.getMass(1, x)) < (1 - 1e-6) * full:
-                            small = True
+                            hit.add(c)
+            # the pieces of the lines inside the face (straight: their two ends), to cut it and its neighbours with
+            outline = cKDTree(np.vstack([_samples(gmsh, c, 64) for cl in loops for c in cl])) if hit else None
+            pieces: list[tuple[np.ndarray, np.ndarray]] = []
+            if hit and outline is not None:
+                for x in trial:
+                    if gmsh.model.getType(1, x) != "Line":
+                        continue
+                    q = _samples(gmsh, x, 4)
+                    if outline.query(q[2])[0] > 1e-3 * h:
+                        pieces.append((q[0], q[-1]))
+            others = sorted({int(n) for c in hit for n in gmsh.model.getAdjacencies(1, c)[0] if int(n) != t})
+            if any(n in by_face or n not in tag_of for n in others) or any(w.face in others for w in washers):
+                small = True        # a neighbour with washers of its own is left as it is
             for w, p in zip(ws, plans, strict=True):
                 R = p[2] * w.r if p is not None else w.R
                 on_ring = [c for c in trial if np.all(np.abs(np.linalg.norm(_samples(gmsh, c, 4) - w.centre, axis=1) - R)
@@ -1086,8 +1137,29 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                 no("a cell would come out too small, a ring or a shared edge cut")
                 continue
             edge_pts = np.vstack([_samples(gmsh, c, 64) for cl in loops for c in cl])
-            _o, omap = gmsh.model.occ.fragment([(2, t)], tools())
-            gmsh.model.occ.synchronize()
+            if others:
+                occ = gmsh.model.occ
+                cutters = [(1, occ.addLine(occ.addPoint(*[float(v) for v in pa]), occ.addPoint(*[float(v) for v in pb])))
+                           for pa, pb in pieces]
+                circles: list[tuple[int, int]] = []
+                # (the rings and the cuts from the box corners to the holes are straight lines and circles inside the
+                # face: drawn again, with the pieces of the box lines)
+                for w, p in zip(ws, plans, strict=True):
+                    R = p[2] * w.r if p is not None else w.R
+                    xa = starts[id(w)] if p is not None else w.xaxis
+                    circles.append((1, occ.addCircle(*[float(x) for x in w.centre], float(R),
+                                                     zAxis=[float(x) for x in n_face], xAxis=[float(x) for x in xa])))
+                _o, omap = occ.fragment([(2, t)] + [(2, n) for n in others], cutters + circles)
+                occ.synchronize()
+                for j, n in enumerate(others, start=1):
+                    kn = tag_of.pop(n)
+                    for d, s2 in omap[j]:
+                        if d == 2:
+                            tag_of[s2] = kn
+                omap = [omap[0]] + omap[1 + len(others):]
+            else:
+                _o, omap = gmsh.model.occ.fragment([(2, t)], tools())
+                gmsh.model.occ.synchronize()
             k = tag_of.pop(t)
             new = [s for d, s in omap[0] if d == 2]
             for s in new:
@@ -1270,6 +1342,15 @@ def reseat_holes(brep, out) -> tuple[int, list]:
             u = u - float(u @ nrm) * nrm
             u /= max(float(np.linalg.norm(u)), 1e-300)
             diag = (u + np.cross(nrm, u)) / math.sqrt(2.0)
+        # SHMESH-49b: on a round plate (its outer edge one circle) each hole starts at 45 degrees to the line from the
+        # plate's centre - where polar_faces' O-grid cuts it
+        round_c = None
+        outer_es = edges(outer)
+        if diag is None and len(outer_es) == 1:
+            oc = BRepAdaptor_Curve(outer_es[0])
+            if oc.GetType() == GeomAbs_Circle:
+                lo_ = oc.Circle().Location()
+                round_c = np.array([lo_.X(), lo_.Y(), lo_.Z()])
         a0 = area(f)
         ex = TopExp_Explorer(f, TopAbs_WIRE)
         swaps = []
@@ -1293,9 +1374,16 @@ def reseat_holes(brep, out) -> tuple[int, list]:
             p0 = circs[0].Value(circs[0].FirstParameter())
             rel = np.array([p0.X() - loc[0], p0.Y() - loc[1], p0.Z() - loc[2]])
             rel /= max(float(np.linalg.norm(rel)), 1e-300)
-            if len(es) == 1 and exact and (diag is None or float(rel @ diag) > 1 - 1e-9):
+            want = diag
+            if want is None and round_c is not None:
+                rad = np.asarray(loc, dtype=float) - round_c
+                rad = rad - float(rad @ nrm) * nrm
+                if float(np.linalg.norm(rad)) > 1e-9 * max(1.0, float(radius)):
+                    rad /= float(np.linalg.norm(rad))
+                    want = (rad + np.cross(nrm, rad)) / math.sqrt(2.0)
+            if len(es) == 1 and exact and (want is None or float(rel @ want) > 1 - 1e-9):
                 continue            # already one circle (starting on the diagonal when the face has one)
-            start = diag if diag is not None else rel
+            start = want if want is not None else rel
             caxis = caxis_fit
             if exact:
                 cax = circs[0].Circle().Axis().Direction()
@@ -1336,4 +1424,254 @@ def reseat_holes(brep, out) -> tuple[int, list]:
     return done, redrawn
 
 
-__all__ = ["WASHERS", "MAPPED", "Washer", "plan_washers", "imprint", "set_counts", "ring_mesh", "map_faces", "block_faces", "reseat_holes"]
+#: SHMESH-49: a round flat plate with its holes on one bolt circle is cut into rings and spokes: two circles round the
+#: bolt circle (BOX_FREE face sizes clear of the washers' rings), a spoke each side of every hole and one in the middle
+#: of a gap wider than POLAR_GAP face sizes, the middle of a full disc left whole (paved: a mapped core square would take
+#: a quarter circle's count on a side 0.45 times as long). The sectors are four-sided (mapped); each washer keeps its ring in its own
+#: sector, paved from ring to sector. Holes on one circle within POLAR_ROUND of its radius, spaced alike within
+#: POLAR_EVEN times.
+POLAR = True
+POLAR_ROUND = 0.02
+POLAR_EVEN = 1.5
+POLAR_GAP = 3.0
+
+
+def _round_loop(gmsh, curves: list[int]) -> tuple[np.ndarray, float] | None:
+    """(centre, radius) when a loop is one circle (in any number of arcs), else None."""
+    got = _circle_of(gmsh, curves)
+    return (got[0], got[1]) if got is not None else None
+
+
+def polar_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: dict[int, float], mm: float,
+                cuts: set[int] | None = None, cells_out: set[int] | None = None, hole_size=None,
+                low_mm: float | None = None, high_mm: float | None = None
+                ) -> tuple[list[Washer], dict[str, int], list[Washer], dict[int, int], set[int]]:
+    """SHMESH-49: the round flat faces whose holes all have washers on one bolt circle, cut into rings and spokes (see
+    POLAR). A face sharing an edge a line would end on, or whose cells would come out under CELL_MIN face sizes, or
+    whose rings would be cut, is left as it is (tried on a copy first). Returns (the washers so made - each with its
+    ring and annulus drawn, in a free sector -, {why a round face was not cut: count}, the O-grid washers, {curve:
+    count} their grid must keep, their holes' curves). SHMESH-49b: where every hole takes the same O-grid plan
+    (_boxed, inside the user's edges), each sector is that plan's box and its four corners are joined to the ring and
+    the hole, so the sector is four mapped cells and its annulus four more - no free paving round a hole."""
+    by_face: dict[int, list[Washer]] = {}
+    for w in washers:
+        by_face.setdefault(w.face, []).append(w)
+    made: list[Washer] = []
+    ogrid: list[Washer] = []
+    preset: dict[int, int] = {}
+    holes: set[int] = set()
+    why: dict[str, int] = {}
+
+    def no(reason: str) -> None:
+        why[reason] = why.get(reason, 0) + 1
+
+    occ = gmsh.model.occ
+    for t, ws in sorted(by_face.items()):
+        _l, loops = occ.getCurveLoops(t)
+        loops = [[abs(int(c)) for c in cl] for cl in loops]
+        hole_loops = [sorted(w.hole) for w in ws]
+        rest = [cl for cl in loops if sorted(cl) not in hole_loops]
+        length = [sum(float(occ.getMass(1, c)) for c in cl) for cl in rest]
+        if not rest:
+            continue
+        outer = rest[int(np.argmax(length))]
+        rim = _round_loop(gmsh, outer)
+        if rim is None or len(ws) < 3:
+            continue                                    # not a round plate: the rectangular grid's (block_faces)
+        C, Ro = rim
+        inner = [cl for cl in rest if cl is not outer]
+        Ri = 0.0
+        if inner:
+            core = _round_loop(gmsh, inner[0]) if len(inner) == 1 else None
+            if core is None or float(np.linalg.norm(core[0] - C)) > 1e-3 * Ro:
+                no("a round plate with another hole not on its centre")
+                continue
+            Ri = core[1]
+        h = size_mm[t] / mm
+        n_face = ws[0].normal
+        e1 = ws[0].centre - C
+        e1 = e1 - float(e1 @ n_face) * n_face
+        e1 /= max(float(np.linalg.norm(e1)), 1e-300)
+        e2 = np.cross(n_face, e1)
+        rb = [float(np.linalg.norm(w.centre - C)) for w in ws]
+        Rb = float(np.mean(rb))
+        if max(abs(x - Rb) for x in rb) > POLAR_ROUND * Rb:
+            no("the holes are not on one bolt circle")
+            continue
+        ang = sorted((math.atan2(float((w.centre - C) @ e2), float((w.centre - C) @ e1)) % (2 * math.pi), w)
+                     for w in ws)
+        gaps = [((ang[(i + 1) % len(ang)][0] - ang[i][0]) % (2 * math.pi)) for i in range(len(ang))]
+        if max(gaps) > POLAR_EVEN * min(gaps):
+            no("the holes are not spaced alike round their circle")
+            continue
+        # one plan for holes of one size (a hole drawn again comes out a hair off its radius: one plan each split the
+        # bolt circle between an O-grid and none)
+        radii = [w.r for w in ws]
+        if hole_size is None:
+            plans = [None] * len(ws)
+        elif max(radii) <= 1.01 * min(radii):
+            r_m = float(np.mean(radii))
+            one = _boxed(r_m * mm, hole_size(r_m * mm, ws[0].owner), size_mm[t], low_mm, high_mm)
+            plans = [one] * len(ws)
+        else:
+            plans = [_boxed(w.r * mm, hole_size(w.r * mm, w.owner), size_mm[t], low_mm, high_mm) for w in ws]
+        use_o = all(pl is not None for pl in plans) and len({pl[0] for pl in plans}) == 1 and \
+            len({pl[1] for pl in plans}) == 1
+        if use_o:
+            b = max(pl[3] for pl in plans) / mm
+            R_of = {id(w): pl[2] * w.r for w, pl in zip(ws, plans, strict=True)}
+            plan_of = {id(w): pl for w, pl in zip(ws, plans, strict=True)}
+        else:
+            b = max(w.R for w in ws) + BOX_FREE * h
+            R_of = {id(w): w.R for w in ws}
+            plan_of = {}
+        beta = math.asin(min(0.99, b / Rb))
+        if min(gaps) - 2 * beta < CELL_MIN * h / Rb:
+            no("the washers' sectors would touch")
+            continue
+        r1, r2 = Rb - b, Rb + b
+        if Ro - r2 < SNAP * h:
+            r2 = Ro
+        if Ri > 0 and r1 - Ri < SNAP * h:
+            r1 = Ri
+        if Ri == 0 and r1 < 2 * h:
+            no("no room for a core inside the bolt circle")
+            continue
+        if r2 > Ro or r1 < Ri:
+            no("the washers' sectors run past the plate")
+            continue
+        start = Ri if Ri > 0 else r1
+        spokes: list[float] = []
+        for i, (a, _w) in enumerate(ang):
+            spokes += [a - beta, a + beta]
+            if gaps[i] * Rb > (POLAR_GAP + 2 * b / h) * h:
+                spokes.append(a + gaps[i] / 2)
+
+        def at(r: float, a: float, C=C, e1=e1, e2=e2) -> list[float]:
+            return [float(x) for x in C + r * (math.cos(a) * e1 + math.sin(a) * e2)]
+
+        def sector_corners(a: float, r1=r1, r2=r2, beta=beta, at=at) -> list[np.ndarray]:
+            return [np.array(at(r, a + sg * beta)) for r, sg in ((r1, -1), (r2, -1), (r2, 1), (r1, 1))]
+
+        def tools(C=C, Ri=Ri, Ro=Ro, ang=ang, e1=e1, n_face=n_face, r1=r1, r2=r2, spokes=spokes, start=start,
+                  at=at, use_o=use_o, R_of=R_of, sector_corners=sector_corners) -> list[tuple[int, int]]:
+            out = []
+            for r in sorted({r1, r2} - {Ri, Ro, 0.0}):
+                out.append((1, occ.addCircle(*[float(x) for x in C], float(r), zAxis=[float(x) for x in n_face],
+                                             xAxis=[float(x) for x in e1])))
+            for a in spokes:
+                out.append((1, occ.addLine(occ.addPoint(*at(start, a)), occ.addPoint(*at(Ro * 1.02, a)))))
+            for a, w in ang:
+                R = R_of[id(w)]
+                if not use_o:
+                    out.append((1, occ.addCircle(*[float(x) for x in w.centre], float(R),
+                                                 zAxis=[float(x) for x in n_face], xAxis=[float(x) for x in w.xaxis])))
+                    continue
+                cs = sector_corners(a)
+                # the ring's and hole's points at exactly 45 degrees to the radial line (where SHMESH-49b starts the
+                # hole), one per sector corner in its order
+                rad = w.centre - C
+                rad = rad - float(rad @ n_face) * n_face
+                rad /= max(float(np.linalg.norm(rad)), 1e-300)
+                tan_ = np.cross(n_face, rad)
+                dgs = [(sr * rad + st * tan_) / math.sqrt(2.0) for sr, st in ((-1, -1), (1, -1), (1, 1), (-1, 1))]
+                # the ring's seam on a corner's diagonal: no seam inside a quarter
+                out.append((1, occ.addCircle(*[float(x) for x in w.centre], float(R),
+                                             zAxis=[float(x) for x in n_face], xAxis=[float(x) for x in dgs[0]])))
+                for cp, dg in zip(cs, dgs, strict=True):
+                    q1 = occ.addPoint(*[float(x) for x in w.centre + R * dg])
+                    out.append((1, occ.addLine(occ.addPoint(*[float(x) for x in cp]), q1)))
+                    out.append((1, occ.addLine(q1, occ.addPoint(*[float(x) for x in w.centre + 0.5 * w.r * dg]))))
+            return out
+
+        # tried on a copy first: cells no smaller than CELL_MIN face sizes, every ring one circle, no shared edge cut
+        shared = [c for cl in loops for c in cl if len(gmsh.model.getAdjacencies(1, c)[0]) > 1]
+        copy = occ.copy([(2, t)])
+        _o, cmap = occ.fragment(copy, tools())
+        occ.synchronize()
+        cells = [s for d, s in cmap[0] if d == 2]
+        cut_curves = {c for got in cmap[1:] for d, c in got if d == 1}
+        trial = sorted({abs(int(c)) for s in cells for _d, c in gmsh.model.getBoundary([(2, s)], oriented=False)})
+        # (a hole's own arcs aside: its circle's seam may split a quarter - a chain, mapped all the same)
+        on_holes = {c for c in trial for w in ws
+                    if np.all(np.abs(np.linalg.norm(_samples(gmsh, c, 4) - w.centre, axis=1) - w.r) <= CIRCLE_TOL * w.r)}
+        bad = any(float(occ.getMass(1, c)) < CELL_MIN * h for c in trial if c not in on_holes)
+        for _a, w in ang:
+            R = R_of[id(w)]
+            on_ring = [c for c in trial if np.all(np.abs(np.linalg.norm(_samples(gmsh, c, 4) - w.centre, axis=1) - R)
+                                                  <= 1e-4 * R)]
+            bad = bad or len(on_ring) != (4 if use_o else 1)
+        if shared:
+            from scipy.spatial import cKDTree
+
+            for c in shared:
+                tree = cKDTree(_samples(gmsh, c, 256))
+                full = float(occ.getMass(1, c))
+                for x in trial:
+                    if tree.query(_samples(gmsh, x, 4))[0].max() <= 1e-3 * h + full / 256 and \
+                            float(occ.getMass(1, x)) < (1 - 1e-6) * full:
+                        bad = True
+        occ.remove([(2, s) for s in cells], recursive=True)
+        occ.synchronize()
+        _remove_loose(gmsh, cut_curves)
+        if bad:
+            no("a sector would come out too small, a ring or a shared edge cut")
+            continue
+        edge_pts = np.vstack([_samples(gmsh, c, 64) for cl in loops for c in cl])
+        _o, omap = occ.fragment([(2, t)], tools())
+        occ.synchronize()
+        k = tag_of.pop(t)
+        new = [s for d, s in omap[0] if d == 2]
+        for s in new:
+            tag_of[s] = k
+        if cells_out is not None:
+            cells_out.update(new)
+        _remove_loose(gmsh, {c for got in omap[1:] for d, c in got if d == 1})
+        curves = sorted({abs(int(c)) for s in new for _d, c in gmsh.model.getBoundary([(2, s)], oriented=False)})
+        on_circle: set[int] = set()
+        for _a, w in ang:
+            R = R_of[id(w)]
+            tol = 1e-4 * R
+            ring_c, hole_c = [], []
+            for c in curves:
+                d = np.linalg.norm(_samples(gmsh, c, 4) - w.centre, axis=1)
+                if np.all(np.abs(d - w.r) <= CIRCLE_TOL * w.r):
+                    hole_c.append(c)
+                elif np.all(np.abs(d - R) <= tol):
+                    ring_c.append(c)
+                elif use_o and d.min() >= w.r - tol and d.max() <= R + tol and abs(d[0] - d[-1]) > 0.5 * (R - w.r):
+                    preset[c] = plan_of[id(w)][1]                    # a row line from the hole to the ring
+            on_circle |= set(ring_c) | set(hole_c)
+            if use_o:
+                pl = plan_of[id(w)]
+                for c in ring_c:
+                    preset[c] = pl[0] // 4
+                holes.update(hole_c)
+                w.n, w.rows, w.R = pl[0], pl[1], R
+                w.out_mm = 2 * math.pi * R * mm / pl[0]
+                w.info["kind"] = "o-grid in a sector of a round plate"
+                ogrid.append(w)
+                continue
+            w.ring, w.hole_after = ring_c[0], hole_c
+            for s in new:
+                _l3, lp = occ.getCurveLoops(s)
+                lp = [sorted(abs(int(c)) for c in cl) for cl in lp]
+                if len(lp) == 2 and [w.ring] in lp and _on_hole(gmsh, w, [c for cl in lp for c in cl if c != w.ring]):
+                    w.annulus = s
+            if not w.annulus:
+                raise ValueError("a washer's ring did not close round its hole")
+            w.info["kind"] = "ring in a sector of a round plate"
+            made.append(w)
+        if cuts is not None:
+            from scipy.spatial import cKDTree
+
+            tree = cKDTree(edge_pts)
+            for c in curves:
+                if c not in on_circle and tree.query(_samples(gmsh, c, 2)[1])[0] > 1e-3 * h:
+                    cuts.add(c)
+    return made, why, ogrid, preset, holes
+
+
+__all__ = ["WASHERS", "MAPPED", "Washer", "plan_washers", "imprint", "set_counts", "ring_mesh", "map_faces", "block_faces", "reseat_holes",
+           "polar_faces"]
+
