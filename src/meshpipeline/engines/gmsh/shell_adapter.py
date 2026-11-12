@@ -996,7 +996,8 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
                 # SHMESH-11d: the closed faces' pieces would not fuse back with the rest (a 45 degree cone's pieces,
                 # exact or fuzzy): the surface is meshed as sewn, and a closed face gmsh stops on is re-made below
                 split_note = f"the closed faces were meshed whole ({exc})"
-        reseated, redrawn = 0, []
+        reseated = 0
+        redrawn: list = []
         if ST.RESEAT and ST.WASHERS and SR.structure_of(requirements) not in ("free", "no_washers"):
             # SHMESH-45b: the round free holes of flat faces drawn again as one circle each
             seated = Path(tmp) / "reseated.brep"
@@ -1511,13 +1512,13 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                     past_nodes |= set(el[hit_].ravel().tolist())
                 if not past_nodes:
                     continue
-                for g in sorted(beside):
+                for g_grid in sorted(beside):
                     shared_c = ({abs(int(c)) for _d, c in gmsh.model.getBoundary([(2, t)], oriented=False)}
-                                & {abs(int(c)) for _d, c in gmsh.model.getBoundary([(2, g)], oriented=False)})
-                    for c in shared_c:
-                        on_c, _x, _p = gmsh.model.mesh.getNodes(1, c, includeBoundary=True)
+                                & {abs(int(c)) for _d, c in gmsh.model.getBoundary([(2, g_grid)], oriented=False)})
+                    for c_shared in shared_c:
+                        on_c, _x, _p = gmsh.model.mesh.getNodes(1, c_shared, includeBoundary=True)
                         if past_nodes & set(index[np.asarray(on_c, dtype=np.int64)].tolist()):
-                            bad.add(g)
+                            bad.add(g_grid)
                             break
             if bad:
                 raise _Unmap(bad)
