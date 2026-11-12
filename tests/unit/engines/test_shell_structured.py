@@ -64,6 +64,21 @@ def test_lines_nearer_than_the_snap_are_one_and_an_edge_wins():
     assert got == [(0.0, True, [0]), (51.0, False, [1, 2]), (100.0, True, [])]
 
 
+def test_near_lines_are_one_only_where_every_ring_keeps_its_room():
+    """SHMESH-48i, a real channel web (50 holes out of step, 5+ sizes apart): a chain of box sides each a little from
+    the next was one line at their mean, pulling a side past its ring ("a ring too near ... for its box")."""
+    vals = [(10.0, "0"), (14.0, "1"), (18.0, "2"), (22.0, "3")]
+    # side 0 may go no higher than 11, side 3 no lower than 21: no one place suits all four
+    limits = {"0": (5.0, 11.0), "1": (8.0, 20.0), "2": (12.0, 24.0), "3": (21.0, 30.0)}
+    got = ST._cluster(vals, 5.0, limits)
+    assert [g[2] for g in got] == [[0, 1], [2, 3]]
+    for at, _edge, sides in got:
+        assert all(limits[str(s)][0] <= at <= limits[str(s)][1] for s in sides)
+    # an edge takes a side only where the side may go
+    assert ST._cluster([(0.0, "edge"), (4.0, "0")], 5.0, {"0": (2.0, 6.0)}) == [(0.0, True, []), (4.0, False, [0])]
+    assert ST._cluster([(0.0, "edge"), (4.0, "0")], 5.0, {"0": (-1.0, 6.0)}) == [(0.0, True, [0])]
+
+
 # ------------------------------------------------------------------------------------------- the measure
 def _grid(nx: int, ny: int) -> ShellMesh:
     xyz = np.array([[i, j, 0.0] for j in range(ny + 1) for i in range(nx + 1)], dtype=float)
@@ -600,6 +615,25 @@ def test_a_top_plate_with_round_and_square_holes_is_gridded(tmp_path):
     assert all(r["met"] is not False for r in applied["requirements"]["rows"]), applied["requirements"]["rows"]
     again, _a = _mesh(brep, rec, _criteria())
     assert _sha(again) == _sha(mesh)
+
+
+@pytest.mark.parametrize("limited", [False, True])
+def test_holes_out_of_step_keep_their_grid(tmp_path, monkeypatch, limited):
+    """SHMESH-48i, a real channel web: four 17.4 mm holes out of step, 5+ sizes from each other and the edges, whose
+    box sides lie 5 mm apart in a chain (120, 125, 130, 135 mm along the web). Made one line at their mean, the last
+    side moved 7.5 mm into its ring's room and the web was left free; now the chain is two lines, every ring keeps
+    its room and the web is gridded with every line met."""
+    monkeypatch.setattr(ST, "SNAP_LIMITS", limited)
+    brep, rec = _plate_with_holes(tmp_path, [(97.3, 61.5, 17.4), (147.7, 140.0, 17.4), (152.7, 301.5, 17.4),
+                                             (112.3, 220.0, 17.4)], size=(400.0, 363.0, 10.0))
+    mesh, applied = _mesh(brep, rec, _criteria())
+    s = applied["quality"]["structure"]
+    too_near = "a ring too near an edge or another ring for its box" in (s.get("not_gridded") or {})
+    assert too_near is not limited, s.get("not_gridded")
+    if limited:
+        assert s["washers"] == 4 and s["washers_ogrid"] + s["washers_boxed"] == 4, s
+        assert applied["quality"]["valid"] and applied["quality"]["within_nastran"]
+        assert all(r["met"] is not False for r in applied["requirements"]["rows"]), applied["requirements"]["rows"]
 
 
 def ms_extract(shape):

@@ -906,6 +906,8 @@ BOX_GAP = 0.4
 BOX_GROW = 2.2
 BOX_FREE = 1.0
 SNAP = 0.75
+#: SHMESH-48i: near lines are made one only where one place keeps every ring on them inside its box
+SNAP_LIMITS = True
 CELL_MIN = 0.4
 #: ... straight edges within PARALLEL_DEG of the face's frame count as running along it
 PARALLEL_DEG = 1.0
@@ -976,19 +978,43 @@ def _frame(gmsh, t: int, outer: list[int]) -> tuple[np.ndarray, np.ndarray, np.n
     return o, u, v
 
 
-def _cluster(values: list[tuple[float, str]], tol: float) -> list[tuple[float, bool, list[int]]]:
+def _cluster(values: list[tuple[float, str]], tol: float,
+             limits: dict[str, tuple[float, float]] | None = None) -> list[tuple[float, bool, list[int]]]:
     """Values along one axis ((value, kind): kind "edge" for a straight edge of the face there, else a box side's
     index) joined where neighbours are closer than tol: [(the value - an edge's where one stands -, whether an edge
-    stands there, the box sides on it)]."""
+    stands there, the box sides on it)]. SHMESH-48i: with `limits` ({kind: (lowest, highest)} - where each box side
+    may go and still keep its ring inside its box), a value joins its neighbours' line only where one place suits them
+    all (an edge only where it suits every side on it): a chain of near lines (holes out of step, each side a little
+    from the next) no longer pulls a side past its ring; the line stands at the mean, moved inside every side's
+    limits."""
     out: list[tuple[float, bool, list[int]]] = []
     group: list[tuple[float, str]] = []
+    span = (-math.inf, math.inf)
+
+    def fits(kind: str, val: float) -> tuple[float, float]:
+        if kind == "edge":
+            return (val, val)
+        return (limits or {}).get(kind, (-math.inf, math.inf))
+
+    def close() -> None:
+        edges = [x for x, k in group if k == "edge"]
+        at = float(np.mean(edges)) if edges else float(np.mean([x for x, _k in group]))
+        if limits is not None and not edges and span[0] <= span[1]:
+            at = min(max(at, span[0]), span[1])
+        out.append((at, bool(edges), [int(k) for _x, k in group if k != "edge"]))
+
     for val, kind in sorted(values) + [(math.inf, "")]:
-        if group and val - group[-1][0] > tol:
-            edges = [x for x, k in group if k == "edge"]
-            at = float(np.mean(edges)) if edges else float(np.mean([x for x, _k in group]))
-            out.append((at, bool(edges), [int(k) for _x, k in group if k != "edge"]))
-            group = []
+        if group:
+            lo, hi = fits(kind, val) if math.isfinite(val) else (math.inf, -math.inf)
+            both = (max(span[0], lo), min(span[1], hi))
+            if val - group[-1][0] > tol or (limits is not None and both[0] > both[1]):
+                close()
+                group, span = [], (-math.inf, math.inf)
+            else:
+                span = both
         if math.isfinite(val):
+            if not group:
+                span = fits(kind, val)
             group.append((val, kind))
     return out
 
@@ -1105,9 +1131,34 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
             for j, bx in enumerate(boxes):
                 vals["u"] += [(bx[0], str(4 * j)), (bx[1], str(4 * j + 1))]
                 vals["v"] += [(bx[2], str(4 * j + 2)), (bx[3], str(4 * j + 3))]
+            # SHMESH-48i: where each box side may go when near lines are made one - no nearer its ring than the room
+            # check below asks, no further than SNAP from where it was, an O-grid box no longer or shorter than its
+            # elements allow (each side half the slack)
+            limits: dict[str, tuple[float, float]] = {}
+            if SNAP_LIMITS:
+                for j, (w, p, bx) in enumerate(zip(ws, plans, boxes, strict=True)):
+                    cu, cv = uv(w.centre)
+                    if w.corners:
+                        q = square_uv[id(w)]
+                        inner = [float(q[:, 0].min()), float(q[:, 0].max()), float(q[:, 1].min()),
+                                 float(q[:, 1].max())]
+                        need = 0.4 * h
+                    else:
+                        inner = [cu, cu, cv, cv]
+                        need = (p[2] * w.r + 0.3 * h) if p is not None else (w.R + 0.4 * h)
+                    need += 1e-6 * h        # (a side moved onto its limit passes the check below)
+                    for ax_i in (0, 1):
+                        lo_s, hi_s = 2 * ax_i, 2 * ax_i + 1
+                        grow_, shrink_ = SNAP * h, SNAP * h
+                        if p is not None:
+                            side = bx[hi_s] - bx[lo_s]
+                            grow_ = min(grow_, max(0.0, 0.5 * (1.5 * h * p[0] / 4 - side)))
+                            shrink_ = min(shrink_, max(0.0, 0.5 * (side - 0.6 * h * p[0] / 4)))
+                        limits[str(4 * j + lo_s)] = (bx[lo_s] - grow_, min(bx[lo_s] + shrink_, inner[lo_s] - need))
+                        limits[str(4 * j + hi_s)] = (max(bx[hi_s] - shrink_, inner[hi_s] + need), bx[hi_s] + grow_)
             lines: dict[str, list[float]] = {"u": [], "v": []}
             for ax in ("u", "v"):
-                for at, edge, sides in _cluster(vals[ax], SNAP * h):
+                for at, edge, sides in _cluster(vals[ax], SNAP * h, limits if SNAP_LIMITS else None):
                     for sd in sides:
                         boxes[sd // 4][sd % 4] = at
                     if not edge and sides:
