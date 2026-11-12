@@ -1287,14 +1287,19 @@ def _wire_turn(edges: list, centre: np.ndarray, axis: np.ndarray) -> float:
     return total
 
 
-def reseat_holes(brep, out) -> tuple[int, list]:
+def reseat_holes(brep, out, seam: list | None = None) -> tuple[int, list]:
     """SHMESH-45b: every round hole of a flat face that no other face shares is drawn again as ONE circle starting on the
     diagonal of the face's frame (its longest straight outer edge, as block_faces reads it), the same circle exactly. A
     CAD hole's circle starts at its seam, often in the middle of an O-grid quarter, and the quarter then cannot be
     counted evenly; drawn again, the seam sits where the O-grid cuts anyway. Only the hole's own wire changes (edges
     shared with other faces are untouched, so every junction stays as it is); a face whose area would change is left
     as it was. Writes `out` and returns (how many holes were drawn again - 0: `out` is the input unchanged -, [(each
-    one's centre, how many CAD edges it had)])."""
+    one's centre, how many CAD edges it had)]).
+
+    SHMESH-45i/49c: a hole that is one exact circle, or exact halves or quarters, keeps the CAD's edges (its ring is in
+    step; moving only the seam changed gmsh's free paving between rings) - unless its centre is in `seam`: the O-grid
+    holes of a first mesh, drawn again to start where their O-grid cuts (the face frame's diagonal, or 45 degrees to
+    a round plate's radial line)."""
     from OCP.BRep import BRep_Builder
     from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeWire
@@ -1391,8 +1396,14 @@ def reseat_holes(brep, out) -> tuple[int, list]:
                 if float(np.linalg.norm(rad)) > 1e-9 * max(1.0, float(radius)):
                     rad /= float(np.linalg.norm(rad))
                     want = (rad + np.cross(nrm, rad)) / math.sqrt(2.0)
-            if len(es) == 1 and exact and (want is None or float(rel @ want) > 1 - 1e-9):
-                continue            # already one circle (starting on the diagonal when the face has one)
+            force = seam is not None and any(
+                float(np.linalg.norm(np.asarray(c_, dtype=float) - np.asarray(loc, dtype=float))) <= 0.25 * radius
+                for c_ in seam)
+            spans = [cv.LastParameter() - cv.FirstParameter() for cv in circs] if exact else []
+            if not force and exact and len(es) in (2, 4) and max(spans) - min(spans) <= 1e-6 * 2 * math.pi:
+                continue            # exact halves or quarters: in step with any ring
+            if len(es) == 1 and exact and (not force or want is None or float(rel @ want) > 1 - 1e-9):
+                continue            # already one circle (an O-grid's starting where it cuts)
             start = want if want is not None else rel
             caxis = caxis_fit
             if exact:

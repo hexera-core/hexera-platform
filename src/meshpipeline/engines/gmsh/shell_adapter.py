@@ -998,6 +998,8 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
                 split_note = f"the closed faces were meshed whole ({exc})"
         reseated = 0
         redrawn: list = []
+        unseated = brep
+        seam_pass = False
         if ST.RESEAT and ST.WASHERS and SR.structure_of(requirements) not in ("free", "no_washers"):
             # SHMESH-45b: the round free holes of flat faces drawn again as one circle each
             seated = Path(tmp) / "reseated.brep"
@@ -1039,6 +1041,21 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
                 brep = nxt
                 resplined += made
                 continue
+            wanted = applied.pop("_seam_wanted", [])
+            if wanted and not seam_pass and not resplined and ST.RESEAT:
+                # SHMESH-49c: the O-grid holes drawn again to start where their O-grid cuts, and the part meshed once
+                # more (a seam inside a quarter makes the quarter two curves, counted unevenly)
+                seam_pass = True
+                again_at = Path(tmp) / "reseated_seam.brep"
+                try:
+                    n2, red2 = ST.reseat_holes(Path(unseated), again_at, seam=wanted)
+                except Exception as exc:  # noqa: BLE001 - the first mesh stands
+                    logger.info("shell mesh: the O-grid holes were not drawn again (%s)", exc)
+                    n2, red2 = 0, []
+                if n2 > reseated:
+                    brep, reseated, redrawn = again_at, n2, red2
+                    unmap, unmapped = set(), 0
+                    continue
             past = applied.pop("_past_spots", [])
             past_n = applied.pop("_past_n", 0)
             own: list = []
@@ -1057,6 +1074,7 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
                 except (ValueError, _Periodic) as exc:
                     logger.info("shell mesh: the spots past the solver's limits were not meshed again (%s)", exc)
                     break
+                applied2.pop("_seam_wanted", None)
                 past2 = applied2.pop("_past_spots", [])
                 n2 = applied2.pop("_past_n", 0)
                 if n2 >= past_n:
@@ -1875,6 +1893,11 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         past = shell_quality.nastran_past(mesh) | (_min_jac(mesh) <= 0)
         out["_past_spots"] = _spots(mesh, face_of, past)
         out["_past_n"] = int(past.sum())
+    # SHMESH-49c: the O-grid holes this mesh did not draw again: _mesh_path draws them again to start where their
+    # O-grid cuts and meshes once more
+    drawn_at = [np.asarray(c, dtype=float) for c, _e in hole_before]
+    out["_seam_wanted"] = [[float(x) for x in w.centre] for w in gridded
+                           if not any(float(np.linalg.norm(c - w.centre)) <= 0.25 * w.r for c in drawn_at)]
     return mesh, out
 
 
