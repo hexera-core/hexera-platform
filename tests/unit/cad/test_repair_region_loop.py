@@ -209,6 +209,61 @@ def test_scoped_work_costs_fewer_whole_shape_verifications_than_one_per_operatio
                                          + run.timings["scoped_scans"])
 
 
+def test_two_executed_operations_in_one_package_cost_two_scoped_scans():
+    """N operations inside ONE package cost N scoped scans, and no whole-shape walk at all.
+
+    THE INSIDE-A-PACKAGE FORM OF THE WHOLE THESIS, which a one-operation plan cannot show: with
+    a single operation per package, "one scoped scan per operation" and "one scoped scan per
+    package" are the same number. Both operations here aim at a defect their operation does not
+    clear, so each is really applied and really re-inspected - `target_remains` is the proof that
+    the re-inspection happened - and each of those re-inspections is scoped.
+    """
+    part = _Part()
+    run = _run(part, _author(part, aim_elsewhere=(0, 1), plan_ops=2))
+
+    verdicts = [v for p in run.packages for v in p.verdicts]
+    assert [v.reason for v in verdicts] == ["target_remains"] * 4
+    assert [p.status for p in run.packages] == ["reverted", "reverted"]
+    # Two operations and one proof per package, and nothing left over.
+    assert run.timings["scoped_scans"] == 6
+    assert run.timings["scoped_scans"] == (sum(len(p.verdicts) for p in run.packages)
+                                           + len(run.packages))
+    # ONE whole-shape scan for the run: the first. Nothing committed, so nothing to re-verify.
+    assert run.timings["verification_scans"] == 1
+    assert run.timings["scan_count"] == 7
+
+
+def test_a_package_that_kept_nothing_does_not_spend_the_runs_operation_allowance():
+    """A region discovered to be sound must not cost a later region its package.
+
+    Once every per-operation proof is scoped, a region an earlier package already cleared is only
+    discovered by packaging it and having its operation decline. Charging those attempts against
+    the RUN's allowance - which counts attempts, not keeps - would let a part whose regions were
+    co-swept (the sliver sweep is a whole-shape walk) burn the whole budget on packages that
+    changed nothing and stop with `op_budget` before reaching a region with real defects.
+
+    Region 0's plan is aimed at a defect its operation does not clear, so the package keeps
+    nothing and is reverted. With an allowance of ONE operation, region 1 must still get its own.
+    """
+    part = _Part()
+    run = _run(part, _author(part, aim_elsewhere=(0,)), max_ops=1)
+
+    assert [(p.region_index, p.status) for p in run.packages] == [(0, "reverted"),
+                                                                   (1, "committed")]
+    assert run.stopped_because != "op_budget"
+    assert run.shape == "original+b"          # region 1's repair really did happen
+
+
+def test_a_package_that_kept_something_still_spends_it():
+    # The other half: restoring the allowance for a package that changed nothing must not become
+    # "never charge anything", or a model author would have an unbounded run.
+    part = _Part()
+    run = _run(part, _author(part), max_ops=1)
+
+    assert [p.status for p in run.packages] == ["committed"]
+    assert run.stopped_because == "op_budget"
+
+
 # WHAT THE BRIEF LEAVES TO THIS TASK
 
 

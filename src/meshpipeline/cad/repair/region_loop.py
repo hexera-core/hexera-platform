@@ -244,6 +244,15 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
     packages: list[PackageVerdict] = []
     escalated: list[int] = []
     committed = False
+    # WHAT THE RUN'S OPERATION ALLOWANCE HAS BEEN SPENT ON, counted here rather than read off
+    # `len(work.log)`, because the log counts every ATTEMPT and this budget bounds mutation work.
+    # A PACKAGE THAT KEPT NOTHING DOES NOT CHARGE AGAINST IT. With per-operation proofs scoped,
+    # a region an earlier package already cleared is only discovered by packaging it (see below),
+    # and charging those discoveries would let a part whose regions were co-swept burn the whole
+    # allowance on packages that changed nothing and stop with `op_budget` before reaching a
+    # region that still has real defects. The run stays bounded regardless: one package per
+    # region, and each package's own `PackageBudget` bounds the attempts inside it.
+    charged = len(work.log)
     # WALKED EVERY REGION unless a budget says otherwise; the loop runs out of regions rather than
     # of ideas, because a region is offered exactly one package per run.
     stopped = REGIONS_EXHAUSTED
@@ -255,14 +264,23 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
             # committed stay committed.
             stopped = TIME_BUDGET
             break
-        if len(work.log) >= limits.max_ops:
+        if charged >= limits.max_ops:
             stopped = OP_BUDGET
             break
 
-        # THE REGION'S DEFECTS AS THEY ARE NOW, not as the first scan found them. An earlier
-        # region's package can legitimately clear a later region's defects (a sew joins the whole
-        # part), and authoring a package for geometry that is already sound would spend a budget
-        # to have `try_op` refuse it for a defect that is no longer there.
+        # THE REGION'S DEFECTS AS THEY ARE NOW, not as the first scan found them - but "now" is
+        # the last whole-shape scan plus whatever a scoped proof has since re-measured, and that
+        # is the price of locality. An earlier region's package can legitimately clear a later
+        # region's defects (a sew joins the whole part, the sliver sweep walks it), and with every
+        # per-operation proof scoped to its own region NOTHING HAS WALKED THIS ONE. So a region
+        # whose geometry is already sound is not skipped for free any more: it is offered its one
+        # package, and the package's own operation declines on geometry that is no longer there.
+        # That costs an apply and one scoped scan - paid in an apply rather than in a scan, which
+        # is the trade this driver exists to make - and it keeps no operation, so it does not
+        # charge against the run's allowance above.
+        # NEXT PLAN: one scoped scan per region before authoring would skip such a region again
+        # at no extra scan cost, and is scheduled as its own change because it alters what the
+        # loop attempts.
         mine = tuple(d for d in work.defects() if d.fingerprint in region.fingerprints)
         if not mine:
             continue
@@ -271,7 +289,7 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
             # NOT A FAILURE AND NOT AN ESCALATION. The author had nothing to propose, so the
             # region is left exactly as it arrived and the final scan reports it.
             continue
-        if len(work.log) + len(package.plan) > limits.max_ops:
+        if charged + len(package.plan) > limits.max_ops:
             # LOOKED AT BEFORE THE PACKAGE IS STARTED, not only after the log has grown past the
             # allowance. A package is executed whole or not at all, so a plan that cannot fit in
             # what the run has left would spend `package.budget.max_ops - 1` operations past the
@@ -283,6 +301,11 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
 
         verdict = work.try_package(_with_tolerance(package, tolerance_mm))
         packages.append(verdict)
+        if any(v.kept for v in verdict.verdicts):
+            # THE WHOLE PLAN IS CHARGED THE MOMENT ANY OF IT WAS KEPT, including the operations
+            # that rolled themselves back beside it: the package did real work on the shape, and
+            # whether the package then survived its own predicate is not what this budget bounds.
+            charged += len(verdict.verdicts)
         if verdict.committed:
             committed = True
         elif verdict.status == ESCALATED:

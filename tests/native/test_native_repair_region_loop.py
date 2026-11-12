@@ -298,8 +298,9 @@ def test_a_committed_package_pays_two_whole_shape_scans_whatever_its_plan_length
     # The second run really did plan more operations, and bought no whole-shape walk with them.
     assert counts[2][2] > counts[1][2]
     assert counts[2][0] == counts[1][0] == 2
-    # IT DID NOT EVEN COST A SCOPED SCAN HERE: the repeated operation declines on geometry the
-    # first one already repaired, which `try_op` answers before paying for any re-inspection. So
-    # the cost of a longer plan is AT MOST one scoped scan per extra operation, and never a
-    # whole-shape one - which is the inequality the design is justified on.
-    assert counts[2][1] <= counts[1][1] + (counts[2][2] - counts[1][2])
+    # IT DID NOT EVEN COST A SCOPED SCAN: the repeated operation declines on geometry the first
+    # one already repaired, and `try_op` answers that before paying for any re-inspection. The
+    # general bound is one scoped scan per extra operation and never a whole-shape one; here the
+    # extra operations cost nothing at all, and the EQUALITY is asserted rather than the bound so
+    # that the sentence above cannot outlive the behaviour it describes.
+    assert counts[2][1] == counts[1][1]
