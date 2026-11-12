@@ -88,11 +88,11 @@ def test_the_auth_surface_defines_the_classes_its_pages_consume():
         assert selector in auth, f"auth.css is missing {selector}"
 
 
-def test_the_auth_title_uses_the_display_face_at_its_thin_weight():
+def test_the_auth_title_uses_the_serif_face_at_its_editorial_weight():
     auth = (CSS / "auth.css").read_text()
     title = auth[auth.index(".auth__title"):auth.index(".auth__title") + 400]
-    assert "var(--display)" in title
-    assert "font-weight:300" in title.replace(" ", "")
+    assert "var(--serif)" in title
+    assert "font-weight:500" in title.replace(" ", "")
 
 
 def test_the_dashboard_shell_defines_the_classes_its_pages_consume():
