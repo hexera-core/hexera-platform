@@ -35,6 +35,9 @@ RECOMBINATION = 1
 PLANE_ALGORITHM: int | None = None
 #: SHMESH-10: cut every quad past Nastran's own limits into two triangles
 SPLIT_PAST = True
+#: SHMESH-48e: a gridded face's free boxes may carry one triangle each (inside the tria angle lines) while its
+#: triangles stay under this share of its elements
+BOX_TRIA_SHARE = 0.01
 #: SHMESH-11: cut every closed sewn face at its seams before meshing; a face gmsh still cannot mesh as a periodic
 #: surface is re-made as a B-spline (the same surface, exactly) and the mesh made again - at most RESPLINE_MAX faces
 SPLIT_CLOSED = True
@@ -1100,6 +1103,11 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
                 n2 = applied2.pop("_past_n", 0)
                 if n2 >= past_n:
                     break
+                # SHMESH-49g: a spot re-meshed across a rings-and-strips plate must not put it past POLAR_TRIAS
+                # triangles (the plate was judged on the mesh before: the record and the check say the same)
+                if any(v > ST.POLAR_TRIAS and v > applied.get("_polar_trias", {}).get(k, 0)
+                       for k, v in applied2.get("_polar_trias", {}).items()):
+                    break
                 mesh, applied, past, past_n = again, applied2, past2, n2
                 applied["quality"]["own_size_spots"] = len(own)
             if applied["quality"].get("own_size_spots"):
@@ -1109,6 +1117,9 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
             applied["quality"]["resplined_faces"] = resplined
             applied["quality"].setdefault("structure", {})["grids_freed"] = len(unmap)
             applied["quality"]["structure"]["holes_redrawn"] = reseated
+            # SHMESH-49g: each round plate meshed in rings and strips, with its triangles in the mesh delivered
+            applied["quality"]["structure"]["rings_and_strips"] = [
+                {"face": str(k), "triangles": int(n)} for k, n in sorted(applied.pop("_polar_trias", {}).items())]
             if split_note:
                 mesh.notes.append(f"{split_note[0].upper()}{split_note[1:]} (SHMESH-11d).")
             if resplined:
@@ -1570,17 +1581,54 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
             # SHMESH-47b: a gridded face whose lines cut a joined face into triangles or elements past the solver's
             # own limits - there, or in its own free cells - is left ungridded on the next pass (its neighbours whole)
             hurt: set[int] = set()
+            # the tria angle lines a free box's one triangle must meet: the user's, else 30 and 120 degrees
+            angle_aims = [(key, op, target) for shape, key, op, target, *_r in lim.aims
+                          if shape == "tria" and key in ("min_angle_tria", "max_angle_tria")]
+            if not angle_aims:
+                angle_aims = [("min_angle_tria", ">=", 30.0), ("max_angle_tria", "<=", 120.0)]
+
+            def elements_of(s_: int) -> list[tuple[int, np.ndarray]]:
+                types, _tags, conns = gmsh.model.mesh.getElements(2, s_)
+                return [(int(et), index[np.asarray(conn, dtype=np.int64)]) for et, conn in zip(types, conns, strict=True)]
+
             for kg, nbrs in sorted(cut_of.items()):
-                for s_ in sorted(x for x, kx in tag_of.items() if kx in nbrs or (kx == kg and x not in grids)):
-                    types, _tags, conns = gmsh.model.mesh.getElements(2, s_)
-                    for et, conn in zip(types, conns, strict=True):
-                        c_ = index[np.asarray(conn, dtype=np.int64)]
+                # the joined faces its lines cut: no triangle, no quad past the solver's limits
+                for s_ in sorted(x for x, kx in tag_of.items() if kx in nbrs):
+                    for et, c_ in elements_of(s_):
                         if et == 2 or (et == 3 and shell_quality._quad_past(
                                 shell_quality.quad_measures(xyz, c_.reshape(-1, 4))).any()):
                             hurt.add(kg)
-                            break
                     if kg in hurt:
                         break
+                if kg in hurt:
+                    continue
+                # SHMESH-48e: its own free cells (a washer's free box): no quad past the solver's limits, and at most
+                # one triangle each, inside the tria angle lines, the face's triangles under BOX_TRIA_SHARE of its
+                # elements (a box between rows of bolt holes leaves one where its ring nearly meets the shared line)
+                n_face, n_tri = 0, 0
+                for s_ in sorted(x for x, kx in tag_of.items() if kx == kg):
+                    tri_here = 0
+                    for et, c_ in elements_of(s_):
+                        if et == 3:
+                            quads_ = c_.reshape(-1, 4)
+                            n_face += len(quads_)
+                            if s_ not in grids and shell_quality._quad_past(
+                                    shell_quality.quad_measures(xyz, quads_)).any():
+                                hurt.add(kg)
+                        elif et == 2:
+                            tris_ = c_.reshape(-1, 3)
+                            n_face += len(tris_)
+                            tri_here += len(tris_)
+                            m_ = shell_quality.tria_measures(xyz, tris_)
+                            for key, op, target in angle_aims:
+                                bad_ = (m_[key] < target) if op.startswith(">") else (m_[key] > target)
+                                if bad_.any():
+                                    hurt.add(kg)
+                    n_tri += tri_here
+                    if tri_here > (1 if s_ not in grids else 0):
+                        hurt.add(kg)
+                if n_tri > BOX_TRIA_SHARE * max(n_face, 1):
+                    hurt.add(kg)
             if hurt:
                 raise _NoCut(hurt)
         if check_maps and grids:
@@ -2017,6 +2065,9 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                                                                               "its ring did not close")))
         and not any(float(np.linalg.norm(c - w.centre)) <= 0.25 * w.r for c in drawn_at)]
     # SHMESH-49c: the O-grid holes this mesh did not draw again (to start where their O-grid cuts)
+    if polar_faces_made:
+        tri_k = Counter(int(k) for k in t_face)
+        out["_polar_trias"] = {int(k): int(tri_k.get(k, 0)) for k in polar_faces_made}
     out["_seam_wanted"] = [([float(x) for x in w.centre], list(w.seam)) if w.seam else [float(x) for x in w.centre]
                            for w in gridded
                            if not any(float(np.linalg.norm(c - w.centre)) <= 0.25 * w.r for c in drawn_at)]
