@@ -363,10 +363,11 @@ def test_a_hole_drawn_as_several_edges_still_gets_its_washer(tmp_path):
     for req in (_criteria(), None):
         mesh, applied = _mesh(brep, rec, req)
         s = applied["quality"]["structure"]
-        # (the even halves at 60, 60 and the quarters at 240, 140 keep their CAD edges, SHMESH-45i - unless the face
-        # is gridded: then its O-grid holes are drawn again to start where they are cut, SHMESH-49c)
-        assert s["holes_redrawn"] == (6 if s["washers_ogrid"] else 4), s
+        # (only the holes whose ring had to follow uneven hole nodes on a first mesh are drawn again, SHMESH-45k: the
+        # uneven splits - and, where the face is gridded, its O-grid holes to start where they are cut, SHMESH-49c)
+        assert (s["holes_redrawn"] == 6) if s["washers_ogrid"] else (1 <= s["holes_redrawn"] <= 4), s
         assert s["washers"] == 6 and s["no_washer"] == {}, s
+        assert all(h["edges"] == 1 for h in s["hole_list"] if h["edges_before"] != h["edges"])
         assert SS.measure(mesh)["holes_ringed"] == 6 and applied["quality"]["valid"]
 
 
