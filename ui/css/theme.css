@@ -225,6 +225,15 @@ th,td{border-color:var(--border)}
 .req-card .rc-notes-add:disabled{opacity:.45;cursor:default}
 .req-card .rc-notes-msg{display:block;margin-top:4px;color:var(--danger);font-size:var(--fs-sm)}
 .req-card .rc-notes-msg:empty{display:none}
+/* the yes, as a button: the one primary action under the plan, the words beside it the other way on */
+.req-card .rc-go{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin-top:10px;padding:14px 16px 4px;
+  border-top:1px solid var(--divider)}
+.req-card .rc-go-btn{height:34px;padding:0 16px;border:1px solid var(--primary);border-radius:var(--r-md);
+  background:var(--primary);color:var(--primary-ink);font:600 var(--fs-md)/1 var(--sans);cursor:pointer;
+  transition:background .12s,border-color .12s}
+.req-card .rc-go-btn:hover:not(:disabled){background:var(--primary-hover);border-color:var(--primary-hover)}
+.req-card .rc-go-btn:disabled{opacity:.55;cursor:default}
+.req-card .rc-go-alt{color:var(--text-faint);font-size:var(--fs-sm)}
 /* the parts the notes mean: one picture, a quiet row per phrase that opens the part list */
 .req-card .rc-pm:empty{display:none}
 .req-card .rc-pm{padding:6px 16px 2px}

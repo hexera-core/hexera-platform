@@ -27,7 +27,7 @@ import { configure as configureStream, lastSeq, replay, start as startStream, te
   from "./realtime/stream.js";
 import { confirmCancel } from "./shell/cancel.js";
 import { clearNewRunOffer, configureComposer, disableInput, enableInput, mountComposer,
-  offerNewRun, setPlaceholder, showRunFile } from "./shell/composer.js";
+  offerNewRun, sendReply, setPlaceholder, showRunFile } from "./shell/composer.js";
 import { refreshHealth } from "./shell/settings.js";
 import { configureDispute } from "./viewer/dispute.js";
 import { offerReview, openParked } from "./review/review.js";
@@ -214,8 +214,12 @@ function attachJob(id, { replayHistory = false, message = "", origin = getState.
 /* THE NOTES BOX under the plan: the user's own text, kept as typed; the card redraws with it */
 async function addBriefNote(text) {
   const d = await addNote(getState.sessionId(), text);
-  Stage.brief(d.brief, addBriefNote, briefParts);
+  Stage.brief(d.brief, addBriefNote, briefParts, startMeshing);
 }
+
+/* THE REQUEST CARD'S "Start meshing": the user's yes to the approval question, sent exactly as typing "yes" sends
+   it - the same message through the same path, so a click approves only what a typed yes would */
+const startMeshing = () => sendReply("yes");
 
 /* THE PARTS CHECKLIST under the notes: which parts the notes mean, and the user's fix for one phrase */
 const briefParts = {
@@ -236,7 +240,7 @@ const briefParts = {
 configureComposer({
   notice: Notice,
   chat: (role, text) => Stage.chat(role, text),
-  brief: (b) => Stage.brief(b, addBriefNote, briefParts),
+  brief: (b) => Stage.brief(b, addBriefNote, briefParts, startMeshing),
   // a yes before Finalize notes: wait (a minute at most) for the reading the server started
   notesRead: async () => {
     const t0 = Date.now();
