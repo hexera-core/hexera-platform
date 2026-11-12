@@ -346,13 +346,18 @@ function initViewer(job,surf,uiCfg){
     const css='linear-gradient(0deg,'+pts.map(([v,c])=>`rgb(${c}) ${pc(v)}`).join(',')+')';
     return {color,hi,lo,open,css,limitPct:pc(lim)};}
   (surf.patches||[]).forEach((p,i)=>{
-    let pts,polys,nCells;
+    let pts,polys,nCells,nTris;
     if(p.polys_b64){pts=b64f32(p.points_b64);polys=b64u32(p.polys_b64);
       // Count the polygons ACTUALLY in this connectivity array. face_count is the
       // patch's face count in the MESH, which a decimated preview surface does not
       // ship one-for-one; trusting it walks the offsets table off the end of polys.
-      nCells=0;for(let q=0;q<polys.length;q+=polys[q]+1)nCells++;}
-    else{pts=b64f32(p.positions_b64);nCells=pts.length/9;    // STL fallback: tri soup
+      // AND THE TRIANGLES THEY FAN TO, off the stream rather than as 2x the polygons: the
+      // lossless merge emits 4-corner rectangles beside faces kept whole at 4 to 8 corners, and
+      // an n-gon fans to n - 2. It is counted here because this is the one walk of the stream
+      // that already happens, and `_vdbg.drawn()` has no other way to say what is on screen.
+      nCells=0;nTris=0;
+      for(let q=0;q<polys.length;q+=polys[q]+1){nCells++;nTris+=Math.max(polys[q]-2,0);}}
+    else{pts=b64f32(p.positions_b64);nCells=pts.length/9;nTris=nCells;  // STL fallback: tri soup
       polys=new Uint32Array(nCells*4);
       for(let t=0;t<nCells;t++){polys[t*4]=3;polys[t*4+1]=t*3;polys[t*4+2]=t*3+1;polys[t*4+3]=t*3+2;}}
     const pd=vtk.Common.DataModel.vtkPolyData.newInstance();
@@ -377,7 +382,7 @@ function initViewer(job,surf,uiCfg){
     if(pr.setBackfaceCulling)pr.setBackfaceCulling(false);
     ren.addActor(actor);
     const b=pd.getBounds();
-    entries.push({actor,pd,patch:p.name,polys,pts,nCells,offsets:null,
+    entries.push({actor,pd,patch:p.name,polys,pts,nCells,nTris,offsets:null,
       diag:Math.hypot(b[1]-b[0],b[3]-b[2],b[5]-b[4])});
     totalFaces+=nCells;});
 
@@ -389,6 +394,10 @@ function initViewer(job,surf,uiCfg){
   // the parts panel's own repaint: the heatmap hands edges back through the panel, so a selected
   // part keeps its selection edge - and a listener on it, so the problem areas follow what is shown
   let repaintParts=null,onPartsPainted=null,onVisibleChanged=null;
+  //: The region a reader has ISOLATED, or null. Set by `paint`, read by the deep-zoom keep list,
+  //: which otherwise can only name patches this payload happens to draw - and the metal's are
+  //: nearly all of the ones it does not. See `detail_window._visible_rows`.
+  let isolatedRegion=null;
   const cam=ren.getActiveCamera();
   /* HALF THE VIEW'S HEIGHT PER UNIT OF DISTANCE, in the scope BOTH closures below
      need it in. It used to be a const inside the heatmap's IIFE, and `radiusNow` in
@@ -400,6 +409,11 @@ function initViewer(job,surf,uiCfg){
   /* The detail window's own way of putting the merged surface back, for the things that
      have to put it back and are not the detail window. Null until it exists. */
   let closeDetail=null;
+  /* THE SAME, WITHOUT TURNING A MODE OFF: just put the merged surface back on screen. For the
+     things that re-frame the camera, because `resetCamera` frames what is VISIBLE and a window
+     that is up has hidden the mesh and put a few thousand real cells in front of it. Null until
+     the detail window exists. */
+  let showSurfaceAgain=null;
   // CAD is z-up, and the geometry check already draws parts that way: start from a front-quarter
   // view looking slightly down with +z up. vtk's default camera is +y-up, which laid cars and
   // aircraft on their side in the mesh viewer. A part modelled another way up opens the way the
@@ -440,9 +454,19 @@ function initViewer(job,surf,uiCfg){
         :`${totalFaces.toLocaleString()} drawn of ${(+_red.delivered_faces).toLocaleString()} faces`)
       :totalFaces.toLocaleString()+' boundary faces';
 
-  document.getElementById('v-fitbtn-'+job).onclick=()=>{ren.resetCamera();clampCam();rw.render();};
+  /* FIT FRAMES THE MESH, and it could not while a window was open. `resetCamera` frames the
+     VISIBLE props, and a detail window hides the merged surface and puts its own few thousand
+     real cells in front of it - so Fit framed the cut. Measured on this plate with the deep mode
+     on: Fit from a 7.8 mm view of the coolant left the camera 0.054 m out on a 0.386 m part, and
+     every zoom after it started from there, bottoming out on the near clamp with 4 real cells in
+     a 0.42 mm box. The surface goes back first; the mode is left alone and puts its cut back on
+     the camera move this makes, which is what it does after any other camera move. */
+  document.getElementById('v-fitbtn-'+job).onclick=()=>{
+    if(showSurfaceAgain)showSurfaceAgain();
+    ren.resetCamera();clampCam();rw.render();};
   // WHICH WAY IS UP: turn the camera to the chosen axis, re-frame, and remember it for this job
   function setUp(axis){
+    if(showSurfaceAgain)showSurfaceAgain();   // re-frames, so the same as Fit above
     orient(cam,axis,VIEW_DIR);ren.resetCamera();clampCam();rw.render();
     if(upSel&&upSel.value!==axis)upSel.value=axis;
     saveUp('job',job,axis);}
@@ -576,7 +600,11 @@ function initViewer(job,surf,uiCfg){
                 role:md.role||'',
                 // declared renderable AND actually present in this payload
                 renderable:p.renderable!==false&&!!entities.length,
-                hiddenByDefault:p.default_visibility==='hidden'};});
+                hiddenByDefault:p.default_visibility==='hidden',
+                //: WHY it opens hidden, because the two reasons want different things once it is
+                //: shown. See `dflt` and `unhide` below, and render/mesh_facts.far_side_interfaces.
+                encloses:!!md.encloses_domain,
+                coincident:md.coincident_with||''};});
 
     const KIND=thermal
       // a thermal model's regions are the file's parts, its boundary the sides of the air box
@@ -593,8 +621,16 @@ function initViewer(job,surf,uiCfg){
     // translucent, so one click brings it back as a shell you can see through. The
     // BACKEND decides which parts those are - from the case's own declared roles -
     // and "Restore full mesh" returns to exactly that.
+    /* TWO REASONS TO OPEN HIDDEN, AND THEY WANT DIFFERENT THINGS WHEN SHOWN AGAIN.
+       An enclosing wall comes back as a shell you can see through, which is the line above: one
+       click on the outside of the plate must not seal the mesh inside it a second time.
+       The far side of an interface the payload draws twice is not a wall at all. It is the
+       surface the reader asked for - hidden only because another region draws the same sheet from
+       the other side and two coincident sheets speckle - and at 18% the channel walls carved into
+       the metal would be a ghost of the one thing in the metal worth looking at. So it comes back
+       solid. */
     const dflt=p=>({hidden:!!(p.renderable&&p.hiddenByDefault),
-                    opacity:p.hiddenByDefault?0.18:1});
+                    opacity:p.hiddenByDefault&&!p.coincident?0.18:1});
     const st={};parts.forEach(p=>{
       const en=actorOf[p.entity],d=dflt(p);
       st[p.id]={hidden:d.hidden,opacity:d.opacity,entity:p.entity,
@@ -608,11 +644,33 @@ function initViewer(job,surf,uiCfg){
        correctly, or the first sight of the mesh is six grey rectangles. Isolating the metal used
        to leave an empty viewport, because the only state un-hidden was the region's own and the
        region paints nothing itself. */
+    /* AND AN ENCLOSING WALL IS NOT WHAT THE READER ASKED FOR, when the part has anything else.
+       The metal's outside is `solid_to_air`, which opens hidden because it wraps everything; the
+       paragraph above brought it back on isolate because it was the metal's ONLY drawn surface
+       and the alternative was an empty viewport. Once the payload also carries the channel walls
+       carved into the metal, bringing it back costs twice: it stands between the camera and them,
+       and - because the camera frames what is VISIBLE and the zoom goes where the camera is
+       pointing - every cut lands on the OUTSIDE of the plate instead of in the channels.
+       Measured on the delivered plate, the metal isolated and everything else identical, 42 wheel
+       clicks and one deep pass: outside hidden, 220,804 real cells in a 7.70 mm view; outside
+       shown, 2,209 in 4.13 mm. The coolant, for scale, is 228,022 in 7.83 mm.
+       So an enclosing surface is left hidden WHEN SOMETHING ELSE DRAWS THE PART, and one click on
+       its own chip brings it back as the shell it always was. When it is the only thing that
+       draws the part, nothing has changed and it still comes back - which is the case on the
+       page that carries one side of each interface, where the metal's outside is all it has.
+
+       PER ACTOR AND BY THE SAME RULE `paint` USES, not per part. An actor's state belongs to the
+       FIRST renderable part that names it, so asking "which parts draw this one" answers with
+       parts whose state nothing reads - the metal region names its own surface, so a filter over
+       parts found a non-enclosing one, concluded there was something else to show, and left the
+       viewport empty on exactly the page this is meant to leave alone. */
     function unhide(id){
       const p=parts.find(x=>x.id===id);if(!p)return;
       st[id].hidden=false;
-      parts.forEach(x=>{if(x.renderable&&x.entities.some(e=>p.entities.indexOf(e)>=0))
-                          st[x.id].hidden=false;});}
+      const owners=p.entities.map(e=>parts.find(x=>x.renderable&&x.entities.indexOf(e)>=0))
+                             .filter(Boolean);
+      const inner=owners.filter(x=>!x.encloses);
+      (inner.length?inner:owners).forEach(x=>{st[x.id].hidden=false;});}
 
     // Re-frame on what is VISIBLE. Without this, hiding the enclosing outer
     // boundary leaves the body a speck inside a fit computed for the whole box.
@@ -632,6 +690,14 @@ function initViewer(job,surf,uiCfg){
 
     function paint(){
       const selPart=sel?parts.find(x=>x.id===sel):null;
+      /* A WHOLE REGION, not a patch. `region:solid` isolated means the reader asked for the
+         metal, and the metal's drawn surface is its OUTSIDE - the channel walls in it are
+         `solid_to_fluid`, which this payload does not draw because the coolant draws the same
+         surface from the other side. With the coolant off screen there is nothing to fight
+         with, so the window can hand back the whole region. */
+      isolatedRegion=(isolated&&selPart&&selPart.kind==='region'
+                      &&String(selPart.id).indexOf('region:')===0)
+        ?String(selPart.id).slice(7):null;
       entries.forEach(en=>{
         const p=parts.find(x=>x.renderable&&x.entities.indexOf(en.patch)>=0);
         const s=p?st[p.id]:null;if(!s)return;
@@ -1270,6 +1336,16 @@ function initViewer(job,surf,uiCfg){
     gridPx:()=>{const f=cam.getFocalPoint(),q=cam.getPosition();
       const d=Math.hypot(q[0]-f[0],q[1]-f[1],q[2]-f[2])||1e-12;
       return stats?stats.typ*(apiRW.getSize()[1]/(2*Math.tan(cam.getViewAngle()*Math.PI/360)))/d:null;},
+    /* WHAT IS ACTUALLY ON SCREEN, against what the payload carries. The status line states the
+       payload's own totals, which is the right thing for it to state and the wrong thing to
+       measure a view by: a conjugate payload may carry both sides of an interface and draw one,
+       so "did this change make the viewer draw more" is a question only the visible set answers. */
+    drawn:()=>{const on=entries.filter(e=>e.actor.getVisibility());
+      return {patches:on.map(e=>e.patch).sort(),
+              polygons:on.reduce((a,e)=>a+e.nCells,0),
+              triangles:on.reduce((a,e)=>a+e.nTris,0),
+              payloadPolygons:entries.reduce((a,e)=>a+e.nCells,0),
+              payloadTriangles:entries.reduce((a,e)=>a+e.nTris,0)};},
     fitDist:()=>_fitDist,stats:stats,diag:diag,size:()=>apiRW.getSize(),
     markers:()=>flags.length,up:()=>cam.getViewUp().slice(),
     upAxis:()=>upSel?upSel.value:'+z',setUp:axis=>setUp(axis),
@@ -2042,6 +2118,29 @@ function initViewer(job,surf,uiCfg){
     //: `viewBox`: the camera sees forward, so a cube centred on the first surface it hits leaves
     //: the far half of a channel unread and the canvas full of holes.
     const DEEP_DEPTH=4.0;
+    //: HOW FAR OVER THE ROUTE'S CEILING A PREDICTED COUNT MAY BE AND STILL BE WORTH ASKING.
+    //:
+    //: IT WAS 2.5 AND THAT IS FOUR WASTED QUESTIONS. Measured on the delivered plate,
+    //: 2026-11-11, driving the wheel in from the fit and asking /window at every settle:
+    //:
+    //:     34.6 mm   4,573,668 faces in box   refused   (the first question; nothing learnt yet)
+    //:     28.7 mm   3,723,777                refused   predicted 3.15 M, slack allowed 3.75 M
+    //:     23.8 mm   2,861,907                refused   predicted 2.56 M
+    //:     19.7 mm   1,906,000                refused   predicted 1.96 M
+    //:     16.3 mm     818,905                FITS      predicted 1.31 M - 818,905 real cells
+    //:
+    //: Every refusal is a full bucket walk over a box holding millions of faces, so those three
+    //: middle rows are seconds each of the reader's zoom spent on an answer the square law had
+    //: already predicted would not fit. At 1.25 the same walk in asks at 34.6 (unlearnt), skips
+    //: 28.7, 23.8 and 19.7, and asks at 16.3 - one refusal instead of four, same handover.
+    //:
+    //: NOT TIGHTER THAN 1.0, and not much looser. The square law holds on a SURFACE, which is
+    //: what the index counts, so a prediction in the same place is sound - but it is a prediction
+    //: of a count that varies by two orders of magnitude ACROSS this part, and the slack is what
+    //: covers the reader zooming into a corner denser than the one measured. Panning is already
+    //: covered by the centre test above (half a box width), so this only has to cover the
+    //: density change along a straight zoom, which is small.
+    const DEEP_SLACK=1.25;
     const dep=document.getElementById('v-insp-deep-'+job);
     let deepOn=false,depTimer=null,depBusy=false,depKey='';
     let depFaces=0,depFits=false,depInBox=0,depMs=0;
@@ -2092,6 +2191,9 @@ function initViewer(job,surf,uiCfg){
     function deepKeep(){
       const on=readerSees(),out=[];
       Object.keys(on).forEach(k=>out.push(k));
+      // the whole region, when that is what the reader isolated: a trailing slash says so, and
+      // it is the only way to reach a patch this payload was never given
+      if(isolatedRegion)out.push(isolatedRegion+'/');
       return out.sort();}
 
     /* IS IT WORTH ASKING. The floor above guards the first question; this guards every one after
@@ -2110,7 +2212,7 @@ function initViewer(job,surf,uiCfg){
       if(depCentre){
         const c0=(v.lo[0]+v.hi[0])/2,c1=(v.lo[1]+v.hi[1])/2,c2=(v.lo[2]+v.hi[2])/2;
         if(Math.hypot(c0-depCentre[0],c1-depCentre[1],c2-depCentre[2])>0.5*depAcross)return true;}
-      return depSeen*Math.pow(v.across/depAcross,2)<=depCap*2.5;}
+      return depSeen*Math.pow(v.across/depAcross,2)<=depCap*DEEP_SLACK;}
 
     /* THE VIEW AS A WORLD-ALIGNED BOX. The index answers axis-aligned boxes and a frustum is
        neither axis-aligned nor a box, so this takes the oriented box around what the camera can
@@ -2221,7 +2323,16 @@ function initViewer(job,surf,uiCfg){
       // fits, but a view this far out has never fitted and the pick plus the round trip is
       // seconds of nothing. The density gate is NOT here: it belongs below, on the box that
       // will actually be asked for.
-      const keep=deepKeep(),px=realCellPx();
+      /* BOTH LISTS, because `keep` can now be wider than the screen. A whole-region entry says
+         "every patch of this region", which is the only way to reach one the payload was never
+         given - and it reaches the ones it WAS given and the reader has turned off as well. On
+         this plate that is `solid/solid_to_air`: isolate the metal and its outside is left
+         hidden, and without this the cut drew it straight back, which is the wall standing
+         between the camera and the channels that the keep list was built to get rid of.
+         `_visible_rows` applies keep first and then skip, so the pair reads as "the region,
+         minus what is off". `skip` is a function of `keep` over a fixed set of actors, so the
+         cache key below still only needs one of them. */
+      const keep=deepKeep(),skip=deepSkip(),px=realCellPx();
       if(px<DEEP_MIN_PX||!keep.length){
         depKey=depKeyOf(viewBox(),keep);
         depFits=false;depFaces=0;
@@ -2265,7 +2376,8 @@ function initViewer(job,surf,uiCfg){
       try{
         const q=`x0=${v.lo[0]}&y0=${v.lo[1]}&z0=${v.lo[2]}`
                +`&x1=${v.hi[0]}&y1=${v.hi[1]}&z1=${v.hi[2]}`
-               +`&keep=${encodeURIComponent(keep.join(','))}`;
+               +`&keep=${encodeURIComponent(keep.join(','))}`
+               +`&skip=${encodeURIComponent(skip.join(','))}`;
         const res=await fetch(`/api/v1/simulation/${job}/window?${q}`,{headers:headers()});
         if(!res.ok){
           let why='';try{why=((await res.json())||{}).detail||'';}catch(_e){why='';}
@@ -2695,6 +2807,10 @@ function initViewer(job,surf,uiCfg){
     const sc=document.getElementById('v-scale-'+job);if(sc)shield(sc);
 
     closeDetail=()=>{if(shown.length){clear();setArmed(false);}};
+    // `hidden` ALONE IS ENOUGH to have taken the mesh off screen: a pass that fits with nothing
+    // in the box hides the surface and shows no cells, and that is exactly the state a re-frame
+    // must not be computed from.
+    showSurfaceAgain=()=>{if(shown.length||hidden.length)clear();};
     /* WHAT A READER CAN ACTUALLY SEE, which is what all three of this window's defects came
        down to: which patches are drawn - a budget that drops a region drops it from here -
        and whether the merged surface this stands in front of is still hidden. */

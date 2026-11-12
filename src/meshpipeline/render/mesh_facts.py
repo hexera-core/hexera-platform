@@ -76,6 +76,52 @@ _ENCLOSING_ROLES: Final[frozenset[str]] = frozenset({
 })
 
 
+def far_side_interfaces(rendered: tuple[str, ...],
+                        enclosing: tuple[str, ...] = ()) -> dict[str, str]:
+    """{drawn surface: the drawn surface it duplicates} for one side of every interface
+    DRAWN TWICE.
+
+    A conjugate interface is ONE surface with two sides, and a payload that carries both hands
+    the renderer two coincident sheets: measured on this plate, `fluid/fluid_to_solid` and
+    `solid/solid_to_fluid` are 16,619,777 faces each, the same faces, and what a reader sees
+    across every channel wall is not detail but a speckle of two materials, worse the closer they
+    look. So one of the two opens HIDDEN. Not dropped: the metal is 63% of this mesh and the
+    channel walls carved into it are the only thing in it worth looking at, so a reader who
+    isolates the metal has to be able to reach them - and when the coolant is off screen there is
+    nothing left for that sheet to fight with.
+
+    THE PAIRING IS THE NAME, which is the convention `splitMeshRegions` writes: region `A` calls
+    its side of the coupling to `B` `A_to_B`, so the drawn `A/A_to_B` is paired with `B/B_to_A`
+    and with nothing else. A patch whose partner is not drawn is not in here at all.
+
+    WHICH SIDE IS THE FAR ONE is decided by `enclosing` and not by a region name. The region that
+    also owns the outside of the block - the one whose other patches wrap everything, which on a
+    cooled solid is the metal - is the outer body, so its side is the far side. That is the same
+    reasoning `cfmesh_conjugate.viewer._skip_for` states for dropping the solid's side, derived
+    from the payload instead of from the word "solid". When neither region owns an enclosing
+    surface the two are still the same surface, so the pick only decides which NAME a reader
+    turns on: the one later in `rendered` is taken, deterministically and for no deeper reason.
+    """
+    drawn = [str(s) for s in rendered if isinstance(s, str) and "/" in s]
+    at = {s: i for i, s in enumerate(drawn)}
+    outer = {s.split("/", 1)[0] for s in enclosing if isinstance(s, str) and "/" in s}
+    out: dict[str, str] = {}
+    for s in drawn:
+        region, bare = s.split("/", 1)
+        if not bare.startswith(region + "_to_"):
+            continue
+        other = bare[len(region) + 4:]
+        mate = f"{other}/{other}_to_{region}"
+        if mate not in at or mate in out or s in out:
+            continue
+        # the outer body's side, or - when that does not decide it - the later of the two
+        far = (s if region in outer and other not in outer
+               else mate if other in outer and region not in outer
+               else (s if at[s] > at[mate] else mate))
+        out[far] = mate if far == s else s
+    return out
+
+
 def _as_int(v: Any) -> int | None:
     if isinstance(v, bool) or v is None:
         return None
@@ -153,16 +199,27 @@ def _region_rows(q: dict) -> list[dict]:
 
 def parts(manifest: dict | None, *, rendered: tuple[str, ...] = (),
           enclosing: tuple[str, ...] = (), list_drawn: bool = False,
-          poor: tuple[str, ...] = ()) -> list[dict[str, Any]]:
+          poor: tuple[str, ...] = (), coincident: dict[str, str] | None = None,
+          ) -> list[dict[str, Any]]:
     """The mesh parts the viewer lists. `rendered` names the surfaces the payload draws;
     `enclosing` those of them the engine says wrap everything else (they open hidden, like an
     enclosing role); `poor` those that are sets of cells that failed a check. `list_drawn` - a
     DELIVERED mesh - also lists every drawn surface no declared part names, so nothing the user
-    sees is a surface they cannot pick."""
+    sees is a surface they cannot pick.
+
+    `coincident` maps a drawn surface onto the one it DUPLICATES - the far side of an interface
+    the payload carries both sides of (`far_side_interfaces` derives it). Those open hidden, so
+    the first sight of the mesh is one sheet per surface and not two fighting, and `coincident_with`
+    on the part says which surface it is the other side of. It is a SEPARATE reason from
+    `encloses_domain` because the two want different things once the part is shown: an enclosing
+    wall comes back as a shell you can see through, where the far side of an interface is the
+    surface a reader asked for and comes back solid.
+    """
     man: dict = manifest or {}
     rendered_set = set(rendered)
     enclosing_set = set(enclosing)
     poor_set = set(poor)
+    twin: dict[str, str] = dict(coincident or {})
     out: list[dict[str, Any]] = []
 
     # boundary patches, in manifest order
@@ -207,8 +264,13 @@ def parts(manifest: dict | None, *, rendered: tuple[str, ...] = (),
                     or (bool(surfaces) and all(s in enclosing_set for s in surfaces)))
         if encloses:
             bmeta["encloses_domain"] = True
+        # the far side of an interface drawn from both sides: every surface that draws this patch
+        # is already on screen under another name, so it opens hidden
+        far = bool(surfaces) and all(s in twin for s in surfaces)
+        if far:
+            bmeta["coincident_with"] = twin[surfaces[0]]
         out.append(_part(f"{BOUNDARY}:{n}", n, BOUNDARY, "patch_types",
-                         visibility=HIDDEN if encloses else VISIBLE,
+                         visibility=HIDDEN if (encloses or far) else VISIBLE,
                          renderable=n in rendered_set or bool(surfaces), metadata=bmeta))
 
     # mesh regions
@@ -316,8 +378,11 @@ def parts(manifest: dict | None, *, rendered: tuple[str, ...] = (),
             encloses = n in enclosing_set
             if encloses:
                 dmeta["encloses_domain"] = True
+            far = n in twin
+            if far:
+                dmeta["coincident_with"] = twin[n]
             out.append(_part(f"{BOUNDARY}:{n}", n, BOUNDARY, "surface",
-                             visibility=HIDDEN if encloses else VISIBLE,
+                             visibility=HIDDEN if (encloses or far) else VISIBLE,
                              renderable=True, metadata=dmeta))
 
     return out

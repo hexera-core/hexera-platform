@@ -17,16 +17,38 @@ what stops that being overstated later.
 
 WHAT IS COPIED AND WHAT IS REBUILT. Everything that describes the MESH is copied from the source
 payload unchanged: `engine`, `quality` (checkMesh's own numbers), `review`, `quality_fields`,
-`parts` (the roster), `cell_stats`. Only the DRAWING changes, so only `patches` is rebuilt, and
-`reduced` - the budget's record of what it threw away - is replaced by `exact`, which records that
-nothing was thrown away and what that cost in polygons.
+`cell_stats`. Only the DRAWING changes, so only `patches` is rebuilt, and `reduced` - the budget's
+record of what it threw away - is replaced by `exact`, which records that nothing was thrown away
+and what that cost in polygons.
 
-WHICH PATCHES. Exactly the ones the source payload drew, by name. The delivered plate has
-`solid/solid_to_fluid` and `solid/solid_to_chip` in the mesh and NOT in the payload, because they
-are the far side of the conjugate interface and sit exactly on top of `fluid/fluid_to_solid` and
-`chip/chip_to_solid`; two coincident surfaces fight for the same depth and neither reads. Deciding
-that again here, differently, would put 1.2 M polygons of invisible back-face into the payload and
-make the two pages incomparable. So the source decides.
+`parts` (the roster) is copied and then RECONCILED against what is actually drawn, which matters
+only under --all-patches and matters absolutely there. The roster is the only thing the viewer can
+reach a surface through: a part names the drawn surfaces that carry it in `metadata.drawn_as`, and
+a drawn surface no part claims is an actor whose visibility nothing owns - shown always, hideable
+never. Copied verbatim, the extra patches would therefore have arrived as two coincident sheets
+nobody could switch off, which is the z-fighting this whole route exists to avoid.
+
+WHICH PATCHES. By default, exactly the ones the source payload drew, by name. The delivered plate
+has `solid/solid_to_fluid` and `solid/solid_to_chip` in the mesh and NOT in the payload, because
+they are the far side of the conjugate interface and sit exactly on top of `fluid/fluid_to_solid`
+and `chip/chip_to_solid`; two coincident surfaces fight for the same depth and neither reads.
+Deciding that again here, differently, would put 1.2 M polygons of invisible back-face into the
+payload and make the two pages incomparable. So the source decides.
+
+--ALL-PATCHES DRAWS BOTH SIDES ANYWAY, and the far side opens HIDDEN. Not drawing it at all cost
+the metal everything worth looking at: its one drawn surface is `solid/solid_to_air`, the outside
+of the plate, so a reader who isolated the Metal view and zoomed in got the outside of a slab.
+Measured on the one-sided page, the metal isolated: a deep cut comes back with 2,209 real cells of
+the plate's OUTSIDE in a 4.13 mm view, against the coolant's 228,022 in 7.83 mm - and the one-sided
+payload has nothing else to offer, because the surface the reader wants is not in it. With both
+sides it is 219,802 in 7.69 mm, on the same page in the same browser.
+
+Hidden by default, the opening view and the All view draw exactly the surfaces they drew before -
+830,493 polygons and 1,700,364 triangles either way, and the two pages' All, Coolant and Chip
+views are pixel-identical at the same camera. Isolating the metal un-hides the far side, which is
+where the channel walls carved into the metal finally appear.
+`render.mesh_facts.far_side_interfaces` decides which side is the far one, and it decides it from
+the drawn set, not from the word "solid".
 """
 from __future__ import annotations
 
@@ -59,6 +81,69 @@ def regions_of(sidecar: Path) -> list[tuple[str, Path]]:
         if pm.is_dir():
             out.append(("", pm))
     return out
+
+
+def reconcile_roster(rows: list, drawn: list[str]) -> tuple[list, list[str]]:
+    """The source's part roster, made true about `drawn`. Returns it with a log of what changed.
+
+    A no-op when the drawn set is the one the source drew, which is the default route: there is
+    nothing to claim and `far_side_interfaces` finds no pair, because only one side of each
+    interface is in the list.
+
+    THREE THINGS HAVE TO BE TRUE for a reader to reach a newly drawn surface, and the viewer
+    (`ui/js/viewer/viewer.js`, `meshParts`) needs all three:
+      - the surface is named in some part's `metadata.drawn_as`, or no part owns the actor and
+        its visibility is nobody's - `paint` skips it and it is drawn forever;
+      - it is named in its REGION's `drawn_as`, or isolating that region hides it: `paint` shows
+        an actor while isolated only when the selected part is one that draws it;
+      - the far side of an interface opens `hidden`, or the All view gains a second sheet over
+        the first and the speckle comes back.
+    """
+    import sys as _sys
+    from pathlib import Path as _Path
+    _sys.path.insert(0, str(_Path(__file__).resolve().parents[3] / "src"))
+    from meshpipeline.render.mesh_facts import far_side_interfaces
+
+    out = [json.loads(json.dumps(r)) for r in rows]      # the source roster is not edited
+    enclosing = tuple(s for r in out if (r.get("metadata") or {}).get("encloses_domain")
+                      for s in ((r.get("metadata") or {}).get("drawn_as") or ()))
+    twin = far_side_interfaces(tuple(drawn), enclosing)
+    log: list[str] = []
+
+    def claim(row: dict, surface: str) -> None:
+        md = row.setdefault("metadata", {})
+        got = list(md.get("drawn_as") or ())
+        if surface not in got:
+            got.append(surface)
+            md["drawn_as"] = got
+            row["renderable"] = True
+            log.append(f"{row['id']} now draws {surface}")
+
+    by_id = {r["id"]: r for r in out}
+    for surface in drawn:
+        region, bare = (surface.split("/", 1) if "/" in surface else ("", surface))
+        # the declared boundary this drawn surface carries, by the BARE name the manifest keeps
+        owners = [r for r in out if r.get("kind") == "boundary"
+                  and (r.get("metadata") or {}).get("name") == bare]
+        if not owners:
+            # a drawn surface the manifest never declared is still a part, the same way
+            # `mesh_facts.parts(list_drawn=True)` appends one
+            owners = [{"id": f"boundary:{bare}", "label": bare, "kind": "boundary",
+                       "source": "surface", "default_visibility": "visible", "selectable": True,
+                       "renderable": True, "metadata": {"name": bare}}]
+            out.append(owners[0])
+            by_id[owners[0]["id"]] = owners[0]
+            log.append(f"{owners[0]['id']} added, no declared patch names it")
+        for row in owners:
+            claim(row, surface)
+            if surface in twin and row["default_visibility"] != "hidden":
+                row["default_visibility"] = "hidden"
+                row.setdefault("metadata", {})["coincident_with"] = twin[surface]
+                log.append(f"{row['id']} opens hidden, it is the far side of "
+                           f"{twin[surface]}")
+        if region and ("region:" + region) in by_id:
+            claim(by_id["region:" + region], surface)
+    return out, log
 
 
 def main(argv=None) -> int:
@@ -157,6 +242,13 @@ def main(argv=None) -> int:
     surf = dict(ssurf)
     surf["patches"] = patches
     surf.pop("reduced", None)
+
+    if ssurf.get("parts"):
+        surf["parts"], changes = reconcile_roster(ssurf["parts"], [p["name"] for p in patches])
+        for line in changes:
+            logger.info("  roster: %s", line)
+        if not changes:
+            logger.info("  roster: unchanged, the source already names every drawn surface")
 
     # PER-POLYGON COLOURS, in the keys viewer.js already decodes, so the whole part gets a heatmap
     # for the first time. The budget route cannot carry one - it clusters by position and keeps no

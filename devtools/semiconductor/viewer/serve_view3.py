@@ -194,6 +194,45 @@ JOBS: dict[str, dict] = {
         "views": [("Coolant", "region:fluid"), ("Metal", "region:solid"),
                   ("Chip", "region:chip"), ("All", None)],
     },
+    #: THE SAME EXACT SURFACE WITH BOTH SIDES OF EVERY INTERFACE IN IT, which is what the Metal
+    #: view needs and nothing else on this server has. /exact draws one sheet per interface -
+    #: `fluid/fluid_to_solid` and `chip/chip_to_solid` - and leaves the metal's side out, because
+    #: two coincident sheets of 16,619,777 faces speckle. The cost of that landed entirely on the
+    #: metal: its only drawn surface was `solid/solid_to_air`, the outside of the plate, so
+    #: isolating Metal and zooming in gave the outside of a slab. Measured on /exact, 42 wheel
+    #: clicks from the fit: 0.7% of the canvas drawn, 169 real cells, 0.57 mm across - against the
+    #: coolant's 98.9%, 228,022 cells and 7.83 mm.
+    #:
+    #: SO BOTH SIDES ARE CARRIED AND ONE OPENS HIDDEN. 2,564,696 polygons against /exact's
+    #: 1,360,201 and 169.6 MB against 90.0, all of the difference being `solid/solid_to_fluid`
+    #: (1,203,717 polygons for the same 16,619,777 faces the coolant draws as 827,506) and
+    #: `solid/solid_to_chip` (778). Neither is on screen until the metal is isolated, so the
+    #: default view and the All view draw exactly the surfaces /exact draws - checked in the
+    #: browser, 830,493 polygons and 1,700,364 triangles on both pages, 22.1% of the canvas on
+    #: both. It costs the load: 8.1 s to the first frame against 5.3 s.
+    #:
+    #: AND ISOLATING THE METAL LEAVES ITS OUTSIDE HIDDEN, because the outside is a wall between
+    #: the camera and the channel walls AND it is what the camera aims at: every cut then lands on
+    #: the plate's outside instead of in the channels. Measured on this page, the metal isolated
+    #: and everything else identical: outside hidden, 220,804 real cells in a 7.70 mm view;
+    #: outside shown, 2,209 in 4.13 mm. Its chip in the parts panel brings it back in one click,
+    #: as the shell it has always come back as.
+    #:
+    #: IT IS A SECOND PAGE AND NOT A REPLACEMENT for the same reason /exact is one beside
+    #: /deliver: the comparison is the evidence. /exact is what shipped.
+    "corintis-exact-all": {
+        "payload": HERE / "exact_all_viewer_data.json",
+        "slug": "exactall",
+        "title": "Delivered mesh, exact, both sides",
+        "up": "+y",
+        #: the same 1.9 GB bundle /exact and /deliver cut from - it is the same mesh
+        "sidecar_slug": "deliver",
+        "where": "the delivered mesh's own boundary indexes, the same ones /exact and /deliver "
+                 "cut from - this page differs only in carrying the metal's side of the two "
+                 "interfaces as well, which it opens hidden.",
+        "views": [("Coolant", "region:fluid"), ("Metal", "region:solid"),
+                  ("Chip", "region:chip"), ("All", None)],
+    },
     "corintis-pitch8": {
         "payload": HERE / "cbox8_viewer_data.json",
         "slug": "cbox8",

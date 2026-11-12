@@ -28,11 +28,22 @@ def _attach_facts(resp: dict, manifest: dict) -> None:
         enclosing = tuple(str(p.get("name")) for p in drawn if p.get("encloses_domain"))
         # the engine marks these with a type of their own (cfmesh_conjugate.viewer.POOR_TYPE)
         poor = tuple(str(p.get("name")) for p in drawn if p.get("type") == "poorQuality")
+        # THE FAR SIDE OF AN INTERFACE DRAWN TWICE, stated by the engine when it knows and
+        # derived from the drawn set when it does not. `cfmesh_conjugate.viewer` drops the
+        # solid's side outright, so on that engine this is empty and nothing changes; a payload
+        # that DOES carry both sides gets one of them opened hidden instead of two coincident
+        # sheets fighting for the same depth.
+        coincident = {str(p.get("name")): str(p.get("coincident_with"))
+                      for p in drawn if p.get("coincident_with")}
+        if not coincident:
+            from meshpipeline.render.mesh_facts import far_side_interfaces
+            coincident = far_side_interfaces(rendered, enclosing)
         q = _quality(manifest) if resp.get("is_mesh") else {}
         if q:
             resp["quality"] = q
         # a DELIVERED mesh lists every surface it draws; an input skin only what is declared
         resp["parts"] = _parts(manifest, rendered=rendered, enclosing=enclosing, poor=poor,
+                               coincident=coincident,
                                list_drawn=bool(resp.get("is_mesh")))
     except Exception as exc:      # a malformed manifest must not cost the user their mesh
         logger.warning("surface: mesh facts unavailable (%s)", exc)

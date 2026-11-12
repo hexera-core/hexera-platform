@@ -226,9 +226,23 @@ export function inspectorHtml(job, { xray = false, clip = false, fly = false, wo
       <button class="v-insp-b" id="${id('follow')}" type="button" aria-pressed="false"
               title="Keep reading the real cells wherever you look, instead of clicking one spot">
         Follow</button>
-      <button class="v-insp-b" id="${id('stream')}" type="button" aria-pressed="false"
-              title="Fill the whole view with real cells, a tile at a time, up to what a screen can show">
-        Stream</button>
+      <!-- STREAM IS CUT, not hidden pending a decision. It asked the route for the view one tile
+           at a time, and two independent measurements say it should not be a control a reader can
+           reach. Its own tiling was refuted first: 71.4% of the tiles it asked for came back
+           empty, and even spending the whole budget it reached full detail only to about 4 mm of
+           a 170 mm part. Then this audit drove it on the delivered plate (2026-11-11) and it
+           reported 0 faces, 0 tiles and 0 reads - it draws nothing at all. Deep does the job it
+           was for and does it measurably: refused above 20 mm, then 818,905 real delivered cells
+           at 16.3 mm, in one request rather than dozens. A button that does nothing is worse than
+           no button, so the button goes. setStream and its pass are still in viewer.js,
+           unreachable from the UI; deleting them is a separate change because drawCut and the
+           edge budget are shared with Deep and Follow.
+
+           NO BACKTICKS IN HERE. This comment sits inside a template literal, so a backtick around
+           a name ends the string and the module dies with "Unexpected identifier" - which is
+           exactly what happened the first time this comment was written, taking the whole console
+           with it (every panel reads this module, so the upload page sat at "checking..." and the
+           file input did nothing). -->
       <button class="v-insp-b" id="${id('deep')}" type="button" aria-pressed="false"
               title="Keep zooming. Past the point where a cell is worth a pixel, the whole view becomes the real cells - and because the surface it replaces is the mesh exactly, nothing moves as it arrives">
         Deep</button>

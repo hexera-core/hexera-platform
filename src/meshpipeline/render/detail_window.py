@@ -71,6 +71,17 @@ def _visible_rows(region: str, rows: list, skip_names, keep_names=()) -> list:
     stands between the camera and the channels - until the mesh on screen was 400 cells of the
     wrong region. Matching both forms costs one set lookup and closes that.
 
+    A KEEP ENTRY ENDING IN "/" IS THE WHOLE REGION, and it exists for the one case a list of
+    drawn patches gets wrong. The metal is 63% of this mesh and its only drawn patch is
+    `solid/solid_to_air`, the outside of the plate: a plain slab. Everything worth looking at in
+    the metal is `solid/solid_to_fluid`, the channel walls carved into it, which is NOT drawn
+    because it is coincident with the coolant's side of the same interface. So a reader who
+    isolates the metal and zooms gets the outside of a slab and nothing else - measured, 169 real
+    cells over 0.7% of the canvas, against 228,022 over 98.9% for the coolant.
+    When the metal is isolated the coolant is not on screen, so there is nothing for that far
+    side to fight with and it is simply the surface the reader asked to see. `keep=solid/` says
+    "the whole of this region" and the coincidence problem does not arise.
+
     `keep_names` IS THE ONE A CLIENT SHOULD SEND, and a skip list cannot replace it. A viewer can
     only name the patches it was given, and a conjugate payload is not given all of them: this
     plate's drawn set leaves out `solid/solid_to_fluid` and `solid/solid_to_chip`, which are the
@@ -84,11 +95,12 @@ def _visible_rows(region: str, rows: list, skip_names, keep_names=()) -> list:
     if not skip_names and not keep_names:
         return rows
     skip, keep = set(skip_names), set(keep_names)
+    whole = (region + "/") if region else ""
     kept = []
     for p in rows:
         bare = str(p["name"])
         qual = f"{region}/{bare}" if region else bare
-        if keep and bare not in keep and qual not in keep:
+        if keep and not (bare in keep or qual in keep or (whole and whole in keep)):
             continue
         if bare in skip or qual in skip:
             continue

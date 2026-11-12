@@ -11,6 +11,7 @@ from meshpipeline.render.mesh_facts import (
     KINDS,
     REGION,
     VISIBLE,
+    far_side_interfaces,
     parts,
     quality,
 )
@@ -271,3 +272,90 @@ def test_a_delivered_surface_nothing_declares_is_still_a_part():
 
 def test_an_undeclared_surface_is_not_listed_unless_asked():
     assert f"{BOUNDARY}:baffle" not in _ids(parts(named_regions(), rendered=("baffle",)))
+
+
+# an interface drawn from BOTH sides
+
+
+def conjugate_plate() -> dict:
+    """The delivered cold plate: three regions and two interfaces, each one surface with a side
+    in each of two regions - 16,619,777 faces on fluid_to_solid and the same 16,619,777 on
+    solid_to_fluid, 270,816 each way on the chip contact."""
+    return {
+        "mesh_mode": "cfmesh_conjugate", "mesh_units": "m", "cell_count": 270_424_307,
+        "patch_types": {"fluid_to_solid": "mappedWall", "port_a": "patch", "port_b": "patch",
+                         "solid_to_air": "wall", "solid_to_fluid": "mappedWall",
+                         "solid_to_chip": "mappedWall", "chip_to_air": "wall",
+                         "chip_to_solid": "mappedWall"},
+        "patch_face_counts": {"fluid_to_solid": 16_619_777, "port_a": 1_331, "port_b": 1_308,
+                               "solid_to_air": 1_213_523, "solid_to_fluid": 16_619_777,
+                               "solid_to_chip": 270_816, "chip_to_air": 1_492_860,
+                               "chip_to_solid": 270_816},
+        "quality": {"cells": 270_424_307, "regions": [
+            {"name": "fluid", "type": "fluid", "cells": 55_303_441},
+            {"name": "solid", "type": "solid", "cells": 199_394_482},
+            {"name": "chip", "type": "solid", "cells": 15_726_384}]},
+    }
+
+
+BOTH_SIDES = ("fluid/fluid_to_solid", "fluid/port_a", "fluid/port_b",
+              "solid/solid_to_air", "solid/solid_to_fluid", "solid/solid_to_chip",
+              "chip/chip_to_air", "chip/chip_to_solid")
+ONE_SIDE = tuple(s for s in BOTH_SIDES if s not in ("solid/solid_to_fluid",
+                                                    "solid/solid_to_chip"))
+
+
+def test_the_far_side_of_an_interface_is_the_outer_bodys_side():
+    assert far_side_interfaces(BOTH_SIDES, ("solid/solid_to_air",)) == {
+        "solid/solid_to_fluid": "fluid/fluid_to_solid",
+        "solid/solid_to_chip": "chip/chip_to_solid"}
+
+
+def test_a_patch_whose_partner_is_not_drawn_is_not_a_far_side():
+    # the payload that ships: one sheet per interface, so there is nothing to hide
+    assert far_side_interfaces(ONE_SIDE, ("solid/solid_to_air",)) == {}
+    # and the ambient is not a region, so the outside of the plate is nobody's far side
+    assert far_side_interfaces(("solid/solid_to_air",), ()) == {}
+
+
+def test_exactly_one_side_is_picked_when_neither_region_encloses():
+    pair = ("a/a_to_b", "b/b_to_a")
+    assert far_side_interfaces(pair, ()) == {"b/b_to_a": "a/a_to_b"}
+    assert far_side_interfaces(pair[::-1], ()) == {"a/a_to_b": "b/b_to_a"}
+
+
+def test_the_far_side_opens_hidden_and_says_what_it_duplicates():
+    ps = parts(conjugate_plate(), rendered=BOTH_SIDES, enclosing=("solid/solid_to_air",),
+               coincident=far_side_interfaces(BOTH_SIDES, ("solid/solid_to_air",)),
+               list_drawn=True)
+    by = {p["id"]: p for p in ps}
+    far = by[f"{BOUNDARY}:solid_to_fluid"]
+    assert far["default_visibility"] == HIDDEN
+    assert far["metadata"]["coincident_with"] == "fluid/fluid_to_solid"
+    # the near side is untouched: it is the sheet that stays on screen
+    near = by[f"{BOUNDARY}:fluid_to_solid"]
+    assert near["default_visibility"] == VISIBLE and "coincident_with" not in near["metadata"]
+    # and it is hidden, not dropped - the metal still names it, which is the only way a reader
+    # who isolates the metal reaches the channel walls carved into it
+    assert by[f"{REGION}:solid"]["metadata"]["drawn_as"] == [
+        "solid/solid_to_air", "solid/solid_to_fluid", "solid/solid_to_chip"]
+
+
+def test_the_shipped_one_sided_payload_hides_nothing_new():
+    ps = parts(conjugate_plate(), rendered=ONE_SIDE, enclosing=("solid/solid_to_air",),
+               coincident=far_side_interfaces(ONE_SIDE, ("solid/solid_to_air",)),
+               list_drawn=True)
+    hidden = {p["id"] for p in ps if p["default_visibility"] == HIDDEN}
+    assert hidden == {f"{BOUNDARY}:solid_to_air"}, "a one-sided payload changed"
+
+
+def test_a_far_side_nothing_declares_still_opens_hidden():
+    man = conjugate_plate()
+    del man["patch_types"]["solid_to_fluid"]
+    del man["patch_face_counts"]["solid_to_fluid"]
+    ps = parts(man, rendered=BOTH_SIDES, enclosing=("solid/solid_to_air",),
+               coincident=far_side_interfaces(BOTH_SIDES, ("solid/solid_to_air",)),
+               list_drawn=True)
+    extra = next(p for p in ps if p["id"] == f"{BOUNDARY}:solid/solid_to_fluid")
+    assert extra["renderable"] and extra["default_visibility"] == HIDDEN
+    assert extra["metadata"]["coincident_with"] == "fluid/fluid_to_solid"
