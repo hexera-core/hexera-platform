@@ -1224,10 +1224,12 @@ def _remap_washers(gmsh, ws: list[Washer], new: list[int]) -> None:
         w.face, w.hole = hit[0], hit[1]
 
 
-def _needs_join(gmsh, t: int, fp: dict, by_face: dict[int, list[Washer]], tag_of: dict[int, int]) -> bool:
+def _needs_join(gmsh, t: int, fp: dict, by_face: dict[int, list[Washer]], tag_of: dict[int, int],
+                gridded: set[int]) -> bool:
     """SHMESH-47c/d: whether the face's own lines (made one as its grid makes them) would end inside a straight edge
-    it shares with another face with holes - the one case its grid is refused for its joints alone. Only such faces
-    are joined (with the strips off); every other face is gridded as before."""
+    it shares with another face with holes that is gridded too (`gridded`: planned) - the one case its grid is refused
+    for its joints alone. Only such faces are joined (with the strips off); every other face is gridded as before,
+    and a holed neighbour that stays free is left whole (its free mesh unchanged)."""
     o, u, v = fp["frame"]
     h = float(fp["h"])
     eps = 1e-6 * h
@@ -1237,7 +1239,7 @@ def _needs_join(gmsh, t: int, fp: dict, by_face: dict[int, list[Washer]], tag_of
             if not edge and sides:
                 lines[ax].append(at)
     for c in fp["outer"]:
-        if not any(int(n) != t and int(n) in by_face and int(n) in tag_of
+        if not any(int(n) != t and int(n) in gridded and int(n) in tag_of
                    for n in gmsh.model.getAdjacencies(1, c)[0]):
             continue
         seg = _straight(gmsh, c)
@@ -1249,8 +1251,8 @@ def _needs_join(gmsh, t: int, fp: dict, by_face: dict[int, list[Washer]], tag_of
     return False
 
 
-def _split_beside(gmsh, t: int, fp: dict, by_face: dict[int, list[Washer]], tag_of: dict[int, int]
-                  ) -> tuple[int, tuple[list[float], dict[int, float], tuple]] | None:
+def _split_beside(gmsh, t: int, fp: dict, by_face: dict[int, list[Washer]], tag_of: dict[int, int],
+                  gridded: set[int]) -> tuple[int, tuple[list[float], dict[int, float], tuple]] | None:
     """SHMESH-47d: a face to grid beside another face with holes of its own (a top plate on a column's walls, a flange
     on its web): its lines would end inside the edge they share and cut it on one side only, so the face was not
     gridded ("a cell would come out too small, a ring or a shared edge cut"). The shared edges are split first, at
@@ -1274,7 +1276,7 @@ def _split_beside(gmsh, t: int, fp: dict, by_face: dict[int, list[Washer]], tag_
     occ = gmsh.model.occ
     for c in fp["outer"]:
         nbrs = [int(n) for n in gmsh.model.getAdjacencies(1, c)[0] if int(n) != t]
-        if not any(n in by_face and n in tag_of for n in nbrs):
+        if not any(n in gridded and n in tag_of for n in nbrs):
             continue
         seg = _straight(gmsh, c)
         if seg is None:
@@ -1351,7 +1353,7 @@ def _join_faces(gmsh, by_face: dict[int, list[Washer]], tag_of: dict[int, int], 
         t0 = next((t for t in sorted(plan) if tag_of[t] not in done), None)
         if t0 is None:
             break
-        if not (JOIN_STRIPS or _needs_join(gmsh, t0, plan[t0], by_face, tag_of)):
+        if not (JOIN_STRIPS or _needs_join(gmsh, t0, plan[t0], by_face, tag_of, set(plan))):
             done.add(tag_of[t0])
             continue
         axis = plan[t0]["frame"][1]
@@ -1392,7 +1394,7 @@ def _join_faces(gmsh, by_face: dict[int, list[Washer]], tag_of: dict[int, int], 
         done |= {tag_of[f] for f in members}
         if len(members) < 2 and not bridges:
             if JOIN_BESIDE:
-                got = _split_beside(gmsh, t0, plan[t0], by_face, tag_of)
+                got = _split_beside(gmsh, t0, plan[t0], by_face, tag_of, set(plan))
                 if got is not None:
                     joint[got[0]] = got[1]
                     refresh()
