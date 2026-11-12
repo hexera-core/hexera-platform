@@ -53,6 +53,21 @@ def test_an_o_grid_box_matches_its_ring_and_the_users_edges():
     assert ST._boxed(7.0, 2 * math.pi * 7 / 8, 10.0, low_mm=5.0, high_mm=15.0) is None
 
 
+def test_an_o_grid_boxs_rows_from_ring_to_box_fit_the_users_edges():
+    """SHMESH-48u: the requirements test's plate (a 20 mm hole, 5 mm size, edges 2.5 to 7.5 mm) had its ring 15 mm out
+    in a 17.5 mm box: one row from ring to box is 9.75 mm at the corners (over 7.35), two are 1.25 mm at the side
+    middles (under 2.5) - 6.56% of its elements under the shortest edge. Now some count of rows fits both ends."""
+    for r, h, lo, hi in ((10.0, 5.0, 2.5, 7.5), (9.9, 10.0, 5.0, 15.0), (12.0, 5.0, 2.5, 7.5), (20.0, 10.0, 5.0, 15.0)):
+        got = ST._boxed(r, 2 * math.pi * r / 8, h, low_mm=lo, high_mm=hi)
+        assert got is not None
+        n, rows, ratio, b = got
+        R = ratio * r
+        assert any((b - R) / k >= lo - 1e-9 and (b * math.sqrt(2) - R) / k <= 0.98 * hi + 1e-9 for k in range(1, 20))
+    # with no user edges the plan is as before (no rows check)
+    assert ST._box_rows(15.0, 17.5, 17.5, 17.5, 2.5, 7.35) is None
+    assert ST._box_rows(15.0, 17.5, 17.5, 21.0, 2.5, 7.35) == 20.0
+
+
 def test_a_chain_takes_its_opposite_sides_count_spread_by_length():
     assert ST._spread(4, [5.5, 5.5]) == [2, 2]
     assert sum(ST._spread(7, [1.0, 2.0, 4.0])) == 7

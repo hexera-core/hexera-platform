@@ -732,6 +732,19 @@ def _spread(total: int, lengths: list[float]) -> list[int] | None:
     return out
 
 
+def _across(gmsh, sides: list[list[int]], c: int) -> float:
+    """SHMESH-48u: a four-sided cell's narrowest width across the rows curve c's count makes: the least distance
+    between the two sides at either end of the side c is on (inf when c is on no side of the cell)."""
+    from scipy.spatial import cKDTree
+
+    i = next((k for k, sd in enumerate(sides) if c in sd), None)
+    if i is None:
+        return math.inf
+    a = np.vstack([_samples(gmsh, x, 16) for x in sides[(i + 1) % 4]])
+    b = np.vstack([_samples(gmsh, x, 16) for x in sides[(i + 3) % 4]])
+    return float(cKDTree(b).query(a)[0].min())
+
+
 def map_faces(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], mm: float, *, skip: set[int],
               preset: dict[int, int], low_mm: float | None = None, fine_at: dict[int, float] | None = None,
               growth: float = 1.3, arc_mm=None, high_mm: float | None = None, wish: dict[int, int] | None = None
@@ -826,6 +839,12 @@ def map_faces(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], mm: float
                     n = max(n, math.ceil(longest * mm / (0.98 * high_mm) - 1e-9))
                 if low_mm is not None:
                     n = max(1, min(n, math.floor(min(length[c] for c in cs) * mm / low_mm + 1e-9)))
+                    # SHMESH-48u: nor so many that a row comes out under it across a cell at its narrowest (the
+                    # class's count is the rows between the cell's two other sides: an O-grid's ring and box side
+                    # 2.5 mm apart took two rows from its 9.75 mm diagonal)
+                    n = max(1, min(n, math.floor(min(_across(gmsh, cand[t][0], c) for t in faces_of[r]
+                                                     for c in cs if any(c in sd for sd in cand[t][0]))
+                                                 * mm / low_mm + 1e-9)))
                 free_beside = any(s not in cand for c in cs for s in gmsh.model.getAdjacencies(1, c)[0] if s in tag_of)
                 if n > 1 and n % 2 and free_beside and (low_mm is None or min(length[c] for c in cs) * mm / (n + 1) >= low_mm):
                     n += 1
@@ -994,12 +1013,42 @@ def _boxed(r_mm: float, hole_mm: float, h_mm: float, low_mm: float | None = None
             r_hi = min(WASHER_RING[1] * r_mm, r_mm + rows * row_hi, n * e_hi / (2 * math.pi), b_hi - gap)
             if r_lo > r_hi:
                 continue
-            R = min(max(WASHER_AIM * r_mm, r_lo), r_hi)
-            b_lo = max(R + gap, n * seg_lo / 8)
-            if b_lo > b_hi + 1e-9:
-                continue
-            return n, rows, R / r_mm, min(max(n * h_mm / 8, b_lo), b_hi)
+            R0 = min(max(WASHER_AIM * r_mm, r_lo), r_hi)
+            # (SHMESH-48u: with the user's edges, other rings between r_lo and r_hi too, nearest the aim first)
+            tries = sorted({R0, *(float(x) for x in np.linspace(r_lo, r_hi, 9))}, key=lambda x: (abs(x - R0), x)) \
+                if user else [R0]
+            for R in tries:
+                b_lo = max(R + gap, n * seg_lo / 8)
+                if b_lo > b_hi + 1e-9:
+                    continue
+                b = min(max(n * h_mm / 8, b_lo), b_hi)
+                if user:
+                    got = _box_rows(R, b, b_lo, b_hi, e_lo, e_hi)
+                    if got is None:
+                        continue
+                    b = got
+                return n, rows, R / r_mm, b
     return None
+
+
+def _box_rows(R: float, b: float, b_lo: float, b_hi: float, e_lo: float, e_hi: float) -> float | None:
+    """SHMESH-48u: the box half-side nearest b (inside [b_lo, b_hi]) for which some count k of rows between the
+    ring and the box keeps every edge of them inside the user's band: the side-middle row (b - R) / k no shorter than
+    e_lo, the corner row (b sqrt 2 - R) / k no longer than e_hi; None when there is none. (A ring 15 mm out in a box
+    17.5 mm half-side had none: one row was 9.75 mm at the corners over a 7.35 mm line, two 1.25 mm at the middles
+    under a 2.5 mm one.)"""
+    eps = 1e-9 * max(1.0, b)
+    best = None
+    for k in range(1, 65):
+        lo_k = max(b_lo, R + k * e_lo)
+        hi_k = min(b_hi, (R + k * e_hi) / math.sqrt(2)) if math.isfinite(e_hi) else b_hi
+        if lo_k <= hi_k + eps:
+            x = min(max(b, lo_k), hi_k)
+            if best is None or abs(x - b) < abs(best - b) - eps:
+                best = x
+        if R + k * e_lo > b_hi + eps:
+            break
+    return best
 
 
 def _diagonals(u: np.ndarray, v: np.ndarray) -> list[np.ndarray]:
