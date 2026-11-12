@@ -3919,6 +3919,19 @@
   "roots": []
  },
  {
+  "context": "contracts/surface_stitch.py::read_text::search#2|NotAPublisher|not-a-publisher|",
+  "path": "contracts/surface_stitch.py",
+  "qualname": "read_text",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "_KEEP",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "contracts/unit_plausibility.py::expected_from_words::search#1|NotAPublisher|not-a-publisher|",
   "path": "contracts/unit_plausibility.py",
   "qualname": "expected_from_words",

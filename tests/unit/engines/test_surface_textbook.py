@@ -183,3 +183,39 @@ U
     _record("surface pressurised cylinder", "radial growth (mm)", float(radial.mean()), theory, 0.02, q)
     assert q["within_nastran"]
     assert abs(radial.mean() / theory - 1.0) <= 0.02, (radial.mean(), theory)
+
+
+def _tip(mesh, deck, tmp_path, job, L, P):
+    root, tip = _nodes(mesh, lambda p: abs(p[0]) < 1e-6), _nodes(mesh, lambda p: abs(p[0] - L) < 1e-6)
+    dat, _frd = _solve(tmp_path, job, deck + _nset("ROOT", root) + _nset("TIP", tip) + """*BOUNDARY
+ROOT, 1, 6
+*STEP
+*STATIC
+*CLOAD
+""" + "".join(f"{i}, 3, {-P / len(tip):.9e}\n" for i in tip) + """*NODE PRINT, NSET=TIP
+U
+*END STEP
+""")
+    rows = [r.split() for r in dat.splitlines()]
+    return float(-np.array([float(r[3]) for r in rows if len(r) == 4 and r[0].isdigit()]).mean())
+
+
+def test_a_cantilever_drawn_as_patches_that_do_not_meet_bends_as_the_one_that_does(tmp_path):
+    """SURF-12: the same cantilever drawn as four patches - once meeting, once with the second patch stopping 0.6 mm
+    short of the first and the fourth lying 0.8 mm off the third (an exercise file's gaps). Made to meet (extended,
+    moved), the gapped one bends as the clean one: the change closes the gaps, it does not change the part."""
+    L, B, T, P = 200.0, 20.0, 2.0, 10.0
+    clean = sx.compound([sx.rect(k * 50.0, 0, (k + 1) * 50.0, B) for k in range(4)])
+    gapped = sx.compound([sx.rect(0, 0, 50, B), sx.rect(50.6, 0, 100, B), sx.rect(100, 0, 150, B),
+                          sx.moved(sx.rect(150, 0, 200, B), (0, 0, 0.8))])
+    m0, d0, q0 = _shell(clean, tmp_path, "clean", T)
+    m1, d1, q1 = _shell(gapped, tmp_path, "gapped", T)
+    from meshpipeline.cad import surface_model as sm
+
+    reading, _sewn = sm.read(gapped, mm_per_unit=1.0)
+    assert reading["cleaned"]["mend"]["closed"] == 2 and reading["cleaned"]["open_places"] == 0
+    w0 = _tip(m0, d0, tmp_path, "clean", L, P)
+    w1 = _tip(m1, d1, tmp_path, "gapped", L, P)
+    _record("surface cantilever made to meet", "tip deflection (mm) vs the clean patches", w1, w0, 0.02, q1)
+    assert q0["within_nastran"] and q1["within_nastran"]
+    assert abs(w1 / w0 - 1.0) <= 0.02, (w0, w1)
