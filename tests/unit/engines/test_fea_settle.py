@@ -138,6 +138,75 @@ def test_the_adapter_reports_the_floor_without_the_set_aside_elements(tmp_path):
     assert q["elements_under_floor"] == 0 and q["min_sicn"] >= 0.1
 
 
+# ------------------------------------------------- cusps: run-outs and the verdict's limits ----
+def _blend_patch():
+    """A curved patch whose one side collapses to a point: an N-sided blend's corner, the way CAD
+    draws a fillet running out against a bore (a degenerated edge at (0, 0, 0))."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+    from OCP.Geom import Geom_BSplineSurface
+    from OCP.gp import gp_Pnt
+    from OCP.TColgp import TColgp_Array2OfPnt
+    from OCP.TColStd import TColStd_Array1OfInteger, TColStd_Array1OfReal
+
+    poles = TColgp_Array2OfPnt(1, 3, 1, 3)
+    for j in range(1, 4):
+        poles.SetValue(1, j, gp_Pnt(0.0, 0.0, 0.0))                    # the row that collapses
+    for i, x in ((2, 5.0), (3, 10.0)):
+        for j, y in ((1, -1.5), (2, 0.0), (3, 1.5)):
+            poles.SetValue(i, j, gp_Pnt(x, y * x / 10.0, 0.6 if j == 2 else 0.0))
+    knots = TColStd_Array1OfReal(1, 2)
+    knots.SetValue(1, 0.0)
+    knots.SetValue(2, 1.0)
+    mult = TColStd_Array1OfInteger(1, 2)
+    mult.SetValue(1, 3)
+    mult.SetValue(2, 3)
+    surf = Geom_BSplineSurface(poles, knots, knots, mult, mult, 2, 2)
+    return BRepBuilderAPI_MakeFace(surf, 1e-6).Face()
+
+
+def test_a_blend_running_out_to_a_point_is_a_cusp_and_a_pole_is_not():
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCone, BRepPrimAPI_MakeSphere
+
+    found = cad_cusps(_blend_patch(), 1.0)
+    run_outs = [c for c in found if c.get("kind") == "run_out"]
+    assert [tuple(round(v, 6) for v in c["at_mm"]) for c in run_outs] == [(0.0, 0.0, 0.0)]
+    assert 0.0 < run_outs[0]["angle_deg"] < 30.0
+    # a sphere's poles and a cone's tip collapse an edge too: the surface is smooth there
+    assert cad_cusps(BRepPrimAPI_MakeSphere(5.0).Shape(), 1.0) == []
+    assert cad_cusps(BRepPrimAPI_MakeCone(5.0, 0.0, 8.0).Shape(), 1.0) == []
+
+
+def _two_tets_by_a_cusp(far: bool):
+    """A discrete model of two linear tetrahedra: a well-shaped one and a flat sliver (aspect far
+    over 20) - the sliver by the cusp at the origin, or 1 m away from it (the good one stays by it)."""
+    gmsh.model.add("two")
+    gmsh.model.addDiscreteEntity(3, 1)
+    off = 1.0 if far else 0.0
+    xyz = [0, 0, 0, 1e-3, 0, 0, 0, 1e-3, 0, 0, 0, 1e-3,
+           off, 0, 0, off + 1e-3, 0, 0, off + 0.5e-3, 1e-3, 0, off + 0.5e-3, 0.4e-3, 2e-5]
+    gmsh.model.mesh.addNodes(3, 1, list(range(1, 9)), xyz)
+    gmsh.model.mesh.addElementsByType(1, 4, [1, 2], [1, 2, 3, 4, 5, 6, 7, 8])
+
+
+def test_a_cusps_element_that_misses_the_verdicts_shape_limits_is_set_aside_and_one_far_away_is_not():
+    gmsh.initialize()
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        _two_tets_by_a_cusp(far=False)
+        tags, q = fea_settle.qualities(gmsh)
+        bad = fea_settle.misses_shape_limits(gmsh, tags)
+        assert bad.tolist() == [False, True]           # the sliver misses aspect / dihedral
+        # a floor of 0: the SICN alone picks nothing, the verdict's limits pick the sliver
+        out = fea_settle.settle(gmsh, {}, [[0.0, 0.0, 0.0]], 0.0)
+        assert out["set_aside"] == [2] and out["cusp_elements"] == 1
+        gmsh.model.remove()
+        _two_tets_by_a_cusp(far=True)
+        out = fea_settle.settle(gmsh, {}, [[0.0, 0.0, 0.0]], 0.0)
+        assert out["set_aside"] == [] and out["cusp_places_m"] == []
+    finally:
+        gmsh.finalize()
+
+
 # ------------------------------------------------------------------ micro details ----
 def test_a_micro_step_is_found_and_ordinary_parts_have_none():
     from meshpipeline.cad.fea_measure import cad_micro
@@ -218,5 +287,83 @@ def test_settling_goes_on_until_straightening_one_element_has_folded_none_of_its
         after = dict(zip(*[x.tolist() for x in fea_settle.qualities(gmsh)], strict=True))
         assert out["straightened"] == 2 and out["rounds"] == 2
         assert min(after.values()) > 0.1                          # nothing left folded
+    finally:
+        gmsh.finalize()
+
+
+#: two 10-node tets on either side of one face; each midside node off its edge's middle by these (found by search:
+#: curving spoils A, B is better curved than straight, and B's shape leans on the midside nodes it shares with A)
+_PAIR_CORNERS = [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0.3, 0.3, 0.25], [0.3, 0.3, -0.25]]
+_PAIR_OFFSETS = [[0.1394, 0.0009, 0.1959], [0.1759, -0.0213, 0.0404], [0.0559, 0.1008, 0.133],
+                 [0.2239, 0.0322, -0.0913], [0.0677, -0.0707, 0.113], [0.025, -0.0116, -0.2094],
+                 [0.1105, -0.0313, 0.0195], [-0.1767, 0.0974, 0.0848], [-0.0724, -0.0648, 0.0059]]
+
+
+def _pair(offsets):
+    corners = np.asarray(_PAIR_CORNERS, dtype=float)
+    tets = ([0, 1, 2, 3], [0, 2, 1, 4])
+    key: dict = {}
+    for el in tets:
+        for i, j in fea_settle.GMSH_TET10_EDGES:
+            key.setdefault(tuple(sorted((el[i], el[j]))), len(key))
+    xyz = list(corners) + [0.5 * (corners[a] + corners[b]) + np.asarray(offsets[n]) for (a, b), n in key.items()]
+    gmsh.model.add("pair")
+    gmsh.model.addDiscreteEntity(3, 1)
+    gmsh.model.mesh.addNodes(3, 1, list(range(1, len(xyz) + 1)), np.asarray(xyz).ravel().tolist())
+    conn = []
+    for el in tets:
+        conn += [c + 1 for c in el] + [6 + key[tuple(sorted((el[i], el[j])))] for i, j in fea_settle.GMSH_TET10_EDGES]
+    gmsh.model.mesh.addElementsByType(1, 11, [1, 2], conn)
+
+
+def _q():
+    t, q = fea_settle.qualities(gmsh)
+    return dict(zip(t.tolist(), q.tolist(), strict=True))
+
+
+def test_straightening_one_element_never_leaves_its_neighbour_inside_out():
+    """PLAN-fea-11 to the end (ox_mc_lid's 2 mm plates): A's straight sides turn B inside out, so B is
+    straightened in turn, and nothing is left below zero."""
+    gmsh.initialize()
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        _pair([[0.0, 0.0, 0.0]] * len(_PAIR_OFFSETS))
+        straight = _q()
+        gmsh.model.remove()
+        # the case: A spoiled by curving, B better curved than straight - and B inside out once A is straight
+        _pair(_PAIR_OFFSETS)
+        curved = _q()
+        assert curved[1] < 0.1 and curved[1] < straight[1]
+        assert curved[2] > straight[2] > 0
+        fea_settle.straighten(gmsh, 1)
+        assert _q()[2] <= 0.0
+        gmsh.model.remove()
+        _pair(_PAIR_OFFSETS)
+        out = fea_settle.settle(gmsh, straight, [], 0.1)
+        after = _q()
+        assert min(after.values()) > 0.0
+        assert out["straightened"] == 2
+        assert after[1] == pytest.approx(straight[1]) and after[2] == pytest.approx(straight[2])
+    finally:
+        gmsh.finalize()
+
+
+def test_a_curved_mesh_with_nothing_under_the_floor_is_never_touched(monkeypatch):
+    """Settling only ever moves nodes of an element under the floor and worse than straight: a curved mesh with
+    none is left exactly as curving made it."""
+    gmsh.initialize()
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        _pair([[0.0, 0.0, 0.0]] * len(_PAIR_OFFSETS))
+        straight = _q()
+        gmsh.model.remove()
+        _pair([[0.01 * k, 0.0, 0.0] for k in range(len(_PAIR_OFFSETS))])
+        before = gmsh.model.mesh.getNodes()[1].tolist()
+        moves = []
+        real = fea_settle._straighten_nodes
+        monkeypatch.setattr(fea_settle, "_straighten_nodes", lambda g, t: moves.append(t) or real(g, t))
+        out = fea_settle.settle(gmsh, straight, [], 0.1)
+        assert moves == [] and out["straightened"] == 0
+        assert gmsh.model.mesh.getNodes()[1].tolist() == before
     finally:
         gmsh.finalize()

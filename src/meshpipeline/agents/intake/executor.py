@@ -89,6 +89,19 @@ def fea_path(st) -> bool:
     return bool(said) and pm.reading_for(said).route == pm.ROUTE_FEA
 
 
+def fea_part_kind(args):
+    """A STRUCTURAL request's input kind is the part itself ("solid-body"), whatever the model wrote.
+    The FEA path meshes the uploaded part as it is - a solid, or a surface file the shell route reads
+    (engines/surface_run) - and no engine meshes a "body-surface" for structural work, so that word
+    only ever refused a valid request. The model chose it now and then for a surface STEP (dev-areen,
+    12 Nov 2026: one turn repaired itself, the next told the user "requires a Solid body or Planar
+    domain"). A flat 2D "planar-domain" is a real structural input and is kept."""
+    if (isinstance(args, dict) and str(args.get("purpose") or "") == "structural"
+            and str(args.get("input_kind") or "") == "body-surface"):
+        return {**args, "input_kind": "solid-body"}
+    return args
+
+
 def _normalize_declared_patches(args: dict):
     """The declared patches as every later layer will read them. The PURPOSE decides which roles a
     word may mean and whether a ground plane exists (only an external flow has a far-field box
@@ -178,6 +191,8 @@ class IntakeExecutionState:
     search_events: list = field(default_factory=list)
     submit_attempts: int = 0
     submit_rejections: int = 0
+    #: a shell run's summary that promised tetrahedra was sent back once for a rewrite (never twice)
+    shell_words_sent_back: bool = False
     val_errors_seen: list[str] = field(default_factory=list)
     tools_invoked: list[str] = field(default_factory=list)
 
@@ -228,6 +243,42 @@ class IntakeToolExecutor:
             logger.debug("Intake: geometry regions unavailable (%s)", exc)
             return {}
 
+    def _measured_setup_errors(self, args: dict) -> list[str]:
+        # WHAT THE MEASURED PART CANNOT CARRY, said before the summary is put to the user: a
+        # symmetry plane on a whole body, the ground taken for a half model's cut, a reference
+        # length a thousand times off (agents/intake/measured_setup). The check's stored facts and
+        # the confirmed form are the evidence; unreadable, nothing is said and nothing is refused.
+        sid = str(self.state.session_id or "")
+        if not sid:
+            return []
+        try:
+            import json
+
+            from meshpipeline.agents.intake.measured_setup import setup_errors
+            from meshpipeline.application.geometry_check import check_object_key, read_check
+            from meshpipeline.contracts.object_storage import get_object_store
+
+            facts = (read_check(sid) or {}).get("facts") or {}
+            try:
+                confirmed = json.loads(get_object_store().get_bytes(
+                    object_key=check_object_key(sid, "confirmed.json")))
+            except Exception:  # noqa: BLE001 - nothing confirmed: no size to judge a length by
+                confirmed = {}
+            return setup_errors(args, facts, confirmed if isinstance(confirmed, dict) else {})
+        except Exception as exc:  # noqa: BLE001 - a check we cannot read refuses nothing
+            logger.debug("Intake: measured setup check unavailable (%s)", exc)
+            return []
+
+    def _confirmed_up_axis(self) -> str:
+        # WHICH WAY IS UP, as the user confirmed it on the picture (INS-9): the ground lies under
+        # it, so a flow along z is along the ground of a Y-up file. Unreadable: +z, as before.
+        try:
+            from meshpipeline.application.geometry_confirmation import confirmed_up_axis
+
+            return confirmed_up_axis(str(self.state.session_id or ""))
+        except Exception:  # noqa: BLE001 - unknown is +z up, never a refusal
+            return ""
+
     def _staged_upload(self) -> str:
         # The session's upload as a local file (staged, or fetched back from its stored source), or ''.
         return measured_choice.staged_upload(str(self.state.session_id or ""),
@@ -275,6 +326,7 @@ class IntakeToolExecutor:
         # is what keeps that split from leaking into the rest of the system.
         from meshpipeline.agents.intake.vocabulary import normalize_tool_args
         args = normalize_tool_args(args)
+        args = fea_part_kind(args)
         # THE DECLARED PATCHES, at the same boundary and for the same reason: a name a person typed
         # ("car wall") becomes the spelling a mesher can write ("car_wall"), a name a mesher keeps
         # for itself ("outer") becomes the user's own, a boundary word becomes the role it means
@@ -490,6 +542,18 @@ class IntakeToolExecutor:
             st.selection_prompt = None
             logger.info("Intake: engine selection CONFIRMED for an FEA part - %s on the FEA path - "
                         "job_id=%s", eng, self._job_id)
+            from meshpipeline.application.shell_check import declared_shell, shell_summary
+            if declared_shell(st.conversation):
+                shell_said = shell_summary(st.conversation)   # SHSTAGE-8: triangles when the stage settled them
+                # SHSTAGE-5 / SURF-6: the stage settled a SHELL - the delivered mesh is plates, never tetrahedra
+                return IntakeToolResult(
+                    tool="propose_engine_selection", accepted=True, advanced=True,
+                    content=(f"{_vocab.to_display(_vocab.ENGINE, eng)} is SELECTED for this FEA part. The stage "
+                             f"settled a SHELL: the delivered mesh is {shell_said}. request_txt and "
+                             "review_brief_txt say that shell and never a solid or tetrahedral mesh, element "
+                             "order or tetrahedra. Do not ask about the engine, the element order, near-wall "
+                             "layers or a detail level, and do not mention them. Call preview_selected_admission "
+                             "and submit_requirements now (engine_source suggested_confirmed)."))
             return IntakeToolResult(
                 tool="propose_engine_selection", accepted=True, advanced=True,
                 content=(f"{_vocab.to_display(_vocab.ENGINE, eng)} is SELECTED for this FEA part "
@@ -665,7 +729,9 @@ class IntakeToolExecutor:
                 "Not in this turn: the user asked a question about the run that has ended. Answer it "
                 "from the LAST RUN facts in your instructions - the mesh exists - and set up nothing. "
                 "Nothing was saved."))
-        val_errors = validate_submission(args)
+        _up = self._confirmed_up_axis()
+        val_errors = ((validate_submission(args, up_axis=_up) if _up else validate_submission(args))
+                      or self._measured_setup_errors(args))
         # STRUCTURAL GATE: authorized ONLY by a matching, unexpired, single-engine SUPPORTED
         # preview TOKEN for the EXACT payload, in this session/owner and the current revision.
         canon = at.canonical_payload(args.get("mesh_engine"), args.get("purpose"),
@@ -695,6 +761,24 @@ class IntakeToolExecutor:
                            tok_reason, self._job_id)
             return IntakeToolResult(tool="submit_requirements", accepted=False, content=(
                 f"Submission NOT authorized: {tok_reason}. Nothing was saved."))
+
+        # A SHELL RUN'S SUMMARY NEVER PROMISES TETRAHEDRA (SHSTAGE-5 / SURF-6): the card shows request_txt to the user,
+        # and a surface file meshed as a shell was summarised as "a quadratic tetrahedral structural mesh". Sent back
+        # ONCE for a rewrite; the card's own Mesh-as and engine rows say the shell either way
+        if fea_path(st) and not st.shell_words_sent_back:
+            from meshpipeline.application.shell_check import TET_WORDS, declared_shell, shell_summary
+            shell_said = shell_summary(st.conversation)   # SHSTAGE-8: triangles when the stage settled them
+            said = sorted({w.lower() for w in TET_WORDS.findall(
+                f"{args.get('request_txt') or ''} {args.get('review_brief_txt') or ''}")})
+            if said and declared_shell(st.conversation):
+                st.shell_words_sent_back = True
+                logger.info("Intake: a shell run's summary promised a solid mesh (%s) - sent back once for a "
+                            "rewrite - job_id=%s", ", ".join(said), self._job_id)
+                return IntakeToolResult(tool="submit_requirements", accepted=False, content=(
+                    "Not saved: this part is meshed as a SHELL (the stage settled it), and request_txt or "
+                    f"review_brief_txt speak of a solid mesh ({', '.join(said)}). The delivered mesh is "
+                    f"{shell_said}. Rewrite both to say that shell - no tetrahedra, no element order - and "
+                    "call submit_requirements again with the same preview_token."))
 
         # THE USER'S OWN WORDS (contracts/user_notes, NOTE-1): their answer to the notes question
         # and every message the model quoted as saying something specific, kept whole and verbatim.

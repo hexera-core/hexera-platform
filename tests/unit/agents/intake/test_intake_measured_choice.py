@@ -265,7 +265,7 @@ def test_the_staged_upload_is_measured_and_ranked_for_the_confirmed_flow(tmp_pat
     rec = asyncio.run(intake._measured_recommendation(state, []))
     assert rec is not None and rec.engine in rec.ranking
     assert rec.shape == "a long passage about as wide as its openings"
-    assert set(rec.ranking) <= {"cfmesh", "snappy", "gmsh", "vmtk"}
+    assert set(rec.ranking) <= {"cfmesh", "snappy", "gmsh", "vmtk", "netgen"}
     assert all(f.reason for f in rec.fits)
     # a settled engine, or no flow yet, is never measured
     assert asyncio.run(intake._measured_recommendation({**state, "engine": "snappy"}, [])) is None

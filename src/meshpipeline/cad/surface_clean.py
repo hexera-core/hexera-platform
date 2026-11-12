@@ -49,7 +49,7 @@ RUNGS = (2.0, 5.0, 10.0, 20.0, 50.0)
 #: SURF-8: with no tolerance stated, gaps are closed up to this many sew tolerances - 1/2000 of the part's size,
 #: the same reach inside which an edge lying along its neighbour is called an edge that does not meet it (SURF-2's
 #: NEAR_SEW): what used to be said as a gap is now closed. The measured numbers behind it are in
-#: docs/design/shell/README.md section 12.
+#: docs/design/shell/README.md section 13.
 GAP_RULE = 5.0
 #: SURF-8: a gap is never closed across more than this share of the narrower face beside it (the extraction's own
 #: cap for loose faces, cad/midsurface.SEW_CAP)
@@ -752,6 +752,9 @@ def clean(sewn, *, mm_per_unit: float, limit_mm: float | None = None,
                "holes_limit_mm": _r(hole_limit * mm), "holes_from": "notes" if holes_mm else "rule",
                "refused": rec["refused"], "skipped": int(rec.get("skipped") or 0), "advice_mm": _r(advice),
                "places_before": len(before), "closed_places": closed_places,
+               # SURF-13's words: each place the stitching closed, where and how wide
+               "stitched_places": [{"at_mm": [_r(c * mm) for c in p["at_mm"]], "gap_mm": _r(float(p["gap_mm"]) * mm)}
+                                   for p in gone][:MAX_PLACES],
                "closed_places_widest_mm": _r(max([float(p["gap_mm"]) for p in gone] + [0.0]) * mm)}
     return out, cleaned
 

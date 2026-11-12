@@ -12,6 +12,12 @@
 4. The user may fix a row (`pick`): the parts they pick for one phrase, kept with the key, checked by the same
    rules (cad/part_words.picked).
 5. The run takes the reading as the user left it (`for_run`) when its key is still the notes'.
+
+ON THE FLOW (CFD) ROUTE the notes are read before approval whatever the model is (NOTES-CFD-1): a single part, or
+parts the notes never name, still gets Finalize notes. The worker then reads the notes as the run's CFD reader
+does (engines/cfd_requirements: engines/mesh_requirements, route "flow", through engines/meshing_standard) and the
+card shows its lines ("From your notes: ...", "Not applied: ..."); a model of several parts gets them beside its
+rows. The run reads the notes again for itself (the same words, the same reading).
 """
 from __future__ import annotations
 
@@ -195,7 +201,8 @@ def parts_seen(check: Mapping | None) -> dict | None:
 
 def notes_of(user_notes, request_txt) -> str:
     from meshpipeline.cad import part_words as PW
-    return PW.notes_text({"user_notes": list(user_notes or []), "request_txt": request_txt or ""})
+    # the user's own words only: request_txt (the intake's summary) is never read (cad/part_words.notes_text)
+    return PW.notes_text({"user_notes": list(user_notes or [])})
 
 
 def key_of(notes: str, table: list[dict]) -> str:
@@ -217,7 +224,7 @@ def view(session: Any, *, owner_id: str = "") -> dict | None:
 
 
 def finalize(session: Any, *, owner_id: str = "") -> dict | None:
-    """THE USER FINALIZED THEIR NOTES: the reading of the words as they stand now (the first answer and every note)
+    """THE USER FINALIZED THEIR NOTES: the reading of the user's notes as they stand now
     is started - unless it already runs or is done - and the card's view is answered. Never raises."""
     try:
         return _view(session, owner_id=owner_id, start=True)
@@ -243,7 +250,12 @@ def _view(session: Any, *, owner_id: str, start: bool) -> dict | None:
     seen = parts_seen(check)
     if seen is None:
         status = str((check or {}).get("status") or "")
-        return {"status": "waiting"} if status in ("pending", "scouted") else None
+        if status in ("pending", "scouted"):
+            return {"status": "waiting"}
+        if not flow_route(check, session):
+            return None
+        # NOTES-CFD-1: no parts to tie the words to, and a flow mesh: the notes themselves are still read
+        seen = NOTES_ONLY
     key = key_of(notes, seen["table"])
     stored = _read(sid, MATCHES)
     was = stored or {}
@@ -252,11 +264,14 @@ def _view(session: Any, *, owner_id: str, start: bool) -> dict | None:
         time.time() - float(was.get("at") or 0) > READING_STALE_S)
     if start and (not current or lapsed):
         if enqueue_reading(sid, key, getattr(session, "user_notes", None), getattr(session, "request_txt", None),
-                           owner_id=owner_id or str(getattr(session, "owner_id", "") or ""), previous=stored):
+                           owner_id=owner_id or str(getattr(session, "owner_id", "") or ""), previous=stored,
+                           notes_only=seen is NOTES_ONLY):
             stored, current = _read(sid, MATCHES), True
     if current and stored is not None and stored.get("status") == "done":
-        got = rows_of(with_picks(sid, stored, seen["table"], notes), seen, sid)
-        return got or {"status": "done", "rows": [], "unsure": []}
+        got = rows_of(with_picks(sid, stored, seen["table"], notes), seen, sid) or {"status": "done", "rows": [],
+                                                                                    "unsure": []}
+        lines = notes_lines(stored)
+        return {**got, "lines": lines} if lines else got
     # NOT READ FOR THESE WORDS (yet): the last reading's rows stay on the card until the new one lands
     status = "reading" if current and stored is not None and stored.get("status") == "reading" else "ready"
     out: dict[str, Any] = {"status": status}
@@ -266,6 +281,37 @@ def _view(session: Any, *, owner_id: str, start: bool) -> dict | None:
         if old:
             out = {**old, "status": status, "stale": True}
     return out
+
+
+#: NOTES-CFD-1: what stands in for the parts on a flow model the notes can name no part of (one part, or none kept)
+NOTES_ONLY: dict = {"route": ROUTE_CFD, "table": []}
+
+
+def flow_route(check: Mapping | None, session: Any) -> bool:
+    """Whether the session's mesh is a flow (CFD) mesh as the stage reads it: the user's words settled a flow purpose
+    and the file is not a whole thermal model (which has its own panel)."""
+    from meshpipeline.application import fea_check
+    return fea_check.stage_route(dict(check or {}), getattr(session, "messages", None)) == fea_check.STAGE_FLOW
+
+
+def notes_lines(stored: Mapping | None) -> list[str]:
+    """NOTES-CFD-1: the CFD reader's lines for a reading - "From your notes: ..." for each requirement it read, then
+    what it could not apply - as the run says them (engines/mesh_requirements.words); none when it read nothing."""
+    from meshpipeline.engines import mesh_requirements as MR
+    sec = (stored or {}).get("notes")
+    return [str(w) for w in MR.words(sec)] if isinstance(sec, Mapping) else []
+
+
+def read_notes(state: Mapping, session_id: str) -> dict:
+    """NOTES-CFD-1: the notes read as the run's CFD reader reads them (engines/cfd_requirements.read_for_attempt:
+    engines/meshing_standard.decide on the flow route) - one model call, on the worker. Never raises."""
+    from meshpipeline.engines import mesh_requirements as MR
+    from meshpipeline.engines import meshing_standard as MS
+    try:
+        return asyncio.run(MS.decide(state, route=MR.FLOW, job_id=f"notes-{session_id}"))
+    except Exception as exc:  # noqa: BLE001 - the run reads the notes itself
+        logger.warning("part matches: the notes were not read (%s) - session=%s", type(exc).__name__, session_id)
+        return MR.section("failed", note=MR.UNREAD_WORDS)
 
 
 def with_picks(session_id: str, stored: Mapping, table: list[dict], notes: str) -> dict:
@@ -439,13 +485,15 @@ def card_picture(session_id: str, name: str) -> bytes | None:
 
 
 def enqueue_reading(session_id: str, key: str, user_notes, request_txt, *, owner_id: str = "",
-                    previous: Mapping | None = None) -> bool:
+                    previous: Mapping | None = None, notes_only: bool = False) -> bool:
     """Mark the reading of `key` as begun and hand it to the geometry worker. False when nothing runs it.
-    `previous`: the last reading, whose rows the card keeps showing until this one lands."""
+    `previous`: the last reading, whose rows the card keeps showing until this one lands. `notes_only`: a flow model
+    with no parts to tie the words to (NOTES-CFD-1): the worker reads the notes alone."""
     from meshpipeline.contracts.geometry_check import enqueue_part_words
     try:
         last = previous if (previous or {}).get("status") == "done" else (previous or {}).get("previous")
         _write(session_id, MATCHES, {"key": key, "status": "reading", "at": time.time(),
+                                     **({"notes_only": True} if notes_only else {}),
                                      **({"previous": dict(last)} if isinstance(last, Mapping) else {})})
         return enqueue_part_words(session_id=session_id, key=key, owner_id=owner_id,
                                   user_notes=json.loads(json.dumps(list(user_notes or []), default=str)),
@@ -479,11 +527,17 @@ def run_reading(*, session_id: str, key: str, user_notes=None, request_txt: str 
 
     seen = parts_seen(read_check(session_id))
     if seen is None:
-        return {"status": "none"}
+        # NOTES-CFD-1: a flow model with no parts to tie the words to - the notes alone, as the card asked
+        if not (_read(session_id, MATCHES) or {}).get("notes_only"):
+            return {"status": "none"}
+        seen = NOTES_ONLY
     state = {"user_notes": list(user_notes or []), "request_txt": request_txt or "", "user_id": owner_id}
-    consumer, purpose, enabled = _route_ask(str(seen.get("route") or ROUTE_FEA))
+    route = str(seen.get("route") or ROUTE_FEA)
+    consumer, purpose, enabled = _route_ask(route)
     started = time.time()
-    if not enabled:
+    if seen is NOTES_ONLY:
+        section = PW.section("none", note="no parts to tie the words to")
+    elif not enabled:
         section = PW.section("none", note="the AI step is off")
     else:
         try:
@@ -505,12 +559,15 @@ def run_reading(*, session_id: str, key: str, user_notes=None, request_txt: str 
         except Exception as exc:  # noqa: BLE001 - nothing read; the run asks again
             logger.warning("part matches: the reading failed (%s) - session=%s", type(exc).__name__, session_id)
             section = PW.section("failed", note=PW.UNREAD_WORDS)
+    # NOTES-CFD-1: on the flow route the notes themselves are read too, as the run's CFD reader reads them
+    notes_sec = read_notes(state, session_id) if route == ROUTE_CFD else None
     now = _read(session_id, MATCHES)
     if now is not None and now.get("key") not in (None, key):
         logger.info("part matches: the notes changed while they were read - this reading dropped - session=%s",
                     session_id)
         return {"status": "superseded"}
     _write(session_id, MATCHES, {"key": key, "status": "done", "at": time.time(), "section": section,
+                                 **({"notes": notes_sec} if notes_sec is not None else {}),
                                  "seconds": round(time.time() - started, 1)})
     logger.info("part matches: read in %.1fs - %d row(s) - session=%s", time.time() - started,
                 len(section.get("entries") or []), session_id)
@@ -561,6 +618,7 @@ def for_run(session_id: str, user_notes, request_txt) -> dict | None:
         return None
 
 
-__all__ = ["CARD_PICTURES", "CARD_VIEWS", "MODEL", "before_run", "finalize", "card_picture", "model_bytes", "readable", "MATCHES", "PARTS_KEY", "PICKS", "PICTURE_NAMES", "ROUTE_CFD", "ROUTE_FEA", "copy_parts",
+__all__ = ["CARD_PICTURES", "CARD_VIEWS", "MODEL", "NOTES_ONLY", "before_run", "finalize", "flow_route", "notes_lines",
+           "read_notes", "card_picture", "model_bytes", "readable", "MATCHES", "PARTS_KEY", "PICKS", "PICTURE_NAMES", "ROUTE_CFD", "ROUTE_FEA", "copy_parts",
            "enqueue_reading", "for_run", "key_of", "notes_of", "parts_seen", "parts_words", "pick", "picture_keys",
            "rows_of", "run_reading", "size_words", "store_parts", "view", "with_picks"]

@@ -63,6 +63,12 @@
    "run_mesh",
    "run_python"
   ],
+  "netgen": [
+   "read_file",
+   "list_directory",
+   "submit_mesh",
+   "run_mesh"
+  ],
   "snapgrid": [
    "read_file",
    "list_directory",

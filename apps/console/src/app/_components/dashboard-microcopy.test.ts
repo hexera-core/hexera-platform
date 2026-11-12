@@ -53,3 +53,17 @@ test("CAD Repair System evidence is available without a console feature gate", (
   assert.match(source, />CAD Repair System</);
   assert.doesNotMatch(source, /CAD_REPAIR_POC|notFound/);
 });
+
+test("meshing settings name the team's standard, the scope and the notes rule, and nothing else", () => {
+  const source = dashboardSource("settings/meshing/page.tsx");
+
+  assert.match(source, /<h1 className="page__title">Meshing<\/h1>/);
+  assert.match(source, /<p className="page__intro">\{SCOPE\}<\/p>/);
+  assert.match(source, /title="We couldn't load your meshing standard"/);
+  // no summary cards and no per-field controls: one box, the one Shell elements switch, its line, Save and Clear
+  assert.doesNotMatch(source, /summary-grid|metric-card/);
+  const view = readFileSync(new URL("./meshing-standard-view.tsx", import.meta.url), "utf8");
+  assert.doesNotMatch(view, /<input|<select/);
+  assert.equal((view.match(/<button/g) ?? []).length, 3);   // Save, Clear and the switch's one mapped choice
+  assert.equal((view.match(/role="radiogroup"/g) ?? []).length, 1);
+});

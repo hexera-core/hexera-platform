@@ -480,7 +480,7 @@ API: it logs that the directory is missing and leaves `/ui` and `/static` unmoun
 
 <!-- Regenerate: python -m meshpipeline.settings.inventory --reference -->
 
-Every supported setting (278 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
+Every supported setting (282 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
 
 | Setting | Exposure | Read by | Secret |
 |---|---|---|---|
@@ -625,7 +625,10 @@ Every supported setting (278 entries). `template` settings are the ones `.env.ex
 | `WORKER_IDLE_RETIRE_MINUTES` | template | app |  |
 | `WORKER_LEASE_SECONDS` | template | app |  |
 | `WORKER_WAKE_MINUTES` | template | app |  |
+| `CAD_FIDELITY_RETRY_ENABLED` | template | app |  |
 | `CELL_HARD_LIMIT` | template | app |  |
+| `CFD_WRAP_ENABLED` | template | app |  |
+| `CFD_WRAP_TIME_S` | template | app |  |
 | `DOMAIN_EXTENT_GATE_ENABLED` | template | app |  |
 | `ENGINE_FALLBACK_ENABLED` | template | app |  |
 | `LAYER_CAVEAT_FLOOR_PCT_EXTERNAL` | template | app |  |
@@ -661,6 +664,7 @@ Every supported setting (278 entries). `template` settings are the ones `.env.ex
 | `WEB_SEARCH_TIMEOUT` | template | app |  |
 | `BUILDER_AI` | internal | app |  |
 | `FEA_AI` | internal | app |  |
+| `FEA_MMG` | internal | app |  |
 | `VMTK_BIN` | template | app |  |
 | `AI_DECISION_CACHE` | internal | app |  |
 | `MESH_CFMESH_THREADS` | internal | app |  |

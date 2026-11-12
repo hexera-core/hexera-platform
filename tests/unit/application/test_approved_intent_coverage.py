@@ -58,6 +58,14 @@ DECLARED_EXCLUSIONS: dict[str, str] = {
         "them only through settings it already controls, inside their validated limits, so no note "
         "can move the approved engine, purpose, patches or any fingerprinted value; the reviewer "
         "reads them as context outside the text a finding may quote, so a note cannot fail a mesh."),
+    "meshing_standard": (
+        "The team's meshing standard (engines/meshing_standard): the organisation's standing mesh "
+        "requirements, snapshotted at approval. GUIDANCE read by the notes' own reader and checked by "
+        "its rules, never acceptance criteria. MITIGATION: it is written only by the owner-scoped, "
+        "membership-checked settings route (console sessions only) and read at approval from the "
+        "approving caller's own organisation; it reaches the mesh only through the fields the notes "
+        "already set (sizes, element kind, quality aims), inside their validated limits, so it cannot "
+        "move the approved engine, purpose, patches or any fingerprinted value."),
     "review_continuation": (
         "Marks a dispatch as a parked run's own re-run, so the spend gate is not applied twice. "
         "MITIGATION: it changes no mesh input and nothing routes on it; it is set only by the "

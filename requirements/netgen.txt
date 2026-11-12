@@ -1,0 +1,15 @@
+# The Netgen CFD engine's ISOLATED interpreter (/opt/netgen-env in the mesh image, Dockerfile
+# `mesh-toolchain`). Netgen ships its own OpenCASCADE (netgen-occt) and numpy 2, which must not meet
+# the app's pinned OCP/vtk/numpy - so, like vmtk, it lives in its own env and is reached ONLY as a
+# subprocess (engines/netgen/runner.py runs engines/netgen/netgen_mesh.py under it).
+# Installed with --require-hashes: every wheel is the exact file reviewed here (cp311, manylinux).
+# Licences: netgen-mesher LGPL-2.1, netgen-occt (OpenCASCADE) LGPL-2.1 with exception, numpy and
+# scipy BSD-3 - see docs/reference/third-party.md.
+netgen-mesher==6.2.2608 \
+    --hash=sha256:1d5ca85f4c45386ffd7495cf2cba8a3c293291c39b2c50d74e8fad2e7f7de0d3
+netgen-occt==7.8.1 \
+    --hash=sha256:db71d77f56f79c0768489e76dde8febdeb25b95777986587a5d09575fa112f94
+numpy==2.4.6 \
+    --hash=sha256:89cd468399cfd2504718f0ba50e410dca55a170b61a02ad92bb18c8a65186e93
+scipy==1.17.1 \
+    --hash=sha256:43af8d1f3bea642559019edfe64e9b11192a8978efbd1539d7bc2aaa23d92de4

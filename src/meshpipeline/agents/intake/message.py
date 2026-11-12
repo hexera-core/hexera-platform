@@ -397,7 +397,16 @@ async def _settle(inbound: InboundMessage, db, *, gate: dict, locked, messages: 
     # Camaro STL, 2026-10-23). A unit the user names unasked is still recorded.
     fea_unit_on_stage = (fea_words(messages) and not uc.already_asked(gate)
                          and uc.stated_unit(inbound.content) is None)
-    unit = None if fea_unit_on_stage else await _settle_unit(
+    # THE UNIT LEFT TO US BEFORE THE PART IS MEASURED goes to the stage too. "Not sure - use your
+    # best guess" to the unit question of a part the check has not measured yet had no answer: the
+    # proposal needs the size, the size needs the check, and the check (the naming) waited for
+    # the unit - so the question came back every turn and the run never started (an Ahmed body
+    # STL, real path 2026-10-28). The stage shows the part's length with a unit proposed from it,
+    # and its Proceed records the unit. Measured already, the deferral takes the proposal below.
+    unit_to_stage = (not fea_unit_on_stage and uc.needs_confirmation(locked)
+                     and _unit_left_unmeasured(inbound, gate))
+    on_stage = fea_unit_on_stage or unit_to_stage
+    unit = None if on_stage else await _settle_unit(
         inbound, db, gate=gate, locked=locked, revision=revision, session_repo=session_repo,
         logger=logger)
     if unit is not None:
@@ -409,7 +418,7 @@ async def _settle(inbound: InboundMessage, db, *, gate: dict, locked, messages: 
             if hold is not None:
                 return hold
         return unit
-    if uc.needs_confirmation(locked) and not fea_unit_on_stage:
+    if uc.needs_confirmation(locked) and not on_stage:
         # THE NAMING WAITS FOR THE UNIT. The user's words go to the model only once the file's
         # scale is known: the naming re-reads every measurement in that unit, and the stage
         # confirms nothing without it. Until then the intake answers as it always did.
@@ -420,11 +429,25 @@ async def _settle(inbound: InboundMessage, db, *, gate: dict, locked, messages: 
     if asked is not None:
         return asked
     hold = await _settle_geometry_hold(inbound, db, locked=locked, messages=messages,
-                                       revision=revision, session_repo=session_repo, logger=logger)
+                                       revision=revision, session_repo=session_repo, logger=logger,
+                                       note=uc.ON_STAGE if unit_to_stage else "")
     if hold is not None:
+        if unit_to_stage:
+            logger.info("intake message: the user left the unit to us before the part was measured - "
+                        "the stage proposes it - session=%s", inbound.session_id)
         return hold
     return MessageOutcome(status=MessageStatus.proceed,
                           transition=GateTransition(revision=revision))
+
+
+def _unit_left_unmeasured(inbound: InboundMessage, gate: dict) -> bool:
+    """Whether this reply leaves the open unit question to us while the part has not been
+    measured yet - the case only the stage can settle (see `_settle`)."""
+    if not uc.already_asked(gate) or not uc.leaves_unit_to_us(inbound.content):
+        return False
+    from meshpipeline.application import geometry_hold as gh
+
+    return gh.measured_size_mm(str(inbound.session_id)) is None
 
 
 #: said while a yes waits for the notes to be read (the run starts the moment they are)
@@ -489,7 +512,7 @@ async def _settle_fea_analysis(inbound: InboundMessage, db, *, messages: list, r
 
 
 async def _settle_geometry_hold(inbound: InboundMessage, db, *, locked, messages: list,
-                                revision: str, session_repo, logger) -> MessageOutcome | None:
+                                revision: str, session_repo, logger, note: str = "") -> MessageOutcome | None:
     """THE GEOMETRY CHECK'S TURN, taken here because it must be decided under the same row lock
     as every other turn: two answers sent at once must not both find 'nobody asked the model
     yet' and queue two namings with two holding lines. The first answer that reaches the intake
@@ -541,6 +564,8 @@ async def _settle_geometry_hold(inbound: InboundMessage, db, *, locked, messages
     if not gh.queue_naming(session_id, inbound.owner_id, gh.purpose_from(messages), interpretation):
         return None
     reply = gh.hold_reply(thermal, headline, reading)
+    if note:
+        reply = f"{reply} {note}"
     try:
         await session_repo.append_message(db, inbound.session_id, "assistant", reply)
     except Exception:
@@ -698,11 +723,10 @@ async def _settle_unit(inbound: InboundMessage, db, *, gate: dict, locked, revis
         # size makes that absurd), which the stage then shows beside the part's length for the user
         # to change. Asked again instead, it was the same question every turn and the geometry
         # check waited on it for good.
-        from meshpipeline.agents.intake import turn as _turn
         from meshpipeline.application import geometry_hold as gh
 
         # only a PURE deferral: "you pick, but not metres" rules a unit out, and is asked again
-        pure = _turn.defers_to_default(inbound.content) and not uc.mentions_unit(inbound.content)
+        pure = uc.leaves_unit_to_us(inbound.content)
         size = gh.measured_size_mm(str(inbound.session_id)) if pure else None
         if size:
             _words = gh.purpose_from(getattr(locked, "messages", None))

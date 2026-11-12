@@ -12,7 +12,7 @@
 a:focus-visible, button:focus-visible, input:focus-visible, textarea:focus-visible,
 select:focus-visible, [role="button"]:focus-visible, [tabindex]:focus-visible, .chip:focus-visible,
 .v-btn:focus-visible, .v-dlbtn:focus-visible, .nt-act:focus-visible, .nt-x:focus-visible{
-  outline:2px solid var(--focus, #ff4f00);
+  outline:2px solid var(--focus, #e8403d);
   outline-offset:2px;
 }
 
@@ -34,7 +34,7 @@ select:focus-visible, [role="button"]:focus-visible, [tabindex]:focus-visible, .
   .gp-chev{transition:none}
   /* the work icons hold still, drawn whole */
   .gp-mark .wi *{animation:none!important;opacity:1!important;transform:none!important;stroke-dashoffset:0!important}
-  .gp-mark .wi .wi-c2{fill:var(--accent)}
+  .gp-mark .wi .wi-c2{fill:var(--live)}
 }
 
 /* NARROW SCREENS. The console is desktop-first, but it must not break on a phone:

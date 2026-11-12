@@ -147,11 +147,16 @@ def test_edges_that_do_not_meet_are_said_in_the_record():
     assert rec["checks"]["connected"] is False
     assert sum(c["open_edges"] for c in rec["sewn"]) == 1          # one gap all round (SURF-8's one count)
     assert any("SURF-2" in n for n in rec["notes"])
-    # by rule they are closed (SURF-8), and the record says that instead
-    reading, sewn = _read(sx.skin_with_crack(3.0 * tol), said_shell=True)
+    # by rule they are closed by stitching (SURF-8, the surfaces left as they are), and the record says that instead
+    reading, sewn = _read(sx.skin_with_crack(3.0 * tol), said_shell=True, mend=False)
     rec, _surface = sm.record(reading, sewn, mm_per_unit=1.0, walls_mm={s["part"]: 1.0 for s in reading["sheets"]})
     assert rec["checks"]["connected"] is True and sum(c["open_edges"] for c in rec["sewn"]) == 0
     assert any("SURF-8" in n and "4 gap(s)" in n for n in rec["notes"]) and not any("SURF-2" in n for n in rec["notes"])
+    # with the surfaces made to meet (SURF-12, the default) the crack is closed before stitching, and said so
+    reading, sewn = _read(sx.skin_with_crack(3.0 * tol), said_shell=True)
+    rec, _surface = sm.record(reading, sewn, mm_per_unit=1.0, walls_mm={s["part"]: 1.0 for s in reading["sheets"]})
+    assert rec["checks"]["connected"] is True and sum(c["open_edges"] for c in rec["sewn"]) == 0
+    assert any("SURF-12" in n or "SURF-8" in n for n in rec["notes"]) and not any("SURF-2" in n for n in rec["notes"])
 
 
 def test_three_faces_at_one_line_are_sewn_into_a_junction():

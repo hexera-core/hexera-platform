@@ -190,7 +190,7 @@ def test_a_shell_asked_for_later_appears_then(live):
 def test_a_shell_that_cannot_be_made_says_why_and_draws_nothing(live):
     """(d) A shell asked for on a chunky part: Solid, with the one-sentence reason; no list, legend or drawing."""
     sid = "feachunky"
-    why = "You asked for a shell, but no wall of this part is thin enough for one, so it is meshed as a solid."
+    why = "You asked for a shell, but this part has no plate or thin wall to make one from, so it is meshed as a solid."
     _open(live, sid, _check(_shell("ready", mesh_as="solid", label="Solid", reason=why)))
     s = _state(live, sid)
     assert s["row"] == "Solid" and s["why"] == why and not s["measuring"] and not s["legend"] and s["rows"] == []

@@ -40,7 +40,7 @@ import { themeRgb } from "./toolbar.js";
 
 /* the same palette the delivered mesh and the geometry check are drawn in (tokens.css
    --viewer-canvas, --part-body); these values are only the fallback when no theme is loaded */
-const BACKGROUND_FALLBACK = [0.035, 0.055, 0.075], BODY_FALLBACK = [0.49, 0.51, 0.54];
+const BACKGROUND_FALLBACK = [0.02, 0.02, 0.02], BODY_FALLBACK = [0.53, 0.52, 0.49];
 const EDGE = [0.27, 0.25, 0.22];
 const AMBIENT = 0.22, DIFFUSE = 0.80, SPECULAR = 0.06;
 // the front-quarter view every viewer here opens with, given for +Z up
