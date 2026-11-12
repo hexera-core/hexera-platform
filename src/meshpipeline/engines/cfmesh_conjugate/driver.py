@@ -38,6 +38,63 @@ NO_COOLANT = "conjugate_no_coolant"
 TOO_FINE = "conjugate_too_fine_for_budget"
 BUILD_FAILED = "conjugate_build_failed"
 
+#: The gate a refusal before meshing stands in for. `manifest_valid` is the one that already
+#: covers "a mesh over budget" alongside a mesher that stopped and a boundary that is missing
+#: (application/final_result._gate_account says so in those words), and a part priced out before
+#: the mesher starts is exactly that.
+_REFUSAL_GATE = "manifest_valid"
+
+
+def _say_why_before_meshing(ws, words: str, *, job_id: str) -> None:
+    """Carry a refusal's OWN WORDS to the user, not just its marker.
+
+    THE WORDS WERE BEING THROWN AWAY. The comment on TOO_FINE above records half of this already -
+    "the log line above each refusal says the true reason; the marker is what survives into the
+    failure record" - and fixed the marker. The words were still only logged. Measured end to end
+    on the first customer part, 2026-11-12, job 0904c8bc: the engine wrote
+
+        this part has two scales of passage - about 2.11 mm and 0.0982 mm - and no pair of cell
+        sizes resolves the thin ones at 4 cells across inside a limit of 400,000,000 cells and
+        this mesher's own ceiling of 178,956,970; a configuration that fits the cell limit was
+        refused on the octree ceiling alone and would build on 2 ranks
+
+    and the customer was shown "Conjugate stopped while preparing the mesh, before the mesher
+    started, so there was nothing to check. THE NOTES ABOVE SAY WHAT IT STOPPED ON." There were no
+    notes above: not one of 2.11 mm, 0.0982 mm, 178,956,970, 400,000,000 or "2 ranks" appeared
+    anywhere on the page. The sentence pointed at an explanation that did not exist, and the
+    engine's best work - a measured, specific, customer-grade account of their own geometry - went
+    only to a log file nobody outside this repo can read.
+
+    NOTHING NEW IS INVENTED TO CARRY IT. `engines/preflight` exists for this and says so: "a
+    pre-flight that refuses a run writes one PreflightRefusal into the attempt's workspace - the
+    only thing that crosses from the builder to the executor - ... so the user reads what was
+    wrong", and "ANY pre-flight may write it". The executor merges `facts` into the failure record
+    (pipeline/executor.py), `failure_cause.describe` reads `facts["reason"]` for NOT_BUILT, and
+    the result is the engine's own sentence in the user's own message. All four size refusals
+    below go through here, because all four had the same silence and each has different words.
+
+    `deterministic` is already true of this driver and is set so the retry policy keeps reading it
+    that way (contracts/failure_cause.retry_can_help); it is the fact that stops a second
+    identical refusal, and it is stated here rather than inferred.
+    """
+    from meshpipeline.contracts.failure_cause import FailureCause
+    from meshpipeline.engines.preflight import PreflightRefusal
+
+    said = str(words or "").strip()
+    if not said:
+        return
+    PreflightRefusal(
+        gate=_REFUSAL_GATE,
+        cause=FailureCause.NOT_BUILT.value,
+        builder_text=said,
+        facts={"reason": said, "deterministic": True, "engine": "cfmesh_conjugate",
+               # the mesher never started, so there is no mesh to judge and nothing was spent on
+               # one - the user's sentence says so and this is what entitles it to
+               "meshers_started": 0},
+    ).write(ws)
+    logger.info("conjugate: refusal recorded for the user at gate %s - job_id=%s",
+                _REFUSAL_GATE, job_id)
+
 #: A FIFTH REFUSAL, AND IT IS NOT A SIZE ONE. The four above price a part against a budget and
 #: decline because the answer is too many cells. This one declines because the geometry is not in
 #: metres at all, which is a different fact about a different thing: the part is not too fine, it
@@ -344,6 +401,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
             # and less useful reason - its narrowest passage - and the user would be told the wrong
             # thing about their own geometry.
             logger.info("conjugate: refusing to start - %s - job_id=%s", two_said, job_id)
+            _say_why_before_meshing(ws, two_said, job_id=job_id)
             await run.fence("deliver builder outcome")
             return False, TOO_FINE, run.outcome(produced_deliverable=False, exhausted=True,
                                                   failure_marker=TOO_FINE)
@@ -382,6 +440,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
             # million is not a three-times argument, and starting it spends hours and ends in a
             # kernel kill. The sentence says the number rather than asking for "less detail".
             logger.info("conjugate: refusing to start - %s - job_id=%s", said, job_id)
+            _say_why_before_meshing(ws, said, job_id=job_id)
             await run.fence("deliver builder outcome")
             return False, TOO_FINE, run.outcome(produced_deliverable=False, exhausted=True,
                                                   failure_marker=TOO_FINE)
@@ -408,6 +467,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     octree_said = B.refuse_for_octree(estimate)
     if octree_said:
         logger.info("conjugate: refusing to start - %s - job_id=%s", octree_said, job_id)
+        _say_why_before_meshing(ws, octree_said, job_id=job_id)
         await run.fence("deliver builder outcome")
         return False, TOO_FINE, run.outcome(produced_deliverable=False, exhausted=True,
                                               failure_marker=TOO_FINE)
@@ -432,6 +492,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     return_said = B.refuse_for_return(estimate, cap_bytes=_cap.max_archive_bytes)
     if return_said:
         logger.info("conjugate: refusing to start - %s - job_id=%s", return_said, job_id)
+        _say_why_before_meshing(ws, return_said, job_id=job_id)
         await run.fence("deliver builder outcome")
         return False, TOO_FINE, run.outcome(produced_deliverable=False, exhausted=True,
                                               failure_marker=TOO_FINE)
