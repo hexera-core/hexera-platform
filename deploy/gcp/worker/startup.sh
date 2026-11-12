@@ -85,6 +85,7 @@ for pair in "deployment-id:DEPLOYMENT_ID" \
             "cad-repair-stall-limit:CAD_REPAIR_STALL_LIMIT" \
             "cad-inspect-timeout-s:CAD_INSPECT_TIMEOUT_S" \
             "cad-repair-llm-planner:CAD_REPAIR_LLM_PLANNER" \
+            "cad-repair-rag:CAD_REPAIR_RAG" \
             "verdict-by-limits:VERDICT_BY_LIMITS" \
             "mesh-progressive-snapshot-enabled:MESH_PROGRESSIVE_SNAPSHOT_ENABLED" \
             "mesh-snappy-ranks:MESH_SNAPPY_RANKS"; do

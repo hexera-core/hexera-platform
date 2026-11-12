@@ -27,6 +27,8 @@ tests/fixtures/external/geometry/*.VTP
 # WORKSPACE_BASE), and the deployment state Gate C and Gate D write (release.json,
 # deployment.json). Redirecting these would move a real runtime or deployment artifact, not a cache.
 data/
+# ... except the engine's baked fix-memory snapshot, which ships with the code
+!src/meshpipeline/cad/repair/data/
 workspaces/
 deploy/output/
 
