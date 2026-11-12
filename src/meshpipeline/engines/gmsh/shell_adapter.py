@@ -193,12 +193,8 @@ class _Regrid(Exception):
 
 
 class _Redraw(Exception):
-    """SHMESH-48l2: holes to draw again (SHMESH-45k one circle, 49c O-grid seams), told as soon as the rings are built
-    on a pass that could end no other way: the clean-up of a mesh the redraw throws away is not made."""
-
-    def __init__(self, wanted: list, w_owner: list, seam: list, s_owner: list) -> None:
-        super().__init__(f"{len(wanted) + len(seam)} hole(s) to draw again")
-        self.wanted, self.w_owner, self.seam, self.s_owner = wanted, w_owner, seam, s_owner
+    """SHMESH-48l2: holes drawn again (SHMESH-45k one circle, 49c O-grid seams) as soon as the rings were built, on a
+    pass that could end no other way: the clean-up of a mesh the redraw throws away is not made."""
 
 
 class _Unmap(Exception):
@@ -1120,13 +1116,11 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
                                            correction=correction, requirements=requirements, unmap=frozenset(unmap),
                                            no_cut=frozenset(no_cut), check_maps=unmapped < UNMAP_ROUNDS,
                                            judge_faces=True, compare=compare, grids_kept=frozenset(kept),
-                                           redraw_ok=EARLY_REDRAW and not redraw_pass and not resplined)
+                                           redraw_now=redraw if EARLY_REDRAW and not redraw_pass and not resplined
+                                           else None)
                 passes.append(["made", round(time.monotonic() - t_pass, 1)])
-            except _Redraw as rd:
+            except _Redraw:
                 passes.append(["holes drawn again", round(time.monotonic() - t_pass, 1)])
-                if not redraw(list(rd.wanted), list(rd.seam), list(rd.w_owner), list(rd.s_owner)):
-                    # (nothing drawn: the pass is made whole, as the mesh that stands)
-                    passes[-1][0] = "holes not drawn again"
                 continue
             except _NoCut as nc:
                 passes.append(["grids left out", round(time.monotonic() - t_pass, 1)])
@@ -1357,7 +1351,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                requirements: dict | None = None, own_spots: tuple = (), unmap: frozenset = frozenset(),
                hole_before: tuple = (), no_cut: frozenset = frozenset(), judge_faces: bool = False,
                check_maps: bool = False, compare: dict | None = None, grids_kept: frozenset = frozenset(),
-               redraw_ok: bool = False) -> tuple[ShellMesh, dict]:
+               redraw_now=None) -> tuple[ShellMesh, dict]:
     """One mesh. `unmap` (SHMESH-40): gmsh surfaces left free (their grid came out past the solver's limits once);
     `check_maps`: raise _Unmap when a mapped face's grid comes out past them. `own_spots` (SHMESH-31): (sewn face, box low corner, box high corner - mm) round elements a mesh
     under the user's sizes left past the solver's own limits: inside each box the face's own rules' size, where
@@ -2020,10 +2014,10 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
             log.extend(gmsh.logger.get())
     finally:
         gmsh.finalize()
-    if redraw_ok:
+    if redraw_now is not None:
         # SHMESH-48l2: holes are to be drawn again and nothing after this could end the pass otherwise (no face is
-        # judged before its O-grid holes are drawn again, no grid waits for its free mesh): the pass stops here, with
-        # the same lists the whole pass would give
+        # judged before its O-grid holes are drawn again, no grid waits for its free mesh): the redraw is made now,
+        # with the same lists the whole pass would give, and the pass stops here (none drawn: it goes on whole)
         drawn_e = [np.asarray(c, dtype=float) for c, _e in hole_before]
         want_e = [w for w in washers_planned if _wants_redraw(w, drawn_e)]
         seam_e = [w for w in gridded if not any(float(np.linalg.norm(c - w.centre)) <= 0.25 * w.r for c in drawn_e)]
@@ -2031,10 +2025,12 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         judged_now_e = bool(judge_faces and ST.POLAR_CHECK and judged_e and not (ST.RESEAT and seam_e))
         comparing = bool(compare and judge_faces and any(k not in grid_faces_made and "free_figures" not in g
                                                          for k, g in compare.items()))
-        if (want_e or seam_e) and not judged_now_e and not comparing:
-            raise _Redraw([[float(x) for x in w.centre] for w in want_e], [int(w.owner) for w in want_e],
-                          [([float(x) for x in w.centre], list(w.seam)) if w.seam else [float(x) for x in w.centre]
-                           for w in seam_e], [int(w.owner) for w in seam_e])
+        if (want_e or seam_e) and not judged_now_e and not comparing and redraw_now(
+                [[float(x) for x in w.centre] for w in want_e], [([float(x) for x in w.centre], list(w.seam))
+                                                                 if w.seam else [float(x) for x in w.centre]
+                                                                 for w in seam_e],
+                [int(w.owner) for w in want_e], [int(w.owner) for w in seam_e]):
+            raise _Redraw()
     Q = np.vstack(quads) if quads else np.zeros((0, 4), dtype=np.int64)
     T = np.vstack(trias) if trias else np.zeros((0, 3), dtype=np.int64)
     merged = 0
