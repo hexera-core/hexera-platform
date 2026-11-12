@@ -1162,7 +1162,10 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
                     # SHMESH-48l2: the faces whose grids come back take their holes drawn again back too; and the holes
                     # this pass's free rings asked for (on the faces that stay free) are drawn with them now - the
                     # redraw the next pass would ask for, without that pass
-                    have = [np.asarray(e if len(e) != 2 else e[0], dtype=float) for _k, e, _o in asked]
+                    # (a hole already asked for and still drawn: not twice - an O-grid seam of a face now free is not
+                    # drawn any more, its free ring may ask for one circle there)
+                    have = [np.asarray(e if len(e) != 2 else e[0], dtype=float) for k_, e, o_ in asked
+                            if k_ == "W" or o_ not in no_cut]
                     extra = [("W", c, o) for c, o in rg.wanted if o not in rg.faces
                              and not any(float(np.linalg.norm(np.asarray(c) - h_)) <= 1e-6 * max(1.0, float(
                                  np.linalg.norm(h_))) for h_ in have)]
