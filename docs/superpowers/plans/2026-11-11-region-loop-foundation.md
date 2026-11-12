@@ -587,6 +587,103 @@ git commit -m "feat(repair): report whether each surviving defect was inherent o
 
 ---
 
+### Task 9: Scope The Per-Operation Re-Inspection
+
+Added after Task 7 revealed that the plan's cost thesis does not yet hold. `try_op` re-inspects the
+WHOLE shape after every operation, so a package of N operations pays N whole-shape scans inside
+`try_op` plus one scoped scan at the package boundary. The scoped scan is additive, and on total
+scan count the region loop is currently MORE expensive than the baseline. "Local edit, local proof"
+is the justification for the entire project and it is unimplemented until an operation inside a
+package also proves itself locally.
+
+The fix is to scope the per-operation re-inspection, NOT to skip it: `try_op`'s progress rule needs
+a rescan to know whether the defect it aimed at actually went, and that rule is what stops an
+operation being kept for doing nothing.
+
+**Files:**
+- Modify: `src/meshpipeline/cad/repair/session.py` (`try_op`, `_rescan`, `try_package`)
+- Test: `tests/unit/cad/test_repair_package_session.py` (extend)
+- Test: `tests/native/test_native_repair_region_loop.py` (extend)
+
+**Interfaces:**
+- Consumes: `Region` (Task 3), `localize_scan(..., within=)` (Task 4), `try_package` (Task 6).
+- Produces: `RepairSession.try_op(..., within: Region | None = None)` and
+  `RepairSession._rescan(*, face_scan: bool, within=None)`. `try_package` passes its
+  `package.region` to every `try_op` it calls. `within=None` preserves today's whole-shape
+  behaviour exactly, so `cad/repair/loop.py` is unaffected.
+
+**The hazard that makes this task non-trivial.** `try_op`'s progress rule compares `previous` — the
+session's cached whole-shape defect list — against `found`, the result of the rescan. Scope only
+`found` and every defect outside the region reads as having disappeared, which would both credit an
+operation with clearing defects it never touched and trip the collateral-damage checks. `previous`
+must be filtered to the same region before the comparison. The two sides of that comparison must
+always be drawn from the same scope.
+
+- [ ] **Step 1: Write the failing tests**
+
+```python
+def test_an_operation_inside_a_package_re_inspects_only_its_region():
+    spy = _scan_spy()
+    _session(spy=spy).try_package(_package(cleared={_EDGE}))
+    # every per-operation rescan is scoped; none walks the whole shape
+    assert [c.index for c in spy.scoped] == [0, 0]      # the op's rescan, then the package's
+    assert spy.whole_shape == []
+
+def test_the_progress_rule_still_rolls_back_an_operation_that_cleared_nothing():
+    verdict = _session(clears=False).try_package(_package(cleared={_EDGE}))
+    assert [v.reason for v in verdict.verdicts] == ["target_remains"]
+
+def test_a_defect_outside_the_region_is_not_credited_as_cleared():
+    # the scoped previous/found comparison must be drawn from the same scope,
+    # or an untouched defect elsewhere reads as having disappeared
+    verdict = _session(elsewhere=("face:far",)).try_package(_package(cleared={_EDGE}))
+    assert verdict.status == "committed"
+    assert "face:far" not in verdict.reason
+
+def test_try_op_without_a_region_is_unchanged():
+    spy = _scan_spy()
+    _session(spy=spy).try_op(_Op(), (_ref(_EDGE),), "small_edge", tolerance_mm=0.1)
+    assert spy.scoped == [] and len(spy.whole_shape) == 1
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `.venv/bin/python -m pytest tests/unit/cad/test_repair_package_session.py -k "region or progress or outside or unchanged" -v`
+Expected: FAIL — `try_op()` got an unexpected keyword argument `within`, and the spy records whole-shape calls where scoped ones are asserted.
+
+- [ ] **Step 3: Thread `within` through `try_op` and `_rescan`, and filter `previous` to the same scope**
+
+Keep `try_op`'s documented step order and every existing cap. The filter on `previous` belongs
+immediately before the progress rule, where the comparison happens, with a comment naming the
+hazard.
+
+- [ ] **Step 4: Run the tests and the suites that cover the unscoped path**
+
+Run: `.venv/bin/python -m pytest tests/unit/cad/test_repair_package_session.py tests/unit/cad/test_repair_timing.py tests/native/test_native_repair_loop.py tests/native/test_native_repair_session.py -v`
+Expected: PASS, with the existing whole-shape behaviour unchanged.
+
+- [ ] **Step 5: Add the native measurement that proves the cost claim**
+
+```python
+def test_a_committed_package_pays_two_whole_shape_scans_whatever_its_plan_length():
+    # the run's first scan and its final one. Every per-operation proof is scoped.
+    run, spy = _run_with_spy(_two_region_part())
+    assert len(spy.whole_shape) == 2
+    assert len(spy.scoped) == sum(len(p.verdicts) for p in run.packages) + len(run.packages)
+```
+
+This is the assertion the plan should have carried from the start. Until it passes, the branch has
+the machinery and not the saving.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/meshpipeline/cad/repair/session.py tests/unit/cad/test_repair_package_session.py tests/native/test_native_repair_region_loop.py
+git commit -m "feat(repair): prove an operation inside a package against its own region"
+```
+
+---
+
 ## Not In This Plan
 
 Separate plans, each depending on this one:
