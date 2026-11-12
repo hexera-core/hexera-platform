@@ -1981,7 +1981,20 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         n_on = Counter(int(k) for k in list(q_face) + list(t_face) if int(k) in judged)
         # (a round plate: at most POLAR_TRIAS triangles; a gridded face is held to the lines only - its free
         # boxes' triangles were there before it was judged)
-        hurt_p = {k for k, n in on_plate.items() if k in polar_faces_made and n > ST.POLAR_TRIAS}
+        allowed_p = {k: max(ST.POLAR_TRIAS, int(ST.POLAR_TRIA_SHARE * n_on.get(k, 0))) for k in polar_faces_made}
+        hurt_p = {k for k, n in on_plate.items() if k in polar_faces_made and n > allowed_p[k]}
+        # ... and every triangle on it inside the tria angle lines (the user's, or 30 and 120 degrees)
+        angle_lines = [(key, op, target) for shape, key, op, target, *_r in lim.aims
+                       if shape == "tria" and key in ("min_angle_tria", "max_angle_tria")] or [
+            ("min_angle_tria", ">=", 30.0), ("max_angle_tria", "<=", 120.0)]
+        tk_ = np.asarray(t_face, dtype=np.int64)
+        for k in polar_faces_made - hurt_p:
+            mine_t = T[tk_ == k]
+            if len(mine_t):
+                m_t = shell_quality.tria_measures(xyz, mine_t)
+                if any(((m_t[key] < target) if op.startswith(">") else (m_t[key] > target)).any()
+                       for key, op, target in angle_lines):
+                    hurt_p.add(k)
         # SHMESH-49g/48f: why each face is refused, with its numbers (the record lists them)
         why_p: dict[int, dict] = {}
         tfk = np.asarray(t_face, dtype=np.int64)
@@ -1989,10 +2002,11 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
             at_ = [[round(float(x), 1) for x in xyz[T[j]].mean(axis=0)] for j in np.nonzero(tfk == k)[0][:20]]
             why_p[k] = {"kind": "rings and strips" if k in polar_faces_made else "grid",
                         "triangles": int(on_plate.get(k, 0)), "triangles_at_mm": at_,
-                        "triangles_allowed": int(ST.POLAR_TRIAS) if k in polar_faces_made else None,
+                        "triangles_allowed": allowed_p.get(k) if k in polar_faces_made else None,
                         "elements": int(n_on.get(k, 0))}
             if k in hurt_p:
-                why_p[k]["why"] = "too many triangles"
+                why_p[k]["why"] = ("too many triangles" if on_plate.get(k, 0) > allowed_p.get(k, 0)
+                                   else "a triangle past the tria angle lines")
         # ... or with an element on it past the solver's own limits, or an edge over the user's longest edge (a line
         # the report holds to every element): the plate's free-face washers met them
         high_p = (sizing or {}).get("high_mm")

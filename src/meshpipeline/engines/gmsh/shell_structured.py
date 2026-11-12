@@ -1524,6 +1524,8 @@ POLAR = True
 #: SHMESH-49g: a round plate whose rings and strips leave triangles or poor elements is meshed again without them
 POLAR_CHECK = True
 POLAR_TRIAS = 4
+#: SHMESH-49g: ... or this share of its elements, when every one meets the tria angle lines
+POLAR_TRIA_SHARE = 0.01
 #: SHMESH-49f: each hole's box square (straight across its strip) or bounded by the bolt circle's rings (arcs)
 POLAR_SQUARE = True
 #: SHMESH-49h: each box side bowed out by this many degrees at its ends: a square box's corner splits into two 45 degree
