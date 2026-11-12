@@ -336,7 +336,8 @@ async def decide(state: Mapping, *, route: str = "", job_id: str = "", run=None,
 # #
 
 _KIND_SLOT = {"quads_only": "shell", "triangles_only": "shell", "max_triangle_percent": "tria_percent_max",
-              "linear": "order", "quadratic": "order"}
+              "linear": "order", "quadratic": "order", "free_mesh": "structure", "no_washers": "structure",
+              "structured": "structure"}
 _SIZE_KEY = {"global": "global_mm", "min_edge": "min_edge_mm", "max_edge": "max_edge_mm", "thickness": "thickness_mm",
              "near_wall": "near_wall_mm"}
 #: the flow route's boundary-layer rows (NOTE-10) and the key each sets in the set's "layers"

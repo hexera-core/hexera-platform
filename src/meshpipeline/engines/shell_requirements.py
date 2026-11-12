@@ -114,6 +114,12 @@ def kind_of(req: Mapping | None) -> str | None:
     return "quads" if k.get("tria_percent_max") is not None else None
 
 
+def structure_of(req: Mapping | None) -> str | None:
+    """SHMESH-43: the user's word on the mesh's pattern (NOTE-7's element kind): "free" (a free mesh: no washers, no
+    mapped faces), "no_washers", "structured" (asked for what is done anyway), or None (not said: structured)."""
+    return ((req or {}).get("kind") or {}).get("structure")
+
+
 def chord_size(radius: float, deviation: float) -> float:
     """SHMESH-34: the longest element (mm) on an arc of `radius` whose middle stands at most `deviation` off it."""
     if radius <= 0 or deviation >= radius:
@@ -342,6 +348,12 @@ def report(mesh, req: Mapping | None, sizing: Mapping | None = None) -> dict | N
                    "delivered": f"{_pct(nt, n):g}% of elements ({nt:,}) are triangles"}
         elif field == "linear":
             got = {"applied": True, "met": True, "delivered": "shell elements are 4-node quads and 3-node triangles"}
+        elif field in ("free_mesh", "no_washers", "structured"):
+            # SHMESH-43: the pattern is a setting of the mesher, applied as asked
+            got = {"applied": True, "met": True, "delivered": {
+                "free_mesh": "a free mesh: no washers, no mapped faces",
+                "no_washers": "no washers round holes; faces with four sides are still mapped",
+                "structured": "washers round the round holes and mapped quads on faces that allow them"}[field]}
         else:  # quadratic
             got = {"applied": False, "met": None, "delivered": "not applied - shell elements are made as 4-node quads "
                                                                "and 3-node triangles"}

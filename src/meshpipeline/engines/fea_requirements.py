@@ -145,6 +145,9 @@ def report(mesh, req: Mapping | None, *, mm_per_unit: float = 1000.0, order: int
                                                                "fixed rate"}
         elif field == "thickness":
             got = {"applied": False, "met": None, "delivered": "not applied - a solid keeps the thickness of your CAD"}
+        elif field in ("free_mesh", "no_washers", "structured"):
+            got = {"applied": False, "met": None, "delivered": "not applied - washers and mapped quads are a shell "
+                                                               "mesh's; a solid is meshed with tetrahedra"}
         else:  # quads_only, triangles_only, max_triangle_percent
             got = {"applied": False, "met": None, "delivered": "not applied - a solid is meshed with tetrahedra"}
         rows.append({"id": row["id"], "field": field, "asked": row["asked"], **got,
