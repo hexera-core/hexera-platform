@@ -782,6 +782,32 @@ def _sew(shape, *, tolerance_mm: float):
     return sewn
 
 
+def _disposition(regions_run) -> dict:
+    """The run's disposition ledger: what survived, whether we caused it, and what was relabelled.
+
+    THE `reclassified` KEY IS THE SPEC'S OWN MITIGATION FOR ANTI-GOAL 1 - "reclassification rate
+    reported per run" - so it has to be filled from somewhere. `disposition.ledger` invents no
+    reclassification (it is pure arithmetic over two scans); the packages are the only things that
+    reclassified anything, so the union is taken here.
+
+    COMMITTED PACKAGES ONLY. A reverted package's geometry and its claim were both thrown away,
+    so nothing it named was discharged. Each verdict's `reclassified` is already the intersection
+    of the predicate's claim with what the package's scoped scan still found, so this reports
+    relabelling that really discharged a survivor rather than everything an author asked for.
+
+    WHY IT IS NOT LEFT TO THE PER-PACKAGE KEY. `measurements["regions"]["packages"][i]
+    ["reclassified"]` carries the same facts, and a reader who has to assemble them cannot see
+    the one number the anti-goal is about: a run that keeps one genuine operation and relabels
+    every remaining warning delivers an artefact, reports `resolved` and summarises "Repaired
+    within the conservative caps", and the only place that is visible at a glance is here.
+    """
+    from meshpipeline.cad.repair.disposition import ledger
+
+    reclassified = {fingerprint for package in regions_run.packages if package.committed
+                    for fingerprint in package.reclassified}
+    return ledger(regions_run.defects_before, regions_run.defects_after, reclassified)
+
+
 def repair_step_file(source: Path, destination: Path, *,
                      profile: RepairProfile = RepairProfile.conservative,
                      directives: tuple[dict, ...] = ()) -> RepairReport:
@@ -872,8 +898,9 @@ def repair_step_file(source: Path, destination: Path, *,
         "operations_kept": sum(1 for v in result.verdicts if v.kept),
         # WHERE THE TIME WENT, so a later change can be shown to have made the run faster.
         # `measure_s` is the whole-shape `caps.measure` calls, a cost centre beside the scan.
-        # A region run adds its own scan counts to these (below); the keys a reader already has
-        # keep their meaning either way.
+        # A region run adds its own scan counts to these (below) and OVERRIDES `measure_s` with
+        # its own total, because a package takes two of those calls that no operation verdict
+        # contains; the keys a reader already has keep their meaning either way.
         "timings": {"total_s": result.total_s, "scan_count": result.scan_count,
                     "measure_s": sum(v.measure_s for v in result.verdicts),
                     **(regions_run.timings if regions_run is not None else {})},
@@ -889,10 +916,7 @@ def repair_step_file(source: Path, destination: Path, *,
         # DID THE REPAIR CAUSE WHAT SURVIVES? Inherent defects arrived with the upload (same
         # fingerprint, same measurement); introduced ones did not. Only a region run holds both
         # scans, so only it can say.
-        from meshpipeline.cad.repair.disposition import ledger
-
-        measurements["disposition"] = ledger(regions_run.defects_before,
-                                             regions_run.defects_after)
+        measurements["disposition"] = _disposition(regions_run)
 
     # THE AFTER-CHECKS STILL HAVE THE LAST WORD. The session already refused any individual
     # operation that left the caps, so reaching here with a refusal would mean a bug - but the

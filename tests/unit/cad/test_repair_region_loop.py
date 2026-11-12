@@ -84,12 +84,16 @@ class _Part:
 
     def __init__(self, *, keys: tuple[str, ...] = ("a", "b"),
                  incomplete_from: int | None = None,
-                 severity=DefectSeverity.error) -> None:
+                 severity=DefectSeverity.error, measure_s: float = 0.0) -> None:
         self.clock = _Clock()
         self.keys = keys
         self.scans = 0
         self.incomplete_from = incomplete_from
         self.severity = severity
+        #: What one `caps.measure` costs. ZERO BY DEFAULT, so the budget fixtures above keep
+        #: measuring only the scans and applies they were written around; a test that is about
+        #: where the measure time is reported asks for a price.
+        self.measure_s = measure_s
         self.ops = {key: _Op(self.clock, key) for key in ("a", "b", "nothing")}
 
     def scanner(self, shape):
@@ -102,6 +106,7 @@ class _Part:
     def measurer(self, shape):
         # Everything the caps read is unchanged; only a count they ignore moves, so a commit and a
         # rollback are both observable without any cap having an opinion.
+        self.clock.now += self.measure_s
         return Measure(**{**_SOUND.to_dict(), "vertices": 40 + str(shape).count("+")})
 
     def session(self) -> RepairSession:
@@ -634,3 +639,53 @@ def test_a_kept_operation_discarded_with_its_package_abandons_its_targets():
                             status="kept"),))
 
     assert _abandoned((discarded,), (_defect("a", DefectSeverity.warning),)) is True
+
+
+def test_a_packages_own_whole_shape_measures_are_timed_and_reported():
+    """`caps.measure` IS THE SECOND COST CENTRE THE SPEC NAMES, beside the scan, and a package
+    adds two more whole-shape calls on top of the two every operation takes. Both bypassed
+    `_timed_measure`, so they appeared in no timing field at all and the instrumentation built to
+    make that cost visible could not see the cost this driver introduced. Scoping `caps.measure`
+    itself is a later plan's; being honest about what it costs is this one's.
+    """
+    import pytest
+
+    price = 0.25
+    part = _Part(keys=("a", "z"), severity=DefectSeverity.warning, measure_s=price)
+    run = _run(part, _mixed_package(part, reclassify=False))
+
+    package = run.packages[0]
+    operations_s = sum(v.measure_s for v in package.verdicts)
+    assert operations_s > 0.0                       # the operations' own measures still counted
+    # ITS OWN TWO, ON TOP OF ITS OPERATIONS'. The verdict is where a reader gets a region's whole
+    # cost without re-deriving it from the op log, which cannot contain these two.
+    assert package.measure_s == pytest.approx(operations_s + 2 * price)
+    # AND THE RUN'S REPORT SHOWS THE TRUE TOTAL, which summing the operations alone would not.
+    assert run.timings["measure_s"] == pytest.approx(package.measure_s)
+    assert run.timings["measure_s"] > operations_s
+    assert package.to_dict()["measure_s"] == package.measure_s
+
+
+def test_a_reclassifying_package_reports_a_live_reclassified_key():
+    """ANTI-GOAL 1'S OWN MITIGATION, which read empty whatever happened: `ledger` was never handed
+    a reclassification, so the one number saying how much of a clean report came from relabelling
+    was always `[]`. Clean-by-relabelling is reachable - one genuinely kept operation beside a
+    predicate that relabels the rest delivers an artefact and reports `resolved` - so the rate
+    has to be visible in the run's own report.
+    """
+    from dataclasses import replace
+
+    from meshpipeline.cad.repair.conservative import _disposition
+
+    part = _Part(keys=("a", "z"), severity=DefectSeverity.warning)
+    run = _run(part, _mixed_package(part, reclassify=True))
+
+    out = _disposition(run)
+    assert out["reclassified"] == ["edge:z"]
+    assert out["resolved"] == ["edge:a"]
+    assert out["inherent"] == ["edge:z"]            # it survived, explained rather than hidden
+
+    # A REVERTED PACKAGE IS NOT CREDITED: its geometry and its claim were both thrown away, so
+    # nothing it named was discharged.
+    reverted = replace(run, packages=(replace(run.packages[0], status="reverted"),))
+    assert _disposition(reverted)["reclassified"] == []

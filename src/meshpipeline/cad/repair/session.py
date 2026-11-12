@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -148,6 +148,12 @@ class PackageVerdict:
     #: boundary and scoped scans, so the same work is never timed twice.
     scan_s: float = 0.0
     apply_s: float = 0.0
+    #: Seconds in `caps.measure`: the package's own two whole-shape measures PLUS its operations'.
+    #: REPORTED because it is the second cost centre the spec names beside the scan, and a package
+    #: adds two more whole-shape `BRepCheck_Analyzer` walks on top of the two each operation takes.
+    #: Without this field the region loop's own measures appeared in no timing at all, so the
+    #: instrumentation built to make that cost visible could not see the cost this driver added.
+    measure_s: float = 0.0
 
     @property
     def committed(self) -> bool:
@@ -157,7 +163,18 @@ class PackageVerdict:
         return {"region_index": int(self.region_index), "status": self.status,
                 "reason": self.reason, "verdicts": [v.to_dict() for v in self.verdicts],
                 "reclassified": sorted(self.reclassified),
-                "scan_s": self.scan_s, "apply_s": self.apply_s}
+                "scan_s": self.scan_s, "apply_s": self.apply_s,
+                "measure_s": self.measure_s}
+
+
+def _measure_total(own_s: float, verdicts: Iterable[OpVerdict]) -> float:
+    """A package's `caps.measure` seconds: its OWN two whole-shape measures plus its operations'.
+
+    The same idiom as `scan_s` and `apply_s` - the package verdict is the one place a reader can
+    get the whole cost of a region's work without re-deriving it from the op log, and a package
+    adds measures the op log does not contain.
+    """
+    return float(own_s) + sum(v.measure_s for v in verdicts)
 
 
 class RepairSession:
@@ -590,7 +607,14 @@ class RepairSession:
                        f"package budget of {package.budget.max_ops}"))
 
         started = self.clock()
-        before = self._measure(self.shape)
+        # WHOLE-SHAPE AND UNSCOPED, both of these `caps.measure` calls. Each is a
+        # `BRepCheck_Analyzer` over the part plus its area, volume and counts, so a package pays
+        # the part's price twice for a local edit, on top of the two every operation inside it
+        # takes. SCOPING `caps.measure` ITSELF IS DEFERRED to its own plan - it changes what every
+        # cap compares against, which is a larger change than this loop. What is owed until then
+        # is that the cost is MEASURED rather than invisible, hence `_timed_measure` and
+        # `PackageVerdict.measure_s`.
+        before, measure_s = self._timed_measure(self.shape)
 
         scan_started = self.clock()
         # THE WHOLE-SHAPE LIST, deliberately, and normally already cached and so free. The
@@ -624,7 +648,8 @@ class RepairSession:
                     region_index=region.index, status=ESCALATED,
                     reason=f"budget: {spent:.6g}s of {package.budget.timeout_s:.6g}s spent after "
                            f"{len(verdicts)} of {len(package.plan)} operation(s)",
-                    verdicts=tuple(verdicts), scan_s=scan_s, apply_s=apply_s))
+                    verdicts=tuple(verdicts), scan_s=scan_s, apply_s=apply_s,
+                    measure_s=_measure_total(measure_s, verdicts)))
             # AN OPERATION THAT ROLLED ITSELF BACK DOES NOT END THE PACKAGE. Its own judgements
             # already undid it, and the predicate - written about the whole plan - is what says
             # whether the plan as a whole did what was claimed.
@@ -657,20 +682,36 @@ class RepairSession:
                 reason="scan incomplete: a scoped re-inspection that stopped early supports no "
                        "claim about what is absent from the region",
                 verdicts=tuple(verdicts), reclassified=reclassified,
-                scan_s=scan_s, apply_s=apply_s))
+                scan_s=scan_s, apply_s=apply_s,
+                measure_s=_measure_total(measure_s, verdicts)))
 
-        reason = evaluate(predicate, before=before, after=self._measure(self.shape),
+        # THE SECOND WHOLE-SHAPE, UNSCOPED `caps.measure` OF THIS PACKAGE, timed for the same
+        # reason as the first above, and scoped to the region no more than it is: scoping it is
+        # deferred to its own plan.
+        #
+        # `evaluate` IS HANDED A WHOLE-SHAPE `defects_before` AND A SCOPED `defects_after`, AND
+        # THAT IS SAFE ONLY BECAUSE `_package_refusal` REFUSES A PREDICATE NAMING ANYTHING OUTSIDE
+        # `region.fingerprints`. Every set `evaluate` intersects with those two lists is therefore
+        # a set of in-region names, so the whole-shape side contributes nothing the scoped side
+        # could not have reported. RELAX THE LOCUS RULE AND THIS BREAKS SILENTLY: an out-of-region
+        # name in `cleared` would be absent from the scoped `defects_after` and read as cleared by
+        # a scan that never looked at it. Any change to the locus rule has to come back here.
+        after, after_measure_s = self._timed_measure(self.shape)
+        measure_s += after_measure_s
+        reason = evaluate(predicate, before=before, after=after,
                            defects_before=defects_before, defects_after=defects_after)
         if reason:
             self.shape, self._defects, self.complete_scan, self.accounting = snapshot
             return self._record_package(PackageVerdict(
                 region_index=region.index, status=REVERTED, reason=reason,
                 verdicts=tuple(verdicts), reclassified=reclassified,
-                scan_s=scan_s, apply_s=apply_s))
+                scan_s=scan_s, apply_s=apply_s,
+                measure_s=_measure_total(measure_s, verdicts)))
 
         return self._record_package(PackageVerdict(
             region_index=region.index, status=COMMITTED, verdicts=tuple(verdicts),
-            reclassified=reclassified, scan_s=scan_s, apply_s=apply_s))
+            reclassified=reclassified, scan_s=scan_s, apply_s=apply_s,
+            measure_s=_measure_total(measure_s, verdicts)))
 
     @staticmethod
     def _package_refusal(package: TargetPackage) -> str:

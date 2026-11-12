@@ -364,7 +364,9 @@ def _timings(started: float, clock: Callable[[], float], session: RepairSession,
     `scan_count` is every scan the session took, `verification_scans` the whole-shape ones this
     loop took to decide the run (the first, and the final one after the merge), and
     `scoped_scans` every scan that was scoped to one region - each operation's own proof as well
-    as each package's. The three together are what says whether scoping made a run cheaper, which
+    as each package's. `measure_s` IS READ OFF THE PACKAGE, not off its operations: a package
+    takes two whole-shape `caps.measure` calls of its own on top of the two each operation takes,
+    and summing only the operations' would hide exactly the cost this driver added. The three together are what says whether scoping made a run cheaper, which
     is the claim this design has to be able to defend, and in this loop they account for each
     other exactly: `scan_count == verification_scans + scoped_scans`, because once a package owns
     an operation there is no whole-shape walk left between the run's first scan and its last.
@@ -373,7 +375,7 @@ def _timings(started: float, clock: Callable[[], float], session: RepairSession,
             "verification_scans": verification_scans, "scoped_scans": scoped_scans,
             "scan_s": sum(p.scan_s for p in packages),
             "apply_s": sum(p.apply_s for p in packages),
-            "measure_s": sum(v.measure_s for p in packages for v in p.verdicts)}
+            "measure_s": sum(p.measure_s for p in packages)}
 
 
 def as_repair_run(run: RegionRun, *, original: dict, final: dict,
