@@ -36,6 +36,7 @@ from meshpipeline.cad.repair.package import TargetPackage
 from meshpipeline.cad.repair.regions import Region, decompose
 from meshpipeline.cad.repair.session import (
     ESCALATED,
+    HEAL_OP,
     ROLLED_BACK,
     PackageVerdict,
     RepairSession,
@@ -120,22 +121,34 @@ def _errors_remain(defects) -> bool:
     return any(d.severity in _ERRORS for d in _judged(defects))
 
 
-def _abandoned(packages: tuple[PackageVerdict, ...], regions: tuple[Region, ...],
-               defects) -> bool:
-    """Is a defect still present in a region whose package was tried and not kept?
+def _abandoned(packages: tuple[PackageVerdict, ...], defects) -> bool:
+    """Is a defect still present at a fingerprint a discarded package's operation aimed at?
 
-    `resolved` MEANS THE RUN SUCCEEDED, not merely that no error-severity defect remains - the
-    same distinction `loop._abandoned` draws, read at the region's granularity because that is
-    the unit a package claimed. A region whose package reverted and whose warning is still there
-    was given up on, and calling that resolved reads downstream as "repaired".
+    `resolved` MEANS THE RUN SUCCEEDED, not merely that no error-severity defect remains. Those
+    differ exactly when the run gave up on a warning, and calling that resolved reads downstream
+    as "repaired".
+
+    THE RULE IS `loop._abandoned`'S, PORTED RATHER THAN REINTERPRETED, in both its particulars:
+
+    * WHAT WAS AIMED AT, not the whole region. A region is a conservative, over-merged cluster, so
+      a package that failed on one edge says nothing about a defect at the far end of the same
+      box; marking the whole region would fail runs the baseline calls resolved for geometry no
+      operation ever touched.
+    * A ROLLED-BACK HEAL ABANDONS NOTHING (floor-fix ruling 2). It aims at the analyzer's crossing
+      and its partner faces, and a partner's unrelated warning must not become "abandoned" because
+      the heal could not re-trim the tangle. A crossing the status walk also reported is an error
+      and is still caught above.
+
+    Both exist so that a difference between this driver and the baseline is attributable to how
+    the packages were authored - which is the only reason `loop.py` is kept alive.
     """
-    boxes = {region.index: region.fingerprints for region in regions}
     tried = {fingerprint for verdict in packages if not verdict.committed
-             for fingerprint in boxes.get(verdict.region_index, frozenset())}
+             for op in verdict.verdicts if op.op != HEAL_OP
+             for fingerprint in op.targets}
     return any(d.fingerprint in tried for d in _judged(defects))
 
 
-def _terminal(session: RepairSession, defects, *, escalated, packages, regions,
+def _terminal(session: RepairSession, defects, *, escalated, packages,
               fallback: str) -> str:
     """What to call a finished run. ONE place, so no exit path can disagree with another.
 
@@ -149,7 +162,7 @@ def _terminal(session: RepairSession, defects, *, escalated, packages, regions,
         return SCAN_INCOMPLETE
     if escalated:
         return ESCALATED_REGIONS
-    if not _errors_remain(defects) and not _abandoned(packages, regions, defects):
+    if not _errors_remain(defects) and not _abandoned(packages, defects):
         return RESOLVED
     return fallback
 
@@ -176,7 +189,9 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
     """Repair `shape` one region at a time, and report what each region's package did.
 
     `session` and `clock` are injectable so the walk and the budget arithmetic can be tested
-    without a kernel and without waiting.
+    without a kernel and without waiting. `reserved` reaches a session this function CONSTRUCTS;
+    an INJECTED session keeps whatever holds it was built with, so a test that injects one is
+    testing the walk and not the session half of the hold guarantee. Production never injects.
 
     SEQUENTIALLY, IN `decompose` ORDER, and not because the work is coupled - regions are
     independent, which is the point of them. `RepairSession` owns ONE shape and snapshots it by
@@ -251,6 +266,15 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
             # NOT A FAILURE AND NOT AN ESCALATION. The author had nothing to propose, so the
             # region is left exactly as it arrived and the final scan reports it.
             continue
+        if len(work.log) + len(package.plan) > limits.max_ops:
+            # LOOKED AT BEFORE THE PACKAGE IS STARTED, not only after the log has grown past the
+            # allowance. A package is executed whole or not at all, so a plan that cannot fit in
+            # what the run has left would spend `package.budget.max_ops - 1` operations past the
+            # run's own budget - and with a model author asking for a six-operation package, the
+            # run budget would be whatever the author felt like. Nothing is tried here, so the
+            # region is not escalated: the run simply ran out, which is what `op_budget` says.
+            stopped = OP_BUDGET
+            break
 
         scans_before = work.scan_count
         verdict = work.try_package(_with_tolerance(package, tolerance_mm))
@@ -275,7 +299,7 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
         after = work.defects()
 
     stopped = _terminal(work, after, escalated=escalated, packages=tuple(packages),
-                        regions=regions, fallback=stopped)
+                        fallback=stopped)
     logger.info("region loop: stopped=%s regions=%d packages=%d committed=%d escalated=%s",
                 stopped, len(regions), len(packages),
                 sum(1 for p in packages if p.committed), escalated)

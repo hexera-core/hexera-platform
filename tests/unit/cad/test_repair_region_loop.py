@@ -11,7 +11,7 @@ from meshpipeline.cad.repair.loop import LoopBudget
 from meshpipeline.cad.repair.operations import OpOutcome
 from meshpipeline.cad.repair.package import PackageBudget, Predicate, TargetPackage
 from meshpipeline.cad.repair.region_loop import REGIONS_EXHAUSTED, run_regions
-from meshpipeline.cad.repair.session import RepairSession
+from meshpipeline.cad.repair.session import OpVerdict, PackageVerdict, RepairSession
 
 # NO KERNEL HERE. What is tested is the loop's own logic: the region walk, the budget arithmetic,
 # which regions ship, which queue, and where the run's verdict comes from. The shape is a string
@@ -106,7 +106,7 @@ class _Part:
 
 
 def _author(part: _Part, *, escalate: tuple[int, ...] = (), decline: tuple[int, ...] = (),
-            aim_elsewhere: tuple[int, ...] = ()):
+            aim_elsewhere: tuple[int, ...] = (), plan_ops: int = 1):
     """One package per region: the operation that clears the region's defect, claiming exactly it.
 
     `escalate` gives a region a zero-operation budget, which is how a real package runs out of
@@ -125,9 +125,10 @@ def _author(part: _Part, *, escalate: tuple[int, ...] = (), decline: tuple[int, 
                               reclassified=frozenset(), unchanged=frozenset(),
                               max_area_delta_mm2=0.0, max_volume_delta_mm3=0.0)
         # NO `tolerance_mm` IN THE PLAN ITEM, deliberately: the loop owns the run's tolerance.
-        plan = ({"op": part.ops[key], "defect_code": DefectCode.small_edge,
-                 "targets": (EntityRef(entity_type="edge", fingerprint=defect.fingerprint,
-                                       entity_index=defect.entity_index),)},)
+        plan = tuple({"op": part.ops[key], "defect_code": DefectCode.small_edge,
+                      "targets": (EntityRef(entity_type="edge", fingerprint=defect.fingerprint,
+                                            entity_index=defect.entity_index),)}
+                     for _ in range(plan_ops))
         return TargetPackage(
             region=region, intent=f"clear {defect.fingerprint}", plan=plan, predicate=predicate,
             budget=PackageBudget(max_ops=0 if region.index in escalate else 4,
@@ -173,15 +174,17 @@ def test_each_region_gets_one_package():
 
 
 def test_an_escalated_region_does_not_block_the_others():
+    # THE FIRST region is starved, deliberately: starving the last one would pass just as well for
+    # a loop that ended its walk on the first escalation, which is the property being tested.
     part = _Part()
-    run = _run(part, _author(part, escalate=(1,)))
+    run = _run(part, _author(part, escalate=(0,)))
 
-    assert run.escalated == (1,)
-    assert [p.status for p in run.packages] == ["committed", "escalated"]
-    # THE PRODUCT DECISION: region 0's repair is in the shape the run hands back, even though a
-    # person now has to look at region 1.
-    assert run.shape == "original+a"
-    assert [d.fingerprint for d in run.defects_after] == ["edge:b"]
+    assert run.escalated == (0,)
+    assert [p.status for p in run.packages] == ["escalated", "committed"]
+    # THE PRODUCT DECISION: region 1's repair is in the shape the run hands back, even though a
+    # person now has to look at region 0.
+    assert run.shape == "original+b"
+    assert [d.fingerprint for d in run.defects_after] == ["edge:a"]
     assert run.stopped_because == "escalated"
 
 
@@ -430,3 +433,51 @@ def test_an_escalated_region_reaches_the_report_as_a_refusal():
     assert [r["refusal"] for r in bridged.refusals] == ["region_escalated"]
     assert bridged.refusals[0]["region"] == 1
     assert "budget" in bridged.refusals[0]["reason"]
+
+
+# THE TWO PARTICULARS OF `_abandoned`, PORTED FROM THE BASELINE LOOP. They exist so that a
+# difference between the two drivers on one fixture is attributable to how the packages were
+# authored - which is the only reason `loop.py` is kept alive at all.
+
+
+def test_a_defect_a_discarded_package_never_aimed_at_does_not_block_resolved():
+    """A region is an over-merged cluster, so a package that failed on one edge says nothing
+    about a warning at the far end of the same box. `loop._abandoned` marks what an operation
+    TARGETED; marking the whole region would fail runs the baseline calls resolved."""
+    from meshpipeline.cad.repair.region_loop import _abandoned
+
+    verdict = PackageVerdict(
+        region_index=0, status="reverted", reason="cleared defects still present: edge:a",
+        verdicts=(OpVerdict(op="fix_a", targets=("edge:a",), defect_code="small_edge",
+                            status="rolled_back"),))
+
+    assert _abandoned((verdict,), (_defect("a", DefectSeverity.warning),)) is True
+    # `edge:b` is in the same region in this fixture's geometry, and nothing aimed at it.
+    assert _abandoned((verdict,), (_defect("b", DefectSeverity.warning),)) is False
+
+
+def test_a_rolled_back_heal_abandons_nothing():
+    """Floor-fix ruling 2, as `loop._abandoned` applies it: the heal aims at the analyzer's
+    crossing and its partner faces, so a partner's unrelated warning must not read as abandoned
+    because the heal could not re-trim the tangle. A crossing the status walk also reported is an
+    error, and `_errors_remain` still catches that."""
+    from meshpipeline.cad.repair.region_loop import _abandoned
+    from meshpipeline.cad.repair.session import HEAL_OP
+
+    healed = PackageVerdict(
+        region_index=0, status="reverted", reason="cleared defects still present: edge:a",
+        verdicts=(OpVerdict(op=HEAL_OP, targets=("edge:a",), defect_code="self_intersection",
+                            status="rolled_back"),))
+
+    assert _abandoned((healed,), (_defect("a", DefectSeverity.warning),)) is False
+
+
+def test_a_package_too_large_for_what_the_run_has_left_is_not_started():
+    """The run's allowance is the RUN'S. A package is executed whole or not at all, so a plan that
+    cannot fit in what is left would spend the author's allowance rather than the loop's."""
+    part = _Part(keys=("a",))
+    run = _run(part, _author(part, plan_ops=3), max_ops=2)
+
+    assert run.packages == ()
+    assert part.ops["a"].tolerances == []          # nothing was applied
+    assert run.stopped_because == "op_budget"

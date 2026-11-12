@@ -178,6 +178,9 @@ def test_a_committed_region_ships_while_another_is_queued(tmp_path, monkeypatch)
     # The escalated region cost no scan at all - its package never ran, so the only scoped proof
     # is the one the region that committed rests on.
     assert spy.scoped == [run.regions[1]]
+    # WITH TWO REGIONS PACKAGED, this is what tells "paid once per RUN" from "once per REGION":
+    # two whole-shape inspections belong to the loop however many regions it walked.
+    assert len(spy.whole_shape) == 2 + sum(len(p.verdicts) for p in run.packages)
 
 
 def test_the_posture_selects_the_region_loop_in_the_entry_point(tmp_path, monkeypatch):
