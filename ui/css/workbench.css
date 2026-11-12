@@ -11,17 +11,26 @@
    away. Nothing in the conversation is rebuilt or lost: the same #stage and the
    same input bar simply take the drawer's column.
 
-   The grid: the header spans both columns; the drawer column holds the upload
-   bar, the stage and the input bar top to bottom; the workbench column holds
-   the viewer at full height. Folding the drawer collapses its column to zero.
+   The grid: the header is an overlay - its two chips are the only things it ever
+   holds (the drawer fold once a mesh owns the stage, the readiness chip when the
+   link drops), so it floats over the page instead of spending a row of the window
+   on itself. The drawer column holds the upload bar, the stage and the input bar
+   top to bottom; the workbench column holds the viewer at full height. Folding
+   the drawer collapses its column to zero.
 / */
 :root{--drawer-w:min(440px,38vw)}
 
+#app{position:relative}
+#app>header{position:absolute;z-index:20;top:0;left:0;right:0;height:auto;padding:10px 12px;
+  border-bottom:0;background:transparent;pointer-events:none}
+#app>header .chip{pointer-events:auto}
+/* a notice still drops in below the floating chips, the way it used to sit below the bar */
+#app>#notice.show{margin-top:48px}
+
 #app.wb{display:grid;
   grid-template-columns:var(--drawer-w) minmax(0,1fr);
-  grid-template-rows:auto auto auto minmax(0,1fr) auto;
-  grid-template-areas:"hdr hdr" "notice notice" "upload wb" "stage wb" "input wb"}
-#app.wb>header{grid-area:hdr}
+  grid-template-rows:auto auto minmax(0,1fr) auto;
+  grid-template-areas:"notice notice" "upload wb" "stage wb" "input wb"}
 #app.wb>#notice{grid-area:notice}
 #app.wb>#upload-bar{grid-area:upload;border-right:1px solid var(--border)}
 #app.wb>#stage{grid-area:stage;min-height:0;border-right:1px solid var(--border)}
@@ -59,8 +68,8 @@
 #wb-toggle[hidden]{display:none}
 
 @media(max-width:900px){
-  #app.wb{grid-template-columns:minmax(0,1fr);grid-template-rows:auto auto auto minmax(0,1fr) auto auto;
-    grid-template-areas:"hdr" "notice" "upload" "wb" "stage" "input"}
+  #app.wb{grid-template-columns:minmax(0,1fr);grid-template-rows:auto auto minmax(0,1fr) auto auto;
+    grid-template-areas:"notice" "upload" "wb" "stage" "input"}
   #app.wb>#stage{max-height:34vh;border-right:0;border-top:1px solid var(--border)}
   #app.wb>#upload-bar,#app.wb>#input-bar{border-right:0}
   #workbench .viewer{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr) auto auto}
