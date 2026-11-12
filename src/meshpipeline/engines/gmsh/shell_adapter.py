@@ -823,8 +823,8 @@ def _mesh_shell(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log
             mesh, applied, _n = _mesh_path(brep, record, mm_per_unit=mm_per_unit, log=log, target=target,
                                            correction=correction, requirements=requirements)
         return mesh, applied
-    mesh, applied, past_n = _mesh_path(brep, record, mm_per_unit=mm_per_unit, log=log, target=target,
-                                       correction=correction, requirements=requirements)
+    mesh, applied, past_n = _guarded_path(brep, record, mm_per_unit=mm_per_unit, log=log, target=target,
+                                          correction=correction, requirements=requirements)
     standing = _standing(applied, past_n)
     if not (requirements and CLASSIC_CHECK and (standing[0] or standing[2])):
         return mesh, applied
@@ -850,6 +850,84 @@ def _mesh_shell(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log
         applied["quality"]["classic"] = True
     applied["kept"] = kept
     return mesh, applied
+
+
+#: SHMESH-45 (washer guard, whole step): a structured mesh that fails, or comes out invalid or past Nastran's own limits,
+#: is set against the mesh with the structured steps off ("free mesh": exactly the mesh before them), and the free mesh
+#: is kept when it is valid where the other is not, or has fewer elements past Nastran's limits
+STRUCTURED_GUARD = True
+
+
+def _structured_on(requirements: dict | None) -> bool:
+    return bool((ST.WASHERS or ST.MAPPED) and SR.structure_of(requirements) != "free")
+
+
+@contextlib.contextmanager
+def _structured_off():
+    """The structured steps (washers, mapped and gridded faces, the flat-face algorithm) off for one mesh: the mesh is
+    then the one "free mesh" in the notes gives, byte for byte the mesh before them."""
+    g = globals()
+    saved = (ST.WASHERS, ST.MAPPED, ST.BLOCKS, g["PLANE_ALGORITHM"])
+    try:
+        ST.WASHERS = ST.MAPPED = ST.BLOCKS = False
+        g["PLANE_ALGORITHM"] = None
+        yield
+    finally:
+        ST.WASHERS, ST.MAPPED, ST.BLOCKS, g["PLANE_ALGORITHM"] = saved
+
+
+def _past(applied: dict) -> tuple[int, int]:
+    """(invalid, elements past Nastran's own limits) of a mesh, from its record - lower is better."""
+    q = applied.get("quality") or {}
+    return int(not q.get("valid", True)), int(sum(int(v) for v in (q.get("nastran_past") or {}).values()))
+
+
+def _guarded_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log: list | None = None,
+                  target: dict | None = None, correction: float = 1.0,
+                  requirements: dict | None = None) -> tuple[ShellMesh, dict, int]:
+    """SHMESH-45: _mesh_path, with the structured steps never costing the mesh. When they raise, the mesh is made
+    again with them off; when their mesh is invalid or has elements past Nastran's own limits, the mesh with them off
+    is made too and kept if it is better (valid where the other is not, else fewer past). Either way the record says
+    so (quality.structure.guard) and a note tells the user."""
+    if not (STRUCTURED_GUARD and _structured_on(requirements)):
+        return _mesh_path(brep, record, mm_per_unit=mm_per_unit, log=log, target=target, correction=correction,
+                          requirements=requirements)
+    try:
+        mesh, applied, past_n = _mesh_path(brep, record, mm_per_unit=mm_per_unit, log=log, target=target,
+                                           correction=correction, requirements=requirements)
+    except Exception as exc:  # noqa: BLE001 - a washer must never cost the mesh: the plain path is tried
+        logger.info("shell mesh: the structured steps failed (%s); meshed without them", exc)
+        with _structured_off():
+            mesh, applied, past_n = _mesh_path(brep, record, mm_per_unit=mm_per_unit, log=log, target=target,
+                                               correction=correction, requirements=requirements)
+        why = f"{type(exc).__name__}: {str(exc)[:200]}"
+        applied["quality"].setdefault("structure", {})["guard"] = {"rule": "SHMESH-45", "kept": "free mesh",
+                                                                    "why": f"the structured steps failed ({why})"}
+        mesh.notes.append("Washers and mapped quads could not be made on this part; it is meshed without them, as "
+                          "before (SHMESH-45).")
+        return mesh, applied, past_n
+    mine = _past(applied)
+    if mine == (0, 0):
+        return mesh, applied, past_n
+    try:
+        with _structured_off():
+            plain, applied_plain, plain_n = _mesh_path(brep, record, mm_per_unit=mm_per_unit, log=None, target=target,
+                                                       correction=correction, requirements=requirements)
+    except Exception as exc:  # noqa: BLE001 - the structured mesh stands
+        logger.info("shell mesh: no mesh without the structured steps to compare (%s)", exc)
+        return mesh, applied, past_n
+    theirs = _past(applied_plain)
+    if theirs < mine:
+        applied_plain["quality"].setdefault("structure", {})["guard"] = {
+            "rule": "SHMESH-45", "kept": "free mesh",
+            "why": f"with washers and mapped quads the mesh had {mine[1]} element(s) past Nastran's limits"
+                   + (" and was not valid" if mine[0] else "") + f"; without them {theirs[1]}"}
+        plain.notes.append("Washers and mapped quads were left out on this part: the mesh without them is better "
+                           "inside Nastran's limits (SHMESH-45).")
+        return plain, applied_plain, plain_n
+    applied["quality"].setdefault("structure", {})["guard"] = {"rule": "SHMESH-45", "kept": "structured",
+                                                                "why": "no better without the structured steps"}
+    return mesh, applied, past_n
 
 
 #: SHMESH-36: what each figure of _standing compares, in order (the first that differs decides)
@@ -1365,9 +1443,18 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                 raise _Unmap(bad)
         quads, trias, q_face, t_face = [], [], [], []
         # SHMESH-39: each washer's annulus takes the washer's own ring of quads in place of gmsh's mesh there
-        ring_of = {w.annulus: w for w in rings}
+        ring_of = {}
         for w in rings:
-            pts, ring = ST.ring_mesh(gmsh, w, index, xyz, mm)
+            try:
+                pts, ring = ST.ring_mesh(gmsh, w, index, xyz, mm)
+            except ValueError as exc:
+                # SHMESH-45 (washer guard, per washer): a ring that cannot be built keeps gmsh's own mesh of its annulus
+                # (conformal: gmsh meshed it with the face), and the record says why
+                logger.info("shell mesh: a washer's own ring was not made (%s)", exc)
+                washer_skipped["its ring could not be built (gmsh's mesh kept there)"] = (
+                    washer_skipped.get("its ring could not be built (gmsh's mesh kept there)", 0) + 1)
+                continue
+            ring_of[w.annulus] = w
             xyz = np.vstack([xyz, pts])
             quads.append(ring)
             q_face += [w.owner] * len(ring)
@@ -1610,6 +1697,8 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
     quality["caps_absorbed"] = capped
     quality["evened_curves"] = evened
     quality["sliver_faces"] = slivers
+    unbuilt = [w for w in rings if w.annulus not in ring_of]
+    washers = [w for w in washers if w not in unbuilt]
     holes_seen = len(washers) + sum(washer_skipped.values())
     quality["structure"] = {"washers": len(washers), "holes": holes_seen,
                             "mapped_faces": len(grids) + len(mapped), "faces": len(tag_of) - len(rings),

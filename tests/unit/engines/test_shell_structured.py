@@ -270,3 +270,45 @@ def test_a_grid_never_cuts_an_edge_another_face_shares(tmp_path):
     assert (d[:, 1] > 1e-6).all()
     assert not np.any((np.abs(mids[:, 1] - 50.0) < 1e-6) & (np.abs(mids[:, 2] - 2.5) < 1e-6))
     assert applied["quality"]["structure"]["washers"] == 3
+
+
+# ------------------------------------------------------------------------------------------- the washer guard
+def test_a_ring_that_cannot_be_built_keeps_gmshs_mesh_there(web, monkeypatch):
+    """SHMESH-45, per washer: a washer whose own ring fails a check costs nothing but its ring."""
+    brep, rec = web
+    real = ST.ring_mesh
+    calls = {"n": 0}
+
+    def flaky(gmsh, w, index, xyz, mm):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ValueError("a washer's hole and ring nodes do not face each other")
+        return real(gmsh, w, index, xyz, mm)
+
+    monkeypatch.setattr(ST, "ring_mesh", flaky)
+    monkeypatch.setattr(ST, "BLOCKS", False)          # every washer then takes its own ring
+    mesh, applied = _mesh(brep, rec, _criteria())
+    q = applied["quality"]
+    assert q["valid"] and mesh.n_elements > 0
+    assert q["structure"]["washers"] == 5
+    assert q["structure"]["no_washer"] == {"its ring could not be built (gmsh's mesh kept there)": 1}
+    assert "guard" not in q["structure"]
+    # conformal: no free edge but the plate's rim and its six holes
+    pairs = SS._edges(mesh)
+    assert len(SS._loops(pairs[0][pairs[1] == 1])) == 7
+
+
+def test_structured_steps_that_fail_fall_back_to_the_free_mesh(web, monkeypatch):
+    """SHMESH-45, whole step: any failure of the structured steps gives the mesh "free mesh" gives, said."""
+    brep, rec = web
+    free, _a = _mesh(brep, rec, _criteria(pattern="free mesh"))
+
+    def broken(*_a, **_k):
+        raise ValueError("a washer's hole and ring nodes do not face each other")
+
+    monkeypatch.setattr(ST, "plan_washers", broken)
+    mesh, applied = _mesh(brep, rec, _criteria())
+    guard = applied["quality"]["structure"]["guard"]
+    assert guard["kept"] == "free mesh" and "do not face each other" in guard["why"]
+    assert _sha(mesh) == _sha(free)
+    assert any("SHMESH-45" in n for n in mesh.notes)
