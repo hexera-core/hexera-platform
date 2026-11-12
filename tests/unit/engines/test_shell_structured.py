@@ -983,3 +983,47 @@ def test_a_base_plate_with_a_central_hole_keeps_rings_and_strips_inside_every_li
     assert applied["quality"]["valid"] and applied["quality"]["within_nastran"]
     assert all(r["met"] is not False and (r["met"] is True or r["field"] == "min_edge")
                for r in applied["requirements"]["rows"]), applied["requirements"]["rows"]
+
+
+
+def _trial_left(fast: bool) -> tuple:
+    """A face among others, a copy of it cut by three lines running out past it and a ring's circle, the copy's cells
+    taken out as block_faces takes out a trial: (the entities left, the next tags)."""
+    import gmsh
+
+    saved = (ST.FAST_REMOVE, ST.FAST_LOOSE)
+    ST.FAST_REMOVE = ST.FAST_LOOSE = fast
+    gmsh.initialize()
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        occ = gmsh.model.occ
+        others = [(2, occ.addRectangle(i, 30.0, 0, 1, 1)) for i in range(6)]
+        occ.fragment(others[:1], others[1:])
+        face = occ.addRectangle(0, 0, 0, 20, 20)
+        occ.synchronize()
+        copy = occ.copy([(2, face)])
+        tools = [(1, occ.addLine(occ.addPoint(x, -1, 0), occ.addPoint(x, 21, 0))) for x in (5.0, 10.0, 15.0)]
+        tools.append((1, occ.addCircle(12.5, 10.0, 0, 2.0)))     # (crossed by no line: one closed curve)
+        _o, cmap = occ.fragment(copy, tools)
+        occ.synchronize()
+        cells = [s for d, s in cmap[0] if d == 2]
+        if fast:
+            ST._remove_cells(gmsh, cells)
+        else:
+            occ.remove([(2, s) for s in cells], recursive=True)
+        occ.synchronize()
+        ST._remove_loose(gmsh, {c for got in cmap[1:] for d, c in got if d == 1})
+        left = tuple(tuple(t for _d, t in gmsh.model.getEntities(d)) for d in range(3))
+        return left, (occ.addPoint(99, 99, 0), occ.addLine(1, 2), occ.getMaxTag(2))
+    finally:
+        gmsh.finalize()
+        ST.FAST_REMOVE, ST.FAST_LOOSE = saved
+
+
+def test_a_trial_is_taken_out_leaving_the_same_model_and_next_tags():
+    """SHMESH-48l2: a trial's cells taken out entity by entity (no gmsh search through every face of the model for each
+    curve and point) leave the model exactly as gmsh's recursive remove does - the same entities, the same next tags -
+    with a ring's closed circle among the cells and cutting lines whose outer pieces keep their ends."""
+    slow, fast = _trial_left(False), _trial_left(True)
+    assert fast == slow
+    assert len(slow[0][2]) == 6 + 1                     # the other faces and the face itself, nothing of the trial

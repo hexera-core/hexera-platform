@@ -495,7 +495,10 @@ def imprint(gmsh, washers: list[Washer], tag_of: dict[int, int], cuts: set[int] 
         cells = [x for d, x in cmap[0] if d == 2]
         ok = len(cells) == 1 + len(rounds) + 4 * (len(ws) - len(rounds)) and (
             not rounds or _rings_whole(gmsh, t, rounds, cmap))
-        occ.remove([(2, x) for x in cells], recursive=True)
+        if FAST_REMOVE:
+            _remove_cells(gmsh, cells)
+        else:
+            occ.remove([(2, x) for x in cells], recursive=True)
         occ.synchronize()
         _remove_loose(gmsh, {c for got in cmap[1:] for d, c in got if d == 1})
         return ok
@@ -1196,24 +1199,57 @@ def _cluster(values: list[tuple[float, str]], tol: float,
     return out
 
 
+def _remove_cells(gmsh, cells: list[int]) -> None:
+    """SHMESH-48l2: take out a trial's cells with their curves and points - the entities occ.remove(cells,
+    recursive=True) takes out, named one by one and taken out without gmsh's own search: that search looks through
+    every face of the model for each curve and point (on a column, about 40 s of a mesh). A curve goes only when
+    every surface it bounds goes, a point only when every curve it ends goes (a cutting line's piece outside the face
+    keeps its end: _remove_loose takes it after), in the same order, so the model and its next tags are the same."""
+    cs = {int(x) for x in cells}
+    curves = sorted({abs(int(c)) for s in cells for _d, c in gmsh.model.getBoundary([(2, s)], oriented=False)})
+    curves = [c for c in curves if {int(x) for x in gmsh.model.getAdjacencies(1, c)[0]} <= cs]
+    cset = set(curves)
+    # (every point of the cells: a closed curve - a ring's circle - names none of its own)
+    pts = sorted({abs(int(q)) for d, q in gmsh.model.getBoundary([(2, s) for s in cells], combined=False,
+                                                                  oriented=False, recursive=True) if d == 0})
+    pts = [q for q in pts if {int(x) for x in gmsh.model.getAdjacencies(0, q)[0]} <= cset]
+    gmsh.model.occ.remove([(2, s) for s in cells] + [(1, c) for c in curves] + [(0, q) for q in pts], recursive=False)
+
+
+#: SHMESH-48l2: a trial's cells taken out by _remove_cells (False: gmsh's recursive remove, as before)
+FAST_REMOVE = True
+#: SHMESH-48l2: loose curves taken out with their points named (False: recursive)
+FAST_LOOSE = True
+
+
 def _remove_loose(gmsh, curves: set[int]) -> None:
     """Take out the curves among these that bound no surface (pieces of a cutting line outside the face)."""
     have = {c for _d, c in gmsh.model.getEntities(1)}
     loose = [(1, c) for c in sorted(curves & have) if not len(gmsh.model.getAdjacencies(1, c)[0])]
-    if loose:
+    ends = {c: [abs(int(q)) for _d2, q in gmsh.model.getBoundary([(1, c)], oriented=False)] for _d, c in loose}
+    if loose and FAST_LOOSE and all(len(set(e)) == 2 for e in ends.values()):
+        # (SHMESH-48l2: their points named too - each one only when every curve it ends goes - no search; a closed
+        # curve, which names no end of its own, is left to gmsh's own search)
+        lset = set(ends)
+        pts = sorted({q for e in ends.values() for q in e})
+        pts = [q for q in pts if {int(x) for x in gmsh.model.getAdjacencies(0, q)[0]} <= lset]
+        gmsh.model.occ.remove(loose + [(0, q) for q in pts], recursive=False)
+        gmsh.model.occ.synchronize()
+    elif loose:
         gmsh.model.occ.remove(loose, recursive=True)
         gmsh.model.occ.synchronize()
 
 
 def _mark_box(gmsh, w: Washer, corners: list[np.ndarray], cells: list[int], h: float, mm: float,
-              high_mm: float | None, wish: dict[int, int]) -> None:
+              high_mm: float | None, wish: dict[int, int], loops_of=None) -> None:
     """SHMESH-48q: note a free box's cell (between its ring and its box) and its corners on the washer, and ask each
     box side that is one curve for n/4 + 2 segments (`wish`: the grid's counts take it where nothing else holds the
-    curve) when they come out BAND_SEG face sizes long and under the user's longest edge."""
+    curve) when they come out BAND_SEG face sizes long and under the user's longest edge. `loops_of(s)`: the cells'
+    curve loops, read once per cut face (SHMESH-48l2); else read here."""
     for s in cells:
         if s == w.annulus:
             continue
-        _l, lp = _curve_loops(gmsh, s)
+        lp = loops_of(s) if loops_of is not None else _curve_loops(gmsh, s)[1]
         lp = [[abs(int(c)) for c in cl] for cl in lp]
         if len(lp) == 2 and [w.ring] in lp:
             w.box = s
@@ -2180,6 +2216,7 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                 # SHMESH-48l: each trial curve sampled once (a joined web's thousands of curves were sampled again for
                 # every shared edge and every ring: most of the time of a mesh)
                 smp = {x: _samples(gmsh, x, 4) for x in trial}
+                smp_trial = None
                 if shared:
                     from scipy.spatial import cKDTree
 
@@ -2217,8 +2254,15 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                     if w.corners:
                         continue
                     R = p[2] * w.r if p is not None else w.R
-                    on_ring = [c for c in trial if np.all(np.abs(np.linalg.norm(smp[c] - w.centre, axis=1) - R)
-                                                          <= 1e-4 * R)]
+                    # (SHMESH-48l2: only the trial curves within reach of the ring tested one by one, as before)
+                    if smp_trial is None:
+                        smp_trial = np.stack([smp[x] for x in trial]) if trial else np.zeros((0, 5, 3))
+                    d_all = np.linalg.norm(smp_trial - w.centre, axis=2)
+                    slack = 1e-9 * R + 1e-12
+                    near_r = np.flatnonzero((d_all.min(axis=1) >= R - 1e-4 * R - slack)
+                                            & (d_all.max(axis=1) <= R + 1e-4 * R + slack))
+                    on_ring = [c for c in (trial[i_] for i_ in near_r.tolist())
+                               if np.all(np.abs(np.linalg.norm(smp[c] - w.centre, axis=1) - R) <= 1e-4 * R)]
                     if len(on_ring) != (4 if p is not None else 1):
                         small = True
                         if not any(x.startswith("a ring") for x in causes):
@@ -2226,7 +2270,10 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                             causes.append(f"a ring came out in {len(on_ring)} pieces, not {4 if p is not None else 1}, "
                                           f"round the {2 * w.r * mm:.3g} mm hole at ({c_[0]:.0f}, {c_[1]:.0f}, "
                                           f"{c_[2]:.0f}) mm")
-                gmsh.model.occ.remove([(2, s) for s in cells], recursive=True)
+                if FAST_REMOVE:
+                    _remove_cells(gmsh, cells)
+                else:
+                    gmsh.model.occ.remove([(2, s) for s in cells], recursive=True)
                 gmsh.model.occ.synchronize()
                 _remove_loose(gmsh, cut_curves)
                 # SHMESH-48r: a too-short piece of a drawn line between the outline (or another line) and the line it
@@ -2291,6 +2338,14 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
             _remove_loose(gmsh, {c for got in omap[1:] for d, c in got if d == 1})
             curves = sorted({abs(int(c)) for s in new for _d, c in gmsh.model.getBoundary([(2, s)], oriented=False)})
             on_circle: set[int] = set()
+            # SHMESH-48l2: each cell's curve loops read once (every free box's washer looked through every cell of its
+            # face: a column web's holes x cells, hundreds of thousands of reads); nothing below changes the model
+            loops_new: dict[int, list] = {}
+
+            def loops_of(s_: int, loops_new=loops_new) -> list:
+                if s_ not in loops_new:
+                    loops_new[s_] = _curve_loops(gmsh, s_)[1]
+                return loops_new[s_]
             for j_, w in enumerate(ws):
                 if j_ in fp["in_grid"]:
                     # SHMESH-48k: its ring is cells of the grid: each hole side keeps its count, each line from a
@@ -2328,12 +2383,15 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                 if w.corners:
                     # SHMESH-48h: the square hole now sits in its box's cell: the ring is drawn there (imprint)
                     cell = next(((s, cl) for s in new for cl in [[abs(int(c)) for c in x]
-                                                                 for x in _curve_loops(gmsh, s)[1]]
+                                                                 for x in loops_of(s)]
                                  if _on_square(gmsh, w, cl)), None)
                     if cell is None:
                         raise ValueError("a square hole was not found in its box")
                     w.face, w.hole, w.in_box = cell[0], cell[1], True
             smp_c = {c: _samples(gmsh, c, 4) for c in curves}       # (sampled once, SHMESH-48l)
+            # SHMESH-48l2: the curves' distances to each washer's centre, all at once - only the curves within reach of
+            # its hole, ring or box are looked at one by one below (the same test as before, on the same numbers)
+            smp_all = np.stack([smp_c[c] for c in curves]) if curves else np.zeros((0, 5, 3))
             for j_w, (w, p) in enumerate(zip(ws, plans, strict=True)):
                 if w.corners:
                     continue
@@ -2353,7 +2411,12 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                         k_rb = _ring_box_rows(R, b_in, b_out, h, float(low_mm or 0.0) / mm, e_hi_)
                 ring_c: list[int] = []
                 hole_c: list[int] = []
-                for c in curves:
+                d_all = np.linalg.norm(smp_all - w.centre, axis=2)
+                reach = max(w.r, R, b_out) * (1 + 1e-9) + 1e-12
+                lower = min(w.r - CIRCLE_TOL * w.r, w.r - tol, R - tol) - reach * 1e-9
+                upper = max(w.r + CIRCLE_TOL * w.r, R + tol, b_out + tol) + reach * 1e-9
+                near = np.flatnonzero((d_all.min(axis=1) >= lower) & (d_all.max(axis=1) <= upper))
+                for c in (curves[i_] for i_ in near.tolist()):
                     d = np.linalg.norm(smp_c[c] - w.centre, axis=1)
                     if np.all(np.abs(d - w.r) <= CIRCLE_TOL * w.r):
                         hole_c.append(c)
@@ -2382,15 +2445,14 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                         raise ValueError("a washer's ring did not come out as one circle")
                     w.ring, w.hole_after = ring_c[0], hole_c
                     for s in new:
-                        _l3, lp = _curve_loops(gmsh, s)
-                        lp = [sorted(abs(int(c)) for c in cl) for cl in lp]
+                        lp = [sorted(abs(int(c)) for c in cl) for cl in loops_of(s)]
                         if len(lp) == 2 and [w.ring] in lp and _on_hole(gmsh, w, [c for cl in lp for c in cl if c != w.ring]):
                             w.annulus = s
                     if not w.annulus:
                         raise ValueError("a washer's ring did not close round its hole")
                     boxed.append(w)
                     if FREE_BAND and wish_out is not None:
-                        _mark_box(gmsh, w, corners_of[j_w], new, h, mm, high_mm, wish_out)
+                        _mark_box(gmsh, w, corners_of[j_w], new, h, mm, high_mm, wish_out, loops_of)
             if cuts is not None:
                 from scipy.spatial import cKDTree
 
@@ -3093,7 +3155,10 @@ def polar_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                     if tree.query(_samples(gmsh, x, 4))[0].max() <= 1e-3 * h + full / 256 and \
                             float(occ.getMass(1, x)) < (1 - 1e-6) * full:
                         bad = True
-        occ.remove([(2, s) for s in cells], recursive=True)
+        if FAST_REMOVE:
+            _remove_cells(gmsh, cells)
+        else:
+            occ.remove([(2, s) for s in cells], recursive=True)
         occ.synchronize()
         _remove_loose(gmsh, cut_curves)
         if bad:
