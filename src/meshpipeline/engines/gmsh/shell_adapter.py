@@ -184,10 +184,21 @@ class _Regrid(Exception):
     """SHMESH-48x: faces (sewn face indices) refused for their short edges or triangles, now meshed free and no better
     there: the mesh is made again with their grids back (kept, not judged on those two again)."""
 
-    def __init__(self, faces: set[int], why: dict[int, dict]) -> None:
+    def __init__(self, faces: set[int], why: dict[int, dict], wanted: list | None = None) -> None:
         super().__init__(f"{len(faces)} grid(s) back")
         self.faces = faces
         self.why = why
+        # (SHMESH-48l2: [(centre, sewn face)] - the holes this pass's rings asked to be drawn again as one circle)
+        self.wanted = wanted or []
+
+
+class _Redraw(Exception):
+    """SHMESH-48l2: holes to draw again (SHMESH-45k one circle, 49c O-grid seams), told as soon as the rings are built
+    on a pass that could end no other way: the clean-up of a mesh the redraw throws away is not made."""
+
+    def __init__(self, wanted: list, w_owner: list, seam: list, s_owner: list) -> None:
+        super().__init__(f"{len(wanted) + len(seam)} hole(s) to draw again")
+        self.wanted, self.w_owner, self.seam, self.s_owner = wanted, w_owner, seam, s_owner
 
 
 class _Unmap(Exception):
@@ -878,6 +889,9 @@ def _mesh_shell(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log
     return mesh, applied
 
 
+#: SHMESH-48l2: a pass whose only outcome is a redraw stops once its rings are built (False: made whole, as before)
+EARLY_REDRAW = True
+
 #: SHMESH-45c: at most this many holes are listed one by one in the record (quality.structure.hole_list)
 HOLE_LINES = 500
 #: SHMESH-45 (washer guard, whole step): a structured mesh that fails, or comes out invalid or past Nastran's own limits,
@@ -1046,18 +1060,47 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
         seated_now: list[tuple[str, Any, int]] = []
         n_seat = 0
 
+        def redraw(wanted: list, seam_wanted: list, w_owner: list, s_owner: list) -> bool:
+            """SHMESH-45k/49c: one more pass for both: the holes whose ring needed them drawn again as one circle, and
+            the O-grid holes drawn again to start where their O-grid cuts (a seam inside a quarter makes it two
+            curves, counted unevenly). Whether any was drawn."""
+            nonlocal redraw_pass, brep, reseated, redrawn, asked, seated_now, unmap, unmapped
+            redraw_pass = True
+            # (SHMESH-48l2: after a refusal, with the holes still drawn - the new ones join them)
+            had = list(seated_now)
+            wanted = [e for k_, e, _o in had if k_ in ("w", "W")] + wanted
+            seam_wanted = [e for k_, e, _o in had if k_ == "s"] + seam_wanted
+            w_owner = [o for k_, _e, o in had if k_ in ("w", "W")] + w_owner
+            s_owner = [o for k_, _e, o in had if k_ == "s"] + s_owner
+            seated = Path(tmp) / ("reseated.brep" if not had else f"reseated_more_{n_seat}.brep")
+            try:
+                n2, red2 = ST.reseat_holes(Path(unseated), seated,
+                                           only=wanted + [e[0] if len(e) == 2 else e for e in seam_wanted],
+                                           seam=seam_wanted)
+            except Exception as exc:  # noqa: BLE001 - the first mesh stands
+                logger.info("shell mesh: holes not drawn again (%s)", exc)
+                n2, red2 = 0, []
+            if not n2:
+                return False
+            brep, reseated, redrawn = seated, n2, red2
+            asked = [("w", e, int(o)) for e, o in zip(wanted, w_owner, strict=True)] + [
+                ("s", e, int(o)) for e, o in zip(seam_wanted, s_owner, strict=True)]
+            seated_now = list(asked)
+            unmap, unmapped = set(), 0
+            return True
+
         def seat_kept() -> tuple[Path | str, int, list, bool, list]:
             """SHMESH-48l2/49g: the refused faces' holes go back to the CAD's own; every other hole drawn again stays
             drawn (the CAD's brep when none is left). Returns (brep, holes drawn, their list, whether a redraw was
             made, the entries drawn)."""
             nonlocal n_seat
-            keep = [x for x in asked if x[2] not in no_cut]
+            keep = [x for x in asked if x[0] == "W" or x[2] not in no_cut]
             if keep == seated_now:
                 return brep, reseated, redrawn, redraw_pass, seated_now
             if keep:
                 n_seat += 1
                 out_ = Path(tmp) / f"reseated_kept_{n_seat}.brep"
-                only_ = [e for k_, e, _o in keep if k_ == "w"]
+                only_ = [e for k_, e, _o in keep if k_ in ("w", "W")]
                 seam_ = [e for k_, e, _o in keep if k_ == "s"]
                 try:
                     n3, red3 = ST.reseat_holes(Path(unseated), out_, only=only_ + [e[0] if len(e) == 2 else e
@@ -1076,8 +1119,15 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
                                            hole_before=tuple((tuple(c), e) for c, e in redrawn),
                                            correction=correction, requirements=requirements, unmap=frozenset(unmap),
                                            no_cut=frozenset(no_cut), check_maps=unmapped < UNMAP_ROUNDS,
-                                           judge_faces=True, compare=compare, grids_kept=frozenset(kept))
+                                           judge_faces=True, compare=compare, grids_kept=frozenset(kept),
+                                           redraw_ok=EARLY_REDRAW and not redraw_pass and not resplined)
                 passes.append(["made", round(time.monotonic() - t_pass, 1)])
+            except _Redraw as rd:
+                passes.append(["holes drawn again", round(time.monotonic() - t_pass, 1)])
+                if not redraw(list(rd.wanted), list(rd.seam), list(rd.w_owner), list(rd.s_owner)):
+                    # (nothing drawn: the pass is made whole, as the mesh that stands)
+                    passes[-1][0] = "holes not drawn again"
+                continue
             except _NoCut as nc:
                 passes.append(["grids left out", round(time.monotonic() - t_pass, 1)])
                 # SHMESH-47b: those faces' grids left out (their joined faces whole); counts as a round of SHMESH-40
@@ -1109,9 +1159,24 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
                     refused.pop(k, None)
                     compare.pop(k, None)
                 if asked and not resplined:
-                    # SHMESH-48l2: the faces whose grids come back take their holes drawn again back too
+                    # SHMESH-48l2: the faces whose grids come back take their holes drawn again back too; and the holes
+                    # this pass's free rings asked for (on the faces that stay free) are drawn with them now - the
+                    # redraw the next pass would ask for, without that pass
+                    have = [np.asarray(e if len(e) != 2 else e[0], dtype=float) for _k, e, _o in asked]
+                    extra = [("W", c, o) for c, o in rg.wanted if o not in rg.faces
+                             and not any(float(np.linalg.norm(np.asarray(c) - h_)) <= 1e-6 * max(1.0, float(
+                                 np.linalg.norm(h_))) for h_ in have)]
+                    asked = asked[:]
+                    for x in extra:
+                        # (each in its place: the one-circle holes before the O-grid seams, as a redraw lists them)
+                        at = max((i + 1 for i, y in enumerate(asked) if y[0] in ("w", "W")), default=0)
+                        asked.insert(at, x)
                     brep, reseated, redrawn, redraw_pass, seated_now = seat_kept()
-                    if seated_now:
+                    if seated_now and extra and any(x in seated_now for x in extra):
+                        # (drawn as a redraw draws: its grids found again from none)
+                        unmap, unmapped = set(), 0
+                        redraw_pass = True
+                    elif seated_now:
                         redraw_pass = False
                 continue
             except _Unmap as u:
@@ -1143,30 +1208,7 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
             w_owner = applied.pop("_redraw_owners", [])
             s_owner = applied.pop("_seam_owners", [])
             if (wanted or seam_wanted) and not redraw_pass and not resplined:
-                # SHMESH-45k/49c: one more pass for both: the holes whose ring needed them drawn again as one circle,
-                # and the O-grid holes drawn again to start where their O-grid cuts (a seam inside a quarter makes it
-                # two curves, counted unevenly)
-                redraw_pass = True
-                # (SHMESH-48l2: after a refusal, with the holes still drawn - the new ones join them)
-                had = list(seated_now)
-                wanted = [e for k_, e, _o in had if k_ == "w"] + wanted
-                seam_wanted = [e for k_, e, _o in had if k_ == "s"] + seam_wanted
-                w_owner = [o for k_, _e, o in had if k_ == "w"] + w_owner
-                s_owner = [o for k_, _e, o in had if k_ == "s"] + s_owner
-                seated = Path(tmp) / ("reseated.brep" if not had else f"reseated_more_{n_seat}.brep")
-                try:
-                    n2, red2 = ST.reseat_holes(Path(unseated), seated,
-                                               only=wanted + [e[0] if len(e) == 2 else e for e in seam_wanted],
-                                               seam=seam_wanted)
-                except Exception as exc:  # noqa: BLE001 - the first mesh stands
-                    logger.info("shell mesh: holes not drawn again (%s)", exc)
-                    n2, red2 = 0, []
-                if n2:
-                    brep, reseated, redrawn = seated, n2, red2
-                    asked = [("w", e, int(o)) for e, o in zip(wanted, w_owner, strict=True)] + [
-                        ("s", e, int(o)) for e, o in zip(seam_wanted, s_owner, strict=True)]
-                    seated_now = list(asked)
-                    unmap, unmapped = set(), 0
+                if redraw(wanted, seam_wanted, w_owner, s_owner):
                     passes[-1][0] = "holes drawn again"
                     continue
             past = applied.pop("_past_spots", [])
@@ -1311,8 +1353,8 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                target: dict | None = None, correction: float = 1.0,
                requirements: dict | None = None, own_spots: tuple = (), unmap: frozenset = frozenset(),
                hole_before: tuple = (), no_cut: frozenset = frozenset(), judge_faces: bool = False,
-               check_maps: bool = False, compare: dict | None = None, grids_kept: frozenset = frozenset()
-               ) -> tuple[ShellMesh, dict]:
+               check_maps: bool = False, compare: dict | None = None, grids_kept: frozenset = frozenset(),
+               redraw_ok: bool = False) -> tuple[ShellMesh, dict]:
     """One mesh. `unmap` (SHMESH-40): gmsh surfaces left free (their grid came out past the solver's limits once);
     `check_maps`: raise _Unmap when a mapped face's grid comes out past them. `own_spots` (SHMESH-31): (sewn face, box low corner, box high corner - mm) round elements a mesh
     under the user's sizes left past the solver's own limits: inside each box the face's own rules' size, where
@@ -1975,6 +2017,21 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
             log.extend(gmsh.logger.get())
     finally:
         gmsh.finalize()
+    if redraw_ok:
+        # SHMESH-48l2: holes are to be drawn again and nothing after this could end the pass otherwise (no face is
+        # judged before its O-grid holes are drawn again, no grid waits for its free mesh): the pass stops here, with
+        # the same lists the whole pass would give
+        drawn_e = [np.asarray(c, dtype=float) for c, _e in hole_before]
+        want_e = [w for w in washers_planned if _wants_redraw(w, drawn_e)]
+        seam_e = [w for w in gridded if not any(float(np.linalg.norm(c - w.centre)) <= 0.25 * w.r for c in drawn_e)]
+        judged_e = polar_faces_made | (grid_faces_made if ST.GRID_CHECK else set())
+        judged_now_e = bool(judge_faces and ST.POLAR_CHECK and judged_e and not (ST.RESEAT and seam_e))
+        comparing = bool(compare and judge_faces and any(k not in grid_faces_made and "free_figures" not in g
+                                                         for k, g in compare.items()))
+        if (want_e or seam_e) and not judged_now_e and not comparing:
+            raise _Redraw([[float(x) for x in w.centre] for w in want_e], [int(w.owner) for w in want_e],
+                          [([float(x) for x in w.centre], list(w.seam)) if w.seam else [float(x) for x in w.centre]
+                           for w in seam_e], [int(w.owner) for w in seam_e])
     Q = np.vstack(quads) if quads else np.zeros((0, 4), dtype=np.int64)
     T = np.vstack(trias) if trias else np.zeros((0, 3), dtype=np.int64)
     merged = 0
@@ -2125,7 +2182,9 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
             if short_ok and tri_ok:
                 back[k_c] = {"grid_figures": dict(g_c), "free_figures": free_}
         if back:
-            raise _Regrid(set(back), back)
+            drawn_ = [np.asarray(c, dtype=float) for c, _e in hole_before]
+            raise _Regrid(set(back), back, [([float(x) for x in w.centre], int(w.owner)) for w in washers_planned
+                                            if _wants_redraw(w, drawn_)])
     judged = polar_faces_made | (grid_faces_made if ST.GRID_CHECK else set())
     judged_now = bool(judge_faces and ST.POLAR_CHECK and judged and not seam_due)
     if judged_now:
@@ -2337,10 +2396,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
     # SHMESH-45k: the holes whose ring had to follow uneven hole nodes, or could not be built or closed: _mesh_path
     # draws them again as one circle and meshes once more
     drawn_at = [np.asarray(c, dtype=float) for c, _e in hole_before]
-    want_w = [w for w in washers_planned
-              if (w.info.get("followed") or str(w.info.get("why", "")).startswith(("its ring could not be built",
-                                                                                   "its ring did not close")))
-              and not any(float(np.linalg.norm(c - w.centre)) <= 0.25 * w.r for c in drawn_at)]
+    want_w = [w for w in washers_planned if _wants_redraw(w, drawn_at)]
     out["_redraw_wanted"] = [[float(x) for x in w.centre] for w in want_w]
     out["_redraw_owners"] = [int(w.owner) for w in want_w]     # (SHMESH-48l2: each hole's sewn face)
     # SHMESH-49c: the O-grid holes this mesh did not draw again (to start where their O-grid cuts)
@@ -2356,6 +2412,14 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                            for w in seam_w]
     out["_seam_owners"] = [int(w.owner) for w in seam_w]
     return mesh, out
+
+
+def _wants_redraw(w, drawn_at: list) -> bool:
+    """SHMESH-45k: a hole whose ring had to follow uneven hole nodes, or could not be built or closed, and that is not
+    drawn again yet: _mesh_path draws it again as one circle."""
+    return bool((w.info.get("followed") or str(w.info.get("why", "")).startswith(("its ring could not be built",
+                                                                                   "its ring did not close")))
+                and not any(float(np.linalg.norm(c - w.centre)) <= 0.25 * w.r for c in drawn_at))
 
 
 def _spots(mesh: ShellMesh, face_of: np.ndarray, past: np.ndarray) -> list[tuple]:
