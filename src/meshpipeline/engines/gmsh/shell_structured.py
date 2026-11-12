@@ -931,6 +931,11 @@ OUTLINE_PINS = True
 #: (a short edge along the first from the pin), the near line moves clear of the pin inside its limits; where it
 #: cannot, the line on the pin keeps clear of it instead
 PIN_CLEAR = True
+#: SHMESH-48r: a cell edge under CELL_MIN that is a piece of a drawn line between the outline (or a line it crosses)
+#: and a line it crosses - never a box's own side - is dropped: the line ends there in a T and the two cells beside
+#: it become one; the face is tried again (up to TRIM_ROUNDS pieces) and refused only when that does not mend it
+TRIM_SHORT = True
+TRIM_ROUNDS = 4
 #: ... straight edges within PARALLEL_DEG of the face's frame count as running along it
 PARALLEL_DEG = 1.0
 #: SHMESH-48q: a free box's cell between its ring (n elements round) and its box is our own one row of quads, two to
@@ -1823,6 +1828,7 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
             boxes, limits = fp["boxes"], fp["limits"]
             boxes0 = [list(bx) for bx in boxes]
             turned: set[tuple[int, int]] = set()
+            pin_notes: dict[tuple[str, float], str] = {}
             gap_ = GAP_MIN * CELL_MIN * h
             for _round in range(4 if PIN_CLEAR else 1):
                 for bx, bx0 in zip(boxes, boxes0, strict=True):
@@ -1852,15 +1858,28 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                     for i_, ax in enumerate(("u", "v")):
                         other = 1 - i_
                         o_ax = ("u", "v")[other]
-                        near = any(1e-6 * h < abs(x - pt[i_]) < gap_ - 1e-6 * h for x in lines[ax])
+                        near_x = [x for x in lines[ax] if 1e-6 * h < abs(x - pt[i_]) < gap_ - 1e-6 * h]
                         held = any(abs(x - pt[other]) <= 1e-6 * h for x in lines[o_ax])
-                        if not (near and held):
+                        if not (near_x and held):
                             continue
-                        if (k_, i_) not in turned:
-                            if not (i_ == 0 and jt is not None):
-                                turn.add((k_, i_))
+                        fixed_ax = i_ == 0 and jt is not None        # (a joined face's u lines are the joint's)
+                        if (k_, i_) not in turned and not fixed_ax:
+                            turn.add((k_, i_))
                         elif (k_, other) not in turned and not (other == 0 and jt is not None):
                             turn.add((k_, other))
+                        # (SHMESH-48r: the record says what held the near line - the shift it needed and what its
+                        # limits allowed - when the face comes out refused)
+                        for x in near_x:
+                            to = pt[i_] + (gap_ if x > pt[i_] else -gap_)
+                            spans = [limits.get(str(sd)) for sd in range(4 * len(ws))
+                                     if boxes[sd // 4][sd % 4] == x and ("u", "v")[(sd % 4) // 2] == ax]
+                            lo_, hi_ = (max((s[0] for s in spans if s), default=-math.inf),
+                                        min((s[1] for s in spans if s), default=math.inf))
+                            pin_notes[(ax, round(x * mm, 2))] = (
+                                f"48p: the {ax} line at {x * mm:.2f} mm is {abs(x - pt[i_]) * mm:.2f} mm from an outline "
+                                f"end at ({pt[0] * mm:.2f}, {pt[1] * mm:.2f}); clear of it is {to * mm:.2f} (a shift of "
+                                f"{(to - x) * mm:+.2f}), " + ("its lines are the joint's" if fixed_ax else
+                                                             f"its limits allow [{lo_ * mm:.2f}, {hi_ * mm:.2f}]"))
                 if not turn:
                     break
                 for k_, i_ in sorted(turn):
@@ -1909,12 +1928,17 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                 if p is not None:
                     starts[id(w)] = _diagonals(u, v)[2]          # (u + v) / sqrt 2: where SHMESH-45b starts the hole
 
+            trims: list[tuple[int, float, float, float]] = []   # SHMESH-48r: (axis, line, from, to) dropped
+
             def line_pieces(at: float, axis_: int, start: float, stop: float, boxes=boxes,
-                       eps=eps) -> list[tuple[float, float]]:
+                       eps=eps, trims=trims) -> list[tuple[float, float]]:
                 """SHMESH-48g: a line across the face, stopped at each box it would cross (it ends on that box's
                 side line, drawn right across: a T, the cells four-sided) - holes in rows that do not line up."""
                 cut_at = sorted((bx[2 - 2 * axis_], bx[3 - 2 * axis_]) for bx in boxes
                                 if bx[2 * axis_] + eps < at < bx[2 * axis_ + 1] - eps) if STOP_AT_BOXES else []
+                # (SHMESH-48r: and with the pieces dropped for being too short taken out)
+                cut_at = sorted(cut_at + [(a_, b_) for ax_, at_, a_, b_ in trims
+                                          if ax_ == axis_ and abs(at_ - at) <= eps])
                 out_, at0 = [], start
                 for g0, g1 in cut_at:
                     if g0 > at0 + eps:
@@ -1967,94 +1991,134 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                             out.append((1, occ.addLine(q1, occ.addPoint(*[float(x) for x in w.centre + 0.5 * w.r * dg]))))
                 return out
 
+            def only_small(causes_: list[str]) -> bool:
+                return bool(causes_) and all(x.startswith("a cell edge") for x in causes_)
+
+            def short_piece(c_: int, lines=lines, boxes=boxes, eps=eps, uv=uv) -> tuple[int, float, float, float] | None:
+                """SHMESH-48r: the short edge as (axis, line, from, to) when it is a piece of a drawn line between
+                the outline, or a line it crosses, and a line it crosses - outside every box's own sides (a box
+                stays closed); else None."""
+                if gmsh.model.getType(1, c_) != "Line":
+                    return None
+                e0, e1 = (np.array(uv(x)) for x in _samples(gmsh, c_, 1))
+                for i_, ax in enumerate(("u", "v")):
+                    if abs(e0[i_] - e1[i_]) > eps or not any(abs(x - e0[i_]) <= eps for x in lines[ax]):
+                        continue
+                    at, j_ = float(e0[i_]), 1 - i_
+                    a_, b_ = sorted((float(e0[j_]), float(e1[j_])))
+                    other = ("u", "v")[j_]
+                    if not any(abs(x - a_) <= eps or abs(x - b_) <= eps for x in lines[other]):
+                        return None             # (it crosses no line at either end: not a piece between lines)
+                    for bx in boxes:
+                        on_side = any(abs(at - bx[2 * i_ + q]) <= eps for q in (0, 1))
+                        if on_side and bx[2 * j_] - eps <= 0.5 * (a_ + b_) <= bx[2 * j_ + 1] + eps:
+                            return None         # (a piece of a box's own side)
+                    return (i_, at, a_, b_)
+                return None
+
             # tried on a copy of the face first: no edge of a cell under CELL_MIN face sizes
             shared = [c for cl in loops for c in cl if len(gmsh.model.getAdjacencies(1, c)[0]) > 1]
-            copy = gmsh.model.occ.copy([(2, t)])
-            _o, cmap = gmsh.model.occ.fragment(copy, tools())
-            gmsh.model.occ.synchronize()
-            cells = [s for d, s in cmap[0] if d == 2]
-            cut_curves = {c for got in cmap[1:] for d, c in got if d == 1}
-            # SHMESH-48j: which of the three causes fired, with its numbers, goes in the reason
-            causes: list[str] = []
-            shortest = min(((float(gmsh.model.occ.getMass(1, abs(c))), abs(int(c))) for s in cells
-                            for _d, c in gmsh.model.getBoundary([(2, s)], oriented=False)), default=(math.inf, 0))
-            small = shortest[0] < CELL_MIN * h
-            if small:
-                mid_ = _samples(gmsh, shortest[1], 2)[1] * mm
-                # (and what stands round it, in the face's own frame, mm: the short edge's ends, the nearest hole's
-                # box, the lines and edges within a face size - so a real part's record pins the pair of lines)
-                ends_ = [np.round(np.array(uv(x)) * mm, 2) for x in _samples(gmsh, shortest[1], 1)]
-                mid_uv = 0.5 * (ends_[0] + ends_[1]) / mm
-                j_near = min(range(len(ws)), key=lambda j: float(np.linalg.norm(np.array(uv(ws[j].centre)) - mid_uv)))
-                near_l = {ax: sorted(round(x * mm, 2) for x in lines[ax] if abs(x - mid_uv[i_]) <= h)
-                          for i_, ax in enumerate(("u", "v"))}
-                near_e = {ax: sorted(round(x * mm, 2) for x, k in vals[ax] if k == "edge" and abs(x - mid_uv[i_]) <= h)
-                          for i_, ax in enumerate(("u", "v"))}
-                causes.append(f"a cell edge {shortest[0] * mm:.3g} mm, under {CELL_MIN * h_mm:.3g} mm, at "
-                              f"({mid_[0]:.0f}, {mid_[1]:.0f}, {mid_[2]:.0f}) mm [face frame mm: ends "
-                              f"{[list(map(float, e)) for e in ends_]}, nearest hole box "
-                              f"{[round(x * mm, 2) for x in boxes[j_near]]} (hole {2 * ws[j_near].r * mm:.3g} mm), "
-                              f"lines {near_l}, edges {near_e}]")
-            # and every ring came out as drawn: one circle round a free box's hole, four quarters round an O-grid's
-            trial = sorted({abs(int(c)) for s in cells for _d, c in gmsh.model.getBoundary([(2, s)], oriented=False)})
-            # a line that ends inside an edge the face shares with another face cuts that edge: the other face is cut
-            # with it (at that point only), else it would keep the edge whole - a crack at the junction
-            hit: set[int] = set()
-            # SHMESH-48l: each trial curve sampled once (a joined web's thousands of curves were sampled again for
-            # every shared edge and every ring: most of the time of a mesh)
-            smp = {x: _samples(gmsh, x, 4) for x in trial}
-            if shared:
-                from scipy.spatial import cKDTree
+            for _trim in range(TRIM_ROUNDS + 1 if TRIM_SHORT else 1):
+                copy = gmsh.model.occ.copy([(2, t)])
+                _o, cmap = gmsh.model.occ.fragment(copy, tools())
+                gmsh.model.occ.synchronize()
+                cells = [s for d, s in cmap[0] if d == 2]
+                cut_curves = {c for got in cmap[1:] for d, c in got if d == 1}
+                # SHMESH-48j: which of the three causes fired, with its numbers, goes in the reason
+                causes: list[str] = []
+                shortest = min(((float(gmsh.model.occ.getMass(1, abs(c))), abs(int(c))) for s in cells
+                                for _d, c in gmsh.model.getBoundary([(2, s)], oriented=False)), default=(math.inf, 0))
+                small = shortest[0] < CELL_MIN * h
+                cut_piece = short_piece(shortest[1]) if small and TRIM_SHORT else None
+                if small:
+                    mid_ = _samples(gmsh, shortest[1], 2)[1] * mm
+                    # (and what stands round it, in the face's own frame, mm: the short edge's ends, the nearest hole's
+                    # box, the lines and edges within a face size - so a real part's record pins the pair of lines)
+                    ends_ = [np.round(np.array(uv(x)) * mm, 2) for x in _samples(gmsh, shortest[1], 1)]
+                    mid_uv = 0.5 * (ends_[0] + ends_[1]) / mm
+                    j_near = min(range(len(ws)), key=lambda j: float(np.linalg.norm(np.array(uv(ws[j].centre)) - mid_uv)))
+                    near_l = {ax: sorted(round(x * mm, 2) for x in lines[ax] if abs(x - mid_uv[i_]) <= h)
+                              for i_, ax in enumerate(("u", "v"))}
+                    near_e = {ax: sorted(round(x * mm, 2) for x, k in vals[ax] if k == "edge" and abs(x - mid_uv[i_]) <= h)
+                              for i_, ax in enumerate(("u", "v"))}
+                    causes.append(f"a cell edge {shortest[0] * mm:.3g} mm, under {CELL_MIN * h_mm:.3g} mm, at "
+                                  f"({mid_[0]:.0f}, {mid_[1]:.0f}, {mid_[2]:.0f}) mm [face frame mm: ends "
+                                  f"{[list(map(float, e)) for e in ends_]}, nearest hole box "
+                                  f"{[round(x * mm, 2) for x in boxes[j_near]]} (hole {2 * ws[j_near].r * mm:.3g} mm), "
+                                  f"lines {near_l}, edges {near_e}]")
+                # and every ring came out as drawn: one circle round a free box's hole, four quarters round an O-grid's
+                trial = sorted({abs(int(c)) for s in cells for _d, c in gmsh.model.getBoundary([(2, s)], oriented=False)})
+                # a line that ends inside an edge the face shares with another face cuts that edge: the other face is cut
+                # with it (at that point only), else it would keep the edge whole - a crack at the junction
+                hit: set[int] = set()
+                # SHMESH-48l: each trial curve sampled once (a joined web's thousands of curves were sampled again for
+                # every shared edge and every ring: most of the time of a mesh)
+                smp = {x: _samples(gmsh, x, 4) for x in trial}
+                if shared:
+                    from scipy.spatial import cKDTree
 
-                all_pts = np.vstack([smp[x] for x in trial])
-                trial_mass = np.array([float(gmsh.model.occ.getMass(1, x)) for x in trial])
-                for c in shared:
-                    tree = cKDTree(_samples(gmsh, c, 256))
-                    full = float(gmsh.model.occ.getMass(1, c))
-                    far = tree.query(all_pts)[0].reshape(len(trial), -1).max(axis=1)
-                    if bool(np.any((far <= 1e-3 * h + full / 256) & (trial_mass < (1 - 1e-6) * full))):
-                        hit.add(c)
-            # the pieces of the lines inside the face (straight: their two ends), to cut it and its neighbours with
-            outline = cKDTree(np.vstack([_samples(gmsh, c, 64) for cl in loops for c in cl])) if hit else None
-            pieces: list[tuple[np.ndarray, np.ndarray]] = []
-            if hit and outline is not None:
-                for x in trial:
-                    if gmsh.model.getType(1, x) != "Line":
-                        continue
-                    q = smp[x]
-                    if outline.query(q[2])[0] > 1e-3 * h:
-                        pieces.append((q[0], q[-1]))
-            spoilt = False
-            if hit and (not CUT_NEIGHBOURS or tag_of[t] in no_cut):
-                # a line would cut a shared edge (the neighbour would keep it whole: a crack) - and cutting the
-                # neighbour is off, or it left poor elements there on a first mesh (SHMESH-47b)
-                small = True
-                spoilt = CUT_NEIGHBOURS
-            others = sorted({int(n) for c in hit for n in gmsh.model.getAdjacencies(1, c)[0] if int(n) != t})
-            if any(n in by_face or n not in tag_of for n in others) or any(w.face in others for w in washers):
-                small = True        # a neighbour with washers of its own is left as it is
-                causes.append("a line would cut an edge shared with a face with holes of its own")
-            elif hit and not spoilt and small and not causes:
-                causes.append("a line would cut a shared edge")
-            for w, p in zip(ws, plans, strict=True):
-                if w.corners:
-                    continue
-                R = p[2] * w.r if p is not None else w.R
-                on_ring = [c for c in trial if np.all(np.abs(np.linalg.norm(smp[c] - w.centre, axis=1) - R)
-                                                      <= 1e-4 * R)]
-                if len(on_ring) != (4 if p is not None else 1):
+                    all_pts = np.vstack([smp[x] for x in trial])
+                    trial_mass = np.array([float(gmsh.model.occ.getMass(1, x)) for x in trial])
+                    for c in shared:
+                        tree = cKDTree(_samples(gmsh, c, 256))
+                        full = float(gmsh.model.occ.getMass(1, c))
+                        far = tree.query(all_pts)[0].reshape(len(trial), -1).max(axis=1)
+                        if bool(np.any((far <= 1e-3 * h + full / 256) & (trial_mass < (1 - 1e-6) * full))):
+                            hit.add(c)
+                # the pieces of the lines inside the face (straight: their two ends), to cut it and its neighbours with
+                outline = cKDTree(np.vstack([_samples(gmsh, c, 64) for cl in loops for c in cl])) if hit else None
+                pieces: list[tuple[np.ndarray, np.ndarray]] = []
+                if hit and outline is not None:
+                    for x in trial:
+                        if gmsh.model.getType(1, x) != "Line":
+                            continue
+                        q = smp[x]
+                        if outline.query(q[2])[0] > 1e-3 * h:
+                            pieces.append((q[0], q[-1]))
+                spoilt = False
+                if hit and (not CUT_NEIGHBOURS or tag_of[t] in no_cut):
+                    # a line would cut a shared edge (the neighbour would keep it whole: a crack) - and cutting the
+                    # neighbour is off, or it left poor elements there on a first mesh (SHMESH-47b)
                     small = True
-                    if not any(x.startswith("a ring") for x in causes):
-                        c_ = w.centre * mm
-                        causes.append(f"a ring came out in {len(on_ring)} pieces, not {4 if p is not None else 1}, "
-                                      f"round the {2 * w.r * mm:.3g} mm hole at ({c_[0]:.0f}, {c_[1]:.0f}, "
-                                      f"{c_[2]:.0f}) mm")
-            gmsh.model.occ.remove([(2, s) for s in cells], recursive=True)
-            gmsh.model.occ.synchronize()
-            _remove_loose(gmsh, cut_curves)
+                    spoilt = CUT_NEIGHBOURS
+                others = sorted({int(n) for c in hit for n in gmsh.model.getAdjacencies(1, c)[0] if int(n) != t})
+                if any(n in by_face or n not in tag_of for n in others) or any(w.face in others for w in washers):
+                    small = True        # a neighbour with washers of its own is left as it is
+                    causes.append("a line would cut an edge shared with a face with holes of its own")
+                elif hit and not spoilt and small and not causes:
+                    causes.append("a line would cut a shared edge")
+                for w, p in zip(ws, plans, strict=True):
+                    if w.corners:
+                        continue
+                    R = p[2] * w.r if p is not None else w.R
+                    on_ring = [c for c in trial if np.all(np.abs(np.linalg.norm(smp[c] - w.centre, axis=1) - R)
+                                                          <= 1e-4 * R)]
+                    if len(on_ring) != (4 if p is not None else 1):
+                        small = True
+                        if not any(x.startswith("a ring") for x in causes):
+                            c_ = w.centre * mm
+                            causes.append(f"a ring came out in {len(on_ring)} pieces, not {4 if p is not None else 1}, "
+                                          f"round the {2 * w.r * mm:.3g} mm hole at ({c_[0]:.0f}, {c_[1]:.0f}, "
+                                          f"{c_[2]:.0f}) mm")
+                gmsh.model.occ.remove([(2, s) for s in cells], recursive=True)
+                gmsh.model.occ.synchronize()
+                _remove_loose(gmsh, cut_curves)
+                # SHMESH-48r: a too-short piece of a drawn line between the outline (or another line) and the line it
+                # crosses is dropped (the line ends there in a T, the cells either side become one) and the face tried
+                # again; refused only when that does not mend it
+                if not (small and TRIM_SHORT and only_small(causes)):
+                    break
+                if cut_piece is None or cut_piece in trims:
+                    break
+                trims.append(cut_piece)
             if small:
+                # (SHMESH-48r: with what held each line 48p could not move, and the pieces dropped)
+                notes_ = [s_ for (ax_, x_), s_ in sorted(pin_notes.items())
+                          if any(abs(x * mm - x_) <= 0.01 for x in lines[ax_])]
+                if trims:
+                    notes_.append(f"48r: {len(trims)} short piece(s) dropped first")
                 no("its lines cut a joined face into poor elements on a first mesh" if spoilt
-                   else "a cell would come out too small, a ring or a shared edge cut: " + "; ".join(causes))
+                   else "a cell would come out too small, a ring or a shared edge cut: " + "; ".join(causes + notes_))
                 continue
             edge_pts = np.vstack([_samples(gmsh, c, 64) for cl in loops for c in cl])
             if others:

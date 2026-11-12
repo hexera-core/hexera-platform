@@ -797,6 +797,7 @@ def test_a_box_side_near_a_notchs_tip_moves_clear(tmp_path, monkeypatch, clear):
     from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt, gp_Vec
 
     monkeypatch.setattr(ST, "PIN_CLEAR", clear)
+    monkeypatch.setattr(ST, "TRIM_SHORT", False)        # (48p alone: 48r would drop the short piece)
     A, B, T_ = 457.0, 406.0, 19.0
     shape = BRepPrimAPI_MakeBox(gp_Pnt(-A / 2, -B / 2, 0), A, B, T_).Shape()
     for x in (-114.0, 0.0, 114.0):
@@ -816,6 +817,46 @@ def test_a_box_side_near_a_notchs_tip_moves_clear(tmp_path, monkeypatch, clear):
     _mesh_, applied = _mesh(brep, rec, _criteria())
     s = applied["quality"]["structure"]
     if not clear:
+        assert [k for k in (s.get("not_gridded") or {}) if "a cell edge" in k], s.get("not_gridded")
+        return
+    assert not s.get("not_gridded"), s.get("not_gridded")
+    assert applied["quality"]["valid"] and applied["quality"]["within_nastran"]
+    assert all(r["met"] is not False for r in applied["requirements"]["rows"]), applied["requirements"]["rows"]
+
+
+@pytest.mark.parametrize("trim", [False, True])
+def test_a_short_piece_of_a_line_past_a_box_corner_is_dropped(tmp_path, monkeypatch, trim):
+    """SHMESH-48r, a real top plate: the box's bottom line ran on past the box's corner 2.96 mm to the end of a slanted
+    outline piece ("a cell edge 2.96 mm, under 4 mm") and neither line could move (48p): the plate was left free. The
+    piece is now dropped (the line stops at the box corner in a T, the cells beside it become one) and the plate is
+    gridded with every line met. Here a V notch's tip 3 mm outside a 19.8 mm hole's box side, level with its bottom."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCylinder, BRepPrimAPI_MakePrism
+    from OCP.BRepTools import BRepTools
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt, gp_Vec
+
+    monkeypatch.setattr(ST, "PIN_CLEAR", False)
+    monkeypatch.setattr(ST, "TRIM_SHORT", trim)
+    A, B, T_ = 457.0, 406.0, 19.0
+    shape = BRepPrimAPI_MakeBox(gp_Pnt(-A / 2, -B / 2, 0), A, B, T_).Shape()
+    for x in (-114.0, 0.0, 114.0):
+        for y in (-171.1, 171.1):
+            shape = BRepAlgoAPI_Cut(shape, BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(x, y, -1), gp_Dir(0, 0, 1)), 9.9,
+                                                                    T_ + 2).Shape()).Shape()
+    tu, tv = -137.96, -192.24
+    poly = BRepBuilderAPI_MakePolygon()
+    for x, y in ((tu - 14.0, -B / 2 - 1), (tu + 11.0, -B / 2 - 1), (tu, tv)):
+        poly.Add(gp_Pnt(x, y, -1.0))
+    poly.Close()
+    shape = BRepAlgoAPI_Cut(shape, BRepPrimAPI_MakePrism(BRepBuilderAPI_MakeFace(poly.Wire()).Face(),
+                                                         gp_Vec(0, 0, T_ + 2)).Shape()).Shape()
+    rec, surf = ms_extract(shape)
+    brep = tmp_path / "notch3.brep"
+    BRepTools.Write_s(surf, str(brep))
+    _mesh_, applied = _mesh(brep, rec, _criteria())
+    s = applied["quality"]["structure"]
+    if not trim:
         assert [k for k in (s.get("not_gridded") or {}) if "a cell edge" in k], s.get("not_gridded")
         return
     assert not s.get("not_gridded"), s.get("not_gridded")
