@@ -119,8 +119,8 @@ def _repeating_author(shape, plan_ops: int):
     author = _author(shape, budget=PackageBudget(max_ops=plan_ops, timeout_s=120.0,
                                                  model_calls=0, deviation_mm=0.0))
 
-    def repeating(region, defects):
-        package = author(region, defects)
+    def repeating(region, defects, attempts):
+        package = author(region, defects, attempts)
         if package is None or not package.plan:
             return package
         from dataclasses import replace
@@ -190,11 +190,14 @@ def test_a_committed_region_ships_while_another_is_queued(tmp_path, monkeypatch)
     generous = _author(shape)
     starved = _author(shape, budget=broke)
 
-    def author(region, defects):
-        return (starved if region.index == 0 else generous)(region, defects)
+    def author(region, defects, attempts):
+        return (starved if region.index == 0 else generous)(region, defects, attempts)
 
     spy = _ScanSpy(monkeypatch)
-    run = run_regions(shape, author=author, tolerance_mm=0.1, budget=_budget())
+    # ONE ATTEMPT PER REGION, pinned: region 0's package cannot afford its own plan, so it
+    # escalates unapplied and would do so again on every attempt the bound allows. What this
+    # probe is about is the walk carrying past the queued region, not how often it is offered one.
+    run = run_regions(shape, author=author, tolerance_mm=0.1, budget=_budget(), attempts=1)
 
     assert run.escalated == (0,)
     assert [(p.region_index, p.status) for p in run.packages] == [(0, "escalated"),
@@ -304,3 +307,52 @@ def test_a_committed_package_pays_two_whole_shape_scans_whatever_its_plan_length
     # extra operations cost nothing at all, and the EQUALITY is asserted rather than the bound so
     # that the sentence above cannot outlive the behaviour it describes.
     assert counts[2][1] == counts[1][1]
+
+
+def test_the_rules_author_revises_after_an_attempt_was_reverted(tmp_path):
+    """THE LEARNING, on the real kernel and through the real planner.
+
+    This is what the operation-at-a-time loop got from a `RunHistory` that outlived one iteration
+    and the region driver could not express: told that an operation was tried on a defect and did
+    not survive, the rules propose something else. Written against real geometry rather than a
+    stub planner because the thing under test is the catalogue's ordering, not a double's.
+    """
+    from meshpipeline.cad.repair.regions import decompose
+    from meshpipeline.cad.repair.session import OpVerdict, PackageVerdict
+
+    shape = _two_notched_plates(tmp_path)
+    before, complete = session_module._localize_scan(shape, face_scan_s=0.0)
+    assert complete
+    region = decompose(before, diagonal_mm=measure(shape).diagonal_mm)[0]
+    mine = tuple(d for d in before if d.fingerprint in region.fingerprints)
+    author = _author(shape)
+
+    first = author(region, mine, ())
+    assert first is not None
+    attempted = first.plan[0]
+
+    # THE VERDICT THE LOOP WOULD HAND BACK: the operation ran, did not survive, and the package
+    # was discarded with it.
+    reverted = PackageVerdict(
+        region_index=region.index, status="reverted",
+        reason="cleared defects still present: " + sorted(first.predicate.cleared)[0],
+        verdicts=(OpVerdict(op=attempted["op"].name,
+                            targets=tuple(r.fingerprint for r in attempted["targets"]),
+                            defect_code=attempted["defect_code"].value, status="rolled_back",
+                            reason="target_remains"),))
+
+    second = author(region, mine, (reverted,))
+
+    # NOT THE SAME PAIR. Either a different operation for the same defect or the next defect in
+    # the region - what the rules would have proposed on the baseline's next iteration - and
+    # never the attempt that was just rolled back. On this fixture it is the sliver EDGES after
+    # the sliver FACE, which is only evidence while the plate keeps both.
+    assert second is not None
+    assert (second.plan[0]["op"].name, sorted(second.predicate.cleared)) != (
+        attempted["op"].name, sorted(first.predicate.cleared))
+    # AND THE FIRST CALL OF A REGION IS UNCHANGED BY ALL OF THIS: an empty `attempts` is an empty
+    # ledger, so a region's first package is what the one-package-per-region walk authored.
+    again = author(region, mine, ())
+    assert again is not None
+    assert (again.plan[0]["op"].name, sorted(again.predicate.cleared)) == (
+        attempted["op"].name, sorted(first.predicate.cleared))

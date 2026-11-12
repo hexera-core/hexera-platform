@@ -120,6 +120,23 @@ CAD_REPAIR_TIMEOUT_S: float = float(optional_env("CAD_REPAIR_TIMEOUT_S", "120"))
 #: `operations.OPERATIONS` holds, which grows, and is sized to leave room for retries.
 CAD_REPAIR_MAX_OPS: int = int(optional_env("CAD_REPAIR_MAX_OPS", "6"))
 
+#: PACKAGES ONE REGION MAY BE OFFERED IN ONE RUN by the region-scoped driver, each a fresh claim
+#: stated before execution and judged on its own.
+#:
+#: WHY MORE THAN ONE. The operation-at-a-time loop's whole advantage was that its `RunHistory`
+#: PERSISTS across iterations: it tries the narrowest operation, records the pair as ineffective
+#: and then proposes the next one, which is often the one that works. A region offered exactly one
+#: package got one guess and no second chance, and the attempts cannot be packed into one longer
+#: plan instead: a package's predicate is stated BEFORE it runs, so a plan of k speculative
+#: attempts must claim all k, and one failure reverts the operations that succeeded.
+#:
+#: THREE, because the baseline's own stall limit is 2 - two consecutive misses and it gives up -
+#: so three packages is one more chance than the loop this driver is measured against, not a
+#: licence to grind. The run's CAD_REPAIR_MAX_OPS and CAD_REPAIR_TIMEOUT_S remain the outer bounds
+#: and are unchanged by this: this one bounds how many CLAIMS a region may state, and a package
+#: that kept nothing still charges nothing against the run's operation allowance.
+CAD_REPAIR_REGION_ATTEMPTS: int = int(optional_env("CAD_REPAIR_REGION_ATTEMPTS", "3"))
+
 #: Consecutive operations that were not kept before the loop gives up. A planner that has proposed
 #: two things in a row that did not work has run out of ideas the rules can express, and further
 #: attempts spend a job's deadline rediscovering that.

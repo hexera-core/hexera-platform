@@ -409,6 +409,8 @@ INVENTORY: list[Group] = [
                help="operations the repair loop may try in one run, kept or rolled back"),
         EnvVar("CAD_REPAIR_STALL_LIMIT", "2", kind="int", exposure="internal",
                help="consecutive operations that were not kept before the loop gives up"),
+        EnvVar("CAD_REPAIR_REGION_ATTEMPTS", "3", kind="int", exposure="internal",
+               help="target packages one region may be offered in one run by the region-scoped driver; each is a fresh claim, and the author is told what the earlier attempts did"),
         EnvVar("CAD_REPAIR_MAX_AREA_CHANGE_RATIO", "0.02", kind="float", exposure="internal",
                help="how far surface area may end up from what the operations accounted for, as a fraction of the original"),
         EnvVar("CAD_REPAIR_MAX_VOLUME_CHANGE_RATIO", "0.02", kind="float", exposure="internal",

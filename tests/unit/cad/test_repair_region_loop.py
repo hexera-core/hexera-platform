@@ -125,7 +125,7 @@ def _author(part: _Part, *, escalate: tuple[int, ...] = (), decline: tuple[int, 
     reverted - an author that was tried and wrong, which is not the same as one that declined.
     """
 
-    def author(region, defects):
+    def author(region, defects, attempts):
         if region.index in decline:
             return None
         defect = defects[0]
@@ -150,9 +150,42 @@ def _budget(*, max_ops: int = 9, timeout_s: float = 1000.0) -> LoopBudget:
     return LoopBudget(max_ops=max_ops, stall_limit=9, timeout_s=timeout_s)
 
 
-def _run(part: _Part, author, **budget):
+def _run(part: _Part, author, *, attempts: int | None = None, **budget):
     return run_regions("original", author=author, tolerance_mm=_TOLERANCE_MM,
-                       budget=_budget(**budget), session=part.session(), clock=part.clock)
+                       budget=_budget(**budget), session=part.session(), clock=part.clock,
+                       attempts=attempts)
+
+
+# THE AUTHORS THAT NEED, OR REFUSE, A SECOND PACKAGE. Every one of them is STATELESS and reads
+# `attempts` instead: that is the seam this task exists to create, and a double that kept its own
+# counter would pass while the loop told the author nothing.
+
+
+def _author_needing_two_tries(part: _Part):
+    """Wrong on a region's FIRST package and right on its second - the baseline's own sequence.
+
+    The first package aims at an operation that clears nothing, so the claim fails and the
+    package is reverted; told that, the author proposes the operation that works. This is the
+    whole behaviour the operation-at-a-time loop got from a `RunHistory` that outlived one
+    iteration, and the region driver had no way to express.
+    """
+    wrong, right = _author(part, aim_elsewhere=(0, 1)), _author(part)
+
+    def author(region, defects, attempts):
+        return (right if attempts else wrong)(region, defects, attempts)
+
+    return author
+
+
+def _author_that_is_always_wrong(part: _Part):
+    """Every package aims at an operation that clears nothing, so every one is reverted."""
+    return _author(part, aim_elsewhere=(0, 1))
+
+
+def _author_that_always_escalates(part: _Part):
+    """Every package asks for more operations than its own budget allows, so every one escalates
+    unapplied - a region that really cannot be finished inside its allowance."""
+    return _author(part, escalate=(0, 1))
 
 
 # THE BRIEF'S CASES
@@ -186,7 +219,10 @@ def test_an_escalated_region_does_not_block_the_others():
     # THE FIRST region is starved, deliberately: starving the last one would pass just as well for
     # a loop that ended its walk on the first escalation, which is the property being tested.
     part = _Part()
-    run = _run(part, _author(part, escalate=(0,)))
+    # ATTEMPTS PINNED TO ONE: this probe is about the walk carrying on past an escalation, and
+    # region 0's package escalates unapplied, so with the real bound it would escalate three
+    # times over. Retry has its own tests below.
+    run = _run(part, _author(part, escalate=(0,)), attempts=1)
 
     assert run.escalated == (0,)
     assert [p.status for p in run.packages] == ["escalated", "committed"]
@@ -228,7 +264,7 @@ def test_two_executed_operations_in_one_package_cost_two_scoped_scans():
     the re-inspection happened - and each of those re-inspections is scoped.
     """
     part = _Part()
-    run = _run(part, _author(part, aim_elsewhere=(0, 1), plan_ops=2))
+    run = _run(part, _author(part, aim_elsewhere=(0, 1), plan_ops=2), attempts=1)
 
     verdicts = [v for p in run.packages for v in p.verdicts]
     assert [v.reason for v in verdicts] == ["target_remains"] * 4
@@ -255,7 +291,7 @@ def test_a_package_that_kept_nothing_does_not_spend_the_runs_operation_allowance
     nothing and is reverted. With an allowance of ONE operation, region 1 must still get its own.
     """
     part = _Part()
-    run = _run(part, _author(part, aim_elsewhere=(0,)), max_ops=1)
+    run = _run(part, _author(part, aim_elsewhere=(0,)), max_ops=1, attempts=1)
 
     assert [(p.region_index, p.status) for p in run.packages] == [(0, "reverted"),
                                                                    (1, "committed")]
@@ -350,7 +386,7 @@ def test_the_run_reports_both_scans_so_a_disposition_can_be_computed():
 
 def test_the_report_carries_the_regions_the_packages_and_why_it_stopped():
     part = _Part()
-    run = _run(part, _author(part, escalate=(1,)))
+    run = _run(part, _author(part, escalate=(1,)), attempts=1)
     out = run.to_dict()
 
     assert out["stopped_because"] == "escalated"
@@ -408,7 +444,7 @@ def test_the_rules_author_claims_exactly_the_defect_its_operation_aims_at():
     op = _Op(_Clock(), "a")
     author, planner = _rules_author(_candidate("edge:a", op))
 
-    package = author(_region("edge:a", "face:z"), (_defect("a"),))
+    package = author(_region("edge:a", "face:z"), (_defect("a"),), ())
 
     assert package is not None
     assert package.predicate.cleared == frozenset({"edge:a"})
@@ -426,7 +462,7 @@ def test_the_rules_author_bounds_its_claim_by_the_deployment_s_own_residual_caps
     import meshpipeline.settings.cad_repair as rcfg
 
     author, _ = _rules_author(_candidate("edge:a", _Op(_Clock(), "a")))
-    package = author(_region("edge:a"), (_defect("a"),))
+    package = author(_region("edge:a"), (_defect("a"),), ())
 
     assert package is not None
     assert package.predicate.max_area_delta_mm2 == (
@@ -438,7 +474,7 @@ def test_the_rules_author_bounds_its_claim_by_the_deployment_s_own_residual_caps
 def test_the_rules_author_proposes_nothing_for_an_unlocated_region():
     author, planner = _rules_author(_candidate("edge:a", _Op(_Clock(), "a")))
 
-    assert author(_region("", index=1, located=False), (_defect("a"),)) is None
+    assert author(_region("", index=1, located=False), (_defect("a"),), ()) is None
     # NOT EVEN ASKED: there is no locus to scope a proof to, so there is nothing to choose.
     assert planner.asked == []
 
@@ -446,13 +482,13 @@ def test_the_rules_author_proposes_nothing_for_an_unlocated_region():
 def test_the_rules_author_proposes_nothing_when_no_operation_claims_the_region():
     author, _ = _rules_author(None)
 
-    assert author(_region("edge:a"), (_defect("a"),)) is None
+    assert author(_region("edge:a"), (_defect("a"),), ()) is None
 
 
 def test_the_rules_author_refuses_a_claim_the_region_s_own_scan_could_not_verify():
     author, _ = _rules_author(_candidate("edge:elsewhere", _Op(_Clock(), "a")))
 
-    assert author(_region("edge:a"), (_defect("a"),)) is None
+    assert author(_region("edge:a"), (_defect("a"),), ()) is None
 
 
 def test_a_region_whose_package_was_tried_and_reverted_is_not_called_resolved():
@@ -462,7 +498,7 @@ def test_a_region_whose_package_was_tried_and_reverted_is_not_called_resolved():
     read downstream as "repaired", which is the same ruling `loop._abandoned` makes per operation.
     """
     part = _Part(keys=("a",), severity=DefectSeverity.warning)
-    run = _run(part, _author(part, aim_elsewhere=(0,)))
+    run = _run(part, _author(part, aim_elsewhere=(0,)), attempts=1)
 
     assert [p.status for p in run.packages] == ["reverted"]
     assert [d.fingerprint for d in run.defects_after] == ["edge:a"]
@@ -480,7 +516,7 @@ def test_an_operation_discarded_with_its_package_is_not_reported_as_kept():
     from meshpipeline.cad.repair.region_loop import as_repair_run
 
     part = _Part()
-    run = _run(part, _author(part, aim_elsewhere=(1,)))
+    run = _run(part, _author(part, aim_elsewhere=(1,)), attempts=1)
     bridged = as_repair_run(run, original=_SOUND.to_dict(), final=_SOUND.to_dict(),
                             planner_label="regions-rules-v1")
 
@@ -496,7 +532,7 @@ def test_an_escalated_region_reaches_the_report_as_a_refusal():
     from meshpipeline.cad.repair.region_loop import as_repair_run
 
     part = _Part()
-    run = _run(part, _author(part, escalate=(1,)))
+    run = _run(part, _author(part, escalate=(1,)), attempts=1)
     bridged = as_repair_run(run, original=_SOUND.to_dict(), final=_SOUND.to_dict())
 
     assert [r["refusal"] for r in bridged.refusals] == ["region_escalated"]
@@ -567,7 +603,7 @@ def _mixed_package(part, *, reclassify: bool):
     package-level key and an operation-level key disagree.
     """
 
-    def author(region, defects):
+    def author(region, defects, attempts):
         cleared = frozenset({"edge:a"})
         predicate = Predicate(
             cleared=cleared,
@@ -597,7 +633,10 @@ def test_an_operation_that_failed_inside_a_committed_package_still_blocks_resolv
     driver is what the retained `loop.py` exists to catch (spec anti-goal: losing attribution).
     """
     part = _Part(keys=("a", "z"), severity=DefectSeverity.warning)
-    run = _run(part, _mixed_package(part, reclassify=False))
+    # ATTEMPTS PINNED TO ONE: the package commits while leaving `edge:z` unclaimed, so with the
+    # real bound the region is legitimately offered another package for it. What this probe is
+    # about is the ONE package's log, and `_abandoned`'s reading of it.
+    run = _run(part, _mixed_package(part, reclassify=False), attempts=1)
 
     # The shape the probe needs: one region, one committed package, one failed operation in it.
     assert len(run.regions) == 1
@@ -652,7 +691,9 @@ def test_a_packages_own_whole_shape_measures_are_timed_and_reported():
 
     price = 0.25
     part = _Part(keys=("a", "z"), severity=DefectSeverity.warning, measure_s=price)
-    run = _run(part, _mixed_package(part, reclassify=False))
+    # ATTEMPTS PINNED TO ONE, so `run.timings` totals exactly the one package this probe prices;
+    # the region's unclaimed `edge:z` would otherwise earn it a second, legitimately.
+    run = _run(part, _mixed_package(part, reclassify=False), attempts=1)
 
     package = run.packages[0]
     operations_s = sum(v.measure_s for v in package.verdicts)
@@ -689,3 +730,119 @@ def test_a_reclassifying_package_reports_a_live_reclassified_key():
     # nothing it named was discharged.
     reverted = replace(run, packages=(replace(run.packages[0], status="reverted"),))
     assert _disposition(reverted)["reclassified"] == []
+
+
+# SEVERAL PACKAGES PER REGION, AND AN AUTHOR THAT SEES WHAT FAILED
+
+
+def test_a_region_gets_a_second_package_when_its_first_is_reverted():
+    """THE POINT OF THE TASK. One package per region was one guess per region.
+
+    The attempts cannot be packed into one longer plan instead: a predicate is stated BEFORE the
+    plan runs, so a plan of k speculative attempts has to claim all k and one failure reverts the
+    operations that succeeded. Retry therefore happens ACROSS packages, which is this walk.
+    """
+    part = _Part(keys=("a",))
+    run = _run(part, _author_needing_two_tries(part))
+
+    assert [p.status for p in run.packages] == ["reverted", "committed"]
+    assert [p.region_index for p in run.packages] == [0, 0]
+    # The second package's repair really did happen, and the run is not called partial for the
+    # first one: the defect its predecessor failed on is gone.
+    assert run.shape == "original+a"
+    assert run.defects_after == ()
+    assert run.stopped_because == "resolved"
+
+
+def test_the_author_is_told_what_already_failed_in_this_region():
+    """THE SEAM, and the reason it is `(region, defects, attempts)` rather than a counter.
+
+    A model author revises through exactly this channel - it is handed the verdict its last claim
+    earned, in words - so the walk must pass the VERDICTS and not merely how many there were.
+    """
+    part = _Part(keys=("a",))
+    seen: list[tuple] = []
+    chosen = _author_needing_two_tries(part)
+
+    def spy(region, defects, attempts):
+        seen.append(tuple(v.reason for v in attempts))
+        return chosen(region, defects, attempts)
+
+    _run(part, spy)
+
+    # NOTHING HAS BEEN TRIED YET on the first call, which is what makes the first package of a
+    # region byte-for-byte what the one-package-per-region walk authored.
+    assert seen[0] == ()
+    assert len(seen) == 2
+    assert "cleared defects still present" in seen[1][0]
+
+
+def test_the_attempt_bound_is_honoured():
+    part = _Part()
+    run = _run(part, _author_that_is_always_wrong(part), attempts=2)
+
+    assert len([p for p in run.packages if p.region_index == 0]) == 2
+    # AND THE WALK GOES ON. A region that spent its attempts does not end the run: the bound is
+    # per region, and the next region gets its own.
+    assert len([p for p in run.packages if p.region_index == 1]) == 2
+    assert run.stopped_because == REGIONS_EXHAUSTED
+
+
+def test_a_region_is_escalated_once_however_many_attempts_it_took():
+    part = _Part(keys=("a",))
+    run = _run(part, _author_that_always_escalates(part), attempts=3)
+
+    assert len(run.packages) == 3
+    assert [p.status for p in run.packages] == ["escalated"] * 3
+    # ONE ENTRY. `escalated` IS THE QUEUE a person works through, and a region listed three times
+    # is one region's worth of work read as three.
+    assert run.escalated == (0,)
+    assert run.escalated.count(0) == 1
+
+
+def test_a_committed_region_is_not_offered_another_package():
+    """A second package is offered because a defect of the region's OWN remains, never because an
+    attempt is left. A region whose claim was proved has nothing left to author for."""
+    part = _Part()
+    run = _run(part, _author(part), attempts=3)
+
+    assert len(run.packages) == len(run.regions) == 2
+    assert [p.status for p in run.packages] == ["committed", "committed"]
+
+
+def test_a_region_whose_author_runs_dry_stops_before_its_attempts_do():
+    # `None` IS NOT A FAILURE: the author has nothing further to propose, so asking again would
+    # buy the same answer at the price of another call - and for a model author, another call.
+    part = _Part(keys=("a",))
+    calls: list[int] = []
+
+    def author(region, defects, attempts):
+        calls.append(len(attempts))
+        return _author(part, aim_elsewhere=(0,))(region, defects, attempts) if not attempts \
+            else None
+
+    run = _run(part, author, attempts=3)
+
+    assert calls == [0, 1]
+    assert [p.status for p in run.packages] == ["reverted"]
+
+
+def test_the_attempts_a_region_spends_do_not_charge_the_run_for_work_it_did_not_keep():
+    """Task 9's rule, which the inner loop must not regress: a package that kept nothing charges
+    nothing against the run's operation allowance, however many of them a region authored."""
+    part = _Part()
+    run = _run(part, _author_that_is_always_wrong(part), attempts=3, max_ops=1)
+
+    assert len(run.packages) == 6                 # three attempts in each of two regions
+    assert run.stopped_because != "op_budget"
+
+
+def test_the_run_s_time_budget_ends_a_region_s_attempts():
+    # The first scan costs 1.0 s and each attempt 2.5 s more, so a 3.5 s run gets region 0's
+    # first attempt and is out of time before its second. The bound inside a region is not
+    # allowed to outlive the job's deadline.
+    part = _Part()
+    run = _run(part, _author_that_is_always_wrong(part), attempts=3, timeout_s=3.5)
+
+    assert [p.region_index for p in run.packages] == [0]
+    assert run.stopped_because == "time_budget"

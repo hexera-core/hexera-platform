@@ -1,6 +1,7 @@
-# Responsibility: Drive a repair REGION BY REGION - decompose the part, ask an author for one
-#                 target package per region, have the session execute each as one reversible unit,
-#                 ship the regions that committed and queue the ones that escalated.
+# Responsibility: Drive a repair REGION BY REGION - decompose the part, ask an author for target
+#                 packages for each region until one holds or its attempts run out, have the
+#                 session execute each as one reversible unit, ship the regions that committed and
+#                 queue the ones that escalated.
 # Owns: the region walk and its order, the run's budget arithmetic, the stop reasons, the ONE
 #       whole-shape verification the run's verdict rests on, and the record of the whole run.
 # Boundaries: it authors nothing and judges nothing. The author proposes a package and the session
@@ -18,6 +19,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 
+import meshpipeline.settings.cad_repair as rcfg
 from meshpipeline.cad.repair.contracts import DefectSeverity
 from meshpipeline.cad.repair.localize import analyzer_only
 
@@ -44,9 +46,10 @@ from meshpipeline.cad.repair.session import (
 
 logger = logging.getLogger(__name__)
 
-#: Every region was offered its one package and what remains was not repaired. The region-level
-#: sibling of the old loop's `no_candidate`: there is nothing further to try, because a region
-#: gets one package per run here (mid-run revision is Plan 2's, with the model).
+#: Every region spent its packages and what remains was not repaired. The region-level sibling of
+#: the old loop's `no_candidate` AND of its `stalled`: a region is offered packages until one
+#: holds, its author runs dry or its attempt bound is reached, so this says there is nothing
+#: further the authors on hand will try - not that only one thing was tried.
 REGIONS_EXHAUSTED = "regions_exhausted"
 
 #: At least one region is queued for a person. NOT `resolved`, whatever is left in the geometry:
@@ -57,11 +60,23 @@ ESCALATED_REGIONS = ESCALATED
 
 _ERRORS = (DefectSeverity.error, DefectSeverity.fatal)
 
-#: THE SEAM OF THE WHOLE PROJECT. `(region, its defects) -> a package, or None`. A later plan
-#: substitutes a language model for the deterministic author without touching this file, so the
-#: loop must never learn which kind of author it has: `None` means "nothing to propose for this
-#: region", which is not a failure - the region is simply left alone.
-Author = Callable[[Region, tuple], "TargetPackage | None"]
+#: THE SEAM OF THE WHOLE PROJECT. `(region, its defects, what it already tried) -> a package, or
+#: None`. A later plan substitutes a language model for the deterministic author without touching
+#: this file, so the loop must never learn which kind of author it has: `None` means "nothing
+#: further to propose for this region", which is not a failure - the region is simply left alone.
+#:
+#: `attempts` IS EVERY PACKAGE ALREADY TRIED IN THIS REGION THIS RUN, in order, as the verdicts
+#: the session returned - `()` on a region's first call. IT IS THE WHOLE POINT OF THE THIRD
+#: ARGUMENT THAT IT CARRIES THE VERDICTS AND NOT A COUNT: the operation-at-a-time loop's entire
+#: advantage over this driver was a `RunHistory` that outlived one iteration, so an author that
+#: knows only HOW MANY times it was wrong has learned nothing and would propose the same package
+#: again. A verdict carries what each operation did and, in words, how the claim failed, which is
+#: exactly the channel a model author revises through - so this shape is a commitment to the next
+#: plan, not an implementation detail of this one.
+#:
+#: AN AUTHOR MAY IGNORE IT, and the first call of every region passes `()`, so a region's first
+#: package is byte-for-byte what the one-package-per-region walk authored.
+Author = Callable[[Region, tuple, "tuple[PackageVerdict, ...]"], "TargetPackage | None"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,9 +221,13 @@ def _with_tolerance(package: TargetPackage, tolerance_mm: float) -> TargetPackag
 
 def run_regions(shape, *, author: Author, tolerance_mm: float,
                 budget: LoopBudget | None = None, reserved: frozenset = frozenset(),
-                session: RepairSession | None = None,
+                session: RepairSession | None = None, attempts: int | None = None,
                 clock: Callable[[], float] = time.monotonic) -> RegionRun:
     """Repair `shape` one region at a time, and report what each region's package did.
+
+    `attempts` BOUNDS THE PACKAGES ONE REGION MAY BE OFFERED, defaulting to the deployment's
+    CAD_REPAIR_REGION_ATTEMPTS. The run's `max_ops` and `timeout_s` are still the outer bounds and
+    are checked before every attempt, not merely before every region.
 
     `session` and `clock` are injectable so the walk and the budget arithmetic can be tested
     without a kernel and without waiting. `reserved` reaches a session this function CONSTRUCTS;
@@ -227,6 +246,11 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
     that region and nothing about the part - and the part is what is being handed back.
     """
     limits = budget if budget is not None else LoopBudget.from_settings()
+    # AT LEAST ONE, whatever a deployment or a caller says. A zero would turn the driver off by
+    # misconfiguration rather than by the posture that exists to turn it off, and silently: every
+    # region would be walked, authored for nothing and reported as exhausted.
+    per_region = max(1, int(attempts if attempts is not None
+                            else rcfg.CAD_REPAIR_REGION_ATTEMPTS))
     # THE CLOCK STARTS BEFORE THE SESSION EXISTS, so every scan's slice of the budget is a slice
     # of what this run actually has left, including the first scan.
     started = clock()
@@ -272,66 +296,141 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
     # a region an earlier package already cleared is only discovered by packaging it (see below),
     # and charging those discoveries would let a part whose regions were co-swept burn the whole
     # allowance on packages that changed nothing and stop with `op_budget` before reaching a
-    # region that still has real defects. The run stays bounded regardless: one package per
-    # region, and each package's own `PackageBudget` bounds the attempts inside it.
+    # region that still has real defects. The run stays bounded regardless: `attempts` packages
+    # per region, each package's own `PackageBudget` bounding the operations inside it, and this
+    # allowance and the run's clock checked before every attempt.
     charged = len(work.log)
     # WALKED EVERY REGION unless a budget says otherwise; the loop runs out of regions rather than
-    # of ideas, because a region is offered exactly one package per run.
+    # of ideas, because a region is offered packages until one of them holds.
     stopped = REGIONS_EXHAUSTED
+    # SET BY THE INNER LOOP WHEN THE RUN - not the region - IS OUT. A region's attempts ending is
+    # ordinary; the job's deadline or its operation allowance ending stops the walk, and the flag
+    # is what carries that out of the inner loop without the attempt bound and the run's bounds
+    # sharing a break.
+    out_of_budget = False
 
     for region in regions:
-        if clock() - started >= limits.timeout_s:
-            # THE WHOLE RUN, not one region. A per-region allowance is the package's own
-            # (`PackageBudget.timeout_s`); this is the job's deadline, and the regions already
-            # committed stay committed.
-            stopped = TIME_BUDGET
-            break
-        if charged >= limits.max_ops:
-            stopped = OP_BUDGET
-            break
+        # WHAT THIS REGION HAS ALREADY TRIED, which is the author's third argument. Per region and
+        # not per run: a package that failed on this locus says nothing about the next one, and
+        # regions are independent by construction (that is the point of them).
+        tried: list[PackageVerdict] = []
+        # WHAT THIS REGION'S OWN PROOF HAS ALREADY DISCHARGED. A committing package's predicate
+        # was checked against the scoped re-inspection the commit rests on, so its `cleared` names
+        # really are absent from the region - but that scoped list deliberately does NOT become
+        # the session's whole-shape defect list (session._region_scan: a region's findings cannot
+        # support a claim about the part), so `work.defects()` still reports them. Without this,
+        # a region whose defect was repaired and proved gone would be authored for again until its
+        # attempts ran out, every one of those packages declining on geometry that is no longer
+        # there. `reclassified` joins it for the same reason it discharges a survivor in
+        # `_abandoned`: relabelling is a discharge under spec decision 2.
+        discharged: set[str] = set()
+        # `escalated` IS THE QUEUE A PERSON WORKS THROUGH, so a region appears in it ONCE however
+        # many of its attempts escalated - three entries would read as three regions of work.
+        queued = False
 
-        # THE REGION'S DEFECTS AS THEY ARE NOW, not as the first scan found them - but "now" is
-        # the last whole-shape scan plus whatever a scoped proof has since re-measured, and that
-        # is the price of locality. An earlier region's package can legitimately clear a later
-        # region's defects (a sew joins the whole part, the sliver sweep walks it), and with every
-        # per-operation proof scoped to its own region NOTHING HAS WALKED THIS ONE. So a region
-        # whose geometry is already sound is not skipped for free any more: it is offered its one
-        # package, and the package's own operation declines on geometry that is no longer there.
-        # That costs an apply and one scoped scan - paid in an apply rather than in a scan, which
-        # is the trade this driver exists to make - and it keeps no operation, so it does not
-        # charge against the run's allowance above.
-        # NEXT PLAN: one scoped scan per region before authoring would skip such a region again
-        # at no extra scan cost, and is scheduled as its own change because it alters what the
-        # loop attempts.
-        mine = tuple(d for d in work.defects() if d.fingerprint in region.fingerprints)
-        if not mine:
-            continue
-        package = author(region, mine)
-        if package is None:
-            # NOT A FAILURE AND NOT AN ESCALATION. The author had nothing to propose, so the
-            # region is left exactly as it arrived and the final scan reports it.
-            continue
-        if charged + len(package.plan) > limits.max_ops:
-            # LOOKED AT BEFORE THE PACKAGE IS STARTED, not only after the log has grown past the
-            # allowance. A package is executed whole or not at all, so a plan that cannot fit in
-            # what the run has left would spend `package.budget.max_ops - 1` operations past the
-            # run's own budget - and with a model author asking for a six-operation package, the
-            # run budget would be whatever the author felt like. Nothing is tried here, so the
-            # region is not escalated: the run simply ran out, which is what `op_budget` says.
-            stopped = OP_BUDGET
-            break
+        while True:
+            if clock() - started >= limits.timeout_s:
+                # THE WHOLE RUN, not one region and not one attempt. A per-region allowance is the
+                # package's own (`PackageBudget.timeout_s`); this is the job's deadline, and the
+                # regions already committed stay committed. CHECKED PER ATTEMPT, because an
+                # attempt is the unit of work now - checking only per region would let one region
+                # spend its whole bound past the deadline.
+                stopped, out_of_budget = TIME_BUDGET, True
+                break
+            if charged >= limits.max_ops:
+                stopped, out_of_budget = OP_BUDGET, True
+                break
 
-        verdict = work.try_package(_with_tolerance(package, tolerance_mm))
-        packages.append(verdict)
-        if any(v.kept for v in verdict.verdicts):
-            # THE WHOLE PLAN IS CHARGED THE MOMENT ANY OF IT WAS KEPT, including the operations
-            # that rolled themselves back beside it: the package did real work on the shape, and
-            # whether the package then survived its own predicate is not what this budget bounds.
-            charged += len(verdict.verdicts)
-        if verdict.committed:
-            committed = True
-        elif verdict.status == ESCALATED:
-            escalated.append(int(region.index))
+            # THE REGION'S DEFECTS AS THEY ARE NOW, RE-READ BEFORE EVERY ATTEMPT, because a kept
+            # operation changes them: the second package of a region must be authored against what
+            # the first one left, or the author is answering a question that is no longer being
+            # asked. "Now" is the last whole-shape scan, plus whatever a scoped proof has since
+            # re-measured, minus what this region's own committed claims discharged - and that is
+            # the price of locality.
+            #
+            # An earlier region's package can legitimately clear a later region's defects (a sew
+            # joins the whole part, the sliver sweep walks it), and with every per-operation proof
+            # scoped to its own region NOTHING HAS WALKED THIS ONE. So a region whose geometry is
+            # already sound is not skipped for free: it is offered a package, and the package's own
+            # operation declines on geometry that is no longer there. That costs an apply and one
+            # scoped scan - paid in an apply rather than in a scan, which is the trade this driver
+            # exists to make - and it keeps no operation, so it does not charge against the run's
+            # allowance above.
+            # NEXT PLAN: one scoped scan per region before authoring would skip such a region again
+            # at no extra scan cost, and is scheduled as its own change because it alters what the
+            # loop attempts.
+            mine = tuple(d for d in work.defects()
+                         if d.fingerprint in region.fingerprints
+                         and d.fingerprint not in discharged)
+            if not mine:
+                # NOTHING OF THE REGION'S OWN IS LEFT, which is also how a region that committed
+                # stops: the stop is "there is nothing to author for", never "an attempt was
+                # spent". A region holding a second defect its first package did not claim is
+                # therefore offered a second package, which is what a part with two holes in one
+                # locus needs and what the baseline got for free from its whole-shape walk.
+                break
+
+            package = author(region, mine, tuple(tried))
+            if package is None:
+                # NOT A FAILURE AND NOT AN ESCALATION. The author has nothing further to propose,
+                # so the region is left exactly as it is and the final scan reports it. ASKED
+                # AGAIN ONLY WHILE IT KEEPS ANSWERING: a `None` ends the region's attempts rather
+                # than spending the rest of them on a question already answered - which for a
+                # model author is also the rest of its calls.
+                break
+            if charged + len(package.plan) > limits.max_ops:
+                # LOOKED AT BEFORE THE PACKAGE IS STARTED, not only after the log has grown past
+                # the allowance. A package is executed whole or not at all, so a plan that cannot
+                # fit in what the run has left would spend `package.budget.max_ops - 1` operations
+                # past the run's own budget - and with a model author asking for a six-operation
+                # package, the run budget would be whatever the author felt like. Nothing is tried
+                # here, so the region is not escalated: the run simply ran out, which is what
+                # `op_budget` says.
+                stopped, out_of_budget = OP_BUDGET, True
+                break
+
+            verdict = work.try_package(_with_tolerance(package, tolerance_mm))
+            packages.append(verdict)
+            tried.append(verdict)
+            if any(v.kept for v in verdict.verdicts):
+                # THE WHOLE PLAN IS CHARGED THE MOMENT ANY OF IT WAS KEPT, including the operations
+                # that rolled themselves back beside it: the package did real work on the shape,
+                # and whether the package then survived its own predicate is not what this budget
+                # bounds. A PACKAGE THAT KEPT NOTHING CHARGES NOTHING (Task 9's rule), which is
+                # what keeps a region's retries from spending a later region's allowance on
+                # attempts that changed no geometry at all.
+                charged += len(verdict.verdicts)
+            if verdict.committed:
+                committed = True
+                discharged |= set(package.predicate.cleared) | set(verdict.reclassified)
+                if not any(v.kept for v in verdict.verdicts):
+                    # A PACKAGE THAT COMMITTED WITHOUT KEEPING ANYTHING ENDS THE REGION'S
+                    # ATTEMPTS, and this is a cost rule rather than a judgement about the region.
+                    # Such a package proved its claim on geometry it did not change: every
+                    # operation in it declined or rolled itself back, which is how a region an
+                    # earlier region's whole-shape sweep already cleared is discovered at all
+                    # (session: a scoped proof deliberately does not become the session's
+                    # whole-shape defect list, so `work.defects()` still reports what is gone).
+                    # Authoring again would re-propose against the SAME geometry for the rest of
+                    # the bound, buying an apply and a scoped scan per attempt to be told the
+                    # same thing - and for a model author, a call each. What that leaves on the
+                    # table is a second, real defect in the same region: it reaches the final
+                    # whole-shape scan and the report, and the run is not called resolved for it.
+                    # The fix is the one already scheduled above - one scoped scan per region
+                    # BEFORE authoring - which is what makes a stale list distinguishable from a
+                    # live one, and it changes what the loop attempts, so it is its own change.
+                    break
+            elif verdict.status == ESCALATED and not queued:
+                escalated.append(int(region.index))
+                queued = True
+            if len(tried) >= per_region:
+                # THE REGION'S OWN BOUND. What is left in it reaches the final scan and the
+                # report; the walk goes on to the next region, which is the whole reason this
+                # driver exists beside the baseline, whose stall limit is global.
+                break
+
+        if out_of_budget:
+            break
 
     if committed:
         # THE ONE WHOLE-SHAPE SCAN THE VERDICT RESTS ON, as thorough as the first inspection was,
