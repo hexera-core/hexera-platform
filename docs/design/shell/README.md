@@ -972,6 +972,18 @@ past the budget, 8 solid meshes could not be made, 6 overlap rows folded or tape
 3 had no shell edge on the region, 2 unheld metal could not be tied, 2 others. Making the grown core (OCC's 3D
 offset) and the unheld metal of many slivers are where the rest is lost: the next work.
 
+The shell census, DEV half (305 files; `~/shellcamp/census`; base 991f57d8 against the branch's own change): fully
+good 136 -> 135; class 3 ("shell cut open round a region kept solid") 24 -> 23. Of the 175 files with something
+kept solid, 5 now carry solid patches (each valid, inside Nastran's limits, every link node tied); 88 ran past the
+5-minute budget, 25 had an overlap row folded or past Nastran at a tight corner, 7 untied, 6 with no shell edge on
+the region, 5 cores or cuts that could not be made, 5 solid meshes that could not be made, 3 others. The scorer
+reads shell cards only, so a shell tied to a patch still reads its tied edges as free; counted as joined (the
+census scorer with that one change, `~/shellcamp/solidpatch/tools/score_tied.py`) the one file that moved from fully
+good to open junction (Equerre) is fully good again. The other two that moved back are time: an extraction that ran
+past its own 1800 s clock (1494 s on base, on a loaded machine) and a 15-minute shell mesh that failed after its
+patches ran out of time. On real parts the regions the extraction keeps solid are mostly shallow pockets,
+engravings and rings round holes, not lumps: the grown core rarely grows, and the metal left is slivers.
+
 Closed by MIXED-8 (both now meshed solid), as it was explained: the box and the casting's 12th mode. Both are as far from the converged truth as from the product's
 own solid mesh, and are unchanged by a shell mesh twice as fine (-0.7%) or a cut 3 walls in (0.0%): the shell
 idealisation itself. The box's 4 mm walls are 10 walls tall: a shell wall bends from the bottom's mid-plane, 2 mm
