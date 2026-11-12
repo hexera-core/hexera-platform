@@ -6,7 +6,9 @@
 # sewn alone at the gap) - one place at a time, each change judged before it is kept and told: what was done, where,
 # by how much. A tapered sliver between two faces that run on into each other is FILLED with a new face between their
 # edges; a corner both sides stop short of has BOTH continued and cut where they cross (or the small side continued
-# onto the large one's surface and the strip left there filled). What is still open after this is closed in the mesh (engines/surface_mesh_close, SURF-13).
+# onto the large one's surface and the strip left there filled); a gap that is part of a HOLE closed round by its faces
+# (a face the drawing left out) has the hole FILLED with one new face spanning it. What is still open after this is
+# closed in the mesh (engines/surface_mesh_close, SURF-13).
 # Boundaries: geometry only, deterministic, no model call. Only open sheets read by cad/surface_model (the surface
 # route): solids and the extraction from solids are never touched, nor cad/repair (a closed skin's defects are CAD
 # repair's). A gap is closed only when it is narrower than the reach (reach_of: the user's "close gaps up to 4 mm",
@@ -923,6 +925,202 @@ def _fill_from(here, first: set[int], second: set[int], touch: list[int], reach:
     return got, "", widest, named[0]
 
 
+#: SURF-12: A HOLE FILLED. A place's edge may lie on the rim of a HOLE - free edges closing into a loop round a face
+#: the drawing left out (the tapering end of a strip in a bend, a corner patch between three fillets) - where no one
+#: edge faces another across a strip, so neither a face continued nor a strip filled closes it. When the hole is no
+#: more than HOLE_REACHES reaches across (the widest circle inside it), it gets one new face spanning the loop -
+#: OpenCASCADE's n-sided filling, tangent to the faces round it where they allow, else through the rim alone - as an
+#: analyst fills a hole from its edges. The faces round it are never moved.
+HOLE_REACHES = 2.0
+#: ... its width read on a grid of this many points a side inside the new face
+HOLE_GRID = 13
+#: ... and a loop longer than this many reaches is the sheet's own outline, or an opening, not a missing face
+HOLE_ROUND = 60.0
+#: ... and a new face that leaves a face's other free edge beside it (a sliver between two holes) has the hole there
+#: filled in the same change, up to this many more
+HOLE_CHAIN = 2
+
+
+def _hole_loop(here, edge, longest: float) -> list[tuple[Any, int]] | None:
+    """SURF-12: the hole the free edge `edge` lies on the rim of: the shortest loop of free edges through it, corners
+    within the sew tolerance of each other taken as one (two faces' corners meeting unsewn) - as [(edge, its face)],
+    in order round the loop. None when the edge closes no loop no longer than `longest`."""
+    import heapq
+
+    from OCP.BRep import BRep_Tool
+    from OCP.TopExp import TopExp
+    from OCP.TopoDS import TopoDS
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+
+    from meshpipeline.cad import midsurface as ms
+
+    free = _free_edges_of(here.faces)
+    vm = TopTools_IndexedMapOfShape()
+    rows: list[tuple[Any, int, int, int, float]] = []
+    for k, es in enumerate(free):
+        for e in es:
+            a, b = vm.Add(TopExp.FirstVertex_s(e)), vm.Add(TopExp.LastVertex_s(e))
+            rows.append((e, k, a, b, ms._length(e)))
+    start = next((i for i, r in enumerate(rows) if r[0].IsSame(edge)), None)
+    if start is None:
+        return None
+    pts = np.array([(lambda q: (q.X(), q.Y(), q.Z()))(BRep_Tool.Pnt_s(TopoDS.Vertex_s(vm.FindKey(i))))
+                    for i in range(1, vm.Extent() + 1)]).reshape(-1, 3)
+    one = list(range(len(pts) + 1))
+    for i in range(1, len(pts)):
+        near = np.where(np.linalg.norm(pts[:i] - pts[i], axis=1) <= here.tol)[0]
+        if len(near):
+            one[i + 1] = one[int(near[0]) + 1]
+    rows = [(e, k, one[a], one[b], w) for e, k, a, b, w in rows]
+    _e, _k, s, t, w0 = rows[start]
+    if s == t:
+        return [(rows[start][0], rows[start][1])] if w0 <= longest else None
+    nbr: dict[int, list[tuple[int, int, float]]] = {}
+    for i, (_e, _k, a, b, w) in enumerate(rows):
+        if i != start and a != b:
+            nbr.setdefault(a, []).append((b, i, w))
+            nbr.setdefault(b, []).append((a, i, w))
+    best: dict[int, float] = {t: w0}
+    prev: dict[int, tuple[int, int]] = {}
+    heap = [(w0, t)]
+    while heap:
+        d, u = heapq.heappop(heap)
+        if u == s or d > longest:
+            break
+        if d > best.get(u, math.inf):
+            continue
+        for v, i, w in nbr.get(u, []):
+            if d + w < best.get(v, math.inf) - 1e-12:
+                best[v], prev[v] = d + w, (u, i)
+                heapq.heappush(heap, (d + w, v))
+    if s not in prev or best[s] > longest:
+        return None
+    path, u = [start], s
+    while u != t:
+        u, i = prev[u]
+        path.append(i)
+    return [(rows[i][0], rows[i][1]) for i in path]
+
+
+def _hole_face(here, loop: list[tuple[Any, int]]):
+    """SURF-12: one new face spanning the hole `loop`: n-sided filling tangent to the faces round it (its tangency kept
+    within SAME_SIDE_DEG), else through its rim alone; mended to a valid face where the filling leaves its outline a
+    little off (a corner of no angle at a tapering end); on the rim within a tenth of the sew tolerance, so it sews to
+    the faces round it. Its side up as the face of the loop's longest edge. None when no such face can be made."""
+    from OCP.BRepCheck import BRepCheck_Analyzer
+    from OCP.BRepOffsetAPI import BRepOffsetAPI_MakeFilling
+    from OCP.GeomAbs import GeomAbs_C0, GeomAbs_G1
+    from OCP.ShapeFix import ShapeFix_Shape
+    from OCP.TopoDS import TopoDS
+
+    from meshpipeline.cad import midsurface as ms
+
+    for tangent in (True, False):
+        try:
+            mf = BRepOffsetAPI_MakeFilling()
+            for e, k in loop:
+                if tangent:
+                    mf.Add(e, here.faces[k], GeomAbs_G1)
+                else:
+                    mf.Add(e, GeomAbs_C0)
+            mf.Build()
+            if not mf.IsDone() or mf.G0Error() > FIT_SHARE * here.tol or (
+                    tangent and mf.G1Error() > math.radians(SAME_SIDE_DEG)):
+                continue
+            got = ms._faces(mf.Shape())
+            if len(got) != 1:
+                continue
+            f = TopoDS.Face_s(got[0])
+            if not BRepCheck_Analyzer(f).IsValid():
+                fix = ShapeFix_Shape(f)
+                fix.Perform()
+                got = ms._faces(fix.Shape())
+                if len(got) != 1 or not BRepCheck_Analyzer(got[0]).IsValid():
+                    continue
+                f = TopoDS.Face_s(got[0])
+            e, k = max(loop, key=lambda r: ms._length(r[0]))
+            q = ms._inner_point(f)
+            if q is None:
+                continue
+            n0, n1 = _normal_at(here.faces[k], _nearest(here.faces[k], q)), _normal_at(f, q)
+            if n0 is not None and n1 is not None and float(np.dot(n0, n1)) < 0:
+                f = TopoDS.Face_s(f.Reversed())
+            return f
+        except Exception as exc:  # noqa: BLE001 - not filled: the place is told
+            logger.debug("surface mend: no hole face (%s)", type(exc).__name__)
+    return None
+
+
+def _across_inside(face, rim) -> float:
+    """How wide a face is across: twice the farthest any point inside it (on a HOLE_GRID grid of its parameters) lies
+    from `rim` (its outline's edges)."""
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.BRepClass import BRepClass_FaceClassifier
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+    from OCP.BRepTools import BRepTools
+    from OCP.gp import gp_Pnt2d
+    from OCP.TopAbs import TopAbs_IN
+
+    from meshpipeline.cad import midsurface as ms
+
+    u0, u1, v0, v1 = BRepTools.UVBounds_s(face)
+    surf = BRepAdaptor_Surface(face)
+    far = 0.0
+    for u in np.linspace(u0, u1, HOLE_GRID + 2)[1:-1]:
+        for v in np.linspace(v0, v1, HOLE_GRID + 2)[1:-1]:
+            if BRepClass_FaceClassifier(face, gp_Pnt2d(float(u), float(v)), 1e-7).State() != TopAbs_IN:
+                continue
+            q = surf.Value(float(u), float(v))
+            d = BRepExtrema_DistShapeShape(ms._vertex(np.array([q.X(), q.Y(), q.Z()])), rim)
+            if d.IsDone() and d.NbSolution():
+                far = max(far, float(d.Value()))
+    return 2.0 * far
+
+
+def _with_hole(here, p, reach: float):
+    """SURF-12: the holes place p's edges lie on the rims of (one, or one each side of a sliver the place runs past)
+    each filled with a new face (HOLE_REACHES): (the new Sewn or None, why not, how wide the widest hole is across,
+    the names of the faces round them)."""
+    from meshpipeline.cad import midsurface as ms
+    from meshpipeline.cad import surface_model as sm
+
+    loops: list[tuple[list, int]] = []
+    for e, k, _g, _n in sorted(p["_members"], key=lambda m: (-ms._length(m[0]), m[1])):
+        if any(any(e.IsSame(x) for x, _j in lp) for lp, _k in loops):
+            continue
+        loop = _hole_loop(here, e, HOLE_ROUND * reach)
+        if loop is not None:
+            loops.append((loop, k))
+    if not loops:
+        return None, "the gap is not part of a hole its faces close round", 0.0, []
+    round_ = sorted({k for lp, _k in loops for _e, k in lp})
+    names = sorted({here.names[k] for k in round_}, key=lambda n: (len(n), n))
+    new, labels, wide = [], [], 0.0
+    others = [f for j, f in enumerate(here.faces) if j not in round_]
+    for loop, k0 in loops:
+        face = _hole_face(here, loop)
+        if face is None:
+            return None, "the hole round the gap could not be filled with a valid face", wide, names
+        wide = max(wide, _across_inside(face, ms._compound([e for e, _k in loop])))
+        if wide > HOLE_REACHES * reach:
+            return None, "the hole round the gap is more than twice as wide as the gaps closed here", wide, names
+        why = _check_strip(face, others, [here.faces[j] for j in round_], here.tol)
+        if why:
+            return None, why, wide, names
+        new.append(face)
+        labels.append(here.names[k0])
+    faces = list(here.faces) + new
+    labels = list(here.names) + labels
+    again = _resew_junctions(faces, here.tol)
+    got = None if again is None else sm.Sewn(again, labels, sm._sheets(again), here.tol, here.diag)
+    if got is None:
+        got = _imprint_some(sm.Sewn(faces, labels, sm._sheets(faces), here.tol, here.diag),
+                            sorted(set(round_) | set(range(len(here.faces), len(faces)))))
+    if got is None:
+        return None, "the new face would not sew to the faces round it", wide, names
+    return got, "", wide, names
+
+
 #: SURF-12: a B-spline patch is rebuilt through this many points a side (more where it has more poles)
 GRID_MIN = 17
 #: ... and kept only when it lies on the old patch within this share of the sew tolerance
@@ -1203,10 +1401,10 @@ def _try(sewn, k: int, new, old, band: float, nbr: int, tol_join: float, length_
 
 
 def _close_one(here, p, e, k: int, nbr: int, gap: float, allowed: float, look: float,
-               last: bool = False):
+               last: bool = False, said: dict | None = None):
     """SURF-12: one side of one place: face k's edge e, `gap` from face nbr. Extended (and cut where it meets its
     neighbour), trimmed back, or moved, the first that passes: (the new Sewn or None, why not, how, how far it
-    moved)."""
+    moved). `said`: filled with what the words need beyond that (a hole's faces round it, "round")."""
     from meshpipeline.cad import midsurface as ms
     from meshpipeline.cad import surface_clean as sc
     from meshpipeline.cad import surface_model as sm
@@ -1271,6 +1469,32 @@ def _close_one(here, p, e, k: int, nbr: int, gap: float, allowed: float, look: f
             if fgot is not None:
                 return fgot, "", "filled with a new face", width
             why = fwhy or why
+        # 1e. A HOLE FILLED: the gap is part of a hole its faces close round (a face the drawing left out) - one new
+        # face spans it
+        hgot, hwhy, width, round_ = _with_hole(here, p, allowed)
+        before = {tuple(map(tuple, x["pairs"])) for x in bp}
+        for _more in range(HOLE_CHAIN):
+            # a face between two holes (a sliver both its free edges are on): the first hole filled leaves its
+            # other edge beside the new face - the hole there is filled in the same change
+            if hgot is None or gone(hgot):
+                break
+            fresh = [x for x in sm.open_places(hgot, mm_per_unit=1.0, reach=look)
+                     if tuple(map(tuple, x["pairs"])) not in before and float(x["gap_mm"]) <= allowed]
+            if not fresh:
+                break
+            nxt = min(fresh, key=lambda x: (float(x["gap_mm"]), list(x["at_mm"])))
+            ngot, _nwhy, nwidth, nround = _with_hole(hgot, nxt, allowed)
+            if ngot is None:
+                break
+            hgot, width = ngot, max(width, nwidth)
+            round_ = sorted(set(round_) | set(nround), key=lambda n: (len(n), n))
+        if hgot is not None and not gone(hgot):
+            hgot, hwhy = None, "the new face would close only part of the gap"
+        if hgot is not None:
+            if said is not None:
+                said["round"] = round_
+            return hgot, "", "filled a hole with a new face", width
+        why = why or hwhy
         return None, why or "no extension, trim or move closes it", "", gap
     # the cheapest change that keeps the part's shape first: the face continued or cut back along its own surface
     # (1, 2); only then its edge moved onto its neighbour (3)
@@ -1436,6 +1660,7 @@ def mend(sewn, *, mm_per_unit: float, limit_mm: float | None = None,
         for m in sorted(p["_members"], key=lambda m: (-ms._length(m[0]), m[1])):
             sides.setdefault(m[1], m)
         got, how, changed, steps = None, "", gap, []
+        said: dict[str, Any] = {}
         for e, k, _g, nbr in list(sides.values())[:2]:
             # the reach is the gap's own limit, whichever face changes: a gap under one element is closed (the face's
             # own width no longer holds it back - 12 Nov: 5 of a stamped training part's 8 places, beside 4 mm fillet
@@ -1453,7 +1678,7 @@ def mend(sewn, *, mm_per_unit: float, limit_mm: float | None = None,
             # neither face's own change closes it: the last ways (a sliver filled, a corner's both faces continued),
             # tried once for the place; their reason, when they were tried, is the one told
             e, k, _g, nbr = next(iter(sides.values()))
-            got, why, how, changed = _close_one(here, p, e, k, nbr, gap, reach, look, last=True)
+            got, why, how, changed = _close_one(here, p, e, k, nbr, gap, reach, look, last=True, said=said)
             if got is None and why:
                 steps.insert(0, f"{here.names[k]}: {why}")
         if got is None:
@@ -1467,6 +1692,8 @@ def mend(sewn, *, mm_per_unit: float, limit_mm: float | None = None,
         here = got
         tried.discard(tuple(map(tuple, p["pairs"])))       # what is left of a place closed piece by piece is tried again
         row.update(how=how, face=row["faces"][0], moved_mm=_r(max(changed, gap) * mm), places_closed=before_n - after_n)
+        if said.get("round"):
+            row["round"] = list(said["round"])
         done.append(row)
     record = {"reach_mm": _r(reach * mm), "reach_from": reach_from,
               "closed": int(sum(int(r["places_closed"]) for r in done)),

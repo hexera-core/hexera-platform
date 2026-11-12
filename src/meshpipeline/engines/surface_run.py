@@ -147,6 +147,12 @@ def _between(faces: list) -> str:
         " and ".join(sorted(set(names)))
 
 
+def _names(names: list) -> str:
+    """ "Face_3 and Face_7", "Face_3, Face_7 and Face_9"."""
+    names = [str(n) for n in names]
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+
+
 def place_words(cleaned: dict | None, closing: dict | None) -> list[str]:
     """SURF-12 / SURF-13: ONE PLAIN SENTENCE PER PLACE: what was done there, by how much and where - a face extended,
     trimmed or its edge moved (the surfaces changed), the faces stitched, the gap closed in the mesh - or why it is
@@ -166,6 +172,10 @@ def place_words(cleaned: dict | None, closing: dict | None) -> list[str]:
             did = f"{a} was extended {by} along its own surface to meet {b}"
         elif how.startswith("trimmed"):
             did = f"{a} was trimmed back {by} to the edge of {b}"
+        elif how.startswith("filled a hole"):
+            out.append(f"At {_at(r.get('at_mm'))}, a hole up to {by} across between "
+                       f"{_names(list(r.get('round') or []) or [a, b])} was filled with a new face.")
+            continue
         elif how.startswith("filled"):
             out.append(f"At {_at(r.get('at_mm'))}, a strip up to {by} wide between {a} and {b} was filled with a new face.")
             continue

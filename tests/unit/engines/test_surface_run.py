@@ -739,3 +739,15 @@ def test_every_place_is_one_sentence_what_by_how_much_where():
         "you asked for (4 mm)."]
     words = surface_run.clean_words(cleaned, closing)
     assert words == ["Closed 2 of the 3 places where the surfaces did not meet."]
+
+
+def test_a_hole_filled_is_one_sentence_naming_the_faces_round_it():
+    """SURF-12: a hole filled with a new face is told with how wide it is across and every face round it."""
+    cleaned = {"places": [], "places_before": 1, "closed_places": 1,
+               "mend": {"closed": 1, "filled": 1, "reach_mm": 4.0, "reach_from": "asked",
+                        "changes": [{"at_mm": [108.5, 0.0, 0.0], "faces": ["Face_2", "Face_1"], "gap_mm": 3.25,
+                                     "how": "filled a hole with a new face", "moved_mm": 3.33,
+                                     "round": ["Face_1", "Face_2", "Face_3", "Face_4"]}]}}
+    assert surface_run.place_words(cleaned, None) == [
+        "At (108.5, 0, 0) mm, a hole up to 3.3 mm across between Face_1, Face_2, Face_3 and Face_4 was filled with a "
+        "new face."]

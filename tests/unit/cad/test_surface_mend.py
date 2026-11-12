@@ -363,3 +363,115 @@ def test_a_corner_both_faces_stop_short_of_is_closed_by_extending_both():
     assert 0.0 < _area(reading) - _area_of(shape) < 60.0 * (3.2 + 1.5)
 
 
+#: the bent sheet's round: radius, and how far it turns (the flange at 48 degrees to the panel)
+_R, _TURN = 4.0, math.radians(48.0)
+
+
+def _on_round(x: float, phi: float):
+    import numpy as np
+
+    return np.array([x, _R * math.sin(phi), _R - _R * math.cos(phi)])
+
+
+def _cut_across(x_panel: float, x_flange: float):
+    """A plane cutting across the round from x_panel on the panel's side to x_flange on the flange's."""
+    import numpy as np
+
+    p0, p1 = _on_round(x_panel, 0.0), _on_round(x_flange, _TURN)
+    mid = 0.5 * (p0 + p1)
+    n = np.cross(p1 - p0, mid - np.array([mid[0], 0.0, _R]))
+    return mid, n / np.linalg.norm(n)
+
+
+def _bent(panel_cuts, flange_cuts, cuts, missing):
+    """A sheet bent through a round, as a stamping drawn in surfaces: a 320 x 200 mm panel (z = 0) turning through a
+    round (a true cylinder, r 4, round the x axis) into a flange at 48 degrees - the round cut across by `cuts`
+    ((point, normal) planes), its pieces whose middle lies in a range of `missing` (x) LEFT OUT: a HOLE closed round by
+    the round's pieces, the panel and the flange (their edges along the round split at `panel_cuts`, `flange_cuts`)."""
+    import numpy as np
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Splitter
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+    from OCP.Geom import Geom_CylindricalSurface
+    from OCP.gp import gp_Ax3, gp_Dir, gp_Pln, gp_Pnt
+    from OCP.TopTools import TopTools_ListOfShape
+
+    lx = 320.0
+    panel = [(0.0, -200.0, 0.0), (lx, -200.0, 0.0)] + [(x, 0.0, 0.0) for x in sorted([lx, *panel_cuts, 0.0], reverse=True)]
+    e, d = _on_round(0.0, _TURN), np.array([0.0, math.cos(_TURN), math.sin(_TURN)])
+    flange = [e + (x, 0.0, 0.0) for x in sorted([0.0, *flange_cuts, lx])] + [e + (lx, 0.0, 0.0) + 150.0 * d,
+                                                                            e + 150.0 * d]
+    cyl = Geom_CylindricalSurface(gp_Ax3(gp_Pnt(0.0, 0.0, _R), gp_Dir(1.0, 0.0, 0.0), gp_Dir(0.0, 0.0, -1.0)), _R)
+    args, tools = TopTools_ListOfShape(), TopTools_ListOfShape()
+    args.Append(BRepBuilderAPI_MakeFace(cyl, 0.0, _TURN, 0.0, lx, 1e-7).Face())
+    for p, n in cuts:
+        tools.Append(BRepBuilderAPI_MakeFace(gp_Pln(gp_Pnt(*map(float, p)), gp_Dir(*map(float, n))),
+                                             -60.0, 60.0, -60.0, 60.0).Face())
+    sp = BRepAlgoAPI_Splitter()
+    sp.SetArguments(args)
+    sp.SetTools(tools)
+    sp.Build()
+    pieces = [f for f in sx.faces_of(sp.Shape()) if not any(lo < _cx(f) < hi for lo, hi in missing)]
+    return sx.compound([_quad(panel), _quad(flange), *pieces])
+
+
+def _round_missing():
+    """The round missing for x 100..117, cut square across."""
+    return _bent([100.0, 117.0], [100.0, 117.0], [((100.0, 0, 0), (1, 0, 0)), ((117.0, 0, 0), (1, 0, 0))],
+                 [(100.0, 117.0)])
+
+
+def test_a_round_with_a_stretch_missing_is_filled_with_a_new_face():
+    # SURF-12: the panel's edge and the flange's run 3.25 mm apart along the 17 mm where the round is missing, at 48
+    # degrees: neither continued alone, nor both, nor a strip between them closes it (the continued faces would cross
+    # the round's pieces either side) - the hole the four faces close round is filled with one new face, tangent to
+    # them; nothing is moved
+    shape = _round_missing()
+    reading, sewn = _read(shape, element_mm=4.0)
+    c, m = reading["cleaned"], reading["cleaned"]["mend"]
+    assert c["places_before"] == 1 and c["open_places"] == 0 and len(reading["sheets"]) == 1, m
+    assert m["filled"] == 1 and m["changes"][0]["how"] == "filled a hole with a new face"
+    assert m["changes"][0]["round"] == ["Face_1", "Face_2", "Face_3", "Face_4"]
+    assert m["changes"][0]["moved_mm"] == pytest.approx(2.0 * _R * math.sin(_TURN / 2.0), rel=0.05)   # the hole's width
+    # the new face is the round's missing stretch, near enough: 17 mm of its 3.35 mm arc
+    assert _area(reading) - _area_of(shape) == pytest.approx(17.0 * _R * _TURN, rel=0.03)
+    assert sewn.names[-1] in ("Face_1", "Face_2") and len(sewn.faces) == 5
+
+
+def test_a_tapering_hole_whose_corners_meet_unsewn_is_filled():
+    # the round cut square at x = 100 and slanted from x = 112 at the panel to x = 100 at the flange: a tapering hole
+    # with a tip where the two pieces' corners meet on the flange's edge but share no edge (two corners at one spot) -
+    # the hole is found round through that spot and filled
+    shape = _bent([100.0, 112.0], [100.0], [((100.0, 0, 0), (1, 0, 0)), _cut_across(112.0, 100.0)], [(100.0, 106.0)])
+    reading, _sewn = _read(shape, element_mm=4.0)
+    c, m = reading["cleaned"], reading["cleaned"]["mend"]
+    assert c["places_before"] == 1 and c["open_places"] == 0 and len(reading["sheets"]) == 1, m
+    assert m["changes"][0]["how"] == "filled a hole with a new face" and m["changes"][0]["round"] == [
+        "Face_1", "Face_3", "Face_4"]
+    assert _area(reading) - _area_of(shape) == pytest.approx(0.5 * 12.0 * _R * _TURN, rel=0.1)
+
+
+def test_a_sliver_between_two_holes_has_both_filled():
+    # a thin sliver of the round left between two missing stretches (a face both its free edges are on a hole): the
+    # place runs past it, and both holes are filled in the one change
+    shape = _bent([100.0, 106.0, 107.5, 117.0], [100.0, 110.0, 117.0],
+                  [((100.0, 0, 0), (1, 0, 0)), _cut_across(106.0, 110.0), _cut_across(107.5, 110.0),
+                   ((117.0, 0, 0), (1, 0, 0))], [(100.0, 105.5), (108.5, 117.0)])
+    reading, sewn = _read(shape, element_mm=4.0)
+    c, m = reading["cleaned"], reading["cleaned"]["mend"]
+    assert c["places_before"] == 1 and c["open_places"] == 0 and len(reading["sheets"]) == 1, m
+    assert m["changes"][0]["how"] == "filled a hole with a new face" and len(sewn.faces) == 5 + 2
+
+
+def test_a_hole_wider_than_twice_the_reach_is_not_filled():
+    # the same hole against a reach of 1.5 mm: 3.3 mm across is more than twice it - left as drawn, and said why
+    from meshpipeline.cad import surface_mend as smd
+
+    sewn = sm.sew(_round_missing())
+    place = sm.open_places(sewn, mm_per_unit=1.0, reach=4.0)[0]
+    got, why, wide, names = smd._with_hole(sewn, place, 1.5)
+    assert got is None and why == "the hole round the gap is more than twice as wide as the gaps closed here"
+    assert wide == pytest.approx(3.3, abs=0.1) and names == ["Face_1", "Face_2", "Face_3", "Face_4"]
+    got, why, wide, _names = smd._with_hole(sewn, place, 4.0)
+    assert got is not None and why == "" and sm.open_places(got, mm_per_unit=1.0, reach=4.0) == []
+
+
