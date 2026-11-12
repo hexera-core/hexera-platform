@@ -868,4 +868,128 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
     return ogrid, boxed, preset, holes, why
 
 
-__all__ = ["WASHERS", "MAPPED", "Washer", "plan_washers", "imprint", "set_counts", "ring_mesh", "map_faces", "block_faces"]
+#: SHMESH-45b: the round free holes of flat faces drawn again as one circle (a CAD circle split into 2 to 5 edges,
+#: unevenly, left the washer's hole nodes out of step with its ring's: "a washer's hole and ring nodes do not face each
+#: other"), starting on the face frame's diagonal where the face has a straight edge
+RESEAT = True
+
+
+def reseat_holes(brep, out) -> int:
+    """SHMESH-45b: every round hole of a flat face that no other face shares is drawn again as ONE circle starting on the
+    diagonal of the face's frame (its longest straight outer edge, as block_faces reads it), the same circle exactly. A
+    CAD hole's circle starts at its seam, often in the middle of an O-grid quarter, and the quarter then cannot be
+    counted evenly; drawn again, the seam sits where the O-grid cuts anyway. Only the hole's own wire changes (edges
+    shared with other faces are untouched, so every junction stays as it is); a face whose area would change is left
+    as it was. Writes `out` and returns how many holes were drawn again (0: `out` is the input unchanged)."""
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeWire
+    from OCP.BRepGProp import BRepGProp
+    from OCP.BRepTools import BRepTools, BRepTools_ReShape
+    from OCP.GCPnts import GCPnts_AbscissaPoint
+    from OCP.GeomAbs import GeomAbs_Circle, GeomAbs_Line, GeomAbs_Plane
+    from OCP.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Pnt
+    from OCP.GProp import GProp_GProps
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_REVERSED, TopAbs_WIRE
+    from OCP.TopExp import TopExp, TopExp_Explorer
+    from OCP.TopoDS import TopoDS, TopoDS_Shape
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+
+    from meshpipeline.cad import midsurface as ms
+
+    shape = TopoDS_Shape()
+    if not BRepTools.Read_s(shape, str(brep), BRep_Builder()):
+        raise ValueError("the mid-surface could not be read")
+    emap = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(shape, TopAbs_EDGE, TopAbs_FACE, emap)
+
+    def area(f) -> float:
+        g = GProp_GProps()
+        BRepGProp.SurfaceProperties_s(f, g)
+        return float(g.Mass())
+
+    def edges(w) -> list:
+        out_, ex = [], TopExp_Explorer(w, TopAbs_EDGE)
+        while ex.More():
+            out_.append(TopoDS.Edge_s(ex.Current()))
+            ex.Next()
+        return out_
+
+    done = 0
+    reshape = BRepTools_ReShape()
+    for f in ms._faces(shape):
+        sa = BRepAdaptor_Surface(f)
+        if sa.GetType() != GeomAbs_Plane:
+            continue
+        outer = BRepTools.OuterWire_s(f)
+        best, u = 0.0, None
+        for e in edges(outer):
+            c = BRepAdaptor_Curve(e)
+            if c.GetType() == GeomAbs_Line:
+                ln = float(GCPnts_AbscissaPoint.Length_s(c))
+                if ln > best:
+                    d = c.Line().Direction()
+                    best, u = ln, np.array([d.X(), d.Y(), d.Z()])
+        ax = sa.Plane().Axis().Direction()
+        nrm = np.array([ax.X(), ax.Y(), ax.Z()])
+        diag = None
+        if u is not None:
+            u = u - float(u @ nrm) * nrm
+            u /= max(float(np.linalg.norm(u)), 1e-300)
+            diag = (u + np.cross(nrm, u)) / math.sqrt(2.0)
+        a0 = area(f)
+        ex = TopExp_Explorer(f, TopAbs_WIRE)
+        swaps = []
+        while ex.More():
+            w = TopoDS.Wire_s(ex.Current())
+            ex.Next()
+            if w.IsSame(outer):
+                continue
+            es = edges(w)
+            ok = bool(es) and all(BRepAdaptor_Curve(e).GetType() == GeomAbs_Circle
+                                  and emap.FindFromKey(e).Size() == 1 for e in es)
+            if not ok:
+                continue
+            circs = [BRepAdaptor_Curve(e).Circle() for e in es]
+            c0 = circs[0]
+            loc = c0.Location()
+            if any(abs(c.Radius() - c0.Radius()) > 1e-7 * c0.Radius() or c.Location().Distance(loc) > 1e-7 * c0.Radius()
+                   for c in circs):
+                continue
+            p0 = BRepAdaptor_Curve(es[0]).Value(BRepAdaptor_Curve(es[0]).FirstParameter())
+            rel = np.array([p0.X() - loc.X(), p0.Y() - loc.Y(), p0.Z() - loc.Z()]) / c0.Radius()
+            if len(es) == 1 and (diag is None or float(rel @ diag) > 1 - 1e-9):
+                continue            # already one circle (starting on the diagonal when the face has one)
+            start = diag if diag is not None else rel
+            cax = c0.Axis().Direction()
+            caxis = np.array([cax.X(), cax.Y(), cax.Z()])
+            xd = start - float(start @ caxis) * caxis
+            circ = gp_Circ(gp_Ax2(gp_Pnt(loc.X(), loc.Y(), loc.Z()), gp_Dir(*caxis.tolist()), gp_Dir(*xd.tolist())),
+                           c0.Radius())
+            nw = BRepBuilderAPI_MakeWire(BRepBuilderAPI_MakeEdge(circ).Edge()).Wire()
+            if es[0].Orientation() == TopAbs_REVERSED:
+                nw.Reverse()
+            swaps.append((w, nw))
+        if not swaps:
+            continue
+        trial = BRepTools_ReShape()
+        for w, nw in swaps:
+            trial.Replace(w, nw)
+        nf = TopoDS.Face_s(trial.Apply(f))
+        if abs(area(nf) - a0) > 1e-6 * max(a0, 1e-300):
+            continue
+        for w, nw in swaps:
+            reshape.Replace(w, nw)
+        done += len(swaps)
+    if not done:
+        BRepTools.Write_s(shape, str(out))
+        return 0
+    result = reshape.Apply(shape)
+    if len(ms._faces(result)) != len(ms._faces(shape)):
+        BRepTools.Write_s(shape, str(out))
+        return 0
+    BRepTools.Write_s(result, str(out))
+    return done
+
+
+__all__ = ["WASHERS", "MAPPED", "Washer", "plan_washers", "imprint", "set_counts", "ring_mesh", "map_faces", "block_faces", "reseat_holes"]

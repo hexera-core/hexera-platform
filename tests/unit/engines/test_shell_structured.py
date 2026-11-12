@@ -312,3 +312,38 @@ def test_structured_steps_that_fail_fall_back_to_the_free_mesh(web, monkeypatch)
     assert guard["kept"] == "free mesh" and "do not face each other" in guard["why"]
     assert _sha(mesh) == _sha(free)
     assert any("SHMESH-45" in n for n in mesh.notes)
+
+
+def test_a_hole_drawn_as_several_edges_still_gets_its_washer(tmp_path):
+    """SHMESH-45b, the cause on a real column: a CAD circle split into 2 to 5 edges, unevenly, left the washer's hole
+    nodes out of step with its ring's ("a washer's hole and ring nodes do not face each other"). The round free holes
+    of flat faces are drawn again as one circle each, so every one gets its ring."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakeWire
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakePrism
+    from OCP.BRepTools import BRepTools
+    from OCP.GC import GC_MakeArcOfCircle
+    from OCP.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Pnt, gp_Vec
+
+    from meshpipeline.cad import midsurface as ms
+
+    def hole(x, y, cuts):
+        circ = gp_Circ(gp_Ax2(gp_Pnt(x, y, -1), gp_Dir(0, 0, 1), gp_Dir(1, 0, 0)), 10.0)
+        angs = [math.radians(a) for a in cuts] + [math.radians(cuts[0]) + 2 * math.pi]
+        mw = BRepBuilderAPI_MakeWire()
+        for a, b in zip(angs[:-1], angs[1:], strict=True):
+            mw.Add(BRepBuilderAPI_MakeEdge(GC_MakeArcOfCircle(circ, a, b, True).Value()).Edge())
+        return BRepPrimAPI_MakePrism(BRepBuilderAPI_MakeFace(mw.Wire()).Face(), gp_Vec(0, 0, 12)).Shape()
+
+    shape = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), 300, 200, 10).Shape()
+    for (x, y), cuts in (((60, 60), [0, 180]), ((150, 60), [0, 100, 250]), ((240, 60), [0, 72, 144, 216, 288]),
+                         ((60, 140), [0, 150]), ((150, 140), [0, 120, 240]), ((240, 140), [0, 90, 180, 270])):
+        shape = BRepAlgoAPI_Cut(shape, hole(x, y, cuts)).Shape()      # no unify: the circles stay split
+    rec, surf = ms.extract(shape, mm_per_unit=1.0)
+    brep = tmp_path / "split.brep"
+    BRepTools.Write_s(surf, str(brep))
+    for req in (_criteria(), None):
+        mesh, applied = _mesh(brep, rec, req)
+        s = applied["quality"]["structure"]
+        assert s["holes_redrawn"] == 6 and s["washers"] == 6 and s["no_washer"] == {}, s
+        assert SS.measure(mesh)["holes_ringed"] == 6 and applied["quality"]["valid"]

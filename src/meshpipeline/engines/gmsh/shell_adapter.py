@@ -967,6 +967,15 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
                 # SHMESH-11d: the closed faces' pieces would not fuse back with the rest (a 45 degree cone's pieces,
                 # exact or fuzzy): the surface is meshed as sewn, and a closed face gmsh stops on is re-made below
                 split_note = f"the closed faces were meshed whole ({exc})"
+        reseated = 0
+        if ST.RESEAT and ST.WASHERS and SR.structure_of(requirements) not in ("free", "no_washers"):
+            # SHMESH-45b: the round free holes of flat faces drawn again as one circle each
+            seated = Path(tmp) / "reseated.brep"
+            try:
+                reseated = ST.reseat_holes(Path(brep), seated)
+                brep = seated
+            except Exception as exc:  # noqa: BLE001 - the holes keep their own circles
+                logger.info("shell mesh: holes not drawn again (%s)", exc)
         resplined = loops = 0
         started = time.monotonic()
         unmap: set[int] = set()
@@ -1028,6 +1037,7 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
                                   "(SHMESH-31).")
             applied["quality"]["resplined_faces"] = resplined
             applied["quality"].setdefault("structure", {})["grids_freed"] = len(unmap)
+            applied["quality"]["structure"]["holes_redrawn"] = reseated
             if split_note:
                 mesh.notes.append(f"{split_note[0].upper()}{split_note[1:]} (SHMESH-11d).")
             if resplined:
