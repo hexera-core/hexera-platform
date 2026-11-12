@@ -1026,7 +1026,8 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
                 mesh, applied = _mesh_once(Path(brep), record, owners, float(mm_per_unit), log, target=target,
                                            hole_before=tuple((tuple(c), e) for c, e in redrawn),
                                            correction=correction, requirements=requirements, unmap=frozenset(unmap),
-                                           no_cut=frozenset(no_cut), check_maps=unmapped < UNMAP_ROUNDS)
+                                           no_cut=frozenset(no_cut), check_maps=unmapped < UNMAP_ROUNDS,
+                                           judge_faces=True)
             except _NoCut as nc:
                 # SHMESH-47b: those faces' grids left out (their joined faces whole); counts as a round of SHMESH-40
                 no_cut |= nc.faces
@@ -1118,8 +1119,12 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
             applied["quality"].setdefault("structure", {})["grids_freed"] = len(unmap)
             applied["quality"]["structure"]["holes_redrawn"] = reseated
             # SHMESH-49g: each round plate meshed in rings and strips, with its triangles in the mesh delivered
+            tri_at = applied.pop("_polar_tri_at", {})
+            was_judged = applied.pop("_polar_judged", None)
             applied["quality"]["structure"]["rings_and_strips"] = [
-                {"face": str(k), "triangles": int(n)} for k, n in sorted(applied.pop("_polar_trias", {}).items())]
+                {"face": str(k), "triangles": int(n), "triangles_at_mm": tri_at.get(k, []),
+                 "judged_by_the_check": was_judged}
+                for k, n in sorted(applied.pop("_polar_trias", {}).items())]
             if split_note:
                 mesh.notes.append(f"{split_note[0].upper()}{split_note[1:]} (SHMESH-11d).")
             if resplined:
@@ -1190,7 +1195,7 @@ def _classic():
 def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list | None, *,
                target: dict | None = None, correction: float = 1.0,
                requirements: dict | None = None, own_spots: tuple = (), unmap: frozenset = frozenset(),
-               hole_before: tuple = (), no_cut: frozenset = frozenset(),
+               hole_before: tuple = (), no_cut: frozenset = frozenset(), judge_faces: bool = False,
                check_maps: bool = False) -> tuple[ShellMesh, dict]:
     """One mesh. `unmap` (SHMESH-40): gmsh surfaces left free (their grid came out past the solver's limits once);
     `check_maps`: raise _Unmap when a mapped face's grid comes out past them. `own_spots` (SHMESH-31): (sewn face, box low corner, box high corner - mm) round elements a mesh
@@ -1334,6 +1339,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         gridded: list = []                  # O-grid washers inside a gridded face (SHMESH-41): mapped with it
         cut_of: dict[int, set[int]] = {}    # SHMESH-47b: gridded face -> the joined faces its lines cut
         polar_faces_made: set[int] = set()  # SHMESH-49g: the round plates cut into rings and strips
+        grid_faces_made: set[int] = set()   # SHMESH-48f: the faces cut into a grid
         boxed: list = []                    # washers in a gridded face's free boxes: their own ring
         rings: list = []                    # washers in a free face: their own ring mesh (ST.ring_mesh)
         block_preset: dict[int, int] = {}
@@ -1378,7 +1384,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                 gridded, boxed, block_preset, block_holes, block_skipped = ST.block_faces(
                     gmsh, washers, tag_of, {t: float(rows[k]["size_mm"]) for t, k in tag_of.items()}, hole_size, mm,
                     cuts=cut_curves, low_mm=(sizing or {}).get("low_mm"), high_mm=(sizing or {}).get("high_mm"),
-                    cells_out=grid_cells, no_cut=no_cut, cut_out=cut_of)
+                    cells_out=grid_cells, no_cut=no_cut, cut_out=cut_of, made_out=grid_faces_made)
             for w in gridded:
                 w.info["kind"] = "o-grid in a gridded face"
             for w in boxed:
@@ -1905,14 +1911,23 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
     remap[used] = np.arange(len(used))
     Q, T, xyz = remap[Q], remap[T], xyz[used]
     face_of = np.array(q_face + t_face, dtype=np.int64)
-    seam_due = any(not any(float(np.linalg.norm(np.asarray(c, dtype=float) - w.centre)) <= 0.25 * w.r
-                           for c, _e in hole_before) for w in gridded if w.seam)
-    if check_maps and ST.POLAR_CHECK and polar_faces_made and not seam_due:
+    seam_due = ST.RESEAT and any(not any(float(np.linalg.norm(np.asarray(c, dtype=float) - w.centre)) <= 0.25 * w.r
+                                         for c, _e in hole_before) for w in gridded)
+    judged = polar_faces_made | (grid_faces_made if ST.GRID_CHECK else set())
+    judged_now = bool(judge_faces and ST.POLAR_CHECK and judged and not seam_due)
+    if judged_now:
+        # (judged on every main pass, not only while SHMESH-40 has rounds left: a part with many grids spent them,
+        # the last pass went unjudged and a real base plate kept 10 triangles; each face is refused at most once)
         # (judged only once its O-grid holes start where they are cut: the pass before is drawn again anyway)
         # SHMESH-49g: a round plate whose rings and strips end with more than POLAR_TRIAS triangles on it (the
         # clean-up split quads past the limits there) is meshed on the next pass with its free-face washers
-        on_plate = Counter(int(k) for k in t_face if int(k) in polar_faces_made)
-        hurt_p = {k for k, n in on_plate.items() if n > ST.POLAR_TRIAS}
+        on_plate = Counter(int(k) for k in t_face if int(k) in judged)
+        # (a gridded face: one triangle per free box, under BOX_TRIA_SHARE of its elements - SHMESH-48e/48f)
+        boxes_on = Counter(int(w.owner) for w in boxed if not w.info.get("kind", "").startswith("ring in a sector"))
+        n_on = Counter(int(k) for k in list(q_face) + list(t_face) if int(k) in judged)
+        hurt_p = {k for k, n in on_plate.items()
+                  if (n > ST.POLAR_TRIAS if k in polar_faces_made else
+                      (n > boxes_on.get(k, 0) or n > BOX_TRIA_SHARE * max(n_on.get(k, 1), 1)))}
         # ... or with an element on it past the solver's own limits, or an edge over the user's longest edge (a line
         # the report holds to every element): the plate's free-face washers met them
         high_p = (sizing or {}).get("high_mm")
@@ -1921,7 +1936,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
             if not len(els):
                 continue
             fk = np.asarray(faces_, dtype=np.int64)
-            for kp in polar_faces_made - hurt_p:
+            for kp in judged - hurt_p:
                 mine = els[fk == kp]
                 if not len(mine):
                     continue
@@ -1933,7 +1948,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
             import types as _types
 
             qk, tk = np.asarray(q_face, dtype=np.int64), np.asarray(t_face, dtype=np.int64)
-            for kp in polar_faces_made - hurt_p:
+            for kp in judged - hurt_p:
                 plate_q: dict = shell_quality.quad_measures(xyz, Q[qk == kp], extra=True) if (qk == kp).any() else {}
                 plate_t: dict = shell_quality.tria_measures(xyz, T[tk == kp], extra=True) if (tk == kp).any() else {}
                 sub = _types.SimpleNamespace(n_elements=int((qk == kp).sum() + (tk == kp).sum()))
@@ -2068,6 +2083,10 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
     if polar_faces_made:
         tri_k = Counter(int(k) for k in t_face)
         out["_polar_trias"] = {int(k): int(tri_k.get(k, 0)) for k in polar_faces_made}
+        tf_ = np.asarray(t_face, dtype=np.int64)
+        out["_polar_tri_at"] = {int(k): [[round(float(x), 1) for x in xyz[T[j]].mean(axis=0)]
+                                         for j in np.nonzero(tf_ == k)[0][:20]] for k in polar_faces_made}
+        out["_polar_judged"] = judged_now
     out["_seam_wanted"] = [([float(x) for x in w.centre], list(w.seam)) if w.seam else [float(x) for x in w.centre]
                            for w in gridded
                            if not any(float(np.linalg.norm(c - w.centre)) <= 0.25 * w.r for c in drawn_at)]

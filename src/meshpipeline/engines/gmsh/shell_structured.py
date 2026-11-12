@@ -868,6 +868,8 @@ BLOCKS = True
 
 #: SHMESH-47: a grid line ending on an edge the face shares cuts the neighbour there too (else the face is not gridded)
 CUT_NEIGHBOURS = True
+#: SHMESH-48f: every gridded face judged on its own elements once meshed (as POLAR_CHECK judges a round plate)
+GRID_CHECK = True
 BOX_STEP = 8
 #: SHMESH-48: the ring an O-grid aims at, times the hole's radius (an engineer's washer: 1.5 to 2 times its diameter)
 WASHER_AIM = 1.75
@@ -975,7 +977,7 @@ def _remove_loose(gmsh, curves: set[int]) -> None:
 def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: dict[int, float], hole_size, mm: float,
                 cuts: set[int] | None = None, low_mm: float | None = None, high_mm: float | None = None,
                 cells_out: set[int] | None = None, no_cut: frozenset = frozenset(),
-                cut_out: dict[int, set[int]] | None = None
+                cut_out: dict[int, set[int]] | None = None, made_out: set[int] | None = None
                 ) -> tuple[list[Washer], list[Washer], dict[int, int], set[int], dict[str, int]]:
     """SHMESH-41: each flat face whose inner loops are all washer holes is cut into a grid: round each hole a box
     along the face's own frame (its longest straight edge) - an O-grid's (_boxed) or a free box - every box side drawn
@@ -1000,6 +1002,10 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
         why[reason] = why.get(reason, 0) + 1
 
     for t, ws in sorted(by_face.items()):
+        if tag_of.get(t) in no_cut:
+            # SHMESH-47b/48f: its grid broke a line or left triangles on a first mesh (there or in a face it cut)
+            no("its grid left triangles or an unmet line on a first mesh")
+            continue
         # SHMESH-45g: a face whose grid fails in any way loses only its own grid (its washers go on to the free
         # rings, or to none where the face was already cut); the other faces keep theirs
         try:
@@ -1206,6 +1212,8 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                 tag_of[s] = k
             if cells_out is not None:
                 cells_out.update(new)
+            if made_out is not None:
+                made_out.add(k)
             _remove_loose(gmsh, {c for got in omap[1:] for d, c in got if d == 1})
             curves = sorted({abs(int(c)) for s in new for _d, c in gmsh.model.getBoundary([(2, s)], oriented=False)})
             on_circle: set[int] = set()
