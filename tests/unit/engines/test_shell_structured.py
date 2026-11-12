@@ -37,7 +37,7 @@ def test_an_o_grid_box_matches_its_ring_and_the_users_edges():
     got = ST._boxed(9.0, 2 * math.pi * 9 / 8, 10.0)
     assert got is not None
     n, rows, ratio, b = got
-    assert n % ST.BOX_STEP == 0                                   # even quarters
+    assert n % 4 == 0 and n % ST.WASHER_STEP == 0                 # even quarters (the hole starts on the diagonal)
     seg = 2 * b / (n / 4)
     assert ST.BOX_SEG[0] * 10.0 - 1e-9 <= seg <= ST.BOX_SEG[1] * 10.0 + 1e-9
     assert b - ratio * 9.0 >= ST.BOX_GAP * 10.0 - 1e-9            # the box clear of the ring
@@ -53,6 +53,28 @@ def test_an_o_grid_box_matches_its_ring_and_the_users_edges():
     assert ST._boxed(7.0, 2 * math.pi * 7 / 8, 10.0, low_mm=5.0, high_mm=15.0) is None
 
 
+def test_an_o_grid_boxs_rows_from_ring_to_box_fit_the_users_edges():
+    """SHMESH-48u: the requirements test's plate (a 20 mm hole, 5 mm size, edges 2.5 to 7.5 mm) had its ring 15 mm out
+    in a 17.5 mm box: one row from ring to box is 9.75 mm at the corners (over 7.35), two are 1.25 mm at the side
+    middles (under 2.5) - 6.56% of its elements under the shortest edge. Now some count of rows fits both ends."""
+    for r, h, lo, hi in ((10.0, 5.0, 2.5, 7.5), (9.9, 10.0, 5.0, 15.0), (12.0, 5.0, 2.5, 7.5), (20.0, 10.0, 5.0, 15.0)):
+        got = ST._boxed(r, 2 * math.pi * r / 8, h, low_mm=lo, high_mm=hi, rows_fit=True)
+        assert got is not None
+        n, rows, ratio, b = got
+        R = ratio * r
+        k = ST._ring_box_rows(R, b, b * math.sqrt(2), h, lo, 0.98 * hi)
+        assert k is not None and (b - R) / k >= lo - 1e-9 and (b * math.sqrt(2) - R) / k <= 0.98 * hi + 1e-9
+    assert ST._box_rows(15.0, 17.5, 17.5, 17.5, 2.5, 7.35) is None
+    assert ST._box_rows(15.0, 17.5, 17.5, 21.0, 2.5, 7.35) == 20.0
+    # SHMESH-48w: never a plan refused that the old rule took (a round base plate's 22 mm bolt holes lost their
+    # O-grids, the plate its rings and strips); round plates (no rows_fit) keep the old plan exactly
+    for r in (9.0, 11.0, 12.0, 13.3, 16.0, 16.5, 20.0):
+        for h, lo, hi in ((10.0, 5.0, 15.0), (8.5, 5.0, 15.0), (5.0, 2.5, 7.5)):
+            old = ST._boxed(r, 5.0, h, lo, hi)
+            assert (old is None) == (ST._boxed(r, 5.0, h, lo, hi, rows_fit=True) is None)
+    assert ST._boxed(16.5, 5.0, 10.0, 5.0, 15.0) == (20, 2, 1.75, 33.875)
+
+
 def test_a_chain_takes_its_opposite_sides_count_spread_by_length():
     assert ST._spread(4, [5.5, 5.5]) == [2, 2]
     assert sum(ST._spread(7, [1.0, 2.0, 4.0])) == 7
@@ -62,6 +84,56 @@ def test_a_chain_takes_its_opposite_sides_count_spread_by_length():
 def test_lines_nearer_than_the_snap_are_one_and_an_edge_wins():
     got = ST._cluster([(0.0, "edge"), (4.0, "0"), (50.0, "1"), (52.0, "2"), (100.0, "edge")], 5.0)
     assert got == [(0.0, True, [0]), (51.0, False, [1, 2]), (100.0, True, [])]
+
+
+def test_near_lines_are_one_only_where_every_ring_keeps_its_room():
+    """SHMESH-48i, a real channel web (50 holes out of step, 5+ sizes apart): a chain of box sides each a little from
+    the next was one line at their mean, pulling a side past its ring ("a ring too near ... for its box")."""
+    vals = [(10.0, "0"), (14.0, "1"), (18.0, "2"), (22.0, "3")]
+    # side 0 may go no higher than 11, side 3 no lower than 21: no one place suits all four
+    limits = {"0": (5.0, 11.0), "1": (8.0, 20.0), "2": (12.0, 24.0), "3": (21.0, 30.0)}
+    got = ST._cluster(vals, 5.0, limits)
+    assert [g[2] for g in got] == [[0, 1], [2, 3]]
+    for at, _edge, sides in got:
+        assert all(limits[str(s)][0] <= at <= limits[str(s)][1] for s in sides)
+    # an edge takes a side only where the side may go
+    assert ST._cluster([(0.0, "edge"), (4.0, "0")], 5.0, {"0": (2.0, 6.0)}) == [(0.0, True, []), (4.0, False, [0])]
+    assert ST._cluster([(0.0, "edge"), (4.0, "0")], 5.0, {"0": (-1.0, 6.0)}) == [(0.0, True, [0])]
+
+
+def test_lines_kept_apart_move_apart_to_no_sliver():
+    """SHMESH-48m, a real top plate: two box sides 0.64 mm apart that no one place suits (each ring's room) stayed two
+    lines and left a 0.64 mm cell; now each moves away from the other inside its own limits, to the gap asked."""
+    vals = [(10.0, "0"), (10.64, "1")]
+    limits = {"0": (5.0, 10.2), "1": (10.5, 16.0)}
+    got = ST._cluster(vals, 5.0, limits, min_gap=4.2)
+    assert [g[2] for g in got] == [[0], [1]]
+    assert got[1][0] - got[0][0] >= 4.2 - 1e-9
+    assert all(limits[str(g[2][0])][0] - 1e-9 <= g[0] <= limits[str(g[2][0])][1] + 1e-9 for g in got)
+    # (without the gap asked: as before)
+    assert [g[0] for g in ST._cluster(vals, 5.0, limits)] == [10.0, 10.64]
+
+
+def test_a_side_that_cannot_reach_a_pin_moves_clear_of_it(monkeypatch):
+    """SHMESH-48p, a real top plate: a box side 2.96 mm from the end of a slanted outline piece (a pin it may not
+    reach) left a 2.96 mm cell edge there ("under 4 mm"); now it moves clear of the pin inside its limits, and a
+    "clear" value (a pin no line may stand on) only pushes lines off, never holds one."""
+    vals = [(91.62, "clear"), (94.58, "0")]
+    limits = {"0": (92.0, 96.5)}
+    got = ST._cluster(vals, 7.5, limits, min_gap=4.2)
+    side = next(g for g in got if g[2] == [0])
+    assert abs(side[0] - (91.62 + 4.2)) < 1e-9
+    # its limits do not allow it: it stays
+    side = next(g for g in ST._cluster(vals, 7.5, {"0": (92.0, 95.5)}, min_gap=4.2) if g[2] == [0])
+    assert side[0] == 94.58
+    # a pin (48o) the side may not reach is left as it was (block_faces turns it to "clear" where it matters)
+    side = next(g for g in ST._cluster([(91.62, "pin"), (94.58, "0")], 7.5, limits, min_gap=4.2) if g[2] == [0])
+    assert side[0] == 94.58
+    # a "clear" value never joins a side, it only pushes it off
+    got = ST._cluster([(10.0, "clear"), (11.0, "0")], 7.5, {"0": (5.0, 20.0)}, min_gap=4.2)
+    assert len(got) == 1 and got[0][1:] == (False, [0]) and abs(got[0][0] - 14.2) < 1e-9
+    monkeypatch.setattr(ST, "PIN_CLEAR", False)
+    assert next(g for g in ST._cluster(vals, 7.5, limits, min_gap=4.2) if g[2] == [0])[0] == 94.58
 
 
 # ------------------------------------------------------------------------------------------- the measure
@@ -137,6 +209,13 @@ def _plate_with_holes(tmp_path, holes, size=(300.0, 200.0, 10.0)):
     brep = tmp_path / "midsurface.brep"
     BRepTools.Write_s(surf, str(brep))
     return brep, rec
+
+
+@pytest.fixture(autouse=True)
+def _grids_unguarded(monkeypatch):
+    # SHMESH-48x: these tests hold the grids themselves; the guard that sets a grid against its free mesh (and may mesh
+    # the face free) is switched on where a test asks for it
+    monkeypatch.setattr(ST, "GRID_GUARD", False)
 
 
 def _mesh(brep, rec, requirements=None):
@@ -364,8 +443,9 @@ def test_a_hole_drawn_as_several_edges_still_gets_its_washer(tmp_path):
         mesh, applied = _mesh(brep, rec, req)
         s = applied["quality"]["structure"]
         # (only the holes whose ring had to follow uneven hole nodes on a first mesh are drawn again, SHMESH-45k: the
-        # uneven splits; the even halves, thirds and quarters keep their CAD edges)
-        assert 1 <= s["holes_redrawn"] <= 4 and s["washers"] == 6 and s["no_washer"] == {}, s
+        # uneven splits - and, where the face is gridded, its O-grid holes to start where they are cut, SHMESH-49c)
+        assert (s["holes_redrawn"] == 6) if s["washers_ogrid"] else (1 <= s["holes_redrawn"] <= 4), s
+        assert s["washers"] == 6 and s["no_washer"] == {}, s
         assert all(h["edges"] == 1 for h in s["hole_list"] if h["edges_before"] != h["edges"])
         assert SS.measure(mesh)["holes_ringed"] == 6 and applied["quality"]["valid"]
 
@@ -469,7 +549,7 @@ def test_a_large_hole_needs_the_users_size_for_a_washer():
     assert ST.WASHER_ACROSS_USER * 10.0 > 46.07 > ST.WASHER_ACROSS * 10.0
 
 
-def test_a_square_hole_gets_a_square_washer(tmp_path):
+def test_a_square_hole_gets_a_square_washer(tmp_path, monkeypatch):
     """SHMESH-45f, class A of a real column: four-sided holes of straight edges (square, diamond; our extraction keeps
     a round hole round - checked on plain, split, countersunk and counterbored 21 mm holes in a 19 mm plate - so these
     are the CAD's own) get a square ring, mapped, inside the user's edges."""
@@ -481,6 +561,7 @@ def test_a_square_hole_gets_a_square_washer(tmp_path):
 
     from meshpipeline.cad import midsurface as ms
 
+    monkeypatch.setattr(ST, "GRID_GUARD", False)        # (the square rings as gridded; 48x may mesh the plate free)
     shape = BRepPrimAPI_MakeBox(gp_Pnt(-175, -175, 0), 350, 350, 19.05).Shape()
     for (x, y), turn in (((-110, -110), 0), ((110, -110), 0), ((-110, 110), 45), ((110, 110), 45)):
         poly = BRepBuilderAPI_MakePolygon()
@@ -496,7 +577,9 @@ def test_a_square_hole_gets_a_square_washer(tmp_path):
     mesh, applied = _mesh(brep, rec, _criteria())
     s = applied["quality"]["structure"]
     assert s["washers"] == 4 and s["no_washer"] == {}, s["hole_list"]
-    assert all(h["shape"] == "square" and h["kind"] == "square ring in a free face" for h in s["hole_list"])
+    # (SHMESH-48h: the plate is gridded, each square ring in a free box of the grid)
+    assert all(h["shape"] == "square" and h["kind"] == "square ring in a free box of a gridded face"
+               for h in s["hole_list"]), s["hole_list"]
     q = applied["quality"]
     assert q["valid"] and q["within_nastran"]
     rows = {r["field"]: r for r in applied["requirements"]["rows"]}
@@ -558,10 +641,299 @@ def test_round_and_square_holes_on_one_face_of_a_several_face_part(tmp_path):
     assert applied["quality"]["valid"] and applied["quality"]["within_nastran"]
 
 
+@pytest.mark.parametrize("guard", [False, True])
+def test_a_top_plate_with_round_and_square_holes_is_gridded(tmp_path, monkeypatch, guard):
+    """SHMESH-48h, a real column's top plates (19 mm, 6 round and 5 four-sided holes on one face): the square rings
+    were drawn after the grid and left out of it, so the grid saw holes without a washer and left the plate free. Now
+    each square ring takes a free box of the grid (its strips drawn in the box), and the plate is gridded with every
+    line met. SHMESH-48x (guard on): the grid is set against the plate's own free mesh - its share under the 5 mm
+    shortest edge and its triangles - and the plate is meshed free where that is better; the record says why with both
+    sets of figures, and the free mesh is no worse on either."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCylinder, BRepPrimAPI_MakePrism
+    from OCP.BRepTools import BRepTools
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt, gp_Vec
+
+    monkeypatch.setattr(ST, "GRID_GUARD", guard)
+    T_ = 19.05
+    shape = BRepPrimAPI_MakeBox(gp_Pnt(-210, -160, 0), 420, 320, T_).Shape()
+    for x, y in ((-150, -100), (0, -100), (150, -100), (-150, 100), (0, 100), (150, 100)):
+        shape = BRepAlgoAPI_Cut(shape, BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(x, y, -1), gp_Dir(0, 0, 1)), 9.0,
+                                                                T_ + 2).Shape()).Shape()
+    for (x, y), turn in (((-75, -100), 0), ((75, -100), 0), ((-75, 100), 0), ((75, 100), 0), ((0, 0), 45)):
+        poly = BRepBuilderAPI_MakePolygon()
+        for j in range(4):
+            a = math.radians(turn + 45 + 90 * j)
+            poly.Add(gp_Pnt(x + 9.0 * math.sqrt(2) * math.cos(a), y + 9.0 * math.sqrt(2) * math.sin(a), -1))
+        poly.Close()
+        shape = BRepAlgoAPI_Cut(shape, BRepPrimAPI_MakePrism(BRepBuilderAPI_MakeFace(poly.Wire()).Face(),
+                                                             gp_Vec(0, 0, T_ + 2)).Shape()).Shape()
+    rec, surf = ms_extract(shape)
+    brep = tmp_path / "top.brep"
+    BRepTools.Write_s(surf, str(brep))
+    mesh, applied = _mesh(brep, rec, _criteria())
+    s = applied["quality"]["structure"]
+    assert "guard" not in s, s.get("guard")
+    assert s["washers"] == 11 and s["no_washer"] == {}, s["hole_list"]
+    refused = [r for r in s.get("refused") or [] if "grid_figures" in r]
+    assert refused or not guard, s.get("refused")
+    if guard and refused:
+        g_, f_ = refused[0]["grid_figures"], refused[0]["free_figures"]
+        assert f_["triangles"] <= g_["triangles"] and f_["short"] * g_["elements"] <= g_["short"] * f_["elements"]
+        assert all(r["met"] is not False for r in applied["requirements"]["rows"]), applied["requirements"]["rows"]
+        return
+    assert "a hole without a washer in the face" not in (s.get("not_gridded") or {}), s.get("not_gridded")
+    kinds = [h["kind"] for h in s["hole_list"]]
+    assert kinds.count("square ring in a free box of a gridded face") == 5, kinds
+    assert all(k.endswith("gridded face") for k in kinds), kinds
+    assert applied["quality"]["valid"] and applied["quality"]["within_nastran"]
+    assert all(r["met"] is not False for r in applied["requirements"]["rows"]), applied["requirements"]["rows"]
+    again, _a = _mesh(brep, rec, _criteria())
+    assert _sha(again) == _sha(mesh)
+
+
+@pytest.mark.parametrize("limited", [False, True])
+def test_holes_out_of_step_keep_their_grid(tmp_path, monkeypatch, limited):
+    """SHMESH-48i, a real channel web: four 17.4 mm holes out of step, 5+ sizes from each other and the edges, whose
+    box sides lie 5 mm apart in a chain (120, 125, 130, 135 mm along the web). Made one line at their mean, the last
+    side moved 7.5 mm into its ring's room and the web was left free; now the chain is two lines, every ring keeps
+    its room and the web is gridded with every line met."""
+    monkeypatch.setattr(ST, "SNAP_LIMITS", limited)
+    brep, rec = _plate_with_holes(tmp_path, [(97.3, 61.5, 17.4), (147.7, 140.0, 17.4), (152.7, 301.5, 17.4),
+                                             (112.3, 220.0, 17.4)], size=(400.0, 363.0, 10.0))
+    mesh, applied = _mesh(brep, rec, _criteria())
+    s = applied["quality"]["structure"]
+    too_near = "a ring too near an edge or another ring for its box" in (s.get("not_gridded") or {})
+    assert too_near is not limited, s.get("not_gridded")
+    if limited:
+        assert s["washers"] == 4 and s["washers_ogrid"] + s["washers_boxed"] == 4, s
+        assert applied["quality"]["valid"] and applied["quality"]["within_nastran"]
+        assert all(r["met"] is not False for r in applied["requirements"]["rows"]), applied["requirements"]["rows"]
+
+
+@pytest.mark.parametrize("join", [False, True])
+def test_a_channels_web_and_flanges_are_gridded_across_their_joints(tmp_path, monkeypatch, join):
+    """SHMESH-47c, a real column's channel (web and flanges with bolt holes, about 3.3 sizes from the flanges' free
+    edges, joined through narrow strips): each face's lines ended on its joint and cut the strip on one side only
+    (triangles there: the faces were left free), or a flange beside the web with holes was not gridded at all. Now the
+    faces are cut across at the same places, the strips straight across, and all three are gridded with every line
+    met."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCylinder
+    from OCP.BRepTools import BRepTools
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
+
+    L, W, T_, F = 900.0, 363.0, 10.0, 100.0
+
+    def box(x, y, z, dx, dy, dz):
+        return BRepPrimAPI_MakeBox(gp_Pnt(x, y, z), dx, dy, dz).Shape()
+
+    shape = BRepAlgoAPI_Fuse(BRepAlgoAPI_Fuse(box(0, 0, 0, L, W, T_), box(0, -T_, 0, L, T_, F)).Shape(),
+                             box(0, W, 0, L, T_, F)).Shape()
+    for x, y in [(120.0 + 150 * i, 61.5) for i in range(5)] + [(208.0 + 150 * i, W - 61.5) for i in range(4)]:
+        shape = BRepAlgoAPI_Cut(shape, BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(x, y, -1), gp_Dir(0, 0, 1)), 8.7,
+                                                                T_ + 2).Shape()).Shape()
+    for x, y0, d, z in [(200.0 + 320 * i, -T_ - 1, 17.4, F - 41.7) for i in range(3)] + \
+                       [(300.0 + 450 * i, W - 1, 12.2, F - 42.1) for i in range(2)]:
+        shape = BRepAlgoAPI_Cut(shape, BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(x, y0, z), gp_Dir(0, 1, 0)), d / 2,
+                                                                T_ + 2).Shape()).Shape()
+    rec, surf = ms_extract(shape)
+    brep = tmp_path / "channel.brep"
+    BRepTools.Write_s(surf, str(brep))
+    monkeypatch.setattr(ST, "JOIN", join)
+    monkeypatch.setattr(ST, "JOIN_STRIPS", join)      # (this channel's faces meet through narrow strips)
+    mesh, applied = _mesh(brep, rec, _criteria())
+    s = applied["quality"]["structure"]
+    assert "guard" not in s, s.get("guard")
+    if not join:
+        # (as before: the faces' grids spoil the strips between them and are left out)
+        assert s.get("not_gridded"), s
+        return
+    assert s["washers"] == 14 and s.get("not_gridded") in (None, {}), (s.get("not_gridded"), s.get("refused"))
+    assert all(h["kind"].endswith("gridded face") for h in s["hole_list"]), s["hole_list"]
+    assert applied["quality"]["valid"] and applied["quality"]["within_nastran"]
+    assert all(r["met"] is not False for r in applied["requirements"]["rows"]), applied["requirements"]["rows"]
+    again, _a = _mesh(brep, rec, _criteria())
+    assert _sha(again) == _sha(mesh)
+
+
 def ms_extract(shape):
     from meshpipeline.cad import midsurface as ms
 
     return ms.extract(shape, mm_per_unit=1.0)
+
+
+@pytest.mark.parametrize("pins", [False, True])
+def test_a_line_near_a_chamfers_end_does_not_cut_a_sliver(tmp_path, monkeypatch, pins):
+    """SHMESH-48o, a real top plate: a hole's box line landed 0.6 mm past the end of a slanted outline piece and cut
+    a sliver of the outline into a cell ("a cell edge 0.637 mm, under 4 mm"): the plate was left free. Here a corner
+    cut off at 45 degrees ends 1.6 mm short of a 19.8 mm hole's box line; the chamfer's ends now hold the lines near
+    them and the plate is gridded with every line met."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCylinder, BRepPrimAPI_MakePrism
+    from OCP.BRepTools import BRepTools
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt, gp_Vec
+
+    monkeypatch.setattr(ST, "OUTLINE_PINS", pins)
+    A, B, T_ = 457.0, 406.0, 19.0
+    shape = BRepPrimAPI_MakeBox(gp_Pnt(-A / 2, -B / 2, 0), A, B, T_).Shape()
+    for x in (-114.0, 0.0, 114.0):
+        for y in (-171.1, 171.1):
+            shape = BRepAlgoAPI_Cut(shape, BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(x, y, -1), gp_Dir(0, 0, 1)), 9.9,
+                                                                    T_ + 2).Shape()).Shape()
+    poly = BRepBuilderAPI_MakePolygon()
+    for x, y in ((-A / 2 - 1, -B / 2 - 1), (-A / 2 + 94.0, -B / 2 - 1), (-A / 2 - 1, -B / 2 + 94.0)):
+        poly.Add(gp_Pnt(x, y, -1.0))
+    poly.Close()
+    shape = BRepAlgoAPI_Cut(shape, BRepPrimAPI_MakePrism(BRepBuilderAPI_MakeFace(poly.Wire()).Face(),
+                                                         gp_Vec(0, 0, T_ + 2)).Shape()).Shape()
+    rec, surf = ms_extract(shape)
+    brep = tmp_path / "chamfer.brep"
+    BRepTools.Write_s(surf, str(brep))
+    _mesh_, applied = _mesh(brep, rec, _criteria())
+    s = applied["quality"]["structure"]
+    small = [k for k in (s.get("not_gridded") or {}) if "a cell edge" in k]
+    if not pins:
+        assert small, s.get("not_gridded")
+        return
+    assert not s.get("not_gridded"), s.get("not_gridded")
+    assert applied["quality"]["valid"] and applied["quality"]["within_nastran"]
+    assert all(r["met"] is not False for r in applied["requirements"]["rows"]), applied["requirements"]["rows"]
+
+
+@pytest.mark.parametrize("band", [False, True])
+def test_free_boxes_between_rows_of_holes_are_a_two_to_one_row_of_quads(tmp_path, monkeypatch, band):
+    """SHMESH-48q, a real channel web: 17.4 mm holes in rows 38 mm apart at 10 mm take free boxes (a ring of 8 in a box
+    of about 45 mm), and gmsh's paving there came out with quads the user's lines cut into triangles (2 to 8 a hole).
+    Each box is now our own row of quads, two to one: 4 segments a side, the ring's quarter facing each side's middle,
+    a kite at each corner - no triangle, every line met."""
+    holes = [(x, y, 17.4) for x in (75.0, 225.0) for y in (61.5, 99.5, 137.5)] + [(150.0, 99.5, 17.4)]
+    brep, rec = _plate_with_holes(tmp_path, holes, size=(300.0, 199.0, 10.0))
+    monkeypatch.setattr(ST, "FREE_BAND", band)
+    mesh, applied = _mesh(brep, rec, _criteria())
+    hl = applied["quality"]["structure"]["hole_list"]
+    assert sum(1 for h in hl if h.get("kind") == "free box in a gridded face") == len(holes)
+    made = [h for h in hl if h.get("box_band") == "made"]
+    if not band:
+        assert not made and len(mesh.trias)
+        return
+    assert len(made) == len(holes), [h.get("box_band") for h in hl]
+    assert len(mesh.trias) == 0
+    assert applied["quality"]["valid"] and applied["quality"]["within_nastran"]
+    assert all(r["met"] is not False for r in applied["requirements"]["rows"]), applied["requirements"]["rows"]
+
+
+@pytest.mark.parametrize("clear", [False, True])
+def test_a_box_side_near_a_notchs_tip_moves_clear(tmp_path, monkeypatch, clear):
+    """SHMESH-48p, a real top plate: the end of a slanted outline piece held the box's bottom line on it (48o) while
+    the box's side, which could not reach it, stood 2.96 mm away: "a cell edge 2.96 mm, under 4 mm", the plate left
+    free. Here a V notch's tip stands 3 mm outside a 19.8 mm hole's box side, level with its bottom line; the side
+    now moves clear of the tip and the plate is gridded with every line met."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCylinder, BRepPrimAPI_MakePrism
+    from OCP.BRepTools import BRepTools
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt, gp_Vec
+
+    monkeypatch.setattr(ST, "PIN_CLEAR", clear)
+    monkeypatch.setattr(ST, "TRIM_SHORT", False)        # (48p alone: 48r would drop the short piece,
+    monkeypatch.setattr(ST, "CELL_HARD", None)          # and 48t would grid it and judge it after)
+    A, B, T_ = 457.0, 406.0, 19.0
+    shape = BRepPrimAPI_MakeBox(gp_Pnt(-A / 2, -B / 2, 0), A, B, T_).Shape()
+    for x in (-114.0, 0.0, 114.0):
+        for y in (-171.1, 171.1):
+            shape = BRepAlgoAPI_Cut(shape, BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(x, y, -1), gp_Dir(0, 0, 1)), 9.9,
+                                                                    T_ + 2).Shape()).Shape()
+    tu, tv = -138.0, -192.24
+    poly = BRepBuilderAPI_MakePolygon()
+    for x, y in ((tu - 14.0, -B / 2 - 1), (tu + 11.0, -B / 2 - 1), (tu, tv)):
+        poly.Add(gp_Pnt(x, y, -1.0))
+    poly.Close()
+    shape = BRepAlgoAPI_Cut(shape, BRepPrimAPI_MakePrism(BRepBuilderAPI_MakeFace(poly.Wire()).Face(),
+                                                         gp_Vec(0, 0, T_ + 2)).Shape()).Shape()
+    rec, surf = ms_extract(shape)
+    brep = tmp_path / "notch.brep"
+    BRepTools.Write_s(surf, str(brep))
+    _mesh_, applied = _mesh(brep, rec, _criteria())
+    s = applied["quality"]["structure"]
+    if not clear:
+        assert [k for k in (s.get("not_gridded") or {}) if "a cell edge" in k], s.get("not_gridded")
+        return
+    assert not s.get("not_gridded"), s.get("not_gridded")
+    assert applied["quality"]["valid"] and applied["quality"]["within_nastran"]
+    assert all(r["met"] is not False for r in applied["requirements"]["rows"]), applied["requirements"]["rows"]
+
+
+@pytest.mark.parametrize(("trim", "hard"), [(False, None), (True, None), (False, 0.5)])
+def test_a_short_piece_of_a_line_past_a_box_corner_is_dropped(tmp_path, monkeypatch, trim, hard):
+    """SHMESH-48r, a real top plate: the box's bottom line ran on past the box's corner 2.96 mm to the end of a slanted
+    outline piece ("a cell edge 2.96 mm, under 4 mm") and neither line could move (48p): the plate was left free. The
+    piece is now dropped (the line stops at the box corner in a T, the cells beside it become one) and the plate is
+    gridded with every line met. Here a V notch's tip 3 mm outside a 19.8 mm hole's box side, level with its bottom."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCylinder, BRepPrimAPI_MakePrism
+    from OCP.BRepTools import BRepTools
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt, gp_Vec
+
+    monkeypatch.setattr(ST, "PIN_CLEAR", False)
+    monkeypatch.setattr(ST, "TRIM_SHORT", trim)
+    monkeypatch.setattr(ST, "CELL_HARD", hard)          # (SHMESH-48t: or gridded and judged once meshed)
+    A, B, T_ = 457.0, 406.0, 19.0
+    shape = BRepPrimAPI_MakeBox(gp_Pnt(-A / 2, -B / 2, 0), A, B, T_).Shape()
+    for x in (-114.0, 0.0, 114.0):
+        for y in (-171.1, 171.1):
+            shape = BRepAlgoAPI_Cut(shape, BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(x, y, -1), gp_Dir(0, 0, 1)), 9.9,
+                                                                    T_ + 2).Shape()).Shape()
+    tu, tv = -137.96, -192.24
+    poly = BRepBuilderAPI_MakePolygon()
+    for x, y in ((tu - 14.0, -B / 2 - 1), (tu + 11.0, -B / 2 - 1), (tu, tv)):
+        poly.Add(gp_Pnt(x, y, -1.0))
+    poly.Close()
+    shape = BRepAlgoAPI_Cut(shape, BRepPrimAPI_MakePrism(BRepBuilderAPI_MakeFace(poly.Wire()).Face(),
+                                                         gp_Vec(0, 0, T_ + 2)).Shape()).Shape()
+    rec, surf = ms_extract(shape)
+    brep = tmp_path / "notch3.brep"
+    BRepTools.Write_s(surf, str(brep))
+    _mesh_, applied = _mesh(brep, rec, _criteria())
+    s = applied["quality"]["structure"]
+    if not trim and hard is None:
+        assert [k for k in (s.get("not_gridded") or {}) if "a cell edge" in k], s.get("not_gridded")
+        return
+    assert not s.get("not_gridded"), s.get("not_gridded")
+    assert applied["quality"]["valid"] and applied["quality"]["within_nastran"]
+    assert all(r["met"] is not False for r in applied["requirements"]["rows"]), applied["requirements"]["rows"]
+
+
+def test_a_round_plate_with_a_bolt_circle_gets_rings_and_spokes(tmp_path):
+    """SHMESH-49/49b: a round plate with its holes on one bolt circle is cut into a strip per hole (two lines parallel
+    to its radial line, from the core to the rim) and rings round the bolt circle; each hole an O-grid in its strip,
+    the core paved. Every washer is an O-grid, the strips are mapped, and the mesh keeps the user's edges."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
+    from OCP.BRepTools import BRepTools
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
+
+    shape = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), 250.0, 20.0).Shape()
+    for j in range(8):
+        a = math.radians(22.5 + 45 * j)
+        hole = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(190 * math.cos(a), 190 * math.sin(a), -1), gp_Dir(0, 0, 1)),
+                                        11.0, 22.0).Shape()
+        shape = BRepAlgoAPI_Cut(shape, hole).Shape()
+    rec, surf = ms_extract(shape)
+    brep = tmp_path / "round.brep"
+    BRepTools.Write_s(surf, str(brep))
+    mesh, applied = _mesh(brep, rec, _criteria())
+    s = applied["quality"]["structure"]
+    assert s["washers"] == 8 and s["washers_ogrid"] == 8 and s["grids_freed"] == 0, s
+    assert all(h["kind"] == "o-grid in a sector of a round plate" for h in s["hole_list"])
+    assert s["mapped_faces"] >= 8 * 8
+    q = applied["quality"]
+    assert q["valid"] and q["within_nastran"]
+    assert all(r["met"] is not False for r in applied["requirements"]["rows"])
+    assert SS.measure(mesh)["holes_ringed"] >= 8      # (the measure counts the rim's own loop too)
 
 
 def test_an_empty_curve_loop_costs_no_washer(web, monkeypatch):
@@ -582,3 +954,76 @@ def test_an_empty_curve_loop_costs_no_washer(web, monkeypatch):
     s = applied["quality"]["structure"]
     assert "guard" not in s, s.get("guard")
     assert s["washers"] == plain["quality"]["structure"]["washers"] > 0
+
+
+def test_a_base_plate_with_a_central_hole_keeps_rings_and_strips_inside_every_line(tmp_path):
+    """SHMESH-49d..i, a real base plate (bolt holes about two sizes across round a central hole): square boxes with
+    bowed sides (no 45 degree O-grid corner), the band inside the bolt circle paved, and the plate judged on its own
+    elements after its holes are drawn again - rings and strips with every line met, or the free-face washers."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
+    from OCP.BRepTools import BRepTools
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
+
+    shape = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), 250.0, 20.0).Shape()
+    shape = BRepAlgoAPI_Cut(shape, BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0, 0, -1), gp_Dir(0, 0, 1)), 110.0,
+                                                            22.0).Shape()).Shape()
+    for j in range(8):
+        a = math.radians(22.5 + 45 * j)
+        hole = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(190 * math.cos(a), 190 * math.sin(a), -1), gp_Dir(0, 0, 1)),
+                                        11.0, 22.0).Shape()
+        shape = BRepAlgoAPI_Cut(shape, hole).Shape()
+    rec, surf = ms_extract(shape)
+    brep = tmp_path / "base.brep"
+    BRepTools.Write_s(surf, str(brep))
+    mesh, applied = _mesh(brep, rec, _criteria())
+    s = applied["quality"]["structure"]
+    assert s["washers_ogrid"] == 8 and s["grids_freed"] == 0, s
+    assert len(mesh.trias) <= ST.POLAR_TRIAS
+    assert applied["quality"]["valid"] and applied["quality"]["within_nastran"]
+    assert all(r["met"] is not False and (r["met"] is True or r["field"] == "min_edge")
+               for r in applied["requirements"]["rows"]), applied["requirements"]["rows"]
+
+
+
+def _trial_left(fast: bool) -> tuple:
+    """A face among others, a copy of it cut by three lines running out past it and a ring's circle, the copy's cells
+    taken out as block_faces takes out a trial: (the entities left, the next tags)."""
+    import gmsh
+
+    saved = (ST.FAST_REMOVE, ST.FAST_LOOSE)
+    ST.FAST_REMOVE = ST.FAST_LOOSE = fast
+    gmsh.initialize()
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        occ = gmsh.model.occ
+        others = [(2, occ.addRectangle(i, 30.0, 0, 1, 1)) for i in range(6)]
+        occ.fragment(others[:1], others[1:])
+        face = occ.addRectangle(0, 0, 0, 20, 20)
+        occ.synchronize()
+        copy = occ.copy([(2, face)])
+        tools = [(1, occ.addLine(occ.addPoint(x, -1, 0), occ.addPoint(x, 21, 0))) for x in (5.0, 10.0, 15.0)]
+        tools.append((1, occ.addCircle(12.5, 10.0, 0, 2.0)))     # (crossed by no line: one closed curve)
+        _o, cmap = occ.fragment(copy, tools)
+        occ.synchronize()
+        cells = [s for d, s in cmap[0] if d == 2]
+        if fast:
+            ST._remove_cells(gmsh, cells)
+        else:
+            occ.remove([(2, s) for s in cells], recursive=True)
+        occ.synchronize()
+        ST._remove_loose(gmsh, {c for got in cmap[1:] for d, c in got if d == 1})
+        left = tuple(tuple(t for _d, t in gmsh.model.getEntities(d)) for d in range(3))
+        return left, (occ.addPoint(99, 99, 0), occ.addLine(1, 2), occ.getMaxTag(2))
+    finally:
+        gmsh.finalize()
+        ST.FAST_REMOVE, ST.FAST_LOOSE = saved
+
+
+def test_a_trial_is_taken_out_leaving_the_same_model_and_next_tags():
+    """SHMESH-48l2: a trial's cells taken out entity by entity (no gmsh search through every face of the model for each
+    curve and point) leave the model exactly as gmsh's recursive remove does - the same entities, the same next tags -
+    with a ring's closed circle among the cells and cutting lines whose outer pieces keep their ends."""
+    slow, fast = _trial_left(False), _trial_left(True)
+    assert fast == slow
+    assert len(slow[0][2]) == 6 + 1                     # the other faces and the face itself, nothing of the trial
