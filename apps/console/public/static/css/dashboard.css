@@ -199,21 +199,33 @@
 
 /* The billing activity charts are server-drawn SVG; every mark reads a token so the picture
    stays on-palette. */
-.activity-grid{display:grid;gap:1rem;grid-template-columns:repeat(auto-fit,minmax(21rem,1fr))}
 .chart{display:block;width:100%;height:auto}
 .chart__label{fill:var(--text-faint);font:400 10px var(--sans)}
 .chart__value{fill:var(--text);font:500 11px var(--mono)}
 .chart__base{stroke:var(--border-strong);stroke-width:1}
-.chart__bar-spend{fill:var(--accent)}
-.chart__bar-grant{fill:var(--ok)}
-.chart__line{fill:none;stroke:var(--accent);stroke-width:1.5;stroke-linejoin:round}
-.chart__area{fill:var(--accent-soft)}
-.chart__dot{fill:var(--accent)}
+.chart__seg--s0{fill:var(--chart-s0)}
+.chart__seg--s1{fill:var(--chart-s1)}
+.chart__seg--s2{fill:var(--chart-s2)}
+.chart__seg--s3{fill:var(--chart-s3)}
+.chart__seg--s4{fill:var(--chart-s4)}
 .chart-legend{display:flex;align-items:center;gap:.4rem;margin:0;color:var(--text-faint);
-  font-size:var(--fs-sm)}
-.chart-legend__swatch{width:8px;height:8px;border-radius:2px;display:inline-block;margin-left:.6rem}
-.chart-legend__swatch--spend{background:var(--accent)}
-.chart-legend__swatch--grant{background:var(--ok)}
+  font-size:var(--fs-sm);flex-wrap:wrap}
+.chart-legend__item{display:inline-flex;align-items:center;gap:.4rem;max-width:15rem;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chart-legend__swatch{width:8px;height:8px;border-radius:2px;display:inline-block;flex:none}
+.chart-legend__swatch--s0{background:var(--chart-s0)}
+.chart-legend__swatch--s1{background:var(--chart-s1)}
+.chart-legend__swatch--s2{background:var(--chart-s2)}
+.chart-legend__swatch--s3{background:var(--chart-s3)}
+.chart-legend__swatch--s4{background:var(--chart-s4)}
+.chart-empty{display:flex;align-items:center;justify-content:center;min-height:10rem;margin:0;
+  color:var(--text-muted);font-size:var(--fs-md)}
+/* the usage-page range picker: quiet text tabs, the live one underlined */
+.range-tabs{display:flex;gap:1.125rem}
+.range-tab{color:var(--text-faint);text-decoration:none;padding-bottom:.2rem;
+  border-bottom:1px solid transparent}
+.range-tab:hover{color:var(--text)}
+.range-tab--active{color:var(--text-bright);border-bottom-color:var(--accent)}
 .message-stack{display:grid;gap:.85rem;padding:1rem 1.15rem}
 .message-card{background:var(--surface-2);border:1px solid var(--border);
   border-radius:var(--r-md);padding:1rem 1.1rem;display:grid;gap:.45rem}
@@ -381,7 +393,7 @@
    never UI. Everywhere else is Geist or Geist Mono - a face that only shows up a couple of
    times reads as intentional; a face that shows up in the labels reads as a font soup. */
 .sidebar__brand span{font-family:var(--serif);font-weight:600;font-size:.95rem;letter-spacing:.04em}
-.shell .label,.shell .page__eyebrow,.section__title,.chart-legend,.chart__label,.chart__value,
+.shell .label,.shell .page__eyebrow,.section__title,.chart-legend,.chart__label,.chart__value,.range-tab,
 .sidebar__group,.sidebar__item,.sidebar__new,.sidebar__run,.sidebar__credits,
 .sidebar__settings>summary,.table th,.status,.shell .btn,.dashboard-notice h2,.auth__alt,
 .auth__foot{font-family:var(--mono);letter-spacing:.12em;text-transform:uppercase}

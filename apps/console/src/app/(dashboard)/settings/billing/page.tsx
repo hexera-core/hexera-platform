@@ -12,15 +12,11 @@ import {
   planLabel,
   subscriptionSummary,
 } from "@/app/_components/billing";
-import { BalanceChart, SpendChart } from "@/app/_components/billing-charts";
+import { CreditsChart } from "@/app/_components/billing-charts";
 import { ExtraCreditsPicker, ManageBillingButton, PlanPicker } from "@/app/_components/billing-panel";
 import { DashboardNotice } from "@/app/_components/dashboard-notice";
 import { formatCredits, formatSigned, ledgerReason, shortRunId } from "@/app/_components/ledger";
-import {
-  activityTotals,
-  activityWindow,
-  balanceSeries,
-} from "@/app/_components/ledger-activity";
+import { spendByDay, spendTotal } from "@/app/_components/ledger-activity";
 import { NavLink } from "@/app/_components/nav-link";
 import { runTitle } from "@/app/_components/run-status";
 import { When } from "@/app/_components/when-time";
@@ -54,12 +50,19 @@ const NAMED_RUNS = 100;
  *  charts describe the recent picture and say so; a busier workspace keeps the full table
  *  (paginated below) for the rest. */
 const ACTIVITY_LIMIT = 100;
-const ACTIVITY_DAYS = 30;
+
+/** The chart's range choices, in days - the same segmented control every usage page teaches. */
+const RANGE_CHOICES = [7, 30, 90] as const;
+const DEFAULT_RANGE = 30;
 
 export default async function BillingPage({
   searchParams,
 }: {
-  searchParams?: Promise<{ checkout?: string | string[]; cursor?: string | string[] }>;
+  searchParams?: Promise<{
+    checkout?: string | string[];
+    cursor?: string | string[];
+    range?: string | string[];
+  }>;
 }) {
   const ownerId = ownerIdFromSession(await auth());
   if (!ownerId) {
@@ -70,6 +73,9 @@ export default async function BillingPage({
     Array.isArray(params?.checkout) ? params.checkout[0] : params?.checkout,
   );
   const cursor = Array.isArray(params?.cursor) ? params.cursor[0] : params?.cursor;
+  const rangeParam = Array.isArray(params?.range) ? params.range[0] : params?.range;
+  const requested = rangeParam ? Number(rangeParam) : NaN;
+  const range = (RANGE_CHOICES as readonly number[]).includes(requested) ? requested : DEFAULT_RANGE;
 
   // Six independent soft reads, so one failing panel does not blank the others; the run names
   // only dress the ledger, so without them each run is shown by its short id.
@@ -91,13 +97,18 @@ export default async function BillingPage({
     }
   }
   const paying = isPaying(subscription);
-  const days = activityWindow(activity?.items ?? [], new Date(), ACTIVITY_DAYS);
-  const totals = activityTotals(days);
-  // A leftover cursor means the read stopped before the ledger's beginning, so the balance line
-  // is only drawn over days the window actually covers.
-  const balances = credits
-    ? balanceSeries(days, credits.balance, activity !== null && !activity.next_cursor)
-    : [];
+  // A ledger reason's run is the spend's source: its title when the run still names itself,
+  // the short id when the name read did not reach it, "Other" for spend not tied to a run.
+  const sourceOf = (entry: Entry) => {
+    const runId = ledgerReason(entry.reason).runId;
+    if (!runId) {
+      return { key: "other", label: "Other" };
+    }
+    return { key: runId, label: names.get(runId) ?? `Run ${shortRunId(runId)}` };
+  };
+  const spend = spendByDay(activity?.items ?? [], sourceOf, new Date(), range);
+  const spent = spendTotal(spend.days);
+  const topSource = spend.sources[0] ?? null;
   const currentPlan = catalogue?.plans.find((candidate) => candidate.name === subscription?.plan);
 
   return (
@@ -120,29 +131,29 @@ export default async function BillingPage({
         </div>
       ) : null}
 
+      <p className="page__sub">
+        {subscription === null
+          ? "Current plan unavailable"
+          : `Current plan · ${planLabel(paying ? subscription.plan : "")} — ${subscriptionSummary(subscription)}${currentPlan ? ` ${currentPlan.included_credits.toLocaleString()} credits a month.` : ""}`}
+      </p>
+
       <div className="summary-grid">
         <div className="metric-card">
-          <p className="label">Current plan</p>
-          <b>{subscription === null ? "Unavailable" : planLabel(paying ? subscription.plan : "")}</b>
+          <p className="label">Credits used</p>
+          <b>{activity === null ? "—" : formatCredits(spent)}</b>
+          <span>{activity === null ? "activity unavailable" : `In the last ${range} days`}</span>
+        </div>
+        <div className="metric-card">
+          <p className="label">Top source</p>
+          <b>{topSource ? topSource.label : "—"}</b>
           <span>
-            {subscription === null
-              ? "Plan data unavailable"
-              : `${subscriptionSummary(subscription)}${currentPlan ? ` ${currentPlan.included_credits.toLocaleString()} credits a month.` : ""}`}
+            {topSource ? `${formatCredits(topSource.amount)} in the last ${range} days` : "No credits used yet"}
           </span>
         </div>
         <div className="metric-card">
           <p className="label">Credit balance</p>
           <b>{credits ? formatCredits(credits.balance) : "—"}</b>
-          <span>{credits ? credits.unit : "unavailable"} available</span>
-        </div>
-        <div className="metric-card">
-          <p className="label">Spent in the last 30 days</p>
-          <b>{activity === null ? "—" : formatCredits(totals.spent)}</b>
-          <span>
-            {activity === null
-              ? "activity unavailable"
-              : `${formatCredits(totals.granted)} granted over the same window`}
-          </span>
+          <span>{credits ? `${credits.unit} available` : "unavailable"}</span>
         </div>
       </div>
 
@@ -177,30 +188,42 @@ export default async function BillingPage({
       {activity === null ? null : (
         <section aria-labelledby="activity-title" className="section">
           <div className="section__head">
-            <h2 className="section__title" id="activity-title">Credit activity</h2>
-            <p className="section__note">Last 30 days</p>
+            <h2 className="section__title" id="activity-title">Credits over time</h2>
+            <nav className="range-tabs">
+              {RANGE_CHOICES.map((choice) => (
+                <Link
+                  className={`range-tab${choice === range ? " range-tab--active" : ""}`}
+                  href={`/settings/billing?range=${choice}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`}
+                  key={choice}
+                >
+                  {choice} days
+                </Link>
+              ))}
+            </nav>
           </div>
-          <div className="activity-grid">
-            <section className="panel">
+          <p className="page__sub">
+            Daily credits by source, {spend.days[0]?.label} to {spend.days.at(-1)?.label}.
+            {activity.next_cursor ? ` The ${ACTIVITY_LIMIT} newest ledger entries; older spend stays in the ledger below.` : ""}
+          </p>
+          <section className="panel">
+            {spend.sources.length > 1 ? (
               <div className="panel__head">
-                <p className="label">Spent and granted per day</p>
                 <p className="chart-legend">
-                  <i className="chart-legend__swatch chart-legend__swatch--spend" /> spent
-                  <i className="chart-legend__swatch chart-legend__swatch--grant" /> granted
+                  {spend.sources.map((source, index) => (
+                    <span className="chart-legend__item" key={source.key}>
+                      <i className={`chart-legend__swatch chart-legend__swatch--s${index}`} />
+                      {source.label}
+                    </span>
+                  ))}
                 </p>
               </div>
-              <SpendChart days={days} />
-            </section>
-            <section className="panel">
-              <div className="panel__head">
-                <p className="label">Balance at end of day</p>
-                {activity.next_cursor ? (
-                  <p className="chart-legend">earlier history not shown</p>
-                ) : null}
-              </div>
-              <BalanceChart days={days} series={balances} />
-            </section>
-          </div>
+            ) : null}
+            {spent > 0 ? (
+              <CreditsChart days={spend.days} sources={spend.sources} />
+            ) : (
+              <p className="chart-empty">No credits used in this range.</p>
+            )}
+          </section>
         </section>
       )}
 
