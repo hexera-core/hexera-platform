@@ -95,11 +95,23 @@ def fea_part_kind(args):
     (engines/surface_run) - and no engine meshes a "body-surface" for structural work, so that word
     only ever refused a valid request. The model chose it now and then for a surface STEP (dev-areen,
     12 Nov 2026: one turn repaired itself, the next told the user "requires a Solid body or Planar
-    domain"). A flat 2D "planar-domain" is a real structural input and is kept."""
+    domain"). A flat 2D "planar-domain" is a real structural input and is kept.
+    The same held for "solid-assembly": the FEA path meshes a part of several bodies as it is (bonded or in
+    contact, as the stage confirmed), and the only engine that takes a solid assembly makes a multi-region
+    fluid+solid mesh, never a structural one. The model wrote it for a 5-body knee implant (dev-areen,
+    13 Nov 2026) and the gate answered that the mesher "cannot mesh a Solid assembly for FEA". So the rule
+    is general: a structural request keeps only "solid-body" and "planar-domain" (STRUCTURAL_KEPT)."""
     if (isinstance(args, dict) and str(args.get("purpose") or "") == "structural"
-            and str(args.get("input_kind") or "") == "body-surface"):
+            and str(args.get("input_kind") or "") not in STRUCTURAL_KEPT):
         return {**args, "input_kind": "solid-body"}
     return args
+
+
+#: The only input kinds a structural request keeps as written (fea_part_kind). EVERY other word the model
+#: may choose - "body-surface", "solid-assembly", "fluid-domain", or one added later - is read as the part
+#: itself: no engine meshes them for structural work, so each one only ever refused a valid FEA request,
+#: and the next variant must not need its own fix. "" stays "" (not yet declared).
+STRUCTURAL_KEPT = ("solid-body", "planar-domain", "")
 
 
 def _normalize_declared_patches(args: dict):

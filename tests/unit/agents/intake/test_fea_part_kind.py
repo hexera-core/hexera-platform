@@ -12,6 +12,25 @@ def test_structural_body_surface_becomes_the_part():
     assert out == {"purpose": "structural", "input_kind": "solid-body", "x": 1}
 
 
+def test_structural_solid_assembly_becomes_the_part():
+    out = fea_part_kind({"purpose": "structural", "input_kind": "solid-assembly"})
+    assert out == {"purpose": "structural", "input_kind": "solid-body"}
+    prev = preview_admission("gmsh", out["purpose"], out["input_kind"], dimensionality="3D")
+    assert prev["verdict"] != "impossible", prev
+
+
+def test_any_other_word_for_a_structural_part_becomes_the_part():
+    for kind in ("fluid-domain", "some-new-kind", "body-surface", "solid-assembly"):
+        out = fea_part_kind({"purpose": "structural", "input_kind": kind})
+        assert out["input_kind"] == "solid-body", kind
+    assert fea_part_kind({"purpose": "structural", "input_kind": ""})["input_kind"] == ""
+
+
+def test_a_thermal_assembly_is_left_alone():
+    args = {"purpose": "conjugate_heat_transfer", "input_kind": "solid-assembly"}
+    assert fea_part_kind(dict(args)) == args
+
+
 def test_other_kinds_and_purposes_are_untouched():
     for args in ({"purpose": "structural", "input_kind": "planar-domain"},
                  {"purpose": "structural", "input_kind": "solid-body"},
