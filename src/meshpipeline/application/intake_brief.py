@@ -110,8 +110,11 @@ def build_checks(brief: dict[str, Any]) -> list[dict[str, Any]]:
             else:
                 # a supported engine needs no explanation on the card (the admission's message is
                 # about what is still open, which the intake settles - FEA sets its element order)
+                # in words, never the registry's keys ("snappy", "external_cfd", "solid-body")
+                from meshpipeline.engines.purposes import purpose_label
+                from meshpipeline.engines.registry import engine_label
                 add("engine_compatible",
-                    f"Engine {engine} supports {purpose} from {input_kind}",
+                    f"{engine_label(str(engine))} can mesh this part for {purpose_label(str(purpose))}",
                     PASS if ok else FAIL, "" if ok else str(r.get("explanation") or ""))
         except Exception:
             # A gate that cannot run is not a gate that passed.
@@ -128,8 +131,9 @@ def build_checks(brief: dict[str, Any]) -> list[dict[str, Any]]:
             if purpose in set(purpose_keys()):
                 allowed = set(PURPOSES[purpose].boundary_roles)
                 bad = sorted({p["role"] for p in patches if p.get("role") not in allowed})
+                from meshpipeline.engines.purposes import purpose_label
                 add("boundary_roles_valid",
-                    f"{len(patches)} boundary assignment(s) valid for {purpose}",
+                    f"{len(patches)} boundary assignment(s) valid for {purpose_label(str(purpose))}",
                     PASS if not bad else FAIL,
                     "" if not bad else f"roles not admitted by {purpose}: {', '.join(bad)}")
             else:
@@ -230,6 +234,9 @@ def build_brief(session: Any, *, part_matches: dict | None = None) -> dict[str, 
         if brief["mesh_as"] and brief.get("engine_params"):
             brief["engine_params_label"] = _clean(card_engine_settings(brief["mesh_as"], brief["engine_params"],
                                                                        elements=card_elements(_declared)))
+    # THE CELL-LIMIT ANSWER IN WORDS on the card, never the parameter's own ("narrow gaps: within_limit")
+    if brief.get("engine_params") and not brief.get("engine_params_label"):
+        brief["engine_params_label"] = _clean(_params_words(brief["engine_params"]))
     # absent stays absent: a field Intake never settled is not a blank row
     brief = {k: v for k, v in brief.items() if v is not None}
     brief["submitted"] = bool(getattr(session, "intake_submitted", False))
@@ -246,6 +253,22 @@ def build_brief(session: Any, *, part_matches: dict | None = None) -> dict[str, 
     brief["checks"] = build_checks(brief)
     _add_display_labels(brief)
     return brief
+
+
+def _params_words(params: Any) -> str | None:
+    """The engine settings as the card says them, when one of them has words of its own (the cell-limit
+    answer); None leaves the console's own reading of them."""
+    from meshpipeline.engines.gap_sizing import FULL_RULE, NARROW_GAPS_PARAM, WITHIN_LIMIT
+    if not isinstance(params, dict) or NARROW_GAPS_PARAM not in params:
+        return None
+    said = {WITHIN_LIMIT: "Narrow gaps: kept within the cell limit", FULL_RULE: "Narrow gaps: full detail"}
+    out = []
+    for k, v in params.items():
+        if k == NARROW_GAPS_PARAM:
+            out.append(said.get(str(v), f"Narrow gaps: {v}"))
+        else:
+            out.append(f"{str(k).replace('_', ' ')}: {v}")
+    return ", ".join(out)
 
 
 def _fea_declaration(messages: list) -> str:

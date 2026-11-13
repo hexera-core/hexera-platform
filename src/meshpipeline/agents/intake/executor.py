@@ -543,6 +543,24 @@ class IntakeToolExecutor:
                 "value that was your own and check again, or put the finding to the user with "
                 "the one revision that would pass; if they want alternatives they will ask."))
         chosen_by_user = named_now or es.user_chose(eng, st.user_texts)
+        if not chosen_by_user:
+            # THE USER'S OWN LAST WORD ON THE ENGINE WINS over the model's proposal: with no question
+            # asked any more, a model that proposes snappyHexMesh after "actually, cfMesh" would
+            # otherwise select it over the user's words
+            theirs = next((e for e in self._engines if e != eng and es.user_chose(e, st.user_texts)), None)
+            if theirs is not None:
+                logger.info("Intake: the model proposed %s; the user chose %s - job_id=%s",
+                            eng, theirs, self._job_id)
+                eng, chosen_by_user = theirs, True
+        if (es.state_of(sel) == es.CONFIRMED and sel.get("engine") != eng and not chosen_by_user
+                and sel.get("session") == st.session_id and sel.get("owner") == st.owner_id):
+            # THE ENGINE IS SETTLED and nobody asked for another: only the user's own words change
+            # it ("use cfMesh"), never the model's second thoughts
+            shown = _vocab.to_display(_vocab.ENGINE, str(sel.get("engine") or ""))
+            return IntakeToolResult(tool="propose_engine_selection", accepted=False, content=(
+                f"Not changed: {shown} is the selected engine and the user did not ask for "
+                f"{_vocab.to_display(_vocab.ENGINE, eng)}. Keep {shown}; do not mention the "
+                "engine. Carry on with the next thing you need."))
         # THE MEASURED RECOMMENDATION IS THE ENGINE PROPOSED. The model presents the system's
         # recommendation, it does not pick its own: when the user named no engine and the
         # geometry was measured and ranked, the question proposes the best-ranked engine, with its
@@ -691,20 +709,35 @@ class IntakeToolExecutor:
                 content=(f"The user named {_vocab.to_display(_vocab.ENGINE, eng)} themselves, so it is SELECTED - "
                          "do not ask them to confirm it. Gather the remaining requirements and call "
                          "preview_selected_admission."))
-        if recd is not None and recd.fit_of(eng) is not None:
-            st.selection_prompt = measured_choice.statement(recd, eng)
-        else:
-            st.selection_prompt = es.render_selection_statement(
-                eng, own_reason or (str(args.get("reason") or "") if model_pick == eng else ""))
-        logger.info("Intake: engine selection PROPOSED engine=%s - job_id=%s", eng, self._job_id)
-        swapped = (f" You suggested {_vocab.to_display(_vocab.ENGINE, model_pick)}; the measured "
-                   f"recommendation for this geometry is {_vocab.to_display(_vocab.ENGINE, eng)}, "
-                   "so that is the engine proposed." if model_pick != eng else "")
-        return IntakeToolResult(tool="propose_engine_selection", accepted=True, advanced=True,
-                                content=("Proposed." + swapped + " The application asks the user "
-                                         "this one engine question in its own words, with the "
-                                         "measured evidence and the alternatives; do not "
-                                         "paraphrase it or ask it again. Await their answer."))
+        # THE ENGINE IS CHOSEN, NOT ASKED (Areen, 2026-11-13; it replaced "recommend, the user
+        # picks"): the best engine for this part - the measured recommendation, an engine that reads
+        # the upload itself, else the model's capable pick - is selected here, with no question and
+        # no lab numbers in the chat. The plan card names it; "use cfMesh" in the user's own words
+        # still chooses another (chosen_by_user above).
+        st.selection = {**st.selection, "state": es.CONFIRMED, "via": es.VIA_AUTO,
+                        "confirmed_revision": st.revision,
+                        "expires_at": es.time.time() + es.CONFIRMED_TTL_S}
+        st.selection_prompt = None
+        logger.info("Intake: engine selection CONFIRMED automatically engine=%s (model said %s) - "
+                    "job_id=%s", eng, model_pick, self._job_id)
+        shown = _vocab.to_display(_vocab.ENGINE, eng)
+        ask = measured_choice.gap_question(recd, eng) if recd is not None else ""
+        if ask:
+            # THE ONE REAL TRADE-OFF: full detail does not fit the cell limit. One plain sentence,
+            # two buttons (purpose_map.choices_for); the answer travels as narrow_gaps.
+            st.selection = {**st.selection, "gap_question": ask}
+            st.selection_prompt = ask
+            return IntakeToolResult(
+                tool="propose_engine_selection", accepted=True, advanced=True,
+                content=(f"{shown} is SELECTED (engine_source suggested_confirmed). The application "
+                         "now asks the user its one cell-limit question in its own words; do not "
+                         "paraphrase it, and do not mention the engine. Await their answer."))
+        return IntakeToolResult(
+            tool="propose_engine_selection", accepted=True, advanced=True,
+            content=(f"{shown} is SELECTED for this part (engine_source suggested_confirmed). Do not "
+                     "ask about the engine, do not compare engines, and do not mention it or any lab "
+                     "evidence - the plan card names it. Gather what is still missing and call "
+                     "preview_selected_admission and submit_requirements."))
 
     async def _do_confirm_engine_selection(self, args: dict) -> IntakeToolResult:
         st = self.state

@@ -215,3 +215,19 @@ def test_no_internal_parameter_text_reaches_the_card():
 def test_a_cfd_card_is_unchanged():
     row = next(c for c in build_checks({"purpose": "external_cfd"}) if c["id"] == "boundary_roles_valid")
     assert row["status"] == UNKNOWN and row["detail"] == "no boundary assignments were declared"
+
+
+def test_the_card_says_the_engine_check_and_the_cell_limit_answer_in_words():
+    # Areen, 2026-11-13: no registry keys on the plan ("Engine snappy supports external_cfd from solid-body"),
+    # and the cell-limit answer in words, never "narrow gaps: within_limit"
+    from types import SimpleNamespace
+
+    from meshpipeline.application.intake_brief import build_brief
+    s = SimpleNamespace(purpose="external_cfd", mesh_engine="snappy", input_kind="solid-body", dimensionality="3D",
+                        requested_mesh_fidelity=None, domain="car", intake_patches=None,
+                        engine_params={"narrow_gaps": "within_limit"}, request_txt="r", review_brief_txt="b",
+                        intake_submitted=False, messages=[], user_notes=[])
+    b = build_brief(s)
+    label = next(c for c in b["checks"] if c["id"] == "engine_compatible")["label"]
+    assert label == "snappyHexMesh can mesh this part for External CFD"
+    assert b["engine_params_label"] == "Narrow gaps: kept within the cell limit"

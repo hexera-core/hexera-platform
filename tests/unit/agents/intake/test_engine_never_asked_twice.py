@@ -112,16 +112,19 @@ def test_a_proposal_a_turn_after_the_user_named_the_engine_is_selected_not_asked
     assert "I'd mesh this with" not in out["messages"][-1]["content"]
 
 
-def test_a_proposal_of_an_engine_the_user_moved_away_from_is_still_asked():
+def test_a_proposal_of_an_engine_the_user_moved_away_from_takes_the_users_engine():
+    # the engine is chosen, not asked (Areen, 2026-11-13): the model's snappyHexMesh after the user's
+    # "actually cfMesh" selects cfMesh - the user's last word - and asks nothing
     messages = [{"role": "user", "content": "snappyHexMesh"},
                 {"role": "assistant", "content": "ok"},
                 {"role": "user", "content": "hmm, actually cfMesh"}]
     out, _ = _run(messages, [
         _resp([_tool_call("propose_engine_selection", json.dumps({"engine": "snappy"}))]),
-        _resp(content="unreached"),
+        _resp(content="What flow speed?"),
     ])
-    assert out["intake_gate"]["selection"]["state"] == es.PROPOSED
-    assert "I'd mesh this with snappyHexMesh" in out["messages"][-1]["content"]
+    sel = out["intake_gate"]["selection"]
+    assert sel["state"] == es.CONFIRMED and sel["engine"] == "cfmesh"
+    assert "I'd mesh this with" not in out["messages"][-1]["content"]
 
 
 # ------------------------------------------- an engine that cannot mesh what was confirmed ----
@@ -163,9 +166,11 @@ def test_an_engine_the_user_named_is_theirs_even_when_it_cannot_mesh_it():
 def test_an_engine_that_can_mesh_the_confirmed_geometry_is_proposed_as_before(kind, flow, engine):
     out, _ = _run([_confirmed(kind, flow), {"role": "user", "content": "which one do you suggest?"}], [
         _resp([_tool_call("propose_engine_selection", json.dumps({"engine": engine}))]),
-        _resp(content="unreached"),
+        _resp(content="What flow speed?"),
     ])
-    assert out["intake_gate"]["selection"]["state"] == es.PROPOSED and out["intake_gate"]["selection"]["engine"] == engine
+    # chosen for the user, with no question (Areen, 2026-11-13)
+    sel = out["intake_gate"]["selection"]
+    assert sel["state"] == es.CONFIRMED and sel["engine"] == engine and sel["via"] == es.VIA_AUTO
 
 
 def test_the_confirmed_case_is_read_back_from_the_stage_sentence_only():

@@ -96,8 +96,9 @@ def test_calls_execute_in_provider_order(h, monkeypatch):
     p = _policy_for(st, monkeypatch)
     _drive(p, [_round(_tc("propose_engine_selection", engine="snappy"),
                       _tc("propose_engine_selection", engine="cfmesh"))], h, monkeypatch)
-    # the LAST proposal in provider order is the standing one
-    assert st.selection["engine"] == "cfmesh"
+    # the FIRST proposal in provider order settles the engine (it is chosen, not asked: Areen,
+    # 2026-11-13); a later one the user never asked for changes nothing
+    assert st.selection["engine"] == "snappy" and st.selection["state"] == "confirmed_selection"
 
 
 def test_invocation_local_state_starts_clean():
@@ -191,7 +192,9 @@ def test_submit_then_engine_proposal_invalidates_the_approval(h, monkeypatch):
                           _tc("propose_engine_selection", engine="cfmesh"))], h, monkeypatch)
     assert st.submit_summary is None and st.submit_args is None, "the submission is void"
     assert st.approval["status"] == "invalidated"
-    assert "Selected engine: cfmesh" in str(r.payload), "the selection prompt wins"
+    # the engine is chosen, not asked: no engine question ends the turn, the model goes on
+    assert "Selected engine" not in str(r.payload)
+    assert st.selection["engine"] == "cfmesh" and st.selection["state"] == "confirmed_selection"
 
 
 def test_submit_then_a_read_only_call_preserves_the_approval(h, monkeypatch):

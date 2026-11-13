@@ -31,6 +31,11 @@ VIA_THE_FILE = "the_file"
 # solid mesher and quadratic tetrahedra in version 1 - selected without a question; the job sheet
 # the user approves names it.
 VIA_FEA_PATH = "the_fea_path"
+# A FLOW PART is meshed by the best engine for it, chosen by the application without a question
+# (Areen, 2026-11-13 - this replaced "recommend, the user picks"): the measured recommendation when
+# there is one, else the engine the model proposed and the capability check let through. The plan
+# card names it; the user's own words ("use cfMesh", in the chat or the notes) still choose another.
+VIA_AUTO = "the_best_fit"
 
 # A PLAIN YES to the application's own question. The question names the engine ("Do you want to
 # select snappyHexMesh?"), so "yes", "ok", "sure" or "go with that" is a complete answer that binds
@@ -502,6 +507,45 @@ def choose_listed(sel: dict | None, *, session_id: str, owner_id: str, revision:
         return None
     return {**sel, "id": uuid.uuid4().hex, "engine": engine, "state": CONFIRMED,
             "confirmed_revision": revision, "expires_at": time.time() + CONFIRMED_TTL_S}
+
+
+def switch_by_words(sel: dict | None, *, session_id: str, owner_id: str, revision: str,
+                    latest_user_message: str) -> dict | None:
+    """THE USER'S OWN WORDS OVERRIDE THE ENGINE THE APPLICATION CHOSE. The engine is selected without
+    a question (VIA_AUTO); a message that plainly chooses ONE other registered engine - "use cfMesh",
+    "go with Gmsh" - selects it here, before the model runs. A question, a hedge, two engines or a
+    refusal is left to the model."""
+    if state_of(sel) != CONFIRMED or not sel or sel.get("via") != VIA_AUTO:
+        return None
+    if sel.get("session") != session_id or sel.get("owner") != owner_id:
+        return None
+    message = str(latest_user_message or "")
+    named = _vocab.engines_named_in(message, "")
+    if len(named) != 1 or named[0] == sel.get("engine"):
+        return None
+    engine = named[0]
+    if _only_shortens(str(sel.get("engine") or ""), message, named):
+        return None
+    if "?" in message or declines(engine, message) or not _chooses_in(engine, message):
+        return None
+    out = {**sel, "id": uuid.uuid4().hex, "engine": engine, "state": CONFIRMED,
+           "via": VIA_CONVERSATION, "confirmed_revision": revision,
+           "expires_at": time.time() + CONFIRMED_TTL_S}
+    out.pop("gap_question", None)    # asked of the engine the user has just left behind
+    return out
+
+
+def note_chooses_engine(note: str, current: str) -> str:
+    """A note that plainly chooses ONE engine other than `current` ("use cfMesh"): the chat line that
+    chooses it ("Use cfMesh"); "" otherwise."""
+    text = str(note or "")
+    named = _vocab.engines_named_in(text, "")
+    if len(named) != 1 or named[0] == (current or "").strip().lower():
+        return ""
+    engine = named[0]
+    if "?" in text or declines(engine, text) or not _chooses_in(engine, text):
+        return ""
+    return f"Use {engine_label(engine)}"
 
 
 def verify_confirmed(sel: dict | None, engine: str, *, session_id: str,

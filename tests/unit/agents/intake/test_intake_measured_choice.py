@@ -68,25 +68,31 @@ def test_the_prompt_note_ranks_every_engine_and_tells_the_model_to_propose_the_r
     assert mc.prompt_block(None, settled=False) == ""
 
 
-def test_a_gap_rule_over_the_cell_limit_is_put_to_the_user_with_the_question():
-    """THE CELL BUDGET, UP FRONT (engines/gap_sizing): when 13 cells across every measured gap
-    needs more than one job may build, the engine question says so with the choices - before any
-    mesh is paid for. Within the limit the question is unchanged."""
+def test_a_gap_rule_over_the_cell_limit_is_one_plain_question_with_two_buttons():
+    """THE CELL BUDGET, UP FRONT (engines/gap_sizing): when 13 cells across every measured gap needs
+    more than one job may build, the user is asked ONE plain sentence - keep the limit, or try full
+    detail - with two buttons. Within the limit nothing is asked, and no lab numbers are said."""
     import dataclasses
+
+    from meshpipeline.application.purpose_map import choices_for
     rec = _rec()
-    assert "Cell sizing" not in mc.statement(rec, "snappy")
+    assert mc.gap_question(rec, "snappy") == ""
     over = dataclasses.replace(rec, traits={**rec.traits, "gap_cells": 5.0e7,
                                             "narrowest_gap": 0.0004})
-    text = mc.statement(over, "snappy")
-    assert "Cell sizing: the narrowest gap is about 0.4 mm across" in text
-    assert "more than the 8.0 M one job may build" in text
-    assert "(1) accept fewer cells across the narrowest spots" in text
-    assert "(2) have the cell limit raised" in text and "(3) mesh a smaller piece" in text
-    assert text.endswith("OK, or pick another engine?") and text.count("?") == 1
-    note = mc.prompt_block(over, settled=False)
-    assert "narrow_gaps='within_limit'" in note
+    q = mc.gap_question(over, "snappy")
+    assert q.startswith("Full detail needs about 57.5 M cells, over the 8.0 M limit. Keep 8.0 M (about ")
+    assert q.endswith("cells across the narrowest gaps), or try full detail?") and q.count("?") == 1
+    assert "passed" not in q and "%" not in q and "(1)" not in q
+    assert [c["send"] for c in choices_for(q)] == ["Keep 8.0 M", "Try full detail"]
+    assert choices_for("Which fluid is it?") == []
+    # an engine that cannot act on the answer is not asked it
+    assert mc.gap_question(over, "gmsh") == ""
+    # the answer reaches the run through the next turn's note
+    note = mc.gap_answer_block(q)
+    assert "narrow_gaps='within_limit'" in note and "Try full detail" in note
+    assert mc.gap_answer_block("") == ""
     within = dataclasses.replace(rec, traits={**rec.traits, "gap_cells": 2.0e5})
-    assert "do not raise it unasked" in mc.prompt_block(within, settled=False)
+    assert "never raise it yourself" in mc.prompt_block(within, settled=False)
 
 
 def test_the_console_payload_exists_only_while_the_question_is_open():
@@ -151,14 +157,42 @@ def _executor(recommendation, *, user_texts=(), latest="internal flow, air"):
     return st, ex
 
 
-def test_the_model_presents_the_recommendation_it_does_not_pick_its_own():
+def test_the_measured_recommendation_is_selected_with_no_question():
+    # the engine is chosen, not asked (Areen, 2026-11-13): the model's cfMesh gives way to the
+    # measured best, which is selected at once - no question, no lab numbers in the chat
     st, ex = _executor(_rec())
     res = asyncio.run(ex.run("propose_engine_selection", {"engine": "cfMesh", "reason": "it is fast"}))
     assert res.accepted
-    assert st.selection["engine"] == "snappy" and st.selection["state"] == es.PROPOSED
+    assert st.selection["engine"] == "snappy" and st.selection["state"] == es.CONFIRMED
+    assert st.selection["via"] == es.VIA_AUTO
     assert st.selection["recommendation"]["engine"] == "snappy"
-    assert st.selection_prompt == mc.statement(_rec(), "snappy")
-    assert "the measured recommendation for this geometry is snappyHexMesh" in res.content
+    assert st.selection_prompt is None
+    assert "is SELECTED" in res.content and "do not mention" in res.content
+
+
+def test_the_cell_limit_question_is_the_only_thing_asked():
+    import dataclasses
+    over = dataclasses.replace(_rec(), traits={**_rec().traits, "gap_cells": 5.0e7, "narrowest_gap": 0.0004})
+    st, ex = _executor(over)
+    asyncio.run(ex.run("propose_engine_selection", {"engine": "snappyHexMesh"}))
+    assert st.selection["state"] == es.CONFIRMED
+    assert st.selection_prompt == mc.gap_question(over, "snappy") == st.selection["gap_question"]
+
+
+def test_the_users_words_switch_the_engine_the_application_chose():
+    st, ex = _executor(_rec())
+    asyncio.run(ex.run("propose_engine_selection", {"engine": "snappyHexMesh"}))
+    switched = es.switch_by_words(st.selection, session_id="s", owner_id="u", revision="r2",
+                                  latest_user_message="use cfMesh")
+    assert switched["engine"] == "cfmesh" and switched["state"] == es.CONFIRMED
+    assert switched["via"] == es.VIA_CONVERSATION
+    for said in ("is cfMesh better?", "don't use cfMesh", "ok", "use snappyHexMesh"):
+        assert es.switch_by_words(st.selection, session_id="s", owner_id="u", revision="r2",
+                                  latest_user_message=said) is None, said
+    # a note says it too: the console sends the chat line for the user
+    assert es.note_chooses_engine("Please use cfMesh for this one.", "snappy") == "Use cfMesh"
+    assert es.note_chooses_engine("refine the mirrors to 2 mm", "snappy") == ""
+    assert es.note_chooses_engine("use snappyHexMesh", "snappy") == ""
 
 
 def test_an_engine_the_user_named_is_theirs_whatever_the_recommendation():
@@ -167,11 +201,11 @@ def test_an_engine_the_user_named_is_theirs_whatever_the_recommendation():
     assert st.selection["engine"] == "cfmesh" and st.selection["state"] == es.CONFIRMED
 
 
-def test_without_a_measurement_the_old_question_is_asked():
+def test_without_a_measurement_the_models_capable_pick_is_selected():
     st, ex = _executor(None)
     asyncio.run(ex.run("propose_engine_selection", {"engine": "snappyHexMesh", "reason": "it fits the walls"}))
     assert st.selection["engine"] == "snappy" and "recommendation" not in st.selection
-    assert st.selection_prompt == es.render_selection_statement("snappy", "it fits the walls")
+    assert st.selection["state"] == es.CONFIRMED and st.selection_prompt is None
 
 
 # ------------------------------------------------------------- whole turns ----
@@ -213,18 +247,19 @@ def _turn(messages, gate, model, rec):
         return asyncio.run(intake.node_intake(state))
 
 
-def test_a_conversation_where_the_user_takes_another_engine_from_the_list():
+def test_a_conversation_where_the_engine_is_chosen_and_the_user_switches_it():
     msgs = [{"role": "assistant", "content": "Got your file. What will you use the mesh for?"},
             {"role": "user", "content": "internal flow of water through this annulus"}]
     model = _Model(_resp([_tc("propose_engine_selection", {"engine": "cfMesh", "reason": "fast"})]))
     out = _turn(msgs, None, model, _rec())
     reply = out["messages"][-1]["content"]
-    assert reply == mc.statement(_rec(), "snappy")
+    # no engine question: the model goes straight on to what it still needs
+    assert reply == "Which fluid is it?"
     assert "MEASURED ENGINE RECOMMENDATION" in model.systems[0]
     gate = out["intake_gate"]
-    assert gate["selection"]["state"] == es.PROPOSED and gate["selection"]["engine"] == "snappy"
+    assert gate["selection"]["state"] == es.CONFIRMED and gate["selection"]["engine"] == "snappy"
 
-    # the user clicks "Use Gmsh": selected before the model runs, and the model goes on
+    # the user types "Use Gmsh": selected before the model runs, and the model goes on
     msgs += [{"role": "assistant", "content": reply}, {"role": "user", "content": "Use Gmsh"}]
     out = _turn(msgs, gate, _Model(_resp(content="Which fluid is it?")), _rec())
     sel = out["intake_gate"]["selection"]
