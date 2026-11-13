@@ -1,0 +1,114 @@
+{
+  "cad_simplicity": {
+    "edge_delta": {
+      "count": 8,
+      "max": 4.0,
+      "mean": 1.375,
+      "median": 1.5,
+      "min": -2.0
+    },
+    "face_delta": {
+      "count": 8,
+      "max": 1.0,
+      "mean": 0.625,
+      "median": 1.0,
+      "min": 0.0
+    },
+    "files_measured": 8,
+    "files_with_fewer_faces": 0,
+    "files_with_more_faces": 5,
+    "operations_kept": {
+      "count": 8,
+      "max": 2.0,
+      "mean": 1.125,
+      "median": 1.0,
+      "min": 1.0
+    },
+    "solid_count_changed": 6,
+    "vertex_delta": {
+      "count": 8,
+      "max": 8.0,
+      "mean": 2.75,
+      "median": 3.0,
+      "min": -4.0
+    }
+  },
+  "catalogue": {
+    "never_exercised": [
+      "fix_face_boundary",
+      "heal_self_intersections"
+    ],
+    "only_declined": [
+      "fill_nonplanar_hole"
+    ],
+    "tally": {
+      "fill_nonplanar_hole": {
+        "declined": 5,
+        "failed": 0,
+        "kept": 0,
+        "rolled_back": 0
+      },
+      "fill_planar_hole": {
+        "declined": 4,
+        "failed": 0,
+        "kept": 6,
+        "rolled_back": 1
+      },
+      "fix_shape_global": {
+        "declined": 0,
+        "failed": 0,
+        "kept": 0,
+        "rolled_back": 242
+      },
+      "fix_small_edges": {
+        "declined": 0,
+        "failed": 0,
+        "kept": 2,
+        "rolled_back": 243
+      },
+      "fix_small_faces": {
+        "declined": 261,
+        "failed": 0,
+        "kept": 0,
+        "rolled_back": 75
+      },
+      "sew_faces": {
+        "declined": 0,
+        "failed": 0,
+        "kept": 1,
+        "rolled_back": 19
+      }
+    }
+  },
+  "heals": {
+    "corroborated": 0,
+    "kept": 0,
+    "uncorroborated_files": [],
+    "unknown": 0,
+    "unknown_files": []
+  },
+  "outcomes": {
+    "no_change": 1,
+    "not_attempted": 6,
+    "nothing_to_repair": 4,
+    "refused": 15,
+    "repaired": 7
+  },
+  "refusals_by_reason": {
+    "paired_rim": 22
+  },
+  "repaired_by_code": {
+    "open_shell": 36
+  },
+  "routes": {
+    "conservative_repair": 23,
+    "manual_cleanup": 6,
+    "mesh_as_is": 4
+  },
+  "row_count": 33,
+  "stopped_because": {
+    "no_candidate": 2,
+    "resolved": 2,
+    "stalled": 4
+  }
+}
