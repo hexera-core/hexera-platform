@@ -166,3 +166,67 @@ def test_a_target_that_is_not_actually_small_is_declined_before_the_kernel_runs(
 
     assert "not_small" in str(outcome.evidence.get("declined"))
     assert outcome.shape is shape
+
+
+def _wide_sliver_by_area():
+    """A 2 m box with a 4 x 4 x 4 mm corner cut out of it, built here rather than read.
+
+    THE CORPUS CASE, in its simplest form. The cut leaves three 16 mm2 faces on a part whose
+    total face area is about 2.4e7 mm2, so `SMALL_FACE_AREA_FRACTION` (1e-5, i.e. about 240 mm2
+    here) reports every one of them as `small_face` - they are small RELATIVE TO THE PART. None of
+    them is a spot or a strip: each is 4 mm across, far wider than any precision the deviation
+    ceiling allows, so `ShapeFix_FixSmallFace` cannot find them.
+    """
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCP.gp import gp_Pnt
+
+    body = BRepPrimAPI_MakeBox(2000.0, 2000.0, 2000.0).Shape()
+    corner = BRepPrimAPI_MakeBox(gp_Pnt(-1.0, -1.0, -1.0), gp_Pnt(4.0, 4.0, 4.0)).Shape()
+    shape = BRepAlgoAPI_Cut(body, corner).Shape()
+    found, complete = localize_scan(shape)
+    assert complete
+    slivers = [d for d in found
+               if d.code is DefectCode.small_face and d.entity_type == "face"]
+    assert slivers, "the authored part no longer carries a small_face defect"
+    return shape, slivers[0]
+
+
+def test_a_sliver_by_area_too_wide_for_the_precision_is_declined(_sweep_on):
+    # THE REASON ALMOST EVERY CORPUS PART READ `target_remains`: flagged by area, unfindable by
+    # width. Attempting it can only roll back, so the operation declines and says which it is.
+    shape, defect = _wide_sliver_by_area()
+    op = FixSmallFaces()
+    targets = op.targets_for(defect)
+    assert targets
+
+    outcome = op.apply(shape, targets, tolerance_mm=0.1)
+
+    declined = str(outcome.evidence.get("declined"))
+    assert "too_wide_to_find" in declined, declined
+    assert "not_small" not in declined, "it IS small by area; the width is what defeats it"
+    assert outcome.shape is shape, "a decline must hand back the input object itself"
+
+
+def test_a_sliver_within_the_precision_is_still_attempted(_sweep_on):
+    # THE OTHER SIDE OF THE SAME CHECK: widen the precision past the face and the width no longer
+    # declines it. Whether the kernel then removes it is its own judgement; what must not happen
+    # is this operation refusing a target it could have been asked to find.
+    shape, defect = _wide_sliver_by_area()
+    op = FixSmallFaces()
+
+    outcome = op.apply(shape, op.targets_for(defect), tolerance_mm=10.0)
+
+    assert "too_wide_to_find" not in str(outcome.evidence.get("declined", ""))
+
+
+def test_the_authored_sliver_face_is_narrow_enough_to_keep_being_swept(tmp_path, _sweep_on):
+    # The 0.002 mm notch end face is a strip by width as well as a sliver by area, so the width
+    # check must leave it alone - the sweep this operation exists for still runs.
+    shape, defect = _sliver(tmp_path)
+    op = FixSmallFaces()
+
+    outcome = op.apply(shape, op.targets_for(defect), tolerance_mm=0.1)
+
+    assert not outcome.evidence.get("declined")
+    assert outcome.evidence.get("faces_removed") == 1
