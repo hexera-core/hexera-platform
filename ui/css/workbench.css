@@ -11,17 +11,45 @@
    away. Nothing in the conversation is rebuilt or lost: the same #stage and the
    same input bar simply take the drawer's column.
 
-   The grid: the header spans both columns; the drawer column holds the upload
-   bar, the stage and the input bar top to bottom; the workbench column holds
-   the viewer at full height. Folding the drawer collapses its column to zero.
+   The grid: once a viewer owns the workbench the header stops spending a row on
+   itself - its one or two chips (the drawer fold, the readiness chip when the
+   link drops) float over the page instead. The drawer column holds the upload
+   bar, the stage and the input bar top to bottom; the workbench column holds the
+   viewer at full height. Folding the drawer collapses its column to zero.
 / */
 :root{--drawer-w:min(440px,38vw)}
 
+#app{position:relative}
+/* the header only pays for itself while a viewer owns the page: then it overlays instead of
+   spending a row, its wordmark steps aside so nothing floats over the upload bar, and the
+   one or two chips it can hold float clear of the canvas */
+#app.wb>header{position:absolute;z-index:20;inset:0;height:auto;padding:10px 12px;
+  border-bottom:0;background:transparent;pointer-events:none}
+#app.wb>header .chip{pointer-events:auto}
+#app.wb>header .brand{display:none}
+/* THE FOLD IS AN EDGE TAB, not a chip: a slim vertical pull on the drawer's edge, kept wholly
+   inside the drawer column while it is open so no click meant for the canvas can land on it
+   (the stage's own tests click the part's edge, which can project beside the seam). It is
+   narrow so it only covers the conversation's padding gutter, and it ends shy of the seam so
+   the intake's drag grip keeps its 10 px strip. Folded, the tab rides the workbench's left
+   edge - the only spot the fold-out can live; stacked narrow it rides the right edge. */
+#app.wb #wb-toggle{position:absolute;top:50%;left:var(--drawer-w);z-index:35;
+  transform:translate(calc(-100% - 2px),-50%);
+  writing-mode:vertical-rl;height:auto;padding:12px 5px;border-right:0;border-radius:8px 0 0 8px}
+#app.wb.intake #wb-toggle{left:var(--intake-w,33.333%)}
+#app.wb.wb-collapsed #wb-toggle{left:0;transform:translate(0,-50%);
+  border-right:1px solid var(--border);border-left:0;border-radius:0 8px 8px 0}
+@media(max-width:900px){
+  #app.wb #wb-toggle{left:auto;right:0;transform:translate(0,-50%);
+    border-right:0;border-left:1px solid var(--border);border-radius:8px 0 0 8px}
+}
+/* a notice still drops in below the floating chips, the way it used to sit below the bar */
+#app.wb>#notice.show{margin-top:48px}
+
 #app.wb{display:grid;
   grid-template-columns:var(--drawer-w) minmax(0,1fr);
-  grid-template-rows:auto auto auto minmax(0,1fr) auto;
-  grid-template-areas:"hdr hdr" "notice notice" "upload wb" "stage wb" "input wb"}
-#app.wb>header{grid-area:hdr}
+  grid-template-rows:auto auto minmax(0,1fr) auto;
+  grid-template-areas:"notice notice" "upload wb" "stage wb" "input wb"}
 #app.wb>#notice{grid-area:notice}
 #app.wb>#upload-bar{grid-area:upload;border-right:1px solid var(--border)}
 #app.wb>#stage{grid-area:stage;min-height:0;border-right:1px solid var(--border)}
@@ -59,8 +87,8 @@
 #wb-toggle[hidden]{display:none}
 
 @media(max-width:900px){
-  #app.wb{grid-template-columns:minmax(0,1fr);grid-template-rows:auto auto auto minmax(0,1fr) auto auto;
-    grid-template-areas:"hdr" "notice" "upload" "wb" "stage" "input"}
+  #app.wb{grid-template-columns:minmax(0,1fr);grid-template-rows:auto auto minmax(0,1fr) auto auto;
+    grid-template-areas:"notice" "upload" "wb" "stage" "input"}
   #app.wb>#stage{max-height:34vh;border-right:0;border-top:1px solid var(--border)}
   #app.wb>#upload-bar,#app.wb>#input-bar{border-right:0}
   #workbench .viewer{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr) auto auto}
