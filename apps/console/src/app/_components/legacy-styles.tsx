@@ -5,9 +5,22 @@ const legacyFontLinks = [
   { crossOrigin: "anonymous", href: "https://fonts.gstatic.com", rel: "preconnect" },
   {
     href: "https://fonts.googleapis.com/css2?family=Saira+Semi+Condensed:wght@300;400;500;600&family=Cormorant:wght@600&family=Geist:wght@300;400;500;600&family=Geist+Mono:wght@400;500&display=swap",
+    precedence: "base",
     rel: "stylesheet",
   },
 ] as const;
+
+// `precedence` makes each sheet a React stylesheet resource: hoisted into <head> on the server,
+// and on a client navigation the new route is not shown until its sheets have loaded. A bare
+// <link rel="stylesheet"> renders where it sits, in <body>, and the browser paints the page
+// unstyled until it arrives. Resources are also never removed, so the three groups keep every
+// sheet in the same cascade order whichever route group added it first.
+const OVERLAYS = new Set(["/static/css/a11y.css", "/static/css/theme.css"]);
+
+function precedenceOf(href: string): string {
+  if (TOKENS.includes(href)) return "base";
+  return OVERLAYS.has(href) ? "overlay" : "components";
+}
 
 function Sheets({ hrefs }: { hrefs: readonly string[] }) {
   return (
@@ -16,7 +29,7 @@ function Sheets({ hrefs }: { hrefs: readonly string[] }) {
         <link key={link.href} {...link} />
       ))}
       {hrefs.map((href) => (
-        <link href={href} key={href} rel="stylesheet" />
+        <link href={href} key={href} precedence={precedenceOf(href)} rel="stylesheet" />
       ))}
     </>
   );
