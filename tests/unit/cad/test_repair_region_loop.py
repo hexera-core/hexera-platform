@@ -924,3 +924,73 @@ def test_a_region_whose_only_operation_declined_does_not_block_resolved():
     assert [d.fingerprint for d in run.defects_after] == ["edge:a", "edge:b"]
     assert run.stopped_because == "resolved"
     assert run.resolved is True
+
+
+# THE WALK ORDER. `decompose` sorts regions spatially, which is the wrong order to spend a budget
+# in: the run's clock and its operation allowance go to whatever sits at the lowest corner, and a
+# part with many scattered warnings and one error can run out before the error is reached at all.
+
+
+class _MixedPart(_Part):
+    """A part whose defects do NOT all share one severity, reported in a chosen input order.
+
+    `order` is the order the SCANNER lists its findings in, which is the only thing a different
+    input order can mean here - the walk must not depend on it.
+    """
+
+    def __init__(self, severities: dict, *, order: tuple[str, ...] | None = None) -> None:
+        super().__init__(keys=tuple(severities))
+        self.severities = dict(severities)
+        self.order = tuple(order) if order is not None else tuple(severities)
+        self.ops["z"] = _Op(self.clock, "z")
+
+    def scanner(self, shape):
+        self.clock.now += _SCAN_S
+        self.scans += 1
+        found = [_defect(key, self.severities[key]) for key in self.order
+                 if f"+{key}" not in shape]
+        return found, True
+
+
+def test_a_region_holding_an_error_is_walked_before_a_region_of_warnings():
+    """Region 0 is spatially first and holds only a warning; region 1 holds the error. The error
+    is what makes the part unusable, so it is offered a package first - whatever `decompose`'s
+    spatial order says, and whatever the budget then does."""
+    part = _MixedPart({"a": DefectSeverity.warning, "b": DefectSeverity.error})
+    run = _run(part, _author(part))
+
+    assert [p.region_index for p in run.packages] == [1, 0]
+    # THE REPORT STILL CARRIES THE DECOMPOSITION, in its own spatial order.
+    assert [r.index for r in run.regions] == [0, 1]
+
+
+def test_only_the_worst_region_is_reached_when_the_budget_ends_the_walk():
+    """The regression this ordering exists for: one package's worth of allowance buys the ERROR's
+    region, not the warning's. A spatial walk spent it on the warning and committed nothing that
+    mattered."""
+    part = _MixedPart({"a": DefectSeverity.warning, "b": DefectSeverity.error})
+    run = _run(part, _author(part), max_ops=1)
+
+    assert [p.region_index for p in run.packages] == [1]
+    # The error is gone and the warning was never attempted, so what is left is a defect nobody
+    # claimed - which is the trade the ordering makes, and the right way round.
+    assert [d.fingerprint for d in run.defects_after] == ["edge:a"]
+
+
+def test_the_walk_does_not_depend_on_the_order_the_defects_were_reported_in():
+    """Two inspections of the same bytes must produce the same report, so the walk is keyed on
+    severity with `decompose`'s spatial index as the only tie-break - never on the order the scan
+    happened to list its findings in."""
+    severities = {"a": DefectSeverity.warning, "z": DefectSeverity.warning,
+                  "b": DefectSeverity.error}
+    forward = _run(_MixedPart(severities, order=("a", "z", "b")),
+                   _author(_MixedPart(severities, order=("a", "z", "b"))))
+    reversed_ = _run(_MixedPart(severities, order=("b", "z", "a")),
+                     _author(_MixedPart(severities, order=("b", "z", "a"))))
+
+    assert [p.region_index for p in forward.packages] == [1, 0, 0]
+    assert ([p.region_index for p in forward.packages]
+            == [p.region_index for p in reversed_.packages])
+    assert [r.index for r in forward.regions] == [r.index for r in reversed_.regions]
+    assert ([sorted(r.fingerprints) for r in forward.regions]
+            == [sorted(r.fingerprints) for r in reversed_.regions])

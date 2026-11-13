@@ -216,6 +216,55 @@ def _terminal(session: RepairSession, defects, *, escalated, packages,
     return fallback
 
 
+#: Worse first, the same ranking the operation-at-a-time planner orders its defects by
+#: (`plan._SEVERITY_RANK`), restated here because a WALK order and a PROPOSAL order are two
+#: different decisions that happen to share a scale today.
+_SEVERITY_RANK = {DefectSeverity.fatal: 0, DefectSeverity.error: 1,
+                  DefectSeverity.warning: 2, DefectSeverity.info: 3}
+
+
+def _walk_order(regions: tuple[Region, ...], defects) -> tuple[Region, ...]:
+    """The regions in the order they should be OFFERED PACKAGES: worst defect first.
+
+    WHY NOT `decompose` ORDER. `decompose` sorts spatially (ascending `bbox_min`), which is the
+    right order for a geometric function and the wrong one for a budget. A spatial walk spends the
+    run's clock and its operation allowance on whatever sits at the lowest corner, so on a part
+    with many scattered warnings and one error the run can exhaust its budget before it reaches
+    the error at all - it has then done the cheap work and left the thing that makes the part
+    unusable standing. Measured on the NIST MBE PMI corpus: `nist_ctc_02_asme1_ap242-e2.stp`
+    decomposes into 103 regions and its first error-bearing region is at spatial index 47, so the
+    run hit `time_budget` on warning-only regions and committed nothing; the baseline, whose
+    single queue is implicitly severity-ordered because its planner always proposes for the worst
+    defect it can claim, repaired it.
+    THE BASELINE'S ORDER IS THEREFORE THE ONE TO MATCH, and matching it is what makes a difference
+    between the two drivers attributable to how packages are AUTHORED - the only reason `loop.py`
+    is kept alive.
+
+    HERE AND NOT IN `decompose`, because the walk order is the loop's concern: `decompose` is
+    pure geometry and several tests pin its ordering, and a region's severity is not a property of
+    its bounding box but of the defects it holds AT THE MOMENT IT IS WALKED - which is why the
+    rank is re-read from the run's own current defect list, exactly as the loop re-reads `mine`.
+
+    DETERMINISTIC, because the whole before/after comparison rests on it (`localize_scan`'s
+    docstring states the property): the rank is the only key and `decompose`'s spatial index is the
+    tie-break, so two inspections of the same bytes produce the same walk, and regions of equal
+    severity are still walked in spatial order.
+
+    RANKED OVER ALL THE REGION'S DEFECTS, the face analyzer's own findings included. `_judged`
+    drops those for the VERDICT, because a crossing no operation removed must not worsen a run -
+    but a crossing is still the worst thing on the part and the heal that answers it should be
+    reached before a sliver sweep somewhere else. An ordering is not a judgement.
+    """
+    worst: dict[int, int] = {}
+    for defect in defects:
+        rank = _SEVERITY_RANK.get(defect.severity, len(_SEVERITY_RANK))
+        for region in regions:
+            if defect.fingerprint in region.fingerprints:
+                worst[region.index] = min(worst.get(region.index, rank), rank)
+    return tuple(sorted(regions,
+                        key=lambda r: (worst.get(r.index, len(_SEVERITY_RANK)), r.index)))
+
+
 def _with_tolerance(package: TargetPackage, tolerance_mm: float) -> TargetPackage:
     """The package as its author wrote it, with the RUN'S tolerance filled into any plan item
     that did not ask for one.
@@ -246,8 +295,8 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
     an INJECTED session keeps whatever holds it was built with, so a test that injects one is
     testing the walk and not the session half of the hold guarantee. Production never injects.
 
-    SEQUENTIALLY, IN `decompose` ORDER, and not because the work is coupled - regions are
-    independent, which is the point of them. `RepairSession` owns ONE shape and snapshots it by
+    SEQUENTIALLY, WORST REGION FIRST (`_walk_order`), and not because the work is coupled -
+    regions are independent, which is the point of them. `RepairSession` owns ONE shape and snapshots it by
     reference, and concurrent `TopoDS_Shape` mutation is not something OpenCASCADE offers, so a
     parallel walk would need a session per region and a merge nobody has written. The saving in
     this design comes from the scans being SCOPED, not from them being concurrent; the order is
@@ -299,6 +348,10 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
             defects_before=before, defects_after=before)
 
     regions = decompose(before, diagonal_mm=work.original.diagonal_mm)
+    # THE ORDER THE BUDGET IS SPENT IN, which is not the order the regions were found in. The
+    # REPORT keeps `decompose`'s spatial order (it is the record of the decomposition, and a
+    # region carries its own index, so nothing is lost); the WALK goes worst-first.
+    walk = _walk_order(regions, work.defects())
     packages: list[PackageVerdict] = []
     escalated: list[int] = []
     committed = False
@@ -321,7 +374,7 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
     # sharing a break.
     out_of_budget = False
 
-    for region in regions:
+    for region in walk:
         # WHAT THIS REGION HAS ALREADY TRIED, which is the author's third argument. Per region and
         # not per run: a package that failed on this locus says nothing about the next one, and
         # regions are independent by construction (that is the point of them).
