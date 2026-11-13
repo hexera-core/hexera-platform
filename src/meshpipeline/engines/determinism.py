@@ -77,11 +77,27 @@ MESH_SNAPPY_RANKS: str = optional_env("MESH_SNAPPY_RANKS", "")
 #: fleet has at least 8 cores - the Cloud Run mesh job is 8 vCPU and every VM is 8 or more - so
 #: any count up to 8 is satisfiable wherever the run lands, without knowing where that is.
 #:
-#: 1 BY DEFAULT, so nothing already measured moves. Parallel changes the mesh: on the coupon,
-#: serial 29,812/29,262 cells against parallel 29,813/29,261 - one cell moves between the regions,
-#: because topoSet classifies a cell on a processor boundary differently. Every part that meshes
-#: today keeps meshing on one process and its gate evidence keeps meaning what it meant.
-CONJUGATE_RANKS: str = optional_env("CONJUGATE_RANKS", "1")
+#: 8 BY DEFAULT, AND NOTHING ALREADY MEASURED MOVES ANYWAY. This is a CEILING on what the planner
+#: may offer, not a count any run gets: conjugate.ranks_for returns 1 for every mesh that fits one
+#: process's octree, whatever this says. So the only parts this number reaches are the ones that
+#: cannot be built on one process at all.
+#:
+#: IT WAS 1, and the reason given was that parallel changes the mesh: on the coupon, serial
+#: 29,812/29,262 cells against parallel 29,813/29,261 - one cell moves between the regions, because
+#: topoSet classifies a cell on a processor boundary differently. That is true and it is exactly
+#: why ranks_for keeps small parts serial. It is not a reason to default this to 1: the coupon is
+#: held serial by ranks_for, not by this, and a default of 1 therefore protected nothing it was
+#: claimed to protect while turning every large part into a refusal.
+#:
+#: WHAT IT COST, 2026-11-13. The first customer cold plate plans at 270,984,151 cells, which is
+#: 1.51x one process's ceiling. With this at 1 the planner cannot reach any plan for it at all and
+#: says so - "a configuration that fits the cell limit was refused on the octree ceiling alone and
+#: would build on 2 ranks" - which is a refusal that names its own remedy and then does not take
+#: it. The remedy needs no operator: ranks_for already computes the 2.
+#:
+#: 8 is CONJUGATE_RANKS_MAX, the smallest core count any route in the fleet has, so the ceiling is
+#: satisfiable wherever the run lands.
+CONJUGATE_RANKS: str = optional_env("CONJUGATE_RANKS", "8")
 
 #: The most ranks this may be set to, because it is the smallest core count any route has.
 CONJUGATE_RANKS_MAX = 8
@@ -197,19 +213,29 @@ def conjugate_ranks() -> tuple[int, str]:
     Nothing is read from the host. An unreadable or absurd value is the pinned default rather than
     a guess, and says so, because a rank count that varies between two runs of the same job would
     change the mesh between them (see CONJUGATE_RANKS).
+
+    THE WORDS SAY CEILING AND NOT CHOICE. They said "pinned by CONJUGATE_RANKS=N", and the driver
+    prints them beside the count the plan actually took - which was fine while the two were the
+    same number and became a contradiction the moment the default stopped being 1:
+
+        conjugate: meshing across 2 processes - pinned by CONJUGATE_RANKS=8
+
+    read by an operator as a run that ignored its own setting. It is the opposite: 8 is the most
+    this would offer and `ranks_for` asked for 2.
     """
     raw = str(CONJUGATE_RANKS or "").strip()
     try:
         asked = int(raw)
     except ValueError:
-        return 1, f"CONJUGATE_RANKS={raw!r} is not a number, so one process"
+        return 1, f"CONJUGATE_RANKS={raw!r} is not a number, so at most one process"
     if asked < 1:
-        return 1, f"CONJUGATE_RANKS={asked} is below one, so one process"
+        return 1, f"CONJUGATE_RANKS={asked} is below one, so at most one process"
     if asked > CONJUGATE_RANKS_MAX:
         return (CONJUGATE_RANKS_MAX,
-                f"pinned by CONJUGATE_RANKS={asked}, capped at {CONJUGATE_RANKS_MAX} - the "
-                "smallest core count any route in the fleet has")
-    return asked, f"pinned by CONJUGATE_RANKS={asked}"
+                f"out of at most {CONJUGATE_RANKS_MAX} offered - CONJUGATE_RANKS={asked} is "
+                f"capped at {CONJUGATE_RANKS_MAX}, the smallest core count any route in the "
+                "fleet has")
+    return asked, f"out of at most {asked} offered by CONJUGATE_RANKS"
 
 
 # ------------------------------------------------------------- what a run actually did --------

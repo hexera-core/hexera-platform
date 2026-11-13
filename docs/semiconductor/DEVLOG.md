@@ -5110,3 +5110,141 @@ number. The plain mesh runs 42.9% to 90.0% wrong locally in the thermal entrance
 Flow rate +8.00% and wall shear exact both survive; they are momentum results.
 
 The authoritative version is MESH_QUALITY_CBOX2B.md section 7.
+
+---
+
+## 13 November 2026: the planner picked the one stretch the record had already refuted
+
+The first customer cold plate went through the whole product three times today and the mesher
+segfaulted three times, 2,272 seconds in, on a byte-identical mesh each time.
+
+| attempt | started | cells built | octree nodes | ended |
+|---|---|---|---|---|
+| 1 | 13:58:31 | 302,810,924 | 155,668,321 | rc=139 |
+| 2 | 14:48:08 | 302,810,924 | 155,668,321 | rc=139 |
+| 3 | 15:30:28 | 302,810,924 | 155,668,321 | rc=139 |
+
+```
+Finished untangling the mesh
+[0] #5  Foam::Module::meshOctreeCube::refineCube(...) in libmeshLibrary.so
+[057994cfa254:00489] Signal: Segmentation fault (11)
+mpirun noticed that process rank 0 exited on signal 11
+```
+
+**Where it died.** The last three lines of real work are `Starting smoothing the mesh`,
+`Finished smoothing the mesh`, `Finished untangling the mesh`. That is the end of
+`optimiseFinalMesh` pass 1, and the next thing `cartesianMeshGenerator` does is
+`projectSurfaceAfterBackScaling`, which deletes the octree, builds a new one on the original
+surface with `createOctreeWithRefinedBoundary(20, 30)` and projects the mesh onto it. `refineCube`
+is that build. Both ranks died inside it, one at `free`, which is heap corruption or a null from a
+failed allocation.
+
+**Why it was on that path at all.** `STRETCH_LADDER` stopped at 4, and MESH_TIME.md has recorded
+`scaleY 4` as "7.5x slower for 7% fewer cells, refuted as a compromise on the real part" since the
+day it was measured. The comment that set the ladder said so in its own words - "4 IS THE LAST RUNG
+WITH A MEASUREMENT UNDER IT, and it is not a good one". It was kept because the ladder was built
+out of powers of two and 3 was never on it, so dropping 4 looked like dropping to 2. It is not. 3
+is what `cbox2` used, and `cbox2b`, and `cbox8`, and every run of this part that has ever finished.
+
+**The machine followed the stretch.** The planner priced the plate at 208,161,242 cells at
+`scaleY 4`, `peak_gib` of that is 181.7 GiB, and that sizes an `n2-highmem-32` with 256 GiB. The
+mesher built 302,810,924, which the same model prices at 211 GiB, and then asked for a second
+octree on top of it. `two_scale_estimate`'s own docstring already said it would: measured on this
+plate, the estimate is 1.24x under at `scaleY 3` and 1.92x under at `scaleY 6`. This run adds the
+third point, and the fit that was already in that docstring predicts it to 1.7%:
+
+| stretch | raw estimate | built | A + B/S, A = 223,019,678 B = 339,610,152 |
+|---|---|---|---|
+| 3 | 271,705,176 | 336,223,062 | 336,223,062 |
+| 4 | 208,161,242 | **302,810,924** | 307,922,216 |
+| 6 | 145,699,361 | 279,621,370 | 279,621,370 |
+
+So the term the stretch divides is 339M of a 562M mesh, not the whole of it, and the error grows
+with the stretch in the direction that sizes a machine too small.
+
+**What changed.** `STRETCH_LADDER` is `(3.0, 2.0, 1.0)`. On this plate at a 400,000,000 cell limit
+that leaves exactly one plan in the whole search - broad 12 across, levels 1 and 4, 22.00 um over
+the thin passages at 4.46 across, stretch 3, 338,730,188 cells - which is `cbox2`'s configuration:
+`couple_box.sh cbox2 0.000352056 1 4 ...`, same background, same two levels. `peak_gib` of that is
+236.4 GiB, so it sizes an `n2-highmem-64` with 512 GiB instead, and the mesh that is actually built
+has 2.2x headroom rather than 0.2x. The run that followed printed exactly that:
+
+```
+The mesher needs about 236 GiB and the workspace about 574 GiB ... n2-highmem-64 VM (512 GiB)
+meshing across 2 processes ... (270,983,796 cells against 178,956,970 a process)
+meshed at two cell sizes: 0.1760 mm over the 2.11 mm passages (12 across) and 0.02200 mm over
+  the 0.0982 mm ones (4.46 across), about 338,729,745 cells; the thin passages' cells are
+  stretched 3x along y
+```
+
+**A single surviving candidate is not a margin** and is worth saying out loud: the next part
+slightly larger than this one has nowhere below it to go but a refusal.
+
+**`CONJUGATE_RANKS` now defaults to 8 rather than 1.** It is a ceiling on what the planner may
+offer, not a count any run gets - `ranks_for` returns 1 for every mesh that fits one process's
+octree, whatever it says. The default of 1 therefore protected nothing (the coupon is held serial
+by `ranks_for`, not by this) while refusing every part that needs a second process. This plate
+plans 270,984,151 cells, 1.51x one process's ceiling, and the engine's own refusal already named
+the remedy - "would build on 2 ranks" - and then would not take it. It takes it now, and the
+`.env` pin that was standing in for it is gone.
+
+Two smaller things in the same line of sight. The refusal was naming the wrong number:
+`needed_ranks` was a `max` over every configuration refused on the ceiling, so it reported the
+deepest rung considered rather than the cheapest one that would deliver a plan - at a 700,000,000
+limit this part said "would build on 4 ranks" when two ranks plan it at the same 4.46 cells
+across. It is a `min` now. And the rank sentence read `meshing across 2 processes - pinned by
+CONJUGATE_RANKS=8`, which an operator reads as a run that ignored its own setting; the basis now
+says "out of at most 8 offered", because that is what it is.
+
+**Not fixed, recorded.** The builder spent two VMs proving the same spec twice. `NOOP_LIMIT = 2`,
+and the digest can only be taken after the attempt has authored its files, which for a
+deterministic driver is after the mesher has already run - so attempts 2 and 3 were 80 minutes and
+two `n2-highmem-32` hours of work that could not have come out differently. Distinguishing a
+transient infrastructure failure from a deterministic mesher refusal is what would make one retry
+worth keeping and the other not.
+
+### The same part's ports were proposed the wrong way round
+
+Separately, and this one would have shipped. The geometry stage proposes a name and a role per
+opening, and on this plate it proposed:
+
+| # | centroid mm | across | proposed | correct |
+|---|---|---|---|---|
+| 1 | 65.92, 33.45, 75.41 | 11.8 mm | `inlet`, inlet | **outlet** |
+| 2 | 99.88, 54.68, 43.31 | 8 mm | `outlet_1`, outlet | **inlet** |
+| 3 | 89.34, 54.68, 77.39 | 8 mm | `outlet_2`, outlet | not an opening |
+
+The customer's own file settles it, and COUPLED_MESH_DELIVERY.md settled the same question the same
+way on 5 November. `ColdPlateAssembly_CLEAN.step` is an XCAF assembly of six named solids, two of
+them called `Inlet` and `Outlet`:
+
+| solid | bbox mm |
+|---|---|
+| `Outlet` | (57.17, 33.94, 66.65) - (89.83, 67.32, 85.07) |
+| `Inlet` | (67.67, 33.94, 33.16) - (100.23, 67.32, 51.11) |
+
+Opening 2 is on `Inlet`'s +X end face and is 9.9 mm wholly outside `Outlet`'s x range, so it is the
+inlet whatever anchor you measure from. It is the same mouth the delivered mesh calls `port_b`, at
+x 99.88. Openings 1 and 3 are both inside `Outlet`'s box. The run before this one declared opening
+1 as the inlet, so it would have delivered a mesh that solves and runs backwards, under names the
+customer had approved on the stage.
+
+**The outlet is a different mouth than the one we delivered, and that is the CAD's doing.** The
+delivered mesh's two ports are `port_a` at x 89.34 - opening 3 here - and `port_b` at x 99.88.
+This run's fluid domain does not reach opening 3 at all, because the engine extracts the space
+inside the six solids as it finds it and the scout reports what it found: "the parts close it into
+2 spaces that do not connect (space 1: openings 1, 2; space 2: opening 3) - a valve drawn shut, or
+a part sealing the passage". The `Outlet` tube's bore is space 2, closed at its lower end, so the
+live circuit runs from opening 2 to opening 1, the 11.8 mm junction underneath that tube. The
+delivered mesh reached opening 3 because it was built on a BOX domain with four zones, which fuses
+the two bores to the plenum; the product's own extraction cannot, and says so rather than
+pretending otherwise. `expect_fluid_pieces` is 2 on both plans for the same reason.
+
+So: opening 2 is the inlet on both constructions. The outlet is opening 3 on the delivered mesh and
+opening 1 on this one, and the two are the far and near ends of the same sealed tube.
+
+Nothing in the engine is wrong here. `declared_for` matched both declarations to their mouths by
+position, to 0 mm, and cut them under the names given. What proposed the roles is the naming step,
+and it has no way to read the assembly's part names - which, on this file, are the answer. Reading
+XCAF names is nine lines of OCP and the recipe is already written down; the stage should use them
+before it guesses.

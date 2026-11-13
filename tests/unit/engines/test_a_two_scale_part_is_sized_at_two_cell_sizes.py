@@ -101,26 +101,26 @@ def test_the_configuration_that_actually_built_is_now_refused_for_being_too_coar
     assert "two scales of passage" in said
 
 
-def test_one_process_takes_a_coarser_rung_rather_than_a_stretch_that_cannot_mesh():
-    """ONE PROCESS no longer reaches the BUILT background, and that is the trade being made.
+def test_one_process_is_refused_rather_than_given_a_stretch_that_cannot_mesh():
+    """ONE PROCESS cannot be given this part at all, and that is the trade being made.
 
     WHY IT MOVED: docs/semiconductor/MESH_TIME.md, measured on this same customer plate. ws_shell
     at scaleY 6 took 139,230.5 s = 38.7 h in the mesher; cbox2 at scaleY 3, on 1.53x the cells,
     took 652 s. 213x, and the stretch is the one setting between them - the back-scale at the end
     of optimiseFinalMesh pass 1 hands the optimiser 346,057 bad faces at scaleY 6 against 440 at
-    scaleY 3. So STRETCH_LADDER now stops at 4, the last rung with a measurement under it.
+    scaleY 3.
 
-    4.46 across at a stretch of 4 is past what one process can address, so one process coarsens
-    the BROAD side instead - 11 across rather than 12, a 24.0 um fine cell, 4.09 across the slots
-    - which still clears the four-cell floor. Giving up 8% of the thin-side resolution is a
-    smaller loss than a plan that cannot be delivered inside CONJUGATE_RUN_TIMEOUT_S.
+    STRETCH_LADDER stopped at 4 for a while and one process could coarsen the BROAD side to 11
+    across and take 4.09 across the slots. At 3 that rung is gone too: the coarsest fine cell
+    above the four-cell floor is 22.00 um, which is 270,983,836 cells at a stretch of 3 against
+    one process's 178,956,970. A refusal that names the rank count is a better answer than a plan
+    that segfaults forty minutes in, which is what the stretch of 4 did on the first customer run
+    through the whole product (job 0fb28a1b, 2026-11-13).
     """
     plan, said = _plan(limit=700_000_000, prismatic_axis=1, ranks=1)
-    assert plan is not None, f"one process still has to get a plan: {said}"
-    assert plan["fine_across"] == pytest.approx(4.09, abs=0.02)
-    assert plan["fine_across"] >= B.FINE_ACROSS_FLOOR
-    assert plan["stretch"] <= max(B.STRETCH_LADDER)
-    assert "two cell sizes" in said and "prismatic" in said
+    assert plan is None, f"one process cannot address any rung that meshes: {plan}"
+    assert "two scales of passage" in said
+    assert "would build on 2 ranks" in said, said
 
 
 def test_with_the_stretch_it_reaches_a_resolution_that_holds_the_passages_together():
@@ -148,7 +148,7 @@ def test_with_the_stretch_it_reaches_a_resolution_that_holds_the_passages_togeth
 def test_the_estimate_for_that_configuration_stays_above_the_mesh_and_under_the_ceiling():
     """The two bounds that have to hold at once for this part to be plannable at all, and the
     reason the margin is dropped for one of them."""
-    plan, _said = _plan(limit=700_000_000, prismatic_axis=1)
+    plan, _said = _plan(limit=700_000_000, prismatic_axis=1, ranks=2)
     raw = B.two_scale_estimate(
         block_lo=LO, block_hi=HI, broad_cell_m=plan["broad_cell_m"],
         broad_area_m2=CUSTOMER["broad"]["area_m2"], fine_cell_m=plan["fine_cell_m"],
@@ -157,8 +157,10 @@ def test_the_estimate_for_that_configuration_stays_above_the_mesh_and_under_the_
         fine_stretch=plan["stretch"])
     assert raw >= BUILT["boxes"], (
         f"the unmargined estimate {raw:,} is UNDER the {BUILT['boxes']:,} that was built")
-    assert raw <= B.octree_ceiling_cells(), (
-        f"the unmargined estimate {raw:,} is over the ceiling {B.octree_ceiling_cells():,}, so a "
+    # AGAINST THE TWO-RANK CEILING, because two ranks is what this plan says it needs. The part
+    # cannot be planned on one at a stretch that meshes; see the row above.
+    assert raw <= B.octree_ceiling_cells(2), (
+        f"the unmargined estimate {raw:,} is over the ceiling {B.octree_ceiling_cells(2):,}, so a "
         "plan that is known to build would be refused")
     # with the margin on it is higher still, which is what sizes the machine
     assert plan["estimate"] > raw

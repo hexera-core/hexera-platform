@@ -118,27 +118,31 @@ def test_without_a_stretch_the_customer_part_cannot_be_resolved_at_all():
 
 
 def test_the_stretch_is_what_makes_it_plannable():
-    """4.09 across and not 4.46, because ONE PROCESS cannot address 4.46 at a stretch that meshes.
+    """4.46 across the slots, on the two processes the plan itself asks for.
 
-    This read 4.46 while the ladder went to 8, and one process got there by stretching 6x.
+    This read 4.46 while the ladder went to 8, then 4.09 while it stopped at 4 and one process
+    could still reach a coarser rung.
 
-    WHY IT MOVED: docs/semiconductor/MESH_TIME.md, measured on this same customer plate. ws_shell
-    at scaleY 6 took 139,230.5 s = 38.7 h in the mesher; cbox2 at scaleY 3, on 1.53x the cells,
-    took 652 s. 213x, and the stretch is the one setting between them - the back-scale at the end
-    of optimiseFinalMesh pass 1 hands the optimiser 346,057 bad faces at scaleY 6 against 440 at
-    scaleY 3. So STRETCH_LADDER now stops at 4, the last rung with a measurement under it.
+    WHY IT MOVED AGAIN, 2026-11-13. The ladder stopped at 4 for a while, and the comment that put
+    it there said in its own words that 4 "is not a good one" - MESH_TIME.md records scaleY 4 as
+    "7.5x slower for 7% fewer cells", refuted on the real part. The first customer run through the
+    whole product took that rung and the mesher segfaulted on it after 2,272 s, in the octree
+    projectSurfaceAfterBackScaling builds after the back-scale. STRETCH_LADDER now stops at 3,
+    which is what cbox2 and cbox8 and every run that finished on this geometry used.
 
-    The deepest rung one process can now address is 4.09 across at a 24.0 um cell - still clear of
-    the four-cell floor a passage needs to survive - and it is reached by coarsening the BROAD
-    side to 11 across rather than by deforming the thin cells further. Two processes get 4.46
-    back, at the same stretch of 4.
+    At 3 there is no rung this part can be given on ONE process at all: the coarsest fine cell
+    above the four-cell floor is 22.00 um, and at the gentlest stretch that meshes that is
+    270,983,836 cells, 1.51x one process's octree ceiling. So the stretch is still what makes the
+    part plannable; what it no longer does is make it plannable serially. See
+    test_one_process_is_refused_and_the_refusal_names_the_remedy.
     """
-    tall, _ = _plan(prismatic_axis=1)
+    tall, _ = _plan(prismatic_axis=1, ranks=2)
     assert tall is not None
     assert tall["fine_across"] >= B.FINE_ACROSS_FLOOR
-    assert tall["fine_across"] == pytest.approx(4.09, abs=0.05)
-    assert tall["estimate"] < 250_000_000, (
+    assert tall["fine_across"] == pytest.approx(4.46, abs=0.05)
+    assert tall["estimate"] < 400_000_000, (
         "and it has to be affordable, not merely reachable")
+    assert tall["stretch"] == 3.0
     assert tall["stretch_axis"] == 1
 
 
@@ -179,69 +183,78 @@ def test_no_plan_is_ever_returned_at_a_stretch_with_no_finishing_run_under_it():
     of optimiseFinalMesh pass 1 hands the optimiser 346,057 bad faces at scaleY 6 against 440 at
     scaleY 3. So STRETCH_LADDER now stops at 4, the last rung with a measurement under it.
 
-    Nothing above 4 has ever produced a mesh on this geometry, against a CONJUGATE_RUN_TIMEOUT_S
-    of 21,600 s, so a plan at 6 or 8 is a plan that cannot be delivered. The planner must not
-    return one at any rank count or any budget.
+    Nothing above 3 has ever produced a usable mesh on this geometry inside a
+    CONJUGATE_RUN_TIMEOUT_S of 21,600 s: 6 is measured at 38.7 h, and 4 segfaulted the mesher
+    after 2,272 s on the first customer run through the whole product (job 0fb28a1b, 2026-11-13,
+    three identical attempts). The planner must not return one at any rank count or any budget.
     """
     for ranks in (1, 2, 4, 8):
         for limit in (400_000_000, 700_000_000, 2_000_000_000):
             plan, _ = _plan(prismatic_axis=1, ranks=ranks, limit=limit)
             if plan is None:
                 continue
-            assert plan["stretch"] <= 4.0, (
+            assert plan["stretch"] <= 3.0, (
                 f"{ranks} ranks at {limit:,} planned a stretch of {plan['stretch']:g}")
 
 
-def test_one_process_gets_the_rung_it_can_actually_build():
-    """The chain is serial today, so a configuration past one process's octree ceiling must be
-    refused rather than started and aborted an hour in."""
-    plan, _ = _plan(prismatic_axis=1, ranks=1)
-    # 4.09, not 4.46: see test_the_stretch_is_what_makes_it_plannable. One process reaches the
-    # deepest rung it can ADDRESS at a stretch that meshes, which is one broad step coarser.
-    assert plan["fine_across"] == pytest.approx(4.09, abs=0.05)
-    assert plan["estimate"] < 250_000_000
-    raw = B.two_scale_estimate(
-        block_lo=BLOCK_LO, block_hi=BLOCK_HI, broad_cell_m=plan["broad_cell_m"],
-        broad_area_m2=SCALES["broad"]["area_m2"], fine_cell_m=plan["fine_cell_m"],
-        fine_area_m2=SCALES["fine"]["area_m2"], background_m=plan["background_m"],
-        broad_levels=plan["broad_levels"], fine_levels=plan["fine_levels"],
-        margin=False, fine_stretch=plan["stretch"])
-    assert raw <= B.octree_ceiling_cells(1)
+def test_the_rung_that_is_planned_is_one_the_processes_can_address():
+    """A configuration past the per-process octree ceiling must be refused rather than started and
+    aborted an hour in - so whatever rung comes back has to fit the ranks it was planned for."""
+    for ranks in (2, 4, 8):
+        plan, why = _plan(prismatic_axis=1, ranks=ranks)
+        assert plan is not None, f"{ranks} ranks: {why}"
+        raw = B.two_scale_estimate(
+            block_lo=BLOCK_LO, block_hi=BLOCK_HI, broad_cell_m=plan["broad_cell_m"],
+            broad_area_m2=SCALES["broad"]["area_m2"], fine_cell_m=plan["fine_cell_m"],
+            fine_area_m2=SCALES["fine"]["area_m2"], background_m=plan["background_m"],
+            broad_levels=plan["broad_levels"], fine_levels=plan["fine_levels"],
+            margin=False, fine_stretch=plan["stretch"])
+        assert raw <= B.octree_ceiling_cells(ranks), (
+            f"{ranks} ranks were handed {raw:,} against a ceiling of "
+            f"{B.octree_ceiling_cells(ranks):,}")
 
 
 def test_more_ranks_open_the_rung_above():
-    """8.93 cells across is 2.8x one process's ceiling and well inside eight ranks', which have
-    already built 202,709,195 cells on this mesher."""
-    one, _ = _plan(prismatic_axis=1, ranks=1)
-    # 1.3 BILLION AND NOT 700 MILLION, because the rung above is no longer reached by stretching
-    # into the old band. 8.93 across at a stretch of 4 - the deepest the ladder now offers - is
-    # 1,244,443,565 cells where 8x made it 634,530,269. The rung is still reachable and still
-    # wants ranks to address it; what changed is that it is priced at a stretch that meshes.
-    many, _ = _plan(prismatic_axis=1, ranks=8, limit=1_300_000_000)
-    assert many["fine_across"] > one["fine_across"] * 1.9
+    """8.93 cells across is 7.4x one process's ceiling and inside eight ranks'.
+
+    TWO RANKS IS THE BASE, not one: one process has no plan for this part at any budget once the
+    ladder stops at 3 (see test_one_process_is_refused_and_the_refusal_names_the_remedy).
+
+    2 BILLION AND NOT 1.3, because the rung above is no longer reached by stretching into the old
+    band. 8.93 across is an 11.00 um cell, and at the deepest stretch the ladder now offers it is
+    1,651,052,429 cells where 8x once made it 634,530,269. The rung is still reachable and still
+    wants ranks to address it; what changed is that it is priced at a stretch that meshes.
+    """
+    two, _ = _plan(prismatic_axis=1, ranks=2)
+    many, _ = _plan(prismatic_axis=1, ranks=8, limit=2_000_000_000)
+    assert many["fine_across"] > two["fine_across"] * 1.9
     assert many["fine_across"] == pytest.approx(8.93, abs=0.05)
-    assert 100_000_000 < many["estimate"] <= 1_300_000_000, (
+    assert 100_000_000 < many["estimate"] <= 2_000_000_000, (
         f"the rung above has to stay inside the band: {many['estimate']:,}")
+    assert many["raw"] <= B.octree_ceiling_cells(8)
 
 
 def test_both_rungs_clear_the_floor_a_passage_needs_to_survive():
     """Below about four cells across, a passage stops being a passage: 1.03 across produced 367
     disconnected pieces and 2.23 produced 19."""
-    for ranks in (1, 8):
-        plan, _ = _plan(prismatic_axis=1, ranks=ranks)
+    for ranks in (2, 4, 8):
+        plan, why = _plan(prismatic_axis=1, ranks=ranks)
+        assert plan is not None, f"{ranks} ranks: {why}"
         assert plan["fine_across"] >= 4.0, f"{ranks} ranks gave {plan['fine_across']:.2f}"
 
 
-def test_a_refusal_says_how_many_ranks_would_have_done_it():
-    """A refusal that only says "too big" sends a reader to the wrong lever."""
+def test_one_process_is_refused_and_the_refusal_names_the_remedy():
+    """A refusal that only says "too big" sends a reader to the wrong lever.
+
+    One process reached a coarser rung while the ladder still offered a stretch of 4. At 3 the
+    coarsest rung above the four-cell floor is 270,983,836 cells, 1.51x what one process can
+    address, so the honest answer is a refusal - and it has to carry the number of processes that
+    would build it, because that is a setting and not a part to redraw.
+    """
     plan, said = _plan(prismatic_axis=1, ranks=1, limit=700_000_000, asked_across=12)
-    assert plan is not None
-    # now force the ceiling to bite by asking for a budget only the deep rung could use
-    plan2, said2 = B.plan_two_scales(
-        block_lo=BLOCK_LO, block_hi=BLOCK_HI, scales=SCALES,
-        limit=700_000_000, asked_across=12, prismatic_axis=1, ranks=1,
-    )
-    assert plan2 is not None, "the shallow rung still fits one process"
+    assert plan is None, f"one process cannot address any rung at a stretch that meshes: {plan}"
+    assert "two scales of passage" in said
+    assert "would build on 2 ranks" in said, said
 
 
 def test_the_words_say_what_was_done_and_why_it_was_allowed():

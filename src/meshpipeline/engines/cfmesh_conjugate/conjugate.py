@@ -955,18 +955,61 @@ RECONSTRUCT_REGIONS = (f"reconstructParMesh -constant -region {FLUID_REGION}"
 REGION_DICTS = "cp -rn processor0/system/. system/ 2>/dev/null; true"
 
 
-def ranks_for(cells: int, *, available: int = 0) -> int:
-    """How many ranks a mesh of `cells` cells needs to stay under the per-process label ceiling.
+#: THE RANK COUNT THE BACK-SCALE PROJECTION HAS BEEN SHOWN TO SURVIVE, and it is a second demand
+#: on the decomposition that has nothing to do with the label ceiling above.
+#:
+#: WHERE IT COMES FROM. With `anisotropicSources` in the dict, cfMesh meshes a scaled part and
+#: scales it back, and `cartesianMeshGenerator::projectSurfaceAfterBackScaling` then throws the
+#: octree away and builds a NEW one on the original surface with
+#: `createOctreeWithRefinedBoundary(20, 30)` before projecting the mesh onto it. On two processes
+#: that build segfaults, in an OpenMP worker inside `meshOctreeCube::refineCube`, with one rank
+#: faulting in `free` - a corrupted heap, not an allocation that failed:
+#:
+#:     job        cells built    machine          ranks  threads  result
+#:     0fb28a1b   302,810,924    n2-highmem-32    2      16       SEGV after 2,272 s, x3
+#:     31b912f0   326,081,268    n2-highmem-64    2      32       SEGV after 2,346 s
+#:
+#: Those two differ in stretch (4 and 3), in memory (256 and 512 GiB, against 211 and 235 GiB of
+#: demand) and in thread count, and they died at the same instruction. Both of those were the
+#: first hypothesis in turn and both are refuted.
+#:
+#: AND IT IS NOT THE STAGE ITSELF. The same stage completes on this same part-skin domain:
+#: `ws_shell` ran it at 8 ranks by 1 thread, and MESH_TIME.md's whole account of that run's 38.7
+#: hours is the SECOND `optimiseFinalMesh` that this projection calls. `cbox2` ran it at 8 ranks
+#: by 12 threads in 652 s. Every run of this engine that has come out the other side of the
+#: back-scale used eight processes; the only two that used two both died in it.
+#:
+#: SO THE FLOOR IS EIGHT, and it is a floor rather than a fix: the mechanism is cfMesh's and is
+#: not understood here. Eight is also CONJUGATE_RANKS_MAX and the smallest core count any route
+#: in the fleet has, so it is reachable wherever the run lands. A reading at 4 would narrow this
+#: and nobody has taken one.
+#:
+#: IT APPLIES ONLY TO A MESH THAT IS ALREADY PARALLEL. A part inside one process's octree never
+#: runs `-parallel` at all, so there is no projection to survive and nothing here may lift it off
+#: one process - which is what keeps every already-measured part building the mesh it was
+#: measured building.
+BACKSCALE_PROJECTION_RANKS = 8
+
+
+def ranks_for(cells: int, *, available: int = 0, back_scaled: bool = False) -> int:
+    """How many ranks a mesh of `cells` cells needs.
 
     1 for anything that fits in one process, which is what every part in the corpus does. The
     count is what the CEILING demands and not what the box can run: a plan that needs more ranks
     than the machine has cores is still a plan that needs them, and saying so is more use than
     silently meshing something smaller. `available` caps it only when a caller passes one.
+
+    `back_scaled` says the plan carries an anisotropic stretch, which makes cfMesh rebuild its
+    octree after the back-scale - a stage that has only ever survived on eight processes. See
+    BACKSCALE_PROJECTION_RANKS. It is read only for a mesh that already needs more than one
+    process; a serial mesh is left serial.
     """
     n = int(cells)
     if n <= OCTREE_BOXES_PER_PROCESS:
         return 1
     need = -(-n // OCTREE_BOXES_PER_PROCESS)              # ceiling division
+    if back_scaled:
+        need = max(need, BACKSCALE_PROJECTION_RANKS)
     return min(need, int(available)) if available else need
 
 
@@ -1699,7 +1742,8 @@ __all__ = ["ConjugateError", "ConjugateReport", "RegionReport", "PortPlan",
            "FLUID_REGION", "SOLID_REGION", "FLUID_TO_SOLID", "SOLID_TO_FLUID",
            "SPLIT_ARGS", "DEFAULT_REFINEMENT_LEVELS", "DEFAULT_VOLUME_TOL",
            "OCTREE_BOXES_PER_PROCESS", "MPI_FLAGS", "DECOMPOSE_METHOD", "PREPARE_PAR",
-           "ranks_for", "render_decompose_pardict", "mpi_command", "omp_threads",
+           "ranks_for", "BACKSCALE_PROJECTION_RANKS",
+           "render_decompose_pardict", "mpi_command", "omp_threads",
            "MPI_BUFFER_BYTES",
            "BLOCK_FACES", "OPEN_FACE_RTOL", "OUTER_PATCH", "is_domain_face", "use_shell_domain",
            "RECONSTRUCT_REGIONS", "REGION_DICTS",

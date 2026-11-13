@@ -20,13 +20,20 @@ and at two it planned 333,869,285 cells (267,095,428 unmargined). The engine's o
 said so - "a configuration that fits the cell limit was refused on the octree ceiling alone and
 would build on 2 ranks".
 
-THOSE TWO NUMBERS HAVE SINCE MOVED, and the entry is kept as written because it is what this file
-was built on. The plan they describe is stretched 8x, and docs/semiconductor/MESH_TIME.md later
-measured what a stretch costs in the optimiser - ws_shell at scaleY 6 took 38.7 h against cbox2 at
-scaleY 3 in 652 s on 1.53x the cells. STRETCH_LADDER now stops at 4, and the same plate at the same
-limit plans 260,194,641 cells (208,155,712 unmargined) on two ranks and 217,131,229 on one. So one
-process is no longer REFUSED - it takes a coarser broad rung instead - and the rows below say which
-of the two is which.
+THOSE TWO NUMBERS HAVE SINCE MOVED TWICE, and the entry is kept as written because it is what this
+file was built on. The plan they describe is stretched 8x, and docs/semiconductor/MESH_TIME.md
+later measured what a stretch costs in the optimiser - ws_shell at scaleY 6 took 38.7 h against
+cbox2 at scaleY 3 in 652 s on 1.53x the cells. STRETCH_LADDER stopped at 4 for a while, and at 4
+one process could take a coarser broad rung instead of being refused.
+
+IT STOPS AT 3 NOW, and one process is REFUSED AGAIN, which puts this file back on the case it was
+written for. 4 was always the rung MESH_TIME.md had already refuted ("7.5x slower for 7% fewer
+cells"); it was kept because the ladder was built out of powers of two and 3 was never on it. The
+first customer run through the whole product took 4 and the mesher segfaulted after 2,272 s, in
+the octree projectSurfaceAfterBackScaling builds after the back-scale (job 0fb28a1b, 2026-11-13,
+three identical attempts). At 3 the same plate at the same limit plans 338,720,238 cells
+(270,976,191 unmargined) on two ranks, and one process has no rung at all: the coarsest fine cell
+above the four-cell floor is 1.51x what it can address.
 
 WHAT MUST NOT CHANGE, and these tests exist mostly for this. Parallel changes the mesh: on the
 coupon, serial 29,812/29,262 cells against parallel 29,813/29,261 - one cell moves between the
@@ -85,38 +92,31 @@ def test_the_octree_gate_lets_through_what_two_processes_can_address():
 # #
 # the plate
 # #
-def test_one_process_gets_a_coarser_rung_and_two_get_the_one_that_was_wanted():
-    """One process is no longer refused outright, and the rank count still decides the rung.
+def test_one_process_is_refused_and_two_get_the_rung_that_was_wanted():
+    """The rank count is what buys this part a plan at all, which is the case this file is for.
 
-    IT USED TO BE A REFUSAL and the refusal was real: the only configuration that fitted the cell
-    limit was stretched 8x, and its 267 million cells are past what one process can address. Once
-    STRETCH_LADDER stopped at 4 (docs/semiconductor/MESH_TIME.md: scaleY 6 is 38.7 h against 652 s
-    at scaleY 3) the planner stopped reaching for that configuration at all, and the search for a
-    plan one process CAN address finds one by coarsening the broad side rather than by stretching
-    the thin cells further.
-
-    So the rank count now buys resolution instead of buying a plan at all, which is the better
-    shape of the same lever: 4.09 cells across the slots on one process, 4.46 on two.
+    It briefly bought resolution instead - 4.09 across on one process, 4.46 on two - while
+    STRETCH_LADDER stopped at 4. At 3 the one-process rung is gone: see the module docstring.
     """
     one, why = _plan(1)
-    assert one is not None, "one process should now get a plan: %s" % why
-    assert one["fine_across"] == pytest.approx(4.09, abs=0.02)
-    assert one["estimate"] <= LIMIT
-    assert C.ranks_for(one["raw"]) == 1, "a one-rank plan has to be addressable by one rank"
+    assert one is None, "one process cannot address any rung at a stretch that meshes: %s" % one
+    assert "would build on 2 ranks" in why, why
 
     two, said = _plan(2)
-    assert two is not None, "two processes should fit it: %s" % why
+    assert two is not None, "two processes should fit it: %s" % said
     assert two["fine_across"] == pytest.approx(4.46, abs=0.02)
-    assert two["fine_across"] > one["fine_across"], "the second process has to buy something"
     assert two["estimate"] <= LIMIT
+    assert C.ranks_for(two["raw"]) == 2, "the plan has to be addressable by the ranks it names"
     assert said and "two cell sizes" in said
 
 
-def test_neither_rung_is_planned_at_a_stretch_that_cannot_mesh():
-    """The reason one process stopped being refused, pinned so it cannot quietly come back."""
-    for ranks in (1, 2):
+def test_no_rung_is_planned_at_a_stretch_that_cannot_mesh():
+    """Pinned so the rungs that cost 38.7 h and a segfault cannot quietly come back."""
+    for ranks in (1, 2, 4, 8):
         plan, _ = _plan(ranks)
-        assert plan["stretch"] <= 4.0, (
+        if plan is None:
+            continue
+        assert plan["stretch"] <= 3.0, (
             "%d ranks planned a stretch of %g, which has no finishing run under it"
             % (ranks, plan["stretch"]))
 
@@ -136,6 +136,58 @@ def test_the_demand_is_two_and_is_read_off_the_raw_count():
 
 
 # #
+# the back-scale projection, which is a second demand on the same number
+# #
+def test_a_stretched_parallel_mesh_takes_the_rank_count_the_projection_survives():
+    """TWO PROCESSES IS WHAT THE CEILING ASKS FOR AND IT IS NOT ENOUGH.
+
+    With an anisotropic stretch in the dict cfMesh rebuilds its octree after the back-scale, in
+    `projectSurfaceAfterBackScaling`, and on two processes that rebuild segfaults inside
+    `meshOctreeCube::refineCube`. Measured twice on the customer plate, at two different stretches
+    on two different machines - 302,810,924 cells on an n2-highmem-32 and 326,081,268 on an
+    n2-highmem-64, both rc=139 at the same instruction. The same stage completes at eight ranks on
+    the same part (`ws_shell`) and on the box domain (`cbox2`). See
+    conjugate.BACKSCALE_PROJECTION_RANKS.
+    """
+    plan, _ = _plan(8)
+    assert C.ranks_for(plan["raw"], available=8) == 2, (
+        "the label ceiling alone still only asks for two")
+    assert C.ranks_for(plan["raw"], available=8, back_scaled=True) == C.BACKSCALE_PROJECTION_RANKS
+
+
+def test_the_floor_never_lifts_a_mesh_off_one_process():
+    """A part inside one process's octree never runs -parallel, so there is no projection to
+    survive - and lifting it would change a mesh that has already been measured."""
+    for cells in (1, 41_616, 8_000_000, C.OCTREE_BOXES_PER_PROCESS):
+        assert C.ranks_for(cells, available=8, back_scaled=True) == 1, cells
+
+
+def test_the_floor_is_only_for_a_plan_that_carries_a_stretch():
+    """Without anisotropicSources `projectSurfaceAfterBackScaling` returns on its first line, so
+    an unstretched parallel mesh never reaches the code that crashes and must not pay for it."""
+    cells = C.OCTREE_BOXES_PER_PROCESS * 2
+    assert C.ranks_for(cells, available=8) == 2
+    assert C.ranks_for(cells, available=8, back_scaled=False) == 2
+
+
+def test_the_floor_cannot_ask_for_more_than_the_deployment_offers():
+    """`available` still caps it: a deployment pinned lower gets what it pinned, and the log says
+    which count it took."""
+    cells = C.OCTREE_BOXES_PER_PROCESS * 2
+    assert C.ranks_for(cells, available=4, back_scaled=True) == 4
+    assert C.ranks_for(cells, available=2, back_scaled=True) == 2
+
+
+def test_the_driver_asks_for_the_floor_when_the_plan_carries_a_stretch():
+    """The floor is useless unless the one caller passes it. `stretch_zones` is the plan's own
+    record of an anisotropic source, written a few lines above the call."""
+    src = _driver_source()
+    assert "back_scaled=" in src, "the driver never tells ranks_for the plan is stretched"
+    assert "plan.stretch_zones" in src, (
+        "the stretch has to come from the plan, not from a separate guess")
+
+
+# #
 # what must not move
 # #
 def test_a_mesh_that_fits_one_process_stays_on_one_process():
@@ -144,27 +196,39 @@ def test_a_mesh_that_fits_one_process_stays_on_one_process():
         assert C.ranks_for(cells, available=8) == 1, "%d cells does not need a second process" % cells
 
 
-def test_the_pinned_default_is_one_process(monkeypatch):
-    """THE SHIPPED DEFAULT, not whatever this machine's .env happens to say.
+def test_one_process_can_still_be_forced(monkeypatch):
+    """Setting it to 1 is the way to make a part that needs ranks be refused instead of meshed,
+    so it has to keep working.
 
-    This called `conjugate_ranks()` bare. The value it reads is a module constant bound at import
-    from the process environment (determinism.CONJUGATE_RANKS <- optional_env), and
-    settings/env.py loads the repo's own .env into that environment - so the moment a deployment
-    set CONJUGATE_RANKS=2, which is the single supported way to mesh a part that needs two
-    processes, this row went red and stayed red. A test that fails because the product was
-    configured is testing the operator, not the code.
+    MONKEYPATCHED AND NOT READ BARE. The value is a module constant bound at import from the
+    process environment (determinism.CONJUGATE_RANKS <- optional_env), and settings/env.py loads
+    the repo's own .env into that environment - so a row that calls `conjugate_ranks()` bare is
+    testing the deployment, not the code.
     """
     monkeypatch.setattr(DET, "CONJUGATE_RANKS", "1")
     ranks, basis = conjugate_ranks()
-    assert ranks == 1, "the default must not change any existing run"
+    assert ranks == 1
     assert "CONJUGATE_RANKS" in basis
 
 
-def test_the_default_shipped_in_the_source_is_still_one_process():
-    """And the default really is 1 where it is declared, which is the claim the row above makes
-    and can no longer observe for itself."""
+def test_the_default_shipped_in_the_source_offers_the_whole_fleet():
+    """IT WAS 1, and the reason given was that parallel changes the mesh. That is true and it is
+    why `ranks_for` keeps small parts serial - which it does whatever this says, so a default of 1
+    protected nothing and refused every part that needs a second process. The customer plate plans
+    270,976,191 cells, 1.51x one process's ceiling, and the engine's own refusal already names the
+    remedy it then would not take."""
     src = Path(inspect.getsourcefile(DET)).read_text(encoding="utf-8")
-    assert 'CONJUGATE_RANKS: str = optional_env("CONJUGATE_RANKS", "1")' in src
+    assert 'CONJUGATE_RANKS: str = optional_env("CONJUGATE_RANKS", "8")' in src
+
+
+def test_the_default_still_leaves_a_part_that_fits_one_process_on_one_process(monkeypatch):
+    """The claim the default rests on, checked rather than asserted: offering eight changes
+    nothing for a mesh the ceiling does not bite."""
+    monkeypatch.setattr(DET, "CONJUGATE_RANKS", "8")
+    offered, _ = conjugate_ranks()
+    assert offered == 8
+    for cells in (1, 41_616, 8_000_000, C.OCTREE_BOXES_PER_PROCESS):
+        assert C.ranks_for(cells, available=offered) == 1
 
 
 def test_a_configured_rank_count_is_honoured_and_capped(monkeypatch):
@@ -174,6 +238,25 @@ def test_a_configured_rank_count_is_honoured_and_capped(monkeypatch):
     monkeypatch.setattr(DET, "CONJUGATE_RANKS", "99")
     ranks, basis = conjugate_ranks()
     assert ranks == CONJUGATE_RANKS_MAX and "capped" in basis
+
+
+def test_the_ceiling_reads_as_a_ceiling_and_not_as_the_count(monkeypatch):
+    """The driver prints this basis beside the count the PLAN took, so a basis that reads like a
+    choice contradicts the line it sits in. On the first customer run after the default moved:
+
+        conjugate: meshing across 2 processes - pinned by CONJUGATE_RANKS=8
+
+    which an operator reads as a run that ignored its own setting. It is the opposite - 8 is the
+    most this offers and `ranks_for` asked for 2 - and the words now say so. It was not wrong
+    while the default was 1, because then the two numbers always agreed.
+    """
+    monkeypatch.setattr(DET, "CONJUGATE_RANKS", "8")
+    ranks, basis = conjugate_ranks()
+    assert ranks == 8
+    assert "pinned" not in basis, basis
+    assert "at most 8" in basis and "CONJUGATE_RANKS" in basis, basis
+    # the case the words have to survive: the plan takes fewer than the ceiling offers
+    assert C.ranks_for(270_983_796, available=ranks) == 2
 
 
 def test_the_pinned_count_is_capped_at_the_smallest_route():

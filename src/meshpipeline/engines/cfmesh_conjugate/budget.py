@@ -490,7 +490,7 @@ TWO_SCALE_BROAD_LEVELS = (1, 2, 3)
 #: solver tolerates - boundary-layer meshes routinely run an order of magnitude past it.
 MAX_STRETCH = 8.0
 
-#: THE STRETCHES THE PLANNER WILL TRY, coarsest first - and it stops at 4, where MAX_STRETCH above
+#: THE STRETCHES THE PLANNER WILL TRY, coarsest first - and it stops at 3, where MAX_STRETCH above
 #: stops at 8. The two numbers bound different things and only one of them was ever about time.
 #:
 #: MAX_STRETCH is a SHAPE bound: an 8:1 cell is well inside what a solver tolerates, which is what
@@ -513,13 +513,33 @@ MAX_STRETCH = 8.0
 #: Pricing it as a pure division - which two_scale_estimate does, correctly, for cells - makes the
 #: most expensive rung look like the cheapest plan, and the planner took the cheapest that fit.
 #:
-#: 4 IS THE LAST RUNG WITH A MEASUREMENT UNDER IT, and it is not a good one: the same document
-#: records scaleY 4 as "7.5x slower for 7% fewer cells", refuted as a compromise on the real part
-#: after a reproducer said otherwise. 6 and 8 have no finishing run between them on this geometry
-#: and 6 is measured at 38.7 h against a CONJUGATE_RUN_TIMEOUT_S of 21,600 s, so a plan at either
-#: is a plan that cannot be delivered. Refusing a part is a worse outcome than a coarser mesh, and
-#: spending six hours to time out is worse than both.
-STRETCH_LADDER: tuple[float, ...] = (4.0, 2.0, 1.0)
+#: 3 IS THE ONLY RUNG ON THIS GEOMETRY WITH A FAST FINISHING RUN UNDER IT. This ladder stopped at
+#: 4 until 2026-11-13, and the comment that put it there said in its own words that 4 "is not a
+#: good one" - MESH_TIME.md records scaleY 4 as "7.5x slower for 7% fewer cells", refuted as a
+#: compromise on the real part after a reproducer said otherwise. It was kept anyway because the
+#: ladder was built out of powers of two and 3 was never on it, so dropping 4 looked like dropping
+#: to 2. It is not: 3 is what every run that finished on this part used.
+#:
+#: WHAT KEEPING 4 COST, measured on the first customer part that went through the whole product
+#: rather than through a shell script - job 0fb28a1b, 2026-11-13. The planner priced the plate at
+#: 208,161,242 cells at scaleY 4, which sized an n2-highmem-32, and the mesher built 302,810,924
+#: and died on it:
+#:
+#:     cartesianMesh exited 139 after 2272s
+#:     meshOctreeCube::refineCube(...)   Signal: Segmentation fault (11)   on both ranks
+#:
+#: The crash is in the octree createOctreeWithRefinedBoundary(20, 30) that
+#: projectSurfaceAfterBackScaling builds AFTER optimiseFinalMesh pass 1 - the back-scale step this
+#: comment has described since it was written. Three attempts, byte-identical mesh each time
+#: (302,810,924 cells, octree nodes 155,668,321), same crash site. At scaleY 3 the same plan is
+#: 338,730,188 estimated cells, which sizes an n2-highmem-64 instead, and it is cbox2's own
+#: configuration: same background 0.000352056, same levels 1 and 4.
+#:
+#: 6 and 8 have no finishing run between them on this geometry and 6 is measured at 38.7 h against
+#: a CONJUGATE_RUN_TIMEOUT_S of 21,600 s, so a plan at either is a plan that cannot be delivered.
+#: Refusing a part is a worse outcome than a coarser mesh, and spending six hours to time out, or
+#: forty minutes to segfault, is worse than both.
+STRETCH_LADDER: tuple[float, ...] = (3.0, 2.0, 1.0)
 
 
 def two_scale_estimate(*, block_lo, block_hi, broad_cell_m: float, broad_area_m2: float,
@@ -592,6 +612,10 @@ def two_scale_estimate(*, block_lo, block_hi, broad_cell_m: float, broad_area_m2
 #: across is 260,192,592 - finer on the broad side AND 16% cheaper, because reaching the same
 #: 22.004 um fine cell from a finer broad cell needs one octree level fewer under it, and a level
 #: is a set of grading shells (see DEPTH_AT_FITTED_SPAN).
+#:
+#: Both of those counts were taken while STRETCH_LADDER still offered a stretch of 4. At 3 the
+#: 6-across plan does not fit the cell limit at all, so 12 across is no longer merely the cheaper
+#: rung - it is the only one.
 BROAD_ACROSS_CAP = 12
 
 
@@ -609,9 +633,15 @@ def _broad_candidates(asked: int) -> tuple[int, ...]:
     which fine cell sizes exist at all. On the first customer cold plate, asked at 5 across the
     broad passages, the only reachable fine cells are 13.20 um and 16.50 um - and the 16.50 um
     rung needs a stretch of 8 to fit the cell limit, which STRETCH_LADDER no longer offers for
-    reasons measured in hours. One step FINER on the broad side, 6 across, puts a 22.00 um rung
-    within reach, and that one fits at a stretch of 4: 308 million cells against 334 million, on
-    a stretch that has a finishing run under it.
+    reasons measured in hours. The whole fallback is what reaches the 22.00 um rung at all.
+
+    AND ON THAT PART IT NOW REACHES EXACTLY ONE PLAN. Enumerated 2026-11-13 against a limit of
+    400,000,000 with the ladder stopping at 3: broad 12 across, levels 1 and 4, 22.00 um over the
+    thin passages at 4.46 across, stretch 3, 338,730,188 cells. Nothing else in the search fits -
+    6 across at levels 1/5 was the plan this paragraph used to cite, and it only fitted because
+    the ladder still offered a stretch of 4, which cost a segfault on the first customer run
+    (see STRETCH_LADDER). A single surviving candidate is not a comfortable margin and is worth
+    knowing: the next part that is slightly larger has nowhere below it to go but a refusal.
     """
     return (*range(int(asked), FLOOR_CELLS_ACROSS - 1, -1),
             *range(int(asked) + 1, BROAD_ACROSS_CAP + 1))
@@ -650,7 +680,12 @@ def plan_two_scales(*, block_lo, block_hi, scales: dict, limit: int,
     # plate at 8.93 cells across is 2.8x one process's ceiling and comfortably inside eight
     # ranks', which have already built 202,709,195 cells.
     ceiling = octree_ceiling_cells(max(1, int(ranks)))
-    needed_ranks = 0           # the most any refused-on-ceiling configuration would have wanted
+    # THE FEWEST, not the most. This was a max, so a refusal told the reader the rank count of
+    # the DEEPEST rung that had been considered rather than of the cheapest one that would
+    # actually deliver a plan: the customer plate at a 700,000,000 limit said "would build on 4
+    # ranks" when two ranks plan it at 4.46 cells across. A refusal is read by someone about to
+    # change a setting, so the number in it has to be the smallest setting that works.
+    needed_ranks = 0           # the fewest any refused-on-ceiling configuration would have wanted
     best = None
     asked_i = int(asked_across)
     # the thin side first, because it is the reason to do this at all: walk its resolution down
@@ -685,8 +720,8 @@ def plan_two_scales(*, block_lo, block_hi, scales: dict, limit: int,
                     if raw > ceiling:
                         # remembered so a refusal can say what it would have taken, rather than
                         # only that it did not fit
-                        needed_ranks = max(needed_ranks,
-                                           int(math.ceil(raw / octree_ceiling_cells(1))))
+                        wanted = int(math.ceil(raw / octree_ceiling_cells(1)))
+                        needed_ranks = wanted if not needed_ranks else min(needed_ranks, wanted)
                         continue
                     fitted = (stretch, est)
                     break

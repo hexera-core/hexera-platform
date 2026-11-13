@@ -655,12 +655,27 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     # PRICED ON `raw`, not on the estimate. The estimate carries ESTIMATE_MARGIN to keep a run
     # inside a budget; the label ceiling is a hard limit on the cells that will exist, so sizing
     # the decomposition from the padded figure would ask for a rank the mesh does not need.
+    #
+    # AND THE STRETCH IS A SECOND DEMAND on the same number, measured rather than reasoned:
+    # cfMesh rebuilds its octree after the back-scale, and that rebuild segfaults on two
+    # processes. See conjugate.BACKSCALE_PROJECTION_RANKS for the two runs that proved it and the
+    # three that did not hit it.
     _raw = int((two or {}).get("raw") or 0) if two else 0
-    plan = dataclasses.replace(plan, ranks=C.ranks_for(_raw or estimate, available=ranks))
+    _cells = _raw or estimate
+    _stretched = bool(plan.stretch_zones)
+    _by_ceiling = C.ranks_for(_cells, available=ranks)
+    _want = C.ranks_for(_cells, available=ranks, back_scaled=_stretched)
+    plan = dataclasses.replace(plan, ranks=_want)
     if plan.ranks > 1:
-        logger.info("conjugate: meshing across %d processes - %s; the mesh needs it (%s cells "
-                    "against %s a process) - job_id=%s", plan.ranks, ranks_basis,
-                    f"{_raw or estimate:,}", f"{C.OCTREE_BOXES_PER_PROCESS:,}", job_id)
+        if plan.ranks > _by_ceiling:
+            why = ("the stretch needs it: the octree cfMesh rebuilds after the back-scale has "
+                   f"only ever survived on {C.BACKSCALE_PROJECTION_RANKS} processes, and "
+                   f"segfaulted on {_by_ceiling}")
+        else:
+            why = (f"the mesh needs it ({_cells:,} cells against "
+                   f"{C.OCTREE_BOXES_PER_PROCESS:,} a process)")
+        logger.info("conjugate: meshing across %d processes - %s; %s - job_id=%s",
+                    plan.ranks, ranks_basis, why, job_id)
     PL.write_plan(ws, plan)
     run.note_authoring()
     note_native_pass(ws, 1)
