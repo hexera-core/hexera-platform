@@ -23,10 +23,10 @@ const QUIET_NOTE_MS = 10 * 60 * 1000;
 const SOFT_MS = { engine: 60e3, plan: 5 * 60e3, quality: 3 * 60e3, review: 5 * 60e3 };
 
 export function createRunProgress(now = () => Date.now()) {
-  let steps, attempt, waitingText, ended, meshInfo, lastEventAt;
+  let steps, attempt, waitingText, ended, meshInfo, lastEventAt, meshSeen;
   function reset() {
     steps = STEPS.map(([key, doing, label]) => ({ key, doing, label, state: "todo", seconds: null, t0: null }));
-    attempt = 1; waitingText = ""; ended = null; meshInfo = null; lastEventAt = 0;
+    attempt = 1; waitingText = ""; ended = null; meshInfo = null; lastEventAt = 0; meshSeen = false;
   }
   reset();
   const step = (k) => steps.find((s) => s.key === k);
@@ -54,7 +54,27 @@ export function createRunProgress(now = () => Date.now()) {
 
   return {
     reset,
-    lane(agent, at) { touch(at); const k = LANE_STEP[agent]; if (k) start(k, at); },
+    /** A lane opening starts its step - EXCEPT the quality check, before any mesher has started.
+     *
+     *  THE EXECUTOR LANE OPENS TWICE over a job and means a different thing each time: a
+     *  PRE-FLIGHT, which runs before the mesher and can refuse the case outright, and the quality
+     *  check that reads the mesh afterwards. Only the second is "Checking quality". Mapping both
+     *  to it told a customer whose case was refused before meshing that the run "Stopped while
+     *  checking quality" - and `start` had swept the un-run mesh step to `done` on the way past,
+     *  so the same card also ticked "Meshed". Both claims were false, and the engine's own message
+     *  directly below them said so in plain words: "no mesher was started, so no time was spent on
+     *  a mesh". Measured on job 82e77c58 (a customer cold plate refused on the octree ceiling).
+     *
+     *  `meshSeen` is the distinction, and it is the engine's own MESHING event rather than a guess
+     *  about which pass this is. Before it, the executor is still getting a mesh built, so the
+     *  plan step stays open and a failure lands there - which is where it happened. After it,
+     *  every lane maps exactly as it did, so a run that reaches its mesher reads unchanged. */
+    lane(agent, at) {
+      touch(at);
+      const k = LANE_STEP[agent];
+      if (!k || (k === "quality" && !meshSeen)) return;
+      start(k, at);
+    },
     waiting(text) { waitingText = text || ""; },
     /** the engine lane's own words: "Mesh engine: cfMesh - it did best in our lab on shapes like this one" */
     engine(text, at) {
@@ -67,13 +87,13 @@ export function createRunProgress(now = () => Date.now()) {
       finish(s, at);
     },
     meshing(engine, budgetS, history, at) {
-      touch(at); start("mesh", at);
+      touch(at); meshSeen = true; start("mesh", at);
       const e = step("engine"); if (!e.engine && engine) e.label = "Mesh engine: " + engine;
       meshInfo = { budget: Number(budgetS) || 0, typical: (history && history.typical_s) || 0, stage: "" };
     },
     meshStage(label, at) { touch(at); if (meshInfo) meshInfo.stage = String(label || ""); },
     meshed(cells, at) {
-      touch(at); const s = step("mesh");
+      touch(at); meshSeen = true; const s = step("mesh");
       if (s.state !== "active") start("mesh", at);
       if (cells) s.label = "Meshed - " + cells;
       finish(s, at); meshInfo = null;
@@ -90,7 +110,10 @@ export function createRunProgress(now = () => Date.now()) {
       if (!(n > attempt)) return;
       attempt = n;
       steps.forEach((s) => { if (s.key !== "engine") Object.assign(s, { state: "todo", seconds: null, t0: null, label: STEPS[idx(s.key)][2] }); });
-      meshInfo = null;
+      // ...AND THIS ATTEMPT HAS NOT MESHED YET, whatever the last one did. A rebuild runs its own
+      // pre-flight, so carrying `meshSeen` over would let the second attempt's pre-flight open
+      // "Checking quality" on the strength of the first attempt's mesher.
+      meshInfo = null; meshSeen = false;
     },
     final(data, at) {
       const failed = !data.pass && !data.cancelled;

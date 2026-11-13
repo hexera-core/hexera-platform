@@ -104,3 +104,61 @@ def test_a_mesh_far_past_its_usual_time_says_so(live):
     assert out["longer"] == "Taking longer than similar runs (usually about 4 min)."
     assert out["near"] == "If it's still going at 16 min, it stops by itself."
     assert out["past"].startswith("Past its time limit") and out["live"] is False
+
+
+def test_a_case_refused_before_the_mesher_does_not_tick_meshed_or_blame_the_quality_check(live):
+    """THE EXECUTOR LANE OPENS TWICE and means a different thing each time.
+
+    Its first pass is a PRE-FLIGHT that runs before any mesher and may refuse the case outright;
+    its second reads the finished mesh. Both arrive as `stage: executor`, and both used to start
+    the "Checking quality" step - so a customer cold plate refused on the mesher's octree ceiling
+    (job 82e77c58, a real run) was shown "Stopped while checking quality." under a ticked
+    "Meshed", `start` having swept the un-run mesh step to done on its way past. The engine's own
+    message rendered directly below said the opposite, in plain words: "no mesher was started, so
+    no time was spent on a mesh".
+
+    The sequence below is that run's, event for event: an engine is chosen, the builder opens and
+    prices the mesh, no MESHING event is ever sent because no mesher is ever started, the
+    executor's pre-flight refuses, and the run ends without a mesh.
+    """
+    out = live.evaluate("(async () => {" + SETUP + """
+      Stage.ensureProc();
+      ev({type:'stage', stage:'engine_select'});
+      ev({type:'note', stage:'engine_select', text:'Mesh engine: cfMesh conjugate - it did best in our lab on shapes like this one', tone:'info'});
+      ev({type:'stage', stage:'builder'});
+      ev({type:'stage', stage:'executor'});          // the PRE-FLIGHT, with no mesher behind it
+      const refused = line();
+      Stage.final({pass:false, createdAt:'2026-11-13T09:25:00Z', endedAt:'2026-11-13T09:39:56Z'});
+      return {refused, ended: line()};
+    })()""", timeout=60)
+    e = out["ended"]
+    assert e["state"] == "failed" and e["live"] is False
+    # NOT "Stopped while checking quality." - nothing was checked, because nothing was meshed.
+    assert e["now"] == "Stopped while planning the mesh.", e["now"]
+    assert "failed:Planning the mesh" in e["steps"], e["steps"]
+    # and no tick anywhere claiming a mesh that does not exist
+    assert not any(s.startswith("done:") and "Mesh" in s and "engine" not in s.lower()
+                   for s in e["steps"]), e["steps"]
+    assert not any("Checking quality" in s or "Checked quality" in s
+                   for s in e["steps"] if s.startswith(("done:", "failed:"))), e["steps"]
+    assert_clean(live, "a case refused before the mesher")
+
+
+def test_the_quality_step_still_opens_once_a_mesher_has_run(live):
+    """THE CONTROL for the row above, so the fix cannot be "never open the quality step".
+
+    Same executor lane, same event type - the one difference is that a mesher ran first. This is
+    what every delivered run does, and it must read exactly as it always has.
+    """
+    out = live.evaluate("(async () => {" + SETUP + """
+      Stage.ensureProc();
+      ev({type:'stage', stage:'builder'});
+      ev({type:'meshing', stage:'builder', engine:'cfmesh', budget_s:600});
+      ev({type:'meshed', stage:'builder', cells:2081224});
+      ev({type:'stage', stage:'executor'});
+      return {checking: line()};
+    })()""", timeout=60)
+    c = out["checking"]
+    assert c["now"] == "Checking quality…", c["now"]
+    assert "done:Meshed - 2,081,224 cells" in c["steps"], c["steps"]
+    assert_clean(live, "the quality step after a real mesh")
