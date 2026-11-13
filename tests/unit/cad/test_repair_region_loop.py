@@ -850,3 +850,77 @@ def test_the_run_s_time_budget_ends_a_region_s_attempts():
 
     assert [p.region_index for p in run.packages] == [0]
     assert run.stopped_because == "time_budget"
+
+
+# A DECLINE IS NOT A FAILED ATTEMPT, the baseline's own ruling at its `declined` branch. It became
+# load-bearing when `fix_small_faces` learned to decline a sliver that is sliver-sized by area but
+# too wide for the fixer to find: the whole corpus of such parts was reported `regions_exhausted`
+# for defects nothing had attempted.
+
+
+class _DecliningOp:
+    """Judges its aim and runs nothing, handing the input shape straight back - `fix_small_faces`
+    on a face that is a sliver by area and no strip by width, in miniature."""
+
+    answers = frozenset({DefectCode.small_edge})
+    scope = 1
+    name = "fix_declining"
+
+    def apply(self, shape, targets, *, tolerance_mm):
+        return OpOutcome(shape=shape,
+                         evidence={"declined": "too_wide_to_find (4 mm across)"})
+
+
+def _declining_author(part: _Part):
+    """One package per region, planning the operation that declines. The package's claim therefore
+    fails and it is reverted - but nothing in it was attempted."""
+
+    def author(region, defects, attempts):
+        defect = defects[0]
+        predicate = Predicate(cleared=frozenset({defect.fingerprint}),
+                              reclassified=frozenset(), unchanged=frozenset(),
+                              max_area_delta_mm2=0.0, max_volume_delta_mm3=0.0)
+        plan = ({"op": _DecliningOp(), "defect_code": DefectCode.small_edge,
+                 "targets": (EntityRef(entity_type="edge", fingerprint=defect.fingerprint,
+                                       entity_index=defect.entity_index),)},)
+        return TargetPackage(region=region, intent=f"look at {defect.fingerprint}", plan=plan,
+                             predicate=predicate,
+                             budget=PackageBudget(max_ops=4, timeout_s=1000.0, model_calls=0,
+                                                  deviation_mm=0.0))
+
+    return author
+
+
+def test_a_declined_operation_abandons_nothing_while_a_rolled_back_one_still_does():
+    """The decline says nothing about whether progress was possible, so its target was never
+    claimed; the operation beside it in the same discarded package really was tried, and its
+    target is still abandoned. Per operation, as everywhere else in this predicate."""
+    from meshpipeline.cad.repair.region_loop import _abandoned
+
+    verdict = PackageVerdict(
+        region_index=0, status="reverted", reason="cleared defects still present: edge:a",
+        verdicts=(OpVerdict(op="fix_a", targets=("edge:a",), defect_code="small_edge",
+                            status="rolled_back",
+                            reason="declined:too_wide_to_find (4 mm across)"),
+                  OpVerdict(op="fix_z", targets=("edge:z",), defect_code="small_edge",
+                            status="rolled_back", reason="target_remains")))
+
+    assert _abandoned((verdict,), (_defect("a", DefectSeverity.warning),)) is False
+    assert _abandoned((verdict,), (_defect("z", DefectSeverity.warning),)) is True
+
+
+def test_a_region_whose_only_operation_declined_does_not_block_resolved():
+    """THE CORPUS CASE, through the whole loop: every package is reverted because its claim could
+    not hold, and every operation in them declined. No error-severity defect remains and nothing
+    was attempted, so what the final scan reports is a defect nobody claimed - and the run is
+    `resolved`, as the baseline calls the same log."""
+    part = _Part(keys=("a", "b"), severity=DefectSeverity.warning)
+    run = _run(part, _declining_author(part), attempts=1)
+
+    assert [p.status for p in run.packages] == ["reverted", "reverted"]
+    assert all(v.reason.startswith("declined:")
+               for p in run.packages for v in p.verdicts), [
+        v.reason for p in run.packages for v in p.verdicts]
+    assert [d.fingerprint for d in run.defects_after] == ["edge:a", "edge:b"]
+    assert run.stopped_because == "resolved"
+    assert run.resolved is True

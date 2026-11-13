@@ -37,6 +37,7 @@ from meshpipeline.cad.repair.loop import (
 from meshpipeline.cad.repair.package import TargetPackage
 from meshpipeline.cad.repair.regions import Region, decompose
 from meshpipeline.cad.repair.session import (
+    DECLINED,
     ESCALATED,
     HEAL_OP,
     ROLLED_BACK,
@@ -149,12 +150,21 @@ def _abandoned(packages: tuple[PackageVerdict, ...], defects) -> bool:
       a package that failed on one edge says nothing about a defect at the far end of the same
       box; marking the whole region would fail runs the baseline calls resolved for geometry no
       operation ever touched.
+    * A DECLINE IS NOT A FAILED ATTEMPT, which is the baseline's own ruling, stated at its
+      `declined` branch: "the operation judged the aim and ran nothing, so it says nothing about
+      whether progress is possible". An operation that declined never attempted its target, so it
+      cannot have abandoned it - a region whose only proposal was declined has had NOTHING tried
+      in it, and a defect surviving there is a defect nobody claimed, which is what the final
+      whole-shape scan reports in its own right rather than something a failed attempt left
+      behind. Identified by the `declined:` reason prefix `try_op` records, the same idiom as
+      `cap:` and `held_for_review:`; the granularity stays per-operation, so a package whose
+      other operation really was rolled back still marks that operation's targets.
     * A ROLLED-BACK HEAL ABANDONS NOTHING (floor-fix ruling 2). It aims at the analyzer's crossing
       and its partner faces, and a partner's unrelated warning must not become "abandoned" because
       the heal could not re-trim the tangle. A crossing the status walk also reported is an error
       and is still caught above.
 
-    Both exist so that a difference between this driver and the baseline is attributable to how
+    All three exist so that a difference between this driver and the baseline is attributable to how
     the packages were authored - which is the only reason `loop.py` is kept alive.
 
     THE KEY IS THE OPERATION, NOT THE PACKAGE, and that is the whole of this function's fidelity
@@ -165,9 +175,10 @@ def _abandoned(packages: tuple[PackageVerdict, ...], defects) -> bool:
     to a customer as `resolved`, which reads as "repaired". The divergence flatters this driver,
     which is exactly the corruption the retained baseline exists to detect, so:
 
-    * EVERY OPERATION THAT DID NOT SURVIVE is tried: one that rolled itself back, and every
-      operation of a package that was discarded whole (a `kept` operation inside a reverted
-      package left nothing behind either).
+    * EVERY OPERATION THAT DID NOT SURVIVE AND DID ATTEMPT SOMETHING is tried: one that rolled
+      itself back, and every operation of a package that was discarded whole (a `kept` operation
+      inside a reverted package left nothing behind either) - minus the declines above, which
+      attempted nothing.
     * MINUS WHAT A COMMITTING PACKAGE RECLASSIFIED. Reclassification is a discharge under spec
       decision 2 - the defect remains, explained, with its rationale in the report - and it is
       the ONLY thing that excuses a survivor at a tried fingerprint. `PackageVerdict.reclassified`
@@ -178,6 +189,7 @@ def _abandoned(packages: tuple[PackageVerdict, ...], defects) -> bool:
     tried = {fingerprint for verdict in packages
              for op in verdict.verdicts
              if op.op != HEAL_OP and not (op.kept and verdict.committed)
+             and not op.reason.startswith(DECLINED)
              for fingerprint in op.targets}
     discharged = {fingerprint for verdict in packages if verdict.committed
                   for fingerprint in verdict.reclassified}

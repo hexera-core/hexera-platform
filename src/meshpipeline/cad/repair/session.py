@@ -118,6 +118,11 @@ ESCALATED = "escalated"
 #: `declined:`.
 REFUSED = "refused:"
 
+#: Reason prefix for an operation that judged its aim and ran nothing. Same idiom, and named here
+#: rather than spelled out at each reader: the region loop's `_abandoned` has to tell a decline
+#: from a failed attempt, and a literal in two modules is a routing split waiting to happen.
+DECLINED = "declined:"
+
 
 @dataclass(frozen=True, slots=True)
 class PackageVerdict:
@@ -484,7 +489,8 @@ class RepairSession:
             self.shape, self._defects, self.complete_scan = snapshot
             return self._record(OpVerdict(
                 op=op.name, targets=fingerprints, defect_code=code, status=ROLLED_BACK,
-                reason=f"declined:{str(declined)[:200]}", evidence=dict(outcome.evidence), delta=delta,
+                reason=f"{DECLINED}{str(declined)[:200]}", evidence=dict(outcome.evidence),
+                delta=delta,
                 apply_s=apply_s, measure_s=measure_s))
 
         previous = self.defects()
