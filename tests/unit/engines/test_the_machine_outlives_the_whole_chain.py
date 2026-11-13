@@ -456,6 +456,43 @@ def test_the_cfd_and_thermal_routes_are_identical_to_the_baseline(ref):
         assert V.disk_gb_for(0.0) == V.MIN_DISK_GB == base.MIN_DISK_GB, (label, ref)
 
 
+#: WHAT A LATER COMMIT ON THIS BRANCH ADDED TO THE SAME STARTUP SCRIPT, named so that the
+#: "nothing else moved" controls below stay controls instead of being retired.
+#:
+#: bc71c00f gave /mnt/stateful_partition/work mode 1777, because the container runs as uid 1000
+#: and that directory is its TMPDIR: root-owned 0755 killed the first parallel conjugate mesh this
+#: route ever ran, with Open MPI unable to make its session directory. It is a real second change
+#: to the body PRE_FIX is the control for, so the two rows that compare the WHOLE body subtract
+#: exactly this and nothing else - if the subtraction stops matching, the body moved again and
+#: whoever moved it has to say so here.
+LATER_STARTUP_LINES = (
+    "# THE CONTAINER RUNS AS uid 1000 AND THIS DIRECTORY IS ITS TMPDIR (see the docker run below).",
+    "chmod 1777 /mnt/stateful_partition/work",
+)
+
+
+def _without_later_startup_changes(body: dict) -> dict:
+    """`body` with the startup-script lines a later commit added taken back out.
+
+    Asserts they were there: a control that silently normalises away a line that is no longer
+    present stops testing anything.
+    """
+    import copy
+
+    out = copy.deepcopy(body)
+    for item in out["metadata"]["items"]:
+        if item["key"] != "startup-script":
+            continue
+        lines = item["value"].split("\n")
+        for marker in LATER_STARTUP_LINES:
+            assert marker in lines, f"startup script no longer carries {marker!r}"
+        start = lines.index(LATER_STARTUP_LINES[0])
+        end = lines.index(LATER_STARTUP_LINES[-1])
+        assert 0 <= start < end, (start, end)
+        item["value"] = "\n".join(lines[:start] + lines[end + 1:])
+    return out
+
+
 def test_the_whole_instance_body_is_identical_to_this_branchs_head():
     """EVERY field, not only the one that was changed: the metadata, the scheduling, the disk, the
     service account. (Against `origin/main` the body differs in the startup script and two
@@ -463,8 +500,9 @@ def test_the_whole_instance_body_is_identical_to_this_branchs_head():
     isolates what this change did.)"""
     base = _module_at(PRE_FIX, GCE_VM, "_head_gce_vm_whole")
     for label, machine, timeout in QUIET_ROUTES:
-        now = _body(V, machine=machine, timeout=timeout, workspace_gib=0.0,
-                    cpus=V.cpus_of(machine))
+        now = _without_later_startup_changes(
+            _body(V, machine=machine, timeout=timeout, workspace_gib=0.0,
+                  cpus=V.cpus_of(machine)))
         was = _body(base, machine=machine, timeout=timeout, workspace_gib=0.0)
         assert json.dumps(now, sort_keys=True) == json.dumps(was, sort_keys=True), label
 
@@ -505,8 +543,9 @@ def test_nothing_about_the_fea_mesh_itself_moves():
     mesher is handed the same deadline and the same room it was before."""
     base = _module_at(PRE_FIX, GCE_VM, "_head_gce_vm_fea2")
     for _elements, files_gib, machine in FEA_PLANS:
-        now = _body(V, machine=machine, timeout=7_200, workspace_gib=files_gib,
-                    cpus=V.cpus_of(machine))
+        now = _without_later_startup_changes(
+            _body(V, machine=machine, timeout=7_200, workspace_gib=files_gib,
+                  cpus=V.cpus_of(machine)))
         was = _body(base, machine=machine, timeout=7_200, workspace_gib=files_gib)
         meta_now = {i["key"]: i["value"] for i in now["metadata"]["items"]}
         meta_was = {i["key"]: i["value"] for i in was["metadata"]["items"]}
