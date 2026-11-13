@@ -36,6 +36,17 @@ from meshpipeline.engines import dispatch as D
 from meshpipeline.engines.cfmesh_conjugate import conjugate as C
 from meshpipeline.engines.registry import get_spec
 
+#: THE COMMIT THIS WORK WAS MEASURED AGAINST, pinned rather than spelled `HEAD`.
+#:
+#: A no-fix control has to load the code as it was BEFORE the fix. While the fix sat uncommitted
+#: `HEAD` WAS that code, so every control below passed - and the moment the fix was committed
+#: `HEAD` became the fix, each control compared the fix against itself, and ten rows went red at
+#: once. A control that holds only while the work is uncommitted is not a control: it would have
+#: been red in CI forever, and it would have stopped discriminating on the day it mattered.
+#:
+#: 42d8a731 is the tip this branch's conjugate work was written on and measured against. A shallow
+#: clone that does not carry it makes these rows SKIP, which the loaders below already handle.
+PRE_FIX = "42d8a731"
 
 # #
 # the budget is the whole run's, not one command's
@@ -379,7 +390,7 @@ def test_the_refusal_names_the_stage_that_could_not_start(tmp_path, monkeypatch)
 # #
 #: The refs this branch must not move a reading against: this branch's HEAD, and what Areen and
 #: Pranav ship.
-BASELINES = ("HEAD", "origin/main")
+BASELINES = (PRE_FIX, "origin/main")
 REPO = Path(__file__).resolve().parents[3]
 
 
@@ -450,7 +461,7 @@ def test_the_whole_instance_body_is_identical_to_this_branchs_head():
     service account. (Against `origin/main` the body differs in the startup script and two
     metadata keys, which are this branch's own and are already at HEAD - so HEAD is the ref that
     isolates what this change did.)"""
-    base = _module_at("HEAD", GCE_VM, "_head_gce_vm_whole")
+    base = _module_at(PRE_FIX, GCE_VM, "_head_gce_vm_whole")
     for label, machine, timeout in QUIET_ROUTES:
         now = _body(V, machine=machine, timeout=timeout, workspace_gib=0.0,
                     cpus=V.cpus_of(machine))
@@ -473,7 +484,7 @@ def test_the_fea_margin_is_the_one_non_semiconductor_reading_that_moves():
     that an FEA workspace of 214 GiB is given time to be archived instead of being deleted
     mid-archive; what it costs is that an ALREADY BROKEN FEA box lives up to 2.02 h longer before
     Compute Engine removes it."""
-    base = _module_at("HEAD", GCE_VM, "_head_gce_vm_fea")
+    base = _module_at(PRE_FIX, GCE_VM, "_head_gce_vm_fea")
     grew: list[tuple[int, int]] = []
     for elements, files_gib, machine in FEA_PLANS:
         timeout = {5_000_000: 3_600, 20_000_000: 7_200,
@@ -492,7 +503,7 @@ def test_the_fea_margin_is_the_one_non_semiconductor_reading_that_moves():
 def test_nothing_about_the_fea_mesh_itself_moves():
     """The run's own budget travels to the container unchanged, and so does the disk - so the
     mesher is handed the same deadline and the same room it was before."""
-    base = _module_at("HEAD", GCE_VM, "_head_gce_vm_fea2")
+    base = _module_at(PRE_FIX, GCE_VM, "_head_gce_vm_fea2")
     for _elements, files_gib, machine in FEA_PLANS:
         now = _body(V, machine=machine, timeout=7_200, workspace_gib=files_gib,
                     cpus=V.cpus_of(machine))
@@ -531,7 +542,7 @@ def test_the_return_watch_changes_nothing_else_a_non_conjugate_run_returns(engin
     around the return runs for CFD, thermal and FEA too. What it may do is add its own phase log;
     what it may not do is change the verdict, the cell count, the scope decision or the largest
     file the extractor sizes itself from."""
-    base = _module_at("HEAD", DISPATCH, f"_head_dispatch_{engine}")
+    base = _module_at(PRE_FIX, DISPATCH, f"_head_dispatch_{engine}")
     now = _returned_through(D, _a_cfd_workspace(tmp_path / "now"), engine)
     was = _returned_through(base, _a_cfd_workspace(tmp_path / "was"), engine)
 

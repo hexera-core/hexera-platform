@@ -50,6 +50,18 @@ from meshpipeline.engines.cfmesh_conjugate import conjugate as C
 from meshpipeline.engines.registry import get_spec
 from meshpipeline.sandbox import safe_exec as SE
 
+#: THE COMMIT THIS WORK WAS MEASURED AGAINST, pinned rather than spelled `HEAD`.
+#:
+#: A no-fix control has to load the code as it was BEFORE the fix. While the fix sat uncommitted
+#: `HEAD` WAS that code, so every control below passed - and the moment the fix was committed
+#: `HEAD` became the fix, each control compared the fix against itself, and ten rows went red at
+#: once. A control that holds only while the work is uncommitted is not a control: it would have
+#: been red in CI forever, and it would have stopped discriminating on the day it mattered.
+#:
+#: 42d8a731 is the tip this branch's conjugate work was written on and measured against. A shallow
+#: clone that does not carry it makes these rows SKIP, which the loaders below already handle.
+PRE_FIX = "42d8a731"
+
 #: the six that declare the flag, and run their meshers the way this now runs its stages
 WATCHED_ENGINES = ("snapgrid", "snappy", "snappy_multiregion", "cfmesh", "gmsh", "vmtk")
 
@@ -181,16 +193,16 @@ def _at_head(repo_path: str, name: str):
     """One file as it is at HEAD, as a module of its own. The no-fix control: nothing on the
     shared tree is touched and nothing is written anywhere."""
     try:
-        src = subprocess.run(["git", "show", "HEAD:" + repo_path], cwd=str(REPO),
+        src = subprocess.run(["git", "show", PRE_FIX + ":" + repo_path], cwd=str(REPO),
                              capture_output=True, text=True, check=True).stdout
     except (OSError, subprocess.CalledProcessError) as exc:  # pragma: no cover - no git, no control
-        pytest.skip(f"the no-fix control needs the file at HEAD: {exc}")
+        pytest.skip(f"the no-fix control needs the file at {PRE_FIX}: {exc}")
     spec = importlib.util.spec_from_loader(name, loader=None)
     mod = importlib.util.module_from_spec(spec)
-    mod.__file__ = "HEAD:" + repo_path
+    mod.__file__ = PRE_FIX + ":" + repo_path
     sys.modules[name] = mod
     try:
-        exec(compile(src, "HEAD:" + repo_path, "exec"), mod.__dict__)
+        exec(compile(src, PRE_FIX + ":" + repo_path, "exec"), mod.__dict__)
     finally:
         sys.modules.pop(name, None)
     return mod

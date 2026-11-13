@@ -45,6 +45,18 @@ import pytest
 
 from meshpipeline.engines.cfmesh_conjugate import review_surface as RS
 
+#: THE COMMIT THIS WORK WAS MEASURED AGAINST, pinned rather than spelled `HEAD`.
+#:
+#: A no-fix control has to load the code as it was BEFORE the fix. While the fix sat uncommitted
+#: `HEAD` WAS that code, so every control below passed - and the moment the fix was committed
+#: `HEAD` became the fix, each control compared the fix against itself, and ten rows went red at
+#: once. A control that holds only while the work is uncommitted is not a control: it would have
+#: been red in CI forever, and it would have stopped discriminating on the day it mattered.
+#:
+#: 42d8a731 is the tip this branch's conjugate work was written on and measured against. A shallow
+#: clone that does not carry it makes these rows SKIP, which the loaders below already handle.
+PRE_FIX = "42d8a731"
+
 pv = pytest.importorskip("pyvista")
 
 
@@ -624,16 +636,16 @@ def test_at_head_this_builder_could_not_be_given_a_budget_at_all_THE_CONTROL():
     repo = Path(__file__).resolve().parents[3]
     path = "src/meshpipeline/engines/cfmesh_conjugate/review_surface.py"
     try:
-        src = subprocess.run(["git", "show", "HEAD:" + path], cwd=str(repo),
+        src = subprocess.run(["git", "show", PRE_FIX + ":" + path], cwd=str(repo),
                              capture_output=True, text=True, check=True).stdout
     except (OSError, subprocess.CalledProcessError) as exc:  # pragma: no cover
-        pytest.skip(f"the control needs the file at HEAD: {exc}")
+        pytest.skip(f"the control needs the file at {PRE_FIX}: {exc}")
     spec = importlib.util.spec_from_loader("_head_review_surface", loader=None)
     head = importlib.util.module_from_spec(spec)
-    head.__file__ = "HEAD:" + path
+    head.__file__ = PRE_FIX + ":" + path
     sys.modules["_head_review_surface"] = head
     try:
-        exec(compile(src, "HEAD:" + path, "exec"), head.__dict__)
+        exec(compile(src, PRE_FIX + ":" + path, "exec"), head.__dict__)
     finally:
         sys.modules.pop("_head_review_surface", None)
 
