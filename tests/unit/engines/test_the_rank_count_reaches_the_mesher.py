@@ -16,9 +16,17 @@ has always known that. Three things did not:
 
 Measured on the first real customer cold plate (ColdPlateAssembly_CLEAN.step, 178 x 41.8 x 101 mm,
 broad passage 2.11 mm, microchannels 0.0982 mm) at a 400,000,000 cell limit: refused at one rank,
-and at two it plans 333,869,285 cells (267,095,428 unmargined). The engine's own refusal already
+and at two it planned 333,869,285 cells (267,095,428 unmargined). The engine's own refusal already
 said so - "a configuration that fits the cell limit was refused on the octree ceiling alone and
 would build on 2 ranks".
+
+THOSE TWO NUMBERS HAVE SINCE MOVED, and the entry is kept as written because it is what this file
+was built on. The plan they describe is stretched 8x, and docs/semiconductor/MESH_TIME.md later
+measured what a stretch costs in the optimiser - ws_shell at scaleY 6 took 38.7 h against cbox2 at
+scaleY 3 in 652 s on 1.53x the cells. STRETCH_LADDER now stops at 4, and the same plate at the same
+limit plans 260,194,641 cells (208,155,712 unmargined) on two ranks and 217,131,229 on one. So one
+process is no longer REFUSED - it takes a coarser broad rung instead - and the rows below say which
+of the two is which.
 
 WHAT MUST NOT CHANGE, and these tests exist mostly for this. Parallel changes the mesh: on the
 coupon, serial 29,812/29,262 cells against parallel 29,813/29,261 - one cell moves between the
@@ -29,11 +37,14 @@ means something else.
 from __future__ import annotations
 
 import inspect
+
+import pytest
 from pathlib import Path
 
 from meshpipeline.engines.cfmesh_conjugate import budget as B
 from meshpipeline.engines.cfmesh_conjugate import conjugate as C
 from meshpipeline.engines.cfmesh_conjugate import driver as D
+from meshpipeline.engines import determinism as DET
 from meshpipeline.engines.determinism import CONJUGATE_RANKS_MAX, conjugate_ranks
 
 #: The customer plate, as the committed two-scale fixture states it.
@@ -74,14 +85,40 @@ def test_the_octree_gate_lets_through_what_two_processes_can_address():
 # #
 # the plate
 # #
-def test_the_plate_is_refused_on_one_process_and_planned_on_two():
-    refused, why = _plan(1)
-    assert refused is None, "one process should not fit this plate"
-    assert "would build on 2 ranks" in why, "the refusal should say what it would have taken"
-    plan, said = _plan(2)
-    assert plan is not None, "two processes should fit it: %s" % why
-    assert plan["estimate"] <= LIMIT
+def test_one_process_gets_a_coarser_rung_and_two_get_the_one_that_was_wanted():
+    """One process is no longer refused outright, and the rank count still decides the rung.
+
+    IT USED TO BE A REFUSAL and the refusal was real: the only configuration that fitted the cell
+    limit was stretched 8x, and its 267 million cells are past what one process can address. Once
+    STRETCH_LADDER stopped at 4 (docs/semiconductor/MESH_TIME.md: scaleY 6 is 38.7 h against 652 s
+    at scaleY 3) the planner stopped reaching for that configuration at all, and the search for a
+    plan one process CAN address finds one by coarsening the broad side rather than by stretching
+    the thin cells further.
+
+    So the rank count now buys resolution instead of buying a plan at all, which is the better
+    shape of the same lever: 4.09 cells across the slots on one process, 4.46 on two.
+    """
+    one, why = _plan(1)
+    assert one is not None, "one process should now get a plan: %s" % why
+    assert one["fine_across"] == pytest.approx(4.09, abs=0.02)
+    assert one["estimate"] <= LIMIT
+    assert C.ranks_for(one["raw"]) == 1, "a one-rank plan has to be addressable by one rank"
+
+    two, said = _plan(2)
+    assert two is not None, "two processes should fit it: %s" % why
+    assert two["fine_across"] == pytest.approx(4.46, abs=0.02)
+    assert two["fine_across"] > one["fine_across"], "the second process has to buy something"
+    assert two["estimate"] <= LIMIT
     assert said and "two cell sizes" in said
+
+
+def test_neither_rung_is_planned_at_a_stretch_that_cannot_mesh():
+    """The reason one process stopped being refused, pinned so it cannot quietly come back."""
+    for ranks in (1, 2):
+        plan, _ = _plan(ranks)
+        assert plan["stretch"] <= 4.0, (
+            "%d ranks planned a stretch of %g, which has no finishing run under it"
+            % (ranks, plan["stretch"]))
 
 
 def test_the_plan_carries_the_unmargined_count_for_sizing_the_decomposition():
@@ -107,10 +144,36 @@ def test_a_mesh_that_fits_one_process_stays_on_one_process():
         assert C.ranks_for(cells, available=8) == 1, "%d cells does not need a second process" % cells
 
 
-def test_the_pinned_default_is_one_process():
+def test_the_pinned_default_is_one_process(monkeypatch):
+    """THE SHIPPED DEFAULT, not whatever this machine's .env happens to say.
+
+    This called `conjugate_ranks()` bare. The value it reads is a module constant bound at import
+    from the process environment (determinism.CONJUGATE_RANKS <- optional_env), and
+    settings/env.py loads the repo's own .env into that environment - so the moment a deployment
+    set CONJUGATE_RANKS=2, which is the single supported way to mesh a part that needs two
+    processes, this row went red and stayed red. A test that fails because the product was
+    configured is testing the operator, not the code.
+    """
+    monkeypatch.setattr(DET, "CONJUGATE_RANKS", "1")
     ranks, basis = conjugate_ranks()
     assert ranks == 1, "the default must not change any existing run"
     assert "CONJUGATE_RANKS" in basis
+
+
+def test_the_default_shipped_in_the_source_is_still_one_process():
+    """And the default really is 1 where it is declared, which is the claim the row above makes
+    and can no longer observe for itself."""
+    src = Path(inspect.getsourcefile(DET)).read_text(encoding="utf-8")
+    assert 'CONJUGATE_RANKS: str = optional_env("CONJUGATE_RANKS", "1")' in src
+
+
+def test_a_configured_rank_count_is_honoured_and_capped(monkeypatch):
+    """The other half: setting it is the supported lever, so it has to actually take effect."""
+    monkeypatch.setattr(DET, "CONJUGATE_RANKS", "2")
+    assert conjugate_ranks()[0] == 2
+    monkeypatch.setattr(DET, "CONJUGATE_RANKS", "99")
+    ranks, basis = conjugate_ranks()
+    assert ranks == CONJUGATE_RANKS_MAX and "capped" in basis
 
 
 def test_the_pinned_count_is_capped_at_the_smallest_route():

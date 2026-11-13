@@ -183,6 +183,16 @@ def test_the_driver_refuses_before_it_meshes(tmp_path, monkeypatch):
     cell budget, and inside `refuse_for_octree`'s 178,956,970 per process - so the refusal under
     test is the archive one and not one of the gates around it.
     """
+    # THE CELL LIMIT THIS ROW'S NUMBERS WERE CHOSEN AGAINST, pinned rather than inherited.
+    # polcfg.CELL_HARD_LIMIT is read at call time from the deployment's own configuration
+    # (settings/env.py loads the repo .env into the process), and the sizes below only mean what
+    # this row says they mean relative to a particular limit. A deployment configured for large
+    # meshes - which is the supported way to mesh a real customer part - silently turned the
+    # comparison round and the row went red for being configured, not for being wrong.
+    import meshpipeline.settings.policy as _polcfg
+
+    monkeypatch.setattr(_polcfg, "CELL_HARD_LIMIT", 8_000_000)
+
     from meshpipeline.engines.cfmesh_conjugate import budget as _B
     from meshpipeline.engines.cfmesh_conjugate import driver as D
 
@@ -224,6 +234,16 @@ def test_it_reads_the_ceiling_the_caller_will_apply():
 def test_the_ceiling_it_uses_is_the_one_the_extractor_gives(monkeypatch):
     """Apples to apples: the estimate is handed over as the cell count, because that is the number
     the extractor will be given too."""
+    # THE CELL LIMIT THIS ROW'S NUMBERS WERE CHOSEN AGAINST, pinned rather than inherited.
+    # polcfg.CELL_HARD_LIMIT is read at call time from the deployment's own configuration
+    # (settings/env.py loads the repo .env into the process), and the sizes below only mean what
+    # this row says they mean relative to a particular limit. A deployment configured for large
+    # meshes - which is the supported way to mesh a real customer part - silently turned the
+    # comparison round and the row went red for being configured, not for being wrong.
+    import meshpipeline.settings.policy as _polcfg
+
+    monkeypatch.setattr(_polcfg, "CELL_HARD_LIMIT", 8_000_000)
+
     from meshpipeline.adapters.mesh_execution.cloud_run_client import result_extraction_limits
 
     for cells in (6_707_503, 28_444_758):

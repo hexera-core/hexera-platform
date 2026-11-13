@@ -101,9 +101,38 @@ def test_the_configuration_that_actually_built_is_now_refused_for_being_too_coar
     assert "two scales of passage" in said
 
 
+def test_one_process_takes_a_coarser_rung_rather_than_a_stretch_that_cannot_mesh():
+    """ONE PROCESS no longer reaches the BUILT background, and that is the trade being made.
+
+    WHY IT MOVED: docs/semiconductor/MESH_TIME.md, measured on this same customer plate. ws_shell
+    at scaleY 6 took 139,230.5 s = 38.7 h in the mesher; cbox2 at scaleY 3, on 1.53x the cells,
+    took 652 s. 213x, and the stretch is the one setting between them - the back-scale at the end
+    of optimiseFinalMesh pass 1 hands the optimiser 346,057 bad faces at scaleY 6 against 440 at
+    scaleY 3. So STRETCH_LADDER now stops at 4, the last rung with a measurement under it.
+
+    4.46 across at a stretch of 4 is past what one process can address, so one process coarsens
+    the BROAD side instead - 11 across rather than 12, a 24.0 um fine cell, 4.09 across the slots
+    - which still clears the four-cell floor. Giving up 8% of the thin-side resolution is a
+    smaller loss than a plan that cannot be delivered inside CONJUGATE_RUN_TIMEOUT_S.
+    """
+    plan, said = _plan(limit=700_000_000, prismatic_axis=1, ranks=1)
+    assert plan is not None, f"one process still has to get a plan: {said}"
+    assert plan["fine_across"] == pytest.approx(4.09, abs=0.02)
+    assert plan["fine_across"] >= B.FINE_ACROSS_FLOOR
+    assert plan["stretch"] <= max(B.STRETCH_LADDER)
+    assert "two cell sizes" in said and "prismatic" in said
+
+
 def test_with_the_stretch_it_reaches_a_resolution_that_holds_the_passages_together():
-    """The same part, the same budget, with the licence to stretch along its extruded axis."""
-    plan, said = _plan(limit=700_000_000, prismatic_axis=1)
+    """The same part, the same budget, with the licence to stretch along its extruded axis.
+
+    ON TWO PROCESSES, where this used to be one. The configuration asserted below is the one the
+    two-scale work was built to reach and it is UNCHANGED - same background, same two spans, one
+    level finer than the run that built - but the stretch that gets there is now 4 rather than 6,
+    and 4.46 across at 4 is past one process's octree ceiling. The rank count buys it back; see
+    test_one_process_takes_a_coarser_rung_rather_than_a_stretch_that_cannot_mesh.
+    """
+    plan, said = _plan(limit=700_000_000, prismatic_axis=1, ranks=2)
     assert plan is not None, f"the stretched plan has to be reachable: {said}"
     assert plan["background_m"] == pytest.approx(BUILT["background_m"], rel=1e-3)
     assert plan["broad_levels"] == BUILT["broad_levels"]

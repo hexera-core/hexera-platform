@@ -118,30 +118,88 @@ def test_without_a_stretch_the_customer_part_cannot_be_resolved_at_all():
 
 
 def test_the_stretch_is_what_makes_it_plannable():
+    """4.09 across and not 4.46, because ONE PROCESS cannot address 4.46 at a stretch that meshes.
+
+    This read 4.46 while the ladder went to 8, and one process got there by stretching 6x.
+
+    WHY IT MOVED: docs/semiconductor/MESH_TIME.md, measured on this same customer plate. ws_shell
+    at scaleY 6 took 139,230.5 s = 38.7 h in the mesher; cbox2 at scaleY 3, on 1.53x the cells,
+    took 652 s. 213x, and the stretch is the one setting between them - the back-scale at the end
+    of optimiseFinalMesh pass 1 hands the optimiser 346,057 bad faces at scaleY 6 against 440 at
+    scaleY 3. So STRETCH_LADDER now stops at 4, the last rung with a measurement under it.
+
+    The deepest rung one process can now address is 4.09 across at a 24.0 um cell - still clear of
+    the four-cell floor a passage needs to survive - and it is reached by coarsening the BROAD
+    side to 11 across rather than by deforming the thin cells further. Two processes get 4.46
+    back, at the same stretch of 4.
+    """
     tall, _ = _plan(prismatic_axis=1)
     assert tall is not None
     assert tall["fine_across"] >= B.FINE_ACROSS_FLOOR
-    assert tall["fine_across"] == pytest.approx(4.46, abs=0.05)
-    assert tall["estimate"] < 200_000_000, (
+    assert tall["fine_across"] == pytest.approx(4.09, abs=0.05)
+    assert tall["estimate"] < 250_000_000, (
         "and it has to be affordable, not merely reachable")
     assert tall["stretch_axis"] == 1
 
 
-def test_the_cheapest_stretch_that_fits_is_the_one_taken():
-    """A stretch is free in accuracy along a prismatic axis but it is still a deformation; there
-    is no reason to take more of it than the budget needs."""
-    tight, _ = _plan(prismatic_axis=1, limit=150_000_000)
-    loose, _ = _plan(prismatic_axis=1, limit=700_000_000)
-    assert tight["stretch"] >= loose["stretch"], (
-        "a tighter budget should buy the stretch, not a looser one")
+def test_more_capacity_buys_a_gentler_stretch_at_the_same_rung():
+    """A stretch is free in accuracy along a prismatic axis. It is NOT free in time, and that is
+    the half this module could not see.
+
+    The old row compared two cell LIMITS and asserted the tighter one bought more stretch. That
+    was true and is still the shape of the trade; it could not be kept as written because its
+    tight budget of 150M no longer plans at all - the configurations that fit inside 150M were
+    exactly the ones stretched 6x and 8x.
+
+    WHY IT MOVED: docs/semiconductor/MESH_TIME.md, measured on this same customer plate. ws_shell
+    at scaleY 6 took 139,230.5 s = 38.7 h in the mesher; cbox2 at scaleY 3, on 1.53x the cells,
+    took 652 s. 213x, and the stretch is the one setting between them - the back-scale at the end
+    of optimiseFinalMesh pass 1 hands the optimiser 346,057 bad faces at scaleY 6 against 440 at
+    scaleY 3. So STRETCH_LADDER now stops at 4, the last rung with a measurement under it.
+
+    The same invariant, stated where it now bites: at a FIXED rung, extra capacity is spent on
+    taking LESS stretch rather than more cells. Two processes reach 4.46 across at 4x; eight reach
+    the same 4.46 at 2x.
+    """
+    tight, _ = _plan(prismatic_axis=1, ranks=2)
+    loose, _ = _plan(prismatic_axis=1, ranks=8)
+    assert tight["fine_across"] == pytest.approx(loose["fine_across"], rel=1e-6), (
+        "same rung on both, so the only thing that may differ is the stretch")
+    assert loose["stretch"] < tight["stretch"], (
+        "more capacity should buy LESS deformation, not more resolution at a worse stretch")
+    assert loose["estimate"] > tight["estimate"], "and a gentler stretch costs cells"
+
+
+def test_no_plan_is_ever_returned_at_a_stretch_with_no_finishing_run_under_it():
+    """THE RULE THE LADDER NOW CARRIES, checked across the band rather than at one point.
+
+    WHY IT MOVED: docs/semiconductor/MESH_TIME.md, measured on this same customer plate. ws_shell
+    at scaleY 6 took 139,230.5 s = 38.7 h in the mesher; cbox2 at scaleY 3, on 1.53x the cells,
+    took 652 s. 213x, and the stretch is the one setting between them - the back-scale at the end
+    of optimiseFinalMesh pass 1 hands the optimiser 346,057 bad faces at scaleY 6 against 440 at
+    scaleY 3. So STRETCH_LADDER now stops at 4, the last rung with a measurement under it.
+
+    Nothing above 4 has ever produced a mesh on this geometry, against a CONJUGATE_RUN_TIMEOUT_S
+    of 21,600 s, so a plan at 6 or 8 is a plan that cannot be delivered. The planner must not
+    return one at any rank count or any budget.
+    """
+    for ranks in (1, 2, 4, 8):
+        for limit in (400_000_000, 700_000_000, 2_000_000_000):
+            plan, _ = _plan(prismatic_axis=1, ranks=ranks, limit=limit)
+            if plan is None:
+                continue
+            assert plan["stretch"] <= 4.0, (
+                f"{ranks} ranks at {limit:,} planned a stretch of {plan['stretch']:g}")
 
 
 def test_one_process_gets_the_rung_it_can_actually_build():
     """The chain is serial today, so a configuration past one process's octree ceiling must be
     refused rather than started and aborted an hour in."""
     plan, _ = _plan(prismatic_axis=1, ranks=1)
-    assert plan["fine_across"] == pytest.approx(4.46, abs=0.05)
-    assert plan["estimate"] < 200_000_000
+    # 4.09, not 4.46: see test_the_stretch_is_what_makes_it_plannable. One process reaches the
+    # deepest rung it can ADDRESS at a stretch that meshes, which is one broad step coarser.
+    assert plan["fine_across"] == pytest.approx(4.09, abs=0.05)
+    assert plan["estimate"] < 250_000_000
     raw = B.two_scale_estimate(
         block_lo=BLOCK_LO, block_hi=BLOCK_HI, broad_cell_m=plan["broad_cell_m"],
         broad_area_m2=SCALES["broad"]["area_m2"], fine_cell_m=plan["fine_cell_m"],
@@ -155,10 +213,14 @@ def test_more_ranks_open_the_rung_above():
     """8.93 cells across is 2.8x one process's ceiling and well inside eight ranks', which have
     already built 202,709,195 cells on this mesher."""
     one, _ = _plan(prismatic_axis=1, ranks=1)
-    many, _ = _plan(prismatic_axis=1, ranks=8)
+    # 1.3 BILLION AND NOT 700 MILLION, because the rung above is no longer reached by stretching
+    # into the old band. 8.93 across at a stretch of 4 - the deepest the ladder now offers - is
+    # 1,244,443,565 cells where 8x made it 634,530,269. The rung is still reachable and still
+    # wants ranks to address it; what changed is that it is priced at a stretch that meshes.
+    many, _ = _plan(prismatic_axis=1, ranks=8, limit=1_300_000_000)
     assert many["fine_across"] > one["fine_across"] * 1.9
     assert many["fine_across"] == pytest.approx(8.93, abs=0.05)
-    assert 100_000_000 < many["estimate"] <= 700_000_000, (
+    assert 100_000_000 < many["estimate"] <= 1_300_000_000, (
         f"the rung above has to stay inside the band: {many['estimate']:,}")
 
 
@@ -184,5 +246,6 @@ def test_a_refusal_says_how_many_ranks_would_have_done_it():
 
 def test_the_words_say_what_was_done_and_why_it_was_allowed():
     _, said = _plan(prismatic_axis=1, ranks=8)
-    assert "stretched 8x along y" in said
+    # 2x and not 8x: eight ranks now spend their capacity on a gentler stretch at the same rung.
+    assert "stretched 2x along y" in said
     assert "prismatic" in said, "the licence for the stretch belongs in the sentence"

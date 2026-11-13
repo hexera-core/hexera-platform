@@ -317,7 +317,18 @@ def test_the_snappy_gap_plan_prices_the_wall_layers_it_adds():
     assert held.limit == 1_000 and held.ceiling() == 2_000_000 and held.status == G.OVER_LIMIT
 
 
-def test_a_retry_after_a_raised_mesh_over_the_limit_keeps_the_plans_own_budget(tmp_path):
+def test_a_retry_after_a_raised_mesh_over_the_limit_keeps_the_plans_own_budget(tmp_path,
+                                                                               monkeypatch):
+    # THE CELL LIMIT THIS ROW'S NUMBERS WERE CHOSEN AGAINST, pinned rather than inherited.
+    # polcfg.CELL_HARD_LIMIT is read at call time from the deployment's own configuration
+    # (settings/env.py loads the repo .env into the process), and the sizes below only mean what
+    # this row says they mean relative to a particular limit. A deployment configured for large
+    # meshes - which is the supported way to mesh a real customer part - silently turned the
+    # comparison round and the row went red for being configured, not for being wrong.
+    import meshpipeline.settings.policy as _polcfg
+
+    monkeypatch.setattr(_polcfg, "CELL_HARD_LIMIT", 8_000_000)
+
     from meshpipeline.engines.snappy import drivers as D
     prev, cur = tmp_path / "attempt_1", tmp_path / "attempt_2"
     prev.mkdir()

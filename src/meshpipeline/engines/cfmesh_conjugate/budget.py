@@ -490,9 +490,36 @@ TWO_SCALE_BROAD_LEVELS = (1, 2, 3)
 #: solver tolerates - boundary-layer meshes routinely run an order of magnitude past it.
 MAX_STRETCH = 8.0
 
-#: The stretches the planner will try, coarsest first. Powers of two and one 6 because the useful
-#: range on a 1.9 mm channel height is 4 to 8 and 6 sits where the cell count lands near 250M.
-STRETCH_LADDER: tuple[float, ...] = (8.0, 6.0, 4.0, 2.0, 1.0)
+#: THE STRETCHES THE PLANNER WILL TRY, coarsest first - and it stops at 4, where MAX_STRETCH above
+#: stops at 8. The two numbers bound different things and only one of them was ever about time.
+#:
+#: MAX_STRETCH is a SHAPE bound: an 8:1 cell is well inside what a solver tolerates, which is what
+#: its comment argues and which is still true. It says "the only reason not to take more is the
+#: cell shape itself", and docs/semiconductor/MESH_TIME.md later measured a second reason that is
+#: larger than every other term in this module put together:
+#:
+#:     run         cells         stretch   mesher
+#:     ws_shell    270,531,894   scaleY 6  139,230.5 s  = 38.7 h
+#:     cbox2       413,273,323   scaleY 3        652 s
+#:
+#: 1.53x the cells, 213x faster, and the one setting between them is the stretch. The mechanism is
+#: known and is not a property of the geometry: cfMesh applies an anisotropic source by scaling the
+#: part, meshing it and scaling back, and that back-scale lands at the end of optimiseFinalMesh
+#: pass 1, handing the optimiser a mesh whose cells have just been squashed by the inverse of the
+#: stretch - 346,057 bad faces at scaleY 6 against 440 at scaleY 3. The optimiser then runs twice
+#: (projectSurfaceAfterBackScaling calls it again) and that is where nearly all the wall clock is.
+#:
+#: So a stretch does not buy a cheaper mesh. It buys a cell COUNT and pays for it in the optimiser.
+#: Pricing it as a pure division - which two_scale_estimate does, correctly, for cells - makes the
+#: most expensive rung look like the cheapest plan, and the planner took the cheapest that fit.
+#:
+#: 4 IS THE LAST RUNG WITH A MEASUREMENT UNDER IT, and it is not a good one: the same document
+#: records scaleY 4 as "7.5x slower for 7% fewer cells", refuted as a compromise on the real part
+#: after a reproducer said otherwise. 6 and 8 have no finishing run between them on this geometry
+#: and 6 is measured at 38.7 h against a CONJUGATE_RUN_TIMEOUT_S of 21,600 s, so a plan at either
+#: is a plan that cannot be delivered. Refusing a part is a worse outcome than a coarser mesh, and
+#: spending six hours to time out is worse than both.
+STRETCH_LADDER: tuple[float, ...] = (4.0, 2.0, 1.0)
 
 
 def two_scale_estimate(*, block_lo, block_hi, broad_cell_m: float, broad_area_m2: float,
@@ -551,6 +578,45 @@ def two_scale_estimate(*, block_lo, block_hi, broad_cell_m: float, broad_area_m2
     return int((band_broad + band_fine + bg) * (ESTIMATE_MARGIN if margin else 1.0))
 
 
+#: The finest the BROAD side may be taken when nothing at the asked resolution fits.
+#:
+#: TWELVE, which is this module's own word for plenty: "12 cells across a 2.1 mm channel is
+#: plenty, and every cell finer than that is spent over 38,813 mm2". It is also the broad
+#: resolution of the configuration that actually built this part on mesh-bench (background
+#: 0.35206 mm at broad span 1, which is 2.1124 / 12 doubled), pinned as BUILT in
+#: tests/unit/engines/test_a_two_scale_part_is_sized_at_two_cell_sizes.py.
+#:
+#: NOT `max(CELLS_ACROSS_BY_FIDELITY.values())`, which is 8 and was the first thing tried here.
+#: The fidelity ladder tops out below the broad resolution this module's own anchor uses, so
+#: reading the cap off it put the real customer part at 6 across and 308,414,926 cells when 12
+#: across is 260,192,592 - finer on the broad side AND 16% cheaper, because reaching the same
+#: 22.004 um fine cell from a finer broad cell needs one octree level fewer under it, and a level
+#: is a set of grading shells (see DEPTH_AT_FITTED_SPAN).
+BROAD_ACROSS_CAP = 12
+
+
+def _broad_candidates(asked: int) -> tuple[int, ...]:
+    """The broad resolutions to try, in order: what was asked and coarser, then FINER.
+
+    THE SECOND HALF IS A FALLBACK AND IT NEVER RUNS WHEN THE FIRST HALF FINDS ANYTHING, because
+    the caller breaks out of this loop on its first plan (every candidate already clears
+    FINE_ACROSS_FLOOR, which equals FINE_ACROSS_WANTED). So every part that plans today plans
+    exactly the same mesh.
+
+    WHY A FINER BROAD CELL CAN BE THE CHEAPER PLAN, which reads backwards until you see that the
+    two sides are not independent. The fine cell is not chosen; it is the broad cell halved
+    `extra` times (fine_cell = broad_cell / 2**extra), so the broad resolution is what decides
+    which fine cell sizes exist at all. On the first customer cold plate, asked at 5 across the
+    broad passages, the only reachable fine cells are 13.20 um and 16.50 um - and the 16.50 um
+    rung needs a stretch of 8 to fit the cell limit, which STRETCH_LADDER no longer offers for
+    reasons measured in hours. One step FINER on the broad side, 6 across, puts a 22.00 um rung
+    within reach, and that one fits at a stretch of 4: 308 million cells against 334 million, on
+    a stretch that has a finishing run under it.
+    """
+    return (*range(int(asked), FLOOR_CELLS_ACROSS - 1, -1),
+            *range(int(asked) + 1, BROAD_ACROSS_CAP + 1))
+
+
 def plan_two_scales(*, block_lo, block_hi, scales: dict, limit: int,
                     asked_across: int,
                     prismatic_axis: int | None = None,
@@ -586,9 +652,10 @@ def plan_two_scales(*, block_lo, block_hi, scales: dict, limit: int,
     ceiling = octree_ceiling_cells(max(1, int(ranks)))
     needed_ranks = 0           # the most any refused-on-ceiling configuration would have wanted
     best = None
+    asked_i = int(asked_across)
     # the thin side first, because it is the reason to do this at all: walk its resolution down
     # from what is wanted, and under each one take the shallowest octree that fits
-    for broad_across in range(int(asked_across), FLOOR_CELLS_ACROSS - 1, -1):
+    for broad_across in _broad_candidates(int(asked_across)):
         for broad_levels in TWO_SCALE_BROAD_LEVELS:
             broad_cell = broad_w / broad_across
             background = broad_cell * (2 ** broad_levels)
@@ -642,9 +709,17 @@ def plan_two_scales(*, block_lo, block_hi, scales: dict, limit: int,
                 if best is None or (plan["fine_across"], -plan["estimate"]) > (
                         best["fine_across"], -best["estimate"]):
                     best = plan
-            if best is not None and best["fine_across"] >= FINE_ACROSS_WANTED:
+            # STOP AT THE FIRST PLAN, but only while walking DOWN from what was asked, where the
+            # first plan found is by construction the best one: the walk starts at the asked
+            # resolution and coarsens, so it stops the moment the part fits. In the finer-broad
+            # fallback below `asked` there is no such ordering - a finer broad cell reaches a
+            # different set of fine cells, and which of them is cheapest is not monotonic - so
+            # that half is searched to the end and the objective below picks the winner.
+            if (broad_across <= asked_i and best is not None
+                    and best["fine_across"] >= FINE_ACROSS_WANTED):
                 break
-        if best is not None and best["fine_across"] >= FINE_ACROSS_WANTED:
+        if (broad_across <= asked_i and best is not None
+                and best["fine_across"] >= FINE_ACROSS_WANTED):
             break
     if best is None:
         why = (f"this part has two scales of passage - about {broad_w * 1000:.2f} mm and "
