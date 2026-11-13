@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Responsibility: Find a release record an earlier deploy run already published for THIS commit, and adopt it when the registry still serves exactly what it names.
-# Boundaries: read-only - it builds nothing, pushes nothing and never moves a tag; anything it cannot prove falls back to Gate C.
+# Boundaries: read-only - it builds nothing, pushes nothing and never moves a tag; anything it cannot prove falls back to release validation.
 
 # REUSE A RELEASE THAT IS ALREADY PUBLISHED.
 #
 # Why it exists: a commit is published once, by the push deploy that follows the merge, and the
 # registry tag <component>:<sha12> then belongs to those bytes. A later manual run on the SAME
-# commit (a fleet-only deploy, a re-run) used to run Gate C again, rebuild every image, and hand
+# commit (a fleet-only deploy, a re-run) used to run release validation again, rebuild every image, and hand
 # publish.sh a NEW image ID for a tag that already held the old one. The images are not
 # bit-reproducible: buildx restores identical layers only when the shared registry layer cache
 # still holds this commit's layers, and any other branch built into the same environment in
@@ -15,7 +15,7 @@
 # every such run failed, and the workers could not get new code.
 #
 # What it does instead: look up the release record the earlier run uploaded for this commit, and
-# adopt it only when ALL of these hold - otherwise it says why and Gate C runs as before:
+# adopt it only when ALL of these hold - otherwise it says why and release validation runs as before:
 #   * the run was a push or a manual run of deploy.yml in THIS repository (never a pull request)
 #   * the record is promotable (record.py check: verdict passed, state published, digests present)
 #   * the record names this exact commit AND tree, and the checkout is clean
@@ -45,8 +45,8 @@ stage(){ printf '\n%s── %s ──%s\n' "${c_bold}" "$1" "${c_off}"; }
 ok(){ printf '   %s✓%s %s\n' "${c_grn}" "${c_off}" "$1"; }
 note(){ printf '   %s%s%s\n' "${c_dim}" "$1" "${c_off}"; }
 answer(){ [ -n "${GITHUB_OUTPUT:-}" ] && echo "reused=$1" >> "${GITHUB_OUTPUT}"; return 0; }
-# Not reusing is never an error: Gate C builds and validates from scratch, exactly as before.
-fallback(){ note "$1"; printf '\n%sNOT REUSED%s - Gate C will build and validate this commit\n\n' \
+# Not reusing is never an error: release validation builds and validates from scratch, exactly as before.
+fallback(){ note "$1"; printf '\n%sNOT REUSED%s - release validation will build and validate this commit\n\n' \
   "${c_bold}" "${c_off}"; answer false; exit 0; }
 
 for v in GITHUB_REPOSITORY RELEASE_REGISTRY RELEASE_ENVIRONMENT; do
@@ -160,7 +160,7 @@ PY
   return 0
 }
 
-# Newest first, and an unusable record is no reason to stop: a run that failed after Gate C (this
+# Newest first, and an unusable record is no reason to stop: a run that failed after release validation (this
 # very failure, for one) uploads a record that was never published, and the push deploy that DID
 # publish the commit is older than it.
 found=""
@@ -182,7 +182,7 @@ PY
 done
 [ -n "${found}" ] || fallback "no earlier run of ${HEAD_SHA:0:12} left a record this run can deploy"
 
-# A record that did not land is no reuse: the next steps would skip Gate C with nothing to deploy.
+# A record that did not land is no reuse: the next steps would skip release validation with nothing to deploy.
 mkdir -p "$(dirname "${REC}")" && cp "${WORK}/${found}/release.json" "${REC}" \
   && cmp -s "${WORK}/${found}/release.json" "${REC}" \
   || fallback "the adopted record could not be written to ${REC}"

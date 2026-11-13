@@ -22,7 +22,7 @@ def _jobs() -> dict:
 
 def _provision_job() -> dict:
     # The job that runs deploy.sh. It was called `deploy` until the workflow was split into
-    # release (Gate C + the push) and provision (the only cloud mutation); every assertion in this
+    # release (release validation + the push) and provision (the only cloud mutation); every assertion in this
     # file is unchanged, only the job or the context that has to satisfy it.
     return _jobs()["provision"]
 
@@ -97,7 +97,7 @@ def test_the_verification_step_checks_all_four_spec_assertions():
     assert "/_next/static/" in run, (
         "the verification step never fetches a /_next/static asset - a 200 on /sign-in alone "
         "would not notice a broken .next/static or public/ path")
-    # 3) /api/internal/health returns 200 - the same unauthenticated route Gate C's in-container
+    # 3) /api/internal/health returns 200 - the same unauthenticated route release validation's in-container
     #    smoke already curls, so post-deploy and build-time verification agree on one endpoint.
     assert "/api/internal/health" in run
     # 4) /readyz returns 401, not 200: /readyz is deliberately session-gated (it proxies to the
@@ -109,7 +109,7 @@ def test_the_verification_step_checks_all_four_spec_assertions():
 
     # It must not follow redirects with -L when checking step 1 (that would hide a redirect to
     # somewhere other than /sign-in behind a final 200), and every curl call must be bounded so a
-    # hung console cannot burn the job to its timeout ceiling the way the pre-fix Gate C smoke did.
+    # hung console cannot burn the job to its timeout ceiling the way the pre-fix release validation smoke did.
     assert "-L " not in run and not run.strip().startswith("-L")
     assert run.count("--max-time") >= 4, (
         "each HTTP check (/, /sign-in, its assets, /api/internal/health, /readyz) should be "

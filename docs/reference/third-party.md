@@ -140,7 +140,7 @@ licenses, see `requirements/runtime.txt` and the `Dockerfile`, and are not vendo
   cd ui/vendor && sha256sum -c SHA256SUMS      # -> vtk.js: OK
   ```
 
-  `ui/vendor/SHA256SUMS` is the pin. Gate C runs the same command **inside the built
+  `ui/vendor/SHA256SUMS` is the pin. Release validation runs the same command **inside the built
   application image**, so a release fails if what ships is not the audited bundle. Updating
   the vendored file therefore requires updating the pin, which is the point: it forces this
   note to be revisited rather than silently drifting.

@@ -72,7 +72,7 @@ def browser():
             f"the browser on this host cannot start: {broken}\n"
             "This is the host, not the page - it fails on about:blank with no product code "
             "loaded. Run the suite against a working browser, or set CHROME_CDP_URL to one "
-            "(Gate C does this automatically).", pytrace=False)
+            "(release validation does this automatically).", pytrace=False)
     b = Browser(binary)
     yield b
     b.close()

@@ -1,9 +1,9 @@
 # Test and release gates
 
 Five gates, each answering exactly one question. They are ordered, and the order is the
-point: **B gates a commit, C builds one artifact set from that commit and validates it,
-D promotes that same artifact, and E checks the running revision. Nothing after C
-rebuilds the application.**
+point: **B gates a commit, release validation builds one artifact set from that commit and
+validates it, D promotes that same artifact, and E checks the running revision. Nothing after
+release validation rebuilds the application.**
 
 ```
 source commit
@@ -12,7 +12,7 @@ source commit
     │
     ├─ B  make check             may this COMMIT produce a release artifact?
     │
-    ├─ C  make release-validate  build the deployable images ONCE; validate THOSE,
+    ├─    make release-validate  build the deployable images ONCE; validate THOSE,
     │                            native-terminal INCLUDED and mandatory
     │                            → deploy/output/release.json   state=validated
     │
@@ -85,7 +85,7 @@ The dependency-backed integration tier (`tests/integration`, real Postgres/Redis
 runs in CI's `images` job against the built image. It is not in `make check` because it
 needs Docker; treat a CI red there as a Gate B failure.
 
-## Gate C: release-artifact validation
+## Release validation
 
 | | |
 |---|---|
@@ -101,10 +101,10 @@ needs Docker; treat a CI red there as a Gate B failure.
 
 **Components.** Two images are deployable, each a Dockerfile target: `app` (target
 `pipeline`) serves **both** the API service and the pipeline job, and `mesh` serves the mesh job.
-Gate C validates `app` with both entrypoints. It used to build a separate `api`-target image and
+Release validation validates `app` with both entrypoints. It used to build a separate `api`-target image and
 validate that; nothing ever deployed it.
 
-**Native-terminal is mandatory.** Gate C provisions its own Postgres, Redis and MinIO on a
+**Native-terminal is mandatory.** Release validation provisions its own Postgres, Redis and MinIO on a
 per-run network, health-checks them with bounded timeouts, runs the five-engine matrix, copies
 the evidence out, and removes every container it created from an `EXIT` trap, matched by a
 per-run label, so a developer's stack is never touched. Coverage is verified by **node ID**
@@ -124,7 +124,7 @@ the engine binary ran.
 `RELEASE_ALLOW_INCOMPLETE=1` skips the native tiers for debugging and produces `incomplete`,
 which can never be promoted. There is no flag that yields a PASS without the tiers.
 
-**One scratch directory, removed when the run ends.** Gate C works in a single `mktemp -d`
+**One scratch directory, removed when the run ends.** Release validation works in a single `mktemp -d`
 workspace and deletes that exact directory on the way out, on success, on failure, and on
 interrupt or terminate alike. The verdict lives in `deploy/output/release.json`, which is written
 before the workspace goes and is the thing meant to outlive it. Set `KEEP_WORK=1` on an invocation
@@ -146,16 +146,16 @@ artifact, so the run **fails** if either field is non-empty.
 | **Checks** | the record is a PASS for HEAD; the tree is clean; each component's local image is still present **and its ID still matches the record**; the registry does not already hold this tag pointing at a different image |
 | **Does** | `docker tag` + `docker push` of those image objects. **It never builds.** |
 | **Output** | the same record, `state=published`, each component carrying `registry_digest` and a `registry/component@sha256:…` reference |
-| **A failure means** | the bytes on this host are not the bytes that were validated: re-run Gate C |
+| **A failure means** | the bytes on this host are not the bytes that were validated: re-run release validation |
 
 ## Gate D: deployment readiness
 
 | | |
 |---|---|
 | **Command** | `make mesh-preflight` |
-| **Question** | May the artifact Gate C validated be promoted into this environment? |
+| **Question** | May the artifact release validation passed be promoted into this environment? |
 | **Inputs** | `deploy/output/release.json`, the deployment environment (`$DEPLOY_ENV_FILE`, else `deploy/gcp/generated.env`), a gcloud session (optional) |
-| **Checks** | the record exists, parses, is schema 2, and is promotable by the same authority Gate C and publish use; **native smoke, native all and native terminal are each named and passed** (a record that simply omits a mandatory tier is refused); every required check passed; record commit == HEAD and record tree == current tree; tree and index clean; every component carries a **digest-qualified** reference; the local image, if still present, still matches the recorded ID; `MESH_IMAGE` in the deployment environment is the recorded digest, not a tag; no credential values in that file; manifests render and parse, and any previously rendered manifest is digest-qualified; the alembic chain has one head, one baseline, every `down_revision` resolves; **each recorded digest resolves in the registry to the same digest**; GCP IAM preflight; a rollback target revision exists |
+| **Checks** | the record exists, parses, is schema 2, and is promotable by the same authority release validation and publish use; **native smoke, native all and native terminal are each named and passed** (a record that simply omits a mandatory tier is refused); every required check passed; record commit == HEAD and record tree == current tree; tree and index clean; every component carries a **digest-qualified** reference; the local image, if still present, still matches the recorded ID; `MESH_IMAGE` in the deployment environment is the recorded digest, not a tag; no credential values in that file; manifests render and parse, and any previously rendered manifest is digest-qualified; the alembic chain has one head, one baseline, every `down_revision` resolves; **each recorded digest resolves in the registry to the same digest**; GCP IAM preflight; a rollback target revision exists |
 | **Excludes** | every source-level test: they gated the commit that produced the artifact; re-running them here proves nothing about the artifact and hides the checks that are specific to promotion |
 | **Output** | one of three distinct outcomes: `DEPLOYMENT READY`, `LOCAL PREFLIGHT PASSED / CLOUD READINESS UNVERIFIED`, or `GATE D FAILED`: plus **every skipped check listed by name**. The three are never collapsed: a host with no gcloud cannot produce a "ready" verdict. |
 | **Network** | read-only Google Cloud calls for the last two sections; loudly skipped if gcloud is absent or unauthenticated |
@@ -195,7 +195,7 @@ job, not on every promotion.
 
 ## Artifact promotion
 
-There is exactly one image producer, Gate C, and exactly one consumer of what it produced.
+There is exactly one image producer, release validation, and exactly one consumer of what it produced.
 `make release-publish` pushes the validated images and records their immutable digests;
 `make mesh-deploy` runs `promote-release.sh`, which copies those digests into the deployment env.
 Deployment promotes. It does not rebuild, and it never resolves a mutable tag.
@@ -203,7 +203,7 @@ Deployment promotes. It does not rebuild, and it never resolves a mutable tag.
 Two ways that could silently break, and how Gate D closes both:
 
 * **a dirty tree**, `source_tag()` appends `-dirty`, so deploy would build and promote
-  an image Gate C never saw. Gate D fails on a dirty tree.
+  an image release validation never saw. Gate D fails on a dirty tree.
 * **a moved HEAD**: the release record would describe a different commit than the one
   deploy is about to tag. Gate D compares the record's commit to HEAD and fails on a
   mismatch.
@@ -215,7 +215,7 @@ commit → validated artifact → deployed digest.
 
 ## What runs where
 
-| Check | A | B | C | publish | D | E |
+| Check | A | B | release validation | publish | D | E |
 |---|:-:|:-:|:-:|:-:|:-:|:-:|
 | ruff | ● | ● | | | | |
 | mypy ratchet | | ● | | | | |

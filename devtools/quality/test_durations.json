@@ -481,7 +481,7 @@
 "tests/unit/deploy/test_edge_stage.py": 5.4,
 "tests/unit/deploy/test_fleet_schedule_contract.py": 0.0,
 "tests/unit/deploy/test_fresh_install_contract.py": 0.3,
-"tests/unit/deploy/test_gate_c_cleanup_contract.py": 1.5,
+"tests/unit/deploy/test_release_validation_cleanup_contract.py": 1.5,
 "tests/unit/deploy/test_gcloud_argument_surface.py": 17.5,
 "tests/unit/deploy/test_geometry_check_queue.py": 0.0,
 "tests/unit/deploy/test_integration_preflight_is_read_only.py": 2.3,

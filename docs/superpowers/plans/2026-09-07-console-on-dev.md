@@ -7,7 +7,7 @@
 localhost.
 
 **Architecture:** The console becomes a third release component beside `mesh` and `app` — built
-once by Gate C, published by digest, promoted into the deployment env as `CONSOLE_IMAGE`, and
+once by release validation, published by digest, promoted into the deployment env as `CONSOLE_IMAGE`, and
 rolled out by a new `create-console-service.sh` stage that `deploy.sh` selects with a new
 `console` component. Nothing about the existing two components changes shape; the console follows
 the conventions they already established (digest-only references, Secret Manager container names
@@ -25,7 +25,7 @@ Secret Manager, GitHub Actions, bash + pytest for the deploy tooling.
 - **No credential value ever enters a Cloud Run spec, a generated env file, or a log.** The
   deployment names a Secret Manager container using the `<SETTING>_SECRET` convention (so
   `AUTH_SECRET` → `AUTH_SECRET_SECRET`). `devtools/quality/check_deploy_secrets.py` is the gate.
-- **Gate C builds; nothing else does.** `deploy.sh` promotes an already-validated artifact.
+- **Release validation builds; nothing else does.** `deploy.sh` promotes an already-validated artifact.
 - **New deploy stages state their skip.** Use the existing `want` / `skipped` helpers in
   `deploy.sh` so a component not selected reads differently from one that was reused.
 - **Pinned base images.** Every `FROM` in the `Dockerfile` is pinned by digest
@@ -436,7 +436,7 @@ git commit -m "build: add the console image target on standalone Next output"
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# Responsibility: Verify Gate C builds, smokes and records the console alongside app and mesh.
+# Responsibility: Verify release validation builds, smokes and records the console alongside app and mesh.
 # Boundaries: it reads the validation script's declarations; it runs no docker build.
 from __future__ import annotations
 
@@ -500,7 +500,7 @@ if [ -n "${IMAGE_ID[console]}" ]; then
   # started on a published port with the two settings Auth.js requires at boot; the values are
   # deliberately not credentials - nothing here authenticates anyone.
   _cid="$(docker run --rm -d --label "amp-release=${STAMP}" -P \
-            -e AUTH_SECRET=gate-c-not-a-real-secret -e CONSOLE_AUTH_USERS='[]' \
+            -e AUTH_SECRET=release-validation-not-a-real-secret -e CONSOLE_AUTH_USERS='[]' \
             "${IMAGE_TAG[console]}" 2>/dev/null || true)"
   if [ -n "${_cid}" ]; then
     _port="$(docker port "${_cid}" 8080/tcp 2>/dev/null | head -1 | sed 's/.*://')"
@@ -658,7 +658,7 @@ Expected: FAIL — `CONSOLE_IMAGE=` is not in the written env.
 In `promote-release.sh`, after the `APP_REF` line:
 
 ```bash
-CONSOLE_REF="$(_ref console)" || die "the release record names no 'console' component - re-run Gate C"
+CONSOLE_REF="$(_ref console)" || die "the release record names no 'console' component - re-run release validation"
 for ref in "${MESH_REF}" "${APP_REF}" "${CONSOLE_REF}"; do
 ```
 
@@ -1814,7 +1814,7 @@ Not a task — run these before opening the PR.
 - [ ] `make lint && python devtools/quality/mypy_ratchet.py` — Python gates pass
 - [ ] `pnpm typecheck && pnpm lint && pnpm test && pnpm build` — workspace gates pass
 - [ ] `python devtools/quality/check_deploy_secrets.py` — no credential in any spec or env
-- [ ] `make release-validate` — Gate C builds and smokes three components, verdict `passed`
+- [ ] `make release-validate` — release validation builds and smokes three components, verdict `passed`
 - [ ] Push the branch, then run the Deploy workflow manually against `dev` with
       `components=console`. Confirm the run reports the console stage as reconciled and every
       other stage as *not selected*.

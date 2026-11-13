@@ -222,7 +222,7 @@ def cmd_publish_record(a: argparse.Namespace) -> int:
 
 
 _CLI_DESCRIPTION = (
-    "The release record: Gate C writes it, release-publish promotes it, Gate D reads it. "
+    "The release record: release validation writes it, release-publish promotes it, Gate D reads it. "
     "Only a published record carrying registry digests may be deployed."
 )
 
@@ -231,7 +231,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=_CLI_DESCRIPTION)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    w = sub.add_parser("write", help="write a fresh Gate C record")
+    w = sub.add_parser("write", help="write a fresh release validation record")
     for f in ("out", "results", "commit", "tree", "branch", "wheel-name", "wheel-sha256",
               "wheel-bytes", "image-tag", "components", "artifact-facts"):
         w.add_argument(f"--{f}", required=True)
