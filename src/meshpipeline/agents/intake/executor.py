@@ -114,6 +114,104 @@ def fea_part_kind(args):
 STRUCTURAL_KEPT = ("solid-body", "planar-domain", "")
 
 
+#: The tool arguments that name the engine a payload is for (the preview and the submission).
+_PAYLOAD_ENGINE_ARGS = ("selected_engine", "mesh_engine")
+
+
+def _payload_engine(args: dict) -> str:
+    for name in _PAYLOAD_ENGINE_ARGS:
+        eng = str(args.get(name) or "").strip().lower()
+        if eng:
+            return eng
+    return ""
+
+
+def stage_part_kind(args, declared_case, form: str = ""):
+    """THE INPUT KIND THE USER CONFIRMED ON THE STAGE, when the model's own word for it would be
+    refused. (args, note): the arguments, and a line for the model when the kind was replaced.
+
+    The stage's sentence says what the file is ("input_kind fluid-domain; the fluid flows through
+    it") and the user clicked it; declared_case reads it back, and is None once the user restated
+    what the file is or how the fluid moves in the chat. While it stands, a different kind in the
+    payload is the model's word, not the user's - and on the engines where the two differ it refused
+    a valid run: snappyHexMesh or cfMesh with "fluid-domain" for a body the air flows around, Gmsh
+    with "solid-body" for a CAD solid of the fluid itself, the multi-region meshers with
+    "solid-body" for a confirmed assembly. Only that case is changed: the same purpose as the
+    stage's, an engine that refuses the model's kind and takes the confirmed one. A payload the gate
+    already admits is never touched, and a kind the engine cannot take either way is still refused
+    with its real reason."""
+    if not isinstance(args, dict) or not declared_case:
+        return args, ""
+    from meshpipeline.engines.purposes import INPUT_KINDS, PURPOSES, is_compatible
+    from meshpipeline.engines.registry import engine_names, get_spec
+
+    d_purpose, d_kind = (tuple(declared_case) + ("", ""))[:2]
+    purpose = str(args.get("purpose") or "").strip()
+    kind = str(args.get("input_kind") or "").strip()
+    eng = _payload_engine(args)
+    if (not kind or kind == d_kind or purpose != d_purpose or purpose not in PURPOSES
+            or d_kind not in INPUT_KINDS or eng not in engine_names()):
+        return args, ""
+    spec = get_spec(eng)
+    if kind in INPUT_KINDS and is_compatible(spec, purpose, kind, form=form):
+        return args, ""
+    if not is_compatible(spec, purpose, d_kind, form=form):
+        return args, ""
+    note = (f"input_kind is '{d_kind}', as the user confirmed on the geometry stage - the payload said "
+            f"'{kind}', which the user never said and the selected engine cannot mesh for this purpose. "
+            "Keep it as the stage has it; do not mention the change unless the user asks.")
+    return {**args, "input_kind": d_kind}, note
+
+
+#: Words a model writes for an engine parameter's declared values (EngineSpec.intake_params), folded
+#: (lower case, letters and digits only). The parameter's own spelling is always accepted too.
+_PARAM_WORDS: dict[str, tuple[str, ...]] = {
+    "1": ("first", "firstorder", "1st", "linear", "tet4", "c3d4"),
+    "2": ("second", "secondorder", "2nd", "quadratic", "tet10", "c3d10"),
+    "on": ("yes", "true", "enabled", "enable"),
+    "off": ("no", "false", "none", "disabled", "disable"),
+    "internal": ("internalflow", "internalcfd", "through"),
+    "external": ("externalflow", "externalcfd", "around"),
+}
+
+
+def _fold(value) -> str:
+    return "".join(c for c in str(value).lower() if c.isalnum())
+
+
+def _param_value(value, allowed: tuple):
+    if isinstance(value, bool):
+        words = ("on", "yes", "true") if value else ("off", "no", "false")
+        return next((a for a in allowed if a in words), value)
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    folded = _fold(value)
+    for a in allowed:
+        if folded == _fold(a) or folded in _PARAM_WORDS.get(a, ()):
+            return a
+    return value
+
+
+def engine_param_words(args):
+    """THE ENGINE'S OWN WORD for a parameter value the model wrote another way: `true` for "on",
+    `2.0` or "quadratic" for element order "2", "internal flow" for "internal". Each is a value the
+    engine declares, so a different spelling only ever held the run back ("param must be one of
+    ['on', 'off'], got 'true'"). A value that means none of them is left as written, for the gate
+    to refuse; an unknown parameter is not touched."""
+    if not isinstance(args, dict) or not isinstance(args.get("engine_params"), dict):
+        return args
+    from meshpipeline.engines.registry import engine_names, get_spec
+
+    eng = _payload_engine(args)
+    if eng not in engine_names():
+        return args
+    specs = {p.key: p for p in get_spec(eng).intake_params}
+    params = args["engine_params"]
+    fixed = {k: (_param_value(v, tuple(specs[k].values)) if k in specs else v)
+             for k, v in params.items()}
+    return args if fixed == params else {**args, "engine_params": fixed}
+
+
 def _normalize_declared_patches(args: dict):
     """The declared patches as every later layer will read them. The PURPOSE decides which roles a
     word may mean and whether a ground plane exists (only an external flow has a far-field box
@@ -339,6 +437,13 @@ class IntakeToolExecutor:
         from meshpipeline.agents.intake.vocabulary import normalize_tool_args
         args = normalize_tool_args(args)
         args = fea_part_kind(args)
+        # THE STAGE'S KIND and THE ENGINE'S OWN PARAMETER WORDS, at the same boundary: the preview
+        # and the submission read the same arguments, so the token bound to one matches the other.
+        _kind_note = ""
+        if tool in ("preview_selected_admission", "submit_requirements"):
+            args = engine_param_words(args)
+            if st.declared_case:
+                args, _kind_note = stage_part_kind(args, st.declared_case, self._geometry_form())
         # THE DECLARED PATCHES, at the same boundary and for the same reason: a name a person typed
         # ("car wall") becomes the spelling a mesher can write ("car_wall"), a name a mesher keeps
         # for itself ("outer") becomes the user's own, a boundary word becomes the role it means
@@ -365,6 +470,8 @@ class IntakeToolExecutor:
             from meshpipeline.contracts.patch_names import declaration_note
             _note = declaration_note(_changes)
             content = f"{_note}\n\n{content}" if content else _note
+        if _kind_note:
+            content = f"{_kind_note}\n\n{content}" if content else _kind_note
         return IntakeToolResult(
             tool=result.tool, content=content, accepted=result.accepted,
             advanced=result.advanced or (after != before), signature=after)
