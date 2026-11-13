@@ -390,35 +390,6 @@ def _sliver_owner_faces(shape, edge) -> list:
     return [TopoDS.Face_s(owner) for owner in ancestors.FindFromKey(edge)]
 
 
-def _strip_width(face) -> float:
-    """How wide `face` is across its narrow direction - the dimension `ShapeFix_FixSmallFace`
-    compares against its precision when it looks for a strip.
-
-    THE SMALLEST EXTENT OF THE FACE'S BOUNDING BOX, except that a sheet lying square to an axis
-    has a smallest extent of zero (its thickness), which says nothing about how wide it is. So an
-    extent that is degenerate against the largest one is skipped and the next one up is the width:
-    for a strip that is 0.002 x 50 mm the answer is 0.002 either way, and for a 4 x 4 mm patch it
-    is 4 rather than 0. A face with no readable box is reported as 0.0, which declines nothing -
-    the kernel's own judgement then stands, as it did before this check existed.
-    """
-    from OCP.Bnd import Bnd_Box
-    from OCP.BRepBndLib import BRepBndLib
-
-    box = Bnd_Box()
-    try:
-        BRepBndLib.Add_s(face, box)
-        if box.IsVoid():
-            return 0.0
-        xmin, ymin, zmin, xmax, ymax, zmax = box.Get()
-    except Exception:  # noqa: BLE001 - an unreadable box declines nothing
-        return 0.0
-    extents = sorted((xmax - xmin, ymax - ymin, zmax - zmin))
-    for extent in extents:
-        if extent > 1e-6 * max(extents[-1], 1.0):
-            return float(extent)
-    return 0.0
-
-
 def _swept_away(context, shape, result) -> list:
     """The faces of `shape` that do not survive into `result`, read from the fixer's history.
 
@@ -474,10 +445,7 @@ class FixSmallFaces:
                   used to report a sliver (`SMALL_FACE_AREA_FRACTION` of the part's total face
                   area). A face target must itself be that small; an edge target must have a face
                   that small beside it. Anything else is declined, not trusted: a model planner
-                  may name any entity it likes. AND it must be findable at the precision this
-                  sweep will use: a face that is sliver-sized by area but wider than that
-                  precision is no spot or strip, so it is declined rather than attempted and
-                  rolled back (see THE DETECTION SCALE).
+                  may name any entity it likes.
       RESULT    - `ShapeFix_FixSmallFace` runs whole-shape (its spot and strip fixes need the
                   neighbours they merge the sliver into, exactly `fix_small_edges`' constraint),
                   so what it REMOVED is read back from its history (`_swept_away`) and judged:
@@ -559,33 +527,16 @@ class FixSmallFaces:
         # area fraction is what makes "this is debris, not a feature" defensible. An edge target
         # is answered through the sliver face beside it, so that face is what must be small.
         threshold = SMALL_FACE_AREA_FRACTION * _total_face_area(shape)
-        # AND AGAINST THE PRECISION THIS SWEEP WILL ACTUALLY USE. The two criteria are on
-        # different axes: the localiser reports an AREA fraction, the fixer finds a spot or a
-        # strip by its WIDTH against the precision, and that precision is the deployment's
-        # deviation ceiling (`diagonal x CAD_REPAIR_MAX_DEVIATION_RATIO`, capped by
-        # CAD_REPAIR_MAX_TOLERANCE_MM) because merging a strip moves the boundary by about its
-        # width. On a two-metre part an area fraction of 1e-5 flags anything under about 68 mm2,
-        # so a 1.3 x 3.3 mm patch is a sliver by area and no strip at all: the fixer will not
-        # touch it and the attempt is guaranteed to roll back with `target_remains`. DECLINING IS
-        # THE HONEST VERDICT - the operation judged the aim and ran nothing - and the alternative
-        # is a wider precision, which is a decision about how far a repair may move a surface and
-        # is not this operation's to take.
-        width_limit = float(tolerance_mm)
         for ref, sub in resolved:
-            faces = [sub] if ref.entity_type == "face" else _sliver_owner_faces(shape, sub)
-            slivers = [face for face in faces if _face_area(face) < threshold]
-            if not slivers:
+            if ref.entity_type == "face":
+                small = _face_area(sub) < threshold
+            else:
+                owners = _sliver_owner_faces(shape, sub)
+                small = any(_face_area(owner) < threshold for owner in owners)
+            if not small:
                 return OpOutcome(shape=shape, evidence={
                     "declined": f"not_small (a targeted {ref.entity_type} is not, and is beside "
                                 f"no face under, the {threshold:.6g} mm2 sliver threshold)",
-                    "faces_targeted": len(targets)})
-            widths = [_strip_width(face) for face in slivers]
-            if min(widths) > width_limit:
-                return OpOutcome(shape=shape, evidence={
-                    "declined": f"too_wide_to_find (a targeted {ref.entity_type}'s sliver face is "
-                                f"{min(widths):.6g} mm across, over the {width_limit:.6g} mm "
-                                f"precision the deployment's deviation ceiling permits, so it is "
-                                f"sliver-sized by area but no spot or strip to find)",
                     "faces_targeted": len(targets)})
 
         diagonal = _diagonal(shape)
