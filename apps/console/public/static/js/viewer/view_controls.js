@@ -18,11 +18,33 @@ export function bindMouse(grw) {
   return true;
 }
 
-/** Controls laid over the canvas are the page's, not the camera's: a press or a scroll on them
- *  must not reach vtk's listeners on the container, which would start a turn and take the pointer. */
+/** Controls laid over the canvas are the page's, not the camera's: no pointer event on them may
+ *  reach vtk's listeners on the container. Stopping the press alone was not enough. vtk reads
+ *  the held buttons off every pointermove, and a move with the left button down that it never saw
+ *  pressed counts as a fresh press: dragging the Section slider (or across any overlay) turned the
+ *  part with the drag (dev-areen 2026-11-13, a Camaro). So the moves, the release and the cancel
+ *  stop here too. A press made here and dragged off onto the part is the same drag: until it is
+ *  released, its moves outside `el` are held back from the page, so the part does not turn under
+ *  a slider the hand overshot. A drag that starts on the part is unaffected: vtk captures the
+ *  pointer on the container, so its moves never target an overlay. */
 export function shield(el) {
   if (!el) return;
-  ["pointerdown", "wheel"].forEach((t) => el.addEventListener(t, (e) => e.stopPropagation(), { passive: true }));
+  const stop = (e) => e.stopPropagation();
+  ["pointerdown", "pointermove", "pointerup", "pointercancel", "wheel"].forEach(
+    (t) => el.addEventListener(t, stop, { passive: true }));
+  el.addEventListener("pointerdown", (down) => {
+    const id = down.pointerId;
+    const hold = (e) => { if (e.pointerId === id && !el.contains(e.target)) e.stopPropagation(); };
+    const end = (e) => {
+      if (e.pointerId !== id) return;
+      window.removeEventListener("pointermove", hold, true);
+      window.removeEventListener("pointerup", end, true);
+      window.removeEventListener("pointercancel", end, true);
+    };
+    window.addEventListener("pointermove", hold, { capture: true, passive: true });
+    window.addEventListener("pointerup", end, true);
+    window.addEventListener("pointercancel", end, true);
+  }, { passive: true });
 }
 
 /** What the on-screen hint says about the mouse, everywhere it is said. */

@@ -1867,6 +1867,9 @@ function initViewer(job,surf,uiCfg){
         const nd=ren.worldToNormalizedDisplay(pt[0],pt[1],pt[2],size[0]/size[1]);
         return [rect.left+nd[0]*rect.width,rect.top+(1-nd[1])*rect.height];},
       dir:()=>cam.getDirectionOfProjection().slice(),
+      // the whole camera, so a test can say a control left it exactly where it was
+      camera:()=>({position:cam.getPosition().slice(),focal:cam.getFocalPoint().slice(),up:cam.getViewUp().slice(),
+        angle:cam.getViewAngle(),scale:cam.getParallelScale(),parallel:!!cam.getParallelProjection()}),
       snapshot:async o=>{const r=await takeSnapshot(o);const g=r.canvas.getContext('2d');
         const px=(x,y)=>Array.from(g.getImageData(x,y,1,1).data);
         return {width:r.width,height:r.height,bytes:r.blob.size,corner:px(1,1),
