@@ -368,3 +368,108 @@ def test_the_rules_author_revises_after_an_attempt_was_reverted(tmp_path):
     assert again is not None
     assert (again.plan[0]["op"].name, sorted(again.predicate.cleared)) == (
         attempted["op"].name, sorted(first.predicate.cleared))
+
+
+# ---------------------------------------------------------------------------
+# THE PAIRED-RIM GUARD, WHICH IS NOT A REGION'S PROPERTY
+#
+# A through-hole whose wall is missing leaves two rims, one at each end of the passage, and
+# patching both seals it - a plate handed back with no bolt hole. The guard that refuses this
+# recomputes the pairing from the defect list it is HANDED, and this driver hands it one region's
+# defects at a time. The two rims of a 10 mm plate's bore decompose into two regions (asserted
+# below, because the fixture is only evidence while that holds), so without the whole-part view
+# the pair is invisible: measured on this fixture, the pre-fix driver filled BOTH rims, committed
+# both packages and called the run `resolved` with no refusal recorded at all.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _filling_on(monkeypatch):
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_FILL_PLANAR_HOLES", True)
+    # Wide enough that the lone rim below is really filled rather than declined as too large -
+    # the test that the guard did not cost the case filling exists for has to see a fill.
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MAX_HOLE_SPAN_RATIO", 0.9)
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MAX_AREA_CHANGE_RATIO", 0.05)
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MAX_VOLUME_CHANGE_RATIO", 0.05)
+
+
+def _region_run(shape):
+    return run_regions(shape, author=_author(shape), tolerance_mm=0.1,
+                       budget=LoopBudget(max_ops=20, timeout_s=300.0, stall_limit=20))
+
+
+def _filled(run) -> set:
+    """Every fingerprint a KEPT, COMMITTED fill actually patched."""
+    return {target for verdict in run.packages if verdict.committed
+            for op in verdict.verdicts if op.kept and op.op == "fill_planar_hole"
+            for target in op.targets}
+
+
+def test_two_rims_of_one_passage_in_different_regions_are_both_refused(tmp_path, _filling_on):
+    from tests.cad_fixtures import write_missing_bore_wall_step
+
+    from meshpipeline.cad.repair.brep import _read_shape
+    from meshpipeline.cad.repair.localize import localize_scan
+    from meshpipeline.cad.repair.plan import paired_rim_fingerprints
+
+    shape = _read_shape(write_missing_bore_wall_step(tmp_path / "bore.step"))
+    defects, _ = localize_scan(shape)
+    rims = paired_rim_fingerprints(shape, defects)
+    assert len(rims) == 2, f"the fixture must present a PAIR of rims, got {sorted(rims)}"
+
+    run = _region_run(shape)
+
+    # THE FIXTURE'S OWN PRECONDITION. If the two rims ever land in one region the part pairs them
+    # the old way and this test proves nothing, so it must fail loudly rather than pass quietly.
+    holders = {rim: [r.index for r in run.regions if rim in r.fingerprints] for rim in rims}
+    assert all(len(where) == 1 for where in holders.values()), holders
+    assert len({where[0] for where in holders.values()}) == 2, (
+        f"both rims decomposed into one region, so the guard never needed the part: {holders}")
+
+    assert _filled(run) == set(), (
+        "a rim of a missing tube wall was patched - the customer's through-hole is sealed")
+    refused = {record["defect"] for record in run.refusals
+               if record["reason"] == "paired_rim"}
+    assert refused == set(rims), (
+        f"the refusal a customer is owed did not reach the run: {run.refusals}")
+
+
+def test_the_paired_rim_refusal_is_deterministic(tmp_path, _filling_on):
+    # THE WHOLE BEFORE/AFTER COMPARISON RESTS ON THIS, so the part-level set the guard now carries
+    # must not make a run depend on anything but its bytes.
+    from tests.cad_fixtures import write_missing_bore_wall_step
+
+    from meshpipeline.cad.repair.brep import _read_shape
+
+    path = write_missing_bore_wall_step(tmp_path / "bore.step")
+    first, second = (_region_run(_read_shape(path)) for _ in range(2))
+
+    def decided(run):
+        # EVERYTHING THE RUN DECIDED, and nothing it merely measured: a wall clock is not a
+        # decision, so the elapsed keys come out at both levels and the rest must match exactly.
+        def scrub(value):
+            if isinstance(value, dict):
+                return {k: scrub(v) for k, v in value.items()
+                        if k != "timings" and not k.endswith("_s")}
+            if isinstance(value, list):
+                return [scrub(item) for item in value]
+            return value
+
+        return scrub(run.to_dict())
+
+    assert decided(first) == decided(second)
+
+
+def test_a_lone_rim_in_its_own_region_is_still_filled(tmp_path, _filling_on):
+    # THE GUARD MUST NOT COST THE CASE FILLING EXISTS FOR. An ordinary single opening has nothing
+    # to pair with anywhere on the part, so widening what the pairing SEES must not widen what it
+    # refuses: this hole is still patched.
+    from tests.cad_fixtures import write_open_shell_step
+
+    from meshpipeline.cad.repair.brep import _read_shape
+
+    shape = _read_shape(write_open_shell_step(tmp_path / "holed.step"))
+    run = _region_run(shape)
+
+    assert _filled(run), f"the legitimate hole was not filled: {run.to_dict()['packages']}"
+    assert [r for r in run.refusals if r["reason"] == "paired_rim"] == []

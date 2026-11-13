@@ -19,7 +19,12 @@ from collections.abc import Callable
 import meshpipeline.settings.cad_repair as rcfg
 from meshpipeline.cad.repair.caps import Measure
 from meshpipeline.cad.repair.package import PackageBudget, Predicate, TargetPackage
-from meshpipeline.cad.repair.plan import RulesPlanner, RunHistory
+from meshpipeline.cad.repair.plan import (
+    RulesPlanner,
+    RunHistory,
+    paired_rim_fingerprints,
+    refuse_paired_rims,
+)
 from meshpipeline.cad.repair.regions import Region
 from meshpipeline.cad.repair.session import PackageVerdict
 
@@ -114,7 +119,9 @@ def rules_author(shape, *, original: Measure, reserved: frozenset = frozenset(),
     rules planner runs, which refuses filling for the whole run when two loops are the two ends of
     one missing passage wall. Read from the upload rather than from the region's current geometry
     because the check is conservative either way - a pairing present on the upload is exactly what
-    must not be patched - and the author has no access to the session's shape by design.
+    must not be patched - and the author has no access to the session's shape by design. THE
+    DEFECTS THAT CHECK RUNS OVER ARE THE WHOLE PART'S, not a region's, and that is the one place
+    this author deliberately looks past the region it was asked about: see `observe_part`.
 
     WHAT THE CLAIM IS BOUNDED BY. The predicate's area and volume allowances default to the
     deployment's own residual caps against the upload's measurement, so a package may never claim
@@ -140,6 +147,44 @@ def rules_author(shape, *, original: Measure, reserved: frozenset = frozenset(),
     #: run-level policy (filling is off for the whole run once a missing tube wall is seen), so a
     #: per-region ledger would report it once per region or not at all.
     refusals: list[dict] = []
+    #: THE PAIRED RIMS OF THE WHOLE PART, computed once per run by `observe_part` below and empty
+    #: until the loop calls it. NOT recomputed per region, and that is the point of it - see
+    #: `observe_part`.
+    part_rims: frozenset = frozenset()
+
+    def observe_part(part_defects: tuple) -> None:
+        """Take the WHOLE part's defects, once per run, and work out its paired rims from them.
+
+        A PAIRING IS A PROPERTY OF THE PART, NOT OF A REGION, and this is the only reason this
+        function exists. `author` is handed ONE REGION's defects, and `RulesPlanner.propose`
+        recomputes the paired-rim set from exactly the list it is handed - so the two ends of one
+        missing tube wall that happen to decompose into two different regions never appear in the
+        same list, never pair, and are BOTH patched: the through-hole the guard exists to protect
+        is sealed, and no refusal is reported either. A region-scoped view of the pairing is not a
+        conservative view of it, it is a blind one, and the direction of that blindness is the one
+        that ruins the customer's part.
+
+        So the whole part's rims are computed ONCE, here, and `author` seeds every per-region
+        `RunHistory` with them (`plan.refuse_paired_rims`) before the rules are asked. A rim is
+        then refused because of a partner its own region cannot see, and the run-level fill ban
+        covers every region rather than the one that happened to hold both ends.
+
+        READ FROM THE UPLOAD'S SCAN, like `shape` itself and for the same reason the factory's
+        docstring gives: the check is conservative either way, and a pairing present on the upload
+        is exactly what must not be patched. Once per run and not per attempt, so it also cannot
+        be lost as kept operations change the geometry out from under it.
+
+        WHAT STAYS REGION-SCOPED: everything else. This widens only what the author REFUSES, never
+        what it proposes for - `author` still works one region, still claims only a fingerprint
+        that region holds, and still orders by that region's own defects.
+
+        OPTIONAL AT THE SEAM. The loop calls this through a `getattr` the same way it reads
+        `refusals` off the callable, so the `(region, defects, attempts) -> package` signature is
+        untouched and an author with no part-level view of its own simply has no attribute.
+        """
+        nonlocal part_rims
+        part_rims = (paired_rim_fingerprints(shape, tuple(part_defects))
+                     if shape is not None else frozenset())
 
     def author(region: Region, defects: tuple,
                attempts: tuple[PackageVerdict, ...] = ()) -> TargetPackage | None:
@@ -151,6 +196,13 @@ def rules_author(shape, *, original: Measure, reserved: frozenset = frozenset(),
             return None
 
         history = _history(attempts)
+        # THE WHOLE PART'S PAIRED RIMS, STATED BEFORE THE RULES ARE ASKED. The planner will also
+        # compute the pairing over the region's own defects and refuse on that, which is a SUBSET
+        # of this and so changes nothing it has already been told: `RunHistory.refuse` dedups on
+        # `(defect, reason)` and `refuse_filling` keeps the first reason. The seeding is what makes
+        # the guard whole-part again - without it a passage whose two rims decompose into two
+        # regions is sealed (observe_part).
+        refuse_paired_rims(history, part_rims)
         candidate = chosen.propose(tuple(defects), history, shape=shape)
         # WHAT THE RULES REFUSED TO AIM AT, KEPT INSTEAD OF DISCARDED WITH THE LEDGER. The
         # ledger above is rebuilt per call because the author is stateless, but a refusal is not
@@ -197,4 +249,9 @@ def rules_author(shape, *, original: Measure, reserved: frozenset = frozenset(),
     # `(region, defects, attempts) -> package | None` and must stay that way: a model author has
     # refusals of its own to report and gains a `refusals` attribute, not a different signature.
     author.refusals = refusals  # type: ignore[attr-defined]
+    # AND SO IS THIS, for the same reason: the paired-rim guard needs a view of the whole part
+    # (observe_part), and the loop is the only thing that has one. An attribute rather than a
+    # fourth argument, because the seam is a commitment to the model author that will take this
+    # callable's place and a model author with no such need should not have to accept one.
+    author.observe_part = observe_part  # type: ignore[attr-defined]
     return author

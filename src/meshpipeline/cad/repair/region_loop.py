@@ -289,6 +289,37 @@ def _refusals_of(author: Author) -> tuple[dict, ...]:
     return tuple(dict(record) for record in getattr(author, "refusals", ()))
 
 
+def _observe_part(author: Author, defects) -> None:
+    """Tell the author what the WHOLE part's defects are, once, before any region is authored for.
+
+    READ OFF THE CALLABLE AND OPTIONAL, exactly like `_refusals_of` above and for the same reason:
+    the seam is `(region, defects, attempts) -> package` and must stay that way, so an author with
+    no part-level view simply has no attribute and nothing happens.
+
+    WHY THE LOOP OWES AN AUTHOR THIS AT ALL, when the whole design of this driver is that an author
+    sees one region. Because one of the choosing rules is not about a region and cannot be: the
+    paired-rim guard refuses to patch the two ends of one missing tube wall, and A PAIRING IS A
+    PROPERTY OF THE PART. Handed one region's defects, the guard recomputes the pairing from that
+    list alone, so two rims of one passage that decompose into DIFFERENT regions never meet, never
+    pair, and are both filled - the through-hole is sealed and nothing is even reported. A
+    region-scoped view of a pairing is not a conservative view, it is a blind one, and the
+    direction of that blindness is the one that ruins a part. The baseline loop got this for free
+    from its whole-shape defect list; this is what buys it back.
+
+    ONLY WHAT IS REFUSED IS WIDENED BY THIS, never what is proposed for. The author still authors
+    for one region, against that region's defects, claiming only fingerprints that region holds.
+
+    `defects` IS THE RUN'S FIRST WHOLE-SHAPE SCAN, and once per run - the same list the regions are
+    decomposed from, taken before anything was changed. That is the upload's own answer, which is
+    what the guard wants (rules_author: a pairing present on the upload is exactly what must not be
+    patched) and it cannot then be lost as kept operations close one rim and leave the other
+    looking single.
+    """
+    observe = getattr(author, "observe_part", None)
+    if observe is not None:
+        observe(tuple(defects))
+
+
 def _with_tolerance(package: TargetPackage, tolerance_mm: float) -> TargetPackage:
     """The package as its author wrote it, with the RUN'S tolerance filled into any plan item
     that did not ask for one.
@@ -372,6 +403,9 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
             defects_before=before, defects_after=before,
             refusals=_refusals_of(author))
 
+    # WHAT THE PART AS A WHOLE LOOKS LIKE, SAID ONCE, BEFORE IT IS CUT INTO REGIONS. The only
+    # thing an author needs that a region cannot carry: the paired-rim guard (see `_observe_part`).
+    _observe_part(author, before)
     regions = decompose(before, diagonal_mm=work.original.diagonal_mm)
     # THE ORDER THE BUDGET IS SPENT IN, which is not the order the regions were found in. The
     # REPORT keeps `decompose`'s spatial order (it is the record of the decomposition, and a

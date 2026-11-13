@@ -224,6 +224,49 @@ def paired_rim_fingerprints(shape, defects) -> frozenset[str]:
         return RimsUnknown(candidates)
 
 
+def refuse_paired_rims(history: RunHistory, rims) -> None:
+    """Record a paired-rim set as refusals and turn filling off for the rest of the run.
+
+    REFUSE AT DETECTION, AND REFUSE FILLING FOR THE REST OF THE RUN.
+    Recorded as soon as the pairing is seen, not when the fill happens to be reached, so a run
+    stopped early still reports it. And the refusal is RUN-LEVEL, not per rim: `rims` recomputed
+    from the CURRENT defects loses a pair as soon as a kept operation closes one rim (or shifts the
+    other's bounding box, changing its fingerprint), so the survivor has nothing to pair with and a
+    per-rim ban would miss it - and the targeted fill has no rim check of its own, so that fill
+    would seal the customer's through-hole.
+    DELIBERATELY CONSERVATIVE: a part carrying both a missing bore wall and a legitimately fillable
+    small hole gets the legitimate hole declined too. One missed repair an operator picks up,
+    against a plate handed back with no bolt hole. Do not "optimise" this to per-rim.
+
+    A FUNCTION RATHER THAN A BRANCH INSIDE `RulesPlanner.propose`, and that is the whole reason it
+    moved out. A PAIRING IS A PROPERTY OF THE PART, NOT OF A REGION. The region-scoped driver asks
+    this planner for one region's defects at a time, so the two ends of one passage can land in two
+    different regions and never meet in a single `defects` list - the pair is then invisible, no
+    refusal is made, and BOTH rims are patched. A region-scoped view of the pairing is not a
+    conservative view, it is a blind one, and the direction of that blindness is the one that seals
+    a passage. So the region loop computes the set ONCE from the WHOLE part's defects
+    (`rules_author.observe_part`) and hands it here before each per-region proposal, which is how a
+    rim comes to be refused because of a partner its own region cannot see.
+    """
+    if getattr(rims, "unknown", False):
+        # FAIL CLOSED: the pairing check could not run, so no loop is known not to be a rim.
+        for rim in sorted(rims):
+            history.refuse(
+                rim, "paired_rim",
+                "the through-hole check could not run on this shape, so this loop may be one "
+                "end of a missing tube wall and is not filled")
+        history.refuse_filling("the through-hole (paired rim) check could not run")
+        return
+    for rim in sorted(rims):
+        history.refuse(
+            rim, "paired_rim",
+            "this loop pairs with another as the two ends of one passage (the line "
+            "between them leaves each no steeper than 70 degrees from its wall's normal, "
+            "or a curved rim lies on the other's axis) - a missing tube wall, and "
+            "patching both would seal a through-hole")
+        history.refuse_filling("a missing tube wall was detected: " + rim)
+
+
 def held_fingerprints(defects, reserved) -> frozenset[str]:
     """Fingerprints of the entities carrying a defect held for review (a code in `reserved`).
 
@@ -254,35 +297,7 @@ class RulesPlanner:
 
     def propose(self, defects, history: RunHistory, *, shape) -> Candidate | None:
         rims = paired_rim_fingerprints(shape, defects) if shape is not None else frozenset()
-
-        # REFUSE AT DETECTION, AND REFUSE FILLING FOR THE REST OF THE RUN.
-        # Recorded now, not when the fill happens to be reached, so a run stopped early still
-        # reports it. And the refusal is RUN-LEVEL, not per rim: `rims` is recomputed from the
-        # current defects, so once a kept operation closes one rim (or shifts the other's bounding
-        # box, changing its fingerprint) the survivor has nothing to pair with and a per-rim ban
-        # would miss it - and the targeted fill has no rim check of its own, so that fill would seal
-        # the customer's through-hole.
-        # DELIBERATELY CONSERVATIVE: a part carrying both a missing bore wall and a legitimately
-        # fillable small hole gets the legitimate hole declined too. One missed repair an operator
-        # picks up, against a plate handed back with no bolt hole. Do not "optimise" this to
-        # per-rim.
-        if getattr(rims, "unknown", False):
-            # FAIL CLOSED: the pairing check could not run, so no loop is known not to be a rim.
-            for rim in sorted(rims):
-                history.refuse(
-                    rim, "paired_rim",
-                    "the through-hole check could not run on this shape, so this loop may be one "
-                    "end of a missing tube wall and is not filled")
-            history.refuse_filling("the through-hole (paired rim) check could not run")
-        else:
-            for rim in sorted(rims):
-                history.refuse(
-                    rim, "paired_rim",
-                    "this loop pairs with another as the two ends of one passage (the line "
-                    "between them leaves each no steeper than 70 degrees from its wall's normal, "
-                    "or a curved rim lies on the other's axis) - a missing tube wall, and "
-                    "patching both would seal a through-hole")
-                history.refuse_filling("a missing tube wall was detected: " + rim)
+        refuse_paired_rims(history, rims)
 
         ordered = sorted(
             defects,
