@@ -250,3 +250,33 @@ def test_more_declared_ports_than_mouths_is_still_refused(three_stubs):
     rows, why = MO.declared_for(three_stubs[:2], extra)
     assert rows is None
     assert "could not be matched" in why
+
+
+def test_the_direction_is_only_called_a_guess_while_nobody_has_said(three_stubs):
+    """THE SENTENCE THAT CONTRADICTED THE LINE ABOVE IT.
+
+    `port_rows` signs off by saying which end is fed is a guess and telling the customer to name
+    the ports at intake. That is true and useful with nothing declared. It was appended
+    unconditionally, so the first real customer cold plate - whose ports had just been bound to
+    its own declaration by position - was told, in the same log line that had named them `inlet`
+    and `outlet_1`:
+
+        The direction is a guess - coolant_in is the mouth measured first - so name them at
+        intake to fix it
+
+    wrong about the direction, naming a patch that is not in the mesh, and asking the customer to
+    do the thing they had already done.
+    """
+    rows, _why = MO.declared_for(three_stubs, DECLARED)
+    _patches, said = MO.port_rows(three_stubs, named=rows)
+    assert "inlet and outlet are cut out of" in said, said
+    assert "guess" not in said, said
+    assert "coolant_in" not in said, said
+
+
+def test_it_is_still_called_a_guess_when_nothing_was_declared(three_stubs):
+    """THE CONTROL. The advice is right whenever it is true, and this is the case it is for."""
+    _patches, said = MO.port_rows(three_stubs)
+    assert "The direction is a guess" in said, said
+    assert "coolant_in is the mouth measured first" in said, said
+    assert "name them at intake" in said, said

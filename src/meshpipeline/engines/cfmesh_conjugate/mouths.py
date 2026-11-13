@@ -484,6 +484,14 @@ def port_rows(stubs: list, *, inlet: str = "coolant_in",
     if len(stubs) > 2:
         said += (f". The other {len(stubs) - 2} mouth(s) are cut as walls: which of several is "
                  "fed is not something the geometry says")
-    said += (f". The direction is a guess - {inlet} is the mouth measured first - so name them "
-             "at intake to fix it")
+    # ...AND IT IS ONLY A GUESS WHILE NOBODY HAS SAID. This was appended unconditionally, so a
+    # run whose ports had just been bound to the customer's own declaration BY POSITION still
+    # signed off with "The direction is a guess - coolant_in is the mouth measured first - so
+    # name them at intake to fix it": wrong about the direction, and naming a patch that is not
+    # in the mesh, directly after the line that had named them inlet and outlet_1. It also asked
+    # the customer to do at intake the thing they had already done. Seen on the first real
+    # customer cold plate, in the same log line as the fix that named its ports.
+    if named is None:
+        said += (f". The direction is a guess - {inlet} is the mouth measured first - so name "
+                 "them at intake to fix it")
     return rows, said
