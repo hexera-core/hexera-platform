@@ -9,6 +9,7 @@
 # the server's shape, built here. Only the network is stood in for.
 from __future__ import annotations
 
+import json
 import math
 
 import pytest
@@ -151,10 +152,17 @@ def test_marks_follow_the_panel_and_merge_where_they_would_overlap(live):
     assert before["single"] + sum(before["merged"]) == 174 and before["merged"], before
     chips = live.evaluate(f"[...{root}.querySelectorAll('.vm-group')].filter((c) => c.style.display !== 'none').map((c) => Number(c.textContent))")
     assert sorted(chips) == sorted(before["merged"]), chips
-    # a merged mark clicked zooms in on its marks: they come apart
-    live.evaluate(f"[...{root}.querySelectorAll('.vm-group')].find((c) => c.style.display !== 'none').click()")
+    # a merged mark clicked zooms in on its marks: they come apart. How far apart one zoom takes
+    # them depends on the panel's size in pixels, so what is asserted is that the clicked mark is
+    # gone - no mark drawn after the zoom still holds every one of its members.
+    members = live.evaluate(f"""(() => {{
+      const c = [...{root}.querySelectorAll('.vm-group')].find((c) => c.style.display !== 'none');
+      const ids = c._members.map((m) => m.id); c.click(); return ids; }})()""")
     after = _marks(live, sid)
-    assert after["single"] > before["single"], (before, after)
+    still_one = live.evaluate(f"""[...{root}.querySelectorAll('.vm-group')]
+      .filter((c) => c.style.display !== 'none')
+      .some((c) => {json.dumps(members)}.every((id) => (c._members || []).some((m) => m.id === id)))""")
+    assert len(members) > 1 and not still_one, (members, before, after)
     # the chosen mark stands on its own, never merged, in the crimson - and keeps its size on screen at any zoom
     h = f"window._vdbg['gstage:{sid}']"
     live.evaluate(f"""{h}.iso(); {root}.querySelector('.fea-spot-row[data-spot="H104"]').click()""")

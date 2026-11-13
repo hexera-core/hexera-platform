@@ -5,7 +5,7 @@
 
 # GATE D - deployment readiness. READ-ONLY: this script deploys nothing and mutates nothing.
 #
-# It answers one question: may the artifact Gate C validated and `release-publish` published be
+# It answers one question: may the artifact release validation passed and `release-publish` published be
 # promoted into this environment? It deliberately does NOT re-run source tests. Those gated the
 # commit, and the commit produced the artifact; running them again proves nothing new about the
 # thing being promoted and hides the checks that ARE specific to promotion.
@@ -56,7 +56,7 @@ if [ ! -f "${REC}" ]; then
   no "no release record at ${REC_LABEL}"
   printf '     run: make release-validate && make release-publish\n'
 else
-  # One authority decides promotability - the same module Gate C and release-publish use, so the
+  # One authority decides promotability - the same module release validation and release-publish use, so the
   # three cannot disagree about what "ready" means. It fails CLOSED on a malformed or partial
   # record: every reason is printed.
   if PROMO="$("${PY}" "${REPO_ROOT}/devtools/release/record.py" check --record "${REC}" 2>&1)"; then
@@ -119,7 +119,7 @@ HEAD_SHA="$(git -C "${REPO_ROOT}" rev-parse HEAD 2>/dev/null || echo none)"
 HEAD_TREE="$(git -C "${REPO_ROOT}" rev-parse HEAD^{tree} 2>/dev/null || echo none)"
 if [ -n "${REC_COMMIT:-}" ]; then
   if [ "${HEAD_SHA}" = "${REC_COMMIT}" ]; then ok "record describes HEAD (${HEAD_SHA:0:12})"
-  else no "record is for ${REC_COMMIT:0:12}, HEAD is ${HEAD_SHA:0:12} - re-run Gate C"; fi
+  else no "record is for ${REC_COMMIT:0:12}, HEAD is ${HEAD_SHA:0:12} - re-run release validation"; fi
   if [ "${HEAD_TREE}" = "${REC_TREE}" ]; then ok "record tree matches the current tree"
   else no "record tree ${REC_TREE:0:12} != current tree ${HEAD_TREE:0:12}"; fi
 fi

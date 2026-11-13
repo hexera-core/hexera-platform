@@ -274,7 +274,7 @@ prescribes review presentation is rejected as not a current manifest.
 | `ui/` | the LEGACY frontend, served by the API at `/ui`. Superseded by `apps/console`, kept as the fallback until the console's React rewrite lands |
 | `tests/` | `unit/` (fast, hermetic, heavy deps stubbed) · `integration/` (real deps, no stubs) · `unit/hygiene/` (the executable architecture rules) · `unit/platform/` (provider contracts, both backends) |
 | `deploy/` · `alembic/` | image + hosted-deploy documentation and templates (never imported by the package) · database migrations |
-| `devtools/` | developer tools, one directory per capability: `env/` (setup, doctor) · `quality/` (the CI-run repository gates) · `release/` (Gate C) |
+| `devtools/` | developer tools, one directory per capability: `env/` (setup, doctor) · `quality/` (the CI-run repository gates) · `release/` (release validation) |
 | `tests/fixtures/external/` | licensed per-machine validation CAD (gitignored). Production code must not depend on it |
 
 **Tests** live under one `tests/` parent split by tier: `tests/unit/`, the fast, hermetic suite (heavy deps stubbed in `tests/unit/conftest.py`), mirroring the app as `tests/unit/{engines,flow,pipeline,api,training,security,worker,infra}/` and `tests/unit/agents/{intake,builder,reviewer}/`; and `tests/integration/`, the live in-container runtime suite (real deps, no stubs, its own conftest). A bare `pytest` runs only `tests/unit` (`testpaths`); integration is opt-in (`make test-integration`).

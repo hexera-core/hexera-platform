@@ -5,7 +5,7 @@
 # Promote the validated, published release artifact into this deployment's configuration.
 #
 # This IS the deploy flow's image step, and it builds nothing. The release record - written by
-# Gate C, completed by release-publish - is read, its promotability is checked by the same
+# Release validation, completed by release-publish - is read, its promotability is checked by the same
 # authority Gate D uses, and the DIGEST-QUALIFIED reference is written into the deployment env.
 #
 # A tag is never resolved here, because a tag can be moved between validation and rollout: only a
@@ -50,15 +50,15 @@ HEAD_SHA="$(git -C "${REPO_ROOT}" rev-parse HEAD 2>/dev/null || echo none)"
 REC_COMMIT="$("${PY}" -c 'import json,sys;print(json.load(open(sys.argv[1]))["commit"])' "${REC}")"
 [ "${HEAD_SHA}" = "${REC_COMMIT}" ] || [ "${HEAD_SHA}" = "none" ] \
   || die "the release record is for ${REC_COMMIT:0:12} but HEAD is ${HEAD_SHA:0:12}
-       Deploy the commit that was validated, or re-run Gate C on this one."
+       Deploy the commit that was validated, or re-run release validation on this one."
 
 # A component this record does not carry is a record from a build that did not produce it - said
 # by name, rather than as a Python traceback out of the middle of a deploy.
 _ref() { "${PY}" -c 'import json,sys;print(json.load(open(sys.argv[1]))["components"][sys.argv[2]]["reference"])' "${REC}" "$1" 2>/dev/null; }
-MESH_REF="$(_ref mesh)" || die "the release record names no 'mesh' component - re-run Gate C"
-APP_REF="$(_ref app)"   || die "the release record names no 'app' component - re-run Gate C"
-CONSOLE_REF="$(_ref console)" || die "the release record names no 'console' component - re-run Gate C"
-ADMIN_REF="$(_ref admin)" || die "the release record names no 'admin' component - re-run Gate C"
+MESH_REF="$(_ref mesh)" || die "the release record names no 'mesh' component - re-run release validation"
+APP_REF="$(_ref app)"   || die "the release record names no 'app' component - re-run release validation"
+CONSOLE_REF="$(_ref console)" || die "the release record names no 'console' component - re-run release validation"
+ADMIN_REF="$(_ref admin)" || die "the release record names no 'admin' component - re-run release validation"
 for ref in "${MESH_REF}" "${APP_REF}" "${CONSOLE_REF}" "${ADMIN_REF}"; do
   case "${ref}" in
     *@sha256:*) ;;

@@ -1,4 +1,4 @@
-# Responsibility: Ship what landed on main - Gate C on the merge commit, publish those exact images, then provision by digest.
+# Responsibility: Ship what landed on main - release validation on the merge commit, publish those exact images, then provision by digest.
 # Owns: the pinned action digests, the federated identity each environment deploys as, and every deployment target it pins.
 # Boundaries: it builds nothing of its own and touches no cloud resource directly; deploy/gcp/scripts/deploy.sh owns every mutation.
 
@@ -1106,7 +1106,7 @@ jobs:
             sleep 30
           done
 
-  # WHY THE DEPLOY IS SIX JOBS AND NOT ONE. It used to be one - checkout, toolchain, auth, Gate C,
+  # WHY THE DEPLOY IS SIX JOBS AND NOT ONE. It used to be one - checkout, toolchain, auth, release validation,
   # the push, deploy.sh, two post-deploy verifications and the records upload, in a single
   # 300-minute lane. That shape cost three things. A red X said "the deploy failed" without saying whether it
   # failed BUILDING, PUBLISHING, PROVISIONING or VERIFYING, which are four different pages and
@@ -1188,7 +1188,7 @@ jobs:
       GCP_REGION: ${{ needs.target.outputs.region }}
       ARTIFACT_REGISTRY_REPOSITORY: ${{ needs.target.outputs.ar_repository }}
     steps:
-      # Gate C refuses a dirty tree, identifies the artifact by commit, and adds a git worktree at
+      # Release validation refuses a dirty tree, identifies the artifact by commit, and adds a git worktree at
       # that exact commit to stage the native fixtures. Full history so the worktree and the
       # record's commit/tree assertions have everything they name.
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
@@ -1210,7 +1210,7 @@ jobs:
 
       # release-publish pushes with `docker push`, which needs the credential helper for this
       # registry host. create-artifact-registry.sh configures it too, but that runs INSIDE the
-      # deploy - a whole job later, after publication - so the helper has to exist before Gate C's
+      # deploy - a whole job later, after publication - so the helper has to exist before release validation's
       # push, not after.
       - name: Configure docker for Artifact Registry
         run: gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet
@@ -1222,7 +1222,7 @@ jobs:
       # registry - so it produced a new image ID that publish.sh rightly refused to write over the
       # published tag, and every such run failed. reuse.sh adopts the earlier run's record only
       # when the registry still serves exactly the images it names for exactly this commit and
-      # tree; anything it cannot prove falls through to Gate C below, unchanged.
+      # tree; anything it cannot prove falls through to release validation below, unchanged.
       - name: Reuse this commit's already-published release, if there is one
         id: reuse
         env:
@@ -1232,7 +1232,7 @@ jobs:
         run: bash devtools/release/reuse.sh
 
       # A stock runner has ~14 GB free; the mesh image alone (OpenFOAM 2412 + vmtk + gmsh) is
-      # several of them, and Gate C builds the app image beside it. These four toolchains are
+      # several of them, and release validation builds the app image beside it. These four toolchains are
       # preinstalled on the image and are used by nothing in this repository.
       - name: Reclaim runner disk for the image builds
         if: steps.reuse.outputs.reused != 'true'
@@ -1249,7 +1249,17 @@ jobs:
           # and a cache is writable by workflows that run on untrusted pull requests - restoring
           # one into the publishing path is how poisoned bytes reach a registry. A deploy runs
           # once per release; the seconds a cache saves are not worth that.
-      # The full profile installs the same pinned environment ci.yml installs. Gate C runs the UI
+      # The UI suite builds some of its fixtures on the host (a real gmsh shell run, for one), and
+      # gmsh's wheel dlopen()s libGLU and the X libraries at import even headless. Without them
+      # that fixture ERRORs at setup and fails the gate. Same list setup-hexera gives every CI lane.
+      - name: Install the native libraries the UI suite's host fixtures load
+        if: steps.reuse.outputs.reused != 'true' && needs.target.outputs.environment != 'dev'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgl1 libglu1-mesa libegl1 libxrender1 libxext6 libxt6 \
+            libxft2 libxcursor1 libxinerama1 libxrandr2 libxi6
+      # The full profile installs the same pinned environment ci.yml installs. Release validation runs the UI
       # suite on the host against the containerised app image, so full validation needs the test
       # dependencies. The dev-fast profile builds a wheel and images only, so it installs just the
       # pinned PEP 517 frontend instead of minutes of runtime/test wheels.
@@ -1272,7 +1282,7 @@ jobs:
         if: steps.reuse.outputs.reused != 'true'
         run: pip install -e . --no-deps
 
-      # GATE C, part 1 for production. Development targets use RELEASE_VALIDATION_PROFILE=dev-fast:
+      # RELEASE VALIDATION, part 1 for production. Development targets use RELEASE_VALIDATION_PROFILE=dev-fast:
       # still a clean commit, wheel identity, image builds, digest publication and promotion by
       # immutable reference, but without entrypoint smoke, browser smoke, native tiers or the
       # pricing audit. That is the iteration trade: dev deploys quickly; production tags keep the
@@ -1323,7 +1333,7 @@ jobs:
 
       # THE HANDOFF. deploy.sh promotes by digest and builds nothing, so this one file is the
       # entire contract between the two jobs - not the images, which stay on this runner and die
-      # with it. `if: always()` because Gate C writes a record with verdict=failed or
+      # with it. `if: always()` because release validation writes a record with verdict=failed or
       # verdict=incomplete too, and that record is the evidence of WHAT failed; losing it on the
       # runs that need it most is how "the deploy went red" becomes an archaeology exercise.
       - name: Publish the release record
@@ -1359,7 +1369,7 @@ jobs:
     environment:
       name: ${{ needs.target.outputs.environment }}
     # deploy.sh waits on Google - a Cloud SQL instance that has to be created is tens of minutes on
-    # its own - but it neither builds nor tests. The old 300 was sized for Gate C, which now lives
+    # its own - but it neither builds nor tests. The old 300 was sized for release validation, which now lives
     # a job away.
     timeout-minutes: 120
     outputs:
@@ -1758,7 +1768,7 @@ jobs:
 
   # POST-DEPLOY VERIFICATION (design spec docs/superpowers/specs/2026-09-07-saas-console-design.md
   # §4): an HTTP check against the console's own URL, the one thing nothing before this ever proves
-  # against a REAL deployed revision - Gate C's console smoke only proves the image can serve
+  # against a REAL deployed revision - release validation's console smoke only proves the image can serve
   # /api/internal/health in isolation, with no Auth.js, no live API origin and no Cloud Run front
   # end in the loop.
   #
@@ -1782,7 +1792,7 @@ jobs:
   #                                  miss a broken .next/static or public/ path, which no smoke
   #                                  has ever covered
   #   3. GET /api/internal/health -> 200 with a JSON body whose status is "ok" - the same
-  #                                  unauthenticated route Gate C's in-container smoke already
+  #                                  unauthenticated route release validation's in-container smoke already
   #                                  curls, so post-deploy and build-time verification agree on
   #                                  one endpoint instead of two
   #   4. GET /readyz              -> 401 unauthenticated. /readyz is deliberately session-gated
@@ -1859,7 +1869,7 @@ jobs:
           echo "OK: /sign-in rendered, $(printf '%s\n' "${assets}" | grep -c .) static asset(s) served"
 
           # 3) /api/internal/health returns 200 with a JSON body whose status is "ok". This route
-          #    is unauthenticated by design and is already what Gate C's in-container smoke curls,
+          #    is unauthenticated by design and is already what release validation's in-container smoke curls,
           #    so post-deploy and build-time verification agree on one endpoint.
           hcode="$(curl -s -o /tmp/console-verify-health.json --max-time 10 -w '%{http_code}' \
             "${CONSOLE_URL}/api/internal/health")"

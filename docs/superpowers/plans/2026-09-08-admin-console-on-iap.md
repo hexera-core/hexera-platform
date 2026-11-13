@@ -6,7 +6,7 @@
 reach, with a navigation shell the later admin sub-projects hang pages off.
 
 **Architecture:** The admin console becomes a fourth release component beside `mesh`, `app` and
-`console` — built once by Gate C, published by digest, promoted, and rolled out by a new `admin`
+`console` — built once by release validation, published by digest, promoted, and rolled out by a new `admin`
 deploy component. Its service is the inverse of the public console's: no `allUsers` binding, IAP
 enabled directly on the service, and the IAP service agent granted the invoker role.
 
@@ -40,7 +40,7 @@ Everything else in §4 is implemented here.
 - **The admin service must never carry an `allUsers` invoker binding.** IAP and the Cloud Run IAM
   policy are separate gates; a public binding admits requests regardless of what IAP decides. This
   is the single most important constraint in this plan.
-- **Gate C builds; nothing else does.** `deploy.sh` promotes an already-validated artifact.
+- **Release validation builds; nothing else does.** `deploy.sh` promotes an already-validated artifact.
 - **New deploy stages state their skip**, using the existing `want` / `skipped` helpers.
 - **Pinned base images.** Every `FROM` is digest-pinned. Reuse the Node digest the console stages
   already pin: `node:24-slim@sha256:ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af091d5281095a71e`.
@@ -62,7 +62,7 @@ Everything else in §4 is implemented here.
 | `apps/admin-console/src/app/(admin)/layout.tsx` | The shell that wraps every admin page in the nav |
 | `deploy/gcp/scripts/create-admin-service.sh` | Provision the IAP-protected Cloud Run service |
 | `tests/unit/deploy/test_admin_service_stage.py` | Drive it against a fake gcloud |
-| `tests/unit/deploy/test_admin_release_component.py` | Gate C builds, smokes and records `admin` |
+| `tests/unit/deploy/test_admin_release_component.py` | Release validation builds, smokes and records `admin` |
 | `tests/unit/deploy/test_admin_deploy_wiring.py` | Workflow outputs, env mapping, dispatch options |
 
 **Modified**
@@ -457,7 +457,7 @@ git commit -m "build: add the admin console image target"
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# Responsibility: Verify Gate C builds, smokes and records the admin console alongside the others.
+# Responsibility: Verify release validation builds, smokes and records the admin console alongside the others.
 # Boundaries: it reads the validation script's declarations; it runs no docker build.
 from __future__ import annotations
 
@@ -572,7 +572,7 @@ Run: `python -m pytest tests/unit/deploy/test_admin_release_component.py tests/u
 Expected: PASS. If `test_release_promotion.py` asserts a closed component set, extend its fixtures
 with an `admin` component rather than weakening the assertion.
 
-Do **not** run `make release-validate` — it builds the multi-gigabyte mesh image. Gate C runs once
+Do **not** run `make release-validate` — it builds the multi-gigabyte mesh image. Release validation runs once
 in final verification.
 
 - [ ] **Step 8: Commit**
@@ -636,7 +636,7 @@ Expected: FAIL — `ADMIN_IMAGE=` is not written.
 In `promote-release.sh`, after the `CONSOLE_REF` line:
 
 ```bash
-ADMIN_REF="$(_ref admin)" || die "the release record names no 'admin' component - re-run Gate C"
+ADMIN_REF="$(_ref admin)" || die "the release record names no 'admin' component - re-run release validation"
 ```
 
 and add `"${ADMIN_REF}"` to the existing `for ref in …` digest-qualification loop.
@@ -1383,7 +1383,7 @@ Not a task — run before opening the PR.
 - [ ] `make lint && python devtools/quality/mypy_ratchet.py`
 - [ ] `python devtools/quality/check_deploy_secrets.py`
 - [ ] `shellcheck` and `/bin/bash -n` on every changed shell script
-- [ ] `make release-validate` — Gate C builds and smokes four components, verdict `passed`
+- [ ] `make release-validate` — release validation builds and smokes four components, verdict `passed`
 - [ ] Deploy to dev with `components=admin`, then follow
       `docs/deployment/admin-console-access.md` §3 (one-time OAuth brand) and §5 (grant yourself
       access)

@@ -1,4 +1,4 @@
-# Responsibility: Record the fully resolved dependency set that a Gate C validated image installed.
+# Responsibility: Record the fully resolved dependency set that an image which passed release validation installed.
 # Owns: the transitive pins nothing declares, so a rebuild resolves to the same distributions.
 # Boundaries: generated - refreshed by re-exporting from an image that passed the gate, never hand-edited.
 
@@ -12,9 +12,9 @@
 # different versions of cffi, cyclopts, langsmith, Mako and websockets - none of them declared
 # anywhere, all of them shipped in the image.
 #
-# GENERATED, NOT HAND-EDITED. Every version here was taken from a Gate C validated image, so this
+# GENERATED, NOT HAND-EDITED. Every version here was taken from an image that passed release validation, so this
 # records a state that passed the release gate rather than a resolution nobody ran. To refresh it:
-# rebuild, validate through Gate C, then re-export from the image that passed.
+# rebuild, validate through release validation, then re-export from the image that passed.
 #
 # Used as `pip install -c requirements/constraints.txt`: it constrains resolution without
 # declaring dependencies, so a package listed here that nothing requires is simply not installed.

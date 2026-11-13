@@ -214,7 +214,7 @@ def test_gate_d_refuses_a_record_for_a_different_commit(tmp_path):
     _, tree = _head()
     r = _gate_d(write_record(tmp_path, make_record(commit="0" * 40, tree=tree)))
     assert r.returncode != 0
-    assert "re-run Gate C" in r.stdout
+    assert "re-run release validation" in r.stdout
 
 
 def test_gate_d_refuses_a_record_for_a_different_tree(tmp_path):
@@ -462,7 +462,7 @@ def test_publication_refuses_a_record_for_another_commit(tmp_path):
     (root / "deploy" / "output" / "release.json").write_text(json.dumps(rec, indent=2))
     r = _run_publish(root, ctx["env"])
     assert r.returncode != 0
-    assert "re-run Gate C" in r.stdout
+    assert "re-run release validation" in r.stdout
 
 
 def test_publication_refuses_a_dirty_tree(tmp_path):
@@ -998,7 +998,7 @@ def _record_written(ctx: dict) -> Path:
 
 def _assert_not_reused(ctx: dict, fragment: str) -> None:
     r, answer = _run_reuse(ctx)
-    assert r.returncode == 0, "not reusing must fall back to Gate C, never fail the run\n" + r.stdout
+    assert r.returncode == 0, "not reusing must fall back to release validation, never fail the run\n" + r.stdout
     assert answer == "false", r.stdout + r.stderr
     assert fragment in r.stdout, r.stdout + r.stderr
     assert not _record_written(ctx).exists(), "a record was adopted that should not have been"
@@ -1019,7 +1019,7 @@ def test_a_published_commit_is_deployed_from_its_record_without_rebuilding(tmp_p
         f"reuse may only read the registry - it never builds, tags or pushes:\n{calls}")
 
 
-def test_no_earlier_run_falls_back_to_gate_c(tmp_path):
+def test_no_earlier_run_falls_back_to_release_validation(tmp_path):
     ctx = _reuse_repo(tmp_path)
     _no_runs(ctx)
     _assert_not_reused(ctx, "no earlier deploy run")
@@ -1040,7 +1040,7 @@ def test_a_record_from_a_pull_request_or_a_fork_is_never_trusted(tmp_path, event
     _assert_not_reused(ctx, "no earlier deploy run")
 
 
-def test_an_expired_record_falls_back_to_gate_c(tmp_path):
+def test_an_expired_record_falls_back_to_release_validation(tmp_path):
     ctx = _reuse_repo(tmp_path)
     _no_runs(ctx)
     _earlier_run(ctx, 802, _full_record(ctx["sha"], ctx["tree"]), expired=True)
@@ -1117,7 +1117,7 @@ def test_a_dirty_checkout_never_reuses(tmp_path):
 def test_the_newest_usable_record_is_found_past_a_run_that_published_nothing(tmp_path):
     ctx = _reuse_repo(tmp_path)
     _no_runs(ctx)
-    _earlier_run(ctx, 810, None)                      # newest: published nothing (Gate C failed)
+    _earlier_run(ctx, 810, None)                      # newest: published nothing (release validation failed)
     _earlier_run(ctx, 805, _full_record(ctx["sha"], ctx["tree"]))
     r, answer = _run_reuse(ctx)
     assert answer == "true", r.stdout + r.stderr
@@ -1151,11 +1151,11 @@ def test_the_deploy_tries_reuse_before_gate_c_and_skips_the_build_when_it_succee
     names = [s.get("name") or s.get("id") or s.get("uses", "") for s in steps]
     reuse = next(i for i, s in enumerate(steps) if s.get("id") == "reuse")
     assert "devtools/release/reuse.sh" in steps[reuse]["run"]
-    gate_c = next(i for i, s in enumerate(steps) if "make release-validate" in (s.get("run") or ""))
+    validate = next(i for i, s in enumerate(steps) if "make release-validate" in (s.get("run") or ""))
     publish = next(i for i, s in enumerate(steps) if "make release-publish" in (s.get("run") or ""))
     login = next(i for i, s in enumerate(steps) if "configure-docker" in (s.get("run") or ""))
-    assert login < reuse < gate_c < publish, f"step order is wrong: {names}"
-    for i in (gate_c, publish):
+    assert login < reuse < validate < publish, f"step order is wrong: {names}"
+    for i in (validate, publish):
         assert steps[i].get("if") == "steps.reuse.outputs.reused != 'true'", (
             f"{names[i]} still runs after a reuse - it would rebuild and hit the published tag")
     upload = next(s for s in steps if "upload-artifact" in s.get("uses", ""))
@@ -1167,12 +1167,12 @@ def test_the_deploy_tries_reuse_before_gate_c_and_skips_the_build_when_it_succee
 
 def test_dev_deploys_use_the_fast_release_validation_profile():
     job = _release_job()
-    gate_c = next(s for s in job["steps"] if "make release-validate" in (s.get("run") or ""))
-    assert gate_c["env"]["RELEASE_VALIDATION_PROFILE"] == (
+    validate = next(s for s in job["steps"] if "make release-validate" in (s.get("run") or ""))
+    assert validate["env"]["RELEASE_VALIDATION_PROFILE"] == (
         "${{ needs.target.outputs.environment == 'dev' && 'dev-fast' || 'full' }}"
     )
     install = next(s for s in job["steps"] if s.get("name") == "Install release validation dependencies")
-    assert install["env"]["RELEASE_VALIDATION_PROFILE"] == gate_c["env"]["RELEASE_VALIDATION_PROFILE"]
+    assert install["env"]["RELEASE_VALIDATION_PROFILE"] == validate["env"]["RELEASE_VALIDATION_PROFILE"]
     assert "build==1.2.2" in install["run"]
     assert "-r requirements/runtime.txt -r requirements/dev.txt" in install["run"]
 

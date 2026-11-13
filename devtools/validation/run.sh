@@ -34,7 +34,7 @@ usage: devtools/validation/run.sh <tier> [extra pytest args]
   ui            the shipped page in a real headless Chrome
   integration   real Postgres/Redis/MinIO, via tests/integration/run_disposable.sh on the host
   native        the five-engine mesh-image tier, via tests/native/run_tier.sh on the host
-  release       Gate C, via devtools/release/validate.sh on the host
+  release       release validation, via devtools/release/validate.sh on the host
 
   RESULTS_DIR=<path>   where the junit xml and the summary json are written
 USAGE
@@ -126,7 +126,7 @@ case "$TIER" in
     # The socket: tests/unit/deploy and tests/unit/dev shell out to `docker compose config` and
     # `docker info`. Without it they SKIP - which is how a compose-parity regression reaches a
     # release looking green. Read-only in effect: the only tier member that creates anything is
-    # test_gate_c_cleanup_contract, which removes what it creates and is asserted to.
+    # test_release_validation_cleanup_contract, which removes what it creates and is asserted to.
     fresh_record "$RESULTS_DIR/unit.xml"
     NEEDS_DOCKER=1 run_in_image -m pytest -q tests/unit -m "not external_fixture" \
       --junitxml=/out/unit.xml "$@" || true
