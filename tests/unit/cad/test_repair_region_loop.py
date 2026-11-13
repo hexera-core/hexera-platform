@@ -994,3 +994,56 @@ def test_the_walk_does_not_depend_on_the_order_the_defects_were_reported_in():
     assert [r.index for r in forward.regions] == [r.index for r in reversed_.regions]
     assert ([sorted(r.fingerprints) for r in forward.regions]
             == [sorted(r.fingerprints) for r in reversed_.regions])
+
+
+# WHAT WAS DELIBERATELY NOT AIMED AT. The deterministic author rebuilds the choosing rules'
+# ledger on every call, so a refusal the rules made - the paired rim of a missing bore wall above
+# all - was authored and thrown away: the region path reported NO refusals at all while the
+# baseline reported 22 `paired_rim` on the same corpus.
+
+
+class _RefusingPlanner:
+    """Refuses to aim at a defect, as the real rules refuse a paired rim, and proposes nothing."""
+
+    label = "stub"
+
+    def __init__(self) -> None:
+        self.asked = 0
+
+    def propose(self, defects, history, *, shape):
+        self.asked += 1
+        history.refuse("edge:a", "paired_rim", "this loop pairs with another as the two ends of "
+                                               "one passage")
+        return None
+
+
+def test_a_refusal_the_planner_made_reaches_the_run_s_report():
+    """In the baseline's own records - `{"defect", "reason", "detail"}`, which is what the
+    receipt and the corpus's `refusals_by_reason` already read - and ONCE, though the author is
+    asked once per region and recomputes the refusal every time."""
+    from meshpipeline.cad.repair.region_loop import as_repair_run
+    from meshpipeline.cad.repair.rules_author import rules_author
+
+    part = _Part(keys=("a", "b"), severity=DefectSeverity.warning)
+    planner = _RefusingPlanner()
+    author = rules_author("original", original=_SOUND, planner=planner)
+    run = _run(part, author)
+
+    assert planner.asked == 2
+    assert run.packages == ()
+    assert run.refusals == ({"defect": "edge:a", "reason": "paired_rim",
+                             "detail": "this loop pairs with another as the two ends of one "
+                                       "passage"},)
+    assert run.to_dict()["refusals"] == [dict(run.refusals[0])]
+    # AND REACHES THE SHAPE EVERY STAGE AFTER THE LOOP READS, unchanged.
+    sealed = as_repair_run(run, original=_SOUND.to_dict(), final=_SOUND.to_dict())
+    assert sealed.refusals == run.refusals
+
+
+def test_an_author_with_nothing_to_say_about_refusals_reports_none():
+    """The `author` seam is `(region, defects, attempts) -> package`; reporting refusals is an
+    extra an author may not have, and a plain callable must not break the walk."""
+    part = _Part()
+    run = _run(part, _author(part))
+
+    assert run.refusals == ()

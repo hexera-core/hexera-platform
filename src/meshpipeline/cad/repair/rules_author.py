@@ -73,6 +73,25 @@ def _history(attempts: tuple[PackageVerdict, ...]) -> RunHistory:
     return history
 
 
+def _keep_refusals(kept: list[dict], fresh: list[dict]) -> None:
+    """Add this call's refusals to the run's, ONCE EACH.
+
+    The dedup key is `(defect, reason)`, which is `RunHistory.refuse`'s own key, for its own
+    reason: the author is asked once per attempt per region, the paired-rim check is recomputed
+    from the current defects every time, and a list that grew on every ask would bury the report
+    it exists to produce. The records are passed through unchanged - this is the shape the
+    baseline's `RepairRun.refusals` carries and the corpus counts by `reason`, and a second shape
+    for the same fact would split that counting in two.
+    """
+    seen = {(record["defect"], record["reason"]) for record in kept}
+    for record in fresh:
+        key = (record["defect"], record["reason"])
+        if key in seen:
+            continue
+        seen.add(key)
+        kept.append(dict(record))
+
+
 def rules_author(shape, *, original: Measure, reserved: frozenset = frozenset(),
                  planner: RulesPlanner | None = None, budget: PackageBudget | None = None,
                  max_area_delta_mm2: float | None = None,
@@ -115,6 +134,12 @@ def rules_author(shape, *, original: Measure, reserved: frozenset = frozenset(),
     # not room to grow into; the run's own clock is the outer bound and lives in the loop.
     allowance = budget if budget is not None else PackageBudget(
         max_ops=1, timeout_s=float(rcfg.CAD_REPAIR_TIMEOUT_S), model_calls=0, deviation_mm=0.0)
+    #: EVERY REFUSAL THE RULES MADE ANYWHERE IN THIS RUN, read off the closure by the loop
+    #: (`region_loop.run_regions`) the same way `loop.py` reads a planner's `unplayable`. It lives
+    #: on the FACTORY, which is per run, and not in `author`, which is per region: a refusal is
+    #: run-level policy (filling is off for the whole run once a missing tube wall is seen), so a
+    #: per-region ledger would report it once per region or not at all.
+    refusals: list[dict] = []
 
     def author(region: Region, defects: tuple,
                attempts: tuple[PackageVerdict, ...] = ()) -> TargetPackage | None:
@@ -125,7 +150,17 @@ def rules_author(shape, *, original: Measure, reserved: frozenset = frozenset(),
             # Those defects are a person's question; proposing for them is not this author's job.
             return None
 
-        candidate = chosen.propose(tuple(defects), _history(attempts), shape=shape)
+        history = _history(attempts)
+        candidate = chosen.propose(tuple(defects), history, shape=shape)
+        # WHAT THE RULES REFUSED TO AIM AT, KEPT INSTEAD OF DISCARDED WITH THE LEDGER. The
+        # ledger above is rebuilt per call because the author is stateless, but a refusal is not
+        # feedback for the next package - it is a thing the customer is owed in the report (the
+        # paired rims of a missing bore wall above all, which used to be a silent skip inside the
+        # fill). The baseline collects exactly these off its one long-lived `RunHistory`; with
+        # this author's ledger thrown away every call, a region run reported NO refusals at all,
+        # and a published comparison with refusals on one arm and not the other is not a
+        # comparison (docs/research/public-benchmarks.md requires every row to record them).
+        _keep_refusals(refusals, history.refusals)
         if candidate is None:
             # NOTHING THE RULES CLAIM ANY MORE. Not a failure: the region is left as it arrived
             # and the run's final scan reports what is still in it. This is also how a region's
@@ -158,4 +193,8 @@ def rules_author(shape, *, original: Measure, reserved: frozenset = frozenset(),
             rationale=(f"{LABEL}: {candidate.op.name} is the narrowest catalogue operation that "
                        f"claims the worst defect this region reports"))
 
+    # THE LOOP READS THIS OFF THE CALLABLE, because the `author` seam is
+    # `(region, defects, attempts) -> package | None` and must stay that way: a model author has
+    # refusals of its own to report and gains a `refusals` attribute, not a different signature.
+    author.refusals = refusals  # type: ignore[attr-defined]
     return author

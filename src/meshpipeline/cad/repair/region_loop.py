@@ -104,6 +104,12 @@ class RegionRun:
     timings: dict = field(default_factory=dict)
     defects_before: tuple = ()
     defects_after: tuple = ()
+    #: WHAT WAS DELIBERATELY NOT AIMED AT AND WHY, in the baseline's own records
+    #: (`{"defect": ..., "reason": ..., "detail": ...}`, `plan.RunHistory.refuse`). The author
+    #: makes these, not the loop - the loop only carries them, because a refusal a customer is
+    #: owed must not depend on which driver ran, and a benchmark row that reports refusals on one
+    #: arm and silence on the other is not a comparison.
+    refusals: tuple[dict, ...] = ()
 
     @property
     def resolved(self) -> bool:
@@ -111,6 +117,7 @@ class RegionRun:
 
     def to_dict(self) -> dict:
         return {"stopped_because": self.stopped_because, "resolved": self.resolved,
+                "refusals": [dict(r) for r in self.refusals],
                 "complete_scan": bool(self.complete_scan),
                 "escalated": [int(i) for i in self.escalated],
                 "regions": [{"index": int(r.index), "located": bool(r.located),
@@ -265,6 +272,23 @@ def _walk_order(regions: tuple[Region, ...], defects) -> tuple[Region, ...]:
                         key=lambda r: (worst.get(r.index, len(_SEVERITY_RANK)), r.index)))
 
 
+def _refusals_of(author: Author) -> tuple[dict, ...]:
+    """What the author refused to aim at, if it reports such a thing.
+
+    READ OFF THE CALLABLE, exactly as `loop.py` reads a planner's `unplayable` off its planner,
+    and OPTIONAL in the same way: the `author` seam is `(region, defects, attempts) -> package`
+    and the loop must never learn which kind of author it has, so an author with nothing to say
+    here simply has no attribute and the run reports no refusals.
+
+    The deterministic author's refusals come from the choosing rules it wraps - the paired rim of
+    a missing bore wall above all - and those are a decision a customer is owed in words. They
+    reached the report on the operation-at-a-time path because that loop owns the one `RunHistory`
+    the planner writes to; on this path the author rebuilds that ledger per call, so without this
+    they were authored and thrown away.
+    """
+    return tuple(dict(record) for record in getattr(author, "refusals", ()))
+
+
 def _with_tolerance(package: TargetPackage, tolerance_mm: float) -> TargetPackage:
     """The package as its author wrote it, with the RUN'S tolerance filled into any plan item
     that did not ask for one.
@@ -345,7 +369,8 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
             stopped_because=SCAN_INCOMPLETE, complete_scan=False,
             timings=_timings(started, clock, work, (), verification_scans,
                              work.scoped_scan_count - scoped_at_start),
-            defects_before=before, defects_after=before)
+            defects_before=before, defects_after=before,
+            refusals=_refusals_of(author))
 
     regions = decompose(before, diagonal_mm=work.original.diagonal_mm)
     # THE ORDER THE BUDGET IS SPENT IN, which is not the order the regions were found in. The
@@ -517,7 +542,9 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
         escalated=tuple(escalated), stopped_because=stopped, complete_scan=work.complete_scan,
         timings=_timings(started, clock, work, tuple(packages), verification_scans,
                          work.scoped_scan_count - scoped_at_start),
-        defects_before=before, defects_after=after)
+        defects_before=before, defects_after=after,
+        # READ AT THE END, once the author has been asked everything it is going to be asked.
+        refusals=_refusals_of(author))
 
 
 def _timings(started: float, clock: Callable[[], float], session: RepairSession,
@@ -569,9 +596,13 @@ def as_repair_run(run: RegionRun, *, original: dict, final: dict,
                         f"{verdict.status} ({verdict.reason})")))
     # EVERY ESCALATION REACHES THE REPORT, in the key that already means "deliberately not
     # finished, and why" - a region queued for a person must not be a silence.
-    refusals = tuple({"refusal": "region_escalated", "region": int(verdict.region_index),
-                      "reason": verdict.reason}
-                     for verdict in run.packages if verdict.status == ESCALATED)
+    # THE AUTHOR'S OWN REFUSALS TRAVEL FIRST, unchanged, because they are the records the
+    # baseline's `RepairRun.refusals` carries and every reader downstream (the receipt, the
+    # corpus's `refusals_by_reason`) already routes on their `reason`.
+    refusals = run.refusals + tuple(
+        {"refusal": "region_escalated", "region": int(verdict.region_index),
+         "reason": verdict.reason}
+        for verdict in run.packages if verdict.status == ESCALATED)
     return RepairRun(
         shape=run.shape, verdicts=tuple(verdicts), refusals=refusals,
         defects=run.defects_after, stopped_because=run.stopped_because,
