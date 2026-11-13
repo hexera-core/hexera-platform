@@ -336,37 +336,70 @@ def declared_for(stubs: list, declared: list) -> tuple[list | None, str]:
     intake, the stubs off the coolant's own mouths. Nothing promises they come out in the same
     order, and an inlet and an outlet swapped is a case that solves and runs backwards.
 
-    Returns (None, why) when every stub cannot be named, because a partly declared set is worse
-    than the honest default: half the patches would carry the user's names and half would not.
+    Returns (None, why) when a DECLARED PORT cannot be named, because a partly declared set is
+    worse than the honest default: half the patches would carry the user's names and half would
+    not.
+
+    A MOUTH WITH NO DECLARED PORT IS NOT THAT CASE, and reading it as one cost this part its run.
+    The loop used to run over the STUBS and demand that every one of them find a declaration, so a
+    part with more mouths than declared ports could never carry the user's names at all - the one
+    unmatchable mouth threw away the matches that had already succeeded. The first real customer
+    cold plate is exactly that shape: three mouths, two declared ports, and the third mouth is the
+    one the customer had just marked "not an opening" on the stage. It came out as
+
+        the declared ports could not be matched to the mouths by position
+
+    with `inlet` sitting 0 mm from a mouth of exactly its declared 11.8 mm and `outlet_1` 0 mm from
+    one of exactly its declared 8 mm. Measured: the same declaration against the first two mouths
+    alone matches both perfectly, so neither the tolerance nor the position-less `wall` row was
+    the cause - it was the third mouth having nothing to match to.
+
+    `port_rows` has always had somewhere to put such a mouth: past the first two it cuts them as
+    walls under `mouth_N`, and says so. So the loop now runs over the DECLARATION - every declared
+    port must find a mouth, which is the half that must not be partial - and any mouth left over
+    takes that same wall default.
     """
-    rows: list = []
     if not stubs or not declared:
         return None, ""
+    #: Only a port can be matched by position. A declared `wall` carries no `near_mm` and names no
+    #: mouth; it is the outer surface, and `declared_port_names` is what reads it.
+    ports = [d for d in declared
+             if len(d.get("near_mm") or []) == 3
+             and str(d.get("type") or "").strip().lower() in ("inlet", "outlet")]
+    if not ports:
+        return None, ""
+    rows: list = [None] * len(stubs)
     used: set[int] = set()
-    for st in stubs:
-        want = 1000.0 * DECLARED_WITHIN * 2.0 * st.radius          # mm
+    for d in ports:
+        near = d["near_mm"]
         best, best_d = None, float("inf")
-        for i, d in enumerate(declared):
+        for i, st in enumerate(stubs):
             if i in used:
-                continue
-            near = d.get("near_mm") or []
-            if len(near) != 3:
                 continue
             gap = math.sqrt(sum((1000.0 * st.centroid[a] - float(near[a])) ** 2
                                 for a in range(3)))
             if gap < best_d:
                 best, best_d = i, gap
-        if best is None or best_d > want:
+        # the slack is the MATCHED mouth's own, as it always was: a wide bore may sit further from
+        # the face centroid the stage measured than a narrow one.
+        if best is None or best_d > 1000.0 * DECLARED_WITHIN * 2.0 * stubs[best].radius:
             return None, ("the declared ports could not be matched to the mouths by position, so "
                           "the mesh keeps this engine's own port names")
+        name = str(d.get("name") or "")
+        if not name:
+            return None, "a declared port has no name"
         used.add(best)
-        d = declared[best]
-        role = str(d.get("type") or "").strip().lower()
-        rows.append((str(d.get("name") or ""), role if role in ("inlet", "outlet") else "wall"))
-    if not all(n for n, _r in rows):
-        return None, "a declared port has no name"
+        rows[best] = (name, str(d.get("type") or "").strip().lower())
+    # every mouth the declaration did not claim: cut as a wall, under the name port_rows would
+    # have given it anyway, so an undeclared mouth reads the same whether or not a port was named
+    for i in range(len(stubs)):
+        if rows[i] is None:
+            rows[i] = (f"mouth_{i + 1}", "wall")
+    told = ", ".join(f"{n} ({r})" for n, r in rows if r in ("inlet", "outlet"))
+    spare = sum(1 for _n, r in rows if r == "wall")
     return rows, ("the ports are cut under the names declared at intake, matched to the mouths by "
-                  "position: " + ", ".join(f"{n} ({r})" for n, r in rows))
+                  "position: " + told
+                  + (f"; the other {spare} mouth(s) are cut as walls" if spare else ""))
 
 
 def shell_stubs(ports: list) -> list:
@@ -432,13 +465,20 @@ def port_rows(stubs: list, *, inlet: str = "coolant_in",
     if len(stubs) < 2:
         return rows, (f"{len(stubs)} mouth(s) can be opened to a block face, and a solve needs "
                       "two: one to be fed through and one to leave by")
-    first, second = ((named[0][0], named[1][0]) if named is not None and len(named) > 1
-                     else (inlet, outlet))
+    # THE TWO THIS SENTENCE IS ABOUT ARE THE TWO THAT ARE PORTS, not the first two mouths
+    # measured. They are the same thing when nothing is declared, because the default names mouth
+    # 0 the inlet and mouth 1 the outlet. Once a declaration binds names BY POSITION they need not
+    # be, and reading rows[0] and rows[1] would then put a wall mouth's name and another mouth's
+    # bore into the same sentence.
+    ends = [k for k, r in enumerate(rows) if r["type"] in ("inlet", "outlet")][:2]
+    if len(ends) < 2:
+        ends = [0, 1]
+    a, b = stubs[ends[0]], stubs[ends[1]]
+    first, second = rows[ends[0]]["name"], rows[ends[1]]["name"]
     said = (f"{first} and {second} are cut out of "
-            + (f"{stubs[0].face}" if stubs[0].face == stubs[1].face
-               else f"{stubs[0].face} and {stubs[1].face}")
-            + f", {2000.0 * stubs[0].radius:.3f} mm and {2000.0 * stubs[1].radius:.3f} mm across")
-    if stubs[0].face == stubs[1].face:
+            + (f"{a.face}" if a.face == b.face else f"{a.face} and {b.face}")
+            + f", {2000.0 * a.radius:.3f} mm and {2000.0 * b.radius:.3f} mm across")
+    if a.face == b.face:
         said += (". Both are on one face, which a renamed block face cannot express and is why "
                  "they are cut rather than renamed")
     if len(stubs) > 2:

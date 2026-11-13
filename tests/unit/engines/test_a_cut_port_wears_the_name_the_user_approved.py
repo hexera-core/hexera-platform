@@ -159,3 +159,94 @@ def test_the_driver_reads_the_declaration_and_hands_it_over():
     assert "declared_for" in src
     assert "port_declaration" in src
     assert "named=_named" in src, "and actually hands the result to port_rows"
+
+
+# #
+# a part with MORE MOUTHS than declared ports
+# #
+#: A third mouth, well away from either declared port - the shape of the first real customer cold
+#: plate, where the customer had marked sticker 3 "not an opening" on the stage.
+MOUTH_C = (0.001, 0.005, 0.002)
+
+
+@pytest.fixture
+def three_stubs():
+    got, _said = MO.stubs_for([_mouth(MOUTH_A), _mouth(MOUTH_B), _mouth(MOUTH_C)],
+                              BLOCK_LO, BLOCK_HI)
+    assert len(got) == 3
+    return got
+
+
+def test_more_mouths_than_declared_ports_still_wear_the_declared_names(three_stubs):
+    """ONE UNMATCHABLE MOUTH USED TO THROW AWAY THE MATCHES THAT HAD SUCCEEDED.
+
+    The loop ran over the STUBS and demanded every one find a declaration, so a part with more
+    mouths than declared ports could not carry the user's names at all. The first real customer
+    cold plate is that shape - three mouths, two declared ports - and it came back with
+
+        the declared ports could not be matched to the mouths by position
+
+    while `inlet` sat 0 mm from a mouth of exactly its declared bore and `outlet_1` 0 mm from
+    another. The run then meshed 260 million cells and would have been refused by patch_contract
+    for calling them coolant_in and coolant_out, which is the failure this whole file is about.
+
+    Every DECLARED PORT must still find a mouth. A mouth with no declared port is a different
+    thing, and `port_rows` has always had somewhere to put it.
+    """
+    rows, why = MO.declared_for(three_stubs, DECLARED)
+    assert rows is not None, why
+    assert [r for r in rows if r[1] == "inlet"] == [("inlet", "inlet")]
+    assert [r for r in rows if r[1] == "outlet"] == [("outlet", "outlet")]
+    assert sum(1 for _n, r in rows if r == "wall") == 1, rows
+    assert "matched to the mouths by position" in why
+
+
+def test_the_spare_mouth_is_cut_as_a_wall_under_the_name_it_would_have_had(three_stubs):
+    """And it reads the same as it would with nothing declared at all, so an undeclared mouth is
+    not a new kind of thing."""
+    rows, _why = MO.declared_for(three_stubs, DECLARED)
+    spare = [n for n, r in rows if r == "wall"]
+    assert len(spare) == 1
+    assert spare[0].startswith("mouth_"), spare
+
+    plain, _ = MO.port_rows(three_stubs)
+    named, _ = MO.port_rows(three_stubs, named=rows)
+    assert [p["name"] for p in plain if p["type"] == "wall"] == spare, (
+        "a mouth nobody declared should be named the same either way")
+    assert {p["type"] for p in named} == {"inlet", "outlet", "wall"}
+
+
+def test_the_sentence_names_the_mouths_that_are_actually_the_ports(three_stubs):
+    """`port_rows` used to build its sentence from rows[0] and rows[1]. That is the same two
+    mouths only while the defaults are in use; once a declaration binds names BY POSITION a wall
+    mouth can be first, and the sentence would then pair its name with another mouth's bore."""
+    rows, _why = MO.declared_for(three_stubs, DECLARED)
+    # put the undeclared mouth first, which position matching is free to do
+    order = sorted(range(3), key=lambda k: rows[k][1] != "wall")
+    shuffled = [three_stubs[k] for k in order]
+    shuffled_rows, _ = MO.declared_for(shuffled, DECLARED)
+    assert shuffled_rows[0][1] == "wall", shuffled_rows
+
+    _patches, said = MO.port_rows(shuffled, named=shuffled_rows)
+    assert "inlet and outlet are cut out of" in said, said
+    assert "mouth_" not in said.split(" are cut out of")[0], said
+
+
+def test_a_declaration_that_does_not_fit_the_geometry_is_still_refused(three_stubs):
+    """THE CONTROL. Loosening "every mouth" to "every declared port" must not loosen the guard
+    into naming ports by nothing at all: a declaration whose positions match no mouth still has
+    to fall back to this engine's own names rather than bind them wrongly."""
+    elsewhere = [{**d, "near_mm": [900, 900, 900]} for d in DECLARED]
+    rows, why = MO.declared_for(three_stubs, elsewhere)
+    assert rows is None
+    assert "could not be matched" in why
+
+
+def test_more_declared_ports_than_mouths_is_still_refused(three_stubs):
+    """And the other direction: a declaration naming more ports than the part has mouths cannot
+    be satisfied, and must say so rather than name the ones it can."""
+    extra = [*DECLARED, {"name": "outlet_2", "type": "outlet", "near_mm": [7, 1, 2],
+                         "diameter_mm": 0.9}]
+    rows, why = MO.declared_for(three_stubs[:2], extra)
+    assert rows is None
+    assert "could not be matched" in why
