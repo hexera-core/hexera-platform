@@ -758,13 +758,16 @@ have compared the artifact's browser against the checkout's backend"
     docker rm -f -v "${UI_C}" >/dev/null 2>&1
   elif UI_BROWSER_BASE_URL="http://${UI_BROWSER_HOST:-127.0.0.1}:${UI_PORT}" UI_EVENT_VOCABULARY="${UI_VOCAB}" \
        CHROME_CDP_URL="${UI_CDP}" \
-       "${GATE_PY}" -m pytest -q -rs -p no:cacheprovider tests/ui \
+       "${GATE_PY}" -m pytest -q -rsfE -p no:cacheprovider tests/ui \
          >"${WORK}/ui-browser.log" 2>&1; then
     record "UI behaviour + real-browser smoke (from the app image)" passed 1 \
       "$(tail -1 "${WORK}/ui-browser.log")  [Mounts=[] Binds=null] [${UI_BROWSER_NOTE}]"
   else
+    # The scratch log dies with a CI runner, so the failing test ids go into the record and the
+    # failure report into the job log - otherwise a red gate names only a pass/fail count.
     record "UI behaviour + real-browser smoke (from the app image)" failed 1 \
-      "$(tail -3 "${WORK}/ui-browser.log" | tr '\n' ' ')"
+      "$(grep -E '^(FAILED|ERROR) ' "${WORK}/ui-browser.log" | head -10 | tr '\n' ' ')$(tail -1 "${WORK}/ui-browser.log")  [${UI_BROWSER_NOTE}]"
+    sed -n '/^=\+ \(FAILURES\|ERRORS\) =\+$/,$p' "${WORK}/ui-browser.log" | head -200
     KEEP_WORK=1
   fi
   docker rm -f -v "${UI_C}" >/dev/null 2>&1
