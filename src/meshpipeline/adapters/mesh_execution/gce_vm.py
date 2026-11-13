@@ -176,6 +176,18 @@ MD=http://metadata.google.internal/computeMetadata/v1
 get() { curl -sf -H Metadata-Flavor:Google "$MD/$1"; }
 IMG=$(get instance/attributes/mesh-image)
 mkdir -p /mnt/stateful_partition/work /mnt/stateful_partition/dockercfg
+# THE CONTAINER RUNS AS uid 1000 AND THIS DIRECTORY IS ITS TMPDIR (see the docker run below).
+# startup-script runs as root, so without this the mount arrives root-owned 0755 and nothing in
+# the container can write to it. Python's tempfile hides that - gettempdir() tests TMPDIR, finds
+# it unwritable and silently falls back to /tmp - so every serial mesh this route has ever run
+# looked fine. Open MPI does not fall back: it puts its session directory under TMPDIR and fails
+# hard, so the FIRST parallel conjugate mesh on this route died with "orte_session_dir failed /
+# A call to mkdir was unable to create the desired directory: /work/ompi.<host>.1000" and
+# cartesianMesh exited 1 after 0s, with preparePar having already written processor0 and
+# processor1. Measured on the mesh image both ways: root-owned 0755 reproduces that exact error,
+# 1777 starts both ranks. 1777 and not a chown because the image's user id is the image's to
+# choose, and this is a scratch directory - /tmp's own mode, for the same reason.
+chmod 1777 /mnt/stateful_partition/work
 export HOME=/mnt/stateful_partition/dockercfg
 REG=$(echo "$IMG" | cut -d/ -f1)
 docker-credential-gcr configure-docker --registries="$REG" >/dev/null 2>&1 || true
