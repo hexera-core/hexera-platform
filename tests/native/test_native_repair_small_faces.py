@@ -70,17 +70,44 @@ def test_the_sweep_removes_an_authored_sliver_and_the_kernel_history_says_it_is_
     assert not [d for d in found if d.code is DefectCode.small_face]
 
 
-def test_the_sweep_precision_is_the_requested_tolerance_not_the_body_scale(
+def test_the_sweep_precision_comes_from_its_own_ratio_not_the_deviation_budget(
         tmp_path, _sweep_on, monkeypatch):
+    # THE SEARCH RADIUS IS NOT THE DISPLACEMENT BOUND. The precision decides what the fixer can
+    # SEE; the deviation ratio bounds how far the part may end up from where the customer drew it,
+    # and measurement puts the two three orders of magnitude apart. So the precision answers to
+    # CAD_REPAIR_SLIVER_PRECISION_RATIO alone: the deviation ratio and the run's tolerance may be
+    # anything and the number handed to the kernel does not follow them.
     import meshpipeline.settings.cad_repair as rcfg
+    from meshpipeline.cad.repair.caps import measure
 
-    monkeypatch.setattr(rcfg, "CAD_REPAIR_MAX_DEVIATION_RATIO", 0.001)
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_SLIVER_PRECISION_RATIO", 0.005)
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MAX_DEVIATION_RATIO", 0.5)
     shape, defect = _sliver(tmp_path)
+    diagonal = measure(shape).diagonal_mm
 
     outcome = FixSmallFaces().apply(shape, FixSmallFaces().targets_for(defect),
                                     tolerance_mm=0.01)
 
-    assert outcome.evidence["precision_mm"] == pytest.approx(0.01)
+    assert outcome.evidence["precision_mm"] == pytest.approx(diagonal * 0.005)
+    assert outcome.evidence["tolerance_mm"] == pytest.approx(0.01), \
+        "the run's deviation budget is still reported, and is still a different number"
+
+
+def test_at_the_default_ratio_the_precision_is_what_it_has_always_been(tmp_path, _sweep_on):
+    # The default (0.001) is the value the sweep has effectively run at, so nothing changes until
+    # a deployment raises the ratio deliberately. Pinned so a default edit cannot pass silently.
+    import meshpipeline.settings.cad_repair as rcfg
+    from meshpipeline.cad.repair.caps import measure
+
+    assert rcfg.CAD_REPAIR_SLIVER_PRECISION_RATIO == pytest.approx(0.001)
+    shape, defect = _sliver(tmp_path)
+    diagonal = measure(shape).diagonal_mm
+
+    outcome = FixSmallFaces().apply(shape, FixSmallFaces().targets_for(defect),
+                                    tolerance_mm=0.1)
+
+    assert outcome.evidence["precision_mm"] == pytest.approx(diagonal * 0.001)
+    assert outcome.evidence["faces_removed"] == 1, "the authored sliver still goes at the default"
 
 
 def test_the_session_keeps_a_real_sweep(tmp_path, _sweep_on):

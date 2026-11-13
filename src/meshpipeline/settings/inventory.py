@@ -403,6 +403,8 @@ INVENTORY: list[Group] = [
                help="heal self-intersections by rebuilding only the faces the kernel's analysis names, leaving the rest of the shape untouched"),
         EnvVar("CAD_REPAIR_FIX_SMALL_FACES", "false", kind="bool", exposure="internal",
                help="sweep away sliver faces left by a Boolean that just missed; every removal is re-measured, declared and refused if undeclared - narrower consent than CAD_REPAIR_ALLOW_FACE_REMOVAL, which waives the face check run-wide"),
+        EnvVar("CAD_REPAIR_SLIVER_PRECISION_RATIO", "0.001", kind="float", exposure="internal",
+               help="search radius the sliver sweep hands the kernel, as a fraction of the part diagonal; a precision is the radius searched, not the distance moved - measured, a sweep at 0.005 moves area by under 1e-04 of the part - and the caps still judge the result"),
         EnvVar("CAD_REPAIR_MAX_HOLE_SPAN_RATIO", "0.75", kind="float", exposure="internal",
                help="largest patchable hole, as a fraction of the part diagonal; past this it is a missing wall"),
         EnvVar("CAD_REPAIR_MAX_OPS", "6", kind="int", exposure="internal",

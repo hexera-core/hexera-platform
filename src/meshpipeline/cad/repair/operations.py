@@ -466,12 +466,16 @@ class FixSmallFaces:
 
     THE DETECTION SCALE. The fixer finds a strip by its width against the precision it is given.
     A sliver is sliver-sized relative to the PART (the localiser's criterion is an area fraction),
-    so a fixed precision misses every strip on a large part. The sweep therefore detects up to
-    `diagonal x CAD_REPAIR_MAX_DEVIATION_RATIO` - merging a strip moves the boundary by about the
-    strip's width, and that ratio is precisely how far this deployment has said a repair may move
-    the surface. The kernel may still inflate a tolerance past CAD_REPAIR_MAX_TOLERANCE_MM to make
-    a merge close (it does not obey SetMaxTolerance here, measured); the cumulative cap then rolls
-    the attempt back, which is the right verdict on a merge that needed a geometry lie.
+    so a fixed millimetre precision misses every strip on a large part. The sweep therefore
+    searches up to `diagonal x CAD_REPAIR_SLIVER_PRECISION_RATIO` - ITS OWN SETTING, not the
+    deviation ceiling it was once derived from. A PRECISION IS A SEARCH RADIUS, NOT A DISPLACEMENT:
+    measured on corpus parts, a sweep at 0.005 of the diagonal removed every flagged sliver while
+    moving the surface area by under 1e-04 of the part and the diagonal not at all, three orders of
+    magnitude inside the deviation budget. The argument for the two being one number is spelled out
+    and retired at the setting. The kernel may still inflate a tolerance past
+    CAD_REPAIR_MAX_TOLERANCE_MM to make a merge close (it does not obey SetMaxTolerance here,
+    measured); the cumulative cap then rolls the attempt back, which is the right verdict on a
+    merge that needed a geometry lie - and is why a wider search radius is not a wider licence.
 
     AREA IS DELIBERATELY NOT DECLARED. Removing a strip extends the neighbouring faces to close
     the gap, so the net surface change is not the sliver's own area and has either sign; each
@@ -540,9 +544,15 @@ class FixSmallFaces:
                     "faces_targeted": len(targets)})
 
         diagonal = _diagonal(shape)
-        # The fixer's precision is a removal width, not a whole-body movement allowance. Scaling
-        # it by the part diagonal turns a conservative 0.1 mm sweep into millimetres on a vehicle.
-        precision = float(tolerance_mm)
+        # THE SEARCH RADIUS, FROM ITS OWN SETTING. Not `tolerance_mm`, which is the run's
+        # deviation budget: the fixer compares this against a candidate strip's WIDTH to decide
+        # whether it can see it at all, and what the merge then MOVES is a different and far
+        # smaller number (measured; argued at CAD_REPAIR_SLIVER_PRECISION_RATIO). Scaled by the
+        # part because a sliver is sliver-sized relative to the part, floored at the run's
+        # tolerance so a tiny part is still searched at least as widely as before. Whether the
+        # result is acceptable is still the caps' answer and not this operation's.
+        precision = max(float(tolerance_mm),
+                        float(diagonal) * rcfg.CAD_REPAIR_SLIVER_PRECISION_RATIO)
         fixer = ShapeFix_FixSmallFace()
         fixer.Init(shape)
         fixer.SetPrecision(precision)

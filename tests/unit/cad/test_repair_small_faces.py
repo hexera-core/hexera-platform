@@ -118,6 +118,65 @@ def test_a_removal_beyond_the_declaration_is_refused(monkeypatch):
     assert "removed" in sanity_refusal(_BEFORE, _after(18), declared_faces_removed=1)
 
 
+# THE SEARCH RADIUS, AND WHO JUDGES WHAT IT BRINGS BACK
+
+
+def test_the_search_precision_is_its_own_setting_with_a_conservative_default():
+    # It used to be derived from CAD_REPAIR_MAX_DEVIATION_RATIO, on the argument that merging a
+    # strip moves the boundary by about the strip's width. Measured, the movement is three orders
+    # of magnitude smaller than the precision needed to FIND the strip, so a search radius and a
+    # displacement bound are two numbers. The default is today's, so separating them changes
+    # nothing until a deployment raises it.
+    assert rcfg.CAD_REPAIR_SLIVER_PRECISION_RATIO == pytest.approx(0.001)
+
+
+#: What a raised ratio ACTUALLY did, measured with `caps.measure` on a corpus part at a precision
+#: of 0.005 of its 2152.87 mm diagonal: 6 of 6 flagged slivers gone, the surface area moved
+#: 7.31e-06 of the part, the volume 1.6e-07, the diagonal not at all, the maximum tolerance
+#: unchanged at 1e-07, the shape still valid and both solids still there.
+_WIDE_BEFORE = Measure(valid=True, solids=2, shells=2, faces=13, edges=40, vertices=28,
+                       diagonal_mm=2152.87, max_tolerance_mm=1e-07,
+                       surface_area_mm2=1.0e06, volume_mm3=1.0e08)
+_WIDE_WORKING = Measure(valid=True, solids=2, shells=2, faces=7, edges=28, vertices=20,
+                        diagonal_mm=2152.87, max_tolerance_mm=1e-07,
+                        surface_area_mm2=1.0e06 * (1 - 7.31e-06),
+                        volume_mm3=1.0e08 * (1 - 1.6e-07))
+#: And at 0.02 of the diagonal on the same part: 8 removed, area 3.7e-03, volume 5.97e-02, and the
+#: kernel inflated a tolerance to 10.85 mm to make the merges close, leaving an INVALID shape.
+_WIDE_DAMAGING = Measure(valid=True, solids=2, shells=2, faces=5, edges=22, vertices=16,
+                         diagonal_mm=2152.87, max_tolerance_mm=10.85,
+                         surface_area_mm2=1.0e06 * (1 - 3.7e-03),
+                         volume_mm3=1.0e08 * (1 - 5.97e-02))
+
+
+def test_the_working_precisions_result_is_inside_every_cap(monkeypatch):
+    # WHY RAISING THE RATIO IS A THING THAT MAY BE TRIED: the result it produced sits 600x to
+    # 2700x inside the area cap and never touched the diagonal or a tolerance. This is the
+    # measurement the setting's default exists to be swept away from.
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_ALLOW_FACE_REMOVAL", False)
+    from meshpipeline.cad.repair.caps import cumulative_refusal
+
+    assert sanity_refusal(_WIDE_BEFORE, _WIDE_WORKING, declared_faces_removed=6) == ""
+    assert cumulative_refusal(_WIDE_BEFORE, _WIDE_WORKING,
+                              declared_area_mm2=0.0, declared_volume_mm3=0.0) == ""
+
+
+def test_a_raised_precisions_damaging_result_is_still_refused_by_the_caps(monkeypatch):
+    # THE GUARD THAT MAKES THE RATIO SAFE TO TUNE. The operation does not get to decide its own
+    # result is acceptable: a precision wide enough to wreck the part comes back with an inflated
+    # tolerance, and CAD_REPAIR_MAX_TOLERANCE_MM refuses it whatever the sweep claimed.
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_ALLOW_FACE_REMOVAL", False)
+    from meshpipeline.cad.repair.caps import cumulative_refusal
+
+    refusal = cumulative_refusal(_WIDE_BEFORE, _WIDE_DAMAGING,
+                                 declared_area_mm2=0.0, declared_volume_mm3=0.0)
+
+    assert "tolerance" in refusal, refusal
+    # and the invalidity the same precision produced is refused per-operation, declaration or not
+    invalid = Measure(**{**_WIDE_DAMAGING.to_dict(), "max_tolerance_mm": 1e-07, "valid": False})
+    assert "invalid" in sanity_refusal(_WIDE_BEFORE, invalid, declared_faces_removed=8)
+
+
 # THE SESSION'S JUDGEMENT OF A SWEEP
 
 

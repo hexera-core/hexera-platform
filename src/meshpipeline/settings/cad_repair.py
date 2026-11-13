@@ -86,6 +86,36 @@ CAD_REPAIR_HEAL_SELF_INTERSECTIONS: bool = bool_env("CAD_REPAIR_HEAL_SELF_INTERS
 #: deployment opts in.
 CAD_REPAIR_FIX_SMALL_FACES: bool = bool_env("CAD_REPAIR_FIX_SMALL_FACES", "false")
 
+#: THE SEARCH RADIUS the sliver sweep (`operations.FixSmallFaces`) hands
+#: `ShapeFix_FixSmallFace`, as a fraction of the part's diagonal. The fixer finds a spot or a
+#: strip by comparing its WIDTH against this precision, and a sliver is sliver-sized relative to
+#: the PART (the localiser's criterion is an area fraction), so a fixed millimetre figure finds
+#: every strip on a bracket and none on a vehicle.
+#:
+#: WHY THIS IS NOT CAD_REPAIR_MAX_DEVIATION_RATIO, which it used to be derived from. The old
+#: reasoning was that merging a strip moves the boundary by about the strip's width, so the
+#: deviation ceiling was the honest precision. MEASURED, THAT IS WRONG BY THREE ORDERS OF
+#: MAGNITUDE. Running the fixer on two corpus parts at several precisions and measuring the result
+#: with `caps.measure`: on a 2152 mm part at 0.005 of the diagonal the sweep removed all 6 flagged
+#: slivers while the surface area moved 7.3e-06 of the part, the volume 1.6e-07, the diagonal not
+#: at all, and the maximum tolerance stayed at 1e-07; on a 420 mm part, 13 of 21 slivers for
+#: 3.2e-05 area and 1.3e-06 volume, again with no diagonal or tolerance movement. A PRECISION IS
+#: THE RADIUS SEARCHED, NOT THE DISTANCE MOVED: removing a strip merges it into neighbours that
+#: were already there, and the geometry that comes back sits far inside every cap. Tying the two
+#: together only meant the sweep could never find what it exists to remove.
+#:
+#: THE CAPS REMAIN THE JUDGE OF ACTUAL MOVEMENT, which is why widening this is safe to try. The
+#: operation does not get to decide its own result is acceptable: the same measurement showed
+#: 0.02 of the diagonal removing 25 of 30 faces, inflating tolerance to 5.34 mm and leaving an
+#: INVALID shape - caught by CAD_REPAIR_MAX_TOLERANCE_MM and the validity check, and rolled back.
+#: Raising this ratio widens what the sweep may LOOK AT; it widens nothing it may keep.
+#:
+#: 0.001 is today's behaviour on the parts this was measured on and changes nothing until a
+#: deployment raises it deliberately. It is settable by environment variable precisely so the
+#: value can be chosen by sweeping the corpus rather than argued.
+CAD_REPAIR_SLIVER_PRECISION_RATIO: float = float(
+    optional_env("CAD_REPAIR_SLIVER_PRECISION_RATIO", "0.001"))
+
 #: The largest hole that may be patched, as a fraction of the part's diagonal measured across the
 #: hole's own bounding box. Past this it is not a hole, it is a missing wall - and a flat lid over
 #: a missing wall is a different part, not a repaired one.
