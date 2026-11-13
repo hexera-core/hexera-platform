@@ -11,33 +11,40 @@
    away. Nothing in the conversation is rebuilt or lost: the same #stage and the
    same input bar simply take the drawer's column.
 
-   The grid: the header is an overlay - its two chips are the only things it ever
-   holds (the drawer fold once a mesh owns the stage, the readiness chip when the
-   link drops), so it floats over the page instead of spending a row of the window
-   on itself. The drawer column holds the upload bar, the stage and the input bar
-   top to bottom; the workbench column holds the viewer at full height. Folding
-   the drawer collapses its column to zero.
+   The grid: once a viewer owns the workbench the header stops spending a row on
+   itself - its one or two chips (the drawer fold, the readiness chip when the
+   link drops) float over the page instead. The drawer column holds the upload
+   bar, the stage and the input bar top to bottom; the workbench column holds the
+   viewer at full height. Folding the drawer collapses its column to zero.
 / */
 :root{--drawer-w:min(440px,38vw)}
 
 #app{position:relative}
-#app>header{position:absolute;z-index:20;inset:0;height:auto;padding:10px 12px;
+/* the header only pays for itself while a viewer owns the page: then it overlays instead of
+   spending a row, its wordmark steps aside so nothing floats over the upload bar, and the
+   one or two chips it can hold float clear of the canvas */
+#app.wb>header{position:absolute;z-index:20;inset:0;height:auto;padding:10px 12px;
   border-bottom:0;background:transparent;pointer-events:none}
-#app>header .chip{pointer-events:auto}
-/* THE FOLD IS A SEAM TAB, not a corner chip: it rides the drawer/workbench boundary at
-   mid-height, where it can never cover the upload bar or the viewer's own controls. The
-   intake's resizable split puts the seam at --intake-w and already owns a drag grip there,
-   so the tab tracks it and sits above it; collapsed, the tab hugs the left edge; stacked
-   narrow, there is no vertical seam and it rides the right edge instead. */
-#app.wb #wb-toggle{position:absolute;top:50%;left:var(--drawer-w);transform:translate(-50%,-50%);
-  z-index:35}
+#app.wb>header .chip{pointer-events:auto}
+#app.wb>header .brand{display:none}
+/* THE FOLD IS AN EDGE TAB, not a chip: a slim vertical pull on the drawer's edge, kept wholly
+   inside the drawer column while it is open so no click meant for the canvas can land on it
+   (the stage's own tests click the part's edge, which can project beside the seam). It is
+   narrow so it only covers the conversation's padding gutter, and it ends shy of the seam so
+   the intake's drag grip keeps its 10 px strip. Folded, the tab rides the workbench's left
+   edge - the only spot the fold-out can live; stacked narrow it rides the right edge. */
+#app.wb #wb-toggle{position:absolute;top:50%;left:var(--drawer-w);z-index:35;
+  transform:translate(calc(-100% - 2px),-50%);
+  writing-mode:vertical-rl;height:auto;padding:12px 5px;border-right:0;border-radius:8px 0 0 8px}
 #app.wb.intake #wb-toggle{left:var(--intake-w,33.333%)}
-#app.wb.wb-collapsed #wb-toggle{left:0;transform:translate(0,-50%)}
+#app.wb.wb-collapsed #wb-toggle{left:0;transform:translate(0,-50%);
+  border-right:1px solid var(--border);border-left:0;border-radius:0 8px 8px 0}
 @media(max-width:900px){
-  #app.wb #wb-toggle{left:auto;right:0;transform:translate(0,-50%)}
+  #app.wb #wb-toggle{left:auto;right:0;transform:translate(0,-50%);
+    border-right:0;border-left:1px solid var(--border);border-radius:8px 0 0 8px}
 }
 /* a notice still drops in below the floating chips, the way it used to sit below the bar */
-#app>#notice.show{margin-top:48px}
+#app.wb>#notice.show{margin-top:48px}
 
 #app.wb{display:grid;
   grid-template-columns:var(--drawer-w) minmax(0,1fr);
