@@ -139,6 +139,22 @@ def test_the_stage_kind_replaces_any_other_word_for_the_same_purpose():
                            ("internal_cfd", "fluid-domain"))[0]["input_kind"] == "fluid-domain"
 
 
+def test_a_flat_structural_part_is_kept_over_the_fea_stage_sentence(monkeypatch):
+    # the FEA stage always says "solid-body"; a 2D plane-stress request is a real input it cannot say
+    args = {"selected_engine": "gmsh", "purpose": "structural", "input_kind": "planar-domain"}
+    assert stage_part_kind(dict(args), ("structural", "solid-body")) == (args, "")
+    st, ex = _executor(monkeypatch, engine="gmsh", declared=("structural", "solid-body"))
+    res, out = _preview(ex, selected_engine="gmsh", purpose="structural", input_kind="planar-domain",
+                        dimensionality="2D", patches=[], engine_params={"element_order": "2"})
+    assert out["verdict"] == "supported", out
+    assert st.pending["canonical"]["input_kind"] == "planar-domain"
+    assert "as the user confirmed on the geometry stage" not in res.content
+    # every other word for a structural part still becomes the part (fea_part_kind runs first)
+    for kind in ("body-surface", "solid-assembly", "fluid-domain"):
+        out_args = ex_mod.fea_part_kind({"purpose": "structural", "input_kind": kind})
+        assert stage_part_kind(out_args, ("structural", "solid-body"))[0]["input_kind"] == "solid-body"
+
+
 def test_a_real_refusal_stands():
     # a CAD solid of the PART for internal flow: Gmsh needs the fluid itself, whatever it is called
     args = {"selected_engine": "gmsh", "purpose": "internal_cfd", "input_kind": "solid-body"}

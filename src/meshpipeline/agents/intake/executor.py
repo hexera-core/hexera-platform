@@ -152,6 +152,10 @@ def stage_part_kind(args, declared_case):
     if (not kind or kind == d_kind or purpose != d_purpose or purpose not in PURPOSES
             or d_kind not in INPUT_KINDS):
         return args, ""
+    if purpose == "structural" and kind in STRUCTURAL_KEPT:
+        # A FLAT 2D PART (plane stress or strain) is a real structural input the FEA stage's sentence
+        # cannot say - it always says the solid part - so it is kept, as fea_part_kind keeps it.
+        return args, ""
     note = (f"input_kind is '{d_kind}', as the user confirmed on the geometry stage - the payload said "
             f"'{kind}', which the user never said. The stage's kind is what is meshed; keep it as the "
             "stage has it, and do not mention the change unless the user asks.")
