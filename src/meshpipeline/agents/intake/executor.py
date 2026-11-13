@@ -126,40 +126,35 @@ def _payload_engine(args: dict) -> str:
     return ""
 
 
-def stage_part_kind(args, declared_case, form: str = ""):
-    """THE INPUT KIND THE USER CONFIRMED ON THE STAGE, when the model's own word for it would be
-    refused. (args, note): the arguments, and a line for the model when the kind was replaced.
+def stage_part_kind(args, declared_case):
+    """THE INPUT KIND THE USER CONFIRMED ON THE STAGE, over any other word the model wrote for it.
+    (args, note): the arguments, and a line for the model when the kind was replaced.
 
     The stage's sentence says what the file is ("input_kind fluid-domain; the fluid flows through
     it") and the user clicked it; declared_case reads it back, and is None once the user restated
-    what the file is or how the fluid moves in the chat. While it stands, a different kind in the
-    payload is the model's word, not the user's - and on the engines where the two differ it refused
-    a valid run: snappyHexMesh or cfMesh with "fluid-domain" for a body the air flows around, Gmsh
-    with "solid-body" for a CAD solid of the fluid itself, the multi-region meshers with
-    "solid-body" for a confirmed assembly. Only that case is changed: the same purpose as the
-    stage's, an engine that refuses the model's kind and takes the confirmed one. A payload the gate
-    already admits is never touched, and a kind the engine cannot take either way is still refused
-    with its real reason."""
+    what the file is or how the fluid moves in the chat. While it stands and the payload has the
+    stage's purpose, a different kind is the model's word, not the user's, and the stage wins
+    ALWAYS. Where the gate refused the model's word it refused a valid run (snappyHexMesh or cfMesh
+    with "fluid-domain" for a body the air flows around, Gmsh with "solid-body" for a CAD solid of
+    the fluid itself, the multi-region meshers with "solid-body" for a confirmed assembly). Where
+    the gate accepted it, it was worse: Gmsh took "body-surface" for a confirmed fluid domain and
+    would build a far-field box around the fluid box, and "fluid-domain" for a confirmed part and
+    would mesh the metal as the fluid - with nothing said. A kind the engine cannot take as
+    confirmed is still refused, with its real reason. A different purpose is never touched here: a
+    change of analysis may be said in words the restate check does not catch."""
     if not isinstance(args, dict) or not declared_case:
         return args, ""
-    from meshpipeline.engines.purposes import INPUT_KINDS, PURPOSES, is_compatible
-    from meshpipeline.engines.registry import engine_names, get_spec
+    from meshpipeline.engines.purposes import INPUT_KINDS, PURPOSES
 
     d_purpose, d_kind = (tuple(declared_case) + ("", ""))[:2]
     purpose = str(args.get("purpose") or "").strip()
     kind = str(args.get("input_kind") or "").strip()
-    eng = _payload_engine(args)
     if (not kind or kind == d_kind or purpose != d_purpose or purpose not in PURPOSES
-            or d_kind not in INPUT_KINDS or eng not in engine_names()):
-        return args, ""
-    spec = get_spec(eng)
-    if kind in INPUT_KINDS and is_compatible(spec, purpose, kind, form=form):
-        return args, ""
-    if not is_compatible(spec, purpose, d_kind, form=form):
+            or d_kind not in INPUT_KINDS):
         return args, ""
     note = (f"input_kind is '{d_kind}', as the user confirmed on the geometry stage - the payload said "
-            f"'{kind}', which the user never said and the selected engine cannot mesh for this purpose. "
-            "Keep it as the stage has it; do not mention the change unless the user asks.")
+            f"'{kind}', which the user never said. The stage's kind is what is meshed; keep it as the "
+            "stage has it, and do not mention the change unless the user asks.")
     return {**args, "input_kind": d_kind}, note
 
 
@@ -443,7 +438,7 @@ class IntakeToolExecutor:
         if tool in ("preview_selected_admission", "submit_requirements"):
             args = engine_param_words(args)
             if st.declared_case:
-                args, _kind_note = stage_part_kind(args, st.declared_case, self._geometry_form())
+                args, _kind_note = stage_part_kind(args, st.declared_case)
         # THE DECLARED PATCHES, at the same boundary and for the same reason: a name a person typed
         # ("car wall") becomes the spelling a mesher can write ("car_wall"), a name a mesher keeps
         # for itself ("outer") becomes the user's own, a boundary word becomes the role it means

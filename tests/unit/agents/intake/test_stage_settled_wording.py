@@ -78,15 +78,20 @@ def test_a_kind_the_stage_settled_is_not_refused_for_the_models_word(monkeypatch
     assert "as the user confirmed on the geometry stage" in res.content
 
 
-def test_the_submission_reads_the_same_kind_so_the_token_matches(monkeypatch):
-    st, ex = _executor(monkeypatch, engine="snappy", declared=("external_cfd", "solid-body"))
-    _res, out = _preview(ex, selected_engine="snappy", purpose="external_cfd", input_kind="fluid-domain",
-                         dimensionality="3D", patches=EXTERNAL, engine_params={})
+@pytest.mark.parametrize("engine,declared,model_kind,params", [
+    ("snappy", ("external_cfd", "solid-body"), "fluid-domain", {}),        # the gate refused the word
+    ("gmsh", ("external_cfd", "fluid-domain"), "body-surface", {"element_order": "1"}),  # it accepted it
+])
+def test_the_submission_reads_the_same_kind_so_the_token_matches(monkeypatch, engine, declared,
+                                                                 model_kind, params):
+    st, ex = _executor(monkeypatch, engine=engine, declared=declared)
+    _res, out = _preview(ex, selected_engine=engine, purpose="external_cfd", input_kind=model_kind,
+                         dimensionality="3D", patches=EXTERNAL, engine_params=params)
     assert out["verdict"] == "supported", out
-    assert st.pending["canonical"]["input_kind"] == "solid-body"
+    assert st.pending["canonical"]["input_kind"] == declared[1]
     sub = asyncio.run(ex.run("submit_requirements", {
-        "mesh_engine": "snappy", "purpose": "external_cfd", "input_kind": "fluid-domain",
-        "dimensionality": "3D", "patches": EXTERNAL, "engine_params": {},
+        "mesh_engine": engine, "purpose": "external_cfd", "input_kind": model_kind,
+        "dimensionality": "3D", "patches": EXTERNAL, "engine_params": params,
         "engine_source": "suggested_confirmed", "domain": "car external aerodynamics",
         "request_txt": "External aerodynamics of the uploaded car body in a far-field box, one wall "
                        "patch for the car and one far field, a full 3D mesh at the standard detail.",
@@ -97,23 +102,52 @@ def test_the_submission_reads_the_same_kind_so_the_token_matches(monkeypatch):
     assert sub.accepted, sub.content
 
 
-def test_a_kind_the_engine_takes_is_never_replaced():
-    # the model's word passes: nothing is changed, whatever the stage said
-    args = {"selected_engine": "snappy", "purpose": "external_cfd", "input_kind": "body-surface"}
-    assert stage_part_kind(dict(args), ("external_cfd", "solid-body"), "cad") == (args, "")
-    args = {"selected_engine": "snappy", "purpose": "internal_cfd", "input_kind": "solid-body"}
-    assert stage_part_kind(dict(args), ("internal_cfd", "fluid-domain"), "cad") == (args, "")
+# THE STAGE WINS ALWAYS: a word the gate would accept is replaced too, because it meshes the wrong thing
+@pytest.mark.parametrize("declared,model_kind,patches", [
+    # the stage confirmed the file IS the fluid around the body; "body-surface" passes on Gmsh, which
+    # would then build a far-field box around the fluid box
+    (("external_cfd", "fluid-domain"), "body-surface", EXTERNAL),
+    # the stage confirmed the file is the PART (the metal, flow through its bore); "fluid-domain"
+    # passes on Gmsh, which would then mesh the metal as the fluid
+    (("internal_cfd", "solid-body"), "fluid-domain", INTERNAL),
+])
+def test_a_word_the_gate_accepts_still_gives_way_to_the_stage(monkeypatch, declared, model_kind, patches):
+    purpose, kind = declared
+    before = preview_admission("gmsh", purpose, model_kind, dimensionality="3D", patches=patches,
+                               engine_params={"element_order": "1"}, geometry_form="cad")
+    assert before["verdict"] == "supported", before          # the reproduction: the wrong mesh admitted
+    st, ex = _executor(monkeypatch, engine="gmsh", declared=declared)
+    res, out = _preview(ex, selected_engine="gmsh", purpose=purpose, input_kind=model_kind,
+                        dimensionality="3D", patches=patches, engine_params={"element_order": "1"})
+    assert "as the user confirmed on the geometry stage" in res.content
+    if out["verdict"] == "supported":
+        assert st.pending["canonical"]["input_kind"] == kind
+    else:
+        # the confirmed kind is one Gmsh cannot take for this flow: refused for the real reason,
+        # never meshed as the model's word
+        assert out["verdict"] == "impossible" and st.pending is None
+        assert st.admission_refusal["preserved_declared_values"]["input_kind"] == kind
+
+
+def test_the_stage_kind_replaces_any_other_word_for_the_same_purpose():
+    for model_kind in ("body-surface", "fluid-domain", "solid-assembly", "planar-domain", "wing"):
+        args = {"selected_engine": "snappy", "purpose": "external_cfd", "input_kind": model_kind}
+        out, note = stage_part_kind(dict(args), ("external_cfd", "solid-body"))
+        assert out["input_kind"] == "solid-body" and note, model_kind
+    # no engine named makes no difference: the stage is the user's word whatever meshes it
+    assert stage_part_kind({"purpose": "internal_cfd", "input_kind": "solid-body"},
+                           ("internal_cfd", "fluid-domain"))[0]["input_kind"] == "fluid-domain"
 
 
 def test_a_real_refusal_stands():
     # a CAD solid of the PART for internal flow: Gmsh needs the fluid itself, whatever it is called
     args = {"selected_engine": "gmsh", "purpose": "internal_cfd", "input_kind": "solid-body"}
-    assert stage_part_kind(dict(args), ("internal_cfd", "solid-body"), "cad") == (args, "")
+    assert stage_part_kind(dict(args), ("internal_cfd", "solid-body")) == (args, "")
     assert preview_admission("gmsh", "internal_cfd", "solid-body", dimensionality="3D",
                              patches=INTERNAL, geometry_form="cad")["verdict"] == "impossible"
     # a surface for a multi-region case on the ECXML mesher: refused for the file, not the word
     args = {"selected_engine": "snapgrid", "purpose": "conjugate_heat_transfer", "input_kind": "solid-body"}
-    out, _ = stage_part_kind(dict(args), ("conjugate_heat_transfer", "solid-assembly"), "surface")
+    out, _ = stage_part_kind(dict(args), ("conjugate_heat_transfer", "solid-assembly"))
     assert preview_admission("snapgrid", out["purpose"], out["input_kind"], dimensionality="3D",
                              geometry_form="surface")["verdict"] == "impossible"
 
@@ -121,12 +155,12 @@ def test_a_real_refusal_stands():
 def test_nothing_is_changed_without_a_standing_stage_declaration_or_for_another_purpose():
     args = {"selected_engine": "snappy", "purpose": "external_cfd", "input_kind": "fluid-domain"}
     # the user restated what the file is: declared_case is None, and the model's word is all there is
-    assert stage_part_kind(dict(args), None, "cad") == (args, "")
+    assert stage_part_kind(dict(args), None) == (args, "")
     # the payload's purpose is not the stage's: a change of analysis is never overridden here
-    assert stage_part_kind(dict(args), ("internal_cfd", "fluid-domain"), "cad") == (args, "")
-    # no engine named: nothing to judge the kind against
-    assert stage_part_kind({"purpose": "external_cfd", "input_kind": "fluid-domain"},
-                           ("external_cfd", "solid-body"), "cad")[1] == ""
+    assert stage_part_kind(dict(args), ("internal_cfd", "fluid-domain")) == (args, "")
+    # a kind not yet declared stays undeclared
+    empty = {"purpose": "external_cfd", "input_kind": ""}
+    assert stage_part_kind(dict(empty), ("external_cfd", "solid-body")) == (empty, "")
 
 
 def test_without_a_stage_the_unsettled_refusal_still_reaches_the_model(monkeypatch):
