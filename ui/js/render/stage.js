@@ -1086,9 +1086,10 @@ export const Stage = {
     r.innerHTML=`<div class="e-rat"><div class="rat-c">${esc(ev.conclusion||'')}</div>`
       +(ev.because?`<div class="rat-w">${esc(ev.because)}</div>`:'')+`</div>`;
     n.body.appendChild(r);this.scroll(n);},
-  // THE REVIEWER'S PICTURES: one small grid under the reviewer's steps, three to a row, filled as
-  // the pictures arrive. It sits outside the scrolling step list, so a picture is never pushed out
-  // of sight by the steps that follow it; past a few rows the grid scrolls on its own.
+  // THE REVIEWER'S PICTURES: one small grid in the review row, three to a row, filled as the
+  // pictures arrive. It sits IN VIEW, under the row's own lines and above its steps: the steps are
+  // folded by default (.tl-body is hidden until the row is opened), and a grid put in there was
+  // drawn but never seen. Past a few rows the grid scrolls on its own.
   screenshot(b64){const n=this.node('reviewer');
     // a live event can arrive twice; the same render must not stack up. A PNG's last bytes hold
     // its final data checksum, so two different renders of the same size are still told apart.
@@ -1098,7 +1099,7 @@ export const Stage = {
     n.shots.add(k);
     if(!n.gallery){const g=document.createElement('div');g.className='e-shots';
       g.innerHTML='<div class="e-shots-h">Pictures<span class="e-shots-n"></span></div><div class="e-shots-grid"></div>';
-      n.el.querySelector('.tl-body').appendChild(g);
+      n.el.insertBefore(g,n.el.querySelector('.tl-body'));
       n.gallery={count:g.querySelector('.e-shots-n'),grid:g.querySelector('.e-shots-grid')};}
     const {grid,count}=n.gallery;
     // follow the newest picture only when the reader is not looking further up the grid
