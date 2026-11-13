@@ -387,6 +387,10 @@ async def _settle(inbound: InboundMessage, db, *, gate: dict, locked, messages: 
                                        session_repo=session_repo, logger=logger)
     if asked is not None:
         return asked
+    asked = await _settle_coolant(inbound, db, messages=messages, revision=revision,
+                                  session_repo=session_repo, logger=logger)
+    if asked is not None:
+        return asked
     hold = await _settle_geometry_hold(inbound, db, locked=locked, messages=messages,
                                        revision=revision, session_repo=session_repo, logger=logger)
     if hold is not None:
@@ -435,6 +439,53 @@ async def _settle_fea_analysis(inbound: InboundMessage, db, *, messages: list, r
     reply = pm.ANALYSIS_QUESTION
     await session_repo.append_message(db, inbound.session_id, "assistant", reply)
     logger.info("intake message: an FEA part - the analysis type asked - session=%s", inbound.session_id)
+    return MessageOutcome(status=MessageStatus.purpose_question, reply=reply,
+                          transition=GateTransition(revision=revision))
+
+
+def coolant_question_due(messages: list) -> bool:
+    """Whether a COOLED SOLID's one required question is due: the user confirmed a cold plate, a
+    water block or a cooled package on the stage, the question was never asked, and nothing the
+    user said names the coolant already ("water at 2 L/min" does; "mesh this cold plate" does not).
+
+    `analysis_question_due` above for the FEA path's question, read the same way and in the same
+    three parts. The words a purpose-question button sent are about the path, not the coolant, and
+    are not read for it.
+    """
+    from meshpipeline.application import purpose_map as pm
+    from meshpipeline.application.geometry_confirmation import cooled_solid_declared
+
+    if not cooled_solid_declared(messages):
+        return False
+    if any(isinstance(m, dict) and m.get("role") == "assistant"
+           and str(m.get("content") or "").strip() == pm.COOLANT_QUESTION for m in messages):
+        return False
+    buttons = {c["send"] for q in pm.QUESTIONS.values() for c in pm.choices_for(q)}
+    said = [str(m.get("content") or "") for m in messages
+            if isinstance(m, dict) and m.get("role") == "user"
+            and str(m.get("content") or "").strip() not in buttons]
+    return not pm.coolant_of("\n".join(said))
+
+
+async def _settle_coolant(inbound: InboundMessage, db, *, messages: list, revision: str,
+                          session_repo, logger) -> MessageOutcome | None:
+    """A COOLED SOLID'S ONE REQUIRED QUESTION, asked by the application with its buttons once the
+    part is confirmed on the stage: "What is the coolant, and how much of it flows?" - water, a
+    water-glycol mix or a dielectric fluid, and the rate typed beside it.
+
+    THE FEA PATH'S MECHANISM, AND NOT A SECOND ONE. `_settle_fea_analysis` above is this function
+    with `fea_declared` and the analysis types in place of `cooled_solid_declared` and the
+    coolants; the prompt block for a cooled solid asked the model to ask this, and a prompt block
+    is not a guarantee. Everything else about the case - the purpose, the two regions, the ports,
+    the role vocabulary - its declaration already settled.
+    """
+    if not coolant_question_due(messages):
+        return None
+    from meshpipeline.application import purpose_map as pm
+
+    reply = pm.COOLANT_QUESTION
+    await session_repo.append_message(db, inbound.session_id, "assistant", reply)
+    logger.info("intake message: a cooled solid - the coolant asked - session=%s", inbound.session_id)
     return MessageOutcome(status=MessageStatus.purpose_question, reply=reply,
                           transition=GateTransition(revision=revision))
 

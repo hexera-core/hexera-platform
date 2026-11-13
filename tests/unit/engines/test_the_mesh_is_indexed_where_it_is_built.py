@@ -14,11 +14,11 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from tests.foam_fixtures import write_row_of_hexes
 
 from meshpipeline.engines.cfmesh_conjugate import native as N
 from meshpipeline.render import boundary_index as B
 from meshpipeline.render import detail_window as D
-from tests.foam_fixtures import write_row_of_hexes
 
 
 @pytest.fixture
@@ -110,8 +110,9 @@ def test_the_quality_is_reduced_beside_the_index_and_the_raw_fields_cleared(two_
     """checkMesh's fields are an intermediate of this step: 116 MB for a 5.69 M-cell region
     against 158 MB once reduced to the boundary, and nothing else reads them. They go as soon as
     they have been read, so they never travel with the workspace."""
-    from meshpipeline.render import boundary_quality as Q
     from tests.foam_fixtures import write_quality_fields
+
+    from meshpipeline.render import boundary_quality as Q
 
     for name in ("fluid", "solid"):
         pm = two_regions / "constant" / name / "polyMesh"
@@ -148,8 +149,9 @@ def test_losing_the_quality_does_not_lose_the_detail_window(two_regions):
 
 
 def test_a_failed_reduce_leaves_the_fields_as_the_evidence(two_regions, monkeypatch):
-    from meshpipeline.render import boundary_quality as Q
     from tests.foam_fixtures import write_quality_fields
+
+    from meshpipeline.render import boundary_quality as Q
 
     pm = two_regions / "constant" / "fluid" / "polyMesh"
     write_quality_fields(pm.parent, cells=[1.0, 2.0, 3.0],
@@ -179,13 +181,94 @@ def test_checkmesh_is_asked_to_write_the_fields_in_the_first_place(two_regions):
     assert "write_fields: bool = False" in inspect.getsource(FE), "it must be opt-in"
 
 
-def test_the_report_carries_it_under_its_own_key(two_regions, monkeypatch, tmp_path):
+def test_the_report_carries_it_under_its_own_key(two_regions, monkeypatch):
     """So a reader of a finished run can tell whether its detail window will work, without
-    opening the workspace."""
-    import inspect
+    opening the workspace.
 
-    src = inspect.getsource(N)
-    assert 'body["boundary_index"] = _boundary_indexes(ws)' in src
-    # and it is written to the report AFTER being filled, not before
-    after = src.split('body["boundary_index"] = _boundary_indexes(ws)', 1)[1]
-    assert after.lstrip().startswith("_write_report(ws, body)"), after[:120]
+    EXERCISED, NOT GREPPED. This asserted the literal source text of the call
+    (`body["boundary_index"] = _boundary_indexes(ws)`) and of the `_write_report` line after it,
+    which said nothing about whether the key reaches the file - and broke the moment the call grew
+    an argument. Now the real runner is driven with the mesher faked out, and the report is read
+    off disk.
+    """
+    import json
+
+    from meshpipeline.engines.cfmesh_conjugate import plan as PL
+
+    _a_plan(two_regions)
+    monkeypatch.setattr(
+        "meshpipeline.engines.cfmesh_conjugate.native.build",
+        lambda ws, **k: _a_report())
+    monkeypatch.setattr(
+        "meshpipeline.engines.cfmesh_conjugate.solver_case.write_solver_case",
+        lambda *a, **k: [])
+    monkeypatch.setattr(
+        "meshpipeline.engines.cfmesh_conjugate.native._review_aids",
+        lambda ws, **k: {"volume": None, "surface": None, "groups": {}, "bbox": None, "why": "x"})
+
+    result = N._run_conjugate_local(two_regions, bashrc="/dev/null", timeout=600)
+    assert result["rc"] == 0, result
+    body = json.loads((two_regions / PL.REPORT_NAME).read_text())
+    assert sorted(body["boundary_index"]["regions"]) == ["fluid", "solid"]
+    assert all(r["ok"] is True for r in body["boundary_index"]["regions"].values())
+
+
+def _a_plan(ws: Path) -> None:
+    """The smallest plan `native._run_conjugate_local` will accept."""
+    from meshpipeline.engines.cfmesh_conjugate import plan as PL
+
+    PL.write_plan(ws, PL.ConjugatePlan(
+        background_cell_m=1e-3, levels=1, expect_fluid_volume_m3=1.0, expect_fluid_pieces=1,
+        volume_tol=0.2, narrowest_m=1e-4))
+
+
+def _a_report():
+    """What `conjugate.build` hands back on a clean two-region run, with nothing in it this file
+    is about."""
+    from meshpipeline.engines.cfmesh_conjugate.conjugate import (
+        ConjugateReport,
+        RegionReport,
+    )
+
+    fluid = RegionReport(name="fluid", cells=10, volume_m3=1.0, pieces=1, mesh_ok=True)
+    solid = RegionReport(name="solid", cells=20, volume_m3=2.0, pieces=1, mesh_ok=True)
+    return ConjugateReport(fluid=fluid, solid=solid)
+
+
+# #
+# and it is paid for out of the run's own budget
+# #
+def test_a_region_whose_index_the_budget_cannot_afford_is_not_started(two_regions, monkeypatch):
+    """THE PLACE NOTHING WAS COUNTING. `write_index` is one pass with no deadline of its own, so
+    the only honest way to bound it is not to start one that cannot finish - and until this it
+    ran with no budget at all, between the engine's deadline and the VM's return margin, counted
+    by neither. Measured at 105 s and 126 s for 13.2 M and 13.4 M faces, which is about 15 minutes
+    at the customer plate's 71.9 M."""
+    started: list = []
+    monkeypatch.setattr("meshpipeline.render.boundary_index.write_index",
+                        lambda *a, **k: started.append(a) or {})
+    out = N._boundary_indexes(two_regions, budget_left_s=0.0)
+    assert started == [], "a region was indexed out of a budget that had nothing left"
+    for name, r in out["regions"].items():
+        assert r["ok"] is False, (name, r)
+        assert "price at about" in r["why"] and "budget has" in r["why"]
+
+
+def test_a_budget_that_covers_it_still_builds_it(two_regions):
+    out = N._boundary_indexes(two_regions, budget_left_s=3_600.0)
+    assert sorted(out["regions"]) == ["fluid", "solid"]
+    assert all(r["ok"] is True for r in out["regions"].values()), out
+
+
+def test_no_budget_given_means_unbounded_by_the_run(two_regions):
+    """Every caller outside the pipeline - the CLI, the devtools, these tests - keeps what it
+    had."""
+    out = N._boundary_indexes(two_regions)
+    assert all(r["ok"] is True for r in out["regions"].values()), out
+
+
+def test_the_price_is_the_measured_one_and_not_a_round_number():
+    """105 s / 13,181,685 faces = 7.97 us and 126 s / 13,407,661 = 9.40 us for the index; 34.9 s
+    and 59.9 s for the quality reduction beside it. The slower pair is 13.9 us a face."""
+    assert 1.3e-5 < N.INDEX_SECONDS_PER_FACE < 1.5e-5
+    assert N.INDEX_SECONDS_PER_FACE * 13_407_661 > 126 + 59.9

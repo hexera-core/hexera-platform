@@ -107,18 +107,105 @@ def test_it_grows_with_the_mesh():
 
 #   -- and the driver checks it before anything runs --------------------------------------------
 
-def test_the_driver_refuses_before_it_meshes():
-    """THE WHOLE POINT. Checked beside the cell limit and the octree ceiling, all three before the
-    first stage runs."""
+class _Outcome:
+    def __init__(self, produced_deliverable: bool, terminal_value: str) -> None:
+        self.produced_deliverable = produced_deliverable
+        self.terminal_value = terminal_value
+
+
+class _Run:
+    """The builder run surface `drive` uses, with no ownership fence to assert against."""
+
+    def __init__(self) -> None:
+        self.native_runs = 0
+
+    async def fence(self, phase: str) -> None:
+        return None
+
+    def note_authoring(self) -> None:
+        return None
+
+    def note_native_run(self, *, produced_usable_mesh: bool) -> None:
+        self.native_runs += 1
+
+    def outcome(self, *, produced_deliverable: bool, exhausted: bool = False,
+                failure_marker: str = ""):
+        return _Outcome(produced_deliverable, failure_marker)
+
+
+def _drive_a_part_of(monkeypatch, tmp_path, *, estimate: int):
+    """Run the REAL `drive` on a part whose cell estimate is `estimate`, with the mesher replaced
+    by a spy. Everything between the CAD and the size gates is stubbed - this is about the gates
+    and the order they are asked in, and the arithmetic they use has its own tests above. The
+    sizing is taken through `cells_across_for` (a part with no wetted area measured), which is the
+    branch that has no cell-limit refusal of its own, so what the archive gate does is not hidden
+    behind the one before it.
+
+    Returns (what drive returned, how many times the mesher was started).
+    """
+    import asyncio
+
+    from meshpipeline.cad import fluid_volume as FV
     from meshpipeline.engines.cfmesh_conjugate import driver as D
 
-    src = inspect.getsource(D.drive)
-    assert "refuse_for_return" in src
-    assert "max_archive_bytes" in src, "the real ceiling, read off the extractor's own limits"
-    # ...after the octree check, which is the one that does not care what machine was chosen
-    assert src.index("refuse_for_octree") < src.index("refuse_for_return")
-    # ...and before the mesher is started
-    assert src.index("refuse_for_return") < src.index("run_cartesian_mesh")
+    cad = tmp_path / "part.step"
+    cad.write_text("")
+    lo, hi = [0.0, 0.0, 0.0], [0.17, 0.17, 0.01]
+    monkeypatch.setattr(D, "find_source", lambda ws, source_path="": cad)
+    monkeypatch.setattr(D, "skin_bounds", lambda ws: (lo, hi))
+    monkeypatch.setattr(D, "cad_scale", lambda src: 1.0)
+    monkeypatch.setattr(D, "coolant_sits_inside", lambda rec, a, b: "")
+    monkeypatch.setattr(FV, "surface_bounded", lambda *a, **k: {
+        "narrowest_m": 1.0e-4, "wetted_area_m2": 0.0, "volume_m3": 5.4e-5, "passages": 2,
+        "bbox_min_m": lo, "bbox_max_m": hi})
+    monkeypatch.setattr(D.B, "cells_across_for",
+                        lambda **k: (4, int(estimate), "priced for this test"))
+
+    started: list = []
+
+    def spy(ws, *, job_id=""):
+        started.append(job_id)
+        return {"rc": 0}
+
+    monkeypatch.setattr(D, "_run_off_the_wall", spy)
+    got = asyncio.run(D.drive(tmp_path, {}, job_id="t", publish=None, run=_Run()))
+    return got, len(started)
+
+
+def test_the_driver_refuses_before_it_meshes(tmp_path, monkeypatch):
+    """THE WHOLE POINT, EXECUTED. A mesh the extractor would not take back is refused with the
+    mesher never started - which is the only thing the refusal is for, and is what this used to
+    assert by reading the source text of `drive` and comparing string offsets. That form broke the
+    moment the mesher call moved into a helper, while never having run a line of the path it was
+    about.
+
+    102,630,992 cells: past what `result_extraction_limits` will take back on this deployment's
+    cell budget, and inside `refuse_for_octree`'s 178,956,970 per process - so the refusal under
+    test is the archive one and not one of the gates around it.
+    """
+    from meshpipeline.engines.cfmesh_conjugate import budget as _B
+    from meshpipeline.engines.cfmesh_conjugate import driver as D
+
+    assert _B.refuse_for_octree(102_630_992, ranks=1) == "", (
+        "this size has to clear the octree ceiling or the wrong gate is being tested")
+
+    (ok, marker, outcome), started = _drive_a_part_of(
+        monkeypatch, tmp_path, estimate=102_630_992)
+
+    assert ok is False
+    assert marker == D.TOO_FINE, "a size refusal files itself as a size refusal"
+    assert outcome.produced_deliverable is False
+    assert started == 0, "the mesher was started on a mesh that cannot come home"
+
+
+def test_the_same_part_inside_the_ceiling_does_reach_the_mesher(tmp_path, monkeypatch):
+    """THE CONTROL. Without it the test above passes for any part at all - including one the
+    driver refuses for some other reason, or one it never gets to the gates for."""
+    (ok, _marker, _outcome), started = _drive_a_part_of(
+        monkeypatch, tmp_path, estimate=6_500_000)
+
+    assert started == 1, "a mesh that can come home has to be meshed"
+    assert ok is True
 
 
 def test_it_reads_the_ceiling_the_caller_will_apply():

@@ -100,6 +100,17 @@ THERMAL_WORDS_NUDGE = (
     "electronics-cooling engineer's words - parts, layers, power, room air, the air box, the "
     "detail level - and ask nothing the file or the panel already settled."
 )
+#: A COOLED SOLID's reply that spoke of something built around the part
+#: (application/cooled_solid_wording). THERMAL_WORDS_NUDGE above for the other case, which is the
+#: mechanism this one is: the same once-per-turn send-back, in the words of the opposite case.
+COOLED_SOLID_WORDS_NUDGE = (
+    "[SYSTEM] Your reply was not sent: this is a cooled solid the user confirmed on its stage - "
+    "one part whose own passages carry the coolant - and the reply spoke of something built "
+    "around it: a far field, a freestream, an air box, room air, cooling air or the fluid around "
+    "the part. Nothing is built around this part. Write it again in the words this case is made "
+    "of - the part, its passages, the coolant, the inlet and the outlet, the metal and the "
+    "coolant as the two halves of one mesh - and ask nothing the stage already settled."
+)
 #: An FEA part's reply that proposed a load, a support or a material the user never said
 #: (application/fea_wording).
 FEA_INVENTED_NUDGE = (

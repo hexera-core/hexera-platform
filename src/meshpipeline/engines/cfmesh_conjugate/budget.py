@@ -332,6 +332,21 @@ def written_gib(cells: int) -> float:
 
     909 bytes a cell, measured on a finished mesh (devtools/semiconductor), and doubled because a
     conjugate build writes the whole block AND the two regions it is cut into.
+
+    IT IS THE MESH AND ONLY THE MESH, deliberately, and that is worth knowing before raising it.
+    A run writes more than its mesh - foamToVTK's second copy of every cell, the boundary .vtp
+    tree, checkMesh's -writeFields output (4.25 GB measured at 182 M cells) and the review msh -
+    and none of that is counted here. It is counted where it is SPENT, which is the VM's disk:
+    `adapters/mesh_execution/gce_vm.DISK_PER_WORKSPACE_GIB` multiplies this figure and its own
+    comment carries the share-by-share table, worked out 2026-11-12 at the Corintis plate's size.
+    Checked there: what a run actually writes comes to about 1.19 x this, and the disk buys 4 x.
+
+    FOLDING THOSE INTO THIS NUMBER WOULD DO HARM, which is the reason it has not been done. This
+    is also what `archive_gib` and therefore `refuse_for_return` are priced from, and that refusal
+    runs BEFORE the first cell - so inflating this refuses parts that would have come home fine.
+    The module's own rule applies ("Stacking a conservative estimate on a conservative ceiling
+    refuses work twice for one reason"), and so does the asymmetry beside ARCHIVE_SHARE_OF_WRITTEN:
+    a wasted run is an hour, a wrongly refused mesh is a part the customer cannot have.
     """
     return 2.0 * max(0, int(cells)) * 909.0 / (1024.0 ** 3)
 

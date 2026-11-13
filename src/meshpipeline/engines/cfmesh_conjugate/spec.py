@@ -165,10 +165,24 @@ HOME_TURF = (
             "metal is what is left. One solid or several bonded into one piece: a brazed or "
             "diffusion-bonded cold plate is a base and a lid and is this engine's case.",
             flow="multi-region"),
-    TurfRow("n_solids", "==", 1, "home",
-            "One solid with coolant passages through it: the coolant is the space inside the "
-            "part, found from the part's own faces, and the metal is what is left.",
-            flow="multi-region"),
+    # THERE IS NO `n_solids == 1` HOME ROW ANY MORE, and for the same reason there is no `closed`
+    # row below: it answered the coolant question off something that is not the coolant. The row
+    # read "One solid with coolant passages through it", but one solid is all it tested - so it
+    # claimed this engine's HOME TURF on any single-solid part in a multi-region case whether a
+    # split had ever looked inside it or not, including the one part the engine's own advisory
+    # says it cannot mesh: "A part with open-topped grooves and no lid has no enclosed coolant to
+    # find - send it with its lid on." On such a plate the row claimed home while the driver
+    # (driver.coolant_sits_inside) was going to refuse the run.
+    #
+    # NOTHING THE ROW WAS CARRYING IS LOST. Measured on the live ranker, 2026-11-12, a one-solid
+    # cold plate with the check not run, after the intake's own format filter stops offering the
+    # snap grid for a STEP file (agents/intake/measured_choice.able_engines):
+    #
+    #     1. cfmesh_conjugate [RECOMMENDED]   2. snappy_multiregion (outside its own turf)
+    #
+    # It leads on the other engine's declaration rather than on a claim of its own, which is the
+    # honest order for a part nobody has measured. With the coolant measured, the row above holds
+    # and says home on the fact the claim is actually about.
     TurfRow("coolant_inside", "is", False, "outside",
             "The fluid is a body in the file rather than the space inside the part, so the "
             "assembly already has one body per region - mesh it with multi-region snappyHexMesh, "
@@ -350,8 +364,75 @@ SPEC = EngineSpec(
             # two full meshes - and >85% of a large build is that serial tail, not the mesher. A
             # ceiling that cuts a run after it has paid for the expensive part is the worst place
             # to put one.
-            run_timeout=lambda: min(int(rtcfg.CONJUGATE_RUN_TIMEOUT_S),
-                                    rtcfg.OPENFOAM_COMMAND_TIMEOUT * 6),
+            #
+            # THIS IS THE WHOLE RUN'S BUDGET, AND IT IS THE ONLY STATEMENT OF IT THERE IS. The
+            # same number is spent twice, by two things that read it differently, and until
+            # 2026-11-12 they disagreed:
+            #
+            #   * `conjugate._foam` applied it PER STAGE, and the parallel chain is eight stages
+            #     (preparePar, cartesianMesh, topoSet, splitMeshRegions, reconstructParMesh,
+            #     regionDicts, topoSetPorts, createPatch) before two checkMesh runs and an export;
+            #   * `adapters/mesh_execution/gce_vm` spends it ONCE, as the machine's whole life:
+            #     maxRunDuration = timeout + the return's own priced margin (return_margin_s).
+            #
+            # THE CLAMP WAS THE DEFECT. `min(CONJUGATE_RUN_TIMEOUT_S 21600,
+            # OPENFOAM_COMMAND_TIMEOUT 1500 x 6)` came out 9,000 s - so one stage's allowance was
+            # 71% of the 12,600 s the VM was given to live, and foamToVTK's own EXPORT_TIMEOUT_S
+            # (7,200 s, foam_exec.py) was another 57% of it on top. The VM would have deleted
+            # itself holding a finished mesh. For scale, the comparable hand-run chain measured
+            # 9,359 s at 413 M cells and 10,796 s at 506 M BEFORE any review aid ran.
+            #
+            # OPENFOAM_COMMAND_TIMEOUT IS A PER-COMMAND FIGURE AND THIS IS NOT ONE COMMAND, which
+            # is the whole reason the clamp was wrong rather than merely tight: multiplying it by
+            # the five-run serial chain of the era it was written in described a shape this engine
+            # no longer has. The setting beside it already says what it is for in its own words
+            # (settings/inventory: "how long ONE conjugate build may take, the mesher plus the
+            # serial tail after it"), so the setting is believed and the clamp is gone. What makes
+            # that safe is that the budget is now spent as a DEADLINE rather than handed out per
+            # stage (conjugate.build, native._run_conjugate_local), so no chain can exceed it and
+            # the machine's life derived from it is honest.
+            #
+            # WHY `watched=True` IS STILL NOT DECLARED HERE, THOUGH THE WALL IS NOW HONOURED -
+            # and the previous version of this note was wrong about both halves, so it is worth
+            # being exact. `contracts/native_time` is the adopted house rule - "NO GUESSED TIME
+            # LIMITS ... stopped only when it has made NO progress for STALL_WINDOW_S, or at the
+            # hard wall of the machine it runs on" - and snapgrid, snappy, snappy_multiregion,
+            # cfmesh, gmsh and vmtk all declare the flag.
+            #
+            # THE FLAG IS UNREADABLE FROM WHERE THIS ENGINE RUNS, and that part was and is true.
+            # The only two places that read it are `agents/builder/tools/meshing.py:348` (the cap
+            # becomes the machine's wall) and `:486` (the RUN-5 re-run loop), both inside
+            # `run_mesh`, the MODEL-LED tool. This engine has a deterministic driver
+            # (`_load_build_driver` above), so `pipeline/executor.py:179` and
+            # `agents/builder/invoke.py:142` route it to `driver.drive`, which never sees
+            # `policy.watched`. Declaring it would change nothing on this route.
+            #
+            # SO THE DRIVER ADOPTS THE WALL ITSELF, the way `engines/snapgrid/driver.py:90` does:
+            # `driver._run_off_the_wall` runs the case through `native_time.run_off_the_wall` with
+            # min(`wall_for(workspace)`, this budget) as its cap. That is the RUN-5 loop and the
+            # machine's wall, reached without the flag.
+            #
+            # AND THIS BUDGET IS STILL THE THING THAT BINDS ON A VM, deliberately: `wall_for` is
+            # 72,000 s there, the plate's whole container half measures 20,485 s, and a cap of
+            # 72,000 would put the machine's own life at 94,831 s - past the worker task's 86,400 s
+            # soft limit (`adapters/pipeline_execution/celery.py:44`). `driver._run_off_the_wall`
+            # carries that arithmetic. On Cloud Run the wall is 13,800 s and binds, which is the
+            # end that was broken.
+            #
+            # WHAT THE OLD NOTE GOT WRONG, recorded because it was the stated reason for declining
+            # this: it said `cloud_run_client.py:683` sizes the waiting worker's patience from this
+            # number, "so a container that took VM_WALL_S for its own deadline would be meshing
+            # hours after the worker stopped listening". `wait_s` is not a clock that gives up. The
+            # module says so in its own words at WAIT_STALL_S - "THE WAIT ENDS WHEN THE REMOTE IS
+            # GONE, NOT ON A CLOCK" - and `_poll_gcs_json` reaches its deadline branch only when
+            # `silent`, which a remote pulsing its beacon every 60 s never is.
+            #
+            # THE OTHER HALF OF THE RULE IS INSIDE THE STAGES. `conjugate._foam` runs every stage
+            # through the same `sandbox/safe_exec.run_guarded(stall_s=native_time.STALL_WINDOW_S)`
+            # the six use, so a stage is told apart as stuck, out of memory or still working, and
+            # a hung stage gives the rest of the chain its time back instead of sitting on the
+            # budget.
+            run_timeout=lambda: int(rtcfg.CONJUGATE_RUN_TIMEOUT_S),
             timeout_hint="Ask for a coarser mesh fidelity (draft) and run again.",
             ok_guidance="Both regions are meshed and checked, and the coolant matches the CAD - "
                         "call submit_mesh.",

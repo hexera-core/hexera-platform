@@ -23,6 +23,8 @@ from __future__ import annotations
 import inspect
 import logging
 
+import pytest
+
 from meshpipeline.engines.cfmesh_conjugate import foam_exec as FE
 from meshpipeline.engines.cfmesh_conjugate import review_surface as RS
 
@@ -131,18 +133,32 @@ def test_the_volume_lookup_skips_an_unfinished_export():
 def test_a_region_that_contributes_nothing_says_so_in_words(tmp_path, caplog):
     """The silent `continue` is why nothing in the log an operator reads said "fluid".
 
-    This asserts the message, not the conversion: gmsh and pyvista are not imported here.
+    EXERCISED, NOT GREPPED, AND NOT SELF-LOGGED. This asserted the source text of the message and
+    then LOGGED THAT MESSAGE ITSELF before checking the log, so it would have passed on a function
+    that logged nothing at all - and it passed through a 198-line rewrite of `build_region_msh`
+    without executing a line of it. Now the real builder is run on a real workspace whose fluid
+    export cannot be parsed, and the log is what the builder put there.
     """
-    src = inspect.getsource(RS.build_region_msh)
-    assert "contributed no readable surface" in src
-    assert "logger.error" in src.split("if not tags:")[1][:600], (
-        "a dropped region is an error, not a debug line")
+    pytest.importorskip("pyvista")
+    for region in ("fluid", "solid"):
+        pm = tmp_path / "constant" / region / "polyMesh"
+        pm.mkdir(parents=True)
+        (pm / "boundary").write_text("0()")
+        t = tmp_path / "VTK" / region / CASE
+        (t / "boundary").mkdir(parents=True)
+        for name in ("fluid_to_solid", "inlet", "outlet"):
+            # not a .vtp: pv.read raises, _read_patch logs and returns None
+            (t / "boundary" / f"{name}.vtp").write_text("not XML at all")
+        (tmp_path / "VTK" / region / f"{CASE}.vtm").write_text("<VTKFile/>")
+
     with caplog.at_level(logging.ERROR, logger=RS.logger.name):
-        RS.logger.error("conjugate review: region %r contributed no readable surface from "
-                        "%d boundary file(s) - the review will not see it: %s",
-                        "fluid", 3, "fluid_to_solid.vtp, inlet.vtp, outlet.vtp")
+        groups, bbox = RS.build_region_msh(tmp_path)
+
+    assert groups == {} and bbox is None
     said = caplog.text
-    assert "fluid" in said and "3 boundary file(s)" in said
+    assert "contributed no readable surface" in said, said
+    assert "'fluid'" in said and "3 boundary file(s)" in said, said
+    assert "outlet.vtp" in said, "the files it tried have to be named"
 
 
 def test_the_two_fixes_are_not_the_same_fix():

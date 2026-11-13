@@ -100,10 +100,18 @@ def test_minimal_geometry_submission_is_accepted(client, tmp_path):
     repo.append_message = AsyncMock()
 
     store = MagicMock()
-    uploaded: dict = {}
+    # EVERY WRITE, KEPT APART BY ITS KEY. An upload stores the source object, and when
+    # GEOMETRY_CHECK_ENABLED is on - which the local .env sets, while a bare environment leaves it
+    # off - `_enqueue_geometry_check` then calls `start_scout`, which writes its own scout.json
+    # marker through this same store, twice: "pending" before the task is published and "failed"
+    # when nothing is configured to run it. A single dict overwritten per call kept only the LAST
+    # of the three, so with the check enabled this row read back the marker and compared a status
+    # document against the STL. That made the row pass or fail on a local setting rather than on
+    # the behaviour it is about. Keyed, it asserts on the source object under either setting.
+    writes: dict[str, bytes] = {}
     store.upload_file = MagicMock(
-        side_effect=lambda local_path, object_key: uploaded.update(
-            {"key": object_key, "bytes": Path(local_path).read_bytes()}))
+        side_effect=lambda local_path, object_key: writes.update(
+            {object_key: Path(local_path).read_bytes()}))
 
     with (
         patch("meshpipeline.persistence.session.get_db", _fake_db),
@@ -125,7 +133,8 @@ def test_minimal_geometry_submission_is_accepted(client, tmp_path):
     assert body["step_filename"].endswith(".stl")
     assert body["intake_greeting"] == ""        # the greeting is switched off for this request
     # The bytes reached DURABLE storage - that, not a local file, is what an upload produces now.
-    assert uploaded["bytes"] == _MINIMAL_STL
-    assert uploaded["key"].startswith("sources/")
+    sources = {key: body for key, body in writes.items() if key.startswith("sources/")}
+    assert len(sources) == 1, f"expected exactly one source object, stored {sorted(writes)}"
+    assert next(iter(sources.values())) == _MINIMAL_STL
     # The staging buffer is deliberately gone: nothing may later mistake it for the source.
     assert not (tmp_path / str(session_id) / "input.stl").exists()

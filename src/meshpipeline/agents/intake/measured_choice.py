@@ -57,13 +57,38 @@ def upload_form(staged: str, source_ref) -> str:
     return ""
 
 
-def able_engines(engines: Iterable[str], purpose: str, input_kind: str, form: str) -> list[str]:
+def able_engines(engines: Iterable[str], purpose: str, input_kind: str, form: str,
+                 source_format: str = "") -> list[str]:
     """The engines that can take this file for this confirmed case (the capability filter, read
-    through the intake's own admission preview)."""
+    through the intake's own admission preview).
+
+    THE UPLOAD'S OWN FORMAT IS PART OF "CAN TAKE IT", and it was the one fact this filter never
+    passed. An engine that reads the model the FILE describes rather than a conversion of it
+    declares so (EngineSpec.reads_source_formats), and base._admit_measured refuses any other
+    format with source_format_unsupported - but only when the facts NAME the format, and this
+    filter named nothing. So the snap grid, which reads ECXML electronics models and nothing else,
+    came back able to mesh a STEP cold plate.
+
+    THAT IS WHAT MADE THE RECOMMENDATION TURN ON ONE UNMEASURED FACT. Measured on the live ranker,
+    2026-11-12, same six-solid cold plate, same case:
+
+        coolant_inside=True   1. cfmesh_conjugate [RECOMMENDED]  2. snapgrid  3. snappy_multiregion
+        coolant_inside=None   1. snapgrid [RECOMMENDED]  2. cfmesh_conjugate  3. snappy_multiregion
+
+    The snap grid declares no home-turf rows at all, so home_turf.verdict calls it "home" with
+    nothing unmeasured, while the conjugate mesher's rows all go silent without the fact and its
+    turf comes out blank; the sort key then falls through to ladder_rank, where 60 beats 65. With
+    the format named here the snap grid is refused by its own declaration before any of that, and
+    the two readings agree: cfmesh_conjugate either way. Nothing else moves - the snap grid is the
+    only engine in the catalogue that declares reads_source_formats, and the guard only fires on a
+    format it does not read.
+    """
     from meshpipeline.agents.intake.validation import preview_admission
+    facts = {"source_format": source_format} if source_format else None
     return [e for e in engines
             if preview_admission(e, purpose, input_kind, dimensionality="3D",
-                                 geometry_form=form or None).get("verdict") != "impossible"]
+                                 geometry_form=form or None,
+                                 geometry_facts=facts).get("verdict") != "impossible"]
 
 
 def source_format_of(*names) -> str:
@@ -84,6 +109,24 @@ def source_format_of(*names) -> str:
     return ""
 
 
+def upload_format(staged: str, source_ref) -> str:
+    """THE UPLOAD'S FORMAT KEY, asked of the same three readings `upload_form` asks for the kind
+    of file: the staged file itself first, then the approved source's suffix hint, then its
+    original name. '' claims nothing.
+
+    THE STAGED PATH ALONE IS NOT ENOUGH, and it was the only one `rank` read. When the session
+    upload was fetched back rather than staged, geometry_materializer.session_upload_path names
+    the copy `intake_copy` plus safe_suffix(ref.suffix_hint): an empty or unsafe hint leaves a
+    path with no suffix at all, `source_format_of` returns '', and the format filter in
+    `able_engines` then refuses nothing - the determinism fix in `able_engines` stops firing with
+    no signal of any kind. Measured 2026-11-12: source_format_of("/jobs/s/intake_copy") == '',
+    and the same source ref's original name reads "step". agents/intake/executor.py already reads
+    all three for this same fact, and `upload_form` reads them for the one beside it.
+    """
+    return source_format_of(staged, getattr(source_ref, "suffix_hint", ""),
+                            getattr(source_ref, "original_filename", ""))
+
+
 def own_format_engines(engines: Iterable[str], source_format: str) -> list[str]:
     """Of `engines`, those that read the upload's own format themselves (fitness.reads_own_format),
     in the order given."""
@@ -93,7 +136,8 @@ def own_format_engines(engines: Iterable[str], source_format: str) -> list[str]:
 
 def rank(*, path: str, purpose: str, input_kind: str, form: str, engines: Sequence[str],
          patches: Sequence[Mapping] = (), said: str = "", region_count: int | None = None,
-         source_format: str = "", coolant_inside: bool | None = None, in_child: bool = False):
+         source_format: str = "", coolant_inside: bool | None = None, source_ref=None,
+         in_child: bool = False):
     """The recommendation for this upload and case, or None when nothing can be ranked (no flow,
     no engine that takes the file). An unmeasurable file is still ranked, on its flow alone, and
     its reasons say how little that is. An engine that reads the upload's own format itself ranks
@@ -105,7 +149,11 @@ def rank(*, path: str, purpose: str, input_kind: str, form: str, engines: Sequen
     flow = flow_of(purpose)
     if not flow:
         return None
-    able = able_engines(engines, purpose, input_kind, form)
+    # ONE READING OF THE FORMAT for both halves: the filter that drops an engine which cannot read
+    # the file, and the sort key that puts one which reads it itself first. They disagreed before,
+    # because only the second was ever told (see able_engines).
+    fmt = source_format or upload_format(path, source_ref)
+    able = able_engines(engines, purpose, input_kind, form, source_format=fmt)
     if not able:
         return None
     # IN A CHILD WHEN THE CALLER IS THE API, because reading CAD holds the GIL and a worker that
@@ -127,8 +175,7 @@ def rank(*, path: str, purpose: str, input_kind: str, form: str, engines: Sequen
         traits = ShapeTraits.from_dict({**traits.as_dict(), "form": form})
     brief = brief_facts(request_txt=said, patches=list(patches), region_count=region_count,
                         coolant_inside=coolant_inside)
-    return recommend(traits, able, brief=brief,
-                     source_format=source_format or source_format_of(path))
+    return recommend(traits, able, brief=brief, source_format=fmt)
 
 
 async def rank_in_time(*, timeout_s: float = MEASURE_WAIT_S, **kw):
@@ -314,6 +361,6 @@ def compact(rec) -> dict | None:
 
 
 __all__ = ["MEASURE_WAIT_S", "able_engines", "choice_payload", "compact", "own_format_engines",
-           "prompt_block", "rank", "rank_in_time", "source_format_of",
+           "prompt_block", "rank", "rank_in_time", "source_format_of", "upload_format",
            "ranking_rows", "staged_upload", "upload_form",
            "statement"]

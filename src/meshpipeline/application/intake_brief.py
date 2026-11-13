@@ -65,6 +65,21 @@ def user_detail(detail: str) -> tuple[str, str]:
     return text, ""
 
 
+def _cooled_solid_boundaries(declared: int, refused: int) -> str:
+    """A COOLED SOLID's boundary row, true on a pass AND on a fail.
+
+    The row asserted admission unconditionally, so on a fail it said "each a role this conjugate
+    case admits" beside a detail naming the role that is not admitted. A cold-plate owner reads
+    this row to check their own ports; a sentence that contradicts its own verdict is worse than
+    the enum keys it replaced. On a fail it counts what was refused instead of claiming it was
+    admitted - the gate's verdict is unchanged either way, the sentence for it is not.
+    """
+    lead = f"The coolant's ports and the part's outer surface: {declared} declared boundaries"
+    if not refused:
+        return f"{lead}, each a role this conjugate case admits"
+    return (f"{lead}, {refused} of them a role this conjugate case does not admit")
+
+
 def build_checks(brief: dict[str, Any]) -> list[dict[str, Any]]:
     checks: list[dict[str, Any]] = []
 
@@ -107,6 +122,16 @@ def build_checks(brief: dict[str, Any]) -> list[dict[str, Any]]:
                 add("engine_compatible",
                     f"{engine_label(str(engine))} meshes this thermal model for a conjugate "
                     "heat-transfer solve", PASS if ok else FAIL, "" if ok else str(r.get("explanation") or ""))
+            elif brief.get("cooled_solid"):
+                # A COLD PLATE'S CARD SAID THE SAME THING IN THE REGISTRY'S KEYS: "Engine
+                # cfmesh_conjugate supports conjugate_heat_transfer from solid-assembly", on the
+                # one case where the file is the customer's own part rather than a model of a
+                # room. Same gate, same verdict, said the way the thermal model's row is.
+                from meshpipeline.engines.registry import engine_label
+                add("engine_compatible",
+                    f"{engine_label(str(engine))} meshes this part's metal and the coolant in its "
+                    "own passages as one case, sharing every face between them",
+                    PASS if ok else FAIL, "" if ok else str(r.get("explanation") or ""))
             else:
                 # a supported engine needs no explanation on the card (the admission's message is
                 # about what is still open, which the intake settles - FEA sets its element order)
@@ -128,8 +153,21 @@ def build_checks(brief: dict[str, Any]) -> list[dict[str, Any]]:
             if purpose in set(purpose_keys()):
                 allowed = set(PURPOSES[purpose].boundary_roles)
                 bad = sorted({p["role"] for p in patches if p.get("role") not in allowed})
-                add("boundary_roles_valid",
-                    f"{len(patches)} boundary assignment(s) valid for {purpose}",
+                # A COOLED SOLID'S BOUNDARIES ARE ITS PORTS AND ITS OUTSIDE, and there is no far
+                # field: saying "valid for conjugate_heat_transfer" told its owner nothing they
+                # could check. The verdict is the same gate on the same roles.
+                #
+                # AND THE LABEL SAYS WHAT IS TRUE ON A FAIL. The one wording asserted admission
+                # ("each a role this conjugate case admits") whatever the gate found, so a plate
+                # declaring a farfield read "2 declared boundaries, each a role this conjugate
+                # case admits" on a row marked fail - a plainly false sentence on exactly the row
+                # a cold-plate owner is meant to be able to check. The old row stated a COUNT and
+                # could not be false that way. Both halves are counted now.
+                refused = [p for p in patches if p.get("role") not in allowed]
+                said = (_cooled_solid_boundaries(len(patches), len(refused))
+                        if brief.get("cooled_solid")
+                        else f"{len(patches)} boundary assignment(s) valid for {purpose}")
+                add("boundary_roles_valid", said,
                     PASS if not bad else FAIL,
                     "" if not bad else f"roles not admitted by {purpose}: {', '.join(bad)}")
             else:
@@ -215,6 +253,10 @@ def build_brief(session: Any) -> dict[str, Any] | None:
         brief["job_sheet"] = _clean(job_sheet(
             view, level=brief.get("mesh_fidelity") or _declared_detail(session),
             engine=brief.get("engine") or "snapgrid"))
+    # A COOLED SOLID'S CARD, in the words its owner uses. Set only when the declaration says so,
+    # like `check_mode` above: absent is the ordinary card.
+    if _cooled_solid(session):
+        brief["cooled_solid"] = True
     if _is_fea(brief.get("purpose")):
         # an FEA mesh has no detail level (one rules-based plan, PLAN-fea-14): no row for it
         brief["mesh_fidelity"] = None
@@ -229,6 +271,21 @@ def build_brief(session: Any) -> dict[str, Any] | None:
     brief["checks"] = build_checks(brief)
     _add_display_labels(brief)
     return brief
+
+
+def _cooled_solid(session: Any) -> bool:
+    """Whether the conversation's declaration is a COOLED SOLID's - one part whose own passages
+    carry the coolant (application/geometry_confirmation.cooled_solid_declared).
+
+    READ HERE FOR THE REASON `_thermal_view` IS READ HERE. A customer's cold plate and an
+    electronics air box are the SAME declared case - purpose conjugate_heat_transfer, input kind
+    solid-assembly - so nothing already on the card tells a cold-plate owner which of the two
+    their own file was read as. The declaration is the only thing that separates them, and
+    `declared_case` cannot.
+    """
+    from meshpipeline.application.geometry_confirmation import cooled_solid_declared
+
+    return cooled_solid_declared(getattr(session, "messages", None) or [])
 
 
 def _thermal_view(session: Any) -> dict | None:

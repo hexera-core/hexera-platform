@@ -207,7 +207,9 @@ async function watchGeometryCheck(sessionId) {
   // THE STAGE OPENS AS SOON AS THE PART IS MEASURED, with the measuring step's own labels under
   // a banner that says what is happening, and takes the model's labels when they arrive. The
   // user is already turning the part while the model thinks - and can proceed without it.
-  let stage = null, stageFailed = false, told = "";
+  // `failedUnrouted` is what the latch below failed AT: an attempt made before the route landed
+  // draws no card, so the route landing is a reason to try once more (mountStage).
+  let stage = null, stageFailed = false, failedUnrouted = null, told = "";
   // THE WAY ON when a step gave up: the scout when the part was never measured, the naming when
   // it was. The watch goes on, so the fresh result lands where the old one would have.
   const retryFn = async (step) => { const d = await retryGeometryCheck(sessionId, step); told = ""; return d; };
@@ -244,6 +246,58 @@ async function watchGeometryCheck(sessionId) {
     }
     return reply;
   };
+  /* THE ONE MOUNT SITE, AND THE ONE STAGE. There were two sites: this one, gated on the route, and
+     a second in the `ready` branch that checked neither the route nor `stageFailed` and THREW THE
+     HANDLE AWAY - so a stage mounted there was never update()d and never release()d, its vtk scene
+     ran on for the life of the page, and the `!stage` guard here still passed afterwards, leaving
+     an un-updatable un-releasable stage behind whatever came next. Both branches call this instead.
+
+     THE PART IS SHOWN AT UPLOAD, not at the first answer. `d.route` is "" until the user's answer
+     settles what the mesh is for, and the stage used to wait for it, so a customer saw only chat
+     text for a whole turn after uploading their CAD. The stage now opens as soon as there is a skin
+     to draw, and the stage ITSELF builds its form when the route lands (geometry_stage.growForm).
+     NOTHING IS MOUNTED TWICE. Re-mounting on a route change read well and was wrong: the server's
+     route is a pure function of ALL the user's messages, so an ordinary CFD customer who had
+     renamed an opening and set its role and then typed "and I want the stress in the bracket too"
+     had the flow stage released under them with their edits in it. */
+  async function mountStage(d, atReady) {
+    if (stage || !d) return;                 // open already: every poll updates it where it stands
+    // nothing to draw yet. At `ready` the attempt is made anyway: a check with no skin is exactly
+    // what the card stands in for, and the card is drawn by the stage's own fallback (main.js),
+    // never by geometryCard, which only follows a card that is already on the page.
+    if (!d.skin && !atReady) return;
+    /* IT COULD NOT DRAW AND NOTHING HAS CHANGED, so the card stands in and there is nothing to
+       try again for. TWO things change. `ready` is one: reaching it is what gives the card its
+       pictures. THE ROUTE LANDING IS THE OTHER, and it is what gives the card AT ALL - an attempt
+       made before the user's answer settled the route draws no card, because the stage suppresses
+       the fallback while `route` is "" (viewer/geometry_stage.js:229: WHICH form the card would
+       carry is exactly what is unsettled then, and a flow card on an FEA part is the wrongness
+       that gate exists to prevent). The part is now shown from the UPLOAD, so that unrouted
+       attempt is the first one, and latching on it left an ordinary CFD customer whose stage
+       cannot draw - no WebGL, or one 500 on the skin GET - with no stage AND no card for the
+       whole naming step, which was 1,022 s on the measured first customer assembly: every later
+       scouted poll returned here, and the `deps.geometryCard(d)` beside the call only follows a
+       card that is already on the page (render/stage.js:324). HEAD attempted only once the route
+       was in, which is why it had the card. MEASURED in Chrome, the composer driven from a real
+       upload with the skin GET answering 500, at the poll that carried the route: before, cards
+       0, proceed 0; after, cards 1, rows 2, Proceed pressable and confirming.
+       The route moves one way and once, so this is at most one further attempt. */
+    const unrouted = d.route === "" && !d.thermal && !d.fea;
+    if (stageFailed && unrouted === failedUnrouted && !atReady) return;
+    failedUnrouted = unrouted;
+    stage = await deps.geometryCheck(sessionId, d, confirmFn, retryFn);   // null when it cannot draw
+    if (stage === null) stageFailed = true;
+    else holdOnStage();
+  }
+  /* THE PART ALONE IS NOT A FORM. Until the route lands the stage shows the part and nothing to
+     answer, so a check that fails under it is, to the chat, a check with no stage: the box is
+     released rather than told to go and press a Proceed that is not there. The stage is asked
+     (`hasForm`) rather than tracked here, because a second notion of the route in this file is
+     what let a real form stage be read as not-a-form-stage and torn down under the user. */
+  const formStage = () => (stage && stage.hasForm && stage.hasForm() ? stage : null);
+  /* the part is on the stage WITH ITS FORM (a preview while a big file is still measured, or the
+     route having just landed): the box says where to go on, not that the part is still being drawn */
+  function holdOnStage() { if (formStage() && isHeld()) holdInput(stageWait(), STAGE_WAIT_MS); }
   for (let n = 0; n < CHECK_POLL_MAX; n++) {
     if (getState.sessionId() !== sessionId) return;
     let d = null;
@@ -261,16 +315,20 @@ async function watchGeometryCheck(sessionId) {
       // answered, on the stage or the card, whatever the naming did afterwards
       _checkState = "done"; releaseHold(); if (stage) stage.release(); return;
     }
-    if (status === "off" || status === "unsupported" || (status === "failed" && !stage && !d.retry)) {
+    if (status === "off" || status === "unsupported" || (status === "failed" && !formStage() && !d.retry)) {
       if (status === "failed" && d.reason) {
         deps.notice.show("The geometry check could not read this file; the questions will "
           + "cover it instead.", "warn");
       }
       _checkState = "over";
       releaseHold();                               // nothing to wait for any more
+      // the watch ends here, so the part-only stage goes with it rather than leaving a vtk scene
+      // nothing drives for the life of the page. A form stage is never touched: the user may be
+      // part-way through answering on it.
+      if (stage && !formStage()) { stage.release(); stage = null; }
       return;
     }
-    if (status === "failed" && !stage) {
+    if (status === "failed" && !formStage()) {
       // THE CHECK GAVE UP BEFORE THE PART WAS DRAWN - a drawing that took too long, a worker
       // that died - and can be run again. Said once per outcome, with the way on: try again, or
       // carry on in the chat, which asks what the picture would have settled. The watch goes on:
@@ -288,25 +346,22 @@ async function watchGeometryCheck(sessionId) {
       _checkState = "over";
       releaseHold();
       if (stageFailed) deps.geometryCard(d);     // the card keeps the part; Proceed follows the unit
-    } else if (status === "failed" && stage) {
+    } else if (status === "failed" && formStage()) {
       // the naming gave up after the stage opened: the code's labels stand, the user proceeds -
       // or runs the naming again from the stage, so the watch goes on
       stage.update(d); _checkState = "ready";
       if (isHeld()) holdInput(stageWait(), STAGE_WAIT_MS);
       if (!d.retry) return;
     } else if (status === "scouted") {
-      // THE STAGE OPENS ONCE THE PURPOSE IS KNOWN (`route`: what the user said the mesh is for):
-      // an FEA part gets its own stage, never the flow form with its stickers. A thermal model's
-      // file says it all by itself, so it opens at once.
-      if (d.skin && !stage && !stageFailed && (d.thermal || d.route)) {
-        stage = await deps.geometryCheck(sessionId, d, confirmFn, retryFn);   // null when the stage cannot draw
-        if (stage === null) stageFailed = true;                               // the card stands in
-        // the part is on the stage (a preview while a big file is still measured): the box says
-        // where to go on, not that the part is still being drawn
-        else if (isHeld()) holdInput(stageWait(), STAGE_WAIT_MS);
-      }
-      if (stage) stage.update(d);            // the banner: waiting on the chat, the unit, or the naming
-      else if (stageFailed) deps.geometryCard(d);   // the card's Proceed follows the unit, in place
+      // THE PART IS DRAWN AS SOON AS THERE IS A SKIN, and the stage grows its form once the
+      // purpose is known (`route`: what the user said the mesh is for) - an FEA part gets the FEA
+      // panel, never the flow form with its stickers. A thermal model's file says it all by
+      // itself, so its stage opens routed at once.
+      await mountStage(d);
+      if (stage) {
+        stage.update(d);                     // the banner, and the form itself once the route lands
+        holdOnStage();
+      } else if (stageFailed) deps.geometryCard(d);  // the card's Proceed follows the unit, in place
     } else if (status === "ready" && d.named !== false) {
       // NAMED ON THE PREVIEW (a big file whose full reading is still running): the watch goes on
       // until that reading lands, and the stage is handed the check once more when it does - not
@@ -315,7 +370,8 @@ async function watchGeometryCheck(sessionId) {
       if (!readySeen || !waitingFull) {
         _checkState = "ready";
         if (isHeld()) holdInput(stageWait(), STAGE_WAIT_MS);
-        if (stage) stage.update(d); else if (!readySeen) await deps.geometryCheck(sessionId, d, confirmFn, retryFn);
+        await mountStage(d, !readySeen);
+        if (stage) stage.update(d); else if (stageFailed) deps.geometryCard(d);
       }
       readySeen = true;
       if (!waitingFull) return;

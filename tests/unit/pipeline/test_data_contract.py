@@ -116,7 +116,7 @@ def test_intake_prompt_blocks_are_registered_and_composed():
     import meshpipeline.agents.intake.agent as intake
     names = [b[0] for b in intake.INTAKE_PROMPT_BLOCKS]
     assert names == ["quality_criteria", "engine_first", "geometry_check", "thermal_model", "purpose_map", "fea_path",
-                     "propose_first",
+                     "cooled_solid", "propose_first",
                      "ask_plainly", "user_notes", "plain_text"]
     for name, purpose, build in intake.INTAKE_PROMPT_BLOCKS:
         assert purpose and callable(build)

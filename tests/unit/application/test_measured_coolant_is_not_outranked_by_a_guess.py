@@ -22,8 +22,6 @@ principle was missing.
 """
 from __future__ import annotations
 
-import pytest
-
 from meshpipeline.application.geometry_check import _kinds_on_offer, _proposal
 
 #: the scout's own reading of that plate: a box in a flow, and sure enough of it to win on numbers

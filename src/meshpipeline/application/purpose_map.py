@@ -1,9 +1,11 @@
 # Responsibility: Read what the user said the mesh is for and say which path it takes - CFD, FEA,
 # electronics cooling, or FEA "heat in a solid part" - and, when the words do not say, the one
-# short question that settles it. Also the FEA path's one required question ("What will you
-# analyze?") and the reading of its answer.
+# short question that settles it. Also each declared path's one required question - the FEA path's
+# ("What will you analyze?") and a cooled solid's ("What is the coolant, and how much of it
+# flows?") - and the reading of its answer.
 # Owns: the cue words, the routing rule, the two purpose questions and their buttons, the FEA
-# analysis types (V1 and "coming soon") and the hold line an FEA part is checked under.
+# analysis types (V1 and "coming soon"), the coolants a cooled solid is offered, and the hold line
+# an FEA part is checked under.
 # Boundaries: pure. It reads words and returns a reading; it stores nothing, asks no model and
 # never changes what a user declared. An ECXML upload is routed by its format before any of this
 # is read (contracts/intake_formats check_mode "thermal").
@@ -91,8 +93,28 @@ _FEA = _rx(
 _FLOW = _rx(
     # \baero as a PREFIX matches AEROSPACE, so "aerospace bracket, static stress" read as
     # mechanics AND flow and asked which domain, on a sentence with no fluid in it at all.
+    #
+    # ANCHORING IT DROPPED THE TWO AERO WORDS THAT ARE NOT "AERO". Measured against main on 70
+    # phrases, 2026-11-12 - origin/main's reading first, then HEAD 42d8a731's, which is what the
+    # two patterns below put back (this file reads all of these as origin/main does):
+    #
+    #     mesh this aerofoil                   flow external  ->  ask domain, why "no cue"
+    #     aeroacoustics of the side mirror     flow external  ->  ask domain, why "no cue"
+    #
+    # The prefix had been carrying them, so the anchor took them with it, and the reason string
+    # then reported no cue on a sentence whose only noun is an aerofoil. Named here instead of
+    # loosening the anchor back: each of these can only mean a fluid moving past a body, which
+    # "aerospace" cannot.
+    #
+    # THE AMERICAN SPELLING IS DELIBERATELY NOT HERE. `\baero` never matched "airfoil" either, so
+    # adding it would not restore a reading - it would change one. Measured 2026-11-12 side by
+    # side with origin/main and HEAD 42d8a731: "mesh this airfoil" asks the domain question on all
+    # three, and twelve mechanics frames ("stress in this airfoil" and the rest) read fea on all
+    # three. Adding it would move the first and leave the second where it is, because these two
+    # patterns are read as a body's NAME below (_A_BODYS_NAME) and a body's name loses to a
+    # mechanics word. Restoring what the anchor took is still the whole job.
     r"\bcfd\b", r"\bfluid\b(?![- ]structure)", r"\bflow", r"\bairflow", r"\baero\b",
-    r"\baerodynamic", r"\bdrag\b",
+    r"\baerodynamic", r"\baerofoil", r"\baeroacoustic", r"\bdrag\b",
     r"\blift\b", r"\bdownforce", r"\bwind\b", r"pressure (drop|loss)", r"\bhead loss", r"\bturbulen",
     r"\bopenfoam\b", r"\bfluent\b", r"star-?ccm", r"\bcfx\b", r"\bvelocity", r"\b\d+\s?(m/s|km/h|mph)",
     r"\bmach\b", r"\breynolds", r"\by\+", r"\byplus", r"boundary layer", r"\binlet", r"\boutlet",
@@ -112,8 +134,9 @@ _INTERNAL = _rx(r"\bthrough\b", r"\binside\b", r"\binternal", r"\bpipe", r"\bduc
                 r"\bartery", r"\bimpeller", r"\bmixing\b", r"\bin the (room|tank|combustor)")
 _EXTERNAL = _rx(r"\baround\b", r"\bover\b", r"\bexternal", r"\baero", r"\bdrag\b", r"\blift\b",
                 r"\bdownforce", r"\bwind\b", r"\bhull\b", r"\bwake\b")
-#: ...and the subset that can ONLY mean flow past a body, which is what may overrule a piece of
-#: thermal hardware. "around" and "over" are in _EXTERNAL above because they are how a user says
+#: ...and the words that can ONLY mean flow past a body, which is what may overrule a piece of
+#: thermal hardware. It began as a subset of _EXTERNAL and is a set of its own now - two lessons
+#: apart, below. "around" and "over" are in _EXTERNAL above because they are how a user says
 #: which way the fluid goes, and they are right for that - but they are hopeless as a veto, and
 #: using the whole of _EXTERNAL for one sent these to plain car-style CFD:
 #:
@@ -130,8 +153,166 @@ _EXTERNAL = _rx(r"\baround\b", r"\bover\b", r"\bexternal", r"\baero", r"\bdrag\b
 #: plate, coolant at 2 L/min" vetoed its own coolant and went to car-style CFD (why="flow: aero"),
 #: as did "aerospace cold plate thermal analysis". A whole industry's name is not a question about
 #: air flowing past a body.
-_PAST_A_BODY = _rx(r"\bexternal", r"\baero\b", r"\baerodynamic", r"\bdrag\b", r"\blift\b",
-                   r"\bdownforce", r"\bwind\b", r"\bhull\b", r"\bwake\b")
+#:
+#: AND IT IS THE QUANTITY ASKED FOR, NOT WHERE THE AIR IS. `\bexternal` and `\bwind` were in this
+#: set too, and they say where the air is rather than what is being asked about it, which is how
+#: a user says a part is AIR-COOLED. Measured against main on 70 phrases, 2026-11-12 -
+#: origin/main's reading first, then HEAD 42d8a731's, which is what taking the two words out of
+#: this set put back (this file reads all four as origin/main does):
+#:
+#:     wind tunnel test of a heat sink                electronics  ->  flow external
+#:     heat sink in a wind tunnel at 5 m/s            electronics  ->  flow external
+#:     cooling the brake disc with external airflow   electronics  ->  flow external
+#:     turbine blade cooling with external flow       electronics  ->  flow external
+#:
+#: Four pieces of genuinely air-cooled thermal work sent to car-style CFD, where the metal is
+#: never meshed. A wind tunnel is where you measure a heat sink; "with external airflow" names
+#: the coolant. What is left here is the aerodynamic QUANTITY or PHENOMENON of a body in a free
+#: stream, and every veto the set was built for rests on one of those: "external drag on an
+#: electronics enclosure" (drag), "wake behind the chip conveyor" (wake), "downforce on this
+#: cooling vent" (downforce).
+#:
+#: AND A BODY'S NAME IS NOT A QUANTITY EITHER, which is why `aerofoil` and `aeroacoustic` are NOT
+#: here. They were, on the argument that each names a body in a free stream - but this set is read
+#: as a VETO over heat, and a turbine blade is an aerofoil whose whole job is heat. Measured
+#: 2026-11-12 on 192 generated turbomachinery and acoustics phrases - the 12 bodies x 16 frames
+#: of tests/unit/application/purpose_phrases.TURBO_BODIES and TURBO_FRAMES - through four
+#: purpose_maps: origin/main, HEAD 42d8a731, this file with the two patterns in the veto, and this
+#: file with them out of it. 96 phrases change, and in ALL 96 the reading with them OUT matches
+#: both origin/main AND HEAD, while the reading with them in matches NEITHER on any of the 96; 94
+#: of the 96 are a settled route under the veto and not an ask. Both baselines first, then the
+#: reading with the two patterns in the veto:
+#:
+#:     conduction through the turbine blade aerofoil            fea_heat     ->  flow
+#:     internal cooling of the aerofoil                         electronics  ->  flow
+#:     cooling the nozzle guide vane aerofoil with film holes    electronics  ->  flow
+#:     conduction through the aeroacoustic liner                 fea_heat     ->  flow
+#:     thermal stress in the compressor aerofoil                 fea_heat     ->  fea
+#:
+#: Four of those are a WRONG ROUTE and not an ask - the cost this file's own doctrine says must
+#: never be paid - and the fifth keeps the FEA path but loses the heat in the solid, so a thermal
+#: stress reads as a static one. The customer is a gas-turbine one, not a semiconductor one. The set's own
+#: corpus labels "turbine blade cooling with external flow" electronics, and with the two patterns
+#: in the veto "turbine blade aerofoil cooling" read flow.
+#:
+#: AND ON NONE OF THE 192 DOES THIS FILE MATCH NEITHER BASELINE: 59 of them restore origin/main's
+#: reading (which HEAD's `\baero\b` anchor had cost), 10 keep HEAD's, and on the other 123 the two
+#: baselines agree and so does this file.
+#:
+#: THE REMOVAL COSTS NOTHING AND KEEPING THEM BOUGHT NOTHING. Measured the same day on the shared
+#: set, 251 phrases: 242/251 with them in the veto and 242/251 with them out, the same nine
+#: misses either way (misses only with them out: none; misses only with them in: none). The four
+#: phrases they were added for - "mesh this aerofoil", "aeroacoustics of the side mirror",
+#: "aerofoil at 2 degrees incidence", "aeroacoustic noise from the wing" - read flow/external on
+#: origin/main, with them in the veto AND with them out, because `\baerofoil` and `\baeroacoustic`
+#: in _FLOW already carry them. They stay in _FLOW; they are out of the veto.
+#:
+#: `external` AND `wind` DID NOT STOP BEING EVIDENCE, THEY STOPPED BEING THIS SET'S KIND OF
+#: EVIDENCE, and they are read at the gate's weaker half now (_WHERE_THE_AIR_IS, below). The measurement
+#: that used to sit here was "wind tunnel test of this enclosure", and it was the wrong phrase: a
+#: bare enclosure is not in _THERMAL_HARDWARE, so the gate cannot open on it and that sentence
+#: reads as flow whether these two words are in this set or not. Add the one word that makes it a
+#: real customer sentence - electronics - and it reverses. Measured 2026-11-12 with HEAD 42d8a731's
+#: purpose_map and this one loaded side by side as standalone modules, HEAD's reading first:
+#:
+#:     wind tunnel test of this enclosure                      flow external  ->  flow external
+#:     wind tunnel test of this electronics enclosure          flow external  ->  electronics
+#:     wind tunnel test of an electronics enclosure at 20 m/s  flow external  ->  electronics
+#:     wind pressure on the electronics enclosure              flow external  ->  electronics
+#:     external flow over the inverter cabinet with its fans   flow external  ->  electronics
+#:
+#: Four ways of asking for the wind loading or the wind-tunnel aero of an outdoor electronics
+#: cabinet, all four taken down the conjugate-cooling path, and the last says "external flow"
+#: outright. Nothing was left to veto them: `enclosure` and `fans?` are themselves the
+#: corroboration _COOLING_AT_IT accepts.
+_PAST_A_BODY = _rx(r"\baero\b", r"\baerodynamic",
+                   r"\bdrag\b", r"\blift\b", r"\bdownforce", r"\bhull\b", r"\bwake\b")
+#: A BODY'S NAME, AND NOT A QUESTION ABOUT A FLUID - the two flow cues this branch added, held to
+#: the same weak-evidence rule a thermal hardware noun is held to at the heat gate.
+#:
+#: `\baerofoil` and `\baeroacoustic` are in _FLOW because an aerofoil is a body in a free stream
+#: and nothing else (see _FLOW). But they name the PART, the way `cold plate` and `chip` do, and
+#: the heat gate already settles what a part's name is worth: it opens on a hardware noun only
+#: where "the words name no mechanics" (`not fea`, in read_purpose below). The flow side had no
+#: such rule, so adding these two patterns created a tie that HEAD 42d8a731 did not have and
+#: turned a stress analysis of an aerofoil into a question about which physics was meant.
+#:
+#: Measured 2026-11-12, HEAD 42d8a731's purpose_map and this one loaded side by side as standalone
+#: modules, over twelve mechanics frames x two British-spelt bodies - 24 phrases, HEAD's reading
+#: first, and HEAD's reading on all 24 is "fea":
+#:
+#:     stress in this aerofoil                   fea  ->  ask domain, why "both: stress, aerofoil"
+#:     vibration of this aerofoil                fea  ->  ask domain
+#:     modal analysis of this aerofoil           fea  ->  ask domain
+#:     FEA of this aerofoil                      fea  ->  ask domain
+#:     is this aerofoil strong enough            fea  ->  ask domain
+#:     fatigue of this aerofoil                  fea  ->  ask domain
+#:     buckling of this aerofoil                 fea  ->  ask domain
+#:     ...and the same twelve again for "aeroacoustic liner"
+#:
+#: A stress analysis of an aerofoil is FEA. The rule below reads it as FEA again: where EVERY flow
+#: cue in the sentence is one of these body names and the words also name mechanics, the mechanics
+#: decides. One aerodynamic quantity in the sentence ("drag on the aerofoil") and the set is no
+#: longer the whole of the flow evidence, so the tie stands and the domain question is asked.
+#:
+#: THE AMERICAN SPELLING IS STILL NOT IN _FLOW, and this rule is why it need not be: adding
+#: `\bairfoil` would no longer cost "stress in this airfoil" its mechanics reading, but it would
+#: still MOVE one - "mesh this airfoil" asks the domain question on origin/main, on HEAD and here -
+#: and no finding asks for that. Restoring what the `\baero\b` anchor took is still the whole job.
+_A_BODYS_NAME = _rx(r"\baerofoil", r"\baeroacoustic")
+#: WHERE THE AIR IS - the weaker half of the same argument, and it is read in ONE place: whether a
+#: bare electronics noun may open the heat gate. It must not beat a heat word, because "cooling the
+#: brake disc with external airflow" and "wind tunnel test of a heat sink" are air-cooled thermal
+#: work that names its coolant with exactly these two words. It must beat a hardware noun that has
+#: nothing behind it but an enclosure or a fan, because that is the four readings above. The
+#: strength is the difference between the two sets, not the words in them.
+#:
+#: TWO WORDS, AND NOT THE WHOLE OF _EXTERNAL. "around" and "over" are the rest of that set and they
+#: are hopeless as a veto at any strength, which is the lesson _PAST_A_BODY was split out of
+#: _EXTERNAL to record. Measured 2026-11-12 on the 251-phrase shared set: these two words score
+#: 242/251, and the whole of _EXTERNAL substituted in their place scores 237/251. The five it loses
+#: are "airflow over the PCB", "airflow around the GPU", "air over the IGBT module", "air around
+#: the chip package" and "fan blowing over the processor" - four of them back on the car-style
+#: path where the metal is never meshed, and the fifth asking which physics was meant. "pressure
+#: drop over the cold plate" survives even that, because a cold plate is a coolant said outright
+#: and the coolant beats both vetoes.
+#:
+#: AND IT REACHES WELL BEYOND COLD PLATES - recorded here because the decision is kept and its
+#: breadth was not. `external` used to veto the heat gate outright; at this weaker strength it
+#: only vetoes a BARE hardware noun, so every sentence whose heat word is its own ("external
+#: thermal resistance of ...") now opens the gate where it did not. Measured 2026-11-12 over 490
+#: generated phrases - the 35 ordinary parts x 14 "external ..." frames of
+#: tests/unit/application/purpose_phrases.EXTERNAL_BREADTH_PARTS and EXTERNAL_BREADTH_FRAMES -
+#: HEAD 42d8a731 and this file side by side as standalone modules: 291 of the 490 move, in seven
+#: shapes:
+#:
+#:     ask domain     ->  electronics  140
+#:     ask domain     ->  ask thermal  110
+#:     flow           ->  electronics   25
+#:     fea            ->  ask domain     5
+#:     flow external  ->  electronics    5
+#:     fea            ->  ask thermal    4
+#:     ask domain     ->  fea_heat       2
+#:
+#: "external thermal resistance of the <part>" routes to electronics cooling for 34 of the 35
+#: parts, a car body, an engine block, a cylinder head, a bridge deck, a ship and a solar panel
+#: among them, and six of those were flow on HEAD (the exhaust manifold, the duct, the nozzle, the
+#: mixing tank, the wind turbine and the impeller). The one exception is the weldment, and it is
+#: also where every one of the nine fea rows above is: `weld` is a mechanics cue, so HEAD read
+#: "external thermal resistance of the weldment" as the FEA path outright (route fea, analysis
+#: thermal, why="mechanics: weld") and this file asks which physics was meant - which is what
+#: origin/main does with it too. Only FOUR of the 490
+#: appear in the 251-phrase shared set (the first frame on the engine block, the car body, the duct
+#: and the nozzle), so the score says almost nothing about any of this;
+#: tests/unit/application/purpose_phrases.py carries six rows as its `semi_breadth` origin and
+#: test_the_word_external_reaches_past_cold_plates runs the whole 490, so the next reader finds
+#: this scored rather than argued.
+#:
+#: It is kept because "external thermal resistance" is how the trade states a cooling problem and
+#: `thermal resistance` is in _THERMAL_HARDWARE for that reason. The cost is a thermal reading on
+#: an engine block where HEAD asked which physics was meant - an ask traded for a thermal route,
+#: not a wrong route traded for a right one.
+_WHERE_THE_AIR_IS = _rx(r"\bexternal", r"\bwind\b")
 
 #: COOLANT INSIDE METAL, SAID OUTRIGHT - and these beat the veto above.
 #:
@@ -199,6 +380,50 @@ _THERMAL_HARDWARE = _rx(
     r"\btdp\b", r"\bhot ?spots?\b", r"junction[- ]to[- ]ambient", r"junction temp",
     r"thermal resistance", r"\btheta[- ]?ja\b",
 )
+#: ...AND THE HALF OF THEM THAT SPEAKS FOR ITSELF: the nouns that name heat, coolant, a cooling
+#: device or silicon outright. Nobody says "cold plate", "heat sink", "TIM2", "junction to ambient"
+#: or "bare die" about anything but heat, so one of these opens the gate on its own.
+#:
+#: THE OTHER HALF IS A PIECE OF ELECTRONICS WITH AN EVERYDAY HOMONYM - a chip, a wafer, a
+#: processor, an interposer, an inverter - and on its own it is no evidence of heat at all.
+#: Measured against main on 70 phrases, 2026-11-12 - origin/main's reading first, then HEAD
+#: 42d8a731's, which is what splitting this set off put back (this file reads all five as
+#: origin/main does):
+#:
+#:     inverter duct flow                         flow internal  ->  electronics
+#:     mesh this wafer check valve                ask domain     ->  electronics
+#:     chip ejection chute                        ask domain     ->  electronics
+#:     processor of the signal, mesh the housing  ask domain     ->  electronics
+#:     mesh this interposer plate                 ask domain     ->  electronics
+#:
+#: A wafer check valve is a valve, a chip ejection chute carries swarf, "processor of the signal"
+#: is a verb and an interposer plate is a plate. The first is the worst of the five: a hardware
+#: noun beat "duct flow", which says outright what the user wants. This is the same trap as "mesh
+#: this part for Tim" matching TIM, which the file already names; these five are it with a noun
+#: that happens to be a real semiconductor word as well.
+_THERMAL_BY_NAME = _rx(
+    # the cooling hardware itself, and the coolant
+    r"\bcold ?plates?\b", r"\bheat ?sinks?\b", r"\bheat ?spreaders?\b", r"\bheat ?pipes?\b",
+    r"\bvapou?r chamber", r"\bmicro ?channel", r"\bmini ?channel", r"\bpin ?fins?\b",
+    r"\bcoolants?\b", r"\btim ?[0-9]\b", r"thermal interface", r"\bimmersion cool",
+    r"\bdirect[- ]to[- ]chip\b", r"\bd2c\b",
+    # silicon said outright - the qualified die the hardware set already insists on
+    r"\bdie ?(stack|attach|shadow)",
+    r"\b(silicon|bare|packaged?|flip[- ]?chip|logic|memory) dies?\b",
+    # how the trade states a THERMAL problem: these are heat quantities, not part names
+    r"\btdp\b", r"\bhot ?spots?\b", r"junction[- ]to[- ]ambient", r"junction temp",
+    r"thermal resistance", r"\btheta[- ]?ja\b",
+)
+#: WHAT TURNS A BARE ELECTRONICS NOUN INTO A QUESTION ABOUT HEAT: something cooling it, or air
+#: being moved at it. These are the `_COOLING` words that are neither heat words themselves (a
+#: heat word opens the gate before any of this is read) nor hardware nouns, so they are the
+#: independent evidence a weak noun needs. Every phrase in the set that rests on a weak noun is
+#: carried by one of them: "150 W processor with a fan" (a wattage, a fan), "airflow over the PCB"
+#: and "airflow around the GPU" (airflow), "fan blowing over the processor" (a fan), "air over the
+#: IGBT module" and "air around the chip package" (air moved at it).
+_COOLING_AT_IT = _rx(r"\bfans?\b", r"\bairflow", r"\bair (move|moves|moving|around|over|through)",
+                     r"\bboards?\b", r"\benclosure", r"\bserver", r"\brack\b", r"\bleds?\b",
+                     r"\b\d+(\.\d+)?\s?w\b", r"6sigma")
 #: ...heat in a solid part: conduction, the temperature inside the part, thermal stress.
 _SOLID_HEAT = _rx(
     r"\bconduct", r"thermal[- ]?(stress|strain|expansion|fatigue|structural|mechanical|deformation)",
@@ -240,6 +465,44 @@ ANALYSIS_QUESTION = "What will you analyze?"
 COMING_SOON = ("{label} is coming soon. For now I'll mesh the part as for static stress: the same "
                "solid mesh, with every face named, so you can set up the rest in your solver.")
 
+#: THE COOLED SOLID PATH'S ONE REQUIRED QUESTION, and it is the FEA path's mechanism exactly.
+#:
+#: An FEA part has one thing the application asks for itself rather than hoping the model does:
+#: the analysis type (ANALYSIS_QUESTION above, asked at agents/intake/message.analysis_question_due
+#: once the part is confirmed on its stage). A cooled solid - a cold plate, a water block, a cooled
+#: package - has one too, and it was prompt-only: the intake prompt block tells the model to ask
+#: "what it is (water, a water-glycol mix, a dielectric) and how much of it flows", and nothing
+#: made it. A prompt is a hope; this is the same question asked by the application, with buttons,
+#: and only when the user's own words have not already named the coolant.
+#:
+#: BOTH HALVES IN ONE QUESTION, because that is what the prompt block asks for and because a
+#: second question about the same passage is a nag. The buttons answer the fluid half; the rate is
+#: typed, and a reply that re-asks the fluid is caught by the loop's repeat-question rule, which
+#: reads the application's own questions.
+COOLANTS = (
+    ("water", "Water"),
+    ("glycol", "A water-glycol mix"),
+    ("dielectric", "A dielectric fluid"),
+)
+COOLANT_KEYS = tuple(k for k, _l in COOLANTS)
+COOLANT_LABELS = dict(COOLANTS)
+COOLANT_QUESTION = "What is the coolant, and how much of it flows?"
+#: The buttons under it: the words sent are clear answers themselves, so a click reads exactly as
+#: typing them would - the same rule THERMAL_CHOICES and DOMAIN_CHOICES are written to.
+COOLANT_CHOICES = tuple((label, label) for _k, label in COOLANTS)
+
+#: Which coolant the words name, most specific first: a glycol mix before the water in it, and a
+#: named dielectric before the general word. "" when the words name none, and the question is then
+#: the one the application asks.
+_COOLANT_RX = (
+    ("glycol", _rx(r"\bglycol", r"\bpgw\b", r"\begw\b", r"\bwater[- ]?glycol", r"\bantifreeze",
+                   r"\bcoolanol")),
+    ("dielectric", _rx(r"\bdielectric", r"\bnovec\b", r"\bfluorinert\b", r"\bfc-?\d+\b",
+                       r"\bmineral oil\b", r"\btransformer oil\b", r"\bsingle[- ]phase oil\b",
+                       r"\bimmersion fluid\b")),
+    ("water", _rx(r"\bwater\b", r"\bdeionised water\b", r"\bdeionized water\b", r"\bdi water\b")),
+)
+
 #: Which analysis the words name, most specific first: buckling before stress, fatigue before a
 #: crack, a thermal stress before a stress.
 _ANALYSIS_RX = (
@@ -280,6 +543,18 @@ def analysis_of(text: str) -> str:
     return ""
 
 
+def coolant_of(text: str) -> str:
+    """The coolant the words name, or "" (then the cooled-solid path asks COOLANT_QUESTION).
+
+    `analysis_of` for the other path's one required question, and read the same way: the first
+    pattern that matches wins, most specific first."""
+    said = str(text or "")
+    for key, rx in _COOLANT_RX:
+        if rx.search(said):
+            return key
+    return ""
+
+
 def _topology(text: str) -> str:
     inside, outside = bool(_INTERNAL.search(text)), bool(_EXTERNAL.search(text))
     return "internal" if inside and not outside else "external" if outside and not inside else ""
@@ -313,17 +588,46 @@ def read_purpose(text: str) -> PurposeReading:
     #
     # Internal-flow words are deliberately not in the veto at all: a cold plate's coolant IS an
     # internal flow, and "microchannel cold plate, water at 2 L/min" has to keep reaching cooling.
-    # AERODYNAMICS VOCABULARY BEATS A HEAT WORD TOO, not just a hardware noun. Drag, lift,
-    # downforce, aero, wake, hull and wind are not words anyone reaches for about coolant inside
-    # metal, and the heat word is often in the PART'S NAME rather than the question: "downforce on
-    # this cooling vent" went to electronics cooling on the "cool" in "cooling", which is the
-    # vent's name and not what was asked about it.
+    # AN AERODYNAMIC QUANTITY BEATS A HEAT WORD TOO, not just a hardware noun. Drag, lift,
+    # downforce, aero, wake and hull are not words anyone reaches for about coolant inside metal,
+    # and the heat word is often in the PART'S NAME rather than the question: "downforce on this
+    # cooling vent" went to electronics cooling on the "cool" in "cooling", which is the vent's
+    # name and not what was asked about it.
+    #
+    # `wind` IS NOT IN THAT LIST ANY MORE, and neither is `external`. This comment sat 240 lines
+    # below the paragraph that had already taken `wind` out of the set and still said "and wind",
+    # so the file carried two recorded measurements that contradicted each other about the same
+    # word, and the lower one sat directly above the code it misdescribes. Both words are read at
+    # the weaker strength now (_WHERE_THE_AIR_IS), which beats a bare hardware noun and loses to a
+    # heat word - by design, because "cooling the brake disc with external airflow" names its
+    # coolant with exactly those words. Measured 2026-11-12 in this tree, one word apart:
+    #
+    #     wind over this heat sink     electronics       (where-the-air-is loses to the heat word)
+    #     drag on this heat sink       flow              (the quantity wins)
+    #
+    # `aerofoil` and `aeroacoustic` are not in the list either: they name a BODY rather than a
+    # quantity, and the veto over heat is the wrong place for them - see _A_BODYS_NAME above.
     # ...AND THE COOLANT BEATS THE VETO. A part named as a cold plate, or a coolant with a flow
     # rate, is the one case where aerodynamics vocabulary sits in a question that is not about air
     # past a body: "externally finned cold plate" is a cold plate with fins on the outside.
     inside = _hits(_COOLANT_INSIDE, said)
     past_a_body = None if inside else _PAST_A_BODY.search(said)
-    if not past_a_body and (_HEAT.search(said) or (hardware and not fea)):
+    # ...AND A HARDWARE NOUN ONLY OPENS THE GATE WHERE SOMETHING SAYS THE QUESTION IS HEAT. That
+    # is the noun itself when it names heat, coolant or silicon outright (_THERMAL_BY_NAME), the
+    # coolant said outright, or something cooling it (_COOLING_AT_IT). A bare electronics noun -
+    # a wafer, a chip, a processor, an interposer, an inverter - says nothing on its own, and five
+    # phrases measured against main show what it cost when it did (see _THERMAL_BY_NAME).
+    heat_at_it = bool(inside) or bool(_THERMAL_BY_NAME.search(said)) \
+        or bool(_COOLING_AT_IT.search(said))
+    # ...AND THE WEAK NOUN ALSO LOSES TO WHERE-THE-AIR-IS, which a heat word does not. Measured
+    # 2026-11-12 against HEAD 42d8a731: without this clause "wind tunnel test of this electronics
+    # enclosure", "wind pressure on the electronics enclosure" and "external flow over the inverter
+    # cabinet with its fans" all read as electronics instead of flow/external, because `enclosure`
+    # and `fans?` are the corroboration _COOLING_AT_IT accepts and `external` and `wind` had been
+    # taken out of the veto above. A coolant said outright still beats it, the same as above.
+    air_outside = None if inside else _WHERE_THE_AIR_IS.search(said)
+    weak_noun = bool(hardware) and heat_at_it and not fea and not air_outside
+    if not past_a_body and (_HEAT.search(said) or weak_noun):
         solid = _hits(_SOLID_HEAT, said)
         # The hardware noun is weak evidence, and heat-in-a-solid words outrank it the same way
         # mechanics words do at the gate: a die attach whose CTE mismatch is the question is heat
@@ -343,6 +647,17 @@ def read_purpose(text: str) -> PurposeReading:
                                   why="heat in a flow: " + ", ".join(flow))
         return PurposeReading(ask=ASK_THERMAL, why="heat, unclear: " + ", ".join(
             _hits(_HEAT, said) + cooling + solid + fea))
+    # A BODY'S NAME IS THE WEAK EVIDENCE, exactly as a thermal hardware noun is at the heat gate
+    # above ("not fea"): where the WHOLE of the flow evidence is the name of a body in a free
+    # stream and the words also name mechanics, the mechanics decides. A stress analysis of an
+    # aerofoil is FEA. The sentence is then read as if the name were not a flow cue at all, which
+    # is exactly what HEAD 42d8a731 did before `\baerofoil` and `\baeroacoustic` joined _FLOW - so
+    # the route, the analysis type AND the reason string all come out of the mechanics branch
+    # below, byte-identical to HEAD on all 24 measured phrases. One aerodynamic quantity in the
+    # sentence ("drag on the aerofoil") and this is no longer the whole of the flow evidence, so
+    # the tie stands and the domain question is asked. See _A_BODYS_NAME.
+    if fea and flow and set(flow) <= set(_hits(_A_BODYS_NAME, said)):
+        flow = []
     if fea and flow:
         if _FLOW_AS_LOAD.search(said):
             return PurposeReading(route=ROUTE_FEA, analysis=analysis_of(said) or "static",
@@ -415,6 +730,9 @@ def choices_for(reply: str) -> list[dict]:
         return [{"label": label + ("" if v1 else " (coming soon)"),
                  "send": label if v1 else f"{label} (coming soon)", "soon": not v1}
                 for _k, label, v1 in ANALYSES]
+    if text == COOLANT_QUESTION:
+        # every coolant this V1 meshes is meshed the same way: no "coming soon" among them
+        return [{"label": label, "send": send, "soon": False} for label, send in COOLANT_CHOICES]
     return []
 
 
@@ -453,8 +771,9 @@ def fea_hold_text(reading: PurposeReading) -> str:
 
 
 __all__ = ["ANALYSES", "ANALYSIS_KEYS", "ANALYSIS_LABELS", "ANALYSIS_QUESTION", "ASK_DOMAIN",
-           "ASK_THERMAL", "COMING_SOON", "DOMAIN_QUESTION", "ELECTRONICS_NOTE", "FEA_HOLD",
+           "ASK_THERMAL", "COMING_SOON", "COOLANTS", "COOLANT_CHOICES", "COOLANT_KEYS",
+           "COOLANT_LABELS", "COOLANT_QUESTION", "DOMAIN_QUESTION", "ELECTRONICS_NOTE", "FEA_HOLD",
            "HEAT_IN_SOLID_NOTE", "PurposeReading", "ROUTES", "ROUTE_ELECTRONICS", "ROUTE_FEA",
            "ROUTE_FLOW", "THERMAL_QUESTION", "V1_ANALYSES", "analysis_of", "choices_for",
-           "coming_soon_note", "fea_hold_text", "question_asked", "question_for", "read_purpose",
-           "reading_for"]
+           "coming_soon_note", "coolant_of", "fea_hold_text", "question_asked", "question_for",
+           "read_purpose", "reading_for"]

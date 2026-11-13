@@ -7,7 +7,6 @@
 # engine OUTSIDE its own turf on `n_solids >= 2`, and the recommender offered the electronics snap
 # grid for a STEP cold plate instead. A brazed or diffusion-bonded plate is a base and a lid, which
 # is the commonest way one is made, and the engine's own confirmation wording had said so all along.
-import pytest
 
 from meshpipeline.engines.capability import FLOW_MULTI_REGION
 from meshpipeline.engines.home_turf import TURF_FACTS, row_problems, verdict
@@ -40,10 +39,31 @@ def test_one_solid_with_passages_is_still_home():
     assert _turf(n_solids=1, coolant_inside=True) == "home"
 
 
-def test_a_single_solid_is_home_even_before_the_split_has_run():
-    """The older rule stands on its own: it needs no extraction to be true."""
+def test_a_single_solid_on_its_own_claims_nothing_now_that_the_loose_row_is_gone():
+    """`TurfRow("n_solids", "==", 1, "home")` was removed and this is the reading that shows it.
+
+    THE TEST THAT USED TO SIT HERE ASSERTED THE RULE THE CHANGE REMOVED, kept passing, and said
+    "the older rule stands on its own: it needs no extraction to be true". It passed because
+    `verdict` (engines/home_turf.py) returns TURF_HOME whenever no outside or weak row HOLDS -
+    including when every row is unmeasured. MEASURED 2026-11-12 on these exact facts, with the row
+    present and with it absent: severity "home" both times, strengths [] both times,
+    unmeasured [coolant_inside, cells_across_at_budget] both times. A severity assertion here
+    cannot fail, whatever the declaration says.
+
+    WHAT THE RANKER READS IS WHETHER ANYTHING HELD: engines/fitness.recommend blanks the turf
+    when nothing did. So that is what is asserted. With the row back, n_solids HOLDS on these
+    facts and the engine claims home on a part nobody has looked inside - a plate with open
+    grooves and no lid is one solid with no enclosed coolant at all, which this engine's own
+    advisory says it cannot mesh.
+    """
     facts = {k: v for k, v in CORINTIS.items() if k != "coolant_inside"}
-    assert verdict(SPEC, FLOW_MULTI_REGION, {**facts, "n_solids": 1}).severity == "home"
+    got = verdict(SPEC, FLOW_MULTI_REGION, {**facts, "n_solids": 1})
+    held = got.strengths + got.weak_spots + got.outside
+    assert not held, f"one solid alone held {[r.fact for r in held]}"
+    assert "coolant_inside" in got.unmeasured, "the missing fact is not reported as missing"
+    assert not any(r.fact == "n_solids" for r in SPEC.home_turf), (
+        "the solid-count row is back, so one solid claims this engine's turf off something that "
+        "is not the coolant")
 
 
 def test_a_file_whose_fluid_is_a_body_is_outside():

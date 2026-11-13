@@ -808,6 +808,14 @@ th,td{border-color:var(--border)}
 .gc-tools .gc-add.armed,.gc-tools .gc-measure.armed{border-color:var(--accent-line);background:var(--accent-soft);color:var(--accent-hover)}
 .gc-tools-hint{color:var(--text-faint);font-size:var(--fs-sm)}
 .gc-note{padding:0;margin-top:10px;color:var(--text-faint);font-size:var(--fs-sm);line-height:1.55}
+/* THE PART BEFORE ITS FORM: every customer who uploads CAD sees this panel, while the chat has
+   not yet said what the mesh is for. The waiting note stands in .gc-form, where the form's own
+   sections will stand, so it carries their rhythm - the top rule and 16px that .gc-actions opens
+   a form region with, the 2px the table closes on, and the same 0 side padding that keeps every
+   section of this panel on the lead's left edge (the card adds 16px; the stage does not). Without
+   a rule the box had none of it and read as one more paragraph of the panel's own flow. */
+.gc-stage.gc-waiting .gc-form{padding:16px 0 2px;border-top:1px solid var(--divider)}
+.gc-stage.gc-waiting .gc-form>.gc-note{margin-top:0}
 .gc-actions{display:flex;align-items:center;flex-wrap:wrap;gap:10px 14px;margin-top:14px;padding:16px 0 0;
   border-top:1px solid var(--divider)}
 .gc-proceed{flex:none;height:36px;padding:0 16px}

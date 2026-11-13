@@ -480,7 +480,7 @@ API: it logs that the directory is missing and leaves `/ui` and `/static` unmoun
 
 <!-- Regenerate: python -m meshpipeline.settings.inventory --reference -->
 
-Every supported setting (276 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
+Every supported setting (279 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
 
 | Setting | Exposure | Read by | Secret |
 |---|---|---|---|
@@ -640,6 +640,9 @@ Every supported setting (276 entries). `template` settings are the ones `.env.ex
 | `WORKSPACE_ARCHIVE_MAX_RATIO` | template | app |  |
 | `WORKSPACE_ARCHIVE_MAX_TOTAL_BYTES` | template | app |  |
 | `DISPUTE_MAX_FLAGS` | template | app |  |
+| `HEXERA_DETAIL_MAX_FACES` | internal | app |  |
+| `HEXERA_DRAWN_MAX_TRIANGLES` | internal | app |  |
+| `HEXERA_WINDOW_MAX_FACES` | internal | app |  |
 | `VIEWER_FINE_FILL` | template | app |  |
 | `VIEWER_FLAG_SPAN_FACTOR` | template | app |  |
 | `VIEWER_FRAME_FRAC` | template | app |  |

@@ -32,6 +32,8 @@ from __future__ import annotations
 import inspect
 from pathlib import Path
 
+import pytest
+
 from meshpipeline.engines.cfmesh_conjugate import review_surface as RS
 
 FLUID, SOLID = "fluid", "solid"
@@ -72,30 +74,89 @@ def test_a_workspace_with_no_regions_names_none(tmp_path):
     assert RS.delivered_regions(tmp_path) == []
 
 
-def test_a_surface_missing_a_region_is_refused_in_words():
-    """The source check, because reaching the publication needs gmsh and pyvista and a real
-    export. The refusal names both counts and both region lists, so a reader of the log knows
-    which half they would have been shown."""
-    src = inspect.getsource(RS.build_region_msh)
-    assert "delivered_regions(ws)" in src
-    assert "missing = [r for r in want if r not in groups]" in src
-    assert "logger.error" in src.split("missing:")[1][:400]
-    assert "NOT published" in src
-    # and it returns the same nothing as "no VTK at all", which finalize already treats as a real
-    # optional state
-    tail = src.split("missing:")[1][:900]
-    assert "return {}, None" in tail
+def test_a_surface_missing_a_region_is_refused_in_words(tmp_path, caplog):
+    """EXERCISED, NOT GREPPED. This asserted the literal source text of the refusal - the list
+    comprehension, the `logger.error` after the word "missing:", the `return {}, None` - and so
+    passed unchanged through a 198-line rewrite of the function without executing a line of it.
+
+    The mesh has two regions and the export carries one. Nothing may be published, and the log
+    has to name both counts and both region lists so a reader knows which half they would have
+    been shown.
+    """
+    import logging
+
+    pv = pytest.importorskip("pyvista")
+    _delivered(tmp_path, FLUID, SOLID)
+    # a finished export of the SOLID only
+    t = tmp_path / "VTK" / SOLID / "case_0"
+    (t / "boundary").mkdir(parents=True)
+    pv.Plane(i_resolution=2, j_resolution=2).save(t / "boundary" / "walls.vtp")
+    (tmp_path / "VTK" / SOLID / "case_0.vtm").write_text("<VTKFile/>")
+
+    with caplog.at_level(logging.ERROR, logger=RS.logger.name):
+        groups, bbox = RS.build_region_msh(tmp_path)
+
+    assert groups == {} and bbox is None
+    assert not (tmp_path / RS.REVIEW_MSH).exists(), "nothing half-written is left behind"
+    said = caplog.text
+    assert "the mesh has 2 region(s)" in said, said
+    assert "the surface would carry 1" in said, said
+    assert FLUID in said and SOLID in said
+    assert "NOT published" in said
 
 
-def test_the_refusal_is_the_state_finalize_already_handles():
+def test_the_refusal_is_the_state_finalize_already_handles(tmp_path, monkeypatch):
     """`native._review_aids` leaves out["surface"] as None when build_region_msh returns nothing,
     and the manifest then publishes no surface - which raises EVIDENCE_MISSING at the review. That
-    is the honest outcome and it is what the run with the PRUNED volume already did."""
+    is the honest outcome and it is what the run with the PRUNED volume already did.
+
+    EXERCISED, NOT GREPPED. This asserted on the source text of the call
+    ("groups, bbox = build_region_msh(ws)") and so broke the moment the call grew an argument,
+    while saying nothing about whether a falsy `groups` actually leaves the surface unpublished -
+    which is the only thing it is about.
+    """
     from meshpipeline.engines.cfmesh_conjugate import native as N
 
-    src = inspect.getsource(N._review_aids)
-    assert "groups, bbox = build_region_msh(ws)" in src
-    assert "if groups:" in src, "a falsy groups must leave the surface unpublished"
+    monkeypatch.setattr(
+        "meshpipeline.engines.cfmesh_conjugate.foam_exec.export_volume_vtk",
+        lambda *a, **k: "VTK/fluid/case_0/internal.vtu")
+    monkeypatch.setattr(
+        "meshpipeline.engines.cfmesh_conjugate.review_surface.build_region_msh",
+        lambda ws, **k: ({}, None))
+
+    out = N._review_aids(tmp_path, bashrc="/dev/null")
+    assert out["surface"] is None
+    assert out["groups"] == {}
+    assert out["why"], "a run that cannot be reviewed has to say why"
+
+
+def test_a_surface_the_builder_refused_is_carried_under_its_OWN_key(tmp_path, monkeypatch):
+    """TWO KEYS CALLED `refused` IN ONE DOCUMENT is a defect waiting for the first piece of code
+    that flattens or searches it. `conjugate_report.json` already has a top-level `refused` that
+    means "the mesher refused this case" and that `finalize` branches on to return success=False;
+    the surface builder's note sits one level down under `review`, where it means "the boundary is
+    past the ceiling, so there is no picture". The longer name costs nothing and matches
+    `surface_reduced` beside it.
+    """
+    from meshpipeline.engines.cfmesh_conjugate import native as N
+
+    monkeypatch.setattr(
+        "meshpipeline.engines.cfmesh_conjugate.foam_exec.export_volume_vtk",
+        lambda *a, **k: "VTK/fluid/case_0/internal.vtu")
+
+    def refuse(ws, *, into=None, **_k):
+        if into is not None:
+            into["surface_refused"] = "180,000,000 boundary faces is over the 120,000,000 this builds"
+        return {}, None
+
+    monkeypatch.setattr(
+        "meshpipeline.engines.cfmesh_conjugate.review_surface.build_region_msh", refuse)
+
+    out = N._review_aids(tmp_path, bashrc="/dev/null")
+    assert out["surface_refused"].startswith("180,000,000")
+    assert out["why"] == out["surface_refused"], (
+        "the builder's own refusal comes first: it is the one case where the export is fine")
+    assert "refused" not in out, "that name belongs to the mesher refusing the case"
 
 
 # #

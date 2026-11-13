@@ -557,6 +557,12 @@ INVENTORY: list[Group] = [
         EnvVar("VIEWER_FRAME_FRAC", "0.85", kind="float"),
         EnvVar("VIEWER_FLAG_SPAN_FACTOR", "2.5", kind="float"),
         EnvVar("DISPUTE_MAX_FLAGS", "20", kind="int"),
+        EnvVar("HEXERA_DRAWN_MAX_TRIANGLES", "800000", kind="int", exposure="internal",
+               help="triangles one drawn boundary surface may carry. A transport figure, not a rendering one: 3,810,902 triangles drew in 0.30 ms of CPU per frame at 55.2 fps, and what binds is about 92 B of VRAM per delivered face. Raise it only from a measured build"),
+        EnvVar("HEXERA_DETAIL_MAX_FACES", "150000", kind="int", exposure="internal",
+               help="faces a detail ball returns. A detail view is a few cell widths across, so this is a backstop for a radius asked carelessly, not a budget anyone should meet"),
+        EnvVar("HEXERA_WINDOW_MAX_FACES", "1500000", kind="int", exposure="internal",
+               help="faces a deep-zoom window returns before it refuses to send any. Measured on the delivered plate: a view 4 mm across holds 1,372,166 faces, which is where a cell first reaches 5 px, so this sits just above the first legible view"),
     ]),
 
     Group("Provider timeouts and retries", vars=[

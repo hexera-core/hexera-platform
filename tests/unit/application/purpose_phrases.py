@@ -295,9 +295,169 @@ SEMI_VETO = [
     ("drag on this car body", "flow"),
 ]
 
+#   semi_regress - 15 phrases added 2026-11-12 after main's purpose_map and the semiconductor
+#              branch's were run side by side and their readings compared phrase by phrase. These
+#              are the ones where the branch was WRONG and main was right, so the set could not
+#              see any of them and a score of 221/230 therefore said nothing about ordinary CFD
+#              routing. Every one is reproduced twice, and the comments in application/purpose_map
+#              record the before and after beside the cue set that caused it.
+#
+#              Eleven came from a 70-phrase run in which 33 readings differed. The last four came
+#              from the review of that fix, which ran the same comparison on the enclosure
+#              sentences a customer actually writes and found the fix had opened a fourth hole of
+#              its own: dropping `external` and `wind` from the veto, plus the new corroboration
+#              set that accepts `enclosure` and `fans?`, took the wind loading of an outdoor
+#              electronics cabinet down the conjugate-cooling path.
+#
+#              The four causes, and what each cost:
+#                * `\baero` was anchored to `\baero\b` (so AEROSPACE would stop voting for flow),
+#                  which took the two aero words that are not "aero" with it.
+#                * the _PAST_A_BODY veto held `external` and `wind`, which say where the air is
+#                  rather than what is asked about it - so genuinely air-cooled thermal work went
+#                  to car-style CFD, where the metal is never meshed.
+#                * a _THERMAL_HARDWARE noun opened the heat gate with no other evidence at all,
+#                  so the noun beat an explicit flow cue ("inverter duct flow").
+#                * ...and then taking `external` and `wind` out of every veto at once left nothing
+#                  to stop `enclosure` or `fans?` opening that gate, so the wind loading of an
+#                  electronics cabinet went to the cooling path. They are read at the weaker
+#                  strength now (_WHERE_THE_AIR_IS), which beats a bare noun and not a heat word.
+#
+#              THE FOUR FALSE FRIENDS ARE LABELLED DELIBERATELY, and all four are "ask". A wafer
+#              check valve is a valve, a chip ejection chute carries swarf, "processor of the
+#              signal" is a verb and an interposer plate is a plate - the same shape as "mesh this
+#              part for Tim" matching TIM. An ask costs the user one click; a wrong route costs
+#              them the whole job, and all four would have been routed to a conjugate mesher.
+SEMI_REGRESS = [
+    # an aero word that is not the word "aero"
+    ("mesh this aerofoil", "flow"),
+    ("aeroacoustics of the side mirror", "flow"),
+    # air-cooled thermal hardware: a wind tunnel is where you measure a heat sink, and "with
+    # external airflow" names the coolant rather than asking for drag
+    ("wind tunnel test of a heat sink", "electronics"),
+    ("heat sink in a wind tunnel at 5 m/s", "electronics"),
+    ("cooling the brake disc with external airflow", "electronics"),
+    ("turbine blade cooling with external flow", "electronics"),
+    # the wind loading and the wind-tunnel aero of an outdoor electronics cabinet. These are the
+    # four the review caught: `enclosure` and `fans?` are enough to open the heat gate on a bare
+    # electronics noun, so with `external` and `wind` gone from the veto there was nothing left to
+    # stop them. "wind tunnel test of this enclosure" is NOT one of them and is no use as a test:
+    # a bare enclosure is not thermal hardware, so it reads as flow either way.
+    ("wind tunnel test of this electronics enclosure", "flow"),
+    ("wind tunnel test of an electronics enclosure at 20 m/s", "flow"),
+    ("wind pressure on the electronics enclosure", "flow"),
+    ("external flow over the inverter cabinet with its fans", "flow"),
+    # an explicit flow cue outranks a bare electronics noun
+    ("inverter duct flow", "flow"),
+    # ...and the bare electronics noun in a sentence about something else entirely
+    ("mesh this wafer check valve", "ask"),
+    ("chip ejection chute", "ask"),
+    ("processor of the signal, mesh the housing", "ask"),
+    ("mesh this interposer plate", "ask"),
+]
+
+#   semi_breadth - 6 phrases added 2026-11-12 to record how far one KEPT decision reaches. Taking
+#              `external` out of the _PAST_A_BODY veto is right and is not in dispute, but the word
+#              is not a cold-plate word, and at the weaker strength it is read at now
+#              (_WHERE_THE_AIR_IS) it no longer vetoes a sentence whose heat word is its own.
+#
+#              WHAT IT BUYS ON THIS SET IS SEVEN ROWS, measured 2026-11-12 by putting `\bexternal`
+#              back into the _PAST_A_BODY veto in process: 235/251 with it there and 242/251 with
+#              it where it is, and the seven are "cooling the brake disc with external airflow"
+#              and "turbine blade cooling with external flow" (both flow with it there, both
+#              electronics on origin/main) plus five of the six rows below. `\bwind\b` put back
+#              the same way scores 240/251 and costs the two wind-tunnel heat-sink rows.
+#              NOT "external thermal resistance of this cold plate": that reads electronics on
+#              HEAD 42d8a731 and with the word back in the veto as well, because a cold plate is a
+#              coolant said outright and the coolant beats every veto. The cold plate was never
+#              what this decision was for.
+#
+#              MEASURED 2026-11-12 over the 490 generated phrases below
+#              (EXTERNAL_BREADTH_PARTS x EXTERNAL_BREADTH_FRAMES, 35 x 14), HEAD 42d8a731 and this
+#              branch side by side as standalone modules: 291 of the 490 move - 140
+#              ask->electronics, 110 ask->ask thermal, 25 flow->electronics, 5 fea->ask domain, 5
+#              flow external->electronics, 4 fea->ask thermal and 2 ask->fea_heat. "external
+#              thermal resistance of the <part>" reaches electronics cooling for 34 of the 35
+#              parts, a car body, an engine block, a cylinder head, a bridge deck, a ship and a
+#              solar panel among them; the weldment is the one exception, and is also where all
+#              nine fea rows are (`weld` is a mechanics cue, so HEAD read it as the FEA path
+#              outright - route fea, analysis thermal, why="mechanics: weld" - and this branch
+#              asks, as origin/main does). Only FOUR of the 490 are in this set -
+#              the first frame on the engine block, the car body, the duct and the nozzle, all four
+#              below - so the score says almost nothing about any of this, which is what
+#              test_the_word_external_reaches_past_cold_plates exists to run.
+#
+#              THESE SIX ARE LABELLED FOR WHAT THE DECISION MEANS, not for what HEAD happened to
+#              say. "external thermal resistance" is how the trade states a cooling problem and
+#              `thermal resistance` is in _THERMAL_HARDWARE for exactly that reason, so an
+#              electronics reading is the right one even on an engine block: the user asked for a
+#              thermal resistance. What was traded away is an "ask", not a right answer.
+SEMI_BREADTH = [
+    # the phrase the decision was made for, and five ordinary parts it now reaches as well
+    ("external thermal resistance of this cold plate", "electronics"),
+    ("external thermal resistance of the engine block", "electronics"),
+    ("external thermal resistance of the car body", "electronics"),
+    # ...and three that were FLOW on HEAD, which is the sharp end of the breadth
+    ("external thermal resistance of the manifold", "electronics"),
+    ("external thermal resistance of the duct", "electronics"),
+    ("external thermal resistance of the nozzle", "electronics"),
+]
+
+#: THE TWO GENERATED SWEEPS, kept here so the numbers recorded in application/purpose_map's
+#: comments can be re-derived rather than taken on trust. Neither is scored against a label: a
+#: sweep is for comparing two purpose_maps phrase by phrase, and the six rows of SEMI_BREADTH
+#: above are the part of it that IS labelled and scored.
+#:
+#: TURBO_* is the turbomachinery and acoustics sweep behind _PAST_A_BODY's record of why
+#: `aerofoil` and `aeroacoustic` are not in the veto: 12 bodies x 16 frames = 192 phrases, every
+#: one of which a gas-turbine customer could write, and most of which are about heat.
+TURBO_BODIES = ("turbine blade aerofoil", "aerofoil", "nozzle guide vane aerofoil",
+                "compressor aerofoil", "aeroacoustic liner", "aerofoil cascade",
+                "HPT blade aerofoil", "aeroacoustic duct liner", "fan aerofoil",
+                "aerofoil trailing edge", "aeroacoustic panel", "cooled aerofoil")
+TURBO_FRAMES = ("conduction through the {part}", "internal cooling of the {part}",
+                "cooling the {part} with film holes", "thermal stress in the {part}",
+                "temperature inside the {part}", "heat transfer in the {part}", "mesh the {part}",
+                "stress in the {part}", "cooling passages in the {part}",
+                "the {part} with its cooling channels", "metal temperature of the {part}",
+                "thermal analysis of the {part}", "drag on the {part}",
+                "the {part} at 2 degrees incidence", "noise from the {part}",
+                "conjugate heat transfer in the {part}")
+#: EXTERNAL_BREADTH_* is the sweep behind _WHERE_THE_AIR_IS's record of how far taking `external`
+#: out of that veto reaches: 35 ordinary parts - not one of them a semiconductor part - x 14
+#: "external ..." frames = 490 phrases.
+EXTERNAL_BREADTH_PARTS = (
+    "car body", "engine block", "cylinder head", "bridge deck", "ship", "solar panel",
+    "brake disc", "radiator", "exhaust manifold", "turbocharger housing", "gearbox casing",
+    "pump casing", "valve body", "flange", "bracket", "weldment", "pipe", "duct", "nozzle",
+    "mixing tank", "wind turbine", "chimney", "kiln wall", "furnace wall", "oven door",
+    "roof panel", "window frame", "concrete slab", "piston", "crankshaft", "bearing housing",
+    "impeller", "propeller", "fuselage panel", "battery tray")
+EXTERNAL_BREADTH_FRAMES = (
+    "external thermal resistance of the {part}", "external thermal resistance of this {part}",
+    "the external thermal resistance of a {part}",
+    "external heat transfer coefficient on the {part}", "external convection from the {part}",
+    "external cooling of the {part}", "external temperature of the {part}",
+    "external surface temperature of the {part}", "external heat loss from the {part}",
+    "external insulation on the {part}", "external flow over the {part}",
+    "external air over the {part}", "external pressure on the {part}",
+    "mesh the external surface of the {part}")
+
+
+def sweep(bodies, frames) -> list[str]:
+    """Every frame filled with every body, bodies outermost - the order the recorded counts were
+    measured in."""
+    return [f.format(part=b) for b in bodies for f in frames]
+
+
 #: (phrase, label, origin) for the whole set.
 PHRASES = ([(p, lab, "audit60") for p, lab in AUDIT60] + [(p, lab, "dev") for p, lab in DEV]
            + [(p, lab, "holdout") for p, lab in HOLDOUT]
            + [(p, lab, "semi_dev") for p, lab in SEMI_DEV]
            + [(p, lab, "semi_holdout") for p, lab in SEMI_HOLDOUT]
-           + [(p, lab, "semi_veto") for p, lab in SEMI_VETO])
+           + [(p, lab, "semi_veto") for p, lab in SEMI_VETO]
+           + [(p, lab, "semi_regress") for p, lab in SEMI_REGRESS]
+           + [(p, lab, "semi_breadth") for p, lab in SEMI_BREADTH])
+#: The origins that did not exist when the 221/230 was measured. The guard in
+#: tests/unit/application/test_an_aerofoil_is_still_an_aerofoil.py takes them out so that number
+#: stays comparable; every new origin belongs here as well as above.
+ADDED_AFTER_221 = ("semi_regress", "semi_breadth")

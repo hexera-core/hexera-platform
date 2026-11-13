@@ -7,6 +7,7 @@
 # the server's shape, built here. Only the network is stood in for.
 from __future__ import annotations
 
+import json
 import math
 
 import pytest
@@ -96,3 +97,59 @@ def test_a_part_with_a_few_hot_spots_keeps_its_numbered_tags(live):
     tags = live.evaluate(f"[...document.querySelectorAll('#gstage-{sid} .fea-spot')].map((m) => m.textContent)")
     assert tags == ["H1", "H2", "H3", "H4", "H5"]
     assert_clean(live, "an FEA stage with 5 hot spots")
+
+
+#   -- the stage that GREW its FEA panel marks them too ------------------------------------------
+#
+# There are two ways onto the FEA panel. One is openFeaStage, which builds the panel and then the
+# scene, so initScene draws the marks from p.hot_spots the panel has just set. The other is a stage
+# opened on the part alone, before the chat said what the mesh is for, which grows the panel where
+# its waiting note stood - and there the SCENE IS OLDER THAN THE PANEL.
+
+
+def _unrouted(check: dict) -> dict:
+    """The same part one poll earlier: measured and drawn, with `route` the empty string the
+    server sends until the user's first answer settles what the mesh is for."""
+    d = {k: v for k, v in check.items() if k != "fea"}
+    d.update(status="scouted", named=False, route="", preview="running")
+    return d
+
+
+def test_the_marks_land_when_the_route_and_the_measurement_arrive_on_one_poll(live):
+    """THE ORDINARY ORDERING, not a rare one: the naming asks no model for an FEA part
+    (application/geometry_check.py:1768), so its measurement is ready on the poll the route lands
+    on. growForm called only scene.rebind(), which touches neither the marks nor the panel's rows,
+    and the panel's own follower will not do it either on this payload - followMeasure compares the
+    `data-state` feaPanelHtml has just written from that same payload (render/fea_form.js:125,
+    :207), so it reports no change and never reaches setSpots.
+
+    MEASURED in Chrome on the unfixed tree: spots [], 0 marks against 2 hot-spot rows listed in
+    the panel, and pointing at a row lit nothing. Straight through openFeaStage, which is what
+    every other row here drives and what HEAD always did, the same payload gives [h1, h2]."""
+    sid = "feagrow"
+    spots = _spots((("hole", "hole", 2), ("fillet", "fillet", 1)))
+    check = _fea_check(spots)
+    _open(live, sid, _skin(_tube(R_OUT, R_IN)), _unrouted(check))
+    waiting = live.evaluate(f"""(() => {{
+      const root = document.getElementById('gstage-{sid}');
+      return {{waiting: root.classList.contains('gc-waiting'),
+               marks: root.querySelectorAll('.fea-spot').length,
+               rows: root.querySelectorAll('.fea-spot-row').length}}; }})()""")
+    assert waiting == {"waiting": True, "marks": 0, "rows": 0}, waiting
+
+    live.evaluate(f"window.__stages['{sid}'].update({json.dumps(check)})")
+    live.wait_for(f"document.querySelectorAll('#gstage-{sid} .fea-spot-row').length === 3",
+                  timeout=60, what="the FEA panel to be built where the waiting note stood")
+    live.settle()
+    s = _state(live, sid)
+    assert s["rows"] == 3, s                      # listed in the panel, as they always were
+    assert s["marks"] == 3 and s["small"] == 0, s  # ...and MARKED on the part
+    assert live.evaluate(f"window._vdbg['gstage:{sid}'].spots()") == ["H1", "H2", "H3"]
+    # the binding setSpots makes, and the only thing the rows are for: a row lights its mark
+    lit = live.evaluate(f"""(() => {{
+      const root = document.getElementById('gstage-{sid}');
+      root.querySelector('.fea-spot-row[data-spot="H2"]').dispatchEvent(new MouseEvent('mouseenter'));
+      return [...root.querySelectorAll('.fea-spot')].map((m) => [m.dataset.spot,
+                m.classList.contains('sel')]); }})()""")
+    assert lit == [["H1", False], ["H2", True], ["H3", False]], lit
+    assert_clean(live, "an FEA panel grown where the waiting note stood")

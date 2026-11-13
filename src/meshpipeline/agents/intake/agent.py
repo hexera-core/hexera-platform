@@ -322,6 +322,13 @@ INTAKE_TOOLS: list[dict] = [
                             "a specific figure the user never required."
                         ),
                     },
+                    # THE CONJUGATE CLAUSE IN THE ROLE DESCRIPTION NAMES ONE OF THE TWO CASES ON
+                    # PURPOSE. It read "a cooled solid, OR an assembly with the fluid among its
+                    # parts", and the second half is the ECXML thermal model, whose own block
+                    # (_block_thermal_model) says patches [] - an empty list, because the air box's
+                    # sides are the file's own. So a set-top-box thermal model read two
+                    # contradicting instructions in one prompt and was left to settle them by
+                    # which block looked more specific.
                     "patches": {
                         "type": "array",
                         "description": (
@@ -350,7 +357,18 @@ INTAKE_TOOLS: list[dict] = [
                                         "single combined freestream patch, 'symmetry' for symmetry planes, "
                                         "'empty' for the front/back faces of a true 2D case. Structural: "
                                         "'fixed' for constrained faces, 'load' where forces act, "
-                                        "'contact', 'free'. Only the declared purpose's roles are accepted."
+                                        "'contact', 'free'. Conjugate heat transfer OF A COOLED "
+                                        "SOLID (one part whose own passages carry the coolant - a cold "
+                                        "plate, a water block, a cooled package): 'inlet'/'outlet' "
+                                        "for the coolant's ports, 'wall' for the part's outer surface, "
+                                        "'external' for a face of the solid that faces the room rather "
+                                        "than the coolant, 'symmetry' for a half model - and NO "
+                                        "'farfield', because nothing is built around the part. The "
+                                        "fluid-to-solid interface is never declared: the mesher's own "
+                                        "split creates and names it. A whole ECXML thermal model is the "
+                                        "same purpose and declares NO patches at all - an empty list, "
+                                        "because the air box's sides are the file's own (A THERMAL "
+                                        "MODEL). Only the declared purpose's roles are accepted."
                                     ),
                                 },
                             },
@@ -919,10 +937,15 @@ def _block_purpose_map() -> str:
         "electronics cooling. When the words did not say, it asked ONE short question with two "
         f"buttons - '{pm.DOMAIN_QUESTION}' or '{pm.THERMAL_QUESTION}' - and the user's "
         "answer to it is their purpose. Never ask it again, in any wording.\n"
-        "- Electronics cooling (cooling, a fan, a heat sink, a chip, a board): the purpose is "
-        "conjugate heat transfer when the geometry check confirmed an assembly of solid parts; "
-        "otherwise it is the cooling air through or around the part, as the check confirmed. "
-        "Never structural.\n"
+        # A COLD PLATE IS ROUTED HERE AND WAS NOT DESCRIBED HERE. This said "an assembly of solid
+        # parts", which is a thermal model's air box; a cold plate is ONE part whose own passages
+        # carry the coolant, and its declaration says so in its own words (A COOLED SOLID, above).
+        # Both are conjugate heat transfer, and the two are told apart by the declaration alone.
+        "- Electronics cooling (cooling, a fan, a heat sink, a chip, a board, a cold plate): the "
+        "purpose is conjugate heat transfer when the geometry check confirmed either an assembly "
+        "of solid parts with the fluid among them or one part with coolant passages through it "
+        "(A COOLED SOLID above says what the second settles); otherwise it is the cooling air "
+        "through or around the part, as the check confirmed. Never structural.\n"
         "- Heat moving through a solid part (conduction, the temperature inside the part, thermal "
         "stress or expansion) is the FEA path's 'heat in a solid part', which is coming "
         "soon: the part is meshed as for static stress (purpose Structural / FEA) - say so in one plain "
@@ -974,6 +997,75 @@ def _block_fea_path() -> str:
         "the user stated it. review_brief_txt describes mesh quality only: the solid meshed whole, "
         "every face present as a named group, well-shaped elements, thin walls and small features "
         "kept."
+    )
+
+
+def _block_cooled_solid() -> str:
+    # THE ONE DECLARED CASE WITH NO BLOCK OF ITS OWN. An ECXML thermal model has one (A THERMAL
+    # MODEL, above) and an FEA part has one (THE FEA PATH, above); each says what its declaration
+    # settled and what must never be asked again. A cooled solid - one part whose own passages
+    # carry the coolant - had none, and `geometry_confirmation.declared_case` reads it as exactly
+    # the same case as a thermal model (conjugate heat transfer, an assembly of parts). That is
+    # the one block whose instructions are wrong for it: it says to send NO patches and ask
+    # nothing, and a cold plate's inlet and outlet are the two things that MUST be asked.
+    #
+    # MEASURED ON THE COMPOSED PROMPT, 2026-11-12: 0 occurrences of microchannel, junction
+    # temperature, thermal interface, heat flux, W/cm, semiconductor or pitch. Every cold-plate
+    # sentence in it came from the engine's own descriptor, intake_guidance and intake_advisories,
+    # injected into the ENGINE FIRST block - which is about the MESHER, and only once the engine
+    # is being settled. Nothing told the model what the CASE was.
+    #
+    # AND THE ROLE VOCABULARY TOLD IT THE WRONG THING. The conjugate purpose declares
+    # (inlet, outlet, wall, external, symmetry, empty) - no farfield - and
+    # validation.validate_submission refuses a role outside the submitted purpose's own set. The
+    # static prompt (prompts/intake/system.txt) says the type is one of
+    # {wall, inlet, outlet, farfield, symmetry, empty} and asks for "one wall PLUS either both
+    # inlet+outlet or a single combined farfield", so a farfield on a cold plate was both invited
+    # there and refused at the submission, and nothing anywhere said what `external` means on one.
+    from meshpipeline.application.geometry_confirmation import COOLED_SOLID_WORDS
+    return (
+        "\n\nA COOLED SOLID - ONE PART, TWO REGIONS, NOTHING BUILT AROUND IT:\n"
+        "When the 'GEOMETRY CHECK (confirmed by the user):' message says the file is "
+        f"'{COOLED_SOLID_WORDS}', the user confirmed a cold plate, a water block, a cooled "
+        "package or a heat-exchanger core: one part, or several brazed into one piece, whose own "
+        "passages carry the coolant. The coolant is not a body in the file - it is the space "
+        "inside the part, and the check found it there and measured it. So:\n"
+        "- The case is settled: the purpose is conjugate heat transfer, the file is the part "
+        "itself, dimensionality 3D. The metal is meshed AND the coolant is meshed, sharing every "
+        "face between them. Nothing is built around the part, so never ask about a far field, a "
+        "domain size, far-field margins, a reference length, an up direction, an air box, a point "
+        "inside the flow or which way air moves past it - and never offer to mesh the coolant on "
+        "its own.\n"
+        "- THE PATCHES ARE THE PORTS AND THE PART'S OUTSIDE. Carry exactly what the message "
+        "declares: each opening under the name and role it states (inlet, outlet) with its size "
+        "and its near_mm, and the one `wall`, which is the part's outer surface. A cooled solid "
+        "has NO farfield - there is no freestream around the part to name, and a farfield patch "
+        "is refused on this purpose - so the general rule elsewhere in this prompt (one wall plus "
+        "either inlet and outlet or a single combined farfield) does not describe this case: here "
+        "the pair is always the inlet and the outlet. `external` is accepted too and means a face "
+        "of the metal that faces the room rather than the coolant; use it only for a face the "
+        "user names that way themselves, because the declared `wall` already covers the part's "
+        "outside. Never `empty` (this case is 3D), and `symmetry` only when the user asks for a "
+        "half model.\n"
+        "- THE COOLANT IS A LIQUID IN A PASSAGE, so ask about it as one, in one question with "
+        "your own proposal: what it is (water, a water-glycol mix, a dielectric) and how much of "
+        "it flows (L/min, or the pressure drop it runs at). Never ask for an air "
+        "speed, a freestream velocity or a Mach number. What the check measured is never asked: "
+        "the coolant's volume, how many connected passages it is, its narrowest width, and which "
+        "faces of the part the ports land on.\n"
+        "- Speak as an engineer who meshes cold plates: the part, its passages, the coolant, the "
+        "inlet and the outlet, the metal and the coolant as the two halves of one mesh. Never "
+        "write far field, freestream, air box, room air, cooling air or 'the fluid around the "
+        "part' in a reply, in request_txt or in review_brief_txt.\n"
+        "- request_txt says: the part and its size, a conjugate mesh of the coolant and the metal "
+        "of that one part, the ports under the names the user gave them, the coolant and its "
+        "flow, and the detail level. review_brief_txt describes mesh quality only: both regions "
+        "present and meshed whole, the surface between them conformal and carrying the same faces "
+        "on both sides, every passage resolved across its narrowest width, the declared ports "
+        "present under their own names, and each region checked clean.\n"
+        "- A user who asks for just the water, or just the metal, is told in one plain line that "
+        "this case meshes both and delivers them coupled; nothing of theirs is withheld or "
+        "thrown away."
     )
 
 
@@ -1108,6 +1200,8 @@ INTAKE_PROMPT_BLOCKS: tuple = (
      _block_purpose_map),
     ("fea_path", "an FEA part confirmed on its stage: the analysis type is the only required question; supports, loads and materials are optional, never asked or invented; coming-soon types meshed as static",
      _block_fea_path),
+    ("cooled_solid", "a cooled solid confirmed on its stage (a cold plate, a water block, a cooled package): the case, the two regions and the role vocabulary are settled; the ports and the coolant are the only questions; no far field, no air box, no farfield patch",
+     _block_cooled_solid),
     ("propose_first", "every question carries a proposed answer read from what is known; 'ok' or 'I do not know' accepts it; one unclear reply and the model moves on; no question twice; the engine goes through its one question, the unit is asked",
      _block_propose_first),
     ("ask_plainly", "one clear thing per reply in plain words, a short numbered list when values are confirmed together; nothing settled is restated; no 'assumption' bookkeeping in chat",
@@ -1194,6 +1288,9 @@ async def _measured_recommendation(state, state_messages):
         path=staged, purpose=purpose, input_kind=kind, form=form, engines=_IMPLEMENTED_ENGINES,
         patches=list(state.get("intake_patches") or []),
         coolant_inside=_coolant_inside(state),
+        # the approved source as well as the staged path: a fetched-back upload can be staged
+        # under a name with no suffix at all (measured_choice.upload_format)
+        source_ref=ref,
         said="\n".join(turn.user_texts(state_messages)))
 
 
@@ -1230,6 +1327,17 @@ def _thermal_declared(state_messages) -> bool:
     restated what the file is (then the declared case no longer stands, and neither does this)."""
     from meshpipeline.application.geometry_confirmation import thermal_declared
     return thermal_declared(state_messages) and _declared_case(state_messages) is not None
+
+
+def _cooled_solid_declared(state_messages) -> bool:
+    """Whether the user confirmed a COOLED SOLID on its stage - a cold plate, a water block, a
+    cooled package - and the chat has not since restated what the file is (then the declared case
+    no longer stands, and neither does this).
+
+    `_thermal_declared` above, on the other case, read the same way: the declaration's own
+    opening phrase, and the declared case still standing behind it."""
+    from meshpipeline.application.geometry_confirmation import cooled_solid_declared
+    return cooled_solid_declared(state_messages) and _declared_case(state_messages) is not None
 
 
 def _thermal_names(session_id: str) -> tuple[str, ...]:
@@ -1334,6 +1442,7 @@ async def node_intake(state: PipelineState) -> dict:
         conversation=tuple(state_messages),
         declared_case=_declared_case(state_messages),
         thermal=_thermal_declared(state_messages),
+        cooled_solid=_cooled_solid_declared(state_messages),
         source_ref=_ctx.source_ref, rec_authorized=_ctx.rec_authorized,
         pending=_ctx.pending, selection=_ctx.selection, approval=_ctx.approval,
         recommendation=_recommendation)

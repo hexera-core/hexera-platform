@@ -141,6 +141,11 @@ class IntakeExecutionState:
     #: panel): its engine is the one that reads the file, selected without a question, and every
     #: reply is held to the thermal vocabulary (application/thermal_wording).
     thermal: bool = False
+    #: Whether that confirmation is a COOLED SOLID's (a cold plate, a water block, a cooled
+    #: package confirmed on its stage): nothing is built around the part, and every reply is held
+    #: to that case's vocabulary (application/cooled_solid_wording). `thermal` above for the
+    #: opposite case; the two declarations are different sentences and never both true.
+    cooled_solid: bool = False
     # The approved SOURCE, not a file. Intake binds which bytes were approved; it never
     # opens them, so it holds the reference and no path.
     source_ref: object | None = None

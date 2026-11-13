@@ -1,13 +1,15 @@
 # Responsibility: Run OpenFOAM commands for the conjugate mesher with a bounded, secret-scrubbed environment.
-# Boundaries: every command is time-bounded, and parse-time code directives are refused before any mesher starts.
+# Boundaries: every command is time-bounded, written to a log beside the mesh as it runs, and parse-time code directives are refused before any mesher starts.
 from __future__ import annotations
 
 import json
 import logging
 import re
+import subprocess
 from pathlib import Path
 
 import meshpipeline.settings.runtime as rtcfg
+from meshpipeline.contracts.native_time import STALL_WINDOW_S
 from meshpipeline.render.boundary_quality import CHECKMESH_WRITE_FIELDS
 from meshpipeline.sandbox.safe_exec import run_guarded
 
@@ -263,17 +265,44 @@ def check_mesh(workspace, *, bashrc: str = _DEFAULT_BASHRC, region: str = "",
     # discarded a mesh the mesher had already built - hours of work thrown away at the last step by
     # the step that was only ever supposed to describe it. Now it says so, and the manifest records
     # a measurement that was not taken rather than a mesh that was not made.
+    #
+    # STRAIGHT TO A LOG BESIDE THE MESH, NOT TO A PIPE, and that is the whole of this engine's
+    # progress during a window measured at 2,776 s on the Corintis plate (724 s over the coolant's
+    # 83 M cells and 2,052 s over the metal's 250 M, from `native._boundary_quality`'s own table).
+    # With `capture_output=True` nothing under the workspace moved while checkMesh walked every
+    # cell, so `runtime/mesh_runner._output_mark` - which IS what progress means, a `*.log` whose
+    # size or mtime moves - saw a run that had stopped. `_beacon` then stopped moving `progress_at`,
+    # `cloud_run_client._relay_progress` stopped calling `progress_clock.touch()`, and
+    # `pipeline_budget.progress_extension` returned None after PROGRESS_GRACE_S (1,020 s): the
+    # lease is lost and the job accounted TIMED OUT under a measurement that was working.
+    #
+    # THE SHAPE IS `conjugate._foam`'s, not a new one: a handle on a workspace log as `stdout`,
+    # `stderr` folded into it, and `run_guarded(stall_s=STALL_WINDOW_S)` on top - which is also how
+    # the stall watch resolves the file it reads (`safe_exec._log_of` takes the path off the
+    # handle), so a checkMesh that HANGS is still stopped after 900 s of no sign of life instead of
+    # sitting on the rest of the run's budget. That is both halves of `contracts/native_time`.
+    #
+    # And the text is read back off that same file, so the parser below sees exactly what it saw
+    # before. On a run that did not finish the partial output is now KEPT rather than lost with the
+    # exception, which is the only evidence of where the measurement got to.
+    # UNDERSCORE, NOT A DOT, and it is load-bearing: `engines/mesher_stage.read_stage` takes the
+    # tool off `newest.stem.split("_")[0]`, so "checkMesh_fluid.log" is checkMesh and
+    # "checkMesh.fluid.log" is a tool it has never heard of. See CHECKMESH_LOG.
+    suffix = f"_{region}" if region else ""
+    log = ws / CHECKMESH_LOG.format(suffix=suffix)
     try:
-        proc = run_guarded(["bash", "-lc", cmd], cwd=str(ws), env=_foam_env(),
-                           capture_output=True, text=True, timeout=float(timeout_s))
+        with log.open("w", encoding="utf-8") as fh:
+            run_guarded(["bash", "-lc", cmd], cwd=str(ws), env=_foam_env(),
+                        stdout=fh, stderr=subprocess.STDOUT, timeout=float(timeout_s),
+                        stall_s=STALL_WINDOW_S)
     except Exception as exc:  # noqa: BLE001 - subprocess timeout types vary by caller
-        logger.warning("checkMesh did not finish within %.0f s (%s): the mesh stands and its "
-                       "quality is unmeasured", float(timeout_s), type(exc).__name__)
+        stuck = (f"it showed no sign of life for {STALL_WINDOW_S:.0f} s" if getattr(exc, "stalled", False)
+                 else f"it did not finish within {float(timeout_s):.0f} s")
+        logger.warning("checkMesh was stopped - %s (%s): the mesh stands and its quality is "
+                       "unmeasured; %s has what it printed", stuck, type(exc).__name__, log.name)
         return {"mesh_ok": False, "fatal": ["checkMesh did not finish"],
                 "skew_faces": 0, "skew_fraction": 0.0, "unmeasured": True}
-    raw = proc.stdout + proc.stderr
-    _keep_checkmesh_output(ws, region, raw)
-    q = parse_check_mesh(raw)
+    q = parse_check_mesh(_read_checkmesh_output(log))
     if write_sets:
         # RECORDED, not re-derived. The reading already carries the COUNT of poor cells; this is
         # where they are, which is the half a customer can act on.
@@ -283,24 +312,44 @@ def check_mesh(workspace, *, bashrc: str = _DEFAULT_BASHRC, region: str = "",
     return q
 
 
-#: What checkMesh said, kept verbatim beside the mesh it said it about.
+#: What checkMesh said, kept verbatim beside the mesh it said it about - and now WRITTEN AS IT IS
+#: SAID rather than after the fact, because this file is also the run's only sign of life while
+#: checkMesh walks the mesh (see check_mesh above).
+#:
+#: THE REGION IS SEPARATED BY AN UNDERSCORE because this name is now read by two things, not one.
+#: `runtime/mesh_runner._output_mark` only needs it to end in ".log" - that is what the job counts
+#: as progress - but `engines/mesher_stage.read_stage` ALSO picks the newest ".log" in the
+#: workspace and names the tool from `stem.split("_")[0]`, which is how the customer's live line
+#: says what the mesher is doing. "checkMesh.fluid.log" gives it the stem "checkMesh.fluid", a
+#: tool it has never heard of, so the line would fall back to a bare clock for the 2,776 s this
+#: engine's two checkMesh runs take at the plate's size; "checkMesh_fluid.log" is `_TOOLS`'
+#: "checkMesh" and the line says "checking the cells".
+#:
+#: WHAT IS STILL A BARE CLOCK, said plainly: `foamToVTK.log` and the three phase logs
+#: `engines/dispatch.watching_progress` writes (review_surface, boundary_index, return_home) are
+#: not names `_TOOLS` holds either, so those windows show a clock. Closing that means adding rows
+#: to `engines/mesher_stage._TOOLS`, which is not this package's file. The PROGRESS channel is
+#: unaffected - `_output_mark` globs "*.log" and does not care what the tool is called.
 CHECKMESH_LOG = "checkMesh{suffix}.log"
 
 
-def _keep_checkmesh_output(ws: Path, region: str, raw: str) -> None:
-    """Write checkMesh's own words next to the mesh, and never fail a run over it.
+def _read_checkmesh_output(log: Path) -> str:
+    """What checkMesh wrote to its log, for the parser; "" when it cannot be read.
 
     THE PARSER IS NOT THE MEASUREMENT. checkMesh walks every cell and every face - 204.9 s on the
     coolant and 584.5 s on the metal of the first customer plate - and until now the only thing
     that survived was whatever `_CM` happened to have a regex for. Four of the six readings that
     customer asked for were in this text on every run since the engine was written, and getting
     them meant measuring the mesh again. Keeping the text makes a missing metric a re-parse.
+
+    `errors="replace"`, the same as `safe_exec._captured_watched` reads its own scratch files with:
+    an OpenFOAM build can print a byte that is not UTF-8 and a quality report is not lost over it.
     """
     try:
-        suffix = f".{region}" if region else ""
-        (ws / CHECKMESH_LOG.format(suffix=suffix)).write_text(raw, encoding="utf-8")
+        return log.read_text(encoding="utf-8", errors="replace")
     except OSError:
-        logger.warning("could not keep checkMesh's output beside the mesh", exc_info=True)
+        logger.warning("could not read back checkMesh's output from %s", log.name, exc_info=True)
+        return ""
 
 
 def parse_check_mesh(out: str) -> dict:
@@ -400,6 +449,9 @@ EXPORT_TIMEOUT_S = 7200.0
 #: with the review inconclusive" on a mesh that had passed every gate. The mesh is in `constant`
 #: and a review wants the mesh, so the field time is not exported at all.
 NO_FIELD_TIME = "-noZero"
+#: Where foamToVTK's own output is written AS IT RUNS - the export's sign of life for the run's
+#: progress channel, and the only record of why one that landed nothing landed nothing.
+EXPORT_LOG = "foamToVTK.log"
 #: foamToVTK writes "<case>_<n>.vtm" beside "<case>_<n>/" only once that time is fully written, so
 #: a time directory WITHOUT its .vtm is an export that died partway. This is the general guard
 #: behind NO_FIELD_TIME: whatever kills an export mid-write leaves this same signature, and a
@@ -449,16 +501,31 @@ def export_volume_vtk(workspace, *, all_regions: bool = False, region: str = "",
     _all = " -allRegions" if all_regions else ""
     cmd = (f"source {bashrc} >/dev/null 2>&1 && "
            f"foamToVTK -constant {NO_FIELD_TIME} -noFaceZones{_all}")
+    # THE SAME WORKSPACE LOG TREATMENT AS checkMesh ABOVE, AND FOR THE SAME REASON. This is the
+    # longest window inside the engine - EXPORT_TIMEOUT_S is 7,200 s and the plate's own export is
+    # a second copy of 334 M cells - and with `capture_output=True` not one byte of it reached a
+    # file `runtime/mesh_runner._output_mark` looks at, so the job stopped counting the run as
+    # making progress 1,020 s (PROGRESS_GRACE_S) into an export that was writing gigabytes a
+    # minute. `stall_s` on top means an export that HANGS is stopped after 900 s of no sign of
+    # life rather than holding what is left of the budget - the two halves of
+    # `contracts/native_time`. What it printed is kept beside the mesh either way, which is the
+    # only record of why an export that landed nothing landed nothing: the glob below cannot tell
+    # ENOSPC from anything else.
+    log = ws / EXPORT_LOG
     try:
-        run_guarded(["bash", "-lc", cmd], cwd=str(ws), env=_foam_env(),
-                    capture_output=True, text=True, timeout=timeout)
-    except Exception:
+        with log.open("w", encoding="utf-8") as fh:
+            run_guarded(["bash", "-lc", cmd], cwd=str(ws), env=_foam_env(),
+                        stdout=fh, stderr=subprocess.STDOUT, timeout=timeout,
+                        stall_s=STALL_WINDOW_S)
+    except Exception as exc:  # noqa: BLE001 - subprocess timeout types vary by caller
         # LOUD, because this is not only a missing picture. The msh that `mesh_paths.surface`
         # names is converted from what this writes, and that artifact is required - so a quiet
         # warning here surfaces downstream as a review that cannot open, on a mesh that is
         # perfectly good and already paid for. Said plainly so the cause is one search away.
-        logger.error("foamToVTK did not finish within %.0f s: the mesh stands, but the review "
-                     "surface is built from this export and will be missing", float(timeout))
+        stuck = (f"showed no sign of life for {STALL_WINDOW_S:.0f} s" if getattr(exc, "stalled", False)
+                 else f"did not finish within {float(timeout):.0f} s")
+        logger.error("foamToVTK %s: the mesh stands, but the review surface is built from this "
+                     "export and will be missing; %s has what it printed", stuck, log.name)
         return None
     # THE NEWEST TIME DIRECTORY, not the first alphabetically. foamToVTK names them
     # "<case>_<n>" and a split case has more than one: measured on a real run, this returned

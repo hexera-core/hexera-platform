@@ -46,6 +46,7 @@ except ImportError:                                      # pragma: no cover - ab
 
 from meshpipeline.engines.cfmesh_conjugate.foam_exec import (
     _DEFAULT_BASHRC,
+    CHECK_TIMEOUT_S,
     _foam_env,
     check_mesh,
     scan_case_dicts,
@@ -94,12 +95,24 @@ class ConjugateError(RuntimeError):
     the signal from it. A mesher the kernel kills for memory - measured peak 1.67 GB on a small
     plate, so not hypothetical - has to arrive as signalled and not as a plain refusal, or nothing
     downstream can tell an out-of-memory run from a mesh this engine declined to trust.
+
+    ...AND `stopped` CARRIES THE SAME DISTINCTION FOR TIME, for the same reason. A build the
+    budget ran out under, or a stage the watch stopped, is not a case this engine DECLINED - and
+    this engine's own review declares a gating criterion on exactly that difference
+    (`criteria.CRITERIA_ROWS`, key="timed_out", "Build completes within compute budget"), which
+    nothing was ever setting. `native._run_conjugate_local` turns this into the flags the shared
+    seam already has names for, through `sandbox/safe_exec.why_it_stopped`: the exception itself
+    when the watch raised one (a `StalledExpired` or a `MemoryExpired`, both of which ARE a
+    `TimeoutExpired`), or plain True when it was this module's own deadline that was spent and
+    there is no exception to read.
     """
 
-    def __init__(self, message: str, *, rc: int | None = None, stage: str = "") -> None:
+    def __init__(self, message: str, *, rc: int | None = None, stage: str = "",
+                 stopped: BaseException | bool = False) -> None:
         super().__init__(message)
         self.rc = rc
         self.stage = stage
+        self.stopped = stopped
 
 
 # #
@@ -1355,15 +1368,66 @@ def _foam(workspace: Path, script: str, log: Path, *, bashrc: str,
     100-channel part the mesher took 617 s and everything after it took over an hour, so a
     turnaround budget that counts only the mesher is counting the wrong stage. See
     ConjugateReport.seconds.
+
+    THE STAGE IS WATCHED FOR PROGRESS, which is the adopted house rule and not a local idea.
+    `contracts/native_time`: "A native mesh run keeps going while it shows progress - its log
+    growing, a new stage, new cells - and is stopped only when it has made NO progress for
+    STALL_WINDOW_S, or at the hard wall of the machine it runs on", and it lists "every OpenFOAM
+    command 1,500 s" among the guessed caps that were REMOVED. Six engines - snapgrid, snappy,
+    snappy_multiregion, cfmesh, gmsh and vmtk - run their meshers through this same
+    `run_guarded(stall_s=...)`, and this one did not: it had `timeout` alone, so the only thing
+    that could stop a stage was the clock, whether it was working or hung.
+    `sandbox/liveness.LivenessWatch` reads the stage's own log file growing (the `stdout` handle
+    names it, safe_exec._log_of), its process tree's CPU and its memory, so a mesher computing
+    quietly is not called stalled.
+    WHAT THIS BUYS, which is worth being exact about: it does NOT lengthen the run - `timeout` is
+    still the hard wall, and at this layer that wall is what is left of the whole run's budget
+    (`build`'s deadline below). What it buys is that a stage which has HUNG gives the rest of the
+    chain, the review aids and the boundary index their time back after STALL_WINDOW_S instead of
+    sitting on the whole remaining budget, and that such a stage is reported as stuck rather than
+    as slow. It also brings this engine under the shared memory guard
+    (liveness.MEMORY_GUARD_SHARE 0.92, against mesh_machine.usable_gib's 0.9 that the machine was
+    chosen by), so a stage heading for the kernel's OOM killer is stopped cleanly first.
     """
+    from meshpipeline.contracts.native_time import STALL_WINDOW_S
+
     # chr(10) rather than an escape, because this line has been mangled twice by tooling that
     # processes backslashes on the way through. A named constant cannot be re-escaped by accident.
     cmd = _NEWLINE.join((f"source {bashrc} >/dev/null 2>&1 || true", script, ""))
     t0 = time.monotonic()
     with log.open("w") as fh:
         proc = run_guarded(["bash", "-lc", cmd], cwd=str(workspace), env=_foam_env(),
-                           stdout=fh, stderr=subprocess.STDOUT, timeout=timeout)
+                           stdout=fh, stderr=subprocess.STDOUT, timeout=timeout,
+                           stall_s=STALL_WINDOW_S)
     return proc.returncode, time.monotonic() - t0
+
+
+def _stopped_words(stage: str, exc: BaseException, allowed: int) -> str:
+    """Why a watched stage was stopped, said as the thing that actually stopped it.
+
+    THREE DIFFERENT EVENTS ARRIVE AS ONE EXCEPTION TYPE (sandbox/safe_exec: StalledExpired and
+    MemoryExpired are both a TimeoutExpired, so every caller that handled a timeout still does),
+    and a reader acts differently on each: a stuck stage is a defect to look at, a stage stopped
+    at the budget is a part that needs more time or a coarser plan, and one stopped at the memory
+    guard is a case for a bigger machine (RUN-3). Told apart by the flags the exceptions carry,
+    the same way `native_time.stopped_at_the_wall` tells the last two apart.
+    """
+    from meshpipeline.contracts.native_time import STALL_WINDOW_S
+
+    if getattr(exc, "out_of_memory", False):
+        used, limit = getattr(exc, "used_gib", 0.0), getattr(exc, "limit_gib", 0.0)
+        return (f"{stage} was stopped before the machine ran out of memory: {used} GiB of the "
+                f"{limit} GiB it allows was in use. The same case needs a larger machine, not a "
+                "different one (RUN-3)")
+    if getattr(exc, "stalled", False):
+        silence = getattr(exc, "silence_s", STALL_WINDOW_S)
+        ran = getattr(exc, "ran_s", 0.0)
+        return (f"{stage} showed no sign of life for {silence:.0f}s after running {ran:.0f}s - "
+                f"stuck, not slow, so it was stopped there rather than allowed to sit on the "
+                f"{allowed}s the rest of this run had left (contracts/native_time.STALL_WINDOW_S)")
+    return (f"{stage} was still working when the run's remaining {allowed}s ran out; see "
+            f"{stage}.log for how far it got (CONJUGATE_RUN_TIMEOUT_S is the budget, and the "
+            "machine's life is derived from it)")
 
 
 def children_peak_rss_bytes() -> int:
@@ -1511,9 +1575,52 @@ def build(workspace, *, block_stl: str = "constant/triSurface/block.stl",
         chain += [("topoSetPorts", f"topoSet -constant -region {FLUID_REGION}"),
                   ("createPatch", f"createPatch -overwrite -region {FLUID_REGION}")]
 
+    # ONE BUDGET FOR THE WHOLE CHAIN, SPENT AS A DEADLINE - not a per-stage cap handed out as
+    # many times as there are stages.
+    #
+    # WHAT THE OLD SHAPE COST, worked out on 2026-11-12 rather than measured, because the run it
+    # describes has never been allowed to finish. `timeout` is spec.run_policy.run_timeout, and
+    # the SAME number is what adapters/mesh_execution/gce_vm turns into the machine's whole life
+    # (maxRunDuration = timeout + gce_vm.return_margin_s). Handing it to every stage meant the
+    # chain's permitted total was eight times the machine's life: a run that was fine stage by
+    # stage would be deleted mid-chain holding a mesh nobody could write down. At the clamped
+    # 9,000 s one stage was 71% of the 12,600 s the VM had.
+    #
+    # A DEADLINE PRESERVES EVERY SMALL RUN EXACTLY. The first stage still gets the full budget,
+    # and every part in the corpus finishes the whole chain in under two minutes against a budget
+    # of six hours, so what each stage is allowed is unchanged in practice. What changes is that
+    # the chain can no longer outlive the machine that is running it.
+    #
+    # THE REMAINDER, NOT THE WHOLE, is also what the two checkMesh runs and the review export get
+    # (below, and native._run_conjugate_local), so a stage that overran cannot be followed by a
+    # measurement that overruns again.
+    deadline = time.monotonic() + max(1.0, float(timeout))
+
+    def _left(what: str) -> int:
+        """What is left of the run's budget, or a refusal naming what ran out of it."""
+        remaining = deadline - time.monotonic()
+        if remaining <= 0.0:
+            raise ConjugateError(
+                f"the conjugate build's {float(timeout):.0f}s budget was spent before {what} "
+                "could start; the mesh is on disk but nothing after this point ran "
+                "(CONJUGATE_RUN_TIMEOUT_S is the budget, and the machine's life is derived "
+                "from it)", stage=what, stopped=True)
+        return max(1, int(remaining))
+
     seconds: dict[str, float] = {}
     for stage, script in chain:
-        rc, took = _foam(ws, script, ws / f"{stage}.log", bashrc=bashrc, timeout=timeout)
+        allowed = _left(stage)
+        t0 = time.monotonic()
+        try:
+            rc, took = _foam(ws, script, ws / f"{stage}.log", bashrc=bashrc, timeout=allowed)
+        except subprocess.TimeoutExpired as exc:
+            # A WATCHED STAGE THAT WAS STOPPED, said as what stopped it (_stopped_words): stuck,
+            # out of memory, or still working at the budget. It used to come back as a bare
+            # TimeoutExpired out of `build`, which `native._run_conjugate_local`'s catch-all
+            # reported as "FAILED: TimeoutExpired" - a crash, for a mesher that was fine.
+            seconds[stage] = round(time.monotonic() - t0, 1)
+            raise ConjugateError(_stopped_words(stage, exc, allowed), stage=stage,
+                                 stopped=exc) from None
         seconds[stage] = round(took, 1)
         if rc != 0:
             raise ConjugateError(f"{stage} exited {rc} after {took:.0f}s; see {stage}.log",
@@ -1540,6 +1647,17 @@ def build(workspace, *, block_stl: str = "constant/triSurface/block.stl",
     if set(regions) != {FLUID_REGION, SOLID_REGION}:
         # The check that would have stopped the 84-region run in its first minute instead of an
         # hour in. More than two regions means the split walked connectivity rather than the zones.
+        #
+        # AND IT REFUSES A CASE TWO OF THIS ENGINE'S OWN READERS WERE BUILT FOR - noted here
+        # because this line is where a reader will come looking. `cfmesh_conjugate/viewer.py` was
+        # deliberately written for the coupled plate-and-chip case, which delivers THREE regions
+        # and says so in its own comment, and `review_surface` iterates only
+        # (FLUID_REGION, SOLID_REGION). So the engine's gate, its viewer and its review surface
+        # hold three different ideas of how many regions a conjugate case has. Nothing here
+        # changes that - a third region today would still be a split that walked connectivity
+        # rather than the zones, which is the defect this catches - but the gap is real and the
+        # fix is one decision about the coupled case, taken in all three places at once, not a
+        # quiet widening of this set.
         raise ConjugateError(
             f"expected exactly the regions {FLUID_REGION} and {SOLID_REGION}, got {regions}")
     (ws / "constant" / REGION_PROPERTIES).write_text(region_properties())
@@ -1550,7 +1668,15 @@ def build(workspace, *, block_stl: str = "constant/triSurface/block.stl",
         # write_fields: checkMesh writes down the per-cell numbers it has already worked out, so
         # the viewer can colour a face with the measurement rather than a second implementation
         # of it. +15.1% on this call, and its verdict is byte-identical (foam_exec.check_mesh).
-        quality = check_mesh(ws, bashrc=bashrc, region=name, write_fields=True)
+        #
+        # UNDER THE RUN'S OWN DEADLINE, not CHECK_TIMEOUT_S alone. Two regions at the plate's size
+        # are a measured 652 s and 878 s at 182 M cells, so the pair is a real share of the run -
+        # and foam_exec's own ceiling is 7,200 s EACH, which with the mesher's chain in front of
+        # it added up to more than the machine was alive for. The smaller of the two is taken, so
+        # a small run keeps exactly the ceiling it had.
+        quality = check_mesh(ws, bashrc=bashrc, region=name, write_fields=True,
+                             timeout_s=float(min(CHECK_TIMEOUT_S,
+                                                 _left(f"checkMesh on {name}"))))
         seconds[f"checkMesh:{name}"] = round(time.monotonic() - t0, 1)
         reports[name] = read_region(quality, name)
         polymesh = ws / "constant" / name / "polyMesh"

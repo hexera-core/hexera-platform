@@ -1664,6 +1664,19 @@
   "roots": []
  },
  {
+  "context": "application/cooled_solid_wording.py::forbidden_words::search#1|NotAPublisher|not-a-publisher|",
+  "path": "application/cooled_solid_wording.py",
+  "qualname": "forbidden_words",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "application/dispute_operation.py::dispatch_or_record_failure::error#1|NotAPublisher|not-a-publisher|",
   "path": "application/dispute_operation.py",
   "qualname": "dispatch_or_record_failure",
@@ -2777,6 +2790,19 @@
   "roots": []
  },
  {
+  "context": "application/purpose_map.py::coolant_of::search#1|NotAPublisher|not-a-publisher|",
+  "path": "application/purpose_map.py",
+  "qualname": "coolant_of",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "rx",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "application/purpose_map.py::read_purpose::search#1|NotAPublisher|not-a-publisher|application/purpose_map.py::re.Pattern",
   "path": "application/purpose_map.py",
   "qualname": "read_purpose",
@@ -2813,7 +2839,7 @@
   "semantic": "search",
   "method": "search",
   "ordinal": 3,
-  "receiver": "_HEAT",
+  "receiver": "_THERMAL_BY_NAME",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
   "gated_required": false,
@@ -2828,7 +2854,7 @@
   "semantic": "search",
   "method": "search",
   "ordinal": 4,
-  "receiver": "_FLOW_AS_LOAD",
+  "receiver": "_COOLING_AT_IT",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
   "gated_required": false,
@@ -2843,7 +2869,7 @@
   "semantic": "search",
   "method": "search",
   "ordinal": 5,
-  "receiver": "_PAST_A_BODY",
+  "receiver": "_WHERE_THE_AIR_IS",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
   "gated_required": false,
@@ -2858,6 +2884,51 @@
   "semantic": "search",
   "method": "search",
   "ordinal": 6,
+  "receiver": "_HEAT",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": [
+   "application/purpose_map.py::re.Pattern"
+  ]
+ },
+ {
+  "context": "application/purpose_map.py::read_purpose::search#7|NotAPublisher|not-a-publisher|application/purpose_map.py::re.Pattern",
+  "path": "application/purpose_map.py",
+  "qualname": "read_purpose",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 7,
+  "receiver": "_FLOW_AS_LOAD",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": [
+   "application/purpose_map.py::re.Pattern"
+  ]
+ },
+ {
+  "context": "application/purpose_map.py::read_purpose::search#8|NotAPublisher|not-a-publisher|application/purpose_map.py::re.Pattern",
+  "path": "application/purpose_map.py",
+  "qualname": "read_purpose",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 8,
+  "receiver": "_PAST_A_BODY",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": [
+   "application/purpose_map.py::re.Pattern"
+  ]
+ },
+ {
+  "context": "application/purpose_map.py::read_purpose::search#9|NotAPublisher|not-a-publisher|application/purpose_map.py::re.Pattern",
+  "path": "application/purpose_map.py",
+  "qualname": "read_purpose",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 9,
   "receiver": "_HEAT",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
@@ -3762,12 +3833,38 @@
   "roots": []
  },
  {
+  "context": "engines/cfmesh_conjugate/native.py::_index_regions::error#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/cfmesh_conjugate/native.py",
+  "qualname": "_index_regions",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "engines/cfmesh_conjugate/native.py::_review_aids::error#1|NotAPublisher|not-a-publisher|",
   "path": "engines/cfmesh_conjugate/native.py",
   "qualname": "_review_aids",
   "semantic": "error",
   "method": "error",
   "ordinal": 1,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/cfmesh_conjugate/native.py::_review_aids::error#2|NotAPublisher|not-a-publisher|",
+  "path": "engines/cfmesh_conjugate/native.py",
+  "qualname": "_review_aids",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 2,
   "receiver": "logger",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
@@ -3821,6 +3918,58 @@
   "method": "search",
   "ordinal": 3,
   "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/cfmesh_conjugate/review_surface.py::_refuse::error#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/cfmesh_conjugate/review_surface.py",
+  "qualname": "_refuse",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/cfmesh_conjugate/review_surface.py::build_region_msh::error#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/cfmesh_conjugate/review_surface.py",
+  "qualname": "build_region_msh",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/cfmesh_conjugate/review_surface.py::build_region_msh::error#2|NotAPublisher|not-a-publisher|",
+  "path": "engines/cfmesh_conjugate/review_surface.py",
+  "qualname": "build_region_msh",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 2,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/cfmesh_conjugate/review_surface.py::build_region_msh::error#3|NotAPublisher|not-a-publisher|",
+  "path": "engines/cfmesh_conjugate/review_surface.py",
+  "qualname": "build_region_msh",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 3,
+  "receiver": "logger",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
   "gated_required": false,
@@ -5215,6 +5364,58 @@
   "roots": [
    "pipeline/graph.py::execution_publisher"
   ]
+ },
+ {
+  "context": "render/boundary_index.py::_data_start::search#1|NotAPublisher|not-a-publisher|",
+  "path": "render/boundary_index.py",
+  "qualname": "_data_start",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_HEADER_ASCII_RE",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "render/boundary_quality.py::_internal_field::search#1|NotAPublisher|not-a-publisher|",
+  "path": "render/boundary_quality.py",
+  "qualname": "_internal_field",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "render/boundary_quality.py::_internal_field::search#2|NotAPublisher|not-a-publisher|",
+  "path": "render/boundary_quality.py",
+  "qualname": "_internal_field",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "render/boundary_quality.py::_patch_values::search#1|NotAPublisher|not-a-publisher|",
+  "path": "render/boundary_quality.py",
+  "qualname": "_patch_values",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
  },
  {
   "context": "render/face_quality.py::_body::search#1|NotAPublisher|not-a-publisher|",

@@ -179,6 +179,7 @@ class IntakeLoopPolicy:
     repeated_questions: int = 0                # replies sent back for asking the same thing again
     engine_nudges: int = 0                     # replies sent back for how they spoke of the engine
     thermal_nudges: int = 0                    # thermal-model replies sent back for generic words
+    cooled_solid_nudges: int = 0               # cold-plate replies sent back for an air box's words
     fea_nudges: int = 0                        # FEA replies sent back for an invented load or material
     fea_settled_nudges: int = 0                # FEA replies sent back for asking what the FEA path settles
     #: The names a thermal model's file gives (its parts, fans, vents...): its own words, which the
@@ -259,6 +260,38 @@ class IntakeLoopPolicy:
                 logger.info("Intake: a thermal model's reply used generic words (%s) - sent back "
                             "once for a rewrite", ", ".join(said))
                 return RoundDecision(message=turn.THERMAL_WORDS_NUDGE, complete=False)
+        # A COOLED SOLID IS SPOKEN OF IN ITS OWN WORDS - the same check on the opposite case. A
+        # reply that says far field, farfield, freestream, air box, room air, cooling air or "the
+        # fluid around the part" about a part whose own passages carry the coolant has meshed an
+        # air box in its head; it goes back ONCE for a rewrite, while another round may start,
+        # exactly like the thermal check above.
+        #
+        # WHAT IS PASSED AS `names` HERE IS WHOLE USER MESSAGES, AND THAT IS NOT WHAT `names`
+        # DOES. The thermal half above passes the FILE's own short names (`self.thermal_names`,
+        # "Inlet_grille"), and `forbidden_words` blanks each one out of the reply where it appears
+        # verbatim - which works for a name and not for a sentence. Measured 2026-11-12 through
+        # the real function: with the user's message "what about the far field around it?" passed
+        # as a name, the reply "You asked about the far field; there is no far field here" still
+        # comes back ["far field"], because the whole message never appears inside the reply. So a
+        # user who raises the word themselves gets the model's honest answer sent back once.
+        #
+        # It is LEFT THAT WAY on purpose: the cost is one send-back per turn on a reply the user
+        # invited, the guard never lets the word through, and exempting a word because the user
+        # once used it is a change to what a cold-plate owner is shown, not a fix to a wrong
+        # reading. tests/unit/agents/intake/test_a_cold_plate_is_asked_its_coolant.py pins the
+        # real behaviour of this call (not the function's own `names` shape) so that the next
+        # reader finds it measured. The one-line change, if it is ever wanted, is to drop from
+        # `said` every word that `forbidden_words("\n".join(self.exec_state.user_texts))` returns.
+        if (self.exec_state.cooled_solid and self.cooled_solid_nudges == 0
+                and (rounds_left is None or rounds_left > 0)):
+            from meshpipeline.application.cooled_solid_wording import forbidden_words
+
+            said = forbidden_words(self.plaintext_text, self.exec_state.user_texts)
+            if said:
+                self.cooled_solid_nudges += 1
+                logger.info("Intake: a cooled solid's reply spoke of something built around the "
+                            "part (%s) - sent back once for a rewrite", ", ".join(said))
+                return RoundDecision(message=turn.COOLED_SOLID_WORDS_NUDGE, complete=False)
         # AN FEA PART'S REPLY INVENTS NOTHING. Supports, loads and materials are the user's, set
         # in their own solver on the named faces; a reply that proposes one the user never said
         # ("1 kN downward on the end face", "steel E = 210 GPa") goes back ONCE for a rewrite.

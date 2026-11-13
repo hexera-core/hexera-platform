@@ -756,33 +756,65 @@ def _scout(*, session_id: str, owner_id: str, source: dict, interpretation: dict
                 facts["confidence"]["input_kind"] = 0.95
             declared_openings(facts, thermal)
 
-        # the same skin, stored for the stage the user turns the part in
         gp.mark(gp.PICTURES, triangles=gp.skin_triangles(skin))
+        # THE SKIN THE STAGE TURNS THE PART IN, stored under the session's one skin key.
+        # THE FILE'S OWN SOLIDS WHERE IT HAS SEVERAL. A thermal model has always been drawn
+        # this way (_placed_skin_payload); a STEP assembly was drawn as one welded lump, so a
+        # customer checking that we read their six-part package could not see whether we had
+        # found their parts at all. The payload is the same one either way, so nothing in the
+        # console changes.
+        drawn_parts = None if placed else _parts_skin(work)
+        # A DRAWING MISSING A SOLID IS NOT SERVED. cad/solid_parts.parts_payload leaves out any
+        # solid it could not triangulate and names it in `parts_not_drawn` (solid_parts.py:148),
+        # while the welded skin draw_view wrote covers every solid in the file. Replacing one with
+        # the other showed a six-solid plate as five, under a camera framed on six-solid bounds
+        # (setSkin does not resetCamera) and stickers placed from six-solid centroids. Five of six
+        # is a worse answer to "did you read my package" than one of one, so the whole part stands
+        # and the note names what could not be drawn apart.
+        if drawn_parts and drawn_parts.get("parts_not_drawn"):
+            facts.setdefault("notes", []).append(
+                "the file holds "
+                f"{drawn_parts['part_count']} solids and "
+                f"{len(drawn_parts['parts_not_drawn'])} of them could not be drawn separately, so "
+                "the part is drawn whole: " + ", ".join(drawn_parts["parts_not_drawn"]))
+            drawn_parts = None
         skin_key = preview.skin_key if preview is not None and preview.skin_key else None
-        if skin_key is None:
-            # the same skin, stored for the stage the user turns the part in (the preview stored
-            # it already when there was one: the same file, drawn once)
-            skin_key = check_object_key(session_id, "skin.json")
-            # THE FILE'S OWN SOLIDS WHERE IT HAS SEVERAL. A thermal model has always been drawn
-            # this way (_placed_skin_payload); a STEP assembly was drawn as one welded lump, so a
-            # customer checking that we read their six-part package could not see whether we had
-            # found their parts at all. The payload is the same one either way, so nothing in the
-            # console changes.
-            drawn_parts = None if placed else _parts_skin(work)
+        # THE PREVIEW'S SKIN IS REPLACED WHEN THE FULL READING HAS MORE TO SHOW. This used to be
+        # `if skin_key is None:` around the whole block, and on the real path `preview` is always
+        # a _Preview (_run_scout) whose publish() sets skin_key for every CAD file - so the block
+        # was always skipped, `_parts_skin` (whose only call site is here) was never called at all,
+        # and skin.json kept the preview's welded grey lump for the whole session. Measured
+        # 2026-11-12 on the Corintis cold plate, 6 solids: one patch served where six were drawn.
+        # The replacement goes to the SAME key, and the console re-fetches the skin when the poll
+        # says the preview is over (ui/js/viewer/geometry_stage.js). A file of one solid draws no
+        # parts and is left exactly as the preview stored it, so nothing is uploaded twice for it.
+        if skin_key is None or drawn_parts is not None:
+            first = skin_key is None
+            skin_key = skin_key or check_object_key(session_id, "skin.json")
+            # A SKIN THE NAMING ALREADY RE-READ IN ANOTHER UNIT (a file that states none, whose
+            # unit the user settled in the chat: _rescale_skin) must not be replaced by one in the
+            # unit the scout assumed - the stage places its pins at the corrected centroids on it.
+            # The factor travels with the skin, so the replacement is put through the same one.
+            #
+            # IT IS READ OFF THE STORED SKIN, AND ONLY WHERE THERE CAN BE ONE. `_rescale_skin` has
+            # exactly one caller, `_name` below, which runs it only under `facts["unit_assumed"]` -
+            # so a file that declares its unit can never have had its skin re-read, and asking is
+            # pure cost. It used to ask on every multi-solid CAD scout: ColdPlateAssembly_CLEAN.step
+            # is 15,883,539 bytes and 9,226 faces, and its stored skin came down whole, base64
+            # float32 and all, to be parsed for one float that is 1.0 for every file that states
+            # its own unit. Measured 2026-11-12: zero skin reads on that scout now, one on a file
+            # that states no unit, where the carry is what keeps the drawing on its own pins.
+            carried = _skin_rescaled_by(skin_key) if not first and facts.get("unit_assumed") else 1.0
             _store_json(skin_key,
                         _placed_skin_payload(fetched) if placed
                         else drawn_parts or skin_payload(skin))
-            if drawn_parts:
-                facts["parts_drawn"] = [
-                    {k: pt.get(k) for k in ("name", "part_id", "triangles", "size_mm",
-                                            "volume_mm3")}
-                    for pt in drawn_parts["patches"]]
-                if drawn_parts.get("parts_not_drawn"):
-                    facts.setdefault("notes", []).append(
-                        "the file holds "
-                        f"{drawn_parts['part_count']} solids and "
-                        f"{len(drawn_parts['parts_not_drawn'])} of them could not be drawn: "
-                        + ", ".join(drawn_parts["parts_not_drawn"]))
+            if abs(carried - 1.0) > 1e-9:
+                _rescale_skin(session_id, carried)
+        if drawn_parts:
+            facts["parts_drawn"] = [
+                {k: pt.get(k) for k in ("name", "part_id", "triangles", "size_mm",
+                                        "volume_mm3")}
+                for pt in drawn_parts["patches"]]
         # which way the part stands up, as far as its shape says: the code's half of the up
         # proposal, weighed against the pictures once the model has seen them
         facts["up_evidence"] = read_up_evidence(skin)
@@ -1971,6 +2003,19 @@ def rescaled_lengths(value, k: float):
 _rescaled = rescaled_lengths
 
 
+def _skin_rescaled_by(skin_key: str) -> float:
+    """What the stored skin says it was already scaled by (`rescaled_by`, written by _rescale_skin),
+    else 1.0. Read before a skin is REPLACED by a fuller drawing of the same part: the naming may
+    have re-read the file in the unit the user settled, and the replacement has to follow it or the
+    stage would draw the part a thousand times the size of its own pins. Never raises."""
+    from meshpipeline.contracts.object_storage import get_object_store
+
+    try:
+        return float(json.loads(get_object_store().get_bytes(object_key=skin_key)).get("rescaled_by") or 1.0)
+    except Exception:  # noqa: BLE001 - no skin, or one that says nothing: it was never rescaled
+        return 1.0
+
+
 def _rescale_skin(session_id: str, k: float) -> None:
     from meshpipeline.contracts.object_storage import ObjectNotFound, get_object_store
 
@@ -1989,6 +2034,18 @@ def _rescale_skin(session_id: str, k: float) -> None:
             if p.get(name):
                 arr = np.frombuffer(base64.b64decode(p[name]), dtype=np.float32) * float(k)
                 p[name] = base64.b64encode(arr.astype(np.float32).tobytes()).decode("ascii")
+    # A PART'S OWN SIZE AND VOLUME TRAVEL WITH ITS POINTS. cad/solid_parts.parts_payload puts
+    # `size_mm` and `volume_mm3` on every patch, because "is this my part?" is the question the
+    # stage exists to answer and a name alone does not answer it. They are read off the same
+    # triangles, so a re-read that multiplies the points by 1000 and leaves these alone leaves the
+    # drawing saying 10.0 mm about a part its own points now put 10 m across. Nothing renders them
+    # yet (partsLegend draws name and colour), which is the only reason the stale number was
+    # harmless, and not a reason to leave it.
+    for p in skin.get("patches") or []:
+        if isinstance(p.get("size_mm"), list):
+            p["size_mm"] = [round(float(v) * float(k), 4) for v in p["size_mm"]]
+        if isinstance(p.get("volume_mm3"), (int, float)) and not isinstance(p["volume_mm3"], bool):
+            p["volume_mm3"] = round(float(p["volume_mm3"]) * float(k) ** 3, 4)
     # THE FACTOR TRAVELS WITH THE SKIN: anything placed on it from the kernel's own millimetres (a
     # repair review's cameras) reads it, as the stage reads scale_to_m. Cumulative across rescales.
     skin["rescaled_by"] = float(skin.get("rescaled_by") or 1.0) * float(k)

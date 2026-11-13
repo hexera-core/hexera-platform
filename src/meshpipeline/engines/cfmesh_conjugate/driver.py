@@ -287,8 +287,6 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     from meshpipeline.cad.fluid_volume import surface_bounded
     from meshpipeline.contracts.mesh_execution import note_native_pass, note_native_payload
     from meshpipeline.engines.cfmesh_conjugate.conjugate import ConjugateError
-    from meshpipeline.engines.registry import get_spec
-    from meshpipeline.engines.runtime import get_engine
 
     ws = Path(workspace)
     src = find_source(ws, source_path)
@@ -690,10 +688,32 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
             logger.info("conjugate: %s - job_id=%s", line, job_id)
 
     await run.fence("start native mesh")
-    policy = get_spec("cfmesh_conjugate").run_policy
-    cap = int(policy.run_timeout()) if policy is not None else 3600
-    result = await asyncio.to_thread(
-        get_engine("cfmesh_conjugate").run_cartesian_mesh, ws, timeout=cap)
+    # THE MACHINE'S WALL IS A CEILING ON THE RUN'S OWN BUDGET - the half of
+    # `contracts/native_time` this engine was still missing, taken through the shared loop
+    # (`native_time.run_off_the_wall`) in the shape `engines/snapgrid/driver.py:90` already uses,
+    # which is the other engine with a deterministic driver and so the other one `policy.watched`
+    # never reaches (the flag is read only inside the model-led `run_mesh`). The loop hands the
+    # wall to the case, re-runs a Cloud Run pass that met it STILL WORKING on a VM - the same
+    # case, nothing coarsened (RUN-5) - and steps one machine up for a run that came back out of
+    # memory (RUN-3). See `_run_off_the_wall`, which is where the ceiling is applied and why it
+    # is a ceiling rather than a replacement.
+    #
+    # WHAT IT FIXES, measured 2026-11-12. `run_timeout()` is 21,600 s and
+    # `native_time.CLOUD_RUN_WALL_S` is 13,800 (MESH_TIMEOUT_SECONDS 14,400 less the margin to
+    # hand the result back), so the engine's own deadline was 1.57x the platform's. The clamp this
+    # replaced - min(21600, OPENFOAM_COMMAND_TIMEOUT 1500 x 6) = 9,000 - happened to fit 13,800
+    # and 21,600 does not, and `mesh_machine.choose` on this engine's own budget model routes
+    # 60,000 cells (peak 0.45 GiB) and 5,000,000 cells (peak 3.89 GiB) to CLOUD RUN. So a small
+    # conjugate case that ran long was killed by Cloud Run with no result document at all, and
+    # reached the customer as GONE ("stopped answering part way through the mesh") rather than as
+    # a mesh that needs a coarser fidelity with this policy's own `timeout_hint`.
+    #
+    # AND THE WAITING WORKER IS FINE, which is the premise this was declined on last time.
+    # `cloud_run_client.wait_s = timeout + 600 + VM_START_S` is NOT a clock that gives up: the
+    # module says so in its own words at WAIT_STALL_S - "THE WAIT ENDS WHEN THE REMOTE IS GONE,
+    # NOT ON A CLOCK" - and `_poll_gcs_json` only reaches its deadline branch when `silent`, which
+    # a remote pulsing its beacon every 60 s never is.
+    result = await asyncio.to_thread(_run_off_the_wall, ws, job_id=job_id)
     # BEFORE the result is judged: a superseded generation must not accept it
     await run.fence("accept native mesh output")
     ok = result.get("rc") == 0
@@ -705,6 +725,52 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     outcome = run.outcome(produced_deliverable=ok, exhausted=not ok,
                           failure_marker="" if ok else BUILD_FAILED)
     return outcome.produced_deliverable, (outcome.terminal_value or BUILD_FAILED), outcome
+
+
+def _run_off_the_wall(ws: Path, *, job_id: str = "") -> dict:
+    """Run the conjugate mesher under the LOWER of the machine's wall and this engine's own
+    budget, and re-run a Cloud Run pass that met that wall still working on a VM (RUN-5).
+
+    `contracts/native_time.run_off_the_wall` is the shared loop every watched engine uses and
+    `engines/snapgrid/driver.py:90` is the adoption this copies. The one thing added is `min`,
+    and both halves of it are measured.
+
+    THE WALL HAS TO BIND ON CLOUD RUN. `wall_for` is 13,800 s there and `run_timeout()` is
+    21,600 s, so without this the engine's own deadline was 1.57x the platform's and a small
+    conjugate case that ran long came back as GONE with no result document instead of as a mesh
+    that needs a coarser fidelity.
+
+    AND THE BUDGET HAS TO BIND ON A VM, which is where taking the wall outright would have done
+    harm rather than good. `wall_for` is 72,000 s on a VM, and three things measured on
+    2026-11-12 say that is not this engine's deadline:
+
+      * the plate's own container half FITS 21,600 with 1,115 s spare - chain 9,359 + checkMesh
+        2,776 + export 7,200 + surface 144 + index 1,006 = 20,485 s. The 39,588 s figure that
+        looks as though it does not fit is that sum plus the 19,103 s RETURN, and the return is
+        not in this budget: `gce_vm.lifetime_seconds` is this cap PLUS `return_margin_s`, which
+        prices the return separately and already covers it;
+      * the machine's life is derived from this cap, so 72,000 would make the plate's
+        maxRunDuration 72,000 + 22,831 = 94,831 s (26.3 h) - past both limits of the worker task
+        that is waiting to collect the result, 86,400 s soft and 90,000 s hard
+        (`adapters/pipeline_execution/celery.py:44-45`). The worker would be killed before the VM
+        was, which loses a finished mesh rather than saving one;
+      * and it would re-price a VM route whose arithmetic is settled and confirmed at 44,431 s,
+        for no measured need.
+
+    So a VM keeps exactly the figures it has - min(72,000, 21,600) = 21,600 - and Cloud Run is
+    brought inside the platform wall, which is the end that was broken. RUN-5 still buys more
+    time than the pass that met the wall: 21,600 against 13,800.
+    """
+    from meshpipeline.contracts.native_time import run_off_the_wall
+    from meshpipeline.engines.registry import get_spec
+    from meshpipeline.engines.runtime import get_engine
+
+    engine = get_engine("cfmesh_conjugate")
+    policy = get_spec("cfmesh_conjugate").run_policy
+    budget = int(policy.run_timeout()) if policy is not None else 3600
+    return run_off_the_wall(
+        ws, lambda wall: engine.run_cartesian_mesh(ws, timeout=min(int(wall), budget)),
+        engine="cfmesh_conjugate", job_id=job_id)
 
 
 def _finer(fidelity: str) -> str:

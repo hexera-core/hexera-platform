@@ -230,7 +230,10 @@ _KIND_WORDS = {"body-surface": "the part's wall, hollow inside for the fluid",
 #: owner reads "an assembly of solid parts" as a denial, and a thermal model's owner would read
 #: "coolant passages" as the wrong part. The STAGE's dropdown cannot branch - the user picks from
 #: a fixed list before anything is settled - so there the one label covers both.
-_COOLED_SOLID_WORDS = "a solid part with coolant passages through it"
+#: PUBLIC, because the intake prompt keys its cooled-solid block on these exact words, the way
+#: THERMAL_LEAD and FEA_LEAD are the opening phrases its thermal-model and FEA blocks key on
+#: (agents/intake/agent._block_cooled_solid). A copy of the string in the prompt would drift.
+COOLED_SOLID_WORDS = "a solid part with coolant passages through it"
 
 
 def kind_words(body) -> str:
@@ -238,7 +241,7 @@ def kind_words(body) -> str:
     if str(getattr(body, "input_kind", "")) == "solid-assembly" \
             and not [n for n in (getattr(body, "regions", None) or []) if str(n).strip()] \
             and _coolant_is_inside(body):
-        return _COOLED_SOLID_WORDS
+        return COOLED_SOLID_WORDS
     return _KIND_WORDS[body.input_kind]
 #: What the declaration says of a whole thermal model's air box (check_mode "thermal"): its sides
 #: are the file's, so no boundary is declared and none is asked about. The chat shows it.
@@ -419,6 +422,22 @@ def thermal_declared(messages: list[dict] | None) -> bool:
     for m in reversed(list(messages or [])):
         if isinstance(m, dict) and _is_declaration(m):
             return str(m.get("content", "")).startswith(f"{CONFIRMED_MARK} {THERMAL_LEAD}")
+    return False
+
+
+def cooled_solid_declared(messages: list[dict] | None) -> bool:
+    """Whether the conversation's declaration is a COOLED SOLID's (its latest one): one part whose
+    own passages carry the coolant, rather than a file of parts with the fluid among them.
+
+    The same reading as `thermal_declared` and `fea_declared`, on this case's own opening phrase.
+    Both are `input_kind solid-assembly` and both are conjugate heat transfer, so `declared_case`
+    cannot tell them apart - which is exactly why the intake needs a separate block for this one:
+    the thermal model's block says to send NO patches and ask nothing, and a cold plate's inlet and
+    outlet are the two things that must be asked.
+    """
+    for m in reversed(list(messages or [])):
+        if isinstance(m, dict) and _is_declaration(m):
+            return COOLED_SOLID_WORDS in str(m.get("content", ""))
     return False
 
 
@@ -896,7 +915,7 @@ def sizeless_record(record: dict, *, scale_to_metres: float, unit: str) -> dict:
             **plain, "message": message, "patches": patches_from(body), "reread": {"sizes_dropped": True}}
 
 
-__all__ = ["BUILT_IN_WALL", "CONFIRMED_MARK", "assembly_sentence", "body_of", "confirmation_message", "declared_case", "kind_words", "distinct_opening_names",
+__all__ = ["BUILT_IN_WALL", "CONFIRMED_MARK", "COOLED_SOLID_WORDS", "assembly_sentence", "body_of", "confirmation_message", "cooled_solid_declared", "declared_case", "kind_words", "distinct_opening_names",
            "renamed_openings_sentence",
            "patches_from", "replace_declaration",
            "reread_record", "sizeless_record", "thermal_confirmation_message", "thermal_declared",
