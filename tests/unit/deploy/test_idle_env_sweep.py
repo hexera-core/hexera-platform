@@ -35,7 +35,8 @@ def _run(tmp_path: Path, history: list[tuple[str, ...]], labels: list[str], **en
         "#!/bin/sh\n"
         '[ "$1 $2" = "${FAIL_LISTING:-}" ] && exit 1\n'
         f'case "$1 $2" in "run services") cat "{tmp_path}/run.json" ;;'
-        f' *) cat "{tmp_path}/empty.json" ;; esac\n')
+        f' *) cat "{tmp_path}/empty.json" ;; esac\n'
+    )
     for f in bin_dir.iterdir():
         f.chmod(0o755)
     out = tmp_path / "gh_output"
@@ -49,8 +50,7 @@ def _run(tmp_path: Path, history: list[tuple[str, ...]], labels: list[str], **en
     return p.returncode, idle, p.stdout + p.stderr
 
 
-def _deploy(slug: str, days: float, ref: str = "some/branch",
-            status: str = "completed") -> tuple[str, str, str]:
+def _deploy(slug: str, days: float, ref: str = "some/branch", status: str = "completed") -> tuple[str, str, str]:
     return (f"Deploy ({ref} -> {slug})", _ago(days), status)
 
 
@@ -69,15 +69,13 @@ def test_the_newest_run_decides_not_the_first(tmp_path):
 
 
 def test_a_queued_or_running_deploy_counts_as_fresh_however_old(tmp_path):
-    history = [_deploy("a", 30, status="queued"), _deploy("b", 30, status="in_progress"),
-               _deploy("c", 30)]
+    history = [_deploy("a", 30, status="queued"), _deploy("b", 30, status="in_progress"), _deploy("c", 30)]
     rc, idle, log = _run(tmp_path, history, ["dev-a", "dev-b", "dev-c"])
     assert rc == 0, log
     assert idle == ["c"]
 
 
-@pytest.mark.parametrize("listing", ["run services", "run jobs", "compute instance-templates",
-                                     "storage buckets"])
+@pytest.mark.parametrize("listing", ["run services", "run jobs", "compute instance-templates", "storage buckets"])
 def test_any_failed_listing_fails_the_run(tmp_path, listing):
     """A listing that fails must not just shrink the set: the sweep would go green, skipping
     whatever only that listing could see."""
@@ -99,8 +97,7 @@ def test_shared_dev_and_malformed_labels_are_never_named(tmp_path):
 
 
 def test_the_keep_list_exempts_a_slug(tmp_path):
-    rc, idle, log = _run(tmp_path, [_deploy("a", 30), _deploy("b", 30)], ["dev-a", "dev-b"],
-                         KEEP_SLUGS="a, c")
+    rc, idle, log = _run(tmp_path, [_deploy("a", 30), _deploy("b", 30)], ["dev-a", "dev-b"], KEEP_SLUGS="a, c")
     assert rc == 0, log
     assert idle == ["b"]
 
@@ -141,7 +138,8 @@ def test_the_title_parsed_is_the_one_deploy_writes():
     text = DEPLOY_WF.read_text(encoding="utf-8")
     assert "format(' -> {0}', github.event.inputs.slug)" in text, (
         "deploy.yml's run-name no longer ends in ' -> <slug>)'; find-idle-envs.sh reads the last "
-        "deploy of every environment from that title and would call all of them idle")
+        "deploy of every environment from that title and would call all of them idle"
+    )
 
 
 def _wf() -> dict:
@@ -154,11 +152,11 @@ def test_the_sweep_runs_weekly_and_a_manual_run_defaults_to_dry():
     assert on["workflow_dispatch"]["inputs"]["dry_run"]["default"] is True
 
 
-def test_a_teardown_never_displaces_a_pending_deploy():
-    """GitHub keeps one pending run per concurrency group, so joining deploy.yml's per-slug group
-    would cancel a deploy waiting behind another. The re-check is the guard instead."""
+def test_a_teardown_never_overlaps_a_deploy_of_its_slug():
+    """A teardown shares deploy.yml's per-slug group so it never overlaps a deploy of that slug,
+    and re-judges the slug only once the group lets it run."""
     destroy = _wf()["jobs"]["destroy"]
-    assert "deploy-env" not in str(destroy.get("concurrency", ""))
+    assert destroy["concurrency"] == {"group": "deploy-env-${{ matrix.slug }}", "cancel-in-progress": False}
     steps = destroy["steps"]
     recheck = next(i for i, s in enumerate(steps) if s.get("id") == "recheck")
     destroy_step = next(i for i, s in enumerate(steps) if "destroy-env.sh" in s.get("run", ""))

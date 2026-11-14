@@ -265,6 +265,8 @@ An environment nobody has deployed for **14 days** is destroyed for you.
 10:00 UTC, finds every slug that still has resources labelled `deployment-id=dev-<slug>`, and runs
 `destroy-env.sh` on each one whose newest `Deploy (… -> <slug>)` run is older than that. Each slug is
 re-checked right before its teardown, and a deploy of it that is queued or running counts as fresh.
+A teardown never overlaps a deploy of the same slug; one queued behind a running deploy can displace
+another deploy pending there, which then needs re-dispatching.
 
 - **Keep yours:** add the slug to the `PERSONAL_ENV_KEEP` repository variable (comma or space
   separated), or just redeploy it - any deploy run resets the clock.

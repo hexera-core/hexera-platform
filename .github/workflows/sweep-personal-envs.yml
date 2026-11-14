@@ -80,9 +80,13 @@ jobs:
       max-parallel: 2
       matrix:
         slug: ${{ fromJSON(needs.find.outputs.idle) }}
-    # NOT in deploy.yml's per-slug concurrency group: GitHub keeps one pending run per group, so a
-    # teardown queued there would cancel a deploy already pending behind another. A deploy that is
-    # queued or running makes the slug fresh at the re-check below, which is the guard instead.
+    # SAME GROUP AS deploy.yml's per-slug deploys, so a teardown and a deploy of one slug never
+    # overlap. The cost: GitHub keeps one pending run per group, so a teardown queued behind a running
+    # deploy displaces a deploy pending there too, and that deploy has to be re-dispatched. That is
+    # the lesser failure; without the group a deploy can land mid-teardown and lose its database.
+    concurrency:
+      group: deploy-env-${{ matrix.slug }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
