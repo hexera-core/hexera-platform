@@ -67,6 +67,13 @@ def _unlocated_mesh(defect) -> bool:
     return _is_mesh(defect) and (not location.get("bbox_min") or not location.get("bbox_max"))
 
 
+def _scope_blind(defect) -> bool:
+    """A mesh finding no scoped probe can speak to: unlocated (about the whole part), or located
+    but of the volume stage (`mesh_probe.volume_stage`), which a 2D-only scoped probe never
+    builds. Either way only a WHOLE-SHAPE probe may clear it (controller ruling R11a)."""
+    return _unlocated_mesh(defect) or (_is_mesh(defect) and mesh_probe.volume_stage(defect))
+
+
 def _mesh_judged(previous, found) -> tuple[tuple, tuple]:
     """Both sides of the progress rule, less the mesh findings that cannot speak to one operation.
 
@@ -315,7 +322,9 @@ class RepairSession:
         (both through `_default_scan`, whatever `face_scan` is, so an operation aimed at a mesh
         defect is judged by the progress rule on a rescan that can still see it) and a package's
         scoped proof (`_region_scan`). A scoped probe surface-meshes the region's faces only, so
-        volume-mesh failures are seen by whole-shape scans alone (mesh_probe.mesh_defects).
+        volume-mesh failures are seen by whole-shape scans alone (mesh_probe.mesh_defects) - and
+        so a located one the session already holds in the region is appended to a scoped result
+        unchanged, never read as cleared by a probe that could not see it (ruling R11a).
 
         AN INJECTED SCANNER NEVER REACHES THIS: it is the whole truth for the test that injected
         it, and a mesh defect added on top would change what that test asserts about.
@@ -357,6 +366,15 @@ class RepairSession:
             carried = tuple(d for d in self._carried(within)
                             if d.code is not DefectCode.mesh_timeout)
             return (*found, *carried, *probed)
+        if within is not None:
+            # A SCOPED PROBE IS 2D-ONLY, so a located volume-stage finding in the region was not
+            # looked for, and its absence is not a repair (ruling R11a). It stands as it was -
+            # in the scan the progress rule and the package's predicate are judged on - until a
+            # whole-shape probe says otherwise.
+            present = {(d.fingerprint, d.code) for d in probed}
+            blind = tuple(d for d in self._carried(within)
+                          if mesh_probe.volume_stage(d) and (d.fingerprint, d.code) not in present)
+            return (*found, *probed, *blind)
         return (*found, *probed)
 
     def _carried(self, within: Region | None) -> tuple:
@@ -451,8 +469,10 @@ class RepairSession:
         # AN UNLOCATED MESH FINDING IS ABOUT THE WHOLE PART, so no region's scan replaces it.
         # `in_region` admits anything unplaceable, and a scoped probe meshes surfaces only, so
         # without this a `mesh_no_volume` would vanish from the list after any scoped rescan.
+        # A LOCATED VOLUME-STAGE ONE is carried for the same reason (ruling R11a): the scoped
+        # probe never built the volume it fails in (`_scope_blind`).
         outside = [d for d in (self._defects or ())
-                   if (_unlocated_mesh(d)
+                   if (_scope_blind(d)
                        or not in_region(d, within, diagonal_mm=self.original.diagonal_mm))
                    and (d.fingerprint, d.code) not in present]
         return tuple(sorted((*outside, *found),
@@ -621,7 +641,10 @@ class RepairSession:
             # the two sides cannot drift apart.
             # An unlocated mesh finding is the whole part's, not this region's: left in, it is an
             # error `found` can never hold, and `improved_to_warnings` would excuse new warnings.
-            previous = tuple(d for d in scoped_to(previous, within,
+            # A LOCATED volume-stage one stays IN: `_with_mesh` carries it into `found` too, so
+            # it is on both sides - never new, never cleared, and an operation aimed at it reads
+            # `target_remains` (ruling R11a: only a whole-shape probe may clear it).
+            previous =tuple(d for d in scoped_to(previous, within,
                                                   diagonal_mm=self.original.diagonal_mm)
                              if not _unlocated_mesh(d))
         if not judged_by_face_scan:

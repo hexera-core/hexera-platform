@@ -17,11 +17,17 @@ from __future__ import annotations
 from collections.abc import Callable
 
 import meshpipeline.settings.cad_repair as rcfg
+from meshpipeline.cad.repair import mesh_probe
 from meshpipeline.cad.repair.caps import Measure
+from meshpipeline.cad.repair.contracts import DefectCode
+from meshpipeline.cad.repair.identity import EntityRef
+from meshpipeline.cad.repair.operations import OPERATIONS
 from meshpipeline.cad.repair.package import PackageBudget, Predicate, TargetPackage
 from meshpipeline.cad.repair.plan import (
+    Candidate,
     RulesPlanner,
     RunHistory,
+    held_fingerprints,
     paired_rim_fingerprints,
     refuse_paired_rims,
 )
@@ -33,6 +39,64 @@ from meshpipeline.cad.repair.session import PackageVerdict
 #: run cannot attribute an improvement to model direction, which is the whole point of keeping the
 #: deterministic driver (spec decision 6).
 LABEL = "regions-rules-v1"
+
+#: WHICH EXISTING OPERATION THE BASELINE AIMS AT A MESH FAILURE (controller ruling R11b), and
+#: nothing else. An open loop is a face whose boundary gmsh could not close, which is the face
+#: fixer's own job; a surface-stage overlap is two surfaces whose discretisations cross, which only
+#: the whole-shape pass can re-sew. Every other mesh code gets NO package - an edge through a face,
+#: a periodic surface, no volume, a timeout and anything unclassified need judgement no bounded
+#: operation in the catalogue makes - and so does a VOLUME-STAGE overlap, because the scoped
+#: (2D-only) probe that judges a package cannot see it go (`mesh_probe.volume_stage`).
+#: "This face will mesh" is then an ordinary `cleared` claim on the mesh defect's fingerprint.
+MESH_OPS: dict[DefectCode, str] = {
+    DefectCode.mesh_open_loop: "fix_face_boundary",
+    DefectCode.mesh_overlapping_facets: "fix_shape_global",
+}
+
+_OPS_BY_NAME = {op.name: op for op in OPERATIONS}
+
+
+def _is_mesh(defect) -> bool:
+    return getattr(defect.code, "value", str(defect.code)).startswith("mesh_")
+
+
+def _mesh_candidate(defects, history: RunHistory, *, reserved: frozenset) -> Candidate | None:
+    """The MESH_OPS proposal for a region's mesh failures, or None - with the RulesPlanner's own
+    bookkeeping, so the two halves of the baseline cannot disagree about what a refusal is.
+
+    ORDERED BY ENTITY, then code, so identical runs propose identically. A failure with no
+    fingerprint is `untargetable`; one MESH_OPS does not map (or a volume-stage one) is
+    `no_operation_claims_it`; a pair the region already tried, an aim already declined, and a
+    target an engineer holds are skipped exactly as the planner skips them.
+    """
+    held = held_fingerprints(defects, reserved)
+    ordered = sorted((d for d in defects if _is_mesh(d)),
+                     key=lambda d: (d.entity_index, d.code.value, d.fingerprint))
+    for defect in ordered:
+        if defect.code in reserved:
+            continue
+        if not defect.fingerprint:
+            history.refuse(f"{defect.entity_type}:{defect.entity_index}", "untargetable",
+                           f"a {defect.code.value} on a {defect.entity_type} with no "
+                           "measurable extent")
+            continue
+        name = MESH_OPS.get(defect.code)
+        if name is None or mesh_probe.volume_stage(defect):
+            history.refuse(defect.fingerprint, "no_operation_claims_it",
+                           f"{defect.code.value} needs a judgement no bounded operation makes")
+            continue
+        if history.was_ineffective(defect.fingerprint, name):
+            continue
+        if history.was_declined(name, (defect.fingerprint,)):
+            continue
+        if defect.fingerprint in held:
+            continue
+        target = EntityRef(entity_type=str(defect.entity_type), fingerprint=defect.fingerprint,
+                           entity_index=int(defect.entity_index),
+                           ambiguous=bool(getattr(defect, "ambiguous", False)))
+        return Candidate(op=_OPS_BY_NAME[name], targets=(target,), defect_code=defect.code,
+                         defect_fingerprint=defect.fingerprint)
+    return None
 
 
 def _history(attempts: tuple[PackageVerdict, ...]) -> RunHistory:
@@ -203,7 +267,14 @@ def rules_author(shape, *, original: Measure, reserved: frozenset = frozenset(),
         # the guard whole-part again - without it a passage whose two rims decompose into two
         # regions is sealed (observe_part).
         refuse_paired_rims(history, part_rims)
-        candidate = chosen.propose(tuple(defects), history, shape=shape)
+        # KERNEL DEFECTS FIRST, MESH FAILURES AFTER. The rules are handed exactly the defects
+        # they always were (with CAD_REPAIR_MESH_PROBE off there is no other kind, so this is
+        # byte-for-byte the flag-off author); a mesh failure is aimed at only once they have
+        # nothing, because a kernel defect is often what the mesher tripped on.
+        candidate = chosen.propose(tuple(d for d in defects if not _is_mesh(d)), history,
+                                   shape=shape)
+        if candidate is None:
+            candidate = _mesh_candidate(tuple(defects), history, reserved=frozenset(reserved))
         # WHAT THE RULES REFUSED TO AIM AT, KEPT INSTEAD OF DISCARDED WITH THE LEDGER. The
         # ledger above is rebuilt per call because the author is stateless, but a refusal is not
         # feedback for the next package - it is a thing the customer is owed in the report (the
@@ -242,7 +313,9 @@ def rules_author(shape, *, original: Measure, reserved: frozenset = frozenset(),
             region=region, plan=plan, predicate=predicate, budget=allowance,
             intent=(f"clear the {candidate.defect_code.value} on "
                     f"{candidate.defect_fingerprint} in region {region.index}"),
-            rationale=(f"{LABEL}: {candidate.op.name} is the narrowest catalogue operation that "
+            rationale=(f"{LABEL}: {candidate.op.name} is the operation MESH_OPS aims at a "
+                       f"{candidate.defect_code.value}" if candidate.defect_code in MESH_OPS else
+                       f"{LABEL}: {candidate.op.name} is the narrowest catalogue operation that "
                        f"claims the worst defect this region reports"))
 
     # THE LOOP READS THIS OFF THE CALLABLE, because the `author` seam is

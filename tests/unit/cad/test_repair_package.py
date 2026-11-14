@@ -197,3 +197,21 @@ def test_movement_is_judged_net_of_what_the_kept_operations_declared():
                     declared_volume_mm3=500.0, **kw) == ""
     assert "volume moved" in evaluate(pv, before=_SOUND, after=_changed(volume_mm3=8600.0),
                                       declared_volume_mm3=500.0, **kw)
+
+
+# MESH FAILURES (plan Task 6). "This face will mesh" is a `cleared` claim naming the mesh defect's
+# fingerprint, judged by the same scoped re-scan the session enriches with the mesh probe - there
+# is no separate `meshes` field to judge.
+
+
+def test_cleared_mesh_fingerprint_fails_while_failure_remains():
+    p = _p(cleared={"face:f4"})
+    reason = evaluate(p, before=_SOUND, after=_SOUND, kept_ops=1,
+                      defects_before=("face:f4",), defects_after=("face:f4",))
+    assert reason and "face:f4" in reason and "still present" in reason
+
+
+def test_cleared_mesh_fingerprint_holds_once_the_failure_is_gone():
+    p = _p(cleared={"face:f4"})
+    assert evaluate(p, before=_SOUND, after=_SOUND, kept_ops=1,
+                    defects_before=("face:f4",), defects_after=()) == ""

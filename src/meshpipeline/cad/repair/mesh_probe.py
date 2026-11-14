@@ -264,7 +264,8 @@ def _face_boxes(faces) -> dict[int, Box]:
 
 
 def _face_defect(code: DefectCode, faces, index: int, failure: MeshFailure) -> EntityDefect:
-    measurements: dict = {"mesh_kind": failure.kind, "gmsh_surfaces": list(failure.surfaces)}
+    measurements: dict = {"mesh_kind": failure.kind, "gmsh_surfaces": list(failure.surfaces),
+                          "stage": failure.stage}
     if failure.point is not None:
         measurements["point"] = list(failure.point)
     return EntityDefect(code=code, severity=DefectSeverity.error, entity_type="face",
@@ -279,7 +280,28 @@ def _unlocated(failure: MeshFailure) -> EntityDefect:
                         severity=DefectSeverity.error, entity_type="shape", entity_index=0,
                         message=failure.message,
                         measurements={"mesh_kind": failure.kind,
-                                      "gmsh_surfaces": list(failure.surfaces)})
+                                      "gmsh_surfaces": list(failure.surfaces),
+                                      "stage": failure.stage})
+
+
+#: Mesh codes only a VOLUME mesh can report, whatever stage was recorded beside them.
+VOLUME_CODES = frozenset({DefectCode.mesh_edge_through_face, DefectCode.mesh_no_volume})
+
+
+def volume_stage(defect) -> bool:
+    """Is this a mesh finding only a WHOLE-SHAPE probe can see (controller ruling R11a)?
+
+    A scoped probe surface-meshes its region and never builds the volume, so a failure of the
+    volume stage - an edge through a face, no volume, or any failure whose recorded stage was 3D -
+    is invisible to it. Its absence from a scoped probe is therefore no evidence it went, and the
+    session carries such a finding through scoped scans until a whole-shape probe judges it.
+    """
+    code = getattr(defect, "code", None)
+    if code in VOLUME_CODES:
+        return True
+    if not getattr(code, "value", str(code)).startswith("mesh_"):
+        return False
+    return (getattr(defect, "measurements", None) or {}).get("stage") == STAGE_3D
 
 
 def _box_distance(point: tuple[float, float, float], box: Box) -> float:

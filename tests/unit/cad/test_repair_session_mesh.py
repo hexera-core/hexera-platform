@@ -332,3 +332,105 @@ def test_a_whole_part_mesh_error_does_not_excuse_a_new_warning_in_the_region(mon
     verdict = session.try_op(_Sew(), _Sew().targets_for(opening), opening.code, tolerance_mm=0.01,
                              within=_REGION)
     assert not verdict.kept and verdict.reason == "new_defect"
+
+
+# CONTROLLER RULING R11a. A scoped probe meshes surfaces only, so a LOCATED volume-stage mesh
+# failure is invisible to it: without a carry it would vanish from a scoped rescan and read as
+# cleared, crediting a package or an operation with a repair nobody could see. Only a whole-shape
+# probe may clear one.
+_THROUGH = EntityDefect(code=DefectCode.mesh_edge_through_face, severity=DefectSeverity.error,
+                        entity_type="face", entity_index=4, message="a segment and a facet intersect",
+                        fingerprint="face:f4", location=dict(_BOX),
+                        measurements={"mesh_kind": "edge_through_face", "gmsh_surfaces": [],
+                                      "stage": mesh_probe.STAGE_3D})
+_OVERLAP_3D = EntityDefect(code=DefectCode.mesh_overlapping_facets, severity=DefectSeverity.error,
+                           entity_type="face", entity_index=4, message="overlapping facets",
+                           fingerprint="face:f4", location=dict(_BOX),
+                           measurements={"mesh_kind": "overlapping_facets", "gmsh_surfaces": [4],
+                                         "stage": mesh_probe.STAGE_3D})
+_VOLUME_STAGE = pytest.mark.parametrize("volume_defect", [_THROUGH, _OVERLAP_3D],
+                                        ids=["edge_through_face", "overlap_stage_3d"])
+
+
+@_VOLUME_STAGE
+def test_a_scoped_rescan_keeps_a_located_volume_stage_mesh_defect(monkeypatch, volume_defect):
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
+    _scan(monkeypatch, ((), True))
+    # Whole-shape probe sees it; the scoped (2D-only) probe that follows cannot.
+    _probe(monkeypatch, (volume_defect,), ())
+    session = RepairSession("shape", measurer=lambda s: MEASURE)
+    assert session.defects() == (volume_defect,)
+    found = session._rescan(face_scan=False, within=_REGION)
+    assert volume_defect in found
+    assert volume_defect in session.defects()
+
+
+@_VOLUME_STAGE
+def test_only_a_whole_shape_probe_clears_a_volume_stage_mesh_defect(monkeypatch, volume_defect):
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
+    _scan(monkeypatch, ((), True))
+    _probe(monkeypatch, (volume_defect,), ())
+    session = RepairSession("shape", measurer=lambda s: MEASURE)
+    session.defects()
+    session._rescan(face_scan=False, within=_REGION)
+    assert session._rescan(face_scan=False) == ()
+    assert session.defects() == ()
+
+
+def test_a_scoped_rescan_still_clears_a_surface_stage_mesh_defect(monkeypatch):
+    # The carry is for what the scoped probe CANNOT see; what it can see, it may clear.
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
+    _scan(monkeypatch, ((), True))
+    _probe(monkeypatch, (_OVERLAP,), ())
+    session = RepairSession("shape", measurer=lambda s: MEASURE)
+    session.defects()
+    assert session._rescan(face_scan=False, within=_REGION) == ()
+    assert _OVERLAP not in session.defects()
+
+
+def test_an_injected_scanners_scoped_rescan_keeps_a_located_volume_stage_mesh_defect(monkeypatch):
+    # `_merged` carries it forward exactly as it carries an unlocated mesh finding.
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
+    answers = iter([((_THROUGH,), True), ((), True)])
+    session = RepairSession("shape", measurer=lambda s: MEASURE, scanner=lambda s: next(answers))
+    session.defects()
+    session._rescan(face_scan=False, within=_REGION)
+    assert _THROUGH in session.defects()
+
+
+@_VOLUME_STAGE
+def test_a_package_cannot_claim_a_volume_stage_mesh_defect_cleared(monkeypatch, volume_defect):
+    from meshpipeline.cad.repair.package import PackageBudget, Predicate, TargetPackage
+
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
+    # The sew really does clear the opening; the scoped probes really do report nothing.
+    _scan(monkeypatch, ((_OPENING,), True), ((), True))
+    _probe(monkeypatch, (volume_defect,), ())
+    session = RepairSession("shape", measurer=lambda s: MEASURE)
+    opening = session.defects()[0]
+    package = TargetPackage(
+        region=_REGION, intent="claim the volume-stage mesh failure cleared",
+        plan=({"op": _Sew(), "targets": _Sew().targets_for(opening),
+               "defect_code": opening.code},),
+        predicate=Predicate(cleared=frozenset({"face:f4"}), reclassified=frozenset(),
+                            unchanged=frozenset(), max_area_delta_mm2=10.0,
+                            max_volume_delta_mm3=10.0),
+        budget=PackageBudget(max_ops=1, timeout_s=60.0, model_calls=0, deviation_mm=0.0))
+    verdict = session.try_package(package)
+    assert verdict.verdicts and verdict.verdicts[0].kept, verdict.verdicts
+    assert verdict.status == session_mod.REVERTED
+    assert "still present" in verdict.reason and "face:f4" in verdict.reason
+    assert session.shape == "shape"
+
+
+@_VOLUME_STAGE
+def test_a_scoped_operation_aimed_at_a_volume_stage_mesh_defect_is_not_kept(monkeypatch,
+                                                                            volume_defect):
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
+    _scan(monkeypatch, ((), True))
+    _probe(monkeypatch, (volume_defect,), ())
+    session = RepairSession("shape", measurer=lambda s: MEASURE)
+    target = session.defects()[0]
+    verdict = session.try_op(_Remesh(), _Remesh().targets_for(target), target.code,
+                             tolerance_mm=0.01, within=_REGION)
+    assert not verdict.kept and verdict.reason == "target_remains"

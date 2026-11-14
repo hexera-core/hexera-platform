@@ -157,3 +157,33 @@ def test_box_distance_is_zero_inside_and_euclidean_outside():
     box = (0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
     assert _box_distance((0.5, 0.5, 0.5), box) == 0.0
     assert _box_distance((4.0, 5.0, 0.5), box) == pytest.approx(5.0)
+
+
+def test_a_mesh_defect_records_the_stage_that_failed():
+    # R11a: the session needs the stage to know a scoped (2D-only) probe could not have seen it.
+    from meshpipeline.cad.repair.mesh_probe import STAGE_3D, MeshFailure, _unlocated, volume_stage
+
+    defect = _unlocated(MeshFailure(OVERLAPPING_FACETS, (4,), None, "overlap", stage=STAGE_3D))
+    assert defect.measurements["stage"] == STAGE_3D
+    assert volume_stage(defect)
+
+
+@pytest.mark.parametrize("code, stage, expected", [
+    ("mesh_edge_through_face", "", True),
+    ("mesh_edge_through_face", "2d", True),
+    ("mesh_no_volume", "", True),
+    ("mesh_overlapping_facets", "3d", True),
+    ("mesh_overlapping_facets", "2d", False),
+    ("mesh_overlapping_facets", "", False),
+    ("mesh_open_loop", "2d", False),
+    ("open_shell", "3d", False),
+])
+def test_volume_stage_is_the_code_or_the_recorded_stage(code, stage, expected):
+    from meshpipeline.cad.repair.contracts import DefectCode, DefectSeverity
+    from meshpipeline.cad.repair.localize import EntityDefect
+    from meshpipeline.cad.repair.mesh_probe import volume_stage
+
+    defect = EntityDefect(code=DefectCode(code), severity=DefectSeverity.error,
+                          entity_type="face", entity_index=1, message="",
+                          measurements={"stage": stage} if stage else {})
+    assert volume_stage(defect) is expected
