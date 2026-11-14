@@ -110,15 +110,46 @@ def earlier_identical(workspace: Path, digest: str) -> dict | None:
     return dict(seen)
 
 
+def _came_to_a_verdict(result: dict) -> bool:
+    """Did a mesher run this case to an answer ABOUT THE CASE? Two shapes reach here and they say
+    it differently. The builder TOOL's translated result says it in words. A NATIVE result
+    (sandbox/safe_exec.describe_native_result) carries neither of those words - only `rc` - and
+    `after_run` passes it through untranslated, so reading the words alone recorded every outage
+    as a verdict on the case and refused the next attempt of a case nothing had ever run."""
+    if result.get("system_failure") or result.get("patch_contract_mismatch"):
+        return False        # our infrastructure, or a launch refusal, in the tool's own words
+    if result.get("identical_rerun") or result.get("cancelled"):
+        return False        # this guard's own refusal, or superseded before it answered
+    rc = result.get("rc")
+    if not isinstance(rc, int):
+        return True
+    from meshpipeline.contracts.mesh_execution import RC_CASE_CONTRACT, RC_IDENTICAL_RERUN, RC_INFRASTRUCTURE
+    return rc not in (RC_INFRASTRUCTURE, RC_CASE_CONTRACT, RC_IDENTICAL_RERUN)
+
+
+def _outcome_words(result: dict) -> str:
+    """What an earlier run came to, in the words the refusal quotes back to whoever reruns it."""
+    if result.get("timed_out"):
+        return "it ran out of time"
+    if "success" in result:
+        # the builder TOOL's translated result: check_mesh has been read and judged.
+        return ("it built a mesh that passed its checks" if result.get("success")
+                else "its mesh did not pass its checks")
+    # A NATIVE result holds the mesher's own exit status and NO check verdict - `success` is added
+    # downstream by the builder tool. Calling rc 0 "passed its checks" would claim a judgement
+    # nothing here made, and calling it "did not pass its checks" (what reading the absent key
+    # did) is a false account of a mesh that built.
+    return ("its mesher finished without error" if result.get("rc") == 0
+            else "its mesher exited with an error")
+
+
 def remember(workspace: Path, digest: str, result: dict) -> None:
     """Record what a run of this case came to - when it came to a verdict at all."""
     if not digest or not isinstance(result, dict) or not _is_attempt(workspace):
         return
-    if result.get("system_failure") or result.get("patch_contract_mismatch"):
-        return          # our infrastructure, or a launch refusal: nothing was learned about the case
-    outcome = ("it ran out of time" if result.get("timed_out") else
-               "it built a mesh that passed its checks" if result.get("success") else
-               "its mesh did not pass its checks")
+    if not _came_to_a_verdict(result):
+        return
+    outcome = _outcome_words(result)
     gen = _generation(workspace)
     _LEDGER.setdefault(gen, {})[digest] = {"attempt": Path(workspace).name, "outcome": outcome}
     while len(_LEDGER) > _LEDGER_KEPT:

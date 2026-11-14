@@ -631,3 +631,77 @@ def test_prepare_refuses_the_identical_retry_before_the_announcement(tmp_path, m
     monkeypatch.setattr(M, "input_contract_rejection", lambda *a, **k: "")
     prepared = M.prepare_mesh_run(ctx)
     assert prepared.refusal is not None and prepared.refusal["identical_rerun"] is True
+
+
+# The three tests above drive the seam with {"rc": ..., "success": ...}. NO REAL EXECUTOR RETURNS
+# THAT SHAPE: `success` is computed downstream by the builder TOOL, after check_mesh, and a native
+# result (sandbox/safe_exec.describe_native_result) carries rc/timed_out/cancelled/outcome and no
+# verdict at all. Fabricating the key hid two defects in `remember`, which read only the tool's
+# vocabulary - so every test below builds its result with the real constructor.
+
+def test_an_outage_is_not_a_verdict_on_the_case(tmp_path, monkeypatch):
+    """An infrastructure failure says NOTHING about the case, so the next attempt of that case
+    must still reach a mesher. `remember` recognised an outage only by the builder tool's
+    `system_failure` key; a native result carries RC_INFRASTRUCTURE and no such key, so one
+    Cloud Run 503 was recorded as the case's verdict and the retry was refused for good - the
+    guard turning a transient outage into a permanent refusal to mesh."""
+    from meshpipeline.agents.builder import tools as _tools
+    from meshpipeline.contracts import mesh_execution as mx
+    from meshpipeline.sandbox.safe_exec import describe_native_result
+
+    monkeypatch.setattr(_tools, "get_spec_run_files", lambda engine: ("system/meshDict",))
+    a1, a2 = _case(tmp_path / "gen" / "attempt_1"), _case(tmp_path / "gen" / "attempt_2")
+    outage = describe_native_result(
+        returncode=mx.RC_INFRASTRUCTURE, stage="cfmesh_conjugate",
+        output=f"{mx.RUN_NOT_STARTED_TAG} cfmesh_conjugate: trigger refused: 503")
+    assert "system_failure" not in outage, "the shape this guard has to read, not the tool's"
+
+    started = _seam(monkeypatch, lambda ws: outage)
+    first = mx.run_mesh(a1, engine="cfmesh_conjugate", timeout=60)
+    assert first["rc"] == mx.RC_INFRASTRUCTURE
+
+    second = mx.run_mesh(a2, engine="cfmesh_conjugate", timeout=60)
+    assert second.get("identical_rerun") is not True, (
+        "an outage was recorded as a verdict, so the retry of a case nothing ever ran was refused")
+    assert [n for n, _ in started] == ["attempt_1", "attempt_2"], "the retry must reach a mesher"
+
+
+def test_a_mesher_that_finished_is_not_recorded_as_having_failed_its_checks(tmp_path, monkeypatch):
+    """The outcome words are quoted back verbatim in the refusal. `remember` read
+    result["success"], which no native result has, so the ternary always fell through and a run
+    whose mesher exited 0 was written down as "its mesh did not pass its checks" - a false account
+    of what happened, handed to whoever reruns it. A native result holds no check verdict, so the
+    words must not claim one in either direction."""
+    from meshpipeline.agents.builder import rerun_guard as g
+    from meshpipeline.sandbox.safe_exec import describe_native_result
+
+    clean = describe_native_result(returncode=0, stage="cfmesh_conjugate", output="End\n")
+    assert "success" not in clean, "the key remember() used to read is simply absent here"
+
+    ws = _case(tmp_path / "gen" / "attempt_1")
+    g.remember(ws, "digest-of-the-case", clean)
+    seen = g.earlier_identical(_case(tmp_path / "gen" / "attempt_2"), "digest-of-the-case")
+    assert seen is not None, "a mesher that ran IS a verdict and must be remembered"
+    assert "did not pass its checks" not in seen["outcome"], (
+        "a native rc 0 was described as failing checks that were never read")
+    assert "passed its checks" not in seen["outcome"], (
+        "and it must not claim they passed either - nothing here judged them")
+    assert g.refusal(seen)["guidance"].count(seen["outcome"]) == 1, "quoted back as written"
+
+
+def test_the_guards_own_refusal_does_not_overwrite_the_verdict_it_quotes(tmp_path, monkeypatch):
+    """`after_run` records every result the seam returns, the refusal included. If the refusal
+    were recorded it would replace the real earlier verdict with an account of the refusal, and a
+    third attempt would be told the case "finished without error"."""
+    from meshpipeline.agents.builder import rerun_guard as g
+    from meshpipeline.sandbox.safe_exec import describe_native_result
+
+    ws1 = _case(tmp_path / "gen" / "attempt_1")
+    g.remember(ws1, "d", describe_native_result(returncode=1, stage="cfmesh_conjugate"))
+    real = g.earlier_identical(_case(tmp_path / "gen" / "attempt_2"), "d")["outcome"]
+
+    g.remember(_case(tmp_path / "gen" / "attempt_2"), "d", g.refusal({"attempt": "attempt_1",
+                                                                     "outcome": real}))
+    after = g.earlier_identical(_case(tmp_path / "gen" / "attempt_3"), "d")
+    assert after["outcome"] == real and after["attempt"] == "attempt_1", (
+        "the refusal was recorded over the verdict it exists to report")
