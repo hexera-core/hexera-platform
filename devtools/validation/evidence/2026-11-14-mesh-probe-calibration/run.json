@@ -1,0 +1,1087 @@
+{
+ "summary": {
+  "files": 80,
+  "verdicts": 79,
+  "missing": [],
+  "errors": [
+   {
+    "name": "occt/bug30790.step",
+    "error": "Standard_Failure: NCollection_Array1::Value",
+    "seconds": 12.0
+   }
+  ],
+  "loop_agrees_reexport": 70,
+  "loop_disagrees_reexport": [
+   {
+    "name": "abc/00500875_a97e4a09c926c436c043e3c3_step_028.step",
+    "file": "meshes",
+    "reexport": "edge_through_face",
+    "loop": "meshes",
+    "loop_located": [],
+    "seconds": 2.2
+   },
+   {
+    "name": "abc/00502475_5895e91efca3da0f6b68639a_step_003.step",
+    "file": "edge_through_face",
+    "reexport": "edge_through_face",
+    "loop": "other",
+    "loop_located": [
+     false
+    ],
+    "seconds": 6.1
+   },
+   {
+    "name": "abc/00503200_c8a4697bcc912578475337ea_step_000.step",
+    "diag_from_ocp": 90.7,
+    "file": "timeout",
+    "reexport": "timeout",
+    "loop": "meshes",
+    "loop_located": [],
+    "seconds": 344.2
+   },
+   {
+    "name": "abc/00507550_ed3bf58da6711cb579e24def_step_024.step",
+    "file": "edge_through_face",
+    "reexport": "overlapping_facets",
+    "loop": "edge_through_face",
+    "loop_located": [
+     false
+    ],
+    "seconds": 9.6
+   },
+   {
+    "name": "abc/00507750_15086f55e7ef8d6b99de417a_step_000.step",
+    "diag_from_ocp": 19654.8,
+    "file": "edge_through_face",
+    "reexport": "periodic_surface",
+    "loop": "edge_through_face",
+    "loop_located": [
+     false
+    ],
+    "seconds": 231.9
+   },
+   {
+    "name": "occt/bug33100_window.step",
+    "diag_from_ocp": 3.6,
+    "file": "timeout",
+    "reexport": "no_volume",
+    "loop": "timeout",
+    "loop_located": [
+     false
+    ],
+    "seconds": 1.2
+   },
+   {
+    "name": "occt/trj3_s1-tc-214.stp",
+    "file": "edge_through_face",
+    "reexport": "meshes",
+    "loop": "edge_through_face",
+    "loop_located": [
+     false
+    ],
+    "seconds": 4.7
+   },
+   {
+    "name": "occt/trj4_s1-ai-214.stp",
+    "file": "overlapping_facets",
+    "reexport": "edge_through_face",
+    "loop": "overlapping_facets",
+    "loop_located": [
+     false
+    ],
+    "seconds": 9.8
+   },
+   {
+    "name": "occt/trj5_s1-in-214.stp",
+    "file": "edge_through_face",
+    "reexport": "overlapping_facets",
+    "loop": "edge_through_face",
+    "loop_located": [
+     false
+    ],
+    "seconds": 3.1
+   }
+  ],
+  "reader_effect": [
+   {
+    "name": "abc/00500875_a97e4a09c926c436c043e3c3_step_028.step",
+    "file": "meshes",
+    "reexport": "edge_through_face",
+    "loop": "meshes",
+    "loop_located": [],
+    "seconds": 2.2
+   },
+   {
+    "name": "abc/00505375_5897aba327753d0fe44f4744_step_006.step",
+    "diag_from_ocp": 129.1,
+    "file": "timeout",
+    "reexport": "edge_through_face",
+    "loop": "edge_through_face",
+    "loop_located": [
+     false
+    ],
+    "seconds": 125.1
+   },
+   {
+    "name": "abc/00506325_589844ae8460820fe9280f95_step_012.step",
+    "file": "edge_through_face",
+    "reexport": "overlapping_facets",
+    "loop": "overlapping_facets",
+    "loop_located": [
+     true
+    ],
+    "seconds": 2.5
+   },
+   {
+    "name": "abc/00507550_ed3bf58da6711cb579e24def_step_024.step",
+    "file": "edge_through_face",
+    "reexport": "overlapping_facets",
+    "loop": "edge_through_face",
+    "loop_located": [
+     false
+    ],
+    "seconds": 9.6
+   },
+   {
+    "name": "abc/00507750_15086f55e7ef8d6b99de417a_step_000.step",
+    "diag_from_ocp": 19654.8,
+    "file": "edge_through_face",
+    "reexport": "periodic_surface",
+    "loop": "edge_through_face",
+    "loop_located": [
+     false
+    ],
+    "seconds": 231.9
+   },
+   {
+    "name": "abc/00509500_5899600b3052da0f6bdf752e_step_062.step",
+    "file": "periodic_surface",
+    "reexport": "meshes",
+    "loop": "meshes",
+    "loop_located": [],
+    "seconds": 10.0
+   },
+   {
+    "name": "occt/bug25013_25013face.stp",
+    "diag_from_ocp": 1.0,
+    "file": "timeout",
+    "reexport": "no_volume",
+    "loop": "no_volume",
+    "loop_located": [
+     false
+    ],
+    "seconds": 122.0
+   },
+   {
+    "name": "occt/bug27453_165-174_piattello.stp",
+    "file": "other",
+    "reexport": "edge_through_face",
+    "loop": "edge_through_face",
+    "loop_located": [
+     false
+    ],
+    "seconds": 7.3
+   },
+   {
+    "name": "occt/bug32596_abc_0_13.step",
+    "file": "periodic_surface",
+    "reexport": "timeout",
+    "loop": "timeout",
+    "loop_located": [
+     false
+    ],
+    "seconds": 244.0
+   },
+   {
+    "name": "occt/bug33100_window.step",
+    "diag_from_ocp": 3.6,
+    "file": "timeout",
+    "reexport": "no_volume",
+    "loop": "timeout",
+    "loop_located": [
+     false
+    ],
+    "seconds": 1.2
+   },
+   {
+    "name": "occt/trj10_ch1-id-chs.stp",
+    "file": "open_loop",
+    "reexport": "meshes",
+    "loop": "meshes",
+    "loop_located": [],
+    "seconds": 3.2
+   },
+   {
+    "name": "occt/trj3_s1-id-203.stp",
+    "file": "open_loop",
+    "reexport": "edge_through_face",
+    "loop": "edge_through_face",
+    "loop_located": [
+     false
+    ],
+    "seconds": 4.1
+   },
+   {
+    "name": "occt/trj3_s1-tc-214.stp",
+    "file": "edge_through_face",
+    "reexport": "meshes",
+    "loop": "edge_through_face",
+    "loop_located": [
+     false
+    ],
+    "seconds": 4.7
+   },
+   {
+    "name": "occt/trj4_s1-ai-214.stp",
+    "file": "overlapping_facets",
+    "reexport": "edge_through_face",
+    "loop": "overlapping_facets",
+    "loop_located": [
+     false
+    ],
+    "seconds": 9.8
+   },
+   {
+    "name": "occt/trj5_s1-in-214.stp",
+    "file": "edge_through_face",
+    "reexport": "overlapping_facets",
+    "loop": "edge_through_face",
+    "loop_located": [
+     false
+    ],
+    "seconds": 3.1
+   },
+   {
+    "name": "occt/trj6_b1-ec-214.stp",
+    "file": "overlapping_facets",
+    "reexport": "timeout",
+    "loop": "timeout",
+    "loop_located": [
+     false
+    ],
+    "seconds": 242.8
+   },
+   {
+    "name": "occt/trj7_k1-id-214.stp",
+    "diag_from_ocp": 172.7,
+    "file": "other",
+    "reexport": "no_volume",
+    "loop": "no_volume",
+    "loop_located": [
+     false
+    ],
+    "seconds": 1.9
+   }
+  ],
+  "stop_rule_tripped": true,
+  "wall_seconds": 997.4
+ },
+ "rows": [
+  {
+   "name": "abc/00500350_cf6391333569f6a17439ce66_step_000.step",
+   "file": "overlapping_facets",
+   "reexport": "overlapping_facets",
+   "loop": "overlapping_facets",
+   "loop_located": [
+    true
+   ],
+   "seconds": 15.4
+  },
+  {
+   "name": "abc/00500400_bce216c87d2d17025db6ab36_step_000.step",
+   "file": "overlapping_facets",
+   "reexport": "overlapping_facets",
+   "loop": "overlapping_facets",
+   "loop_located": [
+    true
+   ],
+   "seconds": 2.1
+  },
+  {
+   "name": "abc/00500875_a97e4a09c926c436c043e3c3_step_028.step",
+   "file": "meshes",
+   "reexport": "edge_through_face",
+   "loop": "meshes",
+   "loop_located": [],
+   "seconds": 2.2
+  },
+  {
+   "name": "abc/00501275_58950467b204b50ff2cc07c9_step_013.step",
+   "file": "overlapping_facets",
+   "reexport": "overlapping_facets",
+   "loop": "overlapping_facets",
+   "loop_located": [
+    true
+   ],
+   "seconds": 2.6
+  },
+  {
+   "name": "abc/00501300_58950467b204b50ff2cc07c9_step_038.step",
+   "file": "overlapping_facets",
+   "reexport": "overlapping_facets",
+   "loop": "overlapping_facets",
+   "loop_located": [
+    false
+   ],
+   "seconds": 38.7
+  },
+  {
+   "name": "abc/00502200_5895d152ed2c0c0fe9ef029c_step_093.step",
+   "file": "edge_through_face",
+   "reexport": "edge_through_face",
+   "loop": "edge_through_face",
+   "loop_located": [
+    false
+   ],
+   "seconds": 89.6
+  },
+  {
+   "name": "abc/00502300_1dcb8ad6a594419908db0fd3_step_002.step",
+   "diag_from_ocp": 118.3,
+   "file": "timeout",
+   "reexport": "timeout",
+   "loop": "timeout",
+   "loop_located": [
+    false
+   ],
+   "seconds": 360.5
+  },
+  {
+   "name": "abc/00502475_5895e91efca3da0f6b68639a_step_003.step",
+   "file": "edge_through_face",
+   "reexport": "edge_through_face",
+   "loop": "other",
+   "loop_located": [
+    false
+   ],
+   "seconds": 6.1
+  },
+  {
+   "name": "abc/00502600_5895f9dd54620e0fdd79706b_step_000.step",
+   "file": "overlapping_facets",
+   "reexport": "overlapping_facets",
+   "loop": "overlapping_facets",
+   "loop_located": [
+    true
+   ],
+   "seconds": 3.9
+  },
+  {
+   "name": "abc/00502775_5896070a01b2bb0fc88ae0eb_step_071.step",
+   "diag_from_ocp": 12.7,
+   "file": "timeout",
+   "reexport": "timeout",
+   "loop": "timeout",
+   "loop_located": [
+    false
+   ],
+   "seconds": 360.5
+  },
+  {
+   "name": "abc/00502800_c9fa412b334b0e215cb26434_step_000.step",
+   "file": "periodic_surface",
+   "reexport": "periodic_surface",
+   "loop": "periodic_surface",
+   "loop_located": [
+    true
+   ],
+   "seconds": 10.3
+  },
+  {
+   "name": "abc/00502900_46dbba28aa960b1c0b680bda_step_007.step",
+   "file": "overlapping_facets",
+   "reexport": "overlapping_facets",
+   "loop": "overlapping_facets",
+   "loop_located": [
+    true,
+    true
+   ],
+   "seconds": 3.0
+  },
+  {
+   "name": "abc/00502950_796e5a4b1bfb1f59da2e443d_step_000.step",
+   "diag_from_ocp": 1773.8,
+   "file": "timeout",
+   "reexport": "timeout",
+   "loop": "timeout",
+   "loop_located": [
+    false
+   ],
+   "seconds": 374.7
+  },
+  {
+   "name": "abc/00503000_32f660ff2a08b13b584f0693_step_000.step",
+   "file": "overlapping_facets",
+   "reexport": "overlapping_facets",
+   "loop": "overlapping_facets",
+   "loop_located": [
+    true,
+    true
+   ],
+   "seconds": 62.0
+  },
+  {
+   "name": "abc/00503200_c8a4697bcc912578475337ea_step_000.step",
+   "diag_from_ocp": 90.7,
+   "file": "timeout",
+   "reexport": "timeout",
+   "loop": "meshes",
+   "loop_located": [],
+   "seconds": 344.2
+  },
+  {
+   "name": "abc/00503325_58965842fca3da0f6b68cb76_step_006.step",
+   "file": "edge_through_face",
+   "reexport": "edge_through_face",
+   "loop": "edge_through_face",
+   "loop_located": [
+    false
+   ],
+   "seconds": 57.9
+  },
+  {
+   "name": "abc/00503600_58969abbfca3da0f6b696760_step_000.step",
+   "file": "timeout",
+   "reexport": "timeout",
+   "loop": "timeout",
+   "loop_located": [
+    false
+   ],
+   "seconds": 360.9
+  },
+  {
+   "name": "abc/00503625_3ece9c6bb503a673c7105a4b_step_006.step",
+   "file": "overlapping_facets",
+   "reexport": "overlapping_facets",
+   "loop": "overlapping_facets",
+   "loop_located": [
+    true
+   ],
+   "seconds": 9.2
+  },
+  {
+   "name": "abc/00504025_5896ef7054620e0fdd79f59d_step_085.step",
+   "file": "edge_through_face",
+   "reexport": "edge_through_face",
+   "loop": "edge_through_face",
+   "loop_located": [
+    false
+   ],
+   "seconds": 18.3
+  },
+  {
+   "name": "abc/00504200_58971a35c1f05a10f76b8a78_step_009.step",
+   "file": "overlapping_facets",
+   "reexport": "overlapping_facets",
+   "loop": "overlapping_facets",
+   "loop_located": [
+    true
+   ],
+   "seconds": 21.8
+  },
+  {
+   "name": "abc/00504475_79b4cdbab23d7acd4e4b5fbc_step_000.step",
+   "file": "overlapping_facets",
+   "reexport": "overlapping_facets",
+   "loop": "overlapping_facets",
+   "loop_located": [
+    true
+   ],
+   "seconds": 7.7
+  },
+  {
+   "name": "abc/00504775_75dc3fef19fbaaff412bb388_step_006.step",
+   "file": "overlapping_facets",
+   "reexport": "overlapping_facets",
+   "loop": "overlapping_facets",
+   "loop_located": [
+    true,
+    true
+   ],
+   "seconds": 15.9
+  },
+  {
+   "name": "abc/00504900_58977eb6e2af0f0fda4a3a4e_step_006.step",
+   "file": "edge_through_face",
+   "reexport": "edge_through_face",
+   "loop": "edge_through_face",
+   "loop_located": [
+    false
+   ],
+   "seconds": 31.1
+  },
+  {
+   "name": "abc/00505075_58978ae07e864b0f6501330a_step_000.step",
+   "file": "overlapping_facets",
+   "reexport": "overlapping_facets",
+   "loop": "overlapping_facets",
+   "loop_located": [
+    true
+   ],
+   "seconds": 58.3
+  },
+  {
+   "name": "abc/00505375_5897aba327753d0fe44f4744_step_006.step",
+   "diag_from_ocp": 129.1,
+   "file": "timeout",
+   "reexport": "edge_through_face",
+   "loop": "edge_through_face",
+   "loop_located": [
+    false
+   ],
+   "seconds": 125.1
+  },
+  {
+   "name": "abc/00505550_5897b8ef36235f0f71862899_step_000.step",
+   "file": "overlapping_facets",
+   "reexport": "overlapping_facets",
+   "loop": "overlapping_facets",
+   "loop_located": [
+    true
+   ],
+   "seconds": 40.3
+  },
+  {
+   "name": "abc/00505625_5897c0de69a9d0103bc02adf_step_018.step",
+   "file": "overlapping_facets",
+   "reexport": "overlapping_facets",
+   "loop": "overlapping_facets",
+   "loop_located": [
+    false
+   ],
+   "seconds": 50.8
+  },
+  {
+   "name": "abc/00506275_541a2ce632275fed8964367a_step_000.step",
+   "file": "edge_through_face",
+   "reexport": "edge_through_face",
+   "loop": "edge_through_face",
+   "loop_located": [
+    false
+   ],
+   "seconds": 13.3
+  },
+  {
+   "name": "abc/00506325_589844ae8460820fe9280f95_step_012.step",
+   "file": "edge_through_face",
+   "reexport": "overlapping_facets",
+   "loop": "overlapping_facets",
+   "loop_located": [
+    true
+   ],
+   "seconds": 2.5
+  },
+  {
+   "name": "abc/00506550_b5806bb84542de8e2656bc88_step_114.step",
+   "file": "edge_through_face",
+   "reexport": "edge_through_face",
+   "loop": "edge_through_face",
+   "loop_located": [
+    false
+   ],
+   "seconds": 2.7
+  },
+  {
+   "name": "abc/00506725_067fcf75ee0eae49a8b1f2e1_step_003.step",
+   "file": "overlapping_facets",
+   "reexport": "overlapping_facets",
+   "loop": "overlapping_facets",
+   "loop_located": [
+    true,
+    true
+   ],
+   "seconds": 4.2
+  },
+  {
+   "name": "abc/00506900_417ada9d4c34002e49e704fa_step_001.step",
+   "file": "overlapping_facets",
+   "reexport": "overlapping_facets",
+   "loop": "overlapping_facets",
+   "loop_located": [
+    true
+   ],
+   "seconds": 3.7
+  },
+  {
+   "name": "abc/00506975_da054becdab299df20251eaf_step_000.step",
+   "file": "overlapping_facets",
+   "reexport": "overlapping_facets",
+   "loop": "overlapping_facets",
+   "loop_located": [
+    true
+   ],
+   "seconds": 11.9
+  },
+  {
+   "name": "abc/00507025_765ba085f20aa7fcb2def3ae_step_000.step",
+   "file": "overlapping_facets",
+   "reexport": "overlapping_facets",
+   "loop": "overlapping_facets",
+   "loop_located": [
+    true
+   ],
+   "seconds": 7.8
+  },
+  {
+   "name": "abc/00507075_e31d2a137ae442102bed9cd9_step_000.step",
+   "diag_from_ocp": 278.5,
+   "file": "timeout",
+   "reexport": "timeout",
+   "loop": "timeout",
+   "loop_located": [
+    false
+   ],
+   "seconds": 360.4
+  },
+  {
+   "name": "abc/00507200_15997739fe66ef86060150e6_step_001.step",
+   "file": "overlapping_facets",
+   "reexport": "overlapping_facets",
+   "loop": "overlapping_facets",
+   "loop_located": [
+    true
+   ],
+   "seconds": 2.5
+  },
+  {
+   "name": "abc/00507550_ed3bf58da6711cb579e24def_step_024.step",
+   "file": "edge_through_face",
+   "reexport": "overlapping_facets",
+   "loop": "edge_through_face",
+   "loop_located": [
+    false
+   ],
+   "seconds": 9.6
+  },
+  {
+   "name": "abc/00507750_15086f55e7ef8d6b99de417a_step_000.step",
+   "diag_from_ocp": 19654.8,
+   "file": "edge_through_face",
+   "reexport": "periodic_surface",
+   "loop": "edge_through_face",
+   "loop_located": [
+    false
+   ],
+   "seconds": 231.9
+  },
+  {
+   "name": "abc/00508150_5898cfe0f3cd940f71b7b650_step_069.step",
+   "file": "overlapping_facets",
+   "reexport": "overlapping_facets",
+   "loop": "overlapping_facets",
+   "loop_located": [
+    true
+   ],
+   "seconds": 5.0
+  },
+  {
+   "name": "abc/00508750_11d8d571a2f54aa924e0c995_step_000.step",
+   "file": "overlapping_facets",
+   "reexport": "overlapping_facets",
+   "loop": "overlapping_facets",
+   "loop_located": [
+    true
+   ],
+   "seconds": 3.1
+  },
+  {
+   "name": "abc/00508775_58991615a878da0f8225af98_step_009.step",
+   "file": "open_loop",
+   "reexport": "open_loop",
+   "loop": "open_loop",
+   "loop_located": [
+    true
+   ],
+   "seconds": 1.7
+  },
+  {
+   "name": "abc/00509150_cb7c199fecd1c9d080129028_step_009.step",
+   "file": "edge_through_face",
+   "reexport": "edge_through_face",
+   "loop": "edge_through_face",
+   "loop_located": [
+    false
+   ],
+   "seconds": 1.8
+  },
+  {
+   "name": "abc/00509250_589954b73503790fce559ec7_step_032.step",
+   "file": "overlapping_facets",
+   "reexport": "overlapping_facets",
+   "loop": "overlapping_facets",
+   "loop_located": [
+    true
+   ],
+   "seconds": 2.9
+  },
+  {
+   "name": "abc/00509500_5899600b3052da0f6bdf752e_step_062.step",
+   "file": "periodic_surface",
+   "reexport": "meshes",
+   "loop": "meshes",
+   "loop_located": [],
+   "seconds": 10.0
+  },
+  {
+   "name": "abc/00509675_58998b763052da0f6bdf8e3f_step_018.step",
+   "file": "overlapping_facets",
+   "reexport": "overlapping_facets",
+   "loop": "overlapping_facets",
+   "loop_located": [
+    true
+   ],
+   "seconds": 5.0
+  },
+  {
+   "name": "abc/00509825_ad14112a53dcabe002ca167f_step_000.step",
+   "file": "overlapping_facets",
+   "reexport": "overlapping_facets",
+   "loop": "overlapping_facets",
+   "loop_located": [
+    true,
+    true
+   ],
+   "seconds": 12.4
+  },
+  {
+   "name": "abc/00509950_290c7c1160b8ce7723907233_step_000.step",
+   "file": "open_loop",
+   "reexport": "open_loop",
+   "loop": "open_loop",
+   "loop_located": [
+    true
+   ],
+   "seconds": 22.9
+  },
+  {
+   "name": "occt/bm2_ec_exhaust-A.stp",
+   "file": "edge_through_face",
+   "reexport": "edge_through_face",
+   "loop": "edge_through_face",
+   "loop_located": [
+    false
+   ],
+   "seconds": 3.6
+  },
+  {
+   "name": "occt/bm2_ec_leverrod-A.stp",
+   "file": "no_volume",
+   "reexport": "no_volume",
+   "loop": "no_volume",
+   "loop_located": [
+    false
+   ],
+   "seconds": 2.5
+  },
+  {
+   "name": "occt/bug25013_25013face.stp",
+   "diag_from_ocp": 1.0,
+   "file": "timeout",
+   "reexport": "no_volume",
+   "loop": "no_volume",
+   "loop_located": [
+    false
+   ],
+   "seconds": 122.0
+  },
+  {
+   "name": "occt/bug27453_165-174_piattello.stp",
+   "file": "other",
+   "reexport": "edge_through_face",
+   "loop": "edge_through_face",
+   "loop_located": [
+    false
+   ],
+   "seconds": 7.3
+  },
+  {
+   "name": "occt/bug30790.step",
+   "error": "Standard_Failure: NCollection_Array1::Value",
+   "seconds": 12.0
+  },
+  {
+   "name": "occt/bug32239.STEP",
+   "file": "overlapping_facets",
+   "reexport": "overlapping_facets",
+   "loop": "overlapping_facets",
+   "loop_located": [
+    true,
+    true
+   ],
+   "seconds": 78.6
+  },
+  {
+   "name": "occt/bug32314_corrupted.stp",
+   "file": "overlapping_facets",
+   "reexport": "overlapping_facets",
+   "loop": "overlapping_facets",
+   "loop_located": [
+    true
+   ],
+   "seconds": 4.0
+  },
+  {
+   "name": "occt/bug32596_abc_0_13.step",
+   "file": "periodic_surface",
+   "reexport": "timeout",
+   "loop": "timeout",
+   "loop_located": [
+    false
+   ],
+   "seconds": 244.0
+  },
+  {
+   "name": "occt/bug33100_window.step",
+   "diag_from_ocp": 3.6,
+   "file": "timeout",
+   "reexport": "no_volume",
+   "loop": "timeout",
+   "loop_located": [
+    false
+   ],
+   "seconds": 1.2
+  },
+  {
+   "name": "occt/bug33261.stp",
+   "file": "edge_through_face",
+   "reexport": "edge_through_face",
+   "loop": "edge_through_face",
+   "loop_located": [
+    false
+   ],
+   "seconds": 35.9
+  },
+  {
+   "name": "occt/nist_ftc_08_asme1_ap242-2.stp",
+   "diag_from_ocp": 386.0,
+   "file": "timeout",
+   "reexport": "timeout",
+   "loop": "timeout",
+   "loop_located": [
+    false
+   ],
+   "seconds": 1.6
+  },
+  {
+   "name": "occt/trj10_ch1-id-chs.stp",
+   "file": "open_loop",
+   "reexport": "meshes",
+   "loop": "meshes",
+   "loop_located": [],
+   "seconds": 3.2
+  },
+  {
+   "name": "occt/trj3_s1-ac-214.stp",
+   "file": "edge_through_face",
+   "reexport": "edge_through_face",
+   "loop": "edge_through_face",
+   "loop_located": [
+    false
+   ],
+   "seconds": 3.4
+  },
+  {
+   "name": "occt/trj3_s1-al-214.stp",
+   "diag_from_ocp": 526.0,
+   "file": "timeout",
+   "reexport": "timeout",
+   "loop": "timeout",
+   "loop_located": [
+    false
+   ],
+   "seconds": 360.7
+  },
+  {
+   "name": "occt/trj3_s1-ct-203.stp",
+   "file": "overlapping_facets",
+   "reexport": "overlapping_facets",
+   "loop": "overlapping_facets",
+   "loop_located": [
+    true,
+    true
+   ],
+   "seconds": 4.1
+  },
+  {
+   "name": "occt/trj3_s1-ct-214.stp",
+   "file": "overlapping_facets",
+   "reexport": "overlapping_facets",
+   "loop": "overlapping_facets",
+   "loop_located": [
+    true,
+    true
+   ],
+   "seconds": 4.0
+  },
+  {
+   "name": "occt/trj3_s1-db-214.stp",
+   "file": "edge_through_face",
+   "reexport": "edge_through_face",
+   "loop": "edge_through_face",
+   "loop_located": [
+    false
+   ],
+   "seconds": 3.4
+  },
+  {
+   "name": "occt/trj3_s1-id-203.stp",
+   "file": "open_loop",
+   "reexport": "edge_through_face",
+   "loop": "edge_through_face",
+   "loop_located": [
+    false
+   ],
+   "seconds": 4.1
+  },
+  {
+   "name": "occt/trj3_s1-md-214.stp",
+   "file": "edge_through_face",
+   "reexport": "edge_through_face",
+   "loop": "edge_through_face",
+   "loop_located": [
+    false
+   ],
+   "seconds": 3.0
+  },
+  {
+   "name": "occt/trj3_s1-pe-203.stp",
+   "file": "edge_through_face",
+   "reexport": "edge_through_face",
+   "loop": "edge_through_face",
+   "loop_located": [
+    false
+   ],
+   "seconds": 3.5
+  },
+  {
+   "name": "occt/trj3_s1-tc-214.stp",
+   "file": "edge_through_face",
+   "reexport": "meshes",
+   "loop": "edge_through_face",
+   "loop_located": [
+    false
+   ],
+   "seconds": 4.7
+  },
+  {
+   "name": "occt/trj3_s1-ug-214.stp",
+   "file": "edge_through_face",
+   "reexport": "edge_through_face",
+   "loop": "edge_through_face",
+   "loop_located": [
+    false
+   ],
+   "seconds": 3.3
+  },
+  {
+   "name": "occt/trj4_s1-ai-214.stp",
+   "file": "overlapping_facets",
+   "reexport": "edge_through_face",
+   "loop": "overlapping_facets",
+   "loop_located": [
+    false
+   ],
+   "seconds": 9.8
+  },
+  {
+   "name": "occt/trj4_s1-pe-214.stp",
+   "file": "edge_through_face",
+   "reexport": "edge_through_face",
+   "loop": "edge_through_face",
+   "loop_located": [
+    false
+   ],
+   "seconds": 3.7
+  },
+  {
+   "name": "occt/trj4_s1-tu-214.stp",
+   "file": "edge_through_face",
+   "reexport": "edge_through_face",
+   "loop": "edge_through_face",
+   "loop_located": [
+    false
+   ],
+   "seconds": 5.4
+  },
+  {
+   "name": "occt/trj4_s1-ug-214.stp",
+   "file": "edge_through_face",
+   "reexport": "edge_through_face",
+   "loop": "edge_through_face",
+   "loop_located": [
+    false
+   ],
+   "seconds": 3.6
+  },
+  {
+   "name": "occt/trj5_s1-ac-214.stp",
+   "file": "edge_through_face",
+   "reexport": "edge_through_face",
+   "loop": "edge_through_face",
+   "loop_located": [
+    false
+   ],
+   "seconds": 3.7
+  },
+  {
+   "name": "occt/trj5_s1-in-214.stp",
+   "file": "edge_through_face",
+   "reexport": "overlapping_facets",
+   "loop": "edge_through_face",
+   "loop_located": [
+    false
+   ],
+   "seconds": 3.1
+  },
+  {
+   "name": "occt/trj5_s1-ug-214.stp",
+   "file": "edge_through_face",
+   "reexport": "edge_through_face",
+   "loop": "edge_through_face",
+   "loop_located": [
+    false
+   ],
+   "seconds": 3.5
+  },
+  {
+   "name": "occt/trj6_b1-ec-214.stp",
+   "file": "overlapping_facets",
+   "reexport": "timeout",
+   "loop": "timeout",
+   "loop_located": [
+    false
+   ],
+   "seconds": 242.8
+  },
+  {
+   "name": "occt/trj6_pm4-ec-203.stp",
+   "file": "meshes",
+   "reexport": "meshes",
+   "loop": "meshes",
+   "loop_located": [],
+   "seconds": 19.9
+  },
+  {
+   "name": "occt/trj7_b1-ec-214.stp",
+   "diag_from_ocp": 362.7,
+   "file": "timeout",
+   "reexport": "timeout",
+   "loop": "timeout",
+   "loop_located": [
+    false
+   ],
+   "seconds": 361.3
+  },
+  {
+   "name": "occt/trj7_k1-id-214.stp",
+   "diag_from_ocp": 172.7,
+   "file": "other",
+   "reexport": "no_volume",
+   "loop": "no_volume",
+   "loop_located": [
+    false
+   ],
+   "seconds": 1.9
+  }
+ ]
+}
