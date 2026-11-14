@@ -59,10 +59,17 @@ adequate. Nobody has walked the engine up the ladder, that is all.
 
 ## 2. The three gaps
 
-### Gap 1: the engine adds no boundary layers. This is the hard one.
+### Gap 1: boundary layers. CLOSED 2026-11-14, and not run on a customer part yet.
 
-`finalize.py:383` says `NEAR_WALL_LAYERS = 0`, and the comment above it is the most useful thing in
-the file. The obstacle is mechanical, not a missing feature:
+`cfmesh_conjugate/layers.py` is the pass, inserted into the chain after `splitMeshRegions` and
+before `reconstructParMesh`, off by default behind `CONJUGATE_LAYERS`. Read its module docstring
+before changing anything in it - in particular `meshQualityControls/minVol`, which is what decides
+whether a layer pass does anything at all and which fails SILENTLY at OpenFOAM's shipped value.
+What remains is to run it on the real plate through the product and compare against the hand-built
+result: 95.553% coverage, 2.84 of 3 layers, 2,936 faces in error, 102,536,327 cells, 2,521.87 s on
+eight ranks.
+
+The mechanical obstacle described below is real and is why it is a second pass:
 
 > `boundaryLayers.patchBoundaryLayers` names PATCHES, and at meshing time the coolant's wall is not
 > a patch. It is interior to one manifold block, and the patch is created by `splitMeshRegions`
@@ -71,9 +78,21 @@ the file. The obstacle is mechanical, not a missing feature:
 That is exactly how we did it by hand: cfMesh builds the mesh, `splitMeshRegions` creates the
 patches, and then a separate `snappyHexMesh -addLayers` pass puts layers on `fluid_to_solid`.
 
-**Two repairs stand in the way, both already measured and written down in that comment.** cfMesh's
-writer drops the `mappedWall` coupling keys, and `checkMesh` then flags upper-triangular ordering
-and wants `renumberMesh`, which this repository has never run. Start there. They are specific.
+**CORRECTED 2026-11-14. This said two repairs stood in the way - that cfMesh's writer drops the
+`mappedWall` coupling keys, and that `checkMesh` then wants `renumberMesh`, which this repository
+has never run. The delivered layered mesh refutes both, and anyone who started there would have
+been fixing two things that are not broken.** The boundary file `snappyHexMesh` wrote AFTER the
+layer pass carries `type mappedWall`, `sampleMode nearestPatchFace`, `sampleRegion solid` and
+`samplePatch solid_to_fluid`, with `nFaces` still 16,619,777 matching `solid_to_fluid` exactly; and
+that mesh's own `checkMesh` prints "Upper triangular ordering OK." No repair was needed.
+
+**The stage exists now**: `src/meshpipeline/engines/cfmesh_conjugate/layers.py`, inserted into the
+chain after `splitMeshRegions` and before `reconstructParMesh`, off by default and asked for with
+`CONJUGATE_LAYERS`. What actually decides whether a layer pass does anything is
+`meshQualityControls/minVol`: OpenFOAM ships 1e-13, it is an ABSOLUTE volume, and on a microchannel
+mesh every face of a geometrically perfect mesh trips it - so snappyHexMesh extrudes nothing,
+prints "Finished meshing without any errors", `checkMesh` says "Mesh OK" and the process exits 0.
+Read the module docstring before changing anything in it.
 
 **What I learned today that you should not have to rediscover.** I ran five layer variants on the
 real plate, 45 minutes each, changing only the layer dictionary. Full table and logs in
@@ -131,10 +150,14 @@ So the plumbing has been exercised end to end but the agents have never driven i
 1. **Walk the engine up the machine ladder.** Take the registered 41,616 cell case and run the same
    engine on something 100x bigger, then 1,000x. You will find the scale bugs with a case you
    already trust rather than with a customer's part. Cheap, and it de-risks everything after it.
-2. **Fix the two named layer repairs.** The coupling keys and `renumberMesh`. Then add the layer
-   pass as a second stage after `splitMeshRegions`, which is where the code comment says it has to
-   go. Use the dictionary that wins in section 14 of the quality doc rather than starting from
-   scratch.
+2. ~~**Fix the two named layer repairs.**~~ DONE AND IT WAS NOT NEEDED - both were refuted, see
+   the correction above. The layer pass is in the chain as of 2026-11-14
+   (`cfmesh_conjugate/layers.py`), off by default. What is left is to RUN it on the real plate
+   through the product and compare against the hand-built result: 95.553% coverage, 2,936 faces in
+   error, 102,536,327 cells, 2,521.87 s on eight ranks. Note section 14's variant **V2** beats the
+   dictionary that shipped on every measure and is 7% quicker, and is not the default yet precisely
+   because no product run has grown a layer at all - the first one should reproduce the measured
+   result rather than a variant.
 3. **Take it T4 to T5.** A real intake, a real geometry read, a real visual review on one case.
 4. **Then the hard problem below.**
 

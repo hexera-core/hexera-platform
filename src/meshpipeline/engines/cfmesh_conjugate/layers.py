@@ -1,0 +1,690 @@
+# Responsibility: Grow a prism stack on the conjugate interface, and say when it did not grow.
+# Boundaries: it renders dictionaries, builds a shell and reads a log. It launches nothing; conjugate.build owns the chain.
+# Collaborates with: cfmesh_conjugate/conjugate.py (which runs the stage) and plan.py (which carries the ask).
+"""THE BOUNDARY LAYER PASS, and the reason it is a second pass rather than part of the mesh.
+
+cfMesh cannot do this. `cartesianMesh` meshes a manifold domain and the conjugate interface does
+not exist until `splitMeshRegions` has cut it, so there is no patch to extrude from while the
+mesher is running. `snappyHexMesh` can grow layers on an existing patch with
+`castellatedMesh false; snap false; addLayers true;`, which is what every measured run of this
+part has used.
+
+WHERE IT RUNS IN THE CHAIN. After the split and BEFORE `reconstructParMesh`, on the decomposed
+mesh. That ordering is the whole economy of it: measured on the first customer plate the layer pass
+is 2,521.87 s on 8 ranks against 10,038 s serial, and the reconstruct costs about 1,105 s whichever
+side of it you pay.
+
+HOW THE CASE IS BUILT, and why there is no `-region`. `snappyHexMesh` is handed a standalone
+SINGLE-region case: the coolant's `polyMesh` is MOVED up out of `processor*/constant/fluid/` to
+`processor*/constant/`, so `constant/polyMesh` exists and `constant/fluid/` does not. It is a
+rename on one filesystem, which is why the measured chain prices this step at 2 s for 270 million
+cells. Afterwards the layered mesh is moved back where `reconstructParMesh -region fluid` expects
+it. THAT SECOND HALF IS UNMEASURED: the hand-built run left the coolant promoted and reconstructed
+it as a standalone single-region mesh with `-noZero`, so no run has yet put a snappy-rewritten
+polyMesh back under `constant/fluid/` and merged it per region. It is written with a guard at every
+step for that reason.
+
+THE ONE SETTING THAT DECIDES WHETHER ANY OF THIS WORKS IS NOT A LAYER SETTING.
+`meshQualityControls/minVol` is an ABSOLUTE volume, and OpenFOAM ships it at 1e-13. A 22.0035 um
+cube's face pyramids are (1/3)(22e-6)^2(11e-6) = 1.78e-15 m3, fifty-six times below that bar, so
+on a microchannel mesh EVERY FACE OF A GEOMETRICALLY PERFECT MESH is flagged on length scale
+alone. The break-even cell edge is about 84 um. Measured on a 20x20x10 blockMesh at 22.0 um with
+addLayers only:
+
+    faces with face pyramid volume < 1e-13 : 12800     (of 12800)
+    Extruding 0 out of 1600 faces (0%)
+    Added 0 out of 4800 cells (0%)
+    Finished meshing with 12800 illegal faces
+    checkMesh: Mesh OK
+    exit code 0
+
+A silent, total, zero-layer failure that exits 0 and passes checkMesh. It is the reason `complain`
+exists and the reason no stage here may be judged by its return code. The ablation says
+`minVol 1e-20` is necessary AND sufficient - adding `minTetQuality` or `minFaceWeight` changes
+nothing - and that `minTetQuality -1e30` must NOT be set with it, because tet quality is
+dimensionless and scale-invariant so it was never the blocker, and clearing it only switches off
+inverted-cell detection.
+
+AND ZERO LAYERS IS NOT THE ONLY WAY IT FAILS. The delivered mesh's own pass extruded 99.7653% of
+the patch at iteration 0 and held 82,548 illegal faces, because the stack it was given did not fit
+its background cell; ten repair iterations then dropped coverage to 90.7146% having removed 6.6%
+of the failures, since thinning is the mover's only repair and thinning manufactures hairline
+cells. So `complain` reads the achieved THICKNESS and the illegal-face count as well as the
+coverage, and `fit_complaint` refuses that dict before anything runs.
+
+NEVER SMOOTH THE NORMALS ON A STAIRCASE. The conjugate interface is a staircase of axis-aligned
+faces, so smoothing its normals aims the extrusion diagonally across steps instead of along a
+face. Raising `nSmoothSurfaceNormals` 1 to 6, `nSmoothThickness` 10 to 50 and `nSmoothNormals` 3
+to 10 came out WORSE - 96.451% coverage at iteration 0 against 97.1958%. See SMOOTH_SURFACE_NORMALS
+for the measurement that says ZEROING two of them is better still, and why that is not the default
+here yet.
+
+THE REGION'S OWN PORT PATCHES ARE LEFT UNNAMED. Pinning them at `nSurfaceLayers 0` measured 93.1%
+coverage with 92 polyhedra and non-orthogonality 62.09; saying nothing about them and letting them
+slide measured 100% and all-hex. Note that measurement was taken with the port patches ALREADY
+CUT, and in this chain the ports are cut before the layer pass for exactly that reason.
+"""
+from __future__ import annotations
+
+import re
+
+#: The directory the single-region layer case is built in, beside the mesh.
+LAYER_CASE = "_layers"
+#: THE STAGE'S NAME, WHICH IS ALSO ITS LOG FILE, AND THAT IS WHY IT IS THE TOOL'S NAME.
+#: `engines/mesher_stage` derives the line a customer is shown from the log's STEM, against a table
+#: of tool names - so a stage called `addLayers` writes `addLayers.log`, matches nothing, and the
+#: longest stage of the chain runs with no line at all. `snappyHexMesh` is in that table and maps
+#: to "adding wall layers" already.
+LAYER_STAGE = "snappyHexMesh"
+
+#: How many prisms. Three on every measured run of this part.
+N_SURFACE_LAYERS = 3
+
+#: THE STACK GEOMETRY AS FRACTIONS OF THE BACKGROUND CELL, which is what makes it transfer to a
+#: part that is not this one. The measured run used `firstLayerThickness 4.15e-06` against a
+#: 25.1578 um background and `expansionRatio 1.2`, so the first layer is 0.164957 of a cell and the
+#: whole stack 0.600444 of one; `geometry_for` reproduces 4.15e-06 at that cell exactly.
+#: ...AND THEY ARE FRACTIONS OF THE CELL AT THE INTERFACE, NOT OF THE BACKGROUND. The layers grow
+#: on the conjugate interface, whose cells are the background divided by the octree levels under
+#: it - on the run plan 402.5570 / 2**4 = 25.1598 um. Sized against the background instead, the
+#: first layer came out at 66.4053 um and the stack at 241.7153 um into 25.1598 um cells, and the
+#: fit rule could not see it because it compared the stack against the same wrong cell: both scale
+#: together, so the share was exactly 60.0% either way. The parameter is named `interface_cell_m`
+#: for that reason.
+FIRST_LAYER_FRACTION = 4.15e-06 / 25.1578e-06
+EXPANSION_RATIO = 1.2
+#: The floor under one layer's thickness, 0.119 of a cell. It must stay ABOVE what `minFaceWeight`
+#: implies against a background-sized neighbour or the mover makes illegal faces by construction:
+#: at `minFaceWeight 0.02` against 20.1263 um that is 0.4107 um, and the delivered dict permitted
+#: 0.400.
+MIN_THICKNESS_FRACTION = 3.0e-06 / 25.1578e-06
+
+#: What fraction of a background cell the stack may occupy. 0.600444 on the measured run, which
+#: left a 10.052 um remnant and a 2.50x volume jump to the first full cell; the delivered run was
+#: at 1.093 of a cell and spent ten iterations failing to recover from it.
+MAX_STACK_FRACTION = 0.75
+
+#: THE MOST LAYERS THAT CAN EVER FIT, derived from the two constants above rather than asserted:
+#: at EXPANSION_RATIO 1.2 the stack is 0.165, 0.363, 0.600, 0.885 of a cell for one to four layers,
+#: so four is over MAX_STACK_FRACTION whatever the part. A deployment asking for more is a typo and
+#: `determinism.conjugate_layers` refuses it at startup rather than once per job.
+def max_layers() -> int:
+    """How many layers could fit a cell at this expansion ratio, at most."""
+    n = 0
+    while n < 64:
+        if (stack_thickness_m(first_layer_m=FIRST_LAYER_FRACTION, expansion=EXPANSION_RATIO,
+                              n_layers=n + 1) > MAX_STACK_FRACTION):
+            return n
+        n += 1
+    return n
+
+
+#: `meshQualityControls/minVol`, and the module docstring is about this one line.
+MIN_VOL = 1e-20
+#: Left at OpenFOAM's own value deliberately: tet quality is dimensionless, so it was never what
+#: blocked the extrusion, and relaxing it would only switch off inverted-cell detection.
+MIN_TET_QUALITY = 1e-30
+#: CAPPED AT 2^31-1 BY THE LABEL SIZE, WHICH BINDS THE DICT ENTRY AND NOT ONLY THE MESH. The first
+#: attempt set 4e9 and OpenFOAM exited with "Expected integral (int32), value out-of-range:
+#: double 4e+09" after 689 s, 665 of them already spent reading the mesh.
+MAX_GLOBAL_CELLS = 2_000_000_000
+MAX_LOCAL_CELLS = 400_000_000
+
+#: The smoothing the measured run used, and it is load-bearing at these values.
+#:
+#: ZEROING THE TWO NORMAL SMOOTHERS IS BETTER AND IS NOT THE DEFAULT YET. Variant V2, same part,
+#: same chain, `nSmoothSurfaceNormals 0` and `nSmoothNormals 0` with `nSmoothThickness` left at 10:
+#: faces in error 2,936 to 2,724, interpolation weights under 0.02 405 to 298, max non-orthogonality
+#: 76.6676 to 76.0512, max aspect ratio 322.161 to 241.68, coverage 95.553% to 95.7253%, layer pass
+#: 2,522 s to 2,353 s. Better on every measure and 7% quicker. It is not the default because no run
+#: of the PRODUCT has grown a layer at all, so the first one should reproduce the result the
+#: 65-minute chain is measured against rather than a variant.
+SMOOTH_SURFACE_NORMALS = 1
+SMOOTH_THICKNESS = 10
+SMOOTH_NORMALS = 3
+
+#: HOW MUCH OF THE INTERFACE HAS TO END UP LAYERED. The measured run finished at 95.553% after ten
+#: outer iterations; the DEFECTIVE delivered run finished at 90.7146%, so a floor under that would
+#: admit the run this module exists to refuse.
+COVERAGE_FLOOR_PCT = 92.0
+#: ...AND HOW MUCH OF THE ASKED STACK HAS TO SURVIVE. The measured run achieved 2.84 of 3 layers at
+#: 94.6% of the requested thickness. Thinning is the mover's only repair and it manufactures
+#: hairline cells, so a stack that came back much thinner than it was asked for is the failure that
+#: coverage alone cannot see.
+THICKNESS_FLOOR_PCT = 75.0
+LAYERS_FLOOR_FRACTION = 0.75
+#: Faces in error per million cells, above which the pass did more harm than good. The measured run
+#: is 2,888 illegal faces over 102,536,327 cells, which is 28.2 per million; the delivered run's
+#: iteration 0 held 82,548 over a smaller mesh.
+ILLEGAL_PER_MILLION_CEILING = 200.0
+
+_EXTRUDING = re.compile(r"Extruding\s+(\d+)\s+out of\s+(\d+)\s+faces\s+\(([\d.]+)%\)")
+_ADDED = re.compile(r"Added\s+(\d+)\s+out of\s+(\d+)\s+cells\s+\(([\d.]+)%\)")
+_LAYER_ROW = re.compile(r"^\s*(\S+)\s+(\d+)\s+(\d+)\s+([\d.]+)\s+([\d.eE+-]+)\s+([\d.]+)\s*$")
+_ILLEGAL = re.compile(r"Finished meshing with (\d+) illegal faces")
+_SECONDS = re.compile(r"Layers added in = ([\d.]+) s")
+
+
+class LayerError(ValueError):
+    """An ask about layers that cannot be satisfied as stated."""
+
+
+def interface_cell_m(background_cell_m: float, levels: int) -> float:
+    """The cell at the conjugate interface: the background halved once per octree level under it.
+
+    ON A TWO-SCALE PART THE LEVELS ARE THE FINE SURFACE'S, not the coolant's own. The run plan for
+    the first customer plate is `levels 1` with a `fine_surfaces` entry at levels 4, and the
+    interface is where that fine surface is - so the cell there is background / 2**4, which is
+    25.1598 um against a 402.5570 um background. `finalize._near_wall` takes the deepest level for
+    the same reason.
+    """
+    bg = float(background_cell_m)
+    if bg <= 0.0:
+        raise LayerError(f"the background cell must be positive, got {background_cell_m}")
+    if int(levels) < 0:
+        raise LayerError(f"octree levels cannot be negative, got {levels}")
+    return bg / (2 ** int(levels))
+
+
+def geometry_for(interface_cell_m: float) -> dict:
+    """The stack geometry for a mesh whose cells AT THE INTERFACE are this big.
+
+    NOT THE BACKGROUND CELL. The layers grow on the conjugate interface and the three thicknesses
+    only mean anything against the cell they sit in; given the background instead they come out
+    2**levels too thick, which on the run plan is sixteen times, and the fit rule cannot see it
+    because it scales the same way. Use `interface_cell_m()` to get the number.
+    """
+    bg = float(interface_cell_m)
+    if bg <= 0.0:
+        raise LayerError(f"the interface cell must be positive, got {interface_cell_m}")
+    return {"n_layers": N_SURFACE_LAYERS,
+            "first_layer_m": bg * FIRST_LAYER_FRACTION,
+            "expansion": EXPANSION_RATIO,
+            "min_thickness_m": bg * MIN_THICKNESS_FRACTION}
+
+
+def stack_thickness_m(*, first_layer_m: float, expansion: float, n_layers: int) -> float:
+    """How deep the whole stack is: first * (1 + r + r^2 + ... + r^(n-1))."""
+    r = float(expansion)
+    n = int(n_layers)
+    if n < 1:
+        raise LayerError(f"a stack needs at least one layer, got {n_layers}")
+    if r <= 0.0:
+        raise LayerError(f"the expansion ratio must be positive, got {expansion}")
+    growth = n if abs(r - 1.0) < 1e-12 else (r ** n - 1.0) / (r - 1.0)
+    return float(first_layer_m) * growth
+
+
+#: HOW MUCH BIGGER THE WHOLE MESH GETS PER LAYER, measured. The pass grows the COOLANT
+#: 55,303,441 cells to 102,536,327, which is 1.854x - but the coolant is a quarter of this part and
+#: the metal around it does not move, so the whole two-region mesh goes 223,191,421 to 270,424,307,
+#: which is 1.212x. Per layer that is 0.0707 of the unlayered mesh.
+#:
+#: IT IS THE WHOLE-MESH FIGURE BECAUSE THAT IS WHAT IS BEING PRICED. The first version of this used
+#: the coolant's own 1.854 against a whole-mesh budget, which over-priced the run by 53% and
+#: refused, at the limit already configured, the very plan the hand-built mesh was built from. The
+#: error showed up against the mesh that exists: raw estimate x factor predicted 381,405,488 cells
+#: where the real layered mesh is 270,424,307.
+WHOLE_MESH_PER_LAYER = (270_424_307 / 223_191_421 - 1.0) / 3.0
+#: ...and the coolant's own, which is what the layer pass's RUN TIME scales with.
+COOLANT_PER_LAYER = (102_536_327 / 55_303_441 - 1.0) / 3.0
+
+
+def cells_multiplier(n_layers: int) -> float:
+    """How much bigger the WHOLE two-region mesh gets when this stack is grown on its interface.
+
+    IT IS HERE BECAUSE THE HOST PRICES THE RUN. The machine, the disk, the VM's lifetime and the
+    cell budget are all chosen from an estimate taken before this stage existed, and
+    `gates._gate_manifest_valid` re-checks the DELIVERED count against the same limit - so a plan
+    admitted at 0.85 of it delivers over and is refused AFTER the whole chain, which is the entire
+    run thrown away for arithmetic that costs nothing.
+
+    Linear in the layer count because nothing finer has been measured.
+    """
+    if int(n_layers) <= 0:
+        return 1.0
+    return 1.0 + WHOLE_MESH_PER_LAYER * int(n_layers)
+
+
+def coolant_multiplier(n_layers: int) -> float:
+    """How much bigger the COOLANT REGION gets - a different number, and not the one to price with.
+
+    1.854x at three layers against the whole mesh's 1.212x, because the coolant is a quarter of
+    this part and the metal around it does not move. It is here because the layer pass's own cost
+    scales with the coolant, not with the mesh.
+    """
+    if int(n_layers) <= 0:
+        return 1.0
+    return 1.0 + COOLANT_PER_LAYER * int(n_layers)
+
+
+def seconds_estimate(n_layers: int, *, coolant_cells: float) -> float:
+    """Roughly how long the pass takes, for the run deadline.
+
+    2,521.87 s for three layers on a 55.3 million cell coolant at eight ranks, which is 45.6 us per
+    unlayered coolant cell. Linear in the layer count because nothing else has been measured, and
+    it is used only to keep a deadline from cutting the stage off - never to promise anything.
+    """
+    if int(n_layers) <= 0:
+        return 0.0
+    return 45.6e-06 * float(coolant_cells) * (int(n_layers) / 3.0)
+
+
+def fit_complaint(*, first_layer_m: float, expansion: float, n_layers: int,
+                  min_thickness_m: float, interface_cell_m: float) -> str:
+    """Empty when this stack fits inside one cell AT THE INTERFACE, otherwise what is wrong.
+
+    THE RULE THAT WAS BROKEN ON THE DELIVERED MESH. A stack deeper than the cell it grows into
+    cannot be placed, and snappyHexMesh's only repair is to thin it, which manufactures hairline
+    cells and loses coverage it never gets back.
+
+    THE CELL HAS TO BE THE ONE AT THE INTERFACE. Given the background instead, this check compares
+    a stack that is 2**levels too thick against a cell that is 2**levels too big and passes - the
+    error cancels exactly, which is how a 241.7153 um stack into 25.1598 um cells read as 60.0% of
+    its cell.
+    """
+    bg = float(interface_cell_m)
+    if bg <= 0.0:
+        return f"the interface cell must be positive, got {interface_cell_m}"
+    stack = stack_thickness_m(first_layer_m=first_layer_m, expansion=expansion,
+                              n_layers=n_layers)
+    share = stack / bg
+    if share > MAX_STACK_FRACTION:
+        return (f"a {n_layers}-layer stack of {stack * 1e6:.3f} um is {share * 100:.1f}% of the "
+                f"{bg * 1e6:.4f} um cell at the interface, over the "
+                f"{MAX_STACK_FRACTION * 100:.0f}% "
+                f"this engine allows. It does not fit, and snappyHexMesh's only repair is to thin "
+                f"it, which manufactures hairline cells: the delivered mesh asked for 109% of a "
+                f"cell and spent ten iterations dropping coverage from 99.77% to 90.71%")
+    weight_floor = 0.02 * bg
+    if float(min_thickness_m) < weight_floor:
+        return (f"minThickness {float(min_thickness_m) * 1e6:.4f} um permits a layer thinner than "
+                f"minFaceWeight 0.02 against a {bg * 1e6:.4f} um neighbour allows "
+                f"({weight_floor * 1e6:.4f} um), so the mover would make illegal faces by "
+                f"construction - which is what the delivered dict did at 0.400 um")
+    return ""
+
+
+def render_mesh_quality_dict() -> str:
+    """`system/meshQualityDict`, which `checkMesh -meshQuality` finds by name and cannot be given
+    with `-dict` because checkMesh has no such option."""
+    return "\n".join([
+        "FoamFile { version 2.0; format ascii; class dictionary; object meshQualityDict; }",
+        "maxNonOrtho          65;",
+        "maxBoundarySkewness  20;",
+        "maxInternalSkewness   4;",
+        "maxConcave           80;",
+        f"minVol               {MIN_VOL:g};",
+        f"minTetQuality        {MIN_TET_QUALITY:g};",
+        "minArea              -1;",
+        "minTwist             0.02;",
+        "minDeterminant       0.001;",
+        "minFaceWeight        0.02;",
+        "minVolRatio          0.01;",
+        "minTriangleTwist     -1;",
+        "nSmoothScale          4;",
+        "errorReduction        0.75;",
+        "",
+    ])
+
+
+def render_layers_dict(*, interface_patch: str, interface_cell_m: float, n_layers: int,
+                       first_layer_m: float, expansion: float, min_thickness_m: float) -> str:
+    """`system/snappyHexMeshDict` for an addLayers-only pass.
+
+    IT TAKES THE CELL AT THE INTERFACE. The first draft recovered it from `first_layer_m /
+    FIRST_LAYER_FRACTION`, which makes the fit check self-referential: the share came out at
+    0.600450 for a first layer of 1e-9 and of 1e-3 alike, so the only guard inside the renderer
+    could not fire. The second took the BACKGROUND cell, which is 2**levels too big and cancelled
+    the error exactly. The cell is the caller's to supply, and it is the one the layers grow in.
+
+    `meshQualityControls` IS WRITTEN OUT IN FULL, never `#include "meshQualityDict"`. The measured
+    dict used the include and the product cannot: `sandbox/foam_case_guard` refuses any active
+    preprocessor directive, and that refusal fires again inside `foam_exec.check_mesh` - so a
+    finished mesh of hundreds of millions of cells would be thrown away on a dictionary, after
+    every stage had succeeded. The engine that already does it inline is `snappy`.
+
+    `castellatedMeshControls` EXISTS THOUGH castellatedMesh IS FALSE, because snappyHexMesh
+    requires the block to be present and exits without it. Nothing in it is used, `locationInMesh`
+    included - which is why it is a fixed origin with a comment saying so, rather than a point
+    computed by reading the whole coolant surface into memory for a value nothing reads.
+    """
+    if not str(interface_patch).strip():
+        raise LayerError("the patch to grow layers on has to be named")
+    bad = fit_complaint(first_layer_m=first_layer_m, expansion=expansion, n_layers=n_layers,
+                        min_thickness_m=min_thickness_m, interface_cell_m=interface_cell_m)
+    if bad:
+        raise LayerError(bad)
+    return "\n".join([
+        "FoamFile { version 2.0; format ascii; class dictionary; object snappyHexMeshDict; }",
+        "castellatedMesh false;",
+        "snap            false;",
+        "addLayers       true;",
+        "geometry        {}",
+        "castellatedMeshControls",
+        "{",
+        f"    maxLocalCells        {MAX_LOCAL_CELLS};",
+        f"    maxGlobalCells      {MAX_GLOBAL_CELLS};",
+        "    minRefinementCells           0;",
+        "    maxLoadUnbalance          0.10;",
+        "    nCellsBetweenLevels          1;",
+        "    features ();",
+        "    refinementSurfaces {}",
+        "    resolveFeatureAngle 30;",
+        "    refinementRegions {}",
+        "    // not read: castellatedMesh is false, so the step that uses this never runs",
+        "    locationInMesh (0 0 0);",
+        "    allowFreeStandingZoneFaces false;",
+        "}",
+        "snapControls { nSmoothPatch 3; tolerance 2.0; nSolveIter 30; nRelaxIter 5; }",
+        "addLayersControls",
+        "{",
+        "    relativeSizes false;",
+        f"    layers {{ {interface_patch} {{ nSurfaceLayers {int(n_layers)}; }} }}",
+        f"    expansionRatio          {float(expansion):g};",
+        f"    firstLayerThickness     {float(first_layer_m):.6g};",
+        f"    minThickness            {float(min_thickness_m):.6g};",
+        "    nGrow 0;",
+        "    featureAngle              180;",
+        "    maxFaceThicknessRatio     0.5;",
+        f"    nSmoothSurfaceNormals       {SMOOTH_SURFACE_NORMALS};",
+        f"    nSmoothThickness           {SMOOTH_THICKNESS};",
+        "    minMedialAxisAngle         90;",
+        "    maxThicknessToMedialRatio 0.6;",
+        f"    nSmoothNormals              {SMOOTH_NORMALS};",
+        "    slipFeatureAngle           30;",
+        "    nRelaxIter                  5;",
+        "    nBufferCellsNoExtrude       0;",
+        "    nLayerIter                 10;",
+        "    nRelaxedIter                3;",
+        "}",
+        "meshQualityControls",
+        "{",
+        "    maxNonOrtho          65;",
+        "    maxBoundarySkewness  20;",
+        "    maxInternalSkewness   4;",
+        "    maxConcave           80;",
+        f"    minVol               {MIN_VOL:g};",
+        f"    minTetQuality        {MIN_TET_QUALITY:g};",
+        "    minArea              -1;",
+        "    minTwist             0.02;",
+        "    minDeterminant       0.001;",
+        "    minFaceWeight        0.02;",
+        "    minVolRatio          0.01;",
+        "    minTriangleTwist     -1;",
+        "    relaxed { maxNonOrtho 75; }",
+        "    nSmoothScale 4;",
+        "    errorReduction 0.75;",
+        "}",
+        "writeFlags ();",
+        "mergeTolerance 1e-6;",
+        "",
+    ])
+
+
+def render_support_dicts() -> dict[str, str]:
+    """The rest of `system/` the layer case needs. snappyHexMesh opens all of these.
+
+    `writeFormat ascii` IS NOT A PREFERENCE. Binary is 1.3 to 1.8x slower on every stage and makes
+    the mesh unreadable to the boundary index, the viewer and the quality sidecar - and those
+    readers refuse it by design, so the refusal lands only after the whole chain has succeeded.
+    `fvSolution` carries no real solver: snappyHexMesh needs the file to exist and reads nothing
+    from it, and the measured case's own was `solvers {}`.
+    """
+    return {
+        "controlDict": "\n".join([
+            "FoamFile { version 2.0; format ascii; class dictionary; object controlDict; }",
+            "application     chtMultiRegionFoam;",
+            "startFrom       startTime;",
+            "startTime       0;",
+            "stopAt          endTime;",
+            "endTime         1;",
+            "deltaT          1;",
+            "writeControl    timeStep;",
+            "writeInterval   1;",
+            "writeFormat     ascii;",
+            "writeCompression off;",
+            "timeFormat      general;",
+            "timePrecision   6;",
+            "runTimeModifiable true;",
+            "",
+        ]),
+        "fvSchemes": "\n".join([
+            "FoamFile { version 2.0; format ascii; class dictionary; object fvSchemes; }",
+            "ddtSchemes { default steadyState; }",
+            "gradSchemes { default Gauss linear; }",
+            "divSchemes { default none; }",
+            "laplacianSchemes { default Gauss linear corrected; }",
+            "interpolationSchemes { default linear; }",
+            "snGradSchemes { default corrected; }",
+            "",
+        ]),
+        "fvSolution": "\n".join([
+            "FoamFile { version 2.0; format ascii; class dictionary; object fvSolution; }",
+            "solvers {}",
+            "",
+        ]),
+    }
+
+
+def render_decompose_dict(ranks: int) -> str:
+    """`system/decomposeParDict` for the layer case.
+
+    `method scotch` WITH NO COEFFICIENTS. A dict copied from a 16-rank case keeps
+    `method hierarchical; coeffs { n (4 2 2); }`, and 4x2x2 is 16 exactly - so in an 8-rank case it
+    is a hard inconsistency. Every driver that produced a layered mesh used scotch.
+    """
+    if int(ranks) < 1:
+        raise LayerError(f"a decomposition needs at least one process, got {ranks}")
+    return "\n".join([
+        "FoamFile { version 2.0; format ascii; class dictionary; object decomposeParDict; }",
+        f"numberOfSubdomains {int(ranks)};",
+        "method scotch;",
+        "",
+    ])
+
+
+def serial_complaint(ranks: int) -> str:
+    """Empty when a layer pass may be attempted on this decomposition, otherwise why not.
+
+    PARALLEL ONLY, AND DELIBERATELY. Every layer pass that has produced a mesh of this part ran on
+    eight ranks over a decomposed case, and the promotion it depends on is a rename of
+    `processor*/constant/<region>/polyMesh`. A serial case keeps its regions at
+    `constant/<region>/polyMesh` with no processor directories at all, which is a different
+    promotion that nothing has ever run.
+
+    A PART THAT PLANS SERIAL IS SKIPPED, NOT REFUSED - see `conjugate.build` and the driver.
+    `ranks_for` returns 1 for everything at or below the per-process octree ceiling, which is every
+    part in the corpus and every mesh so far delivered, so refusing on this would turn one
+    deployment-wide setting into a corpus-wide outage.
+    """
+    if int(ranks) > 1:
+        return ""
+    return ("a boundary layer pass has only ever been measured on a decomposed case - 2,522 s on "
+            "eight ranks against 10,038 s serial on the same part - and the promotion it needs is "
+            "a rename inside the processor directories, which a serial case does not have")
+
+
+def case_script(*, ranks: int, region: str, dict_dir: str, mpi: str) -> str:
+    """The shell the stage runs: promote the region, layer it, put it back.
+
+    EVERY MOVE IS GUARDED, because the failures here are silent.
+
+    THE PROMOTION IS A RENAME, so after it the ONLY copy of the coolant mesh is inside the layer
+    case. A first draft began with `rm -rf` on that directory, which meant a rerun of the stage on
+    a workspace whose previous pass had failed DELETED THE MESH and then reported a missing file.
+    So a layer case that already holds a mesh is refused, and the caller has to say what to do
+    about it.
+
+    THE DEMOTION OVERWRITES NOTHING. `mv src dst` where dst is an existing directory moves src
+    INSIDE it, so a stale `constant/<region>/polyMesh` turned into
+    `constant/<region>/polyMesh/polyMesh` - and the guard that followed, which tested for
+    `polyMesh/owner`, passed on the stale mesh. The reconstruct then merged the UNLAYERED mesh and
+    the delivery reported layers it did not have. Both halves are tested for explicitly now.
+    """
+    case = LAYER_CASE
+    return "; ".join([
+        "set -e",
+        # a layer case holding a mesh is the remains of a failed pass, and the mesh in it is the
+        # only one there is
+        f'if [ -e "{case}" ]; then '
+        f'if find "{case}" -name owner -print -quit 2>/dev/null | grep -q .; then '
+        f'echo "FATAL: {case} already holds a mesh from an earlier pass; move it back under '
+        f'constant/{region}/ before retrying"; exit 2; fi; rm -rf "{case}"; fi',
+        f"mkdir -p {case}/system",
+        f"cp -a {dict_dir}/. {case}/system/",
+        # THE PROMOTION, per processor directory. The glob is tested first, because an unmatched
+        # glob stays literal and would otherwise make a directory called `processor*`.
+        'ls -d processor0 >/dev/null 2>&1 || '
+        '{ echo "FATAL: no processor directories to layer"; exit 2; }',
+        f'for p in processor*; do mkdir -p "{case}/$p/constant"; '
+        f'test -d "$p/constant/{region}/polyMesh" || '
+        f'{{ echo "FATAL: $p has no {region} mesh to promote"; exit 2; }}; '
+        f'mv "$p/constant/{region}/polyMesh" "{case}/$p/constant/polyMesh"; done',
+        f'test -f "{case}/processor0/constant/polyMesh/owner" || '
+        f'{{ echo "FATAL: the promoted case has no mesh"; exit 2; }}',
+        f"cd {case}",
+        mpi,
+        "cd ..",
+        # ...AND BACK, refusing to nest if anything is in the way.
+        f'for p in processor*; do mkdir -p "$p/constant/{region}"; '
+        f'test ! -e "$p/constant/{region}/polyMesh" || '
+        f'{{ echo "FATAL: $p/constant/{region}/polyMesh is in the way of the layered mesh"; '
+        f'exit 2; }}; '
+        f'mv "{case}/$p/constant/polyMesh" "$p/constant/{region}/polyMesh"; done',
+        f'test -f "processor0/constant/{region}/polyMesh/owner" || '
+        f'{{ echo "FATAL: the layered mesh was not put back"; exit 2; }}',
+        f'find "{case}" -name owner -print -quit 2>/dev/null | grep -q . && '
+        f'{{ echo "FATAL: a mesh is still in {case}, so not every rank was put back"; exit 2; }}; '
+        f'rm -rf "{case}"',
+    ])
+
+
+def read_layer_log(text: str) -> dict:
+    """What a layer pass actually did, read off its own log.
+
+    Everything is optional, because the point of this is to be able to say "it reported nothing
+    about layers at all".
+    """
+    body = str(text or "")
+    extruding = [(int(a), int(b), float(c)) for a, b, c in _EXTRUDING.findall(body)]
+    added = [(int(a), int(b), float(c)) for a, b, c in _ADDED.findall(body)]
+    table = {}
+    for line in body.splitlines():
+        m = _LAYER_ROW.match(line)
+        if not m:
+            continue
+        name = m.group(1)
+        if name in ("patch", "-----"):
+            continue
+        table[name] = {"faces": int(m.group(2)), "target_layers": int(m.group(3)),
+                       "mesh_layers": float(m.group(4)), "thickness_m": float(m.group(5)),
+                       "thickness_pct": float(m.group(6))}
+    illegal = _ILLEGAL.findall(body)
+    seconds = _SECONDS.findall(body)
+    return {
+        "iterations": len(extruding),
+        "coverage_pct": (extruding[-1][2] if extruding else None),
+        "coverage_by_iteration": [c for _a, _b, c in extruding],
+        "faces_extruded": (extruding[-1][0] if extruding else None),
+        "faces_offered": (extruding[-1][1] if extruding else None),
+        "cells_added": (added[-1][0] if added else None),
+        "cells_added_pct": (added[-1][2] if added else None),
+        "patches": table,
+        "illegal_faces": (int(illegal[-1]) if illegal else None),
+        "seconds": (float(seconds[-1]) if seconds else None),
+    }
+
+
+def complain(report: dict, *, interface_patch: str, n_layers: int = 0,
+             cells: int = 0) -> str:
+    """Empty when this pass really grew usable layers, otherwise what it actually did.
+
+    NEVER JUDGED BY THE RETURN CODE, and never by coverage alone. With OpenFOAM's shipped `minVol`
+    every face of a good microchannel mesh is flagged on length scale, nothing is extruded, and the
+    run prints "Finished meshing without any errors" and exits 0. And the delivered mesh's own pass
+    extruded 99.7653% of the patch while holding 82,548 illegal faces, because the stack did not
+    fit the cell - a failure that shows up in the achieved THICKNESS and the illegal-face count and
+    nowhere in the coverage.
+    """
+    got = dict(report or {})
+    if not got.get("iterations"):
+        return ("the layer pass reported no extrusion at all, so no layers were added. With "
+                f"OpenFOAM's shipped minVol of 1e-13 this is what a {MIN_VOL:g} case looks like: "
+                "every face of a geometrically correct microchannel mesh is flagged on length "
+                "scale alone, nothing is extruded, and the run still exits 0")
+    cover = got.get("coverage_pct")
+    if cover is None or float(cover) <= 0.0:
+        return "the layer pass extruded 0% of the interface, so no layers were added"
+    row = (got.get("patches") or {}).get(str(interface_patch))
+    if row is None:
+        return (f"the layer pass wrote no layer table row for {interface_patch!r}, so there is "
+                f"nothing that says layers were grown on the conjugate interface; it reported "
+                f"{sorted(got.get('patches') or {})}")
+    if float(cover) < COVERAGE_FLOOR_PCT:
+        return (f"the layer pass covered {float(cover):.4f}% of the interface, under the "
+                f"{COVERAGE_FLOOR_PCT:g}% this engine will deliver; the measured run of this part "
+                f"reached 95.553% and the run that was REFUSED for not fitting its cell reached "
+                f"90.7146%")
+    if not got.get("cells_added"):
+        return "the layer pass added no cells, so the mesh it returned is the one it was given"
+    thick = float(row.get("thickness_pct") or 0.0)
+    if thick < THICKNESS_FLOOR_PCT:
+        return (f"{interface_patch} came back at {thick:.1f}% of the thickness it was asked for, "
+                f"under the {THICKNESS_FLOOR_PCT:g}% this engine will deliver. The mover's only "
+                f"repair is thinning and thinning manufactures hairline cells; the measured run "
+                f"achieved 94.6%")
+    asked = int(n_layers or row.get("target_layers") or 0)
+    mesh_layers = float(row.get("mesh_layers") or 0.0)
+    if mesh_layers <= 0.0:
+        return (f"{interface_patch} came back with {mesh_layers} layers in the mesh against "
+                f"{asked} asked for")
+    if asked and mesh_layers < LAYERS_FLOOR_FRACTION * asked:
+        return (f"{interface_patch} came back with {mesh_layers:.2f} layers against {asked} asked "
+                f"for, under the {LAYERS_FLOOR_FRACTION * 100:.0f}% this engine will deliver; the "
+                f"measured run achieved 2.84 of 3")
+    bad = got.get("illegal_faces")
+    if bad is not None and int(cells) > 0:
+        per_m = float(bad) * 1e6 / float(cells)
+        if per_m > ILLEGAL_PER_MILLION_CEILING:
+            return (f"the layer pass left {int(bad):,} faces in error over {int(cells):,} cells, "
+                    f"{per_m:.0f} per million against a ceiling of "
+                    f"{ILLEGAL_PER_MILLION_CEILING:g}; the measured run left 2,888 over "
+                    f"102,536,327, which is 28")
+    return ""
+
+
+def measured(report: dict, *, interface_patch: str) -> dict:
+    """The figures a delivery should publish about its layers, from the pass's own log.
+
+    The ASKED count is in the plan; these are what was ACHIEVED, and they are not the same number -
+    the measured run asked for 3 and got 2.84 over 94.6% of the thickness on 95.553% of the
+    interface. A report that publishes only the ask is publishing an intention.
+    """
+    got = dict(report or {})
+    row = (got.get("patches") or {}).get(str(interface_patch)) or {}
+    out = {
+        "layer_coverage_pct": got.get("coverage_pct"),
+        "layer_cells_added": got.get("cells_added"),
+        "layer_faces_in_error": got.get("illegal_faces"),
+        "layer_seconds": got.get("seconds"),
+        "layer_iterations": got.get("iterations"),
+        "layers_asked": row.get("target_layers"),
+        "layers_in_mesh": row.get("mesh_layers"),
+        "layer_thickness_m": row.get("thickness_m"),
+        "layer_thickness_pct": row.get("thickness_pct"),
+        "layer_patch": str(interface_patch) if row else "",
+    }
+    return {k: v for k, v in out.items() if v not in (None, "")}
+
+
+__all__ = ["LAYER_CASE", "LAYER_STAGE", "LayerError", "MAX_GLOBAL_CELLS", "MAX_LOCAL_CELLS",
+           "MIN_VOL", "MIN_TET_QUALITY", "N_SURFACE_LAYERS", "EXPANSION_RATIO",
+           "FIRST_LAYER_FRACTION", "MIN_THICKNESS_FRACTION", "MAX_STACK_FRACTION",
+           "SMOOTH_SURFACE_NORMALS", "SMOOTH_THICKNESS", "SMOOTH_NORMALS", "COVERAGE_FLOOR_PCT",
+           "THICKNESS_FLOOR_PCT", "LAYERS_FLOOR_FRACTION", "ILLEGAL_PER_MILLION_CEILING",
+           "max_layers", "interface_cell_m", "geometry_for", "stack_thickness_m", "cells_multiplier", "coolant_multiplier", "WHOLE_MESH_PER_LAYER",
+           "COOLANT_PER_LAYER",
+           "seconds_estimate", "fit_complaint", "render_mesh_quality_dict", "render_layers_dict",
+           "render_support_dicts", "render_decompose_dict", "serial_complaint", "case_script",
+           "read_layer_log", "complain", "measured"]

@@ -87,6 +87,10 @@ def note_plan_settings(plan: PL.ConjugatePlan) -> None:
                      sizing or "carried in the plan; this plan predates sizing_basis")
     det.note_setting("conjugate_octree_levels", int(plan.levels),
                      "octree levels under the background, from the plan")
+    # THE LAYER COUNT, which moves 21% of the delivered cells on the measured part - more than
+    # anything else in this stamp except the cell size itself.
+    det.note_setting("conjugate_layers", int(getattr(plan, "layers", 0) or 0),
+                     "prism layers asked for on the conjugate interface, from the plan")
     fine = [int(s.get("levels", 0) or 0) for s in (getattr(plan, "fine_surfaces", ()) or ())]
     if fine:
         det.note_setting("conjugate_fine_surface_levels", fine,
@@ -155,6 +159,7 @@ def _run_conjugate_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
             stretch_zones=[dict(z) for z in (plan.stretch_zones or ())],
             port_patches=[dict(p) for p in (plan.port_patches or ())],
             ranks=int(getattr(plan, "ranks", 1) or 1),
+            layers=int(getattr(plan, "layers", 0) or 0),
             bashrc=bashrc, timeout=int(timeout))
     except ConjugateError as exc:
         # A REFUSAL IS NOT A CRASH. The mesher refuses a case it can see is wrong - more than two
@@ -756,6 +761,11 @@ def _as_dict(report, plan: PL.ConjugatePlan) -> dict:
                  "expect_fluid_volume_m3": plan.expect_fluid_volume_m3,
                  "expect_fluid_pieces": plan.expect_fluid_pieces,
                  "ranks": int(getattr(plan, "ranks", 1) or 1),
+                 # THE LAYER ASK, for the same reason the fine surfaces below are here and with
+                 # the same defect behind it: `finalize._near_wall` reads `near_wall_layers` off
+                 # THIS dict, so without the key a three-layer mesh published "Boundary layers:
+                 # none, graded refinement instead" in the customer's own report.
+                 "layers": int(getattr(plan, "layers", 0) or 0),
                  # THE FINE SURFACES, because the near-wall reading is built from this block and
                  # cannot find them anywhere else. finalize._near_wall takes the DEEPEST level of
                  # plan["fine_surfaces"] over the coolant's own, and says why: "the thin passages

@@ -121,6 +121,15 @@ class ConjugatePlan:
     #: reproducibility stamp (native.note_plan_settings), which is the one reader it has - the
     #: delivered manifest publishes `background_cell_m` and says nothing about how it was chosen.
     sizing_basis: str = ""
+    #: HOW MANY PRISM LAYERS to grow on the conjugate interface after the split, or 0 for none.
+    #:
+    #: 0 IS THE DEFAULT AND EVERY DELIVERED MESH USED IT. The engine grew no layers at all until
+    #: 2026-11-14; the layered coolant that exists was built by hand outside the product
+    #: (docs/semiconductor/MESH_PITCH8.md). The stack geometry is NOT carried beside this, because
+    #: it is a function of the background cell and nothing else - see
+    #: cfmesh_conjugate/layers.geometry_for, and the fit rule that makes a stack deeper than its
+    #: own cell unbuildable.
+    layers: int = 0
     #: THE THIN CELL AN OPERATOR PINNED, in metres, or 0.0 when the planner chose the resolution.
     #:
     #: IT TRAVELS IN THE PLAN BECAUSE THE DECISION IS THE HOST'S. The knob it comes from

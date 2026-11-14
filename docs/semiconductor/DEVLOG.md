@@ -5739,3 +5739,206 @@ Nothing announced was not.
 
 Unchanged by any of this: the planner still does not pick a commensurate lattice, for the reasons
 in the section above. It needs the VM run, not more local work.
+
+### 2026-11-14, the pitch, and the layer pass the engine never had
+
+Two things landed. The planner can be pinned to a cell the ladder cannot reach, and the chain can
+grow boundary layers. Neither has run on a customer part; both are off by default.
+
+#### The thin cell is chosen by the broad passages, and nothing about the channels enters
+
+`plan_two_scales` never chooses the thin cell. It is the broad cell halved `extra` times and the
+broad cell is the broad passage width over an integer, so the reachable set is
+`broad_width / (n * 2**extra)` and the thin passages only ever FILTER it. Every reachable value on
+the first customer plate, between 4 and 16 cells per channel pitch:
+
+| um | 13.2021 | 14.6690 | 16.5026 | 18.8602 | **22.0035** | 24.0038 | 26.4042 | 29.3380 | 33.0053 | 37.7203 | 44.0070 | 48.0077 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+
+The pitch of that plate's channel array is **201.2785 um**, measured on the staged fine surface the
+product itself writes: 12,409 channel-and-fin pairs taken one ray at a time so a channel is never
+paired with a fin from somewhere else, median, CV 5.03%. That is within 0.008% of the 201.26253 um
+measured on the delivered mesh by a different method, which is the first time those two
+measurements have agreed on anything.
+
+**Not one of the twelve divides it.** The cell the planner picks, and job b6762d5c meshed
+326,631,400 cells at, puts **9.1476 cells on a pitch**. The conjugate interface lies on octree cell
+faces, so a pitch that is not a whole number of cells is a pitch whose channels do not all snap the
+same way.
+
+`CONJUGATE_FINE_CELL_M` pins it, and the derivation runs backwards from the ladder's:
+`background = cell * 2**fine_levels`, so the broad resolution becomes an outcome. A pin of pitch/8
+reaches **25.1598 um on a 402.5570 um background** - the configuration the hand-built 65-minute
+mesh used, arrived at from the pitch alone.
+
+pitch/8 puts the thin side at 3.90 cells across `scales.fine.width_m` and the floor is 4, so it
+needed a band. That floor is 4 cells across the 1ST PERCENTILE of a radius-derived width: on this
+part it reads 98.136 um where the channel's nominal width is pitch/2 = 100.639 um and its measured
+median is 100.243 um. 2.5% of conservatism, and that 2.5% is the whole of what turns 4.0000 cells
+across into 3.901. `PINNED_ACROSS_FLOOR` is 3.5 and only a pin may enter the band; the floor itself
+does not move, and a mesh built there says so in its plan and its stamp.
+
+#### The pin never reached the mesher, and I had pushed it
+
+Reviewed after pushing, which was the wrong order. Three defects, one fatal.
+
+`driver` took `two["broad_across"]` and let `plan.background_for` re-derive the background from it.
+That is an integer on the ladder path and a float on a pinned plan, and `background_for` does
+`int(cells_across)`:
+
+| pinned | asked | delivered |
+|---|---|---|
+| pitch/8 | 25.1598 um, 8.0000 cells per pitch | **26.4047 um, 7.6228** |
+| pitch/10 | 20.1279 um, 10.0000 | **20.3113 um, 9.9097** |
+
+26.4047 um is rung 7 of the twelve above. The pin landed the run back on the ladder, one rung
+coarser, and the run still reported the pinned cell's name while `finalize._near_wall` published a
+third figure. Every test passed, because every test asserted the planner's own dict and none went
+through `plan_for` at all. The background is CARRIED now, on both paths, so the ladder path stops
+depending on the accident that `background_for` reproduces the planner's own arithmetic.
+
+The other two: the knob was never declared in the settings catalogue, so gate A failed and it would
+never have reached the container; and the stamp read `forced_fine_cell()` - the CONTAINER's
+environment - for a decision taken on the host, so on every hosted run it would have said "nothing
+pinned" on precisely the runs that were pinned.
+
+#### The layer pass
+
+The engine had no layer stage. `grep` for `addLayers`, `nSurfaceLayers` or `firstLayerThickness`
+across the package returned three hits, all prose. The layered coolant that exists was built by
+hand outside the product on 2026-11-08.
+
+`cfmesh_conjugate/layers.py` is that pass, inserted after `splitMeshRegions` and before
+`reconstructParMesh`. The ordering is the economy of it: 2,521.87 s on eight ranks over the
+decomposed mesh against 10,038 s once the mesh is whole, with the reconstruct costing about
+1,105 s whichever side of it you pay.
+
+**The one setting that decides whether any of it works is not a layer setting.**
+`meshQualityControls/minVol` is an ABSOLUTE volume and OpenFOAM ships it at 1e-13. A 22.0035 um
+cube's face pyramids are 1.78e-15 m3, fifty-six times under that bar, so on a microchannel mesh
+every face of a geometrically perfect mesh is flagged on length scale alone:
+
+```
+faces with face pyramid volume < 1e-13 : 12800     (of 12800)
+Extruding 0 out of 1600 faces (0%)
+Added 0 out of 4800 cells (0%)
+checkMesh: Mesh OK
+exit code 0
+```
+
+Three things the measured recipe does that the product could not copy. Its dict `#include`s
+`meshQualityDict`, and `foam_case_guard` refuses any active preprocessor directive AND fires again
+inside `check_mesh` - so a finished mesh of hundreds of millions of cells would have been thrown
+away on a dictionary with every stage behind it green. `maxGlobalCells` is capped at 2e9 by the
+32-bit label, which binds the DICT ENTRY and not only the mesh: 4e9 exited with "value
+out-of-range: double 4e+09" after 689 s, 665 of them already spent reading the mesh. And the dicts
+have to be written BEFORE `scan_case_dicts`, which I got wrong first: beside the chain is after the
+scan, which is the same trap one step removed.
+
+#### Eighteen defects in it, found by review, and the two worst were silent
+
+| what | what it did |
+|---|---|
+| the demote overwrote nothing | `mv src dst` with `dst` an existing directory moves src INSIDE it, so a stale `constant/fluid/polyMesh` became `polyMesh/polyMesh` - and the guard that followed tested for `polyMesh/owner` and passed on the stale one. The reconstruct would merge the UNLAYERED mesh and the delivery would report layers it did not have. |
+| a rerun deleted the mesh | the promotion is a rename, so after a failed pass the only copy of the coolant lives in the layer case - which the script began by `rm -rf`-ing, then reported a missing file. |
+| the host priced the run without layers | the coolant goes 55,303,441 cells to 102,536,327 and the whole mesh 223,191,421 to 270,424,307, 1.212x. Every size decision - plan, octree ceiling, machine, disk, VM lifetime, whether the archive comes home - was priced before this stage existed, and `_gate_manifest_valid` re-checks the DELIVERED count against the same limit AFTER the chain. |
+| the gate passed the run it exists to refuse | the delivered dict's own iteration 0: 99.7653% coverage, the full three layers, **82,548 illegal faces**. Coverage cannot see a stack thinned to hairlines. |
+| one env var refused the whole corpus | `ranks_for` keeps every part at or below the per-process octree ceiling serial, which is every part in the corpus, and a serial plan was REFUSED - each failure filed as a size refusal and told to the customer as a fault in their file. |
+| `near_wall_layers` was still 0 | `report["plan"]` never carried `layers`, so my fix to `_near_wall` was a no-op and a three-layer mesh published "Boundary layers: none" in the customer's own report. The same comment block already recorded this exact defect for `fine_surfaces`. |
+
+The shell is now proved by running it, not by reading it: five scenarios executed against real
+decomposed workspaces - a clean pass, a mesher failure, a rerun after a failure, no processor
+directories, and something in the way of the demote - and all five behave, with the mesh surviving
+every failure.
+
+Two I found that the review did not. The stage was called `addLayers`, so it wrote `addLayers.log`,
+and `mesher_stage.read_stage` derives the customer-facing line from the log's STEM against a table
+of TOOL names: the longest stage of the chain, 42 minutes of 65, ran with no line at all. It is
+`snappyHexMesh` now, which that table already maps to "adding wall layers". And the fit rule can
+only ever fire on the layer COUNT, never the cell size, because the stack is stored as a FRACTION
+of the cell - so the delivered dict's defect cannot be recreated through this path at all. That is
+a stronger property than I had claimed and the test says so.
+
+Four places still asserted this engine adds no layers - `docs/engines/overview.md`'s catalogue row,
+`render/mesh_facts.py`, `finalize.py` and the handoff's own Gap 1 heading - and the handoff told
+whoever implemented it to first repair two things the delivered mesh refutes: the boundary file
+`snappyHexMesh` wrote AFTER the pass carries all four `mappedWall` coupling keys with `nFaces`
+still 16,619,777 matching `solid_to_fluid`, and its checkMesh prints "Upper triangular ordering
+OK." All corrected.
+
+#### Two more in my own fixes, found by printing the plan rather than reading it
+
+**The stack was sized against the BACKGROUND cell, by a factor of sixteen.** `geometry_for` took a
+parameter called `background_cell_m` and `build` passed it the plan's background, 402.5570 um. The
+layers grow on the conjugate INTERFACE, whose cells are the background divided by the octree levels
+under it - and on a two-scale part those levels are the FINE surface's, not the coolant's own, so
+402.5570 / 2**4 = 25.1598 um. The first layer came out at **66.4053 um** and the stack at
+**241.7153 um into 25.1598 um cells**: the delivered mesh's own defect, ten times worse.
+
+And `fit_complaint` could not catch it, because it compared the stack against the same wrong cell.
+Both errors scale with `2**levels` and cancel exactly, so the share read 60.0% either way. The
+parameter is `interface_cell_m` everywhere now; the name is the whole defence.
+
+**And `cells_multiplier` was the COOLANT's growth factor used to price a WHOLE-MESH budget.** The
+pass grows the coolant 55,303,441 cells to 102,536,327, which is 1.854x - but the coolant is a
+quarter of this part and the metal around it does not move, so the whole two-region mesh goes
+223,191,421 to 270,424,307, which is **1.212x**. Pricing with 1.854 over-charged the run by 53% and
+refused, at the limit already configured, the very plan the hand-built mesh was built from:
+400,000,000 / 1.854 is 215,633,423 against an estimate of 257,011,785.
+
+Both showed up by printing the plan the run would actually use and comparing every figure against
+the mesh that exists. With them fixed the product reproduces the hand-built configuration from the
+pitch alone:
+
+| | the product's plan | hand-built cbox8 |
+|---|---|---|
+| fine cell | 25.1598 um | 25.1578 um |
+| cells per pitch | **8.000000** | 8 |
+| background | 402.5570 um | 402.525 um |
+| octree levels | 1 / 4 | 4 under the background |
+| stretch | 3 | 3 |
+| firstLayerThickness | 4.1503 um | 4.15e-06 |
+| minThickness | 3.0002 um | 3.0e-06 |
+| stack share of its cell | 60.0% | 60.0% |
+| layer pass | 2,522 s predicted | 2,521.87 s measured |
+
+#### Honest about what is not measured
+
+The demote and the per-region reconstruct are an UNMEASURED SHAPE. The hand-built run left the
+coolant promoted and reconstructed it as a standalone single-region mesh with `-noZero`; no run has
+yet put a snappy-rewritten polyMesh back under `constant/fluid/` and merged it per region. The same
+argument that makes a serial pass refuse applies to this half, and it was not applied - it is
+guarded at every step instead.
+
+The ports are also cut AFTER the layer pass here and the measured run cut them BEFORE, so
+`createPatch` cuts a port box out of a mesh whose boundary faces have moved under the extrusion.
+Unknown rather than broken, and the face counts are a published figure.
+
+And a variant **V2** beats the dictionary that shipped on every measure and is 7% quicker - 2,724
+faces in error against 2,936, coverage 95.7253% against 95.553%, 2,353 s against 2,522 - by zeroing
+`nSmoothSurfaceNormals` and `nSmoothNormals`. Not the default, because no run of the PRODUCT has
+grown a layer and the first one should reproduce the result the 65-minute chain is measured against
+rather than a variant. The two constants carry the measurement.
+
+#### What the product reads on the customer's file
+
+Driving the real intake path on `ColdPlateAssembly_CLEAN.step` and on our own
+`PlateAndChip.step` - upload, scout, chat, naming - both come back `solid-assembly` / `internal`
+with three mouths. The scout's first guess is `solid-body` / `external` on both and the NAMING step
+corrects it; a reading taken before the naming finishes says the wrong thing about the part.
+
+The three mouths it proposes on the plate, against what was measured on the same file on
+2026-11-13:
+
+| id | role proposed | size | centre, mm | reaches outside | what it is |
+|---|---|---|---|---|---|
+| 1 | inlet | 8 mm | 99.88, 54.68, 43.31 | yes | the real inlet, on the plate's channels |
+| 2 | outlet_1 | 8 mm | 89.34, 54.68, 77.39 | yes | the real outlet, on a tube 0.500 mm of metal away |
+| 3 | outlet_2 | 11.8 mm | 65.92, 33.45, 75.41 | **no** | an internal face that reaches no boundary |
+
+So **the file as supplied has one usable port**, and the roles the product now proposes unaided are
+the pair the severed-coolant gate refuses. That gate has never run on the product path; refusing
+this in milliseconds instead of after 2 h 29 m is what it is for.
+
+Nothing here has been run end to end through the product. That is the next thing and it is the only
+thing that settles any of it.

@@ -1195,6 +1195,11 @@ class ConjugateReport:
     #: as having used a bigger build's memory, and the fitted bytes-per-cell would be fitted on
     #: that.
     peak_rss_bytes: int = 0
+    #: WHAT THE LAYER PASS GREW, from its own log, or {} when none was asked for. The ASKED count
+    #: lives in the plan and is a DIFFERENT number: the measured run asked for three and got 2.84
+    #: of them, over 94.6% of the requested thickness on 95.553% of the interface. A delivery that
+    #: publishes only the ask is publishing an intention.
+    layers: dict = field(default_factory=dict)
     #: Seconds per stage. MEASURED, because the cost is not where anyone expects it: on a
     #: 100-channel part cartesianMesh took 617 s and the tagging and splitting after it took over
     #: an hour. For a conjugate mesh the post-processing dominates by a wide margin, so a turnaround
@@ -1509,6 +1514,22 @@ def children_peak_rss_bytes() -> int:
         return 0
 
 
+def _layer_chain(ranks: int, layers: int) -> tuple:
+    """The layer stage as 0 or 1 chain entries, so the chain stays a literal list.
+
+    Its dictionaries are written before `scan_case_dicts`, which is where the guard reads them;
+    this is only the shell that promotes the coolant out of the decomposed multi-region case, runs
+    the pass and puts it back where `reconstructParMesh -region fluid` expects it.
+    """
+    if int(layers) <= 0:
+        return ()
+    from meshpipeline.engines.cfmesh_conjugate import layers as LY
+
+    return ((LY.LAYER_STAGE, LY.case_script(
+        ranks=int(ranks), region=FLUID_REGION, dict_dir="system/layers",
+        mpi=mpi_command("snappyHexMesh -overwrite", int(ranks)))),)
+
+
 def build(workspace, *, block_stl: str = "constant/triSurface/block.stl",
           fluid_stl: str = "constant/triSurface/fluid.stl",
           background_cell_m: float, levels: int = DEFAULT_REFINEMENT_LEVELS,
@@ -1518,7 +1539,7 @@ def build(workspace, *, block_stl: str = "constant/triSurface/block.stl",
           ports: PortPlan | None = None, narrowest_m: float | None = None,
           patch_names: dict | None = None, fine_zones: list | None = None,
           fine_surfaces: list | None = None, stretch_zones: list | None = None,
-          port_patches: list | None = None, ranks: int = 1,
+          port_patches: list | None = None, ranks: int = 1, layers: int = 0,
           bashrc: str = _DEFAULT_BASHRC, timeout: int = 3600) -> ConjugateReport:
     """Mesh the block, split it in two, and report what was actually produced."""
     ws = Path(workspace)
@@ -1561,6 +1582,52 @@ def build(workspace, *, block_stl: str = "constant/triSurface/block.stl",
     # reporting on dictionaries that had already been handed to OpenFOAM three times. An engine
     # row is exactly the change that makes a customer's workspace the argument here, so the order
     # matters from now on rather than in principle.
+    # THE LAYER DICTIONARIES, BEFORE THE SCAN BELOW SEES THEM. The chain entry that uses them is
+    # added further down, where the chain exists; these have to be on disk before
+    # `scan_case_dicts`, because a dictionary written after it is one the guard never reads - and
+    # the next thing that WOULD read it is `check_mesh`, after the mesh has been built. The
+    # measured layer dict uses `#include "meshQualityDict"`, which the guard refuses on sight, so
+    # the cost of getting this order wrong is a finished mesh of hundreds of millions of cells
+    # thrown away on a dictionary with every stage behind it green.
+    layers = int(layers)
+    LY = None
+    if layers > 0:
+        from meshpipeline.engines.cfmesh_conjugate import layers as LY
+
+        # A PART THAT PLANS SERIAL IS SKIPPED, NOT REFUSED. `ranks_for` returns 1 for everything at
+        # or below the per-process octree ceiling, which is every part in the corpus and every mesh
+        # so far delivered - so refusing here would turn one deployment-wide setting into a
+        # corpus-wide outage, each failure filed as a resolution problem and told to the customer
+        # as a fault in their file. It is said out loud instead, and the plan records that none
+        # were grown, which is what makes this skipping rather than failing quietly.
+        skipped = LY.serial_complaint(int(ranks))
+        if skipped:
+            logger.info("conjugate: growing no layers - %s", skipped)
+            layers = 0
+    if layers > 0:
+        # THE CELL THE LAYERS GROW IN, which is NOT the background. On a two-scale part the
+        # interface is where the FINE surface is, so the levels under the background are that
+        # surface's and not the coolant's own - the run plan is levels 1 with a fine surface at
+        # levels 4, and 402.5570 / 2**4 is 25.1598 um. `finalize._near_wall` takes the deepest
+        # level for the same reason.
+        _lv = int(levels)
+        for _s in (fine_surfaces or []):
+            _lv = max(_lv, int((_s or {}).get("levels") or 0))
+        _cell = LY.interface_cell_m(float(background_cell_m), _lv)
+        geom = LY.geometry_for(_cell)
+        geom["n_layers"] = layers
+        bad = LY.fit_complaint(interface_cell_m=_cell, **geom)
+        if bad:
+            raise ConjugateError(bad, stage=LY.LAYER_STAGE)
+        ldir = ws / "system" / "layers"
+        ldir.mkdir(parents=True, exist_ok=True)
+        (ldir / "snappyHexMeshDict").write_text(LY.render_layers_dict(
+            interface_patch=FLUID_TO_SOLID, interface_cell_m=_cell, **geom))
+        (ldir / "meshQualityDict").write_text(LY.render_mesh_quality_dict())
+        (ldir / "decomposeParDict").write_text(LY.render_decompose_dict(int(ranks)))
+        for name, body in LY.render_support_dicts().items():
+            (ldir / name).write_text(body)
+
     reason = scan_case_dicts(ws)
     if reason:
         raise ConjugateError(f"the case dictionaries were rejected before any stage ran: {reason}")
@@ -1611,6 +1678,13 @@ def build(workspace, *, block_stl: str = "constant/triSurface/block.stl",
             ("cartesianMesh", mpi_command("cartesianMesh", int(ranks))),
             ("topoSet", mpi_command("topoSet", int(ranks))),
             ("splitMeshRegions", mpi_command(" ".join(SPLIT_ARGS), int(ranks))),
+            # THE LAYER PASS, after the split and before the reconstruct. It extrudes from
+            # `fluid_to_solid`, which does not exist until the split has cut it, and the ordering
+            # is the whole economy of it: 2,624 s on eight ranks against 10,038 s once the mesh is
+            # whole again, with the reconstruct costing 1,105 s whichever side of it you pay.
+            # Empty when no layers were asked for, and it is only ever in THIS branch because the
+            # pass is parallel-only (layers.serial_complaint).
+            *_layer_chain(int(ranks), layers),
             ("reconstructParMesh", RECONSTRUCT_REGIONS),
             ("regionDicts", REGION_DICTS),
         ]
@@ -1670,6 +1744,7 @@ def build(workspace, *, block_stl: str = "constant/triSurface/block.stl",
         return max(1, int(remaining))
 
     seconds: dict[str, float] = {}
+    layer_report: dict = {}
     for stage, script in chain:
         allowed = _left(stage)
         t0 = time.monotonic()
@@ -1687,6 +1762,27 @@ def build(workspace, *, block_stl: str = "constant/triSurface/block.stl",
         if rc != 0:
             raise ConjugateError(f"{stage} exited {rc} after {took:.0f}s; see {stage}.log",
                                  rc=rc, stage=stage)
+        # WHAT THE LAYER PASS GREW, AND NEVER ITS EXIT CODE - JUDGED HERE, NOT AFTER THE CHAIN.
+        #
+        # With OpenFOAM's shipped `minVol 1e-13`, an ABSOLUTE volume, every face of a
+        # geometrically perfect microchannel mesh is flagged on length scale alone: nothing is
+        # extruded, the run prints "Finished meshing without any errors", checkMesh says "Mesh OK"
+        # and the process exits 0. The loop has just accepted this stage on that code, so the log
+        # is the only thing that can catch it - and the log is on disk the moment the stage exits,
+        # so waiting for the chain to end would spend the reconstruct (1,105 s measured) and the
+        # port cut on a mesh already known to be wrong.
+        if layers > 0 and LY is not None and stage == LY.LAYER_STAGE:
+            log = ws / f"{stage}.log"
+            layer_report = LY.read_layer_log(
+                log.read_text(errors="replace") if log.is_file() else "")
+            said = LY.complain(layer_report, interface_patch=FLUID_TO_SOLID, n_layers=layers,
+                               cells=int(layer_report.get("cells_added") or 0))
+            if said:
+                raise ConjugateError(said, stage=stage)
+            logger.info("conjugate: layers grown on %s - %s", FLUID_TO_SOLID,
+                        ", ".join(f"{k}={v}" for k, v in
+                                  sorted(LY.measured(layer_report,
+                                                     interface_patch=FLUID_TO_SOLID).items())))
 
     # THE PER-RANK COPIES GO, once the merged mesh is on disk. They are a second whole copy of
     # the mesh: at the sizes that need ranks at all that is hundreds of gigabytes of scratch, and
@@ -1749,7 +1845,8 @@ def build(workspace, *, block_stl: str = "constant/triSurface/block.stl",
     rep = ConjugateReport(fluid=reports[FLUID_REGION], solid=reports[SOLID_REGION],
                           ports=ports, seconds=seconds,
                           patch_names={f: n for f, (n, _r) in (patch_names or {}).items()},
-                          peak_rss_bytes=rss_after if rss_after > rss_before else 0)
+                          peak_rss_bytes=rss_after if rss_after > rss_before else 0,
+                          layers=dict(layer_report))
     rep.interface_faces_fluid = interface_faces(rep.fluid.patches, FLUID_TO_SOLID)
     rep.interface_faces_solid = interface_faces(rep.solid.patches, SOLID_TO_FLUID)
     return verify(rep, expect_fluid_volume_m3=expect_fluid_volume_m3,

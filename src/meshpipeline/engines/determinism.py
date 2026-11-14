@@ -151,6 +151,63 @@ def _pinned_cell(raw: object) -> float:
 _pinned_cell(CONJUGATE_FINE_CELL_M)
 
 
+#: HOW MANY PRISM LAYERS the conjugate mesher grows on its interface, or 0 for none.
+#:
+#: 0 IS THE DEFAULT AND IT IS WHAT EVERY DELIVERED MESH USED. The engine could not grow a layer at
+#: all until 2026-11-14 - the layered coolant that exists was built by hand outside the product -
+#: so turning this on asks for a stage no customer run has ever taken. Three is what every
+#: measured run of the first customer plate used, and the fourth layer was refused on the fit rule
+#: (cfmesh_conjugate/layers.fit_complaint): the stack has to go inside ONE background cell.
+CONJUGATE_LAYERS: str = optional_env("CONJUGATE_LAYERS", "0")
+
+
+def _layer_count(raw: object) -> int:
+    """A layer count, 0 for none, or ConfigurationError.
+
+    ONE PARSER, read at import and again on every call, for the same reason the pinned cell has
+    one: those are two readers of one setting and they must not disagree about what a bad value
+    means. Tests set this knob the way every other knob here is tested, by patching the attribute,
+    which never passes through import.
+
+    AN IMPOSSIBLE COUNT IS REFUSED AT STARTUP. The fit rule allows a stack of at most
+    `layers.MAX_STACK_FRACTION` of one background cell, and at `layers.EXPANSION_RATIO` the stack
+    is 0.165, 0.363, 0.600 and 0.885 of a cell for one to four layers - so four can never build on
+    any part at any resolution. Left to the per-job check, a typo became a run of refusals, each
+    one telling a customer that their sound file could not be prepared.
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return 0
+    try:
+        n = int(text)
+    except ValueError:
+        raise ConfigurationError(
+            f"CONJUGATE_LAYERS={raw!r} is not a number of layers") from None
+    if n < 0:
+        raise ConfigurationError(f"CONJUGATE_LAYERS={raw!r} is below zero")
+    from meshpipeline.engines.cfmesh_conjugate.layers import MAX_STACK_FRACTION, max_layers
+
+    most = max_layers()
+    if n > most:
+        raise ConfigurationError(
+            f"CONJUGATE_LAYERS={raw!r} can never be built: at this expansion ratio a stack of "
+            f"{n} layers is more than {MAX_STACK_FRACTION * 100:.0f}% of one background cell "
+            f"whatever the part, and a stack that does not fit its own cell is one snappyHexMesh "
+            f"can only thin, which manufactures hairline cells. The most that fits is {most}")
+    return n
+
+
+def conjugate_layers() -> int:
+    """How many prism layers this deployment asks for, and 0 when it asks for none."""
+    return _layer_count(CONJUGATE_LAYERS)
+
+
+#: Fail the container at startup on a count that can never build, rather than once per job.
+#: It sits here rather than beside the pinned cell's own check because it needs the parser
+#: above, and that parser needs the layers module.
+_layer_count(CONJUGATE_LAYERS)
+
+
 def forced_fine_cell() -> float:
     """The thin cell this deployment pins, in metres, or 0.0 when it pins none."""
     return _pinned_cell(CONJUGATE_FINE_CELL_M)
@@ -525,6 +582,7 @@ __all__ = [
     "GMSH_RANDOM_SEED", "GMSH_THREADS", "MESH_CFMESH_THREADS", "MESH_DETERMINISTIC",
     "MESH_SNAPPY_RANKS", "MESH_THREADS", "SNAPPY_DECOMPOSITION", "STAMP_FILE", "comparable",
     "drain_process_notes", "native_environment", "note_setting", "note_time_limit",
+    "CONJUGATE_LAYERS", "conjugate_layers",
     "pin_process_environment", "read_stamp", "recording", "snappy_ranks", "stamp", "threads_for",
     "tool_versions", "workspace_hashes", "write_stamp",
 ]

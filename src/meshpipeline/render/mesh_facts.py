@@ -30,14 +30,21 @@ _INT_METRICS: Final[tuple[str, ...]] = (
     # an Error. A reading this small is exactly the kind that a summary rounds away.
     "low_quality_tet_faces",
     # THE THIRD OF THE SIX READINGS, "number of boundary layers in the fluid". The conjugate
-    # engine computes it, writes it to the manifest and the answer is a deliberate zero with the
-    # reason attached (see cfmesh_conjugate/finalize.NEAR_WALL_LAYERS). The reason is that a prism
-    # stack does not FIT across a passage this narrow - it takes the quality to checkMesh's bar and
-    # buys nothing, because across such a channel the cells across it ARE the near-wall resolution.
-    # It is NOT that layers would break conformality: that was measured on the coupon and all
-    # 14,477 interface faces stayed matched to 4e-18 m. The graded levels and the cell size at the
-    # wall are what stands in its place, so all three travel together or none of them means
-    # anything.
+    # engine computes it and writes it to the manifest, and until 2026-11-14 the answer was a
+    # deliberate zero. It is now whatever the plan asked for, because that engine grows layers:
+    # `cfmesh_conjugate/layers.py` runs a `snappyHexMesh` addLayers-only pass after the split, and
+    # the measured run on the first customer plate grew 2.84 of three asked-for layers over 95.553%
+    # of a 16,619,777-face interface.
+    #
+    # TWO ARGUMENTS THAT USED TO BE HERE WERE BOTH WRONG. Conformality was never the obstacle, and
+    # that was measured on the coupon - all 14,477 interface faces stayed matched to 4e-18 m. Nor
+    # does the stack fail to FIT: what was measured as "it takes the quality to checkMesh's bar and
+    # buys nothing" was a stack 109% of its own background cell, which is a dictionary defect, and
+    # `layers.fit_complaint` now refuses exactly that dict. At 60.0% of a cell the same part came
+    # back with 2,936 faces in error out of 102,536,327 cells.
+    #
+    # The graded levels and the cell size at the wall still travel beside it, because a layer count
+    # alone does not say how the wall was resolved.
     "near_wall_layers", "near_wall_levels",
     # and the conformality itself, which is the number that says the interface is real: the same
     # face count on each side of it

@@ -310,8 +310,9 @@ def quality_of(ws: Path, report: dict) -> dict:
     q["poor_cell_sets"] = [
         {"region": str(r.get("name")), **dict(x)}
         for r in rows for x in (r.get("poor_sets") or ())]
-    # NEAR-WALL RESOLUTION, reported on every run because it is asked for on every run. See
-    # NEAR_WALL_LAYERS for why the layer count is zero and what stands in its place.
+    # NEAR-WALL RESOLUTION, reported on every run because it is asked for on every run. The layer
+    # count comes from the plan - zero on every mesh delivered so far, and whatever was asked for
+    # on a run that grew them. See NEAR_WALL_LAYERS.
     q.update(_near_wall(plan))
     # WHETHER THE INTERIOR CAN BE CUT AT ALL. The engine declares a REGION inspection target, so
     # the review context tells the reviewer to call inspect_region - and the slices are published
@@ -363,23 +364,32 @@ def _pieces_short(q: dict) -> list[str]:
 #: Layers do not break conformality. The argument was about the wrong thing, and because it read
 #: as "impossible" it also argued against the run that would be worth doing.
 #:
-#: WHAT ACTUALLY RULES THEM OUT IS THE FIT. A prism stack does not go across a 98 um passage at
-#: any affordable cell size: it takes the quality to checkMesh's own bar - non-orthogonality 13.82
-#: before, 64.95 after, against a limit of 65 - and it buys nothing, because across a channel that
-#: narrow the cells ACROSS the channel ARE the near-wall resolution. So the graded levels and the
-#: cell size at the wall below are not a substitute offered in place of an impossibility; they are
-#: the better answer to the question that was asked.
+#: THE FIT ARGUMENT WAS ALSO MEASURED, AND IT IS NOW OUT OF DATE. This said "a prism stack does
+#: not go across a 98 um passage at any affordable cell size", on a reading that took the quality
+#: to non-orthogonality 64.95 against a limit of 65 and bought nothing. What it was measuring was a
+#: stack that did not fit its own background cell, which is a dict defect and not a property of the
+#: part: at `firstLayerThickness 4.15e-06` and `expansionRatio 1.2` into a 25.1578 um cell the
+#: three-layer stack is 60.0% of ONE cell, and the pass delivered 95.553% coverage over
+#: 16,619,777 interface faces with 2,936 faces in error out of 102,536,327 cells
+#: (docs/semiconductor/MESH_PITCH8.md, 2026-11-08). `cfmesh_conjugate/layers.fit_complaint` is that
+#: rule, stated once, and it refuses the dict this comment was describing.
 #:
-#: AND IT IS PASSAGE-BY-PASSAGE, NOT ENGINE-WIDE. The manifolds are 67% of this part's wetted area
-#: and a stack fits in them, so layers on `coolant_coarse` alone are a worthwhile second run and
-#: would let the delivery report a real count. Two repairs stand in the way, both measured the same
-#: day: cfMesh's writer drops the mappedWall coupling keys, and checkMesh then flags upper-
-#: triangular ordering wanting `renumberMesh`, which this repository has never run.
+#: TWO REPAIRS WERE NAMED HERE AS BLOCKERS AND THE DELIVERED LAYERED MESH REFUTES BOTH. The claim
+#: was that cfMesh's writer drops the mappedWall coupling keys and that checkMesh then wants
+#: `renumberMesh`. The boundary file snappyHexMesh wrote AFTER the layer pass carries
+#: `type mappedWall`, `sampleMode nearestPatchFace`, `sampleRegion solid` and
+#: `samplePatch solid_to_fluid`, with nFaces still 16,619,777 matching solid_to_fluid exactly; and
+#: that mesh's own checkMesh prints "Upper triangular ordering OK." Neither repair is needed, and
+#: pointing an implementer at them cost nothing only because nobody followed the advice.
 #:
-#: The mechanical obstacle is real and unchanged: `boundaryLayers.patchBoundaryLayers` names
-#: PATCHES, and at meshing time the coolant's wall is not a patch - it is interior to one manifold
-#: block, and the patch is created by `splitMeshRegions` afterwards. So layers here mean a second
-#: pass over the delivered mesh, not a key in the meshDict.
+#: The mechanical part is real and unchanged: `boundaryLayers.patchBoundaryLayers` names PATCHES,
+#: and at meshing time the coolant's wall is not a patch - it is interior to one manifold block,
+#: and the patch is created by `splitMeshRegions` afterwards. So layers are a SECOND PASS over the
+#: split mesh, not a key in the meshDict. That is what `cfmesh_conjugate/layers` does.
+#:
+#: THIS CONSTANT IS NOW ONLY THE DEFAULT FOR A MESH THAT ASKED FOR NONE, which is still every
+#: delivered mesh. `_near_wall` reads the plan, because a manifest that published 0 on a layered
+#: mesh would be a false figure in the customer's own report.
 NEAR_WALL_LAYERS = 0
 
 
@@ -393,7 +403,10 @@ def _near_wall(plan: dict) -> dict:
     # resolution at the only wall that was hard to resolve. The deepest wins.
     for surf in plan.get("fine_surfaces") or ():
         levels = max(levels, int((surf or {}).get("levels") or 0))
-    out: dict = {"near_wall_layers": NEAR_WALL_LAYERS, "near_wall_levels": levels}
+    # FROM THE PLAN, NOT FROM THE CONSTANT. The plan carries what was asked for; a mesh that grew
+    # layers must not be reported as having none.
+    out: dict = {"near_wall_layers": int(plan.get("layers") or NEAR_WALL_LAYERS),
+                 "near_wall_levels": levels}
     if bg > 0.0 and levels >= 0:
         out["near_wall_cell_m"] = bg / 2 ** levels
     return out

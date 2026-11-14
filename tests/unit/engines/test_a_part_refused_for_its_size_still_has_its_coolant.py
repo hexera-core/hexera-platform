@@ -77,16 +77,22 @@ def test_all_four_size_refusals_say_so():
     src = _source()
     assert src.count("failure_marker=TOO_FINE") == 4, (
         "a size refusal is not filing itself as a size refusal")
+    # AND NOTHING THAT IS NOT ABOUT SIZE MAY BORROW THE MARKER. A layer ask that cannot be
+    # satisfied did exactly that until 2026-11-14, which would have told the next reader to lower
+    # a cell count on a part whose cell count was never the problem.
+    assert src.count("failure_marker=LAYERS_IMPOSSIBLE") == 1
 
 
 def test_every_refusing_to_start_names_itself_truthfully():
     """Every `refusing to start` log line must file a marker that means what the line says.
 
-    Six of them now: the four size refusals carry TOO_FINE, the units refusal carries NOT_METRES,
-    and a coolant whose two ports are on pieces that do not touch carries SEVERED_COOLANT. That
-    last one has its own marker for exactly the reason this test exists - nothing about the
-    budget, the resolution or the machine changes it, and filing it as TOO_FINE would send the
-    next reader to lower a cell count on a part that is not solvable at any count.
+    Seven of them now: the four size refusals carry TOO_FINE, the units refusal carries
+    NOT_METRES, a coolant whose two ports are on pieces that do not touch carries SEVERED_COOLANT,
+    and a boundary layer ask that cannot be satisfied carries LAYERS_IMPOSSIBLE. The last two have
+    their own markers for exactly the reason this test exists - nothing about the budget, the
+    resolution or the machine changes either of them, and filing them as TOO_FINE would send the
+    next reader to lower a cell count on a part that is not solvable at any count, or whose stack
+    simply does not fit inside one background cell.
 
     The rule the original defect broke is the one being held - a refusal's marker is what survives
     into the failure record, so it has to say the true thing - and not the count, which only ever
@@ -95,7 +101,7 @@ def test_every_refusing_to_start_names_itself_truthfully():
     """
     src = _source()
     starts = [m.start() for m in re.finditer(r"refusing to start", src)]
-    assert len(starts) == 6, f"expected six refusals, found {len(starts)}"
+    assert len(starts) == 7, f"expected seven refusals, found {len(starts)}"
     # EACH REFUSAL'S OWN MARKER IS THE NEXT ONE IN THE SOURCE, not whatever appears before the
     # next log line. The window form this replaces only worked while the refusals happened to sit
     # together: the units refusal comes earlier in `drive` than the coolant one, so its window
@@ -108,9 +114,13 @@ def test_every_refusing_to_start_names_itself_truthfully():
     assert seen.count("TOO_FINE") == 4, f"expected four size refusals, found {seen}"
     assert seen.count("NOT_METRES") == 1, f"expected one units refusal, found {seen}"
     assert seen.count("SEVERED_COOLANT") == 1, f"expected one severed-coolant refusal: {seen}"
+    assert seen.count("LAYERS_IMPOSSIBLE") == 1, f"expected one layer refusal: {seen}"
     assert "NO_COOLANT" not in seen, f"a refusal still blames the coolant: {seen}"
 
 
 def test_the_marker_is_exported():
     assert "TOO_FINE" in D.__all__
     assert "SEVERED_COOLANT" in D.__all__
+    assert "LAYERS_IMPOSSIBLE" in D.__all__
+    # the three say different things, so they must not be the same string
+    assert len({D.TOO_FINE, D.SEVERED_COOLANT, D.LAYERS_IMPOSSIBLE}) == 3

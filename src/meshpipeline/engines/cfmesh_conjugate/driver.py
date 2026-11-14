@@ -138,6 +138,14 @@ def _say_why_before_meshing(ws, words: str, *, job_id: str, priced_out: bool = T
 #: offered, and built 877,659,515 octree boxes before it was killed at 250 of 251 GiB. The only
 #: number that reveals it is an absolute length, which is what conjugate.part_size_complaint reads.
 NOT_METRES = "conjugate_geometry_not_metres"
+#: A BOUNDARY LAYER ASK THAT CANNOT BE SATISFIED, and it is NOT a size refusal.
+#:
+#: `TOO_FINE` means the part is too fine for the budget, and the marker is what survives into the
+#: failure record - so filing a layer refusal as TOO_FINE would tell the next reader to lower a
+#: cell count that is not the problem. The two things that land here are a stack that does not fit
+#: inside one background cell (which is fixed by the stack, not the mesh) and a serial plan (fixed
+#: by the rank count). Same reasoning as SEVERED_COOLANT having its own marker.
+LAYERS_IMPOSSIBLE = "conjugate_layers_impossible"
 
 #: The CAD extensions the coolant can be cut out of. A triangle file cannot: the extraction needs
 #: the solid's own faces to find which of them bound the space inside it.
@@ -392,7 +400,31 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                 produced_deliverable=False, failure_marker=STOP_REVIEWED_CASE_REPEATS)
 
     narrowest = float(rec["narrowest_m"])
+    # THE CELL BUDGET, REDUCED BY WHAT A LAYER PASS WILL ADD TO THE MESH.
+    #
+    # EVERY SIZE DECISION BELOW IS PRICED FROM THIS NUMBER - the two-scale plan, the octree
+    # ceiling, the machine, its disk, its lifetime and whether the archive can come home - and all
+    # of them were priced before this engine could grow a layer. Measured on the first customer
+    # plate: the coolant went 55,303,441 cells to 102,536,327 and the whole two-region mesh
+    # 223,191,421 to 270,424,307, which is 1.212x. `gates._gate_manifest_valid` then re-checks the
+    # DELIVERED count against the same limit, so a plan admitted at 0.85 of it delivers over and is
+    # refused AFTER the whole chain - the entire run thrown away for arithmetic that costs nothing.
+    #
+    # Reducing the budget here prices all of them at once. It is deliberately done BEFORE the rank
+    # count is known, so a part that later turns out to plan serial - and therefore grows no layers
+    # - has simply been priced with room to spare. Over-pricing costs a bigger machine; under-
+    # pricing costs the run.
     limit = int(polcfg.CELL_HARD_LIMIT)
+    _asked_layers = det.conjugate_layers()
+    if _asked_layers > 0:
+        from meshpipeline.engines.cfmesh_conjugate import layers as _LY
+
+        _factor = _LY.cells_multiplier(_asked_layers)
+        limit = int(limit / _factor)
+        logger.info("conjugate: %d layer(s) asked for, so the cell budget is %s rather than %s "
+                    "(a layer pass measured %.3fx on the delivered mesh) - job_id=%s",
+                    _asked_layers, f"{limit:,}", f"{int(polcfg.CELL_HARD_LIMIT):,}", _factor,
+                    job_id)
     # HOW MANY PROCESSES THIS MAY BE PLANNED ACROSS, decided ONCE and handed to both size gates.
     #
     # BOTH, or the change does nothing. The two gates ask different questions - plan_two_scales
@@ -762,6 +794,51 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     # CARRIED, not re-derived in the container: the two demands above are both the host's
     # arithmetic, and the stamp used to pick between them by guessing from the count.
     plan = dataclasses.replace(plan, ranks=_want, ranks_basis=why, sizing_basis=said)
+    # BOUNDARY LAYERS, ASKED FOR HERE AND REFUSED HERE. `build` checks the same two things, but it
+    # runs in the container - and for this engine the container is a self-deleting VM with
+    # hundreds of gigabytes of memory, so a refusal that reaches it has already cost a machine.
+    # Both checks are the layer module's own, called with the numbers the host has just decided.
+    _layers = det.conjugate_layers()
+    if _layers > 0:
+        from meshpipeline.engines.cfmesh_conjugate import layers as LY
+
+        # THE SAME CELL `build` WILL USE, or the host's yes and the container's no disagree. It is
+        # the cell at the INTERFACE, which on a two-scale part is the FINE surface's levels under
+        # the background rather than the coolant's own.
+        _lv = int(plan.levels)
+        for _s in (plan.fine_surfaces or ()):
+            _lv = max(_lv, int(dict(_s).get("levels") or 0))
+        _cell = LY.interface_cell_m(float(plan.background_cell_m), _lv)
+        _geom = LY.geometry_for(_cell)
+        _geom["n_layers"] = _layers
+        # SKIPPED ON A SERIAL PLAN, NOT REFUSED. `ranks_for` keeps every part in the corpus on
+        # one process, so refusing here would turn one deployment-wide setting into a corpus-wide
+        # outage. Said out loud, and the plan records that none were grown.
+        _skip = LY.serial_complaint(int(plan.ranks))
+        if _skip:
+            logger.info("conjugate: growing no layers - %s - job_id=%s", _skip, job_id)
+            _layers = 0
+        # ...BUT A STACK THAT CANNOT FIT IS REFUSED HERE. `build` checks the same thing and it runs
+        # in the container, which for this engine is a self-deleting VM with hundreds of gigabytes
+        # of memory - so a refusal that reaches it has already cost a machine. `priced_out` is the
+        # right wording for it: the file is sound, the approved setup is sound, and the thing that
+        # does not fit is a stack of OURS against a cell of OURS.
+        _no = (LY.fit_complaint(interface_cell_m=_cell, **_geom) if _layers > 0 else "")
+        if _no:
+            logger.info("conjugate: refusing to start - %s - job_id=%s", _no, job_id)
+            _say_why_before_meshing(ws, _no, job_id=job_id)
+            await run.fence("deliver builder outcome")
+            return False, LAYERS_IMPOSSIBLE, run.outcome(
+                produced_deliverable=False, exhausted=True, failure_marker=LAYERS_IMPOSSIBLE)
+        if _layers > 0:
+            plan = dataclasses.replace(plan, layers=_layers)
+            logger.info("conjugate: growing %d prism layer(s) on %s, %.4f um of stack into the "
+                        "%.4f um cell at the interface, about %.3fx the cells - job_id=%s",
+                        _layers, "the conjugate interface",
+                        LY.stack_thickness_m(first_layer_m=_geom["first_layer_m"],
+                                             expansion=_geom["expansion"],
+                                             n_layers=_layers) * 1e6,
+                        _cell * 1e6, LY.cells_multiplier(_layers), job_id)
     if plan.ranks > 1:
         logger.info("conjugate: meshing across %d processes - %s; %s - job_id=%s",
                     plan.ranks, ranks_basis, why, job_id)
@@ -902,5 +979,5 @@ def _finer(fidelity: str) -> str:
 
 
 __all__ = ["BUILD_FAILED", "NO_COOLANT", "NOT_METRES", "NO_SOURCE", "SEVERED_COOLANT",
-           "TOO_FINE", "cad_scale",
+           "LAYERS_IMPOSSIBLE", "TOO_FINE", "cad_scale",
            "coolant_sits_inside", "declared_port_names", "drive", "find_source", "skin_bounds"]
