@@ -1105,7 +1105,7 @@ function initViewer(job,surf,uiCfg){
     if(!surf.fea&&!surf.thermal&&bar.classList.contains('rp-dlmenu')){
       [...bar.querySelectorAll('.rp-dl b')].forEach(b=>{if(/^Surface preview/.test(b.textContent))b.closest('a').remove();});
       const after=bar.querySelector('.rp-all');
-      const rows=[['OpenFOAM case','.zip'],['Ansys Fluent','.msh'],['STAR-CCM+','.ccm'],['CGNS','.cgns'],['EnSight','.case']].map(([n,x])=>
+      const rows=[['OpenFOAM case','.zip'],['Ansys Fluent','.msh'],['EnSight','.case']].map(([n,x])=>
         `<a class="v-dlbtn rp-dl" role="menuitem" href="#" onclick="return false"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M4 2h5l3 3v9H4z"/></svg><b>${n}</b><span>${x}</span></a>`).join('');
       if(after)after.insertAdjacentHTML('afterend',rows);else bar.insertAdjacentHTML('afterbegin',rows);}
     const a=document.createElement('a');a.className='v-dlbtn rp-dl';a.href='#';a.id='v-vtk-'+job;a.setAttribute('role','menuitem');
