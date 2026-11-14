@@ -135,7 +135,22 @@ def test_the_cfd_path_falls_back_to_delaunay(tmp_path, monkeypatch):
         return 0
 
     monkeypatch.setattr(D, "_main", attempt)
+    monkeypatch.setattr(D, "CFD_FIRST", "hxt")
     assert D.main(str(tmp_path)) == 0 and seen == ["hxt", "delaunay"]
+    assert json.loads((tmp_path / "quality.json").read_text())["algorithm3d"]["used"] == "delaunay"
+
+
+def test_the_cfd_path_fills_with_delaunay_by_default(tmp_path, monkeypatch):
+    """Measured (lab, 14 Nov): HXT gained nothing on the CFD path and cost quality - one Delaunay attempt."""
+    seen: list[str] = []
+
+    def attempt(ws):
+        seen.append(D._CFD_ALGO[0])
+        (Path(ws) / "quality.json").write_text(json.dumps({"cells": 5, "min_sicn": 0.001, "fatal": []}))
+        return 0
+
+    monkeypatch.setattr(D, "_main", attempt)
+    assert D.CFD_FIRST == "delaunay" and D.main(str(tmp_path)) == 0 and seen == ["delaunay"]
     assert json.loads((tmp_path / "quality.json").read_text())["algorithm3d"]["used"] == "delaunay"
 
 

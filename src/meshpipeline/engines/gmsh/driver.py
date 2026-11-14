@@ -1055,7 +1055,16 @@ def _mesh_cad_at_mm(gmsh, geom: Path, h: float, cb, k: float | None = None, fres
 #: MESH-25 (the CFD path): the volume fill's 3D algorithm (gmsh's Mesh.Algorithm3D numbers) - HXT on every core
 #: first; Delaunay meshes the case again when HXT's mesh fails or misses the bar Delaunay's meets
 CFD_ALGORITHMS_3D = {"hxt": 10, "delaunay": 1}
-CFD_FIRST = "hxt"
+#: DELAUNAY, MEASURED (lab, 14 Nov, 10 staged CFD cases at 8 vCPU, HXT first against Delaunay): HXT gained nothing
+#: here and cost quality. The passage field is a Python size callback, which holds the fill to one thread, and
+#: there HXT's fill took about twice Delaunay's (9.9 -> 20.6 s, 7.0 -> 15.5 s, 225 -> 322 s on a 6M-cell case);
+#: on the external bodies HXT's mesh missed the bar Delaunay's met or matched (worst face 80.0 -> 88.5 degrees on
+#: one), so each was meshed twice (6.6 -> 16.5 s, 15.7 -> 56.8 s, 23.4 -> 78.7 s). "hxt" turns HXT-first with the
+#: Delaunay fall-back back on (main), once the passage field is a gmsh field and not a callback.
+CFD_FIRST = "delaunay"
+#: MESH-23 on a CFD CAD solid's surfaces: off, measured the same day - on these small surface meshes the worker
+#: processes cost more than they saved (0.8 -> 1.4 s, 1.9 -> 3.6 s, 0.4 -> 4.7 s)
+CFD_SURFACE_WORKERS = False
 _CFD_ALGO = [CFD_FIRST]
 #: MESH-25: whether a case whose first fill failed or missed its bar is meshed again with Delaunay (off only in
 #: tests of other rules, which count their own attempts)
@@ -1084,10 +1093,11 @@ def _read_quality(ws: Path) -> dict:
 
 
 def main(workspace: str) -> int:
-    """MESH-25 ON THE CFD PATH: the case meshed with HXT on every core (the founder's decision, 13 Nov: speed wins);
-    should that fail (an error, no mesh, an invalid one) or miss its bar, the case is meshed again with Delaunay,
-    in a fresh gmsh session, and the better is kept - a failed HXT attempt gives way to Delaunay's whatever it is
-    (no case fails that Delaunay would mesh). quality.json says which algorithm made the mesh (`algorithm3d`)."""
+    """MESH-25 ON THE CFD PATH: the case is filled by CFD_FIRST - Delaunay, on the lab's evidence (see CFD_FIRST).
+    With CFD_FIRST = "hxt": HXT on every core first; should that fail (an error, no mesh, an invalid one) or miss
+    its bar, the case is meshed again with Delaunay, in a fresh gmsh session, and the better is kept - a failed HXT
+    attempt gives way to Delaunay's whatever it is. quality.json says which algorithm made the mesh
+    (`algorithm3d`)."""
     import shutil
     import time
 
@@ -1189,7 +1199,7 @@ def _surfaces_on_every_core(gmsh) -> None:
     from meshpipeline.engines.gmsh import fea_parallel2d as P2D
 
     n = gmsh_threads()
-    if n <= 1 or not P2D.can_split(gmsh):
+    if not CFD_SURFACE_WORKERS or n <= 1 or not P2D.can_split(gmsh):
         return
     workers = P2D.workers_for(n, len(gmsh.model.getEntities(2)))
     if workers > 1:
