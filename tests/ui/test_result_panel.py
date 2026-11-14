@@ -106,12 +106,23 @@ def test_an_fea_result_is_a_verdict_four_numbers_the_downloads_and_two_folded_li
 
 
 def test_a_passed_cfd_mesh_has_no_empty_lists(live, tmp_path):
-    _open(live, "rp-cfd", _payload(tmp_path, shear=0.0),
-          {"metrics": {"pass": True}, "files": FILES[1:], "notes": []})
+    surf = _payload(tmp_path, shear=0.0)
+    surf["quality"]["hexahedra"] = 3
+    _open(live, "rp-cfd", surf, {"metrics": {"pass": True}, "files": FILES[1:], "notes": []})
     got = _read(live, "rp-cfd")
     assert got["verdict"].startswith("Passed.") and "pass" in got["verdictCls"], got
     assert got["keys"][0] == "Cells" and "Time" not in got["keys"], got
     assert got["drops"] == [] and got["downloads"] == ["Everything", "Mesh report", "ParaView"], got
+    # Areen 2026-11-14: "make it the same as FEA" - no "Delivered mesh" block of cell types and
+    # quality rows under the panel; those are in the Mesh report, and the heat map is the canvas's
+    # one "Colour by" line
+    panel = live.evaluate("""(() => { const bar = document.querySelector('#viewer-rp-cfd .v-bar');
+      return {text: bar.innerText, facts: !!bar.querySelector('.v-facts, .mx, .mx-c'),
+              ctl: !!document.querySelector('#v-canvas-rp-cfd #v-heatctl-rp-cfd')}; })()""")
+    assert not panel["facts"], panel
+    for gone in ("Delivered mesh", "Cell types", "Hexahedra", "Show on mesh"):
+        assert gone not in panel["text"], (gone, panel["text"])
+    assert panel["ctl"], panel
     assert_clean(live, "the CFD result screen")
 
 
@@ -167,7 +178,7 @@ def test_downloads_are_one_button_that_opens_a_menu_of_short_names(live, tmp_pat
                 (a.querySelector('em') || {}).textContent || '', a.title]),
               hint: !!v.querySelector('.tr-hint'), status: getComputedStyle(v.querySelector('.rp-head .v-row')).display,
               headTitle: v.querySelector('.rp-head').title,
-              facts: (document.getElementById('v-facts-rp-dl').innerText || '').includes('Cells')}; })()"""
+              facts: !!v.querySelector('.v-facts, .mx')}; })()"""
     live.wait_for("document.querySelector('#viewer-rp-dl .rp-head').title", timeout=30, what="the mesh to be read")
     closed = live.evaluate(read)
     assert closed["trig"].startswith("Download") and "MB" in closed["trig"], closed
@@ -186,7 +197,7 @@ def test_downloads_are_one_button_that_opens_a_menu_of_short_names(live, tmp_pat
     # nothing said twice: no "every limit... is in the Mesh report" line, the long delivered-mesh
     # line is the verdict's tooltip, and the cell count is not repeated under the key numbers
     assert not opened["hint"] and opened["status"] == "none" and opened["headTitle"], opened
-    assert not opened["facts"], "the delivered-mesh block repeats the cell count"
+    assert not opened["facts"], "a delivered-mesh block under the panel repeats the cell count"
     # Escape and a click elsewhere close it
     live.evaluate("document.querySelector('#viewer-rp-dl .rp-dlmenu a').dispatchEvent("
                   "new KeyboardEvent('keydown', {key: 'Escape', bubbles: true}))")

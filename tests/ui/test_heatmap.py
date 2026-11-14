@@ -86,15 +86,14 @@ def test_the_heatmap_colours_the_mesh_and_explains_a_face(live, tmp_path):
     live.wait_for(f"window._vdbg && window._vdbg['{JOB}:heat']", timeout=90,
                   what="the viewer to initialise with quality fields")
 
-    # the delivered-mesh FIGURES became the controls, one per metric the payload carries
+    # one plain "Colour by" line on the canvas is the control, one word per metric the payload carries
     state = live.evaluate(f"""(() => {{
       const h = window._vdbg['{JOB}:heat'];
-      const live = [...document.querySelectorAll('#v-facts-{JOB} .mx-c.live')]
-        .map(c => c.dataset.metric);
+      const live = [...document.querySelectorAll('#v-heatctl-{JOB} a')].map(c => c.dataset.metric);
       return {{metrics: h.metrics, live, active: h.active(), legend: h.legend()}};
     }})()""")
     assert state["metrics"] == ["non_ortho", "skewness", "aspect_ratio"]
-    assert sorted(state["live"]) == ["aspect_ratio", "non_ortho", "skewness"], state
+    assert state["live"] == ["non_ortho", "skewness", "aspect_ratio"], state
     assert state["active"] is None and state["legend"] is False
 
     # the viewer opens z-up, as CAD is drawn, and Fit keeps it that way
@@ -106,17 +105,17 @@ def test_the_heatmap_colours_the_mesh_and_explains_a_face(live, tmp_path):
     assert up["open"] == pytest.approx([0, 0, 1], abs=1e-9), up
     assert up["fit"] == pytest.approx([0, 0, 1], abs=1e-9), up
 
-    # clicking the non-orthogonality figure colours the mesh, draws the legend, says the one face
-    # over the bar, and switches the hint to the probe
+    # clicking "non-orthogonality" colours the mesh, draws the legend, says the one face over the
+    # bar, and switches the hint to the probe
     after = live.evaluate(f"""(() => {{
-      document.querySelector('#v-facts-{JOB} .mx-c.live[data-metric=non_ortho]').click();
+      document.querySelector('#v-heatctl-{JOB} a[data-metric=non_ortho]').click();
       const h = window._vdbg['{JOB}:heat'];
       const lg = document.querySelector('#viewer-{JOB} .v-legend');
       return {{active: h.active(), legend: h.legend(), extras: h.extras(),
                legendText: lg ? lg.textContent : '',
                buttons: lg ? [...lg.querySelectorAll('button')].map(b => b.className) : [],
                hint: document.getElementById('v-hint-{JOB}').textContent,
-               onCells: document.querySelectorAll('#v-facts-{JOB} .mx-c.live.on').length,
+               onCells: document.querySelectorAll('#v-heatctl-{JOB} a.on').length,
                calm: h.colorOf('inlet', 0), edges: h.edges(), areas: h.areas()}};
     }})()""")
     assert after["active"] == "non_ortho" and after["legend"] is True
@@ -208,7 +207,7 @@ def test_a_mesh_that_passes_reads_calm_with_nothing_drawn_on_it(live, tmp_path):
     assert not [h for h in payload["quality_fields"]["hotspots"] if h["metric"] == "non_ortho"]
     _open(live, payload, "good-job")
     state = live.evaluate("""(() => {
-      document.querySelector('#v-facts-good-job .mx-c.live[data-metric=non_ortho]').click();
+      document.querySelector('#v-heatctl-good-job a[data-metric=non_ortho]').click();
       const h = window._vdbg['good-job:heat'];
       const lg = document.querySelector('#viewer-good-job .v-legend');
       const box = lg.querySelector('.v-areas');
@@ -360,10 +359,9 @@ def test_a_payload_without_fields_leaves_the_viewer_exactly_as_before(live, tmp_
                   what="the viewer to initialise")
     state = live.evaluate("""(() => ({
       heat: !!(window._vdbg['plain-job:heat']),
-      live: document.querySelectorAll('#v-facts-plain-job .mx-c.live').length,
       ctl: !!document.getElementById('v-heatctl-plain-job'),
       legend: !!document.querySelector('#viewer-plain-job .v-legend'),
       vtk: !!document.getElementById('v-vtk-plain-job')}))()""")
     # the export needs no fields, only a polyMesh surface - it stays
-    assert state == {"heat": False, "live": 0, "ctl": False, "legend": False, "vtk": True}
+    assert state == {"heat": False, "ctl": False, "legend": False, "vtk": True}
     assert_clean(live, "the viewer without quality fields")
