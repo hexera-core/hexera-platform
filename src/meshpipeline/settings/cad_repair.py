@@ -256,3 +256,28 @@ CAD_REPAIR_REGION_LOOP: str = _region_loop_posture()
 #: The confidence below which the model's plan is not acted on and the rule planner's choice stands.
 CAD_REPAIR_LLM_PLANNER_MIN_CONFIDENCE: float = float(
     optional_env("CAD_REPAIR_LLM_PLANNER_MIN_CONFIDENCE", "0.5"))
+
+
+def _mesh_probe_posture() -> str:
+    """The mesh-probe posture, FAILING CLOSED: only the exact string `live` turns it on.
+
+    STRICTER THAN `_region_loop_posture`, which forgives case and surrounding space: this one
+    puts a gmsh run on every scan of a customer's part, so `Live ` or `LIVE` is read as the typo
+    it probably is and the probe stays off.
+    """
+    raw = optional_env("CAD_REPAIR_MESH_PROBE", "off")
+    return "live" if raw == "live" else "off"
+
+
+#: Whether a repair scan also asks gmsh WHY the part will not mesh. "off" is byte-for-byte the
+#: prior behaviour: the probe is never called. "live" appends the probe's defects
+#: (cad/repair/mesh_probe.py) after the kernel scan's on every scan the session makes - the first,
+#: each operation's re-inspection, and a package's scoped proof - so an operation can be aimed at
+#: a mesh failure and judged by the same progress rule as any other defect. A posture, so a typo
+#: reads as off.
+CAD_REPAIR_MESH_PROBE: str = _mesh_probe_posture()
+
+#: Seconds one mesh probe may take. The session hands it the lesser of this and what is left of
+#: the run's time, and skips the probe outright when nothing is left.
+CAD_REPAIR_MESH_PROBE_TIMEOUT_S: float = float(
+    optional_env("CAD_REPAIR_MESH_PROBE_TIMEOUT_S", "120.0"))

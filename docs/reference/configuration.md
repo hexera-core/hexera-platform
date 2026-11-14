@@ -566,6 +566,8 @@ Every supported setting (281 entries). `template` settings are the ones `.env.ex
 | `CAD_REPAIR_MAX_DEVIATION_RATIO` | internal | app |  |
 | `CAD_REPAIR_MAX_HOLE_SPAN_RATIO` | internal | app |  |
 | `CAD_REPAIR_MAX_OPS` | internal | app |  |
+| `CAD_REPAIR_MESH_PROBE` | internal | app |  |
+| `CAD_REPAIR_MESH_PROBE_TIMEOUT_S` | internal | app |  |
 | `CAD_REPAIR_MAX_TOLERANCE_MM` | internal | app |  |
 | `CAD_REPAIR_MAX_VOLUME_CHANGE_RATIO` | internal | app |  |
 | `CAD_REPAIR_REGION_ATTEMPTS` | internal | app |  |

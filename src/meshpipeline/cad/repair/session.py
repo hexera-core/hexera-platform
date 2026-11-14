@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import meshpipeline.settings.cad_repair as rcfg
+from meshpipeline.cad.repair import mesh_probe
 from meshpipeline.cad.repair.caps import (
     Accounting,
     cumulative_refusal,
@@ -261,12 +262,56 @@ class RepairSession:
             remaining = self.remaining_s or (lambda: float(rcfg.CAD_REPAIR_TIMEOUT_S))
             budget = face_scan_budget_s(remaining())
         if within is None:
-            return _localize_scan(shape, face_scan_s=budget)
-        # THE UPLOAD'S DIAGONAL GROWS THE REGION'S BOX, the same number `scoped_to` and
-        # `in_region` are handed below, so the scan's scope and the filters compared against it
-        # are one box. The current shape's diagonal would drift as the repair reshapes the part.
-        return _localize_scan(shape, face_scan_s=budget, within=within,
-                              scope_diagonal_mm=self.original.diagonal_mm)
+            found, complete = _localize_scan(shape, face_scan_s=budget)
+        else:
+            # THE UPLOAD'S DIAGONAL GROWS THE REGION'S BOX, the same number `scoped_to` and
+            # `in_region` are handed below, so the scan's scope and the filters compared against
+            # it are one box. The current shape's diagonal would drift as the repair reshapes the
+            # part.
+            found, complete = _localize_scan(shape, face_scan_s=budget, within=within,
+                                             scope_diagonal_mm=self.original.diagonal_mm)
+        return self._with_mesh(found, shape, within=within), complete
+
+    def _with_mesh(self, found, shape, *, within: Region | None):
+        """`found`, followed by why gmsh will not mesh `shape` when CAD_REPAIR_MESH_PROBE is live.
+
+        OFF RETURNS `found` ITSELF, untouched, and `mesh_probe` is never called - the flag-off
+        scan is byte-for-byte what it was. Live, the probe's defects are APPENDED after the kernel
+        scan's, never handed into it, so `localize_scan` is called exactly as it always was.
+
+        ONE PLACE FOR EVERY DEFAULT SCAN PATH: the first scan and the per-operation re-inspection
+        (both through `_default_scan`, whatever `face_scan` is, so an operation aimed at a mesh
+        defect is judged by the progress rule on a rescan that can still see it) and a package's
+        scoped proof (`_region_scan`). A scoped probe surface-meshes the region's faces only, so
+        volume-mesh failures are seen by whole-shape scans alone (mesh_probe.mesh_defects).
+
+        AN INJECTED SCANNER NEVER REACHES THIS: it is the whole truth for the test that injected
+        it, and a mesh defect added on top would change what that test asserts about.
+
+        COMPLETENESS IS NOT TOUCHED. The probe never raises; a probe that could not finish is a
+        `mesh_timeout` defect on the list, not a stopped kernel walk, so it does not lower
+        `complete_scan`.
+
+        The budget is the lesser of CAD_REPAIR_MESH_PROBE_TIMEOUT_S and what is left of the run.
+        A non-positive (or NaN) budget SKIPS the probe and appends nothing: with no time left there
+        is no probe to run, and an unlocated `mesh_timeout` minted for every late scan would read
+        as a mesh failure the part may not have. The diagonal is the upload's, as every scope in
+        this session is.
+        """
+        if rcfg.CAD_REPAIR_MESH_PROBE != "live":
+            return found
+        timeout = float(rcfg.CAD_REPAIR_MESH_PROBE_TIMEOUT_S)
+        remaining = float(self.remaining_s() if self.remaining_s is not None else timeout)
+        # Checked BEFORE `min`, which would pass a NaN `remaining` over in favour of the timeout.
+        if not remaining > 0.0:
+            return found
+        budget = min(timeout, remaining)
+        if not budget > 0.0:
+            return found
+        # Looked up on the module AT CALL TIME, so a test patching `mesh_probe.mesh_defects` is
+        # obeyed.
+        return (*found, *mesh_probe.mesh_defects(shape, diagonal_mm=self.original.diagonal_mm,
+                                                 budget_s=budget, within=within))
 
     def defects(self) -> tuple:
         """The current shape's located defects. Scanned once per shape and cached."""
@@ -833,6 +878,7 @@ class RepairSession:
             # ONE GROWN BOX FOR BOTH SIDES OF THE SCOPE, as in `_default_scan`.
             found, complete = _localize_scan(self.shape, face_scan_s=budget, within=region,
                                              scope_diagonal_mm=self.original.diagonal_mm)
+            found = self._with_mesh(found, self.shape, within=region)
         return tuple(found), bool(complete)
 
     def _record_package(self, verdict: PackageVerdict) -> PackageVerdict:
