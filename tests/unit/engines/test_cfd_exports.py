@@ -236,6 +236,72 @@ def test_the_hook_writes_only_for_a_flow_mesh_that_was_built_with_time_left(tmp_
     assert not (ws / CE.OPENFOAM_ZIP).exists()
 
 
+def test_the_zips_stop_at_the_exports_deadline_and_leave_no_half_written_file(tmp_path, fake_foam):
+    # the converters ran under the deadline but the zips did not: a big case near the end of the run's
+    # wall went on compressing past it, into the time that is the finished mesh's own way home
+    ws = _case(tmp_path / "ws")
+    (ws / "constant" / "triSurface" / "big.stl").write_bytes(os.urandom(96 * 2**20))
+    t = __import__("time").monotonic()
+    rec = CE.write_exports(ws, bashrc=fake_foam, guard_s=0.2)
+    took = __import__("time").monotonic() - t
+    assert CE.OPENFOAM_ZIP not in rec["files"] and "out of time" in rec["left_out"][CE.OPENFOAM_ZIP]
+    # nothing after the deadline is started either, and nothing half written is left
+    assert set(rec["left_out"]) == set(CE.FILES) and rec["files"] == {}
+    assert not list(ws.glob("*.part")) and not any((ws / f).exists() for f in CE.FILES)
+    assert took < 0.2 + 1.5, took
+    assert CE.offered(ws) == []
+
+
+def test_a_zip_past_its_deadline_is_abandoned_whole(tmp_path):
+    src = tmp_path / "a.bin"
+    src.write_bytes(os.urandom(1024))
+    msh = tmp_path / "mesh.msh"
+    msh.write_bytes(b'(0 "x")\n(39 (1 fluid fluid-1)())\n')
+    past = __import__("time").monotonic() - 1.0
+    with pytest.raises(CE.OutOfTime):
+        CE._zip(tmp_path / "a.zip", [(src, "a.bin")], deadline=past)
+    with pytest.raises(CE.OutOfTime):
+        CE._zip_fluent(msh, tmp_path / "f.zip", "mesh.msh", deadline=past)
+    assert not [p.name for p in tmp_path.iterdir() if p.suffix in (".zip", ".part")]
+    # inside the deadline the zip is the same as before: every entry, deflated
+    n = CE._zip(tmp_path / "a.zip", [(src, "a.bin")], deadline=past + 3600)
+    with zipfile.ZipFile(tmp_path / "a.zip") as zf:
+        assert zf.read("a.bin") == src.read_bytes() and zf.getinfo("a.bin").compress_type == zipfile.ZIP_DEFLATED
+    assert n == (tmp_path / "a.zip").stat().st_size
+
+
+def test_the_time_the_exports_need_is_read_from_the_mesh_s_size(tmp_path, fake_foam, monkeypatch):
+    # the lab's 3.2 M-cell motorBike (a 392 MB polyMesh) took 34 s quiet, 97 s busy for both converters
+    # and the three zips: a flat two minutes is a guess, too much for a small mesh, too little for a big one
+    assert CE.export_need_s(0) == CE.MIN_LEFT_S
+    need_3m = CE.export_need_s(392e6)
+    assert need_3m >= 2 * 97 + CE.MIN_LEFT_S and need_3m >= 2 * CE.export_need_s(0)
+    assert CE.export_send_s(392e6) >= 97
+    ws = _case(tmp_path / "ws")
+    (ws / "constant" / "polyMesh" / "points").write_bytes(b"p" * 2_000_000)      # a 2 MB polyMesh
+    mesh = CE.mesh_bytes(ws)
+    assert 2_000_000 <= mesh <= 2_010_000
+    seen = {}
+
+    def _write(workspace, *, bashrc, guard_s):
+        seen["guard_s"] = guard_s
+        return {"files": {}}
+    monkeypatch.setattr(CE, "write_exports", _write)
+    # just enough for the exports AND their own way home: started, bounded to what is left less that way home
+    left = CE.export_need_s(mesh) + CE.export_send_s(mesh) + 1
+    assert CE.after_run(ws, engine="snappy", result={"rc": 0}, bashrc=fake_foam, left_s=left) == {"files": {}}
+    assert abs(seen.pop("guard_s") - (left - CE.export_send_s(mesh))) < 1e-6
+    # a little less: not started, and nothing stale stays
+    (ws / CE.OPENFOAM_ZIP).write_bytes(b"stale")
+    assert CE.after_run(ws, engine="snappy", result={"rc": 0}, bashrc=fake_foam, left_s=left - 2) is None
+    assert "guard_s" not in seen and not (ws / CE.OPENFOAM_ZIP).exists()
+    # a mesh too big for the stuck-converter guard is given what it needs, not cut at the guard
+    monkeypatch.setattr(CE, "BUSY_S_PER_MB", 1000.0)
+    assert CE.export_need_s(mesh) > CE.GUARD_S
+    CE.after_run(ws, engine="snappy", result={"rc": 0}, bashrc=fake_foam, left_s=None)
+    assert seen["guard_s"] >= CE.export_need_s(mesh)
+
+
 def test_every_engine_run_writes_its_exports_before_it_goes_home(tmp_path, monkeypatch, fake_foam):
     import meshpipeline.engines.cfmesh.foam_exec as FX
     import meshpipeline.engines.dispatch as D
