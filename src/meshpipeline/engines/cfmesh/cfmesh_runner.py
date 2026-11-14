@@ -362,10 +362,12 @@ def fits_one_run(estimated_seconds: float) -> bool:
     return RUN_CAP_HEADROOM * float(estimated_seconds) <= run_ceiling_s()
 
 
-def machine_for_plan(workspace, plan: dict | None) -> dict:
+def machine_for_plan(workspace, plan: dict | None, *, user_cells: int = 0) -> dict:
     """RUN-5 FOR cfMesh: where the case written in `workspace` runs, from its run plan - the Cloud
     Run job, or (its estimated time with the margin past the job's wall) the smallest VM, which has
-    no such wall. Written into the workspace (contracts/mesh_machine) and returned."""
+    no such wall. RUN-9: a cell count the USER asked for (`user_cells`, their budget) past the
+    standard machine's runs on the VM whose memory carries it. Written into the workspace
+    (contracts/mesh_machine) and returned."""
     from meshpipeline.contracts import mesh_machine as MM
     from meshpipeline.contracts.native_time import CLOUD_RUN_WALL_S
     # THE FILES IT WILL WRITE, from the plan (RUN-7): the machine's disk - and the Cloud Run job's
@@ -376,6 +378,9 @@ def machine_for_plan(workspace, plan: dict | None) -> dict:
         cells = 0
     decision = MM.choose(process_gib=0.0, workspace_gib=cells * MM.FLOW_FILE_BYTES_PER_CELL / 2**30,
                          why="cfMesh run plan")
+    if int(user_cells or 0) > MM.normal_cells():
+        # RUN-9: the user's own count past the standard machine's cells runs on a VM that carries it
+        decision = MM.for_cells(max(int(user_cells), cells), why="the cell count asked for")
     seconds = (plan or {}).get("estimated_seconds")
     decision = MM.for_time(decision, planned_s=float(seconds) if seconds else None,
                            wall_s=float(CLOUD_RUN_WALL_S))
@@ -605,7 +610,10 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
         strategy = CR.cfmesh_strategy(_ask, strategy, length_m=L)
         if _ask.user_budget() or _ask.floor is not None:
             import meshpipeline.settings.policy as _polr
-            cell_budget = _ask.budget(int(cell_budget or _polr.CELL_HARD_LIMIT))
+            from meshpipeline.contracts import mesh_machine as _MM
+            # CFDREQ-3 x RUN-9: the user's count up to the largest machine - a plan past the standard machine's
+            # cells runs on a bigger one (machine_for_plan)
+            cell_budget = _ask.budget(int(cell_budget or _polr.CELL_HARD_LIMIT), hard=_MM.ceiling_cells())
 
     # maxCellSize = COARSE background cell. factor is (largest extent / cell);
     # higher factor = finer background. cfMesh refines DOWN from this, so a
@@ -859,8 +867,10 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
         CR.say_sync(ws, _ask.lines())
     _plan_path = ws / RUN_PLAN_FILE
     # WHERE IT RUNS (RUN-5): a plan whose time passes the Cloud Run job's wall goes to a VM before
-    # anything is made coarser
-    machine_for_plan(ws, plan)
+    # anything is made coarser - and (RUN-9) a count the user asked for past the standard machine's
+    # cells runs on a VM that carries them
+    machine_for_plan(ws, plan, user_cells=int(cell_budget or 0) if _ask is not None and (
+        _ask.user_budget() or _ask.floor is not None) else 0)
     if plan is not None:
         _plan_path.write_text(json.dumps({k: v for k, v in plan.items() if k != "wall_cell"}))
     else:

@@ -4595,6 +4595,45 @@
   "roots": []
  },
  {
+  "context": "engines/mesh_requirements.py::asks_nothing::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/mesh_requirements.py",
+  "qualname": "asks_nothing",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/mesh_requirements.py::asks_nothing::search#2|NotAPublisher|not-a-publisher|",
+  "path": "engines/mesh_requirements.py",
+  "qualname": "asks_nothing",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "_MESH_TERMS",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/mesh_requirements.py::asks_nothing::search#3|NotAPublisher|not-a-publisher|",
+  "path": "engines/mesh_requirements.py",
+  "qualname": "asks_nothing",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 3,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "engines/mesh_requirements.py::kind_in_words::search#1|NotAPublisher|not-a-publisher|",
   "path": "engines/mesh_requirements.py",
   "qualname": "kind_in_words",
