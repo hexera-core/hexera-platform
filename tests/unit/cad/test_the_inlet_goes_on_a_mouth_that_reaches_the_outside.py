@@ -15,10 +15,13 @@ from __future__ import annotations
 from meshpipeline.cad.scout import Opening, _name_openings
 
 
-def _opening(area_mm2: float, centroid, *, clear_ahead: bool) -> Opening:
+def _opening(area_mm2: float, centroid, *, clear_ahead: bool, measured: bool = True) -> Opening:
+    """`measured` false is the triangle-mesh path, where nobody measured whether the mouth reaches
+    the outside and `clear_ahead` is only an alias for on_extremity."""
     return Opening(face_index=-1, kind="ring", centroid=tuple(v * 1e-3 for v in centroid),
                    normal=(1.0, 0.0, 0.0), area=area_mm2 * 1e-6, wh=(0.0, 0.0),
-                   clear_ahead=clear_ahead, on_extremity=True)
+                   clear_ahead=clear_ahead, on_extremity=True,
+                   reaches_outside=clear_ahead if measured else None)
 
 def test_the_inlet_is_never_proposed_on_a_mouth_sealed_inside_the_assembly():
     """MEASURED on this plate: three mouths, and the widest of them is an 11.8 mm junction sealed
@@ -72,3 +75,79 @@ def test_two_mouths_put_the_inlet_on_the_one_that_reaches_the_outside():
     low = _opening(50.27, [0.0, 0.0, 0.0], clear_ahead=True)
     high = _opening(50.27, [100.0, 0.0, 0.0], clear_ahead=True)
     assert _name_openings([high, low])[0] is low
+
+
+# WHAT THE FIRST VERSION OF THE RULE GOT WRONG. It read `clear_ahead`, which does not mean the same
+# thing at the three producers that set it, so it reordered the inlet on parts where nobody had
+# measured whether a mouth reaches the outside.
+
+def test_an_unmeasured_mouth_neither_sinks_nor_rises():
+    """cad/scout_mesh._opening sets `clear_ahead=on_extremity` - literally, in the constructor -
+    and on_extremity is "this mouth's own normal reaches the part's BOX within 3% of the
+    diagonal". A header whose feed stub ends short of the box in its own axis, because a smaller
+    branch reaches further, is false by that reading and is wide open in fact. The rule read it as
+    sealed and moved the inlet off the feed onto a 10 mm branch."""
+    feed = _opening(78.54, [90.0, 0.0, 0.0], clear_ahead=False, measured=False)
+    branch_a = _opening(78.54, [0.0, 0.0, 60.0], clear_ahead=True, measured=False)
+    branch_b = _opening(78.54, [0.0, 0.0, 59.0], clear_ahead=True, measured=False)
+    named = _name_openings([feed, branch_a, branch_b])
+    assert named[0] is feed, (
+        "an unmeasured mouth was demoted, so the inlet moved off the feed and onto a branch")
+    assert [o.name for o in named] == ["inlet", "outlet_1", "outlet_2"]
+
+
+def test_two_unmeasured_mouths_are_not_swapped():
+    """The two-mouth branch swaps inlet and outlet outright, and it swapped on the same unmeasured
+    value. Which way that lands on a given part is luck, not measurement - and on a two-mouth cold
+    plate the two directions are the whole answer, so the swap may only fire on a mouth somebody
+    really did ray."""
+    low = _opening(50.27, [0.0, 0.0, 0.0], clear_ahead=False, measured=False)
+    high = _opening(50.27, [100.0, 0.0, 0.0], clear_ahead=True, measured=False)
+    named = _name_openings([low, high])
+    assert named[0] is low and low.role == "inlet", (
+        "with nothing measured, the lower mouth stays the inlet - the rule may not swap on a "
+        "value nobody took")
+
+
+def test_a_measured_mouth_still_decides_it():
+    """The fix must not cost the behaviour the plate was measured on: where the scout really did
+    ray the mouth against the part, the sealed one still sinks."""
+    sealed = _opening(109.36, [65.92, 33.45, 75.41], clear_ahead=False, measured=True)
+    real_a = _opening(50.27, [99.88, 54.68, 43.31], clear_ahead=True, measured=True)
+    real_b = _opening(50.27, [89.34, 54.68, 77.39], clear_ahead=True, measured=True)
+    named = _name_openings([sealed, real_a, real_b])
+    assert named[0] is not sealed and named[-1] is sealed
+    assert [o.role for o in named] == ["inlet", "outlet", "outlet"]
+
+
+def test_a_mixed_pool_sinks_only_the_one_that_was_measured_sealed():
+    """Unknown must not be treated as sealed, and must not be treated as open either."""
+    unknown = _opening(109.36, [0.0, 0.0, 0.0], clear_ahead=False, measured=False)
+    sealed = _opening(80.0, [10.0, 0.0, 0.0], clear_ahead=False, measured=True)
+    reaching = _opening(50.27, [20.0, 0.0, 0.0], clear_ahead=True, measured=True)
+    named = _name_openings([unknown, sealed, reaching])
+    assert named[-1] is sealed, "only the MEASURED sealed mouth sinks"
+    assert named[0] is unknown, "and the unmeasured one keeps the order it came in with"
+
+
+def test_the_bounded_ray_stops_at_the_assembly_box():
+    """cad/fluid_volume._port rayed the mouth against a compound of EVERY solid and loose face in
+    the file, unbounded, so a mouth open to atmosphere that points across the file at the bracket
+    it bolts to read as sealed. Beyond the box the ray has left the assembly and what it meets
+    cannot seal the mouth."""
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCP.gp import gp_Pnt
+
+    from meshpipeline.cad.fluid_volume import _meets
+
+    # the far part: a 10 mm cube whose near face is 200 mm along +x from the mouth
+    far = BRepPrimAPI_MakeBox(gp_Pnt(0.200, -0.005, -0.005), 0.010, 0.010, 0.010).Shape()
+    mouth, normal = (0.0, 0.0, 0.0), (1.0, 0.0, 0.0)
+
+    assert _meets(far, mouth, normal, 1e-6), (
+        "unbounded, the ray finds the far part - this is what the old call asked")
+    assert not _meets(far, mouth, normal, 1e-6, limit=0.005), (
+        "bounded at a box that ends 5 mm ahead, the mouth is open to atmosphere: a part 200 mm "
+        "away, outside this one's own box, cannot seal it")
+    assert _meets(far, mouth, normal, 1e-6, limit=0.5), (
+        "and a limit that really does reach the far part still finds it")

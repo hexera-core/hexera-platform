@@ -1095,11 +1095,19 @@ def _port(k: int, cap: _Cap, faces: list, region, lo, hi, diag, parts) -> Port:
     t_edge = min(steps) if steps else 0.0
     return Port(cap=k, faces=faces, area=area, centroid=centroid, normal=normal,  # type: ignore[arg-type]
                 hole=max(hole, area), wh=wh, on_extremity=t_edge <= 0.03 * diag,
-                clear_ahead=not _meets(parts, centroid, normal, 1e-4 * diag))
+                # BOUNDED AT THE BOX. `parts` is a compound of every solid and loose face in the
+                # file, so an unbounded ray answered "does anything in this assembly lie anywhere
+                # along this normal" - not "does this mouth reach the outside". A mouth open to
+                # atmosphere that happens to point across the file at the bracket it bolts to, or
+                # at the cross-over tube, read as sealed. Past `t_edge` the ray has left the
+                # assembly's own box, and what it meets out there cannot seal this mouth.
+                clear_ahead=not _meets(parts, centroid, normal, 1e-4 * diag, limit=t_edge))
 
 
-def _meets(parts, origin, direction, skip: float) -> bool:
-    """Whether a ray from `origin` along `direction` meets any of the parts beyond `skip`."""
+def _meets(parts, origin, direction, skip: float, limit: float = 0.0) -> bool:
+    """Whether a ray from `origin` along `direction` meets any of the parts beyond `skip` - and,
+    when `limit` is positive, before `limit`. An unbounded ray (limit <= 0) answers a different
+    question than "is this mouth sealed": see the caller."""
     from OCP.BRepIntCurveSurface import BRepIntCurveSurface_Inter
     from OCP.gp import gp_Dir, gp_Lin, gp_Pnt
 
@@ -1108,7 +1116,8 @@ def _meets(parts, origin, direction, skip: float) -> bool:
     ray = BRepIntCurveSurface_Inter()
     ray.Init(parts, gp_Lin(gp_Pnt(*origin), gp_Dir(*direction)), 1e-9)
     while ray.More():
-        if ray.W() > skip:
+        w = ray.W()
+        if w > skip and (limit <= 0.0 or w < limit):
             return True
         ray.Next()
     return False

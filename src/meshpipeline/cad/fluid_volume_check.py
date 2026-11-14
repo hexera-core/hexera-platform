@@ -251,6 +251,10 @@ def _openings(proposed: list) -> tuple[list[dict], dict[int, int]]:
         op = Opening(face_index=-1, kind="ring", centroid=_xyz([v * 1e-3 for v in o["centroid_mm"]]),
                      normal=_xyz(o["normal"]), area=hole, wh=wh, clear_ahead=bool(o.get("clear_ahead", True)),
                      on_extremity=bool(o.get("on_extremity")), outer_wh=wh,
+                     # MEASURED on this path (fluid_volume._port rays the mouth against the other
+                     # parts, bounded at the assembly's box), so the naming rule may act on it -
+                     # but only where the port record actually carried the answer.
+                     reaches_outside=(bool(o["clear_ahead"]) if "clear_ahead" in o else None),
                      filled=max(hole - area, 0.0) if hole - area > 0.01 * hole else 0.0)
         pool.append(op)
         where[id(op)] = k

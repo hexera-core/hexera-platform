@@ -201,6 +201,17 @@ class Opening:
     role: str = ""
     confidence: float = 0.0
     sticker: int = 0          # 1..n in the order proposed; the number on the picture
+    #: DOES THIS MOUTH REACH THE OUTSIDE - measured, or None when nobody measured it.
+    #:
+    #: `clear_ahead` cannot answer that, because it does not mean the same thing at each producer.
+    #: Here it is what its name says: a ray from the mouth that meets nothing of the part. On the
+    #: triangle-mesh path it is a hard alias for `on_extremity` (scout_mesh._opening), which is
+    #: "this mouth's own normal reaches the part's BOX within 3% of the diagonal" - a feed stub
+    #: ending 10 mm short of the box because a smaller branch reaches further is sealed by that
+    #: reading, and it is not. So the naming rule below reads THIS, and None neither promotes a
+    #: mouth nor demotes one: a rule that reorders the inlet has to act on a measurement somebody
+    #: actually took.
+    reaches_outside: bool | None = None
     #: the face's outer extent (for a ring, around the hole): what tells a flange band, which
     #: sits exactly inside the next band's hole, from a coaxial fitting's port, which leaves a gap
     outer_wh: tuple[float, float] = (0.0, 0.0)
@@ -253,6 +264,9 @@ class Opening:
             "area_m2": round(self.area, 9 + 2 * (d - 2)),
             "area_mm2": round(self.area * mm * mm, d + (d - 2)),
             "on_extremity": self.on_extremity, "clear_ahead": self.clear_ahead,
+            # None travels as None: "nobody measured whether this mouth reaches the outside" is
+            # not the same record as "it does not", and the naming rule tells them apart.
+            "reaches_outside": self.reaches_outside,
         }
         if self.shape == "circle":
             out["diameter_mm"] = round(self.equivalent_diameter * mm, d)
@@ -795,6 +809,8 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3, shape=None,
             if o.area < MIN_OPENING_FRACTION * largest:
                 break
             o.clear_ahead = clear_ahead(_add(o.centroid, o.normal, 0.001 * diag), o.normal, 0.0)
+            # measured HERE and only here on this path: a ray that meets nothing of the part
+            o.reaches_outside = o.clear_ahead
             o.rim_free = rim_is_free(faces[o.face_index], o.centroid, o.normal)
             depth = first_hit(o.centroid, _flip(o.normal), 0.001 * diag)
             o.depth = depth
@@ -1197,11 +1213,30 @@ def _name_openings(pool: list[Opening]) -> list[Opening]:
     and the lower one is the inlet; with more, the widest is the feed. The vision step and the
     user both get to overrule this - it only makes sure every pin has a name.
 
-    A MOUTH THAT DOES NOT REACH THE OUTSIDE IS NOT THE FEED. `clear_ahead` is false when nothing
-    of the part's outside lies ahead of the mouth along its own normal: it opens into another part
-    rather than into the air, and the fluid cannot be fed in through it. The scout already
-    measures this, already lowers that opening's confidence to 0.5 for it, and
-    `cad/fluid_volume_check` already prints a note about it on the same card.
+    A MOUTH THAT DOES NOT REACH THE OUTSIDE IS NOT THE FEED: it opens into another part rather
+    than into the air, and the fluid cannot be fed in through it. The scout already measures this,
+    already lowers that opening's confidence to 0.5 for it, and `cad/fluid_volume_check` already
+    prints a note about it on the same card.
+
+    IT READS `reaches_outside`, NOT `clear_ahead`, and the first version of this rule read
+    `clear_ahead` - which does not mean the same thing at each of the three producers that set it,
+    so the rule moved the inlet on parts nobody had measured:
+
+      - cad/scout (this file) measures it: a ray from the mouth that meets nothing of the part.
+        That is the meaning the rule was written for and the one the plate below was measured on.
+      - cad/scout_mesh._opening sets `clear_ahead=on_extremity` - a hard alias for "this mouth's
+        normal reaches the part's BOX within 3% of the diagonal". A header whose feed stub ends
+        short of the box because a smaller branch reaches further in that axis is sealed by that
+        reading and is not sealed at all, and the rule then took the inlet off the feed and put it
+        on a branch. That path now leaves `reaches_outside` None.
+      - cad/fluid_volume._port rays against a compound of EVERY solid and loose face in the file,
+        which answered "does anything in this assembly lie anywhere along this normal". A mouth
+        open to atmosphere pointing across the file at the bracket it bolts to read as sealed, and
+        on a two-mouth plate the swap below then inverted inlet and outlet. That ray is now
+        bounded at the assembly's own box, where the question stops being answerable by geometry
+        outside it.
+
+    None means nobody measured it, and it neither promotes a mouth nor demotes one.
 
     MEASURED on ColdPlateAssembly_CLEAN.step, session eb22296d, 2026-11-13. Three mouths: an
     11.8 mm junction sealed inside the assembly (`clear_ahead` false) and the two real 8 mm hose
@@ -1221,13 +1256,14 @@ def _name_openings(pool: list[Opening]) -> list[Opening]:
     mouth reaches the outside, or none does, nothing moves at all."""
     if not pool:
         return []
-    # a stable sort, so "the widest is the feed" still holds inside each group
-    pool = sorted(pool, key=lambda o: not o.clear_ahead)
+    # a stable sort, so "the widest is the feed" still holds inside each group. Only a mouth
+    # MEASURED not to reach the outside sinks; None is unmeasured and stays where it was.
+    pool = sorted(pool, key=lambda o: o.reaches_outside is False)
     if len(pool) == 2:
         a, b = pool
         axis = max(range(3), key=lambda k: abs(a.centroid[k] - b.centroid[k]))
         first, second = (a, b) if a.centroid[axis] <= b.centroid[axis] else (b, a)
-        if not first.clear_ahead and second.clear_ahead:
+        if first.reaches_outside is False and second.reaches_outside is True:
             first, second = second, first
         first.name, first.role = "inlet", "inlet"
         second.name, second.role = "outlet", "outlet"
