@@ -173,6 +173,76 @@ def test_a_count_and_a_size_being_replaced_too_and_a_reading_of_only_the_old_val
     assert req["layers"]["count"] is None and len(dropped) == 1 and "the value your words replace" in dropped[0]
 
 
+@pytest.mark.parametrize("quote,ask,old", [
+    ("change it from 2 mm to 5 mm", 5, 2), ("go from 8 mm to 3 mm", 3, 8), ("from 8 mm to 3 mm", 3, 8),
+    ("increase the size from 2 mm to 5 mm", 5, 2), ("bring it down from 10 mm to 4 mm", 4, 10)])
+def test_from_one_value_to_another_is_a_change_when_the_words_change_it(quote, ask, old):
+    # a change verb before "from", or a value that goes DOWN (a range is written low to high): the first is replaced
+    for listed in ((ask, old), (old, ask)):
+        req, dropped, _na = _one(quote, sizes=[{"what": "global", "value": v, "unit": "mm", "quote": quote}
+                                               for v in listed])
+        assert req["sizes"]["global_mm"] == float(ask) and dropped == [], (quote, listed, req["sizes"], dropped)
+    assert set(MR.replaced_numbers(quote)) == {float(old)}
+
+
+@pytest.mark.parametrize("quote", ["element sizes from 2 to 5 mm", "element sizes from 2 mm to 5 mm",
+                                   "keep the cells ranging from 2 to 5 mm", "sizes between 2 and 5 mm",
+                                   "element size 2-5 mm", "change the sizes to range from 2 to 5 mm"])
+def test_a_range_keeps_both_ends(quote):
+    # "sizes from 2 to 5 mm" names no old value: the 2 is the smallest size asked for, never the one replaced
+    assert MR.replaced_numbers(quote) == []
+    req, dropped, _na = _one(quote, sizes=[{"what": "min_edge", "value": 2, "unit": "mm", "quote": quote},
+                                           {"what": "max_edge", "value": 5, "unit": "mm", "quote": quote}])
+    assert req["sizes"]["min_edge_mm"] == 2.0 and req["sizes"]["max_edge_mm"] == 5.0 and dropped == [], (req, dropped)
+
+
+# ------------------------------------------------------------------ NOTE-7: each entry is where it was written -
+def _three_notes(*said: str) -> str:
+    return MR.notes_text({"user_notes": [un.make(s, source=un.SOURCE_CHAT, turn=i + 1) for i, s in enumerate(said)]})
+
+
+def test_the_same_words_said_again_later_are_the_latest():
+    # "mesh at 5 mm", then "mesh at 8 mm", then "mesh at 5 mm" again: the final word is 5 mm
+    notes = _three_notes("mesh at 5 mm", "mesh at 8 mm", "mesh at 5 mm")
+    e5 = {"what": "global", "value": 5, "unit": "mm", "quote": "mesh at 5 mm"}
+    e8 = {"what": "global", "value": 8, "unit": "mm", "quote": "mesh at 8 mm"}
+    for sizes in ([e5, e8, e5], [e8, e5, e5], [e5, e5, e8], [e5, e8], [e8, e5]):
+        req, dropped, _na = _one(notes, sizes=[dict(e) for e in sizes])
+        assert req["sizes"]["global_mm"] == 5.0 and dropped == [], (sizes, req["sizes"])
+    # a layer count, a cell count and a quality limit said again read the same way
+    req, _d, _na = _one(_three_notes("5 layers", "8 layers", "5 layers"), layers=[
+        {"what": "count", "value": v, "unit": "none", "quote": f"{v} layers"} for v in (5, 8, 5)])
+    assert req["layers"]["count"] == 5
+    req, _d, _na = _one(_three_notes("2M cells", "4M cells", "2M cells"), counts=[
+        {"what": "target", "value": v * 1e6, "quote": f"{v}M cells"} for v in (2, 4)])
+    assert req["cells"]["target"] == 2e6
+    lim = {"measure": "non_orthogonality", "shape": "any", "direction": "max", "allowed_percent": 0, "outer": 0,
+           "has_outer": False}
+    req, _d, _na = _one(_three_notes("non-ortho under 70", "non-ortho under 65", "non-ortho under 70"), limits=[
+        {**lim, "target": t, "quote": f"non-ortho under {t}"} for t in (70, 65, 70)])
+    assert [x["target"] for x in req["limits"]] == [70.0]
+
+
+def test_each_entry_keeps_its_own_place_and_note():
+    # the words of an earlier ask inside a later sentence are not where that ask was written
+    req, dropped, _na = _one(_three_notes("5 layers", "make it 10 layers, not 5 layers"), layers=[
+        {"what": "count", "value": 5, "unit": "none", "quote": "5 layers"},
+        {"what": "count", "value": 10, "unit": "none", "quote": "make it 10 layers, not 5 layers"}])
+    assert req["layers"]["count"] == 10 and dropped == [], (req, dropped)
+    # nor is a number inside another number ("5 mm" is not in "0.5 mm")
+    req, _d, _na = _one(_three_notes("global 5 mm", "global 8 mm", "first layer 0.5 mm"), sizes=[
+        {"what": "global", "value": 8, "unit": "mm", "quote": "global 8 mm"},
+        {"what": "global", "value": 5, "unit": "mm", "quote": "5 mm"}])
+    assert req["sizes"]["global_mm"] == 8.0
+    # and two counts in different notes with the same words are read as two notes (a change of mind, kept
+    # quietly), never as one note saying both
+    req, dropped, _na = _one(_three_notes("at least 5M cells", "at most 2M cells", "at least 5M cells"), counts=[
+        {"what": "floor", "value": 5e6, "quote": "at least 5M cells"},
+        {"what": "ceiling", "value": 2e6, "quote": "at most 2M cells"},
+        {"what": "floor", "value": 5e6, "quote": "at least 5M cells"}])
+    assert req["cells"]["floor"] == 5e6 and req["cells"]["ceiling"] is None and dropped == [], (req, dropped)
+
+
 # ------------------------------------------------------------------ NOTE-8: a yes asks nothing -------------
 @pytest.mark.parametrize("said", ["the rest looks good", "the rest is right", "yes that's right", "looks good",
                                   "Everything else is fine, thanks!", "ok go ahead", "Perfect - that's all"])
