@@ -39,7 +39,7 @@ implied away.
 | OpenFOAM packages | `openfoam2412=2412.260127-1` | `ARG OPENFOAM_DEB_SHA256`, `ARG OPENFOAM_COMMON_DEB_SHA256` | `Dockerfile` |
 | Python runtime deps | exact `==` pins | pip resolution against those pins | `requirements/runtime.txt` |
 | Python build toolchain | pip/setuptools/wheel exact pins | same | `Dockerfile` |
-| Application wheel | built from the committed tree | Gate C provenance | `Dockerfile` |
+| Application wheel | built from the committed tree | Release validation provenance | `Dockerfile` |
 | fTetWild (FEA's last rung, mesh image only) | wildmeshing/fTetWild commit `8118f810…` fetched by full SHA; each dependency its CMake fetches (CLI11, Eigen, fmt, geogram, json, libigl, predicates, spdlog, oneTBB) checked against a reviewed full commit SHA after the configure step, and the set of them checked too | Git object identity (`ARG FTETWILD_COMMIT`, `ARG FTETWILD_DEPS`) | `Dockerfile` (`ftetwild-build`) |
 | MMG (FEA quality post-pass, mesh image only) | MmgTools/mmg v5.8.0 commit `4d8232c8…` fetched by full SHA and checked after checkout; no optional dependency, so nothing else is fetched | Git object identity (`ARG MMG_COMMIT`) | `Dockerfile` (`mmg-build`) |
 

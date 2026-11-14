@@ -1,4 +1,4 @@
-# Responsibility: Verify Gate C removes only its own labelled containers with their volumes, and never prunes.
+# Responsibility: Verify release validation removes only its own labelled containers with their volumes, and never prunes.
 from __future__ import annotations
 
 import shutil
@@ -11,7 +11,7 @@ import pytest
 REPO = Path(__file__).resolve().parents[3]
 VALIDATE = REPO / "devtools" / "release" / "validate.sh"
 
-#: The image Gate C's Postgres service uses. Chosen here because it declares a VOLUME, which is
+#: The image release validation's Postgres service uses. Chosen here because it declares a VOLUME, which is
 #: the whole point - a container with no VOLUME could not demonstrate the leak.
 VOLUME_DECLARING_IMAGE = "postgres:16-alpine"
 
@@ -150,7 +150,7 @@ def test_removing_a_container_with_v_takes_its_anonymous_volume_but_spares_named
     before = set(_d("volume", "ls", "-q").splitlines())
     assert subject_anon <= before and foreign_anon <= before and named in before
 
-    # THE OPERATION UNDER TEST - exactly what Gate C's cleanup now does.
+    # THE OPERATION UNDER TEST - exactly what release validation's cleanup now does.
     _d("rm", "-f", "-v", subject)
     reaper["containers"].remove(subject)
 

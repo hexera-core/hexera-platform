@@ -42,7 +42,7 @@ readiness completely; only the final push needs connectivity, and that is a sepa
 ## Pushing is a separate: human-authorized action
 
 Nothing in this repository pushes a branch, pushes a tag, publishes a wheel or creates a release.
-The only remote-capable command is `docker push` inside `devtools/release/publish.sh` (Gate C part
+The only remote-capable command is `docker push` inside `devtools/release/publish.sh` (release validation part
 two), which an operator runs deliberately. Creating the tag and pushing it are steps a person takes,
 with intent, after the gates are green.
 

@@ -131,7 +131,7 @@ def test_a_clean_fast_run_passes_and_runs_only_the_version_read(gate):
 def test_a_failed_required_check_still_fails_the_fast_profile(gate, fault, check):
     done = _validate(gate, RELEASE_VALIDATION_PROFILE="dev-fast", **fault)
     assert done.returncode == 1, done.stdout + done.stderr
-    assert "GATE C FAILED" in done.stdout
+    assert "RELEASE VALIDATION FAILED" in done.stdout
     assert "DEV RELEASE BUILD PASSED" not in done.stdout
     record = _record(gate)
     assert record["verdict"] == "failed"

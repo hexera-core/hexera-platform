@@ -62,7 +62,7 @@ fi
 # This used to submit a Cloud Build and then resolve the resulting tag to a digest, which meant
 # the mesh image that ran off-box was built from source at deploy time and had never been through
 # the native tiers. scripts/promote-release.sh writes MESH_IMAGE into the deployment env as the
-# digest of the exact image Gate C validated; this step only checks that it did.
+# digest of the exact image release validation passed; this step only checks that it did.
 # Only a job this run applies - one it creates, or one it created earlier and now refreshes -
 # consumes the image, so a deployment reusing a SUPPLIED job is not asked to have one.
 

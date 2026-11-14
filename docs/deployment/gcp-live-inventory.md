@@ -58,7 +58,7 @@ Everything runs in **`us-central1`**, zone **`us-central1-a`** where zonal.
   `{"status":"ok","version":"0.1"}` in ~180 ms.
 - Created 2026-08-30 10:04 UTC, generation 1, single revision `hexera-dev-api-00001-tmr` (Ready).
 - Image: `us-central1-docker.pkg.dev/hexera-dev/mesh/app@sha256:5a1c68f40387…`, tagged
-  `1445b8b71902` — the digest Gate C validated and `release-publish` recorded.
+  `1445b8b71902` — the digest release validation passed and `release-publish` recorded.
   **Corrected 2026-08-31:** this section previously named the untagged `9175191354ce…`. That was
   wrong. Re-read from `gcloud run services describe` twice since, the service has always run the
   tagged, release-recorded digest. The untagged digest exists in the registry but is not deployed.

@@ -53,8 +53,8 @@ The release machinery already exists locally as four gates in the `Makefile`:
 | --- | --- | --- |
 | A | `make check-fast` | lint + import sweep + graph wiring + config certification, seconds |
 | B | `make check` | the full blocking suite — "may this commit produce a release?" |
-| C | `make release-validate` → `make release-publish` | build the images once, validate *those* artifacts, then push the exact validated images and record their registry digests into `deploy/output/release.json` |
-| D | `make mesh-preflight` | read-only: may the Gate C image be promoted to this project? |
+| release validation | `make release-validate` → `make release-publish` | build the images once, validate *those* artifacts, then push the exact validated images and record their registry digests into `deploy/output/release.json` |
+| D | `make mesh-preflight` | read-only: may the image release validation passed be promoted to this project? |
 
 `deploy/gcp/scripts/deploy.sh` is a 12-stage idempotent provisioner that is **interactive by
 default** — it prints a plan and requires the operator to type the exact project ID — with
@@ -81,7 +81,7 @@ ambiguous target pinned explicitly. That design is already CI-shaped; nothing ca
   `prod` environment's required reviewers, the provider's repository attribute condition, and
   Cloud SQL deletion protection. `roles/owner`, `resourcemanager.projectIamAdmin` and
   `iam.serviceAccountAdmin` remain absent, so a compromised run still cannot widen itself.
-- **A `deploy.yml` workflow** that runs Gate C on the merge commit, pushes the validated
+- **A `deploy.yml` workflow** that runs release validation on the merge commit, pushes the validated
   digests, then runs `deploy.sh` with `DEPLOY_NONINTERACTIVE=1` and every target pinned.
 - **GitHub Environments** — `dev` auto-deploys on merge to `main`; `prod` requires a manual
   approval. This is where the deploy identity and any remaining config live.

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Responsibility: Gate C - build the deployable images once from this commit and validate those artifacts.
+# Responsibility: Release validation - build the deployable images once from this commit and validate those artifacts.
 # Owns: the verdict, computed from which required checks actually ran; only a pass can later be promoted.
 # Boundaries: it validates the built artifact, never the checkout, and writes only under deploy/output/.
 
-# GATE C - release-artifact validation.
+# RELEASE VALIDATION - build the release artifacts once and validate those.
 #
 # Builds the DEPLOYABLE images once from the current commit, proves THOSE ARTIFACTS work without
 # the source checkout, and records what was validated in deploy/output/release.json so a later
@@ -26,7 +26,7 @@
 #   - every native tier runs inside the image with ZERO bind mounts: fixtures are pushed into a
 #     STOPPED container with `docker cp`, so nothing on the host can shadow the installed package.
 #     `docker inspect` records Mounts=[] and Binds=null for each container as evidence;
-#   - in the full profile, the native-to-terminal matrix is MANDATORY. Gate C provisions its own
+#   - in the full profile, the native-to-terminal matrix is MANDATORY. Release validation provisions its own
 #     isolated Postgres, Redis and MinIO, health-checks them, runs the tier, and removes them from
 #     a trap. It cannot be skipped into a PASS.
 #
@@ -36,7 +36,7 @@
 #     console = Dockerfile target `console`   - the console-service web app
 #     admin   = Dockerfile target `admin`     - the admin-service web app
 # `app` is validated with BOTH entrypoints because both run from that one image in production.
-# (Gate C used to build a separate `api`-target image and validate that; nothing ever deployed it.)
+# (release validation used to build a separate `api`-target image and validate that; nothing ever deployed it.)
 #
 # VERDICT. Every check is required or not; the verdict is computed, never asserted:
 #     passed      every required check passed
@@ -94,7 +94,7 @@ bad()   { printf '   %s✗%s %s\n' "${c_red}" "${c_off}" "$1"; }
 warnp() { printf '   %s•%s %s\n' "${c_yel}" "${c_off}" "$1"; }
 note()  { printf '   %s%s%s\n' "${c_dim}" "$1" "${c_off}"; }
 
-# Unique to THIS run. Every container and network Gate C creates carries it as a label, and
+# Unique to THIS run. Every container and network release validation creates carries it as a label, and
 # cleanup removes only what carries it - a developer's running stack is never touched.
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 NET="amp-rel-${STAMP}-net"
@@ -149,7 +149,7 @@ cleanup() {
   ids="$(docker ps -aq --filter "label=amp-release=${STAMP}" 2>/dev/null)"
   # -v REMOVES EACH CONTAINER'S ANONYMOUS VOLUMES WITH IT. postgres, redis and minio each declare
   # a VOLUME (/var/lib/postgresql/data, /data, /data), so every run created three anonymous
-  # volumes and `docker rm -f` left all three behind - a measured leak of 3 volumes per Gate C run.
+  # volumes and `docker rm -f` left all three behind - a measured leak of 3 volumes per release validation run.
   #
   # This is ownership-safe by Docker's own semantics, not by anything this script infers: `-v`
   # removes only volumes ANONYMOUSLY attached to the container being removed. A named volume
@@ -205,7 +205,7 @@ rm -rf "${WORK}/dist"
 # silently needs the network is a gate that cannot prove the artifact was built from this tree
 # alone. Default behaviour (isolation) is unchanged.
 # WHICH interpreter runs this gate. The repository virtualenv when it exists, else python3 - and a
-# caller may name one explicitly. `"${GATE_PY}"` was hardcoded at ten sites, so Gate C could
+# caller may name one explicitly. `"${GATE_PY}"` was hardcoded at ten sites, so release validation could
 # not run at all on a checkout that had not run `make setup`: it reported "wheel build failed",
 # which reads like a defect in the artifact rather than the absence of an interpreter. This is the
 # same ownership `deploy-preflight.sh` already has under PREFLIGHT_PYTHON.
@@ -337,7 +337,7 @@ PY
         printf 'DEV RELEASE BUILD PASSED%s - dev-fast artifact record written to deploy/output/release.json\n' \
           "${c_off}"
       else
-        printf 'GATE C PASSED%s - artifacts validated and recorded in deploy/output/release.json\n' \
+        printf 'RELEASE VALIDATION PASSED%s - artifacts validated and recorded in deploy/output/release.json\n' \
           "${c_off}"
       fi
       printf '   the record is state=validated and NOT yet promotable: nothing has been published,\n'
@@ -345,11 +345,11 @@ PY
       printf '   next: %smake release-publish%s\n\n' "${c_bold}" "${c_off}"
       exit 0 ;;
     incomplete)
-      printf '%sGATE C INCOMPLETE%s - a required check was skipped or never ran\n' "${c_yel}" "${c_off}"
+      printf '%sRELEASE VALIDATION INCOMPLETE%s - a required check was skipped or never ran\n' "${c_yel}" "${c_off}"
       printf '   this record can never be promoted. See deploy/output/release.json.\n\n'
       exit 1 ;;
     *)
-      printf '%sGATE C FAILED%s - which checks failed, and why, is recorded in\n' \
+      printf '%sRELEASE VALIDATION FAILED%s - which checks failed, and why, is recorded in\n' \
         "${c_red}" "${c_off}"
       printf '   deploy/output/release.json\n\n'
       KEEP_WORK=1
@@ -500,7 +500,7 @@ if [ -n "${IMAGE_ID[console]}" ]; then
   # relay must answer a job-stream upgrade itself (502, "could not be reached") - Next alone drops
   # the socket with no reply, which is what reached browsers as a 503 on every live stream.
   _cid="$(docker run --rm -d --label "amp-release=${STAMP}" -P \
-            -e AUTH_SECRET=gate-c-not-a-real-secret \
+            -e AUTH_SECRET=release-validation-not-a-real-secret \
             -e HEXERA_API_BASE_URL=http://127.0.0.1:9 \
             "${IMAGE_TAG[console]}" 2>/dev/null || true)"
   if [ -n "${_cid}" ]; then
@@ -513,7 +513,7 @@ if [ -n "${IMAGE_ID[console]}" ]; then
     _relay="$(curl -s --http1.1 --max-time 10 -o - -w ' %{http_code}' \
       -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' \
       -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
-      "http://127.0.0.1:${_port}/api/v1/ws/00000000-0000-4000-8000-000000000000/stream?ticket=gate-c&since=0" \
+      "http://127.0.0.1:${_port}/api/v1/ws/00000000-0000-4000-8000-000000000000/stream?ticket=release-validation&since=0" \
       2>/dev/null || true)"
     docker rm -f -v "${_cid}" >/dev/null 2>&1 || true
     if [ "${_ok}" = "0" ]; then

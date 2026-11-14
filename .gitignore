@@ -24,7 +24,7 @@ tests/fixtures/external/geometry/*.vtp
 tests/fixtures/external/geometry/*.VTP
 
 # Runtime roots the application itself writes at their configured defaults (DATA_ROOT,
-# WORKSPACE_BASE), and the deployment state Gate C and Gate D write (release.json,
+# WORKSPACE_BASE), and the deployment state release validation and Gate D write (release.json,
 # deployment.json). Redirecting these would move a real runtime or deployment artifact, not a cache.
 data/
 workspaces/

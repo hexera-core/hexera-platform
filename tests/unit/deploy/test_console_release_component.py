@@ -1,4 +1,4 @@
-# Responsibility: Verify Gate C builds, smokes and records the console alongside app and mesh.
+# Responsibility: Verify release validation builds, smokes and records the console alongside app and mesh.
 # Boundaries: it reads the validation script's declarations; it runs no docker build.
 from __future__ import annotations
 

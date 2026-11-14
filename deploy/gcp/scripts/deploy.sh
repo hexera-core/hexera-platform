@@ -203,7 +203,7 @@ else
 fi
 
 stage "Promote the validated release artifact (no build - see docs/development/gates.md)"
-# Deployment does NOT build. It promotes the exact images Gate C validated and release-publish
+# Deployment does NOT build. It promotes the exact images release validation passed and release-publish
 # pushed, identified by immutable registry digests read from deploy/output/release.json. The
 # previous step here submitted a Cloud Build, so the bytes that shipped were built in the cloud
 # from source and were never the bytes that were validated.
