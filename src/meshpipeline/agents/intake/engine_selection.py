@@ -308,6 +308,29 @@ def user_chose(engine: str, user_texts) -> bool:
     return False
 
 
+def user_leans_to(engine: str, user_texts) -> bool:
+    """Whether the user's latest word on the engine is `engine`: `user_chose`, or a message that is the
+    engine's name and at most one other word ("hmm, actually cfMesh"). With no engine question any more
+    (VIA_AUTO), that word is not overruled by the model's pick; a mention in a sentence ("I used
+    snappyHexMesh last time") still is no choice."""
+    if user_chose(engine, user_texts):
+        return True
+    want = (engine or "").strip().lower()
+    for said in reversed(tuple(user_texts or ())):
+        said = str(said or "")
+        named = _vocab.engines_named_in(said, "")
+        if not named:
+            if declines(want, said):
+                return False
+            continue
+        if named != [want] or "?" in said or declines(want, said):
+            return False
+        rest = [w for w in _tokens(want, said, keep_engine=True)
+                if w != _ENGINE_WORD and w not in _FILLER and w not in _CHOICE_PLAIN]
+        return len(rest) <= 1
+    return False
+
+
 #: What may come before an engine's name to choose it: the choice verbs, and "make it", "switch
 #: to", "change to", "try", "go ahead with".
 _CHOOSING = _CHOICE | frozenset({"make", "switch", "change", "try", "goahead"})

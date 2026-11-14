@@ -547,7 +547,7 @@ class IntakeToolExecutor:
             # THE USER'S OWN LAST WORD ON THE ENGINE WINS over the model's proposal: with no question
             # asked any more, a model that proposes snappyHexMesh after "actually, cfMesh" would
             # otherwise select it over the user's words
-            theirs = next((e for e in self._engines if e != eng and es.user_chose(e, st.user_texts)), None)
+            theirs = next((e for e in self._engines if e != eng and es.user_leans_to(e, st.user_texts)), None)
             if theirs is not None:
                 logger.info("Intake: the model proposed %s; the user chose %s - job_id=%s",
                             eng, theirs, self._job_id)
