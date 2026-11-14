@@ -147,9 +147,11 @@ def upload_result(output_uri: str, workspace: str, result: dict) -> None:
             import logging
             logging.getLogger(__name__).warning("keeping the big files in the bucket failed; the "
                                                 "workspace goes home whole", exc_info=True)
+    from meshpipeline.contracts.mesh_execution import EXCHANGE_GZIP_LEVEL
     with tempfile.TemporaryDirectory(prefix="mesh_out_", dir=str(ws.parent)) as tmp:
         archive = pathlib.Path(tmp) / "output.tar.gz"
-        with tarfile.open(name=str(archive), mode="w:gz") as tf:
+        with tarfile.open(name=str(archive), mode="w:gz",
+                          compresslevel=EXCHANGE_GZIP_LEVEL) as tf:
             # Same rule as the input side: children only, so no "." member is written. The local
             # worker extracts this through the identical safe_extract, so a "." root here fails
             # the run just as surely - one step later, after the mesh has already been paid for.

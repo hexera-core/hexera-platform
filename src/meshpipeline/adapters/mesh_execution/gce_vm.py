@@ -69,7 +69,10 @@ docker-credential-gcr configure-docker --registries="$REG" >/dev/null 2>&1 || tr
 for i in 1 2 3; do docker pull "$IMG" && break; sleep 15; done
 T=$(get instance/attributes/timeout); T=${T:-0}
 END=$(( $(date +%s) + T + __MARGIN__ ))
-docker run -d --rm --name mesh \
+# --cpus: every core of the VM, stated as the container's CPU QUOTA. The mesher sizes its parallel
+# work by that quota (engines/determinism.snappy_ranks); without one it fell back to MESH_THREADS (8)
+# and snappyHexMesh ran 8 ranks on a 16-, 32- or 64-core VM. Same machine type, same count.
+docker run -d --rm --name mesh --cpus "$(nproc)" \
   -e INPUT_URI="$(get instance/attributes/input-uri)" \
   -e OUTPUT_URI="$(get instance/attributes/output-uri)" \
   -e ENGINE="$(get instance/attributes/engine)" \

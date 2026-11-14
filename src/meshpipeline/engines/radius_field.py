@@ -88,15 +88,11 @@ def local_radius(points: np.ndarray, faces: np.ndarray, interior_point, r_lo: fl
     f = np.asarray(faces, dtype=np.int64)
     ring = _vertex_rings(f, len(pts))
     fold = FOLD_REACH * _mean_edge(pts, f)
-    r = np.full(len(pts), np.nan)
-    first = np.full(len(pts), np.nan)
     eps = 1e-3 * r_lo
-    for i in range(len(pts)):
-        hits.Reset()
-        ids.Reset()
-        if obb.IntersectWithLine(pts[i] - n[i] * eps, pts[i] - n[i] * reach, hits, ids) \
-                and hits.GetNumberOfPoints():
-            first[i], r[i] = _first_chord(pts[i], -n[i], hits, ids, f, fn, ring[i], fold[i])
+    # one ray per point along its inward normal, on every core the run may use
+    # (engines/radius_chords: the same rays into the same tree, so the same readings as one core)
+    from meshpipeline.engines.radius_chords import cast_all
+    first, r = cast_all(np.asarray(mesh.points, dtype=float), f, n, fn, ring, fold, eps, reach)
     # SHARP EDGES ARE READ ALONG EACH SIDE'S OWN NORMAL. A point on a sharp edge has an averaged
     # normal that points along neither face, and a SHORT narrow passage has no other points:
     # an orifice bore 9 mm long, a sharp throat, a step's lip carry vertices only on their two
