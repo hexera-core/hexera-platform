@@ -1195,13 +1195,40 @@ def _reaches(outer_wh, hole_wh) -> bool:
 def _name_openings(pool: list[Opening]) -> list[Opening]:
     """A first guess at roles: two openings are ordered along the axis that separates them most
     and the lower one is the inlet; with more, the widest is the feed. The vision step and the
-    user both get to overrule this - it only makes sure every pin has a name."""
+    user both get to overrule this - it only makes sure every pin has a name.
+
+    A MOUTH THAT DOES NOT REACH THE OUTSIDE IS NOT THE FEED. `clear_ahead` is false when nothing
+    of the part's outside lies ahead of the mouth along its own normal: it opens into another part
+    rather than into the air, and the fluid cannot be fed in through it. The scout already
+    measures this, already lowers that opening's confidence to 0.5 for it, and
+    `cad/fluid_volume_check` already prints a note about it on the same card.
+
+    MEASURED on ColdPlateAssembly_CLEAN.step, session eb22296d, 2026-11-13. Three mouths: an
+    11.8 mm junction sealed inside the assembly (`clear_ahead` false) and the two real 8 mm hose
+    mouths. The junction is the widest, so "the widest is the feed" made it the inlet and called
+    both real mouths outlets - with the note "opening 1 opens into another part whose inside
+    reaches the outside some other way (a gap in it?)" printed directly above it.
+
+    AND THE RULE IS SYMMETRIC, because the first try at it was not. Protecting only the FEED put
+    sticker 1 on a real hose mouth and left the junction as the OUTLET - an outlet in the middle
+    of the metal, and the two then sat in the SAME piece of coolant, so the severed-circuit check
+    that had correctly refused this part stopped firing. A mouth that does not reach the outside
+    is not a port at all, in either direction, so the reaching mouths are ordered FIRST and the
+    naming is unchanged on top of that. Measured on the same plate, 2026-11-14: inlet and outlet
+    on the two real 8 mm mouths and the junction last.
+
+    The order within each group is the order the pool came in - widest first - so where every
+    mouth reaches the outside, or none does, nothing moves at all."""
     if not pool:
         return []
+    # a stable sort, so "the widest is the feed" still holds inside each group
+    pool = sorted(pool, key=lambda o: not o.clear_ahead)
     if len(pool) == 2:
         a, b = pool
         axis = max(range(3), key=lambda k: abs(a.centroid[k] - b.centroid[k]))
         first, second = (a, b) if a.centroid[axis] <= b.centroid[axis] else (b, a)
+        if not first.clear_ahead and second.clear_ahead:
+            first, second = second, first
         first.name, first.role = "inlet", "inlet"
         second.name, second.role = "outlet", "outlet"
         return [first, second]
