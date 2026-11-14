@@ -20,6 +20,7 @@ from meshpipeline.adapters.mesh_execution.exchange_coordinates import (
 )
 from meshpipeline.contracts.mesh_execution import (
     CANCELLED_BY_OWNER,
+    EXCHANGE_GZIP_LEVEL,
     MESH_CONTRACT_ENV,
     MESH_EXCHANGE_VERSION,
     PLATFORM_UPDATING_KEY,
@@ -101,7 +102,7 @@ def _tar_dir(path: Path) -> bytes:
     root = Path(path)
     payload = submission_payload_files(root)
     buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+    with tarfile.open(fileobj=buf, mode="w:gz", compresslevel=EXCHANGE_GZIP_LEVEL) as tf:
         if payload is None:
             from meshpipeline.contracts.mesh_execution import NATIVE_LOGS_DIR
             for child in sorted(root.iterdir()):
