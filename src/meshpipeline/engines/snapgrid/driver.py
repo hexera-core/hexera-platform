@@ -86,6 +86,8 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     # NO GUESSED TIME LIMIT (contracts/native_time): the run's cap is the WALL of the machine it is
     # on, and the mesher is watched for progress inside (runner.run_native_build); a run stopped at
     # the Cloud Run wall still working runs again, the same case, on a VM (RUN-5). It was 3,600 s.
+    from meshpipeline.agents.builder.driver_run import STOP_IDENTICAL_RERUN
+    from meshpipeline.contracts.mesh_execution import refused_identical_rerun
     from meshpipeline.contracts.native_time import run_off_the_wall
     engine = get_engine("snapgrid")
     result = await asyncio.to_thread(
@@ -93,6 +95,15 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         engine="snapgrid", job_id=job_id)
     # BEFORE the result is judged: a superseded generation must not accept it
     await run.fence("accept native mesh output")
+    if refused_identical_rerun(result):
+        # NOTHING WAS LAUNCHED: an earlier attempt of this run already ran this exact case to a
+        # verdict, so there is no mesher failure to report (see the conjugate driver, same seam).
+        logger.error("snapgrid: %s", result.get("guidance")
+                     or "an earlier attempt of this run already ran this exact case")
+        run.note_native_run(produced_usable_mesh=False)
+        await run.fence("deliver builder outcome")
+        return False, STOP_IDENTICAL_RERUN, run.outcome(
+            produced_deliverable=False, failure_marker=STOP_IDENTICAL_RERUN)
     ok = result.get("rc") == 0
     run.note_native_run(produced_usable_mesh=ok)
     if not ok:

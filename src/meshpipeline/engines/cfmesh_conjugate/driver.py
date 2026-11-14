@@ -299,11 +299,16 @@ def declared_port_names(workspace, plan: PL.ConjugatePlan) -> tuple[dict | None,
 async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublisher,
                 run: BuilderDriverRun, source_path: str = ""):
     from meshpipeline.agents.builder.driver_run import (
+        STOP_IDENTICAL_RERUN,
         STOP_REVIEWED_CASE_REPEATS,
         review_caused_retry,
     )
     from meshpipeline.cad.fluid_volume import surface_bounded
-    from meshpipeline.contracts.mesh_execution import note_native_pass, note_native_payload
+    from meshpipeline.contracts.mesh_execution import (
+        note_native_pass,
+        note_native_payload,
+        refused_identical_rerun,
+    )
     from meshpipeline.engines.cfmesh_conjugate.conjugate import ConjugateError
 
     ws = Path(workspace)
@@ -782,6 +787,17 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     result = await asyncio.to_thread(_run_off_the_wall, ws, job_id=job_id)
     # BEFORE the result is judged: a superseded generation must not accept it
     await run.fence("accept native mesh output")
+    if refused_identical_rerun(result):
+        # NOTHING WAS LAUNCHED. The seam refused this case because an earlier attempt of this run
+        # already ran it to a verdict. Judging it below as `rc != 0` announced the engine's own
+        # build failure for a mesher that never started - the marker that tells the next reader
+        # "the mesher stopped before it finished" - so the stop says what it is instead.
+        logger.error("conjugate: %s", result.get("guidance")
+                     or "an earlier attempt of this run already ran this exact case")
+        run.note_native_run(produced_usable_mesh=False)
+        await run.fence("deliver builder outcome")
+        return False, STOP_IDENTICAL_RERUN, run.outcome(
+            produced_deliverable=False, failure_marker=STOP_IDENTICAL_RERUN)
     ok = result.get("rc") == 0
     run.note_native_run(produced_usable_mesh=ok)
     if not ok:

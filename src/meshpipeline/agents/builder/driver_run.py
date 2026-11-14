@@ -145,6 +145,21 @@ TERMINAL_SUCCESS = "submit_mesh:success"
 #: attempt on it.
 STOP_REVIEWED_CASE_REPEATS = "reviewed_case_repeats"
 
+#: A driver's STOP, not a failure: this attempt authored, byte for byte, a case an EARLIER ATTEMPT
+#: of this run already ran to a verdict, so the launch seam refused to start a mesher at all
+#: (agents/builder/rerun_guard, contracts/mesh_execution.RC_IDENTICAL_RERUN).
+#:
+#: It is NOT STOP_REVIEWED_CASE_REPEATS, which is narrower in both directions: that one is only the
+#: retry a REVIEW rejection caused, and it is decided from the files an attempt authored before any
+#: run. This one is decided at the seam every engine's native run passes, whatever caused the
+#: retry.
+#:
+#: It exists because the refusal carried RC_IDENTICAL_RERUN and nothing read it. A driver judging
+#: `rc == 0` called the refusal a build failure, so a run that spent nothing was announced as
+#: "the mesher stopped before it finished" - and on the FEA path rc -6 was neither a verdict nor a
+#: timeout nor too_big_for_worker, so a lever was chosen to repair a mesh that was never started.
+STOP_IDENTICAL_RERUN = "identical_rerun_refused"
+
 
 def review_caused_retry(state) -> bool:
     """This attempt is the retry a concluded review asked for - not a gate failure's, not an
@@ -154,5 +169,6 @@ def review_caused_retry(state) -> bool:
             and not st.get("user_dispute"))
 
 
-__all__ = ["STOP_REVIEWED_CASE_REPEATS", "STRATEGY_CANONICAL_LOOP", "STRATEGY_ENGINE_DRIVER",
-           "TERMINAL_SUCCESS", "BuildDriverOutcome", "BuilderDriverRun", "review_caused_retry"]
+__all__ = ["STOP_IDENTICAL_RERUN", "STOP_REVIEWED_CASE_REPEATS", "STRATEGY_CANONICAL_LOOP",
+           "STRATEGY_ENGINE_DRIVER", "TERMINAL_SUCCESS", "BuildDriverOutcome", "BuilderDriverRun",
+           "review_caused_retry"]

@@ -705,3 +705,61 @@ def test_the_guards_own_refusal_does_not_overwrite_the_verdict_it_quotes(tmp_pat
     after = g.earlier_identical(_case(tmp_path / "gen" / "attempt_3"), "d")
     assert after["outcome"] == real and after["attempt"] == "attempt_1", (
         "the refusal was recorded over the verdict it exists to report")
+
+
+def test_the_refusal_is_not_announced_as_a_mesher_that_failed_to_build():
+    """RC_IDENTICAL_RERUN had no reader. Every deterministic driver judges a run by `rc == 0`, so
+    the refusal - which starts no mesher and spends nothing - was announced with the engine's own
+    BUILD_FAILED marker, the one that tells the next reader the mesher stopped before it finished.
+    `refused_identical_rerun` is the question they have to ask first, and it must be true of the
+    refusal the guard actually authors, not just of a hand-made dict."""
+    from meshpipeline.agents.builder.driver_run import (
+        STOP_IDENTICAL_RERUN,
+        STOP_REVIEWED_CASE_REPEATS,
+    )
+    from meshpipeline.agents.builder.rerun_guard import refusal
+    from meshpipeline.contracts.mesh_execution import (
+        RC_IDENTICAL_RERUN,
+        RC_INFRASTRUCTURE,
+        refused_identical_rerun,
+    )
+    from meshpipeline.sandbox.safe_exec import describe_native_result
+
+    said = refusal({"attempt": "attempt_1", "outcome": "its mesh did not pass its checks"})
+    assert refused_identical_rerun({**said, "rc": RC_IDENTICAL_RERUN}), "the guard's own refusal"
+    assert refused_identical_rerun({"rc": RC_IDENTICAL_RERUN}), "the exit code alone is enough"
+
+    # and NOTHING else may answer to it, or a real failure would be reported as a stop
+    for other in (describe_native_result(returncode=0, stage="x"),
+                  describe_native_result(returncode=1, stage="x"),
+                  describe_native_result(returncode=RC_INFRASTRUCTURE, stage="x"),
+                  {}, None, "not a dict"):
+        assert not refused_identical_rerun(other), f"{other!r} is not an identical-rerun refusal"
+
+    assert STOP_IDENTICAL_RERUN != STOP_REVIEWED_CASE_REPEATS, (
+        "the review-caused repeat is decided from the authored files before any run; this one is "
+        "decided at the launch seam, whatever caused the retry")
+
+
+def test_every_deterministic_driver_asks_before_it_judges_the_exit_code():
+    """The guard is bound to the ONE seam every engine's native run passes, so every driver that
+    reads `rc` has to know the refusal. This reads the source because the alternative is a Cloud
+    Run job per driver: what it asserts is that no driver judges rc before asking, which is the
+    defect 970ca368 shipped on all four."""
+    import inspect
+
+    from meshpipeline.engines import fea_driver
+    from meshpipeline.engines.cfmesh_conjugate import driver as conjugate
+    from meshpipeline.engines.snapgrid import driver as snapgrid
+
+    for mod in (conjugate, snapgrid, fea_driver):
+        src = inspect.getsource(mod)
+        assert "refused_identical_rerun(result)" in src, (
+            f"{mod.__name__} judges a native result and never asks whether anything was launched")
+        first_ask = src.index("refused_identical_rerun(result)")
+        for judgement in ('_read_quality(ws) if result.get("rc") in (0, 4)',
+                          'ok = result.get("rc") == 0'):
+            if judgement in src:
+                assert src.index(judgement) > first_ask, (
+                    f"{mod.__name__} reaches `{judgement}` before it asks: rc -6 is not a verdict, "
+                    "and reading it as one pulls a lever for a mesh that never ran")

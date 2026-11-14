@@ -52,6 +52,11 @@ NOT_RUN = "fea_not_run"
 NOT_RUN_GATE = "fea_dispatch"
 #: The gate a guard trip is reported under (ours, never the part's).
 GUARD_GATE = "fea_guard"
+#: The gate an IDENTICAL RE-RUN refusal is reported under: no mesher was started, because an earlier
+#: attempt of this run already ran exactly this case to a verdict (agents/builder/rerun_guard). Its
+#: own gate rather than NOT_RUN_GATE, which says our side could not run the pass - nothing failed
+#: here, and the run must not be taken again on the same case.
+RERUN_GATE = "fea_rerun"
 #: MESH-2: the gate a mesh that failed AT a flagged CAD spot is reported under.
 CAD_DEFECT_GATE = "fea_cad_defect"
 #: The plan measures every wall of a part up to this many surface triangles (the geometry check
@@ -903,6 +908,17 @@ def not_run_words(unrun: dict) -> str:
             f"({unrun.get('error') or 'no reason given'})")
 
 
+def _repeated_words(repeated: dict) -> str:
+    """What an identical re-run refusal says, for the why record and the refusal. The guard's own
+    guidance where it gave one, because it names the attempt and what that attempt came to."""
+    said = str(repeated.get("guidance") or "").strip()
+    if said:
+        return said
+    where = str(repeated.get("earlier_attempt") or "an earlier attempt").replace("_", " ")
+    return (f"pass {repeated.get('pass')} authored the case {where} of this run already ran to a "
+            f"verdict, so no mesher was started")
+
+
 def _rung_error(result: dict) -> str:
     """What the rung's pass said when it failed: the adapter's own fTetWild line, else the log's last line."""
     tail = [ln.strip() for ln in str(result.get("log_tail") or "").splitlines() if ln.strip()]
@@ -919,7 +935,11 @@ async def _last_rung(ws: Path, record: dict, diag_m: float, first_plan: dict, pa
     import copy
 
     from meshpipeline.contracts import mesh_machine as MM
-    from meshpipeline.contracts.mesh_execution import note_native_pass, note_native_payload
+    from meshpipeline.contracts.mesh_execution import (
+        note_native_pass,
+        note_native_payload,
+        refused_identical_rerun,
+    )
     from meshpipeline.engines import fea_tetwild as TW
 
     if (record.get("assembly_plan") or {}).get("mode") == "bonded":
@@ -959,6 +979,18 @@ async def _last_rung(ws: Path, record: dict, diag_m: float, first_plan: dict, pa
         t0 = time.monotonic()
         result, machine, work = await _native(ws, machine, work, job_id, n, run)
         await run.fence("accept native mesh output")
+        if refused_identical_rerun(result):
+            # NO MESHER WAS STARTED: an earlier attempt of this run already ran this rung's case to
+            # a verdict. Above the quality read for the same reason as in `drive` - rc -6 is not in
+            # (0, 4), so the pass would be recorded invalid with "exit -6" as its rung error.
+            run.note_native_run(produced_usable_mesh=False)
+            ran.append({**L.pass_facts(n, result.get("rc"), {}, plan),
+                        "native_s": round(time.monotonic() - t0, 1), "engine": TW.ENGINE,
+                        "rung": rung, "parts": parts, "identical_rerun": True,
+                        "earlier_attempt": result.get("earlier_attempt") or "",
+                        "guidance": str(result.get("guidance") or ""),
+                        "ran_on": {k: machine.get(k) for k in ("where", "machine", "memory_gib", "why")}})
+            break
         q = _read_quality(ws) if result.get("rc") in (0, 4) else {}
         made = bool(q) and (ws / "mesh.inp").exists()
         run.note_native_run(produced_usable_mesh=made and result.get("rc") == 0)
@@ -997,7 +1029,11 @@ async def _last_rung(ws: Path, record: dict, diag_m: float, first_plan: dict, pa
 async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublisher,
                 run: BuilderDriverRun, source_path: str = ""):
     from meshpipeline.contracts.failure_cause import FailureCause
-    from meshpipeline.contracts.mesh_execution import note_native_pass, note_native_payload
+    from meshpipeline.contracts.mesh_execution import (
+        note_native_pass,
+        note_native_payload,
+        refused_identical_rerun,
+    )
     from meshpipeline.engines.runtime import get_engine
 
     ws = Path(workspace)
@@ -1081,6 +1117,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     tripped: dict | None = None
     too_big: dict | None = None
     unrun: dict | None = None
+    repeated: dict | None = None
     rate, cls = fill_rate(record)
     chosen: dict = {}
     first_plan: dict = {}
@@ -1219,6 +1256,21 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                 run.note_native_run(produced_usable_mesh=False)
                 too_big = {**result["too_big_for_worker"], "pass": n}
                 break
+            if refused_identical_rerun(result):
+                # NO MESHER WAS STARTED: the launch seam refused this pass's case because an earlier
+                # attempt of this run already ran exactly it to a verdict (agents/builder/rerun_guard).
+                # Neither ours nor the part's, so no lever and no smaller plan. It has to be caught
+                # HERE, above the quality read: RC_IDENTICAL_RERUN is not in (0, 4) so `q` would be {},
+                # `valid` false and `_rung_error` would record "exit -6", and FA.choose_lever would be
+                # asked to repair a mesh that never ran.
+                run.note_native_run(produced_usable_mesh=False)
+                repeated = {"pass": n, "earlier_attempt": result.get("earlier_attempt") or "",
+                            "guidance": str(result.get("guidance") or "")}
+                passes.append({**L.pass_facts(n, result.get("rc"), {}, plan), "native_s": native_s,
+                               "identical_rerun": True,
+                               "ran_on": {k: machine.get(k)
+                                          for k in ("where", "machine", "memory_gib", "why")}})
+                break
             q = _read_quality(ws) if result.get("rc") in (0, 4) else {}
             made = bool(q) and (ws / "mesh.inp").exists()
             run.note_native_run(produced_usable_mesh=made and result.get("rc") == 0)
@@ -1274,7 +1326,8 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                             "inputs": lever.get("inputs") or {}, "words": lever["words"]}])
             levers.append(lever)
 
-        if (tripped is None and too_big is None and unrun is None and passes and not any(f["valid"] for f in passes)
+        if (tripped is None and too_big is None and unrun is None and repeated is None
+                and passes and not any(f["valid"] for f in passes)
                 and not passes[-1].get("out_of_memory")
                 and (record.get("assembly_plan") or {}).get("mode") == "bonded"):
             # PLAN-fea-17: A BONDED ASSEMBLY THE MESHER COULD NOT BUILD AS ONE (the fused parts left
@@ -1289,7 +1342,8 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
             continue
         break
 
-    if (tripped is None and too_big is None and unrun is None and passes and first_plan
+    if (tripped is None and too_big is None and unrun is None and repeated is None
+            and passes and first_plan
             and not any(f["valid"] for f in passes) and not passes[-1].get("out_of_memory")):
         # LAD-fea-9, THE LAST RUNG: every gmsh option is spent (Delaunay, HXT, MeshAdapt on the surfaces
         # that failed, and for an assembly the tie) and no pass is valid - fTetWild meshes the part(s)
@@ -1297,13 +1351,27 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         # guard trip, a worker too small) or a plan out of memory on the largest machine (LAD-fea-7)
         record, ran = await _last_rung(ws, record, diag_m, first_plan, passes, job_id=job_id, run=run)
         passes.extend(ran)
-        if ran and ran[-1].get("not_run") and not any(f["valid"] for f in ran):
+        if ran and ran[-1].get("identical_rerun") and not any(f["valid"] for f in ran):
+            # the last rung's own case was one an earlier attempt already ran: a stop, not a failure
+            last = ran[-1]
+            repeated = {"pass": last["pass"], "earlier_attempt": last.get("earlier_attempt") or "",
+                        "guidance": str(last.get("guidance") or "")}
+        elif ran and ran[-1].get("not_run") and not any(f["valid"] for f in ran):
             last = ran[-1]
             unrun = {"pass": last["pass"], "error": last.get("rung_error"),
                      "machine": (last.get("ran_on") or {}).get("machine"), "where": (last.get("ran_on") or {}).get("where")}
             _cite(job_id, [{"stage": "fea_machine", "decided": "not run", "value": unrun["where"], "rule": "RUN-4",
                             "inputs": unrun, "words": not_run_words(unrun).capitalize() + "."}])
-    if unrun is not None and not any(f["valid"] for f in passes):
+    if repeated is not None and not any(f["valid"] for f in passes):
+        (ws / "fea_passes.json").write_text(json.dumps({"passes": passes, "delivered": None, "levers": levers,
+                                                        "identical_rerun": repeated}, indent=1))
+        logger.error("fea driver: %s - job_id=%s", _repeated_words(repeated), job_id)
+        # NOT_BUILT, whose own words are this case exactly: "NO MESHER WAS STARTED in the attempt...
+        # It used to be told as a crash". Deterministic and not ours: the same inputs stop the same
+        # way again, and nothing on our side failed.
+        _refuse(ws, cause=FailureCause.NOT_BUILT.value, gate=RERUN_GATE, text=_repeated_words(repeated),
+                deterministic=True, ours=False, identical_rerun=repeated)
+    elif unrun is not None and not any(f["valid"] for f in passes):
         (ws / "fea_passes.json").write_text(json.dumps({"passes": passes, "delivered": None, "levers": levers,
                                                         "not_run": unrun}, indent=1))
         logger.error("fea driver: %s - job_id=%s", not_run_words(unrun), job_id)

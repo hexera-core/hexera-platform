@@ -3781,6 +3781,19 @@
   "roots": []
  },
  {
+  "context": "engines/cfmesh_conjugate/driver.py::drive::error#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/cfmesh_conjugate/driver.py",
+  "qualname": "drive",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "engines/cfmesh_conjugate/foam_exec.py::export_volume_vtk::error#1|NotAPublisher|not-a-publisher|",
   "path": "engines/cfmesh_conjugate/foam_exec.py",
   "qualname": "export_volume_vtk",
@@ -4028,6 +4041,19 @@
   "roots": []
  },
  {
+  "context": "engines/fea_driver.py::drive::error#2|NotAPublisher|not-a-publisher|",
+  "path": "engines/fea_driver.py",
+  "qualname": "drive",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 2,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "engines/fea_driver.py::prepare_assembly::stage#1|NotAPublisher|not-a-publisher|",
   "path": "engines/fea_driver.py",
   "qualname": "prepare_assembly",
@@ -4152,6 +4178,19 @@
   "method": "check",
   "ordinal": 1,
   "receiver": "N",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/snapgrid/driver.py::drive::error#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/snapgrid/driver.py",
+  "qualname": "drive",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
   "gated_required": false,

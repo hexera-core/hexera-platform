@@ -429,3 +429,15 @@ def meshers_started(runs: list[dict] | None) -> int | None:
     if runs is None:
         return None
     return sum(1 for r in runs if not r.get("refused_before_launch"))
+
+
+def refused_identical_rerun(result: Any) -> bool:
+    """Is this result the rerun guard's refusal - the one where NOTHING was launched?
+
+    Every driver that judges a run by its exit code has to ask this BEFORE it reads `rc`, because
+    RC_IDENTICAL_RERUN is not a mesh verdict but the absence of one, and `rc != 0` alone reads it
+    as a mesher that failed. It lives here beside the constant, for the same reason the constant
+    does: engines/ may not import agents/, and the refusal is authored in agents/builder."""
+    if not isinstance(result, dict):
+        return False
+    return bool(result.get("identical_rerun")) or result.get("rc") == RC_IDENTICAL_RERUN
