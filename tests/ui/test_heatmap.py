@@ -86,15 +86,14 @@ def test_the_heatmap_colours_the_mesh_and_explains_a_face(live, tmp_path):
     live.wait_for(f"window._vdbg && window._vdbg['{JOB}:heat']", timeout=90,
                   what="the viewer to initialise with quality fields")
 
-    # the delivered-mesh FIGURES became the controls, one per metric the payload carries
+    # one plain "Colour by" line on the canvas is the control, one word per metric the payload carries
     state = live.evaluate(f"""(() => {{
       const h = window._vdbg['{JOB}:heat'];
-      const live = [...document.querySelectorAll('#v-facts-{JOB} .mx-c.live')]
-        .map(c => c.dataset.metric);
+      const live = [...document.querySelectorAll('#v-heatctl-{JOB} a')].map(c => c.dataset.metric);
       return {{metrics: h.metrics, live, active: h.active(), legend: h.legend()}};
     }})()""")
     assert state["metrics"] == ["non_ortho", "skewness", "aspect_ratio"]
-    assert sorted(state["live"]) == ["aspect_ratio", "non_ortho", "skewness"], state
+    assert state["live"] == ["non_ortho", "skewness", "aspect_ratio"], state
     assert state["active"] is None and state["legend"] is False
 
     # the viewer opens z-up, as CAD is drawn, and Fit keeps it that way
@@ -106,17 +105,17 @@ def test_the_heatmap_colours_the_mesh_and_explains_a_face(live, tmp_path):
     assert up["open"] == pytest.approx([0, 0, 1], abs=1e-9), up
     assert up["fit"] == pytest.approx([0, 0, 1], abs=1e-9), up
 
-    # clicking the non-orthogonality figure colours the mesh, draws the legend, says the one face
-    # over the bar, and switches the hint to the probe
+    # clicking "non-orthogonality" colours the mesh, draws the legend, says the one face over the
+    # bar, and switches the hint to the probe
     after = live.evaluate(f"""(() => {{
-      document.querySelector('#v-facts-{JOB} .mx-c.live[data-metric=non_ortho]').click();
+      document.querySelector('#v-heatctl-{JOB} a[data-metric=non_ortho]').click();
       const h = window._vdbg['{JOB}:heat'];
       const lg = document.querySelector('#viewer-{JOB} .v-legend');
       return {{active: h.active(), legend: h.legend(), extras: h.extras(),
                legendText: lg ? lg.textContent : '',
                buttons: lg ? [...lg.querySelectorAll('button')].map(b => b.className) : [],
                hint: document.getElementById('v-hint-{JOB}').textContent,
-               onCells: document.querySelectorAll('#v-facts-{JOB} .mx-c.live.on').length,
+               onCells: document.querySelectorAll('#v-heatctl-{JOB} a.on').length,
                calm: h.colorOf('inlet', 0), edges: h.edges(), areas: h.areas()}};
     }})()""")
     assert after["active"] == "non_ortho" and after["legend"] is True
@@ -208,7 +207,7 @@ def test_a_mesh_that_passes_reads_calm_with_nothing_drawn_on_it(live, tmp_path):
     assert not [h for h in payload["quality_fields"]["hotspots"] if h["metric"] == "non_ortho"]
     _open(live, payload, "good-job")
     state = live.evaluate("""(() => {
-      document.querySelector('#v-facts-good-job .mx-c.live[data-metric=non_ortho]').click();
+      document.querySelector('#v-heatctl-good-job a[data-metric=non_ortho]').click();
       const h = window._vdbg['good-job:heat'];
       const lg = document.querySelector('#viewer-good-job .v-legend');
       const box = lg.querySelector('.v-areas');
@@ -338,6 +337,39 @@ def test_problem_areas_gather_the_bad_faces_and_take_the_camera_there(live):
     assert_clean(live, "the problem areas")
 
 
+def test_colour_by_is_reached_and_worked_from_the_keyboard(live, tmp_path):
+    # "Colour by" is a line of words, one per measure, each a role="button" link with no href: without a
+    # tabindex the browser never stops on it, so a keyboard user could not colour the mesh at all
+    _open(live, _payload(tmp_path), "keys-job")
+    links = live.evaluate("""(() => [...document.querySelectorAll('#v-heatctl-keys-job a')].map(a => {
+      a.focus();
+      return {metric: a.dataset.metric, tab: a.getAttribute('tabindex'), focused: document.activeElement === a};
+    }))()""")
+    assert links, "no Colour by links"
+    # (an <a> with no href reports tabIndex 0 yet takes no focus: the focus itself is what is checked)
+    assert all(x["tab"] == "0" and x["focused"] for x in links), links
+    if len(links) > 1:
+        # Tab walks from one word to the next, as the page's other controls do
+        live.evaluate("document.querySelector('#v-heatctl-keys-job a').focus()")
+        live.press("Tab", vk=9)
+        live.settle(0.1)
+        assert live.evaluate("document.activeElement && document.activeElement.dataset.metric") == links[1]["metric"]
+    # Enter on a focused word colours by it - the page's own Enter/Space rule for role="button"
+    live.evaluate(f"document.querySelector('#v-heatctl-keys-job a[data-metric={links[0]['metric']}]').focus()")
+    live.press("Enter", vk=13)
+    live.settle(0.1)
+    st = live.evaluate("""(() => ({active: window._vdbg['keys-job:heat'].active(),
+      pressed: document.activeElement.getAttribute('aria-pressed')}))()""")
+    assert st == {"active": links[0]["metric"], "pressed": "true"}, st
+    # and Space on the next word moves the colouring to it
+    if len(links) > 1:
+        live.evaluate(f"document.querySelector('#v-heatctl-keys-job a[data-metric={links[1]['metric']}]').focus()")
+        live.press(" ", code="Space", vk=32)
+        live.settle(0.1)
+        assert live.evaluate("window._vdbg['keys-job:heat'].active()") == links[1]["metric"]
+    assert_clean(live, "the Colour by line from the keyboard")
+
+
 def test_a_payload_without_fields_leaves_the_viewer_exactly_as_before(live, tmp_path):
     payload = _payload(tmp_path)
     payload.pop("quality_fields")
@@ -360,10 +392,9 @@ def test_a_payload_without_fields_leaves_the_viewer_exactly_as_before(live, tmp_
                   what="the viewer to initialise")
     state = live.evaluate("""(() => ({
       heat: !!(window._vdbg['plain-job:heat']),
-      live: document.querySelectorAll('#v-facts-plain-job .mx-c.live').length,
       ctl: !!document.getElementById('v-heatctl-plain-job'),
       legend: !!document.querySelector('#viewer-plain-job .v-legend'),
       vtk: !!document.getElementById('v-vtk-plain-job')}))()""")
     # the export needs no fields, only a polyMesh surface - it stays
-    assert state == {"heat": False, "live": 0, "ctl": False, "legend": False, "vtk": True}
+    assert state == {"heat": False, "ctl": False, "legend": False, "vtk": True}
     assert_clean(live, "the viewer without quality fields")

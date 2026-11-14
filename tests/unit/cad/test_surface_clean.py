@@ -22,6 +22,8 @@ PANEL_RIM = 2.0 * (300.0 + 80.0)
 
 
 def _read(shape, **kw):
+    # SURF-8..10 alone: the surfaces are not changed here (SURF-12 has its own tests, test_surface_mend.py)
+    kw.setdefault("mend", False)
     return sm.read(shape, mm_per_unit=1.0, **kw)
 
 

@@ -7,8 +7,9 @@ from __future__ import annotations
 from typing import Final
 
 #: The argument names this module owns, mapped to the vocabulary each draws from. A tool argument
-#: not named here is passed through untouched - dimensionality ("2D"/"3D") and boundary roles
-#: ("wall", "inlet") are already the words a user would use and need no translation.
+#: not named here is passed through untouched - boundary roles ("wall", "inlet") are already the
+#: words a user would use and need no translation; dimensionality ("2D"/"3D") only has its spelling
+#: settled ("3d" is "3D", dimensionality_key).
 PURPOSE: Final = "purpose"
 INPUT_KIND: Final = "input_kind"
 #: Values are the vocabulary names in contracts/display_names.VOCABULARIES.
@@ -50,6 +51,16 @@ def engine_choices() -> tuple[str, ...]:
     return tuple(_engines())
 
 
+#: Short names a model writes for a purpose that are neither its key nor its display name, folded
+#: (lower case, letters and digits only).
+_PURPOSE_ALIASES: Final = {"fea": "structural", "cht": "conjugate_heat_transfer",
+                           "externalflow": "external_cfd", "internalflow": "internal_cfd"}
+
+
+def _fold(text: str) -> str:
+    return "".join(c for c in text.lower() if c.isalnum())
+
+
 def to_key(vocabulary: str, value) -> str:
     raw = str(value or "").strip()
     if not raw:
@@ -58,7 +69,28 @@ def to_key(vocabulary: str, value) -> str:
     if raw in table:
         return table[raw]
     lowered = {name.lower(): key for name, key in table.items()}
-    return lowered.get(raw.lower(), raw)          # already a key, or unknown - validation decides
+    if raw.lower() in lowered:
+        return lowered[raw.lower()]
+    # THE SAME WORD IN ANOTHER SPELLING: "fluid domain", "fluid_domain", "External-CFD",
+    # "snappy hex mesh" name one value each, and refusing them as "not a recognised value" only
+    # cost the user a turn. Keys and display names are folded alike; no two values fold the same.
+    folded = {_fold(k): k for k in table.values()}
+    folded.update({_fold(name): key for name, key in table.items()})
+    if vocabulary == PURPOSE:
+        folded.update(_PURPOSE_ALIASES)
+    return folded.get(_fold(raw), raw)            # already a key, or unknown - validation decides
+
+
+def dimensionality_key(value):
+    """"3d", "3-D", "3D mesh"... as the "3D" the gate reads (likewise 2D); anything else as written."""
+    if value is None or not isinstance(value, str):
+        return value
+    folded = _fold(value).removesuffix("mesh").removesuffix("al")
+    for want, words in (("3D", ("3d", "3", "threed", "threedimension", "3dimension")),
+                        ("2D", ("2d", "2", "twod", "twodimension", "2dimension"))):
+        if folded in words:
+            return want
+    return value.strip()
 
 
 def to_display(vocabulary: str, value) -> str:
@@ -139,6 +171,8 @@ def normalize_tool_args(args: dict) -> dict:
     for name in _ENGINE_ARGS:
         if out.get(name):
             out[name] = to_key(ENGINE, out[name])
+    if out.get("dimensionality"):
+        out["dimensionality"] = dimensionality_key(out["dimensionality"])
     return out
 
 

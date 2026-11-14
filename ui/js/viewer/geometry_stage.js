@@ -242,10 +242,10 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
     }
   }
   function stateBanner() {
-    if (unitNeeded) return ["The file does not say its unit: check the size beside the unit box below and pick the unit that makes it right, or answer in the chat. The names are the measuring step's own - fix them and proceed.", ""];
+    if (unitNeeded) return ["The file does not say its unit: check the size and pick the unit below. The names are the measuring step's own - fix them and proceed.", ""];
     if (naming) return ["Naming the openings… turn the part meanwhile, or fix the names and proceed now.", "busy"];
     if (stalled) return ["The naming is taking longer than usual. These names are the measuring step's own: fix them and proceed, or wait.", "warn"];
-    return ["These names are the measuring step's own. Answer the question in the chat and I'll name the openings - or fix them here and proceed.", ""];
+    return ["These names are the measuring step's own: fix them here and proceed.", ""];
   }
   function showState() {
     const key = ["scouted", naming, stalled, unitNeeded].join("|");
@@ -296,7 +296,7 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
       // ("117 mm" for a wind turbine blade) Proceed never takes either reading in silence
       if (unitChoiceNeeded(p)) {
         hint.textContent = unitChoiceHint(p);
-        const pick = form.querySelector(".gc-pick"); if (pick) pick.focus();
+        const pick = form.querySelector(".gc-unit") || form.querySelector(".gc-pick"); if (pick) pick.focus();
         return;
       }
       const body = readForm(form, p);

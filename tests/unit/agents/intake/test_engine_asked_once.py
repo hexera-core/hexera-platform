@@ -284,20 +284,17 @@ def _names_an_engine(text: str) -> bool:
     return bool(_vocab.engines_named_in(text))
 
 
-def test_the_nozzle_conversation_replayed_asks_the_engine_once_and_never_again():
+def test_the_nozzle_conversation_replayed_never_asks_the_engine():
     c = _Conversation()
     # 1. The model carries the engine as an assumption (the real first reply). It is sent back and
-    #    proposes instead - the user reads the application's one question.
+    #    proposes instead - the application selects the engine with no question (Areen, 2026-11-13),
+    #    and the user reads the model's next clear ask.
     reply = c.turn("CFD of the air flow through this rocket nozzle.", _Model(
-        _resp(content=_CARRYING[0].format(e="snappyHexMesh"))))
-    assert reply == _QUESTION
-    assert c.notes == [turn.ENGINE_UNSETTLED_NUDGE]
-    assert c.selection["state"] == es.PROPOSED and c.selection["engine"] == "snappy"
-
-    # 2. "ok" answers it - read by the application before the model runs. The model asks one clear thing.
-    reply = c.turn("ok", _Model(_resp(content=_CLEAN[0])))
+        _resp(content=_CARRYING[0].format(e="snappyHexMesh")), clean=_CLEAN[0]))
     assert reply == _CLEAN[0]
-    assert c.selection["state"] == es.CONFIRMED
+    assert c.notes == [turn.ENGINE_UNSETTLED_NUDGE]
+    assert c.selection["state"] == es.CONFIRMED and c.selection["engine"] == "snappy"
+    assert c.selection["via"] == es.VIA_AUTO
     selected = c.selection["id"]
 
     # 3. The model restates the engine (the real third reply). Sent back; the user reads the clean ask.
@@ -312,9 +309,9 @@ def test_the_nozzle_conversation_replayed_asks_the_engine_once_and_never_again()
     assert reply == _CLEAN[2]
     assert c.selection["state"] == es.CONFIRMED and c.selection["id"] == selected
 
-    # Exactly one engine question, and no reply after it names the engine or narrates an assumption.
+    # No engine question at all, and no reply names the engine or narrates an assumption.
     said = c.assistant()
-    assert [t for t in said if _names_an_engine(t)] == [_QUESTION]
+    assert [t for t in said if _names_an_engine(t)] == []
     assert not any(w in t.lower() for t in said for w in _BOOKKEEPING)
 
     # 5. Asked about it, the model may talk about it.
@@ -325,7 +322,7 @@ def test_the_nozzle_conversation_replayed_asks_the_engine_once_and_never_again()
 def _settled_conversation() -> _Conversation:
     c = _Conversation()
     c.turn("internal flow through this nozzle, air", _Model(
-        _resp([_tc("propose_engine_selection", {"engine": "snappy", "reason": _REASON})])))
+        _resp([_tc("propose_engine_selection", {"engine": "snappy", "reason": _REASON})]), clean=_CLEAN[0]))
     c.turn("ok", _Model(_resp(content=_CLEAN[0])))
     assert c.selection["state"] == es.CONFIRMED
     return c
@@ -351,12 +348,12 @@ def test_on_the_last_round_the_settled_engine_is_trimmed_without_a_note(monkeypa
     assert c.notes == []
 
 
-def test_why_to_the_engine_question_gets_its_answer_end_to_end():
+def test_why_this_engine_gets_its_answer_end_to_end():
     c = _Conversation()
     c.turn("internal flow through this nozzle, air", _Model(
-        _resp([_tc("propose_engine_selection", {"engine": "snappy", "reason": _REASON})])))
-    why = "snappyHexMesh fits the cells to the curved wall, so the layers stay even. OK with it?"
-    assert c.turn("why?", _Model(_resp(content=why))) == why
+        _resp([_tc("propose_engine_selection", {"engine": "snappy", "reason": _REASON})]), clean=_CLEAN[0]))
+    why = "snappyHexMesh fits the cells to the curved wall, so the layers stay even."
+    assert c.turn("why snappyHexMesh?", _Model(_resp(content=why))) == why
     assert c.notes == []
 
 
@@ -368,17 +365,17 @@ def test_a_hand_back_to_the_engine_question_is_its_answer_end_to_end():
     assert c.selection["state"] == es.CONFIRMED and reply == _CLEAN[0]
 
 
-def test_the_soak_over_conversations_asks_the_engine_exactly_once():
-    # 60 seeded conversations: a persona that never names the engine answers the one question in any of
-    # the ways people do, then goes on; the scripted model restates the engine on about half its turns,
-    # and sometimes proposes it again. The user reads the engine exactly once.
+def test_the_soak_over_conversations_never_asks_the_engine():
+    # 60 seeded conversations: a persona that never names the engine goes on answering in any of the
+    # ways people do; the scripted model restates the engine on about half its turns, and sometimes
+    # proposes it again. The engine is chosen with no question, and no reply names it.
     rng = random.Random(20260930)
     for n in range(60):
         c = _Conversation()
         first = rng.choice((_resp(content=rng.choice(_CARRYING).format(e="snappyHexMesh")),
                             _resp([_tc("propose_engine_selection", {"engine": "snappy", "reason": _REASON})])))
         assert c.turn(rng.choice(("CFD through this nozzle", "air flow through it, 20 m/s", "internal CFD")),
-                      _Model(first)) == _QUESTION
+                      _Model(first, clean=_CLEAN[0])) == _CLEAN[0]
         c.turn(rng.choice(_YES + _HANDED_BACK), _Model(_resp(content=_CLEAN[0])))
         assert c.selection["state"] == es.CONFIRMED, n
         for i, answer in enumerate(rng.sample(["yes", "20 m/s", "fine", "ok, 8 layers", "no refinement zone"], 3)):
@@ -388,15 +385,15 @@ def test_the_soak_over_conversations_asks_the_engine_exactly_once():
                                 _resp(content=clean)))
             assert c.turn(answer, _Model(first, clean=clean)) == clean, (n, i)
         said = c.assistant()
-        assert [t for t in said if _names_an_engine(t)] == [_QUESTION], (n, said)
+        assert [t for t in said if _names_an_engine(t)] == [], (n, said)
         assert c.selection["state"] == es.CONFIRMED, n
 
 
 # ------------------------------------------------------------------------ the prompt ----
 def test_the_prompt_asks_the_engine_once_with_a_proposal_and_never_carries_it():
     block = intake._block_engine_first()
-    assert "ONE question, asked ONCE, and" in block and "carries your proposal" in block
-    assert "`reason`" in block and "I'd mesh this with X: <reason>" in block
+    assert "the APPLICATION CHOOSES IT - nobody is asked" in block and "Never ask the user which engine" in block
+    assert "`reason`" in block and "never mention lab evidence" in block
     assert "THE ENGINE IS NEVER AN ASSUMPTION" in block
     assert "ONCE SETTLED, LEAVE IT ALONE" in block
     # the old menu-with-no-proposal is gone, and so is the rule that forbade the proposal
@@ -405,7 +402,7 @@ def test_the_prompt_asks_the_engine_once_with_a_proposal_and_never_carries_it():
     propose = intake._block_propose_first()
     assert "Two things are never proposed" not in propose
     assert "never calls it an assumption" in propose
-    assert "ENGINE is proposed and confirmed, never defaulted" in propose
+    assert "ENGINE is settled by the application, never defaulted by you" in propose
 
 
 def test_the_ask_plainly_block_is_registered_and_composed():

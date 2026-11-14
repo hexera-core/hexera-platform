@@ -64,6 +64,14 @@ _HOLE: tuple[re.Pattern[str], ...] = (
 )
 
 
+#: SURF-12: "do not change the surfaces", "don't extend or trim", "keep the geometry as it is": no surface is moved,
+#: extended or trimmed (stitching within the sew tolerances still runs unless "do not stitch" is said too)
+_KEEP = re.compile(r"\b(?:(?:do\s+not|don'?t|dont|never|no)\s+(?:change|modify|alter|edit|touch)\s+(?:the\s+)?"
+                   r"(?:surfaces?|geometry|faces?|cad)|(?:do\s+not|don'?t|dont|no)\s+(?:extend(?:ing)?|trim(?:ming)?)"
+                   r"(?:\s+or\s+(?:extend|trim)(?:ing)?)?|keep\s+the\s+(?:surfaces?|geometry)\s+as\s+(?:it\s+is|they\s+are|"
+                   r"drawn))\b", re.I)
+
+
 @dataclass(frozen=True)
 class StitchReading:
     """What the words say about the clean-up: `mm` the gap the user lets us stitch (None: nothing said), `off` when
@@ -74,10 +82,11 @@ class StitchReading:
     quote: str = ""
     holes_mm: float | None = None
     holes_quote: str = ""
+    keep_surfaces: bool = False
 
     @property
     def given(self) -> bool:
-        return self.mm is not None or self.off or self.holes_mm is not None
+        return self.mm is not None or self.off or self.holes_mm is not None or self.keep_surfaces
 
 
 def _mm(num: str, unit: str | None) -> float | None:
@@ -112,16 +121,21 @@ def read_text(text: Any) -> StitchReading:
     no = _NO_STITCH.search(rest)
     holes_mm = hole[0] if hole is not None else None
     holes_quote = hole[1] if hole is not None else ""
+    keep = bool(_KEEP.search(said))
     if stitch is not None and (no is None or stitch[2] > no.start()):
-        return StitchReading(mm=stitch[0], quote=stitch[1], holes_mm=holes_mm, holes_quote=holes_quote)
+        return StitchReading(mm=stitch[0], quote=stitch[1], holes_mm=holes_mm, holes_quote=holes_quote,
+                             keep_surfaces=keep)
     if no is not None:
-        return StitchReading(off=True, quote=" ".join(no.group(0).split()), holes_mm=holes_mm, holes_quote=holes_quote)
-    return StitchReading(holes_mm=holes_mm, holes_quote=holes_quote)
+        return StitchReading(off=True, quote=" ".join(no.group(0).split()), holes_mm=holes_mm, holes_quote=holes_quote,
+                             keep_surfaces=keep)
+    return StitchReading(holes_mm=holes_mm, holes_quote=holes_quote, keep_surfaces=keep)
 
 
 def read(texts: Iterable[Any]) -> StitchReading:
     """THE LATEST WORD STANDS, for the stitching and for the holes each on its own: `texts` oldest first."""
+    texts = list(texts)
     mm, off, quote, holes, hq = None, False, "", None, ""
+    keep = any(read_text(t).keep_surfaces for t in texts if str(t or "").strip())
     got_stitch = got_holes = False
     for text in reversed([t for t in texts if str(t or "").strip()]):
         r = read_text(text)
@@ -131,7 +145,7 @@ def read(texts: Iterable[Any]) -> StitchReading:
             holes, hq, got_holes = r.holes_mm, r.holes_quote, True
         if got_stitch and got_holes:
             break
-    return StitchReading(mm=mm, off=off, quote=quote, holes_mm=holes, holes_quote=hq)
+    return StitchReading(mm=mm, off=off, quote=quote, holes_mm=holes, holes_quote=hq, keep_surfaces=keep)
 
 
 __all__ = ["MAX_MM", "MIN_MM", "StitchReading", "read", "read_text"]

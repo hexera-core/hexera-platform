@@ -31,6 +31,11 @@ VIA_THE_FILE = "the_file"
 # solid mesher and quadratic tetrahedra in version 1 - selected without a question; the job sheet
 # the user approves names it.
 VIA_FEA_PATH = "the_fea_path"
+# A FLOW PART is meshed by the best engine for it, chosen by the application without a question
+# (Areen, 2026-11-13 - this replaced "recommend, the user picks"): the measured recommendation when
+# there is one, else the engine the model proposed and the capability check let through. The plan
+# card names it; the user's own words ("use cfMesh", in the chat or the notes) still choose another.
+VIA_AUTO = "the_best_fit"
 
 # A PLAIN YES to the application's own question. The question names the engine ("Do you want to
 # select snappyHexMesh?"), so "yes", "ok", "sure" or "go with that" is a complete answer that binds
@@ -104,6 +109,27 @@ _CHOICE = frozenset({"want", "like", "need", "prefer", "choose", "select", "use"
 _ENGINE_WORD = "xengine"
 _PRONOUNS = frozenset({"it", "that", "this"})
 _IDIOMS = ("no problem", "no worries", "why not")
+#: A HEDGE anywhere in a clause makes it no choice: "maybe use cfMesh", "I might use cfMesh", "I wonder if cfMesh
+#: would work" weigh an engine and choose none (review on #465). "use cfMesh if possible" is a choice, so "if" is not one.
+_HEDGES = frozenset({"maybe", "perhaps", "possibly", "probably", "might", "wonder", "wondering", "whether",
+                     "unsure", "consider", "considering", "thinking"})
+#: A clause that opens as a question asks, with or without its question mark: "what if we use cfMesh", "how about
+#: cfMesh", "should I use cfMesh", "could we use cfMesh" - but "could you use cfMesh" is a request, and chooses.
+_ASKING_FIRST = frozenset({"what", "how", "why", "which", "whether"})
+_ASKING_MODALS = frozenset({"should", "shall", "would", "could", "can", "may", "might", "do", "does", "did", "will"})
+#: The only words besides the engine's name a short answer may hold and still be the user's word on it
+#: (user_leans_to): a choice or a yes, a lead-in sound ("hmm, actually cfMesh"), or "rather". Anything else
+#: ("instead of", "without", "except", "maybe") is not known to choose, so it does not.
+_LEAD_INS = frozenset({"hmm", "hm", "hmmm", "um", "umm", "uh", "er", "erm", "oh", "ah", "well", "rather"})
+
+
+def _hedged(clause: list[str]) -> bool:
+    # a clause that weighs or asks about an engine rather than choosing it (_HEDGES, _ASKING_FIRST, _ASKING_MODALS)
+    if any(w in _HEDGES for w in clause):
+        return True
+    if clause and clause[0] in _ASKING_FIRST:
+        return True
+    return len(clause) > 1 and clause[0] in _ASKING_MODALS and clause[1] in ("i", "we")
 
 
 def _norm(text) -> str:
@@ -189,7 +215,7 @@ def _chooses_the_engine(clause: list[str]) -> bool:
     # snappyHexMesh instead", "snappyHexMesh is fine"). Any other word - a negation however far
     # from its verb ("I won't ever use snappyHexMesh"), a hedge ("maybe use snappyHexMesh"), a
     # qualification ("I'll use snappyHexMesh some other time") - makes it no choice at all.
-    if _ENGINE_WORD not in clause:
+    if _ENGINE_WORD not in clause or _hedged(clause):
         return False
     rest = [w for w in clause if w != _ENGINE_WORD and w not in _FILLER]
     return (any(w in _ASSENT or w in _CHOICE for w in rest)
@@ -303,6 +329,34 @@ def user_chose(engine: str, user_texts) -> bool:
     return False
 
 
+def user_leans_to(engine: str, user_texts) -> bool:
+    """Whether the user's latest word on the engine is `engine`: `user_chose`, or a short message of the
+    engine's name with only words known to choose it - a choice or a yes, a lead-in sound, "actually",
+    "instead" (_LEAD_INS): "hmm, actually cfMesh", "cfMesh instead". With no engine question any more
+    (VIA_AUTO), that word is not overruled by the model's pick. Any other word makes it no choice: a
+    mention in a sentence ("I used snappyHexMesh last time"), a hedge ("maybe cfMesh"), or the engine
+    being left ("instead of cfMesh", "without cfMesh") - review on #465, where "any one other word"
+    took "maybe cfMesh" as the user's choice."""
+    if user_chose(engine, user_texts):
+        return True
+    want = (engine or "").strip().lower()
+    for said in reversed(tuple(user_texts or ())):
+        said = str(said or "")
+        named = _vocab.engines_named_in(said, "")
+        if not named:
+            if declines(want, said):
+                return False
+            continue
+        if named != [want] or "?" in said or declines(want, said):
+            return False
+        words = _tokens(want, said, keep_engine=True)
+        if _hedged(words):
+            return False
+        return all(w == _ENGINE_WORD or w in _FILLER or w in _CHOICE_PLAIN or w in _ASSENT or w in _CHOICE
+                   or w in _LEAD_INS for w in words)
+    return False
+
+
 #: What may come before an engine's name to choose it: the choice verbs, and "make it", "switch
 #: to", "change to", "try", "go ahead with".
 _CHOOSING = _CHOICE | frozenset({"make", "switch", "change", "try", "goahead"})
@@ -319,7 +373,7 @@ def _chooses_in(engine: str, message: str) -> bool:
         else:
             clauses[-1].append(w)
     for clause in clauses:
-        if _ENGINE_WORD not in clause:
+        if _ENGINE_WORD not in clause or _hedged(clause):
             continue
         rest = [w for w in clause if w != _ENGINE_WORD and w not in _FILLER]
         if not rest or _chooses_the_engine(clause):
@@ -502,6 +556,45 @@ def choose_listed(sel: dict | None, *, session_id: str, owner_id: str, revision:
         return None
     return {**sel, "id": uuid.uuid4().hex, "engine": engine, "state": CONFIRMED,
             "confirmed_revision": revision, "expires_at": time.time() + CONFIRMED_TTL_S}
+
+
+def switch_by_words(sel: dict | None, *, session_id: str, owner_id: str, revision: str,
+                    latest_user_message: str) -> dict | None:
+    """THE USER'S OWN WORDS OVERRIDE THE ENGINE THE APPLICATION CHOSE. The engine is selected without
+    a question (VIA_AUTO); a message that plainly chooses ONE other registered engine - "use cfMesh",
+    "go with Gmsh" - selects it here, before the model runs. A question, a hedge, two engines or a
+    refusal is left to the model."""
+    if state_of(sel) != CONFIRMED or not sel or sel.get("via") != VIA_AUTO:
+        return None
+    if sel.get("session") != session_id or sel.get("owner") != owner_id:
+        return None
+    message = str(latest_user_message or "")
+    named = _vocab.engines_named_in(message, "")
+    if len(named) != 1 or named[0] == sel.get("engine"):
+        return None
+    engine = named[0]
+    if _only_shortens(str(sel.get("engine") or ""), message, named):
+        return None
+    if "?" in message or declines(engine, message) or not _chooses_in(engine, message):
+        return None
+    out = {**sel, "id": uuid.uuid4().hex, "engine": engine, "state": CONFIRMED,
+           "via": VIA_CONVERSATION, "confirmed_revision": revision,
+           "expires_at": time.time() + CONFIRMED_TTL_S}
+    out.pop("gap_question", None)    # asked of the engine the user has just left behind
+    return out
+
+
+def note_chooses_engine(note: str, current: str) -> str:
+    """A note that plainly chooses ONE engine other than `current` ("use cfMesh"): the chat line that
+    chooses it ("Use cfMesh"); "" otherwise."""
+    text = str(note or "")
+    named = _vocab.engines_named_in(text, "")
+    if len(named) != 1 or named[0] == (current or "").strip().lower():
+        return ""
+    engine = named[0]
+    if "?" in text or declines(engine, text) or not _chooses_in(engine, text):
+        return ""
+    return f"Use {engine_label(engine)}"
 
 
 def verify_confirmed(sel: dict | None, engine: str, *, session_id: str,

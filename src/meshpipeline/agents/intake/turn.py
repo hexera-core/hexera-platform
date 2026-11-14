@@ -45,7 +45,7 @@ REPEAT_NUDGE = (
 #: assumption ..." - the user reads the engine once, in the question that settles it, and in the
 #: summary they approve.
 ENGINE_SETTLED_NUDGE = (
-    "[SYSTEM] The engine is already settled - the user chose it earlier in this conversation. "
+    "[SYSTEM] The engine is already settled earlier in this conversation. "
     "Do not mention it again: no restating it, no 'for the <engine> setup', no 'using <engine>', "
     "no note that it is assumed. Rewrite your reply without any engine name and ask only the "
     "next thing you need."
@@ -58,7 +58,7 @@ ENGINE_UNSETTLED_NUDGE = (
     "[SYSTEM] Do not write an engine into your reply: the user has not chosen one, and the engine "
     "is never assumed or carried as 'unconfirmed'. If you know what the mesh is for, call "
     "propose_engine_selection now with the engine you would use and a one-line `reason` - the "
-    "application asks the user once, in its own words. Otherwise leave the engine out and ask "
+    "application selects the engine itself, asking nobody. Otherwise leave the engine out and ask "
     "the next thing you need."
 )
 
@@ -75,7 +75,7 @@ DEFAULT_NUDGE = (
     "inlet.') - never call it an assumption in the reply - carry it into request_txt as "
     "'assumed, not stated by the user', and continue with the next thing you genuinely need - or "
     "call submit_requirements if nothing required is missing. The two standing exceptions hold: "
-    "the ENGINE is proposed and confirmed, never defaulted (if the open question was the engine, "
+    "the ENGINE is settled by the application, never defaulted by you (if the open question was the engine, "
     "call propose_engine_selection with the one you would use), and the file's UNIT is asked, "
     "never guessed."
 )

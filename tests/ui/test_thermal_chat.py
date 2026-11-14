@@ -38,7 +38,7 @@ def test_the_thermal_declaration_shows_as_confirmed_on_the_panel(live):
     assert "input_kind" not in thermal and "mesh_fidelity" not in thermal
     assert "for a conjugate heat-transfer solve" in thermal and "Detail level: Standard" in thermal
     assert not FORBIDDEN.search(thermal) and "flows through" not in thermal
-    assert plain.startswith("Confirmed on the picture: the file is the fluid volume itself")
+    assert plain.startswith("**✓ Confirmed**") and "input_kind" not in plain and "Flow through it" in plain
 
 
 def test_the_brief_of_a_thermal_model_opens_with_its_job_sheet(live):

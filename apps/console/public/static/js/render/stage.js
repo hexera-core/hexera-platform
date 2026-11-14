@@ -516,43 +516,6 @@ export const Stage = {
     cv.onmousemove=(e)=>{const id=at(e);cv.title=id?name(id):'';cv.style.cursor=id&&this._pmOpen!=null?'pointer':'';};
     cv.onclick=(e)=>{e.stopPropagation();this._pmClick(at(e));};},
 
-  /* THE ENGINE CHOICE, under the one engine question. Every engine that can take the uploaded file,
-     best measured fit first: its fit, the plain-words reason (how it did in the lab on shapes measured
-     to be like this one) and a button that picks it. The recommendation is marked, never pre-picked:
-     the user chooses, and the click is sent as their own words ("Use cfMesh") so the conversation
-     records the choice. One card per open question; a turn that closes the question (a reply with
-     no choice) retires the old card's buttons. */
-  engineChoice(c,pick){
-    const old=this._ecEl;
-    const engines=(c&&c.engines)||[];
-    if(!engines.length){
-      if(old){old.querySelectorAll('button').forEach(b=>{b.disabled=true;});
-        old.querySelector('.eng-choice')?.classList.add('done');}
-      return;}
-    if(old)old.remove();
-    this.clearEmpty();
-    const rows=engines.map((e,i)=>{
-      const cls=['ec-row'];if(e.recommended)cls.push('rec');if(e.outside)cls.push('out');
-      const badge=e.recommended?'<span class="ec-badge">Recommended</span>':'';
-      return `<div class="${cls.join(' ')}" data-engine="${esc(e.engine)}">`
-        +`<div class="ec-top"><span class="ec-name">${esc(e.label||e.engine)}</span>${badge}`
-        +`<span class="ec-fit">${esc(e.fit||'')}</span></div>`
-        +`<div class="ec-why">${esc(e.reason||'')}</div>`
-        +(e.heads_up?`<div class="ec-note">Heads-up: ${esc(e.heads_up)}</div>`:'')
-        +`<button type="button" class="ec-pick" data-i="${i}">Use ${esc(e.label||e.engine)}</button></div>`;}).join('');
-    const shape=c.shape?`<div class="ec-shape">This looks like ${esc(c.shape)}.</div>`:'';
-    const g=document.createElement('div');g.className='im assistant';
-    g.innerHTML=`<div class="eng-choice" role="group" aria-label="Choose the mesh engine">`
-      +`<div class="ec-h">Pick the mesh engine</div>${shape}${rows}`
-      +`<div class="ec-foot">Ranked by how each engine did in our lab on shapes measured to be like this one. You choose.</div></div>`;
-    g.querySelectorAll('.ec-pick').forEach(b=>b.addEventListener('click',()=>{
-      const e=engines[Number(b.dataset.i)]||{};
-      g.querySelectorAll('.ec-pick').forEach(x=>{x.disabled=true;});
-      b.closest('.ec-row').classList.add('picked');
-      g.querySelector('.eng-choice').classList.add('done');
-      if(pick)pick(e.reply||('Use '+(e.label||e.engine)));}));
-    this.col().appendChild(g);this._ecEl=g;this.scrollBottom();},
-
   /* THE GEOMETRY CHECK AS A CARD: the fallback when the 3D stage cannot open (no skin stored,
      no WebGL). The hero is the solid angled view - the translucent overview is drawn for the
      vision model, not for people - and the form is the same one the stage shows. One card per
@@ -1086,9 +1049,10 @@ export const Stage = {
     r.innerHTML=`<div class="e-rat"><div class="rat-c">${esc(ev.conclusion||'')}</div>`
       +(ev.because?`<div class="rat-w">${esc(ev.because)}</div>`:'')+`</div>`;
     n.body.appendChild(r);this.scroll(n);},
-  // THE REVIEWER'S PICTURES: one small grid under the reviewer's steps, three to a row, filled as
-  // the pictures arrive. It sits outside the scrolling step list, so a picture is never pushed out
-  // of sight by the steps that follow it; past a few rows the grid scrolls on its own.
+  // THE REVIEWER'S PICTURES: one small grid in the review row, three to a row, filled as the
+  // pictures arrive. It sits IN VIEW, under the row's own lines and above its steps: the steps are
+  // folded by default (.tl-body is hidden until the row is opened), and a grid put in there was
+  // drawn but never seen. Past a few rows the grid scrolls on its own.
   screenshot(b64){const n=this.node('reviewer');
     // a live event can arrive twice; the same render must not stack up. A PNG's last bytes hold
     // its final data checksum, so two different renders of the same size are still told apart.
@@ -1098,7 +1062,7 @@ export const Stage = {
     n.shots.add(k);
     if(!n.gallery){const g=document.createElement('div');g.className='e-shots';
       g.innerHTML='<div class="e-shots-h">Pictures<span class="e-shots-n"></span></div><div class="e-shots-grid"></div>';
-      n.el.querySelector('.tl-body').appendChild(g);
+      n.el.insertBefore(g,n.el.querySelector('.tl-body'));
       n.gallery={count:g.querySelector('.e-shots-n'),grid:g.querySelector('.e-shots-grid')};}
     const {grid,count}=n.gallery;
     // follow the newest picture only when the reader is not looking further up the grid
