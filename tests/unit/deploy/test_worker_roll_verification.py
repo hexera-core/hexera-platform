@@ -44,6 +44,7 @@ if has("add-iam-policy-binding") and (has("artifacts repositories") or has("stor
     sys.exit(1)
 if has("get-ancestors-iam-policy") or has("artifacts repositories get-iam-policy") or has("storage buckets get-iam-policy"):
     key = "FAKE_ANCESTORS" if has("ancestors") else "FAKE_REPO_POLICY" if has("artifacts") else "FAKE_BUCKET_POLICY"
+    if has("get-ancestors-iam-policy 999"): key = "FAKE_ANCESTORS_999"
     if key not in os.environ: sys.exit(1)
     out(os.environ[key])
 if has("instance-templates create"):
@@ -71,6 +72,8 @@ if has("instance-groups managed list-instances"):
              "version": {"instanceTemplate": "https://x/global/instanceTemplates/" + (tpl if i["tpl"] == "NEW" else i["tpl"])}}
             for i in json.loads(spec)]
     out(json.dumps(rows))
+if has("get-guest-attributes") and os.environ.get("FAKE_GA_DENIED"):
+    print("ERROR: (gcloud.compute.instances.get-guest-attributes) PERMISSION_DENIED", file=sys.stderr); sys.exit(1)
 if has("get-guest-attributes"):
     spec = os.environ.get("FAKE_GA_AFTER" if os.path.exists(forced) and "FAKE_GA_AFTER" in os.environ
                           else after_recreate("FAKE_GA"), "{}")
@@ -83,6 +86,7 @@ if has("instance-groups managed describe"):
     if has("instanceTemplate"): out(os.environ.get("FAKE_LIVE_TEMPLATE", "t-workers-tpl-old"))
     sys.exit(0)
 if has("auth print-access-token"): out("fake-token")
+if has("storage buckets describe") and has("--raw"): out(os.environ.get("FAKE_BUCKET_OWNER", "224734058693"))
 if has("storage objects describe") or has("storage buckets describe"): sys.exit(0)
 sys.exit(0)
 '''
@@ -401,3 +405,25 @@ def test_a_grant_that_may_or_may_not_apply_warns_rather_than_passing_or_dying(ru
                       fake_env={"FAKE_BOOT_GRANTS_REFUSED": "1", **policies})
     assert done.returncode == 0, done.stderr
     assert "could not read" in done.stderr and "already granted" not in done.stdout
+
+
+
+def test_guest_attributes_this_identity_cannot_read_never_get_a_vm_recreated(run):
+    done, calls = run([{"name": "t-workers-a1", "tpl": "NEW", "id": "1"}], {},
+                      extra={"WORKER_ROLL_TIMEOUT_SECONDS": "3"},
+                      fake_env={"FAKE_GA_DENIED": "1", "FAKE_SERIAL": _CLEAN_BOOT})
+    assert done.returncode != 0
+    assert not _recreates(calls) and "get-serial-port-output" not in calls
+
+
+def test_a_settings_bucket_in_another_project_is_judged_by_that_projects_policies(run):
+    # this project's policies hold nothing for the worker; the bucket's own project grants it
+    owner = json.dumps([{"type": "project", "policy": {"bindings": [
+        {"role": "roles/storage.objectViewer", "members": [_SA]}]}}])
+    done, calls = run([{"name": "t-workers-a1", "tpl": "NEW"}], _HEALTHY, fake_env={
+        "FAKE_BOOT_GRANTS_REFUSED": "1", "FAKE_BUCKET_OWNER": "999",
+        "FAKE_REPO_POLICY": json.dumps({"bindings": [{"role": "roles/artifactregistry.reader", "members": [_SA]}]}),
+        "FAKE_BUCKET_POLICY": _EMPTY, "FAKE_ANCESTORS": "[]", "FAKE_ANCESTORS_999": owner})
+    assert done.returncode == 0, done.stderr
+    assert "get-ancestors-iam-policy 999" in calls
+    assert "may read gs://fake-bucket/worker.env" in done.stdout

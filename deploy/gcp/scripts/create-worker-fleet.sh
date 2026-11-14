@@ -648,11 +648,22 @@ if gcloud storage buckets add-iam-policy-binding "gs://${_worker_env_bucket}" --
      --member "serviceAccount:${WORKER_SA_EMAIL}" --role roles/storage.objectViewer >/dev/null; then
   log "gs://${_worker_env_bucket} += roles/storage.objectViewer -> ${WORKER_SA_EMAIL}"
 else
+  # project-level grants count only from the project that owns the bucket; an owner not
+  # established leaves them unproven
+  _bucket_ancestors=""
+  _bucket_owner="$(gcloud storage buckets describe "gs://${_worker_env_bucket}" --project "${GCP_PROJECT_ID}" \
+    --raw --format='value(projectNumber)' 2>/dev/null || true)"
+  _own_number="${GCP_PROJECT_NUMBER:-$(gc projects describe "${GCP_PROJECT_ID}" --format='value(projectNumber)' 2>/dev/null || true)}"
+  if [ -n "${_bucket_owner}" ] && [ "${_bucket_owner}" = "${_own_number}" ]; then
+    _bucket_ancestors="${_ancestors_policy}"
+  elif [ -n "${_bucket_owner}" ]; then
+    _bucket_ancestors="$(gc projects get-ancestors-iam-policy "${_bucket_owner}" --format=json 2>/dev/null || true)"
+  fi
   _boot_access "read ${WORKER_ENV_URI}" storage.objects.get \
     roles/storage.objectViewer,roles/storage.objectUser,roles/storage.objectAdmin,roles/storage.admin,roles/storage.legacyObjectReader,roles/storage.legacyObjectOwner,roles/viewer,roles/editor,roles/owner \
     "${_cmd}" \
     "$(gcloud storage buckets get-iam-policy "gs://${_worker_env_bucket}" --project "${GCP_PROJECT_ID}" --format=json 2>/dev/null || true)" \
-    "${_ancestors_policy}"
+    "${_bucket_ancestors}"
 fi
 [ -z "${_boot_missing}" ] || die "${WORKER_SA_EMAIL}, which every worker runs as, cannot boot a worker. Its IAM
    policies show no grant for:
@@ -1065,7 +1076,7 @@ fi
 #
 #    A GROUP AT ZERO is done at once: the next VM the autoscaler starts boots from ${TEMPLATE}.
 _roll_verdict_py='
-import json, sys, time
+import json, os, sys, time
 instances_file, attrs_dir, template, image, max_age, progress_file, silent_file = sys.argv[1:8]
 with open(instances_file) as fh:
     text = fh.read().strip()
@@ -1094,7 +1105,8 @@ for inst in instances:
     beat = attrs.get("heartbeat", "")
     if not beat.isdigit():
         problems.append("its watchdog has published nothing yet (or its guest attributes cannot be read)")
-        silent.append("%s %s" % (name, inst.get("id") or "-"))
+        if not os.path.exists(f"{attrs_dir}/{name}.unreadable"):
+            silent.append("%s %s" % (name, inst.get("id") or "-"))
     elif now - int(beat) > float(max_age):
         problems.append(f"its watchdog last reported {now - int(beat):.0f}s ago")
     for label in ("worker", "geometry"):
@@ -1181,9 +1193,13 @@ text = open(sys.argv[1]).read().strip()
 for i in (json.loads(text) if text else []):
     print(i.get("name") or str(i.get("instance", "")).rsplit("/", 1)[-1])
 ' "${_roll_dir}/instances.json"); do
-      gc compute instances get-guest-attributes "${_vm}" --zone "${WORKER_MIG_ZONE}" \
-        --query-path "hexera/" --format=json > "${_roll_dir}/${_vm}.json" 2>/dev/null \
-        || echo '[]' > "${_roll_dir}/${_vm}.json"
+      rm -f "${_roll_dir}/${_vm}.unreadable"
+      if ! gc compute instances get-guest-attributes "${_vm}" --zone "${WORKER_MIG_ZONE}" \
+           --query-path "hexera/" --format=json > "${_roll_dir}/${_vm}.json" 2> "${_roll_dir}/${_vm}.err"; then
+        echo '[]' > "${_roll_dir}/${_vm}.json"
+        # nothing published yet is a 404; anything else is a read that failed, not a silent VM
+        grep -qiE "404|not ?found" "${_roll_dir}/${_vm}.err" || : > "${_roll_dir}/${_vm}.unreadable"
+      fi
     done
   fi
   _verdict_rc=0
