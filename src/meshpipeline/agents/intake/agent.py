@@ -1266,11 +1266,6 @@ async def node_intake(state: PipelineState) -> dict:
     # reads the ranking, and the one engine question proposes its best engine with the evidence.
     _recommendation = await _measured_recommendation(state, state.get("messages", []))
     system += measured_choice.prompt_block(_recommendation, settled=False)
-    # THE CELL-LIMIT QUESTION, once asked, and how its answer reaches the run
-    _gate_now = state.get("intake_gate")
-    _sel_now = _gate_now.get("selection") if isinstance(_gate_now, Mapping) else None
-    system += measured_choice.gap_answer_block(
-        str(_sel_now.get("gap_question") or "") if isinstance(_sel_now, Mapping) else "")
     # WHAT THE APPLICATION KNOWS, on every turn: the user's notes, the delivered files' unit and the
     # mesh's size (or that it is not computed yet) - the chat answers from these, never a guess
     from meshpipeline.agents.intake import chat_facts

@@ -38,8 +38,11 @@ NOTE-7  the reading: one strict-schema call, every entry checked - the quote is 
         is in the quote, the unit is the one the user states (mm, cm, m, inch, micron; a multiple of the global
         size; none stated: the unit the notes give once for all, else millimetres, said), the direction is the
         measure's own, the outer limit lies past the target, ranges are sane, two entries for one thing keep the
-        first, the shortest edge is not over the longest. What fails is dropped and told in plain words.
-NOTE-8  what fits no field is "not applied" and told; never silently dropped.
+        LATEST written (the earlier one is not told back as a fault), a number the user names as the one being
+        replaced ("3 layers instead of 8") is no request, the shortest edge is not over the longest. What fails is
+        dropped and told in plain words.
+NOTE-8  what fits no field is "not applied" and told; never silently dropped. A clause that asks nothing (no
+        quantity, no mesh term, nothing named: "the rest looks good") is not a requirement and is not told.
 NOTE-9  no words: no model call and an empty set; no answer and none saved: an empty set, and said.
 NOTE-10 the flow fields of the same reading (a count, layers, a size at the walls, sizes in a place, three more flow
         measures, the flow's numbers for a y+), checked the same way; every flow engine applies them
@@ -52,6 +55,7 @@ NOTE-11 a shell element kind written in a few fixed phrases ("triangles only", "
 from __future__ import annotations
 
 import asyncio
+import bisect
 import hashlib
 import json
 import logging
@@ -226,9 +230,12 @@ words for it, copied exactly (one line or phrase, as short as holds the whole re
   "elsewhere": ONLY shell or solid (what to mesh the part as). "not_mesh": loads, supports, materials, the
   analysis, the flow's physics (velocity, fluid, Reynolds number, turbulence model, wall functions, inlet and outlet
   conditions), the solver or file format the mesh is for ("mesh for Fluent", "OpenFOAM format": the export is chosen
-  at download), greetings, thanks, "use your defaults", headings, anything that asks nothing of the mesh.
+  at download), greetings, thanks, "use your defaults", headings, a yes or a verdict on what was proposed ("looks
+  good", "the rest is right", "yes that's right"), anything that asks nothing of the mesh.
 When the notes give the SAME thing twice ("5 layers. Actually 10 layers."), list BOTH entries, in the order written:
-the first one is kept and the second told.
+the LATEST one is kept (the user changed their mind).
+A number the user names as the one being REPLACED ("3 prism layers instead of 8", "3 layers, not 8", "2 mm rather
+than 5 mm") is not a request: list only the value they ask for (3, 3, 2).
 An empty note, or one with no mesh requirement: empty lists (other still lists what was written)."""
 
 
@@ -475,6 +482,66 @@ def _left_over(notes: str, quotes: list[str]) -> list[str]:
     return out
 
 
+#: THE VALUE BEING REPLACED (NOTE-7): "3 prism layers instead of 8", "3 layers, not 8", "2 mm rather than 5 mm", "in
+#: place of 8", "replacing the 8", "from 8 to 3" - the number after these words (before "to", for "from N to M") is the
+#: one the user is changing, never a second request. Founder's run, 14 Nov: "3 prism layers instead of 8" was read as
+#: two layer counts and the 8 told back as "a second layer count".
+_REPLACED = re.compile(
+    r"\b(?:instead\s+of|rather\s+than|in\s+place\s+of|replacing|not)\s+(?:the\s+|a\s+|an\s+|your\s+|our\s+)?"
+    r"(?:(?:current|planned|proposed|suggested|default|usual|old|original|earlier)\s+)?"
+    r"(\d+(?:[.,]\d+)?\s*(?:k|thousand|m|mio|mn|million|millions)?)(?![\w.])"
+    r"|\bfrom\s+(\d+(?:[.,]\d+)?\s*(?:k|thousand|m|mio|mn|million|millions)?)\s+(?:[a-z]+\s+){0,2}?to\s+\d", re.I)
+
+
+def replaced_numbers(quote: str) -> list[float]:
+    """The numbers the user's words name as the value being replaced (_REPLACED), as written and with a count's
+    multiplier ("instead of 8 million" is both 8 and 8,000,000): an entry of one of these is not a request."""
+    out: list[float] = []
+    for m in _REPLACED.finditer(_DASHES.sub("-", str(quote or ""))):
+        out += _counts(m.group(1) or m.group(2) or "")
+    return out
+
+
+#: THE WORDS A CLAUSE THAT ASKS NOTHING IS MADE OF (NOTE-8's floor): a yes, a verdict on what was proposed, and the
+#: small words that hold them together. Founder's run, 14 Nov: "the rest looks good" was told back as "Not applied:
+#: ... no mesh setting of ours matches it yet". A clause is a requirement only when it carries a quantity, a mesh term
+#: or a word outside this closed vocabulary (a part, a place, a feature) - so this is the vocabulary of a clause, not
+#: a list of phrases.
+_FILLER_WORDS = frozenset("""
+    a about all also am and any anything are as at be been but by can could did do does doing done else even every
+    everything for from go going good great had has have here i i'd i'm id im in is it it's its just keep let let's
+    lets like look looking looks me more my nice no nothing now of ok okay on only or other otherwise our perfect
+    please really rest right same seem seems so sound sounds still sure than that that's thats the them then there
+    these thing things this those to too us very was we well were what whatever which with yes yeah yep you your
+    agree agreed approve approved fine correct cool lovely excellent awesome happy thanks thank cheers proceed
+    continue carry ahead stay stays remain remains want wanted should would will can't cannot don't dont
+    """.split())
+#: ...and the words that make a clause about the mesh, whatever else it holds (wider than _MESH_WORDS, which only
+#: decides which left-over words are told)
+_MESH_TERMS = re.compile(r"\b(?:mesh\w*|cells?|elements?|nodes?|sizes?|sized|layers?|prism\w*|inflation|y\+|yplus|"
+                         r"wall|walls|boundary|grid|resolution|resolve\w*|refine\w*|finer|coarser|coarse|detail\w*|"
+                         r"quality|skew\w*|orthogonal\w*|aspect|jacobian|warp\w*|quads?|trias?|triangles?|tets?|hex\w*|"
+                         r"gaps?|thickness|edges?|growth|count|budget)\b", re.I)
+_NUMBER_WORDS = tuple(w for w in _WORDS if w != "no")
+
+
+def asks_nothing(text: str) -> bool:
+    """Whether a clause of the user's words asks nothing of the mesh: no quantity (a digit or a number written as a
+    word), no mesh term, and every word of it from the vocabulary a yes or a verdict is made of (_FILLER_WORDS) -
+    "the rest looks good", "yes that's right", "looks good". A whole quote asks nothing when each of its clauses does."""
+    t = _norm(text).replace("’", "'")
+    clauses = [c for c in re.split(r"[,.;:!?()]+|\s+-\s+|\b(?:and|but)\b", t) if c.strip()]
+    if not clauses:
+        return False
+    for c in clauses:
+        if re.search(r"\d", c) or _MESH_TERMS.search(c) or any(re.search(rf"\b{w}\b", c) for w in _NUMBER_WORDS):
+            return False
+        words = re.findall(r"[a-z][a-z']*", c)
+        if not words or any(w not in _FILLER_WORDS for w in words):
+            return False
+    return True
+
+
 #: "no triangles", "without quads", "avoid trias": the user's words say which kind is NOT wanted
 _NO_KIND = re.compile(r"\b(?:no|without|avoid|zero|never|not)\s+(?:\w+\s+){0,2}?(tri\w*|quad\w*)", re.I)
 
@@ -671,12 +738,39 @@ def _length_mm(value: float, unit: str, quote: str, stated: str) -> tuple[float,
     return value * UNITS_MM[used if used in UNITS_MM else "mm"], used if used in UNITS_MM else "none"
 
 
-def _flow_fields(raw: Mapping, out: dict, quoted, row, dropped: list[str], stated: str, *, cells: bool) -> None:
+def _replaced_only(swapped: Mapping[str, tuple[str, str]], kept, dropped: list[str]) -> None:
+    """An entry read only as the value the user is replacing ("instead of 8"), with nothing else read for its field:
+    told, so the user's line is never silently left out (NOTE-8). `swapped`: field -> (what it was, the quote)."""
+    for field, (said, quote) in swapped.items():
+        if field not in kept:
+            dropped.append(f'"{_short(quote)}": {said} is the value your words replace, and nothing else was read '
+                           "from them: not applied")
+
+
+def _seq(e: Mapping) -> int:
+    """The rank of an entry in the order the user wrote it (set by _check's `order`)."""
+    try:
+        return int(e.get("_seq") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _later(earlier: str, quote: str) -> None:
+    """THE LATEST ONE WINS (NOTE-7): the user changed their mind, so the later value is the one in force and the
+    earlier one is not told back as a fault - only kept in the log."""
+    logger.info("mesh requirements: %r replaced by the later %r", _short(earlier), _short(quote))
+
+
+def _flow_fields(raw: Mapping, out: dict, quoted, row, dropped: list[str], stated: str, *, cells: bool,
+                 order=None) -> None:
     """NOTE-10: the flow fields of the reading, checked like the sizes - the quote is the user's, every number is in
-    it, the unit is theirs, ranges are sane, the first of two is kept, contradictions are told."""
+    it, the unit is theirs, ranges are sane, the LATEST of two is kept (`order` puts the entries in the order the
+    user wrote them), a number named as the one being replaced is no request, contradictions are told."""
+    order = order or (lambda rows: rows)
     # a cell count: a target, a ceiling, a floor
     counts: dict[str, tuple[float, str]] = {}
-    for e in _rows_of(raw, "counts"):
+    swapped: dict[str, tuple[str, str]] = {}
+    for e in order(_rows_of(raw, "counts")):
         got = quoted(e)
         if got is None:
             continue
@@ -686,20 +780,47 @@ def _flow_fields(raw: Mapping, out: dict, quoted, row, dropped: list[str], state
             dropped.append(f"{tag}: not a cell count this step reads: not applied")
         elif value is None or not _in_quote(value, _counts(quote)):
             dropped.append(f"{tag}: the count {e.get('value')!r} is not in those words: not applied")
+        elif _in_quote(value, replaced_numbers(quote)):
+            swapped.setdefault(what, (_count(value), quote))
         elif not (COUNT_RANGE[0] <= value <= COUNT_RANGE[1]):
             dropped.append(f"{tag}: {_count(value)} cells is not a mesh size anyone means: not applied")
-        elif what in counts:
-            dropped.append(f"{tag}: a second cell count {what} - the first one written is kept")
         else:
-            counts[what] = (float(round(value)), quote)
-    lo, hi, mid = (counts.get(k, (None, ""))[0] for k in ("floor", "ceiling", "target"))
+            if what in counts:
+                _later(counts[what][1], quote)
+            counts[what] = (float(round(value)), quote, _seq(e), e.get("_note", 0))
+    _replaced_only(swapped, counts, dropped)
+
+    def later_of(a: str, b: str) -> str | None:
+        """Of two count fields that disagree, written in DIFFERENT notes, the one written later (the user changed
+        their mind); None when one note says both (a contradiction in one breath, told)."""
+        if counts[a][1] == counts[b][1] or counts[a][3] == counts[b][3]:
+            return None
+        return a if counts[a][2] > counts[b][2] else b
+
+    lo, hi, mid = (counts.get(k, (None, "", 0, 0))[0] for k in ("floor", "ceiling", "target"))
     if lo is not None and hi is not None and lo >= hi:
-        dropped.append(f"at least {_count(lo)} and at most {_count(hi)} cells cannot both hold: neither is applied")
-        counts.pop("floor"), counts.pop("ceiling")
-        lo = hi = None
-    if mid is not None and ((hi is not None and mid > hi) or (lo is not None and mid < lo)):
-        dropped.append(f"about {_count(mid)} cells is outside the range the notes give: the range is applied")
-        counts.pop("target")
+        keep = later_of("floor", "ceiling")
+        if keep is None:
+            dropped.append(f"at least {_count(lo)} and at most {_count(hi)} cells cannot both hold: neither is applied")
+            counts.pop("floor"), counts.pop("ceiling")
+        else:
+            gone = "ceiling" if keep == "floor" else "floor"
+            _later(counts[gone][1], counts[keep][1])
+            counts.pop(gone)
+        lo, hi = (counts.get(k, (None, "", 0, 0))[0] for k in ("floor", "ceiling"))
+    for bound, off in (("ceiling", mid is not None and hi is not None and mid > hi),
+                       ("floor", mid is not None and lo is not None and mid < lo)):
+        if not off or "target" not in counts or bound not in counts:
+            continue
+        if later_of("target", bound) == bound or later_of("target", bound) is None:
+            if later_of("target", bound) is None:
+                dropped.append(f"about {_count(mid)} cells is outside the range the notes give: the range is applied")
+            else:
+                _later(counts["target"][1], counts[bound][1])
+            counts.pop("target")
+        else:
+            _later(counts[bound][1], counts["target"][1])
+            counts.pop(bound)
     for what in COUNTS:
         if what in counts:
             out["cells"][what] = counts[what][0]
@@ -707,7 +828,8 @@ def _flow_fields(raw: Mapping, out: dict, quoted, row, dropped: list[str], state
 
     # the boundary layers
     lay: dict[str, tuple[float, float | None, str, str]] = {}
-    for e in _rows_of(raw, "layers"):
+    swapped = {}
+    for e in order(_rows_of(raw, "layers")):
         got = quoted(e)
         if got is None:
             continue
@@ -722,8 +844,8 @@ def _flow_fields(raw: Mapping, out: dict, quoted, row, dropped: list[str], state
                                                                                         quote, re.I))):
             dropped.append(f"{tag}: the number {e.get('value')!r} is not in those words: not applied")
             continue
-        if what in lay:
-            dropped.append(f"{tag}: a second {_LAYER_NAMES[what]} - the first one written is kept")
+        if value and _in_quote(value, replaced_numbers(quote)):
+            swapped.setdefault(what, (_g(value), quote))
             continue
         mm = None
         if what == "count":
@@ -743,7 +865,10 @@ def _flow_fields(raw: Mapping, out: dict, quoted, row, dropped: list[str], state
         elif not (Y_PLUS_RANGE[0] <= value <= Y_PLUS_RANGE[1]):
             dropped.append(f"{tag}: a y+ of {_g(value)} is not one anyone aims at: not applied")
             continue
+        if what in lay:
+            _later(lay[what][3], quote)
         lay[what] = (float(value), mm, unit, quote)
+    _replaced_only(swapped, lay, dropped)
     if "count" in lay and int(lay["count"][0]) == 0 and len(lay) > 1:
         dropped.append("the notes ask for no boundary layers and also set them: no layers is kept, the rest is not "
                        "applied")
@@ -858,13 +983,46 @@ def _check(arguments: str, notes: str, route: str = "") -> tuple[dict, list[str]
         covered.append(quote)
         return quote, _numbers(quote)
 
+    made = [0]
+
     def row(field: str, quote: str, asked: str) -> str:
-        rid = f"r{len(out['rows']) + 1}"
+        made[0] += 1
+        rid = f"r{made[0]}"
         out["rows"].append({"id": rid, "field": field, "quote": quote, "asked": asked})
         return rid
 
-    # sizes: the global size first (the others may be multiples of it)
-    sizes = _rows_of(raw, "sizes")
+    def unrow(*fields: str, rid: str = "") -> None:
+        """A value replaced by a later one (NOTE-7, the latest wins): its row goes (ids are never reused)."""
+        out["rows"] = [r for r in out["rows"] if r["field"] not in fields and r["id"] != rid]
+
+    def at(e: Mapping) -> int:
+        """Where the user wrote an entry's quote in the notes (their notes in the order they were written), so the
+        latest of two is the one kept; an entry whose quote is not found keeps the model's order after the rest."""
+        q = _squash(" ".join(str(e.get("quote") or "").split()))
+        i = squashed.find(q) if len(q) >= 2 else -1
+        if i < 0:
+            near = _locate(str(e.get("quote") or ""), notes)
+            i = squashed.find(_squash(near)) if near else -1
+        return i if i >= 0 else len(squashed) + 1
+
+    # where each of the user's notes starts, in the same squashed text (a note is one message or one box entry)
+    starts, run = [], 0
+    for block in re.split(r"(?=\[n\d+\] \()", str(notes or "")):
+        starts.append(run)
+        run += len(_squash(block))
+
+    def order(rows: list[dict]) -> list[dict]:
+        """The entries in the order the user wrote them (ties: the model's order), each marked with that rank and
+        the note it was written in."""
+        ranked = sorted(enumerate(rows), key=lambda p: (at(p[1]), p[0]))
+        for n, (_i, e) in enumerate(ranked):
+            e["_seq"] = n
+            e["_note"] = bisect.bisect_right(starts, at(e)) - 1
+        return [e for _i, e in ranked]
+
+    # sizes: the global size first (the others may be multiples of it), each kind in the order written
+    sizes = order(_rows_of(raw, "sizes"))
+    sizes_swapped: dict[str, tuple[str, str]] = {}
     pending: list[tuple[str, float, float | None, str, float, str]] = []
     for e in sorted(sizes, key=lambda e: 0 if str(e.get("what")) == "global" else 1):
         got = quoted(e)
@@ -883,16 +1041,19 @@ def _check(arguments: str, notes: str, route: str = "") -> tuple[dict, list[str]
         if value is None or value <= 0 or not _in_quote(value, numbers):
             dropped.append(f"{tag}: the number {e.get('value')!r} is not in those words: not applied")
             continue
+        if _in_quote(value, replaced_numbers(quote)):
+            sizes_swapped.setdefault(what, (_g(value), quote))
+            continue
         key = {"global": "global_mm", "min_edge": "min_edge_mm", "max_edge": "max_edge_mm", "growth": "growth",
                "thickness": "thickness_mm", "near_wall": "near_wall_mm"}[what]
-        if out["sizes"][key] is not None or any(p[0] == what for p in pending):
-            dropped.append(f"{tag}: a second {what.replace('_', ' ')} - the first one written is kept")
-            continue
         if what == "growth":
             if not (GROWTH_RANGE[0] < value <= GROWTH_RANGE[1]):
                 dropped.append(f"{tag}: a growth of {_g(value)} is not between {_g(GROWTH_RANGE[0])} and "
                                f"{_g(GROWTH_RANGE[1])}: not applied")
                 continue
+            if out["sizes"]["growth"] is not None:
+                _later(next((r["quote"] for r in out["rows"] if r["field"] == "growth"), ""), quote)
+                unrow("growth")
             out["sizes"]["growth"] = float(value)
             row("growth", quote, _size_words("growth", 0.0, None, "none", value, cells=flow))
             continue
@@ -917,8 +1078,15 @@ def _check(arguments: str, notes: str, route: str = "") -> tuple[dict, list[str]
                 dropped.append(f"{tag}: {_g(mm)} mm is not an element size anyone means: not applied")
                 continue
             unit = used
+        earlier = next((p for p in pending if p[0] == what), None)
+        if earlier is not None:
+            # THE LATEST ONE WINS (NOTE-7): "mesh at 5 mm. actually mesh at 8 mm" is 8 mm
+            _later(earlier[5], quote)
+            pending.remove(earlier)
         out["sizes"][key] = float(mm)
         pending.append((what, mm, multiple, unit, value, quote))
+    _replaced_only(sizes_swapped, {p[0] for p in pending} | ({"growth"} if out["sizes"]["growth"] is not None
+                                                              else set()), dropped)
     s = out["sizes"]
     # contradictions: the shortest edge over the longest, or the global size outside them
     lo, hi, glob = s["min_edge_mm"], s["max_edge_mm"], s["global_mm"]
@@ -945,10 +1113,10 @@ def _check(arguments: str, notes: str, route: str = "") -> tuple[dict, list[str]
         row(what, quote, words)
     # NOTE-10: the count, the boundary layers and the sizes in a place - read the same on every route (the route
     # that applies the set says what it does with each, and what it cannot)
-    _flow_fields(raw, out, quoted, row, dropped, stated, cells=flow)
+    _flow_fields(raw, out, quoted, row, dropped, stated, cells=flow, order=order)
 
-    # the element kind
-    for e in _rows_of(raw, "element_kind"):
+    # the element kind - of two, the one written later (NOTE-7)
+    for e in order(_rows_of(raw, "element_kind")):
         got = quoted(e)
         if got is None:
             continue
@@ -959,17 +1127,21 @@ def _check(arguments: str, notes: str, route: str = "") -> tuple[dict, list[str]
             dropped.append(f"{tag}: not an element kind this step reads: not applied")
         elif what in ("quads_only", "triangles_only"):
             want = "quads" if what == "quads_only" else "triangles"
-            if k["shell"] is not None and k["shell"] != want:
-                dropped.append(f"{tag}: the notes ask for both quads only and triangles only - the first one "
-                               "written is kept")
-            elif k["shell"] is None:
+            if k["shell"] != want:
+                if k["shell"] is not None:
+                    _later(next((r["quote"] for r in out["rows"] if r["field"] in ("quads_only", "triangles_only")),
+                                ""), quote)
+                    unrow("quads_only", "triangles_only")
                 k["shell"] = want
                 row(what, quote, KIND_WORDS[want])
         elif what in PATTERNS:
-            # SHMESH-43: the pattern - the first one written is kept
-            if k.get("structure") is not None and k["structure"] != PATTERNS[what]:
-                dropped.append(f"{tag}: the notes ask for two mesh patterns - the first one written is kept")
-            elif k.get("structure") is None:
+            # SHMESH-43: the pattern - the one written later; "no washers" beside a free mesh is part of it
+            if k.get("structure") == "free" and PATTERNS[what] == "no_washers":
+                continue
+            if k.get("structure") != PATTERNS[what]:
+                if k.get("structure") is not None:
+                    _later(next((r["quote"] for r in out["rows"] if r["field"] in PATTERNS), ""), quote)
+                    unrow(*PATTERNS)
                 k["structure"] = PATTERNS[what]
                 row(what, quote, {"free": "a free mesh: no washers round holes, no mapped faces",
                                   "no_washers": "no washers round holes",
@@ -978,12 +1150,18 @@ def _check(arguments: str, notes: str, route: str = "") -> tuple[dict, list[str]
             p = _f(e.get("value"))
             if p is None or not (0.0 <= p <= 100.0) or not _in_quote(p, numbers):
                 dropped.append(f"{tag}: the percent {e.get('value')!r} is not in those words: not applied")
-            elif k["tria_percent_max"] is None:
+            elif _in_quote(p, replaced_numbers(quote)):
+                continue
+            else:
+                if k["tria_percent_max"] is not None:
+                    _later(next((r["quote"] for r in out["rows"] if r["field"] == what), ""), quote)
+                    unrow(what)
                 k["tria_percent_max"] = float(p)
                 row(what, quote, f"at most {_g(p)}% triangles")
-        elif k["order"] is not None and k["order"] != what:
-            dropped.append(f"{tag}: the notes ask for both linear and quadratic elements - the first one written is kept")
-        elif k["order"] is None:
+        elif k["order"] != what:
+            if k["order"] is not None:
+                _later(next((r["quote"] for r in out["rows"] if r["field"] in ("linear", "quadratic")), ""), quote)
+                unrow("linear", "quadratic")
             k["order"] = what
             row(what, quote, f"{what} elements")
     rescued = ""
@@ -1005,9 +1183,10 @@ def _check(arguments: str, notes: str, route: str = "") -> tuple[dict, list[str]
         out["rows"] = [r for r in out["rows"] if r["field"] != "max_triangle_percent"]
         out["kind"]["tria_percent_max"] = None
 
-    # the quality limits
-    seen: set[tuple[str, str, str]] = set()
-    for e in _rows_of(raw, "limits"):
+    # the quality limits - of two for the same elements, the one written later (NOTE-7)
+    seen: dict[tuple[str, str, str], dict] = {}
+    limits_swapped: dict = {}
+    for e in order(_rows_of(raw, "limits")):
         got = quoted(e)
         if got is None:
             continue
@@ -1032,9 +1211,15 @@ def _check(arguments: str, notes: str, route: str = "") -> tuple[dict, list[str]
                                            and not (measure == "aspect_ratio" and target > low)):
             dropped.append(f"{tag}: {_g(target)}{unit} is not a {name} limit anyone means: not applied")
             continue
-        if (measure, shape, direction) in seen:
-            dropped.append(f"{tag}: a second {name} limit for the same elements - the first one written is kept")
+        if _in_quote(float(_f(e.get("target")) or 0.0), replaced_numbers(quote)):
+            # "warpage under 10 instead of 15": the 15 is the value being replaced
+            limits_swapped.setdefault((measure, shape, direction), (f"{_g(target)}{unit}", quote))
             continue
+        earlier = seen.get((measure, shape, direction))
+        if earlier is not None:
+            _later(str(earlier.get("quote") or ""), quote)
+            unrow(rid=str(earlier.get("id") or ""))
+            out["limits"].remove(earlier)
         share, outer = 0.0, None
         pct = _f(e.get("allowed_percent")) or 0.0
         has_outer = bool(e.get("has_outer")) and _f(e.get("outer")) is not None
@@ -1056,11 +1241,12 @@ def _check(arguments: str, notes: str, route: str = "") -> tuple[dict, list[str]
                 share = 0.0
             else:
                 outer = o
-        seen.add((measure, shape, direction))
         lim = {"measure": measure, "shape": shape, "op": "<=" if direction == "max" else ">=", "target": float(target),
                "share": float(share), "outer": outer, "quote": quote}
         lim["id"] = row(f"limit:{measure}", quote, limit_words(lim, cells=flow))
         out["limits"].append(lim)
+        seen[(measure, shape, direction)] = lim
+    _replaced_only(limits_swapped, seen, dropped)
 
     # what fits no field (NOTE-8): told, never silently dropped
     not_applied: list[str] = []
@@ -1070,6 +1256,8 @@ def _check(arguments: str, notes: str, route: str = "") -> tuple[dict, list[str]
         covered.append(quote)
         if rescued and kind_in_words(quote):
             continue        # NOTE-11: read above as the element kind
+        if asks_nothing(quote):
+            continue        # NOTE-8: a yes or a verdict ("the rest looks good") asks nothing, so nothing is left out
         if str(e.get("kind")) == "mesh" and _quoted(quote, said, squashed) and quote not in not_applied:
             over = [t for t in typed if t and (_squash(t) in _squash(quote) or _squash(quote) in _squash(t))]
             if over and not _left_over(quote, over):

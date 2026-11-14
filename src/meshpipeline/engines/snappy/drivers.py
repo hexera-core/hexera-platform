@@ -151,33 +151,6 @@ def _prev_attempt_overshoot(workspace: Path) -> tuple[float, float] | None:
     return float(budget), float(actual)
 
 
-def _raised_over_limit(workspace: Path) -> int | None:
-    """The plan's own cell budget of the SIBLING attempt this retry follows, when that attempt's
-    gap plan raised its cell ceiling (engines/gap_sizing) and its mesh still came out over the cell
-    limit - else None. The retry then holds the narrow spots to that budget, as before gap sizing,
-    instead of raising it again past what was just measured to be too much."""
-    import json as _json
-    import re as _re
-
-    from meshpipeline.engines.gap_sizing import read_record
-
-    m = _re.fullmatch(r"attempt_(\d+)", workspace.name)
-    if m is None or int(m.group(1)) < 2:
-        return None
-    prev = workspace.parent / f"attempt_{int(m.group(1)) - 1}"
-    rec = read_record(prev)
-    if not rec:
-        return None
-    try:
-        cells = _json.loads((prev / "mesh_manifest.json").read_text()).get("cell_count")
-        raised = int(rec.get("ceiling") or rec.get("budget") or 0) > int(rec.get("budget_in") or 0)
-        if raised and cells and float(cells) > float(polcfg.CELL_HARD_LIMIT):
-            return int(rec["budget_in"])
-    except Exception:  # noqa: BLE001 - absent or partial records mean nothing to hold
-        return None
-    return None
-
-
 def _sibling_plan_memories(workspace: Path):
     """Plans of earlier sibling attempts, newest first. Same durable memory the overshoot
     correction reads; retries live in fresh attempt_N workspaces, so cross-attempt knowledge
@@ -390,15 +363,44 @@ def _requirements(workspace, engine: str, strategy: dict, state, analysis: dict 
 
 @_guarded(lambda ask, budget, prev: int(budget))
 def _ask_budget(ask, budget: int, prev) -> int:
-    """CFDREQ-3: the user's count as the pass's budget, held to the largest machine - and still corrected when the
-    last pass overshot it."""
-    out = ask.budget(int(budget), hard=int(polcfg.CELL_HARD_LIMIT))
+    """CFDREQ-3: the user's count as the pass's budget, held to the largest machine (RUN-9: past the standard
+    machine's cells the pass runs on a bigger one, _route_big) - and still corrected when the last pass overshot it."""
+    from meshpipeline.contracts import mesh_machine as MM
+    out = ask.budget(int(budget), hard=MM.ceiling_cells())
     if prev is not None and ask.user_budget():
         from meshpipeline.engines.snappy.planner import overshoot_corrected_budget
-        corr = overshoot_corrected_budget(prev[0], prev[1], ceiling=polcfg.CELL_HARD_LIMIT)
+        # against what the machine for this count carries (the standard machine's 8 M for a count within it)
+        corr = overshoot_corrected_budget(prev[0], prev[1], ceiling=MM.cells_carried(MM.for_cells(out)))
         if corr is not None and corr < out:
             out = int(corr)
     return out
+
+
+def _plan_limit(ask) -> int | None:
+    """CFDREQ-3: the most cells this pass's plan may grow to when the user set a count (their own count - our gap
+    boxes never raise it past theirs), else None (the standard machine's, CELL_HARD_LIMIT, as always)."""
+    if ask is None or not (ask.user_budget() or ask.floor is not None):
+        return None
+    from meshpipeline.contracts import mesh_machine as MM
+    return min(int(ask.cell_limit(int(polcfg.CELL_HARD_LIMIT))), MM.ceiling_cells())
+
+
+def _route_big(workspace: Path, budget: int, *, job_id: str = "", attempt: int = 0) -> dict | None:
+    """RUN-9 (contracts/mesh_machine.route_cells): a pass planned to more cells than the standard machine is sized for
+    - only ever the user's own count - runs on a VM that carries them, decided before it meshes, with no question.
+    The decision is written into the workspace the mesh executor ships; None when the pass fits the standard machine."""
+    from meshpipeline.contracts import mesh_machine as MM
+    moved = MM.route_cells(workspace, int(budget), why="the cell count asked for")
+    if moved and moved.get("where") == "gce":
+        logger.warning("snappy pass %d: %s (RUN-9) - job_id=%s", attempt, moved.get("words"), job_id)
+        try:
+            from meshpipeline.contracts import decision_record as _dr
+            _dr.cite(str(job_id or ""), stage="snappy_machine", decided="big machine", value=moved.get("machine"),
+                     rule="RUN-9", inputs={"pass": attempt, "cells": int(budget)},
+                     words=str(moved.get("words") or ""))
+        except Exception:  # noqa: BLE001 - the why record never stops a mesh
+            logger.debug("RUN-9 not cited", exc_info=True)
+    return moved
 
 
 @_guarded(lambda ask, strategy, budget: dict(strategy))
@@ -1354,7 +1356,14 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
             if _ask is not None:
                 _budget = _ask_budget(_ask, _budget, _prev)
                 strategy = _ask_strategy(_ask, strategy, _budget)
+                # CFDREQ-3: the gaps between the body's parts are sized within the user's own count
+                _lim = _plan_limit(_ask)
+                if _lim is not None:
+                    strategy = {**strategy, "_cell_limit": int(_lim)}
             strategy = {**strategy, "max_cells": _budget}
+            # RUN-9: a count past the standard machine runs on a bigger one, decided before it meshes
+            _route_big(workspace, max(_budget, int(strategy.get("_cell_limit") or 0)), job_id=job_id,
+                       attempt=attempt)
             rec = recommend_refinement(analysis, max_cells=_budget)
             # THE USER'S CONFIRMED MARGINS WIN. The planner writes domain_margin itself, and a
             # brief cannot bind a model: an F1 front wing confirmed at 10 reference lengths
@@ -2388,11 +2397,12 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
     _gated_plan = _sibling_plan_memory(workspace) if _under else None
     # ... and WHERE it fell short, as the measure beside that mesh recorded it
     _measured_short = _sibling_under_floor(workspace) if _under else None
-    # THE GAP PLAN HELD TO THE PLAN'S OWN BUDGET (engines/gap_sizing): once a mesh whose cell
-    # ceiling the gap plan raised came out over the cell limit - in this attempt or the one before
-    # - the narrow spots get what the plan's own budget holds, as before gap sizing, never another
-    # raise past what was just measured to be too much (_raised_over_limit)
-    _hold_gaps: int | None = _raised_over_limit(workspace)
+    # THE GAP PLAN HELD TO THE PLAN'S OWN BUDGET (engines/gap_sizing) only after a timeout (below).
+    # A sound mesh that came out OVER the standard machine's cells is never re-meshed smaller
+    # (Areen, 14 Nov: "if they say 7 M but we produce a mesh over 8 M, just move it onto the big
+    # machine"): it is delivered as it is (LAD-cfd-4), and a mesher that runs out of memory on the
+    # standard machine runs the same case again on a bigger one (RUN-3, _run_snappy_on_its_machine)
+    _hold_gaps: int | None = None
 
     for attempt in range(1, max_attempts + 1):
         _timed_out_now, _repeat_stop, _mesh_minutes = False, False, 0.0
@@ -2469,6 +2479,7 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
         # CFDREQ-1: THE USER'S REQUIREMENTS from their notes (engines/cfd_requirements) - the one seam: their count
         # beats the plan's budget, their layer count the plan's, their sizes set the wall cell and the fill
         _ask = _requirements(workspace, "snappy", strategy, state, None)
+        _user_limit = _plan_limit(_ask)          # CFDREQ-3: the user's own count holds the gap plan too
         if _ask is not None:
             _ask.length_m, _ask.length_from = (_ask.length_m or float(bore_D)), (_ask.length_from or "the bore")
             _budget = _ask_budget(_ask, _budget, _prev)
@@ -2530,7 +2541,7 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
                          budget=_budget, band_m=_band_m, near_cell=_near_cell,
                          surface_cell=_wall_cell, base_cell=base_cell,
                          accept_fewer=accepted_fewer(state.get("engine_params")),
-                         n_layers=n_layers, limit=_hold_gaps)
+                         n_layers=n_layers, limit=_hold_gaps if _hold_gaps is not None else _user_limit)
         _gap.write(workspace)
         _narrow_regions = _over_band(list(_gap.regions), _near_offset)
         _narrow_surfaces_, _narrow_regions = _narrow_surfaces(workspace, _narrow_regions,
@@ -2544,6 +2555,8 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
                 _near_offset)
         if _gap.ceiling() > _budget:
             _budget = int(_gap.ceiling())
+        # RUN-9: a count past the standard machine runs on a bigger one, decided before it meshes
+        _route_big(workspace, max(_budget, int(_user_limit or 0)), job_id=job_id, attempt=attempt)
         # the raised ceiling is this pass's alone: the plan's own budget travels beside it, so a
         # later pass or attempt re-plans the narrow spots from the plan's budget, never on top of
         # a raise (gap_budget_in, read back above)
@@ -2703,21 +2716,12 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
                               f"its refinement is raised for the next pass")
                 else:
                     (workspace / ".sealed_ports.json").unlink(missing_ok=True)
-            # OVER THE CELL LIMIT ON A CEILING THE GAP PLAN RAISED: the narrow spots cost more
-            # than priced. Delivered as it is, the mesh fails the manifest gate and the run moves
-            # to another engine, where this one meshes the file within the limit at its plan's own
-            # budget (a shell-side heat exchanger 13.0 M and a valve cage adapter 9.4 M against
-            # 6.5 M and 2.7 M before gap sizing, lab 2026-10-21). So the next pass keeps the
-            # plan's own budget, as before gap sizing.
-            _cells_now = int(q.get("cells") or 0)
-            if (production and _hold_gaps is None and _budget > _planned_budget
-                    and _cells_now > int(polcfg.CELL_HARD_LIMIT)):
-                production = False
-                _hold_gaps = int(_planned_budget)
-                reason = (f"{_cells_now:,} cells, over the {int(polcfg.CELL_HARD_LIMIT):,}-cell "
-                          "limit of one job: the narrow spots cost more than priced, so the next "
-                          "pass keeps the plan's own cell budget of "
-                          f"{int(_planned_budget):,}")
+            # OVER THE STANDARD MACHINE'S CELLS ON A CEILING THE GAP PLAN RAISED: the narrow spots
+            # cost more than priced. It is no longer thrown away and re-meshed smaller (a shell-side
+            # heat exchanger 13.0 M and a valve cage adapter 9.4 M were cut back to 6.5 M and 2.7 M,
+            # lab 2026-10-21, when the cell limit still failed the run): a sound mesh over it is
+            # delivered as it is, with the note (LAD-cfd-4), and the mesh the rules asked for is
+            # the one the user gets (Areen, 14 Nov).
             run.note_native_run(produced_usable_mesh=last_valid)
         except (_fence.StaleWorkerFenced, StaleExecutionPublish, ReviewedCaseRepeats):
             raise                      # supersession stops the invocation; see the external build

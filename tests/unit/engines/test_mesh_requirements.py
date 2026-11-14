@@ -148,11 +148,17 @@ def test_contradictions_are_told_and_only_the_sound_part_kept():
         {"what": "global", "value": 10, "unit": "mm", "quote": "size 10 mm"},
         {"what": "min_edge", "value": 15, "unit": "mm", "quote": "shortest edge 15 mm"}])
     assert req["sizes"]["min_edge_mm"] is None and "over the global size" in dropped[0]
-    # a second global size: the first one written is kept
+    # a second global size: the LATEST one written is kept, and the earlier one is not told back as a fault
     req, dropped, _na = _one("mesh at 5 mm. actually mesh at 8 mm", sizes=[
         {"what": "global", "value": 5, "unit": "mm", "quote": "mesh at 5 mm"},
         {"what": "global", "value": 8, "unit": "mm", "quote": "mesh at 8 mm"}])
-    assert req["sizes"]["global_mm"] == 5.0 and "the first one written is kept" in dropped[0]
+    assert req["sizes"]["global_mm"] == 8.0 and dropped == []
+    assert [r["quote"] for r in req["rows"]] == ["mesh at 8 mm"]
+    # ... by where the user wrote it, whatever order the model listed them in
+    req, dropped, _na = _one("mesh at 5 mm. actually mesh at 8 mm", sizes=[
+        {"what": "global", "value": 8, "unit": "mm", "quote": "mesh at 8 mm"},
+        {"what": "global", "value": 5, "unit": "mm", "quote": "mesh at 5 mm"}])
+    assert req["sizes"]["global_mm"] == 8.0 and dropped == []
 
 
 def _limit(notes, measure, direction, target, shape="any", pct=0, outer=0, has_outer=False):
@@ -196,10 +202,16 @@ def test_the_element_kind_and_its_contradictions():
     req, dropped, _na = _one("no triangles please", element_kind=[{"what": "quads_only", "value": 0,
                                                                   "quote": "no triangles"}])
     assert req["kind"]["shell"] == "quads" and dropped == [] and req["rows"][0]["asked"] == "shell elements: quads only, no triangles"
+    # two kinds: the one written later (the user changed their mind), with one row and nothing told as a fault
     req, dropped, _na = _one("quad mesh only. triangles only.", element_kind=[
         {"what": "quads_only", "value": 0, "quote": "quad mesh only"},
         {"what": "triangles_only", "value": 0, "quote": "triangles only"}])
-    assert req["kind"]["shell"] == "quads" and "both quads only and triangles only" in dropped[0]
+    assert req["kind"]["shell"] == "triangles" and dropped == []
+    assert [r["field"] for r in req["rows"]] == ["triangles_only"]
+    req, dropped, _na = _one("linear elements. no, make them second order", element_kind=[
+        {"what": "linear", "value": 0, "quote": "linear elements"},
+        {"what": "quadratic", "value": 0, "quote": "make them second order"}])
+    assert req["kind"]["order"] == "quadratic" and dropped == []
     req, dropped, _na = _one("at most 5% trias, second order", element_kind=[
         {"what": "max_triangle_percent", "value": 5, "quote": "at most 5% trias"},
         {"what": "quadratic", "value": 0, "quote": "second order"}])
