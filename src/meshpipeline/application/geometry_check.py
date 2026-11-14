@@ -786,6 +786,10 @@ def _scout(*, session_id: str, owner_id: str, source: dict, interpretation: dict
                       if n and not (n.startswith("Part_") and n[5:].isdigit())]
             if _named:
                 facts["part_names"] = _named[:32]
+                # SAID OUT LOUD, because a celery result repr truncates the facts dict long before
+                # this key and there was no other way to tell whether the names had been collected.
+                logger.info("geometry check: the file names its solids: %s - session=%s",
+                            ", ".join(facts["part_names"]), session_id)
         # A DRAWING MISSING A SOLID IS NOT SERVED. cad/solid_parts.parts_payload leaves out any
         # solid it could not triangulate and names it in `parts_not_drawn` (solid_parts.py:148),
         # while the welded skin draw_view wrote covers every solid in the file. Replacing one with

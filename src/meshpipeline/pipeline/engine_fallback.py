@@ -736,6 +736,19 @@ def classify(state: Mapping) -> Failure | None:
         # no gate at all: the executor had nothing to validate - the builder produced no mesh
         cause = FailureCause.ENGINE_CRASHED
     kind = _LADDER_CLASS[cause]
+    if facts.get("geometry_refusal"):
+        # THE SHAPE, AND NO ENGINE MESHES A DIFFERENT SHAPE. `_LADDER_CLASS` calls NOT_BUILT an
+        # ENGINE failure, and the comment beside it says why: it is "its own preparation's limit,
+        # which another engine's preparation may not share". True of the four SIZE refusals it was
+        # written for - each is one engine's own arithmetic against a limit of ours, and another
+        # engine sizes its cells another way. Not true of a refusal about the part: a coolant whose
+        # two ports are on pieces 0.5 mm of metal apart is the same two pieces for every mesher
+        # there is.
+        #
+        # MEASURED on job 1f7dae6b, 2026-11-13. One paragraph of the page said "Running it again
+        # would stop the same way, and so would a coarser mesh or ANOTHER ENGINE: this one is
+        # about the shape", and the next offered snappyHexMesh multi-region by name.
+        kind = NEVER
     if not retry_can_help(cause, facts) and cause not in _ONLY_ANOTHER_ENGINE_CHANGES:
         # the retry policy's own verdict: nothing that runs again changes this, so no engine does
         kind = NEVER

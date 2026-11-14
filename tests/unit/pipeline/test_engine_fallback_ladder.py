@@ -827,3 +827,34 @@ def test_the_builder_is_told_before_the_attempt_where_a_broken_mesh_moves_the_ru
     # the last regular attempt has nowhere to move to inside this run
     last = _external(retry_count=bcfg.MAX_BUILDER_RETRIES + 1)
     assert lad.moves_on_from_broken_mesh(last) == ""
+
+
+def test_a_refusal_about_the_shape_never_offers_another_engine():
+    """NOT_BUILT is an ENGINE failure because the four SIZE refusals it was written for are each
+    one engine's arithmetic against a limit of ours, and another engine sizes its cells another
+    way. A refusal about the PART is not arithmetic.
+
+    Measured on job 1f7dae6b, 2026-11-13: one paragraph of the page said "Running it again would
+    stop the same way, and so would a coarser mesh or another engine: this one is about the
+    shape", and the next offered snappyHexMesh multi-region by name. The part's inlet and outlet
+    were on pieces 0.5 mm of metal apart, which is the same two pieces for every mesher there is.
+    """
+    shape = {"engine": "cfmesh_conjugate", "executor_success": False,
+             "executor_failed_gate": "manifest_valid",
+             "executor_failure_cause": "not_built",
+             "executor_failure_facts": {"deterministic": True, "priced_out": False,
+                                        "geometry_refusal": True, "meshers_started": 0,
+                                        "reason": "the inlet and the outlet open into different "
+                                                  "pieces of the coolant"}}
+    assert lad.classify(shape).kind == lad.NEVER
+
+
+def test_a_refusal_about_the_size_still_offers_one():
+    """The four that ARE priced keep the offer: another engine sizes its cells another way."""
+    priced = {"engine": "cfmesh_conjugate", "executor_success": False,
+              "executor_failed_gate": "manifest_valid",
+              "executor_failure_cause": "not_built",
+              "executor_failure_facts": {"deterministic": True, "priced_out": True,
+                                         "geometry_refusal": False, "meshers_started": 0,
+                                         "reason": "this part has two scales of passage"}}
+    assert lad.classify(priced).kind == lad.ENGINE
