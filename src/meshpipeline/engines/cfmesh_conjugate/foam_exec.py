@@ -404,7 +404,7 @@ def check_mesh(workspace, *, bashrc: str = _DEFAULT_BASHRC, region: str = "",
         # THE COUPLING IS THE DELIVERABLE, so it goes back whatever happened above - a timeout, a
         # stall, a checkMesh that died. A mesh left behind with its interface retyped to a wall
         # is a mesh no conjugate solver can run, broken by the step that only measures.
-        if coupled:
+        if coupled and boundary is not None:
             boundary.write_text(coupled, encoding="utf-8")
     q = parse_check_mesh(_read_checkmesh_output(log))
     if retyped:

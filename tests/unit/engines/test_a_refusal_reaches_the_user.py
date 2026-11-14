@@ -173,3 +173,73 @@ def test_all_four_size_refusals_go_through_it():
     assert len(set(said)) == len(said), (
         "two refusals carry the same variable, so one of them tells the user the wrong reason: %s"
         % said)
+
+
+
+# #
+# ...AND A REFUSAL ABOUT THE SHAPE MUST NOT BORROW THE SIZE REFUSALS' SENTENCES
+# #
+#: What the engine wrote on job ca246a07, 2026-11-13, the first part refused for its shape.
+SHAPE_WORDS = (
+    "the inlet and the outlet open into different pieces of the coolant, 0.580 mm apart at their "
+    "closest, and no face joins them: inlet opens into a piece of 52,140.3 mm3 and outlet into "
+    "one of 1,496.8 mm3, out of 2 the surface is in. Nothing can flow from one to the other, so "
+    "no mesh of this surface can be solved however well it is built. A gap under a millimetre is "
+    "a wall the assembly leaves in and a hole has to be opened through it; a wide one means the "
+    "two are separate circuits, and each needs its own inlet and outlet")
+
+#: The three claims the customer was shown instead, every one of them false here: nothing was
+#: priced, the limit is not ours, and no cell count makes a severed passage flow. Matched as the
+#: claims they are and not as loose words - the shape refusal is allowed to SAY "a coarser mesh"
+#: in the course of ruling one out, and must not OFFER one.
+WRONG = ("priced the mesh this part would need", "limit on our side",
+         "Tell me if a coarser mesh would do", "raising the limit")
+
+
+def _shape_record(tmp_path):
+    from meshpipeline.engines.cfmesh_conjugate.driver import _say_why_before_meshing
+
+    _say_why_before_meshing(tmp_path, SHAPE_WORDS, job_id="test",
+                            priced_out=False, geometry=True)
+    return read_refusal(tmp_path)
+
+
+def test_a_shape_refusal_is_not_filed_as_a_price(tmp_path):
+    ref = _shape_record(tmp_path)
+    assert ref.facts.get("priced_out") is False
+    assert ref.facts.get("geometry_refusal") is True
+    assert ref.facts.get("deterministic") is True
+
+
+def test_the_shape_refusal_says_none_of_the_three_false_things(tmp_path):
+    ref = _shape_record(tmp_path)
+    what, nxt = describe(ref.cause, ref.facts, engine="Conjugate (coolant + metal)")
+    page = f"{what} {nxt}"
+    for wrong in WRONG:
+        assert wrong not in page, f"the shape refusal still says {wrong!r}: {page}"
+
+
+def test_the_shape_refusal_still_carries_every_measurement(tmp_path):
+    ref = _shape_record(tmp_path)
+    what, _nxt = describe(ref.cause, ref.facts, engine="Conjugate (coolant + metal)")
+    for figure in ("0.580 mm", "52,140.3 mm3", "1,496.8 mm3"):
+        assert figure in what, f"{figure} is missing from the sentence the user reads: {what}"
+
+
+def test_the_shape_refusal_does_not_blame_the_file_vaguely_either(tmp_path):
+    """"could not prepare its input from your file" is the fallback, and it is no better: it sends
+    the reader hunting without saying what to look for. The reason itself says what to look for."""
+    ref = _shape_record(tmp_path)
+    what, nxt = describe(ref.cause, ref.facts, engine="Conjugate (coolant + metal)")
+    assert "could not prepare its input" not in what
+    assert "Nothing was spent on a mesh" in what
+    assert "about the shape" in nxt and "one connected passage" in nxt
+
+
+def test_a_size_refusal_is_untouched_by_any_of_this(tmp_path):
+    """The four that ARE priced keep their own sentence, word for word."""
+    ref = _record(tmp_path)
+    what, nxt = describe(ref.cause, ref.facts, engine="Conjugate (coolant + metal)")
+    assert "priced the mesh this part would need" in what
+    assert "limit on our side" in what
+    assert "coarser" in nxt

@@ -5417,3 +5417,69 @@ prints the HTTP code and the grant to make when the delete is refused. Granted b
 octree ceiling` on a run where two ranks met that ceiling and eight were planned by the back-scale
 floor. The stamp named the demand that was not binding. The plan carries `ranks_basis` now and the
 container prints it rather than guessing from the count.
+
+
+### The same evening: the gate fired, and said three false things while it did
+
+Job `ca246a07`, the same file through the whole product with the ports the part actually has -
+opening 2 the inlet, opening 3 the outlet, opening 1 marked not an opening. Upload at 01:01,
+geometry check 13 min, engine picked from the ranked list, water 1 L/min, plan approved. The
+driver reached the new gate **0.6 s** after it cut the ports:
+
+```
+01:47:49.899  conjugate: 3 stub(s) added 0.0000 mm3 to the coolant; inlet and outlet are cut out
+              of wall_outer, 8.000 mm and 8.000 mm across
+01:47:50.535  conjugate: refusing to start - the inlet and the outlet open into different pieces
+              of the coolant, 0.580 mm apart at their closest, and no face joins them ...
+01:47:50.535  conjugate: refusal recorded for the user at gate manifest_valid
+```
+
+Against 2 h 29 m and an n2-highmem-64 for the same answer the day before.
+
+Then the page said:
+
+> Conjugate (coolant + metal) **priced the mesh this part would need** and declined it before
+> starting. ... this is **a limit on our side** ...
+> Tell me if **a coarser mesh would do** ... we will look at **raising the limit** for a part like
+> this.
+
+Every one of those is false here. Nothing was priced, the limit is not ours, and no cell count
+makes a severed passage flow - the only advice offered is advice that cannot work.
+
+`_say_why_before_meshing` wrote `priced_out: True` on every refusal, and its own comment said why:
+all four refusals it had were SIZE refusals, where the file is sound, the approved setup is sound,
+and the number that stopped it is a 32-bit label in our build of OpenFOAM. Right for those four,
+wrong for the fifth the moment it existed. The driver's standard is its own: "the reason names the
+setting rather than blaming the part" - and the mirror of it, that a reason about the part must
+not name a setting.
+
+The caller now says which kind it is and `contracts/failure_cause` has a branch for each. The
+four size refusals keep their sentence word for word, pinned by a test.
+
+### What this run also showed about the naming step
+
+The openings came back proposed as **inlet, outlet, outlet**, with the inlet on opening 1 - the
+11.8 mm junction that is sealed inside the assembly and reaches no boundary at all. The two mouths
+that do reach the outside, openings 2 and 3, were both proposed as outlets.
+
+The assembly's own part names are read from the STEP and listed on the stage the whole time:
+`Microfluidics_Core`, `Top_Lid`, `Outlet`, `Splits`, `Board_cooling`, `Inlet`. Opening 2 sits on
+`Inlet`'s +x end face and opening 3 on `Outlet`'s. On this file they are the answer.
+
+The step that proposes the roles cannot see them. It is a vision model looking at rendered
+pictures with numbered stickers, and its prompt says in its own words that "the numbers are the
+only names you may use" - there is no list of the assembly's parts anywhere in its context. So the
+names are read, rendered, and shown to the customer, and the one step that needs them is the one
+step without them. (An earlier entry today said the stage "has no way to read" them; it reads them
+fine - cad/face_names and cad/regions both go through XCAF - and does not pass them on.)
+
+The scout, separately, got it right and said so in its own notes: "the parts close it into 2
+spaces that do not connect (space 1: openings 1, 2; space 2: openings 3) - a valve drawn shut, or
+a part sealing the passage", and "opening 1 opens into another part whose inside reaches the
+outside some other way (a gap in it?): check it on the picture". Both notes were on the page while
+the roles proposed above it contradicted them.
+
+So the names now travel: `_draw_parts` already produces one named patch per solid, and the check
+copies those names into `facts["part_names"]` (dropping `Part_k`, which is what a solid the file
+does NOT name is called). `_facts_text` puts them in front of the vision model as evidence, not as
+an instruction - a name can be generic, stale or wrong, and the pictures decide.

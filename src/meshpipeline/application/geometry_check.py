@@ -764,6 +764,28 @@ def _scout(*, session_id: str, owner_id: str, source: dict, interpretation: dict
         # found their parts at all. The payload is the same one either way, so nothing in the
         # console changes.
         drawn_parts = None if placed else _parts_skin(work)
+        # THE FILE'S OWN WORDS FOR ITS PARTS, carried into the facts so the step that proposes the
+        # openings' ROLES can read them. They are already read from the STEP (cad/fea_assembly.
+        # read_body_names, through cad/solid_parts.part_skins) and already drawn on the stage, and
+        # the naming step is a vision model looking at pictures: its prompt says "the numbers are
+        # the only names you may use", and nothing in its context has ever carried the assembly's.
+        #
+        # MEASURED on ColdPlateAssembly_CLEAN.step, job ca246a07, 2026-11-13. The file names its
+        # six solids Microfluidics_Core, Top_Lid, Outlet, Splits, Board_cooling, Inlet. Sticker 2
+        # sits on Inlet's +x end face and sticker 3 on Outlet's. The naming step proposed inlet,
+        # outlet, outlet - putting the inlet on sticker 1, an 11.8 mm junction sealed inside the
+        # assembly that reaches no boundary at all, and calling both real mouths outlets.
+        #
+        # Taken BEFORE the `drawn_parts = None` below, which is about a drawing that is missing a
+        # solid: the names are no less true for a part that could not be tessellated.
+        if drawn_parts:
+            # `Part_k` is what cad/solid_parts gives a solid the file does NOT name, so it carries
+            # no information and must not be offered as though it did.
+            _named = [n for n in (str(q.get("name") or "").strip()
+                                  for q in (drawn_parts.get("patches") or []))
+                      if n and not (n.startswith("Part_") and n[5:].isdigit())]
+            if _named:
+                facts["part_names"] = _named[:32]
         # A DRAWING MISSING A SOLID IS NOT SERVED. cad/solid_parts.parts_payload leaves out any
         # solid it could not triangulate and names it in `parts_not_drawn` (solid_parts.py:148),
         # while the welded skin draw_view wrote covers every solid in the file. Replacing one with
@@ -2163,6 +2185,15 @@ def _facts_text(facts: dict, shots, purpose_text: str) -> str:
                  "the part is, not from them.")
     if facts.get("read_as") == "mesh":
         lines.append("The file is a triangle mesh, so the measurements are close, not exact.")
+    if facts.get("part_names"):
+        # THE WORDS THE PERSON WHO DREW IT USED. Offered as evidence and not as an instruction:
+        # a name can be generic, stale or simply wrong, and the pictures are what is being read.
+        # But on an assembly they are often the whole answer, and this step had never seen them.
+        lines.append(
+            "The file names its own solids: " + ", ".join(facts["part_names"]) + ". Those are the "
+            "words the person who drew the part used. On an assembly they often say which sticker "
+            "is which - a sticker on the end face of a solid called Inlet is the inlet - so weigh "
+            "them, but they can be generic, stale or wrong, and the pictures decide.")
     if facts.get("input_kind") == "solid-assembly":
         regions = facts.get("source_regions") or []
         lines.append("The file itself declares this: an assembly of "

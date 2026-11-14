@@ -54,7 +54,8 @@ SEVERED_COOLANT = "conjugate_coolant_severed"
 _REFUSAL_GATE = "manifest_valid"
 
 
-def _say_why_before_meshing(ws, words: str, *, job_id: str) -> None:
+def _say_why_before_meshing(ws, words: str, *, job_id: str, priced_out: bool = True,
+                            geometry: bool = False) -> None:
     """Carry a refusal's OWN WORDS to the user, not just its marker.
 
     THE WORDS WERE BEING THROWN AWAY. The comment on TOO_FINE above records half of this already -
@@ -98,12 +99,21 @@ def _say_why_before_meshing(ws, words: str, *, job_id: str) -> None:
         builder_text=said,
         facts={"reason": said, "deterministic": True,
                # WHAT KIND OF REFUSAL THIS IS, so the sentence does not blame the customer's file.
-               # All four of these price a mesh against a limit of OURS: the file is sound, the
-               # approved setup is sound, and the number that stopped it is a 32-bit label in our
-               # build of OpenFOAM or a cell budget we chose. Without this the user reads
+               # The four SIZE refusals price a mesh against a limit of OURS: the file is sound,
+               # the approved setup is sound, and the number that stopped it is a 32-bit label in
+               # our build of OpenFOAM or a cell budget we chose. Without this the user reads
                # "could not prepare its input from your file" and goes looking for a fault that is
                # not there.
-               "priced_out": True,
+               #
+               # AND THE OPPOSITE IS JUST AS WRONG. A refusal about the SHAPE - a coolant whose
+               # two ports are on pieces that do not touch - is not priced against anything, and
+               # saying so sent a customer the wrong three sentences: "priced the mesh this part
+               # would need and declined it", "this is a limit on our side", and "tell me if a
+               # coarser mesh would do". Measured on job ca246a07, 2026-11-13: every one of those
+               # was false, and the last one is advice that cannot work at any cell count. So the
+               # caller says which kind it is, and `contracts/failure_cause` has a branch for each.
+               "priced_out": bool(priced_out),
+               "geometry_refusal": bool(geometry),
                # the mesher never started, so there is no mesh to judge and nothing was spent on
                # one - the user's sentence says so and this is what entitles it to
                "meshers_started": 0},
@@ -665,7 +675,9 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         severed = ""
     if severed:
         logger.info("conjugate: refusing to start - %s - job_id=%s", severed, job_id)
-        _say_why_before_meshing(ws, severed, job_id=job_id)
+        # NOT PRICED OUT. Nothing about a budget, a resolution or a machine is in this, and the
+        # four size refusals' sentences would all be false here - see `_say_why_before_meshing`.
+        _say_why_before_meshing(ws, severed, job_id=job_id, priced_out=False, geometry=True)
         await run.fence("deliver builder outcome")
         return False, SEVERED_COOLANT, run.outcome(produced_deliverable=False, exhausted=True,
                                                    failure_marker=SEVERED_COOLANT)
@@ -840,5 +852,6 @@ def _finer(fidelity: str) -> str:
         return "" if (fidelity or "").strip().lower() == ladder[-1] else ladder[-1]
 
 
-__all__ = ["BUILD_FAILED", "NO_COOLANT", "NOT_METRES", "NO_SOURCE", "TOO_FINE", "cad_scale",
+__all__ = ["BUILD_FAILED", "NO_COOLANT", "NOT_METRES", "NO_SOURCE", "SEVERED_COOLANT",
+           "TOO_FINE", "cad_scale",
            "coolant_sits_inside", "declared_port_names", "drive", "find_source", "skin_bounds"]

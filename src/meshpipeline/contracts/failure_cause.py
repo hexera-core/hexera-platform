@@ -598,6 +598,19 @@ def _describe(cause: object, facts: Mapping | None = None, *,
                     "No mesher was started, and your geometry was not the problem.",
                     "Running it again would stop the same way. Tell me what to change in this "
                     "chat - the boundaries or the engine.")
+        if f.get("geometry_refusal") and reason:
+            # THE SHAPE, NOT A LIMIT. The engine read the part, found something no mesh of it
+            # could fix, and stopped before any mesher started. The priced-out wording below is
+            # false in every clause here - it was not priced, it is not a limit of ours, and a
+            # coarser mesh cannot help - and it reached a real customer that way on job ca246a07
+            # (2026-11-13), where the part's inlet and outlet were half a millimetre of metal
+            # apart. The reason itself carries the measurement and what to change.
+            return (f"No mesh was built: {who} read your part and stopped before any mesher "
+                    f"started. {_cap(reason)}. Nothing was spent on a mesh.",
+                    "Running it again would stop the same way, and so would a coarser mesh or "
+                    "another engine: this one is about the shape. Change the file so it is one "
+                    "connected passage, or tell me here if the openings should have different "
+                    "roles, and we will run it again.")
         if f.get("priced_out") and reason:
             # NEITHER THE FILE NOR THE APPROVED SETUP. The part is sound, what the user approved is
             # sound, and the engine priced the mesh it would have to build against a limit of OURS
