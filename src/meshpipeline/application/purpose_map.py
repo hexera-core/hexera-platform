@@ -295,6 +295,39 @@ def read_purpose(text: str) -> PurposeReading:
     return PurposeReading(ask=ASK_DOMAIN, why="no cue")
 
 
+#: WORDS THAT NAME AN ANALYSIS OUTRIGHT - what a user writes to change the analysis once a stage has settled one
+#: ("now a static stress analysis of the same part", "run CFD on it instead"). Narrower than the routing words above
+#: on purpose: those read a first request, where "the pipe bend" or "water" helps; after the stage, a note like
+#: "refine the bend" or "it sits in water" is no change of analysis (review on #465).
+_NAMES_FEA = _rx(
+    r"\bfea\b", r"\bfem\b", r"finite[- ]element", r"\bstructural\b", r"natural frequenc", r"\bmode shapes?\b",
+    r"\bvon[- ]?mises\b", r"safety factor", r"factor of safety", r"\bnastran\b", r"\babaqus\b", r"\bcalculix\b",
+    r"\bls-?dyna\b", r"\boptistruct\b", r"\bfemap\b",
+    r"\b(static|stress|strain|modal|vibration|buckling|fatigue|crash|impact|drop[- ]test|thermal[- ]stress)\s+"
+    r"(analysis|analyses|study|simulation|run|check|test|case|job)\b")
+_NAMES_FLOW = _rx(
+    r"\bcfd\b", r"\bairflow\b", r"\baerodynamics?\b", r"\bdrag\b", r"\bdownforce\b", r"pressure (drop|loss)",
+    r"\bopenfoam\b", r"\bfluent\b", r"star-?ccm", r"\bcfx\b", r"\b(?:fluid|air|water|gas)\s+flows?\b",
+    r"\bflows? (through|around|over|past)\b",
+    r"\b(flow|aero\w*|fluid|cooling)\s+(analysis|analyses|study|simulation|run|case|job)\b")
+
+
+def named_analysis(text: str) -> PurposeReading:
+    """The analysis the words NAME outright (_NAMES_FEA, _NAMES_FLOW): route "fea" or "flow" (with the flow's
+    topology when the words say it), or an unsettled reading when they name none, or both. A flow named beside
+    any word of the part's mechanics ("the stress from the water flow", "the flow loads the wall") is the load
+    on the part, never a change to CFD."""
+    said = " ".join(str(text or "").split())
+    fea, flow = _hits(_NAMES_FEA, said), _hits(_NAMES_FLOW, said)
+    if fea and not flow:
+        return PurposeReading(route=ROUTE_FEA, analysis=analysis_of(said), why="names: " + ", ".join(fea))
+    if flow and (_FEA.search(said) or _FLOW_AS_LOAD.search(said)):
+        return PurposeReading(why="a flow beside the part's mechanics")
+    if flow and not fea:
+        return PurposeReading(route=ROUTE_FLOW, topology=_topology(said), why="names: " + ", ".join(flow))
+    return PurposeReading(why="names both" if fea else "names none")
+
+
 def question_asked(messages) -> str:
     """Which purpose question the application already asked in this conversation ("" when none)."""
     for m in messages or []:

@@ -540,9 +540,14 @@ _THERMAL_DECLARED = re.compile(re.escape(_THERMAL_CASE))
 
 
 #: A user message that says what the file is or how the fluid moves - after the stage, a correction
-#: the stage's sentence no longer speaks for.
+#: the stage's sentence no longer speaks for. These are the common words for it; a correction in any
+#: other words is the user's too, and is kept when the model quotes it (agents/intake/executor KIND-1).
+#: The air or fluid space by name ("the upload already includes the air box") and a box the user says
+#: not to add ("without adding another box") speak of what the file is (review on #465).
 _RESTATES = re.compile(
     r"fluid[ -]?(?:volume|domain|region)|body[ -]?surface|solid[ -]?body|input[ _-]?kind|"
+    r"\b(?:air|water|gas|coolant)[ -]?(?:box|volume|domain|region|enclosure)\b|"
+    r"\b(?:another|second|extra|outer|own|new)\s+(?:air\s+|fluid\s+|flow\s+)?(?:box|far[ -]?field|enclosure)\b|"
     r"\b(?:file|part|geometry|model|it|this)(?:'s| is| was)\s+(?:actually\s+|really\s+)?(?:the |a |an |just )?"
     r"(?:wall|walls|solid|surface|skin|shell|fluid|hollow|filled)\b|"
     r"\bnot the (?:fluid|wall|solid|surface)|\b(?:internal|external) (?:flow|cfd)\b|"

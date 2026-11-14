@@ -1504,8 +1504,9 @@ function initViewer(job,surf,uiCfg){
     // the one control: a plain line on the canvas, one word per measure that has a field
     if(avail.length){
       const ctl=document.createElement('div');ctl.className='v-heatctl';ctl.id='v-heatctl-'+job;
+      // tabindex: a link with no href is never a Tab stop; Enter and Space work it (main.js, role="button")
       ctl.innerHTML='Colour by '+avail.map(m=>
-        `<a data-metric="${m}" role="button" aria-pressed="false">${esc(qf.metrics[m].label)}</a>`).join(' · ');
+        `<a data-metric="${m}" role="button" tabindex="0" aria-pressed="false">${esc(qf.metrics[m].label)}</a>`).join(' · ');
       ctl.querySelectorAll('a').forEach(a=>{a.onclick=()=>setMetric(a.dataset.metric);});
       shield(ctl);host.appendChild(ctl);}
 
