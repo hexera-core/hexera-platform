@@ -5692,3 +5692,50 @@ is a property of a part and a resolution together rather than of either alone." 
 argued from a table and landed without a measured run on this part would be exactly the kind of
 change that module exists to warn against. It needs one VM run of the plate at a pitch-commensurate
 cell size, against the current plan, before it is a product rule.
+
+### 2026-11-14, the three fixes reviewed, and nine defects in them
+
+I pushed yesterday's three fixes without the suite, because the laptop's disk filled to 0 bytes and
+took the distro down mid-verification. Then I reviewed them properly. Nine defects, all in my own
+fixes, and the two worst were worse than the bugs they replaced.
+
+| commit | defect | what it did |
+|---|---|---|
+| `970ca368` rerun guard | `remember` read the builder tool's keys | one Cloud Run 503 recorded as the case's verdict, and the retry refused for good |
+| | it read `result["success"]` | a mesher that exited 0 written down as "its mesh did not pass its checks" |
+| | `RC_IDENTICAL_RERUN` had no reader | a refusal announced as `conjugate_build_failed`; on the FEA path a lever chosen for a mesh that never ran |
+| | the seam test's fake executor | returns `{"rc", "success"}`, a shape no executor produces, so a green suite shipped the first two |
+| `f560be32` mouth rule | it read `clear_ahead` | three producers, three meanings; the inlet moved onto a 10 mm branch with a 50 mm feed ordered last |
+| | `fluid_volume._port` rayed unbounded | a mouth open to air pointing across the file at a bracket read as sealed |
+| `cfbb2845` cold plate | `_declared` keyed on `source_regions` | a named multi-solid STL told its stickers were settled by a file that states no openings |
+| | the rule keyed on `single_solid` | a six-piece mesh of the same plate pictured WITH stickers beside a card saying the fluid goes around it |
+
+The guard was the instructive one. It exists to save a wasted VM, measured at 80 minutes and two
+n2-highmem-32 hours on this plate on 2026-11-12. `remember` was written for the builder TOOL's
+translated result and decides "nothing was learned about the case" from `system_failure` and
+`patch_contract_mismatch`. `after_run` hands it the RAW NATIVE result, which carries neither -
+`describe_native_result` returns rc, timed_out, cancelled, signalled, outcome, signal, command,
+stage, log_tail. So a transient outage became a permanent refusal to mesh, which costs more than
+the waste it was built to prevent.
+
+What the three have in common is that none of them was wrong about the DEFECT. The cold plate was
+being read as a body in a flow, the junction was being proposed as an inlet, and the driver was
+spending a second VM on a case it had already run. Each fix then acted on a value that does not
+mean at every producer what it means at the one I read it in: `success` and `system_failure` from
+the tool's vocabulary at a native seam, `clear_ahead` from the CAD scout at the mesh and assembly
+producers, `source_regions` as "the file declares its openings". The fix in each case was to name
+the thing actually being asked - `_came_to_a_verdict`, `reaches_outside`, "where did the openings
+come from" - and let it be None where nobody measured it.
+
+Nine fixed, five commits, each with a test that fails against the version it repairs. The mouth
+rule's two and the cold plate's two were found by running the real code on a built part, not by
+reading it, which is the only reason the header case turned up at all.
+
+Two things I had written here and could not support: that the inlet/outlet inversion lands wrong on
+the Corintis plate (I never measured which way it lands, only that the swap fires on an unmeasured
+value), and `970ca368`'s own claim that "nothing is announced and nothing is spent". Nothing spent
+was true - `run_mesh` marks the refusal `refused_before_launch` and `meshers_started` excludes it.
+Nothing announced was not.
+
+Unchanged by any of this: the planner still does not pick a commensurate lattice, for the reasons
+in the section above. It needs the VM run, not more local work.
