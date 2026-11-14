@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import time as _time
@@ -27,6 +28,33 @@ logger = logging.getLogger(__name__)
 
 #: The FoamFile header a case dictionary opens with.
 _HDR = ("FoamFile{{ version 2.0; format ascii; class {cls}; object {obj}; }}\n")
+
+#: Wall seconds per native step (every stage, snappyHexMesh's own three phases, checkMesh, the
+#: passage measure, foamToVTK, total) and the rank count, written beside the mesh and carried in
+#: the result as `timing` - the record cfMesh and Netgen already keep under the same name.
+TIMING_FILE = "mesh_timing.json"
+
+#: snappyHexMesh's own clock for each phase, as its log prints it ("Mesh refined in = 12.3 s.").
+_SNAPPY_PHASES = (("castellate_s", re.compile(r"Mesh refined in\s*=\s*([0-9.eE+-]+)\s*s")),
+                  ("snap_s", re.compile(r"Mesh snapped in\s*=\s*([0-9.eE+-]+)\s*s")),
+                  ("layers_s", re.compile(r"Layers added in\s*=\s*([0-9.eE+-]+)\s*s")))
+
+
+def stage_timing(stages: list, snappy_log: str, *, ranks: int) -> dict:
+    """{step: wall seconds} of one native run: each stage as it ran (a name run twice adds up),
+    snappyHexMesh's castellate / snap / layer phases from its own log, and the rank count."""
+    timing: dict = {"ranks": int(ranks)}
+    for s in stages:
+        key = f"{getattr(s, 'name', '') or 'stage'}_s"
+        timing[key] = round(float(timing.get(key, 0.0)) + float(getattr(s, "dt_s", 0.0) or 0.0), 2)
+    for key, pat in _SNAPPY_PHASES:
+        hits = pat.findall(snappy_log or "")
+        if hits:
+            try:
+                timing[key] = round(float(hits[-1]), 1)
+            except ValueError:
+                pass
+    return timing
 
 
 def run_snappy(workspace, *, context=None, bashrc: str = _DEFAULT_BASHRC,
@@ -244,10 +272,13 @@ def _run_snappy_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
         # Measuring on this side is not a workaround for that - it is where the measurement
         # belongs. The mesh is here, the binary is here, and the numbers describe bytes that
         # have not yet crossed a network.
+        timing = stage_timing(stages, snap_log, ranks=nproc)
         if (ws / "constant" / "polyMesh" / "owner").exists():
             try:
                 from meshpipeline.engines.snappy.foam_exec import check_mesh
+                t1 = _time.monotonic()
                 q = check_mesh(ws, bashrc=bashrc)
+                timing["checkMesh_s"] = round(_time.monotonic() - t1, 1)
                 if q:
                     # cells across the local passage at every wall point (internal flow):
                     # flow_gates.resolution_floor holds 12 at the narrowest wall
@@ -258,7 +289,9 @@ def _run_snappy_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
                         # read through the one reader, so a workspace without it is "not internal"
                         # rather than a traceback after every mesh
                         if read_flow_topology(ws) == "internal":
+                            t2 = _time.monotonic()
                             q.update(passage_of_polymesh(ws))
+                            timing["passage_measure_s"] = round(_time.monotonic() - t2, 1)
                     except Exception:  # noqa: BLE001 - evidence, not a verdict
                         logger.warning("passage measure after meshing failed; omitted",
                                        exc_info=True)
@@ -280,11 +313,20 @@ def _run_snappy_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
             # reviewer refused a mesh that had passed every other gate.
             try:
                 from meshpipeline.engines.snappy.foam_exec import export_volume_vtk
+                t3 = _time.monotonic()
                 if export_volume_vtk(ws, bashrc=bashrc):
                     logger.info("volume VTK exported beside the mesh for review")
+                timing["foamToVTK_s"] = round(_time.monotonic() - t3, 1)
             except Exception:  # noqa: BLE001 - an export must never lose a finished mesh
                 logger.warning("foamToVTK after meshing failed; the reviewer will have no "
                                "volume to slice", exc_info=True)
+        timing["total_s"] = round(_time.time() - attempt_started, 1)
+        out["timing"] = timing
+        try:
+            (ws / TIMING_FILE).write_text(json.dumps(timing))
+        except OSError:
+            pass
+        logger.info("snappy native steps (s): %s", timing)
         return out
 
     def _merge_class_patches():
@@ -361,4 +403,4 @@ def _run_snappy_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
     return _finish()
 
 
-__all__ = ["_foam_version", "_run_snappy_local", "_snappy_result", "run_snappy"]
+__all__ = ["TIMING_FILE", "_foam_version", "_run_snappy_local", "_snappy_result", "run_snappy", "stage_timing"]
