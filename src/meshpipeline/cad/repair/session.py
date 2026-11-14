@@ -55,6 +55,35 @@ HEAL_OP = "heal_self_intersections"
 _HELD_AGAINST = (DefectSeverity.warning, DefectSeverity.error, DefectSeverity.fatal)
 
 
+def _is_mesh(defect) -> bool:
+    """Is this one of the mesh probe's findings (a `mesh_*` code) rather than the kernel scan's?"""
+    return getattr(defect.code, "value", str(defect.code)).startswith("mesh_")
+
+
+def _unlocated_mesh(defect) -> bool:
+    """A mesh finding with no box: a whole-part verdict (no volume, a timeout, an unplaceable
+    failure). It is about the part, not a place, so no scope - and no one operation - owns it."""
+    location = defect.location or {}
+    return _is_mesh(defect) and (not location.get("bbox_min") or not location.get("bbox_max"))
+
+
+def _mesh_judged(previous, found) -> tuple[tuple, tuple]:
+    """Both sides of the progress rule, less the mesh findings that cannot speak to one operation.
+
+    AN UNLOCATED MESH FINDING IS NEVER NEW AND NEVER CLEARED: a probe that timed out after an
+    operation says nothing about what the operation did, and one that finished after timing out
+    before says nothing either. And WHEN EITHER SIDE TIMED OUT, located mesh findings are not
+    compared at all for this operation - one side was not walked, so what appears on the other
+    is not news. Non-mesh codes are judged exactly as before; with the probe off nothing here
+    has a mesh code, so both sides come back as they went in.
+    """
+    timed_out = any(d.code is DefectCode.mesh_timeout for d in (*previous, *found))
+
+    def keep(d) -> bool:
+        return not _unlocated_mesh(d) and not (timed_out and _is_mesh(d))
+    return tuple(d for d in previous if keep(d)), tuple(d for d in found if keep(d))
+
+
 def _geometric_defect_key(defect) -> tuple | None:
     """Name a finding by its measured geometry when a kernel rebuild renames its entity."""
     location = defect.location or {}
@@ -238,6 +267,9 @@ class RepairSession:
         self.accounting = Accounting()
         self._defects: tuple | None = None
         self.complete_scan: bool = True
+        #: Has the mesh probe run on this session yet? Until it has, there is nothing to carry
+        #: forward when a probe is skipped (`_with_mesh`).
+        self._mesh_probed: bool = False
         self.log: list[OpVerdict] = []
         #: The package-level truth, beside the per-operation `log`. A reader of the log alone
         #: cannot tell a kept operation that shipped from one discarded with its package.
@@ -292,26 +324,52 @@ class RepairSession:
         `mesh_timeout` defect on the list, not a stopped kernel walk, so it does not lower
         `complete_scan`.
 
-        The budget is the lesser of CAD_REPAIR_MESH_PROBE_TIMEOUT_S and what is left of the run.
-        A non-positive (or NaN) budget SKIPS the probe and appends nothing: with no time left there
-        is no probe to run, and an unlocated `mesh_timeout` minted for every late scan would read
-        as a mesh failure the part may not have. The diagonal is the upload's, as every scope in
-        this session is.
+        The budget is the lesser of CAD_REPAIR_MESH_PROBE_TIMEOUT_S and what is left of the run;
+        a non-positive (or NaN) budget skips the probe. The diagonal is the upload's, as every
+        scope in this session is.
+
+        ABSENCE IS NEVER CLAIMED FOR GROUND THE PROBE DID NOT WALK. A skipped probe, or one that
+        came back with nothing but a `mesh_timeout`, is not evidence the part now meshes - and the
+        result REPLACES the session's list, so returning `found` bare would erase a mesh error and
+        let the run's final scan (taken exactly when time has run out) call the part resolved. So
+        the mesh findings the session already holds for this scope are CARRIED FORWARD (`_carried`);
+        a session that has never probed has none, and gets one unlocated `mesh_timeout` instead.
         """
         if rcfg.CAD_REPAIR_MESH_PROBE != "live":
             return found
         timeout = float(rcfg.CAD_REPAIR_MESH_PROBE_TIMEOUT_S)
         remaining = float(self.remaining_s() if self.remaining_s is not None else timeout)
-        # Checked BEFORE `min`, which would pass a NaN `remaining` over in favour of the timeout.
-        if not remaining > 0.0:
-            return found
         budget = min(timeout, remaining)
-        if not budget > 0.0:
-            return found
+        # `remaining` is checked as well as `budget`: `min` would pass a NaN over for the timeout.
+        if not (remaining > 0.0 and budget > 0.0):
+            if not self._mesh_probed:
+                return (*found, mesh_probe._unlocated(mesh_probe.MeshFailure(  # noqa: SLF001
+                    mesh_probe.TIMEOUT, (), None,
+                    "the mesh probe was skipped: no time was left to run it")))
+            return (*found, *self._carried(within))
+        self._mesh_probed = True
         # Looked up on the module AT CALL TIME, so a test patching `mesh_probe.mesh_defects` is
         # obeyed.
-        return (*found, *mesh_probe.mesh_defects(shape, diagonal_mm=self.original.diagonal_mm,
-                                                 budget_s=budget, within=within))
+        probed = tuple(mesh_probe.mesh_defects(shape, diagonal_mm=self.original.diagonal_mm,
+                                               budget_s=budget, within=within))
+        if probed and all(d.code is DefectCode.mesh_timeout for d in probed):
+            # The probe ran out of time: report that, and keep what it knew before.
+            carried = tuple(d for d in self._carried(within)
+                            if d.code is not DefectCode.mesh_timeout)
+            return (*found, *carried, *probed)
+        return (*found, *probed)
+
+    def _carried(self, within: Region | None) -> tuple:
+        """The mesh findings the session holds for one scope, to stand in for a probe not taken.
+
+        Whole shape: every one. Scoped: the LOCATED ones in the region - an unlocated mesh finding
+        is about the whole part, which `_merged` carries forward on its own.
+        """
+        held = [d for d in (self._defects or ()) if _is_mesh(d)]
+        if within is None:
+            return tuple(held)
+        return tuple(d for d in held if not _unlocated_mesh(d)
+                     and in_region(d, within, diagonal_mm=self.original.diagonal_mm))
 
     def defects(self) -> tuple:
         """The current shape's located defects. Scanned once per shape and cached."""
@@ -390,8 +448,12 @@ class RepairSession:
         reports.
         """
         present = {(d.fingerprint, d.code) for d in found}
+        # AN UNLOCATED MESH FINDING IS ABOUT THE WHOLE PART, so no region's scan replaces it.
+        # `in_region` admits anything unplaceable, and a scoped probe meshes surfaces only, so
+        # without this a `mesh_no_volume` would vanish from the list after any scoped rescan.
         outside = [d for d in (self._defects or ())
-                   if not in_region(d, within, diagonal_mm=self.original.diagonal_mm)
+                   if (_unlocated_mesh(d)
+                       or not in_region(d, within, diagonal_mm=self.original.diagonal_mm))
                    and (d.fingerprint, d.code) not in present]
         return tuple(sorted((*outside, *found),
                             key=lambda d: (d.entity_type, d.entity_index, d.code.value)))
@@ -557,7 +619,11 @@ class RepairSession:
             # operation introduced into the very region it is being proved against. Filtered
             # through the same admission rule the scan itself applies (`localize.scoped_to`), so
             # the two sides cannot drift apart.
-            previous = scoped_to(previous, within, diagonal_mm=self.original.diagonal_mm)
+            # An unlocated mesh finding is the whole part's, not this region's: left in, it is an
+            # error `found` can never hold, and `improved_to_warnings` would excuse new warnings.
+            previous = tuple(d for d in scoped_to(previous, within,
+                                                  diagonal_mm=self.original.diagonal_mm)
+                             if not _unlocated_mesh(d))
         if not judged_by_face_scan:
             carried = tuple(d for d in previous if analyzer_only(d))
             previous = tuple(d for d in previous if not analyzer_only(d))
@@ -917,6 +983,8 @@ class RepairSession:
             if any(d.fingerprint in names and d.code.value in wanted for d in found):
                 return "target_remains"
 
+        # Judged on what the mesh probe can actually speak to (`_mesh_judged`); identity when off.
+        previous, found = _mesh_judged(previous, found)
         before_names = {(d.fingerprint, d.code.value) for d in previous}
         before_geometry = {key for d in previous if (key := _geometric_defect_key(d)) is not None}
         added = set(outcome.added)

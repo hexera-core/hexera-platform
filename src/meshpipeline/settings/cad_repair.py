@@ -4,7 +4,11 @@
 # cad/repair/conservative.py measuring its own result against these; nothing here inspects a file.
 from __future__ import annotations
 
+import logging
+
 from meshpipeline.settings.env import bool_env, optional_env
+
+logger = logging.getLogger(__name__)
 
 #: OFF unless a deployment turns it on, and the ONE switch that separates looking from changing.
 #: Inspection runs on every mesh-intended job regardless (pipeline/repair_inspect.py); this says
@@ -266,6 +270,10 @@ def _mesh_probe_posture() -> str:
     it probably is and the probe stays off.
     """
     raw = optional_env("CAD_REPAIR_MESH_PROBE", "off")
+    if raw not in ("live", "off"):
+        # Still read as off - but said out loud, so a deployment that meant `live` finds out.
+        logger.warning("CAD_REPAIR_MESH_PROBE=%r is neither 'live' nor 'off'; reading it as off",
+                       raw)
     return "live" if raw == "live" else "off"
 
 

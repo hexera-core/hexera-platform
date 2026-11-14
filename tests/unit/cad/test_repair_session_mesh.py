@@ -1,11 +1,12 @@
 # Responsibility: Verify the repair session carries gmsh's mesh defects only when CAD_REPAIR_MESH_PROBE is exactly live - appended after localize's findings on every scan path (whole, per-operation re-inspection, scoped package proof), never on top of an injected scanner, and never at the cost of the scan's completeness.
 from __future__ import annotations
 
-import importlib
+import logging
 
 import pytest
 
 import meshpipeline.cad.repair.mesh_probe as mesh_probe
+import meshpipeline.cad.repair.region_loop as region_loop
 import meshpipeline.cad.repair.session as session_mod
 import meshpipeline.settings.cad_repair as rcfg
 from meshpipeline.cad.repair.caps import Measure
@@ -31,6 +32,12 @@ _OVERLAP = EntityDefect(code=DefectCode.mesh_overlapping_facets, severity=Defect
 _TIMEOUT = EntityDefect(code=DefectCode.mesh_timeout, severity=DefectSeverity.error,
                         entity_type="shape", entity_index=0, message="ran past its budget",
                         measurements={"mesh_kind": "timeout", "gmsh_surfaces": []})
+_NOVOL = EntityDefect(code=DefectCode.mesh_no_volume, severity=DefectSeverity.error,
+                      entity_type="shape", entity_index=0, message="no volume",
+                      measurements={"mesh_kind": "no_volume", "gmsh_surfaces": []})
+_NEW_WARNING = EntityDefect(code=DefectCode.small_edge, severity=DefectSeverity.warning,
+                            entity_type="edge", entity_index=9, message="short",
+                            fingerprint="edge:w", location=dict(_BOX))
 _REGION = Region(index=0, fingerprints=frozenset({"edge:a", "face:f4"}),
                  bbox_min=(0.0, 0.0, 0.0), bbox_max=(10.0, 10.0, 10.0))
 
@@ -99,19 +106,21 @@ def test_off_never_calls_probe(monkeypatch):
     ("true", "off"), ("", "off"), ("off", "off")])
 def test_typo_reads_off(monkeypatch, raw, expected):
     monkeypatch.setenv("CAD_REPAIR_MESH_PROBE", raw)
-    try:
-        assert importlib.reload(rcfg).CAD_REPAIR_MESH_PROBE == expected
-    finally:
-        monkeypatch.delenv("CAD_REPAIR_MESH_PROBE")
-        importlib.reload(rcfg)
+    assert rcfg._mesh_probe_posture() == expected
 
 
-def test_unset_reads_off_and_timeout_defaults_to_120(monkeypatch):
+def test_unset_reads_off(monkeypatch):
     monkeypatch.delenv("CAD_REPAIR_MESH_PROBE", raising=False)
-    monkeypatch.delenv("CAD_REPAIR_MESH_PROBE_TIMEOUT_S", raising=False)
-    reloaded = importlib.reload(rcfg)
-    assert reloaded.CAD_REPAIR_MESH_PROBE == "off"
-    assert reloaded.CAD_REPAIR_MESH_PROBE_TIMEOUT_S == 120.0
+    assert rcfg._mesh_probe_posture() == "off"
+
+
+@pytest.mark.parametrize("raw,warned", [("Live ", True), ("on", True), ("live", False),
+                                        ("off", False)])
+def test_an_unrecognised_posture_is_warned_about(monkeypatch, caplog, raw, warned):
+    monkeypatch.setenv("CAD_REPAIR_MESH_PROBE", raw)
+    with caplog.at_level(logging.WARNING, logger=rcfg.__name__):
+        rcfg._mesh_probe_posture()
+    assert any("CAD_REPAIR_MESH_PROBE" in r.getMessage() for r in caplog.records) is warned
 
 
 def test_live_appends_after_localize(monkeypatch):
@@ -134,7 +143,7 @@ def test_the_budget_is_what_remains_when_less_than_the_timeout(monkeypatch):
 
 
 @pytest.mark.parametrize("remaining", [0.0, -5.0, float("nan")])
-def test_no_time_left_skips_the_probe(monkeypatch, remaining):
+def test_no_time_left_skips_the_probe_and_says_so(monkeypatch, remaining):
     monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
     _scan(monkeypatch, ((_OPENING,), True))
 
@@ -142,7 +151,46 @@ def test_no_time_left_skips_the_probe(monkeypatch, remaining):
         raise AssertionError("probed with no budget")
     monkeypatch.setattr(mesh_probe, "mesh_defects", boom)
     session = RepairSession("shape", measurer=lambda s: MEASURE, remaining_s=lambda: remaining)
-    assert session.defects() == (_OPENING,)
+    # Never probed, so there is nothing to carry: one unlocated timeout, not a claim of absence.
+    opening, timeout = session.defects()
+    assert opening == _OPENING
+    assert timeout.code is DefectCode.mesh_timeout and timeout.fingerprint == ""
+    assert session.complete_scan is True
+
+
+def test_a_final_scan_with_no_time_left_keeps_the_mesh_error(monkeypatch):
+    # Finding 1: the region loop's final whole-shape scan runs exactly when time is out. A probe
+    # skipped there must not erase the mesh error the run started with and call the part resolved.
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
+    _scan(monkeypatch, ((), True))
+    _probe(monkeypatch, (_OVERLAP, _NOVOL))
+    left = iter([300.0, 0.0])
+    session = RepairSession("shape", measurer=lambda s: MEASURE, remaining_s=lambda: next(left))
+    assert session.defects() == (_OVERLAP, _NOVOL)
+    after = session._rescan(face_scan=True)
+    assert after == (_OVERLAP, _NOVOL) and session.defects() == after
+    assert region_loop._terminal(session, after, escalated=[], packages=(),
+                                 fallback="time_budget") != region_loop.RESOLVED
+
+
+def test_a_probe_that_times_out_carries_forward_what_it_knew(monkeypatch):
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
+    _scan(monkeypatch, ((), True))
+    _probe(monkeypatch, (_OVERLAP,), (_TIMEOUT,))
+    session = RepairSession("shape", measurer=lambda s: MEASURE)
+    session.defects()
+    assert session._rescan(face_scan=False) == (_OVERLAP, _TIMEOUT)
+
+
+def test_a_skipped_scoped_probe_carries_the_regions_located_mesh_findings(monkeypatch):
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
+    _scan(monkeypatch, ((), True))
+    _probe(monkeypatch, (_OVERLAP, _NOVOL))
+    left = iter([300.0, 0.0])
+    session = RepairSession("shape", measurer=lambda s: MEASURE, remaining_s=lambda: next(left))
+    session.defects()
+    found, _ = session._region_scan(_REGION)
+    assert found == (_OVERLAP,)
 
 
 def test_scoped_scan_passes_region(monkeypatch):
@@ -218,3 +266,69 @@ def test_an_injected_scanner_is_the_whole_truth(monkeypatch):
     assert session.defects() == (_OPENING,)
     session._rescan(face_scan=False)
     session._region_scan(_REGION)
+
+
+class _Sew:
+    """A sew double aimed at the opening; returns a new shape."""
+
+    name = "sew_faces"
+    answers = frozenset({DefectCode.open_shell})
+    scope = 1
+
+    def targets_for(self, defect):
+        return (EntityRef(entity_type=defect.entity_type, fingerprint=defect.fingerprint,
+                          entity_index=defect.entity_index),)
+
+    def apply(self, shape, targets, *, tolerance_mm):
+        return OpOutcome(shape="sewn")
+
+
+@pytest.mark.parametrize("before,after", [
+    ((), (_TIMEOUT,)),                    # the probe times out after the operation
+    ((), (_NOVOL,)),                      # an unlocated whole-part verdict appears
+    ((_TIMEOUT,), (_OVERLAP,)),           # it finished after timing out before: not news
+    ((_OVERLAP,), (_TIMEOUT,)),           # carried forward, plus the timeout: not news
+])
+def test_mesh_probe_noise_does_not_roll_back_a_good_operation(monkeypatch, before, after):
+    # Finding 2, both directions.
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
+    _scan(monkeypatch, ((_OPENING,), True), ((), True))
+    _probe(monkeypatch, before, after)
+    session = RepairSession("shape", measurer=lambda s: MEASURE)
+    opening = session.defects()[0]
+    verdict = session.try_op(_Sew(), _Sew().targets_for(opening), opening.code, tolerance_mm=0.01)
+    assert verdict.kept, verdict.reason
+
+
+def test_a_new_located_mesh_error_still_rolls_back_when_both_probes_finished(monkeypatch):
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
+    _scan(monkeypatch, ((_OPENING,), True), ((), True))
+    _probe(monkeypatch, (), (_OVERLAP,))
+    session = RepairSession("shape", measurer=lambda s: MEASURE)
+    opening = session.defects()[0]
+    verdict = session.try_op(_Sew(), _Sew().targets_for(opening), opening.code, tolerance_mm=0.01)
+    assert not verdict.kept and verdict.reason == "new_defect"
+
+
+def test_a_scoped_rescan_keeps_the_whole_parts_unlocated_mesh_findings(monkeypatch):
+    # Finding 3a: a 2D-only scoped probe cannot see `no volume`, so `_merged` must not drop it.
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
+    _scan(monkeypatch, ((_OPENING,), True))
+    _probe(monkeypatch, (_NOVOL,), ())
+    session = RepairSession("shape", measurer=lambda s: MEASURE)
+    session.defects()
+    session._rescan(face_scan=False, within=_REGION)
+    assert _NOVOL in session.defects()
+
+
+def test_a_whole_part_mesh_error_does_not_excuse_a_new_warning_in_the_region(monkeypatch):
+    # Finding 3b: left in the scoped `previous`, the unlocated error makes the operation look like
+    # it improved the region to warnings, and the warning it introduced is excused.
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
+    _scan(monkeypatch, ((_OPENING,), True), ((_NEW_WARNING,), True))
+    _probe(monkeypatch, (_NOVOL,), ())
+    session = RepairSession("shape", measurer=lambda s: MEASURE)
+    opening = session.defects()[0]
+    verdict = session.try_op(_Sew(), _Sew().targets_for(opening), opening.code, tolerance_mm=0.01,
+                             within=_REGION)
+    assert not verdict.kept and verdict.reason == "new_defect"
