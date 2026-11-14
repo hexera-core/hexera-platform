@@ -108,10 +108,11 @@ def test_an_overshoot_of_a_big_count_is_corrected_against_the_count_not_the_stan
 
 
 def test_the_body_gap_plan_holds_to_the_users_count():
+    from tests.unit.engines.test_gap_sizing import _two_blocks
+
     from meshpipeline.cad.shape_traits import body_gap_field
     from meshpipeline.engines import gap_sizing as G
     from meshpipeline.engines.snappy.snappy_runner import _plan_body_gaps
-    from tests.unit.engines.test_gap_sizing import _two_blocks
     field = body_gap_field(_two_blocks(0.002), samples=4000)
     # ours: the gap boxes raise the ceiling past the plan's own budget, within the standard machine
     ours, raised = _plan_body_gaps(field, wall_cell=0.005, budget=2_000, base_cells=1_500.0)
