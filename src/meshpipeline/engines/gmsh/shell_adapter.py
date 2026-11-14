@@ -1413,7 +1413,10 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
     gmsh.initialize(["-noenv"], readConfigFiles=False)
     try:
         gmsh.option.setNumber("General.Terminal", 0)
-        gmsh.option.setNumber("General.NumThreads", 1)
+        # MESH-25: every gmsh step on the job's cores (the founder, 13 Nov: speed over the same mesh twice; one
+        # thread with MESH_GMSH_THREADS=1, our tests)
+        from meshpipeline.engines.determinism import pin_gmsh
+        pin_gmsh(gmsh)
         gmsh.option.setNumber("Geometry.OCCParallel", 0)
         gmsh.option.setNumber("Mesh.Algorithm", ALGORITHM)
         gmsh.option.setNumber("Mesh.RecombineAll", 0 if kind == "triangles" else 1)

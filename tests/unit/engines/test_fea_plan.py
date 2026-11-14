@@ -150,8 +150,9 @@ def test_levers_change_only_their_own_settings():
     levers = [{"lever": "LAD-fea-1"}, {"lever": "LAD-fea-3", "zones": ["W3"]}]
     assert L.growth(levers) == L.GENTLE_GROWTH
     assert L.tightened(levers) == {"W3": L.TIGHTEN}
-    assert L.mesh_settings(levers) == {"algorithm3d": "delaunay", "optimise_passes": L.OPTIMISE_PASSES}
-    assert L.mesh_settings([]) == {"algorithm3d": "delaunay", "optimise_passes": 1}
+    # MESH-25: HXT fills first unless LAD-fea-2 put Delaunay first
+    assert L.mesh_settings(levers) == {"algorithm3d": "hxt", "optimise_passes": L.OPTIMISE_PASSES}
+    assert L.mesh_settings([]) == {"algorithm3d": "hxt", "optimise_passes": 1}
 
 
 def test_the_best_pass_is_delivered_by_the_fixed_order():
@@ -248,7 +249,7 @@ def test_an_invalid_element_s_surfaces_ride_with_the_gentler_pass():
     bad = L.pass_facts(1, 0, _q(min_sicn=0.0, fatal=["degenerate elements (SICN <= 0)"], fea_bad_surfaces=[4]), PLAN)
     lever = L.next_lever(bad, [], PLAN)
     assert lever["lever"] == "LAD-fea-1" and lever["surfaces"] == [4]
-    assert L.mesh_settings([lever]) == {"algorithm3d": "delaunay", "optimise_passes": L.OPTIMISE_PASSES,
+    assert L.mesh_settings([lever]) == {"algorithm3d": "hxt", "optimise_passes": L.OPTIMISE_PASSES,
                                        "remesh_surfaces": [4]}
     # a valid mesh names no bad surface
     assert L.pass_facts(1, 0, _q(fea_bad_surfaces=[4]), PLAN)["bad_surfaces"] == []

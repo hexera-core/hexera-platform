@@ -39,8 +39,9 @@ from pathlib import Path
 
 import numpy as np
 
-#: MESH-23: fewer surfaces than this are meshed by one process (a fork costs more than it saves)
-MIN_SURFACES = 8
+#: MESH-23: fewer surfaces than this are meshed by one process. MESH-25: two - even a part with a handful of
+#: faces shares them among the job's cores (gmsh's own threaded surface stage is not safe, determinism.pin_gmsh)
+MIN_SURFACES = 2
 #: MESH-23: the surfaces are cut into at most this many blocks (fixed: never the number of workers)
 BLOCKS = 64
 #: the rule id the adapter's log line cites
@@ -127,12 +128,18 @@ def mesh_blocks(gmsh, cut: list[list[int]]) -> dict[int, str]:
     only = gmsh.option.getNumber("Mesh.MeshOnlyVisible")
     renumber = gmsh.option.getNumber("Mesh.Renumber")
     threads = gmsh.option.getNumber("General.NumThreads")
+    per_step = {k: gmsh.option.getNumber(f"Mesh.MaxNumThreads{k}") for k in ("1D", "2D")}
     gmsh.option.setNumber("Mesh.MeshOnlyVisible", 1)
     # NO OpenMP TEAM WHILE THE BLOCKS ARE MESHED: GNU libgomp's thread pool does not survive fork(), so a forked
     # worker whose parent had already run a parallel region (a 3D fill, the optimiser - a pass meshed again in
-    # the same process) hung in its first team of more than one thread (lab, 1 Nov). The surfaces are meshed on
-    # one thread anyway (Mesh.MaxNumThreads2D = 1); one process does the same, so the mesh is the same.
+    # the same process) hung in its first team of more than one thread (lab, 1 Nov). Each block is meshed on one
+    # thread - the cores are used by the worker processes, one block each (MESH-25 threads only gmsh's one-call
+    # stage); one process does the same, so the mesh is the same. gmsh reads the step's own maximum
+    # (Mesh.MaxNumThreads2D) before General.NumThreads: both to one, or a worker hangs in its first surface (lab,
+    # 13 Nov: every worker of a 12-face beam asleep at 0% CPU once the step maxima were the job's cores).
     gmsh.option.setNumber("General.NumThreads", 1)
+    for k in per_step:
+        gmsh.option.setNumber(f"Mesh.MaxNumThreads{k}", 1)
     # no renumbering of the whole model after every block: numbers are set once, after the last (_put_back or
     # the caller) - the mesh of each entity, in its order, is all that is kept
     gmsh.option.setNumber("Mesh.Renumber", 0)
@@ -155,6 +162,8 @@ def mesh_blocks(gmsh, cut: list[list[int]]) -> dict[int, str]:
         gmsh.option.setNumber("Mesh.MeshOnlyVisible", only)
         gmsh.option.setNumber("Mesh.Renumber", renumber)
         gmsh.option.setNumber("General.NumThreads", threads)
+        for k, v in per_step.items():
+            gmsh.option.setNumber(f"Mesh.MaxNumThreads{k}", v)
     return errors
 
 

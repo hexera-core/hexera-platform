@@ -16,7 +16,13 @@ A mesher's result may depend on more than its input and its plan:
   * the wall clock - a pass skipped "because too little time is left" depends on how loaded the
     machine was during the passes before it.
 
-This module fixes the first three by default (MESH_DETERMINISTIC). The fourth is gone from the mesh
+This module fixes the first three by default (MESH_DETERMINISTIC) - for every mesher but gmsh.
+
+GMSH IS THE EXCEPTION, BY THE FOUNDER'S DECISION (13 Nov): speed wins over the same mesh twice. Every gmsh
+step - curves, surfaces and the volume fill (HXT) - runs on every core the job has (MESH-25), and a mesh may
+differ slightly from one run to the next: still valid, still held to every limit. One-thread gmsh gives the
+same mesh to the byte; that mode is kept for OUR tests and sweep tools ("the same file twice"), never for
+production: MESH_GMSH_THREADS=1. The fourth is gone from the mesh
 path (D3, contracts/work_limits): planned work decides, and a clock is only a GUARD. A guard that
 trips is recorded by `note_guard_trip` - in the stamp's `guard_trips`, and in GUARD_TRIPS_FILE in
 the attempt's workspace, which the executor reads - and the attempt ends as an infrastructure
@@ -64,8 +70,11 @@ MESH_SNAPPY_RANKS: str = optional_env("MESH_SNAPPY_RANKS", "")
 
 #: The decomposition snappy's ranks are cut by (decomposeParDict `method`).
 SNAPPY_DECOMPOSITION = "scotch"
-#: gmsh: one thread and a fixed seed (engines/gmsh/driver pins them; recorded here).
-GMSH_THREADS = 1
+#: gmsh's threads, for every step (curves, surfaces, volume). Blank = every core the job has (its CPU quota,
+#: `job_cpus`): production, where a mesh may differ slightly run to run (MESH-25). "1" = one thread: the only
+#: setting under which gmsh gives the same mesh to the byte - for our tests and sweep tools, never production.
+MESH_GMSH_THREADS: str = optional_env("MESH_GMSH_THREADS", "")
+#: gmsh's fixed seed (every gmsh session sets it; on one thread the mesh is then the same every run).
 GMSH_RANDOM_SEED = 1
 #: The hash seed native Python children run with (vmtk's pype, the snap-grid CLI).
 PYTHON_HASH_SEED = "0"
@@ -99,6 +108,7 @@ def _int_or_none(raw: str, name: str) -> int | None:
 
 
 _CFMESH_THREADS = _int_or_none(MESH_CFMESH_THREADS, "MESH_CFMESH_THREADS")
+_GMSH_THREADS = _int_or_none(MESH_GMSH_THREADS, "MESH_GMSH_THREADS")
 _SNAPPY_RANKS = _int_or_none(MESH_SNAPPY_RANKS, "MESH_SNAPPY_RANKS")
 
 
@@ -108,6 +118,31 @@ def threads_for(engine: str) -> int:
     if engine == "cfmesh" and _CFMESH_THREADS:
         return _CFMESH_THREADS
     return MESH_THREADS
+
+
+def gmsh_threads() -> int:
+    """The threads every gmsh step runs on: MESH_GMSH_THREADS when set (1 = repeatable, for our tests), else
+    every core the job has - never the host's (Cloud Run's os.cpu_count() is the host's)."""
+    return _GMSH_THREADS or job_cpus()
+
+
+def pin_gmsh(gmsh, threads: int | None = None) -> int:
+    """Set a gmsh session to `threads` (default gmsh_threads()) - General.NumThreads (the optimiser, the curving)
+    and the curve and volume maxima - and to the fixed seed. Returns the thread count. MESH-25: speed over
+    sameness, so on more than one thread a mesh may differ slightly between runs.
+
+    gmsh's OWN SURFACE STAGE STAYS ON ONE THREAD (Mesh.MaxNumThreads2D = 1), a measured exception: on more than
+    one thread it does not only differ run to run, it FAILS - the surfaces gmsh must parametrize itself are solved
+    with PETSc, which is not thread-safe in gmsh's build ("Invalid object classid", "The linear system of
+    equations did not converge"; lab, 13 Nov: 3 of the first 45 corpus parts that meshed before built nothing
+    on 8 threads). Surfaces get their cores from worker processes instead (MESH-23, engines/gmsh/fea_parallel2d)."""
+    n = max(1, int(threads if threads is not None else gmsh_threads()))
+    gmsh.option.setNumber("General.NumThreads", n)
+    gmsh.option.setNumber("Mesh.MaxNumThreads1D", n)
+    gmsh.option.setNumber("Mesh.MaxNumThreads2D", 1)
+    gmsh.option.setNumber("Mesh.MaxNumThreads3D", n)
+    gmsh.option.setNumber("Mesh.RandomSeed", GMSH_RANDOM_SEED)
+    return n
 
 
 def native_environment(engine: str) -> dict[str, str]:
@@ -489,7 +524,7 @@ def stamp(engine: str, *, record: _RunRecord | None = None, hashes: dict | None 
             "execution": optional_env("CLOUD_RUN_EXECUTION", ""),
         }.items() if v},
         "tools": tool_versions(engine, foam_version=foam_version),
-        "threads": {"engine": threads_for(engine), "gmsh": GMSH_THREADS},
+        "threads": {"engine": threads_for(engine), "gmsh": gmsh_threads()},
         "python_hash_seed": {"children": env.get("PYTHONHASHSEED"),
                              "this_process_salted": sys.flags.hash_randomization == 1},
         "pinned": env,
@@ -500,7 +535,9 @@ def stamp(engine: str, *, record: _RunRecord | None = None, hashes: dict | None 
     if engine in ("snappy",):
         out["decomposition"] = SNAPPY_DECOMPOSITION
     if engine == "gmsh":
-        out["seeds"] = {"Mesh.RandomSeed": GMSH_RANDOM_SEED, "General.NumThreads": GMSH_THREADS}
+        out["seeds"] = {"Mesh.RandomSeed": GMSH_RANDOM_SEED, "General.NumThreads": gmsh_threads()}
+        # MESH-25: on more than one thread gmsh's mesh may differ slightly run to run (speed over sameness)
+        out["repeatable"] = gmsh_threads() == 1
     if started is not None:
         out["seconds"] = round(time.monotonic() - started, 1)
     return out
@@ -536,12 +573,12 @@ def comparable(a: dict, b: dict) -> list[str]:
 
 
 __all__ = [
-    "GMSH_RANDOM_SEED", "GMSH_THREADS", "GUARD_TRIPS_FILE", "MESH_CFMESH_THREADS",
+    "GMSH_RANDOM_SEED", "GUARD_TRIPS_FILE", "MESH_CFMESH_THREADS", "MESH_GMSH_THREADS",
     "MESH_DETERMINISTIC", "MESH_SNAPPY_RANKS", "MESH_THREADS", "SNAPPY_DECOMPOSITION", "STAMP_FILE",
     "clear_guard_trips", "comparable", "drain_process_guard_trips", "drain_process_notes", "drop_attempt_start", "guard_trips", "mark_attempt_start",
     "native_environment",
     "note_guard_trip", "note_setting", "note_time_limit", "restore_attempt_start",
     "write_guard_trips",
-    "pin_process_environment", "read_stamp", "recording", "snappy_ranks", "stamp", "threads_for",
+    "gmsh_threads", "pin_gmsh", "pin_process_environment", "read_stamp", "recording", "snappy_ranks", "stamp", "threads_for",
     "tool_versions", "workspace_hashes", "write_stamp",
 ]

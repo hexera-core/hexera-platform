@@ -120,11 +120,10 @@ def build_surface_msh(workspace) -> str | None:
 
 
 def _pin_gmsh(gmsh) -> None:
-    """One thread and a fixed seed (engines/determinism.py): threaded gmsh inserts points in the
-    order threads finish, so the same surface could come out as a different staging."""
-    from meshpipeline.engines.determinism import GMSH_RANDOM_SEED, GMSH_THREADS
-    gmsh.option.setNumber("General.NumThreads", GMSH_THREADS)
-    gmsh.option.setNumber("Mesh.RandomSeed", GMSH_RANDOM_SEED)
+    """Every core the job has and the fixed seed (engines/determinism.pin_gmsh, MESH-25: speed over sameness -
+    on more than one thread the same surface may come out slightly differently)."""
+    from meshpipeline.engines.determinism import pin_gmsh
+    pin_gmsh(gmsh)
 
 
 __all__ = ["SURFACE_MSH", "build_surface_msh"]

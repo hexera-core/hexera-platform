@@ -996,7 +996,8 @@ def _bound_groups(gmsh, surfaces, ports, *, cad: bool = False) -> list[dict]:
 
 
 #: MESH-9's retry: the options a CFD CAD solid's first try set, set again in the fresh session
-FRESH_OPTIONS = ("General.Terminal", "General.NumThreads", "Mesh.RandomSeed", "Geometry.OCCBoundsUseStl",
+FRESH_OPTIONS = ("General.Terminal", "General.NumThreads", "Mesh.MaxNumThreads1D", "Mesh.MaxNumThreads2D",
+                 "Mesh.MaxNumThreads3D", "Mesh.RandomSeed", "Geometry.OCCBoundsUseStl",
                  "Mesh.MeshSizeFromCurvature", "Mesh.Algorithm", "Mesh.Algorithm3D", "Mesh.Optimize")
 
 
@@ -1014,7 +1015,7 @@ def _mesh_cad_at_mm(gmsh, geom: Path, h: float, cb, k: float | None = None, fres
     groups = [(dim, [int(t) for t in gmsh.model.getEntitiesForPhysicalGroup(dim, tag)],
                gmsh.model.getPhysicalName(dim, tag)) for dim, tag in gmsh.model.getPhysicalGroups()]
     if cb is not None:
-        gmsh.model.mesh.removeSizeCallback()
+        _no_size_callback(gmsh)
     if (k == 1.0) if fresh is None else fresh:
         keep = {name: gmsh.option.getNumber(name) for name in FRESH_OPTIONS}
         gmsh.finalize()
@@ -1035,14 +1036,14 @@ def _mesh_cad_at_mm(gmsh, geom: Path, h: float, cb, k: float | None = None, fres
     gmsh.option.setNumber("Mesh.MeshSizeMin", h / 20.0 * k)
     if k == 1.0:
         if cb is not None:
-            gmsh.model.mesh.setSizeCallback(cb)
+            _size_callback(gmsh, cb)
         gmsh.model.mesh.generate(3)
         return k
     micro = micro_curves_one_segment(gmsh)
     if micro:
         print(f"[GMSH] micro curve(s) {micro[:20]} meshed as one segment each (MESH-4)", file=sys.stderr)
     if cb is not None:
-        gmsh.model.mesh.setSizeCallback(
+        _size_callback(gmsh,
             lambda dim, tag, x, y, z, lc: float(cb(dim, tag, x / k, y / k, z / k, lc / k)) * k)
     gmsh.model.mesh.generate(2)
     # MESH-5: a face whose surface mesh repeats a triangle keeps one copy
@@ -1051,7 +1052,45 @@ def _mesh_cad_at_mm(gmsh, geom: Path, h: float, cb, k: float | None = None, fres
     return k
 
 
+#: MESH-25 (the CFD path): the volume fill's 3D algorithm (gmsh's Mesh.Algorithm3D numbers) - HXT on every core
+#: first; Delaunay meshes the case again when HXT's mesh fails or misses the bar Delaunay's meets
+CFD_ALGORITHMS_3D = {"hxt": 10, "delaunay": 1}
+CFD_FIRST = "hxt"
+_CFD_ALGO = [CFD_FIRST]
+#: MESH-25: whether a case whose first fill failed or missed its bar is meshed again with Delaunay (off only in
+#: tests of other rules, which count their own attempts)
+SECOND_ATTEMPT = True
+#: exits that are never the fill's (no geometry, no solid, a rejected spec, a fill over the size one job holds)
+_NOT_THE_FILL = (2, 3, 5, 6, RC_FILL_OVERSIZE)
+
+
+def _meets_bar(q: dict) -> bool:
+    """A CFD gmsh mesh's record meets its bar: nothing fatal, every element over the floor of its bar, and (the
+    CFD bar) no face past CFD_MAX_NON_ORTHO."""
+    if not q or q.get("fatal"):
+        return False
+    floor = float(q.get("sicn_floor") or (CFD_SICN_FLOOR if q.get("quality_bar") == "cfd" else SICN_FLOOR))
+    if float(q.get("min_sicn") or 0.0) < floor:
+        return False
+    return not (q.get("quality_bar") == "cfd" and float(q.get("max_non_ortho") or 0.0) > CFD_MAX_NON_ORTHO)
+
+
+def _read_quality(ws: Path) -> dict:
+    try:
+        q = json.loads((ws / "quality.json").read_text())
+    except (OSError, ValueError):
+        return {}
+    return q if isinstance(q, dict) else {}
+
+
 def main(workspace: str) -> int:
+    """MESH-25 ON THE CFD PATH: the case meshed with HXT on every core (the founder's decision, 13 Nov: speed wins);
+    should that fail (an error, no mesh, an invalid one) or miss its bar, the case is meshed again with Delaunay,
+    in a fresh gmsh session, and the better is kept - a failed HXT attempt gives way to Delaunay's whatever it is
+    (no case fails that Delaunay would mesh). quality.json says which algorithm made the mesh (`algorithm3d`)."""
+    import shutil
+    import time
+
     ws = Path(workspace)
     # AN FEA PLAN (engines/fea_*.py, FEA build step 4): the solid is meshed exactly as the plan says,
     # by the FEA adapter - the plan is the whole spec, and nothing below applies to it
@@ -1059,6 +1098,115 @@ def main(workspace: str) -> int:
     if (ws / PLAN_FILE).exists():
         from meshpipeline.engines.gmsh.fea_adapter import mesh as mesh_by_plan
         return mesh_by_plan(ws)
+    from meshpipeline.engines.determinism import gmsh_threads
+    before = {f.name: f.stat().st_mtime_ns for f in ws.iterdir() if f.is_file()}
+    record: dict = {"rule": "MESH-25", "first": "hxt", "threads": gmsh_threads()}
+    t0 = time.monotonic()
+    err: BaseException | None = None
+    _CFD_ALGO[0] = CFD_FIRST
+    try:
+        rc = _main(ws)
+    except Exception as exc:  # noqa: BLE001 - Delaunay meshes the case again; its outcome stands
+        rc, err = -1, exc
+    record["first_seconds"] = round(time.monotonic() - t0, 1)
+    q1 = _read_quality(ws) if rc == 0 else {}
+    if rc in _NOT_THE_FILL or (rc == 0 and _meets_bar(q1)) or not SECOND_ATTEMPT or CFD_FIRST != "hxt":
+        _note_algorithm3d(ws, {**record, "first": CFD_FIRST, "used": CFD_FIRST})
+        if err is not None:
+            raise err
+        return rc
+    why = (f"{type(err).__name__}: {str(err)[:200]}" if err is not None else f"exit {rc}" if rc else "short of its bar")
+    aside = ws / "_mesh25_first"
+    shutil.rmtree(aside, ignore_errors=True)
+    aside.mkdir()
+    for f in ws.iterdir():
+        if f.is_file() and before.get(f.name) != f.stat().st_mtime_ns:
+            shutil.move(str(f), aside / f.name)
+    print(f"[GMSH] the HXT fill {'failed' if rc else 'missed its bar'} ({why}) - the case meshed again with "
+          "Delaunay, the better kept (MESH-25)", file=sys.stderr)
+    _CFD_ALGO[0] = "delaunay"
+    t1 = time.monotonic()
+    err2: BaseException | None = None
+    try:
+        rc2 = _main(ws)
+    except Exception as exc:  # noqa: BLE001 - raised below when its outcome stands
+        rc2, err2 = -1, exc
+    finally:
+        _CFD_ALGO[0] = CFD_FIRST
+    record.update(second="delaunay", second_seconds=round(time.monotonic() - t1, 1), why=why)
+    q2 = _read_quality(ws) if rc2 == 0 else {}
+    if rc != 0 or (rc2 == 0 and _meets_bar(q2)):
+        shutil.rmtree(aside, ignore_errors=True)
+        _note_algorithm3d(ws, {**record, "used": "delaunay"})
+        if err2 is not None:
+            raise err2
+        return rc2
+    for f in ws.iterdir():
+        if f.is_file() and (aside / f.name).exists():
+            f.unlink()
+    for f in aside.iterdir():
+        shutil.move(str(f), ws / f.name)
+    shutil.rmtree(aside, ignore_errors=True)
+    _note_algorithm3d(ws, {**record, "used": "hxt"})
+    return rc
+
+
+def _note_algorithm3d(ws: Path, record: dict) -> None:
+    q = _read_quality(ws)
+    if q:
+        q["algorithm3d"] = record
+        try:
+            (ws / "quality.json").write_text(json.dumps(q, indent=1))
+        except OSError:
+            pass
+    print(f"[GMSH] 3D fill: {record.get('used')} on {record.get('threads')} thread(s) (MESH-25)", file=sys.stderr)
+
+
+def _size_callback(gmsh, cb) -> None:
+    """A Python size callback sizes the mesh (the passage field): gmsh's curve and volume steps then run on ONE
+    thread. gmsh calls Python under its lock from every thread, and threads made such a mesh slower, not faster
+    (lab, 13 Nov, 8 tori sized by a callback: surfaces 3.5 s on 1 thread, 8.2 s on 8; HXT fill 2.9 s on 1, 81 s on
+    8). MESH-25's measured exception; _no_size_callback gives the steps the job's cores back. (The surface stage
+    is on one thread in gmsh whatever sizes it, determinism.pin_gmsh.)"""
+    gmsh.model.mesh.setSizeCallback(cb)
+    for k in ("1D", "2D", "3D"):
+        gmsh.option.setNumber(f"Mesh.MaxNumThreads{k}", 1)
+
+
+def _no_size_callback(gmsh) -> None:
+    from meshpipeline.engines.determinism import gmsh_threads
+    gmsh.model.mesh.removeSizeCallback()
+    for k in ("1D", "3D"):
+        gmsh.option.setNumber(f"Mesh.MaxNumThreads{k}", gmsh_threads())
+
+
+def _surfaces_on_every_core(gmsh) -> None:
+    """MESH-25 x MESH-23 on the CFD path: a CAD solid's surfaces meshed in worker processes, one per core
+    (engines/gmsh/fea_parallel2d) - gmsh's own threaded surface stage is not safe (determinism.pin_gmsh), and a
+    Python size callback costs worker processes nothing. One thread, or a model that cannot be split (a periodic
+    face): nothing done, and gmsh's one-call stage meshes the surfaces as before."""
+    from meshpipeline.engines.determinism import gmsh_threads
+    from meshpipeline.engines.gmsh import fea_parallel2d as P2D
+
+    n = gmsh_threads()
+    if n <= 1 or not P2D.can_split(gmsh):
+        return
+    workers = P2D.workers_for(n, len(gmsh.model.getEntities(2)))
+    if workers > 1:
+        done = P2D.mesh_surfaces(gmsh, workers)
+        print(f"[GMSH] {done['surfaces']} surfaces meshed in {done['blocks']} fixed blocks on {done['workers']} "
+              f"process(es) ({P2D.RULE})", file=sys.stderr)
+
+
+def _pin_cfd(gmsh) -> None:
+    """MESH-25: every gmsh step on the job's cores, the fixed seed, and this attempt's 3D algorithm."""
+    from meshpipeline.engines.determinism import pin_gmsh
+    pin_gmsh(gmsh)
+    gmsh.option.setNumber("Mesh.Algorithm3D", CFD_ALGORITHMS_3D[_CFD_ALGO[0]])
+
+
+def _main(ws: Path) -> int:
+    """One attempt at the CFD case, with _CFD_ALGO's 3D algorithm (main)."""
     try:
         spec = json.loads((ws / "gmsh_spec.json").read_text())
     except (OSError, json.JSONDecodeError) as exc:
@@ -1098,12 +1246,11 @@ def main(workspace: str) -> int:
     gmsh.initialize(interruptible=False)
     try:
         gmsh.option.setNumber("General.Terminal", 1)
-        # PINNED: one thread and a fixed seed, so a staged surface gives the same mesh wherever
-        # it runs. Threaded meshing inserts nodes in the order threads finish, and the worst
-        # tet with it; a staged tee read worst SICN 0.18, 0.12 and 0.002 on three lab runs
-        # (2026-10-04), where three local runs of each of three cases matched to the digit.
-        gmsh.option.setNumber("General.NumThreads", 1)
-        gmsh.option.setNumber("Mesh.RandomSeed", 1)
+        # MESH-25: EVERY CORE (the founder, 13 Nov: speed wins over the same mesh twice). Threaded meshing inserts
+        # nodes in the order threads finish, so a mesh may differ slightly run to run (a staged tee read worst SICN
+        # 0.18, 0.12 and 0.002 on three threaded lab runs, 2026-10-04): every attempt is held to its bar, and one
+        # short of it is meshed again with Delaunay (main). One thread (MESH_GMSH_THREADS=1): the same mesh twice.
+        _pin_cfd(gmsh)
         # the model's bounding box from its surface, not OpenCascade's loose envelope of B-spline
         # control points: the element size is a factor of this diagonal and the resolution clamp
         # reads its narrowest side (a 132 mm Supra read 570 x 492 x 401 mm without it)
@@ -1297,7 +1444,7 @@ def main(workspace: str) -> int:
             return RC_FILL_OVERSIZE
         _passage: dict = {"passage_sizing": _why, "passage_cells_across_target": PASSAGE_CELLS_ACROSS}
         if _cb is not None:
-            gmsh.model.mesh.setSizeCallback(_cb)
+            _size_callback(gmsh, _cb)
         else:
             print(f"[GMSH] passage sizing not applied: {_why}", file=sys.stderr)
         # MESH-9 (as the FEA path): a CAD face or edge far below the element size this mesh places there
@@ -1318,6 +1465,8 @@ def main(workspace: str) -> int:
                 # MESH-9: the compounds' nodes back on their CAD faces and curves before the fill
                 gmsh.model.mesh.generate(2)
                 TINY.settle_nodes(gmsh, _tiny)
+            elif _cad:
+                _surfaces_on_every_core(gmsh)
             gmsh.model.mesh.generate(3)
             if staged and not any(len(t) for t in gmsh.model.mesh.getElements(3)[1]):
                 # gmsh can fail to recover the boundary, say so in its log and carry on with
@@ -1363,13 +1512,12 @@ def main(workspace: str) -> int:
                 print(f"[GMSH] the staged boundary did not fill ({exc}); remeshing it split by "
                       "angle instead", file=sys.stderr)
                 if _cb is not None:
-                    gmsh.model.mesh.removeSizeCallback()
+                    _no_size_callback(gmsh)
                 # a failed fill leaves gmsh's meshing state behind it: start it afresh, same options
                 gmsh.finalize()
                 gmsh.initialize(interruptible=False)
                 gmsh.option.setNumber("General.Terminal", 1)
-                gmsh.option.setNumber("General.NumThreads", 1)
-                gmsh.option.setNumber("Mesh.RandomSeed", 1)
+                _pin_cfd(gmsh)
                 gmsh.option.setNumber("Mesh.MeshSizeMax", h)
                 gmsh.option.setNumber("Mesh.MeshSizeMin", h / 20.0)
                 gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", int(spec.get("curvature_nodes", 24)))
@@ -1378,10 +1526,10 @@ def main(workspace: str) -> int:
                 _passage = {"passage_sizing": _why, "passage_cells_across_target": PASSAGE_CELLS_ACROSS,
                             "surface_route": "classified by angle"}
                 if _cb is not None:
-                    gmsh.model.mesh.setSizeCallback(_cb)
+                    _size_callback(gmsh, _cb)
                 gmsh.model.mesh.generate(3)
         if _cb is not None:
-            gmsh.model.mesh.removeSizeCallback()
+            _no_size_callback(gmsh)
         # MESH-10: no volume comes out of the optimiser with invalid elements it went in without
         from meshpipeline.engines.gmsh import optimise_guard
         _optimised = optimise_guard.optimise(gmsh, "Netgen", 1 if spec.get("optimize", True) else 0)
