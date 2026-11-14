@@ -61,5 +61,54 @@ RUNTIME_SA="$(gc run jobs describe "${CLOUDRUN_MESH_JOB}" --region "${GCP_REGION
 RUNTIME_SA="${RUNTIME_SA:-${MESH_SA_EMAIL}}"
 info "Mesh runtime identity: ${RUNTIME_SA} (compute-only)"
 grant_bucket "${GCP_MESH_BUCKET}" "serviceAccount:${RUNTIME_SA}" "roles/storage.objectUser"
+
+# THE RIGHT TO LEAVE, for the BIG-MACHINE route. A mesh too large for the Cloud Run job's 32 GiB
+# runs on a VM of its own (adapters/mesh_execution/gce_vm), started by a worker and running as
+# this same identity, and the last line of its startup script is the box deleting itself. That
+# call needs compute.instances.delete on the project, which nothing has ever granted: the header
+# of this file says "no project-level role" and meant it, and the VM route was added later.
+#
+# WHAT THAT COST, measured 2026-11-13 in hexera-dev. From the instance, a GET on its own resource
+# answered 403 - "Required 'compute.instances.list' permission" - so every self-delete this route
+# has ever issued was refused. Job b6762d5c's n2-highmem-64 finished its mesh and uploaded its
+# 12 GB result at 22:36 UTC; its `maxRunDuration` (12.42 h, with instanceTerminationAction DELETE)
+# was due to remove it at 07:58. 9.4 hours of 64 cores and 512 GiB doing nothing, per big mesh.
+# The lifetime cap is the backstop and it does work, so nothing leaks forever and no job was ever
+# lost - what leaks is the money between the end of the mesh and the end of the cap.
+#
+# TWO PERMISSIONS, NOT roles/compute.instanceAdmin.v1, which would let every mesh VM create and
+# delete any instance in the project. `.get` is here so a refusal can be told from a VM that has
+# already gone, which is the only other way that call returns an error.
+#
+# A DEPLOY IDENTITY USUALLY CANNOT GRANT IT - creating a role needs iam.roles.create and binding
+# it needs the project's setIamPolicy, which a deployer is deliberately not given - so it is
+# attempted and a refusal prints the one command an owner runs ONCE. Without the grant nothing
+# breaks and no mesh is lost: the VM says so on its own serial console and Compute Engine removes
+# it at the cap. The printed command joins its halves with `;` and not `&&`, because after a
+# half-finished earlier attempt the role exists, its create fails, and the binding must still be
+# made.
+MESH_SELF_DELETE_ROLE="${MESH_SELF_DELETE_ROLE:-hexeraMeshSelfDelete}"
+MESH_SELF_DELETE_PERMS="compute.instances.delete,compute.instances.get"
+MESH_SELF_DELETE_REF="projects/${GCP_PROJECT_ID}/roles/${MESH_SELF_DELETE_ROLE}"
+MESH_SELF_DELETE_CMD="gcloud iam roles create ${MESH_SELF_DELETE_ROLE} --project ${GCP_PROJECT_ID} --title 'Hexera mesh VM self-delete' --permissions ${MESH_SELF_DELETE_PERMS} --stage GA ; gcloud projects add-iam-policy-binding ${GCP_PROJECT_ID} --member serviceAccount:${RUNTIME_SA} --role ${MESH_SELF_DELETE_REF} --condition None"
+gc iam roles create "${MESH_SELF_DELETE_ROLE}" \
+    --title "Hexera mesh VM self-delete" \
+    --description "Lets a big-machine mesh VM remove itself when its mesh is done" \
+    --permissions "${MESH_SELF_DELETE_PERMS}" --stage GA >/dev/null 2>&1 \
+  || gc iam roles update "${MESH_SELF_DELETE_ROLE}" \
+    --permissions "${MESH_SELF_DELETE_PERMS}" >/dev/null 2>&1 \
+  || true
+if gc projects add-iam-policy-binding "${GCP_PROJECT_ID}" \
+     --member "serviceAccount:${RUNTIME_SA}" \
+     --role "${MESH_SELF_DELETE_REF}" --condition None >/dev/null 2>&1; then
+  log "project += ${MESH_SELF_DELETE_REF} -> ${RUNTIME_SA}"
+else
+  warn "could not grant ${RUNTIME_SA} the right to delete its own big-machine mesh VM
+       (${MESH_SELF_DELETE_PERMS}). This deploy identity cannot change project IAM. If an owner
+       has already granted it, nothing more is needed. If not, every VM this route starts runs on
+       after its mesh is finished until its lifetime cap expires - measured at 9.4 hours of an
+       n2-highmem-64 on one run - and says so on its serial console. An owner runs, ONCE:
+         ${MESH_SELF_DELETE_CMD}"
+fi
 log "done - the deployer's own prerequisites (run.admin, iam.serviceAccountUser on the mesh SA)"
 log "are listed in docs/deployment/overview.md and are NOT granted by this script"

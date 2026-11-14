@@ -409,6 +409,13 @@ class PortPlan:
     #: with the sides it was cut on, and those sides are walls.
     walls: tuple[str, ...] = ()
     reason: str = ""
+    #: Whether these names are PATCHES CUT INTO a face rather than block faces in their own right.
+    #: The two kinds reach this type by different roads - `plan_ports` chooses among the six block
+    #: faces the coolant is flush with, `plan.port_patches` carries a mouth a user placed by centre
+    #: and diameter - and they are the same question to every check below. The flag exists because
+    #: one NOTE has to tell them apart: a sealed block face is the side the block was cut on, and a
+    #: sealed mouth is an opening somebody said was not one.
+    cut: bool = False
 
     @property
     def patches(self) -> tuple[str, str]:
@@ -1385,7 +1392,19 @@ def verify(report: ConjugateReport, *, expect_fluid_volume_m3: float | None = No
                     f"carries {report.outlet_faces:,}, more than ten to one. That is normal for a "
                     "manifold and a sign of a staircased-away port on anything symmetric, so it is "
                     "worth knowing which this is.")
-        if plan.walls:
+        if plan.walls and plan.cut:
+            # A SEALED MOUTH IS NOT A SEALED SIDE. These are openings in the part that somebody
+            # said were not ports, so the coolant runs right up to them and stops. Measured on
+            # job b6762d5c: mouth_3 carries 1,743 faces, within 2% of the inlet's 1,714, and the
+            # outlet the user named carried none at all.
+            carried = ", ".join(f"{w} ({report.fluid.patches.get(w, 0):,} faces)"
+                                for w in plan.walls)
+            report.notes.append(
+                f"the coolant also reaches {carried}, which were declared openings and then "
+                "sealed as walls. That is a choice, not a defect - but an opening of about the "
+                "inlet's size with no flow through it is worth a second look, because it is what "
+                "a mis-assigned port looks like from here.")
+        elif plan.walls:
             report.notes.append(
                 f"the coolant also reaches {', '.join(plan.walls)}, which are sealed as walls. On a "
                 "block cut out of a wider channel array that is correct - those are the faces it "

@@ -39,6 +39,14 @@ NO_COOLANT = "conjugate_no_coolant"
 TOO_FINE = "conjugate_too_fine_for_budget"
 BUILD_FAILED = "conjugate_build_failed"
 
+#: THE PART HAS NO PATH FROM ITS INLET TO ITS OUTLET, and its own marker because it blames
+#: neither a setting nor this mesher: nothing about the budget, the resolution or the machine
+#: changes it, and `conjugate_too_fine_for_budget` would send the next reader to lower the cell
+#: count on a part that would still not be solvable at any count. See
+#: `cad/fluid_passages.ports_on_one_passage` for the measurement and for why it is taken on the
+#: surface rather than on the finished mesh.
+SEVERED_COOLANT = "conjugate_coolant_severed"
+
 #: The gate a refusal before meshing stands in for. `manifest_valid` is the one that already
 #: covers "a mesh over budget" alongside a mesher that stopped and a boundary that is missing
 #: (application/final_result._gate_account says so in those words), and a part priced out before
@@ -635,6 +643,33 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     if port_patches:
         plan = dataclasses.replace(plan, port_patches=tuple(port_patches))
 
+    # CAN A DROP OF COOLANT GET FROM ONE PORT TO THE OTHER? Read here, on the surface about to be
+    # meshed and after the stubs have grown it, because this is the last moment it costs
+    # milliseconds instead of hours. The coolant's piece count is already checked after the mesh,
+    # against `expect_fluid_pieces` - but that expectation is a count of THIS SAME SURFACE's
+    # pieces, so a coolant already severed meets it and passes. Connectivity between the two named
+    # ports is the question that cannot be satisfied by agreeing with the defect.
+    #
+    # MEASURED, job b6762d5c, 2026-11-13: ColdPlateAssembly_CLEAN.step was meshed to 326,631,400
+    # cells over 2 h 29 m on a 64-core machine before anything noticed that its inlet and its
+    # outlet are on pieces 0.5 mm of metal apart.
+    from meshpipeline.cad.fluid_passages import ports_on_one_passage
+    from meshpipeline.cad.stl_io import read_stl_triangles
+
+    try:
+        severed = ports_on_one_passage(read_stl_triangles(ws / PL.FLUID_STL),
+                                       [dict(p) for p in (plan.port_patches or ())])
+    except Exception:  # noqa: BLE001 - a reading that cannot be taken is not a refusal
+        logger.warning("conjugate: the coolant's connectivity could not be read - job_id=%s",
+                       job_id, exc_info=True)
+        severed = ""
+    if severed:
+        logger.info("conjugate: refusing to start - %s - job_id=%s", severed, job_id)
+        _say_why_before_meshing(ws, severed, job_id=job_id)
+        await run.fence("deliver builder outcome")
+        return False, SEVERED_COOLANT, run.outcome(produced_deliverable=False, exhausted=True,
+                                                   failure_marker=SEVERED_COOLANT)
+
     from meshpipeline.engines.cfmesh_conjugate import conjugate as C
     if shell:
         # the domain STL IS the surface cfMesh fills, under the one name a shell has
@@ -665,15 +700,19 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     _stretched = bool(plan.stretch_zones)
     _by_ceiling = C.ranks_for(_cells, available=ranks)
     _want = C.ranks_for(_cells, available=ranks, back_scaled=_stretched)
-    plan = dataclasses.replace(plan, ranks=_want)
+    if _want > 1 and _want > _by_ceiling:
+        why = ("the stretch needs it: the octree cfMesh rebuilds after the back-scale has "
+               f"only ever survived on {C.BACKSCALE_PROJECTION_RANKS} processes, and "
+               f"segfaulted on {_by_ceiling}")
+    elif _want > 1:
+        why = (f"the mesh needs it ({_cells:,} cells against "
+               f"{C.OCTREE_BOXES_PER_PROCESS:,} a process)")
+    else:
+        why = "the mesh fits in one"
+    # CARRIED, not re-derived in the container: the two demands above are both the host's
+    # arithmetic, and the stamp used to pick between them by guessing from the count.
+    plan = dataclasses.replace(plan, ranks=_want, ranks_basis=why)
     if plan.ranks > 1:
-        if plan.ranks > _by_ceiling:
-            why = ("the stretch needs it: the octree cfMesh rebuilds after the back-scale has "
-                   f"only ever survived on {C.BACKSCALE_PROJECTION_RANKS} processes, and "
-                   f"segfaulted on {_by_ceiling}")
-        else:
-            why = (f"the mesh needs it ({_cells:,} cells against "
-                   f"{C.OCTREE_BOXES_PER_PROCESS:,} a process)")
         logger.info("conjugate: meshing across %d processes - %s; %s - job_id=%s",
                     plan.ranks, ranks_basis, why, job_id)
     PL.write_plan(ws, plan)

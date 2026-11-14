@@ -201,8 +201,32 @@ docker run --rm --name mesh \
   -e TMPDIR=/work -v /mnt/stateful_partition/work:/work \
   "$IMG" python -m meshpipeline.runtime.mesh_runner
 TOKEN=$(get instance/service-accounts/default/token | sed -E 's/.*"access_token":"([^"]+)".*/\1/')
-curl -sf -X DELETE -H "Authorization: Bearer $TOKEN" \
-  "https://compute.googleapis.com/compute/v1/$(get instance/zone)/instances/$(get instance/name)" >/dev/null
+# THE BOX REMOVES ITSELF, AND WHEN IT CANNOT IT HAS TO SAY SO. This was `curl -sf ... >/dev/null`:
+# -f makes curl exit non-zero on an HTTP error and >/dev/null threw the body away, so a refused
+# delete produced exactly one line anywhere - `Script "startup-script" failed with error: exit
+# status 22`, curl's code for "the server answered 400 or above" - on the serial console of a
+# machine nobody was watching.
+#
+# MEASURED 2026-11-13. The mesh identity had NO compute permission in its own project: from the
+# instance, a GET on its own resource answered 403 ("Required 'compute.instances.list' permission
+# for projects/..."). Job b6762d5c's n2-highmem-64 finished its mesh and uploaded its result at
+# 22:36 UTC and was scheduled for deletion at 07:58 - 9.4 hours of 64 cores and 512 GiB with
+# nothing on it, on every big mesh this route has ever run. `maxRunDuration` with
+# instanceTerminationAction DELETE is the backstop and it does work; this is the thing that is
+# meant to make the backstop unnecessary, and it was failing in silence.
+#
+# The grant is deploy/gcp/scripts/apply-iam.sh (a two-permission custom role, attempted there and
+# printed for an owner when the deploy identity may not change project IAM).
+DEL="https://compute.googleapis.com/compute/v1/$(get instance/zone)/instances/$(get instance/name)"
+CODE=$(curl -s -o /tmp/self_delete.out -w '%{http_code}' -X DELETE \
+  -H "Authorization: Bearer $TOKEN" "$DEL")
+case "$CODE" in
+  2*) ;;
+  *)  echo "SELF-DELETE REFUSED http=${CODE}: this machine will now run until its lifetime cap"
+      echo "expires, with nothing on it. The identity it runs as needs compute.instances.delete"
+      echo "on this project - see deploy/gcp/scripts/apply-iam.sh."
+      head -c 600 /tmp/self_delete.out ;;
+esac
 """
 
 

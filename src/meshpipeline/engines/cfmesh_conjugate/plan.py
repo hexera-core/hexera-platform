@@ -108,6 +108,14 @@ class ConjugatePlan:
     #: plate asks for is more of them. The sizing step works it out (budget.plan_two_scales) and
     #: this carries it, because the container is handed a workspace and nothing else.
     ranks: int = 1
+    #: WHY that many, in one phrase, so the reproducibility stamp can say it. Two different
+    #: demands land on the same number and they are not interchangeable: the octree label ceiling
+    #: above, and `conjugate.BACKSCALE_PROJECTION_RANKS` - the floor the back-scale projection has
+    #: been shown to survive, which only applies to a plan carrying a stretch. Job b6762d5c was
+    #: planned on 8 ranks by the floor and stamped "from the mesh size against the per-process
+    #: octree ceiling", which two ranks would have satisfied: the stamp named the demand that was
+    #: NOT binding. Empty means nobody said, and the stamp falls back to describing the count.
+    ranks_basis: str = ""
 
 
 def background_for(narrowest_m: float, cells_across: int, levels: int) -> float:
@@ -257,13 +265,50 @@ def ports_from(plan: ConjugatePlan):
 
     A sealed part is still worth meshing - the branching test part is the hardest topology in the
     set and has no ports at all - so no inlet is a legal plan and not an error.
+
+    TWO ROADS REACH THE SAME TYPE, and for a while only one of them arrived. `plan.inlet` and
+    `plan.outlet` are BLOCK FACES, chosen by `conjugate.plan_ports` from the six sides the coolant
+    is flush with; `plan.port_patches` are MOUTHS, each carved into a face at a centre and a
+    diameter the customer confirmed. The product only ever fills the second - a real part is not a
+    block cut out of a channel array - so `plan.inlet` was empty on every customer run, this
+    returned None, and `conjugate.verify`'s entire port section is behind `if plan is not None`.
+
+    WHAT THAT COST, on job b6762d5c (2026-11-13, the first customer plate through the whole
+    product). The run declared three mouths; `topoSet` found 1,714 faces under the inlet's box and
+    1,743 under the third mouth's, and ZERO under the outlet's - that opening is sealed in the CAD,
+    so the two the coolant actually has are the ones the customer had named inlet and not-an-
+    opening. `createPatch` then did what it is told to do with an empty patch: "Removed zero-sized
+    patch outlet". The mesh was delivered with an inlet, a sealed mouth and no outlet at all,
+    nothing anywhere fixes its pressure, and the report said `"ports": null` and listed three
+    problems, not one of which was this one. The check that catches it exactly - "the outlet patch
+    exists on the fluid region with ZERO faces ... the solve dies in the preconditioner" - had been
+    written months earlier and was never reached.
+
+    A mouth typed `wall` is a declared opening somebody said was not a port. It goes in `walls`,
+    where `verify` says how many faces it carries, because an unused opening the size of the inlet
+    is what a mis-assigned port looks like from the mesh.
     """
     from meshpipeline.engines.cfmesh_conjugate.conjugate import PortPlan
 
-    if not plan.inlet and not plan.outlet:
+    if plan.inlet or plan.outlet:
+        return PortPlan(inlet=plan.inlet, outlet=plan.outlet, walls=tuple(plan.port_walls),
+                        reason=plan.port_reason or "carried in the plan")
+    by_role: dict[str, list[str]] = {}
+    for cut in (plan.port_patches or ()):
+        name = str(dict(cut).get("name") or "").strip()
+        role = str(dict(cut).get("type") or "").strip().lower()
+        if name:
+            by_role.setdefault(role, []).append(name)
+    inlet = (by_role.get("inlet") or [""])[0]
+    outlet = (by_role.get("outlet") or [""])[0]
+    if not inlet and not outlet:
         return None
-    return PortPlan(inlet=plan.inlet, outlet=plan.outlet, walls=tuple(plan.port_walls),
-                    reason=plan.port_reason or "carried in the plan")
+    # EVERY OTHER MOUTH, including a second inlet or outlet if the part has one: they are all
+    # openings the coolant reaches, and `verify` reports each one's face count.
+    named = {inlet, outlet} - {""}
+    walls = tuple(n for role in by_role for n in by_role[role] if n not in named)
+    return PortPlan(inlet=inlet, outlet=outlet, walls=walls, cut=True,
+                    reason=plan.port_reason or "cut into a face at a centre and a diameter")
 
 
 def plan_for(*, narrowest_m: float, fluid_volume_m3: float, passages: int,

@@ -341,6 +341,129 @@ def stranded_openings(surface_path: Path, patches: list[dict]) -> dict[str, str]
     return dict(plan.stranded)
 
 
+def ports_on_one_passage(tris, ports: list[dict]) -> str:
+    """WHETHER A DROP OF COOLANT CAN GET FROM THE INLET TO THE OUTLET, read off the surface the
+    mesher is about to fill. "" when it can, or why it cannot, in the user's words.
+
+    `tris` is the coolant surface in METRES, (n, 3, 3), exactly as it will be written; `ports` are
+    the mouths the plan carries, [{"name", "type", "centre_m", "diameter_m"}].
+
+    A MOUTH IS A RIM, NOT A POINT, and that is what decides which piece it belongs to. The centre
+    sits in the middle of a circular opening, so the piece the mouth is IN has its surface about
+    one radius away; a piece the mouth merely passes near can be closer than that and is not the
+    one it opens into. Each mouth therefore goes to the piece minimising |nearest vertex - its own
+    radius|, and plain nearest only when no diameter is given.
+
+    THE DIFFERENCE IS NOT ACADEMIC. On the part below, opening 1 is 5.900 mm from the plate
+    (exactly its own radius: it is a face of the plate) and 3.979 mm from the tube that runs over
+    it. Nearest alone puts it on the tube and would have refused a configuration that is sound;
+    the radius rule puts it on the plate, which is where the scout independently put it
+    ("space 1: openings 1, 2; space 2: opening 3").
+
+    WHY IT IS HERE AND NOT AFTER THE MESH. `conjugate.verify` counts the coolant's pieces and
+    compares them against `expect_fluid_pieces` - which is a count of the pieces THIS SAME SURFACE
+    has. A coolant already severed in the surface therefore meets its own expectation and passes:
+    the check agrees with the defect by construction. Connectivity between the two named ports is
+    the question that cannot be satisfied that way, and it costs milliseconds on a surface that
+    costs hours to mesh.
+
+    MEASURED ON JOB b6762d5c, 2026-11-13, ColdPlateAssembly_CLEAN.step through the whole product.
+    `fluid.stl` is watertight - every edge used exactly twice - its volume is within 0.046% of
+    what the CAD declares, and it is in TWO pieces:
+
+        piece   triangles   volume        what it is
+        0          50,738   52,140.3 mm3  the plate's channels, open at opening 2
+        1           1,596    1,496.8 mm3  an 8 mm bore about 30 mm long, open at opening 3
+
+    and the nearest vertex of each piece to each declared mouth's centre, in mm - every mouth
+    lands on the piece it is exactly its own radius from, and on no other:
+
+        mouth                       piece 0   piece 1   its own radius   opens into
+        opening 1 (d 11.8 mm)         5.900     3.979   5.900            piece 0
+        opening 2 (d 8.0 mm)          4.000    31.781   4.000            piece 0
+        opening 3 (d 8.0 mm)         21.236     4.000   4.000            piece 1
+
+    which is the scout's own reading of the same assembly, reached another way: "the parts close
+    it into 2 spaces that do not connect (space 1: openings 1, 2; space 2: opening 3)".
+
+    The mesh then confirmed it from the other end: of the coolant's 3,457 faces on the domain
+    boundary, 1,714 were opening 2 and 1,743 were opening 3, which is all of them - the part
+    reaches the outside world at exactly those two places, and they are on pieces that do not
+    touch. 326,631,400 cells and 2 h 29 m of a 64-core machine to mesh a circuit with no path
+    through it.
+
+    AND THE GAP IS NOT OURS. The two pieces come no closer than 0.5797 mm vertex to vertex, and
+    every one of the 63 tube vertices at that distance lies on the plane y = 33.946 mm while the
+    plate's surface under them is at y = 33.446: a flat 0.500 mm of metal, with the rest of the
+    separation being tessellation offsets within those two planes. No weld tolerance below
+    0.58 mm joins a single vertex. So this is a wall the assembly has, not a surface this pipeline
+    severed, and the refusal has to say the distance - it is the one number that tells a customer
+    whether to open a hole or to correct the port roles.
+    """
+    want = {"inlet": "", "outlet": ""}
+    where: dict[str, int] = {}
+    rows = [dict(p) for p in (ports or []) if isinstance(p, dict)]
+    for p in rows:
+        role = str(p.get("type") or "").strip().lower()
+        if role in want and not want[role]:
+            want[role] = str(p.get("name") or role)
+    if not (want["inlet"] and want["outlet"]):
+        return ""
+    T = np.asarray(tris, dtype=np.float64).reshape(-1, 3, 3)
+    if not len(T) or len(T) > VET_MAX_TRIANGLES:
+        return ""
+    pts = T.reshape(-1, 3).astype(np.float32).astype(np.float64)
+    uniq, inv = np.unique(pts, axis=0, return_inverse=True)
+    F = np.asarray(inv).reshape(-1, 3)
+    piece = _piece_labels(F, len(uniq))
+    n = int(piece.max()) + 1 if len(piece) else 0
+    if n < 2:
+        return ""           # one piece: every mouth is on it, and there is nothing to say
+    vols = {k: abs(_signed_volume(T[piece == k])) for k in range(n)}
+    verts = {k: T[piece == k].reshape(-1, 3) for k in range(n)}
+    for p in rows:
+        role = str(p.get("type") or "").strip().lower()
+        name = str(p.get("name") or role)
+        c = p.get("centre_m")
+        if role not in want or name != want[role] or c is None:
+            continue
+        c = np.asarray(c, dtype=np.float64).reshape(3)
+        r = 0.5 * float(p.get("diameter_m") or 0.0)
+        where[role] = min(range(n), key=lambda k: abs(float(
+            np.linalg.norm(verts[k] - c, axis=1).min()) - r))
+    if len(where) < 2 or where["inlet"] == where["outlet"]:
+        return ""
+    a, b = where["inlet"], where["outlet"]
+    gap = _closest_approach(verts[a], verts[b])
+    how_far = f", {gap * 1000:.3f} mm apart at their closest" if gap is not None else ""
+    return (f"the inlet and the outlet open into different pieces of the coolant{how_far}, and "
+            f"no face joins them: {want['inlet']} opens into a piece of {vols[a] * 1e9:,.1f} mm3 "
+            f"and {want['outlet']} into one of {vols[b] * 1e9:,.1f} mm3, out of {n} the surface "
+            "is in. Nothing can flow from one to the other, so no mesh of this surface can be "
+            "solved however well it is built. A gap under a millimetre is a wall the assembly "
+            "leaves in and a hole has to be opened through it; a wide one means the two are "
+            "separate circuits, and each needs its own inlet and outlet.")
+
+
+def _closest_approach(a: np.ndarray, b: np.ndarray) -> float | None:
+    """The smallest vertex-to-vertex distance between two pieces, or None if it cannot be had.
+
+    Vertex to vertex and not surface to surface, which under-states nothing that matters here: a
+    wall is flat, both sides of it are tessellated, and the answer was 0.5797 mm against a true
+    0.500 mm separation on the part this was written for. The number is for a human deciding
+    whether a hole is missing, not for a tolerance anything is compared against.
+    """
+    try:
+        from scipy.spatial import cKDTree
+    except ImportError:          # pragma: no cover - scipy is a hard dependency of _piece_labels
+        return None
+    if not len(a) or not len(b):
+        return None
+    small, large = (b, a) if len(b) <= len(a) else (a, b)
+    d, _ = cKDTree(np.unique(large, axis=0)).query(np.unique(small, axis=0), k=1)
+    return float(d.min())
+
+
 def passage_count(tris, patches: list[dict], *, input_kind: str = "") -> int | None:
     """HOW MANY SEPARATE PASSAGES the mesher's staging would mesh for these declared openings - the
     count every engine's capability is held to (EngineSpec: FlowSupport.max_passages) before an
@@ -437,6 +560,6 @@ def _winding(T: np.ndarray, p: np.ndarray) -> float:
     return float(np.sum(2.0 * np.arctan2(num, den))) / (4.0 * math.pi)
 
 
-__all__ = ["INSIDE_WINDING", "MAX_PASSAGES", "MAX_PIECES", "PASSAGES_FILE", "PASSAGES_READ_FILE", "POCKET_SHARE", "Passage", "PassagePlan", "PassageReading",
+__all__ = ["INSIDE_WINDING", "MAX_PASSAGES", "MAX_PIECES", "PASSAGES_FILE", "PASSAGES_READ_FILE", "POCKET_SHARE", "Passage", "PassagePlan", "PassageReading", "ports_on_one_passage",
            "passage_count", "passage_surface_files", "passage_surfaces", "plan_passages", "plan_staged",
            "read_passages", "staged_passage_count", "stranded_openings", "write_passage"]

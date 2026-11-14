@@ -5248,3 +5248,172 @@ position, to 0 mm, and cut them under the names given. What proposed the roles i
 and it has no way to read the assembly's part names - which, on this file, are the answer. Reading
 XCAF names is nine lines of OCP and the recipe is already written down; the stage should use them
 before it guesses.
+
+
+## 13 November 2026, later: it meshed, and then three separate things refused it
+
+Job `b6762d5c`, the fourth attempt on `ColdPlateAssembly_CLEAN.step` and the first that got past
+the mesher. Eight ranks, as the previous entry argued for.
+
+| stage | wall clock |
+|---|---|
+| `cartesianMesh` (8 ranks, n2-highmem-64) | 11 min |
+| `topoSet` + `splitMeshRegions` | 12 min |
+| `reconstructParMesh` | 58 min |
+| ports, `createPatch` | 14 min |
+| `checkMesh` fluid, then solid | 48 min |
+| boundary index, both regions | 6 min |
+| return home (12.08 GB uploaded) | 29 min |
+| **total** | **2 h 29 m engine, 8,932.7 s billed** |
+
+326,631,400 cells. Fluid 66,624,895, solid 260,006,505. Interface 21,618,626 faces on both sides,
+so conformal. Fluid volume 5.31682e-05 m3 against the CAD's 5.3661786893e-05, which is -0.92%.
+`rc` 0, no signal, no timeout.
+
+**The back-scale hypothesis held.** Two runs died in `meshOctreeCube::refineCube` on two ranks, at
+2,272 s and 2,346 s. The same part on eight ranks ran the same stage and finished. Nothing else
+about the plan moved except the rung, which was already changed for wall-clock reasons.
+
+The report came back `"ok": false` with three problems. They are three different things and only
+one of them is about the mesh.
+
+### 1. checkMesh dies on our own interface, after the numbers and before the verdict
+
+Both regions, same fatal, mirrored:
+
+```
+checkMesh -constant -region fluid -allGeometry -writeSets vtk -writeFields (nonOrthoAngle skewness aspectRatio)
+...every check prints...
+--> FOAM FATAL ERROR: failed lookup of solid (objectRegistry cr_ws_p7bn1361)
+    available objects of type polyMesh: 1(fluid)
+```
+
+`splitMeshRegions` couples the halves with a `mappedWall` pair - `fluid_to_solid` carries
+`sampleRegion solid` and `solid_to_fluid` carries `sampleRegion fluid` - and `checkMesh -region`
+loads one polyMesh. The mapped patch asks for the other one at the write-fields step, and it is
+not registered.
+
+It dies in the worst possible place. The log holds every number the parser reads and neither
+"Mesh OK." nor "Failed N mesh checks", so `mesh_ok` is False on a mesh nothing judged, and the
+three quality fields are never written, so the viewer's per-face heatmap has no source:
+"checkMesh wrote none of ['aspectRatio', 'nonOrthoAngle', 'skewness']", twice.
+
+So two of the three problems the customer would have seen - `fluid: checkMesh did not report Mesh
+OK`, `solid: checkMesh did not report Mesh OK` - were this and not the mesh.
+
+The fix was already measured on 2026-11-07 on a 33,000-cell reproducer and never landed: retype
+the mapped patch to a plain wall on a check-time copy of `boundary`, `rc` 1 to 0 for 2.3% more
+wall clock. `foam_exec.check_mesh` now does it and puts the file back in a `finally`, because the
+coupling is the deliverable. Face counts, face order and the patch count are untouched; the only
+lines rewritten are `type`, `inGroups` and the keys only a mapped patch may carry.
+
+### 2. The port gate had never once run on the product's own path
+
+`conjugate.verify` has had this since the first conjugate solve died in a preconditioner:
+
+> the outlet patch `<name>` exists on the fluid region with ZERO faces, so no coolant reaches it.
+> The coolant is sealed on that side, nothing fixes its pressure, and the solve dies in the
+> preconditioner.
+
+The whole section is behind `if (plan := report.ports) is not None`, and `ports_from` returned
+None unless `plan.inlet` or `plan.outlet` was set. Those are BLOCK FACE names, chosen by
+`plan_ports` among the six sides the coolant is flush with. A real part is not a block cut out of
+a channel array: its ports are mouths carved at a centre and a diameter, and they arrive in
+`plan.port_patches`. The product fills only the second. `"ports": null` on every customer run.
+
+What that cost on this one. The run declared three mouths and `topoSet` found:
+
+| faceSet | box | faces |
+|---|---|---|
+| `port_outlet` | opening 1 | **0** |
+| `port_inlet` | opening 2 | 1,714 |
+| `port_mouth_3` | opening 3 | 1,743 |
+| `wall_outer`, all of it | | 3,457 |
+
+1,714 + 1,743 = 3,457, so the coolant reaches the outside world at exactly two places and opening
+1 is not one of them: it is an internal face of the plate, and the 11.8 mm junction under the
+outlet tube is sealed. `createPatch` then did what it is told to do with an empty patch -
+`Removed zero-sized patch outlet` - and the mesh shipped with an inlet, a sealed mouth and no
+outlet at all. Three problems in the report, not one of them this one.
+
+`ports_from` now builds the plan from `port_patches` when the block-face names are empty, marks it
+`cut=True`, and puts every other mouth in `walls` so the note says how many faces each carries. On
+this report it would have said what the mesh actually has:
+
+> the outlet was to be `outlet`, and the fluid region has no patch of that name. The patches it
+> does have are ['fluid_to_solid', 'inlet', 'mouth_3'].
+
+### 3. The part has 0.500 mm of metal between its inlet and its outlet
+
+`fluid.stl` is watertight - every edge used exactly twice - and its volume is within 0.046% of
+what the CAD declares. It is in two pieces:
+
+| piece | triangles | volume | what it is |
+|---|---|---|---|
+| 0 | 50,738 | 52,140.3 mm3 | the plate's channels |
+| 1 | 1,596 | 1,496.8 mm3 | an 8 mm bore about 30 mm long |
+
+and each declared mouth is exactly its own radius from one of them and nowhere near the other:
+
+| mouth | piece 0 | piece 1 | its radius | opens into |
+|---|---|---|---|---|
+| opening 1, d 11.8 mm | 5.900 | 3.979 | 5.900 | piece 0 |
+| opening 2, d 8.0 mm | 4.000 | 31.781 | 4.000 | piece 0 |
+| opening 3, d 8.0 mm | 21.236 | 4.000 | 4.000 | piece 1 |
+
+which is the scout's own reading of the same file, reached another way: "the parts close it into 2
+spaces that do not connect (space 1: openings 1, 2; space 2: opening 3)".
+
+The two pieces come no closer than 0.5797 mm vertex to vertex. All 63 tube vertices at that
+distance lie on y = 33.946 mm and the plate's surface under them is at y = 33.446: **a flat
+0.500 mm of metal**, with the rest of the separation being tessellation offsets inside those two
+planes. No weld tolerance below 0.58 mm joins a single vertex.
+
+So the gap is the assembly's, not ours. The coolant can be fed at opening 2 and it can be drained
+at opening 3, and there is no path between them.
+
+`cad/fluid_passages.ports_on_one_passage` now reads this off the surface before anything is
+submitted, and the driver refuses with its own marker, `conjugate_coolant_severed`:
+
+> the inlet and the outlet open into different pieces of the coolant, 0.580 mm apart at their
+> closest, and no face joins them: inlet opens into a piece of 52,140.3 mm3 and outlet into one of
+> 1,496.8 mm3, out of 2 the surface is in. Nothing can flow from one to the other, so no mesh of
+> this surface can be solved however well it is built. A gap under a millimetre is a wall the
+> assembly leaves in and a hole has to be opened through it; a wide one means the two are separate
+> circuits, and each needs its own inlet and outlet.
+
+A mouth goes to the piece it is its own RADIUS from, not the nearest one. Opening 1 is 3.979 mm
+from the tube and 5.900 mm from the plate, and 5.900 is its radius: nearest alone puts it on the
+tube and would refuse a port pair that is sound.
+
+It has to be read before the mesh and not after. `verify` compares the coolant's piece count
+against `expect_fluid_pieces`, which is a count of this same surface's pieces - so a coolant that
+is already severed meets its own expectation and passes. Connectivity between the two named ports
+is the question that cannot be satisfied by agreeing with the defect.
+
+### The machine never deletes itself, and never has
+
+The last line of `gce_vm.STARTUP_SCRIPT` is the box removing itself. From the instance, a GET on
+its own resource answers 403: `Required 'compute.instances.list' permission for
+projects/224734058693`. `dev-rehaan-mesh` has no compute permission in its own project, and
+nothing in `deploy/` ever granted one - `apply-iam.sh` says "no project-level role" in its header
+and the big-machine route was added after it.
+
+`curl -sf ... >/dev/null` turns that into a single line on a serial console nobody reads: `Script
+"startup-script" failed with error: exit status 22`. This run's n2-highmem-64 finished its mesh at
+22:36 UTC and its `maxRunDuration` was due to remove it at 07:58. **9.4 hours of 64 cores and
+512 GiB with nothing on it**, on every big mesh this route has ever run. No job was ever lost and
+nothing leaks forever, because the lifetime cap does work; what leaked is the money between the
+end of the mesh and the end of the cap.
+
+Both halves fixed: a two-permission custom role granted in `apply-iam.sh` on the same pattern
+`create-worker-fleet.sh` already uses for the worker's right to leave, and a startup script that
+prints the HTTP code and the grant to make when the delete is refused. Granted by hand in
+`hexera-dev` at 23:14 UTC; the same call answered 200 afterwards.
+
+### Also
+
+`conjugate_ranks` was stamped `the plan's own count, from the mesh size against the per-process
+octree ceiling` on a run where two ranks met that ceiling and eight were planned by the back-scale
+floor. The stamp named the demand that was not binding. The plan carries `ranks_basis` now and the
+container prints it rather than guessing from the count.

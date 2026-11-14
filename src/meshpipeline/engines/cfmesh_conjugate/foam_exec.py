@@ -179,6 +179,82 @@ def poor_sets(workspace, *, region: str = "") -> list[dict]:
     return out
 
 
+#: WHY THE CONJUGATE INTERFACE IS MEASURED AS A PLAIN WALL, on a copy of the boundary file and
+#: never on the one the mesh ships with.
+#:
+#: `splitMeshRegions` couples the two halves with a `mappedWall` pair - the fluid's interface
+#: carries `sampleRegion solid` and the solid's carries `sampleRegion fluid` - and that pair IS
+#: the conjugate coupling, so it has to stay on the delivered mesh.
+#:
+#: `checkMesh -region fluid` loads ONE polyMesh. Every geometric check runs and prints, and then
+#: the last step asks the mapped patch for its sample mesh - `time().lookupObject<polyMesh>` -
+#: which was never registered:
+#:
+#:     --> FOAM FATAL ERROR: failed lookup of solid (objectRegistry cr_ws_p7bn1361)
+#:         available objects of type polyMesh: 1(fluid)
+#:
+#: It dies AFTER the summary and BEFORE the verdict, which is the worst place it could pick. The
+#: log carries every number the parser wants and neither "Mesh OK." nor "Failed N mesh checks",
+#: so `mesh_ok` reads False on a mesh that nothing has actually judged, and the three quality
+#: fields `-writeFields` was asked for are never written, so `render.boundary_quality` has
+#: nothing to colour the viewer with.
+#:
+#: MEASURED ON JOB b6762d5c, 2026-11-13, the first customer plate to go through the whole product:
+#: 326,631,400 cells, the mesher clean at rc=0 and the interface conformal at 21,618,626 faces on
+#: both sides, and then the same fatal on BOTH regions - "failed lookup of solid" under
+#: -region fluid and "failed lookup of fluid" under -region solid. Both verdicts missing, both
+#: sidecars absent (checkMesh wrote none of the three fields), and the two refusals that reached
+#: the customer-facing report - "fluid: checkMesh did not report Mesh OK", "solid: checkMesh did
+#: not report Mesh OK" - were this, not the mesh.
+#:
+#: THE RETYPE ITSELF IS MEASURED, not reasoned: on a 33,000-cell two-region reproducer built for
+#: this question (2026-11-07), `checkMesh -region` went from rc=1 with no verdict to rc=0 with
+#: one, for 2.3% more wall-clock, purely by handing it a boundary file whose interface said
+#: `wall`. A control arm on the same reproducer refuted the other candidate explanation at the
+#: time - that a region with no cells of its own was what it could not look up.
+#:
+#: NOTHING GEOMETRIC MOVES. The faces, their order and their count are the file's own; only
+#: `type`, `inGroups` and the keys that only a mapped patch may carry are rewritten, so every
+#: number checkMesh prints is the number it would have printed. The original text is restored in
+#: a `finally` whatever happens, because the coupling is the deliverable.
+#:
+#: The keys dropped while it is measured. `sampleRegion` is the one that faults; the rest are its
+#: companions and mean nothing on a plain wall.
+_MAPPED_ONLY_KEYS = ("sampleMode", "sampleRegion", "samplePatch", "coupleGroup",
+                     "offsetMode", "offset", "offsets", "distance")
+
+
+def as_plain_walls(text: str) -> tuple[str, tuple[str, ...]]:
+    """`text` with every mapped patch retyped to a plain wall, and the names that were retyped.
+
+    Line-wise and deliberately dumb: the words this touches - `type`, `inGroups` and the keys in
+    _MAPPED_ONLY_KEYS - appear nowhere in a polyBoundaryMesh but inside a patch entry, and a
+    parser that understood the dictionary would be a second thing that could disagree with
+    OpenFOAM about what the file says. Returns the text unchanged, and no names, when there is no
+    mapped patch in it.
+    """
+    out: list[str] = []
+    retyped: list[str] = []
+    name = ""
+    for line in text.splitlines(keepends=True):
+        word = line.split()
+        head = word[0] if word else ""
+        indent = line[:len(line) - len(line.lstrip())]
+        if len(word) == 1 and head not in ("{", "}", "(", ")"):
+            name = head          # a patch's own name is the only bare word that precedes its "{"
+        if head == "type" and len(word) > 1 and word[1].rstrip(";").startswith("mapped"):
+            out.append(indent + "type            wall;\n")
+            retyped.append(name)
+            continue
+        if head == "inGroups" and "mappedPatch" in line:
+            out.append(indent + "inGroups        1(wall);\n")
+            continue
+        if head in _MAPPED_ONLY_KEYS:
+            continue
+        out.append(line)
+    return "".join(out), tuple(retyped)
+
+
 def check_mesh(workspace, *, bashrc: str = _DEFAULT_BASHRC, region: str = "",
                timeout_s: float = CHECK_TIMEOUT_S, write_sets: bool = True,
                write_fields: bool = False) -> dict:
@@ -290,6 +366,28 @@ def check_mesh(workspace, *, bashrc: str = _DEFAULT_BASHRC, region: str = "",
     # "checkMesh.fluid.log" is a tool it has never heard of. See CHECKMESH_LOG.
     suffix = f"_{region}" if region else ""
     log = ws / CHECKMESH_LOG.format(suffix=suffix)
+    # THE INTERFACE IS MEASURED AS A WALL - see _MAPPED_ONLY_KEYS above for the fatal this avoids
+    # and for why nothing geometric moves. Only when a region is named: `checkMesh` with no
+    # -region reads the pre-split mesh, which has no mapped patch on it to trip over.
+    boundary = ws / "constant" / region / "polyMesh" / "boundary" if region else None
+    coupled = ""
+    retyped: tuple[str, ...] = ()
+    if boundary is not None and boundary.is_file():
+        try:
+            coupled = boundary.read_text(encoding="utf-8")
+            plain, retyped = as_plain_walls(coupled)
+            if retyped:
+                boundary.write_text(plain, encoding="utf-8")
+                logger.info("checkMesh: %s measured with %s as a plain wall - the mapped "
+                            "coupling goes back as soon as it has finished", region,
+                            ", ".join(retyped))
+            else:
+                coupled = ""
+        except OSError:
+            logger.warning("checkMesh: could not read %s, so the mesh is measured as it stands "
+                           "and a mapped interface on it will take checkMesh down before its "
+                           "verdict", boundary, exc_info=True)
+            coupled = ""
     try:
         with log.open("w", encoding="utf-8") as fh:
             run_guarded(["bash", "-lc", cmd], cwd=str(ws), env=_foam_env(),
@@ -302,7 +400,17 @@ def check_mesh(workspace, *, bashrc: str = _DEFAULT_BASHRC, region: str = "",
                        "unmeasured; %s has what it printed", stuck, type(exc).__name__, log.name)
         return {"mesh_ok": False, "fatal": ["checkMesh did not finish"],
                 "skew_faces": 0, "skew_fraction": 0.0, "unmeasured": True}
+    finally:
+        # THE COUPLING IS THE DELIVERABLE, so it goes back whatever happened above - a timeout, a
+        # stall, a checkMesh that died. A mesh left behind with its interface retyped to a wall
+        # is a mesh no conjugate solver can run, broken by the step that only measures.
+        if coupled:
+            boundary.write_text(coupled, encoding="utf-8")
     q = parse_check_mesh(_read_checkmesh_output(log))
+    if retyped:
+        # SAID IN THE REPORT, not only in the log: a reader comparing these numbers against a
+        # checkMesh they ran by hand needs to know the interface was a wall while they were taken.
+        q["checked_as_walls"] = list(retyped)
     if write_sets:
         # RECORDED, not re-derived. The reading already carries the COUNT of poor cells; this is
         # where they are, which is the half a customer can act on.

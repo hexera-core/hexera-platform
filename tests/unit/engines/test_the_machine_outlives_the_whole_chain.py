@@ -470,12 +470,26 @@ LATER_STARTUP_LINES = (
     "chmod 1777 /mnt/stateful_partition/work",
 )
 
+#: WHERE THE SELF-DELETE BEGINS. Everything from this line to the end of the script is the box
+#: removing itself, and this branch REWROTE it rather than adding to it: the pinned body issues a
+#: bare `curl -sf ... >/dev/null`, and a refused delete therefore said nothing anywhere but
+#: `exit status 22` on a serial console - 9.4 hours of an idle n2-highmem-64 on job b6762d5c,
+#: 2026-11-13, because the mesh identity had no compute permission at all. The new form reads the
+#: HTTP code and prints it with the grant to make.
+#:
+#: So the tail is cut from BOTH bodies and the comparison is about everything before it, which is
+#: what these two rows are for. It is cut, not normalised away unchecked: both bodies are asserted
+#: to still carry it, so a self-delete that disappeared entirely would fail here.
+SELF_DELETE_FROM = "TOKEN=$(get instance/service-accounts/default/token"
 
-def _without_later_startup_changes(body: dict) -> dict:
-    """`body` with the startup-script lines a later commit added taken back out.
+
+def _without_later_startup_changes(body: dict, *, added: bool = True) -> dict:
+    """`body` with the startup-script lines a later commit added taken back out, and the
+    self-delete tail cut off.
 
     Asserts they were there: a control that silently normalises away a line that is no longer
-    present stops testing anything.
+    present stops testing anything. `added=False` for a body from BEFORE those lines existed -
+    the pinned one - which has the tail but not the block.
     """
     import copy
 
@@ -484,12 +498,17 @@ def _without_later_startup_changes(body: dict) -> dict:
         if item["key"] != "startup-script":
             continue
         lines = item["value"].split("\n")
-        for marker in LATER_STARTUP_LINES:
-            assert marker in lines, f"startup script no longer carries {marker!r}"
-        start = lines.index(LATER_STARTUP_LINES[0])
-        end = lines.index(LATER_STARTUP_LINES[-1])
-        assert 0 <= start < end, (start, end)
-        item["value"] = "\n".join(lines[:start] + lines[end + 1:])
+        tail = [n for n, ln in enumerate(lines) if ln.startswith(SELF_DELETE_FROM)]
+        assert tail, "the startup script no longer removes the machine at all"
+        lines = lines[:tail[0]]
+        if added:
+            for marker in LATER_STARTUP_LINES:
+                assert marker in lines, f"startup script no longer carries {marker!r}"
+            start = lines.index(LATER_STARTUP_LINES[0])
+            end = lines.index(LATER_STARTUP_LINES[-1])
+            assert 0 <= start < end, (start, end)
+            lines = lines[:start] + lines[end + 1:]
+        item["value"] = "\n".join(lines)
     return out
 
 
@@ -503,7 +522,8 @@ def test_the_whole_instance_body_is_identical_to_this_branchs_head():
         now = _without_later_startup_changes(
             _body(V, machine=machine, timeout=timeout, workspace_gib=0.0,
                   cpus=V.cpus_of(machine)))
-        was = _body(base, machine=machine, timeout=timeout, workspace_gib=0.0)
+        was = _without_later_startup_changes(
+            _body(base, machine=machine, timeout=timeout, workspace_gib=0.0), added=False)
         assert json.dumps(now, sort_keys=True) == json.dumps(was, sort_keys=True), label
 
 
@@ -518,7 +538,12 @@ def test_the_fea_margin_is_the_one_non_semiconductor_reading_that_moves():
     """DECIDED ON MEASUREMENT AND RECORDED, which is what the finding asked for. Nothing about an
     FEA mesh changes and a run that FINISHES is unaffected: `gce_vm.STARTUP_SCRIPT` stops the
     container at the run's own timeout + 1,800 s and then deletes the VM itself, so
-    maxRunDuration is only the backstop for a box whose startup script is dead. What it buys is
+    maxRunDuration is meant to be only the backstop for a box whose startup script is dead.
+    ON 2026-11-13 IT WAS DOING THE WHOLE JOB: the mesh identity had no compute permission in its
+    own project, every self-delete was answered 403, and job b6762d5c's n2-highmem-64 sat idle
+    from 22:36 UTC to the 07:58 cap. Both halves are fixed - the grant, and a startup script that
+    says out loud when the delete is refused - but the sentence above describes the design and
+    this one describes what was measured. What it buys is
     that an FEA workspace of 214 GiB is given time to be archived instead of being deleted
     mid-archive; what it costs is that an ALREADY BROKEN FEA box lives up to 2.02 h longer before
     Compute Engine removes it."""
@@ -546,7 +571,8 @@ def test_nothing_about_the_fea_mesh_itself_moves():
         now = _without_later_startup_changes(
             _body(V, machine=machine, timeout=7_200, workspace_gib=files_gib,
                   cpus=V.cpus_of(machine)))
-        was = _body(base, machine=machine, timeout=7_200, workspace_gib=files_gib)
+        was = _without_later_startup_changes(
+            _body(base, machine=machine, timeout=7_200, workspace_gib=files_gib), added=False)
         meta_now = {i["key"]: i["value"] for i in now["metadata"]["items"]}
         meta_was = {i["key"]: i["value"] for i in was["metadata"]["items"]}
         assert meta_now == meta_was, machine

@@ -91,9 +91,15 @@ def _run_conjugate_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
     # which one you had. The mesh report carries a "ranks" field (further down this file), which
     # is not the same thing: that describes the mesh, this is what makes the run repeatable.
     _ranks = int(getattr(plan, "ranks", 1) or 1)
-    det.note_setting("conjugate_ranks", _ranks,
-                     "the plan's own count, from the mesh size against the per-process octree "
-                     "ceiling" if _ranks > 1 else "one process: the mesh fits in one")
+    # THE PLAN'S OWN WORDS WHEN IT HAS ANY. More than one demand can set this number - the
+    # octree's label ceiling, and the floor the back-scale projection survives on - and a stamp
+    # that picks between them from the count alone names the wrong one as soon as they disagree.
+    # Job b6762d5c was planned on 8 by the stretch floor and stamped as the octree ceiling, which
+    # two ranks met. A plan from before this field falls back to describing the count.
+    _basis = str(getattr(plan, "ranks_basis", "") or "").strip()
+    det.note_setting("conjugate_ranks", _ranks, f"the plan's own count - {_basis}" if _basis else
+                     ("the plan's own count, from the mesh size against the per-process octree "
+                      "ceiling" if _ranks > 1 else "one process: the mesh fits in one"))
     try:
         report = build(
             ws, block_stl=PL.BLOCK_STL, fluid_stl=PL.FLUID_STL,
