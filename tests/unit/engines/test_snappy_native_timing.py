@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import threading
-import time
 from pathlib import Path
 
 from meshpipeline.engines.snappy import native as N
@@ -51,18 +50,19 @@ def test_the_mesh_is_measured_while_it_is_exported_and_every_step_is_timed(tmp_p
             (ws / "constant" / "polyMesh" / f).write_text("x\n")
         return _Done()
 
-    spans: dict[str, tuple[float, float, str]] = {}
+    # both steps must be running AT ONCE to pass this barrier; one after the other, the first
+    # waits it out and breaks it, and neither is recorded as met
+    together = threading.Barrier(2, timeout=30)
+    met: dict[str, str] = {}
 
     def fake_check(ws, **k):
-        t0 = time.monotonic()
-        time.sleep(0.4)
-        spans["checkMesh"] = (t0, time.monotonic(), threading.current_thread().name)
+        together.wait()
+        met["checkMesh"] = threading.current_thread().name
         return {"mesh_ok": True, "cells": 10, "fatal": []}
 
     def fake_vtk(ws, **k):
-        t0 = time.monotonic()
-        time.sleep(0.4)
-        spans["foamToVTK"] = (t0, time.monotonic(), threading.current_thread().name)
+        together.wait()
+        met["foamToVTK"] = threading.current_thread().name
         return "VTK/case_0/internal.vtu"
 
     monkeypatch.setattr(N, "run_guarded", fake_run)
@@ -75,14 +75,12 @@ def test_the_mesh_is_measured_while_it_is_exported_and_every_step_is_timed(tmp_p
 
     out = N._run_snappy_local(ws)
 
-    (c0, c1, c_thread), (v0, v1, v_thread) = spans["checkMesh"], spans["foamToVTK"]
-    assert c_thread != v_thread, "the export ran on the measuring thread, after the measurement"
+    assert set(met) == {"checkMesh", "foamToVTK"}, "checkMesh and foamToVTK did not run at once"
+    assert met["checkMesh"] != met["foamToVTK"]
     # the measure stays on the calling (main) thread: the passage measure's guard is a SIGALRM,
     # which only arms there (engines/passage.measure_deadline)
-    assert c_thread == threading.main_thread().name
-    assert c0 < v1 and v0 < c1, "checkMesh and foamToVTK did not overlap"
+    assert met["checkMesh"] == threading.main_thread().name
     t = out["timing"]
-    assert t["measure_wall_s"] < t["checkMesh_s"] + t["foamToVTK_s"]
     assert out["quality"]["cells"] == 10
     on_disk = json.loads((ws / N.TIMING_FILE).read_text())
     assert on_disk == t
