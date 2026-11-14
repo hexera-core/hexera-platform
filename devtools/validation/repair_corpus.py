@@ -510,6 +510,8 @@ def corpus_summary(rows: list[dict], planner_mode: str = "off",
            "cad_simplicity": cad_simplicity(rows)}
     if planner_mode != "off":
         out["planner"] = planner_summary(rows, planner_mode)
+    if any("meshes_before" in r for r in rows):
+        out["meshing"] = meshing_summary(rows)
     return out
 
 
@@ -653,7 +655,88 @@ def bundle_from_rows(rows_json: Path, bundle_dir: Path, *, track: str = "unspeci
             catalogue=stated_catalogue if isinstance(stated_catalogue, list) else None))
 
 
-def _one(path: Path, scratch: Path, *, mode: str = "off") -> dict:
+# THE MESHING SCORE. Whether a file meshes is the outcome the repair exists for, so with
+# --mesh-probe each row also says whether gmsh could mesh the input and the written file. Both
+# probes use ONE mesh size (the input's OCP bounding-box diagonal), so before and after differ only
+# by the repair. The keys appear only under the flag: a bundle sealed without it is unchanged.
+MESH_PROBE_BUDGET_S = 120.0
+_REPAIRED_OUTCOMES = ("repaired", "no_change", "changed_without_fixing")
+
+
+def _diagonal_of(path: Path) -> float:
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
+
+    from meshpipeline.cad.repair.brep import _read_shape
+
+    box = Bnd_Box()
+    BRepBndLib.Add_s(_read_shape(path), box)
+    x0, y0, z0, x1, y1, z1 = box.Get()
+    return float(((x1 - x0) ** 2 + (y1 - y0) ** 2 + (z1 - z0) ** 2) ** 0.5)
+
+
+def _verdict(result) -> tuple[bool, str]:
+    return bool(result.meshed), "" if result.meshed else str(
+        getattr(result.failure, "kind", "") or "other")
+
+
+def _score_meshing(row: dict, path: Path, scratch: Path) -> None:
+    """Add the four mesh keys to `row`. The after probe runs only on a file THIS run wrote (a
+    stale `-repaired.step` from an earlier run is never read): `meshes_after` is None otherwise."""
+    from meshpipeline.cad.repair import mesh_probe
+
+    try:
+        diagonal = _diagonal_of(path)
+    except Exception:  # noqa: BLE001 - no size, no honest probe
+        row.update(meshes_before=False, mesh_kind_before="unreadable",
+                   meshes_after=None, mesh_kind_after="")
+        return
+    row["meshes_before"], row["mesh_kind_before"] = _verdict(
+        mesh_probe.probe_file(path, diagonal_mm=diagonal, budget_s=MESH_PROBE_BUDGET_S))
+    row["meshes_after"], row["mesh_kind_after"] = None, ""
+    if row.get("outcome") in _REPAIRED_OUTCOMES:
+        written = scratch / f"{path.stem}-repaired.step"
+        if written.is_file():
+            row["meshes_after"], row["mesh_kind_after"] = _verdict(
+                mesh_probe.probe_file(written, diagonal_mm=diagonal,
+                                      budget_s=MESH_PROBE_BUDGET_S))
+
+
+def meshing_summary(rows: list[dict]) -> dict:
+    """Aggregate the mesh keys. A file repair did not write keeps its before verdict as its after
+    verdict, so `meshed_after` is the count of files that mesh once repair has had its go."""
+    scored = [r for r in rows if "meshes_before" in r]
+    after = [r["meshes_before"] if r.get("meshes_after") is None else r["meshes_after"]
+             for r in scored]
+    still: dict[str, int] = {}
+    for row, ok in zip(scored, after, strict=True):
+        if not ok:
+            kind = (row.get("mesh_kind_before") if row.get("meshes_after") is None
+                    else row.get("mesh_kind_after")) or "other"
+            still[kind] = still.get(kind, 0) + 1
+    return {
+        "files": len(scored),
+        "meshed_before": sum(1 for r in scored if r["meshes_before"]),
+        "meshed_after": sum(1 for ok in after if ok),
+        "newly_meshed": sum(1 for r, ok in zip(scored, after, strict=True)
+                            if ok and not r["meshes_before"]),
+        "newly_broken": sum(1 for r, ok in zip(scored, after, strict=True)
+                            if r["meshes_before"] and not ok),
+        "still_failing_by_kind": dict(sorted(still.items())),
+    }
+
+
+def _one(path: Path, scratch: Path, *, mode: str = "off", mesh_probe: bool = False) -> dict:
+    row = _repair_row(path, scratch, mode=mode)
+    if mesh_probe and row.get("outcome") != "unreadable":
+        _score_meshing(row, path, scratch)
+    elif mesh_probe:
+        row.update(meshes_before=False, mesh_kind_before="unreadable",
+                   meshes_after=None, mesh_kind_after="")
+    return row
+
+
+def _repair_row(path: Path, scratch: Path, *, mode: str = "off") -> dict:
     from meshpipeline.cad.repair.conservative import (
         RepairRefused,
         RepairUnavailable,
@@ -770,7 +853,7 @@ def _one(path: Path, scratch: Path, *, mode: str = "off") -> dict:
 
 
 def run_files(files: list[Path], scratch: Path, *, mode: str = "off", loop: bool = False,
-              bundle=None) -> list[dict]:
+              bundle=None, mesh_probe: bool = False) -> list[dict]:
     """Run the repair loop over `files`, printing a line per file; returns the rows. When `bundle`
     is a BundleWriter every row is streamed into it AS IT IS PRODUCED, so a run that dies half way
     leaves its evidence-so-far on disk rather than in a list that was never written."""
@@ -783,10 +866,10 @@ def run_files(files: list[Path], scratch: Path, *, mode: str = "off", loop: bool
             rules_dir = scratch / "rules_only"
             rules_dir.mkdir(parents=True, exist_ok=True)
             rules_row = _one(path, rules_dir)
-            row = _one(path, scratch, mode="live")
+            row = _one(path, scratch, mode="live", mesh_probe=mesh_probe)
             row["rules_only"] = rules_row
         else:
-            row = _one(path, scratch, mode=mode)
+            row = _one(path, scratch, mode=mode, mesh_probe=mesh_probe)
         rows.append(row)
         if bundle is not None:
             bundle.write_row(row)
@@ -845,6 +928,9 @@ def main() -> int:
                              "rules-only pass first so the two can be compared")
     parser.add_argument("--reply-cache", default="",
                         help="JSON file of recorded planner replies keyed by prompt hash")
+    parser.add_argument("--mesh-probe", dest="mesh_probe", action="store_true",
+                        help="also mesh each input and its repaired file in gmsh (slow) and "
+                             "report which files mesh after repair")
     parser.add_argument("--json", dest="json_out", default="", help="write the rows here")
     # The publication bundle (public-benchmarks.md). The manifest flags are free text on purpose:
     # provenance is a story only the person running the corpus knows. The one closed set is the
@@ -939,7 +1025,7 @@ def main() -> int:
     # repair configuration this run actually saw - everything another engineer needs to re-run it.
     settings = {
         "directories": list(args.directories), "limit": args.limit, "planner": args.planner,
-        "reply_cache": args.reply_cache,
+        "reply_cache": args.reply_cache, "mesh_probe": args.mesh_probe,
         "cad_repair": repair_settings,
         # THE CATALOGUE THIS RUN KNEW. summary.catalogue.never_exercised is the one aggregate
         # field the rows cannot re-derive on their own, so it is recorded here - under the
@@ -966,7 +1052,8 @@ def main() -> int:
     # ROWS STREAM INTO THE BUNDLE AS THEY ARE PRODUCED; the seal at the end adds the manifest,
     # settings and the recomputed summary (see public-benchmarks.md, First Implementation Slice).
     writer = benchmark_bundle.BundleWriter(Path(args.bundle)) if args.bundle else None
-    rows = run_files(files, scratch, mode=args.planner, loop=args.loop, bundle=writer)
+    rows = run_files(files, scratch, mode=args.planner, loop=args.loop, bundle=writer,
+                     mesh_probe=args.mesh_probe)
 
     # ONE AGGREGATE. Every section printed below reads this dict, and the bundle seal recomputes
     # the same function over the same rows, so the console and the evidence cannot disagree.
@@ -1040,6 +1127,15 @@ def main() -> int:
         print(f"        uncorroborated: {name}")
     for name in heals["unknown_files"]:
         print(f"        unknown (check could not run): {name}")
+
+    if "meshing" in summary:
+        meshing = summary["meshing"]
+        print("\n== meshing, before and after repair ==")
+        print(f"  meshed before {meshing['meshed_before']} / {meshing['files']}, "
+              f"after {meshing['meshed_after']}  "
+              f"(newly meshed {meshing['newly_meshed']}, newly broken {meshing['newly_broken']})")
+        for kind, count in meshing["still_failing_by_kind"].items():
+            print(f"  {count:>4}  still failing: {kind}")
 
     if args.planner != "off":
         _print_planner(summary["planner"], cache)
