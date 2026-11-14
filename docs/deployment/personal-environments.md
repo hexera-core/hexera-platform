@@ -264,7 +264,7 @@ An environment nobody has deployed for **14 days** is destroyed for you.
 [`sweep-personal-envs.yml`](../../.github/workflows/sweep-personal-envs.yml) runs every Sunday at
 10:00 UTC, finds every slug that still has resources labelled `deployment-id=dev-<slug>`, and runs
 `destroy-env.sh` on each one whose newest `Deploy (… -> <slug>)` run is older than that. Each slug is
-re-checked right before its teardown, and the teardown queues behind any deploy of the same slug.
+re-checked right before its teardown, and a deploy of it that is queued or running counts as fresh.
 
 - **Keep yours:** add the slug to the `PERSONAL_ENV_KEEP` repository variable (comma or space
   separated), or just redeploy it - any deploy run resets the clock.

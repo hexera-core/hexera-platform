@@ -80,16 +80,14 @@ jobs:
       max-parallel: 2
       matrix:
         slug: ${{ fromJSON(needs.find.outputs.idle) }}
-    # deploy.yml's group for this slug, so a teardown never runs alongside a deploy of it. A deploy
-    # dispatched while this waits replaces it in the queue, which is the right loser.
-    concurrency:
-      group: deploy-env-${{ matrix.slug }}
-      cancel-in-progress: false
+    # NOT in deploy.yml's per-slug concurrency group: GitHub keeps one pending run per group, so a
+    # teardown queued there would cancel a deploy already pending behind another. A deploy that is
+    # queued or running makes the slug fresh at the re-check below, which is the guard instead.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # RE-CHECKED HERE, not trusted from `find`: a deploy may have landed while this job queued.
+      # RE-CHECKED HERE, not trusted from `find`: a deploy may have been dispatched since.
       - id: recheck
         env:
           GH_TOKEN: ${{ github.token }}

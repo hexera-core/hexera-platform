@@ -22,17 +22,18 @@ def _ago(days: float) -> str:
     return datetime.fromtimestamp(NOW - days * 86400, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _run(tmp_path: Path, history: list[tuple[str, str]], labels: list[str], **env: str):
+def _run(tmp_path: Path, history: list[tuple[str, ...]], labels: list[str], **env: str):
     """Run the finder with `gh` answering `history` and every gcloud listing carrying `labels`."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    (tmp_path / "history.tsv").write_text("".join(f"{t}\t{at}\n" for t, at in history))
+    (tmp_path / "history.tsv").write_text("".join("\t".join(row) + "\n" for row in history))
     run_items = [{"metadata": {"labels": {"deployment-id": label}}} for label in labels]
     (tmp_path / "run.json").write_text(json.dumps(run_items))
     (tmp_path / "empty.json").write_text("[]")
     (bin_dir / "gh").write_text(f'#!/bin/sh\ncat "{tmp_path}/history.tsv"\n')
     (bin_dir / "gcloud").write_text(
         "#!/bin/sh\n"
+        '[ "$1 $2" = "${FAIL_LISTING:-}" ] && exit 1\n'
         f'case "$1 $2" in "run services") cat "{tmp_path}/run.json" ;;'
         f' *) cat "{tmp_path}/empty.json" ;; esac\n')
     for f in bin_dir.iterdir():
@@ -48,8 +49,9 @@ def _run(tmp_path: Path, history: list[tuple[str, str]], labels: list[str], **en
     return p.returncode, idle, p.stdout + p.stderr
 
 
-def _deploy(slug: str, days: float, ref: str = "some/branch") -> tuple[str, str]:
-    return (f"Deploy ({ref} -> {slug})", _ago(days))
+def _deploy(slug: str, days: float, ref: str = "some/branch",
+            status: str = "completed") -> tuple[str, str, str]:
+    return (f"Deploy ({ref} -> {slug})", _ago(days), status)
 
 
 def test_only_environments_past_the_threshold_are_named(tmp_path):
@@ -64,6 +66,23 @@ def test_the_newest_run_decides_not_the_first(tmp_path):
     rc, idle, log = _run(tmp_path, history, ["dev-pranav"])
     assert rc == 0, log
     assert idle == []
+
+
+def test_a_queued_or_running_deploy_counts_as_fresh_however_old(tmp_path):
+    history = [_deploy("a", 30, status="queued"), _deploy("b", 30, status="in_progress"),
+               _deploy("c", 30)]
+    rc, idle, log = _run(tmp_path, history, ["dev-a", "dev-b", "dev-c"])
+    assert rc == 0, log
+    assert idle == ["c"]
+
+
+@pytest.mark.parametrize("listing", ["run services", "run jobs", "compute instance-templates",
+                                     "storage buckets"])
+def test_any_failed_listing_fails_the_run(tmp_path, listing):
+    """A listing that fails must not just shrink the set: the sweep would go green, skipping
+    whatever only that listing could see."""
+    rc, idle, _ = _run(tmp_path, [_deploy("a", 30)], ["dev-a"], FAIL_LISTING=listing)
+    assert rc != 0 and idle is None
 
 
 def test_an_environment_with_no_run_on_record_is_idle(tmp_path):
@@ -84,6 +103,13 @@ def test_the_keep_list_exempts_a_slug(tmp_path):
                          KEEP_SLUGS="a, c")
     assert rc == 0, log
     assert idle == ["b"]
+
+
+def test_a_zero_padded_threshold_is_read_as_decimal(tmp_path):
+    """`014` is octal 12 to bash arithmetic, which would sweep a 13-day-old environment."""
+    rc, idle, log = _run(tmp_path, [_deploy("a", 13)], ["dev-a"], IDLE_DAYS="014")
+    assert rc == 0, log
+    assert idle == []
 
 
 def test_the_threshold_is_configurable(tmp_path):
@@ -128,11 +154,11 @@ def test_the_sweep_runs_weekly_and_a_manual_run_defaults_to_dry():
     assert on["workflow_dispatch"]["inputs"]["dry_run"]["default"] is True
 
 
-def test_a_teardown_queues_behind_a_deploy_of_the_same_slug():
+def test_a_teardown_never_displaces_a_pending_deploy():
+    """GitHub keeps one pending run per concurrency group, so joining deploy.yml's per-slug group
+    would cancel a deploy waiting behind another. The re-check is the guard instead."""
     destroy = _wf()["jobs"]["destroy"]
-    assert destroy["concurrency"]["group"] == "deploy-env-${{ matrix.slug }}"
-    assert "format('env-{0}', github.event.inputs.slug)" in DEPLOY_WF.read_text(encoding="utf-8"), (
-        "deploy.yml's per-slug concurrency group changed; the sweep's destroy job must match it")
+    assert "deploy-env" not in str(destroy.get("concurrency", ""))
     steps = destroy["steps"]
     recheck = next(i for i, s in enumerate(steps) if s.get("id") == "recheck")
     destroy_step = next(i for i, s in enumerate(steps) if "destroy-env.sh" in s.get("run", ""))
