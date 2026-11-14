@@ -190,6 +190,27 @@ def fold(facts: dict, answer: dict) -> None:
         facts["flow"], facts["input_kind"] = "internal", "body-surface"
         facts["body_kind"] = "assembly_cavity"
         facts.setdefault("confidence", {})["input_kind"] = 0.85
+    elif str(facts.get("body_kind") or "") == "single_solid":
+        # A BONDED PLATE IS THE ONE-SOLID PLATE, and the rule for it is twenty lines above - on
+        # the branch a file of six solids never reaches. The split has just cut the coolant out
+        # of this part and found it open at two or more places: that is a part the fluid goes
+        # THROUGH, however the scout read the welded skin. `single_solid` guards it for the same
+        # reason it does there - a `pipe_wall` or `hollow_wall` is metal AROUND a fluid and its
+        # ordinary case is the fluid alone, handled by the branch above.
+        #
+        # MEASURED END TO END on ColdPlateAssembly_CLEAN.step, session eb22296d, 2026-11-13.
+        # 52.1 ml of coolant came out of the six solids, with its three mouths proposed, and the
+        # reading stayed `flow: external, input_kind: solid-body` - the fluid going AROUND a
+        # liquid cold plate. The flow is not only a word on the card: `geometry_check.stickered`
+        # draws NO stickers for an external reading, so the plate was pictured six times unmarked
+        # and the naming step said so itself - "Two external hose/port mouths are visible on the
+        # side, but neither has a numbered sticker, so they cannot be assigned inlet/outlet names
+        # here" - and returned no openings at all. The scout's mechanical default then stood: of
+        # three mouths `_name_openings` calls the WIDEST the inlet, which here is an 11.8 mm
+        # junction sealed inside the assembly, and both real 8 mm mouths became outlets.
+        facts["flow"] = "internal"
+        facts["input_kind"] = "solid-assembly"
+        facts.setdefault("confidence", {})["input_kind"] = 0.85
     litres = _volume_l(passages)
     parts = int(answer.get("parts") or 0)
     notes.append(f"the fluid is the space inside the {parts} part{'s' if parts != 1 else ''}, closed off "

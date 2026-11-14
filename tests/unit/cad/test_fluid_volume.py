@@ -218,12 +218,32 @@ def test_the_check_proposes_the_caps_as_the_openings_of_an_internal_assembly():
     assert any("sealed into the wall" in n for n in facts["notes"])
 
 
-def test_a_body_read_as_external_keeps_its_reading_but_gets_the_openings_for_a_flip():
+def test_a_body_whose_coolant_the_split_cut_out_is_read_as_a_part_the_fluid_goes_through():
+    """THE SPLIT HAS ANSWERED THE FLOW, and this test used to pin the opposite.
+
+    It was written on 2026-10-20 with no reasoning beside it, pinning what the code then did.
+    Nine days later the ONE-SOLID branch chose the other answer on the same evidence, with the
+    reasoning written out: "it cut the coolant out of this solid and found it open at two or more
+    places, which is a part the fluid goes THROUGH" - and the cost of not doing it measured end to
+    end on a cold plate read as a box in a flow.
+
+    That rule reached one solid only, so a six-solid brazed plate kept the body reading. MEASURED
+    on ColdPlateAssembly_CLEAN.step, session eb22296d, 2026-11-13: 52.1 ml of coolant out of six
+    solids, three mouths proposed, `flow: external` - and because `geometry_check.stickered` draws
+    nothing for an external reading, the naming step was shown six unmarked pictures and said so
+    itself, leaving the scout's default inlet on a junction sealed inside the assembly.
+
+    The two halves of the old name are now one: it gets the openings AND the reading that goes
+    with them. Which way to be wrong is the whole argument - an internal reading the user disagrees
+    with costs them one click on the stage, where `_kinds_on_offer` still offers the body reading
+    and the naming model is told to answer external for a part that plainly is one; an external
+    reading costs them every sticker, with nothing on the card to notice."""
     facts = {"flow": "external", "input_kind": "solid-body", "body_kind": "single_solid", "solids": 40,
              "openings": [], "notes": []}
     fold(facts, _answer([{"volume_l": 30.0, "seed_mm": [0.0, 0.0, 0.0],
                           "openings": [_port(-100.0), _port(100.0)]}]))
-    assert facts["flow"] == "external"
+    assert facts["flow"] == "internal"
+    assert facts["input_kind"] == "solid-assembly"
     assert len(facts["openings"]) == 2
 
 

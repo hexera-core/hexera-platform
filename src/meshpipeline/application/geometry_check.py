@@ -892,8 +892,27 @@ def stickered(facts: dict) -> list[dict]:
     """The openings the pictures carry stickers for: the scout's, when it reads the fluid as flowing
     through the part. A part it reads as a body in a flow still keeps the openings it would have if
     the fluid flowed through it - so a user who says so has openings to confirm - but they are not
-    drawn: the pictures (and the model naming them) see the body as before."""
-    return list(facts.get("openings") or []) if facts.get("flow") != "external" else []
+    drawn: the pictures (and the model naming them) see the body as before.
+
+    A MOUTH THE SPLIT MEASURED IS NEVER HIDDEN, whatever the flow was read as. The openings that
+    branch is about are a body's own flat FACES - a shaft's two ends, a capped lumen's lids - which
+    are openings only if the fluid turns out to flow through the part, and drawing stickers on them
+    would tell the naming model there are passages where there are none. `openings_from ==
+    "fluid_volume"` is the other thing entirely: those openings are the caps where a fluid volume
+    the split actually cut out of this part meets the outside (cad/fluid_volume_check), so an
+    external reading beside them is a contradiction inside one set of facts, and the reading is the
+    half that is in doubt.
+
+    MEASURED on ColdPlateAssembly_CLEAN.step, session eb22296d, 2026-11-13. 52.1 ml of coolant,
+    three mouths, `flow: external` - so six pictures with no sticker and no close-up, and the
+    naming model said so itself: "Two external hose/port mouths are visible on the side, but
+    neither has a numbered sticker, so they cannot be assigned inlet/outlet names here."
+    `fluid_volume_check.fold` no longer leaves that reading on a bonded plate; this is the same
+    thing said where the pictures are drawn, so no future reading can hide a measured mouth.
+    """
+    if facts.get("flow") != "external" or facts.get("openings_from") == "fluid_volume":
+        return list(facts.get("openings") or [])
+    return []
 
 
 def _scout_thermal(session_id: str, ref, fetched: Path, canonical, sidecar: dict) -> dict:
@@ -2180,6 +2199,7 @@ def _image_part(path: Path) -> dict:
 
 
 def _facts_text(facts: dict, shots, purpose_text: str) -> str:
+    from meshpipeline.contracts.intake_formats import THERMAL_CHECK
     from meshpipeline.render.scout_snapshots import camera_words
 
     lines = [f"Part size: {facts['size_mm'][0]:.0f} x {facts['size_mm'][1]:.0f} x {facts['size_mm'][2]:.0f} mm.",
@@ -2198,13 +2218,28 @@ def _facts_text(facts: dict, shots, purpose_text: str) -> str:
             "words the person who drew the part used. On an assembly they often say which sticker "
             "is which - a sticker on the end face of a solid called Inlet is the inlet - so weigh "
             "them, but they can be generic, stale or wrong, and the pictures decide.")
-    if facts.get("input_kind") == "solid-assembly":
+    # WHO SAYS SO IS THE POINT OF THIS SENTENCE, and `solid-assembly` alone does not say it. The
+    # kind reaches these facts two ways. An ECXML thermal model DECLARES its regions, its air and
+    # its openings, and for that file "settled by the file" is exactly right. A cold plate gets
+    # the same kind from `cad/fluid_volume_check` because a split found coolant inside it - the
+    # file declares nothing, there is no air around anything, and telling the model its stickers
+    # are settled is telling it not to look. (Reaching the plate is new; the one-solid branch of
+    # that module has set this kind, with `source_regions` empty, since 2026-10-29.)
+    _declared = bool(facts.get("source_regions")) or facts.get("check_mode") == THERMAL_CHECK
+    if facts.get("input_kind") == "solid-assembly" and _declared:
         regions = facts.get("source_regions") or []
         lines.append("The file itself declares this: an assembly of "
                      + (f"{len(regions)} regions (its parts and the air around them)" if regions
                         else "solid parts and the air around them")
                      + ", with its openings stated in the file. The kind, the flow and the stickers "
                      "are settled by the file; say what the part is.")
+    elif facts.get("openings_from") == "fluid_volume":
+        # ...and the true thing to say instead, which is stronger evidence than anything the
+        # outside of the part shows: the stickers are not read off its faces at all.
+        lines.append("The stickers are not read off the part's outside. A split of the space "
+                     "inside it cut a fluid volume out of the part, and they are the caps where "
+                     "that fluid meets the outside - so there IS a passage through this part "
+                     "however solid it looks. What is open is which mouth is which.")
     if purpose_text:
         lines.append(f"The user said: {purpose_text.strip()[:600]}")
     if stickered(facts):
