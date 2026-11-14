@@ -1110,7 +1110,7 @@ def main(workspace: str) -> int:
         return mesh_by_plan(ws)
     from meshpipeline.engines.determinism import gmsh_threads
     before = {f.name: f.stat().st_mtime_ns for f in ws.iterdir() if f.is_file()}
-    record: dict = {"rule": "MESH-25", "first": "hxt", "threads": gmsh_threads()}
+    record: dict = {"rule": "MESH-25", "first": "hxt", "threads": gmsh_threads() if CFD_FIRST == "hxt" else 1}
     t0 = time.monotonic()
     err: BaseException | None = None
     _CFD_ALGO[0] = CFD_FIRST
@@ -1184,10 +1184,9 @@ def _size_callback(gmsh, cb) -> None:
 
 
 def _no_size_callback(gmsh) -> None:
-    from meshpipeline.engines.determinism import gmsh_threads
     gmsh.model.mesh.removeSizeCallback()
     for k in ("1D", "3D"):
-        gmsh.option.setNumber(f"Mesh.MaxNumThreads{k}", gmsh_threads())
+        gmsh.option.setNumber(f"Mesh.MaxNumThreads{k}", gmsh.option.getNumber("General.NumThreads"))
 
 
 def _surfaces_on_every_core(gmsh) -> None:
@@ -1209,9 +1208,12 @@ def _surfaces_on_every_core(gmsh) -> None:
 
 
 def _pin_cfd(gmsh) -> None:
-    """MESH-25: every gmsh step on the job's cores, the fixed seed, and this attempt's 3D algorithm."""
-    from meshpipeline.engines.determinism import pin_gmsh
-    pin_gmsh(gmsh)
+    """This attempt's 3D algorithm, its threads and the fixed seed. Filled by Delaunay (CFD_FIRST), the CFD path
+    runs gmsh on ONE thread, as it always has - measured (lab, 14 Nov): with only the curves on 8 threads a staged
+    tee that meshes on one thread failed ("Invalid boundary mesh (overlapping facets)"), and a body's worst face
+    went from 80.0 to 86.0 degrees; nothing here gained from threads. With HXT first: the job's cores."""
+    from meshpipeline.engines.determinism import gmsh_threads, pin_gmsh
+    pin_gmsh(gmsh, gmsh_threads() if CFD_FIRST == "hxt" else 1)
     gmsh.option.setNumber("Mesh.Algorithm3D", CFD_ALGORITHMS_3D[_CFD_ALGO[0]])
 
 

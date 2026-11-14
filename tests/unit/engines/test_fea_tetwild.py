@@ -401,7 +401,9 @@ def test_a_part_gmsh_cannot_mesh_is_delivered_by_the_last_rung(tmp_path, monkeyp
     rung = [p for p in passes["passes"] if p.get("engine") == "ftetwild" and "refine" not in p]
     gm = [p for p in passes["passes"] if p.get("engine") != "ftetwild"]
     # every gmsh option first (the fixed ladder's passes), the rung after them, delivered
-    assert len(gm) == calls.count(None) >= 2 and not any(p["valid"] for p in gm)
+    # (MESH-25: a pass whose fill fails is meshed again in the same pass with the other 3D algorithm - two
+    # attempts a pass at the most)
+    assert 2 <= len(gm) <= calls.count(None) <= 2 * len(gm) and not any(p["valid"] for p in gm)
     assert len(rung) == 1 and rung[0]["valid"] and passes["delivered"] == rung[0]["pass"]
     cited = [e for e in dr.cited_for(f"t-{ws.name}") if e["rule"] == "LAD-fea-9"]
     assert cited and cited[0]["inputs"]["per_part"]["whole"]["epsilon_m"] > 0
