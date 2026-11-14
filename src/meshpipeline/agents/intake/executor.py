@@ -96,14 +96,103 @@ def fea_path(st) -> bool:
     """Whether the session is an FEA part: the declared case is the structural purpose (the FEA
     route of the purpose mapping, confirmed on the FEA stage) on a solid body - or, before any
     stage was confirmed, the user's own words take it to the FEA path (application/purpose_map).
-    The engine is never a question there, whatever the file's format or whether the stage held."""
+    The engine is never a question there, whatever the file's format or whether the stage held.
+    The LATEST word on the analysis wins: a user who confirmed a flow on the stage and then asks for
+    a stress analysis of the same part is on the FEA path (current_purpose), and the other way round."""
     case = tuple(getattr(st, "declared_case", None) or ())
     if case:
+        now = current_purpose(st)
+        if now and now != case[0] and (now == "structural") != (case[0] == "structural"):
+            return now == "structural"
         return case[0] == "structural" and (len(case) < 2 or case[1] in ("solid-body", ""))
     from meshpipeline.application import purpose_map as pm
 
     said = [{"role": "user", "content": str(t)} for t in getattr(st, "user_texts", None) or ()]
     return bool(said) and pm.reading_for(said).route == pm.ROUTE_FEA
+
+
+def said_after_stage(conversation) -> list[str] | None:
+    """The user's own messages after the latest stage confirmation, oldest first; None when the conversation holds
+    no stage confirmation. The composer is closed while the stage is up, so these are what the user wrote after
+    they proceeded - where a correction of the stage can only be."""
+    from meshpipeline.application.geometry_confirmation import CONFIRMED_MARK
+
+    msgs = [m for m in (conversation or ()) if isinstance(m, dict)]
+    last = max((i for i, m in enumerate(msgs) if m.get("role") == "assistant"
+                and str(m.get("content") or "").startswith(CONFIRMED_MARK)), default=None)
+    if last is None:
+        return None
+    return [str(m.get("content") or "") for m in msgs[last + 1:]
+            if m.get("role") == "user" and str(m.get("content") or "").strip()]
+
+
+#: The purpose of a flow whose words say only "a flow" (neither through nor around it): not a PURPOSES key, so no
+#: engine is checked against it - it only tells a flow from the FEA path.
+SOME_FLOW = "flow"
+
+
+def _flow_purpose(topology: str) -> str:
+    return {"internal": "internal_cfd", "external": "external_cfd"}.get(topology, SOME_FLOW)
+
+
+def current_purpose(st) -> str:
+    """WHAT THE USER WANTS THE MESH FOR NOW: a purpose key, SOME_FLOW, or "" when nothing says. The latest word
+    on it wins: the case the user confirmed on the stage, unless a later message of theirs NAMES the other path
+    outright (purpose_map.named_analysis) - "now a static stress analysis of the same part" after a flow was
+    confirmed is structural; "refine the bend" or "it sits in water" names no analysis and changes nothing.
+    Words on the stage's side of the FEA line leave the stage's purpose standing. With no stage standing, all the
+    user's words read together, as the stage reads them."""
+    from meshpipeline.application import purpose_map as pm
+
+    case = tuple(getattr(st, "declared_case", None) or ())
+    if case:
+        for text in reversed(said_after_stage(getattr(st, "conversation", ())) or []):
+            reading = pm.named_analysis(text)
+            if not reading.settled:
+                continue
+            if (reading.route == pm.ROUTE_FEA) == (case[0] == "structural"):
+                return case[0]
+            return "structural" if reading.route == pm.ROUTE_FEA else _flow_purpose(reading.topology)
+        return case[0]
+    said = [{"role": "user", "content": str(t)} for t in getattr(st, "user_texts", None) or ()]
+    if not said:
+        return ""
+    reading = pm.reading_for(said)
+    if reading.route == pm.ROUTE_FEA:
+        return "structural"
+    return _flow_purpose(reading.topology) if reading.settled else ""
+
+
+def case_now(st) -> tuple[str, str] | None:
+    """(purpose, input kind) of the case the user wants meshed now: the stage's while it is the latest word on the
+    analysis, the part itself for a structural request made since, (purpose, "") for a flow named since; None when
+    nothing says (current_purpose)."""
+    case = tuple(getattr(st, "declared_case", None) or ())
+    now = current_purpose(st)
+    if case and now == case[0]:
+        return case[0], (case[1] if len(case) > 1 else "")
+    if now == "structural":
+        return "structural", "solid-body"
+    from meshpipeline.engines.purposes import PURPOSES
+
+    if now in PURPOSES:
+        return now, ""
+    return (case[0], case[1]) if case and not now else None
+
+
+#: How the APPLICATION chose an engine, with no word of the user's: the best fit, the engine that reads the file, the
+#: FEA path's mesher. Such a choice is reconsidered when the case changes; a choice the user typed is not (it stays
+#: theirs unless it cannot mesh the case at all).
+AUTOMATIC_VIAS = (es.VIA_AUTO, es.VIA_THE_FILE, es.VIA_FEA_PATH)
+
+
+def _cannot_mesh(engine: str, case, form: str) -> bool:
+    """Whether `engine` cannot mesh the case at all (the admission's impossible verdict); False when the case is
+    not known well enough to say."""
+    if not engine or not case or not case[0]:
+        return False
+    return preview_admission(engine, case[0], case[1], dimensionality="3D",
+                             geometry_form=form).get("verdict") == "impossible"
 
 
 def fea_part_kind(args):
@@ -175,8 +264,41 @@ def stage_part_kind(args, declared_case):
         return args, ""
     note = (f"input_kind is '{d_kind}', as the user confirmed on the geometry stage - the payload said "
             f"'{kind}', which the user never said. The stage's kind is what is meshed; keep it as the "
-            "stage has it, and do not mention the change unless the user asks.")
+            "stage has it, and do not mention the change unless the user asks. Only if the USER said "
+            f"otherwise in the chat after the stage, call again with input_kind '{kind}' and "
+            "input_kind_user_words set to their words, copied exactly.")
     return {**args, "input_kind": d_kind}, note
+
+
+#: The tool argument that carries the user's own words for an input kind other than the stage's (KIND-1).
+KIND_WORDS_ARG = "input_kind_user_words"
+
+
+def _plain_words(text) -> str:
+    t = str(text or "").replace("’", "'").replace("‘", "'").casefold()
+    return " ".join(t.split()).strip(" \"'.,;:!?")
+
+
+def kind_said_by_user(args, declared_case, quote, said_after: list[str] | None) -> bool:
+    """KIND-1: THE USER'S OWN CORRECTION OF THE STAGE WINS. The stage's input kind stands over the model's word
+    (stage_part_kind) - but not over the user's: after proceeding, a user may write "the upload already includes
+    the air box; mesh its contents directly", and the model that reads it submits "fluid-domain". That kind is
+    kept when the model quotes the user's words for it (`quote`, the KIND_WORDS_ARG) and the words are in a
+    message the user wrote AFTER the stage (said_after_stage) - a correction can be said in any words, so no word
+    list decides it, and words from before the stage, or words the user never wrote, keep the stage's kind.
+    Review on #465: the correction was replaced by the stage's kind and a second far-field box was built."""
+    if not isinstance(args, dict) or not declared_case or not said_after:
+        return False
+    from meshpipeline.engines.purposes import INPUT_KINDS
+
+    d_purpose, d_kind = (tuple(declared_case) + ("", ""))[:2]
+    kind = str(args.get("input_kind") or "").strip()
+    if str(args.get("purpose") or "").strip() != d_purpose or not kind or kind == d_kind or kind not in INPUT_KINDS:
+        return False
+    q = _plain_words(quote)
+    if len(q) < 8 or len(q.split()) < 2:
+        return False
+    return any(q in _plain_words(text) for text in said_after)
 
 
 #: Words a model writes for an engine parameter's declared values (EngineSpec.intake_params), folded
@@ -353,6 +475,40 @@ class IntakeToolExecutor:
         # the PUBLIC trace sink for this turn. Rationale is published from real
         # gate outcomes below; None simply means nothing is listening.
         self._trace = trace
+        # a line for the model about the engine, put in front of the call's result (run)
+        self._engine_note = ""
+
+    def _choice_is_stale(self, sel: dict, case, form: str) -> bool:
+        """Whether an engine the APPLICATION chose was chosen for another case than the one the user wants now:
+        the analysis crossed the FEA line, the case it was chosen for is not this one (the user corrected the
+        stage, or asked for another analysis), or it cannot mesh this case at all. A selection stored before the
+        case was kept with it is judged by the last alone."""
+        now = current_purpose(self.state)
+        was = str(sel.get("for_purpose") or "")
+        if was and now and (was == "structural") != (now == "structural"):
+            return True
+        if "for_case" in sel and tuple(sel.get("for_case") or ()) != tuple(case or ()):
+            return True
+        return _cannot_mesh(str(sel.get("engine") or ""), case, form)
+
+    def _analysis_changed_since_naming(self, engine: str) -> bool:
+        """Whether the user wants another case now than when they last named `engine` in their own words: the
+        purpose then (current_purpose over the conversation up to that message) is not the purpose now. False
+        when the naming is not found in the conversation - the user's word then stands as it always did."""
+        from types import SimpleNamespace
+
+        from meshpipeline.application.geometry_confirmation import declared_case
+
+        conv = [m for m in (self.state.conversation or ()) if isinstance(m, dict)]
+        at = max((i for i, m in enumerate(conv) if m.get("role") == "user"
+                  and engine in _vocab.engines_named_in(str(m.get("content") or ""), "")), default=None)
+        if at is None:
+            return False
+        then_conv = conv[:at + 1]
+        then = current_purpose(SimpleNamespace(
+            declared_case=declared_case(then_conv), conversation=tuple(then_conv),
+            user_texts=tuple(str(m.get("content") or "") for m in then_conv if m.get("role") == "user")))
+        return then != current_purpose(self.state)
 
 
     def _geometry_facts(self) -> dict:
@@ -456,9 +612,23 @@ class IntakeToolExecutor:
         # THE STAGE'S KIND and THE ENGINE'S OWN PARAMETER WORDS, at the same boundary: the preview
         # and the submission read the same arguments, so the token bound to one matches the other.
         _kind_note = ""
+        _kind_words = ""
+        if isinstance(args, dict) and KIND_WORDS_ARG in args:
+            # the user's words for the kind are the executor's to check; no handler, token or payload sees them
+            _kind_words = str(args.get(KIND_WORDS_ARG) or "")
+            args = {k: v for k, v in args.items() if k != KIND_WORDS_ARG}
         if tool in ("preview_selected_admission", "submit_requirements"):
             args = engine_param_words(args)
-            if st.declared_case:
+            if st.declared_case and kind_said_by_user(args, st.declared_case, _kind_words,
+                                                     said_after_stage(st.conversation)):
+                # KIND-1: the user corrected the stage in their own words - their kind is the case from here on in
+                # this turn (the submission after this preview reads it too, and an engine is judged by it)
+                logger.info("Intake: input_kind %s kept over the stage's %s - the user's own words - job_id=%s",
+                            args.get("input_kind"), st.declared_case[1], self._job_id)
+                st.declared_case = (st.declared_case[0], str(args.get("input_kind")))
+                _kind_note = (f"input_kind '{args.get('input_kind')}' is kept: the user corrected the geometry "
+                              "stage in their own words. Use it in submit_requirements too.")
+            elif st.declared_case:
                 args, _kind_note = stage_part_kind(args, st.declared_case)
         # THE DECLARED PATCHES, at the same boundary and for the same reason: a name a person typed
         # ("car wall") becomes the spelling a mesher can write ("car_wall"), a name a mesher keeps
@@ -488,6 +658,9 @@ class IntakeToolExecutor:
             content = f"{_note}\n\n{content}" if content else _note
         if _kind_note:
             content = f"{_kind_note}\n\n{content}" if content else _kind_note
+        if self._engine_note:
+            content = f"{self._engine_note}\n\n{content}" if content else self._engine_note
+            self._engine_note = ""
         return IntakeToolResult(
             tool=result.tool, content=content, accepted=result.accepted,
             advanced=result.advanced or (after != before), signature=after)
@@ -548,7 +721,20 @@ class IntakeToolExecutor:
                 "need."))
         quote = str(args.get("user_named_verbatim") or "")
         named_now = es.user_named_engine(eng, quote, st.latest_user_msg)
-        if st.admission_refusal is not None and not named_now:
+        asked = eng
+        case = case_now(st)
+        form = self._geometry_form() if case else ""
+        ours = (es.state_of(sel) == es.CONFIRMED and sel.get("session") == st.session_id
+                and sel.get("owner") == st.owner_id)
+        # THE APPLICATION'S CHOICE FOLLOWS THE CASE (review on #465). An engine the application chose itself was
+        # chosen for the case of its day; once the user asks for another analysis of the part ("now a stress
+        # analysis of it" after a flow) or corrects what the file is, it is chosen again - it never holds the user
+        # to an engine they did not pick, which only the name of another one could undo.
+        stale = ours and sel.get("via") in AUTOMATIC_VIAS and self._choice_is_stale(sel, case, form)
+        if stale:
+            logger.info("Intake: the application's %s was chosen for another case (%s, now %s) - chosen again - "
+                        "job_id=%s", sel.get("engine"), sel.get("for_case"), case, self._job_id)
+        if st.admission_refusal is not None and not named_now and not stale:
             # A REFUSAL IS NOT ROUTED AROUND. With the finding in hand, the model may not switch
             # the user to another engine on its own: the application's "I'd mesh this with X"
             # question would name a replacement the user never asked about, in the very turn
@@ -569,8 +755,24 @@ class IntakeToolExecutor:
                 logger.info("Intake: the model proposed %s; the user chose %s - job_id=%s",
                             eng, theirs, self._job_id)
                 eng, chosen_by_user = theirs, True
-        if (es.state_of(sel) == es.CONFIRMED and sel.get("engine") != eng and not chosen_by_user
-                and sel.get("session") == st.session_id and sel.get("owner") == st.owner_id):
+        if (chosen_by_user and not named_now and _cannot_mesh(eng, case, form)
+                and self._analysis_changed_since_naming(eng)):
+            # THE USER'S ENGINE STAYS THEIRS - unless it cannot mesh what they ask for SINCE they named it (an
+            # engine they typed for a flow, then a stress analysis of the part). Then it is said plainly, and an
+            # engine that can is used. Named for this very case, or again now, it goes to the admission, which
+            # says why it cannot.
+            able = [e for e in self._engines if not _cannot_mesh(e, case, form)]
+            pick = asked if asked in able else (able[0] if able else "")
+            if pick:
+                purpose_words = _vocab.to_display(_vocab.PURPOSE, case[0]) if case else "this analysis"
+                self._engine_note = (
+                    f"{_vocab.to_display(_vocab.ENGINE, eng)}, the engine the user chose earlier, cannot mesh this "
+                    f"part for {purpose_words}, so {_vocab.to_display(_vocab.ENGINE, pick)} is used. Tell the user "
+                    "that in one plain sentence.")
+                logger.info("Intake: the user's %s cannot mesh %s - %s is used - job_id=%s", eng, case, pick,
+                            self._job_id)
+                eng, chosen_by_user, stale = pick, False, True
+        if (ours and sel.get("engine") != eng and not chosen_by_user and not stale):
             # THE ENGINE IS SETTLED and nobody asked for another: only the user's own words change
             # it ("use cfMesh"), never the model's second thoughts
             shown = _vocab.to_display(_vocab.ENGINE, str(sel.get("engine") or ""))
@@ -597,14 +799,13 @@ class IntakeToolExecutor:
         # (dev-areen set_top_box, 2026-10-11). Read from the engines' own declarations
         # (EngineSpec.reads_source_formats) and only among engines that can take the confirmed case.
         own_reason = ""
-        if not chosen_by_user and es.state_of(sel) != es.CONFIRMED:
+        if not chosen_by_user and (es.state_of(sel) != es.CONFIRMED or stale):
             fmt = measured_choice.source_format_of(
                 self._staged_upload(), getattr(st.source_ref, "suffix_hint", ""),
                 getattr(st.source_ref, "original_filename", ""))
             native = measured_choice.own_format_engines(self._engines, fmt)
-            if native and st.declared_case:
-                purpose, kind = st.declared_case
-                form = self._geometry_form()
+            if native and case:
+                purpose, kind = case
                 native = [e for e in native
                           if preview_admission(e, purpose, kind, dimensionality="3D",
                                                geometry_form=form).get("verdict") != "impossible"]
@@ -616,14 +817,14 @@ class IntakeToolExecutor:
                 from meshpipeline.contracts.intake_formats import format_for_key
                 label = getattr(format_for_key(fmt), "label", "") or fmt.upper()
                 own_reason = f"it reads the {label} itself and meshes the model the file describes"
-        if not chosen_by_user and st.declared_case:
+        if not chosen_by_user and case:
             # AN ENGINE THE USER DID NOT NAME MUST BE ABLE TO MESH WHAT THEY CONFIRMED. The model
             # proposed cfMesh for a fluid-volume file on its own; the admission then refused, and
             # its way out was to relabel the confirmed fluid volume as a body surface - a fact the
             # user never said - or to ask a user who had said "your call" which value to revise.
-            # The engine is the model's to change, the confirmed geometry is not.
-            purpose, kind = st.declared_case
-            form = self._geometry_form()
+            # The engine is the model's to change, the confirmed geometry is not. The case is the
+            # one the user wants now (case_now): the stage's, or the analysis they asked for since.
+            purpose, kind = case
             verdict = preview_admission(eng, purpose, kind, dimensionality="3D",
                                         geometry_form=form)
             if verdict.get("verdict") == "impossible":
@@ -643,8 +844,9 @@ class IntakeToolExecutor:
                         + " ".join(verdict.get("what_would_pass") or [])))
                 names = ", ".join(_vocab.to_display(_vocab.ENGINE, e) for e in able)
                 return IntakeToolResult(tool="propose_engine_selection", accepted=False, content=(
-                    f"Not proposed: {shown} cannot mesh what the user confirmed on the geometry "
-                    f"stage ({_vocab.to_display(_vocab.INPUT_KIND, kind)}, "
+                    f"Not proposed: {shown} cannot mesh what the user "
+                    f"{'confirmed on the geometry stage' if tuple(st.declared_case or ()) == case else 'asked for'} "
+                    f"({_vocab.to_display(_vocab.INPUT_KIND, kind)}, "
                     f"{_vocab.to_display(_vocab.PURPOSE, purpose)}) from the file they uploaded, "
                     f"and the user did not ask for it. "
                     f"Engines that can: {names}. Propose one of those instead; never ask the user to "
@@ -654,6 +856,9 @@ class IntakeToolExecutor:
         # EARLIER IN THIS SAME provider response.
         st.selection = es.propose(eng, session_id=st.session_id, owner_id=st.owner_id,
                                   revision=st.revision, user_msg_count=st.user_msg_count)
+        # the case this engine is chosen for: an automatic choice is chosen again once the case is another
+        st.selection["for_case"] = list(case or ())
+        st.selection["for_purpose"] = current_purpose(st)
         if recd is not None:
             st.selection["recommendation"] = measured_choice.compact(recd)
         st.pending = None

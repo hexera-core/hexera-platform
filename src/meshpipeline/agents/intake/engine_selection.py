@@ -109,6 +109,27 @@ _CHOICE = frozenset({"want", "like", "need", "prefer", "choose", "select", "use"
 _ENGINE_WORD = "xengine"
 _PRONOUNS = frozenset({"it", "that", "this"})
 _IDIOMS = ("no problem", "no worries", "why not")
+#: A HEDGE anywhere in a clause makes it no choice: "maybe use cfMesh", "I might use cfMesh", "I wonder if cfMesh
+#: would work" weigh an engine and choose none (review on #465). "use cfMesh if possible" is a choice, so "if" is not one.
+_HEDGES = frozenset({"maybe", "perhaps", "possibly", "probably", "might", "wonder", "wondering", "whether",
+                     "unsure", "consider", "considering", "thinking"})
+#: A clause that opens as a question asks, with or without its question mark: "what if we use cfMesh", "how about
+#: cfMesh", "should I use cfMesh", "could we use cfMesh" - but "could you use cfMesh" is a request, and chooses.
+_ASKING_FIRST = frozenset({"what", "how", "why", "which", "whether"})
+_ASKING_MODALS = frozenset({"should", "shall", "would", "could", "can", "may", "might", "do", "does", "did", "will"})
+#: The only words besides the engine's name a short answer may hold and still be the user's word on it
+#: (user_leans_to): a choice or a yes, a lead-in sound ("hmm, actually cfMesh"), or "rather". Anything else
+#: ("instead of", "without", "except", "maybe") is not known to choose, so it does not.
+_LEAD_INS = frozenset({"hmm", "hm", "hmmm", "um", "umm", "uh", "er", "erm", "oh", "ah", "well", "rather"})
+
+
+def _hedged(clause: list[str]) -> bool:
+    # a clause that weighs or asks about an engine rather than choosing it (_HEDGES, _ASKING_FIRST, _ASKING_MODALS)
+    if any(w in _HEDGES for w in clause):
+        return True
+    if clause and clause[0] in _ASKING_FIRST:
+        return True
+    return len(clause) > 1 and clause[0] in _ASKING_MODALS and clause[1] in ("i", "we")
 
 
 def _norm(text) -> str:
@@ -194,7 +215,7 @@ def _chooses_the_engine(clause: list[str]) -> bool:
     # snappyHexMesh instead", "snappyHexMesh is fine"). Any other word - a negation however far
     # from its verb ("I won't ever use snappyHexMesh"), a hedge ("maybe use snappyHexMesh"), a
     # qualification ("I'll use snappyHexMesh some other time") - makes it no choice at all.
-    if _ENGINE_WORD not in clause:
+    if _ENGINE_WORD not in clause or _hedged(clause):
         return False
     rest = [w for w in clause if w != _ENGINE_WORD and w not in _FILLER]
     return (any(w in _ASSENT or w in _CHOICE for w in rest)
@@ -309,10 +330,13 @@ def user_chose(engine: str, user_texts) -> bool:
 
 
 def user_leans_to(engine: str, user_texts) -> bool:
-    """Whether the user's latest word on the engine is `engine`: `user_chose`, or a message that is the
-    engine's name and at most one other word ("hmm, actually cfMesh"). With no engine question any more
-    (VIA_AUTO), that word is not overruled by the model's pick; a mention in a sentence ("I used
-    snappyHexMesh last time") still is no choice."""
+    """Whether the user's latest word on the engine is `engine`: `user_chose`, or a short message of the
+    engine's name with only words known to choose it - a choice or a yes, a lead-in sound, "actually",
+    "instead" (_LEAD_INS): "hmm, actually cfMesh", "cfMesh instead". With no engine question any more
+    (VIA_AUTO), that word is not overruled by the model's pick. Any other word makes it no choice: a
+    mention in a sentence ("I used snappyHexMesh last time"), a hedge ("maybe cfMesh"), or the engine
+    being left ("instead of cfMesh", "without cfMesh") - review on #465, where "any one other word"
+    took "maybe cfMesh" as the user's choice."""
     if user_chose(engine, user_texts):
         return True
     want = (engine or "").strip().lower()
@@ -325,9 +349,11 @@ def user_leans_to(engine: str, user_texts) -> bool:
             continue
         if named != [want] or "?" in said or declines(want, said):
             return False
-        rest = [w for w in _tokens(want, said, keep_engine=True)
-                if w != _ENGINE_WORD and w not in _FILLER and w not in _CHOICE_PLAIN]
-        return len(rest) <= 1
+        words = _tokens(want, said, keep_engine=True)
+        if _hedged(words):
+            return False
+        return all(w == _ENGINE_WORD or w in _FILLER or w in _CHOICE_PLAIN or w in _ASSENT or w in _CHOICE
+                   or w in _LEAD_INS for w in words)
     return False
 
 
@@ -347,7 +373,7 @@ def _chooses_in(engine: str, message: str) -> bool:
         else:
             clauses[-1].append(w)
     for clause in clauses:
-        if _ENGINE_WORD not in clause:
+        if _ENGINE_WORD not in clause or _hedged(clause):
             continue
         rest = [w for w in clause if w != _ENGINE_WORD and w not in _FILLER]
         if not rest or _chooses_the_engine(clause):

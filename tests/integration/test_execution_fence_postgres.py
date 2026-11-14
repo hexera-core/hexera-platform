@@ -292,7 +292,7 @@ def _engine_callback(job_id):
     async def _announce(name: str) -> None:
         _e = pr.execution_publisher(job_id, "engine_select")
         await _e.astage(op_id="pinned")
-        await _e.anote(f"Mesh engine: {name} - the one you asked for", op_id="pinned")
+        await _e.anote(f"Mesh engine: {name}", op_id="pinned")
     return _announce
 
 

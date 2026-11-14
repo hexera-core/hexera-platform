@@ -483,22 +483,54 @@ def _left_over(notes: str, quotes: list[str]) -> list[str]:
 
 
 #: THE VALUE BEING REPLACED (NOTE-7): "3 prism layers instead of 8", "3 layers, not 8", "2 mm rather than 5 mm", "in
-#: place of 8", "replacing the 8", "from 8 to 3" - the number after these words (before "to", for "from N to M") is the
-#: one the user is changing, never a second request. Founder's run, 14 Nov: "3 prism layers instead of 8" was read as
-#: two layer counts and the 8 told back as "a second layer count".
+#: place of 8", "replacing the 8" - the number after these words is the one the user is changing, never a second
+#: request. Founder's run, 14 Nov: "3 prism layers instead of 8" was read as two layer counts and the 8 told back as
+#: "a second layer count". "from N to M" is read by _FROM_TO: a change, or a range.
 _REPLACED = re.compile(
     r"\b(?:instead\s+of|rather\s+than|in\s+place\s+of|replacing|not)\s+(?:the\s+|a\s+|an\s+|your\s+|our\s+)?"
     r"(?:(?:current|planned|proposed|suggested|default|usual|old|original|earlier)\s+)?"
-    r"(\d+(?:[.,]\d+)?\s*(?:k|thousand|m|mio|mn|million|millions)?)(?![\w.])"
-    r"|\bfrom\s+(\d+(?:[.,]\d+)?\s*(?:k|thousand|m|mio|mn|million|millions)?)\s+(?:[a-z]+\s+){0,2}?to\s+\d", re.I)
+    r"(\d+(?:[.,]\d+)?\s*(?:k|thousand|m|mio|mn|million|millions)?)(?![\w.])", re.I)
+_AMOUNT = r"\d+(?:[.,]\d+)?\s*(?:k|thousand|m|mio|mn|million|millions)?"
+#: "from N to M": N is the value being replaced only when the words CHANGE something ("change the layers from 8 to
+#: 3", "go from 8 mm to 3 mm", "bring it down from 10 to 4") or the value goes down ("from 8 to 3 layers" - a range
+#: is written low to high). "element sizes from 2 to 5 mm" or "cells ranging from 2 to 5 mm" is a RANGE: both ends
+#: are asked for (review on #465: the 2 mm minimum was thrown away as an old value).
+_FROM_TO = re.compile(rf"\bfrom\s+({_AMOUNT})\s+(?:[a-z]+\s+){{0,2}}?to\s+({_AMOUNT})(?![\w.])", re.I)
+#: the words that make "from N to M" a change - a verb that moves a setting, or a direction it moves in
+_CHANGE_WORDS = frozenset("""
+    change changed changes changing go goes going went move moved moving switch switched switching reduce reduced
+    reducing increase increased increasing decrease decreased decreasing drop dropped dropping raise raised raising
+    lower lowered lowering bump bumped cut cutting bring brought take took adjust adjusted update updated modify
+    modified alter altered up down back
+    """.split())
+#: ...and the words that make it a range whatever comes before them ("change the sizes to range from 2 to 5 mm")
+_RANGE_WORDS = frozenset("range ranges ranging ranged vary varies varying varied anywhere span spans spanning "
+                         "grade graded grading".split())
+
+
+def _from_to_replaced(text: str, m: re.Match) -> list[float]:
+    """The replaced value of one "from N to M", or [] when the words give a range (_FROM_TO)."""
+    clause = re.split(r"[.;:!?\n]|,\s", text[:m.start()])[-1]
+    before = re.findall(r"[a-z]+", clause.casefold())
+    if before and before[-1] in _RANGE_WORDS:
+        return []
+    old, new = _counts(m.group(1)), _counts(m.group(2))
+    goes_down = bool(old and new) and old[0] > new[0]
+    if any(w in _CHANGE_WORDS for w in before) or goes_down:
+        return old
+    return []
 
 
 def replaced_numbers(quote: str) -> list[float]:
-    """The numbers the user's words name as the value being replaced (_REPLACED), as written and with a count's
-    multiplier ("instead of 8 million" is both 8 and 8,000,000): an entry of one of these is not a request."""
+    """The numbers the user's words name as the value being replaced (_REPLACED, and "from N to M" when it is a
+    change), as written and with a count's multiplier ("instead of 8 million" is both 8 and 8,000,000): an entry of
+    one of these is not a request. Both ends of a range are requests."""
+    text = _DASHES.sub("-", str(quote or ""))
     out: list[float] = []
-    for m in _REPLACED.finditer(_DASHES.sub("-", str(quote or ""))):
-        out += _counts(m.group(1) or m.group(2) or "")
+    for m in _REPLACED.finditer(text):
+        out += _counts(m.group(1) or "")
+    for m in _FROM_TO.finditer(text):
+        out += _from_to_replaced(text, m)
     return out
 
 
@@ -948,6 +980,76 @@ _LAYER_NAMES = {"count": "layer count", "first_height": "first layer height", "t
                 "thickness", "growth": "layer growth", "y_plus": "y+"}
 
 
+def _squash_gaps(text: str) -> frozenset[int]:
+    """The places in _squash(text) where the original had a space or a mark between two kept characters: "5 layers"
+    after "message 1" is a number of its own, although the squashed text runs "message15layers"."""
+    gaps, n, dropped = set(), 0, False
+    for ch in _norm(text):
+        if ch == "_":
+            continue
+        if re.match(r"[\w.]", ch):
+            if dropped and n:
+                gaps.add(n)
+            n, dropped = n + 1, False
+        else:
+            dropped = True
+    return frozenset(gaps)
+
+
+def _occurrences(q: str, text: str, gaps: frozenset[int] | None = None) -> list[int]:
+    """Every place the squashed words `q` stand in the squashed notes as words of their own: a number is never read
+    inside another one ("5mm" is not in "0.5mm" or "15mm", "under70" not in "under700"). `gaps` (_squash_gaps)
+    says where the original text was apart; without it no number is cut."""
+    def joined(k: int) -> bool:
+        return gaps is not None and k not in gaps
+
+    out, i = [], text.find(q) if q else -1
+    while i >= 0:
+        j = i + len(q)
+        cut_before = (q[:1].isdigit() and i > 0 and joined(i)
+                      and (text[i - 1].isdigit() or (text[i - 1] == "." and i > 1 and joined(i - 1)
+                                                     and text[i - 2].isdigit())))
+        cut_after = (q[-1:].isdigit() and j < len(text) and joined(j)
+                     and (text[j].isdigit() or (text[j] == "." and j + 1 < len(text) and joined(j + 1)
+                                                and text[j + 1].isdigit())))
+        if not cut_before and not cut_after:
+            out.append(i)
+        i = text.find(q, i + 1)
+    return out
+
+
+def _written_at(quotes: list[str], text: str, gaps: frozenset[int] | None = None) -> list[int]:
+    """WHERE EACH ENTRY WAS WRITTEN (NOTE-7), by its own words: one place per entry in the squashed notes, so of two
+    the later is kept. The same words said twice are two places ("mesh at 5 mm", "mesh at 8 mm", "mesh at 5 mm":
+    the second 5 mm is the latest word, review on #465): the entries that share words take their places in the
+    order the model listed them, and the last of them the last place - a value said again is in force from its last
+    saying, also when the model listed it once. The longest words are placed first and keep their place, so the
+    words of an earlier ask inside a later sentence ("make it 10 layers, not 5 layers") are not where that ask was
+    written. An entry whose words are not found sorts after the rest."""
+    end = len(text) + 1
+    at = [end] * len(quotes)
+    claimed: list[tuple[int, int]] = []
+    groups: dict[str, list[int]] = {}
+    for k, q in enumerate(quotes):
+        if q:
+            groups.setdefault(q, []).append(k)
+    for q in sorted(groups, key=lambda q: (-len(q), groups[q][0])):
+        found = _occurrences(q, text, gaps)
+        free = [i for i in found if not any(i < b and a < i + len(q) for a, b in claimed)]
+        places = free or found
+        if not places:
+            continue
+        members = groups[q]
+        if len(members) >= len(places):
+            picked = [places[min(n, len(places) - 1)] for n in range(len(members))]
+        else:
+            picked = places[:len(members) - 1] + [places[-1]]
+        for k, i in zip(members, picked):
+            at[k] = i
+            claimed.append((i, i + len(q)))
+    return at
+
+
 def _rows_of(raw: Mapping, key: str) -> list[dict]:
     v = raw.get(key)
     if v is None:
@@ -996,15 +1098,14 @@ def _check(arguments: str, notes: str, route: str = "") -> tuple[dict, list[str]
         """A value replaced by a later one (NOTE-7, the latest wins): its row goes (ids are never reused)."""
         out["rows"] = [r for r in out["rows"] if r["field"] not in fields and r["id"] != rid]
 
-    def at(e: Mapping) -> int:
-        """Where the user wrote an entry's quote in the notes (their notes in the order they were written), so the
-        latest of two is the one kept; an entry whose quote is not found keeps the model's order after the rest."""
+    gaps = _squash_gaps(notes)
+
+    def squashed_quote(e: Mapping) -> str:
         q = _squash(" ".join(str(e.get("quote") or "").split()))
-        i = squashed.find(q) if len(q) >= 2 else -1
-        if i < 0:
-            near = _locate(str(e.get("quote") or ""), notes)
-            i = squashed.find(_squash(near)) if near else -1
-        return i if i >= 0 else len(squashed) + 1
+        if len(q) >= 2 and _occurrences(q, squashed, gaps):
+            return q
+        near = _locate(str(e.get("quote") or ""), notes)
+        return _squash(near) if near else ""
 
     # where each of the user's notes starts, in the same squashed text (a note is one message or one box entry)
     starts, run = [], 0
@@ -1014,11 +1115,13 @@ def _check(arguments: str, notes: str, route: str = "") -> tuple[dict, list[str]
 
     def order(rows: list[dict]) -> list[dict]:
         """The entries in the order the user wrote them (ties: the model's order), each marked with that rank and
-        the note it was written in."""
-        ranked = sorted(enumerate(rows), key=lambda p: (at(p[1]), p[0]))
-        for n, (_i, e) in enumerate(ranked):
+        the note it was written in. Each entry is placed where ITS words were written (_written_at), so the same
+        words said again later are the later ask."""
+        at = _written_at([squashed_quote(e) for e in rows], squashed, gaps)
+        ranked = sorted(enumerate(rows), key=lambda p: (at[p[0]], p[0]))
+        for n, (i, e) in enumerate(ranked):
             e["_seq"] = n
-            e["_note"] = bisect.bisect_right(starts, at(e)) - 1
+            e["_note"] = bisect.bisect_right(starts, at[i]) - 1
         return [e for _i, e in ranked]
 
     # sizes: the global size first (the others may be multiples of it), each kind in the order written

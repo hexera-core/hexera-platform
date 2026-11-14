@@ -753,7 +753,8 @@ async def _run_async(req: JobRequest) -> dict:
                     _shown = _label(name)
                 except Exception:  # noqa: BLE001 - the engine's own name still says which
                     _shown = name
-                await _e.anote(f"Mesh engine: {_shown} - the one you asked for", op_id="pinned")
+                # the engine is picked for the user now (2026-11-13), so the line names it and claims nothing
+                await _e.anote(f"Mesh engine: {_shown}", op_id="pinned")
 
         _pinned_engine = await pin_selected_engine(initial_state, req.mesh_engine, jlog=jlog,
                                                    publish=_announce_engine)

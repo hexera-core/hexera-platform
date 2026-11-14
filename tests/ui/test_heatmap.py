@@ -337,6 +337,39 @@ def test_problem_areas_gather_the_bad_faces_and_take_the_camera_there(live):
     assert_clean(live, "the problem areas")
 
 
+def test_colour_by_is_reached_and_worked_from_the_keyboard(live, tmp_path):
+    # "Colour by" is a line of words, one per measure, each a role="button" link with no href: without a
+    # tabindex the browser never stops on it, so a keyboard user could not colour the mesh at all
+    _open(live, _payload(tmp_path), "keys-job")
+    links = live.evaluate("""(() => [...document.querySelectorAll('#v-heatctl-keys-job a')].map(a => {
+      a.focus();
+      return {metric: a.dataset.metric, tab: a.getAttribute('tabindex'), focused: document.activeElement === a};
+    }))()""")
+    assert links, "no Colour by links"
+    # (an <a> with no href reports tabIndex 0 yet takes no focus: the focus itself is what is checked)
+    assert all(x["tab"] == "0" and x["focused"] for x in links), links
+    if len(links) > 1:
+        # Tab walks from one word to the next, as the page's other controls do
+        live.evaluate("document.querySelector('#v-heatctl-keys-job a').focus()")
+        live.press("Tab", vk=9)
+        live.settle(0.1)
+        assert live.evaluate("document.activeElement && document.activeElement.dataset.metric") == links[1]["metric"]
+    # Enter on a focused word colours by it - the page's own Enter/Space rule for role="button"
+    live.evaluate(f"document.querySelector('#v-heatctl-keys-job a[data-metric={links[0]['metric']}]').focus()")
+    live.press("Enter", vk=13)
+    live.settle(0.1)
+    st = live.evaluate("""(() => ({active: window._vdbg['keys-job:heat'].active(),
+      pressed: document.activeElement.getAttribute('aria-pressed')}))()""")
+    assert st == {"active": links[0]["metric"], "pressed": "true"}, st
+    # and Space on the next word moves the colouring to it
+    if len(links) > 1:
+        live.evaluate(f"document.querySelector('#v-heatctl-keys-job a[data-metric={links[1]['metric']}]').focus()")
+        live.press(" ", code="Space", vk=32)
+        live.settle(0.1)
+        assert live.evaluate("window._vdbg['keys-job:heat'].active()") == links[1]["metric"]
+    assert_clean(live, "the Colour by line from the keyboard")
+
+
 def test_a_payload_without_fields_leaves_the_viewer_exactly_as_before(live, tmp_path):
     payload = _payload(tmp_path)
     payload.pop("quality_fields")

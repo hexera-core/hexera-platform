@@ -21,6 +21,11 @@ region option, and a multi-region case (snapgrid, snappy_multiregion) is offered
 case only. Each file is checked after it is written (the Fluent header must declare exactly the
 polyMesh's points, faces and cells) and dropped when it fails. Neither converted format has been
 opened in its own program yet - only read back by independent readers - and the labels say so.
+
+The exports are optional; the finished mesh is not. They are started only when the run's wall leaves
+them twice the time a mesh this size took on a busy machine, after their own way home, and every
+converter and every zip stops at that deadline - what is not finished is left out whole, said
+"out of time", and the mesh goes home on time (after_run).
 """
 from __future__ import annotations
 
@@ -55,13 +60,49 @@ SCRATCH = "_exports"
 _SCRATCH_CASE = "mesh"
 #: The engines whose finished mesh is an OpenFOAM polyMesh (VMTK's under openfoam_case/).
 ENGINES = frozenset({"snappy", "cfmesh", "netgen", "vmtk", "snapgrid", "snappy_multiregion"})
-#: The guard each converter runs under. A 3 M-cell mesh converts in well under a minute; a
-#: converter still running at this is stuck, and its format is left out.
+#: The guard all the exports run under, converters and zips together, for a mesh whose own need
+#: (export_need_s) is less. A 3 M-cell mesh exports in well under a minute; one still running at
+#: this is stuck, and what is not finished is left out.
 GUARD_S = 1800
-#: Below this much of the run's wall left, no export is started.
-MIN_LEFT_S = 120
+#: HOW LONG THE EXPORTS TAKE, by the size of the mesh: its polyMesh files' bytes, what both
+#: converters read and the zips compress. The lab's 3.2 M-cell motorBike (a 392 MB polyMesh) took
+#: 34 s on a quiet machine and 97 s on a busy one for both converters and the three zips
+#: (~/cfdexport_lab, 2026-11-14): 0.25 s a MB, busy.
+BUSY_S_PER_MB = 0.25
+#: The exports are started only when they have twice the busy time of a mesh this size, and never
+#: less than this (the converters' own start-up), left of the run's wall after their own way home
+#: (export_send_s).
+MIN_LEFT_S = 60
 #: Deflate level of the zips: 1 is about three times as fast as 6 and a few per cent larger.
 ZIP_LEVEL = 1
+#: What a zip copies between two looks at the clock.
+_ZIP_CHUNK = 8 * 1024 * 1024
+
+
+_OUT_OF_TIME = "out of time: the run's wall was near, and the mesh goes home first"
+
+
+class OutOfTime(RuntimeError):
+    """An export reached its deadline before it was finished: it is left out, never half written."""
+
+
+def export_need_s(mesh_bytes_: float) -> float:
+    """The time the exports of a mesh this big (its polyMesh bytes) are started with: twice what the
+    lab measured on a busy machine, and never less than MIN_LEFT_S."""
+    return float(MIN_LEFT_S) + 2.0 * BUSY_S_PER_MB * float(mesh_bytes_) / 1e6
+
+
+def export_send_s(mesh_bytes_: float) -> float:
+    """The exports' own way home, kept out of their budget: their zips are about as many bytes as
+    the mesh again (483 MB for the motorBike's 392 MB polyMesh), packed and sent after the run's
+    wall in the margin that is the finished mesh's (contracts/native_time.CLOUD_RUN_MARGIN_S) - so
+    the exports end that much sooner: as long as one busy pass over the mesh."""
+    return BUSY_S_PER_MB * float(mesh_bytes_) / 1e6
+
+
+def _in_time(deadline: float | None) -> None:
+    if deadline is not None and time.monotonic() > deadline:
+        raise OutOfTime(_OUT_OF_TIME)
 
 _CONTROL_DICT = """FoamFile
 {
@@ -104,6 +145,16 @@ def case_root(workspace) -> Path | None:
         if (root / "constant" / "polyMesh" / "owner").is_file() or (root / "constant" / "regionProperties").is_file():
             return root
     return None
+
+
+def mesh_bytes(workspace) -> int:
+    """The bytes of the delivered polyMesh files (every region's): what the exports read and write
+    over again. 0 when there is no case."""
+    root = case_root(workspace)
+    if root is None:
+        return 0
+    return sum(f.stat().st_size for poly in root.glob("constant/**/polyMesh") if poly.is_dir()
+               for f in poly.iterdir() if f.is_file())
 
 
 def is_multi_region(root: Path) -> bool:
@@ -188,21 +239,35 @@ def fluent_counts(msh: Path) -> dict:
     return out
 
 
-def _run(cmd: str, case: Path, *, bashrc: str, timeout: int) -> tuple[int, str]:
+def _run(cmd: str, case: Path, *, bashrc: str, timeout: float) -> tuple[int, str]:
     from meshpipeline.sandbox.safe_exec import run_guarded, scrubbed_subprocess_env
     proc = run_guarded(["bash", "-lc", f"source {bashrc} >/dev/null 2>&1 && {cmd}"], cwd=str(case),
                        env=scrubbed_subprocess_env(), capture_output=True, text=True, timeout=timeout)
     return proc.returncode, ((proc.stdout or "") + (proc.stderr or ""))[-1500:]
 
 
-def _zip(dest: Path, entries: list[tuple[Path, str]]) -> int:
+def _zip(dest: Path, entries: list[tuple[Path, str]], *, deadline: float | None = None) -> int:
     """`entries` (file, name in the zip) written to `dest` through a temporary name, so a zip that is
-    there is a whole one. Returns its bytes."""
+    there is a whole one. Returns its bytes. Past `deadline` (time.monotonic) it is abandoned -
+    nothing left behind - and OutOfTime raised: each file is copied in pieces, the clock read
+    between them."""
     tmp = dest.with_name(dest.name + ".part")
-    with zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=ZIP_LEVEL,
-                         allowZip64=True) as zf:
-        for src, name in entries:
-            zf.write(src, arcname=name)
+    try:
+        with zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=ZIP_LEVEL,
+                             allowZip64=True) as zf:
+            for src, name in entries:
+                _in_time(deadline)
+                # what zf.write does, in pieces
+                info = zipfile.ZipInfo.from_file(src, arcname=name)
+                info.compress_type = zipfile.ZIP_DEFLATED
+                info._compresslevel = ZIP_LEVEL  # type: ignore[attr-defined]  # zf.write's own way
+                with src.open("rb") as fh, zf.open(info, "w") as out:
+                    while chunk := fh.read(_ZIP_CHUNK):
+                        _in_time(deadline)
+                        out.write(chunk)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
     os.replace(tmp, dest)
     return dest.stat().st_size
 
@@ -222,9 +287,11 @@ def fluent_zone_name(name: str) -> str:
     return _ZONE_UNSAFE.sub("_", str(name)) or "zone"
 
 
-def _zip_fluent(msh: Path, dest: Path, arcname: str) -> tuple[int, dict]:
+def _zip_fluent(msh: Path, dest: Path, arcname: str, *, deadline: float | None = None) -> tuple[int, dict]:
     """The Fluent mesh into its zip, streamed, with every zone name made safe (fluent_zone_name) and
-    kept unique. Returns (zip bytes, {old name: new name} for each one changed)."""
+    kept unique. Returns (zip bytes, {old name: new name} for each one changed). Past `deadline` it
+    is abandoned whole (OutOfTime), as _zip is."""
+    _in_time(deadline)
     size = msh.stat().st_size
     start = max(0, size - _TAIL_BYTES)
     with msh.open("rb") as fh:
@@ -257,17 +324,22 @@ def _zip_fluent(msh: Path, dest: Path, arcname: str) -> tuple[int, dict]:
         fixed.append(b"(%s (%s %s %s)())" % (m.group(1), m.group(2), m.group(3), new.encode()))
     keep = start + len(b"\n".join(lines[:k])) + (1 if k else 0)
     tmp = dest.with_name(dest.name + ".part")
-    with zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=ZIP_LEVEL,
-                         allowZip64=True) as zf, msh.open("rb") as src, \
-            zf.open(arcname, "w", force_zip64=True) as out:
-        left = keep
-        while left > 0:
-            chunk = src.read(min(8 * 1024 * 1024, left))
-            if not chunk:
-                break
-            out.write(chunk)
-            left -= len(chunk)
-        out.write(b"\n".join(fixed))
+    try:
+        with zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=ZIP_LEVEL,
+                             allowZip64=True) as zf, msh.open("rb") as src, \
+                zf.open(arcname, "w", force_zip64=True) as out:
+            left = keep
+            while left > 0:
+                _in_time(deadline)
+                chunk = src.read(min(_ZIP_CHUNK, left))
+                if not chunk:
+                    break
+                out.write(chunk)
+                left -= len(chunk)
+            out.write(b"\n".join(fixed))
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
     os.replace(tmp, dest)
     return dest.stat().st_size, renamed
 
@@ -339,19 +411,31 @@ def clear(workspace) -> None:
     shutil.rmtree(ws / SCRATCH, ignore_errors=True)
 
 
-def write_exports(workspace, *, bashrc: str, guard_s: int = GUARD_S) -> dict:
+def _why(exc: BaseException) -> str:
+    """What the record says of an export left out: out of time (a zip or a converter stopped at the deadline), or
+    the error."""
+    import subprocess
+    if isinstance(exc, (OutOfTime, subprocess.TimeoutExpired)):
+        return _OUT_OF_TIME
+    return f"{type(exc).__name__}: {exc}"[:300]
+
+
+def write_exports(workspace, *, bashrc: str, guard_s: float = GUARD_S) -> dict:
     """Write the flow downloads of the finished mesh in `workspace` (the module text). Returns the
     record also written to EXPORTS_FILE: {files: {file: {bytes, seconds}}, left_out: {file: why},
-    seconds}. Never raises for a format: what cannot be written is left out."""
+    budget_s, seconds}. Never raises for a format: what cannot be written is left out. Everything -
+    each converter and each zip - ends within `guard_s`: what is not finished by then is left out
+    whole, and nothing is started after it."""
     ws = Path(workspace)
     t_all = time.monotonic()
-    deadline = t_all + float(guard_s)        # all of it, both converters together
+    deadline = t_all + float(guard_s)        # all of it, converters and zips together
 
-    def left() -> int:
-        return max(1, int(deadline - time.monotonic()))
+    def left() -> float:
+        _in_time(deadline)
+        return max(0.1, deadline - time.monotonic())
 
     clear(ws)
-    record: dict = {"files": {}, "left_out": {}, "mesh": mesh_fingerprint(ws)}
+    record: dict = {"files": {}, "left_out": {}, "mesh": mesh_fingerprint(ws), "budget_s": round(float(guard_s), 1)}
     root = case_root(ws)
     if root is None:
         record["left_out"] = dict.fromkeys(FILES, "no OpenFOAM case beside the mesh")
@@ -361,12 +445,13 @@ def write_exports(workspace, *, bashrc: str, guard_s: int = GUARD_S) -> dict:
     t = time.monotonic()
     try:
         entries = _tree(root, "constant", "openfoam_case") + _tree(root, "system", "openfoam_case")
-        n = _zip(ws / OPENFOAM_ZIP, entries)
+        n = _zip(ws / OPENFOAM_ZIP, entries, deadline=deadline)
         record["files"][OPENFOAM_ZIP] = {"bytes": n, "seconds": round(time.monotonic() - t, 1)}
     except Exception as exc:  # noqa: BLE001 - an export is never a reason to lose the mesh
-        logger.warning("cfd exports: the OpenFOAM case zip was not written", exc_info=True)
+        logger.warning("cfd exports: the OpenFOAM case zip was not written: %s", _why(exc),
+                       exc_info=not isinstance(exc, OutOfTime))
         (ws / (OPENFOAM_ZIP + ".part")).unlink(missing_ok=True)
-        record["left_out"][OPENFOAM_ZIP] = f"{type(exc).__name__}: {exc}"[:300]
+        record["left_out"][OPENFOAM_ZIP] = _why(exc)
 
     if is_multi_region(root):
         for f in (FLUENT_ZIP, ENSIGHT_ZIP):
@@ -400,7 +485,7 @@ def write_exports(workspace, *, bashrc: str, guard_s: int = GUARD_S) -> dict:
         want = {k: counts[k] for k in ("points", "faces", "cells") if k in counts}
         if not want or any(got.get(k) != v for k, v in want.items()):
             raise RuntimeError(f"the Fluent header declares {got}, the polyMesh has {want}")
-        n, renamed = _zip_fluent(msh, ws / FLUENT_ZIP, f"{_SCRATCH_CASE}.msh")
+        n, renamed = _zip_fluent(msh, ws / FLUENT_ZIP, f"{_SCRATCH_CASE}.msh", deadline=deadline)
         record["files"][FLUENT_ZIP] = {"bytes": n, "msh_bytes": msh.stat().st_size,
                                        "seconds": round(time.monotonic() - t, 1)}
         if renamed:
@@ -409,7 +494,7 @@ def write_exports(workspace, *, bashrc: str, guard_s: int = GUARD_S) -> dict:
     except Exception as exc:  # noqa: BLE001
         logger.warning("cfd exports: the Fluent mesh was not written: %s", exc)
         (ws / (FLUENT_ZIP + ".part")).unlink(missing_ok=True)
-        record["left_out"][FLUENT_ZIP] = f"{type(exc).__name__}: {exc}"[:300]
+        record["left_out"][FLUENT_ZIP] = _why(exc)
 
     # ENSIGHT: foamToEnsight writes EnSight/<case>.case and its geometry, one part per patch
     t = time.monotonic()
@@ -422,12 +507,12 @@ def write_exports(workspace, *, bashrc: str, guard_s: int = GUARD_S) -> dict:
             raise RuntimeError(f"foamToEnsight rc {rc}: {tail[-300:]}")
         entries = [(p, f"ensight/{p.relative_to(out).as_posix()}")
                    for p in sorted(out.rglob("*")) if p.is_file()]
-        n = _zip(ws / ENSIGHT_ZIP, entries)
+        n = _zip(ws / ENSIGHT_ZIP, entries, deadline=deadline)
         record["files"][ENSIGHT_ZIP] = {"bytes": n, "seconds": round(time.monotonic() - t, 1)}
     except Exception as exc:  # noqa: BLE001
         logger.warning("cfd exports: the EnSight case was not written: %s", exc)
         (ws / (ENSIGHT_ZIP + ".part")).unlink(missing_ok=True)
-        record["left_out"][ENSIGHT_ZIP] = f"{type(exc).__name__}: {exc}"[:300]
+        record["left_out"][ENSIGHT_ZIP] = _why(exc)
 
     shutil.rmtree(ws / SCRATCH, ignore_errors=True)
     return _finish(ws, record, t_all)
@@ -446,17 +531,31 @@ def _finish(ws: Path, record: dict, t0: float) -> dict:
 
 def after_run(workspace, *, engine: str, result, bashrc: str, left_s: float | None = None) -> dict | None:
     """The mesher's hook (engines/dispatch.run_engine_local): the exports of a flow mesh that was
-    built, inside what is left of the run's wall (`left_s`) - the converters never cost a mesh its
-    way home. A failed run's workspace only loses a previous pass's exports. Never raises."""
+    built, inside what is left of the run's wall (`left_s`) - the exports never cost a mesh its way
+    home. A failed run's workspace only loses a previous pass's exports. Never raises.
+
+    THE TIME RULE. The exports are optional and the finished mesh is not, so they live only in what
+    the run's wall leaves AFTER their own way home (export_send_s): every converter and every zip
+    ends by then, and what is not finished is left out whole (write_exports). They are started only
+    when that budget holds export_need_s - twice the lab's busy time for a mesh this size, never less
+    than MIN_LEFT_S - and they are given at most GUARD_S, or their need when that is more (a mesh
+    too big for the stuck guard is not cut at it). The mesh's own margin after the wall
+    (contracts/native_time.CLOUD_RUN_MARGIN_S, the worker's wait) is never touched by an export."""
     try:
         if engine not in ENGINES:
             return None
         ok = isinstance(result, dict) and result.get("rc") == 0 and not result.get("timed_out")
-        guard = int(min(GUARD_S, GUARD_S if left_s is None else left_s))
-        if not ok or guard < MIN_LEFT_S:
+        if not ok:
             clear(workspace)
-            if ok:
-                logger.warning("cfd exports: %s s left of the run's wall - not written", guard)
+            return None
+        size = mesh_bytes(workspace)
+        need = export_need_s(size)
+        budget = float("inf") if left_s is None else float(left_s) - export_send_s(size)
+        guard = min(budget, max(float(GUARD_S), need))
+        if guard < need:
+            clear(workspace)
+            logger.warning("cfd exports: %.0f s left of the run's wall after the exports' own way home; "
+                           "a %.0f MB mesh's exports need %.0f s - not written", budget, size / 1e6, need)
             return None
         return write_exports(workspace, bashrc=bashrc, guard_s=guard)
     except Exception:  # noqa: BLE001 - an export must never lose a finished mesh
@@ -464,7 +563,7 @@ def after_run(workspace, *, engine: str, result, bashrc: str, left_s: float | No
         return None
 
 
-__all__ = ["ENGINES", "ENSIGHT_ZIP", "EXPORTS_FILE", "EXPORT_ARTIFACTS", "FILES", "FLUENT_ZIP", "GUARD_S",
-           "MIN_LEFT_S", "NOT_TESTED", "OPENFOAM_ZIP", "SCRATCH", "ZIP_LEVEL", "after_run", "case_root", "clear",
-           "fluent_counts", "fluent_zone_name", "is_multi_region", "mesh_fingerprint", "offered", "polymesh_counts",
-           "write_exports"]
+__all__ = ["BUSY_S_PER_MB", "ENGINES", "ENSIGHT_ZIP", "EXPORTS_FILE", "EXPORT_ARTIFACTS", "FILES", "FLUENT_ZIP",
+           "GUARD_S", "MIN_LEFT_S", "NOT_TESTED", "OPENFOAM_ZIP", "SCRATCH", "ZIP_LEVEL", "OutOfTime", "after_run",
+           "case_root", "clear", "export_need_s", "export_send_s", "fluent_counts", "fluent_zone_name",
+           "is_multi_region", "mesh_bytes", "mesh_fingerprint", "offered", "polymesh_counts", "write_exports"]

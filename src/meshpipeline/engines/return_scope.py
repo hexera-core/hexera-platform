@@ -16,7 +16,9 @@ no volume export, and its surface review must still open").
 So, before the workspace is archived:
   * scratch directories the engines leave (a rescue's candidate meshes) are removed;
   * when the archive would come out over the ceiling, the optional volume exports are left out,
-    largest first, until it fits - and the run says so (RETURN_SCOPE_FILE, `return_scope`).
+    largest first, until it fits - and the run says so (RETURN_SCOPE_FILE, `return_scope`). Only
+    files that ride IN the archive are left out: one big enough to be sent home on its own
+    (engines/bucket_files.packable, RUN-7) costs the archive nothing and always stays.
 Nothing a gate, the solver deliverable or the surface deliverable reads is ever left out: the
 polyMesh, the boundary .vtp files, the quality, passage and layer records all stay.
 """
@@ -103,8 +105,13 @@ def scope_return(workspace, *, ceiling: int | None = None) -> dict | None:
     if estimate > HEADROOM * cap:
         estimate = estimate_archive_bytes(ws)
     if estimate > HEADROOM * cap:
+        # only a file the estimate holds can bring it down: one sent home on its own (RUN-7) never
+        # rides in the archive, so leaving it out would save the archive nothing and lose the
+        # user its download - and taking its bytes off would make the estimate read low
+        archived = set(_archived(ws))
         optional = [p for g in OPTIONAL_GLOBS
-                    for p in sorted((q for q in ws.glob(g) if q.is_file()), key=lambda q: -q.stat().st_size)]
+                    for p in sorted((q for q in ws.glob(g) if q.is_file() and q in archived),
+                                    key=lambda q: -q.stat().st_size)]
         for p in optional:
             if estimate <= HEADROOM * cap:
                 break

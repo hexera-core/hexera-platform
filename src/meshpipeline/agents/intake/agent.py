@@ -238,6 +238,14 @@ INTAKE_TOOLS: list[dict] = [
                                 "description": "The declared use case."},
                     "input_kind": {"type": "string", "enum": _INPUT_KIND_CHOICES,
                                    "description": "What the geometry represents."},
+                    "input_kind_user_words": {
+                        "type": "string",
+                        "description": (
+                            "Only when input_kind differs from the one the user confirmed on the geometry "
+                            "stage BECAUSE THE USER CORRECTED IT in the chat after the stage: their words "
+                            "saying so, copied exactly from that message. Leave it out otherwise; never "
+                            "invent or paraphrase it."),
+                    },
                     "dimensionality": {"type": "string", "enum": _DIMENSIONALITY_VALUES,
                                        "description": "2D or 3D, if the user declared it."},
                     "patches": {

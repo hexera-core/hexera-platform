@@ -3060,6 +3060,36 @@
   ]
  },
  {
+  "context": "application/purpose_map.py::named_analysis::search#1|NotAPublisher|not-a-publisher|application/purpose_map.py::re.Pattern",
+  "path": "application/purpose_map.py",
+  "qualname": "named_analysis",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_FEA",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": [
+   "application/purpose_map.py::re.Pattern"
+  ]
+ },
+ {
+  "context": "application/purpose_map.py::named_analysis::search#2|NotAPublisher|not-a-publisher|application/purpose_map.py::re.Pattern",
+  "path": "application/purpose_map.py",
+  "qualname": "named_analysis",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "_FLOW_AS_LOAD",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": [
+   "application/purpose_map.py::re.Pattern"
+  ]
+ },
+ {
   "context": "application/purpose_map.py::read_purpose::search#1|NotAPublisher|not-a-publisher|application/purpose_map.py::re.Pattern",
   "path": "application/purpose_map.py",
   "qualname": "read_purpose",
