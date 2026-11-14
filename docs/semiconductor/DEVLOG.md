@@ -5483,3 +5483,33 @@ So the names now travel: `_draw_parts` already produces one named patch per soli
 copies those names into `facts["part_names"]` (dropping `Part_k`, which is what a solid the file
 does NOT name is called). `_facts_text` puts them in front of the vision model as evidence, not as
 an instruction - a name can be generic, stale or wrong, and the pictures decide.
+
+### The names reach it. It is the stickers it cannot place.
+
+The celery result repr truncates the facts dict long before `part_names`, so there was no way to
+tell whether the collection had worked. The check says it out loud now:
+
+```
+geometry check: the file names its solids: Microfluidics_Core, Top_Lid, Outlet, Splits,
+Board_cooling, Inlet - session=eb22296d-...
+```
+
+With those in front of it the vision model proposed the same three roles as before - inlet on
+sticker 1, the 11.8 mm junction sealed inside the assembly, and both real mouths as outlets - and
+its own note says why: "Two external hose/port mouths are visible on the side, but **neither has a
+numbered sticker**, so they cannot be assigned inlet/outlet names here."
+
+Stickers 2 and 3 ARE those two mouths. It is not missing the names and it is not missing the
+mouths; it is not matching the stickers it was given to the mouths it can see. That is about where
+the stickers are drawn and which views carry them, and it is the next thing to look at.
+
+### And one last thing the page said
+
+Job 1f7dae6b: one paragraph said "so would a coarser mesh or another engine: this one is about the
+shape" and the next offered snappyHexMesh multi-region by name. `_LADDER_CLASS` files NOT_BUILT as
+an ENGINE failure, correctly for the four size refusals it was written for and wrongly for a
+refusal about the part. A refusal carrying `geometry_refusal` is NEVER now; the size refusals are
+pinned to stay ENGINE.
+
+Verified end to end on job f119170e: the page carries the measurement, claims no limit of ours,
+offers no coarser mesh and offers no other engine.
