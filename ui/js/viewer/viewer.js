@@ -144,7 +144,6 @@ export async function openViewer(job,anchorEl,opts){
       <div class="v-sec rp-lists" id="v-lists-${job}"><div class="rp-notes-host" id="v-notes-${job}">${notesFor(null)}</div>
         <div class="rp-spots-host" id="v-spots-${job}"></div></div>
       <div class="v-thermal" id="v-thermal-${job}"></div>
-      <div class="v-facts" id="v-facts-${job}"></div>
       <div class="v-sec v-review">
         <div class="v-sec-h">Changes</div>
         <div class="v-row">
@@ -882,83 +881,6 @@ function initViewer(job,surf,uiCfg){
   clampCam();                    // opening view = closest allowed to Fit
   rw.render();
 
-  /* THE DELIVERED MESH'S OWN FIGURES, straight from the payload. The UI holds an
-     ORDER and a label for the ones it knows how to name, and shows anything else
-     the backend declared under its own key - a metric this build has never heard
-     of still reaches the user rather than being silently dropped. Nothing is
-     defaulted: a figure the mesh does not carry simply has no cell. */
-  (function meshFacts(){
-    const host=document.getElementById('v-facts-'+job),q=Object.assign({},surf.quality||{});
-    // aspect ratio is measured by the heatmap pass, not by checkMesh's summary block; it gets a
-    // figure here so it is a control like the other two
-    const _ar=surf.quality_fields&&surf.quality_fields.metrics&&surf.quality_fields.metrics.aspect_ratio;
-    if(_ar&&!('max_aspect_ratio' in q)&&typeof _ar.max==='number')q.max_aspect_ratio=Number(_ar.max.toFixed(2));
-    if(!host||!Object.keys(q).length)return;
-    // GROUPED, the way the figures are read: how big the mesh is, what its cells are, how good
-    // they are. A zero that only says "nothing is wrong" (no skewed faces, a skew fraction of 0)
-    // is folded into the figure it qualifies instead of taking a cell of its own.
-    // the cell count is the panel's first key number already, so it is not said twice here
-    const SIZE=[['faces','Faces'],['regions','Regions']];
-    const TYPES=[['hexahedra','Hexahedra'],['polyhedra','Polyhedra'],['prisms','Prisms'],
-                 ['pyramids','Pyramids'],['tetrahedra','Tetrahedra']];
-    const QUALITY=[['max_non_ortho','Max non-orthogonality','°'],['max_skewness','Max skewness',''],
-                   ['max_aspect_ratio','Max aspect ratio','']];
-    const FOLDED=['avg_non_ortho','skew_faces','skew_fraction'];
-    const KNOWN=[...SIZE,...TYPES,...QUALITY].map(r=>r[0]).concat(FOLDED,['units','engine','cells']);
-    const isNum=v=>typeof v==='number'&&isFinite(v);
-    // integers read as counts; a measured value to two decimals, and a very small one in
-    // exponent form rather than a run of zeroes
-    const show=v=>!isNum(v) ? esc(String(v))
-      : Number.isInteger(v) ? v.toLocaleString()
-      : (Math.abs(v)>0&&Math.abs(v)<0.001) ? v.toExponential(2)
-      : v.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
-    const has=k=>k in q&&q[k]!==null&&q[k]!==undefined;
-    const stat=([k,l])=>`<div class="mx-c mx-stat" data-key="${k}"><div class="mx-v">${show(q[k])}</div>`
-      +`<div class="mx-k">${l}</div></div>`;
-    // cell types: each as its share of the cells, so a hex-dominant mesh reads at a glance
-    const total=isNum(q.cells)&&q.cells>0?q.cells:0;
-    const type=([k,l])=>{const v=q[k],pct=total&&isNum(v)?Math.max(0,Math.min(100,100*v/total)):null;
-      return `<div class="mx-c mx-row mx-type" data-key="${k}"><div class="mx-k">${l}</div>`
-        +`<div class="mx-v">${show(v)}</div>`
-        +(pct===null?'':`<div class="mx-pct">${pct>0&&pct<1?'&lt;1':Math.round(pct)}%</div>`
-          +`<div class="mx-bar"><i style="width:${pct.toFixed(1)}%"></i></div>`)+`</div>`;};
-    const row=(k,l,unit,sub)=>`<div class="mx-c mx-row mx-q" data-key="${esc(k)}"><div class="mx-k">${esc(l)}</div>`
-      +`<div class="mx-v">${show(q[k])}${unit?`<small>${unit}</small>`:''}</div>`
-      +(sub?`<div class="mx-sub">${sub}</div>`:'')+`</div>`;
-    // the share of faces that are skewed, when there are any
-    const frac=isNum(q.skew_fraction)&&q.skew_fraction>0?`(${Number((q.skew_fraction*100).toPrecision(2))}%)`:'';
-    const ofFaces=isNum(q.faces)?`of ${q.faces.toLocaleString()}`:'';
-    const skewNote=()=>{
-      if(!isNum(q.skew_faces))return frac?`Skewed: ${frac.slice(1,-1)} of faces`:'';
-      if(q.skew_faces===0)return 'No skewed faces';
-      return [`${q.skew_faces.toLocaleString()} skewed face${q.skew_faces!==1?'s':''}`,ofFaces,frac]
-        .filter(Boolean).join(' ');};
-    const quality=[];
-    if(has('max_non_ortho'))quality.push(row('max_non_ortho','Max non-orthogonality','°',
-      has('avg_non_ortho')?`Mean ${show(q.avg_non_ortho)}°`:''));
-    else if(has('avg_non_ortho'))quality.push(row('avg_non_ortho','Mean non-orthogonality','°'));
-    // skewness: the max with the skewed faces under it; without a max, the count and its share
-    // stand on their own - nothing the engine reported is dropped
-    if(has('max_skewness'))quality.push(row('max_skewness','Max skewness','',skewNote()));
-    else if(has('skew_faces'))quality.push(row('skew_faces','Skewed faces','',[ofFaces,frac].filter(Boolean).join(' ')));
-    else if(has('skew_fraction'))quality.push(row('skew_fraction','Skew fraction',''));
-    if(has('max_aspect_ratio'))quality.push(row('max_aspect_ratio','Max aspect ratio',''));
-    // anything the backend declared that this build has no name for still reaches the user
-    const other=Object.keys(q).filter(k=>!KNOWN.includes(k)).map(k=>row(k,k.replace(/_/g,' '),''));
-    const sizes=SIZE.filter(([k])=>has(k)),types=TYPES.filter(([k])=>has(k));
-    const group=(title,body)=>body?`<div class="mx-group"><div class="mx-gh">${title}</div>${body}</div>`:'';
-    if(!sizes.length&&!types.length&&!quality.length&&!other.length)return;
-    host.innerHTML=`<div class="mx"><div class="mx-h"><span>Delivered mesh</span>`
-      +(q.engine?`<span class="eng">${esc(q.engine)}</span>`:'')
-      +(q.units?`<span class="eng">${esc(q.units)}</span>`:'')
-      +`</div>`
-      +(sizes.length?`<div class="mx-size">${sizes.map(stat).join('')}</div>`:'')
-      +group('Cell types',types.map(type).join(''))
-      +group('Quality',quality.join(''))
-      +group('Other',other.join(''))
-      +`</div>`;
-  })();
-
   const statusEl=document.getElementById('v-status-'+job);
   statusEl.textContent=thermal&&surf.is_mesh
     // a thermal model says what it is in its own words: its parts, its cells, its power
@@ -1114,24 +1036,23 @@ function initViewer(job,surf,uiCfg){
         lbl.textContent=fmtBytes(blob.size);}
       catch(err){lbl.textContent='export failed';console.warn('vtk export',err);}
       finally{delete a.dataset.busy;setTimeout(()=>{lbl.textContent=was;},4000);}};
-    bar.appendChild(a);
+    bar.insertBefore(a,bar.querySelector(':scope>.rp-report'));   // above the Mesh report (none: at the end)
     window._vdbg[job].vtk=()=>a;
   })();
 
   /* QUALITY HEATMAP - the boundary coloured by the quality of the cell behind each face.
      The payload carries one float per drawn polygon (render/face_quality.py, aligned with the
-     surface reader's own filter) and the bar the engine's gate judges against. The
-     delivered-mesh FIGURES are the controls: the non-orthogonality, skewness and
-     aspect-ratio numbers become clickable when fields exist for them - clicking a number shows where it
+     surface reader's own filter) and the bar the engine's gate judges against. One plain line on
+     the canvas, "Colour by ...", names each measure that has a field; clicking one shows where it
      lives. Nothing here touches the geometry: colouring is cell scalars on the same immutable
      actors, and turning it off restores exactly the property colours the parts panel set. */
   let activeMetric=null,lastProbe=null;
   (function heatmap(){
     const qf=surf.quality_fields;
     if(!qf||!qf.patches||!qf.metrics||!window.vtk)return;
-    const META={non_ortho:{fact:'max_non_ortho',b64:'non_ortho_b64'},
-                skewness:{fact:'max_skewness',b64:'skewness_b64'},
-                aspect_ratio:{fact:'max_aspect_ratio',b64:'aspect_ratio_b64'}};
+    const META={non_ortho:{b64:'non_ortho_b64'},
+                skewness:{b64:'skewness_b64'},
+                aspect_ratio:{b64:'aspect_ratio_b64'}};
     const avail=Object.keys(META).filter(m=>qf.metrics[m]);
     // decode once. An array that does not match the polygon count is dropped, not trusted:
     // a misaligned field would paint every face with its neighbour's number.
@@ -1576,28 +1497,15 @@ function initViewer(job,surf,uiCfg){
         ticks:[[1,fmt(m,rp.hi)]].concat(rp.open?[]:[[rp.limitFrac,fmt(m,qf.metrics[m].limit)+' limit',true]])
           .concat([[0,rp.lo?fmt(m,rp.lo):'0']])}:null;
       if(onMetric)onMetric(m);
-      document.querySelectorAll(`#v-facts-${job} .mx-c.live, #v-heatctl-${job} a`).forEach(c=>{
-        const on=c.dataset.metric===m;c.classList.toggle('on',on);
-        if(!c.classList.contains('mx-c'))return;
-        c.setAttribute('aria-pressed',String(on));
-        const t=c.querySelector('.mx-show-t');if(t)t.textContent=on?'Showing':'Show on mesh';});
+      document.querySelectorAll(`#v-heatctl-${job} a`).forEach(c=>{
+        const on=c.dataset.metric===m;c.classList.toggle('on',on);c.setAttribute('aria-pressed',String(on));});
       rw.render();}
 
-    // the figures are the controls - each one that has a field says so, with a small swatch of the
-    // colour scale; a payload with no figures block gets a plain text one
-    const facts=document.getElementById('v-facts-'+job);
-    let wired=0;
-    if(facts)avail.forEach(m=>{
-      const cell=[...facts.querySelectorAll('.mx-c')].find(c=>c.dataset.key===META[m].fact);
-      if(!cell)return;
-      cell.classList.add('live');cell.dataset.metric=m;cell.title='Colour the mesh by this';
-      cell.setAttribute('role','button');cell.tabIndex=0;cell.setAttribute('aria-pressed','false');
-      cell.insertAdjacentHTML('beforeend',
-        '<span class="mx-show"><i class="mx-ramp" aria-hidden="true"></i><span class="mx-show-t">Show on mesh</span></span>');
-      cell.onclick=()=>setMetric(m);wired++;});
-    if(wired<avail.length){
+    // the one control: a plain line on the canvas, one word per measure that has a field
+    if(avail.length){
       const ctl=document.createElement('div');ctl.className='v-heatctl';ctl.id='v-heatctl-'+job;
-      ctl.innerHTML='Colour by '+avail.map(m=>`<a data-metric="${m}">${esc(qf.metrics[m].label)}</a>`).join(' · ');
+      ctl.innerHTML='Colour by '+avail.map(m=>
+        `<a data-metric="${m}" role="button" aria-pressed="false">${esc(qf.metrics[m].label)}</a>`).join(' · ');
       ctl.querySelectorAll('a').forEach(a=>{a.onclick=()=>setMetric(a.dataset.metric);});
       shield(ctl);host.appendChild(ctl);}
 
@@ -1661,7 +1569,7 @@ function initViewer(job,surf,uiCfg){
       cellPx:i=>{const a=areaSet.list[i];if(!a)return null;
         return a.size*(host.clientHeight||600)/(2*camDist()*tanHalf());},
       probe:(patch,cid)=>{const en=entries.find(t=>t.patch===patch);if(en)showProbe(en,cid);return lastProbe;},
-      last:()=>lastProbe,legend:()=>!!legend,wired:()=>wired,
+      last:()=>lastProbe,legend:()=>!!legend,
       extras:()=>ren.getActors().filter(a=>!entries.some(en=>en.actor===a)
         &&!flags.some(f=>f.actors.includes(a))).length,
       edges:()=>{const pp=entries[0].actor.getProperty();return {on:!!pp.getEdgeVisibility(),color:pp.getEdgeColor()};},
@@ -1737,8 +1645,8 @@ function initViewer(job,surf,uiCfg){
     document.getElementById('v-cut-flip-'+job).onclick=()=>{cut.flip=!cut.flip;cut.on=true;applyCut();};
 
     /* PARTS > SHOW: the surface style, and - when the mesh carries quality fields - what the part
-       is coloured by. The colour choices are the heatmap's own switch, so the figures in the side
-       panel and this list always agree. */
+       is coloured by. The colour choices are the heatmap's own switch, so the "Colour by" line on
+       the canvas and this list always agree. */
     bindSeg(ov('parts'),'surface',v=>{surfaceMode=v;if(repaintParts)repaintParts();else rw.render();});
     const colourBox=document.getElementById('v-colour-'+job);
     if(heatApi&&heatApi.metrics.length&&colourBox){

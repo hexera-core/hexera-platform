@@ -16,9 +16,11 @@ THE RULES (docs/RULES.md, PLAN-cfd and LAD-cfd):
   (snappyHexMesh and cfMesh: engines/gap_sizing boxes; VMTK: edge length from the local radius;
   gmsh: the passage size field). Cited where each engine sizes.
 * PLAN-cfd-2 - every opening gets at least PORT_CELLS_ACROSS cells across its own width, locally.
-* PLAN-cfd-3 - THE BIG-MACHINE HOOK. When the cells the sizing rule needs are over one job's cell
-  limit, the plan says `route_big` (gap_sizing.GapPlan.record). The big-machine runner is not built
-  yet: until it is, the run is meshed as the limit holds and says so.
+* PLAN-cfd-3 - THE BIG-MACHINE HOOK. When the cells the sizing rule needs are over the run's cell
+  limit, the plan says `route_big` (gap_sizing.GapPlan.record) and the run is meshed as the limit
+  holds and says so - with no question (Areen, 14 Nov). The big machine is the user's to ask for by
+  a count in their notes: past the standard machine's cells it runs on a VM that carries them
+  (RUN-9, contracts/mesh_machine.route_cells).
 * LAD-cfd-1 - THE RESOLUTION LADDER. A sound mesh short of the floor sends the next attempt up one
   rung: the cells-across target at the narrow spots is multiplied by the rung's factor (1.5, then
   2), or by what the measured shortfall needs ((floor + 1) / measured) when that is more, never
@@ -188,11 +190,19 @@ def gate_cell_limit(ctx) -> tuple[bool, str]:
     limit = int(polcfg.CELL_HARD_LIMIT)
     if n is None or n <= limit:
         return True, ""
+    # RUN-9: the machine it was meshed on, when that was a bigger one sized for the count asked for
+    # (the note then only says the size); still a note, so the worker never runs its trial solve
+    try:
+        from meshpipeline.contracts import mesh_machine as MM
+        carried = MM.cells_carried(MM.read(ctx.workspace))
+    except Exception:  # noqa: BLE001 - an unread machine is the standard one
+        carried = limit
     return False, refuse(
         f"[CELL_LIMIT] the mesh has {int(n):,} cells, over one standard job's {limit:,}. It is "
         "delivered as it is when it is otherwise sound (a note, not a failure): the size is what "
-        "the geometry's sizing rules asked for.",
-        FailureCause.CELL_BUDGET, cells=int(n), limit=limit)
+        "the geometry's sizing rules, or the user's own count, asked for.",
+        FailureCause.CELL_BUDGET, cells=int(n), limit=limit,
+        **({"machine_cells": int(carried)} if carried > limit else {}))
 
 
 # #
@@ -274,6 +284,8 @@ def caveat(gate_key: str, facts: Mapping | None, manifest: Mapping | None, *,
     else:
         out.update({"cells": _num(facts.get("cells")),
                     "limit": _num(facts.get("limit")) or _num(facts.get("cell_limit"))})
+        if _num(facts.get("machine_cells")) is not None:
+            out["machine_cells"] = _num(facts.get("machine_cells"))
     return out
 
 
@@ -504,9 +516,9 @@ def cite_plan(job_id: str, workspace, *, attempt: int) -> None:
             dr.cite(job_id, stage="plan", decided="route_big", value=True, rule=PLAN_ROUTE_BIG,
                     inputs={"attempt": attempt, "needed": rec.get("needed"),
                             "limit": rec.get("limit")},
-                    words=(f"the sizing rule needs about {rec.get('needed')} cells, over one "
-                           f"job's {rec.get('limit')}: this mesh belongs on a bigger machine "
-                           "(not built yet - meshed as the limit holds)"))
+                    words=(f"the sizing rule needs about {rec.get('needed')} cells, over the "
+                           f"{rec.get('limit')} this run may build: meshed as that holds (a count "
+                           "the user states is meshed on a bigger machine, RUN-9)"))
     except Exception:  # noqa: BLE001 - a record never changes a run
         logger.debug("resolution policy: plan not cited", exc_info=True)
 
@@ -527,11 +539,18 @@ def note_lines(c: Mapping) -> list[str]:
     kind = c.get("kind")
     if kind == OVER_CELL_LIMIT:
         cells, limit = _num(c.get("cells")), _num(c.get("limit"))
+        carried = _num(c.get("machine_cells"))
+        if cells and limit and carried and carried > limit and cells <= carried:
+            # RUN-9: meshed on a bigger machine sized for the count asked for - only the size is said
+            return [f"  - The mesh has {cells / 1e6:.1f} M cells. Make sure your solver machine has the "
+                    "memory for it."]
+        # (never "the size your geometry needs": a count the user asked for makes a mesh this big
+        # too, and is theirs - Areen, 14 Nov)
         return [f"  - The mesh has {cells / 1e6:.1f} M cells, more than the {limit / 1e6:.0f} M "
                 "one standard job is sized for." if cells and limit else
                 "  - The mesh has more cells than one standard job is sized for.",
-                "    It is sound, and it is the size your geometry needs, so it is delivered as "
-                "it is. Make sure your solver machine has the memory for it."]
+                "    It is sound, so it is delivered as it is. Make sure your solver machine has "
+                "the memory for it."]
     x, floor = _num(c.get("cells_across")), _num(c.get("floor")) or 12.0
     near = c.get("narrowest") if isinstance(c.get("narrowest"), Mapping) else {}
     at = near.get("at_m") if isinstance(near, Mapping) else None
@@ -554,9 +573,17 @@ def note_lines(c: Mapping) -> list[str]:
     needed, limit = _num(plan.get("needed")), _num(plan.get("limit"))
     if plan.get("route_big") and needed and limit:
         # PLAN-cfd-3: the full rule's mesh is past one job; say so in plain numbers
-        lines.append(f"    Our full rule for every gap would need about {needed / 1e6:.0f} M cells, "
-                     f"more than the {limit / 1e6:.0f} M one job can build, so this mesh puts "
-                     "as many cells in the gaps as that limit allows.")
+        from meshpipeline.contracts.mesh_machine import normal_cells
+        if int(limit) != normal_cells():
+            # the plan was held to the user's own count (CFDREQ-3): theirs, not a limit of ours
+            lines.append(f"    Our full rule for every gap would need about {needed / 1e6:.0f} M cells, "
+                         f"more than the {limit / 1e6:.3g} M you asked for, so this mesh puts as many "
+                         "cells in the gaps as that allows.")
+        else:
+            lines.append(f"    Our full rule for every gap would need about {needed / 1e6:.0f} M cells, "
+                         f"more than the {limit / 1e6:.0f} M one job can build, so this mesh puts "
+                         "as many cells in the gaps as that limit allows. Ask for about "
+                         f"{needed / 1e6:.0f} M cells in your notes and it is meshed on a bigger machine.")
     lines.append("    The mesh is sound - no broken cells - so it is delivered. If the flow in "
                  "that gap matters to you, ask for a finer mesh there.")
     return lines

@@ -1,5 +1,5 @@
 # Responsibility: Verify the mesh viewer's camera controls in a real browser - which mouse button does
-# what, the "Up" axis the user picks, and the figures that switch the heatmap on.
+# what, the "Up" axis the user picks, and the "Colour by" line that switches the heatmap on.
 # Boundaries: the payload is the backend's own for a known mesh; only the network is stood in for.
 from __future__ import annotations
 
@@ -74,18 +74,27 @@ def test_right_drag_pans_left_drag_turns_and_the_up_axis_is_the_users(live, tmp_
     assert up["yUp"] == pytest.approx([0, 1, 0], abs=1e-6), up
     assert up["back"] == pytest.approx([0, 0, 1], abs=1e-6), up
 
-    # the figure that colours the mesh says so, and says when it is on
+    # the "Colour by" line on the canvas switches the heatmap on, shows which one is on, and the
+    # scale's close button turns it off again; it sits clear of the toolbar above and the hint below
     chip = live.evaluate(f"""(() => {{
-      const c = document.querySelector('#v-facts-{JOB} .mx-c.live[data-metric=non_ortho]');
-      const t = () => c.querySelector('.mx-show-t').textContent;
-      const r = {{off: t(), role: c.getAttribute('role'), label: c.querySelector('.mx-k').textContent}};
-      c.click(); r.on = t(); r.pressed = c.getAttribute('aria-pressed');
-      c.click(); r.again = t();
+      const ctl = document.getElementById('v-heatctl-{JOB}');
+      const c = ctl.querySelector('a[data-metric=non_ortho]');
+      const box = s => document.querySelector(s).getBoundingClientRect();
+      const state = () => [c.classList.contains('on'), c.getAttribute('aria-pressed'),
+                           !!document.querySelector('#viewer-{JOB} .v-legend')];
+      const r = {{text: ctl.textContent, role: c.getAttribute('role'), off: state(),
+                  ctlTop: box('#v-heatctl-{JOB}').top, ctlBottom: box('#v-heatctl-{JOB}').bottom,
+                  barBottom: box('#viewer-{JOB} .vt').bottom, hintTop: box('#v-hint-{JOB}').top}};
+      c.click(); r.on = state();
+      document.querySelector('#viewer-{JOB} .v-legend .x').click(); r.closed = state();
+      c.click(); r.again = state(); c.click(); r.offAgain = state();
       return r;
     }})()""")
-    assert chip["off"] == "Show on mesh" and chip["role"] == "button", chip
-    assert chip["label"] == "Max non-orthogonality", chip
-    assert chip["on"] == "Showing" and chip["pressed"] == "true" and chip["again"] == "Show on mesh", chip
+    assert chip["text"] == "Colour by non-orthogonality · skewness · aspect ratio", chip
+    assert chip["role"] == "button" and chip["off"] == [False, "false", False], chip
+    assert chip["on"] == [True, "true", True] and chip["closed"] == [False, "false", False], chip
+    assert chip["again"] == [True, "true", True] and chip["offAgain"] == [False, "false", False], chip
+    assert chip["ctlTop"] >= chip["barBottom"] + 4 and chip["ctlBottom"] <= chip["hintTop"] - 4, chip
     assert_clean(live, "the viewer's camera controls")
 
 

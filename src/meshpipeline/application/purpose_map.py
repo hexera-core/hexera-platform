@@ -368,9 +368,8 @@ def choices_for(reply: str) -> list[dict]:
         return [{"label": label + ("" if v1 else " (coming soon)"),
                  "send": label if v1 else f"{label} (coming soon)", "soon": not v1}
                 for _k, label, v1 in ANALYSES]
-    # the one cell-limit trade-off (agents/intake/measured_choice.gap_question): two buttons
-    from meshpipeline.agents.intake.measured_choice import gap_choices
-    return gap_choices(text)
+    # (no cell-count buttons: the count is the user's to state, never ours to ask - Areen, 14 Nov)
+    return []
 
 
 #: THE HOLD LINE an FEA part is checked under (after the drawing mark, which the intake never

@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import time as _time
@@ -27,6 +28,87 @@ logger = logging.getLogger(__name__)
 
 #: The FoamFile header a case dictionary opens with.
 _HDR = ("FoamFile{{ version 2.0; format ascii; class {cls}; object {obj}; }}\n")
+
+#: Wall seconds per native step (every stage, snappyHexMesh's own three phases, checkMesh, the
+#: passage measure, foamToVTK, total) and the rank count, written beside the mesh and carried in
+#: the result as `timing` - the record cfMesh and Netgen already keep under the same name.
+TIMING_FILE = "mesh_timing.json"
+
+#: snappyHexMesh's own clock for each phase, as its log prints it ("Mesh refined in = 12.3 s.").
+_SNAPPY_PHASES = (("castellate_s", re.compile(r"Mesh refined in\s*=\s*([0-9.eE+-]+)\s*s")),
+                  ("snap_s", re.compile(r"Mesh snapped in\s*=\s*([0-9.eE+-]+)\s*s")),
+                  ("layers_s", re.compile(r"Layers added in\s*=\s*([0-9.eE+-]+)\s*s")))
+
+
+def stage_timing(stages: list, snappy_log: str, *, ranks: int) -> dict:
+    """{step: wall seconds} of one native run: each stage as it ran (a name run twice adds up),
+    snappyHexMesh's castellate / snap / layer phases from its own log, and the rank count."""
+    timing: dict = {"ranks": int(ranks)}
+    for s in stages:
+        name = getattr(s, "name", "") or "stage"
+        words = str(getattr(s, "command", "")).split()
+        if name == "mpirun" and "-np" in words and words.index("-np") + 2 < len(words):
+            name = words[words.index("-np") + 2]       # `mpirun ... -np N <tool>`: the tool
+        key = f"{name}_s"
+        timing[key] = round(float(timing.get(key, 0.0)) + float(getattr(s, "dt_s", 0.0) or 0.0), 2)
+    for key, pat in _SNAPPY_PHASES:
+        hits = pat.findall(snappy_log or "")
+        if hits:
+            try:
+                timing[key] = round(float(hits[-1]), 1)
+            except ValueError:
+                pass
+    return timing
+
+
+def _measure(ws: Path, bashrc: str, out: dict, timing: dict) -> None:
+    """checkMesh (+ the passage measure on internal flow) on the finished mesh, into
+    `out["quality"]` and mesh_quality.json beside it; seconds into `timing`. Never raises."""
+    # QUALITY IS MEASURED HERE, beside the mesh, and travels home in the result. The worker
+    # carries no OpenFOAM, so a checkMesh there came back empty on every Cloud Run mesh (`cells=None`
+    # in every log line, the reviewer refusing for missing `max_non_ortho` evidence after a mesh
+    # had been built and paid for). The mesh is here, the binary is here.
+    try:
+        from meshpipeline.engines.snappy.foam_exec import check_mesh
+        t1 = _time.monotonic()
+        q = check_mesh(ws, bashrc=bashrc)
+        timing["checkMesh_s"] = round(_time.monotonic() - t1, 1)
+        if not q:
+            return
+        # cells across the local passage at every wall point (internal flow):
+        # flow_gates.resolution_floor holds 12 at the narrowest wall
+        try:
+            from meshpipeline.engines.passage import passage_of_polymesh
+            from meshpipeline.engines.workspace_facts import read_flow_topology
+            # the fact the driver ships in the payload (drivers.REMOTE_WORKSPACE_FACTS); read
+            # through the one reader, so a workspace without it is "not internal" rather than a
+            # traceback after every mesh
+            if read_flow_topology(ws) == "internal":
+                t2 = _time.monotonic()
+                q.update(passage_of_polymesh(ws))
+                timing["passage_measure_s"] = round(_time.monotonic() - t2, 1)
+        except Exception:  # noqa: BLE001 - evidence, not a verdict
+            logger.warning("passage measure after meshing failed; omitted", exc_info=True)
+        out["quality"] = q
+        # Beside the mesh, not just in the return value: finalize, solvability and the judge
+        # read it on the far side, and a file travels home with the mesh it describes.
+        (ws / "mesh_quality.json").write_text(json.dumps(q, default=str))
+    except Exception:  # noqa: BLE001 - a measurement must never lose a finished mesh
+        logger.warning("checkMesh after meshing failed; quality omitted", exc_info=True)
+
+
+def _export_volume_timed(ws: Path, bashrc: str) -> float:
+    """foamToVTK's volume export beside the mesh (the reviewer slices it; the worker has no
+    OpenFOAM to write it); its wall seconds. Never raises."""
+    t0 = _time.monotonic()
+    try:
+        from meshpipeline.engines.snappy.foam_exec import export_volume_vtk
+        if export_volume_vtk(ws, bashrc=bashrc):
+            logger.info("volume VTK exported beside the mesh for review")
+    except Exception:  # noqa: BLE001 - an export must never lose a finished mesh
+        logger.warning("foamToVTK after meshing failed; the reviewer will have no volume to "
+                       "slice", exc_info=True)
+    return round(_time.monotonic() - t0, 1)
 
 
 def run_snappy(workspace, *, context=None, bashrc: str = _DEFAULT_BASHRC,
@@ -119,7 +201,13 @@ def _container_mem_bytes() -> int:
     return 0
 
 
-def _rank_count(*, hard_max: int = 12, gib_per_rank: float = 3.0) -> int:
+#: The most MPI ranks one snappy run takes: the biggest mesh VM's cores (contracts/mesh_machine,
+#: n2-highmem-64). The Cloud Run job's quota (8) sets its own count far below it. It was 12, which
+#: left 52 of a 64-core VM's cores idle on the very meshes that were sent there for their size.
+RANKS_MAX = 64
+
+
+def _rank_count(*, hard_max: int = RANKS_MAX, gib_per_rank: float = 3.0) -> int:
     """How many MPI ranks this container can afford - bounded by MEMORY, not just CPU.
 
     Two bugs lived in the one-liner this replaces (`min(os.cpu_count() or 1, 12)`):
@@ -232,59 +320,29 @@ def _run_snappy_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
         if oversize:
             # STOPPED BY THE SIZE BRAKE: headed far past the budget (its count, stage and ratio)
             out["oversize"] = oversize[-1]
-        # QUALITY IS MEASURED HERE, beside the mesh, and travels home in the result.
-        #
-        # The caller runs check_mesh() itself, which shells out to `checkMesh` - an OpenFOAM
-        # binary. That works when the mesh was built in the same container. On the Cloud Run
-        # path it cannot: the local worker image carries no OpenFOAM at all, so every metric
-        # came back empty. It is why every log line reads `cells=None`, and why the reviewer
-        # refused each run for missing `max_non_ortho` evidence AFTER a mesh had been built,
-        # paid for, and passed both the manifest and solvability gates.
-        #
-        # Measuring on this side is not a workaround for that - it is where the measurement
-        # belongs. The mesh is here, the binary is here, and the numbers describe bytes that
-        # have not yet crossed a network.
+        # quality and the volume export are measured HERE, beside the mesh (see _measure)
+        timing = stage_timing(stages, snap_log, ranks=nproc)
         if (ws / "constant" / "polyMesh" / "owner").exists():
-            try:
-                from meshpipeline.engines.snappy.foam_exec import check_mesh
-                q = check_mesh(ws, bashrc=bashrc)
-                if q:
-                    # cells across the local passage at every wall point (internal flow):
-                    # flow_gates.resolution_floor holds 12 at the narrowest wall
-                    try:
-                        from meshpipeline.engines.passage import passage_of_polymesh
-                        from meshpipeline.engines.workspace_facts import read_flow_topology
-                        # the fact the driver ships in the payload (drivers.REMOTE_WORKSPACE_FACTS);
-                        # read through the one reader, so a workspace without it is "not internal"
-                        # rather than a traceback after every mesh
-                        if read_flow_topology(ws) == "internal":
-                            q.update(passage_of_polymesh(ws))
-                    except Exception:  # noqa: BLE001 - evidence, not a verdict
-                        logger.warning("passage measure after meshing failed; omitted",
-                                       exc_info=True)
-                    out["quality"] = q
-                    # Beside the mesh, not just in the return value. The measurement has three
-                    # more readers on the far side - finalize (which writes it into the manifest
-                    # the reviewer reads), solvability, and the judge - and threading a return
-                    # value to each is four chances to miss one. A file in the workspace travels
-                    # home with the mesh it describes and every reader finds it the same way.
-                    (ws / "mesh_quality.json").write_text(json.dumps(q, default=str))
-            except Exception:  # noqa: BLE001 - a measurement must never lose a finished mesh
-                logger.warning("checkMesh after meshing failed; quality omitted", exc_info=True)
-            # THE VOLUME EXPORT, for the same reason and by the same route. The reviewer slices
-            # the mesh to see inside it, and every slice comes from this .vtu. It is written by
-            # foamToVTK - another OpenFOAM binary that exists here and nowhere on the far side -
-            # so calling it there produced nothing, silently: bash exits nonzero, run_guarded
-            # raises nothing, the glob finds no file and returns None without a word. The manifest
-            # then declared five inspection regions the renderer had no volume to cut, and the
-            # reviewer refused a mesh that had passed every other gate.
-            try:
-                from meshpipeline.engines.snappy.foam_exec import export_volume_vtk
-                if export_volume_vtk(ws, bashrc=bashrc):
-                    logger.info("volume VTK exported beside the mesh for review")
-            except Exception:  # noqa: BLE001 - an export must never lose a finished mesh
-                logger.warning("foamToVTK after meshing failed; the reviewer will have no "
-                               "volume to slice", exc_info=True)
+            # THE VOLUME EXPORT RUNS BESIDE THE MEASUREMENT, not after it: foamToVTK and
+            # checkMesh are both serial readers of the same finished mesh and write to
+            # different places (VTK/ and constant/polyMesh/sets), so the slower one sets the
+            # wall instead of the two adding up - 34 s + 34 s on a 3.5 M-cell car at 8 ranks.
+            # The MEASURE stays on this thread: the passage measure's guard is a SIGALRM, which
+            # only arms on the main thread (engines/passage.measure_deadline).
+            from concurrent.futures import ThreadPoolExecutor
+            t_m = _time.monotonic()
+            with ThreadPoolExecutor(max_workers=1, thread_name_prefix="snappy-vtk") as pool:
+                vtk = pool.submit(_export_volume_timed, ws, bashrc)
+                _measure(ws, bashrc, out, timing)
+                timing["foamToVTK_s"] = vtk.result()
+            timing["measure_wall_s"] = round(_time.monotonic() - t_m, 1)
+        timing["total_s"] = round(_time.time() - attempt_started, 1)
+        out["timing"] = timing
+        try:
+            (ws / TIMING_FILE).write_text(json.dumps(timing))
+        except OSError:
+            pass
+        logger.info("snappy native steps (s): %s", timing)
         return out
 
     def _merge_class_patches():
@@ -361,4 +419,4 @@ def _run_snappy_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
     return _finish()
 
 
-__all__ = ["_foam_version", "_run_snappy_local", "_snappy_result", "run_snappy"]
+__all__ = ["TIMING_FILE", "_foam_version", "_run_snappy_local", "_snappy_result", "run_snappy", "stage_timing"]
