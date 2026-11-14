@@ -5942,3 +5942,84 @@ this in milliseconds instead of after 2 h 29 m is what it is for.
 
 Nothing here has been run end to end through the product. That is the next thing and it is the only
 thing that settles any of it.
+
+### 2026-11-14, the first layered run through the product, and the port reading I got backwards
+
+Deployed `d7ca4aa8` to `dev-rehaan` (Gate C 27/27, `terminal_cfmesh_conjugate.json` fresh in the
+image the run uses) and drove `ColdPlateAssembly_CLEAN.step` through the real intake twice. Both
+runs are on `n2-highmem-64` in `us-central1-a`, 8 ranks, forced cell 25.1578 um, 3 layers.
+
+| job | ports declared at intake | what the engine cut |
+|---|---|---|
+| e8256476 | inlet, outlet_1, outlet_2 | `inlet` + `outlet_2` out of `wall_outer`; `outlet_1` as a wall |
+| 6ddb58aa | none | `coolant_in` + `coolant_out` out of `wall_outer`, 11.8 and 8.0 mm; 1 mouth as a wall |
+
+What the plan carries, confirmed in `conjugate_plan.json` on both:
+
+| | |
+|---|---|
+| cell budget | 330,135,147 rather than 400,000,000, because 3 layers cost 1.212x |
+| machine | 272 GiB process + 527 GiB workspace, so n2-highmem-64 (512 GiB) |
+| layer stack | 15.1060 um into the 25.1578 um cell AT THE INTERFACE, 60.0% of it |
+| cells | 257,054,018 unlayered, 3.91 across the 98.2422 um passages, 3x stretch along y |
+| `under_planner_floor` | true, by 0.09 of a cell, and pinned anyway |
+| `expect_fluid_pieces` | 2 |
+| domain | the part's own skin, 276,372 mm3 of a 750,015 mm3 box (36.9%), 27,696 triangles |
+
+#### The entry above this one is wrong about outlet_2 and so was I
+
+The table in the previous entry records opening 3 (11.8 mm, at 65.92, 33.45, 75.41) as "reaches
+outside: no - an internal face that reaches no boundary", and I carried that into this session as a
+property of the FILE and told Rehaan three times that the part can never be solved. It is a property
+of the DOMAIN.
+
+That mouth sits at y = 33.446, which is the lid's top surface, with the detached outlet tube at
+y = 33.946. In a BOX domain the box fills the 0.5 mm gap between them with meshed air, so the face is
+interior, its patch comes back with zero faces and createPatch removes it. In a SHELL domain the gap
+is not meshed, the lid's top surface IS the boundary, and the 11.8 mm port is a hole in it. These
+runs are shell domains, and both engines independently cut that port as a mouth: the one with roles
+declared and the one with none, which measured the same pair unaided.
+
+So the plate's own coolant has two boundary mouths and `inlet -> microchannels -> lid port` is a
+connected circuit. `ports_on_one_passage` not firing was correct: it takes the first inlet and first
+outlet in `plan.port_patches` order, which came out `outlet_2, inlet, outlet_1`, and those two are
+both on piece 0. The detached tube is the third mouth and both runs cut it as a wall.
+
+The CAD defect is unchanged and still needs 0.5 mm of metal drilled through. What changes is the
+sentence we give the customer: the coolant leaves through a port into the dead gap under a tube it
+never joins, so a solver runs it and reports a leak. That is the file describing itself, not a mesh
+we cannot build.
+
+#### Two intake defects, and neither is in the engine
+
+Unaided, a customer cannot reach a conjugate mesh on this part.
+
+The naming step proposed `input_kind='solid-body'` on both sessions, with `flow='internal'` in the
+same proposal, for a file whose assembly names six solids. `geometry_fields` defines solid-body as
+"a solid body the fluid flows around", so the proposal contradicts itself, and the combination is
+terminal rather than merely unhelpful:
+
+| purpose | input_kind | able engines |
+|---|---|---|
+| conjugate_heat_transfer | solid-body | none. All three multi-region engines "impossible" |
+| conjugate_heat_transfer | solid-assembly | cfmesh_conjugate **supported**, snappy_multiregion incomplete |
+
+It is reachable. One plain message stating the case made the naming step re-run, correct itself to
+`solid-assembly`, and find all three mouths with roles after previously proposing zero and saying
+the mouths could not be identified.
+
+And the recommendation goes to the engine that cannot take the case: both sessions said "I'd mesh
+this with snappyHexMesh multi-region", which is `incomplete` here for want of `fluid_topology`,
+while `cfmesh_conjugate` is `supported`. Same cause `able_engines` already documents for snapgrid:
+the conjugate mesher's home-turf rows go silent without `coolant_inside`, which this part's naming
+leaves None, so the sort falls through to `ladder_rank`. It also arrives as prose with no
+`engine_choice` block, so a client that sends `engines[0]` has nothing to read and falls through.
+Any script driving intake has to pick the engine by NAME and refuse to guess.
+
+#### What the VMs confirmed that the last run could not
+
+The image on both boxes is `sha256:6637c3b3`, which is the digest tagged `d7ca4aa82b76`, read off
+the serial console. `hexeraMeshSelfDelete` is granted with both `compute.instances.delete` and
+`compute.instances.get`, and `maxRunDuration` is 43,140 s with `instanceTerminationAction DELETE`.
+That is the 2026-11-13 defect closed: that run's box held 64 cores and 512 GiB for 9.4 hours after
+it finished.
