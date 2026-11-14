@@ -117,10 +117,23 @@ class ConjugatePlan:
     #: NOT binding. Empty means nobody said, and the stamp falls back to describing the count.
     ranks_basis: str = ""
     #: HOW THE CELL SIZE WAS ARRIVED AT, in one phrase, because "chosen by the planner" and
-    #: "forced by a setting" produce identical plans and are not the same claim. The
-    #: reproducibility stamp and the brief both quote it, so a mesh built at a cell somebody
-    #: pinned cannot be read afterwards as a cell the product selected for the part.
+    #: "pinned by a setting" produce identical plans and are not the same claim. Quoted by the
+    #: reproducibility stamp (native.note_plan_settings), which is the one reader it has - the
+    #: delivered manifest publishes `background_cell_m` and says nothing about how it was chosen.
     sizing_basis: str = ""
+    #: THE THIN CELL AN OPERATOR PINNED, in metres, or 0.0 when the planner chose the resolution.
+    #:
+    #: IT TRAVELS IN THE PLAN BECAUSE THE DECISION IS THE HOST'S. The knob it comes from
+    #: (engines.determinism.CONJUGATE_FINE_CELL_M) is read on the host, and the container's
+    #: environment is assembled from declared pair lists rather than forwarded wholesale - so a
+    #: container asking the environment the question gets "nothing pinned" on exactly the runs
+    #: that were pinned. That is the inversion this field exists to prevent, and it is the same
+    #: seam rule the header of this module states for every other decision here.
+    fine_cell_pinned_m: float = 0.0
+    #: Whether that pinned cell sits UNDER the resolution floor the planner holds
+    #: (budget.FINE_ACROSS_FLOOR). Never true for a cell the planner chose, because the planner
+    #: cannot go there. Carried so the stamp can say it in a value rather than only in prose.
+    under_planner_floor: bool = False
 
 
 def background_for(narrowest_m: float, cells_across: int, levels: int) -> float:
@@ -320,7 +333,10 @@ def plan_for(*, narrowest_m: float, fluid_volume_m3: float, passages: int,
              solid_lo, solid_hi, fluid_lo, fluid_hi, cells_across: int, levels: int,
              patch_names: dict | None = None, lid_m: float = 0.0,
              inlet: str | None = None, outlet: str | None = None,
-             no_ports: bool = False) -> tuple[ConjugatePlan, tuple, tuple]:
+             no_ports: bool = False,
+             background_m: float | None = None,
+             fine_cell_pinned_m: float = 0.0,
+             under_planner_floor: bool = False) -> tuple[ConjugatePlan, tuple, tuple]:
     """Everything derived on the host, before anything runs: (plan, block lo, block hi).
 
     The same sequence devtools/semiconductor/semi.py has always used, lifted so the platform and
@@ -337,7 +353,22 @@ def plan_for(*, narrowest_m: float, fluid_volume_m3: float, passages: int,
 
     grow = {"zmax": float(lid_m)} if lid_m else None
     lo, hi = C.block_bounds(solid_lo, solid_hi, grow)
-    background = background_for(narrowest_m, cells_across, levels)
+    # THE BACKGROUND IS CARRIED WHEN THE CALLER HAS ONE, AND RE-DERIVED ONLY WHEN IT DOES NOT.
+    #
+    # Re-deriving it here from `cells_across` was a defect waiting for a non-integer. The
+    # two-scale planner already computes the background it priced the whole mesh against, and
+    # `background_for` happens to reproduce that EXACTLY while cells_across is a whole number -
+    # which it is on the ladder path, because the ladder iterates integers. A pinned thin cell
+    # makes the broad resolution an OUTCOME rather than a request, so it arrives as a float, and
+    # `int(cells_across)` then truncated it: measured 2026-11-14, a pin of 25.1598 um with 8.0000
+    # cells on the channel pitch reached the container as 26.4047 um and 7.6228 - and the run was
+    # still reported under the pinned cell's name.
+    #
+    # So the caller passes what it decided. Nothing is re-derived behind it.
+    background = (float(background_m) if background_m is not None
+                  else background_for(narrowest_m, cells_across, levels))
+    if background <= 0.0:
+        raise ValueError(f"the background cell must be positive, got {background}")
     open_ = C.open_faces(fluid_lo, fluid_hi, lo, hi)
     extent = tuple(fluid_hi[k] - fluid_lo[k] for k in range(3))
     ports = None if no_ports else C.plan_ports(open_, extent, inlet=inlet, outlet=outlet)
@@ -348,7 +379,13 @@ def plan_for(*, narrowest_m: float, fluid_volume_m3: float, passages: int,
         inlet=(ports.inlet if ports else ""), outlet=(ports.outlet if ports else ""),
         port_walls=(tuple(ports.walls) if ports else ()),
         port_reason=(ports.reason if ports else ""),
-        thickness_m=None, patch_names=_as_lists(patch_names), cells_across=int(cells_across),
+        thickness_m=None, patch_names=_as_lists(patch_names),
+        # ROUNDED, not truncated. On the ladder path this is already a whole number and nothing
+        # changes; on a pinned plan the broad resolution is a float and 20.99 cells across is
+        # better reported as 21 than as 20.
+        cells_across=round(cells_across),
+        fine_cell_pinned_m=float(fine_cell_pinned_m),
+        under_planner_floor=bool(under_planner_floor),
         block_lo=(float(lo[0]), float(lo[1]), float(lo[2])),
         block_hi=(float(hi[0]), float(hi[1]), float(hi[2])))
     return plan, lo, hi

@@ -761,6 +761,9 @@ def plan_two_scales(*, block_lo, block_hi, scales: dict, limit: int,
                         "stretch": stretch, "stretch_axis": prismatic_axis}
                 # the best plan is the one that resolves the THIN side furthest; ties go to the
                 # cheaper estimate
+                # SET ON BOTH PLANNERS so a reader never has to know which one it got.
+                # The ladder cannot reach under the floor, so it is always False here.
+                plan["under_planner_floor"] = False
                 if best is None or (plan["fine_across"], -plan["estimate"]) > (
                         best["fine_across"], -best["estimate"]):
                     best = plan

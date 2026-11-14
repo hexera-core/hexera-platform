@@ -432,6 +432,11 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     # it; the single-scale paths leave it unbound, and reading it afterwards to size the
     # decomposition was a NameError on every part that is not two-scale - which is most of them.
     two: dict | None = None
+    # BOUND ON BOTH PATHS for the same reason `two` is. These travel into the plan so the
+    # container and the stamp learn what the HOST decided, rather than asking their own
+    # environment a question whose answer is not there (see plan.ConjugatePlan.fine_cell_pinned_m).
+    pinned_cell_m: float = 0.0
+    under_planner_floor: bool = False
     if scales and rec.get("fine_surface") and area > 0.0:
         asked = B.CELLS_ACROSS_BY_FIDELITY.get((fidelity or "").strip().lower(),
                                                B.CELLS_ACROSS_BY_FIDELITY[B.DEFAULT_FIDELITY])
@@ -455,6 +460,8 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                 block_lo=bounds[0], block_hi=bounds[1], scales=scales, limit=limit,
                 fine_cell_m=_forced,
                 prismatic_axis=(None if prismatic is None else int(prismatic)), ranks=ranks)
+            pinned_cell_m = _forced
+            under_planner_floor = bool((two or {}).get("under_planner_floor"))
         else:
             two, two_said = B.plan_two_scales(block_lo=bounds[0], block_hi=bounds[1], scales=scales,
                                               limit=limit, asked_across=asked,
@@ -530,6 +537,15 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     # So the two are checked separately, and this one is checked LAST, because it is the one that
     # does not care what machine was chosen. Without it a raised cell limit turns a refusal into a
     # five-minute abort that reports as a mesher which stopped before writing anything.
+    # A PIN THAT COULD NOT APPLY SAYS SO. The pinned branch is reached only by a part with two
+    # measured scales and a thin surface; a single-scale part is sized by its own ladder and the
+    # knob is simply not a question that arises for it. Saying nothing was the worse option,
+    # because the knob is deployment-wide: a mixed batch would quietly mesh most of its parts off
+    # the ladder while an operator believed every one of them was pinned.
+    if det.forced_fine_cell() > 0.0 and not pinned_cell_m:
+        logger.info("conjugate: CONJUGATE_FINE_CELL_M is set to %.6g m but this part is not "
+                    "two-scale, so the pin does not apply and the resolution below was chosen by "
+                    "the planner - job_id=%s", det.forced_fine_cell(), job_id)
     octree_said = B.refuse_for_octree(estimate, ranks=ranks)
     if octree_said:
         logger.info("conjugate: refusing to start - %s - job_id=%s", octree_said, job_id)
@@ -582,7 +598,9 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
             passages=int(rec["passages"]), solid_lo=bounds[0], solid_hi=bounds[1],
             fluid_lo=[float(v) for v in rec["bbox_min_m"]],
             fluid_hi=[float(v) for v in rec["bbox_max_m"]],
-            cells_across=cells_across, levels=levels)
+            cells_across=cells_across, levels=levels,
+            background_m=(two or {}).get("background_m"),
+            fine_cell_pinned_m=pinned_cell_m, under_planner_floor=under_planner_floor)
     except ConjugateError as exc:
         # SAID LATER, NOT HERE. At this point nothing yet knows whether the ports will be CUT out
         # of a face - that is decided forty lines down, once the mouths have been read - so a line
@@ -597,7 +615,9 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
             passages=int(rec["passages"]), solid_lo=bounds[0], solid_hi=bounds[1],
             fluid_lo=[float(v) for v in rec["bbox_min_m"]],
             fluid_hi=[float(v) for v in rec["bbox_max_m"]],
-            cells_across=cells_across, levels=levels, no_ports=True)
+            cells_across=cells_across, levels=levels, no_ports=True,
+            background_m=(two or {}).get("background_m"),
+            fine_cell_pinned_m=pinned_cell_m, under_planner_floor=under_planner_floor)
     # WHERE IT RUNS (RUN-1, contracts/mesh_machine). Six engines ask for a bigger machine when a
     # mesh will not fit the Cloud Run job's 32 GiB; this one did not, so every conjugate mesh
     # landed on Cloud Run whatever it needed and a part that wanted more was simply refused for

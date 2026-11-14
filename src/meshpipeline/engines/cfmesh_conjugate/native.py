@@ -91,14 +91,20 @@ def note_plan_settings(plan: PL.ConjugatePlan) -> None:
     if fine:
         det.note_setting("conjugate_fine_surface_levels", fine,
                          "levels under the background for each refined surface, from the plan")
-    try:
-        pinned = det.forced_fine_cell()
-    except Exception:  # noqa: BLE001 - a stamp is a record, never a prerequisite
-        pinned = 0.0
+    # FROM THE PLAN, NEVER FROM THIS PROCESS'S ENVIRONMENT. The pin is the host's decision and
+    # the container's environment is assembled from declared pair lists rather than forwarded
+    # wholesale, so asking the environment here returns "nothing pinned" on precisely the runs
+    # that WERE pinned - the stamp inverted on every hosted run. Same seam rule as every other
+    # decision in the plan.
+    pinned = float(getattr(plan, "fine_cell_pinned_m", 0.0) or 0.0)
     det.note_setting("conjugate_fine_cell_pinned_m", pinned or None,
-                     "pinned by CONJUGATE_FINE_CELL_M, so the planner did NOT choose this "
-                     "resolution" if pinned else
+                     "pinned by CONJUGATE_FINE_CELL_M on the host, so the planner did NOT choose "
+                     "this resolution" if pinned else
                      "nothing pinned: the planner chose the resolution")
+    if pinned and bool(getattr(plan, "under_planner_floor", False)):
+        det.note_setting("conjugate_under_planner_floor", True,
+                         "the pinned cell resolves the thin passages BELOW the floor the planner "
+                         "holds; it was pinned there deliberately")
 
 
 def _run_conjugate_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,

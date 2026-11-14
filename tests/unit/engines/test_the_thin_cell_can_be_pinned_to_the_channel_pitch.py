@@ -67,17 +67,32 @@ def _pinned(cell_m, limit=RUN_LIMIT, ranks=8, axis=1):
 
 # ---------------------------------------------------------------- the gap, pinned
 
-def test_not_one_cell_the_ladder_reaches_divides_the_channel_pitch():
+def test_not_one_cell_the_ladder_reaches_puts_an_even_count_on_the_channel_pitch():
     """The defect itself. If this ever fails, the ladder has changed and the pitch argument below
-    needs re-deriving rather than re-asserting."""
-    offenders = []
+    needs re-deriving rather than re-asserting.
+
+    WHY EVEN, which the first version of this test screened for without saying so. On this part
+    channel ~= fin ~= pitch/2, so an EVEN number of cells per pitch is what divides evenly into
+    both and puts the channel on exactly k/2 cells with no rounding. An odd count lands the channel
+    on x.5 cells and is no better than an incommensurate one.
+
+    It also checks the weaker claim - that nothing reaches a whole number at all - and reports it
+    separately, because a reachable odd divisor would be a different and more interesting finding
+    than the even ones this test is named for.
+    """
+    even, whole = [], []
     for cell in _reachable():
         k = PITCH_M / cell
-        if 4.0 <= k <= 16.0 and abs(k - round(k)) < 1e-3 and round(k) % 2 == 0:
-            offenders.append((cell, k))
-    assert not offenders, (
-        "a reachable cell now divides the pitch evenly, so the planner can be commensurate "
-        f"without pinning: {offenders}")
+        if not (4.0 <= k <= 16.0) or abs(k - round(k)) >= 1e-3:
+            continue
+        whole.append((cell, k))
+        if round(k) % 2 == 0:
+            even.append((cell, k))
+    assert not even, (
+        "a reachable cell now puts an even count on the pitch, so the planner can be commensurate "
+        f"without pinning: {even}")
+    assert not whole, (
+        f"a reachable cell divides the pitch a whole number of times, though oddly: {whole}")
 
 
 def test_the_cell_the_planner_picks_cuts_the_pitch_in_nine_and_a_bit():
@@ -240,9 +255,82 @@ def test_a_malformed_pin_is_refused_and_never_silently_dropped(monkeypatch, bad)
         det.forced_fine_cell()
 
 
+# ------------------------------------------------- what the MESHER gets, not what the planner said
+
+def test_the_pinned_cell_is_what_the_plan_actually_delivers():
+    """THE TEST THAT WAS MISSING, and the change was broken underneath it until 2026-11-14.
+
+    The driver hands `two["broad_across"]` to plan_for. On the ladder path that is an integer and
+    `background_for` reproduced the planner's background exactly; on a pinned plan the broad
+    resolution is an OUTCOME and arrives as a float, and `int(cells_across)` truncated it. Asked
+    for 25.1598 um and 8.0000 cells on the pitch, the container was handed 26.4047 um and 7.6228 -
+    rung 7 of the very ladder the pin exists to leave - and the run was still reported under the
+    pinned cell's name. Every test passed, because none of them looked past the planner's dict.
+    """
+    for k, limit in ((8, RUN_LIMIT), (10, 900_000_000)):
+        cell = PITCH_M / k
+        two, said = _pinned(cell, limit=limit)
+        assert two is not None, said
+        plan, delivered = _delivered(two, pinned=cell)
+        assert delivered == pytest.approx(cell, rel=1e-12), (
+            f"pitch/{k}: pinned {cell * 1e6:.4f} um, the plan delivers "
+            f"{delivered * 1e6:.4f} um")
+        assert PITCH_M / delivered == pytest.approx(float(k), abs=1e-9), (
+            f"pitch/{k}: the delivered lattice is {PITCH_M / delivered:.4f} cells per pitch")
+        assert plan.background_cell_m == pytest.approx(two["background_m"], rel=1e-12)
+
+
+def test_the_ladder_path_carries_its_background_too_rather_than_relying_on_a_coincidence():
+    """It was only ever right by the accident that background_for reproduces the planner's own
+    arithmetic for a whole number of cells. Now it is carried, so the accident is not load-bearing
+    and the two paths cannot drift."""
+    two, said = B.plan_two_scales(block_lo=LO, block_hi=HI, scales=CUSTOMER, limit=RUN_LIMIT,
+                                  asked_across=B.CELLS_ACROSS_BY_FIDELITY["standard"],
+                                  prismatic_axis=1, ranks=8)
+    assert two is not None, said
+    plan, delivered = _delivered(two)
+    assert plan.background_cell_m == pytest.approx(two["background_m"], rel=1e-12)
+    assert delivered == pytest.approx(BUILT_CELL_M, rel=1e-4)
+    assert plan.fine_cell_pinned_m == 0.0
+    assert plan.under_planner_floor is False
+
+
+def test_a_pinned_plan_survives_the_trip_to_the_container(tmp_path):
+    cell = PITCH_M / 8.0
+    two, said = _pinned(cell, limit=RUN_LIMIT)
+    assert two is not None, said
+    plan, _ = _delivered(two, pinned=cell)
+    PL.write_plan(tmp_path, plan)
+    back = PL.read_plan(tmp_path)
+    assert back.background_cell_m == pytest.approx(cell * 2 ** two["fine_levels"], rel=1e-12)
+    assert back.fine_cell_pinned_m == pytest.approx(cell, rel=1e-12)
+    assert back.under_planner_floor is True
+
+
+def test_the_broad_resolution_is_reported_rounded_not_truncated():
+    """20.99 cells across is better reported as 21 than as 20, and `cells_across` is published as
+    `cells_across_asked`. Nothing changes on the ladder path, where it is already whole."""
+    two, said = _pinned(PITCH_M / 8.0, limit=RUN_LIMIT)
+    assert two is not None, said
+    plan, _ = _delivered(two, pinned=PITCH_M / 8.0)
+    assert plan.cells_across == round(two["broad_across"])
+    assert plan.cells_across != int(two["broad_across"]), (
+        "this fixture is meant to have a fractional broad resolution, or it tests nothing")
+
+
+def test_every_planner_sets_the_floor_flag_so_no_reader_has_to_know_which_one_it_got():
+    """`plan_two_scales` never set the key, so the first reader to use it would KeyError on the
+    default path - which is every single-scale and every unpinned part."""
+    ladder, _ = B.plan_two_scales(block_lo=LO, block_hi=HI, scales=CUSTOMER, limit=RUN_LIMIT,
+                                  asked_across=5, prismatic_axis=1, ranks=8)
+    pin, _ = _pinned(PITCH_M / 8.0, limit=RUN_LIMIT)
+    assert ladder["under_planner_floor"] is False
+    assert pin["under_planner_floor"] is True
+
+
 # ---------------------------------------------------------------- what the stamp says about it
 
-def _plan_at(cell_m, *, levels=4, sizing="", ranks=8):
+def _plan_at(cell_m, *, levels=4, sizing="", ranks=8, pinned=0.0, under_floor=False):
     """A plan carrying a resolution, as the driver would write it."""
     return PL.ConjugatePlan(
         background_cell_m=cell_m * 2 ** levels, levels=1,
@@ -250,7 +338,25 @@ def _plan_at(cell_m, *, levels=4, sizing="", ranks=8):
         narrowest_m=CUSTOMER["broad"]["width_m"],
         fine_surfaces=({"name": "microchannels", "file": PL.FLUID_FINE_STL,
                         "levels": levels, "thickness_m": 4.0 * cell_m},),
-        ranks=ranks, ranks_basis="the mesh needs it", sizing_basis=sizing)
+        ranks=ranks, ranks_basis="the mesh needs it", sizing_basis=sizing,
+        fine_cell_pinned_m=pinned, under_planner_floor=under_floor)
+
+
+def _delivered(two, *, pinned=0.0):
+    """The thin cell the PLAN delivers for a planner decision - what the mesher is handed.
+
+    This is the step that was missing, and the whole change was broken underneath it: the driver
+    hands `two["broad_across"]` to plan_for, and a test that asserts the planner's own dict never
+    sees what happens next.
+    """
+    plan, _lo, _hi = PL.plan_for(
+        narrowest_m=CUSTOMER["broad"]["width_m"], fluid_volume_m3=5.3661786893e-05,
+        passages=2, solid_lo=LO, solid_hi=HI,
+        fluid_lo=[-0.007164, 0.021522, 0.015886], fluid_hi=[0.053007, 0.033534, 0.067913],
+        cells_across=two["broad_across"], levels=two["broad_levels"],
+        background_m=two.get("background_m"), fine_cell_pinned_m=pinned,
+        under_planner_floor=bool(two.get("under_planner_floor")), no_ports=True)
+    return plan, plan.background_cell_m / 2 ** two["fine_levels"]
 
 
 def test_the_stamp_says_what_resolution_the_mesh_was_built_at():
@@ -267,20 +373,20 @@ def test_the_stamp_says_what_resolution_the_mesh_was_built_at():
     assert rec.settings["conjugate_ranks"]["value"] == 8
 
 
-def test_the_stamp_distinguishes_a_cell_somebody_pinned_from_one_the_planner_chose(monkeypatch):
+def test_the_stamp_distinguishes_a_cell_somebody_pinned_from_one_the_planner_chose():
     """The same number from two different decisions is not the same claim."""
     cell = PITCH_M / 8.0
     with det.recording() as chosen:
-        monkeypatch.setattr(det,"CONJUGATE_FINE_CELL_M", "")
         N.note_plan_settings(_plan_at(cell))
     with det.recording() as pinned:
-        monkeypatch.setattr(det,"CONJUGATE_FINE_CELL_M", repr(cell))
-        N.note_plan_settings(_plan_at(cell))
+        N.note_plan_settings(_plan_at(cell, pinned=cell, under_floor=True))
 
     assert chosen.settings["conjugate_fine_cell_pinned_m"]["value"] is None
     assert "nothing pinned" in chosen.settings["conjugate_fine_cell_pinned_m"]["basis"]
+    assert "conjugate_under_planner_floor" not in chosen.settings
     assert pinned.settings["conjugate_fine_cell_pinned_m"]["value"] == pytest.approx(cell)
     assert "did NOT choose" in pinned.settings["conjugate_fine_cell_pinned_m"]["basis"]
+    assert pinned.settings["conjugate_under_planner_floor"]["value"] is True
     # `comparable` returns the keys that differ, and it compares only each setting's VALUE, never
     # its basis. So the pin had to be its own value rather than a sentence inside another row's
     # basis, or two runs at the same cell for different reasons would read as the same run.
@@ -288,10 +394,30 @@ def test_the_stamp_distinguishes_a_cell_somebody_pinned_from_one_the_planner_cho
                                         det.stamp("cfmesh_conjugate", record=pinned))
 
 
-def test_a_malformed_pin_does_not_take_the_stamp_down_with_it(monkeypatch):
-    """A stamp is a record, never a prerequisite. The container already refused this value at
-    import; a stamp written later must not raise on top of it."""
-    monkeypatch.setattr(det,"CONJUGATE_FINE_CELL_M", "banana")
+def test_the_stamp_never_asks_its_own_environment_what_the_host_decided(monkeypatch):
+    """IT INVERTED ON EVERY HOSTED RUN. The stamp read `forced_fine_cell()` - this process's
+    environment - for a decision taken on the host. The container's environment is assembled from
+    declared pair lists rather than forwarded wholesale, so on Cloud Run the knob is simply absent
+    and the stamp said "nothing pinned" on precisely the runs that were pinned.
+
+    Both directions are checked here: a pinned plan in a container with no knob set must still
+    stamp as pinned, and an unpinned plan in a container that somehow HAS the knob set must not."""
+    cell = PITCH_M / 8.0
+    monkeypatch.setattr(det, "CONJUGATE_FINE_CELL_M", "")
+    with det.recording() as hosted:
+        N.note_plan_settings(_plan_at(cell, pinned=cell))
+    assert hosted.settings["conjugate_fine_cell_pinned_m"]["value"] == pytest.approx(cell)
+
+    monkeypatch.setattr(det, "CONJUGATE_FINE_CELL_M", repr(cell))
+    with det.recording() as leaked:
+        N.note_plan_settings(_plan_at(cell))
+    assert leaked.settings["conjugate_fine_cell_pinned_m"]["value"] is None
+
+
+def test_a_malformed_knob_cannot_reach_the_stamp_at_all(monkeypatch):
+    """A stamp is a record, never a prerequisite - and now it reads the plan, so a bad value in the
+    environment cannot raise inside it however it got there."""
+    monkeypatch.setattr(det, "CONJUGATE_FINE_CELL_M", "banana")
     with det.recording() as rec:
         N.note_plan_settings(_plan_at(PITCH_M / 8.0))
     assert rec.settings["conjugate_fine_cell_pinned_m"]["value"] is None
