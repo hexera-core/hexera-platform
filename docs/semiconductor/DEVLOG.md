@@ -5513,3 +5513,182 @@ pinned to stay ENGINE.
 
 Verified end to end on job f119170e: the page carries the measurement, claims no limit of ours,
 offers no coarser mesh and offers no other engine.
+
+### No stickers were drawn at all
+
+The entry above says the naming step "is not matching the stickers it was given to the mouths it
+can see", and that is wrong in the way that matters: it was given none. `geometry_check.stickered`
+returns an empty list for a part read as `flow: external`, so `render_snapshots` draws no sticker
+on any picture and no per-opening close-up. The session's stored pictures are the whole proof:
+
+```
+overview.png  iso.png  top.png  front.png  side.png  end.png  upright.png
+```
+
+Six global views, and not one `opening-N.png`. The model's note was a literal account of what was
+in front of it.
+
+So the question is why a liquid cold plate was read as a body with the fluid going around it, and
+that part of the chain is worth following carefully, because every fact in it was right.
+
+The split ran, finished in 158.8 s, and cut the coolant out of the six solids:
+
+| | |
+|---|---|
+| `fluid_volume.found` | `true` |
+| passages | 2 (52,144.56 mm3 and 1,517.23 mm3) |
+| caps | 58, of which 3 proposed as openings |
+| `openings_from` | `fluid_volume` |
+| `flow` | **`external`** |
+| `input_kind` | **`solid-body`** |
+
+`cad/fluid_volume_check.fold` has the rule that stops this, and it was written for this exact
+part on 2026-10-29:
+
+> `single_solid` is the cold plate: a solid body, with coolant found inside it. That one is a
+> conjugate case whatever else is true, and it is the one that was being read as a car.
+
+It sits on the ONE-SOLID branch, which returns before the assembly path begins. A file of six
+solids brazed into one plate never reaches it. On the assembly path the flow was set only where it
+was already internal, or where the scout had read a surface; a part the scout called a solid body
+in a flow kept that reading however much coolant came out of it. One `elif` on `body_kind ==
+"single_solid"`, guarded exactly as the one-solid rule guards itself, and the two branches give the
+same part the same answer.
+
+Which way to be wrong is the whole argument. An internal reading the user disagrees with costs one
+click on the stage, where `_kinds_on_offer` still offers the body reading and the naming model is
+told in its own prompt to answer external for a part that plainly is one. An external reading costs
+every sticker, every close-up, and the role proposal, with nothing on the card to notice.
+
+`tests/unit/cad/test_fluid_volume.py` pinned the old answer in a test written on 2026-10-20 with no
+reasoning beside it, nine days before the rule that contradicts it. It is rewritten rather than
+deleted, with why.
+
+One thing the new reading would have broken on the way past. `_facts_text` had a branch on
+`input_kind == "solid-assembly"` that tells the naming model "The file itself declares this: an
+assembly of solid parts and the air around them, with its openings stated in the file. The kind,
+the flow and the stickers are settled by the file." That is exactly right for an ECXML thermal
+model, which declares all of it. A cold plate now carries the same kind because a SPLIT found
+coolant inside it: the file declares nothing, there is no air around anything, and the sentence
+tells the model not to look. (It was already firing on one-solid plates, where that branch of
+`fluid_volume_check` has set the kind with `source_regions` empty since 2026-10-29.) It is guarded
+on the file actually declaring its regions now, and a part whose stickers came from the split is
+told the true and stronger thing instead: they are not read off the part's outside at all, so
+there IS a passage through it however solid it looks.
+
+### The inlet was on a mouth the scout had measured as sealed
+
+Third thing from the same card, and it is independent of the two above: it would have been wrong
+even with every sticker drawn.
+
+`cad/scout._name_openings` is the first guess at roles, and with more than two openings the rule
+was "the widest is the feed". On this plate the three mouths are an 11.8 mm junction sealed inside
+the assembly and the two real 8 mm hose mouths, so the widest is the one the coolant cannot be fed
+through, and both real mouths were proposed as outlets.
+
+The scout already knew. `clear_ahead` is false for that junction, its confidence is set to 0.5 for
+exactly that reason, and `fluid_volume_check` prints the sentence on the same card:
+
+> opening 1 opens into another part whose inside reaches the outside some other way (a gap in it?):
+> check it on the picture
+
+So a fact measured, stored, scored and printed was not consulted by the one rule that needed it.
+A mouth that does not reach the outside is not the feed. Only the CHOICE of feed moves: where every
+mouth is blind there is nothing to prefer and the order is what it always was, and where every
+mouth reaches the outside the widest is still the feed.
+
+The two-opening branch gets the same rule for the same reason: the lower one along the axis that
+separates them is the inlet unless it is the blind one.
+
+**And the first version of that was half a rule.** Run end to end on the plate, session aad03e39:
+the stickers were drawn (`opening-1.png`, `opening-2.png`, `opening-3.png` are in the store, where
+the previous session had six global views and nothing else), the naming model stopped saying it
+could not see them -
+
+> Stickers 1, 2, and 3 are the visible coolant-port mouths; no additional unstickered flow opening
+> is apparent.
+
+\- and the inlet moved onto a real 8 mm hose mouth. But the junction then became the OUTLET: an
+outlet in the middle of the metal. Worse, the inlet and that junction are in the SAME piece of
+coolant, so `ports_on_one_passage` - which had correctly refused this part for having its two
+ports on pieces 0.5 mm apart - stopped firing. Protecting the feed alone made the refusal go away
+without making the part solvable.
+
+A mouth that does not reach the outside is not a port in either direction. The reaching mouths are
+ordered first and the naming rule is unchanged on top of that, so inlet and the first outlet both
+land on mouths that reach air, the order within each group is still widest-first, and a part where
+every mouth reaches the outside (or none does) is untouched.
+
+### Two VMs on one case, and the guard that already existed
+
+The other thing recorded and not fixed yesterday was `NOOP_LIMIT = 2`: attempts 2 and 3 of the
+plate authored the same spec as attempt 1 and were 80 minutes and two `n2-highmem-32` hours that
+could not have come out differently.
+
+`agents/builder/rerun_guard.py` already does this job properly, down to the rule that separates a
+case from an outage ("Only a JUDGED run counts: one that came back with a mesh, a mesher failure or
+a timeout"). It was reached from one place: the builder's `run_mesh` TOOL, which only the model-led
+loop calls. An engine with a deterministic driver - the conjugate mesher, the FEA driver, snapgrid
+- goes straight to `contracts/mesh_execution.run_mesh` and was never guarded at all.
+
+The seam was already there too. `set_launch_check` exists so "a check here cannot be skipped by one
+engine forgetting it", and the case contract uses it. What was missing was the other half: a check
+that refuses a case an earlier attempt already ran has to be told what those runs came to.
+`set_run_recorder` is that half, and the composition root binds both.
+
+A refused launch comes back as `rc = RC_IDENTICAL_RERUN (-6)`, `timed_out: False`, shaped like any
+native result, with the earlier attempt and its outcome in the guidance. Nothing is announced and
+nothing is spent.
+
+What it cannot refuse, by rules already written in that module: a run inside the SAME attempt - an
+engine's own passes, and the VM re-run of a Cloud Run pass that met the wall still working - a case
+no earlier attempt ran to a verdict, and anything our infrastructure dropped.
+
+### Verified as a user, on the customer's own file
+
+Session 0c4ea4fd, 2026-11-14, ColdPlateAssembly_CLEAN.step uploaded and the job described in the
+chat exactly as a customer would. Nothing else touched.
+
+| | the reading before | the reading now |
+|---|---|---|
+| `flow` | external | **internal** |
+| `input_kind` | solid-body | **solid-assembly** |
+| pictures | 6 global views, no sticker | + `opening-1/2/3.png`, stickers on every mouth |
+| naming model | "neither has a numbered sticker, so they cannot be assigned inlet/outlet names here", `openings: []` | "coolant enters at 1 and leaves through the two outlet mouths, 2 and 3. All visible passage mouths are stickered." |
+| confidence | 0.96 | 0.99 |
+
+The card:
+
+| # | across | at (mm) | role | what it is |
+|---|---|---|---|---|
+| 1 | 8.0 mm | 99.88, 54.68, 43.31 | **inlet** | the mouth on the solid Corintis called `Inlet` |
+| 2 | 8.0 mm | 89.34, 54.68, 77.39 | **outlet** | the mouth on the solid they called `Outlet` |
+| 3 | 11.8 mm | 65.92, 33.45, 75.41 | outlet_2 | the junction sealed inside the assembly, ordered last |
+
+Both roles are on the two real hose mouths and they match the file's own part names, which no step
+is allowed to read as an instruction and which the pictures agreed with anyway.
+
+AND THIS IS THE CARD YESTERDAY'S REFUSAL WAS COMPUTED FROM - after I corrected it by hand on the
+stage. Job f119170e refused the part with "inlet opens into a piece of 52,140.3 mm3 and outlet into
+one of 1,496.8 mm3", and the two patches it was given were 8.0 mm at (99.88, 54.68, 43.31) and
+8.0 mm at (89.34, 54.68, 77.39) - openings 1 and 2 above. Today's split puts those two in
+different spaces of its own accord: "space 1: openings 1, 3; space 2: openings 2", 52,144.56 mm3
+and 1,517.23 mm3. So the roles the product now proposes unaided are the ones a user had to supply
+for it to tell the truth about this file.
+
+### Still not fixed: the planner does not pick a commensurate lattice
+
+The plate's delivered mesh fails six of its own checks. The recipe that passes is on record:
+a *coarser* lattice at 25.1578 um gives the identical 100.631 um channel at 4 cells instead of 5,
+for 270M cells and 65.4 min end to end with layers.
+
+`plan.background_for` already makes the fine cell divide the channel WIDTH exactly
+(`narrowest_m / cells_across`). What it does not do is make it divide the PITCH, and the pitch is
+what makes every wall in an array snap the same way.
+
+Not attempted here, and `engines/staircase_error.py` is why: seven cells across measured fourteen
+times worse than six on one part, and on a second the error grew steadily under refinement. "This
+is a property of a part and a resolution together rather than of either alone." A sizing change
+argued from a table and landed without a measured run on this part would be exactly the kind of
+change that module exists to warn against. It needs one VM run of the plate at a pitch-commensurate
+cell size, against the current plan, before it is a product rule.
