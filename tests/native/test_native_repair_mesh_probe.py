@@ -4,22 +4,28 @@ from __future__ import annotations
 
 import os
 import time
+from pathlib import Path
 
 import pytest
 
 pytest.importorskip("gmsh", reason="gmsh is a native-tier dependency")
 pytest.importorskip("OCP.BRepTools", reason="the CAD kernel is a native-tier dependency")
 
-from OCP.BRep import BRep_Builder  # noqa: E402
 from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox  # noqa: E402
 from OCP.BRepTools import BRepTools  # noqa: E402
 from OCP.gp import gp_Pnt  # noqa: E402
 from OCP.TopAbs import TopAbs_FACE  # noqa: E402
 from OCP.TopExp import TopExp_Explorer  # noqa: E402
-from OCP.TopoDS import TopoDS_Compound  # noqa: E402
 
 from meshpipeline.cad.repair import mesh_probe  # noqa: E402
-from meshpipeline.cad.repair.mesh_probe import EDGE_THROUGH_FACE, TIMEOUT, probe_file  # noqa: E402
+from meshpipeline.cad.repair.mesh_probe import (  # noqa: E402
+    EDGE_THROUGH_FACE,
+    OPEN_LOOP,
+    OVERLAPPING_FACETS,
+    PERIODIC_SURFACE,
+    TIMEOUT,
+    probe_file,
+)
 
 
 def _box(x=0.0, y=0.0, z=0.0, size=10.0):
@@ -31,15 +37,6 @@ def _write(shape, path):
     return path
 
 
-def _overlap(tmp_path):
-    compound = TopoDS_Compound()
-    builder = BRep_Builder()
-    builder.MakeCompound(compound)
-    builder.Add(compound, _box())
-    builder.Add(compound, _box(5.0, 5.0, 5.0))
-    return _write(compound, tmp_path / "overlap.brep")
-
-
 def test_box_meshes(tmp_path):
     result = probe_file(_write(_box(), tmp_path / "box.brep"), diagonal_mm=17.3)
     assert result.meshed is True
@@ -47,13 +44,37 @@ def test_box_meshes(tmp_path):
     assert result.failure is None
 
 
-def test_overlapping_solids_fail_located(tmp_path):
-    result = probe_file(_overlap(tmp_path), diagonal_mm=26.0)
-    if result.meshed:
-        pytest.skip("this gmsh build meshes interpenetrating boxes; it raises no PLC error here")
+_CORPUS = Path(os.environ.get("HEXERA_MESH_FAIL_CORPUS",
+                              "~/archductor/mesh-fail-corpus")).expanduser()
+
+
+def _corpus(name):
+    path = _CORPUS / name
+    if not path.is_file():
+        pytest.skip(f"mesh-failure corpus file {path} is absent (set HEXERA_MESH_FAIL_CORPUS)")
+    return path
+
+
+@pytest.mark.parametrize("name, diagonal, kind", [
+    ("abc/00500400_bce216c87d2d17025db6ab36_step_000.step", 132.3, OVERLAPPING_FACETS),
+    ("occt/bug32596_abc_0_13.step", 59.5, PERIODIC_SURFACE),
+    ("occt/trj10_ch1-id-chs.stp", 463.5, OPEN_LOOP),
+    ("abc/00506550_b5806bb84542de8e2656bc88_step_114.step", 870.6, EDGE_THROUGH_FACE),
+])
+def test_corpus_failures_are_classified_and_located(name, diagonal, kind):
+    result = probe_file(_corpus(name), diagonal_mm=diagonal)
     assert result.meshed is False
     assert result.failure is not None
-    assert result.failure.kind == EDGE_THROUGH_FACE
+    assert result.failure.kind == kind
+    assert result.failure.surfaces
+    assert result.tag_boxes
+
+
+def test_given_surfaces_skip_the_volume(tmp_path):
+    result = probe_file(_write(_box(), tmp_path / "box.brep"), diagonal_mm=17.3, surfaces=(1,))
+    assert result.failure is None
+    assert result.volume_elements == 0
+    assert len(result.tag_boxes) == 6
 
 
 def test_unreadable_part_is_a_failure_not_an_exception(tmp_path):
@@ -89,9 +110,10 @@ def test_probe_survives_child_crash(monkeypatch, tmp_path):
     assert result.failure is not None and result.failure.kind == TIMEOUT
 
 
-def test_budget_is_honoured(tmp_path):
-    path = _write(_box(), tmp_path / "box.brep")
+def test_budget_is_honoured():
+    path = _corpus("occt/bug32239.STEP")   # takes ~12 s to fail unbounded
     start = time.monotonic()
-    result = probe_file(path, diagonal_mm=26.0, budget_s=0.01)
-    assert time.monotonic() - start < 2.0
+    result = probe_file(path, diagonal_mm=153.3, budget_s=1.0)
+    assert time.monotonic() - start < 3.0   # budget + 2 s
+    assert result.meshed is False
     assert result.failure is not None and result.failure.kind == TIMEOUT

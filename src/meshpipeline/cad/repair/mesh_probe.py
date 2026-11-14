@@ -108,7 +108,9 @@ def _probe_child(path: str, diagonal_mm: float, surfaces: tuple[int, ...] | None
             gmsh.model.occ.synchronize()
             gmsh.option.setNumber("Mesh.MeshSizeMax", diagonal_mm / _SIZE_DIVISOR)
             for _dim, tag in gmsh.model.getEntities(2):
-                boxes[int(tag)] = tuple(float(v) for v in gmsh.model.getBoundingBox(2, tag))  # type: ignore[assignment]
+                x0, y0, z0, x1, y1, z1 = gmsh.model.getBoundingBox(2, tag)
+                boxes[int(tag)] = (float(x0), float(y0), float(z0),
+                                   float(x1), float(y1), float(z1))
             if surfaces is not None and not surfaces:
                 return 0, None, boxes
             if surfaces is not None:

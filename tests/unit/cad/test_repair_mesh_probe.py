@@ -41,3 +41,10 @@ def test_open_loop_takes_surface_from_log():
 
 def test_open_loop_without_log_has_no_surface():
     assert classify("The 1D mesh seems not to be forming a closed loop", []).surfaces == ()
+
+
+def test_plc_error_takes_surface_from_log_when_it_names_none():
+    log = ["Meshing surface 3 (Plane)", "Meshing surface 7 (Plane, Frontal-Delaunay)"]
+    failure = classify("PLC Error:  A segment and a facet intersect at point (1,2,3)", log)
+    assert failure.kind == EDGE_THROUGH_FACE
+    assert failure.surfaces == (7,)
