@@ -117,3 +117,139 @@ def test_budget_is_honoured():
     assert time.monotonic() - start < 3.0   # budget + 2 s
     assert result.meshed is False
     assert result.failure is not None and result.failure.kind == TIMEOUT
+
+
+# --- Mesh failures become located defects -------------------------------------------------------
+
+def _compound(*shapes):
+    from OCP.BRep import BRep_Builder
+    from OCP.TopoDS import TopoDS_Compound
+
+    builder = BRep_Builder()
+    compound = TopoDS_Compound()
+    builder.MakeCompound(compound)
+    for shape in shapes:
+        builder.Add(compound, shape)
+    return compound
+
+
+def _faces(shape):
+    from meshpipeline.cad.repair.localize import _indexed
+
+    return _indexed(shape, TopAbs_FACE)
+
+
+def test_overlap_fixture_defect_names_a_real_face():
+    from meshpipeline.cad.repair.brep import _read_shape
+    from meshpipeline.cad.repair.contracts import DefectCode, DefectSeverity
+    from meshpipeline.cad.repair.localize import (
+        EntityDefect,
+        _centroid_and_box,
+        _diagonal,
+        _stamped,
+    )
+
+    shape = _read_shape(_corpus("abc/00500400_bce216c87d2d17025db6ab36_step_000.step"))
+    diagonal = _diagonal(shape)
+    found = mesh_probe.mesh_defects(shape, diagonal_mm=diagonal, budget_s=120.0)
+    assert [d.code for d in found] == [DefectCode.mesh_overlapping_facets]
+    defect = found[0]
+    faces = _faces(shape)
+    assert defect.severity is DefectSeverity.error
+    assert defect.entity_type == "face"
+    assert 1 <= defect.entity_index <= faces.Extent()
+    assert "overlapping facets" in defect.message
+    face = faces.FindKey(defect.entity_index)
+    assert defect.location == _centroid_and_box(face)
+    # The SAME name localize gives that face, so a package can claim it cleared.
+    (reference,) = _stamped((EntityDefect(
+        code=DefectCode.self_intersection, severity=DefectSeverity.error, entity_type="face",
+        entity_index=defect.entity_index, message="", location=_centroid_and_box(face)),),
+        diagonal_mm=diagonal)
+    assert defect.fingerprint
+    assert defect.fingerprint == reference.fingerprint
+
+
+def test_mapping_agrees_with_occ_face_count_on_box(tmp_path):
+    from meshpipeline.cad.repair.localize import _bounds_of
+
+    shape = _box(1.0, 2.0, 3.0, size=7.0)
+    faces = _faces(shape)
+    face_boxes = {}
+    for i in range(1, faces.Extent() + 1):
+        lo, hi = _bounds_of(faces.FindKey(i))
+        face_boxes[i] = (*lo, *hi)
+    probed = probe_file(_write(shape, tmp_path / "box.brep"), diagonal_mm=12.1, surfaces=())
+    mapping = mesh_probe.faces_for_tags(face_boxes, probed.tag_boxes, tol=12.1 * 1e-6)
+    assert len(mapping) == faces.Extent() == 6
+    assert sorted(mapping.values()) == [1, 2, 3, 4, 5, 6]
+
+
+def test_within_region_probes_only_region_faces(monkeypatch):
+    from meshpipeline.cad.repair.localize import _diagonal
+    from meshpipeline.cad.repair.regions import Region
+
+    shape = _compound(_box(), _box(x=100.0))
+    diagonal = _diagonal(shape)
+    asked = []
+    real = mesh_probe.probe_file
+
+    def spy(path, **kwargs):
+        result = real(path, **kwargs)
+        asked.append((kwargs.get("surfaces"), result.tag_boxes))
+        return result
+
+    monkeypatch.setattr(mesh_probe, "probe_file", spy)
+    within = Region(index=0, fingerprints=frozenset(), bbox_min=(-1.0, -1.0, -1.0),
+                    bbox_max=(11.0, 11.0, 11.0))
+    found = mesh_probe.mesh_defects(shape, diagonal_mm=diagonal, budget_s=60.0, within=within)
+    assert found == ()
+    assert len(asked) == 2   # one boxes-only pass, one scoped mesh
+    assert list(asked[0][0]) == []
+    meshed = asked[1][0]
+    boxes = asked[1][1]
+    assert len(meshed) == 6
+    assert all(boxes[tag][3] <= 10.0 + 1e-6 for tag in meshed)   # every one on the first box
+
+
+def _fake_probe(monkeypatch, failure):
+    real = mesh_probe.probe_file
+
+    def fake(path, **kwargs):
+        boxes = real(path, **{**kwargs, "surfaces": ()}).tag_boxes
+        return mesh_probe.ProbeResult(False, 0, failure, boxes)
+
+    monkeypatch.setattr(mesh_probe, "probe_file", fake)
+
+
+def test_plc_point_goes_to_the_nearest_face(monkeypatch):
+    from meshpipeline.cad.repair.contracts import DefectCode
+
+    shape = _box()
+    _fake_probe(monkeypatch, mesh_probe.MeshFailure(
+        EDGE_THROUGH_FACE, (6,), (5.0, 5.0, 10.0), "PLC Error: at point (5,5,10)"))
+    (defect,) = mesh_probe.mesh_defects(shape, diagonal_mm=17.3, budget_s=60.0)
+    assert defect.code is DefectCode.mesh_edge_through_face
+    assert defect.location["bbox_min"][2] == defect.location["bbox_max"][2] == 10.0
+    assert defect.fingerprint
+
+
+@pytest.mark.parametrize("failure", [
+    mesh_probe.MeshFailure("other", (999,), None, "gmsh said something"),
+    mesh_probe.MeshFailure("no_volume", (1,), None, "gmsh produced no volume elements"),
+    mesh_probe.MeshFailure("timeout", (), None, "ran past its budget"),
+    # No point, and the surface came from the log's last 2D surface - a guess, never a target.
+    mesh_probe.MeshFailure(EDGE_THROUGH_FACE, (6,), None, "PLC Error: at point"),
+])
+def test_unmappable_failure_stays_unlocated(monkeypatch, failure):
+    _fake_probe(monkeypatch, failure)
+    (defect,) = mesh_probe.mesh_defects(_box(), diagonal_mm=17.3, budget_s=60.0)
+    assert defect.code is mesh_probe.CODE_FOR_KIND[failure.kind]
+    assert defect.entity_index == 0
+    assert defect.location == {}
+    assert defect.fingerprint == ""
+    assert defect.message == failure.message
+
+
+def test_a_box_that_meshes_has_no_mesh_defects():
+    assert mesh_probe.mesh_defects(_box(), diagonal_mm=17.3, budget_s=60.0) == ()

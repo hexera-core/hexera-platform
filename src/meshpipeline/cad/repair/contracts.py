@@ -56,6 +56,16 @@ class DefectCode(str, Enum):
     tolerance_outlier = "tolerance_outlier"
     duplicate_surface_data = "duplicate_surface_data"
     engine_staging_failure = "engine_staging_failure"
+    # Why gmsh would not mesh the part (cad/repair/mesh_probe.py), one per kind the probe names.
+    # A shape can pass every kernel check and still fail here, so these are defects in their own
+    # right, located on the face gmsh named when that face can be identified, unlocated otherwise.
+    mesh_overlapping_facets = "mesh_overlapping_facets"
+    mesh_edge_through_face = "mesh_edge_through_face"
+    mesh_open_loop = "mesh_open_loop"
+    mesh_periodic_surface = "mesh_periodic_surface"
+    mesh_no_volume = "mesh_no_volume"
+    mesh_timeout = "mesh_timeout"
+    mesh_other = "mesh_other"
 
 
 @dataclass(frozen=True, slots=True)

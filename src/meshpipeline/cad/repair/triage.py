@@ -54,6 +54,15 @@ _REPAIRABLE: frozenset[str] = frozenset({
     # A tolerance outlier is usually the written trace of a gap somebody widened the tolerance to
     # hide; re-fixing it at a sane tolerance is exactly the conservative pass's job.
     DefectCode.tolerance_outlier.value,
+    # A part gmsh will not mesh is the thing repair is for; which face it is, and whether a bounded
+    # operation clears it, is what the loop then measures. None of these asks a person about intent.
+    DefectCode.mesh_overlapping_facets.value,
+    DefectCode.mesh_edge_through_face.value,
+    DefectCode.mesh_open_loop.value,
+    DefectCode.mesh_periodic_surface.value,
+    DefectCode.mesh_no_volume.value,
+    DefectCode.mesh_timeout.value,
+    DefectCode.mesh_other.value,
 })
 
 #: Defects that need a person. Each one is a question about intent that no cap can answer: whether
