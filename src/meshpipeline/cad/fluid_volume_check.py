@@ -32,6 +32,23 @@ MIN_PARTS = 2
 #: nothing and the reading it already had stands.
 MIN_PASSAGE_MOUTHS = 2
 
+#: The scout readings that a split finding ENCLOSED COOLANT overrules. A `pipe_wall` or
+#: `hollow_wall` is metal AROUND a fluid and its ordinary case is the fluid alone, so those keep
+#: the reading they had. These two do not:
+#:
+#:   single_solid - one solid body with coolant found inside it: the cold plate, and the reading
+#:                  that was being served as a body in a flow.
+#:   scene        - what `cad/scout_mesh` calls ANY triangle mesh of six or more pieces: "this
+#:                  reads as a scene the fluid flows around, not a part with openings". It is not
+#:                  a wall and it was never excluded on purpose - the one-solid rule simply did
+#:                  not reach it. ColdPlateAssembly_CLEAN.step is exactly six solids, so the same
+#:                  plate uploaded as a mesh landed here and kept `flow: external, input_kind:
+#:                  solid-body` while the split had already cut its coolant and proposed the
+#:                  mouths. `geometry_check.stickered` draws those mouths once `openings_from` is
+#:                  `fluid_volume` whatever the flow says, so the part was pictured WITH stickers
+#:                  and the card said the fluid goes around the outside of it, in the same prompt.
+_PASSAGE_OVERRULES = ("single_solid", "scene")
+
 
 def has_passage_mouths(facts: dict) -> bool:
     """Whether a single solid reads as one with passages through it, by the measuring step's own
@@ -174,7 +191,7 @@ def fold(facts: dict, answer: dict) -> None:
         #
         # The first version of this set both for every one-solid part and
         # test_one_solid_keeps_the_reading_it_had caught the tee immediately.
-        if str(facts.get("body_kind") or "") == "single_solid":
+        if str(facts.get("body_kind") or "") in _PASSAGE_OVERRULES:
             facts["flow"] = "internal"
             facts["input_kind"] = "solid-assembly"
             facts.setdefault("confidence", {})["input_kind"] = 0.85
@@ -190,13 +207,13 @@ def fold(facts: dict, answer: dict) -> None:
         facts["flow"], facts["input_kind"] = "internal", "body-surface"
         facts["body_kind"] = "assembly_cavity"
         facts.setdefault("confidence", {})["input_kind"] = 0.85
-    elif str(facts.get("body_kind") or "") == "single_solid":
-        # A BONDED PLATE IS THE ONE-SOLID PLATE, and the rule for it is twenty lines above - on
-        # the branch a file of six solids never reaches. The split has just cut the coolant out
-        # of this part and found it open at two or more places: that is a part the fluid goes
-        # THROUGH, however the scout read the welded skin. `single_solid` guards it for the same
-        # reason it does there - a `pipe_wall` or `hollow_wall` is metal AROUND a fluid and its
-        # ordinary case is the fluid alone, handled by the branch above.
+    elif str(facts.get("body_kind") or "") in _PASSAGE_OVERRULES:
+        # A BONDED PLATE IS THE ONE-SOLID PLATE, and the rule for it is twenty lines above. The
+        # split has just cut the coolant out of this part and found it open at two or more places:
+        # that is a part the fluid goes THROUGH, however the scout read the welded skin.
+        # `_PASSAGE_OVERRULES` guards it for the same reason it does there - a `pipe_wall` or
+        # `hollow_wall` is metal AROUND a fluid and its ordinary case is the fluid alone, handled
+        # by the branch above.
         #
         # MEASURED END TO END on ColdPlateAssembly_CLEAN.step, session eb22296d, 2026-11-13.
         # 52.1 ml of coolant came out of the six solids, with its three mouths proposed, and the

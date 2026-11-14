@@ -2225,7 +2225,17 @@ def _facts_text(facts: dict, shots, purpose_text: str) -> str:
     # file declares nothing, there is no air around anything, and telling the model its stickers
     # are settled is telling it not to look. (Reaching the plate is new; the one-solid branch of
     # that module has set this kind, with `source_regions` empty, since 2026-10-29.)
-    _declared = bool(facts.get("source_regions")) or facts.get("check_mode") == THERMAL_CHECK
+    # ...AND `source_regions` DOES NOT SAY THE FILE DECLARED ANY OF IT. `CanonicalGeometry.regions`
+    # is "named groups/bodies the source carried, as written", which a named multi-solid ASCII STL
+    # carries too (cad/ingest/canonical: _ascii_solid_names, the tidied STL, every converted
+    # surface format with named groups), and `facts.update(canonical.facts())` puts them in these
+    # same facts. So the plate this sentence was fixed FOR - uploaded as a two-solid named STL
+    # instead of a STEP - had `source_regions` set, took this branch, and was told its stickers
+    # were settled by a file that declares no openings at all. What tells the two apart is where
+    # the openings came from: a split that cut them is not the file stating them.
+    _from_split = facts.get("openings_from") == "fluid_volume"
+    _declared = (bool(facts.get("source_regions")) or facts.get("check_mode") == THERMAL_CHECK) \
+        and not _from_split
     if facts.get("input_kind") == "solid-assembly" and _declared:
         regions = facts.get("source_regions") or []
         lines.append("The file itself declares this: an assembly of "

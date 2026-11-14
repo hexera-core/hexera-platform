@@ -212,3 +212,83 @@ def test_a_thermal_model_keeps_the_sentence_it_had():
                      "check_mode": THERMAL_CHECK})
     assert _DECLARED in thermal and "settled by the file" in thermal
 
+
+
+# #
+# THE SAME PLATE, UPLOADED AS A TRIANGLE MESH
+# #
+# The rule above keys on the scout's reading, and cad/scout_mesh has a reading cad/scout does not:
+# any mesh of six or more pieces is a "scene the fluid flows around, not a part with openings"
+# (MANY_BODIES = 6). ColdPlateAssembly_CLEAN is exactly six solids, so the same plate sent as an
+# STL landed on a reading the one-solid rule never reached.
+
+def test_a_six_piece_mesh_of_the_plate_is_not_a_scene_once_its_coolant_is_cut():
+    """`scene` was never excluded on purpose - it is not a wall, and the reason the walls are
+    excluded (metal AROUND a fluid, whose ordinary case is the fluid alone) does not apply to it.
+    The split cutting 52 ml out of the pieces and finding it open at three places answers the
+    same question it answers for the one-solid plate."""
+    facts = _plate_facts(body_kind="scene", read_as="mesh", confidence={"input_kind": 0.7})
+    fold(facts, _plate_answer())
+    assert facts["flow"] == "internal", "a scene whose coolant was cut is not a scene"
+    assert facts["input_kind"] == "solid-assembly"
+    assert facts["openings_from"] == "fluid_volume"
+
+
+def test_the_pictures_and_the_card_could_not_disagree_about_the_same_part():
+    """What the gap actually cost. `geometry_check.stickered` draws the mouths as soon as the
+    openings came from the split, whatever the flow says - so the mesh upload was pictured WITH
+    numbered stickers on its mouths while the card it was shown beside said the fluid goes around
+    the outside of it. Either both or neither, and the split has answered which."""
+    from meshpipeline.application.geometry_check import stickered
+
+    facts = _plate_facts(body_kind="scene", read_as="mesh", confidence={"input_kind": 0.7})
+    fold(facts, _plate_answer())
+    drawn = stickered(facts)
+    assert drawn, "the split's mouths are drawn on the part"
+    assert facts["flow"] == "internal", (
+        f"{len(drawn)} stickers were drawn on a part the card called a body in a flow")
+
+
+def test_a_wall_reading_is_still_not_overruled():
+    """The guard that matters: a pipe tee is metal AROUND a fluid and its ordinary case is the
+    fluid alone. Widening the rule to `scene` must not widen it to the walls."""
+    for wall in ("pipe_wall", "hollow_wall"):
+        facts = _plate_facts(body_kind=wall, flow="internal")
+        fold(facts, _plate_answer())
+        assert facts["input_kind"] != "solid-assembly", f"{wall} was read as a cooled solid"
+
+
+def test_a_named_multi_solid_upload_is_not_a_file_that_declares_its_openings():
+    """The third claim of this fix was that "The file itself declares this ... settled by the
+    file" must only reach a file that really declares its regions AND its openings, and that a
+    plate whose stickers came from the split gets the corrective sentence instead.
+
+    It guarded on `source_regions`, which is only "named groups/bodies the source carried, as
+    written" - a named multi-solid ASCII STL carries it, and canonical.facts() puts it straight
+    into these facts. So the plate sent as a two-solid named STL kept the declares-sentence and
+    LOST the corrective one, and was told not to look at the very pictures that hold the answer.
+    """
+    from meshpipeline.application.geometry_check import _facts_text
+
+    facts = _plate_facts(body_kind="single_solid", source_regions=["plate", "lid"],
+                         size_mm=[100.0, 60.0, 12.0])
+    fold(facts, _plate_answer())
+    assert facts["input_kind"] == "solid-assembly" and facts["openings_from"] == "fluid_volume"
+
+    text = _facts_text(facts, [], "")
+    assert "settled by the file" not in text, (
+        "a file that names two solids was read as one that states its openings")
+    assert "The stickers are not read off the part's outside" in text, (
+        "and the sentence that tells the model to look was the one it lost")
+
+
+def test_a_file_that_really_declares_its_regions_still_says_so():
+    """The ECXML thermal model declares its regions, its air and its openings, and for that file
+    the sentence is exactly right. The fix must not cost it."""
+    from meshpipeline.application.geometry_check import _facts_text
+
+    declared = {"input_kind": "solid-assembly", "source_regions": ["die", "lid", "air"],
+                "flow": "internal", "body_kind": "assembly", "notes": [], "confidence": {},
+                "size_mm": [40.0, 40.0, 5.0]}
+    text = _facts_text(declared, [], "")
+    assert "settled by the file" in text, "a file that does declare its openings still says so"
