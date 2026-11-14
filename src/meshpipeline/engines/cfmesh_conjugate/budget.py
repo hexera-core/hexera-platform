@@ -458,6 +458,25 @@ def plan_for_budget(*, block_lo, block_hi, narrowest_m: float, wetted_area_m2: f
 #: what it always should have been. Raising it without that would simply have refused the part.
 FINE_ACROSS_FLOOR = 4
 FINE_ACROSS_WANTED = 4
+#: HOW FAR BELOW `FINE_ACROSS_FLOOR` A PINNED CELL MAY GO, and no further.
+#:
+#: FINE_ACROSS_FLOOR is 4 cells across `scales.fine.width_m`, the 1st percentile of a
+#: radius-derived width. That percentile is deliberately conservative - "a cell size has to suit
+#: the smallest thing it must hold together", says cad/scales - and on the first customer cold
+#: plate it reads 98.136 um where the channel's nominal width is pitch/2 = 100.639 um and its
+#: measured median is 100.243 um. 2.5% narrow, and that 2.5% is exactly what turns pitch/8 from
+#: 4.0000 cells across into 3.901.
+#:
+#: WHY 3.5 AND NOT LOWER. cbox8 was built at 3.90 against that percentile on 2026-11-08 and came
+#: back Mesh OK on all three regions, 47.92 max non-orthogonality against the shipped mesh's
+#: 49.45, 95.55% layer coverage against 90.71%, 270M cells in 65 minutes against 5.79 hours. So
+#: the band immediately under the floor is where a measurement is worth taking. Below it there is
+#: nothing to take: `engines/staircase_error` measured 3 cells across at 32.30% volume error and
+#: 2 across at 27.54% on a single prismatic channel, and a mesh there cannot carry a claim about
+#: the coolant it encloses.
+#:
+#: IT IS ONLY EVER REACHED BY A PINNED CELL. `plan_two_scales` never sees it.
+PINNED_ACROSS_FLOOR = 3.5
 #: TEN, NOT EIGHT, and the reason is that the ladder is discrete. The published guidance for
 #: microchannel conjugate work is of the order of eight cells across the width; the octree halves,
 #: so on the first customer's 0.0982 mm slots the reachable rungs are 4.46 and 8.93, and a cap of
@@ -700,10 +719,11 @@ def plan_two_scales(*, block_lo, block_hi, scales: dict, limit: int,
                 across = fine_w / fine_cell
                 if across < FINE_ACROSS_FLOOR or across > FINE_ACROSS_CAP:
                     continue
-                shape = dict(block_lo=block_lo, block_hi=block_hi, broad_cell_m=broad_cell,
-                             broad_area_m2=broad_a, fine_cell_m=fine_cell, fine_area_m2=fine_a,
-                             background_m=background, broad_levels=broad_levels,
-                             fine_levels=fine_levels)
+                shape = {"block_lo": block_lo, "block_hi": block_hi,
+                         "broad_cell_m": broad_cell, "broad_area_m2": broad_a,
+                         "fine_cell_m": fine_cell, "fine_area_m2": fine_a,
+                         "background_m": background, "broad_levels": broad_levels,
+                         "fine_levels": fine_levels}
                 # THE CHEAPEST STRETCH THAT FITS, not the largest. A stretch costs nothing in
                 # accuracy along an axis the geometry is prismatic along, but it is still a
                 # deformation of the cells and there is no reason to take more of it than the
@@ -775,6 +795,156 @@ def plan_two_scales(*, block_lo, block_hi, scales: dict, limit: int,
     return best, said
 
 
+def two_scales_at_fine_cell(*, block_lo, block_hi, scales: dict, limit: int,
+                            fine_cell_m: float,
+                            prismatic_axis: int | None = None,
+                            ranks: int = 1) -> tuple[dict | None, str]:
+    """The cheapest two-scale plan whose THIN cell is exactly `fine_cell_m`, or (None, why).
+
+    WHAT THIS IS FOR, AND WHAT IT IS NOT. It is not a sizing rule and it does not compete with
+    `plan_two_scales`, which remains the only chooser. It realises a cell size somebody else
+    decided, so that a cell the ladder cannot reach can be MEASURED on a real part before anyone
+    argues it should be the rule. `determinism.CONJUGATE_FINE_CELL_M` is the only caller.
+
+    WHY A CELL THE LADDER CANNOT REACH IS A REAL CATEGORY. In `plan_two_scales` the fine cell is
+    never chosen; it is the broad cell halved `extra` times, and the broad cell is the broad
+    passage width over an integer. So the reachable fine cells are
+    `broad_width / (integer * 2**extra)` and NOTHING about the thin passages enters except as an
+    acceptance window. Enumerated on the first customer cold plate (broad width 2.112337 mm,
+    2026-11-14) the whole reachable set between 4 and 16 cells per channel pitch is
+
+        13.2021  14.6690  16.5026  18.8602  22.0035  24.0038  26.4042  29.3380
+        33.0053  37.7203  44.0070  48.0077   (um)
+
+    and the measured pitch of that plate's channel array is 201.2785 um, taken on the staged fine
+    surface itself - 12,409 channel-and-fin pairs along one ray at a time, median, CV 5.03%. Not
+    one of the twelve divides it. The built 22.0035 um cell puts 9.1476 cells on a pitch, and a
+    pitch that is not a whole number of cells is a pitch whose channels do not all snap the same
+    way, which is the whole of the quantisation spread measured on the delivered mesh.
+
+    HOW THE DERIVATION RUNS BACKWARDS from `plan_two_scales`. There the background comes from the
+    broad side and the fine cell falls out; here the fine cell is given, so
+
+        background = fine_cell * 2**fine_levels        and    broad_cell = fine_cell * 2**extra
+
+    and `broad_across` is an OUTCOME rather than a request. It is therefore held only to
+    FLOOR_CELLS_ACROSS - the broad side must still be resolved - and deliberately NOT to
+    BROAD_ACROSS_CAP, which bounds how fine the SEARCH may ask for and would here reject a plan
+    for being better than asked on the broad side. What stops a runaway is the cell limit and the
+    octree ceiling, the same two gates as always. The value comes back in the plan so a reader can
+    see it moved.
+
+    THE THIN-SIDE WINDOW STILL APPLIES. FINE_ACROSS_FLOOR and FINE_ACROSS_CAP are the product's
+    rule about what resolution means and a forced cell does not get to step over them: on that
+    same plate pitch/8 (25.1598 um) lands the thin side at 3.90 cells and is refused here, while
+    pitch/10 (20.1278 um) lands at 4.88 and is taken. Moving that floor is a separate argument
+    and has to be made in its own right.
+    """
+    broad_w = float(scales["broad"]["width_m"])
+    broad_a = float(scales["broad"]["area_m2"])
+    fine_w = float(scales["fine"]["width_m"])
+    fine_a = float(scales["fine"]["area_m2"])
+    if min(broad_w, fine_w, broad_a, fine_a) <= 0.0:
+        return None, "the scale split carried a width or an area that is not positive"
+    fine_cell = float(fine_cell_m)
+    if not (fine_cell > 0.0) or fine_cell != fine_cell or fine_cell in (float("inf"),):
+        return None, f"a forced fine cell must be a positive length, got {fine_cell_m!r}"
+    across = fine_w / fine_cell
+    if across > FINE_ACROSS_CAP or across < PINNED_ACROSS_FLOOR:
+        return None, (
+            f"a fine cell of {fine_cell * 1e6:.4f} um puts {across:.2f} cells across this part's "
+            f"{fine_w * 1e6:.4f} um passages, and a pinned cell may resolve them at "
+            f"{PINNED_ACROSS_FLOOR} to {FINE_ACROSS_CAP} cells")
+    # UNDER THE PRODUCT'S OWN FLOOR BUT INSIDE THE BAND A PIN MAY ENTER. Carried in words all the
+    # way to the plan rather than logged and dropped: a mesh built here must never read as one the
+    # product chose for the part. See PINNED_ACROSS_FLOOR.
+    shortfall = ""
+    if across < FINE_ACROSS_FLOOR:
+        shortfall = (
+            f"; this is UNDER the {FINE_ACROSS_FLOOR}-cell floor the planner holds, by "
+            f"{FINE_ACROSS_FLOOR - across:.2f} of a cell, and was pinned anyway")
+    ceiling = octree_ceiling_cells(max(1, int(ranks)))
+    needed_ranks = 0
+    best = None
+    # WHICH GATE REFUSED, counted rather than assumed. Three different demands can empty this
+    # search and they are fixed by three different things; a refusal that names the wrong one
+    # sends the reader to the wrong setting.
+    dropped_broad = 0           # the broad side would not have been resolved
+    over_limit = 0              # it fitted the mesher and not the cell budget
+    cheapest_over_limit = 0     # ...and this is the smallest such mesh, which is the real ask
+    for broad_levels in TWO_SCALE_BROAD_LEVELS:
+        for extra in sorted(FINE_EXTRA_LEVELS, reverse=True):
+            fine_levels = broad_levels + extra
+            broad_cell = fine_cell * (2 ** extra)
+            background = fine_cell * (2 ** fine_levels)
+            broad_across = broad_w / broad_cell
+            if broad_across < FLOOR_CELLS_ACROSS:
+                dropped_broad += 1
+                continue
+            shape = {"block_lo": block_lo, "block_hi": block_hi,
+                     "broad_cell_m": broad_cell, "broad_area_m2": broad_a,
+                     "fine_cell_m": fine_cell, "fine_area_m2": fine_a,
+                     "background_m": background, "broad_levels": broad_levels,
+                     "fine_levels": fine_levels}
+            ladder = (sorted(STRETCH_LADDER) if prismatic_axis is not None else (1.0,))
+            fitted = None
+            for stretch in ladder:
+                est = two_scale_estimate(**shape, fine_stretch=stretch)
+                if est > limit:
+                    over_limit += 1
+                    cheapest_over_limit = (est if not cheapest_over_limit
+                                           else min(cheapest_over_limit, est))
+                    continue
+                raw = two_scale_estimate(**shape, margin=False, fine_stretch=stretch)
+                if raw > ceiling:
+                    wanted = int(math.ceil(raw / octree_ceiling_cells(1)))
+                    needed_ranks = wanted if not needed_ranks else min(needed_ranks, wanted)
+                    continue
+                fitted = (stretch, est, raw)
+                break
+            if fitted is None:
+                continue
+            stretch, est, raw = fitted
+            plan = {"background_m": background, "broad_levels": broad_levels,
+                    "fine_levels": fine_levels, "broad_cell_m": broad_cell,
+                    "fine_cell_m": fine_cell, "broad_across": broad_across,
+                    "fine_across": across, "estimate": est, "raw": raw,
+                    "stretch": stretch, "stretch_axis": prismatic_axis}
+            # THE CHEAPEST, and only that. In `plan_two_scales` the objective is to resolve the
+            # thin side furthest with the estimate as a tie-break; here the thin side is fixed by
+            # the caller, so the whole objective collapses to the cell count.
+            if best is None or plan["estimate"] < best["estimate"]:
+                best = plan
+    if best is None:
+        head = f"a forced fine cell of {fine_cell * 1e6:.4f} um reaches no octree on this part: "
+        if cheapest_over_limit:
+            why = head + (
+                f"the smallest mesh that resolves this part at it is about "
+                f"{cheapest_over_limit:,} cells against a limit of {limit:,}")
+        elif dropped_broad and not over_limit:
+            why = head + (
+                f"every octree that reaches it leaves under {FLOOR_CELLS_ACROSS} cells across "
+                f"the broad {broad_w * 1000:.2f} mm passages")
+        else:
+            why = head + (
+                f"nothing fits a limit of {limit:,} cells and this mesher's own ceiling of "
+                f"{ceiling:,}")
+        if needed_ranks > int(ranks):
+            why += (f"; a configuration that fits the cell limit was refused on the octree "
+                    f"ceiling alone and would build on {needed_ranks} ranks")
+        return None, why
+    said = (f"meshed at a FORCED thin cell of {best['fine_cell_m'] * 1e6:.4f} um "
+            f"({best['fine_across']:.2f} across this part's {fine_w * 1e6:.4f} um passages), with "
+            f"{best['broad_cell_m'] * 1000:.4f} mm over the {broad_w * 1000:.2f} mm ones "
+            f"({best['broad_across']:.2f} across) and a {best['background_m'] * 1000:.4f} mm "
+            f"background, about {best['estimate']:,} cells")
+    if best.get("stretch", 1.0) > 1.0:
+        said += (f"; the thin passages' cells are stretched {best['stretch']:g}x along "
+                 f"{'xyz'[int(best['stretch_axis'])]}, which the geometry is prismatic along")
+    best["under_planner_floor"] = bool(shortfall)
+    return best, said + shortfall
+
+
 def estimate_cells(*, block_lo, block_hi, narrowest_m: float, cells_across: int,
                    levels: int = LEVELS) -> int:
     """A pre-flight cell count: the block filled with background cells, every one refined.
@@ -832,6 +1002,6 @@ def fits(estimate: int, limit: int) -> bool:
 
 
 __all__ = ["ARCHIVE_SHARE_OF_WRITTEN", "archive_gib", "refuse_for_return",
-           "PEAK_BYTES_PER_CELL", "PEAK_FIXED_BYTES", "peak_gib", "written_gib", "DEPTH_AT_FITTED_SPAN", "DEPTH_PER_LEVEL", "band_depth", "span_of", "plan_two_scales", "two_scale_estimate", "FINE_ACROSS_FLOOR", "FINE_ACROSS_WANTED", "CELLS_ACROSS_BY_FIDELITY", "DEFAULT_FIDELITY", "ESTIMATE_MARGIN",
+           "PEAK_BYTES_PER_CELL", "PEAK_FIXED_BYTES", "peak_gib", "written_gib", "DEPTH_AT_FITTED_SPAN", "DEPTH_PER_LEVEL", "band_depth", "span_of", "plan_two_scales", "two_scales_at_fine_cell", "two_scale_estimate", "FINE_ACROSS_FLOOR", "FINE_ACROSS_WANTED", "PINNED_ACROSS_FLOOR", "CELLS_ACROSS_BY_FIDELITY", "DEFAULT_FIDELITY", "ESTIMATE_MARGIN",
            "LEVELS_LADDER", "band_estimate_cells", "plan_for_budget",
            "FLOOR_CELLS_ACROSS", "LEVELS", "cells_across_for", "estimate_cells", "fits"]

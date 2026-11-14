@@ -116,6 +116,11 @@ class ConjugatePlan:
     #: octree ceiling", which two ranks would have satisfied: the stamp named the demand that was
     #: NOT binding. Empty means nobody said, and the stamp falls back to describing the count.
     ranks_basis: str = ""
+    #: HOW THE CELL SIZE WAS ARRIVED AT, in one phrase, because "chosen by the planner" and
+    #: "forced by a setting" produce identical plans and are not the same claim. The
+    #: reproducibility stamp and the brief both quote it, so a mesh built at a cell somebody
+    #: pinned cannot be read afterwards as a cell the product selected for the part.
+    sizing_basis: str = ""
 
 
 def background_for(narrowest_m: float, cells_across: int, levels: int) -> float:

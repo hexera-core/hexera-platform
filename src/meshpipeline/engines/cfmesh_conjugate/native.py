@@ -50,6 +50,57 @@ def _result(rc: int, *, stage: str = "", output: str = "", outcome=None, **extra
     return out
 
 
+def note_plan_settings(plan: PL.ConjugatePlan) -> None:
+    """Put everything about this run that CHANGES THE MESH into the reproducibility stamp.
+
+    THE RANK COUNT, because parallel changes the mesh. Measured on the coupon: serial
+    29,812/29,262 cells against parallel 29,813/29,261 - one cell moves between the regions,
+    because topoSet classifies a cell on a processor boundary differently. Two runs of one job at
+    different rank counts are two different meshes, and for a long time nothing in this package
+    called note_setting at all, so the stamp could not say which one you had. The mesh report
+    carries a "ranks" field too, which is not the same thing: that describes the MESH, this is what
+    makes the RUN repeatable.
+
+    ITS BASIS IN THE PLAN'S OWN WORDS when it has any. More than one demand can set that number -
+    the octree's label ceiling, and the floor the back-scale projection survives on - and a stamp
+    that picks between them from the count alone names the wrong one as soon as they disagree. Job
+    b6762d5c was planned on 8 by the stretch floor and stamped as the octree ceiling, which two
+    ranks met.
+
+    AND THE RESOLUTION, which changes the mesh far more than the rank count and was stamped
+    nowhere. The plan file is hashed as an input, so two runs at different cell sizes cannot
+    collide - but a digest says only THAT they differ, and a reader comparing two meshes of one
+    part needs to know WHICH knob moved. The pinned cell is a separate row from the background
+    because "the planner chose this" and "an operator pinned this" are different claims about the
+    same number (engines.determinism.CONJUGATE_FINE_CELL_M).
+
+    IT IS ITS OWN FUNCTION so it can be tested against `det.recording()` rather than by running a
+    mesh or by reading source, which is how every other setting in the stamp is tested.
+    """
+    ranks = int(getattr(plan, "ranks", 1) or 1)
+    basis = str(getattr(plan, "ranks_basis", "") or "").strip()
+    det.note_setting("conjugate_ranks", ranks, f"the plan's own count - {basis}" if basis else
+                     ("the plan's own count, from the mesh size against the per-process octree "
+                      "ceiling" if ranks > 1 else "one process: the mesh fits in one"))
+    sizing = str(getattr(plan, "sizing_basis", "") or "").strip()
+    det.note_setting("conjugate_background_cell_m", float(plan.background_cell_m),
+                     sizing or "carried in the plan; this plan predates sizing_basis")
+    det.note_setting("conjugate_octree_levels", int(plan.levels),
+                     "octree levels under the background, from the plan")
+    fine = [int(s.get("levels", 0) or 0) for s in (getattr(plan, "fine_surfaces", ()) or ())]
+    if fine:
+        det.note_setting("conjugate_fine_surface_levels", fine,
+                         "levels under the background for each refined surface, from the plan")
+    try:
+        pinned = det.forced_fine_cell()
+    except Exception:  # noqa: BLE001 - a stamp is a record, never a prerequisite
+        pinned = 0.0
+    det.note_setting("conjugate_fine_cell_pinned_m", pinned or None,
+                     "pinned by CONJUGATE_FINE_CELL_M, so the planner did NOT choose this "
+                     "resolution" if pinned else
+                     "nothing pinned: the planner chose the resolution")
+
+
 def _run_conjugate_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
                          timeout: int = 3600) -> dict:
     """Mesh the block, split it, and write the report. The signature dispatch calls, exactly.
@@ -83,23 +134,7 @@ def _run_conjugate_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
         _write_report(ws, {"ok": False, "refused": str(exc)})
         return _result(RC_NO_PLAN, stage=_STAGE, output=f"REJECTED: {exc}")
 
-    # THE RANK COUNT GOES IN THE REPRODUCIBILITY STAMP, because it changes the mesh. Measured on
-    # the coupon: serial 29,812/29,262 cells against parallel 29,813/29,261 - one cell moves
-    # between the regions, because topoSet classifies a cell on a processor boundary differently.
-    # Two runs of the same job at different rank counts are therefore two different meshes, and
-    # until now nothing in this package called note_setting at all, so the stamp could not say
-    # which one you had. The mesh report carries a "ranks" field (further down this file), which
-    # is not the same thing: that describes the mesh, this is what makes the run repeatable.
-    _ranks = int(getattr(plan, "ranks", 1) or 1)
-    # THE PLAN'S OWN WORDS WHEN IT HAS ANY. More than one demand can set this number - the
-    # octree's label ceiling, and the floor the back-scale projection survives on - and a stamp
-    # that picks between them from the count alone names the wrong one as soon as they disagree.
-    # Job b6762d5c was planned on 8 by the stretch floor and stamped as the octree ceiling, which
-    # two ranks met. A plan from before this field falls back to describing the count.
-    _basis = str(getattr(plan, "ranks_basis", "") or "").strip()
-    det.note_setting("conjugate_ranks", _ranks, f"the plan's own count - {_basis}" if _basis else
-                     ("the plan's own count, from the mesh size against the per-process octree "
-                      "ceiling" if _ranks > 1 else "one process: the mesh fits in one"))
+    note_plan_settings(plan)
     try:
         report = build(
             ws, block_stl=PL.BLOCK_STL, fluid_stl=PL.FLUID_STL,

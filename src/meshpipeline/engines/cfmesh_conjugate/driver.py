@@ -443,11 +443,24 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         # loop included - correctly reads as having no prismatic axis at all.
         fine_rec = rec.get("fine_surface") or {}
         prismatic = fine_rec.get("prismatic_axis")
-        two, two_said = B.plan_two_scales(block_lo=bounds[0], block_hi=bounds[1], scales=scales,
-                                          limit=limit, asked_across=asked,
-                                          prismatic_axis=(None if prismatic is None
-                                                          else int(prismatic)),
-                                          ranks=ranks)
+        # A PINNED THIN CELL OVERRIDES THE LADDER, AND NEVER FALLS BACK TO IT. If the forced cell
+        # cannot be reached the run is refused, because a run that quietly meshed at the
+        # planner's own choice instead would be reported under the pinned cell's name - the exact
+        # shape of defect this engine spent 2026-11-13 and 14 removing. See
+        # engines.determinism.CONJUGATE_FINE_CELL_M for why the knob exists at all and why it is
+        # not a sizing rule.
+        _forced = det.forced_fine_cell()
+        if _forced > 0.0:
+            two, two_said = B.two_scales_at_fine_cell(
+                block_lo=bounds[0], block_hi=bounds[1], scales=scales, limit=limit,
+                fine_cell_m=_forced,
+                prismatic_axis=(None if prismatic is None else int(prismatic)), ranks=ranks)
+        else:
+            two, two_said = B.plan_two_scales(block_lo=bounds[0], block_hi=bounds[1], scales=scales,
+                                              limit=limit, asked_across=asked,
+                                              prismatic_axis=(None if prismatic is None
+                                                              else int(prismatic)),
+                                              ranks=ranks)
         if two is None:
             # REFUSED, and the reason is the part's own two scales rather than a cell count. Said
             # once, here, because the single-scale path would refuse the same part for a different
@@ -728,7 +741,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         why = "the mesh fits in one"
     # CARRIED, not re-derived in the container: the two demands above are both the host's
     # arithmetic, and the stamp used to pick between them by guessing from the count.
-    plan = dataclasses.replace(plan, ranks=_want, ranks_basis=why)
+    plan = dataclasses.replace(plan, ranks=_want, ranks_basis=why, sizing_basis=said)
     if plan.ranks > 1:
         logger.info("conjugate: meshing across %d processes - %s; %s - job_id=%s",
                     plan.ranks, ranks_basis, why, job_id)

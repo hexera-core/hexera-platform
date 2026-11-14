@@ -102,6 +102,59 @@ CONJUGATE_RANKS: str = optional_env("CONJUGATE_RANKS", "8")
 #: The most ranks this may be set to, because it is the smallest core count any route has.
 CONJUGATE_RANKS_MAX = 8
 
+#: THE THIN CELL THIS DEPLOYMENT FORCES, in metres, or empty for "let the planner choose".
+#:
+#: IT IS NOT A SIZING RULE AND MUST NOT BECOME ONE BY HABIT. `cfmesh_conjugate/budget` owns how
+#: fine a run is and this overrides its answer outright, so a deployment that leaves this set is a
+#: deployment meshing every two-scale part at one cell size whatever the part is. It exists so a
+#: cell size the ladder cannot reach can be MEASURED on a real part before anyone argues it should
+#: be the rule - `engines/staircase_error` is the standing warning against the other order, since
+#: on its corpus seven cells across came out fourteen times worse than six on one part and the
+#: error grew under refinement on another.
+#:
+#: WHAT IT WAS ADDED FOR, 2026-11-14. The reachable thin cells are `broad_width / (n * 2**extra)`,
+#: so nothing about the thin passages chooses one - and on the first customer cold plate not one
+#: of the twelve reachable values divides the 201.2785 um pitch of its channel array. The built
+#: 22.0035 um cell puts 9.1476 cells on a pitch. A pitch that is not a whole number of cells is a
+#: pitch whose channels do not all snap the same way.
+#:
+#: A MALFORMED VALUE REFUSES THE CONTAINER rather than being ignored. A knob that is silently
+#: dropped makes a run report a cell size nobody chose, which is the shape of the three defects
+#: this branch spent 2026-11-13 and 14 removing.
+CONJUGATE_FINE_CELL_M: str = optional_env("CONJUGATE_FINE_CELL_M", "")
+
+
+def _pinned_cell(raw: object) -> float:
+    """A pinned cell in metres, 0.0 for "nothing pinned", or ConfigurationError.
+
+    ONE PARSER, read at import and again on every call, because those are two readers of one
+    setting and they must not disagree about what a bad value means. Tests set this knob the way
+    every other knob in this module is tested - by patching the attribute - which never passes
+    through import.
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return 0.0
+    try:
+        metres = float(text)
+    except ValueError:
+        raise ConfigurationError(
+            f"CONJUGATE_FINE_CELL_M={raw!r} is not a length in metres") from None
+    if not (0.0 < metres < 1.0):
+        raise ConfigurationError(
+            f"CONJUGATE_FINE_CELL_M={raw!r} is not a plausible cell size: it is read in METRES, "
+            "so a 20 um cell is 2.0e-05")
+    return metres
+
+
+#: Fail the container at startup on a malformed value, rather than at the hour of a mesh.
+_pinned_cell(CONJUGATE_FINE_CELL_M)
+
+
+def forced_fine_cell() -> float:
+    """The thin cell this deployment pins, in metres, or 0.0 when it pins none."""
+    return _pinned_cell(CONJUGATE_FINE_CELL_M)
+
 #: The decomposition snappy's ranks are cut by (decomposeParDict `method`).
 SNAPPY_DECOMPOSITION = "scotch"
 #: gmsh: one thread and a fixed seed (engines/gmsh/driver pins them; recorded here).
