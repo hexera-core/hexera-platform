@@ -1775,14 +1775,26 @@ def build(workspace, *, block_stl: str = "constant/triSurface/block.stl",
             log = ws / f"{stage}.log"
             layer_report = LY.read_layer_log(
                 log.read_text(errors="replace") if log.is_file() else "")
+            _cells = int(layer_report.get("cells_added") or 0)
             said = LY.complain(layer_report, interface_patch=FLUID_TO_SOLID, n_layers=layers,
-                               cells=int(layer_report.get("cells_added") or 0))
+                               cells=_cells)
             if said:
                 raise ConjugateError(said, stage=stage)
             logger.info("conjugate: layers grown on %s - %s", FLUID_TO_SOLID,
                         ", ".join(f"{k}={v}" for k, v in
                                   sorted(LY.measured(layer_report,
                                                      interface_patch=FLUID_TO_SOLID).items())))
+            # ...AND WHERE IT DID WORSE THAN THE RUN THE THRESHOLDS CAME FROM, said and carried
+            # rather than raised. Those thresholds are one hand-built run of one part; this pass
+            # has already MOVED the only copy of the coolant and rewritten it, so refusing on a
+            # three-point coverage miss would throw away a finished mesh nothing else had anything
+            # against. The figures travel in the report either way.
+            _short = LY.shortfalls(layer_report, interface_patch=FLUID_TO_SOLID,
+                                   n_layers=layers, cells=_cells)
+            if _short:
+                layer_report["shortfalls"] = list(_short)
+                for _line in _short:
+                    logger.warning("conjugate: the layer pass %s", _line)
 
     # THE PER-RANK COPIES GO, once the merged mesh is on disk. They are a second whole copy of
     # the mesh: at the sizes that need ranks at all that is hundreds of gigabytes of scratch, and

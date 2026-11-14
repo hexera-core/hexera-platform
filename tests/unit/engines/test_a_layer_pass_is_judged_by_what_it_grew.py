@@ -441,28 +441,51 @@ def test_a_pass_that_never_reached_the_layer_phase_is_caught():
     assert "1e-13" in said, "the reason names the setting that causes it"
 
 
-def test_the_run_that_extruded_plenty_and_thinned_to_hairlines_is_caught():
-    """THE ONE THE FIRST GATE LET THROUGH. The delivered dict's own iteration 0: 99.7653% coverage,
-    the full three layers, and 82,548 illegal faces, because the stack did not fit its cell. A gate
-    that reads coverage alone cannot see it, and that run is the reason this module exists."""
+def test_the_run_that_extruded_plenty_and_thinned_to_hairlines_is_REPORTED_not_refused():
+    """THE ONE THE FIRST GATE LET THROUGH, and it is a reading rather than a verdict.
+
+    The delivered dict's own iteration 0: 99.7653% coverage, the full three layers, and 82,548
+    illegal faces, because the stack did not fit its cell. Coverage alone cannot see that, so the
+    thickness and the illegal-face count are read too.
+
+    BUT NOT AS A REFUSAL. Those thresholds come from ONE hand-built run of ONE part, and by the
+    time they can be read the pass has already moved the only copy of the coolant and rewritten
+    it - so refusing here throws away a finished mesh that nothing else had anything against. The
+    figures come home through `measured` and the judgement is made on the mesh.
+    """
     got = L.read_layer_log(THINNED_LOG)
     assert got["coverage_pct"] == pytest.approx(99.7653)
     assert got["patches"][INTERFACE]["mesh_layers"] == pytest.approx(3.0)
-    said = L.complain(got, interface_patch=INTERFACE, n_layers=3, cells=49_859_331)
-    assert said, "99.77% coverage with 82,548 illegal faces must not pass"
-    assert "41.2% of the thickness" in said
+    assert L.complain(got, interface_patch=INTERFACE, n_layers=3, cells=49_859_331) == ""
+    short = L.shortfalls(got, interface_patch=INTERFACE, n_layers=3, cells=49_859_331)
+    assert any("41.2% of the thickness" in s for s in short), short
+    assert any("per million" in s for s in short), short
 
 
-def test_a_pass_that_left_too_many_faces_in_error_is_caught():
+def test_too_many_faces_in_error_is_reported():
     got = L.read_layer_log(GOOD_LOG.replace("2888 illegal", "900000 illegal"))
-    said = L.complain(got, interface_patch=INTERFACE, n_layers=3, cells=102_536_327)
-    assert "faces in error" in said and "per million" in said
+    assert L.complain(got, interface_patch=INTERFACE, n_layers=3, cells=102_536_327) == ""
+    short = L.shortfalls(got, interface_patch=INTERFACE, n_layers=3, cells=102_536_327)
+    assert any("faces in error" in s and "per million" in s for s in short), short
 
 
-def test_a_pass_that_kept_far_fewer_layers_than_asked_is_caught():
+def test_far_fewer_layers_than_asked_is_reported():
     got = L.read_layer_log(GOOD_LOG.replace("3        2.84", "3        1.10"))
+    assert L.complain(got, interface_patch=INTERFACE, n_layers=3, cells=102_536_327) == ""
+    short = L.shortfalls(got, interface_patch=INTERFACE, n_layers=3, cells=102_536_327)
+    assert any("1.10 layers of the 3" in s for s in short), short
+
+
+def test_a_pass_that_kept_no_layers_at_all_is_still_refused():
+    """The line between the two: NOTHING GREW is a refusal, grew-less-well is a reading."""
+    got = L.read_layer_log(GOOD_LOG.replace("3        2.84", "3        0.00"))
     said = L.complain(got, interface_patch=INTERFACE, n_layers=3, cells=102_536_327)
-    assert "1.10 layers against 3 asked for" in said
+    assert "0.0 layers in the mesh against 3" in said
+
+
+def test_the_measured_run_has_nothing_to_report():
+    assert L.shortfalls(L.read_layer_log(GOOD_LOG), interface_patch=INTERFACE, n_layers=3,
+                        cells=102_536_327) == []
 
 
 def test_layers_on_the_wrong_patch_are_not_layers_on_the_interface():
@@ -472,12 +495,13 @@ def test_layers_on_the_wrong_patch_are_not_layers_on_the_interface():
 
 def test_the_coverage_floor_sits_above_the_run_that_was_refused():
     """The measured run finished at 95.553%; the DEFECTIVE delivered run finished at 90.7146%. A
-    floor under that would admit the very run this module exists to refuse."""
+    floor under that would say nothing about the very run this module exists to catch."""
     assert 90.7146 < L.COVERAGE_FLOOR_PCT < 95.553
     thin = GOOD_LOG.replace("(95.553%)", "(90.7146%)")
-    said = L.complain(L.read_layer_log(thin), interface_patch=INTERFACE, n_layers=3,
-                      cells=102_536_327)
-    assert "90.7146" in said
+    got = L.read_layer_log(thin)
+    assert L.complain(got, interface_patch=INTERFACE, n_layers=3, cells=102_536_327) == ""
+    short = L.shortfalls(got, interface_patch=INTERFACE, n_layers=3, cells=102_536_327)
+    assert any("90.7146" in s for s in short), short
 
 
 # ---------------------------------------------------------------- what gets published
@@ -502,7 +526,15 @@ def test_nothing_is_published_about_a_pass_that_did_not_happen():
 
 # ---------------------------------------------------------------- the knob
 
-def test_the_knob_is_off_by_default():
+def test_the_knob_is_off_by_default(monkeypatch):
+    """THE DEFAULT, not whatever this deployment happens to be set to. The suite loads the
+    repository's own .env, so a bare call here reads whatever a run is currently configured for -
+    which is how this test started failing the moment the pitch run was set up."""
+    import inspect
+
+    src = inspect.getsource(det)
+    assert 'CONJUGATE_LAYERS: str = optional_env("CONJUGATE_LAYERS", "0")' in src
+    monkeypatch.setattr(det, "CONJUGATE_LAYERS", "")
     assert det.conjugate_layers() == 0
 
 

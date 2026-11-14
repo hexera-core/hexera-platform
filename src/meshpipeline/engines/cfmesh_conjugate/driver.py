@@ -416,10 +416,11 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     # pricing costs the run.
     limit = int(polcfg.CELL_HARD_LIMIT)
     _asked_layers = det.conjugate_layers()
+    _layer_factor = 1.0
     if _asked_layers > 0:
         from meshpipeline.engines.cfmesh_conjugate import layers as _LY
 
-        _factor = _LY.cells_multiplier(_asked_layers)
+        _factor = _layer_factor = _LY.cells_multiplier(_asked_layers)
         limit = int(limit / _factor)
         logger.info("conjugate: %d layer(s) asked for, so the cell budget is %s rather than %s "
                     "(a layer pass measured %.3fx on the delivered mesh) - job_id=%s",
@@ -602,8 +603,12 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     # is the real lever and the refusal names it.
     from meshpipeline.adapters.mesh_execution.cloud_run_client import result_extraction_limits
 
-    _cap = result_extraction_limits({"rc": 0, "quality": {"cells": int(estimate)}})
-    return_said = B.refuse_for_return(estimate, cap_bytes=_cap.max_archive_bytes)
+    # PRICED ON WHAT COMES HOME, which is the LAYERED mesh when layers were asked for. The
+    # estimate above is the unlayered one, and on the measured part the layer pass adds 21% to the
+    # delivered count.
+    _priced = int(estimate * _layer_factor)
+    _cap = result_extraction_limits({"rc": 0, "quality": {"cells": _priced}})
+    return_said = B.refuse_for_return(_priced, cap_bytes=_cap.max_archive_bytes)
     if return_said:
         logger.info("conjugate: refusing to start - %s - job_id=%s", return_said, job_id)
         _say_why_before_meshing(ws, return_said, job_id=job_id)
@@ -657,8 +662,27 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     # on three builds, and the decision travels in the workspace for the executor to read.
     from meshpipeline.contracts import mesh_machine as MM
 
-    machine = MM.choose(process_gib=B.peak_gib(estimate), workspace_gib=B.written_gib(estimate),
-                        why="conjugate cell estimate")
+    # THE MACHINE IS PRICED ON THE LAYERED MESH TOO, and on this part that is the difference
+    # between two tiers. The pinned cell is COARSER than the ladder would have chosen, which on
+    # its own drops the box from the 512 GiB machine the last run of this part used to a 256 GiB
+    # one - and `budget.PEAK_BYTES_PER_CELL` was fitted on three cfMesh builds with no layer stage
+    # in them, while this project's own notes name the layer pass as the memory hog behind two
+    # OOM kills on a 755 GB box. Over-pricing costs a bigger machine; under-pricing costs an
+    # OOM-killed rank, a `step_up` and the whole run a second time.
+    _peak = B.peak_gib(int(estimate * _layer_factor))
+    if _asked_layers > 0:
+        from meshpipeline.engines.cfmesh_conjugate import layers as _LY2
+
+        # A TIER OF HEADROOM FOR A STAGE NOBODY HAS MEASURED AT A LIMIT. See
+        # layers.LAYER_PEAK_MARGIN: the cell count is priced, the pass's own peak is not, and an
+        # OOM-killed rank does not fail cleanly - its siblings spin at full CPU holding all their
+        # memory until something reaps them, and the symptom lands stages later as rc=137.
+        _peak *= _LY2.LAYER_PEAK_MARGIN
+    machine = MM.choose(process_gib=_peak,
+                        workspace_gib=B.written_gib(int(estimate * _layer_factor)),
+                        why=(f"conjugate cell estimate with {_asked_layers} layer(s), with a "
+                             f"margin for a layer pass nobody has measured at a limit"
+                             if _asked_layers else "conjugate cell estimate"))
     MM.write(ws, machine)
     if machine.get("where") == "gce":
         logger.info("conjugate: %s - job_id=%s", machine.get("words"), job_id)

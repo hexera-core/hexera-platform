@@ -108,10 +108,19 @@ def test_the_cell_the_planner_picks_cuts_the_pitch_in_nine_and_a_bit():
     assert k == pytest.approx(9.1476, abs=5e-4), f"{k} cells per pitch"
 
 
-def test_pinning_is_off_unless_the_setting_says_otherwise():
-    """Every part that plans today must keep planning exactly as it did."""
+def test_pinning_is_off_unless_the_setting_says_otherwise(monkeypatch):
+    """Every part that plans today must keep planning exactly as it did.
+
+    IT ASSERTS THE DEFAULT, not whatever this deployment is set to. The suite loads the
+    repository's own .env, so a bare call here reads whatever a run is currently configured for -
+    which is how this test started failing the moment a pinned run was set up.
+    """
+    import inspect
+
+    src = inspect.getsource(det)
+    assert 'CONJUGATE_FINE_CELL_M: str = optional_env("CONJUGATE_FINE_CELL_M", "")' in src
+    monkeypatch.setattr(det, "CONJUGATE_FINE_CELL_M", "")
     assert det.forced_fine_cell() == 0.0
-    assert det.CONJUGATE_FINE_CELL_M == ""
 
 
 def test_the_planner_is_untouched_when_nothing_is_pinned(monkeypatch):

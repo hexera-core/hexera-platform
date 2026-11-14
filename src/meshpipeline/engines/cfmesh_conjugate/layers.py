@@ -119,6 +119,22 @@ def max_layers() -> int:
     return n
 
 
+#: HOW MUCH MEMORY HEADROOM A LAYER PASS BUYS, AND IT IS A GUESS THAT SAYS SO.
+#:
+#: The cell count is priced (`cells_multiplier`), but the PASS's own transient peak is not.
+#: `budget.PEAK_BYTES_PER_CELL` was fitted on three cfMesh builds with no layer stage in them, and
+#: the only run of this pass that exists was on a 755 GB machine, so it has never been near a
+#: limit. What it is protecting against is the worst failure in this project's record: when the
+#: kernel OOM-kills ONE rank of an mpirun the others do not exit - they wait in a collective that
+#: will never complete, and OpenMPI busy-waits, so each survivor spins at full CPU holding its
+#: whole share of memory until something reaps it. On 2026-11-07 that left 16 processes and 381.9
+#: GB resident for six hours and killed an unrelated stage three stages later with rc=137.
+#:
+#: 1.25 is one tier of the machine ladder at the sizes this part lands on, which is the smallest
+#: increment that buys anything. DROP IT once a layer pass has been measured on a right-sized box
+#: - and the first run of this stage is what measures it.
+LAYER_PEAK_MARGIN = 1.25
+
 #: `meshQualityControls/minVol`, and the module docstring is about this one line.
 MIN_VOL = 1e-20
 #: Left at OpenFOAM's own value deliberately: tet quality is dimensionless, so it was never what
@@ -621,37 +637,54 @@ def complain(report: dict, *, interface_patch: str, n_layers: int = 0,
         return (f"the layer pass wrote no layer table row for {interface_patch!r}, so there is "
                 f"nothing that says layers were grown on the conjugate interface; it reported "
                 f"{sorted(got.get('patches') or {})}")
-    if float(cover) < COVERAGE_FLOOR_PCT:
-        return (f"the layer pass covered {float(cover):.4f}% of the interface, under the "
-                f"{COVERAGE_FLOOR_PCT:g}% this engine will deliver; the measured run of this part "
-                f"reached 95.553% and the run that was REFUSED for not fitting its cell reached "
-                f"90.7146%")
+    if float(row.get("mesh_layers") or 0.0) <= 0.0:
+        return (f"{interface_patch} came back with {row.get('mesh_layers')} layers in the mesh "
+                f"against {int(n_layers or row.get('target_layers') or 0)} asked for")
     if not got.get("cells_added"):
         return "the layer pass added no cells, so the mesh it returned is the one it was given"
-    thick = float(row.get("thickness_pct") or 0.0)
-    if thick < THICKNESS_FLOOR_PCT:
-        return (f"{interface_patch} came back at {thick:.1f}% of the thickness it was asked for, "
-                f"under the {THICKNESS_FLOOR_PCT:g}% this engine will deliver. The mover's only "
-                f"repair is thinning and thinning manufactures hairline cells; the measured run "
-                f"achieved 94.6%")
+    return ""
+
+
+def shortfalls(report: dict, *, interface_patch: str, n_layers: int = 0,
+               cells: int = 0) -> list[str]:
+    """Where this pass did WORSE than the one that was measured - said, never raised.
+
+    WHY THESE ARE NOT REFUSALS. Every threshold here comes from one hand-built run of one part on
+    2026-11-08: 95.553% coverage, 94.6% of the requested thickness, 2.84 of three layers, 2,888
+    faces in error over 102,536,327 cells. A different part has its own staircase and its own port
+    cuts, and the layer pass MOVES the only copy of the coolant mesh and rewrites it in place - so
+    refusing on a three-point coverage miss would throw away a finished mesh that nothing else had
+    anything against, and the mesh is what the judgement should be made on.
+
+    `complain` keeps the refusals that mean NOTHING GREW. These mean it grew less well than
+    somewhere else, which is a reading and not a verdict.
+    """
+    got = dict(report or {})
+    row = (got.get("patches") or {}).get(str(interface_patch)) or {}
+    out: list[str] = []
+    cover = got.get("coverage_pct")
+    if cover is not None and float(cover) < COVERAGE_FLOOR_PCT:
+        out.append(f"covered {float(cover):.4f}% of the interface against the {COVERAGE_FLOOR_PCT:g}% "
+                   f"this engine aims at; the measured run of the other part reached 95.553% and "
+                   f"the run that was refused for not fitting its cell reached 90.7146%")
+    thick = row.get("thickness_pct")
+    if thick is not None and float(thick) < THICKNESS_FLOOR_PCT:
+        out.append(f"{interface_patch} came back at {float(thick):.1f}% of the thickness it was "
+                   f"asked for against {THICKNESS_FLOOR_PCT:g}%; thinning is the mover's only "
+                   f"repair and it manufactures hairline cells, and the measured run achieved 94.6%")
     asked = int(n_layers or row.get("target_layers") or 0)
     mesh_layers = float(row.get("mesh_layers") or 0.0)
-    if mesh_layers <= 0.0:
-        return (f"{interface_patch} came back with {mesh_layers} layers in the mesh against "
-                f"{asked} asked for")
-    if asked and mesh_layers < LAYERS_FLOOR_FRACTION * asked:
-        return (f"{interface_patch} came back with {mesh_layers:.2f} layers against {asked} asked "
-                f"for, under the {LAYERS_FLOOR_FRACTION * 100:.0f}% this engine will deliver; the "
-                f"measured run achieved 2.84 of 3")
+    if asked and 0.0 < mesh_layers < LAYERS_FLOOR_FRACTION * asked:
+        out.append(f"{interface_patch} kept {mesh_layers:.2f} layers of the {asked} asked for, "
+                   f"under {LAYERS_FLOOR_FRACTION * 100:.0f}%; the measured run kept 2.84 of 3")
     bad = got.get("illegal_faces")
     if bad is not None and int(cells) > 0:
         per_m = float(bad) * 1e6 / float(cells)
         if per_m > ILLEGAL_PER_MILLION_CEILING:
-            return (f"the layer pass left {int(bad):,} faces in error over {int(cells):,} cells, "
-                    f"{per_m:.0f} per million against a ceiling of "
-                    f"{ILLEGAL_PER_MILLION_CEILING:g}; the measured run left 2,888 over "
-                    f"102,536,327, which is 28")
-    return ""
+            out.append(f"left {int(bad):,} faces in error over {int(cells):,} cells, "
+                       f"{per_m:.0f} per million against {ILLEGAL_PER_MILLION_CEILING:g}; the "
+                       f"measured run left 2,888 over 102,536,327, which is 28")
+    return out
 
 
 def measured(report: dict, *, interface_patch: str) -> dict:
@@ -683,8 +716,8 @@ __all__ = ["LAYER_CASE", "LAYER_STAGE", "LayerError", "MAX_GLOBAL_CELLS", "MAX_L
            "FIRST_LAYER_FRACTION", "MIN_THICKNESS_FRACTION", "MAX_STACK_FRACTION",
            "SMOOTH_SURFACE_NORMALS", "SMOOTH_THICKNESS", "SMOOTH_NORMALS", "COVERAGE_FLOOR_PCT",
            "THICKNESS_FLOOR_PCT", "LAYERS_FLOOR_FRACTION", "ILLEGAL_PER_MILLION_CEILING",
-           "max_layers", "interface_cell_m", "geometry_for", "stack_thickness_m", "cells_multiplier", "coolant_multiplier", "WHOLE_MESH_PER_LAYER",
+           "LAYER_PEAK_MARGIN", "max_layers", "interface_cell_m", "geometry_for", "stack_thickness_m", "cells_multiplier", "coolant_multiplier", "WHOLE_MESH_PER_LAYER",
            "COOLANT_PER_LAYER",
            "seconds_estimate", "fit_complaint", "render_mesh_quality_dict", "render_layers_dict",
            "render_support_dicts", "render_decompose_dict", "serial_complaint", "case_script",
-           "read_layer_log", "complain", "measured"]
+           "read_layer_log", "complain", "shortfalls", "measured"]
