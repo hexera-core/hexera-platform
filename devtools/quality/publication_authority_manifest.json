@@ -728,6 +728,19 @@
   ]
  },
  {
+  "context": "agents/builder/rerun_guard.py::before_launch::error#1|NotAPublisher|not-a-publisher|",
+  "path": "agents/builder/rerun_guard.py",
+  "qualname": "before_launch",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "agents/intake/approval.py::assert_payload_matches_approval::error#1|NotAPublisher|not-a-publisher|agents/intake/approval.py::callers of assert_payload_matches_approval()",
   "path": "agents/intake/approval.py",
   "qualname": "assert_payload_matches_approval",
