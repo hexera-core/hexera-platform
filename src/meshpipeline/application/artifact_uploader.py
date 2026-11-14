@@ -340,9 +340,34 @@ def fea_export_plan(job_id: uuid.UUID, workspace: Path) -> list[_Planned]:
     return out
 
 
+def cfd_export_plan(job_id: uuid.UUID, workspace: Path) -> list[_Planned]:
+    """A FLOW MESH'S SOLVER FILES, one download each (engines/cfd_exports.py: the OpenFOAM case as a
+    zip, the Fluent mesh, the EnSight case - written on the mesher). Only the files that belong to
+    the mesh delivered (cfd_exports.offered); nothing for any other run."""
+    from meshpipeline.engines.cfd_exports import offered
+    if (workspace / "fea_plan.json").exists():
+        return []
+    from meshpipeline.artifact_keys import export_key
+    from meshpipeline.engines.bucket_files import kept
+    held = kept(workspace)
+    out = []
+    for logical, file_name, _label in offered(workspace, held):
+        src = workspace / file_name
+        if src.is_file():
+            out.append(_Planned(ArtifactType.mesh, logical, export_key(str(job_id), file_name),
+                                "application/zip", src, required=False))
+        else:
+            k = held[file_name]
+            out.append(_Planned(ArtifactType.mesh, logical, export_key(str(job_id), file_name),
+                                "application/zip", src, required=False, chunks=_kept_raw(k),
+                                expect_bytes=k.bytes))
+    return out
+
+
 def _build_plan(job_id: uuid.UUID, workspace: Path, scratch: list[Path],
                 engine: str) -> list[_Planned]:
     plan: list[_Planned] = []
+    from meshpipeline.engines.cfd_exports import ENGINES as _FLOW_ENGINES
 
     # OPTIONAL: the boundary surface for quick viewing (the solver mesh lives in the bundle).
     # surface_mesh.msh is the boundary this run PRODUCED. mesh.msh is the CAD the mesher snapped to,
@@ -355,7 +380,11 @@ def _build_plan(job_id: uuid.UUID, workspace: Path, scratch: list[Path],
         mesh_path = workspace / "mesh.msh"
     from meshpipeline.engines.bucket_files import kept
     held = kept(workspace)
-    if mesh_path.exists() and mesh_path.stat().st_size > 0:
+    if engine in _FLOW_ENGINES:
+        # A FLOW MESH'S boundary .msh is the viewer's own file, not a download: the user gets the
+        # OpenFOAM case and the solver files (cfd_export_plan), and the bundle carries the rest
+        pass
+    elif mesh_path.exists() and mesh_path.stat().st_size > 0:
         from meshpipeline.artifact_keys import mesh_artifact_key
         plan.append(_Planned(ArtifactType.mesh, ArtifactType.mesh.value,
                              mesh_artifact_key(str(job_id)),
@@ -370,6 +399,8 @@ def _build_plan(job_id: uuid.UUID, workspace: Path, scratch: list[Path],
                              chunks=_kept_raw(k), expect_bytes=k.bytes))
 
     plan.extend(fea_export_plan(job_id, workspace))
+    if engine in _FLOW_ENGINES:
+        plan.extend(cfd_export_plan(job_id, workspace))
 
     # REQUIRED: the engine-declared deliverable bundle (spec.deliverable) - what the user is promised.
     # requiredness is decided by the ONE artifact policy, keyed on the engine whose
@@ -418,6 +449,12 @@ def _build_plan(job_id: uuid.UUID, workspace: Path, scratch: list[Path],
     # A report that cannot be written never costs the user their mesh: the bundle ships without it.
     _bundle: _Planned | None = None
     _members = [m.path for m in _recipe.members]
+    if engine in _FLOW_ENGINES:
+        # the bundle carries a solver file only when it belongs to the mesh delivered (cfd_exports.offered)
+        from meshpipeline.engines.cfd_exports import FILES as _FLOW_FILES
+        from meshpipeline.engines.cfd_exports import offered as _offered
+        _good = {f for _k, f, _l in _offered(workspace, held)}
+        _members = [m for m in _members if m not in _FLOW_FILES or m in _good]
     try:
         from meshpipeline.render.mesh_report import REPORT_FILE, mesh_report_html
         (workspace / REPORT_FILE).write_text(mesh_report_html(json.loads(_vpath.read_text())), encoding="utf-8")

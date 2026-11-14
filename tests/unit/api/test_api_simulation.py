@@ -232,3 +232,32 @@ def test_every_customer_visible_artifact_has_a_name_a_person_would_recognise():
                if label == t.replace("_", " ").capitalize()}
     assert not unnamed, f"these fell through to the enum's own spelling: {unnamed}"
     assert labelled["repaired_cad"] == "Repaired geometry (.step)", labelled["repaired_cad"]
+
+
+def test_a_flow_mesh_s_solver_files_are_named_and_listed_bundle_first_then_in_menu_order():
+    from types import SimpleNamespace as NS
+
+    from meshpipeline.persistence.models import ArtifactType
+
+    assert sim_module._artifact_label(ArtifactType.mesh, "snappy", "export_openfoam_case") == "OpenFOAM case (.zip)"
+    assert sim_module._artifact_label(ArtifactType.mesh, "snappy", "export_fluent").startswith("Ansys Fluent mesh (.msh) - not yet tested")
+    assert sim_module._artifact_label(ArtifactType.mesh, "snappy", "export_ensight").startswith("EnSight case (.case) - not yet tested")
+    rows = [NS(artifact_type=ArtifactType.repair_report, logical_key="repair_report"),
+            NS(artifact_type=ArtifactType.mesh, logical_key="export_ensight"),
+            NS(artifact_type=ArtifactType.mesh_bundle, logical_key="mesh_bundle"),
+            NS(artifact_type=ArtifactType.mesh, logical_key="export_fluent"),
+            NS(artifact_type=ArtifactType.mesh, logical_key="export_openfoam_case")]
+    assert [r.logical_key for r in sorted(rows, key=sim_module._menu_rank)] == [
+        "mesh_bundle", "export_openfoam_case", "export_fluent", "export_ensight", "repair_report"]
+
+
+def test_a_flow_mesh_offers_no_surface_preview_and_an_fea_mesh_keeps_its_file():
+    from types import SimpleNamespace as NS
+
+    from meshpipeline.persistence.models import ArtifactType
+
+    preview = NS(artifact_type=ArtifactType.mesh, logical_key="mesh")
+    for engine in ("snappy", "cfmesh", "netgen", "vmtk", "snapgrid", "snappy_multiregion"):
+        assert sim_module._surface_preview_hidden(preview, engine), engine
+    assert not sim_module._surface_preview_hidden(preview, "gmsh")
+    assert not sim_module._surface_preview_hidden(NS(artifact_type=ArtifactType.mesh, logical_key="export_fluent"), "snappy")

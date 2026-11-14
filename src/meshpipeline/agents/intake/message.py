@@ -405,7 +405,14 @@ async def _settle(inbound: InboundMessage, db, *, gate: dict, locked, messages: 
     # and its Proceed records the unit. Measured already, the deferral takes the proposal below.
     unit_to_stage = (not fea_unit_on_stage and uc.needs_confirmation(locked)
                      and _unit_left_unmeasured(inbound, gate))
-    on_stage = fea_unit_on_stage or unit_to_stage
+    # A FLOW PART'S UNIT IS SETTLED ON ITS STAGE TOO (Areen, 2026-11-13): the chat asked "I'll take
+    # inches - say ok, or name the unit" while the stage stood beside it with its own unit box, and
+    # the two fought. While a geometry check will show the part, the stage's unit box and Proceed
+    # settle it; the chat asks only when there is no stage (the check off, failed or finished).
+    flow_unit_on_stage = (not fea_unit_on_stage and not unit_to_stage and uc.needs_confirmation(locked)
+                          and not uc.already_asked(gate) and uc.stated_unit(inbound.content) is None
+                          and _stage_settles_unit(str(inbound.session_id)))
+    on_stage = fea_unit_on_stage or unit_to_stage or flow_unit_on_stage
     unit = None if on_stage else await _settle_unit(
         inbound, db, gate=gate, locked=locked, revision=revision, session_repo=session_repo,
         logger=logger)
@@ -438,6 +445,13 @@ async def _settle(inbound: InboundMessage, db, *, gate: dict, locked, messages: 
         return hold
     return MessageOutcome(status=MessageStatus.proceed,
                           transition=GateTransition(revision=revision))
+
+
+def _stage_settles_unit(session_id: str) -> bool:
+    """Whether a geometry stage will settle the unit (application/geometry_hold.stage_settles_unit)."""
+    from meshpipeline.application import geometry_hold as gh
+
+    return gh.stage_settles_unit(session_id)
 
 
 def _unit_left_unmeasured(inbound: InboundMessage, gate: dict) -> bool:

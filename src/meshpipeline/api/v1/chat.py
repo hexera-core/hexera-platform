@@ -197,9 +197,13 @@ async def chat_message(body: ChatMessageIn, owner_id: str = Depends(owner_dep),
     async with get_db() as db:
         _sess = await session_repo.get_for_owner(db, session_id, owner_id,
                                                   organization_id=organization_id)
+    from meshpipeline.application.purpose_map import choices_for
+    _reply = _extract_reply(result)
     return ChatResponse(
         session_id=session_id,
-        reply=_extract_reply(result),
+        reply=_reply,
+        # the buttons under the application's own question (a purpose question; never a cell count)
+        choices=choices_for(_reply),
         awaiting_confirmation=bool(_sess.request_txt) and _sess.job_id is None,
         brief=await _brief(_sess, owner_id),
         # re-projected for the mode running NOW: a session written under raw must
@@ -231,7 +235,16 @@ async def chat_notes(body: ChatNoteIn, owner_id: str = Depends(owner_dep),
     from meshpipeline.contracts.user_notes import clean as _clean_notes
     notes = [{"id": n["id"], "text": n["text"], "source": n["source"]}
              for n in _clean_notes(getattr(session, "user_notes", None))]
-    return {"session_id": str(body.session_id), "brief": await _brief(session, owner_id), "user_notes": notes}
+    out = {"session_id": str(body.session_id), "brief": await _brief(session, owner_id), "user_notes": notes}
+    # "use cfMesh" IN THE NOTES chooses the engine as it does in the chat: the console says it in the
+    # chat for the user, and the intake takes it from there (engine_selection.switch_by_words)
+    from meshpipeline.agents.intake.engine_selection import note_chooses_engine
+    gate = getattr(session, "intake_gate", None) or {}
+    current = str((gate.get("selection") or {}).get("engine") or getattr(session, "mesh_engine", "") or "")
+    say = note_chooses_engine(body.text, current)
+    if say:
+        out["say"] = say
+    return out
 
 
 #: Typed approval outcome -> HTTP status. The route owns this table and nothing else about

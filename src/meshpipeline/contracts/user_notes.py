@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -196,22 +196,46 @@ def make(text: str, *, source: str, turn: int | None = None, at: str = "") -> di
             "turn": int(turn) if turn is not None else None, "at": at or _now()}
 
 
-def capture(messages: Iterable[Any], quotes: Sequence[Any] = (), *,
-            consumer: str = "intake") -> tuple[list[dict], list[str]]:
+def clicked(text: Any, asked: Any, offered: Callable[[str], Iterable[Mapping]] | None) -> bool:
+    """Whether a user message is a click on a button the application offered under its message just before
+    (`offered(asked)`: the buttons under that message, application/purpose_map.choices_for) - the button's own words,
+    sent for the user. Such a message chooses among what WE offered; it is never the user's own note (NOTE-1)."""
+    if offered is None:
+        return False
+    said = _norm(text)
+    if not said:
+        return False
+    try:
+        choices = list(offered(str(asked or "")) or ())
+    except Exception:  # noqa: BLE001 - a question we cannot read offered no button
+        logger.debug("user notes: the offered choices could not be read", exc_info=True)
+        return False
+    return any(said in (_norm(c.get("send")), _norm(c.get("label"))) for c in choices if isinstance(c, Mapping))
+
+
+def capture(messages: Iterable[Any], quotes: Sequence[Any] = (), *, consumer: str = "intake",
+            offered: Callable[[str], Iterable[Mapping]] | None = None) -> tuple[list[dict], list[str]]:
     """The conversation's notes, and the quotes that matched no message of the user's.
 
     Two ways in, both the user's WHOLE message verbatim: the answer to the question (unless it
     says no), and every message the intake quoted as saying something specific. A quote that
-    matches nothing the user wrote is not the user's words, so it is not kept - it is returned."""
+    matches nothing the user wrote is not the user's words, so it is not kept - it is returned.
+    A CLICK ON A BUTTON WE OFFERED (`offered`, see clicked) is never a note: the founder's "Keep
+    8.0 M" was kept as one and read as his cell count over the 3 M he typed after it (14 Nov)."""
     _reader(consumer)
-    turns, turn = [], 0
+    turns, turn, asked_before, clicks = [], 0, "", set()
     for m in _own(messages):
         if m.get("role") == "user":
             turn += 1
-            turns.append((turn, str(m.get("content") or "")))
+            text = str(m.get("content") or "")
+            turns.append((turn, text))
+            if clicked(text, asked_before, offered):
+                clicks.add(turn)
+        else:
+            asked_before = str(m.get("content") or "")
     picked: dict[int, str] = {}
     got = answer(messages)
-    if got is not None and got[1].strip() and not is_skip(got[1]):
+    if got is not None and got[1].strip() and not is_skip(got[1]) and got[0] not in clicks:
         picked[got[0]] = got[1]
     unmatched: list[str] = []
     for q in quotes or ():
@@ -221,7 +245,7 @@ def capture(messages: Iterable[Any], quotes: Sequence[Any] = (), *,
         hit = next(((t, text) for t, text in turns if quote in _norm(text)), None)
         if hit is None:
             unmatched.append(str(q))
-        elif not is_skip(hit[1]):
+        elif not is_skip(hit[1]) and hit[0] not in clicks:
             picked[hit[0]] = hit[1]
     return [make(text, source=SOURCE_CHAT, turn=t) for t, text in sorted(picked.items())], unmatched
 
@@ -448,7 +472,7 @@ def result_lines(remarks: Sequence[Any], *, consumer: str = "delivery") -> list[
 __all__ = ["COMMON_CONSUMERS", "CONSUMERS", "ENGINE_CONSUMERS", "GUIDANCE", "NOTES_FILE",
            "QUESTION", "REMARKS_FILE", "REMARK_DESCRIPTION", "ROUTE_CONSUMERS", "RULE_EVERY_ROUTE",
            "RULE_NEVER_FAILS", "RULE_VERBATIM", "SOURCE_CHAT", "SOURCE_CONSOLE", "SOURCE_SETTINGS", "answer",
-           "answers_now", "asked", "capture", "chat_block", "clean", "context_block", "drop_remark", "is_skip", "make",
+           "answers_now", "asked", "capture", "chat_block", "clean", "clicked", "context_block", "drop_remark", "is_skip", "make",
            "merge", "own_notes",
            "prompt_block", "SYSTEM_LEADS", "system_written",
            "read_remarks", "record_remark", "render", "result_lines", "workspace_block",

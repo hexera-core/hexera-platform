@@ -27,7 +27,7 @@ import { configure as configureStream, lastSeq, replay, start as startStream, te
   from "./realtime/stream.js";
 import { confirmCancel } from "./shell/cancel.js";
 import { clearNewRunOffer, configureComposer, disableInput, enableInput, mountComposer,
-  offerNewRun, setPlaceholder, showRunFile } from "./shell/composer.js";
+  offerNewRun, say, setPlaceholder, showRunFile } from "./shell/composer.js";
 import { refreshHealth } from "./shell/settings.js";
 import { configureDispute } from "./viewer/dispute.js";
 import { offerReview, openParked } from "./review/review.js";
@@ -215,6 +215,8 @@ function attachJob(id, { replayHistory = false, message = "", origin = getState.
 async function addBriefNote(text) {
   const d = await addNote(getState.sessionId(), text);
   Stage.brief(d.brief, addBriefNote, briefParts);
+  // "use cfMesh" in a note chooses the engine as it does in the chat: said there for the user
+  if (d.say) say(d.say);
 }
 
 /* THE PARTS CHECKLIST under the notes: which parts the notes mean, and the user's fix for one phrase */
@@ -247,7 +249,6 @@ configureComposer({
       await new Promise((r) => setTimeout(r, 2000));
     }
   },
-  engineChoice: (c, pick) => Stage.engineChoice(c, pick),
   // the buttons under an application question: what the mesh is for, an FEA part's analysis type
   choices: (list, pick) => Stage.choices(list, pick),
   supportedCopy: (t, short) => Stage.setSupportedCopy(t, short),

@@ -1,0 +1,477 @@
+# Responsibility: Verify SURF-12 (cad/surface_mend, through cad/surface_model.read): on a surface file, places where
+# the surfaces do not meet are made to meet by changing the surfaces - an edge stopping short is extended along its
+# own surface, an overlap is trimmed back to its neighbour's edge, a step is moved onto its neighbour, a web's foot
+# short of its plate is extended onto it - within the reach, each change told; beyond the reach the place stays open
+# and is told why; "do not change the surfaces" changes nothing; a slot drawn in a face is never closed; the open-place
+# count goes down by exactly the places closed; the same file twice reads the same.
+# Boundaries: small shapes drawn here with OpenCASCADE (tests/surface_fixtures); no mesh, no file.
+from __future__ import annotations
+
+import json
+import math
+
+import pytest
+
+pytest.importorskip("OCP.BRepPrimAPI")
+
+from tests import surface_fixtures as sx  # noqa: E402
+
+from meshpipeline.cad import surface_model as sm  # noqa: E402
+
+
+def _read(shape, **kw):
+    return sm.read(shape, mm_per_unit=1.0, said_shell=True, **kw)
+
+
+def _area(reading) -> float:
+    return sum(s["area_mm2"] for s in reading["sheets"])
+
+
+def _web(drop: float):
+    """A plate and an upright web whose foot stops `drop` above it."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
+    from OCP.gp import gp_Ax1, gp_Dir, gp_Pnt, gp_Trsf
+
+    t = gp_Trsf()
+    t.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(1, 0, 0)), math.pi / 2)
+    web = BRepBuilderAPI_Transform(sx.rect(20, 0, 180, 40), t, True).Shape()
+    return sx.compound([sx.rect(0, -50, 200, 50), sx.moved(web, (0, 0, drop))])
+
+
+def test_an_edge_stopping_short_is_extended_along_its_own_surface():
+    reading, sewn = _read(sx.compound([sx.rect(0, 0, 100, 80), sx.rect(101.0, 0, 200, 80)]))
+    c, m = reading["cleaned"], reading["cleaned"]["mend"]
+    assert m["closed"] == 1 and m["extended"] == 1 and m["changes"][0]["how"].startswith("extended")
+    assert len(reading["sheets"]) == 1 and c["open_places"] == 0
+    assert c["places_before"] == 1 and c["closed_places"] == 1
+    assert _area(reading) == pytest.approx(200.0 * 80.0, rel=1e-6)           # the gap is filled, nothing more
+    assert sewn.names == ["Face_1", "Face_2"]
+
+
+def test_an_overlap_is_trimmed_back_to_its_neighbours_edge():
+    reading, _sewn = _read(sx.compound([sx.rect(0, 0, 101.0, 80), sx.rect(100, 0, 200, 80)]))
+    c, m = reading["cleaned"], reading["cleaned"]["mend"]
+    assert m["closed"] == 1 and m["trimmed"] == 1
+    assert len(reading["sheets"]) == 1 and c["open_places"] == 0
+    assert _area(reading) == pytest.approx(200.0 * 80.0, rel=1e-6)           # the double layer is gone
+
+
+def test_a_step_is_moved_onto_its_neighbour():
+    reading, _sewn = _read(sx.compound([sx.rect(0, 0, 100, 80), sx.moved(sx.rect(100, 0, 200, 80), (0, 0, 1.0))]))
+    c, m = reading["cleaned"], reading["cleaned"]["mend"]
+    assert m["closed"] == 1 and m["moved"] == 1
+    assert len(reading["sheets"]) == 1 and c["open_places"] == 0
+
+
+def test_a_web_stopping_short_of_its_plate_is_extended_onto_it():
+    reading, _sewn = _read(_web(1.0))
+    c, m = reading["cleaned"], reading["cleaned"]["mend"]
+    assert m["closed"] == 1 and m["extended"] == 1
+    assert len(reading["sheets"]) == 1 and c["open_places"] == 0
+    assert sum(s["junction_edges"] + s["shared_edges"] for s in reading["sheets"]) >= 1
+
+
+def _web_on_patches(drop: float, cuts=(100.0,)):
+    """The web of _web over a plate drawn in several patches (cut across the web's line at `cuts`)."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
+    from OCP.gp import gp_Ax1, gp_Dir, gp_Pnt, gp_Trsf
+
+    t = gp_Trsf()
+    t.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(1, 0, 0)), math.pi / 2)
+    web = BRepBuilderAPI_Transform(sx.rect(20, 0, 180, 40), t, True).Shape()
+    xs = (0.0, *cuts, 200.0)
+    plate = [sx.rect(a, -50, b, 50) for a, b in zip(xs, xs[1:], strict=False)]
+    return sx.compound([*plate, sx.moved(web, (0, 0, drop))])
+
+
+def test_a_web_stopping_short_of_a_plate_drawn_in_patches_is_extended_onto_them():
+    # 12 Nov: a wall's foot 3.4 mm short of a stamped panel, across several of its patches, lay along no one face:
+    # it was no open place at all, and the web continued down met no single patch end to end
+    reading, sewn = _read(_web_on_patches(2.0, (70.0, 130.0)), element_mm=4.0)
+    c, m = reading["cleaned"], reading["cleaned"]["mend"]
+    assert c["places_before"] == 1 and m["closed"] == 1 and m["extended"] == 1, m
+    assert len(reading["sheets"]) == 1 and c["open_places"] == 0
+    # the foot on all three patches: through the middle one (split, a junction), scored into the two it ends in
+    assert sum(s["junction_edges"] for s in reading["sheets"]) >= 1
+    assert sum(s["junction_edges"] + s["shared_edges"] for s in reading["sheets"]) >= 6
+    assert sewn.names.count("Face_2") == 2
+    assert _area(reading) == pytest.approx(200.0 * 100.0 + 160.0 * 40.0 + 160.0 * 2.0, rel=1e-6)
+
+
+def test_a_tangent_strip_continues_a_face_straight_on_past_its_edge():
+    # SURF-12: where a face's own surface does not run on, it is continued by a ruled strip tangent to it, square to
+    # the edge and away from the face, starting on the edge's own points
+    from meshpipeline.cad import midsurface as ms
+    from meshpipeline.cad import surface_mend as smd
+
+    face = sx.rect(0, 0, 50, 30)
+    edge = max((e for e in smd._edges(face) if abs(ms._box(e)[0][0] - 50.0) < 1e-6 and abs(ms._box(e)[1][0] - 50.0) < 1e-6),
+               key=ms._length)
+    strip = smd._strip(face, edge, 3.0)
+    assert strip is not None
+    assert ms._area(strip) == pytest.approx(30.0 * 3.0, rel=1e-6)
+    lo, hi = ms._box(strip)
+    assert lo[0] == pytest.approx(50.0, abs=1e-6) and hi[0] == pytest.approx(53.0, abs=1e-6)   # outward, not over it
+    assert abs(lo[2]) < 1e-6 and abs(hi[2]) < 1e-6                                            # on the face's plane
+
+
+def test_beyond_the_reach_nothing_is_changed_and_the_notes_reach_closes_it():
+    """5 mm on a 220 mm strip is past 1/100 of the part: not an open place (SURF-8), nothing changed. "close gaps up to
+    6 mm" lets the change reach it."""
+    shape = sx.compound([sx.rect(0, 0, 100, 80), sx.rect(105.0, 0, 205, 80)])
+    reading, _sewn = _read(shape)
+    assert reading["cleaned"]["mend"]["closed"] == 0 and len(reading["sheets"]) == 2
+    said, _sewn = _read(shape, sew_mm=6.0)
+    m = said["cleaned"]["mend"]
+    assert m["closed"] == 1 and m["reach_from"] == "notes" and len(said["sheets"]) == 1
+    assert said["cleaned"]["open_places"] == 0
+
+
+def test_do_not_change_the_surfaces_changes_nothing():
+    shape = sx.compound([sx.rect(0, 0, 100, 80), sx.rect(101.0, 0, 200, 80)])
+    reading, _sewn = _read(shape, mend=False)
+    assert reading["cleaned"]["mend"] == {"off": True} and reading["cleaned"]["open_places"] == 1
+    assert len(reading["sheets"]) == 2
+
+
+def test_a_slot_drawn_in_a_face_is_never_closed():
+    shape = sx.plate_with_slot(slot=1.0, run=40.0)
+    reading, _sewn = _read(shape)
+    assert reading["cleaned"]["mend"].get("closed", 0) == 0
+    assert reading["sheets"][0]["loop_count"] == 2
+
+
+def test_the_open_count_goes_down_by_exactly_the_places_closed_and_twice_is_the_same():
+    shape = sx.compound([sx.rect(0, 0, 100, 80), sx.rect(101.0, 0, 200, 80), sx.moved(sx.rect(200, 0, 300, 80), (0, 0, 1.0)),
+                         sx.rect(306.0, 0, 400, 80)])
+    a, _ = _read(shape)
+    c = a["cleaned"]
+    assert c["places_before"] - c["closed_places"] == c["open_places"]
+    b, _ = _read(shape)
+    strip = lambda r: json.dumps(r, sort_keys=True, default=str)  # noqa: E731
+    assert strip(a) == strip(b)
+
+
+def _slanted(cut_back: float):
+    """A 300 x 200 plate cut in two along a slanted line; the right piece's slanted edge cut back by `cut_back` -
+    two TRIMMED faces (the plate's own plane runs on past every cut)."""
+    import numpy as np
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Splitter
+    from OCP.TopTools import TopTools_ListOfShape
+
+    def wall(p, n):
+        t = np.cross(n, [0, 0, 1.0])
+        t /= np.linalg.norm(t)
+        z = np.array([0, 0, 1.0])
+        return _quad([p + a * 800 * t + b * 50 * z for a, b in ((-1, -1), (1, -1), (1, 1), (-1, 1))])
+
+    def cut(face, tool):
+        args, tools = TopTools_ListOfShape(), TopTools_ListOfShape()
+        args.Append(face)
+        tools.Append(tool)
+        sp = BRepAlgoAPI_Splitter()
+        sp.SetArguments(args)
+        sp.SetTools(tools)
+        sp.Build()
+        return sx.faces_of(sp.Shape())
+
+    n = np.array([200.0, 60.0, 0.0])
+    n /= np.linalg.norm(n)
+    p = np.array([150.0, 100.0, 0.0])
+    left, right = sorted(cut(sx.rect(0, 0, 300, 200), wall(p, n)), key=lambda f: _cx(f))
+    if cut_back:
+        right = max(cut(right, wall(p + cut_back * n, n)), key=lambda f: _cx(f))
+    return sx.compound([left, right])
+
+
+def _quad(pts):
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon
+    from OCP.gp import gp_Pnt
+
+    poly = BRepBuilderAPI_MakePolygon()
+    for q in pts:
+        poly.Add(gp_Pnt(*map(float, q)))
+    poly.Close()
+    return BRepBuilderAPI_MakeFace(poly.Wire(), True).Face()
+
+
+def _cx(face) -> float:
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
+
+    g = GProp_GProps()
+    BRepGProp.SurfaceProperties_s(face, g)
+    return float(g.CentreOfMass().X())
+
+
+def test_a_trimmed_face_stopping_short_is_extended_on_its_own_surface():
+    """The coordinator's case: most faces of a real stamped file are trimmed (cut out of a larger patch). A trimmed
+    face is continued by a strip of its own surface past the edge, joined into one face, and meets its neighbour."""
+    reading, _sewn = _read(_slanted(1.0))
+    c, m = reading["cleaned"], reading["cleaned"]["mend"]
+    assert m["closed"] == 1 and m["extended"] == 1, m
+    assert len(reading["sheets"]) == 1 and c["open_places"] == 0
+    assert _area(reading) == pytest.approx(300.0 * 200.0, rel=1e-6)
+
+
+def _bspline(fn, u, v, n: int = 9):
+    """A natural B-spline patch through an n x n grid of fn(a, b) over u x v (one wire, four sides)."""
+    import numpy as np
+    from OCP.Approx import Approx_IsoParametric
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+    from OCP.GeomAPI import GeomAPI_PointsToBSplineSurface
+    from OCP.gp import gp_Pnt
+    from OCP.TColgp import TColgp_Array2OfPnt
+
+    arr = TColgp_Array2OfPnt(1, n, 1, n)
+    for i, a in enumerate(np.linspace(*u, n)):
+        for j, b in enumerate(np.linspace(*v, n)):
+            arr.SetValue(i + 1, j + 1, gp_Pnt(*map(float, fn(a, b))))
+    api = GeomAPI_PointsToBSplineSurface()
+    api.Interpolate(arr, Approx_IsoParametric, False)
+    return BRepBuilderAPI_MakeFace(api.Surface(), 1e-7).Face()
+
+
+def _fillet_and_bead(gap: float, short: bool = False):
+    """A small natural fillet patch (a quarter round of 5 mm radius, 12 mm long) rising from a 200 x 12 mm panel, and a
+    small natural bead patch (10 x 12 mm, bulging 0.5 mm) standing on the fillet's top edge but starting `gap` above
+    it: two 4-sided natural B-spline patches a few millimetres across with a gap between them. With `short`, the bead is
+    the clean bead's own surface stopping `gap` short instead (its lower edge on the same curve, higher up)."""
+    r = 5.0
+    fillet = _bspline(lambda a, b: (r * math.sin(a), b, r - r * math.cos(a)), (0.0, math.pi / 2), (0.0, 12.0))
+    if short:
+        bead = _bspline(lambda a, b: (r + 0.5 * math.sin(math.pi * a / 10.0), b, r + a), (gap, 10.0), (0.0, 12.0))
+    else:
+        bead = _bspline(lambda a, b: (r + 0.5 * math.sin(math.pi * a / 10.0), b, r + gap + a), (0.0, 10.0), (0.0, 12.0))
+    return sx.compound([sx.rect(-200.0, 0.0, 0.0, 12.0), fillet, bead])
+
+
+@pytest.mark.parametrize("gap,short", [(1.0, False), (0.6, True), (2.0, True)])
+def test_small_natural_bspline_patches_a_millimetre_apart_are_made_to_meet(gap, short):
+    """0.6 to 2 mm between two small natural B-spline patches (a fillet and a bead) is inside the reach: the fillet's own
+    curve bends away from the bead, so the BEAD is continued down onto the fillet's edge (both faces of a place are
+    tried), and the continued bead, rebuilt through its own points, is found again after the cut (it lies within the
+    fit, not on the old patch to the last digit). The open-place count goes to 0, one sheet."""
+    reading, _sewn = _read(_fillet_and_bead(gap, short=short))
+    m = reading["cleaned"]["mend"]
+    assert m["closed"] == 1 and m["extended"] >= 1, m
+    assert reading["cleaned"]["open_places"] == 0, m
+    assert len(reading["sheets"]) == 1
+
+
+def test_a_gap_wider_than_a_quarter_of_the_narrower_face_is_still_closed():
+    """A 3.5 mm gap between a 300 x 200 panel and a 12 mm wide strip: more than a quarter of the strip (3 mm), but under
+    1/100 of the part and under the run's own element size, so it is closed."""
+    reading, _sewn = _read(sx.compound([sx.rect(0, 0, 300, 200), sx.rect(303.5, 0, 315.5, 200)]))
+    m = reading["cleaned"]["mend"]
+    assert m["closed"] == 1 and reading["cleaned"]["open_places"] == 0, m
+
+
+def test_the_users_element_size_widens_the_reach_on_a_small_face():
+    """A 2 mm gap between two 3 mm wide strips 400 mm long: the run's own element size there is 1.7 mm (a strip's
+    size over 20, SHMESH-15, at the thin-sheet wall), so it stays open - unless the user asked for 4 mm elements
+    everywhere, then a 2 mm gap is under one element and it is closed."""
+    shape = sx.compound([sx.rect(0, 0, 3, 400), sx.rect(5.0, 0, 8, 400)])
+    plain, _sewn = _read(shape)
+    assert plain["cleaned"]["mend"]["closed"] == 0
+    asked, _sewn = _read(shape, element_mm=4.0)
+    assert asked["cleaned"]["mend"]["closed"] == 1 and asked["cleaned"]["open_places"] == 0
+
+
+def _fillet_line(widths: list[tuple[float, float]], fillet_cuts=(0.0, 60.0, 100.0, 101.2, 160.0)):
+    """A 320 x 196 mm panel (z = 0, y from 4) running round a fillet (true quarter cylinders, r 4, cut at
+    `fillet_cuts` along x) down into a flange (natural B-spline patches in y = 0 at the top, curved below), the flange's
+    top stopping short of the fillet by a strip whose width runs through `widths` ((x, mm), one flange patch between
+    each two): two tangent faces leaving a tapered sliver between their edges, as a clean-up course hands them out."""
+    import numpy as np
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+    from OCP.Geom import Geom_CylindricalSurface
+    from OCP.gp import gp_Ax3, gp_Dir, gp_Pnt
+
+    r, f = 4.0, 15.0
+    s = Geom_CylindricalSurface(gp_Ax3(gp_Pnt(0.0, r, -r), gp_Dir(1.0, 0.0, 0.0), gp_Dir(0.0, -1.0, 0.0)), r)
+    fillets = [BRepBuilderAPI_MakeFace(s, 1.5 * math.pi, 2.0 * math.pi, a, b, 1e-7).Face()
+               for a, b in zip(fillet_cuts, fillet_cuts[1:], strict=False)]
+    xs = [x for x, _w in widths]
+    ws = [w for _x, w in widths]
+    flanges = []
+    for (x0, _w0), (x1, _w1) in zip(widths, widths[1:], strict=False):
+
+        def fn(a, b):
+            top = -r - float(np.interp(a, xs, ws))
+            z = -r - f + b * (top + r + f)
+            return (a, -0.01 * (top - z) ** 2, z)
+
+        flanges.append(_bspline(fn, (x0, x1), (0.0, 1.0)))
+    return sx.compound([sx.rect(0.0, r, 320.0, 200.0), *fillets, *flanges])
+
+
+def _area_of(shape) -> float:
+    return float(sum(sx._area(f) for f in sx.faces_of(shape)))
+
+
+def test_a_tapered_sliver_between_tangent_faces_is_filled_with_a_new_face():
+    # SURF-12: a fillet and the flange beside it are tangent, but the flange stops short by a strip opening and
+    # closing between 0.65 and 3.4 mm (the fillet and the flange cut at different places): a new face spans the strip
+    # between the two edges - the faces themselves stay as they are; one sheet, nothing left open
+    from meshpipeline.cad import midsurface as ms
+    from meshpipeline.cad import surface_mend as smd
+
+    shape = _fillet_line([(0.0, 0.7), (40.0, 3.4), (80.0, 0.65), (120.0, 3.2), (160.0, 1.0)])
+    sewn = sm.sew(shape)
+    places = sm.open_places(sewn, mm_per_unit=1.0, reach=4.0)
+    assert len(places) == 1
+    got, why, widest, _who = smd._with_fill(sewn, places[0], 4.0, 4.0)
+    assert got is not None, why
+    assert sm.open_places(got, mm_per_unit=1.0, reach=4.0) == [] and len(got.sheets) == 1
+    assert widest == pytest.approx(3.4, abs=0.05)
+    strip = 20.0 * (0.7 + 3.4 + 3.4 + 0.65 + 0.65 + 3.2 + 3.2 + 1.0)
+    assert sum(ms._area(f) for f in got.faces) - _area_of(shape) == pytest.approx(strip, rel=0.02)
+    old = {round(ms._area(f), 6) for f in sewn.faces}
+    assert old <= {round(ms._area(f), 6) for f in got.faces}                 # none of the old faces changed
+    # the whole reading closes it too (by the faces' own extension where they extend, else the fill)
+    reading, _sewn = _read(shape, element_mm=4.0)
+    assert reading["cleaned"]["open_places"] == 0 and len(reading["sheets"]) == 1
+
+
+def test_a_sliver_that_closes_to_nothing_at_both_ends_is_filled_to_the_points():
+    # the strip touching at both ends (0 -> 3.4 -> ... -> 0): the new faces close to a point where the edges meet, and
+    # nothing is left open there (no stub of edge between the point and the corner)
+    from meshpipeline.cad import surface_mend as smd
+
+    shape = _fillet_line([(0.0, 0.0), (40.0, 3.4), (80.0, 0.65), (120.0, 3.2), (160.0, 0.0)])
+    sewn = sm.sew(shape)
+    places = sm.open_places(sewn, mm_per_unit=1.0, reach=4.0)
+    got, why, _w, _who = smd._with_fill(sewn, places[0], 4.0, 4.0)
+    assert got is not None, why
+    assert sm.open_places(got, mm_per_unit=1.0, reach=4.0) == [] and len(got.sheets) == 1
+
+
+def test_a_corner_both_faces_stop_short_of_is_closed_by_extending_both():
+    # a lip leaving the panel's end at 48 degrees, its foot 3.2 mm out from the panel's edge and 0.41 mm above it:
+    # the lip continued alone meets the panel's plane just past the panel's edge, the panel continued alone passes
+    # under the lip - both are continued and cut where they cross
+    a = math.radians(48.0)
+    lips = [_bspline(lambda t, y: (323.2 + t * math.cos(a), y, 0.41 + t * math.sin(a) + 0.002 * t * t),
+                     (0.0, 12.0), (y0, y1)) for y0, y1 in ((60.0, 90.0), (90.0, 120.0))]
+    shape = sx.compound([sx.rect(0.0, 0.0, 320.0, 200.0), *lips])
+    reading, _sewn = _read(shape, element_mm=4.0)
+    c, m = reading["cleaned"], reading["cleaned"]["mend"]
+    assert m["closed"] == 1 and m["changes"][0]["how"].startswith("extended both"), m
+    assert c["open_places"] == 0 and len(reading["sheets"]) == 1
+    # the panel grew by about the 2.8 mm it lacked along the lip's 60 mm, no more
+    assert 0.0 < _area(reading) - _area_of(shape) < 60.0 * (3.2 + 1.5)
+
+
+#: the bent sheet's round: radius, and how far it turns (the flange at 48 degrees to the panel)
+_R, _TURN = 4.0, math.radians(48.0)
+
+
+def _on_round(x: float, phi: float):
+    import numpy as np
+
+    return np.array([x, _R * math.sin(phi), _R - _R * math.cos(phi)])
+
+
+def _cut_across(x_panel: float, x_flange: float):
+    """A plane cutting across the round from x_panel on the panel's side to x_flange on the flange's."""
+    import numpy as np
+
+    p0, p1 = _on_round(x_panel, 0.0), _on_round(x_flange, _TURN)
+    mid = 0.5 * (p0 + p1)
+    n = np.cross(p1 - p0, mid - np.array([mid[0], 0.0, _R]))
+    return mid, n / np.linalg.norm(n)
+
+
+def _bent(panel_cuts, flange_cuts, cuts, missing):
+    """A sheet bent through a round, as a stamping drawn in surfaces: a 320 x 200 mm panel (z = 0) turning through a
+    round (a true cylinder, r 4, round the x axis) into a flange at 48 degrees - the round cut across by `cuts`
+    ((point, normal) planes), its pieces whose middle lies in a range of `missing` (x) LEFT OUT: a HOLE closed round by
+    the round's pieces, the panel and the flange (their edges along the round split at `panel_cuts`, `flange_cuts`)."""
+    import numpy as np
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Splitter
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+    from OCP.Geom import Geom_CylindricalSurface
+    from OCP.gp import gp_Ax3, gp_Dir, gp_Pln, gp_Pnt
+    from OCP.TopTools import TopTools_ListOfShape
+
+    lx = 320.0
+    panel = [(0.0, -200.0, 0.0), (lx, -200.0, 0.0)] + [(x, 0.0, 0.0) for x in sorted([lx, *panel_cuts, 0.0], reverse=True)]
+    e, d = _on_round(0.0, _TURN), np.array([0.0, math.cos(_TURN), math.sin(_TURN)])
+    flange = [e + (x, 0.0, 0.0) for x in sorted([0.0, *flange_cuts, lx])] + [e + (lx, 0.0, 0.0) + 150.0 * d,
+                                                                            e + 150.0 * d]
+    cyl = Geom_CylindricalSurface(gp_Ax3(gp_Pnt(0.0, 0.0, _R), gp_Dir(1.0, 0.0, 0.0), gp_Dir(0.0, 0.0, -1.0)), _R)
+    args, tools = TopTools_ListOfShape(), TopTools_ListOfShape()
+    args.Append(BRepBuilderAPI_MakeFace(cyl, 0.0, _TURN, 0.0, lx, 1e-7).Face())
+    for p, n in cuts:
+        tools.Append(BRepBuilderAPI_MakeFace(gp_Pln(gp_Pnt(*map(float, p)), gp_Dir(*map(float, n))),
+                                             -60.0, 60.0, -60.0, 60.0).Face())
+    sp = BRepAlgoAPI_Splitter()
+    sp.SetArguments(args)
+    sp.SetTools(tools)
+    sp.Build()
+    pieces = [f for f in sx.faces_of(sp.Shape()) if not any(lo < _cx(f) < hi for lo, hi in missing)]
+    return sx.compound([_quad(panel), _quad(flange), *pieces])
+
+
+def _round_missing():
+    """The round missing for x 100..117, cut square across."""
+    return _bent([100.0, 117.0], [100.0, 117.0], [((100.0, 0, 0), (1, 0, 0)), ((117.0, 0, 0), (1, 0, 0))],
+                 [(100.0, 117.0)])
+
+
+def test_a_round_with_a_stretch_missing_is_filled_with_a_new_face():
+    # SURF-12: the panel's edge and the flange's run 3.25 mm apart along the 17 mm where the round is missing, at 48
+    # degrees: neither continued alone, nor both, nor a strip between them closes it (the continued faces would cross
+    # the round's pieces either side) - the hole the four faces close round is filled with one new face, tangent to
+    # them; nothing is moved
+    shape = _round_missing()
+    reading, sewn = _read(shape, element_mm=4.0)
+    c, m = reading["cleaned"], reading["cleaned"]["mend"]
+    assert c["places_before"] == 1 and c["open_places"] == 0 and len(reading["sheets"]) == 1, m
+    assert m["filled"] == 1 and m["changes"][0]["how"] == "filled a hole with a new face"
+    assert m["changes"][0]["round"] == ["Face_1", "Face_2", "Face_3", "Face_4"]
+    assert m["changes"][0]["moved_mm"] == pytest.approx(2.0 * _R * math.sin(_TURN / 2.0), rel=0.05)   # the hole's width
+    # the new face is the round's missing stretch, near enough: 17 mm of its 3.35 mm arc
+    assert _area(reading) - _area_of(shape) == pytest.approx(17.0 * _R * _TURN, rel=0.03)
+    assert sewn.names[-1] in ("Face_1", "Face_2") and len(sewn.faces) == 5
+
+
+def test_a_tapering_hole_whose_corners_meet_unsewn_is_filled():
+    # the round cut square at x = 100 and slanted from x = 112 at the panel to x = 100 at the flange: a tapering hole
+    # with a tip where the two pieces' corners meet on the flange's edge but share no edge (two corners at one spot) -
+    # the hole is found round through that spot and filled
+    shape = _bent([100.0, 112.0], [100.0], [((100.0, 0, 0), (1, 0, 0)), _cut_across(112.0, 100.0)], [(100.0, 106.0)])
+    reading, _sewn = _read(shape, element_mm=4.0)
+    c, m = reading["cleaned"], reading["cleaned"]["mend"]
+    assert c["places_before"] == 1 and c["open_places"] == 0 and len(reading["sheets"]) == 1, m
+    assert m["changes"][0]["how"] == "filled a hole with a new face" and m["changes"][0]["round"] == [
+        "Face_1", "Face_3", "Face_4"]
+    assert _area(reading) - _area_of(shape) == pytest.approx(0.5 * 12.0 * _R * _TURN, rel=0.1)
+
+
+def test_a_sliver_between_two_holes_has_both_filled():
+    # a thin sliver of the round left between two missing stretches (a face both its free edges are on a hole): the
+    # place runs past it, and both holes are filled in the one change
+    shape = _bent([100.0, 106.0, 107.5, 117.0], [100.0, 110.0, 117.0],
+                  [((100.0, 0, 0), (1, 0, 0)), _cut_across(106.0, 110.0), _cut_across(107.5, 110.0),
+                   ((117.0, 0, 0), (1, 0, 0))], [(100.0, 105.5), (108.5, 117.0)])
+    reading, sewn = _read(shape, element_mm=4.0)
+    c, m = reading["cleaned"], reading["cleaned"]["mend"]
+    assert c["places_before"] == 1 and c["open_places"] == 0 and len(reading["sheets"]) == 1, m
+    assert m["changes"][0]["how"] == "filled a hole with a new face" and len(sewn.faces) == 5 + 2
+
+
+def test_a_hole_wider_than_twice_the_reach_is_not_filled():
+    # the same hole against a reach of 1.5 mm: 3.3 mm across is more than twice it - left as drawn, and said why
+    from meshpipeline.cad import surface_mend as smd
+
+    sewn = sm.sew(_round_missing())
+    place = sm.open_places(sewn, mm_per_unit=1.0, reach=4.0)[0]
+    got, why, wide, names = smd._with_hole(sewn, place, 1.5)
+    assert got is None and why == "the hole round the gap is more than twice as wide as the gaps closed here"
+    assert wide == pytest.approx(3.3, abs=0.1) and names == ["Face_1", "Face_2", "Face_3", "Face_4"]
+    got, why, wide, _names = smd._with_hole(sewn, place, 4.0)
+    assert got is not None and why == "" and sm.open_places(got, mm_per_unit=1.0, reach=4.0) == []
+
+

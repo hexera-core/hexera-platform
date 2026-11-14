@@ -286,37 +286,6 @@ th,td{border-color:var(--border)}
 .req-card .rc-pm-msg:empty{display:none}
 .req-card .rc-ck code{font-family:var(--mono);font-size:.9em;color:var(--stone-bright)}
 
-/* the engine choice under the one engine question: every engine that can take the file, its fit
-   and its measured reason, one button each; the recommendation carries the bright line and the stone badge, never a pick */
-.eng-choice{max-width:680px;margin-top:4px;padding:4px 0 8px;border:1px solid var(--border);
-  border-radius:10px;background:var(--surface-1)}
-.eng-choice .ec-h{padding:12px 16px 2px;font:600 var(--fs-md)/1.3 var(--sans);color:var(--text)}
-.eng-choice .ec-shape{padding:2px 16px 6px;font-size:var(--fs-sm);color:var(--text-faint)}
-.eng-choice .ec-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 12px;
-  margin:6px 10px 0;padding:10px 12px;border:1px solid var(--divider);border-radius:var(--r-md)}
-.eng-choice .ec-row.rec{border-color:var(--border-bright);background:var(--selected)}
-.eng-choice .ec-row.out{opacity:.75}
-.eng-choice .ec-row.picked{border-color:var(--text)}
-.eng-choice .ec-top{display:flex;align-items:baseline;gap:8px;min-width:0;flex-wrap:wrap}
-.eng-choice .ec-name{font:600 var(--fs-md)/1.3 var(--sans);color:var(--text)}
-.eng-choice .ec-badge{padding:1px 7px;border-radius:999px;background:var(--primary);color:var(--primary-ink);
-  font:600 var(--fs-xs)/1.5 var(--sans)}
-.eng-choice .ec-fit{font-size:var(--fs-sm);color:var(--text-muted)}
-.eng-choice .ec-why{grid-column:1;font-size:var(--fs-sm);line-height:1.45;color:var(--text-muted);
-  overflow-wrap:anywhere}
-.eng-choice .ec-note{grid-column:1;font-size:var(--fs-sm);line-height:1.45;color:var(--warn);
-  overflow-wrap:anywhere}
-.eng-choice .ec-pick{grid-column:2;grid-row:1/span 3;align-self:center;height:30px;padding:0 12px;
-  border:1px solid var(--border);border-radius:var(--r-md);background:var(--surface-2);color:var(--text);
-  font:500 var(--fs-sm)/1 var(--sans);cursor:pointer;white-space:nowrap}
-.eng-choice .ec-row.rec .ec-pick{border-color:var(--border-bright)}
-.eng-choice .ec-pick:hover:not(:disabled){border-color:var(--border-strong);background:var(--surface-raised)}
-.eng-choice .ec-pick:disabled{cursor:default;opacity:.6}
-.eng-choice .ec-foot{padding:10px 16px 2px;font-size:var(--fs-xs);color:var(--text-faint)}
-@media (max-width:560px){
-  .eng-choice .ec-row{grid-template-columns:minmax(0,1fr)}
-  .eng-choice .ec-pick{grid-column:1;grid-row:auto;justify-self:start}
-}
 
 /* ----------------------------------------------------------------- run ---- */
 .proc{border:1px solid var(--border);border-radius:10px;background:var(--surface-1);box-shadow:none}
@@ -544,61 +513,6 @@ th,td{border-color:var(--border)}
 .v-act{gap:8px}
 .v-cost{margin-top:10px;color:var(--text-faint);font:var(--fs-sm)/1.5 var(--sans)}
 
-/* THE DELIVERED MESH'S FIGURES: grouped, labelled in plain words, numbers set as data */
-.mx{margin-top:14px;border:1px solid var(--border);border-radius:10px;padding:14px 16px}
-.v-facts .mx{margin:0;padding:16px 18px;border:0;border-top:1px solid var(--divider);border-radius:0}
-.mx-h{display:flex;align-items:baseline;gap:8px;padding:0 0 14px;border:0;background:transparent;
-  color:var(--text);font:600 var(--fs-md)/1.3 var(--sans);letter-spacing:0;text-transform:none}
-.mx-h>span:first-child{margin-right:auto}
-.mx-h .eng{color:var(--text-faint);font:var(--fs-sm)/1 var(--sans);letter-spacing:0}
-.mx-h .eng+.eng::before{content:'·';margin-right:8px;opacity:.6}
-.mx-c{padding:0;background:transparent}
-.mx-k{color:var(--text-muted);font:var(--fs-md)/1.4 var(--sans);letter-spacing:0;text-transform:none}
-.mx-k::first-letter{text-transform:uppercase}
-.mx-v{margin:0;color:var(--text);font:500 var(--fs-md)/1.4 var(--sans);font-variant-numeric:tabular-nums;
-  letter-spacing:0;white-space:nowrap}
-.mx-v small{margin-left:1px;color:var(--text-muted);font-size:inherit;font-weight:400}
-/* how big: three headline numbers */
-.mx-size{display:grid;grid-template-columns:1.2fr 1.2fr .7fr;gap:12px}
-.mx-stat .mx-v{color:var(--text-bright);font-size:var(--fs-xl);line-height:1.2;letter-spacing:-.01em}
-.mx-stat .mx-k{margin-top:2px;color:var(--text-faint);font-size:var(--fs-sm)}
-/* what the cells are, and how good they are: rows of label and value */
-.mx-group{margin-top:18px}
-.mx-gh{margin-bottom:4px;color:var(--text-faint);font:500 var(--fs-sm)/1.3 var(--sans)}
-.mx-row{display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:12px;align-items:baseline;
-  padding:7px 0}
-.mx-row+.mx-row{border-top:1px solid var(--divider)}
-.mx-type{grid-template-columns:minmax(0,1fr) auto 38px;row-gap:6px;padding:6px 0}
-.mx-type+.mx-type{border-top:0}
-.mx-pct{color:var(--text-faint);font:var(--fs-sm)/1.4 var(--sans);font-variant-numeric:tabular-nums;text-align:right}
-.mx-bar{grid-column:1/-1;height:3px;overflow:hidden;border-radius:2px;background:var(--surface-2)}
-.mx-bar i{display:block;height:100%;border-radius:2px;background:var(--stone)}
-.mx-q{grid-template-columns:minmax(0,1fr) auto minmax(52px,auto);grid-template-areas:"k c v" "s s s";row-gap:1px}
-.mx-q .mx-k{grid-area:k}
-.mx-q .mx-v{grid-area:v;text-align:right}
-.mx-sub{grid-area:s;color:var(--text-faint);font:var(--fs-sm)/1.5 var(--sans)}
-.mx-sub:empty{display:none}
-/* a figure the mesh can be coloured by is a toggle: the row is the control, the swatch says so */
-.mx-c.live{margin:0 -10px;padding:8px 10px;border-radius:var(--r-md);cursor:pointer;
-  transition:background .12s,box-shadow .12s}
-.mx-c.live+.mx-c,.mx-c+.mx-c.live{border-top-color:transparent}
-.mx-c.live:hover{background:var(--hover)}
-.mx-c.live.on{background:var(--selected);box-shadow:inset 2px 0 0 var(--accent)}
-.mx-show{grid-area:c;justify-self:end;align-self:center;display:inline-flex;align-items:center;gap:6px;
-  padding:2px 6px;border-radius:var(--r-sm);color:var(--text-faint);font:500 var(--fs-xs)/1.4 var(--sans);
-  white-space:nowrap}
-.mx-ramp{width:16px;height:6px;border-radius:2px;
-  background:linear-gradient(90deg,#6e6d65,#afaea2 45%,#ecb45c 75%,#e22c2c)}
-.mx-c.live:hover .mx-show{background:var(--hover);color:var(--text)}
-.mx-c.live.on .mx-show{background:transparent;color:var(--text-bright)}
-.mx table{width:100%;margin:0;border-collapse:collapse;border-top:1px solid var(--divider);font-size:var(--fs-md)}
-.mx th{padding:8px 0;border:0;border-bottom:1px solid var(--divider);background:transparent;
-  color:var(--text-faint);font:500 var(--fs-sm)/1.3 var(--sans);letter-spacing:0;text-align:left;text-transform:none}
-.mx td{padding:8px 0;border:0;border-bottom:1px solid var(--divider);color:var(--text)}
-.mx tr:last-child td{border-bottom:0}
-.mx td.n{font-variant-numeric:tabular-nums;text-align:right}
-.mx td.nm{font:var(--fs-sm)/1.4 var(--mono)}
-
 /* A DELIVERED THERMAL MODEL: the file's parts as a table, the quality in words, the slices */
 .v-thermal:empty{display:none}
 .tr .v-sec-h{margin-bottom:6px}
@@ -771,7 +685,8 @@ th,td{border-color:var(--border)}
   background:rgba(5,5,5,.66);color:var(--text-faint);font:var(--fs-sm)/1.3 var(--sans)}
 .v-hint{left:12px;max-width:calc(100% - 180px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .v-count{right:12px;color:var(--text-muted);font-variant-numeric:tabular-nums}
-.v-heatctl{left:12px;top:52px;padding:6px 10px;border:1px solid var(--border);border-radius:var(--r-md);
+/* "Colour by": under the toolbar with room to spare, the toolbar's touch-size buttons included */
+.v-heatctl{left:12px;top:66px;padding:6px 10px;border:1px solid var(--border);border-radius:var(--r-md);
   background:rgba(5,5,5,.74);color:var(--text-faint);font:var(--fs-sm)/1.4 var(--sans)}
 .v-heatctl a{color:var(--text);text-decoration:underline;text-decoration-color:var(--text-faint);text-underline-offset:3px}
 .v-heatctl a.on{color:var(--text-bright);text-decoration-color:var(--accent-text)}
@@ -802,7 +717,8 @@ th,td{border-color:var(--border)}
 
 /* problem areas: the bad cells gathered into places under the scale, worst first. Quiet rows -
    the only colour is the red of a count over the limit; the chosen row takes a faint wash */
-.v-legend{width:244px;max-height:calc(100% - 64px);overflow-y:auto;overscroll-behavior:contain}
+/* the scale stops short of the "Colour by" line above it, so on a short canvas neither hides the other */
+.v-legend{width:244px;max-height:calc(100% - 156px);overflow-y:auto;overscroll-behavior:contain}
 .v-legend .v-areas{display:flex;flex-direction:column;gap:1px;margin-top:6px;padding-top:10px;
   border-top:1px solid var(--divider);white-space:normal}
 .v-legend .ar-h{display:flex;align-items:center;gap:8px;margin:0 0 4px;color:var(--text-muted);

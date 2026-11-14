@@ -350,22 +350,28 @@ class Ask:
     # -- CFDREQ-3: the cell budget ---------------------------------------------------------------------------
     def budget(self, ours: int, *, hard: int | None = None) -> int:
         """The cell budget this engine plans to: the user's count when they set one (a ceiling, a target; a floor
-        raises ours), held to the largest machine; ours otherwise, unchanged."""
+        raises ours), held to `hard` - the most this engine can build: the standard machine's (CELL_HARD_LIMIT) by
+        default, the largest machine's for an engine that moves a big plan to a bigger machine (RUN-9: snappy,
+        cfMesh); ours otherwise, unchanged. A count over the standard machine is said to run on a bigger one."""
         if self.target is None and self.ceiling is None and self.floor is None:
             return int(ours)
+        from meshpipeline.contracts import mesh_machine as MM
+        normal = MM.normal_cells()
         if hard is None:
-            from meshpipeline.settings import policy as pol
-            hard = int(pol.CELL_HARD_LIMIT)
+            hard = normal
+        most = (f"the most the largest machine we run holds is {_cells(hard)} cells" if hard >= MM.ceiling_cells()
+                else f"the most this mesher builds here is {_cells(hard)} cells")
+        bigger = "; that is more than our standard machine is sized for, so it is meshed on a bigger one"
         out = int(ours)
         for field, want in (("cells:ceiling", self.ceiling), ("cells:target", self.target)):
             if want is None:
                 continue
             if want > hard:
-                self.nearest(field, f"the most the largest machine we run holds is {_cells(hard)} cells, so the mesh "
-                                    f"is planned to that", planned=hard)
+                self.nearest(field, f"{most}, so the mesh is planned to that", planned=hard)
                 out = hard
             else:
-                self.done(field, f"the cell budget is set to {_cells(want)}", planned=int(want))
+                self.done(field, f"the cell budget is set to {_cells(want)}" + (bigger if want > normal else ""),
+                          planned=int(want))
                 out = int(want)
             break
         if self.floor is not None:
@@ -373,14 +379,23 @@ class Ask:
             if out < want:
                 out = want
             if self.floor > hard:
-                self.nearest("cells:floor", f"the most the largest machine we run holds is {_cells(hard)} cells",
-                             planned=hard)
+                self.nearest("cells:floor", most, planned=hard)
             else:
-                self.done("cells:floor", f"the cell budget is at least {_cells(want)}", planned=out)
+                self.done("cells:floor", f"the cell budget is at least {_cells(want)}"
+                          + (bigger if out > normal else ""), planned=out)
         return int(out)
 
     def user_budget(self) -> bool:
         return self.target is not None or self.ceiling is not None
+
+    def cell_limit(self, normal: int) -> int:
+        """CFDREQ-3: the most cells this attempt's plan may grow to - our sizing rules (the gap boxes) raise a budget
+        of ours up to it, never past the user's own count: their ceiling, else their target, else (a floor alone, or
+        nothing) the larger of the floor and `normal` (the standard machine's)."""
+        want = self.ceiling if self.ceiling is not None else self.target
+        if want is not None:
+            return int(want)
+        return max(int(normal), int(self.floor or 0))
 
     # -- CFDREQ-4: the first layer -------------------------------------------------------------------------
     def first_layer(self, *, length_m: float | None = None, length_from: str = "") -> float | None:

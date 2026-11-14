@@ -16,6 +16,8 @@
   "deliverable": [
    "_passages",
    "constant/polyMesh",
+   "export_ensight.zip",
+   "export_fluent.zip",
    "geom.fms",
    "geom.stl",
    "passages.json",
@@ -206,6 +208,8 @@
   ],
   "deliverable": [
    "constant/polyMesh",
+   "export_ensight.zip",
+   "export_fluent.zip",
    "fluid_boundary.stl",
    "mesh_volume.msh",
    "netgen_report.json",
@@ -368,6 +372,8 @@
   "deliverable": [
    "constant/polyMesh",
    "constant/triSurface",
+   "export_ensight.zip",
+   "export_fluent.zip",
    "system/blockMeshDict",
    "system/snappyHexMeshDict"
   ],
@@ -540,6 +546,8 @@
   ],
   "deliverable": [
    "centerlines.vtp",
+   "export_ensight.zip",
+   "export_fluent.zip",
    "lumen.vtp",
    "mesh.msh",
    "mesh.vtu",

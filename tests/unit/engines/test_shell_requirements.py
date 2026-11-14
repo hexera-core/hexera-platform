@@ -376,8 +376,13 @@ def test_no_requirement_leaves_no_trace_in_the_record(tmp_path, plate):
     (b / MR.FILE).write_text(json.dumps(MR.section("used", requirements=MR.empty())))
     rec_b = _run(b)
     assert _sha(tmp_path / "a") == _sha(b)
-    assert {k: v for k, v in rec.items() if not k.endswith("_s") and k != "seconds"} == {
-        k: v for k, v in rec_b.items() if not k.endswith("_s") and k != "seconds"}
+    def untimed(d):
+        # (timings at any depth - "seconds", "*_s" - differ from run to run)
+        if isinstance(d, dict):
+            return {k: untimed(v) for k, v in d.items() if not k.endswith("_s") and k != "seconds"}
+        return d
+
+    assert untimed(rec) == untimed(rec_b)
 
 
 def test_the_global_size_sets_the_shells_size_field(tmp_path, plate):

@@ -91,7 +91,7 @@ def test_the_rule_says_what_to_take_and_keeps_the_two_exceptions():
     n = turn.DEFAULT_NUDGE
     assert "Do not ask it again" in n and "cannot be defaulted" in n
     assert "first one you listed" in n and "assumed, not stated by the user" in n
-    assert "ENGINE is proposed and confirmed, never defaulted" in n and "UNIT is asked" in n
+    assert "ENGINE is settled by the application, never defaulted by you" in n and "UNIT is asked" in n
 
 
 def test_the_deferral_line_is_the_applications_not_the_users():
@@ -170,7 +170,7 @@ def test_the_propose_first_block_says_a_value_left_to_the_model_is_chosen_not_re
     assert "A VALUE THE USER LEAVES TO YOU is yours to choose" in block
     assert "second inlet" in block and "first candidate you listed" in block
     assert "cannot be defaulted" in block
-    assert "ENGINE is proposed and confirmed, never defaulted" in block
+    assert "ENGINE is settled by the application, never defaulted by you" in block
     assert "UNIT is asked, never guessed" in block
 
 

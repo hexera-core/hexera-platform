@@ -209,6 +209,10 @@ SPEC = EngineSpec(
                 M("netgen_report.json", required=False),
                 M("mesh_volume.msh", required=False),
                 M("system/controlDict", required=False),
+                # the Fluent mesh and the EnSight case written beside it (engines/cfd_exports.py), when
+                # they were - Everything carries every solver file, as an FEA mesh's does
+                M("export_fluent.zip", required=False),
+                M("export_ensight.zip", required=False),
             ),
         ),
         downstream=DownstreamTarget(solvers=("OpenFOAM",)),

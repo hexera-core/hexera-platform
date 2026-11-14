@@ -213,7 +213,7 @@ def test_edges_that_do_not_meet_are_said_on_the_result(tmp_path):
     rec = surface_run.run(tmp_path, src, mm_per_unit=1.0, thickness_mm=1.0, stitch=False)
     # one place: the lid's rim and the walls' tops are the two sides of one gap all round (SURF-8's one count)
     assert rec["made"] and rec["open_edges"] == 1
-    assert "The surfaces do not meet at 1 place(s): the shell has gaps there (the widest " in rec["words"]
+    assert "The surfaces do not meet at 1 place: the shell has gaps there (the widest " in rec["words"]
     assert "Nothing was stitched, as your notes asked." in rec["words"]
 
 
@@ -228,12 +228,12 @@ def test_small_gaps_are_closed_by_rule_and_said(tmp_path):
                             thickness_mm=1.0)
     tol = sm.read(sx.strip_of_plates(), mm_per_unit=1.0)[0]["sew_tolerance_mm"]
     src = _file(sx.strip_of_plates(move={1: (0, 0, 3.0 * tol)}), tmp_path / "b")
-    rec = surface_run.run(tmp_path / "gapped", src, mm_per_unit=1.0, thickness_mm=1.0)
+    rec = surface_run.run(tmp_path / "gapped", src, mm_per_unit=1.0, thickness_mm=1.0, mend=False)
     assert rec["made"] and rec["open_edges"] == 0 and rec["surface"]["sheets"] == 1
     c = rec["surface"]["cleaned"]
     assert c["closed_edges"] == 2 and c["limit_from"] == "rule" and c["wider_gaps"] == 0
     assert c["places_before"] == 2 and c["closed_places"] == 2
-    assert f"Closed 2 of the 2 place(s) where the surfaces did not meet, the widest {3.0 * tol:.2g} mm." in rec["words"]
+    assert f"Closed both places where the surfaces did not meet, the widest {3.0 * tol:.2g} mm." in rec["words"]
     q = rec["quality"]
     assert q["invalid"] == 0 and q["within_nastran"] is True
     # one sheet: the mesh's only free edges are the panel's rim, as for the panel written whole
@@ -249,15 +249,15 @@ def test_a_wider_gap_is_left_open_and_said_and_the_notes_tolerance_closes_it(tmp
     src = _file(sx.strip_of_plates(move={1: (0, 0, 12.0 * tol)}), tmp_path / "in")
     for name in ("rule", "said"):
         (tmp_path / name).mkdir()
-    rec = surface_run.run(tmp_path / "rule", src, mm_per_unit=1.0, thickness_mm=1.0)
+    rec = surface_run.run(tmp_path / "rule", src, mm_per_unit=1.0, thickness_mm=1.0, mend=False)
     assert rec["made"] and rec["surface"]["sheets"] == 3 and rec["surface"]["cleaned"]["closed_edges"] == 0
-    assert rec["open_edges"] == 2 and "The surfaces do not meet at 2 place(s)" in rec["words"]
-    assert "2 of them are wider than that: the surfaces run side by side " in rec["words"]
+    assert rec["open_edges"] == 2 and "The surfaces do not meet at 2 places: the shell has gaps there." in rec["words"]
+    assert "At both places, the surfaces run side by side " in rec["words"]
     assert 'If they should meet, add to your notes: "stitch gaps up to ' in rec["words"]
     # the tolerance the words suggest is enough to close them
     ask = float(rec["words"].split('"stitch gaps up to ')[1].split(" mm")[0])
     assert 12.0 * tol < ask <= 1.25 * 12.0 * tol
-    said = surface_run.run(tmp_path / "said", src, mm_per_unit=1.0, thickness_mm=1.0, sew_mm=ask)
+    said = surface_run.run(tmp_path / "said", src, mm_per_unit=1.0, thickness_mm=1.0, sew_mm=ask, mend=False)
     assert said["made"] and said["surface"]["sheets"] == 1 and said["open_edges"] == 0
     assert f"as your notes asked (up to {ask:.2g} mm)" in said["words"]
     assert "run side by side" not in said["words"]
@@ -542,9 +542,9 @@ def test_the_cleanup_is_cited_when_it_did_something(tmp_path, monkeypatch):
     assert ok is True
     (entry,) = [c for c in cited if c["decided"] == "surface cleaned"]
     assert entry["rule"] == "SURF-8" and entry["value"] == 2 and entry["inputs"]["limit_from"] == "rule"
-    assert entry["words"].startswith("Closed 2 of the 2 place(s) where the surfaces did not meet")
+    assert entry["words"].startswith("Closed both places where the surfaces did not meet")
     res = shell_run.read(ws)
-    assert "Closed 2 of the 2 place(s) where the surfaces did not meet" in res["words"]
+    assert "Closed both places where the surfaces did not meet" in res["words"]
 
 
 # ------------------------------------------------------------------- SHELL-15j / SHELL-15k: MESH-1's reading
@@ -607,7 +607,7 @@ def test_a_face_written_twice_is_no_solid(tmp_path):
     assert FD.solids_from_shells(ws, seen) == 0 and seen == {"open": True}
     rec = surface_run.run(ws, ws / "geometry.step", mm_per_unit=1000.0, thickness_mm=1.0)
     assert rec["made"] and rec["surface"]["cleaned"]["duplicates"] == 1 and rec["surface"]["faces"] == 1
-    assert "1 face(s) were in the file twice: the second copy of each is left out." in rec["words"]
+    assert "1 face was in the file twice: the second copy of it is left out." in rec["words"]
 
 
 def _volumes(shape) -> list[float]:
@@ -674,3 +674,80 @@ def test_a_pipe_and_its_insulation_written_as_iges_are_two_bodies(tmp_path):
     got = _volumes(solid)
     assert len(got) == 2 and got == pytest.approx(want, rel=1e-4)
     assert all(v > 0 for v in got)
+
+
+def test_the_stated_tolerance_words_stand_alone_and_add_up():
+    """With a stitch tolerance stated in the notes, each gap sentence names what was stitched and its own count out of
+    the places in all: never "of them", never "(s)"."""
+    c = {"left_open": 1, "wider_gaps": 2, "applied_mm": 2.0, "left_widest_mm": 1.0, "wider_narrowest_mm": 3.0,
+         "wider_widest_mm": 4.0, "limit_from": "notes"}
+    words = surface_run.gap_words(3, c)
+    assert words[0] == "The surfaces do not meet at 3 places: the shell has gaps there."
+    assert words[1].startswith("At 1 of these 3 places, the gap is narrower than the 2 mm stitched here")
+    assert words[2].startswith("At 2 of these 3 places, the surfaces run side by side ")
+    assert "wider than the 2 mm stitched here." in words[2]
+    assert not any("of them" in w or "(s)" in w for w in words)
+    one = surface_run.gap_words(1, {**c, "left_open": 1, "wider_gaps": 0})
+    assert one[1].startswith("At that place, the gap is narrower than the 2 mm stitched here") and "join it" in one[1]
+
+
+def test_a_step_wider_than_the_stitch_is_closed_by_default_and_told_where(tmp_path):
+    """SURF-12/13: a panel's middle plate written 12 sew tolerances off - wider than the stitch, under one element: closed
+    by default (the faces changed, or the mesh joined), one sheet, inside Nastran's limits, and each place told in one
+    sentence with where it is."""
+    from meshpipeline.cad import surface_model as sm
+
+    tol = sm.read(sx.strip_of_plates(), mm_per_unit=1.0)[0]["sew_tolerance_mm"]
+    src = _file(sx.strip_of_plates(move={1: (0, 0, 12.0 * tol)}), tmp_path / "in")
+    (tmp_path / "ws").mkdir()
+    rec = surface_run.run(tmp_path / "ws", src, mm_per_unit=1.0, thickness_mm=1.0)
+    assert rec["made"] and rec["open_edges"] == 0, rec["words"]
+    assert rec["quality"]["invalid"] == 0 and rec["quality"]["within_nastran"] is True
+    assert "Closed both places where the surfaces did not meet." in rec["words"]
+    assert rec["words"].count("At (") == 2 and "do not meet" not in rec["words"]
+
+
+def test_do_not_stitch_closes_nothing_in_the_mesh_either(tmp_path):
+    from meshpipeline.cad import surface_model as sm
+
+    tol = sm.read(sx.strip_of_plates(), mm_per_unit=1.0)[0]["sew_tolerance_mm"]
+    src = _file(sx.strip_of_plates(move={1: (0, 0, 12.0 * tol)}), tmp_path / "in")
+    (tmp_path / "ws").mkdir()
+    rec = surface_run.run(tmp_path / "ws", src, mm_per_unit=1.0, thickness_mm=1.0, stitch=False)
+    assert rec["made"] and rec["open_edges"] == 2 and "mesh_close" not in rec
+    assert "Nothing was stitched, as your notes asked." in rec["words"]
+
+
+def test_every_place_is_one_sentence_what_by_how_much_where():
+    """SURF-12/13's words from the record alone: a face extended, a gap closed in the mesh, one left open past the reach
+    - one sentence each, the counts adding up."""
+    cleaned = {"places": [{}], "places_before": 3, "closed_places": 1,
+               "mend": {"closed": 1, "reach_mm": 4.0, "reach_from": "asked",
+                        "changes": [{"at_mm": [112.0, 0.0, -7.6], "faces": ["Face_4", "Face_14"], "gap_mm": 3.6,
+                                     "how": "extended along its own surface", "moved_mm": 3.6}]}}
+    closing = {"closed": 1, "left": 1, "reach_mm": 4.0, "reach_from": "asked", "places": [
+        {"at_mm": [64.0, 120.67, 4.7], "gap_mm": 2.4, "faces": [["Face_53", "Face_52"], ["Face_53", "Face_43"]],
+         "closed": True, "joined": 18, "put_in": 3, "moved_mm": 1.2},
+        {"at_mm": [10.0, 20.0, 0.0], "gap_mm": 4.5, "faces": [["Face_7", "Face_8"]], "closed": False,
+         "why": "wider than the reach"}]}
+    said = surface_run.place_words(cleaned, closing)
+    assert said == [
+        "At (112, 0, -7.6) mm, Face_4 was extended 3.6 mm along its own surface to meet Face_14.",
+        "At (64, 120.7, 4.7) mm, the 2.4 mm gap between Face_53 and its 2 neighbours was closed in the mesh: 21 nodes "
+        "joined across it, none moved more than 1.2 mm.",
+        "At (10, 20, 0) mm, the 4.5 mm gap between Face_7 and Face_8 is left open: it is wider than the element size "
+        "you asked for (4 mm)."]
+    words = surface_run.clean_words(cleaned, closing)
+    assert words == ["Closed 2 of the 3 places where the surfaces did not meet."]
+
+
+def test_a_hole_filled_is_one_sentence_naming_the_faces_round_it():
+    """SURF-12: a hole filled with a new face is told with how wide it is across and every face round it."""
+    cleaned = {"places": [], "places_before": 1, "closed_places": 1,
+               "mend": {"closed": 1, "filled": 1, "reach_mm": 4.0, "reach_from": "asked",
+                        "changes": [{"at_mm": [108.5, 0.0, 0.0], "faces": ["Face_2", "Face_1"], "gap_mm": 3.25,
+                                     "how": "filled a hole with a new face", "moved_mm": 3.33,
+                                     "round": ["Face_1", "Face_2", "Face_3", "Face_4"]}]}}
+    assert surface_run.place_words(cleaned, None) == [
+        "At (108.5, 0, 0) mm, a hole up to 3.3 mm across between Face_1, Face_2, Face_3 and Face_4 was filled with a "
+        "new face."]

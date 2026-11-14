@@ -238,6 +238,14 @@ INTAKE_TOOLS: list[dict] = [
                                 "description": "The declared use case."},
                     "input_kind": {"type": "string", "enum": _INPUT_KIND_CHOICES,
                                    "description": "What the geometry represents."},
+                    "input_kind_user_words": {
+                        "type": "string",
+                        "description": (
+                            "Only when input_kind differs from the one the user confirmed on the geometry "
+                            "stage BECAUSE THE USER CORRECTED IT in the chat after the stage: their words "
+                            "saying so, copied exactly from that message. Leave it out otherwise; never "
+                            "invent or paraphrase it."),
+                    },
                     "dimensionality": {"type": "string", "enum": _DIMENSIONALITY_VALUES,
                                        "description": "2D or 3D, if the user declared it."},
                     "patches": {
@@ -755,19 +763,15 @@ def _block_engine_first() -> str:
         "     that answer is AUTHORITATIVE: ACCEPT it (engine_source=user_direct) and do NOT ask "
         "     them to choose or confirm it again - never re-derive or second-guess it from the "
         "     geometry, and never silently change it.\n"
-        "  3. If the user has NOT named an engine, it is settled by ONE question, asked ONCE, and "
-        "     that question carries your proposal. It is your FIRST substantive question as soon as "
-        "     you know what the mesh is for (the purpose) - BEFORE any engine-specific parameter. "
-        "     You do not write it: call propose_engine_selection with the engine you would use for "
-        "     THIS case and a `reason` - one short plain line on why it suits this part (e.g. 'it "
-        "     fits the mesh to the nozzle's curved walls and grows thin layers along them'). The "
-        "     application asks the user 'I'd mesh this with X: <reason>. OK, or do you use a "
-        "     different mesher?' and the turn ends there. Their 'ok' (or 'your call') confirms it "
-        "     (engine_source=suggested_confirmed); naming another engine replaces it. When a "
-        "     MEASURED ENGINE RECOMMENDATION block follows, the application measured the upload "
-        "     and ranked the engines on lab evidence: propose ITS recommended engine - the question "
-        "     then carries that evidence and lists the alternatives with their fit, and the user "
-        "     picks. Without one, pick from "
+        "  3. If the user has NOT named an engine, the APPLICATION CHOOSES IT - nobody is asked. As "
+        "     soon as you know what the mesh is for (the purpose), BEFORE any engine-specific "
+        "     parameter, call propose_engine_selection with the engine you would use for THIS case "
+        "     and a short `reason`; the application selects the best engine for the part (its "
+        "     measured choice wins over yours) and tells you which. Never ask the user which engine, "
+        "     never offer a list of engines, and never mention lab evidence (pass rates, runs, "
+        "     percentages) - the plan card names the engine (engine_source=suggested_confirmed). "
+        "     Only the user's own words change it ('use cfMesh'). When a MEASURED ENGINE "
+        "     RECOMMENDATION block follows, propose ITS recommended engine. Without one, pick from "
         "     this catalog, judged against the purpose, the geometry check and what the user said. "
         "     Each engine's 'Takes' line is a hard limit: propose only one that takes the uploaded "
         "     file (a CAD solid, or a surface mesh such as an STL) for this flow - the application "
@@ -777,11 +781,10 @@ def _block_engine_first() -> str:
         + catalog_menu() + "\n"
         "  4. Ask only ONE substantive question per turn; if a prerequisite (e.g. the purpose) is "
         "     needed to explain a compatibility conflict, ask the minimum necessary question.\n"
-        "  5. Proposing ONE engine to a user who named none (rule 3) is the only time you name an "
-        "     engine unprompted. Do NOT list, compare or rank engines unless the user explicitly "
-        "     asks for a recommendation.\n"
-        "  6. THE ENGINE IS NEVER AN ASSUMPTION. Never go on with an engine the user has not "
-        "     confirmed, and never write one into your reply as 'assumed', 'unconfirmed', 'not "
+        "  5. Never name an engine unprompted. Do NOT list, compare or rank engines unless the user "
+        "     explicitly asks for a recommendation.\n"
+        "  6. THE ENGINE IS NEVER AN ASSUMPTION. Never go on with an engine the application has not "
+        "     selected, and never write one into your reply as 'assumed', 'unconfirmed', 'not "
         "     stated' or 'carried forward' - if it is not settled, settle it (rule 3).\n"
         "  7. ONCE SETTLED, LEAVE IT ALONE. After the user named or confirmed the engine, do not "
         "     mention it again - no 'for the X setup', no 'using X', no recap - unless the user "
@@ -1010,9 +1013,10 @@ def _block_propose_first() -> str:
         "confirms; an 'ok' confirms the proposal exactly as you stated it, and you then carry those "
         "values as user-given. The courtesy follow-ups that usually share one answer - prism layers, "
         "patch names, refinement zones - go into ONE question with ONE proposal, not four turns. "
-        "Two things are handled apart: the ENGINE is proposed ONCE, through "
-        "propose_engine_selection - the application asks it (ENGINE FIRST rule 3), you never ask "
-        "or assume it in your own words - and the file's UNIT is asked, never guessed.\n"
+        "Two things are handled apart: the ENGINE is settled ONCE, through "
+        "propose_engine_selection - the application chooses it (ENGINE FIRST rule 3), you never ask "
+        "or assume it in your own words - and the file's UNIT is settled by the application (on "
+        "the geometry stage, or its own question), never asked or guessed by you.\n"
         "HOW A REPLY IS READ: 'ok', 'yes', 'fine', 'sure', 'sensible default', 'you decide', "
         "'whatever is standard' and 'I do not know' all ACCEPT the proposal exactly as you stated "
         "it - take those values and move on. Any other reply is still the user's ONE answer to "
@@ -1032,7 +1036,7 @@ def _block_propose_first() -> str:
         "listed, unless the geometry says otherwise), say which in one plain line, record it in "
         "request_txt as assumed, and continue. Never reply that a value is required and cannot be defaulted: "
         "required means it must be in the submission, not that the user must type it. The two "
-        "exceptions stand - the ENGINE is proposed and confirmed, never defaulted, and the UNIT is "
+        "exceptions stand - the ENGINE is settled by the application, never defaulted by you, and the UNIT is "
         "asked, never guessed."
     )
 
@@ -1318,8 +1322,13 @@ async def node_intake(state: PipelineState) -> dict:
             _ctx.selection, session_id=_ctx.session_id, owner_id=_ctx.owner_id,
             revision=_ctx.revision, latest_user_message=_ctx.latest_user_msg,
             user_msg_count=_ctx.user_msg_count)
+        if _picked is None:
+            # "use cfMesh" over the engine the application chose: the user's words win
+            _picked = es.switch_by_words(
+                _ctx.selection, session_id=_ctx.session_id, owner_id=_ctx.owner_id,
+                revision=_ctx.revision, latest_user_message=_ctx.latest_user_msg)
         if _picked is not None:
-            logger.info("Intake: engine selection CONFIRMED - the user picked %s from the list "
+            logger.info("Intake: engine selection CONFIRMED - the user picked %s "
                         "- job_id=%s", _picked["engine"], job_id)
             _ctx = dataclasses.replace(_ctx, selection=_picked)
     # A JobPublisher only exists once a job does - and Intake runs BEFORE one. Rather than mint a

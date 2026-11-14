@@ -107,12 +107,15 @@ export function fileLabel(label) {
 }
 
 /** The downloads: ONE "Download" button that opens a short menu - Everything (the one bundle)
- *  first, then each file by its short name and size, then the Mesh report. ParaView and a thermal
- *  model's files join the same menu when the mesh is read (viewer.js, thermal_results.js). */
+ *  first, then the solver files by short name and size (the OpenFOAM case, Fluent, EnSight; an FEA
+ *  mesh's decks), then the Mesh report, then the small reports. ParaView joins the menu above the
+ *  Mesh report, and a thermal model's files at its end, when the mesh is read (viewer.js,
+ *  thermal_results.js). */
 export function downloadsHtml(job, files = []) {
   const list = files.filter((f) => f && f.type !== "video");
   const bundle = list.filter((f) => f.type === "mesh_bundle");
-  const rest = list.filter((f) => f.type !== "mesh_bundle");
+  const solver = list.filter((f) => f.type === "mesh");
+  const small = list.filter((f) => f.type !== "mesh_bundle" && f.type !== "mesh");
   const row = (f, main) => {
     const l = fileLabel(main ? "" : (f.label || f.type));
     const title = main ? (f.label ? `${f.label}: case folder, solver files, report` : "Case folder, solver files, report") : (l.note || l.name);
@@ -127,9 +130,10 @@ export function downloadsHtml(job, files = []) {
     + ` aria-controls="v-dlmenu-${attr(job)}">${ICON.down}<b>Download</b>`
     + (all ? `<span>${fmtBytes(all.size)}</span>` : "") + `<i class="rp-dlcaret" aria-hidden="true"></i></button>`
     + `<div class="rp-dlmenu" id="v-dlmenu-${attr(job)}" role="menu" hidden>`
-    + bundle.map((f) => row(f, true)).join("") + rest.map((f) => row(f, false)).join("")
+    + bundle.map((f) => row(f, true)).join("") + solver.map((f) => row(f, false)).join("")
     + `<a class="v-dlbtn rp-dl rp-report" role="menuitem" href="#" id="v-report-${attr(job)}" title="Every limit, place, hot spot and check, as a page you can print">`
-    + `${ICON.report}<b>Mesh report</b><span>HTML</span></a></div>`;
+    + `${ICON.report}<b>Mesh report</b><span>HTML</span></a>`
+    + small.map((f) => row(f, false)).join("") + `</div>`;
 }
 
 /** The Download button opens and closes its menu; Escape or a click elsewhere closes it. */

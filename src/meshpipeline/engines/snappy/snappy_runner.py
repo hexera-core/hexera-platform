@@ -1048,7 +1048,9 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
                 area=analysis.get("surface_area"), divisions=div, base_cell=base_actual,
                 surface_level=smax, near=(b0d, near_band_level), far=(b1d, max(1, smin - 1))),
             n_layers=max([n_layers, *layer_counts.values()]) if _any_layers else 0,
-            wall_area=analysis.get("surface_area"))
+            wall_area=analysis.get("surface_area"),
+            # CFDREQ-3: within the user's own count when they set one (engines/snappy/drivers._plan_limit)
+            limit=strategy.get("_cell_limit"))
         for k, b in enumerate(_gap.regions if _gap is not None else []):
             _lvl = min(_HARD_MAX_LEVEL, smax + int(b.get("level_bump", 1)))
             _gap_geom += (f" {_GAP_BOX}{k} {{ type searchableBox; min {vf(b['min'])}; "
@@ -1200,14 +1202,15 @@ _GAP_BOX = "gapZone"
 
 
 def _plan_body_gaps(field, *, wall_cell: float, budget: int, base_cells: float | None,
-                    n_layers: int = 0, wall_area: float | None = None):
+                    n_layers: int = 0, wall_area: float | None = None, limit: int | None = None):
     """(gap plan, the cell ceiling to mesh with) for the gaps between an external body's parts
     (engines/gap_sizing.plan_gaps on the body gap field): the boxes put 13 across every gap the
-    wall cell leaves short, the ceiling rises to what they cost within the compute limit, and over
-    it the gaps get as many as the limit holds. The wall layers snappy adds after refinement are
-    priced too - `n_layers` per wall face on the body's `wall_area`, and on each gap's finer wall -
-    so the ceiling leaves room for them under the limit, as the internal plan does.
-    (None, budget) when the plan cannot be made."""
+    wall cell leaves short, the ceiling rises to what they cost within the compute limit (`limit`:
+    the user's own count when they set one, CFDREQ-3; else the standard machine's CELL_HARD_LIMIT),
+    and over it the gaps get as many as the limit holds. The wall layers snappy adds after
+    refinement are priced too - `n_layers` per wall face on the body's `wall_area`, and on each
+    gap's finer wall - so the ceiling leaves room for them under the limit, as the internal plan
+    does. (None, budget) when the plan cannot be made."""
     import numpy as np
 
     import meshpipeline.settings.policy as polcfg
@@ -1237,7 +1240,7 @@ def _plan_body_gaps(field, *, wall_cell: float, budget: int, base_cells: float |
                                             * (1.0 / c ** 2 - 1.0 / wall_cell ** 2))
             return boxes
         plan = GS.plan_gaps(at, cell_m=wall_cell, budget=int(budget),
-                            limit=int(polcfg.CELL_HARD_LIMIT), base_cells=base_cells,
+                            limit=int(limit or polcfg.CELL_HARD_LIMIT), base_cells=base_cells,
                             accept_fewer=True, whole_box=True, base_after=after)
     except Exception:  # noqa: BLE001 - a plan we cannot make leaves the case as planned
         logger.warning("render_snappy_case: the body-gap plan failed - meshing as planned",

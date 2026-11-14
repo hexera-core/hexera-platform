@@ -54,8 +54,7 @@ export function rowFor(stage, ev, building, fallback = "engine") {
 export function rowDef(key) { return ROWS.find((r) => r.key === key) || ROWS[0]; }
 
 /** What the engine row says for the engine sentence the backend sends: the row is already called
- *  "Choosing the engine", so "Mesh engine: Gmsh - the one you asked for" reads "Gmsh - the one you
- *  asked for". Anything else is shown as sent. */
+ *  "Choosing the engine", so "Mesh engine: Gmsh" reads "Gmsh". Anything else is shown as sent. */
 export function engineWords(text) {
   const t = String(text || "").trim();
   return t.replace(/^Mesh engine:\s*/, "");

@@ -101,11 +101,15 @@ def test_over_the_limit_it_meshes_what_the_limit_holds_and_still_offers_the_choi
     assert base + G.box_cost(plan.regions, cell) * G.BUDGET_HEADROOM <= plan.limit + 1
     assert plan.floor() == G.GAP_FLOOR_CELLS          # not lowered: nobody chose fewer
     assert "as many as the limit holds" in plan.words() and "still checked for 12" in plan.words()
+    # what the user can do - never a choice of ours to pick (Areen, 14 Nov): a count in their notes, or a
+    # smaller piece; "a bigger machine" only for a count past the standard machine's
     opts = plan.options()
-    assert len(opts) == 3
-    assert f"about {plan.affordable:.0f} cells across" in opts[0]
-    assert "limit of one job raised" in opts[1]
-    assert "smaller piece" in opts[2]
+    assert len(opts) == 2
+    assert "ask for about" in opts[0] and "cells in your notes" in opts[0] and "bigger machine" not in opts[0]
+    assert "Accept" not in " ".join(opts) and "raised" not in " ".join(opts)
+    assert "smaller piece" in opts[1]
+    big = G.GapPlan(G.LIMITED, full_cost=2.0e7, base_cells=1.0e6, limit=8_000_000)
+    assert "ask for about 24.1 M cells in your notes - it is meshed on a bigger machine." in big.options()[0]
 
 
 def test_when_not_even_the_fewest_cells_fit_the_run_still_meshes_as_planned_never_stops():
@@ -124,7 +128,7 @@ def test_when_not_even_the_fewest_cells_fit_the_run_still_meshes_as_planned_neve
     assert "not meshed" not in words and "refined only as far as the planned cell budget" in words
     assert "still checked for 12" in words
     opts = plan.options()
-    assert len(opts) == 2 and "limit of one job raised" in opts[0] and "smaller piece" in opts[1]
+    assert len(opts) == 2 and "cells in your notes" in opts[0] and "smaller piece" in opts[1]
     assert plan.record()["resolution_short"] is True
 
 
@@ -207,11 +211,12 @@ def test_the_estimate_at_approval_names_the_choice_only_over_the_limit():
     est = G.estimate_from_traits(T(), limit=8_000_000)
     assert est.over_limit
     s = est.sentence()
-    assert "more than the 8.0 M" in s and "smaller piece" in s and "cell limit raised" in s
+    # no choice offered (Areen, 14 Nov): within the standard machine unless the user states a count
+    assert "more than the 8.0 M" in s and "a count the user states is used as stated" in s
+    assert "pick" not in s and "(1)" not in s and "raised" not in s
     # 2e7 x 1.15 against 8e6: the rule's cost goes with the cube of the count, so ~9 across
     assert est.affordable == pytest.approx(13 * (8e6 / (1.15 * 2e7)) ** (1 / 3))
-    assert f"about {est.affordable:.0f} or more" in s
-    assert G.WITHIN_LIMIT in est.guidance() and G.NARROW_GAPS_PARAM in est.guidance()
+    assert f"(about {est.affordable:.0f})" in s
     # a recommendation carries the traits as a dict
     assert G.estimate_from_traits({"gap_cells": 2.0e7}, limit=8_000_000).over_limit
     T.gap_cells = None
@@ -317,24 +322,17 @@ def test_the_snappy_gap_plan_prices_the_wall_layers_it_adds():
     assert held.limit == 1_000 and held.ceiling() == 2_000_000 and held.status == G.OVER_LIMIT
 
 
-def test_a_retry_after_a_raised_mesh_over_the_limit_keeps_the_plans_own_budget(tmp_path):
+def test_a_sound_mesh_over_the_standard_machine_is_never_re_meshed_smaller():
+    # Areen, 14 Nov: "if they say 7 M but we produce a mesh over 8 M, just move it onto the big machine" - the
+    # internal driver no longer throws a sound pass over the cell limit away to re-mesh it at the plan's own
+    # budget, and no later attempt is held smaller for it (the hold that did both is gone)
+    import inspect
+
     from meshpipeline.engines.snappy import drivers as D
-    prev, cur = tmp_path / "attempt_1", tmp_path / "attempt_2"
-    prev.mkdir()
-    cur.mkdir()
-    rec = {"status": G.LIMITED, "budget_in": 2_000_000, "budget": 3_000_000,
-           "ceiling": 3_000_000}
-    (prev / G.GAP_RECORD).write_text(json.dumps(rec))
-    (prev / "mesh_manifest.json").write_text(json.dumps({"cell_count": 12_965_976}))
-    assert D._raised_over_limit(cur) == 2_000_000
-    # inside the limit, or a ceiling the gap plan did not raise: nothing to hold
-    (prev / "mesh_manifest.json").write_text(json.dumps({"cell_count": 6_542_645}))
-    assert D._raised_over_limit(cur) is None
-    (prev / "mesh_manifest.json").write_text(json.dumps({"cell_count": 12_965_976}))
-    (prev / G.GAP_RECORD).write_text(json.dumps({**rec, "budget": 2_000_000,
-                                                  "ceiling": 2_000_000}))
-    assert D._raised_over_limit(cur) is None
-    assert D._raised_over_limit(prev) is None, "a first attempt has no sibling"
+    assert not hasattr(D, "_raised_over_limit")
+    src = inspect.getsource(D._build_internal_deterministic)
+    assert "_hold_gaps = int(_planned_budget)" not in src
+    assert "_hold_gaps: int | None = None" in src
 
 
 def test_cfmesh_never_stops_before_meshing_over_the_limit(tmp_path):
@@ -353,13 +351,11 @@ def test_cfmesh_never_stops_before_meshing_over_the_limit(tmp_path):
     assert rec["status"] == G.OVER_LIMIT and rec["resolution_short"] is True
 
 
-def test_the_fewer_cells_choice_is_offered_only_for_engines_that_take_it():
+def test_the_fewer_cells_choice_is_never_offered():
+    # the intake is never told to offer narrow_gaps (the cell count is the user's to state)
     est = G.estimate_from_traits({"gap_cells": 2.0e7}, limit=8_000_000)
-    assert est is not None and est.over_limit
-    words = est.guidance(("snappyHexMesh", "cfMesh"))
-    assert "only for snappyHexMesh and cfMesh" in words and G.WITHIN_LIMIT in words
-    none = est.guidance(())
-    assert G.WITHIN_LIMIT not in none and "leave narrow_gaps out" in none
+    assert est is not None and est.over_limit and not hasattr(est, "guidance")
+    assert "NEVER ask this" in G.NARROW_GAPS_PARAM_SPEC.ask and "Leave it out" in G.NARROW_GAPS_PARAM_SPEC.ask
 
 
 def test_the_external_gap_plan_prices_the_wall_layers_too():

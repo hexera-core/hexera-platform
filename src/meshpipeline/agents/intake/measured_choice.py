@@ -166,11 +166,7 @@ def statement(rec, engine: str) -> str:
     if others:
         listed = "; ".join(f"{_display(f.engine)} ({_fit(f)})" for f in others)
         lines.append(f"Also able to mesh it: {listed}.")
-    gaps = gap_estimate(rec)
-    if gaps is not None and gaps.over_limit:
-        # THE CELL BUDGET, UP FRONT: the gap rule does not fit one job, so the user chooses now,
-        # not after an hour of meshing (engines/gap_sizing)
-        lines.append(gaps.sentence())
+    # (no cell-count choice here: the count is the user's to state, never ours to ask - Areen, 14 Nov)
     lines.append("OK, or pick another engine?")
     return " ".join(lines)
 
@@ -185,19 +181,6 @@ def gap_estimate(rec):
     except Exception:  # noqa: BLE001 - advice never breaks a turn
         logger.warning("Intake: the gap estimate could not be read", exc_info=True)
         return None
-
-
-def _gap_choice_takers(rec) -> tuple[str, ...]:
-    """The engines on the ranking whose declaration takes the narrow_gaps choice (by label): only
-    those may be sent it - another engine refuses an unknown parameter at intake."""
-    from meshpipeline.engines.fitness import _spec
-    from meshpipeline.engines.gap_sizing import NARROW_GAPS_PARAM
-    out = []
-    for f in rec.fits:
-        params = getattr(_spec(f.engine), "intake_params", ()) or ()
-        if any(getattr(p, "key", "") == NARROW_GAPS_PARAM for p in params):
-            out.append(_display(f.engine))
-    return tuple(dict.fromkeys(out))
 
 
 def _fit(fit) -> str:
@@ -240,20 +223,21 @@ def prompt_block(rec, *, settled: bool) -> str:
                "questions only - never re-open the choice.")
     else:
         use = ("When you settle the engine (ENGINE FIRST rule 3), call propose_engine_selection "
-               f"with {_display(rec.engine)} - the application words the question with this "
-               "evidence and lists the alternatives. If the user asks why, or about another "
-               "engine, answer from these lines in plain words. The user picks: any engine "
-               "listed here that they name is theirs, without argument.") if rec.engine else (
+               f"with {_display(rec.engine)} - the application selects the best engine itself, with "
+               "no question; never ask the user to pick one and never quote this evidence to them. "
+               "If the user asks why, or about another engine, answer from these lines in one or "
+               "two plain sentences, with no counts, rates or percentages. Any engine listed here "
+               "that the user names in their own words is theirs, without argument.") if rec.engine else (
                "No engine here is suited by its own declaration; if the user names one, take it.")
     gaps = gap_estimate(rec)
     sizing = ""
     if gaps is not None:
-        # the gap rule's cost, measured: said to the user only when it is over the limit (the
-        # engine question carries it); background for questions otherwise
+        # the gap rule's cost, measured: background for questions only. THE CELL COUNT IS NEVER
+        # ASKED (Areen, 14 Nov): a count the user states is used as stated, on a bigger machine
+        # when it needs one; none stated, the run sizes the mesh itself
         sizing = (f"  {gaps.sentence()}"
-                  + (f" {gaps.guidance(_gap_choice_takers(rec))}" if gaps.over_limit else
-                     " (Background only - the run sizes the narrow spots itself; do not raise "
-                     "it unasked.)") + "\n")
+                  + " (Background only: never ask the user how many cells they want and never offer a "
+                  "choice of cell counts; a count they state is used as stated.)\n")
     return ("\n\nMEASURED ENGINE RECOMMENDATION (the application measured the uploaded geometry "
             "and compared it with lab runs of every engine on shapes measured to be like it - "
             "evidence, not opinion):\n" + shape + sizing + rows + "\n" + use)

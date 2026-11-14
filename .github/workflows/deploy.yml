@@ -588,13 +588,13 @@ jobs:
               echo "worker_env_uri=gs://${_did}-transfer-${_num}/worker.env"
               # the measured limits decide pass, concerns or fail; the AI review only adds notes
               echo "verdict_by_limits=true"
-              # THE IN-PROGRESS MESH FRAME, on in every dev environment and unstated on prod, the
-              # same posture the verdict above takes. It needs BOTH levers: the flag, and the rank
-              # pin, because a parallel run never snapshots and the flag alone would read as a
-              # feature that does nothing. A repository variable of either name still wins, so an
-              # environment that wants its meshes parallel can say so without editing this.
-              echo "mesh_snapshots=true"
-              echo "mesh_snappy_ranks=1"
+              # THE IN-PROGRESS MESH FRAME is OFF (2026-11-14, the founder): the viewer holds the part
+              # until the mesh is finished and checked, as FEA does, and snappyHexMesh runs on every
+              # core of the mesh job (rank count from its CPU quota). The frame only ever worked on a
+              # serial run, so having it on cost every dev mesh its parallel speed. A repository
+              # variable of either name still wins.
+              echo "mesh_snapshots=false"
+              echo "mesh_snappy_ranks="
               # THE OBJECT STORE. Every field is pinned EXCEPT the access id, and the exception is
               # the point.
               #
@@ -753,10 +753,9 @@ jobs:
               echo "worker_env_uri=gs://dev-transfer-224734058693/worker.env"
               # the measured limits decide pass, concerns or fail; the AI review only adds notes
               echo "verdict_by_limits=true"
-              # the in-progress mesh frame, as on every personal environment: both levers together,
-              # and unstated on prod until it is cut there deliberately
-              echo "mesh_snapshots=true"
-              echo "mesh_snappy_ranks=1"
+              # the in-progress mesh frame is off here too, and snappyHexMesh runs on every core
+              echo "mesh_snapshots=false"
+              echo "mesh_snappy_ranks="
               # THE OBJECT STORE DEV ALREADY OWNS. Everything below RESTATES live configuration -
               # the bucket, the HMAC key and the secret container all exist and the worker fleet
               # has been reading exactly these values out of worker.env all along. Only the API
