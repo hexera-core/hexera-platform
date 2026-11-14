@@ -1036,7 +1036,7 @@ function initViewer(job,surf,uiCfg){
         lbl.textContent=fmtBytes(blob.size);}
       catch(err){lbl.textContent='export failed';console.warn('vtk export',err);}
       finally{delete a.dataset.busy;setTimeout(()=>{lbl.textContent=was;},4000);}};
-    bar.appendChild(a);
+    bar.insertBefore(a,bar.querySelector(':scope>.rp-report'));   // above the Mesh report (none: at the end)
     window._vdbg[job].vtk=()=>a;
   })();
 

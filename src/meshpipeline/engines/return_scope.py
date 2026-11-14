@@ -31,10 +31,13 @@ logger = logging.getLogger(__name__)
 
 #: The record of what was left out, beside the mesh.
 RETURN_SCOPE_FILE = "return_scope.json"
-#: Directories no caller reads: an engine's own scratch (engines/cfmesh/rescue.py).
-SCRATCH_DIRS = ("_rescue",)
-#: Files the delivery can do without, in the order they are given up: the volume exports.
-OPTIONAL_GLOBS = ("VTK/**/internal.vtu",)
+#: Directories no caller reads: an engine's own scratch (engines/cfmesh/rescue.py), the solver
+#: exports' scratch case (engines/cfd_exports.py).
+SCRATCH_DIRS = ("_rescue", "_exports")
+#: Files the delivery can do without, in the order they are given up (largest first within each):
+#: the volume exports, then a flow mesh's solver files (engines/cfd_exports.py - the mesh and its
+#: OpenFOAM case in the bundle stay, and the result screen then offers them no more).
+OPTIONAL_GLOBS = ("VTK/**/internal.vtu", "export_ensight.zip", "export_fluent.zip", "export_openfoam_case.zip")
 #: The archive is kept this far under the ceiling.
 HEADROOM = 0.9
 #: How the archive's size is measured: every file compressed whole. Level 6 is a little LARGER than
@@ -100,8 +103,8 @@ def scope_return(workspace, *, ceiling: int | None = None) -> dict | None:
     if estimate > HEADROOM * cap:
         estimate = estimate_archive_bytes(ws)
     if estimate > HEADROOM * cap:
-        optional = sorted({p for g in OPTIONAL_GLOBS for p in ws.glob(g) if p.is_file()},
-                          key=lambda p: -p.stat().st_size)
+        optional = [p for g in OPTIONAL_GLOBS
+                    for p in sorted((q for q in ws.glob(g) if q.is_file()), key=lambda q: -q.stat().st_size)]
         for p in optional:
             if estimate <= HEADROOM * cap:
                 break
@@ -116,9 +119,12 @@ def scope_return(workspace, *, ceiling: int | None = None) -> dict | None:
               "scratch_removed": removed, "left_out": left_out,
               "fits": estimate <= cap}
     if left_out:
+        what = "the volume export the reviewer slices was"
+        if any(not x["file"].endswith("internal.vtu") for x in left_out):
+            what = "the volume export and some solver files were"
         record["note"] = (
             "The mesh was too large to send back whole within the transfer limit "
-            f"({cap / 2**20:.0f} MiB), so the volume export the reviewer slices was left out "
+            f"({cap / 2**20:.0f} MiB), so {what} left out "
             f"({sum(x['bytes'] for x in left_out) / 1e6:.0f} MB); the mesh, its boundary and "
             "every measurement are all there.")
         logger.warning("return scope: %s", record["note"])

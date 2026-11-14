@@ -303,6 +303,10 @@ SPEC = EngineSpec(
                 # case (its surface and dicts), which native.mesh_passages meshed and merged in
                 M("passages.json", required=False),
                 M("_passages", kind="dir", required=False),
+                # the Fluent mesh and the EnSight case written beside it (engines/cfd_exports.py), when
+                # they were - Everything carries every solver file, as an FEA mesh's does
+                M("export_fluent.zip", required=False),
+                M("export_ensight.zip", required=False),
             ),
         ),
         downstream=DownstreamTarget(
