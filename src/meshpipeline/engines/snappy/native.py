@@ -326,7 +326,9 @@ def _run_snappy_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
             # THE VOLUME EXPORT RUNS BESIDE THE MEASUREMENT, not after it: foamToVTK and
             # checkMesh are both serial readers of the same finished mesh and write to
             # different places (VTK/ and constant/polyMesh/sets), so the slower one sets the
-            # wall instead of the two adding up - 34 s + 34 s on a 3.2 M-cell car at 8 ranks.
+            # wall instead of the two adding up - 34 s + 34 s on a 3.5 M-cell car at 8 ranks.
+            # The MEASURE stays on this thread: the passage measure's guard is a SIGALRM, which
+            # only arms on the main thread (engines/passage.measure_deadline).
             from concurrent.futures import ThreadPoolExecutor
             t_m = _time.monotonic()
             with ThreadPoolExecutor(max_workers=1, thread_name_prefix="snappy-vtk") as pool:

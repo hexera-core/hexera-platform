@@ -77,6 +77,9 @@ def test_the_mesh_is_measured_while_it_is_exported_and_every_step_is_timed(tmp_p
 
     (c0, c1, c_thread), (v0, v1, v_thread) = spans["checkMesh"], spans["foamToVTK"]
     assert c_thread != v_thread, "the export ran on the measuring thread, after the measurement"
+    # the measure stays on the calling (main) thread: the passage measure's guard is a SIGALRM,
+    # which only arms there (engines/passage.measure_deadline)
+    assert c_thread == threading.main_thread().name
     assert c0 < v1 and v0 < c1, "checkMesh and foamToVTK did not overlap"
     t = out["timing"]
     assert t["measure_wall_s"] < t["checkMesh_s"] + t["foamToVTK_s"]
