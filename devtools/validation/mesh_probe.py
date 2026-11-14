@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import concurrent.futures.process
 import hashlib
 import json
 import sys
@@ -129,29 +130,78 @@ def _one(task: tuple[str, str, float | None]) -> dict:
     path = Path(path_str)
     started = time.monotonic()
     row: dict = {"name": name}
+    shape = None
     try:
         from meshpipeline.cad.repair.brep import _read_shape
 
         shape = _read_shape(path)
-        if diag is None:
+    except Exception as exc:  # noqa: BLE001 - recorded against reexport/loop only
+        row["ocp_read_error"] = f"{type(exc).__name__}: {exc}"
+    try:
+        if diag is None and shape is not None:
             # The corpus build's child died before it measured this part: take OCP's box.
-            diag = _diagonal(shape)
-            row["diag_from_ocp"] = round(diag, 1)
-        original = probe_file(path, diagonal_mm=diag, budget_s=BUDGET_S)
-        row["file"] = _verdict(original)
-        with tempfile.TemporaryDirectory() as tmp:
-            out = Path(tmp) / "reexport.step"
-            if _reexport(shape, out):
-                row["reexport"] = _verdict(probe_file(out, diagonal_mm=diag, budget_s=BUDGET_S))
-            else:
-                row["reexport"] = "reexport_failed"
-        defects = mesh_defects(shape, diagonal_mm=diag, budget_s=BUDGET_S)
-        row["loop"] = _verdict(_loop_result(defects))
-        row["loop_located"] = [bool(d.fingerprint) for d in defects]
+            try:
+                diag = _diagonal(shape)
+                row["diag_from_ocp"] = round(diag, 1)
+            except Exception as exc:  # noqa: BLE001 - OCP read it but cannot measure it
+                row["ocp_read_error"] = f"{type(exc).__name__}: {exc} (measuring the diagonal)"
+                shape = None
+        file_diag = diag
+        if file_diag is None:
+            # Neither the manifest nor OCP can say. An import-stage failure does not depend on it.
+            file_diag = 1.0
+            row["file_diag_assumed"] = True
+        # The file probe is gmsh's own read of the upload: it never needs OCP to have read it.
+        row["file"] = _verdict(probe_file(path, diagonal_mm=file_diag, budget_s=BUDGET_S))
+        if shape is not None:
+            with tempfile.TemporaryDirectory() as tmp:
+                out = Path(tmp) / "reexport.step"
+                if _reexport(shape, out):
+                    row["reexport"] = _verdict(
+                        probe_file(out, diagonal_mm=diag, budget_s=BUDGET_S))
+                else:
+                    row["reexport"] = "reexport_failed"
+            defects = mesh_defects(shape, diagonal_mm=diag, budget_s=BUDGET_S)
+            row["loop"] = _verdict(_loop_result(defects))
+            row["loop_located"] = [bool(d.fingerprint) for d in defects]
     except Exception as exc:  # noqa: BLE001 - one bad file is a row, not a dead run
         row["error"] = f"{type(exc).__name__}: {exc}"
+    if "ocp_read_error" in row and "error" not in row:
+        row["error"] = f"OCP read failed: {row['ocp_read_error']}"
     row["seconds"] = round(time.monotonic() - started, 1)
     return row
+
+
+def run_all(tasks: list, workers: int, fn=_one, context=None) -> list[dict]:
+    """Run `fn` over `tasks` in worker processes; a worker that dies is a row, not a dead run.
+
+    A hard death (segfault, OOM) breaks the whole pool and fails every pending future, so the
+    survivors are taken as they are and the unfinished tasks are rerun one at a time in a fresh
+    single-worker pool, which names the task that kills its worker.
+    """
+    rows: list[dict] = []
+    unfinished: list = []
+    broken = concurrent.futures.process.BrokenProcessPool
+
+    def _collect(group: list, n: int, retry: bool) -> None:
+        with concurrent.futures.ProcessPoolExecutor(max_workers=n, mp_context=context) as pool:
+            futures = [(pool.submit(fn, t), t) for t in group]
+            for future, task in futures:
+                try:
+                    rows.append(future.result())
+                except broken:
+                    (rows.append(_dead_row(task)) if retry else unfinished.append(task))
+                except Exception as exc:  # noqa: BLE001
+                    rows.append({"name": task[0], "error": f"{type(exc).__name__}: {exc}"})
+
+    _collect(list(tasks), workers, retry=False)
+    for task in unfinished:
+        _collect([task], 1, retry=True)
+    return rows
+
+
+def _dead_row(task) -> dict:
+    return {"name": task[0], "error": "worker process died (segfault or OOM) on this file"}
 
 
 def _same(a: str | None, b: str | None) -> bool:
@@ -159,7 +209,7 @@ def _same(a: str | None, b: str | None) -> bool:
 
 
 def summarise(rows: list[dict], missing: list[str]) -> dict:
-    complete = [r for r in rows if "error" not in r and "reexport" in r]
+    complete = [r for r in rows if "reexport" in r and "loop" in r]
     loop_vs_reexport = [r for r in complete if (r["loop"] == "meshes") != (r["reexport"] == "meshes")]
     kind_swaps = [r for r in complete if r not in loop_vs_reexport
                   and not _same(r["loop"], r["reexport"])]
@@ -197,8 +247,8 @@ def main(argv: list[str] | None = None) -> int:
     diag = {f["name"]: f["diag_mm"] for f in manifest["files"]}
     tasks = [(n, str(p), diag[n]) for n, p in found.items()]
     started = time.monotonic()
-    with concurrent.futures.ProcessPoolExecutor(max_workers=args.workers) as pool:
-        rows = sorted(pool.map(_one, tasks), key=lambda r: r["name"])
+    rows = []
+    rows = sorted(run_all(tasks, args.workers), key=lambda r: r["name"])
     summary = summarise(rows, missing)
     summary["wall_seconds"] = round(time.monotonic() - started, 1)
 

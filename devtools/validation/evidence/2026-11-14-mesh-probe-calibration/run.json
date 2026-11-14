@@ -6,8 +6,11 @@
   "errors": [
    {
     "name": "occt/bug30790.step",
-    "error": "Standard_Failure: NCollection_Array1::Value",
-    "seconds": 12.0
+    "ocp_read_error": "Standard_Failure: NCollection_Array1::Value (measuring the diagonal)",
+    "file_diag_assumed": true,
+    "file": "other",
+    "error": "OCP read failed: Standard_Failure: NCollection_Array1::Value (measuring the diagonal)",
+    "seconds": 8.5
    }
   ],
   "loop_agrees_reexport": 76,
@@ -798,8 +801,11 @@
   },
   {
    "name": "occt/bug30790.step",
-   "error": "Standard_Failure: NCollection_Array1::Value",
-   "seconds": 12.0
+   "ocp_read_error": "Standard_Failure: NCollection_Array1::Value (measuring the diagonal)",
+   "file_diag_assumed": true,
+   "file": "other",
+   "error": "OCP read failed: Standard_Failure: NCollection_Array1::Value (measuring the diagonal)",
+   "seconds": 8.5
   },
   {
    "name": "occt/bug32239.STEP",

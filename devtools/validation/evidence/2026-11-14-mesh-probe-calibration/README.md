@@ -1,9 +1,10 @@
 # Mesh probe calibration on the mesh-failure-real track (2026-11-14)
 
-**Verdict: binary agreement 76/80; the stop rule (more than 8 disagreements) is not tripped.**
-The in-loop probe (`loop`) and the same shape re-exported through STEP (`reexport`) agree on
-whether the part meshes for 76 of 80 files: 3 disagree (meshes vs fails), 1 file could not be
-read by OCP at all. A further 6 files fail under both but with different kinds (kind-swap table).
+**Verdict: binary agreement on 76 of 79 verdicts, plus 1 unreadable file; the stop rule (more than 8
+disagreements) is not tripped.** The in-loop probe (`loop`) and the same shape re-exported through
+STEP (`reexport`) agree on whether the part meshes for 76 of the 79 files that have both verdicts:
+3 disagree (meshes vs fails). The 80th file, `occt/bug30790.step`, has no `reexport` or `loop`
+verdict because OCP cannot measure it. A further 6 files fail under both but with different kinds (kind-swap table).
 
 Why binary is the gate (controller ruling R9): the track's score is always the file probe on the
 delivered STEP, so the in-loop probe only steers where repair looks. Whether the part meshes is
@@ -25,7 +26,7 @@ with `reexport`. `file` vs `reexport` is the separate reader effect.
 
 | | count |
 |---|---|
-| binary agreement, loop vs reexport | 76 / 80 |
+| binary agreement, loop vs reexport | 76 / 79 verdicts (+1 unreadable) |
 | meshes-vs-fails disagreements | 3 |
 | both fail, different kind (not gating) | 6 |
 | file OCP cannot read | 1 (`occt/bug30790.step`) |
@@ -57,9 +58,12 @@ unexplained.
 
 ## OCP read failure
 
-`occt/bug30790.step`: OCP raised `Standard_Failure: NCollection_Array1::Value` reading it, so it has
-no reexport or loop verdict and no OCP diagonal. Its `diag_mm` stays null (`diag_source`
-`unavailable`); the corpus build's gmsh child died on it too (rc=1).
+`occt/bug30790.step`: OCP reads it but raises `Standard_Failure: NCollection_Array1::Value` the
+moment its bounding box is measured, so there is no OCP diagonal, no `reexport` and no `loop`
+verdict. The verdicts that exist for it: `file` = `other` (import stage: gmsh's own read of the
+upload fails; probed independently of OCP, with an assumed diagonal of 1.0 recorded as
+`file_diag_assumed` because an import-stage failure does not depend on it). `reexport`, `loop`: none.
+Its manifest `diag_mm` stays null (`diag_source` `unavailable`).
 
 ## Budget-bound rows
 
@@ -70,7 +74,10 @@ trj6_b1-ec-214, trj7_b1-ec-214.
 
 ## Not measured
 
-Nondeterminism: one pass only. Whether a repeat run gives the same verdicts is unknown.
+- Nondeterminism: one pass only. Whether a repeat run gives the same verdicts is unknown.
+- Budget dependence: every verdict is at a 120 s per-probe budget; 11 rows reached it.
+- Outcome validity: agreement was never checked against a real repair outcome.
+- One platform (darwin-arm64) and one gmsh version (4.15.2).
 
 ## Diagonals
 
