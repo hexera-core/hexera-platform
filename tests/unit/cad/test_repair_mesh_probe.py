@@ -107,3 +107,53 @@ def test_mesh_codes_are_repairable_not_judgement():
                     "mesh_periodic_surface", "mesh_no_volume", "mesh_timeout", "mesh_other"}
     assert mesh <= _REPAIRABLE
     assert not mesh & _NEEDS_JUDGEMENT
+
+
+# --- Which surfaces a failure may be located on -------------------------------------------------
+
+def test_log_fallback_is_marked_and_staged():
+    from meshpipeline.cad.repair.mesh_probe import STAGE_3D
+
+    failure = classify("something gmsh never said before", ["Meshing surface 4 (Plane)"],
+                       stage=STAGE_3D)
+    assert failure.surfaces == (4,)
+    assert failure.surfaces_from_log is True
+    assert failure.stage == STAGE_3D
+
+
+def test_error_text_surfaces_are_not_log_derived():
+    from meshpipeline.cad.repair.mesh_probe import STAGE_3D
+
+    failure = classify("Invalid boundary mesh (overlapping facets) on surface 33 surface 33",
+                       ["Meshing surface 40"], stage=STAGE_3D)
+    assert failure.surfaces == (33,)
+    assert failure.surfaces_from_log is False
+
+
+@pytest.mark.parametrize("error, stage, expected", [
+    # A log surface is the face being meshed only when the 2D stage is what failed.
+    ("The 1D mesh seems not to be forming a closed loop", "2d", (12,)),
+    ("something gmsh never said before", "2d", (12,)),
+    # In the volume stage the last 2D surface is a guess, whatever the kind.
+    ("something gmsh never said before", "3d", ()),
+    ("The 1D mesh seems not to be forming a closed loop", "3d", ()),
+    # An unknown stage is not trusted either.
+    ("something gmsh never said before", "", ()),
+    # Surfaces gmsh named in its own error are trusted in any stage.
+    ("Invalid boundary mesh (overlapping facets) on surface 33 surface 34", "3d", (33, 34)),
+    # An edge through a face is located only by its point (R7).
+    ("PLC Error:  A segment and a facet intersect at point", "2d", ()),
+])
+def test_locating_surfaces_refuses_guesses(error, stage, expected):
+    from meshpipeline.cad.repair.mesh_probe import locating_surfaces
+
+    log = ["Meshing surface 3 (Plane)", "Meshing surface 12 (Plane)"]
+    assert locating_surfaces(classify(error, log, stage=stage)) == expected
+
+
+def test_box_distance_is_zero_inside_and_euclidean_outside():
+    from meshpipeline.cad.repair.mesh_probe import _box_distance
+
+    box = (0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
+    assert _box_distance((0.5, 0.5, 0.5), box) == 0.0
+    assert _box_distance((4.0, 5.0, 0.5), box) == pytest.approx(5.0)

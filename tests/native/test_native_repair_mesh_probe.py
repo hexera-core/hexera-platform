@@ -166,8 +166,13 @@ def test_overlap_fixture_defect_names_a_real_face():
         code=DefectCode.self_intersection, severity=DefectSeverity.error, entity_type="face",
         entity_index=defect.entity_index, message="", location=_centroid_and_box(face)),),
         diagonal_mm=diagonal)
+    # Stamping a mesh defect in a list of its own gives the scan's name because a fingerprint is
+    # the face's box on a grid of diagonal * QUANTUM_FRACTION, and a list-level `#n` suffix appears
+    # only when two DIFFERENT faces share a box - which `faces_for_tags` already refuses to map
+    # (its tol, diagonal * TAG_MATCH_FRACTION, is that same grid). So it is never ambiguous.
     assert defect.fingerprint
     assert defect.fingerprint == reference.fingerprint
+    assert defect.ambiguous is False
 
 
 def test_mapping_agrees_with_occ_face_count_on_box(tmp_path):
@@ -212,11 +217,15 @@ def test_within_region_probes_only_region_faces(monkeypatch):
     assert all(boxes[tag][3] <= 10.0 + 1e-6 for tag in meshed)   # every one on the first box
 
 
-def _fake_probe(monkeypatch, failure):
+def _fake_probe(monkeypatch, failure, *, delay_s=0.0):
+    """Real tag boxes; `failure` from every probe that was asked to mesh something."""
     real = mesh_probe.probe_file
 
     def fake(path, **kwargs):
+        if kwargs.get("surfaces") is not None and not kwargs["surfaces"]:
+            return real(path, **kwargs)
         boxes = real(path, **{**kwargs, "surfaces": ()}).tag_boxes
+        time.sleep(delay_s)
         return mesh_probe.ProbeResult(False, 0, failure, boxes)
 
     monkeypatch.setattr(mesh_probe, "probe_file", fake)
@@ -240,6 +249,9 @@ def test_plc_point_goes_to_the_nearest_face(monkeypatch):
     mesh_probe.MeshFailure("timeout", (), None, "ran past its budget"),
     # No point, and the surface came from the log's last 2D surface - a guess, never a target.
     mesh_probe.MeshFailure(EDGE_THROUGH_FACE, (6,), None, "PLC Error: at point"),
+    # A surface read off the log while the VOLUME was meshing is the last 2D surface: a guess.
+    mesh_probe.MeshFailure("other", (1,), None, "volume step failed", stage="3d",
+                           surfaces_from_log=True),
 ])
 def test_unmappable_failure_stays_unlocated(monkeypatch, failure):
     _fake_probe(monkeypatch, failure)
@@ -253,3 +265,63 @@ def test_unmappable_failure_stays_unlocated(monkeypatch, failure):
 
 def test_a_box_that_meshes_has_no_mesh_defects():
     assert mesh_probe.mesh_defects(_box(), diagonal_mm=17.3, budget_s=60.0) == ()
+
+
+def test_log_surface_of_a_2d_failure_is_located(monkeypatch):
+    _fake_probe(monkeypatch, mesh_probe.MeshFailure(
+        OPEN_LOOP, (1,), None, "not a closed loop", stage="2d", surfaces_from_log=True))
+    (defect,) = mesh_probe.mesh_defects(_box(), diagonal_mm=17.3, budget_s=60.0)
+    assert defect.entity_type == "face"
+    assert defect.entity_index >= 1
+    assert defect.fingerprint
+
+
+def test_locating_past_the_deadline_leaves_the_failure_unlocated(monkeypatch):
+    from meshpipeline.cad.repair.contracts import DefectCode
+
+    _fake_probe(monkeypatch, mesh_probe.MeshFailure(
+        EDGE_THROUGH_FACE, (), (5.0, 5.0, 10.0), "PLC Error"), delay_s=1.5)
+    (defect,) = mesh_probe.mesh_defects(_box(), diagonal_mm=17.3, budget_s=1.0)
+    assert defect.code is DefectCode.mesh_edge_through_face
+    assert defect.entity_index == 0
+    assert defect.fingerprint == ""
+
+
+def test_nearest_face_search_measures_few_faces(monkeypatch):
+    """The box-bounded search: a point on one box of a far-apart pair measures that box only."""
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+
+    measured = []
+
+    class Counting(BRepExtrema_DistShapeShape):
+        def __init__(self, *args):
+            measured.append(1)
+            super().__init__(*args)
+
+    import OCP.BRepExtrema
+    monkeypatch.setattr(OCP.BRepExtrema, "BRepExtrema_DistShapeShape", Counting)
+    shape = _compound(_box(), _box(x=100.0))
+    faces = _faces(shape)
+    near = mesh_probe._nearest_faces(faces, (5.0, 5.0, 10.0), tol=1e-4,
+                                     deadline=time.monotonic() + 60.0)
+    assert near is not None and len(near) == 1
+    assert len(measured) < faces.Extent() == 12
+
+
+def test_scoped_defect_outside_the_region_is_dropped_not_unlocated(monkeypatch):
+    from meshpipeline.cad.repair.localize import _diagonal
+    from meshpipeline.cad.repair.regions import Region
+
+    shape = _compound(_box(), _box(x=100.0))
+    _fake_probe(monkeypatch, mesh_probe.MeshFailure(
+        EDGE_THROUGH_FACE, (), (105.0, 5.0, 10.0), "PLC Error", stage="3d"))
+    within = Region(index=0, fingerprints=frozenset(), bbox_min=(-1.0, -1.0, -1.0),
+                    bbox_max=(11.0, 11.0, 11.0))
+    assert mesh_probe.mesh_defects(shape, diagonal_mm=_diagonal(shape), budget_s=60.0,
+                                   within=within) == ()
+
+
+def test_nearest_face_search_stops_at_the_deadline():
+    faces = _faces(_box())
+    assert mesh_probe._nearest_faces(faces, (5.0, 5.0, 10.0), tol=1e-4,
+                                     deadline=time.monotonic() - 1.0) is None

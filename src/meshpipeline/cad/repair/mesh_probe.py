@@ -42,6 +42,12 @@ NO_VOLUME = "no_volume"
 TIMEOUT = "timeout"
 OTHER = "other"
 
+#: Which step of the child's work raised. A surface read off the log is the one being meshed only
+#: when the 2D stage is what failed; once the volume is meshing it is merely the last 2D surface.
+STAGE_IMPORT = "import"
+STAGE_2D = "2d"
+STAGE_3D = "3d"
+
 #: xmin, ymin, zmin, xmax, ymax, zmax
 Box = tuple[float, float, float, float, float, float]
 
@@ -56,6 +62,11 @@ class MeshFailure:
     surfaces: tuple[int, ...]
     point: tuple[float, float, float] | None
     message: str
+    #: The stage that raised (STAGE_*), or "" when not known.
+    stage: str = ""
+    #: True when `surfaces` was not in gmsh's error text but taken from the log's last
+    #: "Meshing surface N". See `locating_surfaces` for when that may be trusted.
+    surfaces_from_log: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,8 +86,11 @@ _OPEN_LOOP = re.compile(r"not to be forming a closed loop", re.I)
 _MESHING_SURFACE = re.compile(r"Meshing surface (\d+)")
 
 
-def classify(error: str, log: Sequence[str]) -> MeshFailure:
-    """Name the kind, surfaces and point of a gmsh failure. Pure; never raises."""
+def classify(error: str, log: Sequence[str], *, stage: str = "") -> MeshFailure:
+    """Name the kind, surfaces and point of a gmsh failure. Pure; never raises.
+
+    `stage` is recorded on the failure, and so is whether its surfaces came from the log.
+    """
     error = error or ""
     surfaces: tuple[int, ...] = ()
     point: tuple[float, float, float] | None = None
@@ -98,6 +112,7 @@ def classify(error: str, log: Sequence[str]) -> MeshFailure:
     elif _OPEN_LOOP.search(error):
         kind = OPEN_LOOP
 
+    from_log = False
     if not surfaces:
         last = None
         for line in log:
@@ -106,7 +121,24 @@ def classify(error: str, log: Sequence[str]) -> MeshFailure:
                 last = int(found.group(1))
         if last is not None:
             surfaces = (last,)
-    return MeshFailure(kind=kind, surfaces=surfaces, point=point, message=error.strip())
+            from_log = True
+    return MeshFailure(kind=kind, surfaces=surfaces, point=point, message=error.strip(),
+                       stage=stage, surfaces_from_log=from_log)
+
+
+def locating_surfaces(failure: MeshFailure) -> tuple[int, ...]:
+    """The gmsh surfaces a failure may be LOCATED on - never a guessed one. Pure.
+
+    Surfaces gmsh named in its own error are trusted. A surface read off the log is trusted only
+    when the 2D stage failed, because then it is the surface being meshed; in the volume stage (or
+    an unknown one) it is just the last surface meshed in 2D. An edge through a face is located only
+    by its point (controller ruling R7), so it never takes a surface from here.
+    """
+    if failure.kind == EDGE_THROUGH_FACE:
+        return ()
+    if failure.surfaces_from_log and failure.stage != STAGE_2D:
+        return ()
+    return failure.surfaces
 
 
 def _probe_child(path: str, diagonal_mm: float, surfaces: tuple[int, ...] | None,
@@ -120,6 +152,7 @@ def _probe_child(path: str, diagonal_mm: float, surfaces: tuple[int, ...] | None
         gmsh.option.setNumber("General.Terminal", 0)
         gmsh.option.setNumber("General.NumThreads", 1)
         gmsh.logger.start()
+        stage = STAGE_IMPORT
         try:
             gmsh.model.occ.importShapes(path)
             gmsh.model.occ.synchronize()
@@ -134,18 +167,20 @@ def _probe_child(path: str, diagonal_mm: float, surfaces: tuple[int, ...] | None
                 keep = set(surfaces)
                 gmsh.model.removeEntities(
                     [(2, t) for _d, t in gmsh.model.getEntities(2) if t not in keep])
+            stage = STAGE_2D
             gmsh.model.mesh.generate(2)
             if surfaces is not None or not volume:
                 return 0, None, boxes
+            stage = STAGE_3D
             gmsh.model.mesh.generate(3)
             _types, tags, _nodes = gmsh.model.mesh.getElements(3)
             count = sum(len(t) for t in tags)
             if count == 0:
                 return 0, MeshFailure(NO_VOLUME, (), None,
-                                      "gmsh produced no volume elements"), boxes
+                                      "gmsh produced no volume elements", stage=STAGE_3D), boxes
             return count, None, boxes
         except Exception as exc:  # noqa: BLE001 - a gmsh failure is the answer, not an error
-            return 0, classify(str(exc), gmsh.logger.get()), boxes
+            return 0, classify(str(exc), gmsh.logger.get(), stage=stage), boxes
     finally:
         try:
             gmsh.finalize()
@@ -247,15 +282,42 @@ def _unlocated(failure: MeshFailure) -> EntityDefect:
                                       "gmsh_surfaces": list(failure.surfaces)})
 
 
-def _nearest_faces(faces, point: tuple[float, float, float], *, tol: float) -> list[int]:
-    """The face(s) nearest a point: every face within `tol` of the least distance."""
+def _box_distance(point: tuple[float, float, float], box: Box) -> float:
+    """How far a point is from a box: 0 inside it. A lower bound on the distance to what it holds."""
+    gaps = (max(box[k] - point[k], 0.0, point[k] - box[k + 3]) for k in range(3))
+    return sum(g * g for g in gaps) ** 0.5
+
+
+def _nearest_faces(faces, point: tuple[float, float, float], *, tol: float,
+                   deadline: float) -> list[int] | None:
+    """The face(s) nearest a point - every face within `tol` of the least distance - or None when
+    the deadline passed first.
+
+    BOX-BOUNDED, AND STILL EXACT. A face's box distance is a lower bound on its true distance, so
+    faces are measured in order of box distance and the search stops at the first whose box is
+    already further than the best exact distance (+ tol): nothing after it can be nearer. Taking
+    only the faces with the least BOX distance would not be exact - the point may sit inside the
+    box of a large curved face that is itself far away. A face with no box is measured first.
+    """
     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
     from OCP.BRepExtrema import BRepExtrema_DistShapeShape
     from OCP.gp import gp_Pnt
 
+    if time.monotonic() >= deadline:
+        return None
+    order: list[tuple[float, int]] = []
+    for index in range(1, faces.Extent() + 1):
+        bounds = _bounds_of(faces.FindKey(index))
+        order.append((0.0 if bounds is None else _box_distance(point, (*bounds[0], *bounds[1])),
+                      index))
+    order.sort()
     vertex = BRepBuilderAPI_MakeVertex(gp_Pnt(*point)).Vertex()
     distances: dict[int, float] = {}
-    for index in range(1, faces.Extent() + 1):
+    for bound, index in order:
+        if distances and bound > min(distances.values()) + tol:
+            break
+        if time.monotonic() >= deadline:
+            return None
         try:
             extrema = BRepExtrema_DistShapeShape(vertex, faces.FindKey(index))
             if extrema.IsDone():
@@ -274,21 +336,24 @@ def mesh_defects(shape, *, diagonal_mm: float, budget_s: float,
 
     Empty when the part meshes. Each defect is stamped exactly as `localize` stamps a scan, so a
     defect on a face carries the fingerprint the scan gives that face. A failure that names no face
-    this can identify - and every NO_VOLUME or TIMEOUT - is ONE unlocated defect (index 0, empty
-    location, empty fingerprint): never aimed at a guessed face.
+    this can identify - every NO_VOLUME or TIMEOUT, any failure whose only surface is a guess
+    (`locating_surfaces`), and one the budget ran out before locating - is ONE unlocated defect
+    (index 0, empty location, empty fingerprint): never aimed at a guessed face.
 
     `within` scopes the probe to the gmsh surfaces whose face `localize.in_region` admits, the one
     region rule the scan uses. A scoped probe meshes surfaces only, so failures that first appear
     in the volume mesh (overlapping facets, an edge through a face, no volume) are not seen there.
+    A located defect the region does not admit is not reported by a scoped call at all.
     """
     try:
-        found = _mesh_defects(shape, diagonal_mm=float(diagonal_mm), budget_s=float(budget_s),
-                              within=within)
+        return _stamped(_mesh_defects(shape, diagonal_mm=float(diagonal_mm),
+                                      budget_s=float(budget_s), within=within),
+                        diagonal_mm=diagonal_mm)
     except Exception as exc:  # noqa: BLE001 - the probe never raises
         logger.info("mesh_defects: %s: %s", type(exc).__name__, exc)
-        found = (_unlocated(MeshFailure(
+        # Unlocated, so it needs no stamp: its fingerprint is "" either way.
+        return (_unlocated(MeshFailure(
             TIMEOUT, (), None, f"the mesh probe could not run: {type(exc).__name__}")),)
-    return _stamped(found, diagonal_mm=diagonal_mm)
 
 
 def _mesh_defects(shape, *, diagonal_mm: float, budget_s: float,
@@ -330,22 +395,25 @@ def _mesh_defects(shape, *, diagonal_mm: float, budget_s: float,
     failure = result.failure
     if failure is None:
         return ()
-    if failure.kind in _WHOLE_PART_KINDS:
+    if failure.kind in _WHOLE_PART_KINDS or time.monotonic() >= deadline:
+        # The budget is spent: report the failure, but do no more kernel work to place it.
         return (_unlocated(failure),)
     code = CODE_FOR_KIND.get(failure.kind, DefectCode.mesh_other)
-    located: list[int] = []
+    located: list[int] | None = []
     if failure.point is not None:
-        located = _nearest_faces(faces, failure.point, tol=tol)
-    elif failure.kind != EDGE_THROUGH_FACE:
-        # An edge through a face is found in the VOLUME mesh, so the surface `classify` took from
-        # the log is only the last one meshed in 2D - a guess. Without a point it stays unlocated.
+        located = _nearest_faces(faces, failure.point, tol=tol, deadline=deadline)
+    elif trusted := locating_surfaces(failure):
         if mapping is None:
             mapping = faces_for_tags(_face_boxes(faces), result.tag_boxes, tol=tol)
-        located = list(dict.fromkeys(mapping[t] for t in failure.surfaces if t in mapping))
+        located = list(dict.fromkeys(mapping[t] for t in trusted if t in mapping))
+    if not located:
+        return (_unlocated(failure),)
     defects = [_face_defect(code, faces, index, failure) for index in sorted(located)]
     if within is not None:
+        # A scoped call answers for its region only. Turning an outside face into an UNLOCATED
+        # defect would make it read as in-region (unplaceable is admitted), so it is dropped.
         defects = [d for d in defects if in_region(d, within, diagonal_mm=diagonal_mm)]
-    return tuple(defects) if defects else (_unlocated(failure),)
+    return tuple(defects)
 
 
 def _tag_in_region(tag: int, box: Box, mapping: dict[int, int], faces, within: Region, *,
