@@ -76,7 +76,17 @@ def resolve_inputs(manifest: dict, roots: list[Path]) -> tuple[dict[str, Path], 
 
 
 def agreement(file_result: ProbeResult, loop_result: ProbeResult) -> bool:
-    """Both meshed, or both failed with the same kind."""
+    """Both meshed, or both failed (any kinds): the binary verdict, which gates calibration.
+
+    The track scores the file probe on the delivered STEP, so the in-loop probe only steers where
+    repair looks; whether the part meshes is what it must get right. `same_kind` is the stricter,
+    reported-only comparison.
+    """
+    return file_result.meshed == loop_result.meshed
+
+
+def same_kind(file_result: ProbeResult, loop_result: ProbeResult) -> bool:
+    """Secondary, non-gating: both meshed, or both failed with the same kind."""
     if file_result.meshed or loop_result.meshed:
         return file_result.meshed and loop_result.meshed
     assert file_result.failure is not None and loop_result.failure is not None
@@ -150,7 +160,9 @@ def _same(a: str | None, b: str | None) -> bool:
 
 def summarise(rows: list[dict], missing: list[str]) -> dict:
     complete = [r for r in rows if "error" not in r and "reexport" in r]
-    loop_vs_reexport = [r for r in complete if not _same(r["loop"], r["reexport"])]
+    loop_vs_reexport = [r for r in complete if (r["loop"] == "meshes") != (r["reexport"] == "meshes")]
+    kind_swaps = [r for r in complete if r not in loop_vs_reexport
+                  and not _same(r["loop"], r["reexport"])]
     reader_effect = [r for r in complete if not _same(r["file"], r["reexport"])]
     return {
         "files": len(rows) + len(missing),
@@ -159,6 +171,7 @@ def summarise(rows: list[dict], missing: list[str]) -> dict:
         "errors": [r for r in rows if "error" in r],
         "loop_agrees_reexport": len(complete) - len(loop_vs_reexport),
         "loop_disagrees_reexport": loop_vs_reexport,
+        "kind_swaps_both_fail": kind_swaps,
         "reader_effect": reader_effect,
         "stop_rule_tripped": len(loop_vs_reexport) > MAX_DISAGREEMENTS,
     }
@@ -190,9 +203,11 @@ def main(argv: list[str] | None = None) -> int:
     summary["wall_seconds"] = round(time.monotonic() - started, 1)
 
     print(_table(rows, ("file", "reexport", "loop")))
-    print(f"\nloop vs reexport: agree {summary['loop_agrees_reexport']}/{summary['files']}")
+    print(f"\nloop vs reexport (binary): agree {summary['loop_agrees_reexport']}/{summary['files']}")
     for r in summary["loop_disagrees_reexport"]:
         print(f"  DISAGREE {r['name']}: reexport={r['reexport']} loop={r['loop']}")
+    for r in summary["kind_swaps_both_fail"]:
+        print(f"  kind swap (not gating) {r['name']}: reexport={r['reexport']} loop={r['loop']}")
     print(f"reader effect (file vs reexport): {len(summary['reader_effect'])} files")
     for r in summary["reader_effect"]:
         print(f"  {r['name']}: file={r['file']} reexport={r['reexport']}")

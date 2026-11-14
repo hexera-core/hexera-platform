@@ -31,7 +31,8 @@
    "solids": 1,
    "faces": 49,
    "diag_mm": 10005.9,
-   "gmsh_error": "FAIL: no volume elements"
+   "gmsh_error": "FAIL: no volume elements",
+   "diag_source": "gmsh"
   },
   {
    "name": "occt/bm2_ec_exhaust-A.stp",
@@ -40,7 +41,8 @@
    "solids": 6,
    "faces": 58,
    "diag_mm": 2626.8,
-   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point"
+   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point",
+   "diag_source": "gmsh"
   },
   {
    "name": "occt/bug27453_165-174_piattello.stp",
@@ -49,7 +51,8 @@
    "solids": 1,
    "faces": 313,
    "diag_mm": 204.2,
-   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point"
+   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point",
+   "diag_source": "gmsh"
   },
   {
    "name": "occt/bug32314_corrupted.stp",
@@ -58,7 +61,8 @@
    "solids": 11,
    "faces": 77,
    "diag_mm": 25535.2,
-   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 8 surface 8"
+   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 8 surface 8",
+   "diag_source": "gmsh"
   },
   {
    "name": "occt/bug33100_window.step",
@@ -66,8 +70,9 @@
    "sha256": "ad0a33b0c846e90f70f20e4abc466c8922a41e2beeb707953a6cd8275637a3e0",
    "solids": null,
    "faces": null,
-   "diag_mm": null,
-   "gmsh_error": "FAIL: timeout/crash rc=139"
+   "diag_mm": 3.6,
+   "gmsh_error": "FAIL: timeout/crash rc=139",
+   "diag_source": "ocp"
   },
   {
    "name": "occt/bug32596_abc_0_13.step",
@@ -76,7 +81,8 @@
    "solids": 1,
    "faces": 99,
    "diag_mm": 59.5,
-   "gmsh_error": "FAIL: Impossible to mesh periodic surface 6"
+   "gmsh_error": "FAIL: Impossible to mesh periodic surface 6",
+   "diag_source": "gmsh"
   },
   {
    "name": "occt/bug30790.step",
@@ -85,7 +91,8 @@
    "solids": null,
    "faces": null,
    "diag_mm": null,
-   "gmsh_error": "FAIL: timeout/crash rc=1"
+   "gmsh_error": "FAIL: timeout/crash rc=1",
+   "diag_source": "unavailable"
   },
   {
    "name": "occt/nist_ftc_08_asme1_ap242-2.stp",
@@ -93,8 +100,9 @@
    "sha256": "19eb01d2a6a3404e6a5c2f5294fa6a3d7606efb3118fc32d49b60fa185d99ea9",
    "solids": null,
    "faces": null,
-   "diag_mm": null,
-   "gmsh_error": "FAIL: timeout/crash rc=139"
+   "diag_mm": 386.0,
+   "gmsh_error": "FAIL: timeout/crash rc=139",
+   "diag_source": "ocp"
   },
   {
    "name": "occt/bug33261.stp",
@@ -103,7 +111,8 @@
    "solids": 24,
    "faces": 1622,
    "diag_mm": 183.1,
-   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point"
+   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point",
+   "diag_source": "gmsh"
   },
   {
    "name": "occt/trj10_ch1-id-chs.stp",
@@ -112,7 +121,8 @@
    "solids": 1,
    "faces": 12,
    "diag_mm": 463.5,
-   "gmsh_error": "FAIL: The 1D mesh seems not to be forming a closed loop"
+   "gmsh_error": "FAIL: The 1D mesh seems not to be forming a closed loop",
+   "diag_source": "gmsh"
   },
   {
    "name": "occt/bug32239.STEP",
@@ -121,7 +131,8 @@
    "solids": 20,
    "faces": 2004,
    "diag_mm": 153.3,
-   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 320 surface 324"
+   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 320 surface 324",
+   "diag_source": "gmsh"
   },
   {
    "name": "occt/trj3_s1-ac-214.stp",
@@ -130,7 +141,8 @@
    "solids": 11,
    "faces": 138,
    "diag_mm": 17491.2,
-   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point"
+   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point",
+   "diag_source": "gmsh"
   },
   {
    "name": "occt/trj3_s1-db-214.stp",
@@ -139,7 +151,8 @@
    "solids": 11,
    "faces": 178,
    "diag_mm": 58.5,
-   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point"
+   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point",
+   "diag_source": "gmsh"
   },
   {
    "name": "occt/trj3_s1-ct-214.stp",
@@ -148,7 +161,8 @@
    "solids": 11,
    "faces": 178,
    "diag_mm": 514.2,
-   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 67 surface 68"
+   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 67 surface 68",
+   "diag_source": "gmsh"
   },
   {
    "name": "occt/trj3_s1-ct-203.stp",
@@ -157,7 +171,8 @@
    "solids": 11,
    "faces": 178,
    "diag_mm": 514.2,
-   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 67 surface 68"
+   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 67 surface 68",
+   "diag_source": "gmsh"
   },
   {
    "name": "occt/trj3_s1-id-203.stp",
@@ -166,7 +181,8 @@
    "solids": 11,
    "faces": 134,
    "diag_mm": 608.0,
-   "gmsh_error": "FAIL: The 1D mesh seems not to be forming a closed loop"
+   "gmsh_error": "FAIL: The 1D mesh seems not to be forming a closed loop",
+   "diag_source": "gmsh"
   },
   {
    "name": "occt/trj3_s1-md-214.stp",
@@ -175,7 +191,8 @@
    "solids": 11,
    "faces": 130,
    "diag_mm": 612.7,
-   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point"
+   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point",
+   "diag_source": "gmsh"
   },
   {
    "name": "occt/trj3_s1-pe-203.stp",
@@ -184,7 +201,8 @@
    "solids": 11,
    "faces": 188,
    "diag_mm": 539.3,
-   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point"
+   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point",
+   "diag_source": "gmsh"
   },
   {
    "name": "occt/trj3_s1-tc-214.stp",
@@ -193,7 +211,8 @@
    "solids": 11,
    "faces": 189,
    "diag_mm": 529.8,
-   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point"
+   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point",
+   "diag_source": "gmsh"
   },
   {
    "name": "occt/trj3_s1-ug-214.stp",
@@ -202,7 +221,8 @@
    "solids": 11,
    "faces": 138,
    "diag_mm": 568.9,
-   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point"
+   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point",
+   "diag_source": "gmsh"
   },
   {
    "name": "occt/trj4_s1-pe-214.stp",
@@ -211,7 +231,8 @@
    "solids": 11,
    "faces": 188,
    "diag_mm": 539.3,
-   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point"
+   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point",
+   "diag_source": "gmsh"
   },
   {
    "name": "occt/trj4_s1-ug-214.stp",
@@ -220,7 +241,8 @@
    "solids": 11,
    "faces": 138,
    "diag_mm": 568.9,
-   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point"
+   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point",
+   "diag_source": "gmsh"
   },
   {
    "name": "occt/trj4_s1-tu-214.stp",
@@ -229,7 +251,8 @@
    "solids": 11,
    "faces": 180,
    "diag_mm": 540.6,
-   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point"
+   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point",
+   "diag_source": "gmsh"
   },
   {
    "name": "occt/trj4_s1-ai-214.stp",
@@ -238,7 +261,8 @@
    "solids": 8,
    "faces": 104,
    "diag_mm": 320.1,
-   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 3 surface 3"
+   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 3 surface 3",
+   "diag_source": "gmsh"
   },
   {
    "name": "occt/trj5_s1-ac-214.stp",
@@ -247,7 +271,8 @@
    "solids": 11,
    "faces": 138,
    "diag_mm": 573.9,
-   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point"
+   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point",
+   "diag_source": "gmsh"
   },
   {
    "name": "occt/trj5_s1-in-214.stp",
@@ -256,7 +281,8 @@
    "solids": 11,
    "faces": 146,
    "diag_mm": 571.2,
-   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point"
+   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point",
+   "diag_source": "gmsh"
   },
   {
    "name": "occt/trj5_s1-ug-214.stp",
@@ -265,7 +291,8 @@
    "solids": 11,
    "faces": 138,
    "diag_mm": 568.9,
-   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point"
+   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point",
+   "diag_source": "gmsh"
   },
   {
    "name": "occt/trj6_b1-ec-214.stp",
@@ -274,7 +301,8 @@
    "solids": 1,
    "faces": 292,
    "diag_mm": 30561.0,
-   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 113 surface 114"
+   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 113 surface 114",
+   "diag_source": "gmsh"
   },
   {
    "name": "occt/trj7_k1-id-214.stp",
@@ -282,8 +310,9 @@
    "sha256": "ae819be983c52f86771522df8dc0bd63a0ff4683c3cb4e14d2ab17b37df0a133",
    "solids": null,
    "faces": null,
-   "diag_mm": null,
-   "gmsh_error": "FAIL: timeout/crash rc=1"
+   "diag_mm": 172.7,
+   "gmsh_error": "FAIL: timeout/crash rc=1",
+   "diag_source": "ocp"
   },
   {
    "name": "occt/trj6_pm4-ec-203.stp",
@@ -292,7 +321,8 @@
    "solids": 32,
    "faces": 840,
    "diag_mm": 312.4,
-   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point"
+   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point",
+   "diag_source": "gmsh"
   },
   {
    "name": "occt/bug25013_25013face.stp",
@@ -300,8 +330,9 @@
    "sha256": "9923afaff8a4c95e356438198b80f4897e91101c644db19638c01ffb279bf8ea",
    "solids": null,
    "faces": null,
-   "diag_mm": null,
-   "gmsh_error": "FAIL: timeout/crash rc=124"
+   "diag_mm": 1.0,
+   "gmsh_error": "FAIL: timeout/crash rc=124",
+   "diag_source": "ocp"
   },
   {
    "name": "occt/trj3_s1-al-214.stp",
@@ -309,8 +340,9 @@
    "sha256": "8a39ac93f2a63f93500793ed9fa8ab5de7e6ccdfde8b4ec215fda5873e028c3b",
    "solids": null,
    "faces": null,
-   "diag_mm": null,
-   "gmsh_error": "FAIL: timeout/crash rc=124"
+   "diag_mm": 526.0,
+   "gmsh_error": "FAIL: timeout/crash rc=124",
+   "diag_source": "ocp"
   },
   {
    "name": "occt/trj7_b1-ec-214.stp",
@@ -318,8 +350,9 @@
    "sha256": "117ecb94ab1decefe8d78516b1a0366aab05035e08b1df29c365a85f708ad670",
    "solids": null,
    "faces": null,
-   "diag_mm": null,
-   "gmsh_error": "FAIL: timeout/crash rc=124"
+   "diag_mm": 362.7,
+   "gmsh_error": "FAIL: timeout/crash rc=124",
+   "diag_source": "ocp"
   },
   {
    "name": "abc/00500400_bce216c87d2d17025db6ab36_step_000.step",
@@ -328,7 +361,8 @@
    "solids": 1,
    "faces": 8,
    "diag_mm": 132.3,
-   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 1 surface 1"
+   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 1 surface 1",
+   "diag_source": "gmsh"
   },
   {
    "name": "abc/00500875_a97e4a09c926c436c043e3c3_step_028.step",
@@ -337,7 +371,8 @@
    "solids": 5,
    "faces": 88,
    "diag_mm": 720.2,
-   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point"
+   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point",
+   "diag_source": "gmsh"
   },
   {
    "name": "abc/00501275_58950467b204b50ff2cc07c9_step_013.step",
@@ -346,7 +381,8 @@
    "solids": 1,
    "faces": 37,
    "diag_mm": 64.6,
-   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 19 surface 19"
+   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 19 surface 19",
+   "diag_source": "gmsh"
   },
   {
    "name": "abc/00500350_cf6391333569f6a17439ce66_step_000.step",
@@ -355,7 +391,8 @@
    "solids": 12,
    "faces": 144,
    "diag_mm": 982.2,
-   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 3 surface 3"
+   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 3 surface 3",
+   "diag_source": "gmsh"
   },
   {
    "name": "abc/00502475_5895e91efca3da0f6b68639a_step_003.step",
@@ -364,7 +401,8 @@
    "solids": 5,
    "faces": 170,
    "diag_mm": 1841.3,
-   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point"
+   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point",
+   "diag_source": "gmsh"
   },
   {
    "name": "abc/00502600_5895f9dd54620e0fdd79706b_step_000.step",
@@ -373,7 +411,8 @@
    "solids": 2,
    "faces": 183,
    "diag_mm": 432.7,
-   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 5 surface 5"
+   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 5 surface 5",
+   "diag_source": "gmsh"
   },
   {
    "name": "abc/00501300_58950467b204b50ff2cc07c9_step_038.step",
@@ -382,7 +421,8 @@
    "solids": 1,
    "faces": 30,
    "diag_mm": 800.1,
-   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 4 surface 4"
+   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 4 surface 4",
+   "diag_source": "gmsh"
   },
   {
    "name": "abc/00502900_46dbba28aa960b1c0b680bda_step_007.step",
@@ -391,7 +431,8 @@
    "solids": 1,
    "faces": 26,
    "diag_mm": 1415.6,
-   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 5 surface 19"
+   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 5 surface 19",
+   "diag_source": "gmsh"
   },
   {
    "name": "abc/00502800_c9fa412b334b0e215cb26434_step_000.step",
@@ -400,7 +441,8 @@
    "solids": 8,
    "faces": 618,
    "diag_mm": 786.8,
-   "gmsh_error": "FAIL: Impossible to mesh periodic surface 380"
+   "gmsh_error": "FAIL: Impossible to mesh periodic surface 380",
+   "diag_source": "gmsh"
   },
   {
    "name": "abc/00503000_32f660ff2a08b13b584f0693_step_000.step",
@@ -409,7 +451,8 @@
    "solids": 70,
    "faces": 3827,
    "diag_mm": 33195.1,
-   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 212 surface 213"
+   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 212 surface 213",
+   "diag_source": "gmsh"
   },
   {
    "name": "abc/00502200_5895d152ed2c0c0fe9ef029c_step_093.step",
@@ -418,7 +461,8 @@
    "solids": 178,
    "faces": 1149,
    "diag_mm": 104.7,
-   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point"
+   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point",
+   "diag_source": "gmsh"
   },
   {
    "name": "abc/00503625_3ece9c6bb503a673c7105a4b_step_006.step",
@@ -427,7 +471,8 @@
    "solids": 7,
    "faces": 252,
    "diag_mm": 225.7,
-   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 113 surface 113"
+   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 113 surface 113",
+   "diag_source": "gmsh"
   },
   {
    "name": "abc/00503325_58965842fca3da0f6b68cb76_step_006.step",
@@ -436,7 +481,8 @@
    "solids": 35,
    "faces": 1749,
    "diag_mm": 289.3,
-   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point"
+   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point",
+   "diag_source": "gmsh"
   },
   {
    "name": "abc/00504025_5896ef7054620e0fdd79f59d_step_085.step",
@@ -445,7 +491,8 @@
    "solids": 2,
    "faces": 307,
    "diag_mm": 176.4,
-   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point"
+   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point",
+   "diag_source": "gmsh"
   },
   {
    "name": "abc/00504200_58971a35c1f05a10f76b8a78_step_009.step",
@@ -454,7 +501,8 @@
    "solids": 27,
    "faces": 712,
    "diag_mm": 383.6,
-   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 135 surface 135"
+   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 135 surface 135",
+   "diag_source": "gmsh"
   },
   {
    "name": "abc/00504475_79b4cdbab23d7acd4e4b5fbc_step_000.step",
@@ -463,7 +511,8 @@
    "solids": 2,
    "faces": 155,
    "diag_mm": 177.9,
-   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 123 surface 123"
+   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 123 surface 123",
+   "diag_source": "gmsh"
   },
   {
    "name": "abc/00504775_75dc3fef19fbaaff412bb388_step_006.step",
@@ -472,7 +521,8 @@
    "solids": 101,
    "faces": 997,
    "diag_mm": 26430.4,
-   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 1 surface 15"
+   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 1 surface 15",
+   "diag_source": "gmsh"
   },
   {
    "name": "abc/00504900_58977eb6e2af0f0fda4a3a4e_step_006.step",
@@ -481,7 +531,8 @@
    "solids": 1,
    "faces": 173,
    "diag_mm": 934.2,
-   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point"
+   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point",
+   "diag_source": "gmsh"
   },
   {
    "name": "abc/00505075_58978ae07e864b0f6501330a_step_000.step",
@@ -490,7 +541,8 @@
    "solids": 28,
    "faces": 1005,
    "diag_mm": 171.4,
-   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 768 surface 768"
+   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 768 surface 768",
+   "diag_source": "gmsh"
   },
   {
    "name": "abc/00505550_5897b8ef36235f0f71862899_step_000.step",
@@ -499,7 +551,8 @@
    "solids": 98,
    "faces": 2180,
    "diag_mm": 1571.8,
-   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 512 surface 512"
+   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 512 surface 512",
+   "diag_source": "gmsh"
   },
   {
    "name": "abc/00505625_5897c0de69a9d0103bc02adf_step_018.step",
@@ -508,7 +561,8 @@
    "solids": 1,
    "faces": 30,
    "diag_mm": 800.1,
-   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 4 surface 4"
+   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 4 surface 4",
+   "diag_source": "gmsh"
   },
   {
    "name": "abc/00502300_1dcb8ad6a594419908db0fd3_step_002.step",
@@ -516,8 +570,9 @@
    "sha256": "ae77dd998f9d8092cde8172cce221d45abe7b3adf78590f7d42ca61ea32748c8",
    "solids": null,
    "faces": null,
-   "diag_mm": null,
-   "gmsh_error": "FAIL: timeout/crash rc=124"
+   "diag_mm": 118.3,
+   "gmsh_error": "FAIL: timeout/crash rc=124",
+   "diag_source": "ocp"
   },
   {
    "name": "abc/00506325_589844ae8460820fe9280f95_step_012.step",
@@ -526,7 +581,8 @@
    "solids": 1,
    "faces": 63,
    "diag_mm": 57.0,
-   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 9 surface 9"
+   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 9 surface 9",
+   "diag_source": "gmsh"
   },
   {
    "name": "abc/00506275_541a2ce632275fed8964367a_step_000.step",
@@ -535,7 +591,8 @@
    "solids": 2,
    "faces": 1271,
    "diag_mm": 309.3,
-   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point"
+   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point",
+   "diag_source": "gmsh"
   },
   {
    "name": "abc/00506550_b5806bb84542de8e2656bc88_step_114.step",
@@ -544,7 +601,8 @@
    "solids": 1,
    "faces": 15,
    "diag_mm": 870.6,
-   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point"
+   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point",
+   "diag_source": "gmsh"
   },
   {
    "name": "abc/00506725_067fcf75ee0eae49a8b1f2e1_step_003.step",
@@ -553,7 +611,8 @@
    "solids": 1,
    "faces": 49,
    "diag_mm": 194.9,
-   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 18 surface 21"
+   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 18 surface 21",
+   "diag_source": "gmsh"
   },
   {
    "name": "abc/00502775_5896070a01b2bb0fc88ae0eb_step_071.step",
@@ -561,8 +620,9 @@
    "sha256": "a811e7d9d5e701254de0028b31cd469ba029813381c9683b8e3bb7b802fe7992",
    "solids": null,
    "faces": null,
-   "diag_mm": null,
-   "gmsh_error": "FAIL: timeout/crash rc=124"
+   "diag_mm": 12.7,
+   "gmsh_error": "FAIL: timeout/crash rc=124",
+   "diag_source": "ocp"
   },
   {
    "name": "abc/00502950_796e5a4b1bfb1f59da2e443d_step_000.step",
@@ -570,8 +630,9 @@
    "sha256": "0eba27d5e13651bcd215a9bc471e8de304315ad633c60267ab14eff647030a6d",
    "solids": null,
    "faces": null,
-   "diag_mm": null,
-   "gmsh_error": "FAIL: timeout/crash rc=124"
+   "diag_mm": 1773.8,
+   "gmsh_error": "FAIL: timeout/crash rc=124",
+   "diag_source": "ocp"
   },
   {
    "name": "abc/00506900_417ada9d4c34002e49e704fa_step_001.step",
@@ -580,7 +641,8 @@
    "solids": 1,
    "faces": 78,
    "diag_mm": 39.6,
-   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 33 surface 33"
+   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 33 surface 33",
+   "diag_source": "gmsh"
   },
   {
    "name": "abc/00507025_765ba085f20aa7fcb2def3ae_step_000.step",
@@ -589,7 +651,8 @@
    "solids": 9,
    "faces": 456,
    "diag_mm": 1537.4,
-   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 22 surface 22"
+   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 22 surface 22",
+   "diag_source": "gmsh"
   },
   {
    "name": "abc/00507200_15997739fe66ef86060150e6_step_001.step",
@@ -598,7 +661,8 @@
    "solids": 3,
    "faces": 30,
    "diag_mm": 985.3,
-   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 5 surface 5"
+   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 5 surface 5",
+   "diag_source": "gmsh"
   },
   {
    "name": "abc/00506975_da054becdab299df20251eaf_step_000.step",
@@ -607,7 +671,8 @@
    "solids": 14,
    "faces": 574,
    "diag_mm": 2749.8,
-   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 21 surface 21"
+   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 21 surface 21",
+   "diag_source": "gmsh"
   },
   {
    "name": "abc/00503200_c8a4697bcc912578475337ea_step_000.step",
@@ -615,8 +680,9 @@
    "sha256": "1b082230fadf2e7ec4b236962bf89cc61eb7a393fcd3e2546da1466898d1e57c",
    "solids": null,
    "faces": null,
-   "diag_mm": null,
-   "gmsh_error": "FAIL: timeout/crash rc=124"
+   "diag_mm": 90.7,
+   "gmsh_error": "FAIL: timeout/crash rc=124",
+   "diag_source": "ocp"
   },
   {
    "name": "abc/00503600_58969abbfca3da0f6b696760_step_000.step",
@@ -625,7 +691,8 @@
    "solids": 2,
    "faces": 63,
    "diag_mm": 1032.0,
-   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point"
+   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point",
+   "diag_source": "gmsh"
   },
   {
    "name": "abc/00507550_ed3bf58da6711cb579e24def_step_024.step",
@@ -634,7 +701,8 @@
    "solids": 1,
    "faces": 28,
    "diag_mm": 2000.2,
-   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point"
+   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point",
+   "diag_source": "gmsh"
   },
   {
    "name": "abc/00508150_5898cfe0f3cd940f71b7b650_step_069.step",
@@ -643,7 +711,8 @@
    "solids": 3,
    "faces": 268,
    "diag_mm": 301.6,
-   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 122 surface 122"
+   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 122 surface 122",
+   "diag_source": "gmsh"
   },
   {
    "name": "abc/00508750_11d8d571a2f54aa924e0c995_step_000.step",
@@ -652,7 +721,8 @@
    "solids": 3,
    "faces": 136,
    "diag_mm": 335.5,
-   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 69 surface 69"
+   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 69 surface 69",
+   "diag_source": "gmsh"
   },
   {
    "name": "abc/00508775_58991615a878da0f8225af98_step_009.step",
@@ -661,7 +731,8 @@
    "solids": 1,
    "faces": 33,
    "diag_mm": 334.6,
-   "gmsh_error": "FAIL: The 1D mesh seems not to be forming a closed loop"
+   "gmsh_error": "FAIL: The 1D mesh seems not to be forming a closed loop",
+   "diag_source": "gmsh"
   },
   {
    "name": "abc/00509150_cb7c199fecd1c9d080129028_step_009.step",
@@ -670,7 +741,8 @@
    "solids": 4,
    "faces": 82,
    "diag_mm": 222.6,
-   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point"
+   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point",
+   "diag_source": "gmsh"
   },
   {
    "name": "abc/00509250_589954b73503790fce559ec7_step_032.step",
@@ -679,7 +751,8 @@
    "solids": 3,
    "faces": 60,
    "diag_mm": 188.8,
-   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 3 surface 3"
+   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 3 surface 3",
+   "diag_source": "gmsh"
   },
   {
    "name": "abc/00509500_5899600b3052da0f6bdf752e_step_062.step",
@@ -688,7 +761,8 @@
    "solids": 7,
    "faces": 44,
    "diag_mm": 29.7,
-   "gmsh_error": "FAIL: Impossible to mesh periodic surface 9"
+   "gmsh_error": "FAIL: Impossible to mesh periodic surface 9",
+   "diag_source": "gmsh"
   },
   {
    "name": "abc/00509675_58998b763052da0f6bdf8e3f_step_018.step",
@@ -697,7 +771,8 @@
    "solids": 12,
    "faces": 114,
    "diag_mm": 1785.7,
-   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 1 surface 1"
+   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 1 surface 1",
+   "diag_source": "gmsh"
   },
   {
    "name": "abc/00509825_ad14112a53dcabe002ca167f_step_000.step",
@@ -706,7 +781,8 @@
    "solids": 3,
    "faces": 1405,
    "diag_mm": 1793.0,
-   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 18 surface 1081"
+   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 18 surface 1081",
+   "diag_source": "gmsh"
   },
   {
    "name": "abc/00509950_290c7c1160b8ce7723907233_step_000.step",
@@ -715,7 +791,8 @@
    "solids": 5,
    "faces": 2885,
    "diag_mm": 151.4,
-   "gmsh_error": "FAIL: The 1D mesh seems not to be forming a closed loop"
+   "gmsh_error": "FAIL: The 1D mesh seems not to be forming a closed loop",
+   "diag_source": "gmsh"
   },
   {
    "name": "abc/00505375_5897aba327753d0fe44f4744_step_006.step",
@@ -723,8 +800,9 @@
    "sha256": "49cf4f38954e10a3ea6556d60fc1384dc2e47fd93ca482ccd084835150dd146b",
    "solids": null,
    "faces": null,
-   "diag_mm": null,
-   "gmsh_error": "FAIL: timeout/crash rc=124"
+   "diag_mm": 129.1,
+   "gmsh_error": "FAIL: timeout/crash rc=124",
+   "diag_source": "ocp"
   },
   {
    "name": "abc/00507075_e31d2a137ae442102bed9cd9_step_000.step",
@@ -732,8 +810,9 @@
    "sha256": "1456ae456c198e658ce497a39064f5b5245608a96cadcc78009f8d9caa8d75e8",
    "solids": null,
    "faces": null,
-   "diag_mm": null,
-   "gmsh_error": "FAIL: timeout/crash rc=124"
+   "diag_mm": 278.5,
+   "gmsh_error": "FAIL: timeout/crash rc=124",
+   "diag_source": "ocp"
   },
   {
    "name": "abc/00507750_15086f55e7ef8d6b99de417a_step_000.step",
@@ -741,8 +820,9 @@
    "sha256": "fb2127e85fa54c028586dedac5231c8682afa4dd1cd82fca03f19a219c66f328",
    "solids": null,
    "faces": null,
-   "diag_mm": null,
-   "gmsh_error": "FAIL: timeout/crash rc=124"
+   "diag_mm": 19654.8,
+   "gmsh_error": "FAIL: timeout/crash rc=124",
+   "diag_source": "ocp"
   }
  ]
 }

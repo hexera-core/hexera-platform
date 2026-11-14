@@ -1,9 +1,15 @@
 # Mesh probe calibration on the mesh-failure-real track (2026-11-14)
 
-**Verdict: the stop rule tripped.** The in-loop probe (`loop`) disagrees with the same shape
-re-exported through STEP (`reexport`) on 9 of 80 files; the limit is 8. Plan Task 3 says stop and
-report before Task 5. Nothing was tuned. The run is a single pass, so some disagreements may be
-gmsh nondeterminism or budget effects (see causes); that was not re-measured.
+**Verdict: binary agreement 76/80; the stop rule (more than 8 disagreements) is not tripped.**
+The in-loop probe (`loop`) and the same shape re-exported through STEP (`reexport`) agree on
+whether the part meshes for 76 of 80 files: 3 disagree (meshes vs fails), 1 file could not be
+read by OCP at all. A further 6 files fail under both but with different kinds (kind-swap table).
+
+Why binary is the gate (controller ruling R9): the track's score is always the file probe on the
+delivered STEP, so the in-loop probe only steers where repair looks. Whether the part meshes is
+what it must get right; which of gmsh's failure kinds it reports first is secondary and is reported
+as its own column, not gated. (The first pass of this evidence gated on kind and counted 9
+disagreements; the same `run.json` rows, re-summarised, give the figures below.)
 
 Run: `run.json` (rows and summary). Command, host darwin-arm64, gmsh 4.15.2, 120 s per probe,
 6 workers, 997 s wall:
@@ -15,39 +21,62 @@ python devtools/validation/mesh_probe.py --manifest devtools/validation/corpora/
 
 Three probes per file: `file` = probe_file on the upload; `reexport` = OCP read, OCP
 STEPControl_Writer, probe_file; `loop` = OCP read, `mesh_defects` (BREP). Agreement compares `loop`
-with `reexport` (same kind, or both mesh). `file` vs `reexport` is the separate reader effect.
-
-## Result
+with `reexport`. `file` vs `reexport` is the separate reader effect.
 
 | | count |
 |---|---|
-| loop agrees with reexport | 70 / 80 |
-| loop disagrees with reexport | 9 |
-| file could not be probed (OCP error) | 1 (`occt/bug30790.step`: `Standard_Failure: NCollection_Array1::Value` in OCP's read) |
+| binary agreement, loop vs reexport | 76 / 80 |
+| meshes-vs-fails disagreements | 3 |
+| both fail, different kind (not gating) | 6 |
+| file OCP cannot read | 1 (`occt/bug30790.step`) |
 | reader effect (file differs from reexport) | 17 files |
+| rows where a probe hit its 120 s budget (over 200 s) | 11 |
 
-## loop vs reexport disagreements (9)
+## Meshes-vs-fails (3, gating)
 
-| file | reexport | loop | cause |
+| file | reexport | loop | note |
 |---|---|---|---|
-| abc/00500875..._028 | edge_through_face | meshes | unexplained; `file` also meshes, so this is the re-export that fails, BREP meshes |
-| abc/00502475..._003 | edge_through_face | other | unexplained; loop defect is unlocated |
-| abc/00503200..._000 | timeout | meshes | budget: reexport probe ran 120 s; the file probe also timed out (344 s row total) |
-| abc/00507550..._024 | overlapping_facets | edge_through_face | unexplained; both are volume-stage PLC failures on the same part |
-| abc/00507750..._000 | periodic_surface | edge_through_face | unexplained; different failure kind on the same part |
-| occt/bug33100_window | no_volume | timeout | loop failed in 1.2 s with a child crash (the file probe also crashed, rc=139 in the corpus build) |
-| occt/trj3_s1-tc-214 | meshes | edge_through_face | unexplained; `file` fails edge_through_face, as loop does |
-| occt/trj4_s1-ai-214 | edge_through_face | overlapping_facets | unexplained; same class of volume-stage PLC failure |
-| occt/trj5_s1-in-214 | overlapping_facets | edge_through_face | unexplained; same class |
+| abc/00500875_a97e4a09c926c436c043e3c3_step_028 | edge_through_face | meshes | `file` also meshes; only the re-export fails |
+| abc/00503200_c8a4697bcc912578475337ea_step_000 | timeout | meshes | budget-bound: the file probe also timed out |
+| occt/trj3_s1-tc-214 | meshes | edge_through_face | `file` fails edge_through_face, as loop does |
 
-Pattern: 6 of 9 swap between two volume-stage PLC kinds (overlapping_facets / edge_through_face /
-periodic_surface) on parts that fail either way. gmsh's 3D tetrahedralisation reports whichever
-intersection it hits first, which can depend on the input ordering a STEP round trip changes, so
-"same kind" is a strict test for these. Whether the in-loop probe still serves the track (it must
-say meshes / does not mesh, and where) is the decision for the controller; by kind it fails the
-plan's threshold. If "both fail" counted as agreement, the disagreements would be 4: the three
-meshes-vs-fails cases (abc/00500875, abc/00503200, occt/trj3_s1-tc-214) plus occt/bug33100_window
-(no_volume vs timeout, a crash).
+## Kind swaps, both fail (6, not gating)
+
+| file | reexport | loop |
+|---|---|---|
+| abc/00502475_5895e91efca3da0f6b68639a_step_003 | edge_through_face | other (unlocated) |
+| abc/00507550_ed3bf58da6711cb579e24def_step_024 | overlapping_facets | edge_through_face |
+| abc/00507750_15086f55e7ef8d6b99de417a_step_000 | periodic_surface | edge_through_face |
+| occt/bug33100_window | no_volume | timeout (gmsh child crash, 1.2 s) |
+| occt/trj4_s1-ai-214 | edge_through_face | overlapping_facets |
+| occt/trj5_s1-in-214 | overlapping_facets | edge_through_face |
+
+Mostly swaps between volume-stage PLC kinds: gmsh's 3D step reports whichever intersection it hits
+first, which can depend on input ordering a STEP round trip changes. Causes are otherwise
+unexplained.
+
+## OCP read failure
+
+`occt/bug30790.step`: OCP raised `Standard_Failure: NCollection_Array1::Value` reading it, so it has
+no reexport or loop verdict and no OCP diagonal. Its `diag_mm` stays null (`diag_source`
+`unavailable`); the corpus build's gmsh child died on it too (rc=1).
+
+## Budget-bound rows
+
+Eleven rows ran over 200 s (a probe reached its 120 s budget), so their verdicts depend on the
+budget: abc/00502300_..._002, 00502775_..._071, 00502950_..._000, 00503200_..._000,
+00503600_..._000, 00507075_..._000, 00507750_..._000, occt/bug32596_abc_0_13, trj3_s1-al-214,
+trj6_b1-ec-214, trj7_b1-ec-214.
+
+## Not measured
+
+Nondeterminism: one pass only. Whether a repeat run gives the same verdicts is unknown.
+
+## Diagonals
+
+`diag_mm` in the manifest is what the probe meshes at (diagonal / 40). `diag_source` is `gmsh`
+(66 files, from the corpus build), `ocp` (13 files whose corpus-build child died before measuring;
+OCP's bounding-box diagonal from this run) or `unavailable` (1, above).
 
 ## Reader effect (file vs reexport, 17 files)
 
@@ -74,11 +103,7 @@ OCP's STEP reader and gmsh's disagree on these (file / reexport / loop):
 | occt/trj7_k1-id-214 | other | no_volume | no_volume |
 
 Two files mesh once OCP has read them (trj10, abc/00509500): a repair that changes nothing would
-already "fix" them. Eleven rows spent over 200 s, i.e. a probe hit its 120 s budget; those are
-budget-dependent verdicts.
-
-Where the corpus build recorded no diagonal (14 files whose child died), the CLI takes OCP's
-bounding-box diagonal and records it as `diag_from_ocp` in `run.json`.
+already "fix" them.
 
 ## Fetching the inputs (no CAD is committed)
 

@@ -46,9 +46,30 @@ def test_resolve_by_hash_reports_missing(tmp_path):
 def test_agreement_rules():
     assert cli.agreement(_result(True), _result(True))
     assert cli.agreement(_result(False, "open_loop"), _result(False, "open_loop"))
-    assert not cli.agreement(_result(False, "open_loop"), _result(False, "timeout"))
+    # Binary gate: both fail with different kinds still agree.
+    assert cli.agreement(_result(False, "open_loop"), _result(False, "timeout"))
     assert not cli.agreement(_result(True), _result(False, "open_loop"))
     assert not cli.agreement(_result(False, "open_loop"), _result(True))
+
+
+def test_same_kind_is_the_stricter_secondary_rule():
+    assert cli.same_kind(_result(True), _result(True))
+    assert cli.same_kind(_result(False, "open_loop"), _result(False, "open_loop"))
+    assert not cli.same_kind(_result(False, "open_loop"), _result(False, "timeout"))
+    assert not cli.same_kind(_result(True), _result(False, "open_loop"))
+
+
+def test_summarise_gates_on_binary_and_reports_kind_swaps():
+    rows = [
+        {"name": "a", "file": "meshes", "reexport": "meshes", "loop": "meshes"},
+        {"name": "b", "file": "x", "reexport": "open_loop", "loop": "timeout"},
+        {"name": "c", "file": "x", "reexport": "meshes", "loop": "open_loop"},
+    ]
+    out = cli.summarise(rows, [])
+    assert out["loop_agrees_reexport"] == 2
+    assert [r["name"] for r in out["loop_disagrees_reexport"]] == ["c"]
+    assert [r["name"] for r in out["kind_swaps_both_fail"]] == ["b"]
+    assert not out["stop_rule_tripped"]
 
 
 def test_load_manifest_rejects_wrong_track(tmp_path):
@@ -68,8 +89,12 @@ def test_manifest_has_80_files_and_no_cad():
     assert len({f["sha256"] for f in files}) == 80
     assert {f["source"] for f in files} == {s["name"] for s in manifest["sources"]}
     assert all(len(s["archive_sha256"]) == 64 for s in manifest["sources"])
-    # diag_mm is null where the corpus build's child died before measuring the part.
-    assert all(f["diag_mm"] is None or f["diag_mm"] > 0 for f in files)
+    # 14 diagonals come from OCP, where the corpus build's child died before measuring the part.
+    for f in files:
+        if f["diag_source"] == "unavailable":  # OCP cannot read it (bug30790)
+            assert f["diag_mm"] is None
+        else:
+            assert f["diag_source"] in ("gmsh", "ocp") and f["diag_mm"] > 0
     # Names and hashes only: no CAD is committed, here or beside the manifest.
     assert not list(MANIFEST.parent.glob("*.st*p")) and not list(MANIFEST.parent.glob("*.igs"))
     assert MANIFEST.stat().st_size < 100_000

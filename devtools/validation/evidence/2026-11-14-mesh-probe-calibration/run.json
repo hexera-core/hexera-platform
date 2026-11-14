@@ -10,7 +10,7 @@
     "seconds": 12.0
    }
   ],
-  "loop_agrees_reexport": 70,
+  "loop_agrees_reexport": 76,
   "loop_disagrees_reexport": [
    {
     "name": "abc/00500875_a97e4a09c926c436c043e3c3_step_028.step",
@@ -21,6 +21,27 @@
     "seconds": 2.2
    },
    {
+    "name": "abc/00503200_c8a4697bcc912578475337ea_step_000.step",
+    "diag_from_ocp": 90.7,
+    "file": "timeout",
+    "reexport": "timeout",
+    "loop": "meshes",
+    "loop_located": [],
+    "seconds": 344.2
+   },
+   {
+    "name": "occt/trj3_s1-tc-214.stp",
+    "file": "edge_through_face",
+    "reexport": "meshes",
+    "loop": "edge_through_face",
+    "loop_located": [
+     false
+    ],
+    "seconds": 4.7
+   }
+  ],
+  "kind_swaps_both_fail": [
+   {
     "name": "abc/00502475_5895e91efca3da0f6b68639a_step_003.step",
     "file": "edge_through_face",
     "reexport": "edge_through_face",
@@ -29,15 +50,6 @@
      false
     ],
     "seconds": 6.1
-   },
-   {
-    "name": "abc/00503200_c8a4697bcc912578475337ea_step_000.step",
-    "diag_from_ocp": 90.7,
-    "file": "timeout",
-    "reexport": "timeout",
-    "loop": "meshes",
-    "loop_located": [],
-    "seconds": 344.2
    },
    {
     "name": "abc/00507550_ed3bf58da6711cb579e24def_step_024.step",
@@ -70,16 +82,6 @@
      false
     ],
     "seconds": 1.2
-   },
-   {
-    "name": "occt/trj3_s1-tc-214.stp",
-    "file": "edge_through_face",
-    "reexport": "meshes",
-    "loop": "edge_through_face",
-    "loop_located": [
-     false
-    ],
-    "seconds": 4.7
    },
    {
     "name": "occt/trj4_s1-ai-214.stp",
@@ -273,7 +275,7 @@
     "seconds": 1.9
    }
   ],
-  "stop_rule_tripped": true,
+  "stop_rule_tripped": false,
   "wall_seconds": 997.4
  },
  "rows": [
