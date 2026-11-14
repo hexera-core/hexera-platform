@@ -201,7 +201,13 @@ def _container_mem_bytes() -> int:
     return 0
 
 
-def _rank_count(*, hard_max: int = 12, gib_per_rank: float = 3.0) -> int:
+#: The most MPI ranks one snappy run takes: the biggest mesh VM's cores (contracts/mesh_machine,
+#: n2-highmem-64). The Cloud Run job's quota (8) sets its own count far below it. It was 12, which
+#: left 52 of a 64-core VM's cores idle on the very meshes that were sent there for their size.
+RANKS_MAX = 64
+
+
+def _rank_count(*, hard_max: int = RANKS_MAX, gib_per_rank: float = 3.0) -> int:
     """How many MPI ranks this container can afford - bounded by MEMORY, not just CPU.
 
     Two bugs lived in the one-liner this replaces (`min(os.cpu_count() or 1, 12)`):
