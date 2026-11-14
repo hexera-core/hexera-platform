@@ -166,11 +166,7 @@ def statement(rec, engine: str) -> str:
     if others:
         listed = "; ".join(f"{_display(f.engine)} ({_fit(f)})" for f in others)
         lines.append(f"Also able to mesh it: {listed}.")
-    gaps = gap_estimate(rec)
-    if gaps is not None and gaps.over_limit:
-        # THE CELL BUDGET, UP FRONT: the gap rule does not fit one job, so the user chooses now,
-        # not after an hour of meshing (engines/gap_sizing)
-        lines.append(gaps.sentence())
+    # (no cell-count choice here: the count is the user's to state, never ours to ask - Areen, 14 Nov)
     lines.append("OK, or pick another engine?")
     return " ".join(lines)
 
@@ -185,63 +181,6 @@ def gap_estimate(rec):
     except Exception:  # noqa: BLE001 - advice never breaks a turn
         logger.warning("Intake: the gap estimate could not be read", exc_info=True)
         return None
-
-
-#: THE CELL-LIMIT QUESTION'S OWN WORDS: how it opens and closes, so the console draws its two buttons
-#: (application/purpose_map.choices_for) and the next turn knows what was asked.
-GAP_ASK_LEAD = "Full detail needs about "
-GAP_ASK_END = "or try full detail?"
-GAP_TRY_FULL = "Try full detail"
-
-
-def gap_question(rec, engine: str) -> str:
-    """THE ONE TRADE-OFF THE USER IS ASKED: the gap rule (13 cells across every gap) does not fit
-    the cell limit of one job, and the chosen engine takes the narrow_gaps choice. One plain
-    sentence; "" when it is no real choice (it fits, it was not measured, or the engine cannot
-    act on the answer)."""
-    from meshpipeline.engines.gap_sizing import BUDGET_HEADROOM, _cells
-    gaps = gap_estimate(rec)
-    if gaps is None or not gaps.over_limit or _display(engine) not in _gap_choice_takers(rec):
-        return ""
-    across = max(int(round(gaps.affordable)), 1)
-    limit = _cells(gaps.limit)
-    return (f"{GAP_ASK_LEAD}{_cells(gaps.cells * BUDGET_HEADROOM)} cells, over the {limit} limit. "
-            f"Keep {limit} (about {across} cells across the narrowest gaps), {GAP_ASK_END}")
-
-
-def gap_choices(reply: str) -> list[dict]:
-    """The two buttons under the cell-limit question; [] for any other reply."""
-    text = str(reply or "").strip()
-    if not (text.startswith(GAP_ASK_LEAD) and text.endswith(GAP_ASK_END)):
-        return []
-    limit = text.split(" Keep ", 1)[1].split(" (", 1)[0].strip() if " Keep " in text else ""
-    label = f"Keep {limit}" if limit else "Keep the limit"
-    return [{"label": label, "send": label, "soon": False},
-            {"label": GAP_TRY_FULL, "send": GAP_TRY_FULL, "soon": False}]
-
-
-def gap_answer_block(question: str) -> str:
-    """The system note on the turns after the cell-limit question: how the answer reaches the run."""
-    from meshpipeline.engines.gap_sizing import NARROW_GAPS_PARAM, WITHIN_LIMIT
-    if not question:
-        return ""
-    return ("\n\nTHE CELL-LIMIT QUESTION (asked by the application, once): " + question + "\n"
-            f"If the user keeps the limit (\"Keep ...\", \"ok\", \"yes\", \"your call\"), submit "
-            f"engine_params {NARROW_GAPS_PARAM}='{WITHIN_LIMIT}'. If they choose full detail "
-            f"(\"{GAP_TRY_FULL}\"), leave {NARROW_GAPS_PARAM} out. Never ask it again and never restate it.")
-
-
-def _gap_choice_takers(rec) -> tuple[str, ...]:
-    """The engines on the ranking whose declaration takes the narrow_gaps choice (by label): only
-    those may be sent it - another engine refuses an unknown parameter at intake."""
-    from meshpipeline.engines.fitness import _spec
-    from meshpipeline.engines.gap_sizing import NARROW_GAPS_PARAM
-    out = []
-    for f in rec.fits:
-        params = getattr(_spec(f.engine), "intake_params", ()) or ()
-        if any(getattr(p, "key", "") == NARROW_GAPS_PARAM for p in params):
-            out.append(_display(f.engine))
-    return tuple(dict.fromkeys(out))
 
 
 def _fit(fit) -> str:
@@ -293,11 +232,12 @@ def prompt_block(rec, *, settled: bool) -> str:
     gaps = gap_estimate(rec)
     sizing = ""
     if gaps is not None:
-        # the gap rule's cost, measured: said to the user only when it is over the limit (the
-        # engine question carries it); background for questions otherwise
+        # the gap rule's cost, measured: background for questions only. THE CELL COUNT IS NEVER
+        # ASKED (Areen, 14 Nov): a count the user states is used as stated, on a bigger machine
+        # when it needs one; none stated, the run sizes the mesh itself
         sizing = (f"  {gaps.sentence()}"
-                  + " (Background only: the application asks the user its own one-line cell-limit "
-                  "question when it is a real choice; never raise it yourself.)\n")
+                  + " (Background only: never ask the user how many cells they want and never offer a "
+                  "choice of cell counts; a count they state is used as stated.)\n")
     return ("\n\nMEASURED ENGINE RECOMMENDATION (the application measured the uploaded geometry "
             "and compared it with lab runs of every engine on shapes measured to be like it - "
             "evidence, not opinion):\n" + shape + sizing + rows + "\n" + use)
@@ -343,7 +283,7 @@ def compact(rec) -> dict | None:
     return d
 
 
-__all__ = ["GAP_ASK_END", "GAP_ASK_LEAD", "GAP_TRY_FULL", "MEASURE_WAIT_S", "able_engines", "choice_payload", "compact", "own_format_engines",
+__all__ = ["MEASURE_WAIT_S", "able_engines", "choice_payload", "compact", "own_format_engines",
            "prompt_block", "rank", "rank_in_time", "source_format_of",
            "ranking_rows", "staged_upload", "upload_form",
-           "statement", "gap_answer_block", "gap_choices", "gap_question"]
+           "statement"]

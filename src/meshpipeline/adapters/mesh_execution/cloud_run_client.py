@@ -535,8 +535,11 @@ def result_extraction_limits(result: dict | None = None):
         cells = max(0, int((q or {}).get("cells") or 0)) if isinstance(q, dict) else 0
     except (TypeError, ValueError):
         cells = 0
-    # the count is the remote's word: bounded, so no document can lift the limits without end
-    cells = min(cells, 2 * int(polcfg.CELL_HARD_LIMIT))
+    # the count is the remote's word: bounded, so no document can lift the limits without end - by
+    # the most the largest machine carries (RUN-9: a count the user asked for past the standard
+    # machine is meshed on a bigger one, and its mesh must come home too)
+    from meshpipeline.contracts.mesh_machine import ceiling_cells
+    cells = min(cells, max(2 * int(polcfg.CELL_HARD_LIMIT), ceiling_cells()))
     archive = max(base.max_archive_bytes, by_budget, cells * RESULT_ARCHIVE_BYTES_PER_MEASURED_CELL)
     raw = max(base.max_total_uncompressed_bytes, cells * RESULT_RAW_BYTES_PER_MEASURED_CELL)
     largest = max(base.max_file_bytes, cells * RESULT_FILE_BYTES_PER_MEASURED_CELL)
@@ -560,7 +563,7 @@ def result_extraction_limits(result: dict | None = None):
         raw = max(raw, int(m_raw * RESULT_MARGIN))
         archive = max(archive, int(m_raw * RESULT_MARGIN))      # gzip never grows text much
         largest = max(largest, int(m_big * RESULT_MARGIN))
-    if fea or isinstance(measured, dict):
+    if fea or isinstance(measured, dict) or cells > 2 * int(polcfg.CELL_HARD_LIMIT):
         archive, raw, largest = (min(v, RESULT_MAX_BYTES) for v in (archive, raw, largest))
     return replace(base, max_archive_bytes=archive, max_total_uncompressed_bytes=raw,
                    max_file_bytes=largest)

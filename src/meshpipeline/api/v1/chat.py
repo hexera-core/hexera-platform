@@ -202,7 +202,7 @@ async def chat_message(body: ChatMessageIn, owner_id: str = Depends(owner_dep),
     return ChatResponse(
         session_id=session_id,
         reply=_reply,
-        # the buttons under the application's own question (the one cell-limit trade-off)
+        # the buttons under the application's own question (a purpose question; never a cell count)
         choices=choices_for(_reply),
         awaiting_confirmation=bool(_sess.request_txt) and _sess.job_id is None,
         brief=await _brief(_sess, owner_id),

@@ -61,6 +61,23 @@ NOTES_KEPT = ("Your notes are kept word for word, and every step that builds the
               "as guidance.")
 
 
+#: The cell-limit question's opening, as conversations from before its removal carry it (Areen, 14 Nov: the cell
+#: count is the user's to state, never ours to ask) - its two buttons are still read as clicks, never as notes.
+_RETIRED_CELL_QUESTION = "Full detail needs about "
+
+
+def _offered_choices(reply: str) -> list[dict]:
+    """The buttons the application offered under one of its messages (application/purpose_map.choices_for), so a
+    click on one is never kept as the user's note (contracts/user_notes.capture)."""
+    from meshpipeline.application.purpose_map import choices_for
+    text = str(reply or "").strip()
+    if text.startswith(_RETIRED_CELL_QUESTION) and " Keep " in text:
+        limit = text.split(" Keep ", 1)[1].split(" (", 1)[0].strip()
+        return [{"label": f"Keep {limit}", "send": f"Keep {limit}"},
+                {"label": "Try full detail", "send": "Try full detail"}]
+    return choices_for(text)
+
+
 def _same_submission(a, b) -> bool:
     """The same submission: every value equal, and the same notes in the same words (when a note
     was captured is not part of what was submitted)."""
@@ -721,17 +738,10 @@ class IntakeToolExecutor:
         logger.info("Intake: engine selection CONFIRMED automatically engine=%s (model said %s) - "
                     "job_id=%s", eng, model_pick, self._job_id)
         shown = _vocab.to_display(_vocab.ENGINE, eng)
-        ask = measured_choice.gap_question(recd, eng) if recd is not None else ""
-        if ask:
-            # THE ONE REAL TRADE-OFF: full detail does not fit the cell limit. One plain sentence,
-            # two buttons (purpose_map.choices_for); the answer travels as narrow_gaps.
-            st.selection = {**st.selection, "gap_question": ask}
-            st.selection_prompt = ask
-            return IntakeToolResult(
-                tool="propose_engine_selection", accepted=True, advanced=True,
-                content=(f"{shown} is SELECTED (engine_source suggested_confirmed). The application "
-                         "now asks the user its one cell-limit question in its own words; do not "
-                         "paraphrase it, and do not mention the engine. Await their answer."))
+        # NO CELL-COUNT QUESTION (Areen, 14 Nov: "the person is specifying how many cells they want - why
+        # does the system ask 8 M or 21 M?"). A count the user states is theirs, on the machine it needs
+        # (engines/cfd_requirements CFDREQ-3); none stated, the run sizes the mesh itself within the
+        # standard machine (engines/gap_sizing) - nothing is asked either way.
         return IntakeToolResult(
             tool="propose_engine_selection", accepted=True, advanced=True,
             content=(f"{shown} is SELECTED for this part (engine_source suggested_confirmed). Do not "
@@ -932,9 +942,10 @@ class IntakeToolExecutor:
                     "call submit_requirements again with the same preview_token."))
 
         # THE USER'S OWN WORDS (contracts/user_notes, NOTE-1): their answer to the notes question
-        # and every message the model quoted as saying something specific, kept whole and verbatim.
+        # and every message the model quoted as saying something specific, kept whole and verbatim -
+        # never a click on a button the application offered (its words are ours, not a note)
         notes, unmatched = un.capture(st.conversation, args.get("user_note_quotes") or (),
-                                       consumer="intake")
+                                       consumer="intake", offered=_offered_choices)
         if not notes and not un.asked(st.conversation):
             # ASKED ONCE, before the first summary, and only when the user has said nothing
             # specific yet. It holds nothing: the next answer - details or a plain no - goes

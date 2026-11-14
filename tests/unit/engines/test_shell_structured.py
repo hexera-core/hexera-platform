@@ -181,7 +181,14 @@ def test_free_mesh_in_the_notes_is_read_into_the_pattern():
     req, dropped, _na = MR.check(json.dumps(answer), notes)
     assert req["kind"]["structure"] == "free"
     assert any(r["field"] == "free_mesh" for r in req["rows"])
-    assert any("two mesh patterns" in d for d in dropped)          # the first one written is kept
+    # "no washers" beside a free mesh is part of it: one pattern, nothing told as a fault
+    assert [r["field"] for r in req["rows"] if r["field"] in MR.PATTERNS] == ["free_mesh"] and dropped == []
+    # two patterns that differ: the one written later (NOTE-7)
+    later = MR.check(json.dumps({**answer, "element_kind": [
+        {"what": "structured", "value": 0, "quote": "washers round holes"},
+        {"what": "free_mesh", "value": 0, "quote": "Free mesh please"}]}),
+        CRITERIA + "\nwashers round holes. Actually no - Free mesh please")[0]
+    assert later["kind"]["structure"] == "free"
     # nothing said: no pattern (the shell mesh is structured), and the kind keeps its shape
     req2, _d, _n = MR.check(json.dumps(criteria_answer()), CRITERIA)
     assert "structure" not in req2["kind"] and not MR.is_empty(req2)

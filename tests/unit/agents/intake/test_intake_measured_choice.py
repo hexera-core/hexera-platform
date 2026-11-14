@@ -68,31 +68,27 @@ def test_the_prompt_note_ranks_every_engine_and_tells_the_model_to_propose_the_r
     assert mc.prompt_block(None, settled=False) == ""
 
 
-def test_a_gap_rule_over_the_cell_limit_is_one_plain_question_with_two_buttons():
-    """THE CELL BUDGET, UP FRONT (engines/gap_sizing): when 13 cells across every measured gap needs
-    more than one job may build, the user is asked ONE plain sentence - keep the limit, or try full
-    detail - with two buttons. Within the limit nothing is asked, and no lab numbers are said."""
+def test_a_gap_rule_over_the_cell_limit_asks_nothing():
+    """NO CELL-COUNT QUESTION (Areen, 14 Nov: "the person is specifying how many cells they want - why
+    does the system ask 8 M or 21 M?"): 13 cells across every measured gap needing more than the
+    standard machine carries is background for the model only - no question, no buttons, no choice
+    in the engine statement, and the model is told never to raise one."""
     import dataclasses
 
     from meshpipeline.application.purpose_map import choices_for
     rec = _rec()
-    assert mc.gap_question(rec, "snappy") == ""
-    over = dataclasses.replace(rec, traits={**rec.traits, "gap_cells": 5.0e7,
-                                            "narrowest_gap": 0.0004})
-    q = mc.gap_question(over, "snappy")
-    assert q.startswith("Full detail needs about 57.5 M cells, over the 8.0 M limit. Keep 8.0 M (about ")
-    assert q.endswith("cells across the narrowest gaps), or try full detail?") and q.count("?") == 1
-    assert "passed" not in q and "%" not in q and "(1)" not in q
-    assert [c["send"] for c in choices_for(q)] == ["Keep 8.0 M", "Try full detail"]
-    assert choices_for("Which fluid is it?") == []
-    # an engine that cannot act on the answer is not asked it
-    assert mc.gap_question(over, "gmsh") == ""
-    # the answer reaches the run through the next turn's note
-    note = mc.gap_answer_block(q)
-    assert "narrow_gaps='within_limit'" in note and "Try full detail" in note
-    assert mc.gap_answer_block("") == ""
+    over = dataclasses.replace(rec, traits={**rec.traits, "gap_cells": 5.0e7, "narrowest_gap": 0.0004})
+    for name in ("gap_question", "gap_choices", "gap_answer_block"):
+        assert not hasattr(mc, name), name
+    text = mc.statement(over, "snappy")
+    assert "Full detail" not in text and "Keep" not in text and "pick one" not in text and text.count("?") == 1
+    # the founder's own question, as it was asked: no buttons under it any more
+    assert choices_for("Full detail needs about 21.0 M cells, over the 8.0 M limit. Keep 8.0 M (about 9 cells "
+                       "across the narrowest gaps), or try full detail?") == []
+    note = mc.prompt_block(over, settled=False)
+    assert "never ask the user how many cells they want" in note and "(1)" not in note
     within = dataclasses.replace(rec, traits={**rec.traits, "gap_cells": 2.0e5})
-    assert "never raise it yourself" in mc.prompt_block(within, settled=False)
+    assert "never offer a choice of cell counts" in mc.prompt_block(within, settled=False)
 
 
 def test_the_console_payload_exists_only_while_the_question_is_open():
@@ -170,13 +166,15 @@ def test_the_measured_recommendation_is_selected_with_no_question():
     assert "is SELECTED" in res.content and "do not mention" in res.content
 
 
-def test_the_cell_limit_question_is_the_only_thing_asked():
+def test_a_gap_rule_over_the_cell_limit_selects_the_engine_with_no_question():
+    # the founder's run (14 Nov): an external car whose gaps wanted ~21 M cells was asked "Keep 8.0 M,
+    # or try full detail?". Now nothing is asked: the engine is selected and the intake goes on
     import dataclasses
     over = dataclasses.replace(_rec(), traits={**_rec().traits, "gap_cells": 5.0e7, "narrowest_gap": 0.0004})
     st, ex = _executor(over)
-    asyncio.run(ex.run("propose_engine_selection", {"engine": "snappyHexMesh"}))
-    assert st.selection["state"] == es.CONFIRMED
-    assert st.selection_prompt == mc.gap_question(over, "snappy") == st.selection["gap_question"]
+    res = asyncio.run(ex.run("propose_engine_selection", {"engine": "snappyHexMesh"}))
+    assert st.selection["state"] == es.CONFIRMED and st.selection_prompt is None
+    assert "gap_question" not in st.selection and "cell-limit" not in res.content
 
 
 def test_the_users_words_switch_the_engine_the_application_chose():
