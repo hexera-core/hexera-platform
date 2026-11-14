@@ -5,9 +5,11 @@
 # across the gap are joined into one node half way between them, and a node with no partner across is put into the
 # edge facing it (its element cut in two or three). An edge stopping short of another face's inside (a T) is joined
 # onto that face's mesh: onto a row of its nodes along the line, or, where it has none, onto the line IMPRINTED on it
-# (its elements cut along the line). No node moves farther than the gap; the place is kept closed only
-# when no element is folded or turned and none is left past Nastran's own limits that was not before - else the mesh
-# there is as meshed and the place is told open, with why.
+# (its elements cut along the line, its ends included). No node moves farther than the gap - MEASURED on the result,
+# whichever side was moved (half way, or one side brought the whole gap): every node, every node put into an edge,
+# every node an imprint added - and that measure is the move told. The place is kept closed only when no element is
+# folded or turned, none is left past Nastran's own limits that was not before, and (a T) no stretch of the edge is
+# left lying on the face unjoined - else the mesh there is as meshed and the place is told open, with why.
 # Boundaries: pure numpy on the engine-neutral ShellMesh (engines/shell_mesh); no geometry, no engine, no file.
 # Deterministic: the same mesh and places give the same mesh.
 # Collaborates with: engines/surface_run.py (calls close() after the shell mesh is made), cad/surface_model.py
@@ -158,6 +160,45 @@ class _Mesh:
         self.xyz = mesh.xyz.astype(float).copy()
         self.conn: list[list[int]] = [list(map(int, c)) for c in mesh.elements()]
         self.parent: list[int] = list(range(mesh.n_elements))
+        self._track()
+
+    def _track(self) -> None:
+        """Start measuring how far a try moves the mesh (travel): the nodes as they are now, and no node yet
+        added, put into an edge or made one with another."""
+        self.base = self.xyz.copy()
+        self.ref: dict[int, np.ndarray] = {}                         # an added node -> the point it stands for
+        self.put: list[tuple[int, np.ndarray, np.ndarray]] = []      # a node put into an edge -> the edge as it was
+        self.merged: dict[int, int] = {}                             # a node made one with another -> that node
+
+    def start_of(self, n: int) -> np.ndarray:
+        """Where node `n` was when the try began (an added node: the point of the mesh it stands for)."""
+        return self.base[n] if n < len(self.base) else self.ref.get(n, self.xyz[n])
+
+    def _now(self, n: int) -> int:
+        seen = 0
+        while n in self.merged and seen < len(self.merged) + 1:
+            n, seen = self.merged[n], seen + 1
+        return n
+
+    def put_in(self, n: int, edge: tuple[int, int]) -> None:
+        """Node `n` goes into `edge`: the edge as it was when the try began is where the mesh was."""
+        self.put.append((n, self.start_of(edge[0]).copy(), self.start_of(edge[1]).copy()))
+
+    def travel(self) -> float:
+        """SURF-13: how far the try moved the mesh, MEASURED: the farthest any node now stands from where it was
+        (a node made one with another: where that one stands), any node put into an edge from that edge as it was
+        (the other side brought the whole way to it moves that side's mesh as far), and any node the try added
+        (an imprint's) from the point of the mesh it stands for."""
+        out = 0.0
+        if len(self.base):
+            now = np.array([self._now(n) for n in range(len(self.base))], dtype=np.int64)
+            out = float(np.max(np.linalg.norm(self.xyz[now] - self.base, axis=1)))
+        for n, p, q in self.put:
+            d, _k, _t = _seg_nearest(self.xyz[[self._now(n)]], p[None, :], q[None, :])
+            out = max(out, float(d[0]))
+        for n, at in self.ref.items():
+            out = max(out, float(np.linalg.norm(self.xyz[self._now(n)] - at)))
+        return out
 
     def users(self) -> dict[tuple[int, int], list[int]]:
         out: dict[tuple[int, int], list[int]] = {}
@@ -173,6 +214,7 @@ class _Mesh:
         other.xyz = self.xyz.copy()
         other.conn = [list(c) for c in self.conn]
         other.parent = list(self.parent)
+        other._track()
         return other
 
     def _node_wall(self) -> np.ndarray:
@@ -257,21 +299,21 @@ def _join_pair(mm: _Mesh, mids_a: set[str], mids_b: set[str], gap: float, reach:
     lim = REACH_GAPS * gap + 1e-9
     fa, fb = _side_free(mm, users, mids_a), _side_free(mm, users, mids_b)
     ea, eb = _near(mm, fa, fb, lim), _near(mm, fb, fa, lim)
-    out: dict[str, Any] = {"joined": 0, "put_in": 0, "moved_mm": 0.0, "open_mm": 0.0}
+    out: dict[str, Any] = {"joined": 0, "put_in": 0, "open_mm": 0.0}
     remap: dict[int, int] = {}
     newpos: dict[int, np.ndarray] = {}
     inserts: dict[tuple[int, int], list[tuple[float, int]]] = {}
     taken: set[int] = set()
-    orig = mm.xyz.copy()
     tee = not ea or not eb
     short: list[tuple[int, int]] = []
     other: set[str] = set()
+    foot: set[str] = set()
     if tee:
         # A T: one side's free edge stops short of the other's INSIDE (a wall's foot short of a panel) - the panel's
         # mesh has no free edge there. Its nodes along the foot's line are moved onto that line, and the foot's
         # nodes onto the panel, then joined as two free edges are
         sa_ = _near_surface(mm, fa, mids_b, lim)
-        short, other = (sa_, mids_b) if sa_ else (_near_surface(mm, fb, mids_a, lim), mids_a)
+        short, other, foot = (sa_, mids_b, mids_a) if sa_ else (_near_surface(mm, fb, mids_a, lim), mids_a, mids_b)
         tee = bool(short)
     if tee:
         runs_b = _t_line(mm, short, other, gap, lim, out)
@@ -292,8 +334,11 @@ def _join_pair(mm: _Mesh, mids_a: set[str], mids_b: set[str], gap: float, reach:
         _pair_runs(mm, _paths(ea), _paths(eb), gap, lim, shared, taken, remap, newpos, inserts, out, onto_b=onto_b)
     got = _apply(mm, remap, newpos, inserts, out, mids_a, mids_b, gap, lim)
     if tee:
-        # every node's move, from where it was meshed (the line's nodes and the foot's moved before the joining)
-        got["moved_mm"] = _r(float(np.max(np.linalg.norm(mm.xyz[:len(orig)] - orig, axis=1))) if len(orig) else 0.0)
+        # the foot is joined only where none of its edges is left lying along the face unjoined: free edges facing
+        # free edges are counted by _apply, but the face has none there - a stretch of the foot left over (its end
+        # short of the row it was joined to) lies on the face's inside, a slit still open
+        rest = _near_surface(mm, _side_free(mm, mm.users(), foot), other, lim)
+        got["foot_left_mm"] = _r(sum(float(np.linalg.norm(mm.xyz[a] - mm.xyz[b])) for a, b in rest))
     return got
 
 
@@ -504,13 +549,66 @@ def _row_near(mm: _Mesh, nbr: dict[int, dict[int, float]], line: np.ndarray, gap
 IMPRINT_SNAP = 0.15
 
 
+def _turned(xyz: np.ndarray, piece: list[int], n0: np.ndarray) -> bool:
+    """An element turned over or folded against the normal `n0`: a corner that does not turn the way n0 says, or
+    no area."""
+    p = xyz[piece]
+    k = len(piece)
+    return any(float(np.dot(np.cross(p[(j + 1) % k] - p[j], p[(j - 1) % k] - p[j]), n0)) <= 1e-12 for j in range(k))
+
+
+def _end_cut(poly: list[int], on: int, tip: int, xyz: np.ndarray, n0: np.ndarray) -> list[list[int]] | None:
+    """SURF-13, AN IMPRINT'S END: the element `poly` (its nodes in its own turning order; the row's node where the
+    line comes in at index `on`) cut along the line to `tip`, the line's end inside it, and on from there to one of
+    its other nodes - the cut whose worst element is best (inside Nastran's limits first, then the largest least
+    angle), none turned over; a fan round the tip when no such cut is better. None when every way turns one."""
+    from meshpipeline.engines import shell_quality as SQ
+
+    n = len(poly)
+    options: list[list[list[int]]] = []
+    for k in range(n):
+        if k == on:
+            continue
+        first = [poly[(on + j) % n] for j in range((k - on) % n + 1)] + [tip]
+        second = [poly[(k + j) % n] for j in range((on - k) % n + 1)] + [tip]
+        options.append(_pieces(first, xyz) + _pieces(second, xyz))
+    options.append([[poly[i], poly[(i + 1) % n], tip] for i in range(n)])
+    best, score = None, None
+    for opt in options:
+        if any(len(set(e)) != len(e) or _turned(xyz, e, n0) for e in opt):
+            continue
+        key = (sum(int(SQ._past_one(xyz, e)) for e in opt), -min(SQ._least_angle(xyz, e) for e in opt), len(opt))
+        if score is None or key < score:
+            best, score = opt, key
+    return best
+
+
+def _holding(mm: _Mesh, elems: list[int], p: np.ndarray, tol: float) -> int | None:
+    """The element of `elems` whose surface (a quad as two triangles) lies nearest the point `p`, within `tol`."""
+    best, at = None, tol
+    for e in elems:
+        c = mm.conn[e]
+        x = mm.xyz[c]
+        if np.any(x.min(axis=0) > p + tol) or np.any(x.max(axis=0) < p - tol):
+            continue
+        tri = [(0, 1, 2)] + ([(0, 2, 3)] if len(c) == 4 else [])
+        d, _q = _on_triangles(p, x[[t[0] for t in tri]], x[[t[1] for t in tri]], x[[t[2] for t in tri]])
+        if d <= at:
+            best, at = e, d
+    return best
+
+
 def _imprint(mm: _Mesh, other: set[str], line: np.ndarray, gap: float) -> list[int] | None:
     """SURF-13: THE LINE IMPRINTED ON A MESH: every element of the faces `other` the polyline `line` (on their mesh)
     crosses is cut along it - a new node where the line crosses each element edge (an edge node within IMPRINT_SNAP
     of it, and half the gap, moved onto the line instead), the element cut in two along the line between them and
-    each part made a quad or triangles (_pieces) - and the elements beside take the new nodes into their edges. The
-    other mesh then has a row of nodes along the line. Changes mm in place; returns the row (node list, in the line's
-    order) or None when the line crosses no element edge (nothing changed)."""
+    each part made a quad or triangles (_pieces) - and the elements beside take the new nodes into their edges. Where
+    the line ENDS inside an element (the edge stopping short ends between two of the other mesh's element edges) a
+    node is put there too - that element's node nearest it moved onto it when within IMPRINT_SNAP and half the gap,
+    else a new node inside it and the element cut from the line's last crossing to it (_end_cut) - so the row runs
+    the line's whole length and the edge's end nodes have a node to join. The other mesh then has a row of nodes
+    along the line. Changes mm in place; returns the row (node list, in the line's order) or None when the line
+    crosses no element edge (nothing changed)."""
     mid = mm.src.mid
     elems = [e for e, c in enumerate(mm.conn) if mid[mm.parent[e]] in other]
     lo_l, hi_l = line.min(axis=0) - gap, line.max(axis=0) + gap
@@ -572,14 +670,46 @@ def _imprint(mm: _Mesh, other: set[str], line: np.ndarray, gap: float) -> list[i
             continue
         nid = len(mm.xyz)
         mm.xyz = np.vstack([mm.xyz, x[None, :]])
+        # it stands for the point of the edge as it was nearest it (travel: how far the edge was moved)
+        _dx, _kx, tx = _seg_nearest(x[None, :], mm.start_of(key[0])[None, :], mm.start_of(key[1])[None, :])
+        mm.ref[nid] = mm.start_of(key[0]) + float(tx[0]) * (mm.start_of(key[1]) - mm.start_of(key[0]))
         inserts[key] = nid
         at_line[nid] = sl
-    # the elements: new nodes into their edges, those the line crosses cut in two along it
+    # the line's two ends: where one stops inside an element, a node there too (else the row stops at the last edge
+    # the line crosses and the edge's end nodes are joined to nothing)
+    interior: dict[int, int] = {}                  # element -> the new node inside it
+    tiny = COINCIDE_GAPS * gap
+    for tip_at, s_tip in ((line[0], 0.0), (line[-1], float(cum[-1]))):
+        if any(float(np.linalg.norm(mm.xyz[n] - tip_at)) <= tiny for n in at_line):
+            continue                               # the line ends on an edge it crosses
+        e_in = _holding(mm, elems, tip_at, 0.5 * gap)
+        if e_in is None or e_in in interior:
+            continue
+        c = mm.conn[e_in]
+        keys = [(min(c[i], c[(i + 1) % len(c)]), max(c[i], c[(i + 1) % len(c)])) for i in range(len(c))]
+        sides = min(float(np.linalg.norm(mm.xyz[a] - mm.xyz[b])) for a, b in keys)
+        dist = [float(np.linalg.norm(mm.xyz[n] - tip_at)) for n in c]
+        k = int(np.argmin(dist))
+        if dist[k] <= min(IMPRINT_SNAP * sides, 0.5 * gap):
+            if c[k] not in at_line:
+                mm.xyz[c[k]] = tip_at
+                at_line[c[k]] = s_tip
+            continue
+        # one way in: the row's node on the element's outline the cut runs from
+        if sum(1 for n in c if n in at_line) + sum(1 for key in keys if key in inserts) != 1:
+            continue
+        nid = len(mm.xyz)
+        mm.xyz = np.vstack([mm.xyz, tip_at[None, :]])
+        mm.ref[nid] = np.array(tip_at, dtype=float)
+        interior[e_in] = nid
+        at_line[nid] = s_tip
+    # the elements: new nodes into their edges, those the line crosses cut in two along it, those it ends in cut to
+    # its end
     new_conn: list[list[int]] = []
     new_parent: list[int] = []
     for e, c in enumerate(mm.conn):
         keys = [(min(c[i], c[(i + 1) % len(c)]), max(c[i], c[(i + 1) % len(c)])) for i in range(len(c))]
-        if mid[mm.parent[e]] not in other or not (any(k in inserts for k in keys) or
+        if mid[mm.parent[e]] not in other or not (any(k in inserts for k in keys) or e in interior or
                                                    sum(1 for n in c if n in at_line) >= 2):
             new_conn.append(c)
             new_parent.append(mm.parent[e])
@@ -591,7 +721,14 @@ def _imprint(mm: _Mesh, other: set[str], line: np.ndarray, gap: float) -> list[i
                 poly.append(inserts[keys[i]])
         on = [i for i, n in enumerate(poly) if n in at_line]
         parts = [poly]
-        if len(on) == 2 and (on[1] - on[0]) % len(poly) not in (1, len(poly) - 1):
+        if e in interior and len(on) == 1:
+            cut = _end_cut(poly, on[0], interior[e], mm.xyz, _normal(mm.xyz[c]))
+            if cut is not None:
+                for piece in cut:
+                    new_conn.append(piece)
+                    new_parent.append(mm.parent[e])
+                continue
+        elif len(on) == 2 and (on[1] - on[0]) % len(poly) not in (1, len(poly) - 1):
             i0, i1 = on
             parts = [poly[i0:i1 + 1], poly[i1:] + poly[:i0 + 1]]
         for part in parts:
@@ -675,7 +812,6 @@ def _pair_runs(mm: _Mesh, runs_a: list[list[int]], runs_b: list[list[int]], gap:
                 newpos[b] = m
                 taken |= {a, b}
                 out["joined"] += 1
-                out["moved_mm"] = max(out["moved_mm"], 0.5 * float(np.linalg.norm(mm.xyz[a] - mm.xyz[b])))
             # a node with no partner goes into the other side's edge it faces (inside the other side's run only)
             for i, a in enumerate(ca):
                 if i in paired_a or a in shared or a in taken or not (sb[0] < sa[i] < sb[-1]) or float(d[i]) > lim \
@@ -687,7 +823,6 @@ def _pair_runs(mm: _Mesh, runs_a: list[list[int]], runs_b: list[list[int]], gap:
                 newpos[a] = qa[i].copy() if onto_b else 0.5 * (mm.xyz[a] + qa[i])
                 inserts.setdefault(key, []).append((float(sa[i]), a))
                 out["put_in"] += 1
-                out["moved_mm"] = max(out["moved_mm"], 0.5 * float(d[i]))
             if len(ca) > 1:
                 db, sab, qb, inb = _chain_params(mm.xyz[ca], bx)
                 ca_s = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(mm.xyz[ca], axis=0), axis=1))])
@@ -701,7 +836,6 @@ def _pair_runs(mm: _Mesh, runs_a: list[list[int]], runs_b: list[list[int]], gap:
                     newpos[b] = mm.xyz[b].copy() if onto_b else 0.5 * (mm.xyz[b] + qb[j])
                     inserts.setdefault(key, []).append((float(sab[j]), b))
                     out["put_in"] += 1
-                    out["moved_mm"] = max(out["moved_mm"], 0.5 * float(db[j]))
 
 
 def _apply(mm: _Mesh, remap: dict[int, int], newpos: dict[int, np.ndarray],
@@ -728,7 +862,10 @@ def _apply(mm: _Mesh, remap: dict[int, int], newpos: dict[int, np.ndarray],
             dn, _k, tn = _seg_nearest(mm.xyz[[n]], xa[None, :], xb[None, :])
             if float(dn[0]) <= ON_RUN * span and 0.0 < float(tn[0]) < 1.0:
                 remap[n] = b
-                out["moved_mm"] = max(out["moved_mm"], float(np.linalg.norm(mm.xyz[n] - 0.5 * (xa + xb))))
+    # (how far all this moves the mesh is measured on the result: _Mesh.travel)
+    for key, put in inserts.items():
+        for _s, n in put:
+            mm.put_in(n, key)
     # the node moves, then the elements: nodes put into their edges, the joined nodes made one
     before = {e: _normal(mm.xyz[c]) for e, c in enumerate(mm.conn)
               if any(n in remap or n in newpos for n in c) or any(
@@ -763,6 +900,7 @@ def _apply(mm: _Mesh, remap: dict[int, int], newpos: dict[int, np.ndarray],
                 if rp != rq:
                     parent[max(rp, rq)] = min(rp, rq)
     remap = {n: root(n) for n in parent if root(n) != n}
+    mm.merged.update(remap)
     new_conn: list[list[int]] = []
     new_parent: list[int] = []
     changed: list[int] = []
@@ -804,7 +942,6 @@ def _apply(mm: _Mesh, remap: dict[int, int], newpos: dict[int, np.ndarray],
     fa, fb = _side_free(mm, users, mids_a), _side_free(mm, users, mids_b)
     left = _near(mm, fa, fb, lim) + _near(mm, fb, fa, lim)
     out["left_mm"] = _r(sum(float(np.linalg.norm(mm.xyz[a] - mm.xyz[b])) for a, b in left))
-    out["moved_mm"] = _r(out["moved_mm"])
     return out
 
 
@@ -828,7 +965,8 @@ def _attempt(mm: _Mesh, faces: list, gap: float, reach_mm: float, onto: str) -> 
     """One try at closing a place on a copy of `mm`: each pair of its faces joined (`onto` "": half way; "b": the
     second face kept where it is; "a": the first). Returns (the copy, the totals, the first reason given)."""
     trial = mm.copy()
-    total: dict[str, Any] = {"joined": 0, "put_in": 0, "moved_mm": 0.0, "open_mm": 0.0, "left_mm": 0.0}
+    total: dict[str, Any] = {"joined": 0, "put_in": 0, "moved_mm": 0.0, "open_mm": 0.0, "left_mm": 0.0,
+                             "foot_left_mm": 0.0}
     why = ""
     for fa, fb in faces:
         if fa == fb:
@@ -837,10 +975,12 @@ def _attempt(mm: _Mesh, faces: list, gap: float, reach_mm: float, onto: str) -> 
         got = _join_pair(trial, a, b, max(gap, 1e-9), reach_mm, onto_b=bool(onto))
         for k in ("joined", "put_in"):
             total[k] += int(got.get(k) or 0)
-        total["moved_mm"] = max(total["moved_mm"], float(got.get("moved_mm") or 0.0))
-        total["open_mm"] += float(got.get("open_mm") or 0.0)
-        total["left_mm"] += float(got.get("left_mm") or 0.0)
+        for k in ("open_mm", "left_mm", "foot_left_mm"):
+            total[k] += float(got.get(k) or 0.0)
         why = why or str(got.get("why") or "")
+    # how far the mesh moved, measured on the result - every node, every node put into an edge, every node added -
+    # whichever way the faces were joined (half way, or one side brought the whole gap to the other)
+    total["moved_mm"] = trial.travel()
     return trial, total, why
 
 
@@ -966,6 +1106,8 @@ def close(mesh: ShellMesh, places: list[dict], *, reach_mm: float, reach_from: s
                 verdict["why"] = "joining the mesh there would move a node farther than the gap"
             elif total["left_mm"] > max(0.25 * total["open_mm"], 2.0 * gap):
                 verdict["why"] = "the mesh's edges there do not face each other along the gap"
+            elif total["foot_left_mm"] > COINCIDE_GAPS * gap:
+                verdict["why"] = "part of the edge there would still not be joined to the face it stops short of"
             else:
                 verdict["closed"] = True
                 mm = trial
