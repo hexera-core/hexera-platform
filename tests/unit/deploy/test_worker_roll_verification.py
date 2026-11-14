@@ -373,3 +373,31 @@ def test_what_the_policies_cannot_prove_only_warns(run, policies):
                       fake_env={"FAKE_BOOT_GRANTS_REFUSED": "1", **policies})
     assert done.returncode == 0, done.stderr
     assert "could not read" in done.stderr and "--role roles/artifactregistry.reader" in done.stderr
+
+
+def test_a_vm_whose_console_shows_the_watchdog_up_is_not_recreated_for_silence(run):
+    # its guest attributes are unreadable to this identity; the VM itself is working
+    up = _CLEAN_BOOT + "\nhexera-worker-watchdog[812]: hexera-watchdog: watching hexera-worker every 30s"
+    done, calls = run([{"name": "t-workers-a1", "tpl": "NEW", "id": "1"}], {},
+                      extra={"WORKER_ROLL_TIMEOUT_SECONDS": "3"}, fake_env={"FAKE_SERIAL": up})
+    assert done.returncode != 0
+    assert not _recreates(calls)
+
+
+@pytest.mark.parametrize("policies", [
+    {"FAKE_REPO_POLICY": json.dumps({"bindings": [{"role": "roles/artifactregistry.reader", "members": [_SA],
+                                                   "condition": {"expression": "false", "title": "never"}}]}),
+     "FAKE_BUCKET_POLICY": json.dumps({"bindings": [{"role": "roles/storage.objectViewer", "members": [_SA],
+                                                     "condition": {"expression": "false", "title": "never"}}]}),
+     "FAKE_ANCESTORS": "[]"},                                               # a condition may exclude it
+    {"FAKE_REPO_POLICY": json.dumps({"bindings": [{"role": "projects/fake-proj/roles/pull",
+                                                   "members": ["group:workers@example.com"]}]}),
+     "FAKE_BUCKET_POLICY": json.dumps({"bindings": [{"role": "projects/fake-proj/roles/read",
+                                                     "members": ["group:workers@example.com"]}]}),
+     "FAKE_ANCESTORS": "[]"},                                               # a custom role through a group
+])
+def test_a_grant_that_may_or_may_not_apply_warns_rather_than_passing_or_dying(run, policies):
+    done, calls = run([{"name": "t-workers-a1", "tpl": "NEW"}], _HEALTHY,
+                      fake_env={"FAKE_BOOT_GRANTS_REFUSED": "1", **policies})
+    assert done.returncode == 0, done.stderr
+    assert "could not read" in done.stderr and "already granted" not in done.stdout

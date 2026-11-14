@@ -587,10 +587,13 @@ for doc in sys.argv[4:]:
     policies = [p.get("policy") or {} for p in parsed] if isinstance(parsed, list) else [parsed]
     for binding in (b for p in policies for b in p.get("bindings") or []):
         role, members = binding.get("role", ""), binding.get("members") or []
-        if member in members:
+        custom = role.startswith(("projects/", "organizations/"))
+        if binding.get("condition") and member in members and (role in sufficient or custom):
+            unknown = True  # a condition may leave this repo or bucket out
+        elif member in members:
             if role in sufficient:
                 sys.exit(0)
-            if role.startswith(("projects/", "organizations/")):
+            if custom:
                 got = subprocess.run(["gcloud", "iam", "roles", "describe", role, "--format=json"],
                                      capture_output=True, text=True)
                 try:
@@ -600,7 +603,7 @@ for doc in sys.argv[4:]:
                     unknown = True
                 if got.returncode != 0:
                     unknown = True
-        elif role in sufficient and any(m.startswith(indirect) for m in members):
+        elif (role in sufficient or custom) and any(m.startswith(indirect) for m in members):
             unknown = True
 sys.exit(2 if unknown else 1)
 '
@@ -1125,14 +1128,17 @@ sys.exit(0 if not outdated and not pending else (10 if outdated else 11))
 #    recreated once: the cause may be fixed since that boot (an owner's IAM grant, before the
 #    deploy was rerun). If it fails again on the recreated VM, the stage stops at once with the
 #    console's error lines and does not wait out the stall window. A VM that stays silent for
-#    WORKER_ROLL_FORCE_AFTER_SECONDS with no failure on its console is recreated once as well.
+#    WORKER_ROLL_FORCE_AFTER_SECONDS is recreated once as well, but only when its console is
+#    readable and shows its boot neither failed nor finished: a console showing the watchdog up
+#    means only its guest attributes are unreadable, and recreating it would kill running jobs.
 _boot_failure_py='
 import re, sys
 text = open(sys.argv[1], errors="replace").read()
 boots = [m.start() for m in re.finditer(r"Linux version ", text)]
 text = text[boots[-1]:] if boots else text
 if not re.search(r"Script \"startup-script\" failed", text):
-    sys.exit(0)
+    # a boot that got as far as the watchdog is up; only its guest attributes are unreadable
+    sys.exit(5 if re.search(r"hexera-watchdog: watching|Finished running startup scripts", text) else 0)
 lines = []
 for line in text.splitlines():
     _, sep, said = line.partition("startup-script: ")
@@ -1203,10 +1209,12 @@ for i in (json.loads(text) if text else []):
       if gc compute instances get-serial-port-output "${_vm}" --zone "${WORKER_MIG_ZONE}" \
            > "${_roll_dir}/serial.txt" 2>/dev/null; then
         _boot_lines="$(python3 -c "${_boot_failure_py}" "${_roll_dir}/serial.txt")" || _boot_rc=$?
+      else
+        _boot_rc=5  # no console to judge by: silence alone never recreates a VM
       fi
       if [ -e "${_roll_dir}/recreated.${_vm}" ]; then
         # the same instance id is the VM before the recreate took effect, not its replacement
-        if [ "${_boot_rc}" -ne 0 ] && { [ "${_id}" = "-" ] || [ "$(cat "${_roll_dir}/recreated.${_vm}")" != "${_id}" ]; }; then
+        if [ "${_boot_rc}" -ne 0 ] && [ "${_boot_rc}" -ne 5 ] && { [ "${_id}" = "-" ] || [ "$(cat "${_roll_dir}/recreated.${_vm}")" != "${_id}" ]; }; then
           _hint=""
           [ "${_boot_rc}" -eq 3 ] && _hint="
    That is a permission ${WORKER_SA_EMAIL} lacks. What every worker's boot needs:
@@ -1217,10 +1225,10 @@ ${_boot_lines}${_hint}
    The deploy is NOT done. Fix the cause and rerun the deploy (it recreates the VM itself). The whole log:
      gcloud compute instances get-serial-port-output ${_vm} --zone ${WORKER_MIG_ZONE} --project ${GCP_PROJECT_ID}"
         fi
-      elif [ "${_boot_rc}" -ne 0 ]; then
+      elif [ "${_boot_rc}" -eq 3 ] || [ "${_boot_rc}" -eq 4 ]; then
         _recreate_vm "${_vm}" "${_id}" "its startup script failed:
 ${_boot_lines}"
-      elif [ $(( _now - $(cat "${_roll_dir}/silent-since.${_vm}.${_id}") )) -ge "${WORKER_ROLL_FORCE_AFTER_SECONDS}" ]; then
+      elif [ "${_boot_rc}" -eq 0 ] && [ $(( _now - $(cat "${_roll_dir}/silent-since.${_vm}.${_id}") )) -ge "${WORKER_ROLL_FORCE_AFTER_SECONDS}" ]; then
         _recreate_vm "${_vm}" "${_id}" "has reported nothing for $(( _now - $(cat "${_roll_dir}/silent-since.${_vm}.${_id}") ))s"
       fi
     done 3< "${_roll_dir}/silent"
