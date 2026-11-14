@@ -63,6 +63,8 @@ REVIEW_SURFACE_FILE = "review_surface.msh"
 KEEP_FROM_BYTES = 256 * 1024 * 1024
 #: Files no worker step reads past their presence: the solver decks of any mesh.
 DECKS = ("mesh.inp", "mesh.bdf", "mesh.cdb", "mesh.unv")
+#: A flow mesh's solver files (engines/cfd_exports.FILES): download-only, like the decks.
+FLOW_EXPORTS = ("export_openfoam_case.zip", "export_fluent.zip", "export_ensight.zip")
 #: gmsh's own mesh, kept only for an FEA plan (its worker readers have stand-ins - the viewer and
 #: the reviewer). A flow mesh's mesh.msh is the boundary the worker's gates read: it comes home.
 FEA_MESH = "mesh.msh"
@@ -114,7 +116,7 @@ def keepable(workspace) -> list[Path]:
     """The files of `workspace` that stay in the bucket: big (KEEP_FROM_BYTES) and in KEEPABLE -
     the decks always, gmsh's mesh for an FEA plan. Largest first."""
     ws = Path(workspace)
-    names = list(DECKS) + ([FEA_MESH] if (ws / FEA_PLAN).is_file() else [])
+    names = list(DECKS) + list(FLOW_EXPORTS) + ([FEA_MESH] if (ws / FEA_PLAN).is_file() else [])
     out = []
     for name in names:
         p = ws / name
