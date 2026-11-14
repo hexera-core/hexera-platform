@@ -13,11 +13,11 @@ from pathlib import Path
 # and this is a no-op wherever STATIC_DIR is already the shipped UI (e.g. /srv/ui in-image).
 os.environ.setdefault("STATIC_DIR", str(Path(__file__).resolve().parents[2] / "ui"))
 
-# GMSH ON ONE THREAD, THE SAME MESH EVERY RUN (MESH-25). Production gmsh runs every step on every core of the
-# job, and a mesh may then differ slightly run to run (the founder's decision, 13 Nov: speed wins). Our tests
-# hold meshes to exact counts and hashes, so they run gmsh's repeatable mode - set before any meshpipeline import
-# (engines/determinism reads it at import). setdefault: a lab run of a suite in production mode
-# (MESH_GMSH_THREADS=8) still can; the multi-thread path has its own tests (test_gmsh_multicore.py).
+# THE FEA FILL ON ONE THREAD, THE SAME MESH EVERY RUN (MESH-25). In production an FEA solid's volume is filled by
+# HXT on every core of the job, and that fill may then differ slightly run to run (the founder's decision, 13 Nov:
+# speed wins). Our tests hold meshes to exact counts and hashes, so they run the repeatable mode - set before any
+# meshpipeline import (engines/determinism reads it at import). setdefault: a lab run of a suite in production
+# mode (MESH_GMSH_THREADS=8) still can; the multi-thread path has its own tests (test_gmsh_multicore.py).
 os.environ.setdefault("MESH_GMSH_THREADS", "1")
 
 # THE RUNTIME DATA ROOTS, OFF THE CHECKOUT. settings/runtime.py defaults these to CWD-relative

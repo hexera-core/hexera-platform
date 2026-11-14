@@ -122,10 +122,8 @@ def delaunay_fill(monkeypatch):
 @pytest.fixture
 def one_attempt(monkeypatch):
     """These tests count MESH-9 own attempts and hold its meshes to the byte: one attempt a pass, as before
-    MESH-25 (no second attempt with the other 3D algorithm) - MESH-25 has its own tests (test_gmsh_multicore.py)."""
-    from meshpipeline.engines.gmsh import driver as _D
+    MESH-25 (no second fill with the other 3D algorithm) - MESH-25 has its own tests (test_gmsh_multicore.py)."""
     monkeypatch.setattr(A, "SECOND_ATTEMPT", False)
-    monkeypatch.setattr(_D, "SECOND_ATTEMPT", False)
 
 
 def test_each_strip_is_meshed_as_part_of_the_face_beside_it_and_said(strip_meshed):
@@ -411,7 +409,6 @@ def test_the_result_screen_says_which_face_went_into_which(strip_meshed):
     assert not gone & listed and listed | gone == {f['name'] for f in r_off['faces']}
 
 
-@pytest.mark.usefixtures("one_attempt")
 def test_a_cfd_fill_the_merges_break_is_meshed_again_as_drawn_in_a_fresh_session(strip, tmp_path, monkeypatch, capsys):
     """The CFD gmsh path: a fill that fails with the merges set is meshed again with every face as drawn, in
     a fresh gmsh session (a failed fill leaves gmsh's state behind it) - the mesh the solid has without MESH-9."""
