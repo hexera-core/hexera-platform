@@ -512,6 +512,114 @@ def test_a_run_that_reached_no_verdict_may_run_again_unchanged(tmp_path, result)
     assert g.earlier_identical(a2, g.case_digest(a2, ("system/meshDict",))) is None
 
 
+# ...and the same guard for an engine the model does not drive
+
+
+def _seam(monkeypatch, run):
+    """The seam every engine's native run passes, wired the way runtime/composition wires it."""
+    from meshpipeline.agents.builder import rerun_guard as g
+    from meshpipeline.contracts import mesh_execution as mx
+
+    started = []
+
+    class _Executor:
+        def run(self, workspace, *, engine, timeout):
+            started.append((Path(workspace).name, engine))
+            return run(workspace)
+
+    monkeypatch.setattr(mx, "_executor", _Executor())
+    monkeypatch.setattr(mx, "_launch_check", g.before_launch)
+    monkeypatch.setattr(mx, "_run_recorder", g.after_run)
+    return started
+
+
+def test_a_driver_that_never_touches_the_run_mesh_tool_is_guarded_at_the_seam(tmp_path, monkeypatch):
+    """The builder's tool guard only ever reached the model-led loop. An engine with a
+    deterministic driver - the conjugate mesher, the FEA driver, snapgrid - goes straight to
+    contracts/mesh_execution.run_mesh, and the builder's own no-op detector cannot help it: the
+    detector compares the files an attempt AUTHORED, which for a driver is only knowable once the
+    driver has run, and the driver runs the mesher. On the Corintis plate, 2026-11-12, attempts 2
+    and 3 handed the mesher byte for byte attempt 1's case, for 80 minutes and two
+    n2-highmem-32 hours."""
+    from meshpipeline.agents.builder import tools as _tools
+    from meshpipeline.contracts import mesh_execution as mx
+
+    monkeypatch.setattr(_tools, "get_spec_run_files", lambda engine: ("system/meshDict",))
+    a1, a2 = _case(tmp_path / "gen" / "attempt_1"), _case(tmp_path / "gen" / "attempt_2")
+    started = _seam(monkeypatch, lambda ws: {"rc": 1, "timed_out": False, "success": False})
+
+    first = mx.run_mesh(a1, engine="cfmesh_conjugate", timeout=60)
+    assert first["rc"] == 1 and started == [("attempt_1", "cfmesh_conjugate")]
+
+    second = mx.run_mesh(a2, engine="cfmesh_conjugate", timeout=60)
+    assert started == [("attempt_1", "cfmesh_conjugate")], "no second mesher was started"
+    assert second["rc"] == mx.RC_IDENTICAL_RERUN
+    assert second["identical_rerun"] is True and second["earlier_attempt"] == "attempt_1"
+    assert "already ran in attempt 1" in second["guidance"]
+    assert second["timed_out"] is False, "nothing ran, so nothing ran out of time"
+
+
+def test_the_engines_own_passes_inside_one_attempt_are_never_refused(tmp_path, monkeypatch):
+    """A driver runs several plan->mesh->judge passes in its one workspace, and `run_off_the_wall`
+    re-runs a Cloud Run pass that met the wall STILL WORKING on a VM - the same case, deliberately.
+    Only another attempt's run is ever matched."""
+    from meshpipeline.agents.builder import tools as _tools
+    from meshpipeline.contracts import mesh_execution as mx
+
+    monkeypatch.setattr(_tools, "get_spec_run_files", lambda engine: ("system/meshDict",))
+    a1 = _case(tmp_path / "gen" / "attempt_1")
+    started = _seam(monkeypatch, lambda ws: {"rc": 1, "timed_out": False, "success": False})
+    for _ in range(3):
+        assert mx.run_mesh(a1, engine="cfmesh_conjugate", timeout=60)["rc"] == 1
+    assert len(started) == 3
+
+
+def test_what_a_run_wrote_into_its_own_workspace_is_not_part_of_the_case(tmp_path, monkeypatch):
+    """The digest is taken BEFORE the mesher starts. A run writes into its workspace - polyMesh,
+    logs, an exported surface - so one re-read afterwards is not the case the next attempt would
+    be compared against, and the ledger would hold a digest nothing ever matches."""
+    from meshpipeline.agents.builder import tools as _tools
+    from meshpipeline.contracts import mesh_execution as mx
+
+    monkeypatch.setattr(_tools, "get_spec_run_files", lambda engine: ("system/meshDict",))
+    a1, a2 = _case(tmp_path / "gen" / "attempt_1"), _case(tmp_path / "gen" / "attempt_2")
+
+    def _meshes_and_writes(ws):
+        (Path(ws) / "constant" / "triSurface" / "exported.stl").write_text("solid out\n")
+        return {"rc": 1, "timed_out": False, "success": False}
+
+    _seam(monkeypatch, _meshes_and_writes)
+    mx.run_mesh(a1, engine="cfmesh_conjugate", timeout=60)
+    assert mx.run_mesh(a2, engine="cfmesh_conjugate", timeout=60)["rc"] == mx.RC_IDENTICAL_RERUN
+
+
+def test_a_recorder_that_raises_never_turns_a_built_mesh_into_a_failed_one(tmp_path, monkeypatch):
+    from meshpipeline.contracts import mesh_execution as mx
+
+    a1 = _case(tmp_path / "gen" / "attempt_1")
+
+    def _boom(workspace, engine, result):
+        raise RuntimeError("the ledger is on fire")
+
+    _seam(monkeypatch, lambda ws: {"rc": 0, "timed_out": False, "success": True})
+    monkeypatch.setattr(mx, "_run_recorder", _boom)
+    assert mx.run_mesh(a1, engine="cfmesh_conjugate", timeout=60)["rc"] == 0
+
+
+def test_the_composition_root_wires_both_halves():
+    """One of them alone is useless: a check with nothing recorded never fires, and a ledger
+    nothing reads is bookkeeping. And the case contract keeps its place at the front - a case that
+    does not build the approved patches is refused for that, not for being familiar."""
+    import inspect
+
+    from meshpipeline.runtime import composition
+
+    src = inspect.getsource(composition)
+    assert "mesh_execution.set_launch_check(_before_any_mesher_starts)" in src
+    assert "mesh_execution.set_run_recorder(rerun_guard.after_run)" in src
+    assert "launch_check(workspace, engine) or rerun_guard.before_launch(workspace, engine)" in src
+
+
 def test_prepare_refuses_the_identical_retry_before_the_announcement(tmp_path, monkeypatch):
     from meshpipeline.agents.builder import rerun_guard as g
     from meshpipeline.agents.builder.tools import meshing as M

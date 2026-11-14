@@ -34,6 +34,11 @@ RC_TIMED_OUT = -1
 #: approved (engines/case_contract.py). Not a mesh verdict and not an outage: nothing ran.
 RC_CASE_CONTRACT = -5
 
+#: A run REFUSED before launch because an EARLIER ATTEMPT of this run already ran exactly this
+#: case to a verdict (agents/builder/rerun_guard). Like RC_CASE_CONTRACT it is not a mesh verdict
+#: and not an outage: nothing ran, and nothing was spent.
+RC_IDENTICAL_RERUN = -6
+
 #: The tag an RC_INFRASTRUCTURE result's log opens with when the run NEVER STARTED (the remote
 #: runner could not be dispatched or polled). RC_INFRASTRUCTURE alone does not say that: a run
 #: whose output could not be collected ran, and snappyHexMesh's own stage verdict reports -3 for a
@@ -240,6 +245,19 @@ def set_launch_check(check: Callable[[Any, str], dict | None] | None) -> None:
     _launch_check = check
 
 
+#: WHAT A FINISHED NATIVE RUN LEAVES BEHIND: (workspace, engine, result) -> None, called once a
+#: run has come back, whatever it came back as. It is the other half of `_launch_check`: a check
+#: that refuses a case an earlier attempt already ran has to be told what those runs came to, and
+#: this is the one seam every engine's run returns through. It may not raise - a recorder that
+#: fails must never turn a finished mesh into a failed one.
+_run_recorder: Callable[[Any, str, dict], None] | None = None
+
+
+def set_run_recorder(record: Callable[[Any, str, dict], None] | None) -> None:
+    global _run_recorder
+    _run_recorder = record
+
+
 #: THE ABANDONMENT WATCH: () -> why the run should stop waiting on its remote mesh, or None to
 #: keep waiting. A worker waiting on a Cloud Run execution sits in a poll loop for up to its whole
 #: deadline, and that loop used to ask nothing: on shared dev, 2026-10-01, job 470c3eb9 was
@@ -336,6 +354,12 @@ def run_mesh(workspace: Any, *, engine: str, timeout: int) -> dict:
         _note_native_run(workspace, {"rc": RC_INFRASTRUCTURE, "timed_out": False}, raised=True)
         raise
     _note_native_run(workspace, result)
+    if _run_recorder is not None:
+        try:
+            _run_recorder(workspace, engine, result)
+        except Exception:    # noqa: BLE001 - bookkeeping must not fail a mesh that was built
+            logger.warning("the run recorder raised on %s (%s) - the result stands",
+                           workspace, engine, exc_info=True)
     keep_native_logs(workspace, read_native_run(workspace))
     return result
 

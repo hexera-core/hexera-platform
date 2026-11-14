@@ -140,8 +140,19 @@ def install_adapters() -> None:
     # THE PRE-FLIGHT: the written case is held to the approved patches before any mesher starts,
     # so a name the case does not carry costs seconds and an internal error naming it - never a
     # whole run that ends as "quality".
+    # ...AND NO IDENTICAL RE-RUNS, for every engine rather than only the model-led ones. The
+    # builder's `run_mesh` tool has asked this since job d20ad762, but an engine with a
+    # deterministic driver never passes through that tool: on the Corintis plate, 2026-11-12,
+    # attempts 2 and 3 handed the mesher byte for byte the case attempt 1 had already run, for
+    # 80 minutes and two n2-highmem-32 hours that could not have come out differently.
+    from meshpipeline.agents.builder import rerun_guard
     from meshpipeline.engines.case_contract import launch_check
-    mesh_execution.set_launch_check(launch_check)
+
+    def _before_any_mesher_starts(workspace, engine: str):
+        return launch_check(workspace, engine) or rerun_guard.before_launch(workspace, engine)
+
+    mesh_execution.set_launch_check(_before_any_mesher_starts)
+    mesh_execution.set_run_recorder(rerun_guard.after_run)
     # Console sign-in. The product knows only `contracts.firebase_token.verify`; which identity
     # provider is behind it - and therefore which certificate endpoint and which claim
     # vocabulary - is settled here, once.
