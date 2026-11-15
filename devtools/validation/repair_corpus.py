@@ -702,8 +702,9 @@ def _score_meshing(row: dict, path: Path, scratch: Path) -> None:
         row.update(meshes_before=False, mesh_kind_before="unreadable",
                    meshes_after=None, mesh_kind_after="")
         return
-    row["meshes_before"], row["mesh_kind_before"] = _verdict(
-        mesh_probe.probe_file(path, diagonal_mm=diagonal, budget_s=MESH_PROBE_BUDGET_S))
+    if "meshes_before" not in row:  # --force-repair probes first, and the verdict is kept
+        row["meshes_before"], row["mesh_kind_before"] = _verdict(
+            mesh_probe.probe_file(path, diagonal_mm=diagonal, budget_s=MESH_PROBE_BUDGET_S))
     row["meshes_after"], row["mesh_kind_after"] = None, ""
     if row.get("outcome") in _REPAIRED_OUTCOMES:
         written = scratch / f"{path.stem}-repaired.step"
@@ -725,7 +726,9 @@ def meshing_summary(rows: list[dict]) -> dict:
             kind = (row.get("mesh_kind_before") if row.get("meshes_after") is None
                     else row.get("mesh_kind_after")) or "other"
             still[kind] = still.get(kind, 0) + 1
+    forced = sum(1 for r in scored if r.get("forced_repair"))
     return {
+        **({"forced_repairs": forced} if forced else {}),
         "files": len(scored),
         "meshed_before": sum(1 for r in scored if r["meshes_before"]),
         "meshed_after": sum(1 for ok in after if ok),
@@ -737,8 +740,31 @@ def meshing_summary(rows: list[dict]) -> dict:
     }
 
 
-def _one(path: Path, scratch: Path, *, mode: str = "off", mesh_probe: bool = False) -> dict:
-    row = _repair_row(path, scratch, mode=mode)
+def _probe_before(path: Path) -> tuple[bool, str] | None:
+    """The file probe's verdict on the input as delivered, or None when it cannot be measured.
+    Taken BEFORE repair only under --force-repair, which needs it to decide whether to run one."""
+    from meshpipeline.cad.repair import mesh_probe
+
+    try:
+        diagonal = _diagonal_of(path)
+    except Exception:  # noqa: BLE001
+        return None
+    return _verdict(mesh_probe.probe_file(path, diagonal_mm=diagonal,
+                                          budget_s=MESH_PROBE_BUDGET_S))
+
+
+def _one(path: Path, scratch: Path, *, mode: str = "off", mesh_probe: bool = False,
+         force_repair: bool = False) -> dict:
+    # FORCE-REPAIR IS A BENCHMARK SWITCH, NOT A PRODUCT PATH. A file the before-probe says will not
+    # mesh runs the repair session even where triage routed it away (a clean inspection goes to
+    # mesh-as-is), so the in-session probe can locate what the inspector could not see.
+    forced = False
+    taken = _probe_before(path) if (force_repair and mesh_probe) else None
+    if taken is not None:
+        forced = not taken[0]
+    row = _repair_row(path, scratch, mode=mode, force=forced)
+    if taken is not None and row.get("outcome") != "unreadable":
+        row["meshes_before"], row["mesh_kind_before"] = taken
     if mesh_probe and row.get("outcome") != "unreadable":
         _score_meshing(row, path, scratch)
     elif mesh_probe:
@@ -747,7 +773,7 @@ def _one(path: Path, scratch: Path, *, mode: str = "off", mesh_probe: bool = Fal
     return row
 
 
-def _repair_row(path: Path, scratch: Path, *, mode: str = "off") -> dict:
+def _repair_row(path: Path, scratch: Path, *, mode: str = "off", force: bool = False) -> dict:
     from meshpipeline.cad.repair.conservative import (
         RepairRefused,
         RepairUnavailable,
@@ -783,11 +809,17 @@ def _repair_row(path: Path, scratch: Path, *, mode: str = "off") -> dict:
 
     # A crossing only the face analyzer measured does not make a file repair work (floor-fix
     # ruling 2): with review off it is the flag-off file's outcome, the finding still in the row.
-    if status is RepairStatus.clean and not [e for e in before["entities"]
-                                             if not e.get("analyzer_only")]:
+    skipped = ((status is RepairStatus.clean and not [e for e in before["entities"]
+                                                      if not e.get("analyzer_only")])
+               or advice.route != ROUTE_CONSERVATIVE_REPAIR)
+    if skipped and force:
+        # Runner-only: the route triage chose is kept in the row, and nothing under src/ changes.
+        row.update(forced_repair=True, triage_route=advice.route)
+    elif status is RepairStatus.clean and not [e for e in before["entities"]
+                                               if not e.get("analyzer_only")]:
         row.update(outcome="nothing_to_repair", seconds=round(time.monotonic() - started, 2))
         return row
-    if advice.route != ROUTE_CONSERVATIVE_REPAIR:
+    elif advice.route != ROUTE_CONSERVATIVE_REPAIR:
         row.update(outcome=f"not_attempted:{advice.route}",
                    seconds=round(time.monotonic() - started, 2))
         return row
@@ -868,7 +900,7 @@ def _repair_row(path: Path, scratch: Path, *, mode: str = "off") -> dict:
 
 
 def run_files(files: list[Path], scratch: Path, *, mode: str = "off", loop: bool = False,
-              bundle=None, mesh_probe: bool = False) -> list[dict]:
+              bundle=None, mesh_probe: bool = False, force_repair: bool = False) -> list[dict]:
     """Run the repair loop over `files`, printing a line per file; returns the rows. When `bundle`
     is a BundleWriter every row is streamed into it AS IT IS PRODUCED, so a run that dies half way
     leaves its evidence-so-far on disk rather than in a list that was never written."""
@@ -881,10 +913,12 @@ def run_files(files: list[Path], scratch: Path, *, mode: str = "off", loop: bool
             rules_dir = scratch / "rules_only"
             rules_dir.mkdir(parents=True, exist_ok=True)
             rules_row = _one(path, rules_dir)
-            row = _one(path, scratch, mode="live", mesh_probe=mesh_probe)
+            row = _one(path, scratch, mode="live", mesh_probe=mesh_probe,
+                       force_repair=force_repair)
             row["rules_only"] = rules_row
         else:
-            row = _one(path, scratch, mode=mode, mesh_probe=mesh_probe)
+            row = _one(path, scratch, mode=mode, mesh_probe=mesh_probe,
+                       force_repair=force_repair)
         rows.append(row)
         if bundle is not None:
             bundle.write_row(row)
@@ -946,6 +980,9 @@ def main() -> int:
     parser.add_argument("--mesh-probe", dest="mesh_probe", action="store_true",
                         help="also mesh each input and its repaired file in gmsh (slow) and "
                              "report which files mesh after repair")
+    parser.add_argument("--force-repair", dest="force_repair", action="store_true",
+                        help="with --mesh-probe: a file whose before-probe fails runs the repair "
+                             "session even when triage routed it away (benchmark only)")
     parser.add_argument("--json", dest="json_out", default="", help="write the rows here")
     # The publication bundle (public-benchmarks.md). The manifest flags are free text on purpose:
     # provenance is a story only the person running the corpus knows. The one closed set is the
@@ -1049,6 +1086,9 @@ def main() -> int:
         "operations_catalogue": operation_catalogue(),
     }
 
+    if args.force_repair:
+        settings["force_repair"] = True  # only when set: a run without it keeps its old digest
+
     # A real directory rather than a per-run temp one: the repaired files ARE the evidence, and
     # a reviewer wants to open them after the run rather than watch them be deleted.
     scratch = Path(tempfile.gettempdir()) / "repair_corpus_out"
@@ -1068,7 +1108,7 @@ def main() -> int:
     # settings and the recomputed summary (see public-benchmarks.md, First Implementation Slice).
     writer = benchmark_bundle.BundleWriter(Path(args.bundle)) if args.bundle else None
     rows = run_files(files, scratch, mode=args.planner, loop=args.loop, bundle=writer,
-                     mesh_probe=args.mesh_probe)
+                     mesh_probe=args.mesh_probe, force_repair=args.force_repair)
 
     # ONE AGGREGATE. Every section printed below reads this dict, and the bundle seal recomputes
     # the same function over the same rows, so the console and the evidence cannot disagree.

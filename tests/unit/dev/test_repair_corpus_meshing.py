@@ -107,3 +107,61 @@ def test_mesh_located_of_a_report_with_no_mesh_defects_is_empty():
     assert corpus._mesh_located({"regions": {"defects_remaining": [
         {"code": "small_edge", "entity": "edge:1", "fingerprint": "x"}]}}) == []
     assert corpus._mesh_located({"timings": {}}) == []
+
+
+# --force-repair: the benchmark's runner-only switch for files the inspector calls clean.
+def _clean_seams(monkeypatch, tmp_path, *, probe_meshes: bool):
+    from types import SimpleNamespace
+
+    from meshpipeline.cad.repair import conservative
+
+    sessions: list[Path] = []
+    fake_report = SimpleNamespace(defects=[], measurements=[], to_dict=lambda: {"defects": [], "measurements": [], "entities": []})
+    monkeypatch.setattr(corpus, "_inspect", lambda path: {
+        "report": fake_report, "defects": [], "entities": [], "valid": True,
+        "counts": {}, "located": {}})
+
+    def fake_repair(source, destination, **_):
+        sessions.append(Path(source))
+        raise conservative.RepairUnavailable("seam")
+
+    monkeypatch.setattr(conservative, "repair_step_file", fake_repair)
+    failure = None if probe_meshes else mesh_probe.MeshFailure("edge_through_face", (), None, "")
+    monkeypatch.setattr(mesh_probe, "probe_file", lambda path, **_: mesh_probe.ProbeResult(
+        probe_meshes, 1 if probe_meshes else 0, failure, {}))
+    monkeypatch.setattr(corpus, "_diagonal_of", lambda path: 10.0)
+    src = tmp_path / "clean.step"
+    src.write_text("x")
+    return src, sessions
+
+
+def test_force_repair_runs_the_session_on_clean_inspections(monkeypatch, tmp_path):
+    src, sessions = _clean_seams(monkeypatch, tmp_path, probe_meshes=False)
+    row = corpus._one(src, tmp_path, mesh_probe=True, force_repair=True)
+    assert sessions == [src]
+    assert row["outcome"] == "unavailable"
+
+
+def test_force_repair_leaves_a_meshing_clean_file_alone(monkeypatch, tmp_path):
+    src, sessions = _clean_seams(monkeypatch, tmp_path, probe_meshes=True)
+    row = corpus._one(src, tmp_path, mesh_probe=True, force_repair=True)
+    assert sessions == [] and row["outcome"] == "nothing_to_repair"
+    assert "forced_repair" not in row
+
+
+def test_force_repair_rows_are_marked(monkeypatch, tmp_path):
+    src, _ = _clean_seams(monkeypatch, tmp_path, probe_meshes=False)
+    row = corpus._one(src, tmp_path, mesh_probe=True, force_repair=True)
+    assert row["forced_repair"] is True
+    assert row["triage_route"] == "mesh_as_is"
+    assert row["meshes_before"] is False
+    out = corpus.meshing_summary([row, _row(True, True)])
+    assert out["forced_repairs"] == 1
+    assert "forced_repairs" not in corpus.meshing_summary([_row(True, True)])
+
+
+def test_without_the_flag_rows_are_unchanged(monkeypatch, tmp_path):
+    src, sessions = _clean_seams(monkeypatch, tmp_path, probe_meshes=False)
+    row = corpus._one(src, tmp_path, mesh_probe=True)
+    assert sessions == [] and row["outcome"] == "nothing_to_repair"
+    assert "forced_repair" not in row and "triage_route" not in row
