@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import asyncio
-import gzip
 import hashlib
 import json
 import logging
@@ -249,6 +248,25 @@ def fea_export_plan(job_id: uuid.UUID, workspace: Path) -> list[_Planned]:
     return out
 
 
+#: HOW THE DELIVERED BUNDLE IS COMPRESSED. Six, which is zlib's own default and the number
+#: gcs_exchange.RESULT_ARCHIVE_LEVEL reached independently on the return archive - not Python's
+#: `gzip` default of nine, which is what this used and what _build_plan's own note now records the
+#: cost of.
+#:
+#: WHY SIX AND NOT THE FASTEST. On one thread the measured table in _build_plan would argue for
+#: two: 98.0 MB/s against level 6's 26.8, for 4.27x against 5.82x. But the archive is no longer
+#: written on one thread - `parallel_gzip` spreads it over every core the job has - so the lever
+#: that was costing hours is the THREAD COUNT, and once it is pulled, level 6 buys 36% smaller
+#: bundles for time the cores now absorb. 66.6 GB at 26.8 MB/s a core is about five minutes on
+#: eight. The customer downloads this file and we store it; the smaller one is the better one as
+#: soon as writing it is no longer the thing that loses the run.
+#:
+#: NOT the same name as gcs_exchange's, and not imported from it: that constant is for the archive
+#: a MESH VM sends home and this one is for the bundle a CUSTOMER is handed. They agree today, and
+#: a reason to move one is not automatically a reason to move the other.
+BUNDLE_ARCHIVE_LEVEL = 6
+
+
 def _build_plan(job_id: uuid.UUID, workspace: Path, scratch: list[Path],
                 engine: str) -> list[_Planned]:
     plan: list[_Planned] = []
@@ -290,12 +308,60 @@ def _build_plan(job_id: uuid.UUID, workspace: Path, scratch: list[Path],
         ti.uname = ti.gname = ""
         return ti
 
-    with gzip.GzipFile(filename="", fileobj=open(_tmp, "wb"), mode="wb", mtime=0) as _gz:  # noqa: SIM115
-        with tarfile.open(fileobj=_gz, mode="w") as _ctar:
-            for _rel in sorted(m.path for m in _recipe.members):
-                _cp = workspace / _rel
-                if _cp.exists():          # optional members ship when present
-                    _ctar.add(_cp, arcname=f"{_recipe.prefix}/{_rel}", filter=_norm)
+    # NOT `gzip.GzipFile`, WHOSE DEFAULT IS LEVEL 9 ON ONE CORE, which is what this was and what
+    # cost job 57b613d7 its delivery. That run meshed a 283,410,955-cell cold plate in 3 h 53 m,
+    # passed every gate, and then sat in THIS loop: at 17:48 UTC, 63 minutes after the graph
+    # returned, it had consumed 12.57 GB of the recipe's 66.6 GB `constant` tree and was still
+    # going. The whole bundle would have taken about eight and a half hours, during which
+    # `_invoke_with_heartbeat` has already stopped both the in-process beat and the lease keeper
+    # (pipeline_run.py, its `finally`), so the lease lapsed after 900 s, the stalled-job reaper
+    # claimed a new generation, and a second 64-vCPU VM started on a mesh that was already built.
+    # The row never reached `terminal_finalize`'s CAS, so it still read `running` with no
+    # `ended_at` - which is what made it look stalled in the first place.
+    #
+    # MEASURED, 2026-11-15, on that mesh's own fluid `faces` file - a 419,430,400-byte slice taken
+    # one third in, one thread, each level compressing the same bytes:
+    #
+    #     level   MB/s     ratio     the recipe's 66.6 GB at that rate
+    #        1    87.0     4.07x     12m 44s
+    #        2    98.0     4.27x     11m 18s
+    #        5    51.6     5.71x     21m 27s
+    #        6    26.8     5.82x     41m 20s
+    #        9     3.7     5.89x     4h 59m 59s
+    #
+    # Level 9 is 23 times slower than level 2 to save a seventh of the bytes. And `faces` is the
+    # KIND half: gcs_exchange.RESULT_ARCHIVE_LEVEL has the same measurement on the other files -
+    # "0.7 against 16.9 on `owner`" - and `owner` and `neighbour` are 15.85 GB of this recipe,
+    # which is why the 5 h above is a floor rather than an estimate.
+    #
+    # THE LEVEL AND THE THREADING ARE BOTH THAT MODULE'S ANSWER, NOT A NEW ONE. gcs_exchange
+    # learned this twice already - its own note says "measuring against a tarfile default instead
+    # of against this has been wrong twice - first its level-9 compresslevel, then its
+    # single-threaded deflate stream" - and `parallel_gzip` is what it reached for: one gzip
+    # member, cut on fixed CHUNK_BYTES boundaries and primed with the previous window, spread over
+    # every core THE JOB has. This was simply the third place to make the same mistake, and it is
+    # the place where the mesh is actually handed to the customer.
+    #
+    # STILL DETERMINISTIC, which this bundle's checksum depends on (see _norm above): the cut
+    # points are fixed by `chunk_bytes` and the pieces are concatenated in order, so `worker_count`
+    # changes how fast it is written and not one byte of what is written. The gzip header
+    # parallel_gzip emits carries no mtime, for the same reason `mtime=0` was passed here.
+    #
+    # `mode="w|"` AND NOT `"w"`: ParallelGzipWriter is a write-only, non-seekable sink, which is
+    # the streaming tar mode's contract. The nesting order matters too - the tar's end-of-archive
+    # blocks have to be written before the gzip trailer that covers them, which is what the two
+    # `with`s in this order do.
+    from meshpipeline.engines.determinism import job_cpus
+    from meshpipeline.parallel_gzip import ParallelGzipWriter, workers
+
+    with _tmp.open("wb") as _fh, \
+            ParallelGzipWriter(_fh, level=BUNDLE_ARCHIVE_LEVEL,
+                               worker_count=workers(job_cpus())) as _gz, \
+            tarfile.open(fileobj=_gz, mode="w|") as _ctar:
+        for _rel in sorted(m.path for m in _recipe.members):
+            _cp = workspace / _rel
+            if _cp.exists():              # optional members ship when present
+                _ctar.add(_cp, arcname=f"{_recipe.prefix}/{_rel}", filter=_norm)
     verify_archive(_tmp, spec)
     scratch.append(_tmp)
 
