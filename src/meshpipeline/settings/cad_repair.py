@@ -304,3 +304,28 @@ CAD_REPAIR_MESH_PROBE: str = _mesh_probe_posture()
 #: the run's time, and skips the probe outright when nothing is left.
 CAD_REPAIR_MESH_PROBE_TIMEOUT_S: float = float(
     optional_env("CAD_REPAIR_MESH_PROBE_TIMEOUT_S", "120.0"))
+
+
+def _llm_author_posture() -> str:
+    """The model-author posture, FAILING CLOSED: only the exact strings `shadow` and `live` turn it
+    on, and anything else but `off` is read as off OUT LOUD - the mesh probe's rule, because this
+    one puts a model in the author's seat for a customer's geometry."""
+    raw = optional_env("CAD_REPAIR_LLM_AUTHOR", "off")
+    if raw not in ("live", "shadow", "off"):
+        logger.warning("CAD_REPAIR_LLM_AUTHOR=%r is not 'live', 'shadow' or 'off'; reading it "
+                       "as off", raw)
+    return raw if raw in ("live", "shadow") else "off"
+
+
+#: Who authors the region loop's target packages (cad/repair/model_author.py). "off" is
+#: byte-for-byte the prior behaviour: the deterministic rules author, no model call. "shadow"
+#: keeps the rules author driving and asks the model beside it, recording its proposal (validated
+#: or refused, with the reason) and executing nothing of it. "live" lets the model author the
+#: packages - each still a claim the session proves under the same caps - and only when a model
+#: router is configured; without one the rules author drives. Read only by the region-scoped
+#: driver (CAD_REPAIR_REGION_LOOP=live).
+CAD_REPAIR_LLM_AUTHOR: str = _llm_author_posture()
+
+#: Seconds one model-author call may take before it counts as no proposal for that attempt.
+CAD_REPAIR_LLM_AUTHOR_TIMEOUT_S: float = float(
+    optional_env("CAD_REPAIR_LLM_AUTHOR_TIMEOUT_S", "20.0"))

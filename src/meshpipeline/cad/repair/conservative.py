@@ -860,6 +860,7 @@ def repair_step_file(source: Path, destination: Path, *,
     # until an engineer's directive does.
     reserved = REVIEW_RESERVED_CODES if rcfg.CAD_REPAIR_REVIEW_ENABLED else frozenset()
     regions_run = None
+    model_record = None
     if rcfg.CAD_REPAIR_REGION_LOOP == "live":
         # THE REGION-SCOPED DRIVER. Every after-check below is unchanged and still has the last
         # word: the region run is translated into the one result shape every later stage reads
@@ -876,12 +877,22 @@ def repair_step_file(source: Path, destination: Path, *,
         from meshpipeline.cad.repair.region_loop import as_repair_run, run_regions
         from meshpipeline.cad.repair.rules_author import LABEL, rules_author
 
+        # WHO AUTHORS THE PACKAGES (CAD_REPAIR_LLM_AUTHOR). Off is the rules author exactly as
+        # before; shadow and live are chosen by `model_author.select_author` (live needs a model
+        # router, or the rules drive), and the model's record travels in the report below.
+        if rcfg.CAD_REPAIR_LLM_AUTHOR in ("shadow", "live"):
+            from meshpipeline.cad.repair.model_author import select_author
+
+            author, label = select_author(before_shape, original=original, reserved=reserved)
+            model_record = getattr(author, "report", None)
+        else:
+            author, label = rules_author(before_shape, original=original,
+                                         reserved=reserved), LABEL
         regions_run = run_regions(
-            before_shape, tolerance_mm=tolerance, reserved=reserved,
-            author=rules_author(before_shape, original=original, reserved=reserved))
+            before_shape, tolerance_mm=tolerance, reserved=reserved, author=author)
         final = measure(regions_run.shape)
         result = as_repair_run(regions_run, original=original.to_dict(), final=final.to_dict(),
-                               planner_label=LABEL)
+                               planner_label=label)
         if directives:
             result = _replace(result, refusals=result.refusals + tuple(
                 {"refusal": "directive_unplayable", "reason": "region_loop_posture",
@@ -927,6 +938,11 @@ def repair_step_file(source: Path, destination: Path, *,
         # fingerprint, same measurement); introduced ones did not. Only a region run holds both
         # scans, so only it can say.
         measurements["disposition"] = _disposition(regions_run)
+        if callable(model_record):
+            # THE MODEL AUTHOR'S RECORD (shadow or live only; absent when off): every call's
+            # observation size and hash, clipped reply, outcome and refusal reason, its accepted
+            # mesher verdicts and, in shadow, each proposal beside what the rules drove.
+            measurements["model_author"] = model_record()
 
     # THE AFTER-CHECKS STILL HAVE THE LAST WORD. The session already refused any individual
     # operation that left the caps, so reaching here with a refusal would mean a bug - but the
