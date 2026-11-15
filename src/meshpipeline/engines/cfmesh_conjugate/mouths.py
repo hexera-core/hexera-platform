@@ -433,7 +433,7 @@ def shell_stubs(ports: list) -> list:
 
 def port_rows(stubs: list, *, inlet: str = "coolant_in",
               outlet: str = "coolant_out",
-              named: list | None = None) -> tuple[list, str]:
+              named: list | None = None, roles: bool = True) -> tuple[list, str]:
     """The stubs as patches to cut, and what to say about which end is which.
 
     WHY THIS IS NOT `plan_ports`. That one chooses an inlet and an outlet from the BLOCK FACES the
@@ -450,11 +450,32 @@ def port_rows(stubs: list, *, inlet: str = "coolant_in",
     Fewer than two stubs is not an error here: a part with one way in and no way out is refused by
     the flowable gate with the numbers to show for it, which is a better place to say so than a
     planner that has not meshed anything yet.
+
+    AND `roles=False` NAMES NO END AT ALL, which is what a part whose intake declared no ports has
+    to get. The mouths are still CUT - the delivered mesh carries every opening as a named,
+    unassigned patch a solver setup can be put on later - but nothing here guesses which one is
+    fed. Guessing is not harmless, because `plan.ports_from` reads the roles back out of these
+    rows and `finalize` sets `coolant_ports_declared` from that, so the flowable gate ends up
+    holding the run to a port the run itself invented. MEASURED, job 6ddb58aa: the customer's own
+    notes said not to name any ports on the file and that the boundary patch list is empty, no
+    port declaration was written, and the plan still carried `coolant_in` as the inlet on an
+    11.8 mm mouth whose own record says nothing is clear ahead of it. topoSet found 0 of the
+    coolant's 2,640 outer faces in its box, createPatch removed the zero-sized patch, and 3.94 h
+    of meshing was refused with "the inlet was to be coolant_in, and the fluid region has no patch
+    of that name". [[project-corintis-port-roles]]
     """
     rows = []
     for k, s in enumerate(stubs):
         if named is not None and k < len(named):
             name, role = named[k][0], named[k][1]
+        elif not roles:
+            # "opening" is not in ROLE_TO_OF_TYPE, and `render_port_patch_dicts` falls back to
+            # OpenFOAM type `patch` for a role it does not know - which is the unassigned shape
+            # this customer's two mouths have already been shipped under as port_a and port_b.
+            # A `wall` would be the wrong physics for a real hole in a mesh that has to be
+            # solvable later, and `finalize.delivered_boundary_types` reads the OF type back out
+            # of the boundary file rather than this role word, so nothing downstream needs it.
+            role, name = "opening", f"mouth_{k + 1}"
         else:
             role, name = (("inlet", inlet) if k == 0 else
                           ("outlet", outlet) if k == 1 else
@@ -481,9 +502,16 @@ def port_rows(stubs: list, *, inlet: str = "coolant_in",
     if a.face == b.face:
         said += (". Both are on one face, which a renamed block face cannot express and is why "
                  "they are cut rather than renamed")
-    if len(stubs) > 2:
+    if len(stubs) > 2 and roles:
         said += (f". The other {len(stubs) - 2} mouth(s) are cut as walls: which of several is "
                  "fed is not something the geometry says")
+    elif len(stubs) > 2:
+        said += f". The other {len(stubs) - 2} mouth(s) are cut the same way"
+    if named is None and not roles:
+        said += (". No inlet and no outlet is named: none was declared at intake, and which end "
+                 "is fed is not something the geometry says. Every mouth is delivered as an "
+                 "unassigned opening")
+        return rows, said
     # ...AND IT IS ONLY A GUESS WHILE NOBODY HAS SAID. This was appended unconditionally, so a
     # run whose ports had just been bound to the customer's own declaration BY POSITION still
     # signed off with "The direction is a guess - coolant_in is the mouth measured first - so

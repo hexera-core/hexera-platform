@@ -192,11 +192,24 @@ def test_conformal_but_wrongly_tagged_is_still_refused():
 
 
 def test_islands_are_refused_even_though_checkmesh_said_ok():
+    """The refusal stands; what it CLAIMS has changed, and this pin changed with it.
+
+    It used to require "will not solve". That is a second unmeasured assertion beside the one this
+    message carried for months ("the cells are too coarse to hold the passage together"), and the
+    engine contradicts itself about it: conjugate.verify says an island has no face path to the
+    pressure reference cell, criteria.py says a solver will run and report no flow between them,
+    and no solve of either has been run here - solving is the customer's half. So the sentence now
+    says what checkMesh measured and what the count cannot separate, and asserts no outcome.
+    [[project-corintis-island-diagnosis]] [[feedback-we-mesh-they-solve]]
+    """
     r = C.verify(_report(fluid=C.RegionReport("fluid", cells=10, volume_m3=6.3196e-09, pieces=15,
                                               mesh_ok=True)),
                  expect_fluid_pieces=1)
     assert any("disconnected piece" in p for p in r.problems)
-    assert any("will not solve" in p for p in r.problems)
+    said = " ".join(r.problems)
+    assert "15 disconnected piece(s), expected 1" in said
+    assert "cannot separate them" in said
+    assert "will not solve" not in said
 
 
 def test_a_multi_passage_part_is_allowed_to_be_many_pieces():

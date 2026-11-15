@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -59,6 +60,9 @@ logger = logging.getLogger(__name__)
 #: Names the two regions carry through split, checkMesh and the solver case.
 FLUID_REGION = "fluid"
 SOLID_REGION = "solid"
+#: The cellSet the coolant is collected into before it becomes a cellZone. A constant because
+#: topoSet prints the name in its own log and `seed_drop` reads the set's size back out of there.
+FLUID_CELLS = "fluidCells"
 
 #: How the interface patches are named once `splitMeshRegions` has run.
 FLUID_TO_SOLID = f"{FLUID_REGION}_to_{SOLID_REGION}"
@@ -764,7 +768,12 @@ def interface_cell_m(background_cell_m: float, levels: int = DEFAULT_REFINEMENT_
     return background_cell_m / (_LEVEL_DIVISOR ** levels)
 
 
-def render_toposetdict(*, fluid_file: str) -> str:
+#: The marker `regionToCell` prints when it runs, used to find the coolant's size either side of
+#: it in topoSet's own log. Its exact text, from OpenFOAM v2412's regionToCell.C.
+SEED_KEEP_MARKER = "Adding all cells of connected region containing points"
+
+
+def render_toposetdict(*, fluid_file: str, seeds: list | None = None) -> str:
     """Tag the coolant cells, then name everything else.
 
     `useSurfaceOrientation` lets topoSet decide inside from outside using the surface's own normals,
@@ -774,12 +783,51 @@ def render_toposetdict(*, fluid_file: str) -> str:
     BOTH ZONES ARE NAMED, and leaving the second one implicit is the mistake this avoids. An
     unzoned remainder leaves `splitMeshRegions` to work out what those cells are, and what it works
     out is one region per connected lump of metal.
+
+    AND THE ORIENTATION TEST IS THEN HELD TO THE SURFACE'S OWN CONNECTIVITY, which is what `seeds`
+    are for. `surfaceToCell useSurfaceOrientation` answers cell by cell out of an octree whose
+    leaves can be bigger than the feature they straddle, and on the customer cold plate it tagged
+    247.998 mm3 of bulk metal as coolant - 6,669 cells in four lumps, three of them a single
+    background cell, all four with a generalised winding number of 0.0000 against both shells of
+    the surface. The coolant came out in six pieces where the part has two and the mesh was
+    refused, at the end of a 3.94 h run.
+    [[project-corintis-island-diagnosis]]
+    `regionToCell` keeps only the connected regions holding `seeds`, one point per passage from
+    `cad.fluid_passages.interior_seeds`, so a lump with no face path to any of them is not coolant.
+    It costs no cells and runs BEFORE the split, which is the whole reason it is here rather than a
+    `subsetMesh` afterwards: the islands own 8,335 of the interface's 16,590,533 faces, so cutting
+    them out after the split takes those faces off one side only and the interface stops being
+    conformal. Retagged before it, they go to the metal in the same pass that builds both zones.
+
+    MEASURED IN OPENFOAM v2412 before it was wired in, on a 64,000-cell block whose fluid set was
+    one 5,832-cell blob plus two islands (one of them a single cell): 5,841 -> 5,832 with the
+    islands moved to the solid set, identical serial and under 4-rank MPI. The same run measured
+    the two ways it can go wrong, which is why `interior_seeds` returns nothing rather than a
+    guess: a seed in a cell the query did not tag empties the set and still exits 0, and a seed
+    outside the mesh is a FOAM FATAL ERROR.
     """
+    keep = ""
+    if seeds:
+        pts = " ".join(f"({p[0]:.9g} {p[1]:.9g} {p[2]:.9g})" for p in seeds)
+        keep = (
+            "    {\n"
+            "        name      " + FLUID_CELLS + ";\n"
+            "        type      cellSet;\n"
+            # SUBSET, not new: the walk is restricted to the cells the orientation test tagged, so
+            # this can only ever take cells away from the coolant and never add one.
+            "        action    subset;\n"
+            "        source    regionToCell;\n"
+            "        set       " + FLUID_CELLS + ";\n"
+            f"        insidePoints ({pts});\n"
+            # No erosion. nErode peels layers off the kept region, which would unpick the
+            # staircased channel walls this engine spends its refinement on.
+            "        nErode    0;\n"
+            "    }\n")
     return (
         "FoamFile { version 2.0; format ascii; class dictionary; object topoSetDict; }\n"
         "actions\n(\n"
         "    {\n"
-        "        name      fluidCells;\n"
+        "        name      " + FLUID_CELLS + ";\n"
         "        type      cellSet;\n"
         "        action    new;\n"
         "        source    surfaceToCell;\n"
@@ -792,9 +840,10 @@ def render_toposetdict(*, fluid_file: str) -> str:
         "        nearDistance    -1;\n"
         "        curvature       -100;\n"
         "    }\n"
+        + keep +
         f"    {{\n        name      {FLUID_REGION};\n        type      cellZoneSet;\n"
         "        action    new;\n        source    setToCellZone;\n"
-        "        set       fluidCells;\n    }\n"
+        "        set       " + FLUID_CELLS + ";\n    }\n"
         "    {\n"
         "        name      solidCells;\n"
         "        type      cellSet;\n"
@@ -809,12 +858,44 @@ def render_toposetdict(*, fluid_file: str) -> str:
         # cellToCell, not setToCell. `setToCell` does not exist, and topoSet rejects the whole
         # dictionary rather than the one action, so the mesh is built and then thrown away.
         "        source    cellToCell;\n"
-        "        set       fluidCells;\n"
+        "        set       " + FLUID_CELLS + ";\n"
         "    }\n"
         f"    {{\n        name      {SOLID_REGION};\n        type      cellZoneSet;\n"
         "        action    new;\n        source    setToCellZone;\n"
         "        set       solidCells;\n    }\n"
         ");\n")
+
+
+def seed_drop(log_text: str) -> tuple[int, int] | None:
+    """(cells the orientation test tagged, cells the seeds kept) out of topoSet's own log.
+
+    HOW MUCH THE CONNECTIVITY RULE TOOK AWAY, which has to be published rather than inferred. The
+    rule is right on a surface whose passages are all seeded, and on the part it was written for it
+    drops 6,669 cells of mislabelled metal out of 91,329,913. But a channel pinched shut by
+    staircasing would also arrive here as a piece with no seed in it, and dropping THAT quietly
+    would turn a real defect into a clean pass. So the number is reported, and the bar it is judged
+    against stays `coolant_error_over_tol` - the coolant's volume against the CAD - which is the
+    one measurement that moves when real coolant goes missing.
+
+    None when the log does not show the action, which is every run with no seeds.
+    """
+    if SEED_KEEP_MARKER not in log_text:
+        return None
+    size = re.compile(r"cellSet\s+" + FLUID_CELLS + r"\s+now size\s+(\d+)")
+    last: int | None = None
+    before: int | None = None
+    seen_marker = False
+    for line in log_text.splitlines():
+        if SEED_KEEP_MARKER in line:
+            seen_marker, before = True, last
+            continue
+        m = size.search(line)
+        if not m:
+            continue
+        if seen_marker:
+            return (before, int(m.group(1))) if before is not None else None
+        last = int(m.group(1))
+    return None
 
 
 #: What `splitMeshRegions` leaves behind in `constant/`, and where it has to be moved to.
@@ -1105,6 +1186,13 @@ class RegionReport:
     cells: int = 0
     volume_m3: float = 0.0
     pieces: int = 1
+    #: How many cells each of those pieces holds, in checkMesh's own order. Empty when checkMesh
+    #: printed no piece list, which is every mesh in one piece. THE SIZES AND NOT ONLY THE COUNT,
+    #: because the two things that arrive here looking the same are told apart by them: a passage
+    #: broken in half gives two large pieces, and cells tagged as coolant that are not coolant give
+    #: one large piece and a handful of tiny ones. The customer plate's six were 91,226,027 / 6,666
+    #: / 1 / 1 / 1 / 97,217 and the count alone sent the investigation at the resolution.
+    piece_cells: tuple[int, ...] = ()
     mesh_ok: bool = False
     max_non_ortho: float | None = None
     max_skewness: float | None = None
@@ -1267,6 +1355,7 @@ def read_region(quality: dict, name: str) -> RegionReport:
         volume_m3=float(quality.get("total_volume") or 0.0),
         # checkMesh prints the piece count only when it looks; absent means one body.
         pieces=int(quality.get("regions") or 1),
+        piece_cells=tuple(int(x) for x in (quality.get("piece_cells") or ())),
         max_non_ortho=quality.get("max_non_ortho"),
         max_skewness=quality.get("max_skewness"),
         fatal=tuple(quality.get("fatal") or ()),
@@ -1358,10 +1447,25 @@ def verify(report: ConjugateReport, *, expect_fluid_volume_m3: float | None = No
         for defect in r.fatal:
             p.append(f"{r.name}: {defect}, which every solver refuses outright")
     if expect_fluid_pieces is not None and report.fluid.pieces != expect_fluid_pieces:
+        # THE SIZES, AND NO CAUSE ASSERTED. This sentence used to say "islands mean the cells are
+        # too coarse to hold the passage together", which the gate never measures and which was
+        # false on the part it was written against: 99.89% of that coolant was one piece and the
+        # four extra ones were 247.998 mm3 of bulk METAL the inside/outside test had tagged as
+        # coolant, three of them a single cell. The claim cost a ten-agent investigation aimed at
+        # the resolution. checkMesh prints the sizes beside the count for nothing extra, and they
+        # are what separates the two causes, so they are what this hands over.
+        # [[project-corintis-island-diagnosis]]
+        sizes = ""
+        if report.fluid.piece_cells:
+            sizes = (" The pieces are "
+                     + " / ".join(f"{n:,}" for n in report.fluid.piece_cells) + " cells.")
         p.append(
             f"fluid is in {report.fluid.pieces} disconnected piece(s), expected "
-            f"{expect_fluid_pieces}. Islands mean the cells are too coarse to hold the passage "
-            "together; this mesh will not solve even though checkMesh calls it OK.")
+            f"{expect_fluid_pieces}.{sizes} checkMesh still calls the mesh OK, because a piece "
+            "with no face path to the others is not a geometric defect to it. Two different "
+            "things arrive here looking the same and the count cannot separate them: cells too "
+            "coarse to hold a passage together, or cells tagged as coolant that are not coolant. "
+            "The sizes say which to look at first.")
     if expect_fluid_volume_m3:
         err = abs(report.fluid.volume_m3 - expect_fluid_volume_m3) / expect_fluid_volume_m3
         if err > volume_tol:
@@ -1569,7 +1673,43 @@ def build(workspace, *, block_stl: str = "constant/triSurface/block.stl",
         background_cell_m=background_cell_m, levels=levels, thickness_m=thickness_m,
         patch_names=patch_names, fine_zones=fine_zones, fine_surfaces=fine_surfaces,
         stretch_zones=stretch_zones))
-    (ws / "system" / "topoSetDict").write_text(render_toposetdict(fluid_file=fluid_stl))
+    # THE SEEDS, read off the surface about to be meshed and checked against the passage count the
+    # plan already holds. Two numbers have to agree before a seed is used: how many passages the
+    # surface is in, and how many points were found deep enough inside one to be trusted. They are
+    # read by the same code (`cad.fluid_passages`) and `expect_fluid_pieces` is what verify judges
+    # the finished coolant against, so a disagreement means this surface is not one anything here
+    # understands well enough to name points in - and then nothing is written and the run behaves
+    # as it did before. A seed that is wrong costs the whole mesh; a seed that is missing costs the
+    # islands this exists to remove, which is where the engine already was.
+    seeds: list = []
+    seeds_said = ""
+    try:
+        from meshpipeline.cad.fluid_passages import interior_seeds
+        from meshpipeline.cad.stl_io import read_stl_triangles
+
+        found = interior_seeds(read_stl_triangles(ws / fluid_stl),
+                               background_m=float(background_cell_m))
+        want = int(expect_fluid_pieces or 0)
+        if found and (want <= 0 or len(found) == want):
+            seeds = [s["point_m"] for s in found]
+            seeds_said = (
+                f"the coolant is kept as the cells connected to {len(seeds)} seed point(s), "
+                + "; ".join(
+                    f"({s['point_m'][0] * 1e3:.3f} {s['point_m'][1] * 1e3:.3f} "
+                    f"{s['point_m'][2] * 1e3:.3f}) mm, {s['clearance_m'] / float(background_cell_m):.2f} "
+                    f"background cells clear of its own walls, in a passage of "
+                    f"{s['volume_m3'] * 1e9:,.1f} mm3" for s in found))
+        else:
+            seeds_said = (
+                f"no seed points: {len(found)} found against {want} passage(s) expected, so the "
+                "coolant is whatever the orientation test tags and a lump of metal it tags by "
+                "mistake will come out as an extra piece")
+    except Exception:  # noqa: BLE001 - a reading that cannot be taken is not a refusal
+        logger.warning("conjugate: the coolant's seed points could not be read", exc_info=True)
+        seeds, seeds_said = [], "the coolant's seed points could not be read"
+    logger.info("conjugate: %s", seeds_said)
+    (ws / "system" / "topoSetDict").write_text(
+        render_toposetdict(fluid_file=fluid_stl, seeds=seeds))
     # BEFORE THE SCAN, not after it. scan_case_dicts below reads every dictionary in system/ and
     # constant/, and a dictionary written after it is a dictionary nothing checked.
     if int(ranks) > 1:
@@ -1861,6 +2001,24 @@ def build(workspace, *, block_stl: str = "constant/triSurface/block.stl",
                           layers=dict(layer_report))
     rep.interface_faces_fluid = interface_faces(rep.fluid.patches, FLUID_TO_SOLID)
     rep.interface_faces_solid = interface_faces(rep.solid.patches, SOLID_TO_FLUID)
+    # WHAT THE CONNECTIVITY RULE COST, from topoSet's own log rather than from what was intended.
+    # Said out loud whichever way it went: a drop of nothing is a surface whose orientation test
+    # agreed with its connectivity, and a drop of real coolant is a defect that has to be visible
+    # beside the volume error it causes rather than inferred from it.
+    if seeds_said:
+        rep.notes.append(seeds_said)
+        try:
+            sizes = seed_drop((ws / "topoSet.log").read_text(errors="replace"))
+        except OSError:
+            sizes = None
+        if sizes:
+            tagged, kept = sizes
+            rep.notes.append(
+                f"the orientation test tagged {tagged:,} cells as coolant and the seeds kept "
+                f"{kept:,} of them: {tagged - kept:,} cells "
+                f"({(tagged - kept) / max(tagged, 1) * 100:.4f}%) had no face path to any passage "
+                "and went to the metal. The coolant's volume against the CAD is the bar that "
+                "moves if any of them were coolant.")
     return verify(rep, expect_fluid_volume_m3=expect_fluid_volume_m3,
                   expect_fluid_pieces=expect_fluid_pieces, volume_tol=volume_tol,
                   narrowest_m=narrowest_m)

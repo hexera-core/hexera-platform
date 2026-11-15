@@ -514,6 +514,14 @@ def parse_check_mesh(out: str) -> dict:
         # depends on the user's request - that's the reviewer's judgment, not a blind gate.
         # The fatal gate stays reserved for universally-invalid defects.
         q["regions"] = int(mr.group(1))
+    # AND HOW BIG EACH ONE IS, which checkMesh prints beside the count for nothing extra and four
+    # separate records then threw away. The count alone sent a ten-agent investigation at the cell
+    # size: the coolant was in six pieces, and three of those pieces are a SINGLE cell, which says
+    # on sight that the question is which cells were tagged rather than how big they are.
+    # [[project-corintis-island-diagnosis]]
+    pc = [int(x) for x in re.findall(r"Writing region \d+ with (\d+) cells to cellSet", out)]
+    if pc:
+        q["piece_cells"] = pc
     mb = re.search(r"Overall domain bounding box \(([-\d.eE+\s]+?)\)\s*\(([-\d.eE+\s]+?)\)", out)
     if mb:
         try:

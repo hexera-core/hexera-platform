@@ -703,6 +703,31 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     ports_said = ""
     if rec.get("ports"):
         from meshpipeline.engines.cfmesh_conjugate import mouths as MO
+        from meshpipeline.engines.workspace_facts import port_declaration
+
+        # NOBODY ASKED FOR PORTS, SO NONE ARE NAMED. Read here, before the mouths are cut, because
+        # whether this part has an inlet at all is the customer's statement and not a measurement.
+        # An absent declaration used to mean "name them yourself": the first mouth measured became
+        # coolant_in and the second coolant_out, `plan.ports_from` read that back as a port pair,
+        # and `finalize` then set `coolant_ports_declared` from the engine's OWN guess - so the
+        # flowable gate held the run to a port the run had invented.
+        #
+        # MEASURED, job 6ddb58aa, ColdPlateAssembly_CLEAN.step, 3.94 h on n2-highmem-64. The
+        # customer's notes said not to name any ports on the file and that there is no
+        # inlet-outlet pair to name, request.txt said the boundary patch list is therefore empty,
+        # and no port_declaration.json was written. The plan still carried coolant_in as the inlet
+        # on an 11.8 mm mouth whose own record says nothing is clear ahead of it; topoSet selected
+        # 0 of the coolant's 2,640 outer faces into its box, createPatch removed the zero-sized
+        # patch, and the finished mesh was refused for "the inlet was to be coolant_in, and the
+        # fluid region has no patch of that name". [[project-corintis-port-roles]]
+        #
+        # `workspace.py` writes patches_contract.txt and port_declaration.json in the same block
+        # from the same intake patches, so this cannot read False for a job whose intake named
+        # ports and there is no second signal worth reading.
+        _declared = [d for d in port_declaration(ws)
+                     if isinstance(d, dict) and d.get("name")]
+        _asked_ports = any(str(d.get("type") or "").strip().lower() in ("inlet", "outlet")
+                           for d in _declared)
 
         # ON A SHELL THERE IS NOTHING TO STUB OUT TO. The mouths are already on the domain's own
         # surface, so each is a patch cut where it is - `mouths.shell_stubs`, written against this
@@ -723,14 +748,10 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
             # finished mesh: the coupon plate meshed, came home, and failed with "The mesh has
             # no boundary called 'inlet' or 'outlet' (it has 'coolant_in' and 'coolant_out') ...
             # so the mesh does not match what you approved" (2026-10-29). The mesh was fine.
-            from meshpipeline.engines.workspace_facts import port_declaration
-
-            _declared = [d for d in port_declaration(ws)
-                         if isinstance(d, dict) and d.get("name")]
             _named, _named_why = MO.declared_for(stubs, _declared)
             if _named_why:
                 logger.info("conjugate: %s - job_id=%s", _named_why, job_id)
-            port_patches, ports_said = MO.port_rows(stubs, named=_named)
+            port_patches, ports_said = MO.port_rows(stubs, named=_named, roles=_asked_ports)
             logger.info("conjugate: %d stub(s) added %.4f mm3 to the coolant; %s - job_id=%s",
                         len(stubs), added * 1e9, ports_said, job_id)
             # the coolant is a different shape now, so what the split is checked against moves

@@ -464,6 +464,199 @@ def _closest_approach(a: np.ndarray, b: np.ndarray) -> float | None:
     return float(d.min())
 
 
+#: How far inside the coolant a seed point has to sit before it is worth handing to a mesher, as a
+#: multiple of the background cell. A seed is used to say "the coolant is the cells connected to
+#: HERE", so the one thing it must be is a point whose own cell the mesher agrees is coolant - and
+#: a cell centre can be up to 0.87 of a cell from the point inside it, so one cell of clearance is
+#: not enough on its own. Two is, and both seeds on the customer cold plate come out at eight.
+#:
+#: TWO IS ALSO HALF THE PLANNER'S FLOOR, which is not a coincidence worth losing: the product sizes
+#: a passage at no fewer than four cells across, and the deepest point of a passage four cells wide
+#: is two cells from its wall. So the bar is "a passage the planner would have agreed to mesh", and
+#: a surface that cannot meet it is one whose own resolution is already being argued about.
+SEED_CLEARANCE_CELLS = 2.0
+#: How many of a piece's triangles are stepped inward from while looking for its seed, largest
+#: first. Largest first because the open part of a passage is where its triangles are biggest: on
+#: the cold plate's 50,738-triangle coolant the first one tried lands 3.22 mm inside.
+SEED_TRIANGLES_TRIED = 40
+#: The ladder of step distances tried, in background cells, deepest first. Deepest first because
+#: the seed wanted is the one furthest from the wall, and the ladder exists so a passage too
+#: narrow to hold the deep step still gets a seed rather than none.
+SEED_STEPS_CELLS = (8.0, 4.0, 2.5, 1.5, 1.0)
+
+
+def _point_tri_distance(p: np.ndarray, T: np.ndarray) -> np.ndarray:
+    """Exact distance from one point to every triangle of T (n x 3 x 3).
+
+    EXACT, and not the distance to the nearest VERTEX, which is what `_closest_approach` above is
+    allowed to use. That one reports a number for a human to read; this one decides whether a seed
+    is far enough inside the coolant to be trusted, and vertex distance OVER-states clearance by
+    up to half an edge length - on a staircased channel surface that is the whole margin.
+    """
+    a, b, c = T[:, 0], T[:, 1], T[:, 2]
+    ab, ac, ap = b - a, c - a, p - a
+    bp, cp = p - b, p - c
+    d1 = np.einsum("ij,ij->i", ab, ap)
+    d2 = np.einsum("ij,ij->i", ac, ap)
+    d3 = np.einsum("ij,ij->i", ab, bp)
+    d4 = np.einsum("ij,ij->i", ac, bp)
+    d5 = np.einsum("ij,ij->i", ab, cp)
+    d6 = np.einsum("ij,ij->i", ac, cp)
+    va, vb, vc = d3 * d6 - d5 * d4, d5 * d2 - d1 * d6, d1 * d4 - d3 * d2
+    out = np.empty(len(T))
+    at_a = (d1 <= 0) & (d2 <= 0)
+    out[at_a] = np.linalg.norm(ap[at_a], axis=1)
+    at_b = (~at_a) & (d3 >= 0) & (d4 <= d3)
+    out[at_b] = np.linalg.norm(bp[at_b], axis=1)
+    at_c = (~at_a) & (~at_b) & (d6 >= 0) & (d5 <= d6)
+    out[at_c] = np.linalg.norm(cp[at_c], axis=1)
+    done = at_a | at_b | at_c
+    for take, num, den, base, edge in (
+            ((~done) & (vc <= 0) & (d1 >= 0) & (d3 <= 0), d1, d1 - d3, ap, ab),
+            ((~done) & (vb <= 0) & (d2 >= 0) & (d6 <= 0), d2, d2 - d6, ap, ac),
+            ((~done) & (va <= 0) & ((d4 - d3) >= 0) & ((d5 - d6) >= 0),
+             d4 - d3, (d4 - d3) + (d5 - d6), bp, c - b)):
+        take = take & ~done
+        if take.any():
+            t = (num[take] / np.where(den[take] == 0.0, 1.0, den[take]))[:, None]
+            out[take] = np.linalg.norm(base[take] - t * edge[take], axis=1)
+        done = done | take
+    inner = ~done
+    if inner.any():
+        den = (va + vb + vc)[inner]
+        den = np.where(den == 0.0, 1.0, den)
+        q = (a[inner] + (vb[inner] / den)[:, None] * ab[inner]
+             + (vc[inner] / den)[:, None] * ac[inner])
+        out[inner] = np.linalg.norm(p - q, axis=1)
+    return out
+
+
+def interior_seeds(tris, *, background_m: float,
+                   clearance_cells: float = SEED_CLEARANCE_CELLS,
+                   triangles_tried: int = SEED_TRIANGLES_TRIED) -> list[dict]:
+    """One point deep inside each separate passage of a closed fluid surface, in METRES.
+
+    WHAT IT IS FOR. A mesher that cuts the coolant out of a solid block decides cell by cell
+    whether a cell centre is inside the coolant surface, and OpenFOAM's `topoSet surfaceToCell
+    useSurfaceOrientation` answers that from an octree whose leaves can be larger than the feature
+    they straddle. On the customer cold plate it tagged 247.998 mm3 of bulk METAL as coolant -
+    6,669 cells in four lumps, three of them a single background cell, one of them a block
+    40.0018 x 40.0065 background cells square in plan reaching 4.2 mm into solid metal, every one
+    of them with a generalised winding number of 0.0000 against BOTH of the surface's shells. The
+    delivered mesh's coolant was therefore in six pieces where the part has two, and the engine
+    refused it.
+    [[project-corintis-island-diagnosis]]
+    The seeds are how that is fixed WITHOUT changing a cell: handed to `regionToCell`, they say
+    "the coolant is the connected regions containing THESE points", so a lump of metal with no
+    face path to any of them is not coolant, and it is retagged before the split rather than cut
+    out after it - which is what keeps the two sides of the conjugate interface the same surface.
+
+    ONE SEED PER TOP-LEVEL PASSAGE, counted exactly as `read_passages` counts them: pieces are
+    edge-connected sets of triangles, a piece standing inside another is part of that one's
+    boundary rather than a passage of its own, and a seed must be inside its passage's outer shell
+    AND outside every piece standing in it. The caller is expected to check the count against the
+    passage count it already holds and to use the seeds only if they agree - a surface this
+    disagrees with is one nothing here understands well enough to name points in.
+
+    [] rather than a guess, when the surface is in more pieces than `read_passages` will read, or
+    when any passage has no point `clearance_cells` background cells clear of its own walls. An
+    absent seed list is a run that behaves exactly as it did before; a WRONG seed is a coolant
+    region with no cells at all, which is why nothing here is approximate: measured in OpenFOAM
+    v2412, a `regionToCell` point in a cell the query did not tag emptied the set and still
+    exited 0, and a point outside the mesh was a FOAM FATAL ERROR.
+    """
+    T = np.asarray(tris, dtype=np.float64).reshape(-1, 3, 3)
+    clearance_m = float(background_m) * float(clearance_cells)
+    if not len(T) or background_m <= 0.0 or clearance_m <= 0.0:
+        return []
+    # The same bound `ports_on_one_passage` is held to, for the same reason: the nesting pass is a
+    # winding number per pair of pieces and the clearance an exact distance to every triangle, so
+    # both are linear in the surface and this sits in a driver before anything is sized. The
+    # customer plate is 52,334 triangles and takes 2.9 s.
+    if len(T) > VET_MAX_TRIANGLES:
+        return []
+    pts = T.reshape(-1, 3).astype(np.float32).astype(np.float64)
+    uniq, inv = np.unique(pts, axis=0, return_inverse=True)
+    F = np.asarray(inv).reshape(-1, 3)
+    piece = _piece_labels(F, len(uniq))
+    n = int(piece.max()) + 1 if len(piece) else 0
+    if n <= 0 or n > MAX_PIECES:
+        return []
+    closed = _closed_pieces(F, piece, n)
+    vol = np.array([_signed_volume(T[piece == k]) for k in range(n)])
+    order = sorted(range(n), key=lambda k: -abs(vol[k]))
+    # NESTING, by the same rule and in the same order as `read_passages`: the smallest closed
+    # piece bigger than this one whose winding number at one of its points is about 1.
+    parent = [-1] * n
+    for i in order:
+        p = T[piece == i][0, 0]
+        best = -1
+        for j in order:
+            if j == i or not closed[j] or abs(vol[j]) <= abs(vol[i]):
+                continue
+            Tj = T[piece == j]
+            lo, hi = Tj.reshape(-1, 3).min(axis=0), Tj.reshape(-1, 3).max(axis=0)
+            if np.any(p < lo) or np.any(p > hi):
+                continue
+            if abs(_winding(Tj, p)) >= INSIDE_WINDING and (best < 0 or abs(vol[j]) < abs(vol[best])):
+                best = j
+        parent[i] = best
+    seeds = []
+    for k in (t for t in order if parent[t] < 0):
+        if not closed[k]:
+            return []
+        kids = [m for m in range(n) if parent[m] == k]
+        Tk = T[piece == k]
+        # The whole passage's wall, outer shell and inclusions together, because an inclusion's
+        # surface is coolant wall too and a seed must stand clear of it as well.
+        Tall = T[np.isin(piece, [k, *kids])]
+        # +1 when the surface's normals point OUT of the fluid, which is the STL convention and
+        # what both shells of the cold plate's surface come out as. Read rather than assumed: an
+        # inside-out surface is a real failure this package has measured, and stepping the wrong
+        # way on one would put every seed in the metal.
+        sign = 1.0 if vol[k] > 0 else -1.0
+        cross = np.cross(Tk[:, 1] - Tk[:, 0], Tk[:, 2] - Tk[:, 0])
+        mag = np.linalg.norm(cross, axis=1)
+        keep = mag > 0.0
+        if not keep.any():
+            return []
+        unit = cross[keep] / mag[keep][:, None]
+        centre = Tk[keep].mean(axis=1)
+        widest = np.argsort(-mag[keep])[:max(1, int(triangles_tried))]
+        verts = Tall.reshape(-1, 3)
+        best: tuple | None = None
+
+        def consider(p: np.ndarray) -> None:
+            nonlocal best
+            if abs(_winding(Tk, p)) < INSIDE_WINDING:
+                return
+            if any(abs(_winding(T[piece == m], p)) >= INSIDE_WINDING for m in kids):
+                return
+            clear = float(_point_tri_distance(p, Tall).min())
+            if best is None or clear > best[1]:
+                best = (p, clear)
+
+        # The two points a passage shaped like anything convex is deepest at, tried first because
+        # they cost one winding call each and because the step ladder below cannot reach them: its
+        # rungs are fixed multiples of the background cell, so a passage whose deepest point is
+        # between two rungs gets the shallower one. Measured: a 4 mm cube at a 1 mm cell has its
+        # best point exactly 2 cells in, and the ladder skips from 2.5 to 1.5.
+        consider(0.5 * (verts.min(axis=0) + verts.max(axis=0)))
+        consider(verts.mean(axis=0))
+        if best is None or best[1] < clearance_m:
+            for step in SEED_STEPS_CELLS:
+                for i in widest:
+                    consider(centre[i] - sign * (step * float(background_m)) * unit[i])
+                if best is not None and best[1] >= clearance_m:
+                    break
+        if best is None or best[1] < clearance_m:
+            return []
+        seeds.append({"point_m": tuple(float(v) for v in best[0]),
+                      "clearance_m": float(best[1]),
+                      "volume_m3": float(abs(vol[k]) - sum(abs(vol[m]) for m in kids))})
+    return seeds
+
+
 def passage_count(tris, patches: list[dict], *, input_kind: str = "") -> int | None:
     """HOW MANY SEPARATE PASSAGES the mesher's staging would mesh for these declared openings - the
     count every engine's capability is held to (EngineSpec: FlowSupport.max_passages) before an
@@ -560,6 +753,6 @@ def _winding(T: np.ndarray, p: np.ndarray) -> float:
     return float(np.sum(2.0 * np.arctan2(num, den))) / (4.0 * math.pi)
 
 
-__all__ = ["INSIDE_WINDING", "MAX_PASSAGES", "MAX_PIECES", "PASSAGES_FILE", "PASSAGES_READ_FILE", "POCKET_SHARE", "Passage", "PassagePlan", "PassageReading", "ports_on_one_passage",
+__all__ = ["INSIDE_WINDING", "MAX_PASSAGES", "MAX_PIECES", "PASSAGES_FILE", "PASSAGES_READ_FILE", "POCKET_SHARE", "SEED_CLEARANCE_CELLS", "SEED_STEPS_CELLS", "SEED_TRIANGLES_TRIED", "Passage", "PassagePlan", "PassageReading", "interior_seeds", "ports_on_one_passage",
            "passage_count", "passage_surface_files", "passage_surfaces", "plan_passages", "plan_staged",
            "read_passages", "staged_passage_count", "stranded_openings", "write_passage"]
