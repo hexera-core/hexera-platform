@@ -48,12 +48,26 @@ CATALOGUE: tuple[str, ...] = catalogue()
 #: Pinned to `operations.FILL_OPS` by tests/unit/agents/test_catalogue_pinned_to_operations.py.
 FILL_CATALOGUE: tuple[str, ...] = ("fill_planar_hole", "fill_nonplanar_hole")
 
-CATALOGUE_LIMITS = (
-    "the repair catalogue can only merge small edges, sweep away a few measured sliver faces, fix "
-    "a face boundary, sew faces, fill a planar hole, cap a small curved hole with a constrained "
-    "patch, re-trim only the faces the kernel says cross each other, or run a whole-shape fix; "
-    "beyond those slivers it cannot move, redraw or delete geometry, change dimensions, or edit "
-    "the part by hand")
+def catalogue_limits(*, rebuild_face: bool | None = None) -> str:
+    """What the catalogue can NOT do, in words, for the given consent (CAD_REPAIR_REBUILD_FACE
+    read when not told). Flag off is the prior text, byte for byte; on, it also says a face the
+    mesher reports overlapping facets on may be re-trimmed - the one admitted op that redraws a
+    face, so the limits must not claim otherwise."""
+    import meshpipeline.settings.cad_repair as rcfg
+
+    if rebuild_face is None:
+        rebuild_face = bool(rcfg.CAD_REPAIR_REBUILD_FACE)
+    rebuild = (", re-trim one face from its own boundary on the same surface when the mesher "
+               "reports overlapping facets on it" if rebuild_face else "")
+    return (
+        "the repair catalogue can only merge small edges, sweep away a few measured sliver faces, "
+        "fix a face boundary, sew faces, fill a planar hole, cap a small curved hole with a "
+        "constrained patch, re-trim only the faces the kernel says cross each other"
+        f"{rebuild}, or run a whole-shape fix; beyond those slivers it cannot move, redraw or "
+        "delete geometry, change dimensions, or edit the part by hand")
+
+
+CATALOGUE_LIMITS = catalogue_limits()
 
 #: `catalogue_text` LIVES IN `cad/repair/catalogue_words.py` (the model author in `cad/repair` needs it
 #: and cad may not import agents); re-exported here so this module's callers are untouched.

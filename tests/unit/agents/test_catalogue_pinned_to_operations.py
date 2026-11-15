@@ -100,3 +100,19 @@ def test_the_rebuild_flag_is_read_when_the_model_side_is_not_told(monkeypatch, f
     monkeypatch.setattr(rcfg, "CAD_REPAIR_REBUILD_FACE", flag)
     assert set(_wire.catalogue()) == {op.name for op in catalogue()}
     assert ("rebuild_face" in _described(_wire.catalogue_text())) is flag
+
+
+def test_the_limits_text_is_flag_aware_and_unchanged_when_off(monkeypatch):
+    import meshpipeline.settings.cad_repair as rcfg
+
+    off = _wire.catalogue_limits(rebuild_face=False)
+    assert off == (
+        "the repair catalogue can only merge small edges, sweep away a few measured sliver faces, "
+        "fix a face boundary, sew faces, fill a planar hole, cap a small curved hole with a "
+        "constrained patch, re-trim only the faces the kernel says cross each other, or run a "
+        "whole-shape fix; beyond those slivers it cannot move, redraw or delete geometry, change "
+        "dimensions, or edit the part by hand")
+    on = _wire.catalogue_limits(rebuild_face=True)
+    assert "re-trim one face from its own boundary" in on and "overlapping facets" in on
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_REBUILD_FACE", True)
+    assert _wire.catalogue_limits() == on

@@ -90,6 +90,88 @@ def test_a_seamed_face_on_a_located_body_is_kept_equivalent(rebuild_on):
             shape, RebuildFace().apply(shape, (_ref(shape, index),), tolerance_mm=0.01))
 
 
+# THE SPLICE AND THE HOLE, PROVED: every case above is a geometric no-op, so a skipped splice or a
+# dropped inner wire with unchanged area would pass them. A plate with a through-hole has a face
+# with TWO wires, and spying on the re-trim seam names the exact face that must land in the output.
+
+
+def _plate_with_hole():
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCylinder
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
+
+    plate = BRepPrimAPI_MakeBox(40.0, 40.0, 5.0).Shape()
+    hole = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(20, 20, -1), gp_Dir(0, 0, 1)), 5.0, 7.0).Shape()
+    return BRepAlgoAPI_Cut(plate, hole).Shape()
+
+
+def _located(shape):
+    from OCP.gp import gp_Ax1, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec
+    from OCP.TopLoc import TopLoc_Location
+
+    turn, shift = gp_Trsf(), gp_Trsf()
+    turn.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(1, 2, 3)), 0.7)
+    shift.SetTranslation(gp_Vec(13.0, -7.0, 21.0))
+    return shape.Moved(TopLoc_Location(shift.Multiplied(turn)))
+
+
+def _wire_count(face) -> int:
+    from OCP.TopAbs import TopAbs_WIRE
+    from OCP.TopExp import TopExp
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+
+    wires = TopTools_IndexedMapOfShape()
+    TopExp.MapShapes_s(face, TopAbs_WIRE, wires)
+    return wires.Extent()
+
+
+def _faces(shape) -> list:
+    from OCP.TopAbs import TopAbs_FACE
+
+    from meshpipeline.cad.repair.localize import _indexed
+
+    faces = _indexed(shape, TopAbs_FACE)
+    return [faces.FindKey(i) for i in range(1, faces.Extent() + 1)]
+
+
+@pytest.mark.parametrize("located", [False, True], ids=["plain", "rotated_translated"])
+def test_a_holed_face_is_spliced_in_with_its_hole(monkeypatch, rebuild_on, located):
+    import meshpipeline.cad.repair.operations as operations
+
+    shape = _plate_with_hole()
+    if located:
+        shape = _located(shape)
+    holed = [i for i, face in enumerate(_faces(shape), start=1) if _wire_count(face) == 2]
+    assert len(holed) == 2                       # the top and bottom of the plate
+    index = holed[0]
+    if located:
+        assert not sub_shape(shape, "face", index).Location().IsIdentity()
+
+    seen: list = []
+    real = operations._retrim_face
+
+    def spy(face, **kw):
+        result = real(face, **kw)
+        seen.append(result)
+        return result
+
+    monkeypatch.setattr(operations, "_retrim_face", spy)
+    outcome = RebuildFace().apply(shape, (_ref(shape, index),), tolerance_mm=0.01)
+    _assert_kept_equivalent(shape, outcome)
+
+    (old, new), = seen
+    out_faces = _faces(outcome.shape)
+    # (a) THE REBUILT FACE KEEPS ITS WIRES - the hole's inner wire was added back.
+    assert _wire_count(new) == _wire_count(old) == 2
+    # (b) THE OUTPUT HOLDS THE REBUILT FACE, NOT THE OLD ONE: the splice really happened.
+    assert sum(face.IsSame(new) for face in out_faces) == 1
+    assert not any(face.IsSame(old) for face in out_faces)
+    # ...and still has exactly two holed faces, the hole's area still absent from it.
+    assert sum(_wire_count(face) == 2 for face in out_faces) == 2
+    assert measure(outcome.shape).surface_area_mm2 == pytest.approx(
+        measure(shape).surface_area_mm2, rel=1e-9)
+
+
 # THE REAL MESH FAILURE
 
 _CORPUS = Path(os.environ.get("HEXERA_MESH_FAIL_CORPUS",

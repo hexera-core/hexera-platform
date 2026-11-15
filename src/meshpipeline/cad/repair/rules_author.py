@@ -270,6 +270,20 @@ def _keep_refusals(kept: list[dict], fresh: list[dict]) -> None:
         kept.append(dict(record))
 
 
+def _rationale(candidate: Candidate) -> str:
+    """Why this operation, in words the package reviewer reads - so a FALLBACK says it is one
+    rather than claiming to be the operation MESH_OPS aims at."""
+    code = candidate.defect_code
+    preferred = MESH_OPS.get(code)
+    if preferred is None:
+        return (f"{LABEL}: {candidate.op.name} is the narrowest catalogue operation that "
+                f"claims the worst defect this region reports")
+    if candidate.op.name != preferred:
+        return (f"{LABEL}: {candidate.op.name} is the fallback for a {code.value} after "
+                f"{preferred} was spent on it")
+    return f"{LABEL}: {candidate.op.name} is the operation MESH_OPS aims at a {code.value}"
+
+
 def rules_author(shape, *, original: Measure, reserved: frozenset = frozenset(),
                  planner: RulesPlanner | None = None, budget: PackageBudget | None = None,
                  max_area_delta_mm2: float | None = None,
@@ -432,10 +446,7 @@ def rules_author(shape, *, original: Measure, reserved: frozenset = frozenset(),
             region=region, plan=plan, predicate=predicate, budget=allowance,
             intent=(f"clear the {candidate.defect_code.value} on "
                     f"{candidate.defect_fingerprint} in region {region.index}"),
-            rationale=(f"{LABEL}: {candidate.op.name} is the operation MESH_OPS aims at a "
-                       f"{candidate.defect_code.value}" if candidate.defect_code in MESH_OPS else
-                       f"{LABEL}: {candidate.op.name} is the narrowest catalogue operation that "
-                       f"claims the worst defect this region reports"))
+            rationale=_rationale(candidate))
 
     # THE LOOP READS THIS OFF THE CALLABLE, because the `author` seam is
     # `(region, defects, attempts) -> package | None` and must stay that way: a model author has

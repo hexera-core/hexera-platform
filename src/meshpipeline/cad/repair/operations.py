@@ -2359,6 +2359,10 @@ def _rebuild_deviation(old, new, name: str, *, diagonal_mm: float):
     exists to show. The face is selected by its own fingerprint at the PART's quantum
     (`diagonals`), which is how `deviation._select_faces` names it. Evidence, never a gate: a
     failure comes back as `mm=None`.
+
+    ONE-SIDED: points are sampled on the NEW face only. 0 means the new face lies within the old
+    one, not that the two are the same - area the old face had and the new one lost is never
+    sampled, and shows only in AREA_DELTA.
     """
     from meshpipeline.cad.repair.deviation import measure_deviation
 
@@ -2392,7 +2396,8 @@ class RebuildFace:
     caps' face count sees as no change), AREA_DELTA as the new face's area minus the old's, measured
     before the splice; no volume declaration (the cumulative cap's residual judges it). Recorded,
     not declared: `deviation_mm`, the sampled (32-point) maximum distance of the new face from the
-    old (`_rebuild_deviation`). `rebuilt` names the new face and any owner face whose name the
+    old (`_rebuild_deviation`) - ONE-SIDED: 0 means the new face lies within the old, and area the
+    rebuild lost shows only in AREA_DELTA. `rebuilt` names the new face and any owner face whose name the
     re-stitch changed; `added` names the new face only when its name is new.
 
     WHY EACH DECLINE EXISTS, in the order checked:
@@ -2405,9 +2410,10 @@ class RebuildFace:
                           built no face from them.
       rebuilt_invalid   - the rebuilt face is not `BRepCheck`-valid: a re-trim that makes a broken
                           face is not a repair.
-      owner_invalidated - the owner was valid and the re-stitched owner is not. An owner already
-                          invalid is not blamed on the rebuild; the session's caps still judge the
-                          part.
+      owner_invalidated - the owner was valid (measured on the copy BEFORE the re-trim, which
+                          writes into shared edges) and the re-stitched owner is not. An owner
+                          already invalid is not blamed on the rebuild; the session's caps still
+                          judge the part.
     """
 
     name = "rebuild_face"
@@ -2462,6 +2468,10 @@ class RebuildFace:
         work = _copied(shape)
         face = sub_shape(work, "face", ref.entity_index)
         owner = _owners_of(work, face)[0]
+        # THE OWNER'S VALIDITY BEFORE THE RE-TRIM: `_retrim_face` writes into the edges the owner
+        # shares, so measured afterwards an owner the fixer broke would read "already invalid"
+        # and the damage would be excused instead of blamed on this operation.
+        owner_was_valid = _is_valid(owner)
         retrimmed = _retrim_face(face, tolerance_mm=tolerance_mm)
         if retrimmed is None:
             return declined("no_boundary (no underlying surface or outer wire could be "
@@ -2470,7 +2480,7 @@ class RebuildFace:
         if not _is_valid(new):
             return declined("rebuilt_invalid (the re-trimmed face is not BRepCheck-valid)")
         restitched, context = splice(owner, [(old, new)])
-        if _is_valid(owner) and not _is_valid(restitched):
+        if owner_was_valid and not _is_valid(restitched):
             return declined("owner_invalidated (the owning body was valid and is not with the "
                             "re-trimmed face)")
         spliced, _ = splice(work, [(owner, restitched)])

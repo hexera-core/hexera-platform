@@ -361,3 +361,52 @@ def test_a_volume_stage_overlap_still_gets_no_package(baseline_on):
 def test_with_the_flag_off_the_overlap_goes_to_fix_shape_global():
     package = rules_author(None, original=MEASURE)(_REGION, (_overlap(),), ())
     assert package is not None and package.plan[0]["op"].name == "fix_shape_global"
+
+
+def test_the_owner_is_judged_valid_before_the_retrim_writes_into_its_edges(doubles):
+    doubles().apply("SHAPE", (REF,), tolerance_mm=0.01)
+    order = [c for c in doubles.calls if isinstance(c, tuple) and c[0] in ("valid", "retrim")]
+    assert order.index(("valid", "SOLID")) < order.index(("retrim", "FACE@WORK"))
+
+
+def test_a_fallback_says_it_is_one_in_its_rationale(baseline_on):
+    author = rules_author(None, original=MEASURE)
+    first = author(_REGION, (_overlap(),), ())
+    assert first.rationale.endswith("rebuild_face is the operation MESH_OPS aims at a "
+                                    "mesh_overlapping_facets")
+    fallback = author(_REGION, (_overlap(),), (_tried("rebuild_face"),))
+    assert fallback.rationale.endswith("fix_shape_global is the fallback for a "
+                                       "mesh_overlapping_facets after rebuild_face was spent on it")
+
+
+def test_flag_off_rationale_is_unchanged():
+    package = rules_author(None, original=MEASURE)(_REGION, (_overlap(),), ())
+    assert package.rationale == ("regions-rules-v1: fix_shape_global is the operation MESH_OPS "
+                                 "aims at a mesh_overlapping_facets")
+
+
+@pytest.mark.parametrize("flag, code, op_name", [
+    ("CAD_REPAIR_SPLIT_CLOSED_FACES", DefectCode.mesh_periodic_surface, "split_closed_faces"),
+    ("CAD_REPAIR_FRAGMENT_BODIES", DefectCode.mesh_edge_through_face, "fragment_bodies"),
+], ids=["split", "fragment"])
+def test_a_claiming_op_that_refuses_a_non_face_aim_is_refused_up_front(monkeypatch, flag, code,
+                                                                       op_name):
+    # The chain passes over an op whose own targets_for refuses the aim: a periodic or
+    # edge-through-face failure on an EDGE is refused by the author instead of handed to an op
+    # that would only decline it.
+    monkeypatch.setattr(rcfg, flag, True)
+    monkeypatch.setattr(rules_author_module, "MESH_OPS", mesh_ops())
+    monkeypatch.setattr(rules_author_module, "_OPS_BY_NAME", {op.name: op for op in catalogue()})
+    stage = STAGE_3D if code is DefectCode.mesh_edge_through_face else STAGE_2D
+    defect = EntityDefect(code=code, severity=DefectSeverity.error, entity_type="edge",
+                          entity_index=1, message=code.value, fingerprint="face:cone",
+                          location=dict(_BOX), measurements={"stage": stage})
+    author = rules_author(None, original=MEASURE)
+    assert author(_REGION, (defect,), ()) is None
+    assert {r["reason"] for r in author.refusals} == {"no_operation_claims_it"}
+    # The same failure on a FACE is still aimed at.
+    face = EntityDefect(code=code, severity=DefectSeverity.error, entity_type="face",
+                        entity_index=1, message=code.value, fingerprint="face:cone",
+                        location=dict(_BOX), measurements={"stage": stage})
+    package = rules_author(None, original=MEASURE)(_REGION, (face,), ())
+    assert package is not None and package.plan[0]["op"].name == op_name
