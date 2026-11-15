@@ -435,12 +435,20 @@ class SplitClosedFaces:
 
     def targets_for(self, defect) -> tuple[EntityRef, ...]:
         import meshpipeline.settings.cad_repair as rcfg
+        from meshpipeline.cad.repair.mesh_probe import STAGE_2D
 
         if not rcfg.CAD_REPAIR_SPLIT_CLOSED_FACES:
             return ()
         if getattr(defect, "code", None) not in self.answers:
             return ()
         if defect.entity_type != "face" or not getattr(defect, "fingerprint", ""):
+            return ()
+        # A PERIODIC FAILURE IS 2D-STAGE EVIDENCE BY NATURE: gmsh raises it while meshing
+        # surfaces. An unknown or 3D stage is odd evidence, and the operation declines to aim at
+        # it - the same fail-toward-not-acting direction as MESH_OPS' guard (rules_author), which
+        # stays as defence in depth. Here, so EVERY path obeys it: the operation-at-a-time
+        # RulesPlanner hands mesh defects straight to `targets_for` with no stage check of its own.
+        if (getattr(defect, "measurements", None) or {}).get("stage") != STAGE_2D:
             return ()
         return (EntityRef(entity_type="face", fingerprint=defect.fingerprint,
                           entity_index=int(defect.entity_index),

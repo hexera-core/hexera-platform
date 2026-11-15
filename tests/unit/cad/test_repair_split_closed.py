@@ -92,6 +92,19 @@ def test_answers_and_targets(flag_on):
     assert op.targets_for(object()) == ()
 
 
+def test_targets_only_a_surface_stage_failure(flag_on):
+    # Every path obeys the stage rule, the operation-at-a-time RulesPlanner included.
+    op = SplitClosedFaces()
+    assert op.targets_for(_periodic(stage=STAGE_2D)) == (REF,)
+    for stage in (STAGE_3D, ""):
+        assert op.targets_for(_periodic(stage=stage)) == (), stage
+    absent = _periodic()
+    absent = EntityDefect(code=absent.code, severity=absent.severity, entity_type="face",
+                          entity_index=3, message=absent.message, fingerprint="face:cyl",
+                          location=dict(_BOX), measurements={"mesh_kind": "periodic_surface"})
+    assert op.targets_for(absent) == ()
+
+
 def test_targets_nothing_while_the_flag_is_off(monkeypatch):
     monkeypatch.setattr(rcfg, "CAD_REPAIR_SPLIT_CLOSED_FACES", False)
     assert SplitClosedFaces().targets_for(_periodic()) == ()
