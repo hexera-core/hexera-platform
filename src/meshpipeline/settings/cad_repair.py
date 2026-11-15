@@ -333,3 +333,30 @@ CAD_REPAIR_LLM_AUTHOR_TIMEOUT_S: float = float(
 #: The most model-author calls one repair run may make, shadow or live - a hard ceiling on spend
 #: and on the run time model calls can take, beside the per-region CAD_REPAIR_REGION_ATTEMPTS.
 CAD_REPAIR_LLM_AUTHOR_CALLS_MAX: int = int(optional_env("CAD_REPAIR_LLM_AUTHOR_CALLS_MAX", "6"))
+
+
+def _package_review_posture() -> str:
+    """The package-review posture, FAILING CLOSED: only the exact string `live` turns it on, and
+    anything else but `off` is read as off OUT LOUD - the model author's rule, because this one
+    puts a model between a customer's repaired geometry and its commit."""
+    raw = optional_env("CAD_REPAIR_PACKAGE_REVIEW", "off")
+    if raw not in ("live", "off"):
+        logger.warning("CAD_REPAIR_PACKAGE_REVIEW=%r is neither 'live' nor 'off'; reading it "
+                       "as off", raw)
+    return "live" if raw == "live" else "off"
+
+
+#: Whether a separate model reviews every package that passed its predicate BEFORE the commit
+#: becomes durable (cad/repair/package_review.py) - the owner's semantic review, in place of any
+#: numeric "barely moved" gate. "off" is byte-for-byte the prior behaviour: no call, no new key on
+#: a verdict. "live" hands the reviewer the package's MEASURED evidence (ops kept and rolled back,
+#: declared vs measured area/volume, counts, deviation, mesh verdicts, defects cleared/revealed/
+#: remaining) with the author's intent labelled a claim; a reject - or any no-answer, including
+#: no router and no time left - undoes the package exactly as a failed predicate does. Needs
+#: nothing else on; without the mesh probe the evidence simply lacks mesh and deviation fields.
+CAD_REPAIR_PACKAGE_REVIEW: str = _package_review_posture()
+
+#: Seconds one package-review call may take; cut further to what is left of the run's time. A
+#: call that does not answer in time is a reject.
+CAD_REPAIR_PACKAGE_REVIEW_TIMEOUT_S: float = float(
+    optional_env("CAD_REPAIR_PACKAGE_REVIEW_TIMEOUT_S", "20.0"))

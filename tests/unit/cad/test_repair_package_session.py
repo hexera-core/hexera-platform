@@ -657,3 +657,146 @@ def test_a_packages_proof_probe_is_capped_by_what_the_package_has_left(monkeypat
     assert len(budgets) == 3, budgets
     # The run had 1000 s and the probe timeout is 120 s; the package had 3 s left.
     assert budgets[-1] == 3.0
+
+
+# THE SEMANTIC REVIEW (Plan 3 Task 4). With CAD_REPAIR_PACKAGE_REVIEW live, a package that passed
+# its predicate is read by a separate reviewer BEFORE its commit becomes durable; a reject undoes
+# it exactly as a failed predicate does, and every verdict is recorded on the PackageVerdict.
+# Hermetic: the model call is a fake `package_review._ask`.
+
+
+class _ReviewAsk:
+    """The reviewer's model call: queued replies, every call recorded; `spend_s` moves the run's
+    clock as a real call would spend it."""
+
+    def __init__(self, *replies, clock: _Clock | None = None, spend_s: float = 0.0):
+        self.replies = list(replies)
+        self.calls: list[dict] = []
+        self._clock = clock
+        self._spend_s = spend_s
+
+    async def __call__(self, system, user, *, job_id, timeout_s):
+        self.calls.append({"system": system, "user": user, "timeout_s": timeout_s})
+        if self._clock is not None:
+            self._clock.now += self._spend_s
+        return self.replies.pop(0) if self.replies else None
+
+
+def _review(monkeypatch, *replies, posture: str = "live", **kw) -> _ReviewAsk:
+    import meshpipeline.settings.cad_repair as rcfg
+    from meshpipeline.cad.repair import package_review
+
+    fake = _ReviewAsk(*replies, **kw)
+    monkeypatch.setattr(package_review, "_ask", fake)
+    monkeypatch.setattr(package_review, "_configured", lambda: True)
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_PACKAGE_REVIEW", posture)
+    return fake
+
+
+def _state(session) -> tuple:
+    return (session.shape, session._defects, session.complete_scan, session.accounting,
+            session.current())
+
+
+def test_accept_commits_with_verdict_recorded(monkeypatch):
+    session = _session()
+    fake = _review(monkeypatch, {"verdict": "accept", "reason": "only the edge moved"},
+                   clock=session.test_clock, spend_s=2.0)
+    verdict = session.try_package(_package(session, cleared={_EDGE}))
+    assert verdict.status == "committed", verdict.reason
+    assert session.shape == "repaired"
+    assert (verdict.reviewed, verdict.review_reason) == ("accept", "only the edge moved")
+    # `review_s` is the reviewer's seconds on the run's clock, beside the other timings.
+    assert verdict.review_s == 2.0
+    out = verdict.to_dict()
+    assert (out["reviewed"], out["review_reason"], out["review_s"]) == (
+        "accept", "only the edge moved", 2.0)
+    assert len(fake.calls) == 1
+    # THE AUTHOR'S INTENT TRAVELS ONLY AS A CLAIM.
+    import json
+    evidence = json.loads(fake.calls[0]["user"])
+    assert evidence["author_claim"] == "clear the short edge"
+    assert evidence["defects_cleared"] == ["small_edge"]
+    # Probe off: the evidence simply lacks the mesh and deviation fields.
+    assert not {"mesh_before", "mesh_after", "deviation_mm"} & set(evidence)
+
+
+def test_reject_reverts_the_package(monkeypatch):
+    # THE SAME RESTORED STATE AS A FAILED PREDICATE, accounting included.
+    failed = _session(declared_area_mm2=2.0)
+    failed.defects()
+    failed_before = _state(failed)
+    verdict = failed.try_package(_package(failed, cleared={"edge:never-cleared"},
+                                          extra_fingerprints={"edge:never-cleared"},
+                                          max_area_delta_mm2=2.0))
+    assert verdict.status == "reverted"
+    assert _state(failed) == failed_before
+
+    rejected = _session(declared_area_mm2=2.0)
+    rejected.defects()
+    rejected_before = _state(rejected)
+    fake = _review(monkeypatch, {"verdict": "reject", "reason": "a boss face was removed"})
+    verdict = rejected.try_package(_package(rejected, cleared={_EDGE}, max_area_delta_mm2=2.0))
+    assert len(fake.calls) == 1
+    assert verdict.status == "reverted"
+    assert verdict.reason.startswith("review:")
+    assert (verdict.reviewed, verdict.review_reason) == ("reject", "a boss face was removed")
+    assert verdict.to_dict()["reviewed"] == "reject"
+    assert _state(rejected) == rejected_before
+    assert _state(rejected) == _state(failed)
+
+
+def test_a_review_no_answer_reverts_the_package(monkeypatch):
+    session = _session()
+    _review(monkeypatch, None)
+    verdict = session.try_package(_package(session, cleared={_EDGE}))
+    assert verdict.status == "reverted"
+    assert verdict.reviewed == "reject" and "no reply" in verdict.review_reason
+    assert session.shape == "original"
+
+
+def test_review_off_is_byte_identical(monkeypatch):
+    control = _session()
+    expected = control.try_package(_package(control, cleared={_EDGE})).to_dict()
+    session = _session()
+    fake = _review(monkeypatch, {"verdict": "reject", "reason": "x"}, posture="off")
+    out = session.try_package(_package(session, cleared={_EDGE})).to_dict()
+    assert fake.calls == []
+    assert out == expected
+    assert not {"reviewed", "review_reason", "review_s"} & set(out)
+
+
+def test_no_time_left_rejects_not_skips(monkeypatch):
+    # AN UNREVIEWED COMMIT IS EXACTLY WHAT THE POSTURE FORBIDS, so no time left is a reject.
+    session = _session()
+    session.remaining_s = lambda: 0.0
+    fake = _review(monkeypatch, {"verdict": "accept", "reason": "ok"})
+    verdict = session.try_package(_package(session, cleared={_EDGE}))
+    assert fake.calls == []
+    assert verdict.status == "reverted"
+    assert (verdict.reviewed, verdict.review_reason) == ("reject", "no time left to review")
+    assert session.shape == "original"
+
+
+def test_the_review_timeout_is_cut_to_the_runs_remaining_time(monkeypatch):
+    session = _session()
+    session.remaining_s = lambda: 3.0
+    fake = _review(monkeypatch, {"verdict": "accept", "reason": "ok"})
+    session.try_package(_package(session, cleared={_EDGE}))
+    assert fake.calls[0]["timeout_s"] == 3.0
+
+
+def test_the_reviewer_is_never_consulted_for_a_package_that_did_not_pass(monkeypatch):
+    fake = _review(monkeypatch, {"verdict": "accept", "reason": "ok"})
+    reverted = _session()
+    v = reverted.try_package(_package(reverted, cleared={"edge:never-cleared"},
+                                      extra_fingerprints={"edge:never-cleared"}))
+    escalated = _session()
+    e = escalated.try_package(_package(escalated, cleared={_EDGE}, max_ops=0))
+    refused = _session()
+    r = refused.try_package(_package(refused, cleared={_EDGE}, timeout_s=0.0))
+    assert (v.status, e.status, r.status) == ("reverted", "escalated", "reverted")
+    assert fake.calls == []
+    for verdict in (v, e, r):
+        assert verdict.reviewed is None
+        assert "reviewed" not in verdict.to_dict()

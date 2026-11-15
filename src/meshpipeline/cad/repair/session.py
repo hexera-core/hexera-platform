@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import meshpipeline.settings.cad_repair as rcfg
-from meshpipeline.cad.repair import mesh_probe
+from meshpipeline.cad.repair import mesh_probe, package_review
 from meshpipeline.cad.repair.caps import (
     Accounting,
     cumulative_refusal,
@@ -247,6 +247,11 @@ REFUSED = "refused:"
 #: from a failed attempt, and a literal in two modules is a routing split waiting to happen.
 DECLINED = "declined:"
 
+#: Reason prefix for a package that passed its predicate and was then REJECTED BY THE SEMANTIC
+#: REVIEWER. `reverted`, because a reject undoes the package exactly as a failed predicate does;
+#: the prefix says the claim held and the reviewer still refused it.
+REVIEW_REJECTED = "review:"
+
 
 @dataclass(frozen=True, slots=True)
 class PackageVerdict:
@@ -286,8 +291,9 @@ class PackageVerdict:
     #: MEASURED EVIDENCE, NEVER A GATE: the sampled largest distance in mm from the surface this
     #: package changed to the shape it started from (`cad/repair/deviation.py`). None - and absent
     #: from `to_dict` - when it was not measured: the mesh probe posture is off, the package did
-    #: not commit, or the measurement failed or ran out of its budget. A reviewer reads it; no
-    #: code branches on it.
+    #: not pass its predicate, or the measurement failed or ran out of its budget. A reviewer
+    #: reads it (CAD_REPAIR_PACKAGE_REVIEW), so a package the REVIEWER rejected keeps it too - the
+    #: record shows what the verdict was made on; no code branches on it.
     deviation_mm: float | None = None
     #: HOW SPARSE `deviation_mm` IS, so a reader can weigh it. All None when no measurement was
     #: attempted (posture off, not committed). `deviation_faces == 0` with `deviation_mm` absent
@@ -299,6 +305,14 @@ class PackageVerdict:
     deviation_faces: int | None = None
     deviation_faces_skipped: int | None = None
     deviation_s: float | None = None
+    #: THE SEMANTIC REVIEW (CAD_REPAIR_PACKAGE_REVIEW, cad/repair/package_review.py): "accept" or
+    #: "reject", the reviewer's reason (or the named no-answer that made it a reject), and the
+    #: seconds the review took on the run's clock. All None - and absent from `to_dict` - when the
+    #: posture is off or the package never passed its predicate (the reviewer is consulted for
+    #: nothing else).
+    reviewed: str | None = None
+    review_reason: str | None = None
+    review_s: float | None = None
 
     @property
     def committed(self) -> bool:
@@ -315,7 +329,10 @@ class PackageVerdict:
                     ("deviation_samples", self.deviation_samples),
                     ("deviation_faces", self.deviation_faces),
                     ("deviation_faces_skipped", self.deviation_faces_skipped),
-                    ("deviation_s", self.deviation_s)) if v is not None}}
+                    ("deviation_s", self.deviation_s),
+                    ("reviewed", self.reviewed),
+                    ("review_reason", self.review_reason),
+                    ("review_s", self.review_s)) if v is not None}}
 
 
 def _measure_total(own_s: float, verdicts: Iterable[OpVerdict]) -> float:
@@ -842,6 +859,8 @@ class RepairSession:
                                     movement net of the declarations, as `caps._accounted` does,
                                     and refuses a `cleared` claim from a plan that kept nothing)
           7. commit, or restore the BOUNDARY snapshot
+          8. with CAD_REPAIR_PACKAGE_REVIEW live, between a held claim and its commit: the
+             semantic reviewer (`_review`), whose reject - or no-answer - is step 7's restore
 
         ALL OR NOTHING. The predicate was written about the whole plan, so a partially applied
         package was never what the author claimed: a failed predicate, a budget exhausted
@@ -899,7 +918,8 @@ class RepairSession:
         # predicate may only name entities in the region (checked above), so every comparison
         # `evaluate` makes against it is a comparison about this region; and reading the cached
         # whole-shape list avoids a second scan to learn what is already known.
-        defects_before = tuple(d.fingerprint for d in self.defects())
+        boundary = self.defects()
+        defects_before = tuple(d.fingerprint for d in boundary)
         scan_s = self.clock() - scan_started
 
         # THE SNAPSHOT IS TAKEN AFTER THE BOUNDARY LIST IS MATERIALISED, so restoring it restores
@@ -1024,12 +1044,69 @@ class RepairSession:
                 scan_s=scan_s, apply_s=apply_s,
                 measure_s=_measure_total(measure_s, verdicts)))
 
+        deviation = self._deviation_evidence(
+            snapshot[0], cap_s=package.budget.timeout_s - (self.clock() - started))
+        review: dict = {}
+        if package_review.posture() == "live":
+            # 8. THE SEMANTIC REVIEW, AFTER THE CLAIM HELD AND BEFORE THE COMMIT IS DURABLE. A
+            # separate model reads the measured evidence (the author's intent only as a claim)
+            # and a reject - or any no-answer - takes the failed predicate's revert below.
+            review = self._review(package, verdicts, boundary, found, whole=whole,
+                                  before=before, after=after, declared=declared,
+                                  deviation=deviation)
+            if review["reviewed"] != package_review.ACCEPT:
+                self.shape, self._defects, self.complete_scan, self.accounting = snapshot
+                return self._record_package(PackageVerdict(
+                    region_index=region.index, status=REVERTED,
+                    reason=f"{REVIEW_REJECTED}{review['review_reason']}",
+                    verdicts=tuple(verdicts), reclassified=reclassified,
+                    scan_s=scan_s, apply_s=apply_s,
+                    measure_s=_measure_total(measure_s, verdicts), **deviation, **review))
+
         return self._record_package(PackageVerdict(
             region_index=region.index, status=COMMITTED, verdicts=tuple(verdicts),
             reclassified=reclassified, scan_s=scan_s, apply_s=apply_s,
-            measure_s=_measure_total(measure_s, verdicts),
-            **self._deviation_evidence(
-                snapshot[0], cap_s=package.budget.timeout_s - (self.clock() - started))))
+            measure_s=_measure_total(measure_s, verdicts), **deviation, **review))
+
+    def _review(self, package: TargetPackage, verdicts: list[OpVerdict], boundary: tuple,
+                found: tuple, *, whole: bool, before, after, declared: Accounting,
+                deviation: dict) -> dict:
+        """The semantic reviewer's verdict on a package that passed its predicate, as the
+        PackageVerdict fields `reviewed`, `review_reason` and `review_s`.
+
+        BOTH SIDES OF THE DEFECT EVIDENCE ARE DRAWN FROM ONE SCOPE, as the progress rule's are:
+        the boundary list is the cached whole-shape one, so for a scoped package it is cut to the
+        region before it is compared with the region's proof.
+
+        THE CLOCK. The call's timeout is the lesser of CAD_REPAIR_PACKAGE_REVIEW_TIMEOUT_S and
+        what is left of the RUN (`remaining_s`), the model_author pattern. It is NOT cut by the
+        package's own budget: that budget bounds the plan and its proof, and letting an overrun
+        there skip the review would commit exactly the unreviewed package this posture exists to
+        forbid. And WITH NO RUN TIME LEFT THE VERDICT IS A REJECT ("no time left to review"),
+        never a skip and never an accept - for the same reason.
+        """
+        mesh_probed = rcfg.CAD_REPAIR_MESH_PROBE == "live"
+        was, now = tuple(boundary), tuple(found)
+        if not whole:
+            diagonal = self.original.diagonal_mm
+            was = tuple(scoped_to(was, package.region, diagonal_mm=diagonal))
+            now = tuple(scoped_to(now, package.region, diagonal_mm=diagonal))
+        delta = {"verdicts": [v.to_dict() for v in verdicts],
+                 "before": before.to_dict(), "after": after.to_dict(),
+                 "declared_area_mm2": declared.declared_area_mm2,
+                 "declared_volume_mm3": declared.declared_volume_mm3}
+        evidence = package_review.evidence_of(
+            package, delta, deviation,
+            package_review.probe_of(was, mesh_probed=mesh_probed),
+            package_review.probe_of(now, mesh_probed=mesh_probed))
+        started = self.clock()
+        deadline = (started + float(self.remaining_s())
+                    if self.remaining_s is not None else None)
+        verdict, reason = package_review.review_package(
+            evidence, timeout_s=float(rcfg.CAD_REPAIR_PACKAGE_REVIEW_TIMEOUT_S),
+            deadline_s=deadline, clock=self.clock)
+        return {"reviewed": verdict, "review_reason": reason,
+                "review_s": self.clock() - started}
 
     def _deviation_evidence(self, before_shape, *, cap_s: float) -> dict:
         """The deviation fields for a committed package: {} when not measured at all.

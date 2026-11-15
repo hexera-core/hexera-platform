@@ -480,7 +480,7 @@ API: it logs that the directory is missing and leaves `/ui` and `/static` unmoun
 
 <!-- Regenerate: python -m meshpipeline.settings.inventory --reference -->
 
-Every supported setting (288 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
+Every supported setting (290 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
 
 | Setting | Exposure | Read by | Secret |
 |---|---|---|---|
@@ -574,6 +574,8 @@ Every supported setting (288 entries). `template` settings are the ones `.env.ex
 | `CAD_REPAIR_MAX_VOLUME_CHANGE_RATIO` | internal | app |  |
 | `CAD_REPAIR_MESH_PROBE` | internal | app |  |
 | `CAD_REPAIR_MESH_PROBE_TIMEOUT_S` | internal | app |  |
+| `CAD_REPAIR_PACKAGE_REVIEW` | internal | app |  |
+| `CAD_REPAIR_PACKAGE_REVIEW_TIMEOUT_S` | internal | app |  |
 | `CAD_REPAIR_REGION_ATTEMPTS` | internal | app |  |
 | `CAD_REPAIR_REGION_LOOP` | internal | app |  |
 | `CAD_REPAIR_REVIEW_ENABLED` | template | app |  |
