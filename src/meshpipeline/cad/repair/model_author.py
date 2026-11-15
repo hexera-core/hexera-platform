@@ -9,8 +9,9 @@
 #             a separate measurement judges the claim. A model reply is DATA: it can never waive a
 #             cap, never carry `answered_held`, never aim at a held (reserved) code, never fill a
 #             paired rim, and never name a tolerance (the loop owns that).
-# Collaborates with: cad/repair/observe.py (what the model sees), agents/repair_review/_wire.py
-#                    (the one bounded model call and the catalogue), cad/repair/rules_author.py
+# Collaborates with: cad/repair/observe.py (what the model sees), contracts/model_inference.py
+#                    (the one bounded model call), cad/repair/catalogue_words.py (the catalogue in
+#                    words), cad/repair/rules_author.py
 #                    (the guards it mirrors and the author shadow composes), cad/repair/package.py
 #                    (the package it builds), cad/repair/region_loop.py (which calls it),
 #                    cad/repair/conservative.py (which selects it), settings/cad_repair.py.
@@ -22,17 +23,13 @@ import json
 import logging
 import math
 import threading
+import time
 from collections.abc import Callable
 
 import meshpipeline.settings.cad_repair as rcfg
-
-# THE ONE MODEL CALL, looked up as `_wire.ask` AT CALL TIME so a test fakes it where this module
-# looks it up. cad -> agents is the reverse of the usual direction; it is the plan's binding
-# interface (the bounded wire the repair-review planner already uses), and nothing in `_wire`
-# imports back into `cad.repair`.
-from meshpipeline.agents.repair_review import _wire
 from meshpipeline.cad.repair import observe
 from meshpipeline.cad.repair.caps import Measure
+from meshpipeline.cad.repair.catalogue_words import catalogue_text
 from meshpipeline.cad.repair.identity import EntityRef
 from meshpipeline.cad.repair.operations import FILL_OPS
 from meshpipeline.cad.repair.operations import catalogue as op_catalogue
@@ -61,7 +58,8 @@ REPLY_MAX = 600
 #: Intent and reason text kept from a reply.
 INTENT_MAX = 200
 #: Seconds past the model call's own timeout before the bridge abandons the worker thread. The
-#: wire's `wait_for` is the real bound; this only catches a call that will not honour it.
+#: call's `wait_for` is the real bound; this only catches a call that will not honour it. Also the
+#: margin a SHADOW call needs left on the run's clock beyond its own timeout.
 _GRACE_S = 5.0
 
 AUTHOR_SYSTEM = (
@@ -88,7 +86,7 @@ AUTHOR_SYSTEM = (
 
 def system_prompt() -> str:
     """The system prompt for the deployment's ACTIVE catalogue (flag-aware, read per call)."""
-    return AUTHOR_SYSTEM.format(catalogue=_wire.catalogue_text())
+    return AUTHOR_SYSTEM.format(catalogue=catalogue_text())
 
 
 def posture() -> str:
@@ -97,8 +95,47 @@ def posture() -> str:
     return value if value in ("shadow", "live") else "off"
 
 
+def _configured() -> bool:
+    """Is a model router configured? No router -> no model, fail closed."""
+    from meshpipeline.contracts import model_inference
+    return model_inference._router is not None
+
+
+def _parse_object(text: str) -> dict | None:
+    """The reply's JSON object. COPIED from `agents/repair_review/_wire.parse_object` - cad may not
+    import agents, and ten lines are cheaper than a new shared layer."""
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    try:
+        value = json.loads(text[start:end + 1])
+    except ValueError:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+async def _ask(system: str, user: str, *, job_id: str, timeout_s: float) -> dict | None:
+    """ONE bounded model call; the reply's JSON object, or None for any failure at all.
+
+    The same call `agents/repair_review/_wire.ask` makes, made through `contracts` directly
+    (cad -> contracts is allowed; cad -> agents is not). Looked up as `_ask` AT CALL TIME, so a
+    test fakes it where this module looks it up.
+    """
+    from meshpipeline.contracts.model_inference import call_repair_review_model
+    messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+    try:
+        result = await asyncio.wait_for(
+            call_repair_review_model(messages, job_id=job_id), timeout=timeout_s)
+    except Exception as exc:  # noqa: BLE001 - total: a failed call is no proposal, never a raise
+        logger.warning("model author call failed: %s", type(exc).__name__)
+        return None
+    if not getattr(result, "ok", True):
+        return None
+    return _parse_object(getattr(result, "assistant_text", "") or "")
+
+
 def _ask_sync(system: str, user: str, *, job_id: str, timeout_s: float) -> dict | None:
-    """`_wire.ask` from synchronous code: `asyncio.run` in a WORKER THREAD.
+    """`_ask` from synchronous code: `asyncio.run` in a WORKER THREAD.
 
     The region loop is synchronous and itself runs off the event loop (`asyncio.to_thread` in the
     attempt node), so the model call gets a loop of its own in a thread of its own - which also
@@ -110,8 +147,8 @@ def _ask_sync(system: str, user: str, *, job_id: str, timeout_s: float) -> dict 
 
     def run() -> None:
         try:
-            box["reply"] = asyncio.run(_wire.ask(system, user, job_id=job_id,
-                                                 timeout_s=timeout_s))
+            box["reply"] = asyncio.run(_ask(system, user, job_id=job_id,
+                                            timeout_s=timeout_s))
         except BaseException as exc:  # noqa: BLE001 - total: reported below, never raised
             box["error"] = exc
 
@@ -165,39 +202,50 @@ def _form(reply: object) -> tuple[str, object]:
 
 
 class _Context:
-    """What one call's validation is judged against."""
+    """What every reply is judged against: the region and ITS OWN defects. Cheap - no kernel."""
 
-    def __init__(self, region: Region, defects: tuple, *, part_fingerprints: frozenset,
-                 reserved: frozenset, rims: frozenset, original: Measure) -> None:
+    def __init__(self, region: Region, defects: tuple) -> None:
         self.region = region
         # THE REGION'S OWN DEFECTS: a claim the region's scoped scan cannot verify is unprovable.
         self.mine = [d for d in defects if d.fingerprint and d.fingerprint in region.fingerprints]
         self.mine_fps = frozenset(d.fingerprint for d in self.mine)
-        self.part_fps = frozenset(part_fingerprints) | region.fingerprints | frozenset(
-            d.fingerprint for d in defects if d.fingerprint)
+
+
+class _Guards:
+    """What a PACKAGE is judged against beyond its region. Built only for a package reply, since
+    the paired-rim half can touch the kernel and a pass or a verdict needs none of it."""
+
+    def __init__(self, defects: tuple, *, reserved: frozenset, rims: frozenset,
+                 original: Measure) -> None:
         self.reserved = frozenset(reserved)
         self.held = held_fingerprints(defects, self.reserved)
         self.rims = rims
         # THE RUN'S CAPS, read exactly as rules_author reads them: a claim may never be wider.
         self.area_cap = float(rcfg.CAD_REPAIR_MAX_AREA_CHANGE_RATIO) * original.surface_area_mm2
         self.volume_cap = float(rcfg.CAD_REPAIR_MAX_VOLUME_CHANGE_RATIO) * original.volume_mm3
+        # THE ACTIVE CATALOGUE, read per call so it follows the consent flags.
         self.ops = {op.name: op for op in op_catalogue()}
-        self.names = frozenset(_wire.catalogue())
 
 
-def _plan_item(item: object, ctx: _Context) -> tuple[dict, dict]:
+#: Every key a package body may carry. Anything else is refused, so an attempt to smuggle a field
+#: (a tolerance, `answered_held`, `reclassified`) shows up as a recorded refusal, not a silent drop.
+_PACKAGE_KEYS = frozenset({"intent", "plan", "cleared", "unchanged", "max_area_delta_mm2",
+                           "max_volume_delta_mm3"})
+
+
+def _plan_item(item: object, ctx: _Context, guards: _Guards) -> tuple[dict, dict]:
     """One plan entry as the session's plan item, and as recorded."""
     if not isinstance(item, dict) or set(item) - {"op", "fingerprint", "defect_code"}:
         raise _Refused("a plan entry is not {op, fingerprint}")
     name, fp = item.get("op"), item.get("fingerprint")
-    if not isinstance(name, str) or name not in ctx.names or name not in ctx.ops:
+    if not isinstance(name, str) or name not in guards.ops:
         raise _Refused(f"plan names {name!r}, which is not in the active catalogue")
     if not isinstance(fp, str) or fp not in ctx.mine_fps:
         raise _Refused(f"plan aims at {fp!r}, which is not a defect fingerprint in region "
                        f"{ctx.region.index}")
-    if fp in ctx.held:
+    if fp in guards.held:
         raise _Refused(f"plan aims at {fp}, which is held for review")
-    if name in FILL_OPS and ctx.rims:
+    if name in FILL_OPS and guards.rims:
         raise _Refused(f"plan fills {fp} while the part has a paired rim (a missing passage "
                        "wall); filling is refused for the whole run")
     on = sorted((d for d in ctx.mine if d.fingerprint == fp), key=lambda d: d.code.value)
@@ -207,20 +255,23 @@ def _plan_item(item: object, ctx: _Context) -> tuple[dict, dict]:
         if not on:
             raise _Refused(f"plan names defect_code {named!r}, which {fp} does not carry")
     defect = on[0]
-    if defect.code in ctx.reserved:
+    if defect.code in guards.reserved:
         raise _Refused(f"plan aims at a {defect.code.value}, a code held for review")
     target = EntityRef(entity_type=str(defect.entity_type), fingerprint=fp,
                        entity_index=int(defect.entity_index),
                        ambiguous=bool(getattr(defect, "ambiguous", False)))
     # NO `tolerance_mm` and NO `answered_held`: the loop fills the run's tolerance, and an
     # engineer's exemption is never a model's to give (session.try_package).
-    return ({"op": ctx.ops[name], "targets": (target,), "defect_code": defect.code},
+    return ({"op": guards.ops[name], "targets": (target,), "defect_code": defect.code},
             {"op": name, "fingerprint": fp, "defect_code": defect.code.value})
 
 
-def _package(body: object, ctx: _Context) -> tuple[TargetPackage, dict]:
+def _package(body: object, ctx: _Context, guards: _Guards) -> tuple[TargetPackage, dict]:
     if not isinstance(body, dict):
         raise _Refused("package is not an object")
+    extra = sorted(str(k) for k in set(body) - _PACKAGE_KEYS)
+    if extra:
+        raise _Refused(f"package carries keys outside the schema: {', '.join(extra)}")
     intent = body.get("intent")
     if not isinstance(intent, str) or not intent.strip():
         raise _Refused("package states no intent")
@@ -230,26 +281,30 @@ def _package(body: object, ctx: _Context) -> tuple[TargetPackage, dict]:
     if len(plan) > int(rcfg.CAD_REPAIR_MAX_OPS):
         raise _Refused(f"plan has {len(plan)} operations, past the run's "
                        f"{int(rcfg.CAD_REPAIR_MAX_OPS)}")
-    items, recorded = zip(*(_plan_item(item, ctx) for item in plan), strict=True)
+    items, recorded = zip(*(_plan_item(item, ctx, guards) for item in plan), strict=True)
     cleared = _strings(body.get("cleared"))
     if cleared is None:
         raise _Refused("cleared is not a list of fingerprints")
     if set(cleared) - ctx.mine_fps:
         raise _Refused("cleared names fingerprints that are not defects in region "
                        f"{ctx.region.index}: {', '.join(sorted(set(cleared) - ctx.mine_fps))}")
-    if set(cleared) & ctx.held:
+    if set(cleared) & guards.held:
         raise _Refused("cleared names a fingerprint held for review")
     unchanged = _strings(body.get("unchanged", []))
     if unchanged is None:
         raise _Refused("unchanged is not a list of fingerprints")
-    if set(unchanged) - ctx.part_fps:
-        raise _Refused("unchanged names fingerprints unknown to the part: "
-                       f"{', '.join(sorted(set(unchanged) - ctx.part_fps))}")
+    # THE REGION'S FINGERPRINTS, the set `session._package_refusal` checks every predicate name
+    # against: a name outside it is a package the session is certain to refuse, so it is refused
+    # here, where it costs no attempt.
+    outside = set(unchanged) - ctx.region.fingerprints
+    if outside:
+        raise _Refused(f"unchanged names fingerprints outside region {ctx.region.index}: "
+                       f"{', '.join(sorted(outside))}")
     if not cleared and not unchanged:
         raise _Refused("cleared and unchanged are both empty: the claim names no entity")
     bounds = {}
-    for field, cap in (("max_area_delta_mm2", ctx.area_cap),
-                       ("max_volume_delta_mm3", ctx.volume_cap)):
+    for field, cap in (("max_area_delta_mm2", guards.area_cap),
+                       ("max_volume_delta_mm3", guards.volume_cap)):
         value = _number(body.get(field))
         if value is None or value < 0.0:
             raise _Refused(f"{field} is not a non-negative number")
@@ -286,24 +341,34 @@ def _verdict(body: object, ctx: _Context) -> dict:
 
 
 def model_author(shape, *, original: Measure, reserved: frozenset = frozenset(),
-                 job_id: str = "", face_reader: observe.FaceReader | None = None) -> Author:
+                 job_id: str = "", face_reader: observe.FaceReader | None = None,
+                 deadline_s: float | None = None, clock: Callable[[], float] = time.monotonic,
+                 shadow: bool = False) -> Author:
     """Build the model `author` the region loop calls: `(region, defects, attempts) -> package`.
 
-    ONE CALL PER AUTHOR CALL, at most CAD_REPAIR_REGION_ATTEMPTS per region, each bounded by
-    CAD_REPAIR_LLM_AUTHOR_TIMEOUT_S. No router, a timeout, garbage, a refused reply, a `pass` and a
-    `verdict` all return None - which ends the region's attempts exactly as the rules author's
-    None does (region_loop). A refused reply is NOT retried within the call: the next attempt, if
-    the loop makes one, is the retry, and it sees what went before.
+    ONE CALL PER AUTHOR CALL. No router, a timeout, garbage, a refused (malformed or invalid)
+    reply, a `pass` and a `verdict` all return None - and a None ENDS THE REGION'S ATTEMPTS, as the
+    rules author's None does (region_loop). A malformed reply is therefore NOT retried, neither
+    within the call nor by the loop: the region is left as it is and the final scan reports it.
+
+    THE CLOCKS, because a model call spends the repair run's own time:
+      - at most CAD_REPAIR_REGION_ATTEMPTS calls per region, and at most
+        CAD_REPAIR_LLM_AUTHOR_CALLS_MAX across the whole run (this factory is per run);
+      - `deadline_s` is an ABSOLUTE `clock()` reading the run must finish model work by
+        (conservative passes start + CAD_REPAIR_TIMEOUT_S - 5). Each call's timeout is the lesser
+        of CAD_REPAIR_LLM_AUTHOR_TIMEOUT_S and the time left; with none left, None without a call;
+      - `shadow=True` is stricter: a shadow call is skipped unless a FULL timeout plus a margin is
+        left, because a shadow must never move the outcome of the run it watches.
+    A skipped call is recorded (outcome `skipped`) so the report says why the model was not asked.
 
     WHAT IT EXPOSES, read off the callable like rules_author's attributes (the seam stays
     `(region, defects, attempts)`):
       - `calls`: one record per call - region, attempt, observation bytes and hash, the clipped
-        reply, the outcome (package / verdict / pass / refused / no_reply / not_configured) and the
-        refusal reason; a validated package's `proposal` too.
+        reply, the outcome (package / verdict / pass / refused / no_reply / not_configured /
+        skipped) and the refusal reason; a validated package's `proposal` too.
       - `verdicts`: every accepted "the geometry is sound, the mesher is at fault" verdict.
       - `refusals`: the run-level paired-rim refusals, in the shape rules_author reports them.
-      - `observe_part`: the whole part's defects, once per run (the paired-rim guard and the set of
-        fingerprints `unchanged` may name).
+      - `observe_part`: the whole part's defects, once per run (the paired-rim guard).
       - `report()`: all of the above as one JSON-safe dict, for the repair report.
 
     `shape` IS THE UPLOAD, as for rules_author: the observation's faces and the paired-rim check
@@ -313,11 +378,10 @@ def model_author(shape, *, original: Measure, reserved: frozenset = frozenset(),
     verdicts: list[dict] = []
     refusals: list[dict] = []
     asked: dict[int, int] = {}
-    state: dict = {"part_fps": frozenset(), "part_rims": frozenset()}
+    state: dict = {"part_rims": frozenset()}
     held_codes = frozenset(reserved)
 
     def observe_part(part_defects: tuple) -> None:
-        state["part_fps"] = frozenset(d.fingerprint for d in part_defects if d.fingerprint)
         state["part_rims"] = (paired_rim_fingerprints(shape, tuple(part_defects))
                               if shape is not None else frozenset())
 
@@ -331,27 +395,44 @@ def model_author(shape, *, original: Measure, reserved: frozenset = frozenset(),
         _keep_refusals(refusals, history.refusals)
         return frozenset(state["part_rims"]) | frozenset(local)
 
+    def _skip_reason(timeout: float) -> str:
+        if sum(asked.values()) >= max(0, int(rcfg.CAD_REPAIR_LLM_AUTHOR_CALLS_MAX)):
+            return "the run's model calls are spent (CAD_REPAIR_LLM_AUTHOR_CALLS_MAX)"
+        if deadline_s is None:
+            return ""
+        left = deadline_s - clock()
+        if left <= 0.0:
+            return "the run's time is spent"
+        if shadow and left < timeout + _GRACE_S:
+            return "too little of the run's time is left for a shadow call"
+        return ""
+
     def author(region: Region, defects: tuple,
                attempts: tuple[PackageVerdict, ...] = ()) -> TargetPackage | None:
         if not region.located:
             # Not a locus (rules_author says why); no call is spent on it.
             return None
-        budget = max(1, int(rcfg.CAD_REPAIR_REGION_ATTEMPTS))
-        if asked.get(region.index, 0) >= budget:
+        if asked.get(region.index, 0) >= max(1, int(rcfg.CAD_REPAIR_REGION_ATTEMPTS)):
             return None
         record: dict = {"region": int(region.index), "attempt": len(attempts) + 1}
         calls.append(record)
-        if not _wire.configured():
+        if not _configured():
             record.update(outcome="not_configured", reason="no model router is configured")
             return None
+        timeout = float(rcfg.CAD_REPAIR_LLM_AUTHOR_TIMEOUT_S)
+        skip = _skip_reason(timeout)
+        if skip:
+            record.update(outcome="skipped", reason=skip)
+            return None
+        if deadline_s is not None:
+            timeout = min(timeout, deadline_s - clock())
         asked[region.index] = asked.get(region.index, 0) + 1
         obs = observe.observation_of(region, tuple(defects), tuple(attempts), shape,
                                      original=original, face_reader=face_reader)
         user = json.dumps(obs, sort_keys=True, allow_nan=False)
         record.update(observation_bytes=len(user.encode()),
                       observation_sha256=hashlib.sha256(user.encode()).hexdigest()[:16])
-        reply = _ask_sync(system_prompt(), user, job_id=job_id,
-                          timeout_s=float(rcfg.CAD_REPAIR_LLM_AUTHOR_TIMEOUT_S))
+        reply = _ask_sync(system_prompt(), user, job_id=job_id, timeout_s=timeout)
         record["reply"] = _clip_reply(reply)
         if reply is None:
             record.update(outcome="no_reply",
@@ -359,8 +440,7 @@ def model_author(shape, *, original: Measure, reserved: frozenset = frozenset(),
             return None
         try:
             form, body = _form(reply)
-            ctx = _Context(region, tuple(defects), part_fingerprints=state["part_fps"],
-                           reserved=held_codes, rims=_rims(tuple(defects)), original=original)
+            ctx = _Context(region, tuple(defects))
             if form == "pass":
                 if body is not True:
                     raise _Refused("pass is not true")
@@ -371,7 +451,9 @@ def model_author(shape, *, original: Measure, reserved: frozenset = frozenset(),
                 verdicts.append(verdict)
                 record.update(outcome="verdict", reason="")
                 return None
-            package, proposal = _package(body, ctx)
+            guards = _Guards(tuple(defects), reserved=held_codes, rims=_rims(tuple(defects)),
+                             original=original)
+            package, proposal = _package(body, ctx, guards)
         except _Refused as exc:
             record.update(outcome="refused", reason=str(exc))
             return None
@@ -393,7 +475,8 @@ def model_author(shape, *, original: Measure, reserved: frozenset = frozenset(),
 
 def shadow_author(shape, *, original: Measure, reserved: frozenset = frozenset(),
                   job_id: str = "", face_reader: observe.FaceReader | None = None,
-                  rules: Author | None = None) -> Author:
+                  rules: Author | None = None, deadline_s: float | None = None,
+                  clock: Callable[[], float] = time.monotonic) -> Author:
     """The rules author DRIVES; the model is asked beside it and its proposal recorded.
 
     Composes rules_author's callable (never reimplements it) and returns exactly what it returns,
@@ -401,11 +484,16 @@ def shadow_author(shape, *, original: Measure, reserved: frozenset = frozenset()
     be validated and is discarded. Each author call appends one `shadow_proposals` record - the
     region, the attempt, whether the rules proposed, and the model's call record (validated or
     refused, with the reason). `refusals` are the rules author's, since the rules drove.
+
+    THE SHADOW CANNOT MOVE THE OUTCOME: the inner model author runs with `shadow=True`, so it
+    makes no call unless a full call timeout plus a margin is left before `deadline_s`, and it
+    shares the run-wide CAD_REPAIR_LLM_AUTHOR_CALLS_MAX.
     """
     driver = rules if rules is not None else rules_author(shape, original=original,
                                                           reserved=reserved)
     model = model_author(shape, original=original, reserved=reserved, job_id=job_id,
-                         face_reader=face_reader)
+                         face_reader=face_reader, deadline_s=deadline_s, clock=clock,
+                         shadow=True)
     proposals: list[dict] = []
 
     def observe_part(part_defects: tuple) -> None:
@@ -443,17 +531,18 @@ def shadow_author(shape, *, original: Measure, reserved: frozenset = frozenset()
 
 
 def select_author(shape, *, original: Measure, reserved: frozenset = frozenset(),
-                  job_id: str = "") -> tuple[Author, str]:
+                  job_id: str = "", deadline_s: float | None = None) -> tuple[Author, str]:
     """The region loop's author for the deployment's posture, and the label the run reports.
 
     live + a configured router -> the model author; shadow -> the shadow composite (the rules
     drive); anything else, including live with no router, -> the rules author exactly as it was
-    built before this module existed.
+    built before this module existed. `deadline_s` bounds the model's calls (see model_author).
     """
     mode = posture()
-    if mode == "live" and _wire.configured():
-        return model_author(shape, original=original, reserved=reserved, job_id=job_id), LABEL
+    if mode == "live" and _configured():
+        return model_author(shape, original=original, reserved=reserved, job_id=job_id,
+                            deadline_s=deadline_s), LABEL
     if mode == "shadow":
-        return shadow_author(shape, original=original, reserved=reserved,
-                             job_id=job_id), RULES_LABEL
+        return shadow_author(shape, original=original, reserved=reserved, job_id=job_id,
+                             deadline_s=deadline_s), RULES_LABEL
     return rules_author(shape, original=original, reserved=reserved), RULES_LABEL

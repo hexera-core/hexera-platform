@@ -329,3 +329,7 @@ CAD_REPAIR_LLM_AUTHOR: str = _llm_author_posture()
 #: Seconds one model-author call may take before it counts as no proposal for that attempt.
 CAD_REPAIR_LLM_AUTHOR_TIMEOUT_S: float = float(
     optional_env("CAD_REPAIR_LLM_AUTHOR_TIMEOUT_S", "20.0"))
+
+#: The most model-author calls one repair run may make, shadow or live - a hard ceiling on spend
+#: and on the run time model calls can take, beside the per-region CAD_REPAIR_REGION_ATTEMPTS.
+CAD_REPAIR_LLM_AUTHOR_CALLS_MAX: int = int(optional_env("CAD_REPAIR_LLM_AUTHOR_CALLS_MAX", "6"))

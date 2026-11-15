@@ -439,6 +439,8 @@ INVENTORY: list[Group] = [
                help="who authors the region-scoped driver's target packages: off (byte-for-byte the prior behaviour, the rules author), shadow (the rules author drives; the model is asked and its proposal recorded, never executed) or live (the model authors, each package still proved under the same caps, and only with a model router configured); only the exact strings shadow and live turn it on, anything else reads as off"),
         EnvVar("CAD_REPAIR_LLM_AUTHOR_TIMEOUT_S", "20.0", kind="float", exposure="internal",
                help="seconds one model-author call may take before it counts as no proposal for that attempt"),
+        EnvVar("CAD_REPAIR_LLM_AUTHOR_CALLS_MAX", "6", kind="int", exposure="internal",
+               help="most model-author calls one repair run may make, shadow or live"),
         EnvVar("CAD_REPAIR_LLM_PLANNER", "off", exposure="internal",
                help="the model's seat in the repair planner: off (byte-for-byte the prior behaviour, rules only), shadow (asked and recorded, never acted on) or live (its plan acts inside the same caps); anything else reads as off"),
         EnvVar("CAD_REPAIR_LLM_PLANNER_CALLS_MAX", "2", kind="int", exposure="internal",

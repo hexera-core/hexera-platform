@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 
 import meshpipeline.settings.cad_repair as rcfg
@@ -836,6 +837,8 @@ def repair_step_file(source: Path, destination: Path, *,
         raise RepairUnavailable(
             f"only the conservative profile is implemented; {profile.value} needs an operator")
     _occ()
+    # THE RUN'S START, the clock a model author's deadline is measured from (below).
+    started = time.monotonic()
 
     from meshpipeline.cad.repair.brep import _read_shape
     from meshpipeline.cad.repair.caps import (
@@ -883,7 +886,11 @@ def repair_step_file(source: Path, destination: Path, *,
         if rcfg.CAD_REPAIR_LLM_AUTHOR in ("shadow", "live"):
             from meshpipeline.cad.repair.model_author import select_author
 
-            author, label = select_author(before_shape, original=original, reserved=reserved)
+            # MODEL CALLS SPEND THE RUN'S OWN CLOCK - the attempt node bounds this whole function
+            # by CAD_REPAIR_TIMEOUT_S - so model work must finish 5 s before it does.
+            author, label = select_author(
+                before_shape, original=original, reserved=reserved,
+                deadline_s=started + float(rcfg.CAD_REPAIR_TIMEOUT_S) - 5.0)
             model_record = getattr(author, "report", None)
         else:
             author, label = rules_author(before_shape, original=original,

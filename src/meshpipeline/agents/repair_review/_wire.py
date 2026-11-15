@@ -6,6 +6,8 @@ import asyncio
 import json
 import logging
 
+from meshpipeline.cad.repair.catalogue_words import catalogue_text
+
 logger = logging.getLogger(__name__)
 
 #: The operation that answers a periodic-surface mesh failure, present ONLY when
@@ -46,29 +48,8 @@ CATALOGUE_LIMITS = (
     "beyond those slivers it cannot move, redraw or delete geometry, change dimensions, or edit "
     "the part by hand")
 
-def catalogue_text(*, split_closed_faces: bool | None = None,
-                   fragment_bodies: bool | None = None) -> str:
-    """One line per catalogued operation, for the same consent as `catalogue`."""
-    lines = [
-        "- fix_small_edges: merge edges too short to keep",
-        "- fix_small_faces: sweep away sliver faces too small to keep, if the deployment allows it",
-        "- fix_face_boundary: repair a face whose boundary is broken or open",
-        "- sew_faces: stitch faces that should share an edge",
-        "- fill_planar_hole: cap a flat hole",
-        "- fill_nonplanar_hole: cap a small curved hole with a constrained patch",
-        "- heal_self_intersections: re-trim only the faces the kernel says cross each other",
-        "- fix_shape_global: run the whole-shape healing pass",
-    ]
-    names = catalogue(split_closed_faces=split_closed_faces, fragment_bodies=fragment_bodies)
-    if SPLIT_CLOSED in names:
-        lines.append(f"- {SPLIT_CLOSED}: split a closed (periodic) face - a full cylinder, cone, "
-                     "sphere or torus with one seam - in two so the mesher can wrap it")
-    if FRAGMENT in names:
-        lines.append(f"- {FRAGMENT}: make two touching bodies share their contact faces so the "
-                     "volume mesh is conformal there; declined when the bodies overlap")
-    return "\n".join(lines)
-
-
+#: `catalogue_text` LIVES IN `cad/repair/catalogue_words.py` (the model author in `cad/repair` needs it
+#: and cad may not import agents); re-exported here so this module's callers are untouched.
 CATALOGUE_TEXT = catalogue_text()
 
 
