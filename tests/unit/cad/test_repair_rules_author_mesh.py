@@ -126,3 +126,47 @@ def test_timeout_region_cannot_claim_meshes(monkeypatch):
     verdict = session.try_package(package)
     assert verdict.status != "committed"
     assert session.shape == "shape"
+
+
+# --- P2-R8: severity first at the candidate choice ------------------------------------------------
+
+def _kernel(code, severity, fingerprint, index):
+    return EntityDefect(code=code, severity=severity, entity_type="edge", entity_index=index,
+                        message=code.value, fingerprint=fingerprint, location=dict(_BOX))
+
+
+_REGION_R8 = Region(index=0, fingerprints=frozenset({"face:f4", "edge:a", "edge:b", "edge:c"}),
+                    bbox_min=(0.0, 0.0, 0.0), bbox_max=(10.0, 10.0, 10.0),
+                    face_indices=frozenset({4}))
+
+
+def _picks(defects):
+    package = _author()(_REGION_R8, tuple(defects), ())
+    return None if package is None else (package.plan[0]["op"].name,
+                                         package.plan[0]["targets"][0].fingerprint)
+
+
+def test_kernel_only_proposal_order_is_unchanged():
+    # Pinned from today's behaviour (no mesh defect present, so the severity branch never runs):
+    # the planner's own severity/entity ordering decides, however the list arrives.
+    warn_b = _kernel(DefectCode.small_edge, DefectSeverity.warning, "edge:b", 2)
+    warn_a = _kernel(DefectCode.small_edge, DefectSeverity.warning, "edge:a", 1)
+    expected = ("fix_small_edges", "edge:a")
+    assert _picks([warn_b, warn_a]) == expected
+    assert _picks([warn_a, warn_b]) == expected
+
+
+def test_a_mesh_error_is_proposed_before_a_kernel_warning():
+    warn = _kernel(DefectCode.small_edge, DefectSeverity.warning, "edge:a", 1)
+    assert _picks([warn, _mesh(DefectCode.mesh_open_loop)]) == ("fix_face_boundary", "face:f4")
+
+
+def test_a_kernel_error_still_comes_before_a_mesh_error():
+    err = _kernel(DefectCode.wire_gap, DefectSeverity.error, "edge:a", 1)
+    assert _picks([err, _mesh(DefectCode.mesh_open_loop)])[1] == "edge:a"
+
+
+def test_an_unmapped_mesh_error_does_not_displace_a_kernel_warning():
+    warn = _kernel(DefectCode.small_edge, DefectSeverity.warning, "edge:a", 1)
+    unmapped = _mesh(DefectCode.mesh_edge_through_face, stage=STAGE_3D)
+    assert _picks([warn, unmapped]) == ("fix_small_edges", "edge:a")

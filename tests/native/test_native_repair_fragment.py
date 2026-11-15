@@ -256,15 +256,10 @@ def _flag_on_baseline(monkeypatch):
 
 
 def test_corpus_touch_only_file_under_the_region_loop(monkeypatch, fragment_on, capsys):
-    """THE END-TO-END OUTCOME, reported as measured (2026-11-14, Task 3b, 103-160 s): the failure
-    is now LOCATED by contact measurement (5 faces, `located_by: contact-pair`), but
-    `fragment_bodies` is STILL NOT PROPOSED and the file does not mesh after the run.
-
-    WHY: the failure's region (555 defects) also holds kernel small-edge defects, and
-    `rules_author` aims at kernel defects FIRST and mesh failures only when the rules have
-    nothing. The region's attempts (default 3; also measured with 30 over 514 s) are spent on
-    `fix_small_edges` / `fix_shape_global`, so `_mesh_candidate` is never reached. That ordering
-    is the author's design, not the probe's; this test pins it so a change to it is noticed.
+    """THE END-TO-END OUTCOME (Task 3b + P2-R8): the failure is LOCATED by contact measurement
+    (`located_by: contact-pair`) and, because the author aims at error-severity mesh failures
+    before kernel warnings, `fragment_bodies` is PROPOSED. Outcome numbers are in the printed
+    line and the task report.
     """
     from meshpipeline.cad.repair.brep import _read_shape
     from meshpipeline.cad.repair.contracts import DefectCode
@@ -287,9 +282,14 @@ def test_corpus_touch_only_file_under_the_region_loop(monkeypatch, fragment_on, 
               f"verdicts={[(op, status) for op, status, _ in verdicts]} "
               f"edge_through_face_after={[(d.entity_index, d.fingerprint) for d in through]}")
 
-    assert through and all(d.fingerprint for d in through), through
-    assert all(d.measurements["located_by"] == "contact-pair" for d in through), through
-    assert "fragment_bodies" not in {op for op, _, _ in verdicts}, verdicts
+    assert any(op == "fragment_bodies" for op, _, _ in verdicts), verdicts
+    assert any(op == "fragment_bodies" and status == "kept" for op, status, _ in verdicts), verdicts
+    revealed = [r for p in run.packages for v in p.verdicts if v.op == "fragment_bodies"
+                for r in (v.delta.get("revealed") or [])]
+    with capsys.disabled():
+        print(f"revealed={[(r['code'], r['fingerprint']) for r in revealed]}")
+    assert {r["code"] for r in revealed} == {"mesh_overlapping_facets"}, revealed
+    assert DefectCode.mesh_edge_through_face not in {d.code for d in run.defects_after}
 
 
 def test_fragment_aimed_at_the_contact_clears_the_corpus_edge_through_face(fragment_on):

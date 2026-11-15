@@ -19,11 +19,12 @@ from collections.abc import Callable
 import meshpipeline.settings.cad_repair as rcfg
 from meshpipeline.cad.repair import mesh_probe
 from meshpipeline.cad.repair.caps import Measure
-from meshpipeline.cad.repair.contracts import DefectCode
+from meshpipeline.cad.repair.contracts import DefectCode, DefectSeverity
 from meshpipeline.cad.repair.identity import EntityRef
 from meshpipeline.cad.repair.operations import OPERATIONS
 from meshpipeline.cad.repair.package import PackageBudget, Predicate, TargetPackage
 from meshpipeline.cad.repair.plan import (
+    _SEVERITY_RANK,
     Candidate,
     RulesPlanner,
     RunHistory,
@@ -326,9 +327,19 @@ def rules_author(shape, *, original: Measure, reserved: frozenset = frozenset(),
         # they always were (with CAD_REPAIR_MESH_PROBE off there is no other kind, so this is
         # byte-for-byte the flag-off author); a mesh failure is aimed at only once they have
         # nothing, because a kernel defect is often what the mesher tripped on.
-        candidate = chosen.propose(tuple(d for d in defects if not _is_mesh(d)), history,
-                                   shape=shape)
-        if candidate is None:
+        kernel = tuple(d for d in defects if not _is_mesh(d))
+        candidate = chosen.propose(kernel, history, shape=shape)
+        # P2-R8: SEVERITY FIRST, as the region walk is (region_loop._SEVERITY_RANK). A mesh
+        # failure is an ERROR; when the kernel's pick is only a warning or info sweep, the
+        # failure is reached first. Kernel errors keep their place ahead of it. With no mesh
+        # defect present this branch never runs, so the flag-off proposal is unchanged.
+        if candidate is not None and any(_is_mesh(d) for d in defects):
+            rank = min((_SEVERITY_RANK.get(d.severity, 9) for d in kernel
+                        if d.fingerprint == candidate.defect_fingerprint), default=9)
+            if rank > _SEVERITY_RANK[DefectSeverity.error]:
+                candidate = (_mesh_candidate(tuple(defects), history,
+                                             reserved=frozenset(reserved)) or candidate)
+        elif candidate is None:
             candidate = _mesh_candidate(tuple(defects), history, reserved=frozenset(reserved))
         # WHAT THE RULES REFUSED TO AIM AT, KEPT INSTEAD OF DISCARDED WITH THE LEDGER. The
         # ledger above is rebuilt per call because the author is stateless, but a refusal is not
