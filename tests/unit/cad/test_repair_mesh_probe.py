@@ -189,3 +189,96 @@ def test_volume_stage_is_the_code_or_the_recorded_stage(code, stage, expected):
                           entity_type="face", entity_index=1, message="",
                           measurements={"stage": stage} if stage else {})
     assert volume_stage(defect) is expected
+
+
+# --- Task 3b: a no-coordinates PLC failure is located by contact measurement ----------------------
+
+_PLC_BARE = "PLC Error:  A segment and a facet intersect"
+
+
+def _two_boxes_and_a_fake_probe(monkeypatch, *, supports, calls=None):
+    """mesh_defects over a real 2-solid compound, a faked gmsh answer and a faked pair finder."""
+    pytest.importorskip("OCP.BRepTools", reason="the CAD kernel is a native-tier dependency")
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCP.gp import gp_Pnt
+    from OCP.TopoDS import TopoDS_Compound
+
+    from meshpipeline.cad.repair import mesh_probe
+    from meshpipeline.cad.repair.mesh_probe import MeshFailure, ProbeResult
+
+    builder, shape = BRep_Builder(), TopoDS_Compound()
+    builder.MakeCompound(shape)
+    for x in (0.0, 10.0):
+        builder.Add(shape, BRepPrimAPI_MakeBox(gp_Pnt(x, 0, 0), 10, 10, 10).Shape())
+    failure = MeshFailure(EDGE_THROUGH_FACE, (), None, _PLC_BARE, stage="3d")
+    monkeypatch.setattr(mesh_probe, "probe_file",
+                        lambda path, **kw: ProbeResult(False, 0, failure, {}))
+
+    def fake(shape_, faces, *, tol, deadline):
+        if calls is not None:
+            calls.append(deadline)
+        return supports
+
+    monkeypatch.setattr(mesh_probe, "_contact_support_faces", fake)
+    return mesh_probe, shape
+
+
+def test_plc_without_coordinates_is_located_by_contact(monkeypatch):
+    mesh_probe, shape = _two_boxes_and_a_fake_probe(monkeypatch, supports=[3, 7])
+    found = mesh_probe.mesh_defects(shape, diagonal_mm=17.3, budget_s=60.0)
+    assert [d.entity_index for d in found] == [3, 7]
+    assert all(d.code.value == "mesh_edge_through_face" and d.entity_type == "face"
+               and d.measurements["stage"] == "3d" and d.fingerprint for d in found)
+    assert all(d.measurements["located_by"] == "contact-pair" for d in found)
+
+
+def test_located_by_marker_present(monkeypatch):
+    mesh_probe, shape = _two_boxes_and_a_fake_probe(monkeypatch, supports=[2])
+    (defect,) = mesh_probe.mesh_defects(shape, diagonal_mm=17.3, budget_s=60.0)
+    assert defect.measurements["located_by"] == mesh_probe.LOCATED_BY_CONTACT == "contact-pair"
+
+
+def test_no_contact_pair_stays_unlocated(monkeypatch):
+    mesh_probe, shape = _two_boxes_and_a_fake_probe(monkeypatch, supports=[])
+    (defect,) = mesh_probe.mesh_defects(shape, diagonal_mm=17.3, budget_s=60.0)
+    assert defect.entity_index == 0 and defect.fingerprint == ""
+    assert "located_by" not in defect.measurements
+
+
+def test_single_solid_plc_stays_unlocated(monkeypatch):
+    # The REAL seam: one solid has no pair, so nothing is inferred.
+    mesh_probe, _shape = _two_boxes_and_a_fake_probe(monkeypatch, supports=[3])
+    monkeypatch.undo()
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+
+    from meshpipeline.cad.repair import mesh_probe as mp
+    from meshpipeline.cad.repair.mesh_probe import MeshFailure, ProbeResult
+
+    failure = MeshFailure(EDGE_THROUGH_FACE, (), None, _PLC_BARE, stage="3d")
+    monkeypatch.setattr(mp, "probe_file", lambda path, **kw: ProbeResult(False, 0, failure, {}))
+    (defect,) = mp.mesh_defects(BRepPrimAPI_MakeBox(10, 10, 10).Shape(), diagonal_mm=17.3,
+                                budget_s=60.0)
+    assert defect.entity_index == 0 and defect.fingerprint == ""
+    assert "located_by" not in defect.measurements
+
+
+def test_contact_search_respects_budget(monkeypatch):
+    import time
+
+    mesh_probe, shape = _two_boxes_and_a_fake_probe(monkeypatch, supports=[3, 7])
+    monkeypatch.undo()
+    from meshpipeline.cad.repair import mesh_probe as mp
+    from meshpipeline.cad.repair.mesh_probe import MeshFailure, ProbeResult
+
+    failure = MeshFailure(EDGE_THROUGH_FACE, (), None, _PLC_BARE, stage="3d")
+    monkeypatch.setattr(mp, "probe_file", lambda path, **kw: ProbeResult(False, 0, failure, {}))
+    # An expired deadline: the real seam answers None (out of budget), never a guess.
+    from OCP.TopAbs import TopAbs_FACE
+
+    from meshpipeline.cad.repair.localize import _indexed
+    assert mp._contact_support_faces(shape, _indexed(shape, TopAbs_FACE), tol=1e-6,
+                                     deadline=time.monotonic() - 1.0) is None
+    # And through mesh_defects the whole call stays unlocated at a spent budget.
+    (defect,) = mp.mesh_defects(shape, diagonal_mm=17.3, budget_s=0.0)
+    assert defect.entity_index == 0 and "located_by" not in defect.measurements

@@ -256,14 +256,15 @@ def _flag_on_baseline(monkeypatch):
 
 
 def test_corpus_touch_only_file_under_the_region_loop(monkeypatch, fragment_on, capsys):
-    """THE END-TO-END OUTCOME, reported as measured (2026-11-14, about 72 s): the operation is
-    NEVER PROPOSED on this file, and the file does not mesh after the run.
+    """THE END-TO-END OUTCOME, reported as measured (2026-11-14, Task 3b, 103-160 s): the failure
+    is now LOCATED by contact measurement (5 faces, `located_by: contact-pair`), but
+    `fragment_bodies` is STILL NOT PROPOSED and the file does not mesh after the run.
 
-    WHY: gmsh's PLC error here is "A segment and a facet intersect at point" WITH NO COORDINATES
-    (neither in the exception nor in the log), so `mesh_probe` can only report the failure
-    UNLOCATED - no face, no fingerprint - and `targets_for` has nothing to aim at. The loop spends
-    its attempts on kernel defects and stops `unmeshable`. This test pins that limit: if the probe
-    one day locates the failure, the first assertion fails and this file must be re-measured.
+    WHY: the failure's region (555 defects) also holds kernel small-edge defects, and
+    `rules_author` aims at kernel defects FIRST and mesh failures only when the rules have
+    nothing. The region's attempts (default 3; also measured with 30 over 514 s) are spent on
+    `fix_small_edges` / `fix_shape_global`, so `_mesh_candidate` is never reached. That ordering
+    is the author's design, not the probe's; this test pins it so a change to it is noticed.
     """
     from meshpipeline.cad.repair.brep import _read_shape
     from meshpipeline.cad.repair.contracts import DefectCode
@@ -286,7 +287,8 @@ def test_corpus_touch_only_file_under_the_region_loop(monkeypatch, fragment_on, 
               f"verdicts={[(op, status) for op, status, _ in verdicts]} "
               f"edge_through_face_after={[(d.entity_index, d.fingerprint) for d in through]}")
 
-    assert through and all(not d.fingerprint for d in through), through
+    assert through and all(d.fingerprint for d in through), through
+    assert all(d.measurements["located_by"] == "contact-pair" for d in through), through
     assert "fragment_bodies" not in {op for op, _, _ in verdicts}, verdicts
 
 
@@ -303,7 +305,7 @@ def test_fragment_aimed_at_the_contact_clears_the_corpus_edge_through_face(fragm
     shape = _read_shape(_corpus(_TOUCH_ONLY))
     before = measure(shape)
     found = mesh_probe.mesh_defects(shape, diagonal_mm=before.diagonal_mm, budget_s=300.0)
-    assert [d.code for d in found] == [DefectCode.mesh_edge_through_face], found
+    assert found and {d.code for d in found} == {DefectCode.mesh_edge_through_face}, found
 
     outcome = FragmentBodies().apply(shape, (_contact_ref(shape),), tolerance_mm=0.1)
 
@@ -329,10 +331,9 @@ def test_the_single_solid_corpus_file_is_declined(fragment_on):
 def test_the_session_keeps_fragment_and_lists_the_revealed_overlap(monkeypatch, fragment_on):
     """THE SESSION-LEVEL PROOF of the revealed rule, on the real file and the real probe.
 
-    The probe cannot locate this file's edge-through-face (no coordinates in gmsh's error; Task
-    3b's subject), so ONE thing is stood in: an UNLOCATED edge-through-face from the real probe is
-    re-reported on the contact face, which is where a contact locator would put it. Everything
-    else - the kernel scan, the fragment, the caps, the post-op probe - is real.
+    Everything is real: gmsh's PLC error carries no coordinates, so the probe locates the
+    edge-through-face by contact measurement (Task 3b) and the fragment is aimed at the first
+    face it names.
 
     Measured 2026-11-14: after the fragment the edge through a face is gone and the real probe
     reports overlapping facets in the 3D stage on face 943. The file has two bodies, so `rebuilt`
@@ -340,9 +341,6 @@ def test_the_session_keeps_fragment_and_lists_the_revealed_overlap(monkeypatch, 
     rebuild unchanged), so by ruling P2-R7 it is REVEALED: the op is KEPT and the overlap stays in
     the session's defects. (Round 2's blunter rule rolled it back here.)
     """
-    from dataclasses import replace
-
-    from meshpipeline.cad.repair import mesh_probe
     from meshpipeline.cad.repair.brep import _read_shape
     from meshpipeline.cad.repair.contracts import DefectCode
     from meshpipeline.cad.repair.session import KEPT, RepairSession
@@ -351,22 +349,12 @@ def test_the_session_keeps_fragment_and_lists_the_revealed_overlap(monkeypatch, 
     monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE_TIMEOUT_S", 300.0)
     monkeypatch.setattr(rcfg, "CAD_REPAIR_HEAL_SELF_INTERSECTIONS", False)
     shape = _read_shape(_corpus(_TOUCH_ONLY))
-    contact = _contact_ref(shape)
-    located = box_of(sub_shape(shape, "face", contact.entity_index))
-    real = mesh_probe.mesh_defects
-
-    def probe(target, **kw):
-        found = real(target, **kw)
-        return tuple(
-            replace(d, entity_type="face", entity_index=contact.entity_index,
-                    fingerprint=contact.fingerprint, location=dict(located))
-            if d.code is DefectCode.mesh_edge_through_face and not d.fingerprint else d
-            for d in found)
-
-    monkeypatch.setattr(mesh_probe, "mesh_defects", probe)
     session = RepairSession(shape)
     through = [d for d in session.defects() if d.code is DefectCode.mesh_edge_through_face]
-    assert [d.fingerprint for d in through] == [contact.fingerprint], through
+    # Task 3b: the REAL probe now locates the failure itself, by contact measurement.
+    assert through and all(d.fingerprint for d in through), through
+    assert all(d.measurements["located_by"] == "contact-pair" for d in through), through
+    contact = _ref(shape, through[0].entity_index)
 
     verdict = session.try_op(FragmentBodies(), (contact,), DefectCode.mesh_edge_through_face,
                              tolerance_mm=0.1)

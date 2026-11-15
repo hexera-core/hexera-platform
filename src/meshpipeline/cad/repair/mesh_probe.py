@@ -435,6 +435,94 @@ def _nearest_faces(faces, point: tuple[float, float, float], *, tol: float,
     return sorted(i for i, d in distances.items() if d <= least + tol)
 
 
+#: How many bbox-meeting solid pairs the contact search measures before it picks the nearest. A
+#: part with more candidate pairs than this is measured on its first CAP only: bounded, not exact.
+CONTACT_PAIR_CAP = 8
+
+#: `measurements["located_by"]` on a defect placed by `_contact_support_faces`: the failure named no
+#: point and no surface, so WE inferred the faces from the geometry. Never gmsh's own word.
+LOCATED_BY_CONTACT = "contact-pair"
+
+
+def _contact_support_faces(shape, faces, *, tol: float, deadline: float) -> list[int] | None:
+    """The faces (indices in `faces`) where the nearest pair of touching solids meets, or None
+    when the deadline passed first; [] when the shape has no such pair. SEAM: tests replace it.
+
+    A part gmsh cannot tetrahedralise with an edge through a face and no coordinates is, necessarily,
+    carrying a body pair with no conformal interface. So: the solids whose boxes meet form the
+    candidate pairs (capped at CONTACT_PAIR_CAP), the pair with the least `BRepExtrema_DistShapeShape`
+    distance is the contact, and its support faces are the answer. A support the kernel reports IN a
+    face is that face. When it reports only vertices or edges (two coplanar contacts usually do),
+    the faces nearest the centroid of the minimal-distance points are used instead, on each body.
+    Every kernel failure is "no pair": this never raises.
+    """
+    try:
+        from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+        from OCP.TopAbs import TopAbs_FACE, TopAbs_SOLID
+
+        from meshpipeline.cad.repair.localize import _indexed
+
+        solids = _indexed(shape, TopAbs_SOLID)
+        if solids.Extent() < 2:
+            return []
+        boxes = {i: b for i in range(1, solids.Extent() + 1)
+                 if (b := _bounds_of(solids.FindKey(i))) is not None}
+        pairs = [(i, j) for i in boxes for j in boxes
+                 if i < j and all(boxes[i][0][k] <= boxes[j][1][k] + tol
+                                  and boxes[j][0][k] <= boxes[i][1][k] + tol for k in range(3))]
+        best = None
+        best_key = None
+        for i, j in pairs[:CONTACT_PAIR_CAP]:
+            if time.monotonic() >= deadline:
+                return None
+            try:
+                extrema = BRepExtrema_DistShapeShape(solids.FindKey(i), solids.FindKey(j))
+                if not extrema.IsDone() or extrema.NbSolution() < 1:
+                    continue
+                key = (round(float(extrema.Value()), 9), i, j)
+            except Exception as exc:  # noqa: BLE001 - an unmeasurable pair is merely not nearest
+                logger.debug("mesh_probe: pair %d/%d unmeasurable: %s", i, j, exc)
+                continue
+            if best_key is None or key < best_key:
+                best, best_key = (i, j, extrema), key
+        if best is None:
+            return []
+        i, j, extrema = best
+        distance = float(extrema.Value())
+        found: set[int] = set()
+        points: list[tuple[float, float, float]] = []
+        for n in range(1, extrema.NbSolution() + 1):
+            for support, kind in ((extrema.SupportOnShape1(n), extrema.SupportTypeShape1(n)),
+                                  (extrema.SupportOnShape2(n), extrema.SupportTypeShape2(n))):
+                if kind.name.endswith("IsInFace") and support.ShapeType() == TopAbs_FACE:
+                    index = faces.FindIndex(support)
+                    if index:
+                        found.add(int(index))
+            gap = extrema.PointOnShape1(n).Distance(extrema.PointOnShape2(n))
+            if gap <= distance + tol:
+                p1 = extrema.PointOnShape1(n)
+                points.append((p1.X(), p1.Y(), p1.Z()))
+        if found:
+            return sorted(found)
+        if not points:
+            return []
+        count = len(points)
+        centre = (sum(p[0] for p in points) / count, sum(p[1] for p in points) / count,
+                  sum(p[2] for p in points) / count)
+        for index in (i, j):
+            body_faces = _indexed(solids.FindKey(index), TopAbs_FACE)
+            near = _nearest_faces(body_faces, centre, tol=tol, deadline=deadline)
+            if near is None:
+                return None
+            for local in near:
+                found.add(int(faces.FindIndex(body_faces.FindKey(local))))
+        found.discard(0)
+        return sorted(found)
+    except Exception as exc:  # noqa: BLE001 - the probe never raises
+        logger.info("mesh_probe: contact search: %s: %s", type(exc).__name__, exc)
+        return []
+
+
 def mesh_defects(shape, *, diagonal_mm: float, budget_s: float,
                  within: Region | None = None) -> tuple[EntityDefect, ...]:
     """Why gmsh will not mesh `shape`, as defects on the faces it named. NEVER raises.
@@ -511,9 +599,18 @@ def _mesh_defects(shape, *, diagonal_mm: float, budget_s: float,
         if mapping is None:
             mapping = faces_for_tags(_face_boxes(faces), result.tag_boxes, tol=tol)
         located = list(dict.fromkeys(mapping[t] for t in trusted if t in mapping))
+    by_contact = False
+    if (not located and failure.kind == EDGE_THROUGH_FACE and failure.point is None
+            and not locating_surfaces(failure)):
+        # gmsh named no point and no surface: infer the place from the bodies' contact, and say so.
+        located = _contact_support_faces(shape, faces, tol=tol, deadline=deadline)
+        by_contact = bool(located)
     if not located:
         return (_unlocated(failure),)
     defects = [_face_defect(code, faces, index, failure) for index in sorted(located)]
+    if by_contact:
+        for defect in defects:
+            defect.measurements["located_by"] = LOCATED_BY_CONTACT
     if within is not None:
         # A scoped call answers for its region only. Turning an outside face into an UNLOCATED
         # defect would make it read as in-region (unplaceable is admitted), so it is dropped.

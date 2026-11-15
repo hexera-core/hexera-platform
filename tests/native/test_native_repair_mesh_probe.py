@@ -359,3 +359,57 @@ def test_nearest_face_search_stops_at_the_deadline():
     faces = _faces(_box())
     assert mesh_probe._nearest_faces(faces, (5.0, 5.0, 10.0), tol=1e-4,
                                      deadline=time.monotonic() - 1.0) is None
+
+
+# --- Task 3b: a no-coordinates PLC failure located by contact measurement ----------------------
+
+def test_touching_boxes_contact_faces_are_the_supports():
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+
+    from meshpipeline.cad.repair.localize import _bounds_of
+
+    shape = _compound(_box(), _box(x=10.0))
+    faces = _faces(shape)
+    found = mesh_probe._contact_support_faces(shape, faces, tol=1e-5,
+                                              deadline=time.monotonic() + 60.0)
+    assert found is not None and len(found) == 2
+    for index in found:           # each is a face lying in the shared plane x = 10
+        lo, hi = _bounds_of(faces.FindKey(index))
+        assert lo[0] == pytest.approx(10.0, abs=1e-4)   # bbox is padded by the kernel's tolerance
+        assert hi[0] == pytest.approx(10.0, abs=1e-4)
+    # ... and the pair is genuinely in contact.
+    assert BRepExtrema_DistShapeShape(faces.FindKey(found[0]), faces.FindKey(found[1])).Value() == 0.0
+
+
+def test_apart_boxes_and_single_solid_have_no_contact_pair():
+    for shape in (_compound(_box(), _box(x=100.0)), _box()):
+        assert mesh_probe._contact_support_faces(
+            shape, _faces(shape), tol=1e-5, deadline=time.monotonic() + 60.0) == []
+
+
+_TOUCH_ONLY = "abc/00506275_541a2ce632275fed8964367a_step_000.step"
+
+
+def test_corpus_plc_without_coordinates_is_located_by_contact():
+    from meshpipeline.cad.repair.brep import _read_shape
+    from meshpipeline.cad.repair.contracts import DefectCode
+    from meshpipeline.cad.repair.localize import (
+        EntityDefect,
+        _centroid_and_box,
+        _diagonal,
+        _stamped,
+    )
+
+    shape = _read_shape(_corpus(_TOUCH_ONLY))
+    diagonal = _diagonal(shape)
+    found = mesh_probe.mesh_defects(shape, diagonal_mm=diagonal, budget_s=300.0)
+    assert found and all(d.code is DefectCode.mesh_edge_through_face for d in found), found
+    assert all(d.entity_type == "face" and d.entity_index >= 1 for d in found)
+    assert all(d.measurements["located_by"] == "contact-pair" for d in found)
+    faces = _faces(shape)
+    for defect in found:
+        (reference,) = _stamped((EntityDefect(
+            code=DefectCode.self_intersection, severity=defect.severity, entity_type="face",
+            entity_index=defect.entity_index, message="",
+            location=_centroid_and_box(faces.FindKey(defect.entity_index))),), diagonal_mm=diagonal)
+        assert defect.fingerprint and defect.fingerprint == reference.fingerprint
