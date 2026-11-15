@@ -16,7 +16,7 @@ _POINTS = [(1.0, 0.0, 0.0), (2.0, 0.0, 0.0), (3.0, 0.0, 0.0)]
 
 
 def _sampler(*_args):
-    return _POINTS
+    return _POINTS, 1, 0
 
 
 def test_deviation_is_max_of_samples():
@@ -29,7 +29,7 @@ def test_failure_is_none_not_raise():
         raise RuntimeError("kernel")
 
     assert surface_deviation_mm("b", "a", sampler=_sampler, distance=boom) is None
-    assert surface_deviation_mm("b", "a", sampler=lambda *a: [], distance=lambda p: 1.0) is None
+    assert surface_deviation_mm("b", "a", sampler=lambda *a: ([], 0, 0), distance=lambda p: 1.0) is None
 
     def bad_sampler(*_a):
         raise ValueError("no faces")
@@ -67,6 +67,36 @@ def test_faces_filter_selects_new_fingerprints(monkeypatch):
     assert deviation._select_faces("before", "after", ("nope",)) == []
 
 
+def test_result_carries_its_own_sparseness_and_measured_empty_is_not_a_failure():
+    got = deviation.measure_deviation("b", "a", sampler=lambda *a: (_POINTS, 2, 1),
+                                      distance=lambda p: 1.0)
+    assert (got.mm, got.samples, got.faces, got.faces_skipped) == (1.0, 3, 2, 1)
+    empty = deviation.measure_deviation("b", "a", sampler=lambda *a: ([], 0, 0),
+                                        distance=lambda p: 1.0)
+    assert (empty.mm, empty.faces) == (None, 0)           # nothing to measure
+    failed = deviation.measure_deviation("b", "a", sampler=lambda *a: 1 / 0)
+    assert (failed.mm, failed.faces) == (None, None)      # could not measure
+
+
+def test_faces_are_named_at_the_quantum_of_the_ops_input_shape(monkeypatch):
+    from meshpipeline.cad.repair import operations
+
+    seen: list[float] = []
+
+    def named(shape, *, quantum):
+        seen.append(quantum)
+        # the face is named "q<quantum>" so only the matching quantum finds it in `faces`
+        return [(f"q{quantum}", "F")]
+
+    monkeypatch.setattr(deviation, "_named_faces", named)
+    monkeypatch.setattr(operations, "_diagonal_of", lambda shape: 100.0)
+    ops_quantum = deviation.quantum_for(250.0)
+    assert deviation.quantum_for(100.0) != ops_quantum
+    # the op named it at the diagonal of ITS input (250); before_shape's own (100) would miss it
+    assert deviation._select_faces("b", "a", (f"q{ops_quantum}",), (250.0,)) == ["F"]
+    assert deviation._select_faces("b", "a", (f"q{ops_quantum}",)) == []
+
+
 # SESSION ATTACHMENT
 
 
@@ -76,47 +106,60 @@ def _no_probe_scan(monkeypatch):
                         lambda self, found, shape, **kw: found)
 
 
-def _commit(monkeypatch, *, probe: str, measured):
+def _commit(monkeypatch, *, probe: str, result, remaining_s=None):
     monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", probe)
     calls: list = []
 
     def fake(before, after, faces=(), **kw):
         calls.append((before, after, faces, kw))
-        return measured
+        return result
 
-    monkeypatch.setattr(deviation, "surface_deviation_mm", fake)
+    monkeypatch.setattr(deviation, "measure_deviation", fake)
     session = pkg._session()
+    session.remaining_s = remaining_s
     verdict = session.try_package(pkg._package(session, cleared={pkg._EDGE}))
     assert verdict.committed
     return verdict, calls
 
 
 def test_committed_package_carries_deviation_when_probe_live(monkeypatch, _no_probe_scan):
-    verdict, calls = _commit(monkeypatch, probe="live", measured=0.25)
+    result = deviation.DeviationResult(0.25, 40, 5, 1, 0.3)
+    verdict, calls = _commit(monkeypatch, probe="live", result=result)
     assert verdict.deviation_mm == 0.25
-    assert verdict.to_dict()["deviation_mm"] == 0.25
+    shown = verdict.to_dict()
+    assert (shown["deviation_mm"], shown["deviation_samples"], shown["deviation_faces"],
+            shown["deviation_faces_skipped"], shown["deviation_s"]) == (0.25, 40, 5, 1, 0.3)
     assert calls[0][0] == "original" and calls[0][1] == "repaired"
     assert calls[0][3]["budget_s"] == 10.0
 
 
+def test_budget_is_the_least_of_ten_the_run_and_the_package(monkeypatch, _no_probe_scan):
+    _, calls = _commit(monkeypatch, probe="live", result=deviation.DeviationResult(),
+                       remaining_s=lambda: 3.0)
+    assert calls[0][3]["budget_s"] == 3.0
+
+
 def test_deviation_absent_and_unmeasured_when_probe_off(monkeypatch):
-    verdict, calls = _commit(monkeypatch, probe="off", measured=0.25)
+    verdict, calls = _commit(monkeypatch, probe="off", result=deviation.DeviationResult(1.0))
     assert calls == []
-    assert verdict.deviation_mm is None
-    assert "deviation_mm" not in verdict.to_dict()
+    assert not [k for k in verdict.to_dict() if k.startswith("deviation")]
 
 
-def test_a_none_measurement_is_recorded_as_absent(monkeypatch, _no_probe_scan):
-    verdict, calls = _commit(monkeypatch, probe="live", measured=None)
-    assert calls and verdict.deviation_mm is None
-    assert "deviation_mm" not in verdict.to_dict()
+def test_a_none_measurement_is_absent_and_measured_empty_says_zero_faces(monkeypatch,
+                                                                         _no_probe_scan):
+    verdict, _ = _commit(monkeypatch, probe="live",
+                         result=deviation.DeviationResult(None, 0, 0, 0, 0.1))
+    shown = verdict.to_dict()
+    assert "deviation_mm" not in shown and shown["deviation_faces"] == 0
+    failed, _ = _commit(monkeypatch, probe="live", result=deviation.DeviationResult(None))
+    assert "deviation_mm" not in failed.to_dict() and "deviation_faces" not in failed.to_dict()
 
 
 def test_a_reverted_package_is_not_measured(monkeypatch, _no_probe_scan):
     monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
     calls: list = []
-    monkeypatch.setattr(deviation, "surface_deviation_mm",
-                        lambda *a, **k: calls.append(1) or 1.0)
+    monkeypatch.setattr(deviation, "measure_deviation",
+                        lambda *a, **k: calls.append(1) or deviation.DeviationResult(1.0))
     session = pkg._session(repairs=False)
     verdict = session.try_package(pkg._package(session, cleared={pkg._EDGE}))
     assert not verdict.committed and calls == [] and verdict.deviation_mm is None
@@ -129,11 +172,15 @@ def _record(*packages):
     return {"measurements": {"regions": {"packages": list(packages)}}}
 
 
-def test_receipt_shows_the_largest_committed_deviation_and_is_silent_without_one():
-    rows = _deviation_rows(_record({"status": "committed", "deviation_mm": 0.2},
-                                   {"status": "committed", "deviation_mm": 0.31},
-                                   {"status": "reverted", "deviation_mm": 9.0}))
-    assert [(r["label"], r["value"]) for r in rows] == [("Repaired surface moved",
-                                                         "up to 0.31 mm")]
+def test_receipt_words_the_largest_committed_deviation_as_a_sampled_lower_bound():
+    rows = _deviation_rows(_record(
+        {"status": "committed", "deviation_mm": 0.2},
+        {"status": "committed", "deviation_mm": 125.0, "deviation_samples": 36,
+         "deviation_faces": 3},
+        {"status": "reverted", "deviation_mm": 900.0}))
+    assert len(rows) == 1
+    assert rows[0]["value"] == "at least 125 mm"
+    assert "sampled: 36 points on 3 faces" in rows[0]["why"]
+    assert "new surface filling an opening" in rows[0]["why"]
     assert _deviation_rows(_record({"status": "committed"})) == []
     assert _deviation_rows({}) == []

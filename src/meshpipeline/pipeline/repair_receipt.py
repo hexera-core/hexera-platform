@@ -384,24 +384,41 @@ def _shape_rows(record: Mapping, *, undone: bool = False) -> list[dict]:
     return rows
 
 
-def _deviation_rows(record: Mapping) -> list[dict]:
-    """How far the repaired surface moved from the upload, in millimetres, when it was measured.
+def _mm(value: float) -> str:
+    """Millimetres in plain digits at any size: 125 reads "125", never "1.2e+02"."""
+    if value < 0.01:
+        return "under 0.01"
+    return f"{value:.0f}" if value >= 100 else f"{value:.1f}" if value >= 10 else f"{value:.2g}"
 
-    The largest `deviation_mm` over the packages that kept their repair. SILENT WHEN ABSENT: the
-    measurement exists only under the mesh-probe posture and is None when it failed, and a row
-    claiming "0 mm" for an unmeasured part would be the guess this receipt never makes. It is a
-    measurement shown, not a limit: nothing here says it passed or failed.
+
+def _deviation_rows(record: Mapping) -> list[dict]:
+    """How far the repaired surface sits from the original, as sampled, when it was measured.
+
+    THE NUMBER IS A SAMPLED LOWER BOUND, so the row says "at least" and how many points stand
+    behind it. It counts NEW surface (a patch over an opening is new surface whose distance is the
+    gap's half-width - the size of the repair, not damage), and it never sees geometry that was
+    removed. It is a measurement shown, not a limit: nothing here says it passed or failed.
+
+    The largest value over the packages that kept their repair, with the point and face counts of
+    the package that produced it. SILENT WHEN ABSENT: the measurement exists only under the
+    mesh-probe posture and is absent when it failed or had nothing to sample, and a row claiming
+    "0 mm" for an unmeasured part would be the guess this receipt never makes.
     """
     measured = record.get("measurements")
     regions = measured.get("regions") if isinstance(measured, Mapping) else None
     packages = regions.get("packages") if isinstance(regions, Mapping) else None
-    found = [n for p in (packages or ())
+    found = [(n, p) for p in (packages or ())
              if isinstance(p, Mapping) and p.get("status") == "committed"
              and (n := _num(p.get("deviation_mm"))) is not None and n >= 0]
     if not found:
         return []
-    return [_row("Repaired surface moved", f"up to {max(found):.2g} mm",
-                 "measured from the repaired surface back to your original")]
+    worst, package = max(found, key=lambda pair: pair[0])
+    points, faces = _num(package.get("deviation_samples")), _num(package.get("deviation_faces"))
+    sampled = (f"sampled: {int(points)} points on {int(faces)} faces; "
+               if points is not None and faces is not None else "")
+    return [_row("Sampled distance from the original surface", f"at least {_mm(worst)} mm",
+                 sampled + "new surface filling an opening counts toward this, and geometry "
+                 "that was removed is not measured")]
 
 
 def _volume_was_compared(before: Mapping, after: Mapping) -> bool:

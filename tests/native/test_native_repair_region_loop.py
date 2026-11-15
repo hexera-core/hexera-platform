@@ -524,3 +524,18 @@ def test_a_committed_fill_records_a_plausible_deviation(tmp_path, _filling_on, m
     assert measured and all(d is not None for d in measured), run.to_dict()["packages"]
     assert max(measured) > 0.0
     assert max(measured) < _diagonal(shape)
+
+
+def test_deviation_against_a_known_offset_pins_direction_and_scale():
+    """A box face moved 1.0 mm off the original: the sampled value is a lower bound within
+    [0.5, 1.0] of that truth - which fixes both the direction (after-to-before) and the scale."""
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCP.gp import gp_Pnt
+
+    from meshpipeline.cad.repair.deviation import measure_deviation
+
+    before = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), gp_Pnt(10, 10, 10)).Shape()
+    after = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), gp_Pnt(11, 10, 10)).Shape()  # +x face at 11
+    result = measure_deviation(before, after)
+    assert result.mm is not None and 0.5 <= result.mm <= 1.0 + 1e-6, result
+    assert result.faces and result.samples >= 4 * result.faces

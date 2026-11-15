@@ -289,6 +289,16 @@ class PackageVerdict:
     #: not commit, or the measurement failed or ran out of its budget. A reviewer reads it; no
     #: code branches on it.
     deviation_mm: float | None = None
+    #: HOW SPARSE `deviation_mm` IS, so a reader can weigh it. All None when no measurement was
+    #: attempted (posture off, not committed). `deviation_faces == 0` with `deviation_mm` absent
+    #: is MEASURED-EMPTY - there was nothing to sample - which is not the same as not measured.
+    #: `deviation_samples` is points actually measured, `deviation_faces` faces they lie on,
+    #: `deviation_faces_skipped` selected faces that had no in-face point, and `deviation_s` the
+    #: seconds the measurement took (beside apply_s/scan_s/measure_s).
+    deviation_samples: int | None = None
+    deviation_faces: int | None = None
+    deviation_faces_skipped: int | None = None
+    deviation_s: float | None = None
 
     @property
     def committed(self) -> bool:
@@ -300,8 +310,12 @@ class PackageVerdict:
                 "reclassified": sorted(self.reclassified),
                 "scan_s": self.scan_s, "apply_s": self.apply_s,
                 "measure_s": self.measure_s,
-                **({"deviation_mm": self.deviation_mm}
-                   if self.deviation_mm is not None else {})}
+                **{k: v for k, v in (
+                    ("deviation_mm", self.deviation_mm),
+                    ("deviation_samples", self.deviation_samples),
+                    ("deviation_faces", self.deviation_faces),
+                    ("deviation_faces_skipped", self.deviation_faces_skipped),
+                    ("deviation_s", self.deviation_s)) if v is not None}}
 
 
 def _measure_total(own_s: float, verdicts: Iterable[OpVerdict]) -> float:
@@ -377,9 +391,13 @@ class RepairSession:
         #: cannot tell a kept operation that shipped from one discarded with its package.
         self.packages: list[PackageVerdict] = []
         #: Fingerprints of the faces every KEPT operation reported adding or rebuilding, in the
-        #: order kept - what `try_package` hands `deviation.surface_deviation_mm` as the faces to
-        #: measure. Appended only on a keep, read only by a committing package.
+        #: order kept, and the shapes those operations took as input (whose diagonals named them)
+        #: - what `try_package` hands `deviation.measure_deviation`. LIFECYCLE ASSUMPTION: the
+        #: loop is sequential and `try_package` resets both lists before its plan, so entries
+        #: from an operation run outside a package (`try_op` directly) are never read, and a
+        #: package never sees another's. Appended only on a keep.
         self._kept_faces: list[str] = []
+        self._kept_inputs: list = []
 
     def _default_scan(self, shape, *, face_scan: bool = True, within: Region | None = None):
         """`localize_scan`, with a face-level scan only when the self-intersection heal is on.
@@ -792,6 +810,7 @@ class RepairSession:
 
         self.accounting = self.accounting.plus(outcome.evidence)
         self._kept_faces.extend((*outcome.added, *outcome.rebuilt))
+        self._kept_inputs.append(snapshot[0])
         return self._record(OpVerdict(
             op=op.name, targets=fingerprints, defect_code=code, status=KEPT, basis=basis,
             evidence=dict(outcome.evidence), delta=delta,
@@ -905,6 +924,7 @@ class RepairSession:
         whole = _judged_whole(package)
         scope = None if whole else region
         self._kept_faces = []
+        self._kept_inputs = []
 
         for item in package.plan:
             spent = self.clock() - started
@@ -1008,23 +1028,43 @@ class RepairSession:
             region_index=region.index, status=COMMITTED, verdicts=tuple(verdicts),
             reclassified=reclassified, scan_s=scan_s, apply_s=apply_s,
             measure_s=_measure_total(measure_s, verdicts),
-            deviation_mm=self._deviation_evidence(snapshot[0])))
+            **self._deviation_evidence(
+                snapshot[0], cap_s=package.budget.timeout_s - (self.clock() - started))))
 
-    def _deviation_evidence(self, before_shape) -> float | None:
-        """How far the committed shape moved from `before_shape`, or None.
+    def _deviation_evidence(self, before_shape, *, cap_s: float) -> dict:
+        """The deviation fields for a committed package: {} when not measured at all.
 
-        THE SAME POSTURE AS THE MESH PROBE, no new flag: measured only when CAD_REPAIR_MESH_PROBE
+        THE SAME POSTURE AS THE MESH PROBE, no new flag: attempted only when CAD_REPAIR_MESH_PROBE
         is live, so flag-off runs make no measurement and carry no new key. EVIDENCE, NOT A GATE -
-        the result is recorded on the verdict and nothing here branches on it; a None (failure,
-        empty sample, spent 10 s budget) is recorded as absent, never invented. Looked up on the
+        recorded on the verdict, never branched on. The budget is the least of 10 s, what is left
+        of the run (`remaining_s`) and what is left of the package, so measuring cannot overspend
+        either clock; its seconds are recorded as `deviation_s`. A failed or spent measurement
+        records only that, leaving `deviation_mm` absent rather than invented. Looked up on the
         module at call time so a test can patch it.
         """
         if rcfg.CAD_REPAIR_MESH_PROBE != "live":
-            return None
+            return {}
         from meshpipeline.cad.repair import deviation
+        from meshpipeline.cad.repair.operations import _diagonal_of
 
-        return deviation.surface_deviation_mm(
-            before_shape, self.shape, tuple(dict.fromkeys(self._kept_faces)), budget_s=10.0)
+        budget = min(10.0, cap_s,
+                     float(self.remaining_s()) if self.remaining_s is not None else 10.0)
+        if budget <= 0:
+            return {"deviation_s": 0.0}
+        try:
+            diagonals = tuple(dict.fromkeys(_diagonal_of(shape) for shape in self._kept_inputs))
+        except Exception:  # noqa: BLE001 - evidence only
+            diagonals = ()
+        result = deviation.measure_deviation(
+            before_shape, self.shape, tuple(dict.fromkeys(self._kept_faces)),
+            budget_s=budget, diagonals=diagonals)
+        out: dict = {"deviation_s": result.seconds}
+        if result.faces is not None:
+            out.update(deviation_samples=result.samples, deviation_faces=result.faces,
+                       deviation_faces_skipped=result.faces_skipped)
+        if result.mm is not None:
+            out["deviation_mm"] = result.mm
+        return out
 
     @staticmethod
     def _package_refusal(package: TargetPackage) -> str:
