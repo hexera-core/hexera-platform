@@ -43,8 +43,8 @@ LABEL = "regions-rules-v1"
 #: WHICH EXISTING OPERATION THE BASELINE AIMS AT A MESH FAILURE (controller ruling R11b), and
 #: nothing else. An open loop is a face whose boundary gmsh could not close, which is the face
 #: fixer's own job; a surface-stage overlap is two surfaces whose discretisations cross, which only
-#: the whole-shape pass can re-sew. Every other mesh code gets NO package - an edge through a face,
-#: a periodic surface (flag off; see below), no volume, a timeout and anything unclassified need
+#: the whole-shape pass can re-sew. Every other mesh code gets NO package - an edge through a face
+#: and a periodic surface (flags off; see below), no volume, a timeout and anything unclassified need
 #: judgement no bounded operation in the catalogue makes - and so does a VOLUME-STAGE overlap,
 #: because the scoped (2D-only) probe that judges a package cannot see it go
 #: (`mesh_probe.volume_stage`).
@@ -54,17 +54,29 @@ LABEL = "regions-rules-v1"
 #: `split_closed_faces`, and only for a failure the probe recorded in the 2D stage (SURFACE_ONLY):
 #: gmsh raises a periodic failure while meshing surfaces, so any other stage - including one
 #: nobody recorded - is a failure this mapping does not understand, and gets no package.
-def mesh_ops(*, split_closed_faces: bool | None = None) -> dict[DefectCode, str]:
-    """MESH_OPS for the given consent (the deployment's flag when not told). Flag off is today's
+#:
+#: AN EDGE THROUGH A FACE joins only with CAD_REPAIR_FRAGMENT_BODIES, mapped to `fragment_bodies`,
+#: and only for a failure the probe recorded in the 3D stage (VOLUME_ONLY). This revises R11b's
+#: "an edge through a face gets no package", which predated an operation that answers it: the
+#: volume-stage refusal existed because a scoped (2D-only) probe could not judge the package, and
+#: a package carrying an operation that answers a volume code is now judged by WHOLE-SHAPE scans
+#: (`session.try_package`), which can.
+def mesh_ops(*, split_closed_faces: bool | None = None,
+             fragment_bodies: bool | None = None) -> dict[DefectCode, str]:
+    """MESH_OPS for the given consent (the deployment's flags when not told). Flags off is today's
     mapping, byte for byte."""
     if split_closed_faces is None:
         split_closed_faces = bool(rcfg.CAD_REPAIR_SPLIT_CLOSED_FACES)
+    if fragment_bodies is None:
+        fragment_bodies = bool(rcfg.CAD_REPAIR_FRAGMENT_BODIES)
     mapping = {
         DefectCode.mesh_open_loop: "fix_face_boundary",
         DefectCode.mesh_overlapping_facets: "fix_shape_global",
     }
     if split_closed_faces:
         mapping[DefectCode.mesh_periodic_surface] = "split_closed_faces"
+    if fragment_bodies:
+        mapping[DefectCode.mesh_edge_through_face] = "fragment_bodies"
     return mapping
 
 
@@ -74,11 +86,28 @@ MESH_OPS: dict[DefectCode, str] = mesh_ops()
 #: volume-stage refusal every mapping gets: an unrecorded stage is refused too.
 SURFACE_ONLY: frozenset[DefectCode] = frozenset({DefectCode.mesh_periodic_surface})
 
+#: Mesh codes whose mapping holds only when the probe RECORDED the 3D stage - and which are
+#: therefore EXEMPT from the volume-stage refusal: their package is proved by whole-shape scans.
+VOLUME_ONLY: frozenset[DefectCode] = frozenset({DefectCode.mesh_edge_through_face})
+
 _OPS_BY_NAME = {op.name: op for op in OPERATIONS}
 
 
 def _surface_stage(defect) -> bool:
     return (getattr(defect, "measurements", None) or {}).get("stage") == mesh_probe.STAGE_2D
+
+
+def _volume_stage_recorded(defect) -> bool:
+    return (getattr(defect, "measurements", None) or {}).get("stage") == mesh_probe.STAGE_3D
+
+
+def _stage_refused(defect) -> bool:
+    """Does the recorded stage put this mesh failure outside what its mapping understands?"""
+    if defect.code in VOLUME_ONLY:
+        return not _volume_stage_recorded(defect)
+    if mesh_probe.volume_stage(defect):
+        return True
+    return defect.code in SURFACE_ONLY and not _surface_stage(defect)
 
 
 def _is_mesh(defect) -> bool:
@@ -107,8 +136,7 @@ def _mesh_candidate(defects, history: RunHistory, *, reserved: frozenset) -> Can
             continue
         name = MESH_OPS.get(defect.code)
         # A NAME THE CATALOGUE DOES NOT HOLD IS NO OPERATION: refused, never a KeyError.
-        if (name is None or name not in _OPS_BY_NAME or mesh_probe.volume_stage(defect)
-                or (defect.code in SURFACE_ONLY and not _surface_stage(defect))):
+        if name is None or name not in _OPS_BY_NAME or _stage_refused(defect):
             history.refuse(defect.fingerprint, "no_operation_claims_it",
                            f"{defect.code.value} needs a judgement no bounded operation makes")
             continue

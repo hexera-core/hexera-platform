@@ -74,6 +74,19 @@ def _scope_blind(defect) -> bool:
     return _unlocated_mesh(defect) or (_is_mesh(defect) and mesh_probe.volume_stage(defect))
 
 
+def _judged_whole(package) -> bool:
+    """Must this package be proved by WHOLE-SHAPE scans rather than scoped ones?
+
+    Yes when any operation in its plan ANSWERS a volume-stage code (`mesh_probe.VOLUME_CODES`, the
+    family `_scope_blind` already refuses a scoped probe the right to clear). Such an operation is
+    aimed at a failure only the volume mesh shows, so a scoped (2D-only) probe would carry the
+    failure through unseen and roll every such operation back `target_remains` - the package could
+    never commit however right it was. The whole-shape probe builds the volume, so it can judge it.
+    """
+    return any(frozenset(getattr(item.get("op"), "answers", ())) & mesh_probe.VOLUME_CODES
+               for item in package.plan)
+
+
 def _mesh_judged(previous, found) -> tuple[tuple, tuple]:
     """Both sides of the progress rule, less the mesh findings that cannot speak to one operation.
 
@@ -786,6 +799,12 @@ class RepairSession:
         snapshot = (self.shape, self._defects, self.complete_scan, self.accounting)
         apply_s = 0.0
         verdicts: list[OpVerdict] = []
+        # A VOLUME-STAGE ANSWER IS PROVED ON THE WHOLE SHAPE (`_judged_whole`): every operation's
+        # re-inspection and the package's own proof below. The predicate still names only this
+        # region's entities (`_package_refusal`), so a whole-shape `defects_after` can only see
+        # MORE than a scoped one - the conservative direction for every check `evaluate` makes.
+        whole = _judged_whole(package)
+        scope = None if whole else region
 
         for item in package.plan:
             spent = self.clock() - started
@@ -805,13 +824,13 @@ class RepairSession:
             # then the only scan this plan adds to what an operation already costs.
             verdict = self.try_op(
                 item["op"], tuple(item["targets"]), item["defect_code"],
-                tolerance_mm=float(item.get("tolerance_mm", 0.0)), within=region)
+                tolerance_mm=float(item.get("tolerance_mm", 0.0)), within=scope)
             verdicts.append(verdict)
             apply_s += verdict.apply_s
             scan_s += verdict.scan_s
 
         scan_started = self.clock()
-        found, complete = self._region_scan(region)
+        found, complete = self._region_scan(region, whole_shape=whole)
         scan_s += self.clock() - scan_started
         defects_after = tuple(d.fingerprint for d in found)
         # Computed from what the scan actually found, so this reports relabelling that really
@@ -943,8 +962,9 @@ class RepairSession:
                 return f"malformed plan item {n}: missing {', '.join(missing)}"
         return ""
 
-    def _region_scan(self, region) -> tuple[tuple, bool]:
-        """ONE re-inspection, scoped to the region, for the whole package.
+    def _region_scan(self, region, *, whole_shape: bool = False) -> tuple[tuple, bool]:
+        """ONE re-inspection, scoped to the region, for the whole package - or of the WHOLE shape
+        when `whole_shape` (a plan answering a volume-stage code, `_judged_whole`).
 
         IT DOES NOT BECOME THE SESSION'S DEFECT LIST. A scoped list is exhaustive only within its
         scope, and `self._defects`/`self.complete_scan` are read as statements about the whole
@@ -956,7 +976,8 @@ class RepairSession:
         region it is as thorough as the original inspection was.
         """
         self.scan_count += 1
-        self.scoped_scan_count += 1
+        if not whole_shape:
+            self.scoped_scan_count += 1
         if self._injected:
             found, complete = self._scan(self.shape)
         else:
@@ -964,10 +985,14 @@ class RepairSession:
             if rcfg.CAD_REPAIR_HEAL_SELF_INTERSECTIONS:
                 remaining = self.remaining_s or (lambda: float(rcfg.CAD_REPAIR_TIMEOUT_S))
                 budget = face_scan_budget_s(remaining())
-            # ONE GROWN BOX FOR BOTH SIDES OF THE SCOPE, as in `_default_scan`.
-            found, complete = _localize_scan(self.shape, face_scan_s=budget, within=region,
-                                             scope_diagonal_mm=self.original.diagonal_mm)
-            found = self._with_mesh(found, self.shape, within=region)
+            if whole_shape:
+                found, complete = _localize_scan(self.shape, face_scan_s=budget)
+                found = self._with_mesh(found, self.shape, within=None)
+            else:
+                # ONE GROWN BOX FOR BOTH SIDES OF THE SCOPE, as in `_default_scan`.
+                found, complete = _localize_scan(self.shape, face_scan_s=budget, within=region,
+                                                 scope_diagonal_mm=self.original.diagonal_mm)
+                found = self._with_mesh(found, self.shape, within=region)
         return tuple(found), bool(complete)
 
     def _record_package(self, verdict: PackageVerdict) -> PackageVerdict:

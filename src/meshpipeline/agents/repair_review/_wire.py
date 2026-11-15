@@ -12,18 +12,25 @@ logger = logging.getLogger(__name__)
 #: CAD_REPAIR_SPLIT_CLOSED_FACES admits it to `operations.OPERATIONS` - the same flag, read the same
 #: way, so the model side can never offer (or refuse) what the catalogue does not hold.
 SPLIT_CLOSED = "split_closed_faces"
+#: The operation that answers an edge-through-face mesh failure between touching bodies, present
+#: ONLY when CAD_REPAIR_FRAGMENT_BODIES admits it - the same rule as SPLIT_CLOSED.
+FRAGMENT = "fragment_bodies"
 
 
-def catalogue(*, split_closed_faces: bool | None = None) -> tuple[str, ...]:
-    """The catalogue names for the given consent (the deployment's flag when not told). Pinned to
-    `operations.catalogue` in both flag states by test_catalogue_pinned_to_operations.py."""
+def catalogue(*, split_closed_faces: bool | None = None,
+              fragment_bodies: bool | None = None) -> tuple[str, ...]:
+    """The catalogue names for the given consent (the deployment's flags when not told). Pinned to
+    `operations.catalogue` in every flag state by test_catalogue_pinned_to_operations.py."""
+    import meshpipeline.settings.cad_repair as rcfg
+
     if split_closed_faces is None:
-        import meshpipeline.settings.cad_repair as rcfg
-
         split_closed_faces = bool(rcfg.CAD_REPAIR_SPLIT_CLOSED_FACES)
+    if fragment_bodies is None:
+        fragment_bodies = bool(rcfg.CAD_REPAIR_FRAGMENT_BODIES)
     return ("fix_small_edges", "fix_small_faces", "fix_face_boundary", "sew_faces",
             "fill_planar_hole", "fill_nonplanar_hole", "heal_self_intersections",
-            "fix_shape_global", *((SPLIT_CLOSED,) if split_closed_faces else ()))
+            "fix_shape_global", *((SPLIT_CLOSED,) if split_closed_faces else ()),
+            *((FRAGMENT,) if fragment_bodies else ()))
 
 
 CATALOGUE: tuple[str, ...] = catalogue()
@@ -39,7 +46,8 @@ CATALOGUE_LIMITS = (
     "beyond those slivers it cannot move, redraw or delete geometry, change dimensions, or edit "
     "the part by hand")
 
-def catalogue_text(*, split_closed_faces: bool | None = None) -> str:
+def catalogue_text(*, split_closed_faces: bool | None = None,
+                   fragment_bodies: bool | None = None) -> str:
     """One line per catalogued operation, for the same consent as `catalogue`."""
     lines = [
         "- fix_small_edges: merge edges too short to keep",
@@ -51,9 +59,13 @@ def catalogue_text(*, split_closed_faces: bool | None = None) -> str:
         "- heal_self_intersections: re-trim only the faces the kernel says cross each other",
         "- fix_shape_global: run the whole-shape healing pass",
     ]
-    if SPLIT_CLOSED in catalogue(split_closed_faces=split_closed_faces):
+    names = catalogue(split_closed_faces=split_closed_faces, fragment_bodies=fragment_bodies)
+    if SPLIT_CLOSED in names:
         lines.append(f"- {SPLIT_CLOSED}: split a closed (periodic) face - a full cylinder, cone, "
                      "sphere or torus with one seam - in two so the mesher can wrap it")
+    if FRAGMENT in names:
+        lines.append(f"- {FRAGMENT}: make two touching bodies share their contact faces so the "
+                     "volume mesh is conformal there; declined when the bodies overlap")
     return "\n".join(lines)
 
 

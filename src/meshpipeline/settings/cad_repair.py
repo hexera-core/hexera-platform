@@ -87,6 +87,14 @@ CAD_REPAIR_HEAL_SELF_INTERSECTIONS: bool = bool_env("CAD_REPAIR_HEAL_SELF_INTERS
 #: catalogue and out of the rules baseline's MESH_OPS entirely.
 CAD_REPAIR_SPLIT_CLOSED_FACES: bool = bool_env("CAD_REPAIR_SPLIT_CLOSED_FACES", "false")
 
+#: Make two TOUCHING bodies share their interface (`operations.FragmentBodies`: a general fuse over
+#: the pair), the standard answer when gmsh's volume stage finds an edge through a face because
+#: two bodies of an assembly meet without a conformal interface. It splits faces and moves no
+#: volume, but it rewrites how the customer's bodies are joined, so it is off by default and a
+#: deployment opts in. Interpenetrating bodies are always declined. Off keeps the operation out of
+#: the catalogue and out of the rules baseline's MESH_OPS entirely.
+CAD_REPAIR_FRAGMENT_BODIES: bool = bool_env("CAD_REPAIR_FRAGMENT_BODIES", "false")
+
 #: Sweep away SLIVER FACES - the sub-tolerance strips and spots a Boolean that just missed leaves
 #: behind. Separate from CAD_REPAIR_ALLOW_FACE_REMOVAL on purpose: that knob waives the
 #: face-removal check for EVERY operation in a run, while this one consents to a single bounded

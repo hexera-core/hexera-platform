@@ -1890,6 +1890,299 @@ class HealSelfIntersections:
                                    "precision_mm": float(tolerance_mm)})
 
 
+#: A common volume above this is INTERPENETRATION, at or below it the bodies touch: the same
+#: epsilon the body-pair census measured the corpus with (devtools/validation/body_pairs.py).
+FRAGMENT_EPS_MM3 = 1e-6
+
+INTERPENETRATION_REASON = ("the bodies interpenetrate; which body owns the shared volume is a "
+                           "judgement")
+
+
+def _solid_count(shape) -> int:
+    from OCP.TopAbs import TopAbs_SOLID
+
+    from meshpipeline.cad.repair.localize import _indexed
+
+    return int(_indexed(shape, TopAbs_SOLID).Extent())
+
+
+def _solid_owners(shape, face) -> tuple:
+    """Every SOLID that owns `face`, each once - never a shell (`_owners_of` falls back to shells,
+    and a fragment has no use for a body that is not a volume)."""
+    from OCP.TopAbs import TopAbs_FACE, TopAbs_SOLID
+    from OCP.TopExp import TopExp
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+
+    ancestors = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(shape, TopAbs_FACE, TopAbs_SOLID, ancestors)
+    if not ancestors.Contains(face):
+        return ()
+    distinct: list = []
+    for owner in ancestors.FindFromKey(face):
+        if not any(owner.IsSame(seen) for seen in distinct):
+            distinct.append(owner)
+    return tuple(distinct)
+
+
+def _bnd(shape):
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
+
+    box = Bnd_Box()
+    BRepBndLib.Add_s(shape, box)
+    return box
+
+
+def _meeting_partner(shape, body, face):
+    """The solid other than `body` whose bounding box meets `body`'s, nearest the failing `face`,
+    or None when no other solid's box meets it.
+
+    The bounding-box test is the census's prefilter: bodies whose boxes are apart cannot share an
+    interface, and the Boolean below is too dear to run on every pair. Among the candidates, the
+    one closest to the face gmsh's failure was located on is the one the failing edge belongs to.
+    """
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+    from OCP.TopAbs import TopAbs_SOLID
+
+    from meshpipeline.cad.repair.localize import _indexed
+
+    solids = _indexed(shape, TopAbs_SOLID)
+    own = _bnd(body)
+    best, best_distance = None, None
+    for index in range(1, solids.Extent() + 1):
+        other = solids.FindKey(index)
+        if other.IsSame(body) or own.IsOut(_bnd(other)):
+            continue
+        try:
+            extrema = BRepExtrema_DistShapeShape(face, other)
+            distance = float(extrema.Value()) if extrema.IsDone() else float("inf")
+        except Exception as exc:  # noqa: BLE001 - an unmeasurable pair is merely not nearest
+            logger.debug("fragment_bodies: no distance to solid %d (%s)", index, exc)
+            distance = float("inf")
+        if best is None or distance < best_distance:
+            best, best_distance = other, distance
+    return best
+
+
+def _common_volume(a, b) -> float | None:
+    """The volume the two bodies SHARE, or None when the kernel could not compute it - which the
+    caller declines on, never reading it as touching (the census's rule)."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
+
+    try:
+        common = BRepAlgoAPI_Common(a, b)
+        if not common.IsDone():
+            return None
+        props = GProp_GProps()
+        BRepGProp.VolumeProperties_s(common.Shape(), props)
+        return abs(float(props.Mass()))
+    except Exception as exc:  # noqa: BLE001 - a kernel failure is no measurement
+        logger.debug("fragment_bodies: common volume failed (%s)", exc)
+        return None
+
+
+def _general_fuse(a, b, faces) -> tuple[tuple[tuple, tuple], object]:
+    """Run the general fuse (`BOPAlgo_Builder`) over the TWO bodies only.
+
+    Returns `((pieces of a, pieces of b), history)`: each body's images (empty when the fuse left
+    it unmodified), and a ShapeBuild_ReShape recording what became of each of `faces` - the
+    kernel's own answer, so `mapping_from_context` reads it like any other operation's context.
+    Raises on a kernel failure; the session turns that into a `failed` verdict.
+    """
+    from OCP.BOPAlgo import BOPAlgo_Builder
+    from OCP.BRep import BRep_Builder
+    from OCP.ShapeBuild import ShapeBuild_ReShape
+    from OCP.TopoDS import TopoDS_Compound
+
+    builder = BOPAlgo_Builder()
+    builder.AddArgument(a)
+    builder.AddArgument(b)
+    # Deterministic: identical runs must produce identical shapes, and so identical reports.
+    builder.SetRunParallel(False)
+    builder.Perform()
+    if builder.HasErrors():
+        raise RuntimeError("fragment_bodies: the general fuse reported errors")
+
+    def pieces(shape) -> tuple:
+        return tuple(builder.Modified(shape))
+
+    history = ShapeBuild_ReShape()
+    for face in faces:
+        if builder.IsDeleted(face):
+            history.Remove(face)
+            continue
+        images = pieces(face)
+        if not images:
+            continue
+        if len(images) == 1:
+            history.Replace(face, images[0])
+            continue
+        compound = TopoDS_Compound()
+        assembler = BRep_Builder()
+        assembler.MakeCompound(compound)
+        for image in images:
+            assembler.Add(compound, image)
+        history.Replace(face, compound)
+    return (pieces(a), pieces(b)), history
+
+
+def _tally(shape) -> tuple[int, int, float]:
+    """`(solids, faces, surface area)` counted EXACTLY as `caps.measure` counts them, so what this
+    operation declares is what the session's caps will measure."""
+    from meshpipeline.cad.repair.conservative import _area_and_volume, _counts
+
+    counts = _counts(shape)
+    return (int(counts.get("solids", 0)), int(counts.get("faces", 0)),
+            float(_area_and_volume(shape).get("surface_area_mm2") or 0.0))
+
+
+class FragmentBodies:
+    """Make two TOUCHING bodies share their interface, so gmsh's volume mesh is conformal there.
+
+    WHAT IT ANSWERS: `mesh_edge_through_face` recorded in the 3D stage. On a multi-body part this
+    is, as a rule, two bodies of an assembly that meet without a shared interface: each body is
+    surface-meshed on its own, the two triangulations of the contact cross, and the volume mesher
+    finds an edge of one piercing a facet of the other. The standard CAE fix is a general fuse
+    (fragment) over the pair: the contact becomes faces BOTH bodies own, meshed once.
+
+    WHAT IT MAY TOUCH: the failing face's owning SOLID and ONE partner - the other solid whose
+    bounding box meets the owner's and which lies nearest the failing face. The fuse is run over
+    those two bodies only and each is spliced back as its image; every other body is untouched,
+    and both bodies are KEPT (a fragment, never a union).
+
+    WHY INTERPENETRATION IS DECLINED: if the two bodies share VOLUME (the census measured 11 of 23
+    multi-solid failures with such a pair), the fuse would cut out the shared region as a third
+    solid nobody drew, and which body owns that volume is a judgement about the design - not a
+    repair. Decided by a `BRepAlgoAPI_Common` volume against FRAGMENT_EPS_MM3, as the census did.
+
+    WHY IT TARGETS A FACE AND NOT THE TWO SOLIDS: `targets_for` receives only the defect, never the
+    shape, and the session's `_carries` check needs a target carrying the defect - the face. The
+    pair is resolved here, against the shape, which is also where "the part has one solid" can
+    actually be known.
+
+    WHAT IT DECLARES, every number measured with the counters `caps.measure` uses:
+      solids_delta - expected 0, and asserted: a body lost is a decline, never a silent kept op.
+      faces_added  - the exact face-count delta (the contact split into shared patches).
+      AREA_DELTA   - the measured surface-area change, declared as measured. On a clean touch it
+                     is ~0: the counters walk faces per owner, so the shared interface is counted
+                     on both bodies as each body's touching face was before.
+      VOLUME_DELTA - 0.0: a fragment of touching bodies moves no volume; kernel noise is the
+                     cumulative cap's to judge.
+
+    WHY EACH DECLINE EXISTS, in the order checked:
+      fragmenting_disabled - CAD_REPAIR_FRAGMENT_BODIES, the consent, is absent.
+      no face was named / one_face_only / not_resolved - nothing (or too much) to aim at.
+      single_body          - fewer than two solids: there is no pair (abc/00506550 is such a part).
+      no_owner             - the face belongs to no solid.
+      already_shared       - two solids already own the face: that contact is conformal.
+      no_partner           - no other solid's box meets the owner's: nothing it could touch.
+      unmeasured           - the kernel could not measure the common volume; never read as a touch.
+      interpenetrating     - see above.
+      nothing_fragmented   - the fuse modified neither body: there was no contact to share.
+      body_split           - the fuse cut a body into pieces: that is a new solid, not an interface.
+      solid_lost           - the spliced part has fewer solids than before.
+    """
+
+    name = "fragment_bodies"
+    answers = frozenset({DefectCode.mesh_edge_through_face})
+    #: Two whole bodies: wider than any face fix, narrower than the whole-shape pass.
+    scope = 8
+
+    def targets_for(self, defect) -> tuple[EntityRef, ...]:
+        import meshpipeline.settings.cad_repair as rcfg
+        from meshpipeline.cad.repair.mesh_probe import STAGE_3D
+
+        if not rcfg.CAD_REPAIR_FRAGMENT_BODIES:
+            return ()
+        if getattr(defect, "code", None) not in self.answers:
+            return ()
+        if defect.entity_type != "face" or not getattr(defect, "fingerprint", ""):
+            return ()
+        # AN EDGE THROUGH A FACE IS 3D-STAGE EVIDENCE BY NATURE: gmsh raises it while building the
+        # volume. `mesh_probe` records a stage on EVERY mesh defect, so the data allows requiring
+        # it exactly - an unrecorded or other stage is evidence this operation does not read, and
+        # it declines to aim at it (the fail-toward-not-acting direction split_closed_faces takes
+        # for its 2D stage). Here, so every path obeys it, the operation-at-a-time planner too.
+        if (getattr(defect, "measurements", None) or {}).get("stage") != STAGE_3D:
+            return ()
+        return (EntityRef(entity_type="face", fingerprint=defect.fingerprint,
+                          entity_index=int(defect.entity_index),
+                          ambiguous=bool(getattr(defect, "ambiguous", False))),)
+
+    def apply(self, shape, targets: tuple[EntityRef, ...], *,
+              tolerance_mm: float) -> OpOutcome:
+        import meshpipeline.settings.cad_repair as rcfg
+
+        def declined(reason: str, **measured) -> OpOutcome:
+            # NO DECLARATION ON A DECLINE, for SplitClosedFaces' reason: the shape is unchanged.
+            return OpOutcome(shape=shape, evidence={"declined": reason,
+                                                    "faces_targeted": len(targets), **measured})
+
+        if not rcfg.CAD_REPAIR_FRAGMENT_BODIES:
+            return declined("fragmenting_disabled (CAD_REPAIR_FRAGMENT_BODIES)")
+        if not targets:
+            return declined("no face was named")
+        if len(targets) > 1:
+            return declined(f"one_face_only ({len(targets)} targets named)")
+        ref = targets[0]
+        face = sub_shape(shape, "face", ref.entity_index) if ref.entity_type == "face" else None
+        if face is None:
+            return declined("not_resolved (the target face is not in this shape)")
+        solids = _solid_count(shape)
+        if solids < 2:
+            return declined(f"single_body (the part has {solids} solid(s); there is no pair of "
+                            "bodies to fragment)")
+        owners = _solid_owners(shape, face)
+        if not owners:
+            return declined("no_owner (the face belongs to no solid)")
+        if len(owners) > 1:
+            return declined(f"already_shared ({len(owners)} solids already own the face)")
+        owner = owners[0]
+        partner = _meeting_partner(shape, owner, face)
+        if partner is None:
+            return declined("no_partner (no other solid's bounding box meets the owner's)")
+        common = _common_volume(owner, partner)
+        if common is None:
+            return declined("unmeasured (the kernel could not measure the bodies' common "
+                            "volume; an unmeasured pair is never read as touching)")
+        if common > FRAGMENT_EPS_MM3:
+            return declined(f"interpenetrating (common volume {common:.6g} mm3): "
+                            f"{INTERPENETRATION_REASON}", common_volume_mm3=float(common))
+
+        (owner_pieces, partner_pieces), history = _general_fuse(owner, partner, (face,))
+        if not owner_pieces and not partner_pieces:
+            return declined("nothing_fragmented (the fuse modified neither body: there is no "
+                            "contact to share)", common_volume_mm3=float(common))
+        if len(owner_pieces) > 1 or len(partner_pieces) > 1:
+            return declined(f"body_split (the fuse cut the bodies into {len(owner_pieces)} and "
+                            f"{len(partner_pieces)} pieces)", common_volume_mm3=float(common))
+        replacements = [(body, pieces[0]) for body, pieces in
+                        ((owner, owner_pieces), (partner, partner_pieces)) if pieces]
+        spliced, _ = splice(shape, replacements)
+
+        solids_before, faces_before, area_before = _tally(shape)
+        solids_after, faces_after, area_after = _tally(spliced)
+        solids_delta = solids_after - solids_before
+        if solids_delta < 0:
+            # NEVER SILENT: the caps would also refuse it, but the operation says it first.
+            return declined(f"solid_lost (the fuse left {solids_after} of {solids_before} "
+                            "solids)", solids_delta=int(solids_delta),
+                            common_volume_mm3=float(common))
+        diagonal = _diagonal_of(shape)
+        mapping = mapping_from_context(history, targets, shape_before=shape, diagonal_mm=diagonal)
+        return OpOutcome(shape=spliced, mapping=mapping,
+                         added=_split_fingerprints(shape, spliced, diagonal_mm=diagonal),
+                         evidence={"solids_delta": int(solids_delta),
+                                   "faces_added": int(faces_after - faces_before),
+                                   AREA_DELTA: round(float(area_after - area_before), 6),
+                                   VOLUME_DELTA: 0.0,
+                                   "common_volume_mm3": float(common),
+                                   "bodies": 2, "faces_targeted": 1,
+                                   "precision_mm": float(tolerance_mm)})
+
+
 class FixShapeGlobal:
     """Today's whole-shape `ShapeFix_Shape`, kept as the LAST RESORT.
 
@@ -1964,18 +2257,21 @@ class FixShapeGlobal:
                                    "modes": "solid,free_shell,free_face,same_parameter"})
 
 
-def catalogue(*, split_closed_faces: bool | None = None) -> tuple[RepairOp, ...]:
+def catalogue(*, split_closed_faces: bool | None = None,
+              fragment_bodies: bool | None = None) -> tuple[RepairOp, ...]:
     """Every operation the loop may run, narrowest first.
 
-    `split_closed_faces` ENTERS ONLY WITH ITS CONSENT (CAD_REPAIR_SPLIT_CLOSED_FACES, read when not
-    told): flag off, the catalogue is today's, byte for byte. The ORDER here is documentation - the
-    planner sorts on `scope`, so adding one in the wrong place changes nothing but a reader's
-    expectations.
+    `split_closed_faces` and `fragment_bodies` ENTER ONLY WITH THEIR CONSENT
+    (CAD_REPAIR_SPLIT_CLOSED_FACES, CAD_REPAIR_FRAGMENT_BODIES, each read when not told): flags
+    off, the catalogue is today's, byte for byte. The ORDER here is documentation - the planner
+    sorts on `scope`, so adding one in the wrong place changes nothing but a reader's expectations.
     """
-    if split_closed_faces is None:
-        import meshpipeline.settings.cad_repair as rcfg
+    import meshpipeline.settings.cad_repair as rcfg
 
+    if split_closed_faces is None:
         split_closed_faces = bool(rcfg.CAD_REPAIR_SPLIT_CLOSED_FACES)
+    if fragment_bodies is None:
+        fragment_bodies = bool(rcfg.CAD_REPAIR_FRAGMENT_BODIES)
     return (
         FixSmallEdges(),
         *((SplitClosedFaces(),) if split_closed_faces else ()),
@@ -1985,6 +2281,7 @@ def catalogue(*, split_closed_faces: bool | None = None) -> tuple[RepairOp, ...]
         FillPlanarHole(),
         FillNonplanarHole(),
         HealSelfIntersections(),
+        *((FragmentBodies(),) if fragment_bodies else ()),
         FixShapeGlobal(),
     )
 
