@@ -143,9 +143,14 @@ def test_checkmesh_already_prints_the_piece_sizes_and_they_are_kept():
 """
     q = parse_check_mesh(out)
     assert q["regions"] == 6
-    assert q["piece_cells"] == [91226027, 6666, 1, 1, 1, 97217]
-    # And a mesh in one piece says nothing about pieces, rather than saying [1].
-    assert "piece_cells" not in parse_check_mesh("    cells:            10\nMesh OK.\n")
+    # `region_cells` HERE and `piece_cells` on the report, which is the same split the count
+    # already has: checkMesh says "regions" and this reader speaks its vocabulary, while a
+    # RegionReport is one region whose mesh may be in several pieces. `read_region` maps one to
+    # the other, exactly as it maps `regions` to `pieces`.
+    assert q["region_cells"] == (91226027, 6666, 1, 1, 1, 97217)
+    assert sum(q["region_cells"]) == q["cells"], "the pieces account for every cell"
+    # And a mesh in one piece says nothing about pieces, rather than saying (10,).
+    assert "region_cells" not in parse_check_mesh("    cells:            10\nMesh OK.\n")
 
 
 def test_the_piece_refusal_hands_over_the_sizes_and_asserts_no_cause():

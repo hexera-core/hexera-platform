@@ -8,10 +8,10 @@ import logging
 import time
 from pathlib import Path
 
+import meshpipeline.engines.determinism as det
 from meshpipeline.engines.cfmesh_conjugate import plan as PL
 from meshpipeline.engines.cfmesh_conjugate.conjugate import ConjugateError, build
 from meshpipeline.engines.cfmesh_conjugate.foam_exec import _DEFAULT_BASHRC
-import meshpipeline.engines.determinism as det
 
 logger = logging.getLogger(__name__)
 
@@ -727,7 +727,14 @@ def _as_dict(report, plan: PL.ConjugatePlan) -> dict:
             # unskewed. None is carried as None: a quality number that was not measured is not
             # zero, and a gate reading 0.0 for "not measured" passes everything.
             r.name: {"cells": int(r.cells), "volume_m3": float(r.volume_m3),
-                     "pieces": int(r.pieces), "mesh_ok": bool(r.mesh_ok),
+                     "pieces": int(r.pieces),
+                     # THE SIZES BESIDE THE COUNT, and named here or they do not exist on the
+                     # other side: this dict is what finalize reads across the container
+                     # boundary. The count arrived alone for every run until now, and it is the
+                     # one reading that separates a passage cut in half from cells that were
+                     # never coolant. [[project-corintis-island-diagnosis]]
+                     "piece_cells": [int(x) for x in r.piece_cells],
+                     "mesh_ok": bool(r.mesh_ok),
                      "fatal": list(r.fatal), "patches": dict(r.patches),
                      "max_non_ortho": r.max_non_ortho,
                      "max_skewness": r.max_skewness,

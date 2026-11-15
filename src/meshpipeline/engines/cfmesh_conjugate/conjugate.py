@@ -910,6 +910,44 @@ def fluid_seeds(fluid_stl, *, background_cell_m: float,
     return [s["point_m"] for s in found], said
 
 
+#: How many pieces are named one by one before the sentence summarises instead. Eight, because the
+#: sizes exist to say WHICH of two causes to look at first and a handful of them does that: one
+#: large piece beside tiny ones is mislabelled cells, two large ones is a passage cut in half. This
+#: engine has really produced a 367-piece coolant - the first customer cold plate, 99,172,391 cells
+#: - and listing those would be a wall nobody reads in a refusal nobody then acts on.
+PIECES_LISTED = 8
+
+
+def piece_sizes_said(sizes) -> str:
+    """The piece sizes as one sentence, or that they were not read.
+
+    ONE SPELLING OF THESE NUMBERS, used by all three places that say them: the engine's own
+    problem list, the manifest's `coolant_pieces_short` criterion, and the customer-facing
+    `coolant_pieces` gate. They disagreed before, and a reader comparing a report card against a
+    log had to work out whether two different sentences were about the same mesh.
+
+    AND AN ABSENT READING IS STATED AS ABSENT. checkMesh prints the sizes only when it writes the
+    region cellSets, so a mesh in one body has none and an older log may have none either. Saying
+    nothing would read as "the sizes are not interesting here"; inventing one - the whole region as
+    a single piece - would be a measurement nobody took.
+    """
+    n = [int(x) for x in (sizes or ())]
+    if not n:
+        return "checkMesh did not print the piece sizes, so this reading is the count alone."
+    if len(n) <= PIECES_LISTED:
+        return "The pieces are " + " / ".join(f"{x:,}" for x in n) + " cells."
+    # Sorted for the summary and only for the summary: once the list is too long to print, what a
+    # reader needs is the shape of the distribution rather than the region numbering.
+    big = sorted(n, reverse=True)
+    ones = sum(1 for x in n if x == 1)
+    said = ("The largest pieces are "
+            + " / ".join(f"{x:,}" for x in big[:PIECES_LISTED - 1])
+            + f" cells and the smallest is {min(n):,}")
+    if ones:
+        said += f", and {ones:,} of the {len(n):,} are a single cell"
+    return said + "."
+
+
 def seed_drop(log_text: str) -> tuple[int, int] | None:
     """(cells the orientation test tagged, cells the seeds kept) out of topoSet's own log.
 
@@ -1399,7 +1437,7 @@ def read_region(quality: dict, name: str) -> RegionReport:
         volume_m3=float(quality.get("total_volume") or 0.0),
         # checkMesh prints the piece count only when it looks; absent means one body.
         pieces=int(quality.get("regions") or 1),
-        piece_cells=tuple(int(x) for x in (quality.get("piece_cells") or ())),
+        piece_cells=tuple(int(x) for x in (quality.get("region_cells") or ())),
         max_non_ortho=quality.get("max_non_ortho"),
         max_skewness=quality.get("max_skewness"),
         fatal=tuple(quality.get("fatal") or ()),
@@ -1499,13 +1537,10 @@ def verify(report: ConjugateReport, *, expect_fluid_volume_m3: float | None = No
         # the resolution. checkMesh prints the sizes beside the count for nothing extra, and they
         # are what separates the two causes, so they are what this hands over.
         # [[project-corintis-island-diagnosis]]
-        sizes = ""
-        if report.fluid.piece_cells:
-            sizes = (" The pieces are "
-                     + " / ".join(f"{n:,}" for n in report.fluid.piece_cells) + " cells.")
         p.append(
             f"fluid is in {report.fluid.pieces} disconnected piece(s), expected "
-            f"{expect_fluid_pieces}.{sizes} checkMesh still calls the mesh OK, because a piece "
+            f"{expect_fluid_pieces}. {piece_sizes_said(report.fluid.piece_cells)} checkMesh "
+            "still calls the mesh OK, because a piece "
             "with no face path to the others is not a geometric defect to it. Two different "
             "things arrive here looking the same and the count cannot separate them: cells too "
             "coarse to hold a passage together, or cells tagged as coolant that are not coolant. "
@@ -2059,6 +2094,6 @@ __all__ = ["ConjugateError", "ConjugateReport", "RegionReport", "PortPlan",
            "background_complaint", "MIN_BACKGROUND_CELLS_ACROSS_BLOCK",
            "part_size_complaint", "MAX_PART_M",
            "children_peak_rss_bytes",
-           "render_meshdict", "render_toposetdict", "interface_cell_m",
+           "render_meshdict", "render_toposetdict", "interface_cell_m", "PIECES_LISTED", "piece_sizes_said",
            "FLUID_CELLS", "SEED_KEEP_MARKER", "fluid_seeds", "seed_drop",
            "read_region", "boundary_patches", "interface_faces", "verify", "build"]

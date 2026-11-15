@@ -519,9 +519,16 @@ def parse_check_mesh(out: str) -> dict:
     # size: the coolant was in six pieces, and three of those pieces are a SINGLE cell, which says
     # on sight that the question is which cells were tagged rather than how big they are.
     # [[project-corintis-island-diagnosis]]
-    pc = [int(x) for x in re.findall(r"Writing region \d+ with (\d+) cells to cellSet", out)]
+    #
+    # BY REGION INDEX, not by where the line appears. The numbers identify region0 as the passage
+    # and region5 as the second shell, and an order taken from the text happens to agree today
+    # without being the thing being read. `Writing region information to "constant/cellToRegion"`
+    # is printed first in the same shape and is not a piece; it has no "with N cells" and so
+    # cannot match. Absent when checkMesh printed no sizes, which is every mesh in one body: a
+    # reading never taken is empty, not a one-element list of the whole region.
+    pc = re.findall(r"Writing region (\d+) with (\d+) cells to cellSet", out)
     if pc:
-        q["piece_cells"] = pc
+        q["region_cells"] = tuple(int(n) for _k, n in sorted(pc, key=lambda kv: int(kv[0])))
     mb = re.search(r"Overall domain bounding box \(([-\d.eE+\s]+?)\)\s*\(([-\d.eE+\s]+?)\)", out)
     if mb:
         try:

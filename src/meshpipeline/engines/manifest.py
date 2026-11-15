@@ -174,6 +174,29 @@ def _published_volume(ws: Path, volume_path: str | None) -> str | None:
     return volume_path
 
 
+def _published_surface(ws: Path, name: str = "mesh.msh") -> str | None:
+    """The surface the manifest may publish: a FILE a reader can open, or None.
+
+    THE SAME RULE AS THE VOLUME, applied to the key beside it. `mesh_paths.surface` was an
+    unconditional `str((ws / "mesh.msh").resolve())` one line below the guard whose own docstring
+    states the standard - "Absence is a real, stated state; a stand-in path is not" - so a
+    workspace with no mesh.msh still published a path to one. Every engine writes that file on a
+    successful run, which is why nothing caught it; what it costs is on the paths where the file is
+    NOT there, because a reader then gets a dangling name instead of a stated absence and
+    `review_session.resolve_raw` raises the same EVIDENCE_MISSING for both while saying the wrong
+    thing about which happened.
+
+    `mesh_paths.surface` is `required=True` in all seven review bundles, so None is not a quiet
+    downgrade: it is the absence those bundles already know how to refuse on, stated once instead
+    of discovered by opening it.
+    """
+    p = (ws / name).resolve()
+    if not p.is_file():
+        logger.warning("manifest: no %s in %s - no surface published", name, ws)
+        return None
+    return str(p)
+
+
 def _validation_block(types: set, owner: bool, fc: dict, roles: dict) -> dict:
     return {
         "has_wall": "wall" in types,
@@ -275,7 +298,7 @@ def write_manifest(workspace, *, patch_types: dict, patch_entities: dict,
         "patches": patch_entities or {p: [] for p in roles},
         "patch_types": roles,
         "patch_face_counts": fc, "quality": quality,
-        "mesh_paths": {"surface": str((ws / "mesh.msh").resolve()), "volume": volume_path},
+        "mesh_paths": {"surface": _published_surface(ws), "volume": volume_path},
         # the engine's own slices when it names them (a thermal model's: across the board and
         # through the hottest parts), else the generic ones through the body. Every slice is a
         # cut through the VOLUME: with none published there is nothing to cut, so none is promised.

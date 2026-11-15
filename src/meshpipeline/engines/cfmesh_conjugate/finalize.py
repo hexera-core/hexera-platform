@@ -169,6 +169,12 @@ def quality_of(ws: Path, report: dict) -> dict:
                      "cells": int(r.get("cells") or 0),
                      "volume_m3": float(r.get("volume_m3") or 0.0),
                      "pieces": int(r.get("pieces") or 0),
+                     # THE SIZES, the third hop of three they have to survive: native._as_dict,
+                     # conjugate_report.json, here, mesh_manifest.json. Job 6ddb58aa's manifest
+                     # carried 23 readings of its coolant, down to a 329,153,282-byte
+                     # concaveCells.vtp, and `pieces: 6` with no sizes - the one reading that
+                     # identifies the defect was the only one the chain dropped.
+                     "piece_cells": [int(x) for x in (r.get("piece_cells") or ())],
                      "mesh_ok": bool(r.get("mesh_ok")),
                      "fatal": list(r.get("fatal") or []),
                      # PER REGION, which is the only way these mean anything here. The coolant is
@@ -229,6 +235,7 @@ def quality_of(ws: Path, report: dict) -> dict:
         "coolant_volume_m3": meshed,
         "coolant_expected_m3": expected,
         "coolant_pieces": int(fluid.get("pieces") or 0),
+        "coolant_piece_cells": [int(x) for x in (fluid.get("piece_cells") or ())],
         "coolant_pieces_expected": int(plan.get("expect_fluid_pieces") or 0),
         "empty_patches": blank,
         "ports": report.get("ports"),
@@ -348,7 +355,16 @@ def _pieces_short(q: dict) -> list[str]:
     want, got = int(q["coolant_pieces_expected"]), int(q["coolant_pieces"])
     if want <= 0 or got == want:
         return []
-    return [f"the coolant came out as {got} piece(s) where the part's geometry has {want}"]
+    # WITH THE SIZES IN THE SENTENCE, because this string IS the criterion's `measured` value and
+    # therefore the line a reader of the report card is given. The count alone sent a ten-agent
+    # investigation at the cell size on a mesh whose four extra pieces were metal; three of them
+    # were a single cell, which says on sight that the question is which cells were tagged.
+    # `conjugate.piece_sizes_said` is the one spelling, shared with the engine's own problem list
+    # and with the customer-facing gate, so a reader comparing them sees one mesh.
+    from meshpipeline.engines.cfmesh_conjugate.conjugate import piece_sizes_said
+
+    return [f"the coolant came out as {got} piece(s) where the part's geometry has {want}. "
+            + piece_sizes_said(q.get("coolant_piece_cells"))]
 
 
 #: HOW MANY PRISM LAYERS A CONJUGATE MESH HAS, and the number is not a shortfall to be fixed.

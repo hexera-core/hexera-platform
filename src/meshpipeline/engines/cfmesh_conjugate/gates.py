@@ -182,19 +182,30 @@ def _gate_coolant_pieces(ctx: GateCtx) -> tuple[bool, str]:
 
     A SECOND, INDEPENDENT READING of the same question the volume gate asks, and it catches what
     the volume cannot: a mesh that found the right total volume in the wrong number of places. One
-    network meshed as two disconnected halves has lost the slot that joins them, and the solver
-    will run on it and report no flow between the levels.
+    network meshed as two disconnected halves has lost the slot that joins them.
+
+    AND IT NAMES NO CAUSE. This sentence - the one a customer actually reads - used to end
+    "Passages that should join have been cut apart by the mesh.", which the gate never measures
+    and which was false on the part it was written against: the four extra pieces were 247.998 mm3
+    of bulk METAL the inside/outside test had tagged as coolant, not a severed passage, and three
+    of them were a single cell. The sizes say which of the two to look at first, so the sizes are
+    what it hands over. [[project-corintis-island-diagnosis]]
     """
+    from meshpipeline.engines.cfmesh_conjugate.conjugate import piece_sizes_said
+
     q = _q(ctx)
     want = int(q.get("coolant_pieces_expected") or 0)
     got = int(q.get("coolant_pieces") or 0)
     if want <= 0 or got == want:
         return True, ""
+    more = ("Two different things arrive here looking the same and the count cannot separate "
+            "them: passages that should join and were cut apart, or cells tagged as coolant that "
+            "are not coolant."
+            if got > want else
+            "Passages that are separate in the part have been merged.")
     return False, refuse(
         f"[REGION_SPLIT_FAILED] the coolant came out as {got} separate piece(s) where the part's "
-        f"own geometry has {want}. "
-        + ("Passages that should join have been cut apart by the mesh."
-           if got > want else "Passages that are separate in the part have been merged."),
+        f"own geometry has {want}. {piece_sizes_said(q.get('coolant_piece_cells'))} {more}",
         FailureCause.REGION_SPLIT)
 
 
