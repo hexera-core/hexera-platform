@@ -41,7 +41,8 @@ _DEFECT_WORDS: dict[str, str] = {
     "mesh_open_loop": "a boundary loop that does not close",
     "mesh_periodic_surface": "a curved surface the mesher cannot wrap",
     "mesh_no_volume": "a closed surface with no solid inside it to fill",
-    "mesh_timeout": "a part the mesher gave up on after too long",
+    "mesh_timeout": "a part the mesher could not be checked on in time",
+    "mesh_probe_error": "a part the mesher check could not complete",
     "mesh_other": "a place the mesher refused for a reason it did not give",
 }
 

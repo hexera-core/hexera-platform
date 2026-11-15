@@ -1,27 +1,31 @@
 # Responsibility: Ask gmsh whether a B-rep will mesh and, when it will not, say why - which kind of
 #                 failure, which gmsh surface tags, and where - plus every surface's bounding box.
-# Boundaries: it meshes in a throwaway child process and reports. It mutates no shape and repairs
+# Boundaries: it meshes in a freshly exec'd interpreter (never a fork: production calls from a
+#             threaded process, where a forked child's first gmsh import can crash or hang) and reports. It mutates no shape and repairs
 #             nothing. gmsh is imported only inside the child, never at module level, so this module
 #             imports (and `classify` runs) on a host with no gmsh.
-# Collaborates with: cad/repair/localize.py (`_bounded` supplies the forked, killable child; its
-#                    `_centroid_and_box`, `_stamped` and `in_region` place and name the defects
+# Collaborates with: cad/repair/localize.py (its `_centroid_and_box`, `_stamped` and `in_region` place and name the defects
 #                    `mesh_defects` turns a failure into, so they read exactly like a scan's).
 from __future__ import annotations
 
 import bisect
+import json
 import logging
+import os
 import re
+import signal
+import subprocess
+import sys
 import tempfile
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Literal
 
 from meshpipeline.cad.repair.contracts import DefectCode, DefectSeverity
 from meshpipeline.cad.repair.localize import (
     EntityDefect,
-    _bounded,
     _bounds_of,
     _centroid_and_box,
     _indexed,
@@ -40,6 +44,8 @@ OPEN_LOOP = "open_loop"
 PERIODIC_SURFACE = "periodic_surface"
 NO_VOLUME = "no_volume"
 TIMEOUT = "timeout"
+#: The probe child died (non-zero exit, a signal) without answering: not a timeout, not a verdict.
+PROBE_ERROR = "probe_error"
 OTHER = "other"
 
 #: Which step of the child's work raised. A surface read off the log is the one being meshed only
@@ -188,25 +194,96 @@ def _probe_child(path: str, diagonal_mm: float, surfaces: tuple[int, ...] | None
             pass
 
 
+def _child_main(argv: Sequence[str]) -> int:
+    """`python -m meshpipeline.cad.repair.mesh_probe PATH DIAGONAL SURFACES VOLUME`: one JSON line."""
+    path, diagonal, surfaces, volume = argv
+    wanted = json.loads(surfaces)
+    count, failure, boxes = _probe_child(
+        path, float(diagonal), None if wanted is None else tuple(wanted), volume == "1")
+    sys.stdout.write("\n" + json.dumps({
+        "volume_elements": count,
+        "failure": None if failure is None else {
+            "kind": failure.kind, "surfaces": list(failure.surfaces),
+            "point": None if failure.point is None else list(failure.point),
+            "message": failure.message, "stage": failure.stage,
+            "surfaces_from_log": failure.surfaces_from_log},
+        "tag_boxes": {str(k): list(v) for k, v in boxes.items()}}) + "\n")
+    sys.stdout.flush()
+    return 0
+
+
+def _kill_group(proc: subprocess.Popen) -> None:
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        proc.kill()
+
+
+def _run_child(path: str, diagonal_mm: float, surfaces: tuple[int, ...] | None, volume: bool,
+               budget_s: float) -> dict[str, Any] | None | Literal["error"]:
+    """The child's JSON answer; None when it ran out of budget; "error" when it died unanswering."""
+    cmd = [sys.executable, "-W", "ignore", "-m", "meshpipeline.cad.repair.mesh_probe", path,
+           repr(float(diagonal_mm)), json.dumps(None if surfaces is None else list(surfaces)),
+           "1" if volume else "0"]
+    proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL, start_new_session=True, text=True)
+    try:
+        out, _ = proc.communicate(timeout=max(budget_s, 0.0))
+    except subprocess.TimeoutExpired:
+        _kill_group(proc)
+        try:
+            proc.communicate(timeout=5)
+        except Exception:  # noqa: BLE001
+            pass
+        return None
+    finally:
+        if proc.poll() is None:
+            _kill_group(proc)
+    lines = [ln for ln in (out or "").splitlines() if ln.strip()]
+    if proc.returncode != 0 or not lines:
+        return "error"
+    try:
+        answer = json.loads(lines[-1])
+    except ValueError:
+        return "error"
+    return answer if isinstance(answer, dict) else "error"
+
+
 def probe_file(path: Path, *, diagonal_mm: float, surfaces: Sequence[int] | None = None,
                volume: bool = True, budget_s: float = 120.0) -> ProbeResult:
-    """Mesh `path` in a bounded child and report. NEVER raises, never blocks past `budget_s`.
+    """Mesh `path` in a bounded fresh interpreter and report. NEVER raises, never blocks past
+    `budget_s` (plus a few seconds to reap the child).
 
     `surfaces=None` meshes everything; an empty sequence meshes nothing and only fills `tag_boxes`.
-    A child that crashed or ran out of budget is a TIMEOUT failure.
+    A child that ran out of budget is a TIMEOUT failure; one that died without answering is a
+    PROBE_ERROR failure.
     """
     wanted = None if surfaces is None else tuple(int(s) for s in surfaces)
     try:
-        answer = _bounded(_probe_child, str(path), float(diagonal_mm), wanted, bool(volume),
-                          budget_s=budget_s)
+        answer = _run_child(str(path), float(diagonal_mm), wanted, bool(volume), budget_s)
     except Exception as exc:  # noqa: BLE001 - the probe never raises
         logger.info("mesh_probe: %s: %s", type(exc).__name__, exc)
-        answer = None
+        answer = "error"
     if answer is None:
         return ProbeResult(False, 0, MeshFailure(
-            TIMEOUT, (), None,
-            f"the mesh probe crashed or ran past its {budget_s:g} s budget"), {})
-    count, failure, boxes = answer
+            TIMEOUT, (), None, f"the mesh probe ran past its {budget_s:g} s budget"), {})
+    if isinstance(answer, str):
+        return ProbeResult(False, 0, MeshFailure(
+            PROBE_ERROR, (), None, "the mesh probe process died without an answer"), {})
+    try:
+        raw = answer["failure"]
+        failure = None if raw is None else MeshFailure(
+            kind=str(raw["kind"]), surfaces=tuple(int(x) for x in raw["surfaces"]),
+            point=None if raw["point"] is None else (
+                float(raw["point"][0]), float(raw["point"][1]), float(raw["point"][2])),
+            message=str(raw["message"]), stage=str(raw["stage"]),
+            surfaces_from_log=bool(raw["surfaces_from_log"]))
+        boxes = {int(k): (float(v[0]), float(v[1]), float(v[2]), float(v[3]), float(v[4]),
+                          float(v[5])) for k, v in answer["tag_boxes"].items()}
+        count = int(answer["volume_elements"])
+    except (KeyError, TypeError, ValueError):
+        return ProbeResult(False, 0, MeshFailure(
+            PROBE_ERROR, (), None, "the mesh probe answered in a form that could not be read"), {})
     if failure is not None:
         return ProbeResult(False, 0, failure, boxes)
     return ProbeResult(True, count, None, boxes)
@@ -220,11 +297,17 @@ CODE_FOR_KIND: dict[str, DefectCode] = {
     PERIODIC_SURFACE: DefectCode.mesh_periodic_surface,
     NO_VOLUME: DefectCode.mesh_no_volume,
     TIMEOUT: DefectCode.mesh_timeout,
+    PROBE_ERROR: DefectCode.mesh_probe_error,
     OTHER: DefectCode.mesh_other,
 }
 
+#: Every mesh code, and the two that mean the mesher was never heard from rather than that it
+#: refused (a probe skipped, unwritable, out of time, or dead). Only the rest are evidence.
+MESH_CODES = frozenset(CODE_FOR_KIND.values())
+NO_ANSWER_CODES = frozenset({DefectCode.mesh_timeout, DefectCode.mesh_probe_error})
+
 #: Kinds that are about the whole part, never one face: no surface gmsh names for them is a cause.
-_WHOLE_PART_KINDS = frozenset({NO_VOLUME, TIMEOUT})
+_WHOLE_PART_KINDS = frozenset({NO_VOLUME, TIMEOUT, PROBE_ERROR})
 
 #: How far a gmsh surface's box may sit from an OCC face's and still be that face, as a fraction
 #: of the part's diagonal. gmsh reads the very BREP the face came from and boxes it with the same
@@ -452,3 +535,7 @@ def _tag_in_region(tag: int, box: Box, mapping: dict[int, int], faces, within: R
                                entity_type="face", entity_index=index, message="",
                                location=location)
     return in_region(provisional, within, diagonal_mm=diagonal_mm)
+
+
+if __name__ == "__main__":
+    raise SystemExit(_child_main(sys.argv[1:]))

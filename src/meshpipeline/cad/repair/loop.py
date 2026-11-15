@@ -11,6 +11,7 @@ import time
 from dataclasses import dataclass, field, replace
 
 import meshpipeline.settings.cad_repair as rcfg
+from meshpipeline.cad.repair import mesh_probe
 from meshpipeline.cad.repair.contracts import DefectSeverity
 
 # The ONE list of sources whose directive may answer a held defect, shared with RepairPlanner so
@@ -112,13 +113,17 @@ def _errors_remain(session: RepairSession) -> bool:
 
 
 def only_mesh_errors(defects) -> bool:
-    """Are there error-severity defects, and is every one of them a `mesh_*` code?
+    """Is every error-severity defect a mesh code, and is at least one of them EVIDENCE?
 
-    Only a live mesh probe emits those codes, so with the flag off this is always False.
+    Evidence is a mesh code other than the two "no answer" ones (`mesh_timeout`,
+    `mesh_probe_error`): those also come from a skipped, unwritable or dead probe, so a list holding
+    only them says the mesher was not heard from, not that it refused. Only a live probe emits any
+    of these codes, so with the flag off this is always False.
     """
     errors = [d for d in defects if d.severity in _ERRORS]
-    return bool(errors) and all(str(getattr(d.code, "value", d.code)).startswith("mesh_")
-                                for d in errors)
+    return (bool(errors)
+            and all(d.code in mesh_probe.MESH_CODES for d in errors)
+            and any(d.code not in mesh_probe.NO_ANSWER_CODES for d in errors))
 
 
 def _abandoned(session: RepairSession) -> bool:

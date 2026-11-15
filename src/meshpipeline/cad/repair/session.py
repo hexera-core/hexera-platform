@@ -84,7 +84,7 @@ def _mesh_judged(previous, found) -> tuple[tuple, tuple]:
     is not news. Non-mesh codes are judged exactly as before; with the probe off nothing here
     has a mesh code, so both sides come back as they went in.
     """
-    timed_out = any(d.code is DefectCode.mesh_timeout for d in (*previous, *found))
+    timed_out = any(d.code in mesh_probe.NO_ANSWER_CODES for d in (*previous, *found))
 
     def keep(d) -> bool:
         return not _unlocated_mesh(d) and not (timed_out and _is_mesh(d))
@@ -361,10 +361,10 @@ class RepairSession:
         # obeyed.
         probed = tuple(mesh_probe.mesh_defects(shape, diagonal_mm=self.original.diagonal_mm,
                                                budget_s=budget, within=within))
-        if probed and all(d.code is DefectCode.mesh_timeout for d in probed):
+        if probed and all(d.code in mesh_probe.NO_ANSWER_CODES for d in probed):
             # The probe ran out of time: report that, and keep what it knew before.
             carried = tuple(d for d in self._carried(within)
-                            if d.code is not DefectCode.mesh_timeout)
+                            if d.code not in mesh_probe.NO_ANSWER_CODES)
             return (*found, *carried, *probed)
         if within is not None:
             # A SCOPED PROBE IS 2D-ONLY, so a located volume-stage finding in the region was not

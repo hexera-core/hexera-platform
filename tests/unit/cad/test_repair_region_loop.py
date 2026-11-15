@@ -1071,7 +1071,9 @@ def _terminals(defects, *, complete=True, escalated=False, fallback="no_candidat
 
 def test_a_final_list_of_only_mesh_errors_is_unmeshable():
     from meshpipeline.cad.repair.loop import UNMESHABLE
-    for codes in ([DefectCode.mesh_timeout], [DefectCode.mesh_open_loop, DefectCode.mesh_other]):
+    for codes in ([DefectCode.mesh_open_loop],
+                  [DefectCode.mesh_open_loop, DefectCode.mesh_other],
+                  [DefectCode.mesh_timeout, DefectCode.mesh_overlapping_facets]):
         region, baseline = _terminals([_mesh_defect(c) for c in codes])
         assert region == baseline == UNMESHABLE == "unmeshable"
 
@@ -1101,3 +1103,27 @@ def test_receipt_has_words_for_unmeshable():
     for code in DefectCode:
         if code.value.startswith("mesh_"):
             assert _DEFECT_WORDS[code.value].strip()
+
+
+def test_only_no_answer_mesh_errors_keep_the_fallback():
+    # A timeout or a dead probe is the mesher not being heard from, not evidence it refused.
+    for codes in ([DefectCode.mesh_timeout], [DefectCode.mesh_probe_error],
+                  [DefectCode.mesh_timeout, DefectCode.mesh_probe_error]):
+        for fallback in ("time_budget", "stalled"):
+            assert _terminals([_mesh_defect(c) for c in codes], fallback=fallback) == (
+                fallback, fallback)
+
+
+def test_mesh_errors_plus_an_abandoned_fingerprint_is_unmeshable():
+    from types import SimpleNamespace
+
+    from meshpipeline.cad.repair.region_loop import _terminal
+    # Intended: an abandoned warning is not an error, and the mesher's refusal is the stronger
+    # evidence, so it is said rather than hidden behind the generic fallback.
+    mesh = _mesh_defect()
+    warning = _defect("a", DefectSeverity.warning)
+    op = SimpleNamespace(op="x", kept=False, reason="rolled_back", targets=(warning.fingerprint,))
+    verdict = SimpleNamespace(verdicts=(op,), committed=False, reclassified=())
+    session = SimpleNamespace(complete_scan=True)
+    assert _terminal(session, (mesh, warning), escalated=False, packages=(verdict,),
+                     fallback="no_candidate") == "unmeshable"

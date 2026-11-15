@@ -62,6 +62,7 @@ _REPAIRABLE: frozenset[str] = frozenset({
     DefectCode.mesh_periodic_surface.value,
     DefectCode.mesh_no_volume.value,
     DefectCode.mesh_timeout.value,
+    DefectCode.mesh_probe_error.value,
     DefectCode.mesh_other.value,
 })
 

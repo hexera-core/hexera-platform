@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -23,6 +24,7 @@ from meshpipeline.cad.repair.mesh_probe import (  # noqa: E402
     OPEN_LOOP,
     OVERLAPPING_FACETS,
     PERIODIC_SURFACE,
+    PROBE_ERROR,
     TIMEOUT,
     probe_file,
 )
@@ -100,14 +102,46 @@ def test_tag_boxes_cover_every_surface(tmp_path):
     assert only_boxes.volume_elements == 0
 
 
-def test_probe_survives_child_crash(monkeypatch, tmp_path):
-    def crash(*_args):
-        os._exit(139)
-
-    monkeypatch.setattr(mesh_probe, "_probe_child", crash)
+@pytest.mark.parametrize("body", ["kill -SEGV $$", "exit 3"])
+def test_probe_survives_child_crash(monkeypatch, tmp_path, body):
+    # A child that dies without an answer (by signal, or non-zero) is a PROBE_ERROR, not a TIMEOUT.
+    fake = tmp_path / "python"
+    fake.write_text(f"#!/bin/sh\n{body}\n")
+    fake.chmod(0o755)
+    monkeypatch.setattr(sys, "executable", str(fake))
     result = probe_file(_write(_box(), tmp_path / "box.brep"), diagonal_mm=17.3)
     assert result.meshed is False
+    assert result.failure is not None and result.failure.kind == PROBE_ERROR
+
+
+def test_a_hung_child_group_is_killed_at_the_budget(monkeypatch, tmp_path):
+    fake = tmp_path / "python"
+    fake.write_text("#!/bin/sh\nsleep 30 &\nwait\n")
+    fake.chmod(0o755)
+    monkeypatch.setattr(sys, "executable", str(fake))
+    start = time.monotonic()
+    result = probe_file(_write(_box(), tmp_path / "box.brep"), diagonal_mm=17.3, budget_s=1.0)
+    assert time.monotonic() - start < 4.0
     assert result.failure is not None and result.failure.kind == TIMEOUT
+
+
+def test_probe_from_a_thread_with_gmsh_unimported_in_the_parent(tmp_path):
+    """The production shape: repair runs under `asyncio.to_thread`, gmsh never imported here."""
+    import subprocess
+
+    brep = _write(_box(), tmp_path / "box.brep")
+    code = (
+        "import asyncio, sys\n"
+        "from pathlib import Path\n"
+        "from meshpipeline.cad.repair.mesh_probe import probe_file\n"
+        "async def main():\n"
+        f"    r = await asyncio.to_thread(probe_file, Path({str(brep)!r}), diagonal_mm=17.3)\n"
+        "    assert 'gmsh' not in sys.modules\n"
+        "    return r\n"
+        "r = asyncio.run(main())\n"
+        "print('MESHED', r.meshed, r.volume_elements)\n")
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120)
+    assert "MESHED True" in out.stdout, out.stdout + out.stderr
 
 
 def test_budget_is_honoured():

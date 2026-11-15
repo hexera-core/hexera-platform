@@ -86,11 +86,12 @@ def test_every_kind_has_a_code():
         OTHER,
         OVERLAPPING_FACETS,
         PERIODIC_SURFACE,
+        PROBE_ERROR,
         TIMEOUT,
     )
 
     kinds = {OVERLAPPING_FACETS, EDGE_THROUGH_FACE, OPEN_LOOP, PERIODIC_SURFACE, NO_VOLUME,
-             TIMEOUT, OTHER}
+             TIMEOUT, PROBE_ERROR, OTHER}
     assert set(CODE_FOR_KIND) == kinds
     assert len(set(CODE_FOR_KIND.values())) == len(kinds)   # one-to-one
     assert all(isinstance(code, DefectCode) for code in CODE_FOR_KIND.values())
@@ -104,7 +105,8 @@ def test_mesh_codes_are_repairable_not_judgement():
 
     mesh = {c.value for c in DefectCode if c.value.startswith("mesh_")}
     assert mesh == {"mesh_overlapping_facets", "mesh_edge_through_face", "mesh_open_loop",
-                    "mesh_periodic_surface", "mesh_no_volume", "mesh_timeout", "mesh_other"}
+                    "mesh_periodic_surface", "mesh_no_volume", "mesh_timeout", "mesh_probe_error",
+                    "mesh_other"}
     assert mesh <= _REPAIRABLE
     assert not mesh & _NEEDS_JUDGEMENT
 

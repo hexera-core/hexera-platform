@@ -65,6 +65,7 @@ class DefectCode(str, Enum):
     mesh_periodic_surface = "mesh_periodic_surface"
     mesh_no_volume = "mesh_no_volume"
     mesh_timeout = "mesh_timeout"
+    mesh_probe_error = "mesh_probe_error"
     mesh_other = "mesh_other"
 
 

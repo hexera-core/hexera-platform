@@ -476,33 +476,32 @@ def test_a_lone_rim_in_its_own_region_is_still_filled(tmp_path, _filling_on):
 
 
 def test_a_file_no_operation_answers_ends_unmeshable_not_resolved(monkeypatch):
-    """The probe sees a failure no current operation answers, and the run says so.
+    """The probe names a failure no current operation answers, and the run says so.
 
     No committable fixture fails gmsh (synthetic overlaps mesh fine), so this reads the external
-    mesh-failure corpus and skips when it is absent. `bug32596` is a periodic surface that times
-    out once OCP has read it.
+    mesh-failure corpus and skips when it is absent. This file fails with overlapping facets,
+    located on a face, after OCP reads it.
     """
     import os
     from pathlib import Path
 
-    # Imported in THIS process on purpose: the probe forks, and a child that has to dlopen gmsh
-    # after the parent has started threads aborts, which reads as a timeout and proves nothing.
-    pytest.importorskip("gmsh", reason="gmsh is a native-tier dependency")
     from meshpipeline.cad.repair.brep import _read_shape
+    from meshpipeline.cad.repair.contracts import DefectCode
     from meshpipeline.cad.repair.loop import RESOLVED, UNMESHABLE
 
     corpus = Path(os.environ.get("HEXERA_MESH_FAIL_CORPUS",
                                  "~/archductor/mesh-fail-corpus")).expanduser()
-    path = corpus / "occt/bug32596_abc_0_13.step"
+    path = corpus / "abc/00500400_bce216c87d2d17025db6ab36_step_000.step"
     if not path.is_file():
         pytest.skip(f"mesh-failure corpus file {path} is absent (set HEXERA_MESH_FAIL_CORPUS)")
     monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
-    # The file only ever times out, so a short budget reaches the same verdict in seconds.
-    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE_TIMEOUT_S", 10.0)
 
     shape = _read_shape(path)
     run = run_regions(shape, author=rules_author(shape, original=measure(shape)),
                       tolerance_mm=0.1, budget=_budget())
 
     assert run.stopped_because != RESOLVED
+    codes = {d.code for d in run.defects_after}
+    assert DefectCode.mesh_overlapping_facets in codes, codes
+    assert not codes & {DefectCode.mesh_timeout, DefectCode.mesh_probe_error}, codes
     assert run.stopped_because == UNMESHABLE, run.stopped_because
