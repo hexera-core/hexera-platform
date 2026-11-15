@@ -86,13 +86,21 @@ def test_all_four_size_refusals_say_so():
 def test_every_refusing_to_start_names_itself_truthfully():
     """Every `refusing to start` log line must file a marker that means what the line says.
 
-    Seven of them now: the four size refusals carry TOO_FINE, the units refusal carries
+    Eight of them now: the four size refusals carry TOO_FINE, the units refusal carries
     NOT_METRES, a coolant whose two ports are on pieces that do not touch carries SEVERED_COOLANT,
-    and a boundary layer ask that cannot be satisfied carries LAYERS_IMPOSSIBLE. The last two have
-    their own markers for exactly the reason this test exists - nothing about the budget, the
-    resolution or the machine changes either of them, and filing them as TOO_FINE would send the
-    next reader to lower a cell count on a part that is not solvable at any count, or whose stack
-    simply does not fit inside one background cell.
+    a boundary layer ask that cannot be satisfied carries LAYERS_IMPOSSIBLE, and a port DECLARED
+    on a mouth that opens into another part carries SEALED_PORT. The last three have their own
+    markers for exactly the reason this test exists - nothing about the budget, the resolution or
+    the machine changes any of them, and filing them as TOO_FINE would send the next reader to
+    lower a cell count on a part that is not solvable at any count, or whose stack simply does not
+    fit inside one background cell, or whose named outlet is not an outlet.
+
+    SEALED_PORT is not SEVERED_COOLANT either, and the two are a pair worth keeping apart. Severed
+    says "these two ends are real and do not connect", which wants the CAD opened; sealed says
+    "that one is not an end", which the customer can fix at intake by naming a mouth that opens to
+    the outside. Measured on job e8256476, where both are live on one part: its declared inlet and
+    its declared outlet_2 are both on passage 0, so the connectivity check PASSES and only the
+    sealed one fires.
 
     The rule the original defect broke is the one being held - a refusal's marker is what survives
     into the failure record, so it has to say the true thing - and not the count, which only ever
@@ -101,7 +109,7 @@ def test_every_refusing_to_start_names_itself_truthfully():
     """
     src = _source()
     starts = [m.start() for m in re.finditer(r"refusing to start", src)]
-    assert len(starts) == 7, f"expected seven refusals, found {len(starts)}"
+    assert len(starts) == 8, f"expected eight refusals, found {len(starts)}"
     # EACH REFUSAL'S OWN MARKER IS THE NEXT ONE IN THE SOURCE, not whatever appears before the
     # next log line. The window form this replaces only worked while the refusals happened to sit
     # together: the units refusal comes earlier in `drive` than the coolant one, so its window
@@ -115,6 +123,7 @@ def test_every_refusing_to_start_names_itself_truthfully():
     assert seen.count("NOT_METRES") == 1, f"expected one units refusal, found {seen}"
     assert seen.count("SEVERED_COOLANT") == 1, f"expected one severed-coolant refusal: {seen}"
     assert seen.count("LAYERS_IMPOSSIBLE") == 1, f"expected one layer refusal: {seen}"
+    assert seen.count("SEALED_PORT") == 1, f"expected one sealed-port refusal: {seen}"
     assert "NO_COOLANT" not in seen, f"a refusal still blames the coolant: {seen}"
 
 
@@ -122,5 +131,6 @@ def test_the_marker_is_exported():
     assert "TOO_FINE" in D.__all__
     assert "SEVERED_COOLANT" in D.__all__
     assert "LAYERS_IMPOSSIBLE" in D.__all__
-    # the three say different things, so they must not be the same string
-    assert len({D.TOO_FINE, D.SEVERED_COOLANT, D.LAYERS_IMPOSSIBLE}) == 3
+    assert "SEALED_PORT" in D.__all__
+    # the four say different things, so they must not be the same string
+    assert len({D.TOO_FINE, D.SEVERED_COOLANT, D.LAYERS_IMPOSSIBLE, D.SEALED_PORT}) == 4

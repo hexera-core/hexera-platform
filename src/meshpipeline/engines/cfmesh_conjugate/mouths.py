@@ -70,6 +70,17 @@ class Stub:
     radius: float                   # metres, from the mouth's own flow area
     length: float                   # metres, mouth to just past the face
     volume: float                   # metres^3 it adds to the coolant
+    #: Whether anything of the assembly lies straight ahead of the mouth, from the surface
+    #: record's own `clear_ahead`. False means it opens into another part rather than into air, so
+    #: no coolant reaches it and it is not a port in EITHER direction. `stubs_for`, the box path,
+    #: has refused such a mouth since it was written, and `cad/scout._name_openings` was corrected
+    #: the same way on 2026-11-13 and 2026-11-14; the SHELL path, which every real customer part
+    #: takes, read the flag at neither end.
+    #:
+    #: True when nobody measured it, which neither promotes nor demotes a mouth: an older record
+    #: or another extractor must not start refusing parts that were fine, so the flag has to be
+    #: explicitly False to mean anything.
+    reaches_air: bool = True
 
     @property
     def flush(self) -> bool:
@@ -415,6 +426,16 @@ def shell_stubs(ports: list) -> list:
     happens to reach does not come into it, and that is the point: `plan_ports` refused the first
     customer assembly for reaching no opposite pair of faces, which was true of its cuboid and
     said nothing about its plumbing.
+
+    EVERY MOUTH, INCLUDING ONE WITH NOTHING CLEAR AHEAD OF IT. `stubs_for` skips such a mouth and
+    is right to: there a stub would be a passage bored through metal that is not in the CAD. Here
+    there is nothing to bore, cutting is free, and the cut is what produces the measurement. Job
+    6ddb58aa cut the blind 11.8 mm lid port, topoSet selected 0 of the coolant's 2,640 wall_outer
+    faces into its box, createPatch removed the zero-sized patch and `empty_patches` came out
+    EMPTY, so no gate can fire on it - while a face count of zero in the delivered boundary is the
+    only thing that tells "the coolant does not reach it" from "we chose not to look". The flag is
+    carried on the Stub instead, so `sealed_declared` can refuse a port DECLARED on such a mouth
+    before the mesher starts, which is the one thing that was costing whole runs.
     """
     from meshpipeline.engines.cfmesh_conjugate import conjugate as C
 
@@ -427,8 +448,67 @@ def shell_stubs(ports: list) -> list:
             continue
         out.append(Stub(port=k, passage=int(port.get("passage") or 0), face=C.OUTER_PATCH,
                         centroid=centroid, normal=normal, radius=radius,
-                        length=0.0, volume=0.0))
+                        length=0.0, volume=0.0,
+                        reaches_air=bool(port.get("clear_ahead", True))))
     return out
+
+
+def sealed_declared(stubs: list, named: list | None) -> str:
+    """Why a port DECLARED at intake cannot be cut where it was declared, or "" when it can.
+
+    ONE QUESTION ONLY: does a mouth the customer named an inlet or an outlet have anything of the
+    assembly straight ahead of it? If it does, no coolant reaches it, the patch comes back with
+    zero faces, createPatch deletes it for being empty, and the run is refused at the END for a
+    boundary the mesh does not carry. The flag that answers it is measured by the surface
+    extraction and written into its own record; until now nothing on the shell path read it.
+
+    MEASURED TWICE ON THE SAME PART, both at the end of a mesh:
+
+      job 6ddb58aa  no declaration existed, so the engine INVENTED coolant_in on the blind 11.8 mm
+                    lid port. 0 of wall_outer's 2,640 faces in its box; "Removed zero-sized patch
+                    coolant_in type patch at position 2"; refused for "the inlet was to be
+                    coolant_in, and the fluid region has no patch of that name". 283,410,955
+                    cells, 11,217.3 s of mesher time on an n2-highmem-64.
+      job e8256476  the USER declared that same mouth outlet_2, under a patches_contract.txt
+                    headed "USER-CONFIRMED AT INTAKE - ENFORCED BY THE PIPELINE". The identical
+                    box, the identical 0 faces, the same removal, refused for "the outlet was to
+                    be outlet_2". 14,910.8 s, on a second 64-core machine.
+
+    The first case is closed by naming no ends when nothing was declared (`port_rows(roles=False)`).
+    This is the second, and it has to be a REFUSAL rather than a warning: the customer approved a
+    boundary the mesh cannot carry, so `flowable` and `patch_contract` will refuse it anyway. What
+    changes is that they are told now, and told which two things would fix it.
+
+    `named` is `declared_for`'s output - one (name, role) per stub, or None when the declaration
+    could not be bound by position. A None is not a claim about any mouth, so it is not refused.
+    A `wall` is not a flow boundary either: job 6ddb58aa's own plan put a wall on its third mouth
+    and that was correct.
+    """
+    if not stubs or not named:
+        return ""
+    bad = []
+    for k, st in enumerate(stubs):
+        row = named[k] if k < len(named) else None
+        if not row:
+            continue
+        name, role = str(row[0]), str(row[1]).strip().lower()
+        if role not in ("inlet", "outlet") or st.reaches_air:
+            continue
+        where = ", ".join(f"{v * 1000:.1f}" for v in st.centroid)
+        bad.append(f"the declared {role} {name} is on the {2000.0 * st.radius:.3f} mm mouth at "
+                   f"({where}) mm")
+    if not bad:
+        return ""
+    many = len(bad) > 1
+    return ("; ".join(bad)
+            + (". Those mouths open" if many else ". That mouth opens")
+            + " into another part rather than into air - the surface reading found nothing clear "
+            "ahead of " + ("them" if many else "it") + " - so no coolant reaches "
+            + ("them" if many else "it") + " and a patch cut there comes back with zero faces. "
+            "The mesh would be built and then refused for a boundary it does not carry, which has "
+            "happened twice on this shape. Either declare the port on a mouth that opens to the "
+            "outside, or open the metal ahead of this one in the CAD. The mouth is still cut, "
+            "unassigned, so its face count stays in the delivered boundary as the evidence.")
 
 
 def port_rows(stubs: list, *, inlet: str = "coolant_in",

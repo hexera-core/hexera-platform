@@ -47,6 +47,14 @@ BUILD_FAILED = "conjugate_build_failed"
 #: surface rather than on the finished mesh.
 SEVERED_COOLANT = "conjugate_coolant_severed"
 
+#: A PORT WAS DECLARED ON A MOUTH NO COOLANT REACHES, and its own marker for the same reason
+#: SEVERED_COOLANT has one: nothing about the budget, the resolution or the machine changes it, and
+#: it is a different defect from a severed circuit. There the two ends are real and do not connect;
+#: here one of the ends is not an end. It is also the one of the two that the CUSTOMER can fix
+#: without touching the CAD, by declaring the port on a mouth that opens to the outside. See
+#: `mouths.sealed_declared` for the two runs that paid for it.
+SEALED_PORT = "conjugate_port_sealed"
+
 #: The gate a refusal before meshing stands in for. `manifest_valid` is the one that already
 #: covers "a mesh over budget" alongside a mesher that stopped and a boundary that is missing
 #: (application/final_result._gate_account says so in those words), and a part priced out before
@@ -701,6 +709,9 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     # name. See conjugate.render_port_patch_dicts.
     port_patches = None
     ports_said = ""
+    #: Why a port the customer declared cannot be cut where they declared it, read at the same
+    #: moment the mouths are, and acted on beside the other geometry refusal below.
+    sealed_said = ""
     if rec.get("ports"):
         from meshpipeline.engines.cfmesh_conjugate import mouths as MO
         from meshpipeline.engines.workspace_facts import port_declaration
@@ -751,6 +762,10 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
             _named, _named_why = MO.declared_for(stubs, _declared)
             if _named_why:
                 logger.info("conjugate: %s - job_id=%s", _named_why, job_id)
+            # ASKED HERE, where the binding of names to mouths has just been done and the mouths'
+            # own measurements are in hand. Acted on below, beside `ports_on_one_passage`, because
+            # that is the path a refusal before meshing already takes.
+            sealed_said = MO.sealed_declared(stubs, _named)
             port_patches, ports_said = MO.port_rows(stubs, named=_named, roles=_asked_ports)
             logger.info("conjugate: %d stub(s) added %.4f mm3 to the coolant; %s - job_id=%s",
                         len(stubs), added * 1e9, ports_said, job_id)
@@ -778,6 +793,20 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     # MEASURED, job b6762d5c, 2026-11-13: ColdPlateAssembly_CLEAN.step was meshed to 326,631,400
     # cells over 2 h 29 m on a 64-core machine before anything noticed that its inlet and its
     # outlet are on pieces 0.5 mm of metal apart.
+    # AND IS EITHER OF THE TWO ENDS AN END AT ALL? Asked first because it is the narrower
+    # question and the cheaper fix: `ports_on_one_passage` answers "these two ends do not connect",
+    # which on this shape is true and wants the CAD opened, while this answers "that one is not an
+    # end", which the customer can fix at intake by naming a mouth that opens to the outside. The
+    # two are complementary rather than alternatives - on job e8256476 the declared inlet and the
+    # declared outlet_2 are both on passage 0, so the connectivity check passes and only this one
+    # fires. `mouths.sealed_declared` carries both runs it is written against.
+    if sealed_said:
+        logger.info("conjugate: refusing to start - %s - job_id=%s", sealed_said, job_id)
+        _say_why_before_meshing(ws, sealed_said, job_id=job_id, priced_out=False, geometry=True)
+        await run.fence("deliver builder outcome")
+        return False, SEALED_PORT, run.outcome(produced_deliverable=False, exhausted=True,
+                                               failure_marker=SEALED_PORT)
+
     from meshpipeline.cad.fluid_passages import ports_on_one_passage
     from meshpipeline.cad.stl_io import read_stl_triangles
 
@@ -1023,6 +1052,6 @@ def _finer(fidelity: str) -> str:
         return "" if (fidelity or "").strip().lower() == ladder[-1] else ladder[-1]
 
 
-__all__ = ["BUILD_FAILED", "NO_COOLANT", "NOT_METRES", "NO_SOURCE", "SEVERED_COOLANT",
+__all__ = ["BUILD_FAILED", "NO_COOLANT", "NOT_METRES", "NO_SOURCE", "SEALED_PORT", "SEVERED_COOLANT",
            "LAYERS_IMPOSSIBLE", "TOO_FINE", "cad_scale",
            "coolant_sits_inside", "declared_port_names", "drive", "find_source", "skin_bounds"]
