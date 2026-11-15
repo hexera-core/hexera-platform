@@ -77,6 +77,43 @@
 - [ ] **Step 4: Native test** on a touch-only corpus file from Task 1's census (pick from its JSON; if the census found none suitable, build a two-touching-boxes BREP fixture — synthetic is acceptable here because the op's input condition, not gmsh failure, is what is under test; note it). Assert kept + declared interface faces. Then one corpus edge-through-face file end-to-end: report whether it now meshes; `abc/00506550...` is the known single-solid case (fragment will decline there — assert the decline reason reaches the report).
 - [ ] **Step 5: Flag-off identity, gates, commit.**
 
+
+### Task 3b: Locate a no-coordinates PLC failure by contact measurement
+
+Added 2026-11-14 after Task 3: on every corpus candidate, gmsh's PLC edge-through-face error names
+no point and no surface, so the defect stays unlocated and the loop can never propose
+`fragment_bodies`. The probe locates it instead from the geometry itself: the failure's necessary
+condition is a body pair without a conformal interface, and the kernel can find that pair.
+
+**Files:**
+- Modify: `src/meshpipeline/cad/repair/mesh_probe.py` (`mesh_defects`)
+- Test: `tests/unit/cad/test_repair_mesh_probe.py`, `tests/native/test_native_repair_mesh_probe.py`
+
+**Interfaces:**
+- Produces: inside `mesh_defects`, when the classified failure is `EDGE_THROUGH_FACE` with no
+  trusted surfaces and no point, and the shape holds more than one solid: find bbox-meeting solid
+  pairs; for the nearest pair (`BRepExtrema_DistShapeShape` between the solids, bounded by the
+  probe's remaining budget and a pair cap of 8), take the SUPPORT FACES at the minimal-distance
+  points on each body and emit one located `mesh_edge_through_face` per support face (stage "3d",
+  `measurements["located_by"] = "contact-pair"`), stamped like every located defect. No pair found,
+  budget out, or a single-solid part: unlocated, exactly as today.
+- The `located_by` marker is the honesty flag: a contact-located defect is OUR inference, not
+  gmsh's words, and the report must show which it was.
+
+- [ ] **Step 1: Failing unit tests** — `test_plc_without_coordinates_is_located_by_contact` (fake
+  pair-finder seam: two solids, support faces 3 and 7 → two located defects with `located_by`),
+  `test_single_solid_plc_stays_unlocated`, `test_contact_search_respects_budget` (expired deadline
+  → unlocated), `test_located_by_marker_present`. RED run.
+- [ ] **Step 2: Implement**; the kernel pair search sits behind an injectable seam (unit-hermetic),
+  native tests cover the real kernel: two touching boxes → the contact faces are the supports;
+  corpus `abc/00506275` → `mesh_defects` returns located edge-through-face defects whose
+  fingerprints match localize's for those faces.
+- [ ] **Step 3: End-to-end native** — region loop on `abc/00506275`, probe live +
+  `CAD_REPAIR_FRAGMENT_BODIES=true`: `fragment_bodies` is PROPOSED and KEPT (needs Task 3 fix
+  round's revealed-not-damage ruling), the revealed overlap is carried, run honest about the
+  residual. skipif HEXERA_SLOW_CORPUS with measured numbers if over 5 minutes.
+- [ ] **Step 4: Gates, one targeted commit.**
+
 ### Task 4: `mesh_open_loop` reach — measure, then extend `fix_face_boundary`
 
 **Files:**
