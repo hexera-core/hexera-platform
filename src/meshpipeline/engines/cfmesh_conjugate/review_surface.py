@@ -412,6 +412,38 @@ def _merge_fit_notes(notes, before: list[dict], after: list[dict]) -> dict | Non
             "patches": {k: v for n in live for k, v in (n.get("patches") or {}).items()}}
 
 
+def _index_dir(ws: Path, region: str) -> Path:
+    """Where `boundary_index.write_index` leaves one region's sidecar."""
+    return ws / "constant" / region / "polyMesh" / "boundaryIndex"
+
+
+def _patches_from_index(ws: Path, region: str) -> list[dict]:
+    """One region's boundary as the same patch dicts `_read_patch` returns, out of its sidecar.
+
+    `surface_from_index` is documented as returning "`boundary_surface`'s own two return values"
+    and produces exactly the dict `fit_to_budget` consumes - name, face_count, points as raw
+    float32 bytes, polys as raw uint32 - which is the shape `_read_patch` was already handing the
+    same budget. `region=` does the "<region>/<patch>" prefixing that `_is_interface` reads, so
+    this does not prefix it a second time.
+
+    `with_area=False` because nothing downstream of here reads `area_m2` and computing it is a
+    pass over every face of a 31-million-face patch.
+
+    Never raises: a sidecar that is absent, stale or unreadable is an empty list, and the caller
+    treats that the same way it treats an unreadable .vtp.
+    """
+    from meshpipeline.render.index_surface import surface_from_index
+
+    try:
+        patches, _stats = surface_from_index(
+            ws / "constant" / region / "polyMesh",
+            region=region, skip_names=(SOLID_TO_FLUID,), with_area=False)
+    except Exception as exc:  # noqa: BLE001 - any trouble with the sidecar is "no surface here"
+        logger.warning("conjugate review: %s has no usable boundary index (%s)", region, exc)
+        return []
+    return [p for p in patches if int(p.get("face_count") or 0) > 0]
+
+
 def build_region_msh(workspace, *, into: dict | None = None,
                      budget_left_s: float | None = None
                      ) -> tuple[dict[str, list[int]], tuple | None]:
@@ -524,8 +556,34 @@ def build_region_msh(workspace, *, into: dict | None = None,
     # conjugate.build's own assertion, which is where it bites first; closing it is one decision
     # about the coupled case taken in all three places at once, not a loop widened here.
     per_region = {r: _patch_files(ws, r) for r in (FLUID_REGION, SOLID_REGION)}
-    if not any(per_region.values()):
-        logger.info("conjugate review: no VTK boundary beside the mesh, nothing to convert")
+    # THE SIDECAR IS THE OTHER WAY IN, and it is the reason a run that writes no volume export can
+    # still be reviewed.
+    #
+    # WHAT IT COST TO LEARN. Job 57b613d7, 2026-11-15: 283,410,955 cells, every gating criterion
+    # passed, and the reviewer refused for "required artifact 'mesh_paths.surface' does not
+    # exist". The direct cause was native.py calling _review_aids with refused=bool(
+    # report.problems) and is fixed there. But the SHAPE of the failure is this module's: the only
+    # way in was the .vtp tree foamToVTK writes, so the review surface - 2 M triangles, about
+    # 120 MB - was a downstream consequence of whether a second copy of 283 million CELLS got
+    # written. Those two things have nothing to do with each other, and tying them together means
+    # every future reason the export does not happen (the size skip above VOLUME_SKIP_ABOVE_CELLS,
+    # the 7,200 s ceiling, ENOSPC, a stall) silently takes the picture with it.
+    #
+    # `boundary_index.write_index` has already parsed the delivered polyMesh in the worker and
+    # written the boundary down - the measured sidecar on this very job is 783 MB for the coolant
+    # against a 19.5 GB polyMesh, and `render/index_surface` turns it into these same patch dicts.
+    # `cfmesh_conjugate/viewer.py` has been reading it that way all along; this is the same route,
+    # not a new one.
+    #
+    # THE EXPORT STILL WINS WHEN IT IS THERE, deliberately. A workspace that has both is the
+    # ordinary successful run, the .vtp path is the one every fixture in this package exercises,
+    # and changing which source a working run reads is a change nobody asked for. This is a
+    # fallback for the case that currently has no picture at all.
+    from_index = not any(per_region.values()) and any(
+        _index_dir(ws, r).is_dir() for r in per_region)
+    if not any(per_region.values()) and not from_index:
+        logger.info("conjugate review: no VTK boundary and no boundary index beside the mesh, "
+                    "nothing to convert")
         return {}, None
 
     # THE CEILING IS ASKED BEFORE THE TREE IS READ, which is the only order in which it can
@@ -572,8 +630,15 @@ def build_region_msh(workspace, *, into: dict | None = None,
     # is about 2.3 GiB that way.
     read: dict[str, list[dict]] = {}
     for region, files in per_region.items():
+        if from_index:
+            read[region] = _patches_from_index(ws, region)
+            continue
         got = [p for p in (_read_patch(f, f"{region}/{f.stem}") for f in files) if p]
         read[region] = got
+    if from_index and not any(read.values()):
+        logger.warning("conjugate review: the boundary index beside the mesh yielded no patch, "
+                       "so no review surface was built")
+        return {}, None
     # ...AND ASKED AGAIN OF WHAT WAS ACTUALLY READ, because the declared table is the cheap check
     # and not the truth: a workspace whose polyMesh cannot be read declares nothing, and an export
     # can carry more faces than the boundary table says (the pre-split block, a time directory
@@ -636,9 +701,13 @@ def build_region_msh(workspace, *, into: dict | None = None,
                 # the reviewer refusing two region targets it could not find. Nothing in the log
                 # an operator reads said the word "fluid". The mesh stands - this module never
                 # fails one - but the review will be inconclusive and the reason belongs here.
+                # NAMING THE SOURCE, because "0 boundary file(s)" is what the index route
+                # always has and would read as the bug rather than as the route.
+                whence = ("its boundary index" if from_index else
+                          f"{len(files)} boundary file(s): "
+                          f"{', '.join(f.name for f in files) or '(none)'}")
                 logger.error("conjugate review: region %r contributed no readable surface from "
-                             "%d boundary file(s) - the review will not see it: %s",
-                             region, len(files), ", ".join(f.name for f in files) or "(none)")
+                             "%s - the review will not see it", region, whence)
                 continue
             group = gmsh.model.addPhysicalGroup(2, tags)
             gmsh.model.setPhysicalName(2, group, region)
