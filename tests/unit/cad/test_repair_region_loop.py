@@ -1127,3 +1127,32 @@ def test_mesh_errors_plus_an_abandoned_fingerprint_is_unmeshable():
     session = SimpleNamespace(complete_scan=True)
     assert _terminal(session, (mesh, warning), escalated=False, packages=(verdict,),
                      fallback="no_candidate") == "unmeshable"
+
+
+def test_mesher_problem_discharges_nothing():
+    """A verdict ends the region's attempts and clears NOTHING: the run stops for the same reason,
+    with the same defects left, as an author that simply had nothing to propose."""
+    def verdict_author(part):
+        inner = _author(part)
+        calls: list[int] = []
+
+        def author(region, defects, attempts):
+            if region.index == 1:
+                calls.append(len(attempts))
+                return None
+            return inner(region, defects, attempts)
+
+        author.calls = calls
+        author.verdicts = [{"region": 1, "mesher_problem": ["edge:b"], "reason": "sound",
+                            "author": "regions-model-v1"}]
+        return author
+
+    plain_part, verdict_part = _Part(), _Part()
+    plain = _run(plain_part, _author(plain_part, decline=(1,)))
+    author = verdict_author(verdict_part)
+    run = _run(verdict_part, author, attempts=3)
+
+    assert author.calls == [0], "the region stops authoring after the verdict"
+    assert run.stopped_because == plain.stopped_because == REGIONS_EXHAUSTED
+    assert [d.fingerprint for d in run.defects_after] == ["edge:b"]
+    assert run.escalated == plain.escalated

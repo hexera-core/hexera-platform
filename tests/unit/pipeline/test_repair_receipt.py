@@ -435,3 +435,26 @@ def test_a_decline_that_measured_nothing_is_still_silent(outcome):
     assert R.repair_receipt_rows(_state(), {"repair_attempt": {
         "attempted": False, "outcome": outcome, "reason": "whatever it was",
         "detail": {"reasons": ["triage said so"]}}}) == []
+
+
+def _verdict(*fps: str, region: int = 1) -> dict:
+    return {"region": region, "mesher_problem": list(fps), "reason": "the faces are sound",
+            "author": "regions-model-v1"}
+
+
+def test_receipt_renders_the_verdict():
+    out = _out(resolved=False, stopped_because="unmeshable",
+               measurements={"model_author": {"label": "regions-model-v1", "calls": [],
+                                              "verdicts": [_verdict("face:aa11", "face:bb22")]}})
+    rows = R.repair_receipt_rows(_state(), out)
+    row = _find(rows, "judged this geometry sound")
+    assert "the mesher could not handle it at: face:aa11, face:bb22" in row["why"]
+    assert not leaks(row["why"]) and not leaks(row["label"])
+    assert _find(rows, "Everything found was fixed")["value"] == "No"
+
+
+def test_receipt_is_unchanged_without_a_verdict():
+    plain = R.repair_receipt_rows(_state(), _out())
+    with_empty = R.repair_receipt_rows(_state(), _out(
+        measurements={"model_author": {"label": "x", "calls": [], "verdicts": []}}))
+    assert plain == with_empty

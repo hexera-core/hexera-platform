@@ -337,7 +337,7 @@ def _verdict(body: object, ctx: _Context) -> dict:
     if not isinstance(reason, str) or not reason.strip():
         raise _Refused("verdict gives no reason")
     return {"region": int(ctx.region.index), "mesher_problem": sorted(named),
-            "reason": observe.clip_text(reason, INTENT_MAX)}
+            "reason": observe.clip_text(reason, INTENT_MAX), "author": LABEL}
 
 
 def model_author(shape, *, original: Measure, reserved: frozenset = frozenset(),

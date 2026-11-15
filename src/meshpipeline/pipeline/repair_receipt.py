@@ -91,6 +91,9 @@ _STOPPED: dict[str, str] = {
     "regions_exhausted": "every region was tried once and what is left was not repaired",
 }
 
+#: How many places one verdict row names before it says "and N more".
+_VERDICT_NAMED_MAX = 5
+
 #: The measured lengths an inspection records against a located defect, worst-first by usefulness.
 _SPAN_KEYS = ("boundary_length", "length")
 
@@ -421,6 +424,33 @@ def _deviation_rows(record: Mapping) -> list[dict]:
                  "that was removed is not measured")]
 
 
+def _verdict_rows(record: Mapping) -> list[dict]:
+    """The model author's "mesher's problem" verdicts, one row each. SILENT WHEN ABSENT: only a
+    live or shadow model author records any, and the flag off never does.
+
+    A VERDICT DISCHARGES NOTHING and the rows say so by what they leave out: they claim no fix.
+    The repair judged the geometry sound at those places and the mesher still could not take it;
+    "Everything found was fixed" beside them is still "No". Only the places are named - the
+    model's own reasoning is free text and stays in the run report.
+    """
+    measured = record.get("measurements")
+    author = measured.get("model_author") if isinstance(measured, Mapping) else None
+    found = author.get("verdicts") if isinstance(author, Mapping) else None
+    rows = []
+    for verdict in found or ():
+        if not isinstance(verdict, Mapping):
+            continue
+        named = [str(f) for f in (verdict.get("mesher_problem") or ()) if f]
+        if not named:
+            continue
+        shown = ", ".join(named[:_VERDICT_NAMED_MAX])
+        if len(named) > _VERDICT_NAMED_MAX:
+            shown += f" and {len(named) - _VERDICT_NAMED_MAX} more"
+        rows.append(_row("The repair judged this geometry sound", "Left for the mesher",
+                         _safe(f"the mesher could not handle it at: {shown}")))
+    return rows
+
+
 def _volume_was_compared(before: Mapping, after: Mapping) -> bool:
     """Whether `cad/repair/caps.cumulative_refusal` actually judged the volume, by its own rule:
     both sides must have an inside, and a body must not have closed during the run."""
@@ -466,7 +496,8 @@ def repair_receipt_rows(state: Mapping, out: Mapping) -> list[dict]:
         return []
     else:
         rows = (_kept_rows(view) + _undone_rows(view) + _refusal_rows(view)
-                + _shape_rows(view) + _deviation_rows(view) + _outcome_row(view))
+                + _shape_rows(view) + _deviation_rows(view) + _verdict_rows(view)
+                + _outcome_row(view))
     return [r for r in rows if r["label"]]
 
 

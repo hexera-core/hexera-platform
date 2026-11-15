@@ -223,8 +223,20 @@ def test_verdict_recorded_and_returns_none(ask):
     author = _author()
     assert author(REGION, DEFECTS, ()) is None
     assert author.verdicts == [{"region": 0, "mesher_problem": ["fp1"],
-                                "reason": "the geometry is sound; gmsh is not"}]
+                                "reason": "the geometry is sound; gmsh is not",
+                                "author": ma.LABEL}]
     assert author.calls[-1]["outcome"] == "verdict"
+
+
+def test_verdict_is_recorded_with_reason(ask):
+    ask({"verdict": {"mesher_problem": ["fp1"], "reason": "sound " + "x" * 5000}})
+    author = _author()
+    assert author(REGION, DEFECTS, ()) is None
+    (verdict,) = author.report()["verdicts"]
+    assert verdict["region"] == REGION.index
+    assert verdict["mesher_problem"] == ["fp1"]
+    assert verdict["author"] == ma.LABEL
+    assert verdict["reason"].startswith("sound ") and len(verdict["reason"]) <= ma.INTENT_MAX + 3
 
 
 def test_verdict_naming_unknown_fingerprints_is_refused(ask):
