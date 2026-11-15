@@ -259,3 +259,33 @@ def test_the_driver_hands_the_rims_through():
     from meshpipeline.engines.cfmesh_conjugate import driver as DR
 
     assert 'MO.shell_stubs(rec["ports"], rec.get("open_rims"))' in inspect.getsource(DR)
+
+
+def test_the_what_next_follows_the_refusal_and_not_the_other_one():
+    """ONE SENTENCE CANNOT SERVE BOTH SHAPES. "Change the file so it is one connected passage" is
+    right for a SEVERED coolant, whose two ends are real and do not meet. It is the wrong lever for
+    a SEALED port, where one end is not an end and the role can be moved at intake for nothing.
+    The two were split into their own markers for exactly that reason and the advice was still
+    shared, so half of these customers were being sent after the wrong change."""
+    from meshpipeline.contracts.failure_cause import FailureCause, describe
+
+    base = {"reason": "the outlet outlet_2 is to be cut on the 11.800 mm mouth",
+            "priced_out": False, "geometry_refusal": True, "meshers_started": 0}
+    _what, sealed = describe(FailureCause.NOT_BUILT, {**base, "geometry_fix": "roles"})
+    _what2, severed = describe(FailureCause.NOT_BUILT, base)
+    assert "which openings should carry the inlet and the outlet" in sealed
+    assert "one connected passage" not in sealed, "that is the severed lever"
+    # ...and an absent key keeps the wording every other shape refusal already had.
+    assert "one connected passage" in severed
+    assert "which openings should carry" not in severed
+
+
+def test_the_driver_tells_the_record_which_lever_it_is():
+    import inspect
+
+    from meshpipeline.engines.cfmesh_conjugate import driver as DR
+
+    src = inspect.getsource(DR)
+    block = src[src.index("if sealed_said:"):][:900]
+    assert 'fix="roles"' in block
+    assert '"geometry_fix"' in src, "and the fact is written into the refusal record"

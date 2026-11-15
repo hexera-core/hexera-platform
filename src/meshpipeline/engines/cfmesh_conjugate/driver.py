@@ -63,7 +63,7 @@ _REFUSAL_GATE = "manifest_valid"
 
 
 def _say_why_before_meshing(ws, words: str, *, job_id: str, priced_out: bool = True,
-                            geometry: bool = False) -> None:
+                            geometry: bool = False, fix: str = "") -> None:
     """Carry a refusal's OWN WORDS to the user, not just its marker.
 
     THE WORDS WERE BEING THROWN AWAY. The comment on TOO_FINE above records half of this already -
@@ -122,6 +122,11 @@ def _say_why_before_meshing(ws, words: str, *, job_id: str, priced_out: bool = T
                # caller says which kind it is, and `contracts/failure_cause` has a branch for each.
                "priced_out": bool(priced_out),
                "geometry_refusal": bool(geometry),
+               # WHICH LEVER THE CUSTOMER HAS, when it is a shape refusal. A severed coolant wants
+               # the file made into one connected passage; a port declared on a capped mouth wants
+               # the role moved, which costs nothing and needs no CAD. One sentence was serving
+               # both and sending half of them after the wrong change. "" keeps the older wording.
+               "geometry_fix": str(fix or ""),
                # the mesher never started, so there is no mesh to judge and nothing was spent on
                # one - the user's sentence says so and this is what entitles it to
                "meshers_started": 0},
@@ -814,7 +819,8 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     # fires. `mouths.sealed_rows` carries both runs it is written against.
     if sealed_said:
         logger.info("conjugate: refusing to start - %s - job_id=%s", sealed_said, job_id)
-        _say_why_before_meshing(ws, sealed_said, job_id=job_id, priced_out=False, geometry=True)
+        _say_why_before_meshing(ws, sealed_said, job_id=job_id, priced_out=False, geometry=True,
+                                fix="roles")
         await run.fence("deliver builder outcome")
         return False, SEALED_PORT, run.outcome(produced_deliverable=False, exhausted=True,
                                                failure_marker=SEALED_PORT)

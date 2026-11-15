@@ -605,12 +605,27 @@ def _describe(cause: object, facts: Mapping | None = None, *,
             # coarser mesh cannot help - and it reached a real customer that way on job ca246a07
             # (2026-11-13), where the part's inlet and outlet were half a millimetre of metal
             # apart. The reason itself carries the measurement and what to change.
+            #
+            # AND THE "WHAT NEXT" FOLLOWS THE REFUSAL, because one sentence cannot serve both
+            # shapes of it. "Change the file so it is one connected passage" is right for a
+            # SEVERED coolant, whose two ends are real and do not meet - and it is the wrong lever
+            # for a SEALED port, where one of the ends is not an end and the customer can move the
+            # role at intake without touching the CAD. The engines split those into their own
+            # markers for exactly that reason (cfmesh_conjugate/driver: SEVERED_COOLANT against
+            # SEALED_PORT) and the sentence had still been sending both customers after the same
+            # file change. An absent key keeps the connected-passage wording, so nothing that does
+            # not set it changes.
+            nxt = ("Running it again would stop the same way, and so would a coarser mesh or "
+                   "another engine: this one is about the shape. ")
+            if str(f.get("geometry_fix") or "") == "roles":
+                nxt += ("Tell me here which openings should carry the inlet and the outlet - the "
+                        "reason above names the ones that are open - or open the metal ahead of "
+                        "the one that is capped, and we will run it again.")
+            else:
+                nxt += ("Change the file so it is one connected passage, or tell me here if the "
+                        "openings should have different roles, and we will run it again.")
             return (f"No mesh was built: {who} read your part and stopped before any mesher "
-                    f"started. {_cap(reason)}. Nothing was spent on a mesh.",
-                    "Running it again would stop the same way, and so would a coarser mesh or "
-                    "another engine: this one is about the shape. Change the file so it is one "
-                    "connected passage, or tell me here if the openings should have different "
-                    "roles, and we will run it again.")
+                    f"started. {_cap(reason)}. Nothing was spent on a mesh.", nxt)
         if f.get("priced_out") and reason:
             # NEITHER THE FILE NOR THE APPROVED SETUP. The part is sound, what the user approved is
             # sound, and the engine priced the mesh it would have to build against a limit of OURS
