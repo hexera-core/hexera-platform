@@ -538,13 +538,24 @@ def interior_seeds(tris, *, background_m: float,
 
     WHAT IT IS FOR. A mesher that cuts the coolant out of a solid block decides cell by cell
     whether a cell centre is inside the coolant surface, and OpenFOAM's `topoSet surfaceToCell
-    useSurfaceOrientation` answers that from an octree whose leaves can be larger than the feature
-    they straddle. On the customer cold plate it tagged 247.998 mm3 of bulk METAL as coolant -
-    6,669 cells in four lumps, three of them a single background cell, one of them a block
-    40.0018 x 40.0065 background cells square in plan reaching 4.2 mm into solid metal, every one
-    of them with a generalised winding number of 0.0000 against BOTH of the surface's shells. The
-    delivered mesh's coolant was therefore in six pieces where the part has two, and the engine
-    refused it.
+    useSurfaceOrientation` gets that wrong in BLOCKS. On the customer cold plate it tagged
+    247.998 mm3 of bulk METAL as coolant - 6,669 cells in four lumps, three of them a single
+    background cell, one of them a block 40.0018 x 40.0065 background cells square in plan
+    reaching 4.2 mm into solid metal, every one with a generalised winding number of 0.0000
+    against BOTH of the surface's shells. The coolant came out in six pieces where the part has
+    two, and the engine refused it.
+
+    IT IS NOT A RESOLUTION FAILURE, and the first version of this docstring said it was: "an
+    octree whose leaves can be larger than the feature they straddle". Measured off the delivered
+    mesh and refuted three ways. ZERO of the 6,669 cells straddle the 0.500 mm of metal the
+    mis-classification sits on - only 8 cells have any extent reaching 500 um and the largest is
+    503.7 um, on a cell 1,053.0 um away from the coolant surface. All 1,626 cells that actually
+    sit inside that band are one level FINER than background, median 201.5 x 266.7 x 201.5 um, so
+    the wall is resolved 1.875 cells deep where the query still called it fluid. And 3,373 of the
+    6,669 (50.58%) are level-1 cells at 201.2624 um, 2,114 of them inside the coolant surface's
+    own refinement band. What the islands are is bulk metal reached by CONNECTIVITY - 3,296 cells
+    carrying 86.42% of the island volume lie 757.0 um to 7,602.1 um from the coolant surface - so
+    more cells in the same block would have made it bigger, not smaller.
     [[project-corintis-island-diagnosis]]
     The seeds are how that is fixed WITHOUT changing a cell: handed to `regionToCell`, they say
     "the coolant is the connected regions containing THESE points", so a lump of metal with no
@@ -626,7 +637,12 @@ def interior_seeds(tris, *, background_m: float,
         verts = Tall.reshape(-1, 3)
         best: tuple | None = None
 
-        def consider(p: np.ndarray) -> None:
+        # The three arrays are BOUND as defaults rather than closed over. This runs once per
+        # passage and is only ever called inside its own iteration, so closing over them would
+        # behave correctly - but a closure over a loop variable is the same shape as the defect
+        # that ships the last iteration's data to every caller, and it is not worth leaving a
+        # reader to work out which one this is.
+        def consider(p: np.ndarray, Tk=Tk, kids=kids, Tall=Tall) -> None:
             nonlocal best
             if abs(_winding(Tk, p)) < INSIDE_WINDING:
                 return

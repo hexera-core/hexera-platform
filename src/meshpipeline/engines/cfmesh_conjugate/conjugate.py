@@ -785,12 +785,17 @@ def render_toposetdict(*, fluid_file: str, seeds: list | None = None) -> str:
     out is one region per connected lump of metal.
 
     AND THE ORIENTATION TEST IS THEN HELD TO THE SURFACE'S OWN CONNECTIVITY, which is what `seeds`
-    are for. `surfaceToCell useSurfaceOrientation` answers cell by cell out of an octree whose
-    leaves can be bigger than the feature they straddle, and on the customer cold plate it tagged
-    247.998 mm3 of bulk metal as coolant - 6,669 cells in four lumps, three of them a single
-    background cell, all four with a generalised winding number of 0.0000 against both shells of
-    the surface. The coolant came out in six pieces where the part has two and the mesh was
-    refused, at the end of a 3.94 h run.
+    are for. `surfaceToCell useSurfaceOrientation` answers cell by cell, and on the customer cold
+    plate it got a BLOCK of them wrong: 247.998 mm3 of bulk metal tagged as coolant, 6,669 cells
+    in four lumps, three of them a single background cell, all four with a generalised winding
+    number of 0.0000 against both shells of the surface. The coolant came out in six pieces where
+    the part has two and the mesh was refused, at the end of a 3.94 h run.
+
+    REFINING THERE WOULD NOT HAVE HELPED, measured off the delivered mesh: not one of the 6,669
+    cells straddles the 0.500 mm of metal involved, half of them are already one level finer than
+    background, and the 1,626 that sit inside that metal resolve it 1.875 cells deep. The error is
+    in which cells the query claimed, not in how big they are. `cad.fluid_passages.interior_seeds`
+    carries the full reading.
     [[project-corintis-island-diagnosis]]
     `regionToCell` keeps only the connected regions holding `seeds`, one point per passage from
     `cad.fluid_passages.interior_seeds`, so a lump with no face path to any of them is not coolant.

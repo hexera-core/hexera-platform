@@ -2,13 +2,18 @@
 
 WHY THERE ARE SEEDS AT ALL. A mesher that cuts the coolant out of a solid block asks, cell by cell,
 whether a cell centre is inside the coolant surface. OpenFOAM's `topoSet surfaceToCell
-useSurfaceOrientation` answers out of an octree whose leaves can be larger than the feature they
-straddle, and on job 6ddb58aa - ColdPlateAssembly_CLEAN.step, 283,410,955 cells, 3.94 h on
-n2-highmem-64 - it tagged 247.998 mm3 of bulk METAL as coolant: 6,669 cells in four lumps, three of
-them a single background cell, one of them a block 40.0018 x 40.0065 background cells square in
-plan reaching 4.2 mm into solid metal, every one with a generalised winding number of 0.0000
-against BOTH shells of the surface. The delivered coolant was in six pieces where the part has two,
-and the mesh was refused.
+useSurfaceOrientation` gets that wrong in BLOCKS, and on job 6ddb58aa - ColdPlateAssembly_CLEAN.step,
+283,410,955 cells, 3.94 h on n2-highmem-64 - it tagged 247.998 mm3 of bulk METAL as coolant: 6,669
+cells in four lumps, three of them a single background cell, one of them a block 40.0018 x 40.0065
+background cells square in plan reaching 4.2 mm into solid metal, every one with a generalised
+winding number of 0.0000 against BOTH shells of the surface. The delivered coolant was in six pieces
+where the part has two, and the mesh was refused.
+
+AND NOT BECAUSE ANYTHING WAS UNDER-RESOLVED. Zero of the 6,669 cells straddle the 0.500 mm of metal
+the mis-classification sits on; 3,373 of them (50.58%) are already one octree level finer than
+background at 201.2624 um; and the 1,626 that sit inside that metal resolve it 1.875 cells deep.
+The 3,296 coarse cells carrying 86.42% of the island volume lie 757.0 um to 7,602.1 um from the
+coolant surface, which is bulk metal reached by connectivity. So the fix is connectivity too.
 
 Handed to `regionToCell`, a seed per passage says "the coolant is the cells connected to HERE", so
 a lump with no face path to one is not coolant. Measured in OpenFOAM v2412 on the engine's own
