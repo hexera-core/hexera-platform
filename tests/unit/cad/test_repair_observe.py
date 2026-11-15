@@ -8,7 +8,7 @@ from meshpipeline.cad.repair.caps import Measure
 from meshpipeline.cad.repair.contracts import DefectCode, DefectSeverity
 from meshpipeline.cad.repair.localize import EntityDefect
 from meshpipeline.cad.repair.observe import observation_of
-from meshpipeline.cad.repair.regions import Region
+from meshpipeline.cad.repair.regions import Region, decompose
 from meshpipeline.cad.repair.session import REVERTED, OpVerdict, PackageVerdict
 
 ORIGINAL = Measure(valid=False, solids=1, shells=1, faces=10, edges=20, vertices=12,
@@ -29,7 +29,7 @@ def _defect(i: int, severity=DefectSeverity.error) -> EntityDefect:
 def _region(n: int) -> Region:
     return Region(index=0, fingerprints=frozenset(f"fp{i}" for i in range(n)),
                   bbox_min=(0.0, 0.0, 0.0), bbox_max=(1.0, 1.0, 30.0),
-                  face_indices=frozenset(range(n)))
+                  face_indices=frozenset(range(1, n + 1)))
 
 
 def _faces(shape, indices):
@@ -78,7 +78,7 @@ def test_no_kernel_needed_for_located_fields():
 
     obs = observation_of(_region(3), (_defect(0),), (), None, original=ORIGINAL,
                          face_reader=reader)
-    assert calls == [[0, 1, 2]]
+    assert calls == [[1, 2, 3]]
     assert obs["region"]["bbox_min"] == [0.0, 0.0, 0.0]
     assert obs["faces"][0]["surface_type"] == "GeomAbs_Plane"
     assert "OCP" not in sys.modules
@@ -91,3 +91,69 @@ def test_unreadable_faces_do_not_fail_the_observation():
     obs = observation_of(_region(2), (_defect(0),), (), None, original=ORIGINAL,
                          face_reader=broken)
     assert obs["faces"] == []
+    assert obs["faces_status"] == "unavailable: RuntimeError"
+
+
+def test_ok_status_and_scope_markers():
+    obs = observation_of(_region(3), (_defect(0),), (), None, original=ORIGINAL,
+                         face_reader=_faces)
+    assert obs["faces_status"] == "ok" and obs["defects_scope"] == "region"
+    stray = observation_of(_region(3), (_defect(99),), (), None, original=ORIGINAL,
+                           face_reader=_faces)
+    assert stray["defects_scope"] == "part-wide-fallback"
+
+
+def test_face_truncation_prefers_shown_defects_and_counts():
+    region = Region(index=0, fingerprints=frozenset({"fp0"}), bbox_min=(0, 0, 0),
+                    bbox_max=(1, 1, 1), face_indices=frozenset(range(1, 61)))
+    obs = observation_of(region, (_defect(55),), (), None, original=ORIGINAL,
+                         face_reader=_faces)
+    # fp55 is not in the region's fingerprints, so it is a fallback defect; its face still leads.
+    assert obs["faces"][0]["index"] == 55
+    assert obs["face_count_total"] == 60
+    assert obs["faces_omitted"] == 60 - len(obs["faces"])
+    assert obs["region"]["face_indices_omitted"] == 20
+
+
+def test_face_index_zero_is_skipped_and_counted_and_indices_are_one_based():
+    found = decompose([_defect(1)], diagonal_mm=100.0)
+    assert found[0].face_indices == frozenset({1})  # the kernel's 1-based index, as recorded
+    region = Region(index=0, fingerprints=frozenset({"fp1"}), bbox_min=(0, 0, 0),
+                    bbox_max=(1, 1, 1), face_indices=frozenset({0, 1}))
+    asked = []
+
+    def reader(shape, indices):
+        asked.extend(indices)
+        return _faces(shape, indices)
+
+    obs = observation_of(region, (_defect(1),), (), None, original=ORIGINAL, face_reader=reader)
+    assert asked == [1] and obs["faces_skipped"] == 1
+
+
+def test_ceiling_holds_with_huge_attempts_and_faces_and_nonfinite_numbers():
+    ops = tuple(OpVerdict(op="fix_small_edges", targets=tuple(f"fp{n}" * 20 for n in range(9)),
+                          defect_code="c", status="reverted", reason="r" * 900)
+                for _ in range(9))
+    attempts = tuple(PackageVerdict(region_index=0, status=REVERTED, reason="q" * 900, verdicts=ops)
+                     for _ in range(9))
+
+    def fat(shape, indices):
+        return {i: {"surface_type": "S" * 500, "area_mm2": float("nan"),
+                    "bbox_min": [0, 0, float("inf")], "bbox_max": [1, 1, 1], "neighbours": 1}
+                for i in indices}
+
+    obs = observation_of(_region(30), tuple(_defect(i) for i in range(30)), attempts, None,
+                         original=ORIGINAL, face_reader=fat)
+    text = json.dumps(obs, allow_nan=False)
+    assert len(text.encode()) < 16_000
+    assert obs["attempts_omitted"] >= 5
+    assert obs["defects_omitted"] + len(obs["defects"]) == 30
+
+
+def test_attempt_ops_carry_targets_and_long_reasons():
+    attempt = PackageVerdict(region_index=0, status=REVERTED, reason="z" * 390, verdicts=(
+        OpVerdict(op="sew_faces", targets=("fpA", "fpB"), defect_code="c", status="reverted"),))
+    obs = observation_of(_region(1), (_defect(0),), (attempt,), None, original=ORIGINAL,
+                         face_reader=_faces)
+    assert obs["attempts"][0]["ops"][0]["targets"] == ["fpA", "fpB"]
+    assert obs["attempts"][0]["reason"] == "z" * 390
