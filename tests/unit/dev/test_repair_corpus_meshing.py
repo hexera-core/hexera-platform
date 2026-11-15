@@ -103,9 +103,7 @@ def test_mesh_located_keeps_only_mesh_defects_still_held_with_their_fingerprints
     assert corpus._mesh_located(None) == [] and corpus._mesh_located({}) == []
 
 
-def test_mesh_located_is_empty_when_the_probe_is_off():
-    # The row keys are written whether or not --mesh-probe is given; with the probe off nothing
-    # carries mesh defects, so the field exists and is empty. Pinned, not accidental.
+def test_mesh_located_of_a_report_with_no_mesh_defects_is_empty():
     assert corpus._mesh_located({"regions": {"defects_remaining": [
         {"code": "small_edge", "entity": "edge:1", "fingerprint": "x"}]}}) == []
     assert corpus._mesh_located({"timings": {}}) == []

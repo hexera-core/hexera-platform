@@ -6,7 +6,7 @@ numbers; the cause is below.
 
 Track `mesh-failure-real`, 80 files (33 OCCT + 47 ABC; manifest
 `devtools/validation/corpora/mesh-failure-real.json`), host darwin-arm64. Two arms, run
-sequentially, the same NIST-2026-11-13 settings (`CAD_REPAIR_ENABLED/AUTONOMOUS/FILL_PLANAR_HOLES/
+sequentially, intended-identical NIST-2026-11-13 settings (see Provenance and confound for the actual differences) (`CAD_REPAIR_ENABLED/AUTONOMOUS/FILL_PLANAR_HOLES/
 FILL_NONPLANAR_HOLES/FIX_SMALL_FACES=true`, `MAX_OPS=200`, `STALL_LIMIT=50`, `TIMEOUT_S=300`,
 `REGION_LOOP=live`, `REGION_ATTEMPTS=6`); `CAD_REPAIR_MESH_PROBE` is `off` in arm A and `live` in arm B, **but the arms also ran at
 different engine commits (see Provenance and confound)**. Both scored with `--mesh-probe` (gmsh file probe on the input and on the repaired
@@ -38,10 +38,12 @@ timeout counts 7 vs 10, stop reasons) may partly reflect the engine change, not 
 The within-arm facts (arm B's located counts, `newly_broken`, the `unmeshable` count and the 0/15
 result) are unaffected by this, since they are read from arm B alone.
 
-Arm A's rows were produced before the instrumentation below, so they have no
-`mesh_located_remaining`; "located" counts are arm-B-only by construction. The code that wrote the
-new row fields was committed after both runs (`fe254a5d`); arm B's `engine_commit` predates it, and
-the fields came from the uncommitted working tree at run time.
+Instrumentation timing, precisely: `timings` entered the working tree before arm A ran, so arm A
+rows carry it (42 of 80) and the "Scans and time" sums for arm A are legitimate.
+`mesh_located_remaining` entered between arm A and arm B (which is why arm B was re-run), so arm A
+rows carry it in 0 of 80 and "located" counts are arm-B-only by construction. The code for both
+fields was committed after both runs (`fe254a5d`); arm B's `engine_commit` predates it, and the
+fields came from the uncommitted working tree at run time.
 
 ## Previously invisible files
 
@@ -138,7 +140,7 @@ unmeshable 5) and are not part of this bundle. `run-status.txt` therefore lists 
 
 - **No new operations.** Existing operations are only aimed at mesh failures; the operations that
   answer these families arrive in Plan 2. Nothing here says the failures can be repaired.
-  `newly_meshed` is 2 in both arms, so the probe adds no repairs (and 2 gains occur with it off); the arms also differ in engine commit, so even that comparison is not clean.
+  `newly_meshed` is 2 in both arms, so in this confounded comparison the probe added no repairs (and 2 gains occur with it off); the arms also differ in engine commit, so even that comparison is not clean.
 - **gmsh is not the product mesher.** Meshing is scored with gmsh 4.15.2 at diagonal/40 and a 120 s
   budget; a part that meshes here may still fail the engine the product uses, and vice versa.
 - **Nondeterminism was not measured, and the arms differ in engine commit.** One pass per arm at
