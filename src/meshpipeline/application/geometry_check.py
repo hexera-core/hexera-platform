@@ -2202,8 +2202,20 @@ def _facts_text(facts: dict, shots, purpose_text: str) -> str:
     from meshpipeline.contracts.intake_formats import THERMAL_CHECK
     from meshpipeline.render.scout_snapshots import camera_words
 
+    # `single_solid` IS NOT SAID OF A FILE THAT HOLDS SIX. The scout gives the whole upload one
+    # body_kind and never branches on how many solids it read - `cad/scout` reports
+    # `solids=len(solids)` and no decision consults it - so a six-solid assembly reached this step
+    # as "solid-body (single_solid), flow external". That is the one sentence in the model's
+    # context which contradicts the part names listed a few lines below it, and the prompt tells
+    # the model the measuring step's reading is worth weighing. What the file holds is said
+    # instead; a part the scout read as a wall or a surface still says so, with the count beside it.
+    _solids = int(facts.get("solids") or 0)
+    _read_as = str(facts.get("body_kind") or "")
+    if _solids >= MIN_ASSEMBLY_SOLIDS:
+        _count = f"{_solids} solids"
+        _read_as = _count if _read_as in ("single_solid", "unknown", "") else f"{_read_as}, {_count}"
     lines = [f"Part size: {facts['size_mm'][0]:.0f} x {facts['size_mm'][1]:.0f} x {facts['size_mm'][2]:.0f} mm.",
-             f"Measuring step's guess: {facts['input_kind']} ({facts['body_kind']}), flow {facts['flow']}."]
+             f"Measuring step's guess: {facts['input_kind']} ({_read_as}), flow {facts['flow']}."]
     lines.append("These sizes are read in the unit the file declares (or millimetres when it declares "
                  "none), which is sometimes wrong by a factor of 1000: judge real_length_m from what "
                  "the part is, not from them.")
@@ -2561,7 +2573,7 @@ def _proposal(facts: dict, vision: dict | None) -> dict:
         pass
     model_conf = float(vision.get("confidence", 0.0) or 0.0)
     scout_conf = float(facts.get("confidence", {}).get("input_kind", 0.0))
-    on_offer = _kinds_on_offer(facts, proposal)
+    on_offer = _kinds_on_offer(facts, proposal, vision)
     # MEASURED COOLANT IS NOT A CONFIDENCE, and it was losing to one. `_kinds_on_offer` already
     # holds the principle - "COOLANT ACTUALLY FOUND INSIDE THE PART OUTRANKS THE FLOW THE
     # MEASURING STEP GUESSED ... a split that closed the space off and measured a volume is far
@@ -2604,6 +2616,10 @@ def _proposal(facts: dict, vision: dict | None) -> dict:
 #: How many passage mouths the measuring step has to have found before a part may be read as a
 #: cooled solid. One is a bore or a bolt hole; coolant needs a way in and a way out.
 MIN_ASSEMBLY_OPENINGS = 2
+#: How many closed solids a file has to hold before it may be read as an assembly of solid parts
+#: on the file's own evidence, with nothing measured yet. `solid-assembly` is "an assembly of solid
+#: parts, each its own region" (contracts/geometry_fields), so two is the whole of the claim.
+MIN_ASSEMBLY_SOLIDS = 2
 #: The kinds the pictures may name on their own. solid-assembly is NOT among them by default: a
 #: cold plate and a car body are both closed solids in a picture, and a car read as a cold plate
 #: would be sent to a mesher that waits for a coolant inlet it will never have. The measuring
@@ -2611,7 +2627,7 @@ MIN_ASSEMBLY_OPENINGS = 2
 _PICTURED_KINDS = ("body-surface", "fluid-domain", "solid-body")
 
 
-def _kinds_on_offer(facts: dict, proposal: dict) -> tuple[str, ...]:
+def _kinds_on_offer(facts: dict, proposal: dict, vision: dict | None = None) -> tuple[str, ...]:
     """Which input kinds the picture-naming step is allowed to settle for this part.
 
     COOLANT ACTUALLY FOUND INSIDE THE PART OUTRANKS THE FLOW THE MEASURING STEP GUESSED. Refusing
@@ -2620,7 +2636,11 @@ def _kinds_on_offer(facts: dict, proposal: dict) -> tuple[str, ...]:
     external flow and both give up their coolant cleanly, so the stage could not propose what they
     plainly are and the user had to pick it by hand. A split that closed the space off and
     measured a volume is far better evidence than a guess made off flat faces.
+
+    AND A PART NOBODY HAS MEASURED YET HAS NOT BEEN FOUND TO HAVE NO MOUTHS (_unmeasured_assembly).
     """
+    if _unmeasured_assembly(facts, vision):
+        return (*_PICTURED_KINDS, "solid-assembly")
     openings = len(proposal.get("openings") or [])
     if openings < MIN_ASSEMBLY_OPENINGS:
         return _PICTURED_KINDS
@@ -2628,6 +2648,50 @@ def _kinds_on_offer(facts: dict, proposal: dict) -> tuple[str, ...]:
     if found or str(facts.get("flow") or "") != "external":
         return (*_PICTURED_KINDS, "solid-assembly")
     return _PICTURED_KINDS
+
+
+def _unmeasured_assembly(facts: dict, vision: dict | None) -> bool:
+    """Whether a part the scout has NOT measured yet may be read as an assembly of solid parts.
+
+    A PREVIEW HAS NO MOUTHS BECAUSE NONE HAVE BEEN LOOKED FOR, and the gate above read that as
+    "fewer than two were found". It is the same conflation `cad/fluid_volume_check.fold` had to
+    undo for a split that ran out of time - "one of those two is the geometry's answer and the
+    other is ours; they are not the same sentence and must not read as one".
+
+    MEASURED END TO END on ColdPlateAssembly_CLEAN.step, session 7831769b, 2026-11-14 17:56. The
+    naming spent its whole wait on the scout (_wait_for_scout), gave up and named the PREVIEW,
+    whose facts carry `openings: []` and `confidence {"input_kind": 0.0}` by construction
+    (preview_facts). The model had the part right - `solid-assembly`, `internal`, 0.72, "this is a
+    solid assembly rather than an external-flow body" - and `solid-assembly` was not on offer, so
+    its KIND was dropped and its FLOW kept, and the card served was:
+
+        input_kind  solid-body        the preview's placeholder
+        flow        internal          the model's reading
+        openings    none
+
+    `solid-body` is "a solid body the fluid flows around", so that card contradicts itself - and
+    `conjugate_heat_transfer + solid-body` admits no multi-region engine at all (cfmesh_conjugate
+    declares one capability and it is `solid-assembly`), so confirming what was shown ends the
+    case. The full reading never landed for that session, so nothing replaced it: `merged_onto_full`
+    is what made the companion session 3b3027a5 right, four hours later, on the same file.
+
+    WHAT A PREVIEW DOES KNOW IS WHAT THE FILE HOLDS. The reading step counts the solids before
+    anything is measured and `preview_facts` carries the count, and `solid-assembly` is defined as
+    "an assembly of solid parts, each its own region": a file of two or more closed solids is one.
+
+    THE GUARD THAT STAYS IS THE MODEL'S OWN READING OF THE FLOW. `_PICTURED_KINDS` leaves
+    solid-assembly out because "a car read as a cold plate would be sent to a mesher that waits
+    for a coolant inlet it will never have", and on a preview the measured mouths that normally
+    answer that are not there. What is left is that a car is a body the fluid flows AROUND and the
+    model says so: the prompt tells it in as many words that "a car body, a wing or a hull is
+    solid-body however many bolt holes it has". So a multi-solid file may be read as an assembly
+    only while the pictures say the fluid runs THROUGH the part - and only until the full reading
+    lands, which re-makes the proposal from what was actually measured.
+    """
+    if not facts.get("preview") or not isinstance(vision, dict) or "error" in vision:
+        return False
+    return (int(facts.get("solids") or 0) >= MIN_ASSEMBLY_SOLIDS
+            and vision.get("flow") == "internal")
 
 
 def _upright(proposal: dict, facts: dict, vision: dict | None, flow_axis) -> dict:
