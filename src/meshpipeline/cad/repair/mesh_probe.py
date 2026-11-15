@@ -444,17 +444,49 @@ CONTACT_PAIR_CAP = 8
 LOCATED_BY_CONTACT = "contact-pair"
 
 
-def _contact_support_faces(shape, faces, *, tol: float, deadline: float) -> list[int] | None:
-    """The faces (indices in `faces`) where the nearest pair of touching solids meets, or None
-    when the deadline passed first; [] when the shape has no such pair. SEAM: tests replace it.
+@dataclass(frozen=True, slots=True)
+class Contact:
+    """What the contact search found: the support faces (indices in the shape's face map), the
+    solid pair they belong to, and how much of the candidate field was searched."""
+    faces: tuple[int, ...]
+    #: "solids:I+J", I and J being indices in the shape's solid map.
+    pair: str
+    pairs_total: int
+    pairs_considered: int
+
+
+def _shared_pairs(shape, solids) -> set[tuple[int, int]]:
+    """Solid-index pairs that ALREADY own a common face (a conformal interface).
+
+    Reimplements the few lines of FragmentBodies' `already_shared` / third-body notion (faces to
+    owning solids, compared with IsSame) rather than importing operations.
+    """
+    from OCP.TopAbs import TopAbs_FACE, TopAbs_SOLID
+    from OCP.TopExp import TopExp
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+
+    ancestors = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(shape, TopAbs_FACE, TopAbs_SOLID, ancestors)
+    out: set[tuple[int, int]] = set()
+    for index in range(1, ancestors.Extent() + 1):
+        owners = sorted({int(solids.FindIndex(o)) for o in ancestors.FindFromIndex(index)} - {0})
+        out.update((a, b) for n, a in enumerate(owners) for b in owners[n + 1:])
+    return out
+
+
+def _contact_support_faces(shape, faces, *, tol: float, deadline: float) -> Contact | None:
+    """The contact of the nearest pair of touching solids that share no face yet, or None when
+    there is no such pair or the deadline passed first. SEAM: tests replace it.
 
     A part gmsh cannot tetrahedralise with an edge through a face and no coordinates is, necessarily,
-    carrying a body pair with no conformal interface. So: the solids whose boxes meet form the
-    candidate pairs (capped at CONTACT_PAIR_CAP), the pair with the least `BRepExtrema_DistShapeShape`
-    distance is the contact, and its support faces are the answer. A support the kernel reports IN a
-    face is that face. When it reports only vertices or edges (two coplanar contacts usually do),
-    the faces nearest the centroid of the minimal-distance points are used instead, on each body.
-    Every kernel failure is "no pair": this never raises.
+    carrying a body pair with no conformal interface. So: solid pairs whose boxes meet form the
+    candidates; pairs that ALREADY share a face are dropped (a healthy interface would score
+    distance 0 and win); the rest are ranked by box-overlap volume, biggest contact first, then
+    index, and the first CONTACT_PAIR_CAP are measured with `BRepExtrema_DistShapeShape`. The
+    least distance wins (ties by the same ranking) and its support faces are the answer. A support
+    the kernel reports IN a face is that face. When it reports only vertices or edges (touching
+    planar faces usually do), the faces nearest the centroid of the minimal-distance points are
+    used instead, on each body. Every kernel failure is "no pair": this never raises.
     """
     try:
         from OCP.BRepExtrema import BRepExtrema_DistShapeShape
@@ -464,29 +496,43 @@ def _contact_support_faces(shape, faces, *, tol: float, deadline: float) -> list
 
         solids = _indexed(shape, TopAbs_SOLID)
         if solids.Extent() < 2:
-            return []
+            return None
         boxes = {i: b for i in range(1, solids.Extent() + 1)
                  if (b := _bounds_of(solids.FindKey(i))) is not None}
+        shared = _shared_pairs(shape, solids)
+
+        def overlap(i: int, j: int) -> float:
+            # Padded by tol so two boxes that merely touch still rank by their contact area.
+            volume = 1.0
+            for k in range(3):
+                volume *= max(min(boxes[i][1][k], boxes[j][1][k])
+                              - max(boxes[i][0][k], boxes[j][0][k]), tol)
+            return volume
+
         pairs = [(i, j) for i in boxes for j in boxes
-                 if i < j and all(boxes[i][0][k] <= boxes[j][1][k] + tol
-                                  and boxes[j][0][k] <= boxes[i][1][k] + tol for k in range(3))]
+                 if i < j and (i, j) not in shared
+                 and all(boxes[i][0][k] <= boxes[j][1][k] + tol
+                         and boxes[j][0][k] <= boxes[i][1][k] + tol for k in range(3))]
+        pairs.sort(key=lambda ij: (-overlap(*ij), ij))
         best = None
         best_key = None
-        for i, j in pairs[:CONTACT_PAIR_CAP]:
+        for rank, (i, j) in enumerate(pairs[:CONTACT_PAIR_CAP]):
+            # One DistShapeShape call is uninterruptible, so a slow pair can overshoot the
+            # deadline by its own duration; the check is only BETWEEN pairs.
             if time.monotonic() >= deadline:
                 return None
             try:
                 extrema = BRepExtrema_DistShapeShape(solids.FindKey(i), solids.FindKey(j))
                 if not extrema.IsDone() or extrema.NbSolution() < 1:
                     continue
-                key = (round(float(extrema.Value()), 9), i, j)
+                key = (round(float(extrema.Value()), 9), rank)
             except Exception as exc:  # noqa: BLE001 - an unmeasurable pair is merely not nearest
                 logger.debug("mesh_probe: pair %d/%d unmeasurable: %s", i, j, exc)
                 continue
             if best_key is None or key < best_key:
                 best, best_key = (i, j, extrema), key
         if best is None:
-            return []
+            return None
         i, j, extrema = best
         distance = float(extrema.Value())
         found: set[int] = set()
@@ -502,10 +548,19 @@ def _contact_support_faces(shape, faces, *, tol: float, deadline: float) -> list
             if gap <= distance + tol:
                 p1 = extrema.PointOnShape1(n)
                 points.append((p1.X(), p1.Y(), p1.Z()))
-        if found:
-            return sorted(found)
-        if not points:
-            return []
+
+        def contact() -> Contact | None:
+            if not found:
+                return None
+            return Contact(faces=tuple(sorted(found)), pair=f"solids:{i}+{j}",
+                           pairs_total=len(pairs), pairs_considered=min(len(pairs),
+                                                                         CONTACT_PAIR_CAP))
+
+        if found or not points:
+            return contact()
+        # FALLBACK CENTRE: the average of body i's minimal-distance points. For a contact that is
+        # not convex (an L-shaped patch) that average can lie OFF the contact, and the nearest
+        # faces to it are then a guess - `located_by` already says this is an inference.
         count = len(points)
         centre = (sum(p[0] for p in points) / count, sum(p[1] for p in points) / count,
                   sum(p[2] for p in points) / count)
@@ -517,10 +572,10 @@ def _contact_support_faces(shape, faces, *, tol: float, deadline: float) -> list
             for local in near:
                 found.add(int(faces.FindIndex(body_faces.FindKey(local))))
         found.discard(0)
-        return sorted(found)
+        return contact()
     except Exception as exc:  # noqa: BLE001 - the probe never raises
         logger.info("mesh_probe: contact search: %s: %s", type(exc).__name__, exc)
-        return []
+        return None
 
 
 def mesh_defects(shape, *, diagonal_mm: float, budget_s: float,
@@ -600,17 +655,22 @@ def _mesh_defects(shape, *, diagonal_mm: float, budget_s: float,
             mapping = faces_for_tags(_face_boxes(faces), result.tag_boxes, tol=tol)
         located = list(dict.fromkeys(mapping[t] for t in trusted if t in mapping))
     by_contact = False
+    contact: Contact | None = None
     if (not located and failure.kind == EDGE_THROUGH_FACE and failure.point is None
             and not locating_surfaces(failure)):
         # gmsh named no point and no surface: infer the place from the bodies' contact, and say so.
-        located = _contact_support_faces(shape, faces, tol=tol, deadline=deadline)
+        contact = _contact_support_faces(shape, faces, tol=tol, deadline=deadline)
+        located = list(contact.faces) if contact is not None else []
         by_contact = bool(located)
     if not located:
         return (_unlocated(failure),)
     defects = [_face_defect(code, faces, index, failure) for index in sorted(located)]
-    if by_contact:
+    if by_contact and contact is not None:
         for defect in defects:
             defect.measurements["located_by"] = LOCATED_BY_CONTACT
+            defect.measurements["pair"] = contact.pair
+            defect.measurements["pairs_total"] = contact.pairs_total
+            defect.measurements["pairs_considered"] = contact.pairs_considered
     if within is not None:
         # A scoped call answers for its region only. Turning an outside face into an UNLOCATED
         # defect would make it read as in-region (unplaceable is admitted), so it is dropped.

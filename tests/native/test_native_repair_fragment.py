@@ -355,6 +355,9 @@ def test_the_session_keeps_fragment_and_lists_the_revealed_overlap(monkeypatch, 
     assert through and all(d.fingerprint for d in through), through
     assert all(d.measurements["located_by"] == "contact-pair" for d in through), through
     contact = _ref(shape, through[0].entity_index)
+    # The aim and the progress rule must agree on names: the probe-located fingerprint IS the
+    # one localize/identity gives that same face (the `_ref`-built target).
+    assert through[0].fingerprint == contact.fingerprint
 
     verdict = session.try_op(FragmentBodies(), (contact,), DefectCode.mesh_edge_through_face,
                              tolerance_mm=0.1)

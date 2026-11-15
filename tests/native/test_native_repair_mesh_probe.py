@@ -372,7 +372,9 @@ def test_touching_boxes_contact_faces_are_the_supports():
     faces = _faces(shape)
     found = mesh_probe._contact_support_faces(shape, faces, tol=1e-5,
                                               deadline=time.monotonic() + 60.0)
-    assert found is not None and len(found) == 2
+    assert found is not None and len(found.faces) == 2 and found.pair == "solids:1+2"
+    assert (found.pairs_total, found.pairs_considered) == (1, 1)
+    found = found.faces
     for index in found:           # each is a face lying in the shared plane x = 10
         lo, hi = _bounds_of(faces.FindKey(index))
         assert lo[0] == pytest.approx(10.0, abs=1e-4)   # bbox is padded by the kernel's tolerance
@@ -384,7 +386,7 @@ def test_touching_boxes_contact_faces_are_the_supports():
 def test_apart_boxes_and_single_solid_have_no_contact_pair():
     for shape in (_compound(_box(), _box(x=100.0)), _box()):
         assert mesh_probe._contact_support_faces(
-            shape, _faces(shape), tol=1e-5, deadline=time.monotonic() + 60.0) == []
+            shape, _faces(shape), tol=1e-5, deadline=time.monotonic() + 60.0) is None
 
 
 _TOUCH_ONLY = "abc/00506275_541a2ce632275fed8964367a_step_000.step"
@@ -413,3 +415,46 @@ def test_corpus_plc_without_coordinates_is_located_by_contact():
             entity_index=defect.entity_index, message="",
             location=_centroid_and_box(faces.FindKey(defect.entity_index))),), diagonal_mm=diagonal)
         assert defect.fingerprint and defect.fingerprint == reference.fingerprint
+
+
+def test_a_pair_that_already_shares_a_face_is_not_the_culprit():
+    """Solids 1 and 2 share a face (a conformal interface); solid 3 merely touches solid 2."""
+    from OCP.BOPAlgo import BOPAlgo_Builder
+
+    a, b, c = _box(), _box(x=10.0), _box(x=20.0)
+    builder = BOPAlgo_Builder()
+    for body in (a, b):
+        builder.AddArgument(body)
+    builder.Perform()
+    fused = builder.Shape()           # a and b now own one common face
+    shape = _compound(fused, c)
+    found = mesh_probe._contact_support_faces(shape, _faces(shape), tol=1e-5,
+                                              deadline=time.monotonic() + 60.0)
+    assert found is not None
+    from OCP.TopAbs import TopAbs_SOLID
+
+    from meshpipeline.cad.repair.localize import _bounds_of, _indexed
+    solids = _indexed(shape, TopAbs_SOLID)
+    third = next(i for i in range(1, solids.Extent() + 1)
+                 if _bounds_of(solids.FindKey(i))[0][0] > 15.0)
+    assert str(third) in found.pair.removeprefix("solids:").split("+")
+    assert found.pairs_total == 1
+    for index in found.faces:      # the contact is the x = 20 plane, not the healthy x = 10 one
+        lo, _hi = _bounds_of(_faces(shape).FindKey(index))
+        assert lo[0] == pytest.approx(20.0, abs=1e-4)
+
+
+def test_zero_distance_ties_go_to_the_larger_contact_and_the_cap_is_visible():
+    big = _box(size=10.0)
+    plate = _box(x=10.0, size=10.0)
+    small = BRepPrimAPI_MakeBox(gp_Pnt(-3.0, 0.0, 0.0), 3.0, 1.0, 1.0).Shape()   # tiny contact
+    shape = _compound(small, big, plate)           # the small body has the LOWEST index
+    found = mesh_probe._contact_support_faces(shape, _faces(shape), tol=1e-5,
+                                              deadline=time.monotonic() + 60.0)
+    assert found is not None and found.pairs_total == 2 and found.pairs_considered == 2
+    from OCP.TopAbs import TopAbs_SOLID
+
+    from meshpipeline.cad.repair.localize import _bounds_of, _indexed
+    solids = _indexed(shape, TopAbs_SOLID)
+    ids = [int(x) for x in found.pair.removeprefix("solids:").split("+")]
+    assert all(_bounds_of(solids.FindKey(i))[1][0] > 5.0 for i in ids)   # big + plate

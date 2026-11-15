@@ -170,3 +170,20 @@ def test_an_unmapped_mesh_error_does_not_displace_a_kernel_warning():
     warn = _kernel(DefectCode.small_edge, DefectSeverity.warning, "edge:a", 1)
     unmapped = _mesh(DefectCode.mesh_edge_through_face, stage=STAGE_3D)
     assert _picks([warn, unmapped]) == ("fix_small_edges", "edge:a")
+
+
+def test_siblings_of_one_contact_pair_are_ineffective_together():
+    from meshpipeline.cad.repair.session import OpVerdict, PackageVerdict
+
+    def sibling(fp):
+        d = _mesh(DefectCode.mesh_open_loop, fingerprint=fp)
+        d.measurements["pair"] = "solids:1+2"
+        return d
+
+    region = Region(index=0, fingerprints=frozenset({"face:f4", "face:f5"}),
+                    bbox_min=(0.0, 0.0, 0.0), bbox_max=(10.0, 10.0, 10.0),
+                    face_indices=frozenset({4}))
+    tried = PackageVerdict(region_index=0, status="reverted", verdicts=(OpVerdict(
+        op="fix_face_boundary", targets=("face:f4",), defect_code="mesh_open_loop",
+        status="rolled_back", reason="target_remains"),))
+    assert _author()(region, (sibling("face:f4"), sibling("face:f5")), (tried,)) is None

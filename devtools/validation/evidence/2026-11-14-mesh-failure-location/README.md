@@ -156,3 +156,4 @@ unmeshable 5) and are not part of this bundle. `run-status.txt` therefore lists 
 
 See `../2026-11-14-mesh-probe-calibration/README.md` (sources, sha256, extraction). Pass the OCCT and
 ABC directories to `repair_corpus.py` as in `bundle-*/manifest.json`.
+- Probe-live `refusals_by_reason` counts from before and after commit 8a95d589 are not comparable: a warning pick now also records the mesh `no_operation_claims_it` refusals it previously skipped.

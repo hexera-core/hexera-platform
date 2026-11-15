@@ -218,7 +218,10 @@ def _two_boxes_and_a_fake_probe(monkeypatch, *, supports, calls=None):
     def fake(shape_, faces, *, tol, deadline):
         if calls is not None:
             calls.append(deadline)
-        return supports
+        if not supports:
+            return None
+        return mesh_probe.Contact(faces=tuple(supports), pair="solids:1+2", pairs_total=3,
+                                  pairs_considered=3)
 
     monkeypatch.setattr(mesh_probe, "_contact_support_faces", fake)
     return mesh_probe, shape
@@ -231,6 +234,8 @@ def test_plc_without_coordinates_is_located_by_contact(monkeypatch):
     assert all(d.code.value == "mesh_edge_through_face" and d.entity_type == "face"
                and d.measurements["stage"] == "3d" and d.fingerprint for d in found)
     assert all(d.measurements["located_by"] == "contact-pair" for d in found)
+    assert all(d.measurements["pair"] == "solids:1+2" and d.measurements["pairs_total"] == 3
+               and d.measurements["pairs_considered"] == 3 for d in found)
 
 
 def test_located_by_marker_present(monkeypatch):

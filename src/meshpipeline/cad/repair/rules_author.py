@@ -143,6 +143,13 @@ def _mesh_candidate(defects, history: RunHistory, *, reserved: frozenset) -> Can
             continue
         if history.was_ineffective(defect.fingerprint, name):
             continue
+        # SIBLINGS OF ONE CONTACT: faces located from the same solid pair are one physical
+        # problem, so an op that already failed on one of them is not retried on the others.
+        pair = (getattr(defect, "measurements", None) or {}).get("pair")
+        if pair and any(history.was_ineffective(other.fingerprint, name) for other in ordered
+                        if other is not defect
+                        and (getattr(other, "measurements", None) or {}).get("pair") == pair):
+            continue
         if history.was_declined(name, (defect.fingerprint,)):
             continue
         if defect.fingerprint in held:
