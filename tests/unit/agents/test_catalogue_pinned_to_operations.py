@@ -71,3 +71,32 @@ def test_the_fragment_flag_is_read_when_the_model_side_is_not_told(monkeypatch, 
     monkeypatch.setattr(rcfg, "CAD_REPAIR_FRAGMENT_BODIES", flag)
     assert set(_wire.catalogue()) == {op.name for op in catalogue()}
     assert ("fragment_bodies" in _described(_wire.catalogue_text())) is flag
+
+
+# EVERY POSTURE OF THE THREE MESH-OPERATION FLAGS (2^3): CAD_REPAIR_REBUILD_FACE joins the two
+# above, read the same way on both sides.
+
+_POSTURES_3 = [(s, f, r) for s in (False, True) for f in (False, True) for r in (False, True)]
+
+
+@pytest.mark.parametrize("split, fragment, rebuild", _POSTURES_3,
+                         ids=[f"split_{s}-fragment_{f}-rebuild_{r}" for s, f, r in _POSTURES_3])
+def test_the_model_catalogue_follows_the_registry_in_every_three_flag_posture(
+        split, fragment, rebuild):
+    flags = {"split_closed_faces": split, "fragment_bodies": fragment, "rebuild_face": rebuild}
+    names = _wire.catalogue(**flags)
+    registry = {op.name for op in catalogue(**flags)}
+    assert set(names) == registry and len(names) == len(registry)
+    assert _described(_wire.catalogue_text(**flags)) == set(names)
+    assert ("rebuild_face" in names) is rebuild
+    assert ("fragment_bodies" in names) is fragment
+    assert ("split_closed_faces" in names) is split
+
+
+@pytest.mark.parametrize("flag", [False, True], ids=["rebuild_off", "rebuild_on"])
+def test_the_rebuild_flag_is_read_when_the_model_side_is_not_told(monkeypatch, flag):
+    import meshpipeline.settings.cad_repair as rcfg
+
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_REBUILD_FACE", flag)
+    assert set(_wire.catalogue()) == {op.name for op in catalogue()}
+    assert ("rebuild_face" in _described(_wire.catalogue_text())) is flag

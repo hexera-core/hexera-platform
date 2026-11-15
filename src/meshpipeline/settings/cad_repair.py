@@ -95,6 +95,21 @@ CAD_REPAIR_SPLIT_CLOSED_FACES: bool = bool_env("CAD_REPAIR_SPLIT_CLOSED_FACES", 
 #: the catalogue and out of the rules baseline's MESH_OPS entirely.
 CAD_REPAIR_FRAGMENT_BODIES: bool = bool_env("CAD_REPAIR_FRAGMENT_BODIES", "false")
 
+#: Re-trim ONE FACE from its own boundary (`operations.RebuildFace`: the face's underlying surface
+#: and wires through BRepBuilderAPI_MakeFace, finished by ShapeFix_Face, spliced back into its
+#: owning body), the standard answer when gmsh's 2D stage reports overlapping facets because a
+#: face's trimming or parameterisation defeats the surface mesher. Off keeps the operation out of
+#: the catalogue, and the rules baseline's MESH_OPS maps an overlap to `fix_shape_global` exactly
+#: as before; on, `rebuild_face` is preferred and `fix_shape_global` is its fallback.
+#:
+#: THE GATE: NOT TO BE SET LIVE ON CUSTOMER JOBS UNTIL THE SEMANTIC PACKAGE REVIEWER
+#: (CAD_REPAIR_PACKAGE_REVIEW=live) IS LIVE. A re-trim can move a feature - a face rebuilt on the
+#: same surface but a different trim is a different face - and the reviewer is what replaces the
+#: numeric deviation gate for such an operation (the op records its sampled deviation as evidence,
+#: never as a gate). Code does not enforce the coupling; deployment posture owns it, and
+#: `_warn_unreviewed_rebuild` says it out loud when the two disagree.
+CAD_REPAIR_REBUILD_FACE: bool = bool_env("CAD_REPAIR_REBUILD_FACE", "false")
+
 #: Sweep away SLIVER FACES - the sub-tolerance strips and spots a Boolean that just missed leaves
 #: behind. Separate from CAD_REPAIR_ALLOW_FACE_REMOVAL on purpose: that knob waives the
 #: face-removal check for EVERY operation in a run, while this one consents to a single bounded
@@ -368,6 +383,19 @@ def _warn_unreviewed_baseline(review: str, region_loop: str) -> None:
 
 
 _warn_unreviewed_baseline(CAD_REPAIR_PACKAGE_REVIEW, CAD_REPAIR_REGION_LOOP)
+
+
+def _warn_unreviewed_rebuild(rebuild_face: bool, review: str) -> None:
+    """Say out loud when `rebuild_face` is admitted but the package reviewer is not live: the
+    reviewer is the gate this operation ships behind (see CAD_REPAIR_REBUILD_FACE), and without it
+    a re-trim that moved a feature is judged by nothing semantic. A warning, not a refusal - the
+    coupling is the deployment posture's to own, and benchmarks run the op unreviewed on purpose."""
+    if rebuild_face and review != "live":
+        logger.warning("CAD_REPAIR_REBUILD_FACE is on but CAD_REPAIR_PACKAGE_REVIEW=%r: rebuild_face "
+                       "must not run on customer jobs until the package reviewer is live", review)
+
+
+_warn_unreviewed_rebuild(CAD_REPAIR_REBUILD_FACE, CAD_REPAIR_PACKAGE_REVIEW)
 
 #: Seconds one package-review call may take; cut further to what is left of the run's time. A
 #: call that does not answer in time is a reject.

@@ -2282,6 +2282,217 @@ class FragmentBodies:
                                    "precision_mm": float(tolerance_mm)})
 
 
+def _is_valid(shape) -> bool:
+    """`BRepCheck_Analyzer` over `shape` - a face, a body or a part."""
+    from OCP.BRepCheck import BRepCheck_Analyzer
+
+    return bool(BRepCheck_Analyzer(shape).IsValid())
+
+
+def _area_of(face) -> float:
+    from meshpipeline.cad.repair.localize import _face_area
+
+    return float(_face_area(face))
+
+
+def _face_name(face, *, diagonal_mm: float) -> str:
+    """One face named as `_face_names` names every face: its box at the WHOLE PART's quantum."""
+    return fingerprint_of("face", box_of(face), quantum=quantum_for(diagonal_mm))
+
+
+def _retrim_face(face, *, tolerance_mm: float):
+    """`face` re-trimmed from its own boundary: `(old, new)`, both FORWARD, or None when no
+    surface or outer wire can be recovered (or the kernel builds no face from them).
+
+    THE SAME SURFACE, THE SAME EDGES. The new face is `BRepBuilderAPI_MakeFace` over the face's
+    own underlying surface and its outer wire, with every inner wire added back, then finished by
+    `ShapeFix_Face` with the heal's configuration (`_rebuild_face`: removal, reorientation and
+    natural bounds off). The edges are the face's own, so the neighbours that share them still do,
+    and the splice closes up around the new face.
+
+    WHY THE LOCATION IS PEELED OFF. `BRep_Tool.Surface_s(face)` on a located face returns a
+    TRANSFORMED COPY of the surface, and the edges carry no pcurves on a copy: ShapeFix then
+    projects fresh ones, which is a different trim (measured on the corpus cone: projecting
+    fresh pcurves left the face invalid). So the raw surface is taken with its location, the
+    wires are moved into the surface's frame, and the finished face is moved back - every
+    existing pcurve is found where it was.
+
+    IT WRITES INTO THE EDGES IT IS HANDED (ShapeFix adds pcurves and raises tolerances in place),
+    so the caller hands it only a face of its own `_copied` shape.
+    """
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+    from OCP.BRepTools import BRepTools
+    from OCP.TopAbs import TopAbs_FORWARD, TopAbs_WIRE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopLoc import TopLoc_Location
+    from OCP.TopoDS import TopoDS
+
+    old = TopoDS.Face_s(face.Oriented(TopAbs_FORWARD))
+    location = TopLoc_Location()
+    surface = BRep_Tool.Surface_s(old, location)
+    outer = BRepTools.OuterWire_s(old)
+    if surface is None or outer.IsNull():
+        return None
+    inverse = location.Inverted()
+    maker = BRepBuilderAPI_MakeFace(surface, TopoDS.Wire_s(outer.Moved(inverse)), True)
+    if not maker.IsDone():
+        return None
+    wires = TopExp_Explorer(old, TopAbs_WIRE)
+    while wires.More():
+        wire = TopoDS.Wire_s(wires.Current())
+        if not wire.IsSame(outer):
+            maker.Add(TopoDS.Wire_s(wire.Moved(inverse)))
+        wires.Next()
+    if not maker.IsDone():
+        return None
+    built = TopoDS.Face_s(maker.Face().Moved(location))
+    return old, TopoDS.Face_s(_rebuild_face(built, tolerance_mm=tolerance_mm))
+
+
+def _rebuild_deviation(old, new, name: str, *, diagonal_mm: float):
+    """The sampled maximum distance from the NEW face to the OLD one (32 points), through
+    `deviation.measure_deviation` - never reimplemented here.
+
+    AGAINST THE OLD FACE, not the old part: a point of the new face that drifted onto a
+    neighbour would measure ~0 against the whole part and hide exactly the movement this number
+    exists to show. The face is selected by its own fingerprint at the PART's quantum
+    (`diagonals`), which is how `deviation._select_faces` names it. Evidence, never a gate: a
+    failure comes back as `mm=None`.
+    """
+    from meshpipeline.cad.repair.deviation import measure_deviation
+
+    return measure_deviation(old, new, (name,), samples=32, diagonals=(float(diagonal_mm),))
+
+
+class RebuildFace:
+    """Re-trim ONE face from its own boundary, so gmsh's surface mesher meets a cleanly trimmed
+    face on the same surface instead of the trimming or parameterisation that defeated it.
+
+    THE GATE: NOT TO BE SET LIVE ON CUSTOMER JOBS UNTIL THE SEMANTIC PACKAGE REVIEWER
+    (CAD_REPAIR_PACKAGE_REVIEW=live) IS LIVE. This is the riskiest operation in the catalogue: a
+    face rebuilt on the same surface but trimmed differently is a different face, and a re-trim
+    can move a feature. The reviewer is what replaces the numeric deviation gate for an operation
+    like that - `deviation_mm` below is evidence handed to it, never a refusal. Code does not
+    enforce the coupling (the deployment posture owns it); settings/cad_repair.py warns when
+    CAD_REPAIR_REBUILD_FACE is on while the reviewer is off.
+
+    WHAT IT ANSWERS: `mesh_overlapping_facets` recorded in the 2D stage - gmsh's "Invalid boundary
+    mesh (overlapping facets) on surface N" raised while meshing surfaces. The CAE answer for a
+    face whose trimming defeats the mesher is to re-trim the same underlying surface from its
+    boundary wire (`_retrim_face`). A 3D-stage overlap is the VOLUME mesher reading a surface mesh
+    it disagrees with; that is not this face's trim, and the operation declines to aim at it.
+
+    WHAT IT MAY TOUCH: the target face, rebuilt, and its OWNING BODY, re-stitched around it: the
+    face is spliced into its owner (`splice`), and the owner into the part, so the owner's other
+    faces keep their identity and every other body is untouched. Everything is done on a
+    `_copied` shape, because ShapeFix writes into shared edges.
+
+    WHAT IT DECLARES: `faces_removed = faces_added = 1` (one face out, one face in - a swap the
+    caps' face count sees as no change), AREA_DELTA as the new face's area minus the old's, measured
+    before the splice; no volume declaration (the cumulative cap's residual judges it). Recorded,
+    not declared: `deviation_mm`, the sampled (32-point) maximum distance of the new face from the
+    old (`_rebuild_deviation`). `rebuilt` names the new face and any owner face whose name the
+    re-stitch changed; `added` names the new face only when its name is new.
+
+    WHY EACH DECLINE EXISTS, in the order checked:
+      rebuilding_disabled - CAD_REPAIR_REBUILD_FACE, the consent, is absent.
+      no face was named / one_face_only / not_resolved - nothing (or too much) to aim at.
+      no_owner          - the face belongs to no solid or shell: there is no body to re-stitch.
+      non_manifold      - more than one body owns the face: rebuilding one would leave the other
+                          holding the old face (SplitClosedFaces' reason).
+      no_boundary       - no underlying surface or outer wire could be recovered, or the kernel
+                          built no face from them.
+      rebuilt_invalid   - the rebuilt face is not `BRepCheck`-valid: a re-trim that makes a broken
+                          face is not a repair.
+      owner_invalidated - the owner was valid and the re-stitched owner is not. An owner already
+                          invalid is not blamed on the rebuild; the session's caps still judge the
+                          part.
+    """
+
+    name = "rebuild_face"
+    answers = frozenset({DefectCode.mesh_overlapping_facets})
+    #: One face (re-stitched into its owner): as narrow as the face fixer.
+    scope = 2
+
+    def targets_for(self, defect) -> tuple[EntityRef, ...]:
+        import meshpipeline.settings.cad_repair as rcfg
+        from meshpipeline.cad.repair.mesh_probe import STAGE_2D
+
+        if not rcfg.CAD_REPAIR_REBUILD_FACE:
+            return ()
+        if getattr(defect, "code", None) not in self.answers:
+            return ()
+        if defect.entity_type != "face" or not getattr(defect, "fingerprint", ""):
+            return ()
+        # ONLY A 2D-STAGE OVERLAP, the SplitClosedFaces rule (ruling P2-R3): here so every path
+        # obeys it, the operation-at-a-time planner and the rules baseline's chain alike.
+        if (getattr(defect, "measurements", None) or {}).get("stage") != STAGE_2D:
+            return ()
+        return (EntityRef(entity_type="face", fingerprint=defect.fingerprint,
+                          entity_index=int(defect.entity_index),
+                          ambiguous=bool(getattr(defect, "ambiguous", False))),)
+
+    def apply(self, shape, targets: tuple[EntityRef, ...], *,
+              tolerance_mm: float) -> OpOutcome:
+        import meshpipeline.settings.cad_repair as rcfg
+
+        def declined(reason: str, **measured) -> OpOutcome:
+            # NO DECLARATION ON A DECLINE, for SplitClosedFaces' reason: the shape is unchanged.
+            return OpOutcome(shape=shape, evidence={"declined": reason,
+                                                    "faces_targeted": len(targets), **measured})
+
+        if not rcfg.CAD_REPAIR_REBUILD_FACE:
+            return declined("rebuilding_disabled (CAD_REPAIR_REBUILD_FACE)")
+        if not targets:
+            return declined("no face was named")
+        if len(targets) > 1:
+            return declined(f"one_face_only ({len(targets)} targets named)")
+        ref = targets[0]
+        face = sub_shape(shape, "face", ref.entity_index) if ref.entity_type == "face" else None
+        if face is None:
+            return declined("not_resolved (the target face is not in this shape)")
+        owners = _owners_of(shape, face)
+        if not owners:
+            return declined("no_owner (the face belongs to no solid or shell)")
+        if len(owners) > 1:
+            return declined(f"non_manifold ({len(owners)} bodies share the face)")
+
+        # EVERYTHING FROM HERE ON IS DONE TO A COPY, whose indices are the input's.
+        work = _copied(shape)
+        face = sub_shape(work, "face", ref.entity_index)
+        owner = _owners_of(work, face)[0]
+        retrimmed = _retrim_face(face, tolerance_mm=tolerance_mm)
+        if retrimmed is None:
+            return declined("no_boundary (no underlying surface or outer wire could be "
+                            "recovered from the face)")
+        old, new = retrimmed
+        if not _is_valid(new):
+            return declined("rebuilt_invalid (the re-trimmed face is not BRepCheck-valid)")
+        restitched, context = splice(owner, [(old, new)])
+        if _is_valid(owner) and not _is_valid(restitched):
+            return declined("owner_invalidated (the owning body was valid and is not with the "
+                            "re-trimmed face)")
+        spliced, _ = splice(work, [(owner, restitched)])
+
+        diagonal = _diagonal_of(work)
+        old_name = _face_name(old, diagonal_mm=diagonal)
+        new_name = _face_name(new, diagonal_mm=diagonal)
+        delta = _area_of(new) - _area_of(old)
+        deviation = _rebuild_deviation(old, new, new_name, diagonal_mm=diagonal)
+        before = set(_face_names(owner, diagonal_mm=diagonal))
+        renamed = [n for n in _face_names(restitched, diagonal_mm=diagonal) if n not in before]
+        mapping = mapping_from_context(context, targets, shape_before=work, diagonal_mm=diagonal)
+        return OpOutcome(
+            shape=spliced, mapping=mapping,
+            added=(new_name,) if new_name and new_name != old_name else (),
+            rebuilt=tuple(dict.fromkeys(n for n in (new_name, *renamed) if n)),
+            evidence={"faces_removed": 1, "faces_added": 1,
+                      AREA_DELTA: round(float(delta), 6),
+                      "deviation_mm": deviation.mm, "deviation_samples": deviation.samples,
+                      "faces_targeted": 1, "precision_mm": float(tolerance_mm)})
+
+
 class FixShapeGlobal:
     """Today's whole-shape `ShapeFix_Shape`, kept as the LAST RESORT.
 
@@ -2357,13 +2568,15 @@ class FixShapeGlobal:
 
 
 def catalogue(*, split_closed_faces: bool | None = None,
-              fragment_bodies: bool | None = None) -> tuple[RepairOp, ...]:
+              fragment_bodies: bool | None = None,
+              rebuild_face: bool | None = None) -> tuple[RepairOp, ...]:
     """Every operation the loop may run, narrowest first.
 
-    `split_closed_faces` and `fragment_bodies` ENTER ONLY WITH THEIR CONSENT
-    (CAD_REPAIR_SPLIT_CLOSED_FACES, CAD_REPAIR_FRAGMENT_BODIES, each read when not told): flags
-    off, the catalogue is today's, byte for byte. The ORDER here is documentation - the planner
-    sorts on `scope`, so adding one in the wrong place changes nothing but a reader's expectations.
+    `split_closed_faces`, `fragment_bodies` and `rebuild_face` ENTER ONLY WITH THEIR CONSENT
+    (CAD_REPAIR_SPLIT_CLOSED_FACES, CAD_REPAIR_FRAGMENT_BODIES, CAD_REPAIR_REBUILD_FACE, each read
+    when not told): flags off, the catalogue is today's, byte for byte. The ORDER here is
+    documentation - the planner sorts on `scope`, so adding one in the wrong place changes nothing
+    but a reader's expectations.
     """
     import meshpipeline.settings.cad_repair as rcfg
 
@@ -2371,10 +2584,13 @@ def catalogue(*, split_closed_faces: bool | None = None,
         split_closed_faces = bool(rcfg.CAD_REPAIR_SPLIT_CLOSED_FACES)
     if fragment_bodies is None:
         fragment_bodies = bool(rcfg.CAD_REPAIR_FRAGMENT_BODIES)
+    if rebuild_face is None:
+        rebuild_face = bool(rcfg.CAD_REPAIR_REBUILD_FACE)
     return (
         FixSmallEdges(),
         *((SplitClosedFaces(),) if split_closed_faces else ()),
         FixFaceBoundary(),
+        *((RebuildFace(),) if rebuild_face else ()),
         FixSmallFaces(),
         SewFaces(),
         FillPlanarHole(),

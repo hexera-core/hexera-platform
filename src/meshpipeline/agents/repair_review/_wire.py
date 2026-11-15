@@ -17,10 +17,14 @@ SPLIT_CLOSED = "split_closed_faces"
 #: The operation that answers an edge-through-face mesh failure between touching bodies, present
 #: ONLY when CAD_REPAIR_FRAGMENT_BODIES admits it - the same rule as SPLIT_CLOSED.
 FRAGMENT = "fragment_bodies"
+#: The operation that re-trims a face gmsh reports overlapping facets on, present ONLY when
+#: CAD_REPAIR_REBUILD_FACE admits it - the same rule as SPLIT_CLOSED.
+REBUILD = "rebuild_face"
 
 
 def catalogue(*, split_closed_faces: bool | None = None,
-              fragment_bodies: bool | None = None) -> tuple[str, ...]:
+              fragment_bodies: bool | None = None,
+              rebuild_face: bool | None = None) -> tuple[str, ...]:
     """The catalogue names for the given consent (the deployment's flags when not told). Pinned to
     `operations.catalogue` in every flag state by test_catalogue_pinned_to_operations.py."""
     import meshpipeline.settings.cad_repair as rcfg
@@ -29,10 +33,13 @@ def catalogue(*, split_closed_faces: bool | None = None,
         split_closed_faces = bool(rcfg.CAD_REPAIR_SPLIT_CLOSED_FACES)
     if fragment_bodies is None:
         fragment_bodies = bool(rcfg.CAD_REPAIR_FRAGMENT_BODIES)
+    if rebuild_face is None:
+        rebuild_face = bool(rcfg.CAD_REPAIR_REBUILD_FACE)
     return ("fix_small_edges", "fix_small_faces", "fix_face_boundary", "sew_faces",
             "fill_planar_hole", "fill_nonplanar_hole", "heal_self_intersections",
             "fix_shape_global", *((SPLIT_CLOSED,) if split_closed_faces else ()),
-            *((FRAGMENT,) if fragment_bodies else ()))
+            *((FRAGMENT,) if fragment_bodies else ()),
+            *((REBUILD,) if rebuild_face else ()))
 
 
 CATALOGUE: tuple[str, ...] = catalogue()

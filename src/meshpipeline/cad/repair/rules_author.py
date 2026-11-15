@@ -62,14 +62,23 @@ LABEL = "regions-rules-v1"
 #: volume-stage refusal existed because a scoped (2D-only) probe could not judge the package, and
 #: a package carrying an operation that answers a volume code is now judged by WHOLE-SHAPE scans
 #: (`session.try_package`), which can.
+#:
+#: AN OVERLAP prefers `rebuild_face` only with CAD_REPAIR_REBUILD_FACE: the narrowest operation
+#: that claims a defect goes first (the planner's standing principle), and re-trimming the one face
+#: gmsh named is narrower than the whole-shape pass. `fix_shape_global` stays as its FALLBACK
+#: (`mesh_fallbacks`), so a file the whole-shape pass used to rescue is not lost to the narrower
+#: idea failing first.
 def mesh_ops(*, split_closed_faces: bool | None = None,
-             fragment_bodies: bool | None = None) -> dict[DefectCode, str]:
+             fragment_bodies: bool | None = None,
+             rebuild_face: bool | None = None) -> dict[DefectCode, str]:
     """MESH_OPS for the given consent (the deployment's flags when not told). Flags off is today's
     mapping, byte for byte."""
     if split_closed_faces is None:
         split_closed_faces = bool(rcfg.CAD_REPAIR_SPLIT_CLOSED_FACES)
     if fragment_bodies is None:
         fragment_bodies = bool(rcfg.CAD_REPAIR_FRAGMENT_BODIES)
+    if rebuild_face is None:
+        rebuild_face = bool(rcfg.CAD_REPAIR_REBUILD_FACE)
     mapping = {
         DefectCode.mesh_open_loop: "fix_face_boundary",
         DefectCode.mesh_overlapping_facets: "fix_shape_global",
@@ -78,10 +87,32 @@ def mesh_ops(*, split_closed_faces: bool | None = None,
         mapping[DefectCode.mesh_periodic_surface] = "split_closed_faces"
     if fragment_bodies:
         mapping[DefectCode.mesh_edge_through_face] = "fragment_bodies"
+    if rebuild_face:
+        mapping[DefectCode.mesh_overlapping_facets] = "rebuild_face"
     return mapping
 
 
 MESH_OPS: dict[DefectCode, str] = mesh_ops()
+
+
+def mesh_fallbacks(*, rebuild_face: bool | None = None) -> dict[DefectCode, tuple[str, ...]]:
+    """The operations a mesh code falls back to, in order, once its MESH_OPS choice is spent.
+
+    HOW A FALLBACK IS REACHED: through the region's own attempts, exactly as the rules planner
+    reaches its second idea. `_history` turns a tried-and-not-kept `rebuild_face` into an
+    ineffective `(fingerprint, rebuild_face)` pair (a decline into a declined aim), so on the
+    region's NEXT attempt `_mesh_candidate` passes the spent choice over and proposes the next name
+    here - `fix_shape_global`, today's mapping. It needs a second attempt for the region
+    (CAD_REPAIR_REGION_ATTEMPTS > 1). Empty with the flag off: no chain, today's single choice.
+    """
+    if rebuild_face is None:
+        rebuild_face = bool(rcfg.CAD_REPAIR_REBUILD_FACE)
+    if rebuild_face:
+        return {DefectCode.mesh_overlapping_facets: ("fix_shape_global",)}
+    return {}
+
+
+MESH_FALLBACKS: dict[DefectCode, tuple[str, ...]] = mesh_fallbacks()
 
 #: Mesh codes whose mapping holds only when the probe RECORDED the 2D stage. Stricter than the
 #: volume-stage refusal every mapping gets: an unrecorded stage is refused too.
@@ -115,6 +146,21 @@ def _is_mesh(defect) -> bool:
     return getattr(defect.code, "value", str(defect.code)).startswith("mesh_")
 
 
+def _spent(defect, name: str, ordered, history: RunHistory) -> bool:
+    """Has the region already used up `name` on this defect - tried it, tried it on a sibling of
+    the same contact, or had the aim declined?"""
+    if history.was_ineffective(defect.fingerprint, name):
+        return True
+    # SIBLINGS OF ONE CONTACT: faces located from the same solid pair are one physical
+    # problem, so an op that already failed on one of them is not retried on the others.
+    pair = (getattr(defect, "measurements", None) or {}).get("pair")
+    if pair and any(history.was_ineffective(other.fingerprint, name) for other in ordered
+                    if other is not defect
+                    and (getattr(other, "measurements", None) or {}).get("pair") == pair):
+        return True
+    return history.was_declined(name, (defect.fingerprint,))
+
+
 def _mesh_candidate(defects, history: RunHistory, *, reserved: frozenset) -> Candidate | None:
     """The MESH_OPS proposal for a region's mesh failures, or None - with the RulesPlanner's own
     bookkeeping, so the two halves of the baseline cannot disagree about what a refusal is.
@@ -135,24 +181,24 @@ def _mesh_candidate(defects, history: RunHistory, *, reserved: frozenset) -> Can
                            f"a {defect.code.value} on a {defect.entity_type} with no "
                            "measurable extent")
             continue
-        name = MESH_OPS.get(defect.code)
+        # THE CHOICE, THEN ITS FALLBACKS (`mesh_fallbacks`; none with every flag off, so the chain
+        # is the single MESH_OPS name it always was). A name the catalogue does not hold is no
+        # operation; an operation that CLAIMS the code but refuses this aim through its own
+        # `targets_for` (rebuild_face on a non-2D overlap) is passed over, so the aim gets the
+        # next name - for an unrecorded-stage overlap, exactly the flag-off choice.
+        chain = [n for n in (MESH_OPS.get(defect.code), *MESH_FALLBACKS.get(defect.code, ()))
+                 if n is not None and n in _OPS_BY_NAME
+                 and not (defect.code in _OPS_BY_NAME[n].answers
+                          and not _OPS_BY_NAME[n].targets_for(defect))]
         # A NAME THE CATALOGUE DOES NOT HOLD IS NO OPERATION: refused, never a KeyError.
-        if name is None or name not in _OPS_BY_NAME or _stage_refused(defect):
+        if not chain or _stage_refused(defect):
             history.refuse(defect.fingerprint, "no_operation_claims_it",
                            f"{defect.code.value} needs a judgement no bounded operation makes")
             continue
-        if history.was_ineffective(defect.fingerprint, name):
-            continue
-        # SIBLINGS OF ONE CONTACT: faces located from the same solid pair are one physical
-        # problem, so an op that already failed on one of them is not retried on the others.
-        pair = (getattr(defect, "measurements", None) or {}).get("pair")
-        if pair and any(history.was_ineffective(other.fingerprint, name) for other in ordered
-                        if other is not defect
-                        and (getattr(other, "measurements", None) or {}).get("pair") == pair):
-            continue
-        if history.was_declined(name, (defect.fingerprint,)):
-            continue
         if defect.fingerprint in held:
+            continue
+        name = next((n for n in chain if not _spent(defect, n, ordered, history)), None)
+        if name is None:
             continue
         target = EntityRef(entity_type=str(defect.entity_type), fingerprint=defect.fingerprint,
                            entity_index=int(defect.entity_index),
