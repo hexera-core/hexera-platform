@@ -12,8 +12,9 @@ where the part has two, and the mesh was refused.
 AND NOT BECAUSE ANYTHING WAS UNDER-RESOLVED. Zero of the 6,669 cells straddle the 0.500 mm of metal
 the mis-classification sits on; 3,373 of them (50.58%) are already one octree level finer than
 background at 201.2624 um; and the 1,626 that sit inside that metal resolve it 1.875 cells deep.
-The 3,296 coarse cells carrying 86.42% of the island volume lie 757.0 um to 7,602.1 um from the
-coolant surface, which is bulk metal reached by connectivity. So the fix is connectivity too.
+The 3,296 coarse cells carry 86.92% of the island volume - 247.997606 mm3 exactly, by a fan
+decomposition over those cells' own 24,686 faces - and lie 757.0 um to 6,661.3 um from the coolant
+surface, which is bulk metal reached by connectivity. So the fix is connectivity too.
 
 Handed to `regionToCell`, a seed per passage says "the coolant is the cells connected to HERE", so
 a lump with no face path to one is not coolant. Measured in OpenFOAM v2412 on the engine's own

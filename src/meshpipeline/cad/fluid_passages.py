@@ -553,9 +553,18 @@ def interior_seeds(tris, *, background_m: float,
     sit inside that band are one level FINER than background, median 201.5 x 266.7 x 201.5 um, so
     the wall is resolved 1.875 cells deep where the query still called it fluid. And 3,373 of the
     6,669 (50.58%) are level-1 cells at 201.2624 um, 2,114 of them inside the coolant surface's
-    own refinement band. What the islands are is bulk metal reached by CONNECTIVITY - 3,296 cells
-    carrying 86.42% of the island volume lie 757.0 um to 7,602.1 um from the coolant surface - so
-    more cells in the same block would have made it bigger, not smaller.
+    own refinement band. What the islands are is bulk metal reached by CONNECTIVITY - the 3,296
+    coarse cells carry 86.92% of the island volume and lie 757.0 um to 6,661.3 um from the coolant
+    surface - so more cells in the same block would have made it bigger, not smaller.
+
+    The island volume is 247.997606 mm3 EXACTLY, by a fan decomposition over the 24,686 faces of
+    those cells, which are their complete face set. Two figures here were corrected by measuring
+    that rather than modelling it: the share was 86.42% from bounding boxes, and the far distance
+    was 7,602.1 um from a search restricted to the triangles within 3 mm of the island box, which
+    can only overestimate a distance longer than 3 mm. The level-1 cells also do not separate
+    cleanly from the level-0 ones by distance - the two populations overlap over [757.0, 1,044.7]
+    um with 497 cells in the overlap - it is their MEDIANS that are far apart, 245.7 um against
+    2,609.7 um.
     [[project-corintis-island-diagnosis]]
     The seeds are how that is fixed WITHOUT changing a cell: handed to `regionToCell`, they say
     "the coolant is the connected regions containing THESE points", so a lump of metal with no
