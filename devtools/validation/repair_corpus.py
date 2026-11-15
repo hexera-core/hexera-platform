@@ -286,6 +286,17 @@ def planner_summary(rows: list[dict], mode: str) -> dict:
     return out
 
 
+def _mesh_located(measured: dict | None) -> list[dict]:
+    """The mesh_* defects a repair session still holds when the run ends, as (code, entity,
+    fingerprint), read from the region run's `defects_remaining`. The `before`/`after` reports in
+    the measurements come from `caps.measure`, which never runs the mesh probe, so they cannot
+    carry these; the row's pre-session inspection does not either."""
+    remaining = ((measured or {}).get("regions") or {}).get("defects_remaining") or []
+    return [{"code": e.get("code", ""), "entity": e.get("entity", ""),
+             "fingerprint": e.get("fingerprint", "")}
+            for e in remaining if str(e.get("code", "")).startswith("mesh_")]
+
+
 def _operation_rows(operations) -> list[dict]:
     return [{"op": op.get("name", ""), "status": op.get("status", ""),
              "reason": op.get("reason", ""), "basis": op.get("basis", ""),
@@ -799,6 +810,8 @@ def _repair_row(path: Path, scratch: Path, *, mode: str = "off") -> dict:
         # after-check discarded kept nothing either: its `kept` operations count as rolled back.
         measured = dict(getattr(exc, "measurements", None) or {})
         row.update(outcome="refused", error=str(exc),
+                   mesh_located_remaining=_mesh_located(measured),
+                   timings=dict(measured.get("timings") or {}),
                    operations=_operation_rows(measured.get("operations") or ()),
                    result_discarded=bool(measured.get("result_discarded")),
                    seconds=round(time.monotonic() - started, 2))
@@ -825,6 +838,8 @@ def _repair_row(path: Path, scratch: Path, *, mode: str = "off") -> dict:
         planner=str(measured.get("planner", "")),
         refusals=list(measured.get("refusals", []) or []),
         declared_area_mm2=float(measured.get("declared_area_mm2", 0.0) or 0.0),
+        mesh_located_remaining=_mesh_located(measured),
+        timings=dict(measured.get("timings") or {}),
     )
 
     after = _inspect(destination)

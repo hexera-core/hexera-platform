@@ -88,3 +88,16 @@ def test_score_meshing_leaves_after_none_when_nothing_written(monkeypatch, tmp_p
     corpus._score_meshing(row, tmp_path / "b.step", tmp_path)
     assert row["meshes_before"] is True
     assert row["meshes_after"] is None and row["mesh_kind_after"] == ""
+
+
+def test_mesh_located_keeps_only_mesh_defects_still_held_with_their_fingerprints():
+    measured = {"regions": {"defects_remaining": [
+        {"code": "mesh_open_loop", "entity": "face:3", "fingerprint": "ab12", "region": "x"},
+        {"code": "small_edge", "entity": "edge:4", "fingerprint": "cd34"},
+        {"code": "mesh_timeout", "entity": "face:0", "fingerprint": ""},
+    ]}}
+    assert corpus._mesh_located(measured) == [
+        {"code": "mesh_open_loop", "entity": "face:3", "fingerprint": "ab12"},
+        {"code": "mesh_timeout", "entity": "face:0", "fingerprint": ""},
+    ]
+    assert corpus._mesh_located(None) == [] and corpus._mesh_located({}) == []
