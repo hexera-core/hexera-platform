@@ -8,9 +8,25 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-CATALOGUE: tuple[str, ...] = (
-    "fix_small_edges", "fix_small_faces", "fix_face_boundary", "sew_faces", "fill_planar_hole",
-    "fill_nonplanar_hole", "heal_self_intersections", "fix_shape_global")
+#: The operation that answers a periodic-surface mesh failure, present ONLY when
+#: CAD_REPAIR_SPLIT_CLOSED_FACES admits it to `operations.OPERATIONS` - the same flag, read the same
+#: way, so the model side can never offer (or refuse) what the catalogue does not hold.
+SPLIT_CLOSED = "split_closed_faces"
+
+
+def catalogue(*, split_closed_faces: bool | None = None) -> tuple[str, ...]:
+    """The catalogue names for the given consent (the deployment's flag when not told). Pinned to
+    `operations.catalogue` in both flag states by test_catalogue_pinned_to_operations.py."""
+    if split_closed_faces is None:
+        import meshpipeline.settings.cad_repair as rcfg
+
+        split_closed_faces = bool(rcfg.CAD_REPAIR_SPLIT_CLOSED_FACES)
+    return ("fix_small_edges", "fix_small_faces", "fix_face_boundary", "sew_faces",
+            "fill_planar_hole", "fill_nonplanar_hole", "heal_self_intersections",
+            "fix_shape_global", *((SPLIT_CLOSED,) if split_closed_faces else ()))
+
+
+CATALOGUE: tuple[str, ...] = catalogue()
 
 #: The catalogue names that fill a hole, as strings so this layer does not import `cad.repair`.
 #: Pinned to `operations.FILL_OPS` by tests/unit/agents/test_catalogue_pinned_to_operations.py.
@@ -23,15 +39,25 @@ CATALOGUE_LIMITS = (
     "beyond those slivers it cannot move, redraw or delete geometry, change dimensions, or edit "
     "the part by hand")
 
-CATALOGUE_TEXT = (
-    "- fix_small_edges: merge edges too short to keep\n"
-    "- fix_small_faces: sweep away sliver faces too small to keep, if the deployment allows it\n"
-    "- fix_face_boundary: repair a face whose boundary is broken or open\n"
-    "- sew_faces: stitch faces that should share an edge\n"
-    "- fill_planar_hole: cap a flat hole\n"
-    "- fill_nonplanar_hole: cap a small curved hole with a constrained patch\n"
-    "- heal_self_intersections: re-trim only the faces the kernel says cross each other\n"
-    "- fix_shape_global: run the whole-shape healing pass")
+def catalogue_text(*, split_closed_faces: bool | None = None) -> str:
+    """One line per catalogued operation, for the same consent as `catalogue`."""
+    lines = [
+        "- fix_small_edges: merge edges too short to keep",
+        "- fix_small_faces: sweep away sliver faces too small to keep, if the deployment allows it",
+        "- fix_face_boundary: repair a face whose boundary is broken or open",
+        "- sew_faces: stitch faces that should share an edge",
+        "- fill_planar_hole: cap a flat hole",
+        "- fill_nonplanar_hole: cap a small curved hole with a constrained patch",
+        "- heal_self_intersections: re-trim only the faces the kernel says cross each other",
+        "- fix_shape_global: run the whole-shape healing pass",
+    ]
+    if SPLIT_CLOSED in catalogue(split_closed_faces=split_closed_faces):
+        lines.append(f"- {SPLIT_CLOSED}: split a closed (periodic) face - a full cylinder, cone, "
+                     "sphere or torus with one seam - in two so the mesher can wrap it")
+    return "\n".join(lines)
+
+
+CATALOGUE_TEXT = catalogue_text()
 
 
 def configured() -> bool:

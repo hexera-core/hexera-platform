@@ -312,12 +312,14 @@ def _closed_directions(face) -> tuple[bool, bool]:
     return bool(surface.IsUClosed()), bool(surface.IsVClosed())
 
 
-def _owner_of(shape, face):
-    """The SOLID that owns `face` in `shape` - or its shell when the shape has no solid - or None.
+def _owners_of(shape, face) -> tuple:
+    """Every SOLID that owns `face` in `shape` - or every shell when it is in no solid - each once.
 
     The body is what the divider must be handed: splitting a closed face also splits the edges it
     shares with its neighbours (a cylinder's two rim circles), so the neighbours must be rebuilt
-    with it or the part comes back with two unshared rims.
+    with it or the part comes back with two unshared rims. MORE THAN ONE owner is a non-manifold
+    face shared between bodies; the caller declines it rather than rebuild one body and leave the
+    other holding the unsplit face.
     """
     from OCP.TopAbs import TopAbs_FACE, TopAbs_SHELL, TopAbs_SOLID
     from OCP.TopExp import TopExp
@@ -328,10 +330,13 @@ def _owner_of(shape, face):
         TopExp.MapShapesAndAncestors_s(shape, TopAbs_FACE, kind, ancestors)
         if not ancestors.Contains(face):
             continue
-        owners = ancestors.FindFromKey(face)
-        if owners.Size() > 0:
-            return owners.First()
-    return None
+        distinct: list = []
+        for owner in ancestors.FindFromKey(face):
+            if not any(owner.IsSame(seen) for seen in distinct):
+                distinct.append(owner)
+        if distinct:
+            return tuple(distinct)
+    return ()
 
 
 def _face_count(shape) -> int:
@@ -402,6 +407,9 @@ class SplitClosedFaces:
     still bounded by the unsplit circles - two unshared rims. `ShapeUpgrade_ShapeDivideClosed` is
     run on the body and its result replaces the body whole. A consequence stated rather than
     hidden: every other closed face of that body is split too, and `faces_added` counts them all.
+    Nothing here checks the rebuilt body beyond its face count - the session's sanity and validity
+    caps are the backstop (measured: on bug32596's one solid, splitting all 19 closed faces left
+    surfaces of revolution invalid, which `sanity_refusal` rolls back).
 
     WHAT IT DECLARES: `faces_added`, the exact face-count delta of the body (one per face split),
     and AREA_DELTA = VOLUME_DELTA = 0.0 - explicitly, because a split moves no surface and no
@@ -415,6 +423,8 @@ class SplitClosedFaces:
       not_periodic       - the face is closed in neither U nor V: there is no seam to split away,
                            and a split would be topology for its own sake.
       no_owner           - the face belongs to no solid or shell, so there is no body to re-stitch.
+      non_manifold       - more than one body owns the face: rebuilding one would leave the other
+                           holding the unsplit face, so neither is touched.
       nothing_split      - the divider ran and the body has no more faces than before: a no-op is
                            a decline, not a kept operation.
     """
@@ -460,9 +470,12 @@ class SplitClosedFaces:
         closed = "uv" if u_closed and v_closed else "u" if u_closed else "v" if v_closed else ""
         if not closed:
             return declined("not_periodic (the face is closed in neither U nor V)")
-        owner = _owner_of(shape, face)
-        if owner is None:
+        owners = _owners_of(shape, face)
+        if not owners:
             return declined("no_owner (the face belongs to no solid or shell)", closed=closed)
+        if len(owners) > 1:
+            return declined(f"non_manifold ({len(owners)} bodies share the face)", closed=closed)
+        owner = owners[0]
 
         divided, context = _divide_closed(owner, tolerance_mm=tolerance_mm)
         added = _face_count(divided) - _face_count(owner)

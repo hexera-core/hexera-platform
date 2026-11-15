@@ -55,6 +55,17 @@ def _ref(shape, index: int) -> EntityRef:
                                                 quantum=quantum_for(diagonal)))
 
 
+def _faces(shape) -> list:
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp_Explorer
+
+    out, explorer = [], TopExp_Explorer(shape, TopAbs_FACE)
+    while explorer.More():
+        out.append(explorer.Current())
+        explorer.Next()
+    return out
+
+
 def _lateral_index(shape) -> int:
     count = measure(shape).faces
     closed = [i for i in range(1, count + 1) if any(_closed_directions(sub_shape(shape, "face", i)))]
@@ -80,6 +91,20 @@ def test_a_cylinder_s_lateral_face_is_split_in_two(tmp_path, split_on):
     assert after.valid
     # The halves are named, so a defect appearing on them is attributed to this operation.
     assert len(outcome.added) == 2
+    # WHAT THE KERNEL RECORDED, read rather than assumed: the divider's ReShape records the face as
+    # replaced by a SHELL of its two halves, whose joint box is the face's own - so the face's name
+    # is neither moved nor gone, and the mapping says so on the kernel's authority.
+    assert outcome.mapping.basis == "kernel"
+    assert outcome.mapping.moved == {} and outcome.mapping.gone == frozenset()
+    from OCP.TopAbs import TopAbs_SHELL
+
+    from meshpipeline.cad.repair.operations import _divide_closed
+    _, context = _divide_closed(shape, tolerance_mm=0.01)
+    face = sub_shape(shape, "face", index)
+    assert context.IsRecorded(face)
+    assert context.Value(face).ShapeType() == TopAbs_SHELL
+    assert sorted(fingerprint_of("face", box_of(f), quantum=quantum_for(before.diagonal_mm))
+                  for f in _faces(context.Value(face))) == sorted(outcome.added)
     # And nothing closed is left to split.
     assert not any(any(_closed_directions(sub_shape(outcome.shape, "face", i)))
                    for i in range(1, after.faces + 1))
@@ -108,13 +133,12 @@ def _corpus(name):
     return path
 
 
-@pytest.mark.xfail(run=False, strict=True, reason=(
-    "MEASURED 2026-11-14, not assumed: after an OCP read the whole-shape probe of bug32596 TIMES "
-    "OUT at 300 s (mesh_timeout, unlocated), so the region loop never sees a located periodic "
-    "failure and never proposes split_closed_faces - the 1800 s run tried fix_small_edges, "
-    "fix_shape_global, fix_small_edges, all rolled back. And where gmsh does name the surface "
-    "(reading the STEP itself), it is a partial cylinder closed in neither direction, which this "
-    "operation declines (pinned below). Not run by default: one attempt costs the full 30 min."))
+@pytest.mark.skipif(not os.environ.get("HEXERA_SLOW_CORPUS"), reason=(
+    "set HEXERA_SLOW_CORPUS to run (about 30 min). MEASURED 2026-11-14: after an OCP read the "
+    "whole-shape probe of bug32596 TIMES OUT at 300 s (mesh_timeout, unlocated), so the region "
+    "loop never sees a located periodic failure; the 1803.6 s run tried fix_small_edges, "
+    "fix_shape_global, fix_small_edges (all rolled back) and never proposed split_closed_faces. "
+    "Where gmsh does name the surface it is a partial cylinder, declined (pinned below)."))
 def test_corpus_periodic_file_is_repaired_and_meshes(monkeypatch, split_on, capsys):
     """bug32596 fails gmsh's 2D stage with a periodic surface after OCP reads it.
 
@@ -178,10 +202,10 @@ def test_bug32596_s_periodic_failure_is_on_a_face_that_is_not_closed(split_on):
     )
 
     path = _corpus(_PERIODIC_FILE)
-    diagonal = 59.5
+    shape = _read_shape(path)
+    diagonal = measure(shape).diagonal_mm
     result = probe_file(path, diagonal_mm=diagonal, budget_s=120.0)
     assert result.failure is not None and result.failure.kind == PERIODIC_SURFACE
-    shape = _read_shape(path)
     mapping = faces_for_tags(_face_boxes(_indexed(shape, TopAbs_FACE)), result.tag_boxes,
                              tol=diagonal * TAG_MATCH_FRACTION * 1000)
     failing = [mapping[t] for t in result.failure.surfaces if t in mapping]

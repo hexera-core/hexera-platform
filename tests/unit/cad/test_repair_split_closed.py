@@ -54,8 +54,9 @@ def doubles(monkeypatch, flag_on):
                             lambda shape, kind, index: "FACE" if index == 3 else None)
         monkeypatch.setattr(operations, "_closed_directions",
                             lambda face: calls.append("closed") or closed)
-        monkeypatch.setattr(operations, "_owner_of",
-                            lambda shape, face: calls.append("owner") or owner)
+        owners = () if owner is None else owner if isinstance(owner, tuple) else (owner,)
+        monkeypatch.setattr(operations, "_owners_of",
+                            lambda shape, face: calls.append("owner") or owners)
         monkeypatch.setattr(operations, "_divide_closed",
                             lambda owner, *, tolerance_mm: calls.append("divide")
                             or ("DIVIDED", "CONTEXT"))
@@ -134,6 +135,14 @@ def test_declines_what_it_cannot_aim_at(doubles, targets, reason):
 def test_a_face_with_no_owning_body_declines(doubles):
     outcome = doubles(owner=None).apply("SHAPE", (REF,), tolerance_mm=0.01)
     assert outcome.evidence["declined"].startswith("no_owner")
+
+
+def test_a_face_two_bodies_share_declines(doubles):
+    # Non-manifold: rebuilding one owner would leave the other holding the unsplit face.
+    outcome = doubles(owner=("SOLID", "OTHER")).apply("SHAPE", (REF,), tolerance_mm=0.01)
+    assert outcome.shape == "SHAPE"
+    assert outcome.evidence["declined"].startswith("non_manifold (2 bodies")
+    assert "divide" not in doubles.calls
 
 
 def test_declines_while_the_flag_is_off(doubles, monkeypatch):

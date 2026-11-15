@@ -15,3 +15,32 @@ def test_every_catalogued_operation_has_a_one_line_description():
 def test_the_model_side_fill_list_is_the_guarded_fill_set():
     assert set(_wire.FILL_CATALOGUE) == set(FILL_OPS)
     assert FILL_OPS <= {op.name for op in OPERATIONS}
+
+
+# BOTH POSTURES OF CAD_REPAIR_SPLIT_CLOSED_FACES: the model side and the registry read one flag.
+
+import pytest  # noqa: E402
+
+from meshpipeline.cad.repair.operations import catalogue  # noqa: E402
+
+
+def _described(text: str) -> set[str]:
+    return set(dict(line[2:].split(": ", 1) for line in text.splitlines()))
+
+
+@pytest.mark.parametrize("flag", [False, True], ids=["split_off", "split_on"])
+def test_the_model_catalogue_follows_the_registry_in_both_flag_states(flag):
+    names = _wire.catalogue(split_closed_faces=flag)
+    registry = {op.name for op in catalogue(split_closed_faces=flag)}
+    assert set(names) == registry and len(names) == len(registry)
+    assert _described(_wire.catalogue_text(split_closed_faces=flag)) == set(names)
+    assert ("split_closed_faces" in names) is flag
+
+
+@pytest.mark.parametrize("flag", [False, True], ids=["split_off", "split_on"])
+def test_the_flag_is_read_when_the_model_side_is_not_told(monkeypatch, flag):
+    import meshpipeline.settings.cad_repair as rcfg
+
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_SPLIT_CLOSED_FACES", flag)
+    assert set(_wire.catalogue()) == {op.name for op in catalogue()}
+    assert ("split_closed_faces" in _described(_wire.catalogue_text())) is flag
