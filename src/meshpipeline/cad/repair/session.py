@@ -87,6 +87,47 @@ def _judged_whole(package) -> bool:
                for item in package.plan)
 
 
+def _revealed(outcome, targets, defect_code, previous, found) -> tuple:
+    """The mesh findings an operation REVEALED rather than caused. APPLIES TO EVERY MESH OPERATION.
+
+    gmsh reports only its FIRST failure. An operation that clears the mesh failure it aimed at
+    therefore lets the probe get further, and the next failure it meets appears in the rescan as
+    if new - read as `new_defect`, that rolls the operation back exactly where it worked
+    (measured: fragment_bodies on abc/00506275 clears the edge through a face, and the probe then
+    reports overlapping facets on face 943, which was always there behind it).
+
+    A newly appearing finding is revealed when ALL of (controller ruling, P2 Task 3 fix round 1):
+      (a) the operation aimed at a MESH defect, and that defect CLEARED in the rescan - nothing
+          with its code remains at the target or at what the mapping says the target became;
+      (b) the new finding is itself a `mesh_*` code - a kernel finding is never excused here;
+      (c) it does not sit on geometry the operation created or moved: its fingerprint is neither
+          in `outcome.added` nor among the mapping's moved names. If it does, it is damage, and
+          rolls back as it always did.
+    A revealed finding is NOT dropped: it stays in the rescan and so in the session's list, where
+    the loop must answer or escalate it, and `try_op` records it under the delta's `revealed` key.
+    Unlocated mesh findings never reach this: `_mesh_judged` already holds them neither new nor
+    cleared.
+    """
+    if not _is_mesh_code(defect_code):
+        return ()
+    wanted = getattr(defect_code, "value", str(defect_code))
+    for ref in targets:
+        _fate, successor = outcome.mapping.fate_of(ref.fingerprint)
+        names = {ref.fingerprint, successor} - {""}
+        if any(d.fingerprint in names and d.code.value == wanted for d in found):
+            return ()
+    previous, found = _mesh_judged(previous, found)
+    before = {(d.fingerprint, d.code.value) for d in previous}
+    touched = set(outcome.added) | set(outcome.mapping.moved) | set(outcome.mapping.moved.values())
+    return tuple(d for d in found
+                 if _is_mesh(d) and d.fingerprint and (d.fingerprint, d.code.value) not in before
+                 and d.fingerprint not in touched)
+
+
+def _is_mesh_code(code) -> bool:
+    return getattr(code, "value", str(code)).startswith("mesh_")
+
+
 def _mesh_judged(previous, found) -> tuple[tuple, tuple]:
     """Both sides of the progress rule, less the mesh findings that cannot speak to one operation.
 
@@ -324,7 +365,7 @@ class RepairSession:
                                              scope_diagonal_mm=self.original.diagonal_mm)
         return self._with_mesh(found, shape, within=within), complete
 
-    def _with_mesh(self, found, shape, *, within: Region | None):
+    def _with_mesh(self, found, shape, *, within: Region | None, cap_s: float | None = None):
         """`found`, followed by why gmsh will not mesh `shape` when CAD_REPAIR_MESH_PROBE is live.
 
         OFF RETURNS `found` ITSELF, untouched, and `mesh_probe` is never called - the flag-off
@@ -346,8 +387,9 @@ class RepairSession:
         `mesh_timeout` defect on the list, not a stopped kernel walk, so it does not lower
         `complete_scan`.
 
-        The budget is the lesser of CAD_REPAIR_MESH_PROBE_TIMEOUT_S and what is left of the run;
-        a non-positive (or NaN) budget skips the probe. The diagonal is the upload's, as every
+        The budget is the lesser of CAD_REPAIR_MESH_PROBE_TIMEOUT_S and what is left of the run -
+        and, for a package's proof, what is left of the package (`cap_s`); a non-positive (or NaN)
+        budget skips the probe. The diagonal is the upload's, as every
         scope in this session is.
 
         ABSENCE IS NEVER CLAIMED FOR GROUND THE PROBE DID NOT WALK. A skipped probe, or one that
@@ -362,6 +404,9 @@ class RepairSession:
         timeout = float(rcfg.CAD_REPAIR_MESH_PROBE_TIMEOUT_S)
         remaining = float(self.remaining_s() if self.remaining_s is not None else timeout)
         budget = min(timeout, remaining)
+        if cap_s is not None:
+            # A PACKAGE'S PROOF IS CAPPED BY WHAT THE PACKAGE HAS LEFT (`try_package`).
+            budget = min(budget, float(cap_s))
         # `remaining` is checked as well as `budget`: `min` would pass a NaN over for the timeout.
         if not (remaining > 0.0 and budget > 0.0):
             if not self._mesh_probed:
@@ -665,8 +710,13 @@ class RepairSession:
             previous = tuple(d for d in previous if not analyzer_only(d))
 
         basis = self._basis(outcome, targets)
+        revealed = _revealed(outcome, targets, defect_code, previous, found)
+        if revealed:
+            delta["revealed"] = [{"fingerprint": d.fingerprint, "code": d.code.value}
+                                 for d in revealed]
         reason = self._progress_refusal(
-            outcome, targets, defect_code, previous, found, op_name=op.name)
+            outcome, targets, defect_code, previous, found, op_name=op.name,
+            revealed=frozenset((d.fingerprint, d.code.value) for d in revealed))
         if reason:
             self.shape, self._defects, self.complete_scan = snapshot
             return self._record(OpVerdict(
@@ -829,8 +879,24 @@ class RepairSession:
             apply_s += verdict.apply_s
             scan_s += verdict.scan_s
 
+        # THE PACKAGE'S CLOCK IS RE-READ BEFORE ITS PROOF IS PAID FOR. The loop above checks it only
+        # BEFORE each operation, so a last operation (with its own probe) could spend the budget
+        # and the verification probe would then spend a full probe budget on top. Exhausted here is
+        # the same escalation as exhausted mid-plan; otherwise the proof's probe is capped by what
+        # the package has left (`_with_mesh` still also caps it by the run's remaining time).
+        spent = self.clock() - started
+        if spent > package.budget.timeout_s:
+            self.shape, self._defects, self.complete_scan, self.accounting = snapshot
+            return self._record_package(PackageVerdict(
+                region_index=region.index, status=ESCALATED,
+                reason=f"budget: {spent:.6g}s of {package.budget.timeout_s:.6g}s spent after "
+                       f"{len(verdicts)} of {len(package.plan)} operation(s), before the "
+                       "package's proof",
+                verdicts=tuple(verdicts), scan_s=scan_s, apply_s=apply_s,
+                measure_s=_measure_total(measure_s, verdicts)))
         scan_started = self.clock()
-        found, complete = self._region_scan(region, whole_shape=whole)
+        found, complete = self._region_scan(region, whole_shape=whole,
+                                            cap_s=package.budget.timeout_s - spent)
         scan_s += self.clock() - scan_started
         defects_after = tuple(d.fingerprint for d in found)
         # Computed from what the scan actually found, so this reports relabelling that really
@@ -962,7 +1028,8 @@ class RepairSession:
                 return f"malformed plan item {n}: missing {', '.join(missing)}"
         return ""
 
-    def _region_scan(self, region, *, whole_shape: bool = False) -> tuple[tuple, bool]:
+    def _region_scan(self, region, *, whole_shape: bool = False,
+                     cap_s: float | None = None) -> tuple[tuple, bool]:
         """ONE re-inspection, scoped to the region, for the whole package - or of the WHOLE shape
         when `whole_shape` (a plan answering a volume-stage code, `_judged_whole`).
 
@@ -987,12 +1054,12 @@ class RepairSession:
                 budget = face_scan_budget_s(remaining())
             if whole_shape:
                 found, complete = _localize_scan(self.shape, face_scan_s=budget)
-                found = self._with_mesh(found, self.shape, within=None)
+                found = self._with_mesh(found, self.shape, within=None, cap_s=cap_s)
             else:
                 # ONE GROWN BOX FOR BOTH SIDES OF THE SCOPE, as in `_default_scan`.
                 found, complete = _localize_scan(self.shape, face_scan_s=budget, within=region,
                                                  scope_diagonal_mm=self.original.diagonal_mm)
-                found = self._with_mesh(found, self.shape, within=region)
+                found = self._with_mesh(found, self.shape, within=region, cap_s=cap_s)
         return tuple(found), bool(complete)
 
     def _record_package(self, verdict: PackageVerdict) -> PackageVerdict:
@@ -1012,7 +1079,7 @@ class RepairSession:
         return any(d.fingerprint in names and d.code.value == wanted for d in self.defects())
 
     def _progress_refusal(self, outcome, targets, defect_code, previous, found, *,
-                           op_name: str) -> str:
+                           op_name: str, revealed: frozenset = frozenset()) -> str:
         """"" if this operation made progress, otherwise why it did not.
 
         PROGRESS IS ABOUT THE DEFECT, NOT THE ENTITY. A hole patch leaves the rim edges exactly
@@ -1045,6 +1112,10 @@ class RepairSession:
                                     and fewer_non_error_findings)
         for defect in found:
             if (defect.fingerprint, defect.code.value) in before_names:
+                continue
+            if (defect.fingerprint, defect.code.value) in revealed:
+                # REVEALED, NOT DAMAGE (`_revealed`): it stays on the defect list for the next
+                # package to answer or escalate, and the verdict's delta names it.
                 continue
             geometric_key = _geometric_defect_key(defect)
             if geometric_key is not None and geometric_key in before_geometry:

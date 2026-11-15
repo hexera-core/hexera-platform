@@ -1933,6 +1933,14 @@ def _bnd(shape):
     return box
 
 
+def _centre(box) -> tuple[float, float, float] | None:
+    """A Bnd_Box's centre, or None when the box is void (nothing measurable)."""
+    if box.IsVoid():
+        return None
+    x0, y0, z0, x1, y1, z1 = box.Get()
+    return ((x0 + x1) / 2.0, (y0 + y1) / 2.0, (z0 + z1) / 2.0)
+
+
 def _meeting_partner(shape, body, face):
     """The solid other than `body` whose bounding box meets `body`'s, nearest the failing `face`,
     or None when no other solid's box meets it.
@@ -1940,6 +1948,12 @@ def _meeting_partner(shape, body, face):
     The bounding-box test is the census's prefilter: bodies whose boxes are apart cannot share an
     interface, and the Boolean below is too dear to run on every pair. Among the candidates, the
     one closest to the face gmsh's failure was located on is the one the failing edge belongs to.
+
+    TIES - several candidates at the same distance, typically 0 (two bodies both touching the
+    failing face) - go to the candidate whose bounding-box CENTRE is nearest the centre of the
+    face's box, which is the box the defect was located by. When the face has no measurable box
+    there is nothing to compare, and the LOWEST-INDEX candidate (TopExp's order) wins: arbitrary,
+    but deterministic.
     """
     from OCP.BRepExtrema import BRepExtrema_DistShapeShape
     from OCP.TopAbs import TopAbs_SOLID
@@ -1948,10 +1962,14 @@ def _meeting_partner(shape, body, face):
 
     solids = _indexed(shape, TopAbs_SOLID)
     own = _bnd(body)
-    best, best_distance = None, None
+    aim = _centre(_bnd(face))
+    best, best_key = None, None
     for index in range(1, solids.Extent() + 1):
         other = solids.FindKey(index)
-        if other.IsSame(body) or own.IsOut(_bnd(other)):
+        if other.IsSame(body):
+            continue
+        box = _bnd(other)
+        if own.IsOut(box):
             continue
         try:
             extrema = BRepExtrema_DistShapeShape(face, other)
@@ -1959,9 +1977,53 @@ def _meeting_partner(shape, body, face):
         except Exception as exc:  # noqa: BLE001 - an unmeasurable pair is merely not nearest
             logger.debug("fragment_bodies: no distance to solid %d (%s)", index, exc)
             distance = float("inf")
-        if best is None or distance < best_distance:
-            best, best_distance = other, distance
+        centre = _centre(box)
+        offset = (0.0 if aim is None or centre is None
+                  else sum((a - c) ** 2 for a, c in zip(aim, centre)) ** 0.5)
+        # Distances are rounded so kernel noise in the last digits does not decide a tie.
+        key = (round(distance, 9), offset, index)
+        if best_key is None or key < best_key:
+            best, best_key = other, key
     return best
+
+
+def _face_owner_sets(shape) -> list[tuple]:
+    """For every face of `shape`, the distinct SOLIDS owning it."""
+    from OCP.TopAbs import TopAbs_FACE, TopAbs_SOLID
+    from OCP.TopExp import TopExp
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+
+    ancestors = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(shape, TopAbs_FACE, TopAbs_SOLID, ancestors)
+    out: list[tuple] = []
+    for index in range(1, ancestors.Extent() + 1):
+        distinct: list = []
+        for owner in ancestors.FindFromIndex(index):
+            if not any(_same(owner, seen) for seen in distinct):
+                distinct.append(owner)
+        out.append(tuple(distinct))
+    return out
+
+
+def _same(a, b) -> bool:
+    return a.IsSame(b) if hasattr(a, "IsSame") else a == b
+
+
+def _shares_with_third_body(pair: tuple, owner_sets) -> bool:
+    """Does either body of `pair` already share a face with a body OUTSIDE the pair? Pure.
+
+    Such a face is a conformal interface a third body relies on. The fuse rebuilds each pair body
+    as its image, and the splice replaces the pair body alone - so the third body would keep the
+    OLD shared face while the image holds a new one, and the interface that already meshed would
+    come apart. The fragment declines rather than make that trade.
+    """
+    for owners in owner_sets:
+        if len(owners) < 2:
+            continue
+        inside = [o for o in owners if any(_same(o, member) for member in pair)]
+        if inside and len(inside) < len(owners):
+            return True
+    return False
 
 
 def _common_volume(a, b) -> float | None:
@@ -2057,6 +2119,11 @@ class FragmentBodies:
     solid nobody drew, and which body owns that volume is a judgement about the design - not a
     repair. Decided by a `BRepAlgoAPI_Common` volume against FRAGMENT_EPS_MM3, as the census did.
 
+    THE EPSILON IS ABSOLUTE (1e-6 mm3), not scaled to the part - a known limitation, stated: on a
+    metre-scale assembly the kernel's noise in a touching pair's common can exceed it, and such a
+    pair then reads as interpenetrating and is declined. That errs toward not acting, which is the
+    chosen direction; a false "touching" would fuse bodies that share volume.
+
     WHY IT TARGETS A FACE AND NOT THE TWO SOLIDS: `targets_for` receives only the defect, never the
     shape, and the session's `_carries` check needs a target carrying the defect - the face. The
     pair is resolved here, against the shape, which is also where "the part has one solid" can
@@ -2078,6 +2145,8 @@ class FragmentBodies:
       no_owner             - the face belongs to no solid.
       already_shared       - two solids already own the face: that contact is conformal.
       no_partner           - no other solid's box meets the owner's: nothing it could touch.
+      shared_with_third_body - owner or partner already shares a face with a body outside the
+                             pair: rebuilding the pair would leave that body holding the old face.
       unmeasured           - the kernel could not measure the common volume; never read as a touch.
       interpenetrating     - see above.
       nothing_fragmented   - the fuse modified neither body: there was no contact to share.
@@ -2143,6 +2212,10 @@ class FragmentBodies:
         partner = _meeting_partner(shape, owner, face)
         if partner is None:
             return declined("no_partner (no other solid's bounding box meets the owner's)")
+        if _shares_with_third_body((owner, partner), _face_owner_sets(shape)):
+            return declined("shared_with_third_body (a body of the pair already shares a face "
+                            "with a body outside it; rebuilding the pair would break that "
+                            "interface)")
         common = _common_volume(owner, partner)
         if common is None:
             return declined("unmeasured (the kernel could not measure the bodies' common "

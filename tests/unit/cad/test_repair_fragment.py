@@ -58,7 +58,7 @@ def doubles(monkeypatch, flag_on):
     calls: list[str] = []
 
     def configure(*, solids=2, owner="A", partner="B", common=0.0, images=(("A2",), ("B2",)),
-                  tallies=None):
+                  tallies=None, owner_sets=(("A",), ("B",))):
         calls.clear()
         monkeypatch.setattr(operations, "sub_shape",
                             lambda shape, kind, index: "FACE" if index == 4 else None)
@@ -68,6 +68,7 @@ def doubles(monkeypatch, flag_on):
                             lambda shape, face: calls.append("owner") or owners)
         monkeypatch.setattr(operations, "_meeting_partner",
                             lambda shape, body, face: calls.append("partner") or partner)
+        monkeypatch.setattr(operations, "_face_owner_sets", lambda shape: list(owner_sets))
         monkeypatch.setattr(operations, "_common_volume",
                             lambda a, b: calls.append("common") or common)
         monkeypatch.setattr(operations, "_general_fuse",
@@ -178,6 +179,27 @@ def test_no_body_meeting_the_owner_is_declined(doubles):
     outcome = doubles(partner=None).apply("SHAPE", (REF,), tolerance_mm=0.01)
     assert outcome.evidence["declined"].startswith("no_partner")
     assert "common" not in doubles.calls
+
+
+def test_a_body_sharing_a_face_with_a_third_body_is_declined(doubles):
+    # B already shares a conformal face with C: rebuilding B as its image would leave C holding
+    # the old face.
+    op = doubles(owner_sets=(("A",), ("A", "B"), ("B", "C")))
+    outcome = op.apply("SHAPE", (REF,), tolerance_mm=0.01)
+    assert outcome.shape == "SHAPE"
+    assert outcome.evidence["declined"].startswith("shared_with_third_body")
+    assert "common" not in doubles.calls and "fuse" not in doubles.calls
+
+
+@pytest.mark.parametrize("owner_sets, shared", [
+    ((("A",), ("B",), ("C",)), False),
+    ((("A", "B"),), False),              # the pair's own interface is not a third body's
+    ((("A", "C"),), True),
+    ((("C", "B"),), True),
+    ((("C", "D"),), False),              # two OTHER bodies sharing a face is not the pair's
+])
+def test_third_body_sharing_is_judged_on_the_owner_map(owner_sets, shared):
+    assert operations._shares_with_third_body(("A", "B"), owner_sets) is shared
 
 
 def test_a_fuse_that_changes_neither_body_is_declined(doubles):

@@ -434,3 +434,100 @@ def test_a_scoped_operation_aimed_at_a_volume_stage_mesh_defect_is_not_kept(monk
     verdict = session.try_op(_Remesh(), _Remesh().targets_for(target), target.code,
                              tolerance_mm=0.01, within=_REGION)
     assert not verdict.kept and verdict.reason == "target_remains"
+
+
+# REVEALED, NOT DAMAGE (P2 Task 3 fix round 1; applies to EVERY mesh operation). gmsh reports only
+# its first failure, so clearing the targeted mesh failure lets the probe meet the next one.
+
+_BOX_9 = {"centroid": [25.0, 5.0, 5.0], "bbox_min": [20.0, 0.0, 0.0],
+          "bbox_max": [30.0, 10.0, 10.0]}
+_NEXT = EntityDefect(code=DefectCode.mesh_overlapping_facets, severity=DefectSeverity.error,
+                     entity_type="face", entity_index=9, message="overlapping facets",
+                     fingerprint="face:f9", location=dict(_BOX_9),
+                     measurements={"mesh_kind": "overlapping_facets", "gmsh_surfaces": [9],
+                                   "stage": mesh_probe.STAGE_3D})
+
+
+class _Fragment:
+    """An operation double answering the edge through a face (as fragment_bodies does)."""
+
+    name = "fragment_bodies"
+    answers = frozenset({DefectCode.mesh_edge_through_face})
+    scope = 8
+
+    def __init__(self, *, added=(), moved=None):
+        self._added = tuple(added)
+        self._moved = dict(moved or {})
+
+    def targets_for(self, defect):
+        return (EntityRef(entity_type="face", fingerprint=defect.fingerprint,
+                          entity_index=defect.entity_index),)
+
+    def apply(self, shape, targets, *, tolerance_mm):
+        from meshpipeline.cad.repair.identity import EntityMapping
+
+        mapping = (EntityMapping(moved=self._moved, gone=frozenset(), basis="kernel")
+                   if self._moved else EntityMapping.empty())
+        return OpOutcome(shape="fragmented", added=self._added, mapping=mapping)
+
+
+def _revealing_session(monkeypatch, after):
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
+    _scan(monkeypatch, ((), True))
+    _probe(monkeypatch, (_THROUGH,), after)
+    session = RepairSession("shape", measurer=lambda s: MEASURE)
+    return session, session.defects()[0]
+
+
+def test_a_mesh_failure_revealed_behind_a_cleared_one_does_not_roll_back(monkeypatch):
+    session, target = _revealing_session(monkeypatch, (_NEXT,))
+    op = _Fragment()
+    verdict = session.try_op(op, op.targets_for(target), target.code, tolerance_mm=0.01)
+    assert verdict.kept, verdict.reason
+    assert verdict.delta["revealed"] == [{"fingerprint": "face:f9",
+                                          "code": "mesh_overlapping_facets"}]
+    # NOT DROPPED: the loop must still answer or escalate it.
+    assert _NEXT in session.defects()
+    assert session.shape == "fragmented"
+
+
+@pytest.mark.parametrize("op", [_Fragment(added=("face:f9",)),
+                                _Fragment(moved={"face:f4": "face:f9"})],
+                         ids=["on_added_geometry", "on_moved_geometry"])
+def test_a_mesh_failure_on_geometry_the_operation_made_is_damage(monkeypatch, op):
+    session, target = _revealing_session(monkeypatch, (_NEXT,))
+    verdict = session.try_op(op, op.targets_for(target), target.code, tolerance_mm=0.01)
+    assert not verdict.kept and verdict.reason == "new_defect"
+    assert session.shape == "shape"
+
+
+def test_nothing_is_revealed_while_the_target_remains(monkeypatch):
+    session, target = _revealing_session(monkeypatch, (_THROUGH, _NEXT))
+    op = _Fragment()
+    verdict = session.try_op(op, op.targets_for(target), target.code, tolerance_mm=0.01)
+    assert not verdict.kept and verdict.reason == "target_remains"
+
+
+def test_a_new_kernel_finding_is_never_excused_as_revealed(monkeypatch):
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
+    broken = EntityDefect(code=DefectCode.open_shell, severity=DefectSeverity.error,
+                          entity_type="edge", entity_index=7, message="free",
+                          fingerprint="edge:new", location=dict(_BOX_9))
+    _scan(monkeypatch, ((), True), ((broken,), True))
+    _probe(monkeypatch, (_THROUGH,), ())
+    session = RepairSession("shape", measurer=lambda s: MEASURE)
+    target = session.defects()[0]
+    op = _Fragment()
+    verdict = session.try_op(op, op.targets_for(target), target.code, tolerance_mm=0.01)
+    assert not verdict.kept and verdict.reason == "new_defect"
+
+
+def test_a_kernel_operation_reveals_nothing(monkeypatch):
+    # Only an operation aimed at a MESH defect earns the excuse.
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
+    _scan(monkeypatch, ((_OPENING,), True), ((), True))
+    _probe(monkeypatch, (), (_NEXT,))
+    session = RepairSession("shape", measurer=lambda s: MEASURE)
+    opening = session.defects()[0]
+    verdict = session.try_op(_Sew(), _Sew().targets_for(opening), opening.code, tolerance_mm=0.01)
+    assert not verdict.kept and verdict.reason == "new_defect"

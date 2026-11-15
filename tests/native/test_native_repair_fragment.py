@@ -154,6 +154,59 @@ def test_two_boxes_apart_have_no_partner(fragment_on):
     assert outcome.evidence["declined"].startswith("no_partner")
 
 
+def test_of_two_bodies_touching_the_face_the_one_nearest_its_centre_is_fused(fragment_on):
+    # Both small boxes touch the big box's x=10 side (distance 0): the tie goes to the one whose
+    # box centre is nearest the face's - the one at its middle, not the one in its corner.
+    shape = _assembly(_box(0, 0, 0, 10, 10, 10), _box(10, 0, 0, 2, 2, 2),
+                      _box(10, 4, 4, 2, 2, 2))
+    outcome = FragmentBodies().apply(shape, (_ref(shape, _contact_face(shape, 10.0)),),
+                                     tolerance_mm=0.01)
+    assert "declined" not in outcome.evidence, outcome.evidence
+    assert _shared_faces(outcome.shape) == 1
+    shared = _shared_face_boxes(outcome.shape)
+    assert len(shared) == 1
+    low, high = shared[0]["bbox_min"], shared[0]["bbox_max"]
+    assert low[1] == pytest.approx(4.0) and high[1] == pytest.approx(6.0), shared
+
+
+def test_a_partner_already_conformal_with_a_third_body_is_declined(fragment_on):
+    from OCP.BOPAlgo import BOPAlgo_Builder
+
+    # B and C already share a face (fused beforehand); A touches B.
+    middle, far = _box(10, 2, 2, 5, 5, 5), _box(15, 2, 2, 5, 5, 5)
+    builder = BOPAlgo_Builder()
+    builder.AddArgument(middle)
+    builder.AddArgument(far)
+    builder.SetRunParallel(False)
+    builder.Perform()
+    assert not builder.HasErrors()
+    middle, far = builder.Modified(middle).First(), builder.Modified(far).First()
+    shape = _assembly(_box(0, 0, 0, 10, 10, 10), middle, far)
+    assert _shared_faces(shape) == 1
+    outcome = FragmentBodies().apply(shape, (_ref(shape, _contact_face(shape, 10.0)),),
+                                     tolerance_mm=0.01)
+    assert outcome.shape is shape
+    assert outcome.evidence["declined"].startswith("shared_with_third_body"), outcome.evidence
+
+
+def _shared_face_boxes(shape) -> list[dict]:
+    from OCP.TopAbs import TopAbs_FACE, TopAbs_SOLID
+    from OCP.TopExp import TopExp
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+
+    ancestors = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(shape, TopAbs_FACE, TopAbs_SOLID, ancestors)
+    boxes = []
+    for i in range(1, ancestors.Extent() + 1):
+        owners: list = []
+        for owner in ancestors.FindFromIndex(i):
+            if not any(owner.IsSame(o) for o in owners):
+                owners.append(owner)
+        if len(owners) > 1:
+            boxes.append(box_of(ancestors.FindKey(i)))
+    return boxes
+
+
 # THE REAL MESH FAILURE
 
 _CORPUS = Path(os.environ.get("HEXERA_MESH_FAIL_CORPUS",
@@ -271,3 +324,53 @@ def test_the_single_solid_corpus_file_is_declined(fragment_on):
     outcome = FragmentBodies().apply(shape, (_ref(shape, 1),), tolerance_mm=0.1)
     assert outcome.shape is shape
     assert outcome.evidence["declined"].startswith("single_body (the part has 1 solid(s)")
+
+
+def test_the_session_keeps_fragment_and_lists_the_revealed_overlap(monkeypatch, fragment_on):
+    """THE SESSION-LEVEL PROOF of the revealed rule, on the real file and the real probe.
+
+    The probe cannot locate this file's edge-through-face (no coordinates in gmsh's error; Task
+    3b's subject), so ONE thing is stood in: an UNLOCATED edge-through-face from the real probe is
+    re-reported on the contact face, which is where a contact locator would put it. Everything
+    else - the kernel scan, the fragment, the caps, the post-op probe - is real. Measured
+    2026-11-14: after the fragment the real probe reports overlapping facets in the 3D stage on a
+    face the fragment neither created nor moved; that is REVEALED, the op is KEPT, and the overlap
+    stays in the session's defects.
+    """
+    from dataclasses import replace
+
+    from meshpipeline.cad.repair import mesh_probe
+    from meshpipeline.cad.repair.brep import _read_shape
+    from meshpipeline.cad.repair.contracts import DefectCode
+    from meshpipeline.cad.repair.session import KEPT, RepairSession
+
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE_TIMEOUT_S", 300.0)
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_HEAL_SELF_INTERSECTIONS", False)
+    shape = _read_shape(_corpus(_TOUCH_ONLY))
+    contact = _contact_ref(shape)
+    located = box_of(sub_shape(shape, "face", contact.entity_index))
+    real = mesh_probe.mesh_defects
+
+    def probe(target, **kw):
+        found = real(target, **kw)
+        return tuple(
+            replace(d, entity_type="face", entity_index=contact.entity_index,
+                    fingerprint=contact.fingerprint, location=dict(located))
+            if d.code is DefectCode.mesh_edge_through_face and not d.fingerprint else d
+            for d in found)
+
+    monkeypatch.setattr(mesh_probe, "mesh_defects", probe)
+    session = RepairSession(shape)
+    through = [d for d in session.defects() if d.code is DefectCode.mesh_edge_through_face]
+    assert [d.fingerprint for d in through] == [contact.fingerprint], through
+
+    verdict = session.try_op(FragmentBodies(), (contact,), DefectCode.mesh_edge_through_face,
+                             tolerance_mm=0.1)
+
+    assert verdict.status == KEPT, (verdict.reason, verdict.delta.get("revealed"))
+    revealed = verdict.delta.get("revealed") or []
+    assert {r["code"] for r in revealed} == {"mesh_overlapping_facets"}, revealed
+    remaining = {(d.fingerprint, d.code.value) for d in session.defects()}
+    assert all((r["fingerprint"], r["code"]) in remaining for r in revealed)
+    assert DefectCode.mesh_edge_through_face not in {d.code for d in session.defects()}

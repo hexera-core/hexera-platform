@@ -591,3 +591,69 @@ def test_try_op_without_a_region_is_unchanged(monkeypatch):
     # `_carries`' first scan and the re-inspection - both whole-shape, exactly as before.
     assert len(spy.whole_shape) == 2
     assert [d.fingerprint for d in session.defects()] == [_FACE]
+
+
+# THE PACKAGE'S PROOF IS PAID FOR OUT OF THE PACKAGE'S OWN BUDGET (P2 Task 3 fix round 1). The
+# plan loop checks the clock only BEFORE each operation, so a last operation could spend the budget
+# and the verification probe would then spend a full probe budget on top.
+
+
+def _probed_session(monkeypatch, clock: _Clock, *, apply_s: float):
+    """A session on the DEFAULT scan path with the mesh probe live: `_localize_scan` reports the
+    edge first and nothing after; every probe call records the budget it was handed."""
+    import meshpipeline.cad.repair.mesh_probe as mesh_probe
+    import meshpipeline.settings.cad_repair as rcfg
+
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE_TIMEOUT_S", 120.0)
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_HEAL_SELF_INTERSECTIONS", False)
+    scans = {"n": 0}
+
+    def scan(shape, **kw):
+        scans["n"] += 1
+        return ((_defect(_EDGE, at=(0.0, 0.0, 0.0)),) if scans["n"] == 1 else ()), True
+
+    budgets: list[float] = []
+
+    def probe(shape, **kw):
+        budgets.append(float(kw["budget_s"]))
+        return ()
+
+    monkeypatch.setattr(session_module, "_localize_scan", scan)
+    monkeypatch.setattr(mesh_probe, "mesh_defects", probe)
+
+    class _Slow(_Op):
+        def apply(self, shape, targets, *, tolerance_mm):
+            self._clock.now += apply_s
+            return OpOutcome(shape="repaired")
+
+    def measurer(shape):
+        return _SOUND if shape == "original" else _REPAIRED
+
+    session = RepairSession("original", measurer=measurer, clock=clock,
+                            remaining_s=lambda: 1000.0)
+    session.test_ops = (_Slow(clock),)
+    return session, budgets
+
+
+def test_a_package_exhausted_by_its_last_operation_pays_for_no_proof(monkeypatch):
+    clock = _Clock()
+    session, budgets = _probed_session(monkeypatch, clock, apply_s=5.0)
+    session.defects()
+    verdict = session.try_package(_package(session, cleared={_EDGE}, timeout_s=2.0))
+    assert verdict.status == "escalated"
+    assert "before the package's proof" in verdict.reason
+    # The first scan's probe and the operation's own re-inspection - and NO verification probe.
+    assert len(budgets) == 2, budgets
+    assert session.shape == "original"
+
+
+def test_a_packages_proof_probe_is_capped_by_what_the_package_has_left(monkeypatch):
+    clock = _Clock()
+    session, budgets = _probed_session(monkeypatch, clock, apply_s=7.0)
+    session.defects()
+    verdict = session.try_package(_package(session, cleared={_EDGE}, timeout_s=10.0))
+    assert verdict.status == "committed", verdict.reason
+    assert len(budgets) == 3, budgets
+    # The run had 1000 s and the probe timeout is 120 s; the package had 3 s left.
+    assert budgets[-1] == 3.0
