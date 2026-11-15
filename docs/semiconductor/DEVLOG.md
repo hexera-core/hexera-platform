@@ -6023,3 +6023,153 @@ the serial console. `hexeraMeshSelfDelete` is granted with both `compute.instanc
 `compute.instances.get`, and `maxRunDuration` is 43,140 s with `instanceTerminationAction DELETE`.
 That is the 2026-11-13 defect closed: that run's box held 64 cores and 512 GiB for 9.4 hours after
 it finished.
+
+#### The six pieces were metal, and two sentences in the entries above are wrong
+
+Job `6ddb58aa` built a mesh and we threw it away. 283,410,955 cells, fluid 91,329,913 and solid
+192,081,042, 3.94 h on an n2-highmem-64, rc=0, peak 133.8 GiB, interface conformal at 16,590,533
+faces each side, `need_gib` 271.75 against 512. `quality_floor` refused it.
+
+The refusal was on `coolant_pieces_short`: 6 pieces where the part has 2. checkMesh prints the
+sizes beside the count and four separate records discarded them.
+
+| piece | cells | what it is |
+|---|---|---|
+| region0 | 91,226,027 | the plate coolant. Owns all 1,306 `coolant_out` faces |
+| region5 | 97,217 | the legitimate second piece, the 8 mm Outlet bore. 1496.5121 mm3 against its own shell's 1496.7623, and all 1,334 `mouth_3` faces |
+| region1 | 6,666 | metal |
+| region2/3/4 | 1 each | metal, one background cell each |
+
+99.89% of the coolant is one piece and three of the extras are a single cell. All four extras have
+a generalised winding number of 0.0000 against BOTH shells of `fluid.stl` and even ray parity in
+several directions: 247.998 mm3 of bulk metal the inside/outside test tagged as coolant. region1
+reaches 4.2 mm into solid metal and its point bbox is 40.0018 background cells in x by 40.0065 in
+z, equal to within 1.9 um.
+
+Three hypotheses refuted, each with its own measurement:
+
+| hypothesis | verdict |
+|---|---|
+| the cells are too coarse to hold the passage together | refuted. An exact point-in-surface test on the real cell-centre lattice over the junction box returns 2 pieces and 0 islands at the 402.5248 um background cell, with a metal barrier at y = 33.8121 mm |
+| our `fluid.stl` dropped triangles, as it has before | refuted. 52,334 triangles, exactly 2 closed shells, every edge used exactly twice, 0 open and 0 non-manifold, volume within 0.046% of what the CAD declares |
+| the violated 4-cell floor | refuted. `cbox8` ran the identical 25.1578 um cell at 3.90 across and returned ONE piece |
+
+#### The gate's sentence sent a ten-agent pass at the resolution
+
+It said "Islands mean the cells are too coarse to hold the passage together". The gate never
+measures that, and on this mesh it was false. The sizes are what separate the two causes, so the
+sizes are what it hands over now, and it names both candidates rather than asserting one. I also
+dropped "this mesh will not solve": no solve has been run, solving is the customer's half, and this
+package contradicts itself about it in two files (`conjugate.verify` says an island has no face
+path to the pressure reference cell, `criteria.py` says a solver runs and reports no flow).
+
+Refinement at the junction was designed and then refuted on its own premise. More cells inside the
+same mis-classified block makes the block bigger, not smaller, and the forecast was 6 pieces going
+to 7-9. It was also priced at the wrong thing: clearing the 4-cell floor means pitch/10 = 20.126 um
+and a delivered forecast of 449-553M cells, which needs `CELL_HARD_LIMIT` raised from 400,000,000
+to at least 493,448,592, for four pieces totalling 6,669 cells of which three are one cell.
+
+#### The fix is connectivity and it costs no cells
+
+`cad.fluid_passages.interior_seeds` finds one point deep inside each passage of the staged surface
+and `topoSet regionToCell` keeps only the connected regions holding them. It runs BEFORE the split,
+which is the whole reason it is there rather than a `subsetMesh` afterwards: the islands own 8,335
+of the interface's 16,590,533 faces, so cutting them out after the split takes those faces off one
+side only and the interface stops being conformal. Retagged before it, they go to the metal in the
+same pass that builds both zones.
+
+Measured in OpenFOAM v2412 on the engine's own rendered dictionaries, on a 64,000-cell block whose
+fluid surface is three closed cube shells with the smallest left unseeded:
+
+| | fluid cells | pieces | sizes | fluid_to_solid | solid_to_fluid |
+|---|---|---|---|---|---|
+| the dictionary as the refused run wrote it | 9,064 | 3 | 8,000 / 1,000 / 64 | 3,096 | 3,096 |
+| with seeds, serial | 9,000 | 2 | 8,000 / 1,000 | 3,000 | 3,000 |
+| with seeds, 4-rank MPI | 9,000 | - | - | 3,000 | 3,000 |
+
+and the 64 dropped cells went to the metal, 206,936 to 207,000.
+
+The same runs measured the two ways a seed can be wrong, which is why `interior_seeds` returns
+nothing rather than a guess: a seed in a cell the orientation test did not tag empties the coolant
+set and still exits 0, and a seed outside the mesh is a FOAM FATAL ERROR at the topoSet stage with
+the mesh already built. So nothing is written unless the seed count equals the passage count the
+plan already holds, every seed clears its own walls by two background cells, and the seeds are read
+by the same code that counts the passages the finished coolant is judged against. The bar of two
+cells is half the planner's own 4-cell floor, so a passage it would have agreed to mesh is a
+passage that can be seeded. On this part both seeds come out at eight cells clear, in 2.9 s.
+
+What the rule takes away is read out of topoSet's own log, not from what was intended. A channel
+pinched shut by staircasing would also arrive as a piece with no seed in it, and dropping that
+quietly would turn a real defect into a clean pass. The bar it is judged against stays
+`coolant_error_over_tol`, which is the one measurement that moves when real coolant goes missing.
+
+#### Mesh OK is not a gate, and never was
+
+Only two things stood between that mesh and delivery.
+
+| gate | attempt 1 | why |
+|---|---|---|
+| manifest_valid | pass | 283.4M under the 400M limit, no fatal class |
+| quality_floor | FAIL | `coolant_pieces_short`. There is no `mesh_ok` criterion in `CRITERIA_ROWS` |
+| coolant_volume | pass | 1.90% against a 5% allowance |
+| coolant_pieces | FAIL | the same fact as quality_floor |
+| regions_split | pass | |
+| interface | pass | 16,590,533 both sides |
+| flowable | FAIL | ports declared, inlet 0 faces |
+| named_patches | pass | createPatch removed the zero-sized patch, so `empty_patches` is empty |
+| patch_contract | n/a | the intake named no patches |
+
+`finalize`'s success is `a_mesh_came_out(q)`, which is regions with cells and no fatal checkMesh
+class. The two "checkMesh did not report Mesh OK" lines are entries in `report.problems`, which is
+published and read but gates nothing. Both regions fail the identical five `-allGeometry` checks and
+the solid is a zero-layer control arm, so they are not layer-induced either.
+
+#### The ports were invented on a job that asked for none
+
+The customer's note says "Do not name any ports on this file ... there is no inlet-outlet pair to
+name here ... leave the boundary patches unnamed - I want the mesh", `request.txt` says the boundary
+patch list is therefore empty, and no `port_declaration.json` was written. The plan still carried
+`coolant_in` as the inlet on the blind 11.8 mm lid port. topoSet selected 0 of the coolant's 2,640
+outer faces into its box, createPatch logged "Removed zero-sized patch coolant_in type patch at
+position 2", and the finished mesh was refused for "the inlet was to be coolant_in, and the fluid
+region has no patch of that name".
+
+`plan.ports_from` reads the roles back out of `port_rows`' output and `finalize` sets
+`coolant_ports_declared` from that, so the flowable gate was holding the run to a port the run
+itself had invented. An absent declaration now means "name none": every mouth is still cut, as an
+unassigned opening typed `patch`, and the blind one is cut too, because a face count of zero on it
+is the only evidence left that the throat is closed. A declaration still binds the names the user
+approved, by position, exactly as before.
+
+#### Corrections to the two entries above this one
+
+The entry "Two intake defects, and neither is in the engine" says the naming step proposed
+`solid-body` **on both sessions**. Only `7831769b` did. `3b3027a5` came out right, four hours later,
+on the same file and the same code. The difference was a clock: `7831769b`'s naming spent its whole
+wait on the scout, gave up and named the PREVIEW, whose facts carry `openings: []` and
+`confidence {"input_kind": 0.0}` by construction because nothing has been probed yet.
+
+The same entry says one plain message "made the naming step re-run, correct itself to
+`solid-assembly`, and find all three mouths with roles". No re-run happened. `3b3027a5` was right
+because its split finished and `merged_onto_full` rebuilt the proposal from the full reading. I
+credited a chat message with a fix that a clock did.
+
+Also wrong, from me, in the entry before that: that region1 is the inlet bore and so pruning it
+would ship a mesh with no inlet. The bore does not exist as coolant. The inlet is a blind
+109.1776 mm2 cap on the coolant's own ceiling, 61 triangles flat on y = 33.4462 mm against the
+circle's own 109.3588 mm2, and comp0 already holds both the inlet and an outlet. The ground for
+rejecting a retag was refuted; the retag is simply not the fix that was needed.
+
+#### Two things found while getting there
+
+The naming step told the model a six-solid file is one solid. The scout gives the whole upload one
+`body_kind` and nothing branched on `solids`, so a six-solid assembly reached the naming as
+"solid-body (single_solid), flow external", which is the one sentence in its context contradicting
+the part names printed below it. `MIN_ASSEMBLY_SOLIDS` and the solid count in `_facts_text` close
+both halves.
+
+`make dev-up` started a stack on 12-hour-old images. The worker image carries no source stamp at
+all, neither the OCI revision label nor `MESH_SOURCE_TREE`, and by `dev-images`' own rule an
+unstamped image counts as stale and must rebuild. It did not, and the stack served code without
+yesterday's intake fix in it. An explicit `make dev-images` then rebuilt all five. A stack that
+silently serves stale code is how you test a fix that is not there.

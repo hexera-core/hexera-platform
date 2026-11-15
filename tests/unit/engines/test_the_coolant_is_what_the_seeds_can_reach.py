@@ -98,6 +98,31 @@ def test_a_log_with_no_connectivity_rule_in_it_reports_nothing():
     assert C.seed_drop("") is None
 
 
+def test_a_seed_count_that_disagrees_with_the_passage_count_names_no_points(tmp_path):
+    """THE ASYMMETRY IS THE WHOLE DESIGN. A seed that is missing costs the islands this exists to
+    remove, which is where the engine already was. A seed that is WRONG costs the whole mesh:
+    measured in OpenFOAM v2412, a regionToCell point in a cell the orientation test did not tag
+    emptied the coolant set and still exited 0, and a point outside the mesh was a FOAM FATAL
+    ERROR at the topoSet stage with the mesh already built. So a disagreement writes nothing."""
+    from meshpipeline.cad.stl_io import _box_triangles, write_stl_binary
+
+    stl = tmp_path / "fluid.stl"
+    write_stl_binary(stl, _box_triangles((0.0, 0.0, 0.0), (0.02, 0.02, 0.02))
+                     + _box_triangles((0.03, 0.0, 0.0), (0.05, 0.02, 0.02)))
+    good, said = C.fluid_seeds(stl, background_cell_m=1e-3, expect_fluid_pieces=2)
+    assert len(good) == 2
+    assert "kept as the cells connected to 2 seed point(s)" in said
+    none, why = C.fluid_seeds(stl, background_cell_m=1e-3, expect_fluid_pieces=3)
+    assert none == []
+    assert "2 found against 3 passage(s) expected" in why
+    # ...and a surface that cannot be read at all is a run that behaves as it did before, not a
+    # refusal: the islands are a defect worth removing, never a reason to throw away the mesh.
+    gone, cannot = C.fluid_seeds(tmp_path / "absent.stl", background_cell_m=1e-3,
+                                 expect_fluid_pieces=2)
+    assert gone == []
+    assert "could not be read" in cannot
+
+
 # # # the piece count # # #
 
 def test_checkmesh_already_prints_the_piece_sizes_and_they_are_kept():

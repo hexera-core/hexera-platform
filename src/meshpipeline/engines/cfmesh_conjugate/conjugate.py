@@ -866,6 +866,45 @@ def render_toposetdict(*, fluid_file: str, seeds: list | None = None) -> str:
         ");\n")
 
 
+def fluid_seeds(fluid_stl, *, background_cell_m: float,
+                expect_fluid_pieces: int | None = None) -> tuple[list, str]:
+    """The points that say where the coolant is, and the sentence that says what was found.
+
+    TWO NUMBERS HAVE TO AGREE before a seed is used: how many passages the staged surface is in,
+    and how many points were found deep enough inside one to be trusted. They are read by the same
+    code (`cad.fluid_passages`), and `expect_fluid_pieces` is what `verify` judges the finished
+    coolant against, so a disagreement means this surface is not one anything here understands well
+    enough to name points in. Then nothing is written and the run behaves exactly as it did before.
+
+    THE ASYMMETRY IS THE WHOLE DESIGN. A seed that is MISSING costs the islands this exists to
+    remove, which is where the engine already was. A seed that is WRONG costs the entire mesh:
+    measured in OpenFOAM v2412, a `regionToCell` point in a cell the orientation test did not tag
+    empties the coolant set and still exits 0, and a point outside the mesh is a FOAM FATAL ERROR
+    at the topoSet stage with the mesh already built. So every failure here returns no seeds.
+    """
+    try:
+        from meshpipeline.cad.fluid_passages import interior_seeds
+        from meshpipeline.cad.stl_io import read_stl_triangles
+
+        found = interior_seeds(read_stl_triangles(fluid_stl),
+                               background_m=float(background_cell_m))
+    except Exception:  # noqa: BLE001 - a reading that cannot be taken is not a refusal
+        logger.warning("conjugate: the coolant's seed points could not be read", exc_info=True)
+        return [], "the coolant's seed points could not be read"
+    want = int(expect_fluid_pieces or 0)
+    if not found or (want > 0 and len(found) != want):
+        return [], (f"no seed points: {len(found)} found against {want} passage(s) expected, so "
+                    "the coolant is whatever the orientation test tags and a lump of metal it "
+                    "tags by mistake will come out as an extra piece")
+    said = (f"the coolant is kept as the cells connected to {len(found)} seed point(s), "
+            + "; ".join(f"({s['point_m'][0] * 1e3:.3f} {s['point_m'][1] * 1e3:.3f} "
+                        f"{s['point_m'][2] * 1e3:.3f}) mm, "
+                        f"{s['clearance_m'] / float(background_cell_m):.2f} background cells "
+                        f"clear of its own walls, in a passage of {s['volume_m3'] * 1e9:,.1f} mm3"
+                        for s in found))
+    return [s["point_m"] for s in found], said
+
+
 def seed_drop(log_text: str) -> tuple[int, int] | None:
     """(cells the orientation test tagged, cells the seeds kept) out of topoSet's own log.
 
@@ -1673,40 +1712,17 @@ def build(workspace, *, block_stl: str = "constant/triSurface/block.stl",
         background_cell_m=background_cell_m, levels=levels, thickness_m=thickness_m,
         patch_names=patch_names, fine_zones=fine_zones, fine_surfaces=fine_surfaces,
         stretch_zones=stretch_zones))
-    # THE SEEDS, read off the surface about to be meshed and checked against the passage count the
-    # plan already holds. Two numbers have to agree before a seed is used: how many passages the
-    # surface is in, and how many points were found deep enough inside one to be trusted. They are
-    # read by the same code (`cad.fluid_passages`) and `expect_fluid_pieces` is what verify judges
-    # the finished coolant against, so a disagreement means this surface is not one anything here
-    # understands well enough to name points in - and then nothing is written and the run behaves
-    # as it did before. A seed that is wrong costs the whole mesh; a seed that is missing costs the
-    # islands this exists to remove, which is where the engine already was.
-    seeds: list = []
-    seeds_said = ""
-    try:
-        from meshpipeline.cad.fluid_passages import interior_seeds
-        from meshpipeline.cad.stl_io import read_stl_triangles
-
-        found = interior_seeds(read_stl_triangles(ws / fluid_stl),
-                               background_m=float(background_cell_m))
-        want = int(expect_fluid_pieces or 0)
-        if found and (want <= 0 or len(found) == want):
-            seeds = [s["point_m"] for s in found]
-            seeds_said = (
-                f"the coolant is kept as the cells connected to {len(seeds)} seed point(s), "
-                + "; ".join(
-                    f"({s['point_m'][0] * 1e3:.3f} {s['point_m'][1] * 1e3:.3f} "
-                    f"{s['point_m'][2] * 1e3:.3f}) mm, {s['clearance_m'] / float(background_cell_m):.2f} "
-                    f"background cells clear of its own walls, in a passage of "
-                    f"{s['volume_m3'] * 1e9:,.1f} mm3" for s in found))
-        else:
-            seeds_said = (
-                f"no seed points: {len(found)} found against {want} passage(s) expected, so the "
-                "coolant is whatever the orientation test tags and a lump of metal it tags by "
-                "mistake will come out as an extra piece")
-    except Exception:  # noqa: BLE001 - a reading that cannot be taken is not a refusal
-        logger.warning("conjugate: the coolant's seed points could not be read", exc_info=True)
-        seeds, seeds_said = [], "the coolant's seed points could not be read"
+    # THE SEEDS that say where the coolant is, read off the surface about to be meshed. The rule and
+    # the measurements behind it are on `fluid_seeds`.
+    #
+    # KEPT AS A CALL AND NOT INLINED, for two reasons. It is the only part of this builder worth
+    # testing on its own; and this function's SOURCE TEXT is read by two of its own tests, which
+    # isolate the serial chain by splitting at the first branch keyword and asserting that what
+    # follows mentions neither mpi_command nor PREPARE_PAR. A branch anywhere above that point
+    # silently moves what they are asserting about - and so, measured, does a COMMENT that merely
+    # quotes the keyword, which is how this sentence came to be written the long way round.
+    seeds, seeds_said = fluid_seeds(ws / fluid_stl, background_cell_m=background_cell_m,
+                                    expect_fluid_pieces=expect_fluid_pieces)
     logger.info("conjugate: %s", seeds_said)
     (ws / "system" / "topoSetDict").write_text(
         render_toposetdict(fluid_file=fluid_stl, seeds=seeds))
@@ -2039,4 +2055,5 @@ __all__ = ["ConjugateError", "ConjugateReport", "RegionReport", "PortPlan",
            "part_size_complaint", "MAX_PART_M",
            "children_peak_rss_bytes",
            "render_meshdict", "render_toposetdict", "interface_cell_m",
+           "FLUID_CELLS", "SEED_KEEP_MARKER", "fluid_seeds", "seed_drop",
            "read_region", "boundary_patches", "interface_faces", "verify", "build"]
