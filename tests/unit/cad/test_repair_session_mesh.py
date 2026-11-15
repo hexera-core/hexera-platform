@@ -455,9 +455,10 @@ class _Fragment:
     answers = frozenset({DefectCode.mesh_edge_through_face})
     scope = 8
 
-    def __init__(self, *, added=(), moved=None):
+    def __init__(self, *, added=(), moved=None, rebuilt=()):
         self._added = tuple(added)
         self._moved = dict(moved or {})
+        self._rebuilt = tuple(rebuilt)
 
     def targets_for(self, defect):
         return (EntityRef(entity_type="face", fingerprint=defect.fingerprint,
@@ -468,7 +469,8 @@ class _Fragment:
 
         mapping = (EntityMapping(moved=self._moved, gone=frozenset(), basis="kernel")
                    if self._moved else EntityMapping.empty())
-        return OpOutcome(shape="fragmented", added=self._added, mapping=mapping)
+        return OpOutcome(shape="fragmented", added=self._added, mapping=mapping,
+                         rebuilt=self._rebuilt)
 
 
 def _revealing_session(monkeypatch, after):
@@ -531,3 +533,84 @@ def test_a_kernel_operation_reveals_nothing(monkeypatch):
     opening = session.defects()[0]
     verdict = session.try_op(_Sew(), _Sew().targets_for(opening), opening.code, tolerance_mm=0.01)
     assert not verdict.kept and verdict.reason == "new_defect"
+
+
+# THE OPERATION'S OWN GEOMETRY INCLUDES WHAT IT REBUILT (fix round 2): a body replaced whole keeps
+# most of its faces' NAMES, so `added` and `moved` alone would excuse a failure the rebuild caused.
+
+_PERIODIC = EntityDefect(code=DefectCode.mesh_periodic_surface, severity=DefectSeverity.error,
+                         entity_type="face", entity_index=4, message="periodic surface",
+                         fingerprint="face:f4", location=dict(_BOX),
+                         measurements={"mesh_kind": "periodic_surface", "gmsh_surfaces": [4],
+                                       "stage": mesh_probe.STAGE_2D})
+
+
+class _Split(_Fragment):
+    """An operation double answering a periodic surface (as split_closed_faces does)."""
+
+    name = "split_closed_faces"
+    answers = frozenset({DefectCode.mesh_periodic_surface})
+    scope = 1
+
+
+@pytest.mark.parametrize("op, first", [(_Fragment(rebuilt=("face:f4", "face:f9")), _THROUGH),
+                                       (_Split(rebuilt=("face:f4", "face:f9")), _PERIODIC)],
+                         ids=["fragment_bodies", "split_closed_faces"])
+def test_a_mesh_failure_on_a_rebuilt_body_s_surviving_face_is_damage(monkeypatch, op, first):
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
+    _scan(monkeypatch, ((), True))
+    _probe(monkeypatch, (first,), (_NEXT,))
+    session = RepairSession("shape", measurer=lambda s: MEASURE)
+    target = session.defects()[0]
+    verdict = session.try_op(op, op.targets_for(target), target.code, tolerance_mm=0.01)
+    assert not verdict.kept and verdict.reason == "new_defect"
+    # A ROLLED-BACK VERDICT LISTS NO REVEALS: nothing it names reached the defect list.
+    assert "revealed" not in verdict.delta
+    assert session.shape == "shape"
+
+
+@pytest.mark.parametrize("op, first", [(_Fragment(rebuilt=("face:f4",)), _THROUGH),
+                                       (_Split(rebuilt=("face:f4",)), _PERIODIC)],
+                         ids=["fragment_bodies", "split_closed_faces"])
+def test_a_mesh_failure_off_the_rebuilt_bodies_is_still_revealed(monkeypatch, op, first):
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
+    _scan(monkeypatch, ((), True))
+    _probe(monkeypatch, (first,), (_NEXT,))
+    session = RepairSession("shape", measurer=lambda s: MEASURE)
+    target = session.defects()[0]
+    verdict = session.try_op(op, op.targets_for(target), target.code, tolerance_mm=0.01)
+    assert verdict.kept, verdict.reason
+    assert verdict.delta["revealed"] == [{"fingerprint": "face:f9",
+                                          "code": "mesh_overlapping_facets"}]
+
+
+def test_a_rolled_back_verdict_lists_no_reveals_even_beside_damage(monkeypatch):
+    # One finding off the op's geometry (would be revealed) and one on it (damage): rolled back,
+    # and the verdict does not claim the first was revealed.
+    damaged = EntityDefect(code=DefectCode.mesh_overlapping_facets, severity=DefectSeverity.error,
+                           entity_type="face", entity_index=5, message="overlap",
+                           fingerprint="face:f5", location=dict(_BOX_9),
+                           measurements={"mesh_kind": "overlapping_facets", "stage": "3d"})
+    session, target = _revealing_session(monkeypatch, (_NEXT, damaged))
+    op = _Fragment(rebuilt=("face:f5",))
+    verdict = session.try_op(op, op.targets_for(target), target.code, tolerance_mm=0.01)
+    assert not verdict.kept and verdict.reason == "new_defect"
+    assert "revealed" not in verdict.delta
+
+
+class _KernelFixer(_Fragment):
+    """A kernel operation (answers no mesh code) that nevertheless clears the mesh failure."""
+
+    name = "fix_shape_global"
+    answers = frozenset({DefectCode.invalid_brep})
+
+
+def test_a_non_mesh_operation_aimed_at_a_mesh_defect_gets_no_amnesty(monkeypatch):
+    # A directive (or MESH_OPS) may aim a kernel fixer at a mesh failure. It clears it, and the
+    # probe meets the next failure - but the fixer declares nothing it rebuilt, so the amnesty
+    # would be hollow for it: the new mesh finding is new damage, as it always was.
+    session, target = _revealing_session(monkeypatch, (_NEXT,))
+    op = _KernelFixer()
+    verdict = session.try_op(op, op.targets_for(target), target.code, tolerance_mm=0.01)
+    assert not verdict.kept and verdict.reason == "new_defect"
+    assert "revealed" not in verdict.delta

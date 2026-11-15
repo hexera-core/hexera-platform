@@ -87,7 +87,7 @@ def _judged_whole(package) -> bool:
                for item in package.plan)
 
 
-def _revealed(outcome, targets, defect_code, previous, found) -> tuple:
+def _revealed(op, outcome, targets, defect_code, previous, found) -> tuple:
     """The mesh findings an operation REVEALED rather than caused. APPLIES TO EVERY MESH OPERATION.
 
     gmsh reports only its FIRST failure. An operation that clears the mesh failure it aimed at
@@ -97,18 +97,23 @@ def _revealed(outcome, targets, defect_code, previous, found) -> tuple:
     reports overlapping facets on face 943, which was always there behind it).
 
     A newly appearing finding is revealed when ALL of (controller ruling, P2 Task 3 fix round 1):
-      (a) the operation aimed at a MESH defect, and that defect CLEARED in the rescan - nothing
-          with its code remains at the target or at what the mapping says the target became;
+      (a) the operation is a MESH OPERATION - its own `answers` hold the mesh code it was aimed
+          at - and that defect CLEARED in the rescan: nothing with its code remains at the target
+          or at what the mapping says the target became. An operation that does not answer the
+          mesh code (a kernel fixer a directive or MESH_OPS aims at a mesh failure) earns no
+          amnesty: it does not declare what it rebuilt, so (c) would be hollow for it;
       (b) the new finding is itself a `mesh_*` code - a kernel finding is never excused here;
-      (c) it does not sit on geometry the operation created or moved: its fingerprint is neither
-          in `outcome.added` nor among the mapping's moved names. If it does, it is damage, and
-          rolls back as it always did.
+      (c) it does not sit on geometry the operation created, moved or REBUILT: its fingerprint is
+          in none of `outcome.added`, the mapping's moved names, or `outcome.rebuilt` (every face
+          of a body the operation rebuilt, even one whose name survived). If it does, it is
+          damage, and rolls back as it always did.
     A revealed finding is NOT dropped: it stays in the rescan and so in the session's list, where
     the loop must answer or escalate it, and `try_op` records it under the delta's `revealed` key.
     Unlocated mesh findings never reach this: `_mesh_judged` already holds them neither new nor
     cleared.
     """
-    if not _is_mesh_code(defect_code):
+    if not _is_mesh_code(defect_code) or defect_code not in frozenset(
+            getattr(op, "answers", ())):
         return ()
     wanted = getattr(defect_code, "value", str(defect_code))
     for ref in targets:
@@ -118,7 +123,8 @@ def _revealed(outcome, targets, defect_code, previous, found) -> tuple:
             return ()
     previous, found = _mesh_judged(previous, found)
     before = {(d.fingerprint, d.code.value) for d in previous}
-    touched = set(outcome.added) | set(outcome.mapping.moved) | set(outcome.mapping.moved.values())
+    touched = (set(outcome.added) | set(outcome.rebuilt) | set(outcome.mapping.moved)
+               | set(outcome.mapping.moved.values()))
     return tuple(d for d in found
                  if _is_mesh(d) and d.fingerprint and (d.fingerprint, d.code.value) not in before
                  and d.fingerprint not in touched)
@@ -710,10 +716,7 @@ class RepairSession:
             previous = tuple(d for d in previous if not analyzer_only(d))
 
         basis = self._basis(outcome, targets)
-        revealed = _revealed(outcome, targets, defect_code, previous, found)
-        if revealed:
-            delta["revealed"] = [{"fingerprint": d.fingerprint, "code": d.code.value}
-                                 for d in revealed]
+        revealed = _revealed(op, outcome, targets, defect_code, previous, found)
         reason = self._progress_refusal(
             outcome, targets, defect_code, previous, found, op_name=op.name,
             revealed=frozenset((d.fingerprint, d.code.value) for d in revealed))
@@ -723,6 +726,11 @@ class RepairSession:
                 op=op.name, targets=fingerprints, defect_code=code, status=ROLLED_BACK,
                 reason=reason, basis=basis, evidence=dict(outcome.evidence), delta=delta,
                 apply_s=apply_s, scan_s=scan_s, measure_s=measure_s))
+        if revealed:
+            # ONLY ON A KEPT VERDICT: a rolled-back one never put these on the list, and the
+            # training log must not say it revealed what nobody now holds.
+            delta["revealed"] = [{"fingerprint": d.fingerprint, "code": d.code.value}
+                                 for d in revealed]
 
         if not judged_by_face_scan and carried:
             # THE ANALYZER'S FINDINGS STAY ON THE LIST after a kept operation that did not re-run

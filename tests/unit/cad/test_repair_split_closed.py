@@ -67,6 +67,8 @@ def doubles(monkeypatch, flag_on):
         monkeypatch.setattr(operations, "_split_fingerprints",
                             lambda owner, divided, **_: ("face:half1", "face:half2"))
         monkeypatch.setattr(operations, "_diagonal_of", lambda shape: 100.0)
+        monkeypatch.setattr(operations, "_face_names",
+                            lambda body, **_: tuple(f"face:{body}:{n}" for n in (1, 2)))
         monkeypatch.setattr(operations, "mapping_from_context",
                             lambda *a, **k: operations.EntityMapping.empty())
         return SplitClosedFaces()
@@ -180,6 +182,8 @@ def test_declares_exact_face_count(doubles):
     assert outcome.evidence[AREA_DELTA] == 0.0
     assert outcome.evidence[VOLUME_DELTA] == 0.0
     assert outcome.added == ("face:half1", "face:half2")
+    # Every face of the divided owner is the op's own geometry (`session._revealed`).
+    assert outcome.rebuilt == ("face:DIVIDED:1", "face:DIVIDED:2")
     assert doubles.calls == ["closed", "owner", "divide", "splice"]
 
 

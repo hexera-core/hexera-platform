@@ -61,6 +61,11 @@ class OpOutcome:
     #: session needs them to tell "a new defect appeared" from "a defect appeared on geometry this
     #: operation deliberately added".
     added: tuple[str, ...] = ()
+    #: Fingerprints of EVERY face of geometry this operation REBUILT - a body it replaced whole -
+    #: including faces whose name survived the rebuild. A mesh failure that appears on one of them
+    #: is the operation's own doing, never "revealed" (`session._revealed`). Empty for an operation
+    #: that rebuilds nothing.
+    rebuilt: tuple[str, ...] = ()
     #: What it did, in numbers a reviewer can read, plus its AREA_DELTA/VOLUME_DELTA declarations.
     evidence: dict = field(default_factory=dict)
 
@@ -392,6 +397,23 @@ def _split_fingerprints(owner, divided, *, diagonal_mm: float) -> tuple[str, ...
     return tuple(added)
 
 
+def _face_names(body, *, diagonal_mm: float) -> tuple[str, ...]:
+    """Every face of `body`, named at the WHOLE PART's quantum (as `_split_fingerprints` names),
+    each once - what `OpOutcome.rebuilt` carries."""
+    from OCP.TopAbs import TopAbs_FACE
+
+    from meshpipeline.cad.repair.localize import _indexed
+
+    quantum = quantum_for(diagonal_mm)
+    faces = _indexed(body, TopAbs_FACE)
+    names: list[str] = []
+    for i in range(1, faces.Extent() + 1):
+        name = fingerprint_of("face", box_of(faces.FindKey(i)), quantum=quantum)
+        if name and name not in names:
+            names.append(name)
+    return tuple(names)
+
+
 class SplitClosedFaces:
     """Split a CLOSED (periodic) face in two, so gmsh has a bounded patch to mesh instead of a
     surface that wraps onto itself.
@@ -496,6 +518,7 @@ class SplitClosedFaces:
         mapping = mapping_from_context(context, targets, shape_before=shape, diagonal_mm=diagonal)
         return OpOutcome(shape=spliced, mapping=mapping,
                          added=_split_fingerprints(owner, divided, diagonal_mm=diagonal),
+                         rebuilt=_face_names(divided, diagonal_mm=diagonal),
                          evidence={"faces_added": int(added), AREA_DELTA: 0.0, VOLUME_DELTA: 0.0,
                                    "faces_targeted": 1, "closed": closed,
                                    "precision_mm": float(tolerance_mm)})
@@ -2247,6 +2270,9 @@ class FragmentBodies:
         mapping = mapping_from_context(history, targets, shape_before=shape, diagonal_mm=diagonal)
         return OpOutcome(shape=spliced, mapping=mapping,
                          added=_split_fingerprints(shape, spliced, diagonal_mm=diagonal),
+                         rebuilt=tuple(dict.fromkeys(
+                             name for _body, image in replacements
+                             for name in _face_names(image, diagonal_mm=diagonal))),
                          evidence={"solids_delta": int(solids_delta),
                                    "faces_added": int(faces_after - faces_before),
                                    AREA_DELTA: round(float(area_after - area_before), 6),

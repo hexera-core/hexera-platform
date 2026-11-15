@@ -326,23 +326,29 @@ def test_the_single_solid_corpus_file_is_declined(fragment_on):
     assert outcome.evidence["declined"].startswith("single_body (the part has 1 solid(s)")
 
 
-def test_the_session_keeps_fragment_and_lists_the_revealed_overlap(monkeypatch, fragment_on):
-    """THE SESSION-LEVEL PROOF of the revealed rule, on the real file and the real probe.
+def test_the_session_rolls_fragment_back_when_the_next_failure_is_on_a_rebuilt_body(
+        monkeypatch, fragment_on):
+    """THE SESSION-LEVEL OUTCOME of the revealed rule on the real file and the real probe, as
+    MEASURED after fix round 2 (2026-11-14) - the operation is ROLLED BACK `new_defect`.
 
     The probe cannot locate this file's edge-through-face (no coordinates in gmsh's error; Task
     3b's subject), so ONE thing is stood in: an UNLOCATED edge-through-face from the real probe is
     re-reported on the contact face, which is where a contact locator would put it. Everything
-    else - the kernel scan, the fragment, the caps, the post-op probe - is real. Measured
-    2026-11-14: after the fragment the real probe reports overlapping facets in the 3D stage on a
-    face the fragment neither created nor moved; that is REVEALED, the op is KEPT, and the overlap
-    stays in the session's defects.
+    else - the kernel scan, the fragment, the caps, the post-op probe - is real.
+
+    After the fragment the edge through a face is gone and the real probe reports overlapping
+    facets in the 3D stage on face 943 - a face that existed before, was not added and was not
+    moved, but lies on one of the two bodies the fuse REBUILT. The file HAS only two bodies, so
+    `rebuilt` names every face of the part (1275 names; 1271 faces before), and by the round-2
+    ruling a mesh failure on a rebuilt body is the operation's own doing. So nothing is excused,
+    the verdict lists no reveals, and the shape is restored. (Round 1 kept the op here.)
     """
     from dataclasses import replace
 
     from meshpipeline.cad.repair import mesh_probe
     from meshpipeline.cad.repair.brep import _read_shape
     from meshpipeline.cad.repair.contracts import DefectCode
-    from meshpipeline.cad.repair.session import KEPT, RepairSession
+    from meshpipeline.cad.repair.session import ROLLED_BACK, RepairSession
 
     monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
     monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE_TIMEOUT_S", 300.0)
@@ -368,9 +374,6 @@ def test_the_session_keeps_fragment_and_lists_the_revealed_overlap(monkeypatch, 
     verdict = session.try_op(FragmentBodies(), (contact,), DefectCode.mesh_edge_through_face,
                              tolerance_mm=0.1)
 
-    assert verdict.status == KEPT, (verdict.reason, verdict.delta.get("revealed"))
-    revealed = verdict.delta.get("revealed") or []
-    assert {r["code"] for r in revealed} == {"mesh_overlapping_facets"}, revealed
-    remaining = {(d.fingerprint, d.code.value) for d in session.defects()}
-    assert all((r["fingerprint"], r["code"]) in remaining for r in revealed)
-    assert DefectCode.mesh_edge_through_face not in {d.code for d in session.defects()}
+    assert verdict.status == ROLLED_BACK and verdict.reason == "new_defect", verdict.reason
+    assert "revealed" not in verdict.delta
+    assert session.shape is shape

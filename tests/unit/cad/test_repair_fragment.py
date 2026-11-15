@@ -81,6 +81,8 @@ def doubles(monkeypatch, flag_on):
         monkeypatch.setattr(operations, "_split_fingerprints",
                             lambda before, after, **_: ("face:patch",))
         monkeypatch.setattr(operations, "_diagonal_of", lambda shape: 100.0)
+        monkeypatch.setattr(operations, "_face_names",
+                            lambda body, **_: tuple(f"face:{body}:{n}" for n in (1, 2)))
         monkeypatch.setattr(operations, "mapping_from_context",
                             lambda *a, **k: operations.EntityMapping.empty())
         return FragmentBodies()
@@ -246,6 +248,8 @@ def test_fragment_declares_its_solids(doubles):
     assert outcome.evidence[VOLUME_DELTA] == 0.0
     assert outcome.evidence["common_volume_mm3"] == 0.0
     assert outcome.added == ("face:patch",)
+    # EVERY face of both rebuilt bodies is the op's own geometry, surviving names included.
+    assert outcome.rebuilt == ("face:A2:1", "face:A2:2", "face:B2:1", "face:B2:2")
     # BOTH bodies are replaced, each by its own image; nothing else is touched.
     splices = [c for c in doubles.calls if isinstance(c, tuple)]
     assert splices == [("splice", (("A", "A2"), ("B", "B2")))]
@@ -259,6 +263,8 @@ def test_an_unmodified_body_is_left_in_place(doubles):
     doubles(images=(("A2",), ())).apply("SHAPE", (REF,), tolerance_mm=0.01)
     splices = [c for c in doubles.calls if isinstance(c, tuple)]
     assert splices == [("splice", (("A", "A2"),))]
+    outcome = doubles(images=(("A2",), ())).apply("SHAPE", (REF,), tolerance_mm=0.01)
+    assert outcome.rebuilt == ("face:A2:1", "face:A2:2")   # the untouched body is not rebuilt
 
 
 # THE FLAG KEEPS IT OUT OF EVERYTHING
