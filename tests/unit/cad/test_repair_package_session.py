@@ -778,12 +778,117 @@ def test_no_time_left_rejects_not_skips(monkeypatch):
     assert session.shape == "original"
 
 
-def test_the_review_timeout_is_cut_to_the_runs_remaining_time(monkeypatch):
+def test_the_review_timeout_is_cut_to_the_runs_remaining_time_less_a_margin(monkeypatch):
+    # 5 s are kept back before the run's deadline, as the model author keeps them.
     session = _session()
-    session.remaining_s = lambda: 3.0
+    session.remaining_s = lambda: 8.0
     fake = _review(monkeypatch, {"verdict": "accept", "reason": "ok"})
     session.try_package(_package(session, cleared={_EDGE}))
     assert fake.calls[0]["timeout_s"] == 3.0
+    inside_margin = _session()
+    inside_margin.remaining_s = lambda: 4.0
+    fake = _review(monkeypatch, {"verdict": "accept", "reason": "ok"})
+    verdict = inside_margin.try_package(_package(inside_margin, cleared={_EDGE}))
+    assert fake.calls == []
+    assert verdict.review_reason == "no time left to review"
+    assert inside_margin.shape == "original"
+
+
+def test_the_verdict_records_the_evidence_it_was_judged_on(monkeypatch):
+    import json
+    session = _session()
+    fake = _review(monkeypatch, {"verdict": "accept", "reason": "ok"})
+    verdict = session.try_package(_package(session, cleared={_EDGE}))
+    assert verdict.review_evidence == json.loads(fake.calls[0]["user"])
+    assert verdict.to_dict()["review_evidence"]["author_claim"] == "clear the short edge"
+    # The part's scale, from the session's measure of the upload.
+    assert verdict.review_evidence["diagonal_mm"] == _SOUND.diagonal_mm
+    assert verdict.review_evidence["deviation_status"] == "not measured: probe off"
+
+
+def test_a_review_that_raises_reverts_the_package(monkeypatch):
+    from meshpipeline.cad.repair import package_review
+
+    session = _session()
+    session.defects()
+    before = _state(session)
+    fake = _review(monkeypatch, {"verdict": "accept", "reason": "ok"})
+
+    def broken(*a, **k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(package_review, "evidence_of", broken)
+    verdict = session.try_package(_package(session, cleared={_EDGE}))
+    assert fake.calls == []
+    assert verdict.status == "reverted"
+    assert (verdict.reviewed, verdict.review_reason) == ("reject", "review failed: RuntimeError")
+    assert _state(session) == before
+
+
+# NO RETRY-UNTIL-ACCEPT, AND THE GRADER STAYS OUT OF THE AUTHOR'S REACH (fix round 1, C1).
+
+
+def _reworded(session, intent: str):
+    package = _package(session, cleared={_EDGE})
+    from dataclasses import replace
+    return replace(package, intent=intent)
+
+
+def test_the_author_sees_only_a_generic_reason_for_a_review_reject(monkeypatch):
+    from meshpipeline.cad.repair.observe import _attempt_of
+
+    session = _session()
+    _review(monkeypatch, {"verdict": "reject", "reason": "SECRET-GRADER-REASONING"})
+    verdict = session.try_package(_package(session, cleared={_EDGE}))
+    assert verdict.reason == "review: rejected by review"
+    assert verdict.review_reason == "SECRET-GRADER-REASONING"
+    import json
+    assert "SECRET-GRADER-REASONING" not in json.dumps(_attempt_of(verdict))
+
+
+def test_a_reworded_retry_is_judged_with_the_prior_reject_in_evidence(monkeypatch):
+    import json
+    session = _session()
+    fake = _review(monkeypatch, {"verdict": "reject", "reason": "the boss was flattened"},
+                   {"verdict": "accept", "reason": "ok"})
+    first = session.try_package(_reworded(session, "clear the short edge"))
+    second = session.try_package(_reworded(session, "tidy the edge, nothing else"))
+    assert first.status == "reverted" and second.status == "committed"
+    assert json.loads(fake.calls[0]["user"])["review_rejects"] == {"count": 0, "reasons": []}
+    assert json.loads(fake.calls[1]["user"])["review_rejects"] == {
+        "count": 1, "reasons": ["the boss was flattened"]}
+
+
+def test_a_second_review_reject_escalates_the_region(monkeypatch):
+    session = _session()
+    fake = _review(monkeypatch, {"verdict": "reject", "reason": "r1"},
+                   {"verdict": "reject", "reason": "r2"},
+                   {"verdict": "accept", "reason": "ok"})
+    first = session.try_package(_reworded(session, "one"))
+    second = session.try_package(_reworded(session, "two"))
+    third = session.try_package(_reworded(session, "three"))
+    assert first.status == "reverted"
+    assert (second.status, second.reason) == ("escalated", "review: rejected by review twice")
+    assert (second.reviewed, second.review_reason) == ("reject", "r2")
+    assert session.shape == "original"
+    # PAST THE CAP NOTHING RUNS AND NOTHING IS ASKED.
+    assert (third.status, third.reason) == ("escalated", "review: rejected by review twice")
+    assert third.verdicts == () and len(fake.calls) == 2
+
+
+def test_one_review_reject_allows_exactly_one_more_attempt(monkeypatch):
+    session = _session()
+    fake = _review(monkeypatch, {"verdict": "reject", "reason": "r1"},
+                   {"verdict": "accept", "reason": "ok"})
+    session.try_package(_reworded(session, "one"))
+    # The one extra attempt fails its predicate rather than its review...
+    failed = session.try_package(_package(session, cleared={"edge:never-cleared"},
+                                          extra_fingerprints={"edge:never-cleared"}))
+    assert failed.status == "reverted" and not failed.reason.startswith("review:")
+    # ...and the attempt after it is escalated unrun.
+    spent = session.try_package(_reworded(session, "three"))
+    assert spent.status == "escalated" and spent.reason.startswith("review:")
+    assert spent.verdicts == () and len(fake.calls) == 1
 
 
 def test_the_reviewer_is_never_consulted_for_a_package_that_did_not_pass(monkeypatch):

@@ -81,8 +81,12 @@ def _probes(*, mesh: bool = True) -> tuple[dict, dict]:
     return before, after
 
 
+_ORIGINAL = {**_BEFORE, "solids": 2}
+
 EXPECTED_KEYS = {
     "ops", "area_mm2", "volume_mm3", "faces", "solids",
+    "diagonal_mm", "area_mm2_before", "volume_mm3_before",
+    "deviation_status", "review_rejects",
     "deviation_mm", "deviation_samples", "deviation_faces", "deviation_faces_skipped",
     "mesh_before", "mesh_after",
     "defects_cleared", "defects_revealed", "defects_remaining",
@@ -92,8 +96,14 @@ EXPECTED_KEYS = {
 
 def test_reviewer_evidence_is_measured_only():
     before, after = _probes()
-    evidence = pr.evidence_of(_package(), _delta(), _DEVIATION, before, after)
+    evidence = pr.evidence_of(_package(), _delta(), _DEVIATION, before, after,
+                              original=_ORIGINAL, review_rejects=("a fillet face was removed",))
     assert set(evidence) == EXPECTED_KEYS
+    assert (evidence["diagonal_mm"], evidence["area_mm2_before"],
+            evidence["volume_mm3_before"]) == (200.0, 1000.0, 8000.0)
+    assert evidence["deviation_status"] == "measured"
+    assert evidence["review_rejects"] == {"count": 1,
+                                          "reasons": ["a fillet face was removed"]}
     assert evidence["author_claim"] == _INTENT
     assert evidence["ops"] == [
         {"op": "fragment_bodies", "status": "kept", "reason": ""},
@@ -117,6 +127,10 @@ def test_reviewer_evidence_is_measured_only():
 def test_evidence_without_the_probe_lacks_mesh_and_deviation_fields():
     before, after = _probes(mesh=False)
     evidence = pr.evidence_of(_package(), _delta(), {}, before, after)
+    assert evidence["deviation_status"] == "not measured: probe off"
+    assert evidence["review_rejects"] == {"count": 0, "reasons": []}
+    # No upload measure handed in: the scale reads as the hole it is.
+    assert evidence["diagonal_mm"] == "unmeasured"
     assert set(evidence) == EXPECTED_KEYS - {
         "deviation_mm", "deviation_samples", "deviation_faces", "deviation_faces_skipped",
         "mesh_before", "mesh_after"}
@@ -129,6 +143,41 @@ def test_measured_empty_deviation_is_kept_as_recorded():
                                "deviation_faces_skipped": 0}, before, after)
     assert "deviation_mm" not in evidence
     assert evidence["deviation_faces"] == 0
+    assert evidence["deviation_status"] == "not measured: no faces"
+
+
+def test_deviation_status_says_why_it_is_absent():
+    assert pr._deviation_status({}) == "not measured: probe off"
+    assert pr._deviation_status({"deviation_s": 0.4}) == "not measured: failed or ran out of time"
+    assert pr._deviation_status({"deviation_s": 0.0, "deviation_status":
+                                 "not measured: no time"}) == "not measured: no time"
+    assert pr._deviation_status(_DEVIATION) == "measured"
+
+
+def test_a_missing_or_non_finite_measurement_is_unmeasured_never_zero():
+    delta = _delta()
+    delta["after"] = {**_AFTER, "surface_area_mm2": float("nan"), "faces": None}
+    delta["before"] = {k: v for k, v in _BEFORE.items() if k != "volume_mm3"}
+    delta["declared_area_mm2"] = float("inf")
+    before, after = _probes()
+    evidence = pr.evidence_of(_package(), delta, {**_DEVIATION, "deviation_mm": float("nan")},
+                              before, after, original={**_ORIGINAL, "diagonal_mm": float("inf")})
+    assert evidence["area_mm2"] == {"declared": "unmeasured", "measured": "unmeasured"}
+    assert evidence["volume_mm3"]["measured"] == "unmeasured"
+    assert evidence["faces"] == {"before": 20, "after": "unmeasured"}
+    assert evidence["deviation_mm"] == "unmeasured"
+    assert evidence["diagonal_mm"] == "unmeasured"
+    json.dumps(evidence, allow_nan=False)
+
+
+def test_the_recorded_evidence_is_clipped_with_a_stated_marker():
+    small = {"author_claim": "x"}
+    assert pr.clip_evidence(small) == small
+    big = {"author_claim": "y" * 10_000}
+    clipped = pr.clip_evidence(big)
+    assert set(clipped) == {"clipped", "head"}
+    assert "clipped to 4000 of" in clipped["clipped"]
+    assert len(clipped["head"].encode()) <= 4000
 
 
 def test_reviewer_never_sees_raw_replies_or_observations(review_ask):
@@ -232,6 +281,10 @@ def test_the_timeout_is_cut_to_the_time_left(review_ask):
 def test_the_prompt_says_unsure_is_reject_and_names_the_claim():
     assert "reject" in pr.REVIEW_SYSTEM and "unsure" in pr.REVIEW_SYSTEM
     assert "author_claim" in pr.REVIEW_SYSTEM
+    assert "unmeasured" in pr.REVIEW_SYSTEM
+    assert "deviation was not measured, reject it unless" in pr.REVIEW_SYSTEM
+    assert "review_rejects" in pr.REVIEW_SYSTEM
+    assert "from the upload as repair received it" in pr.REVIEW_SYSTEM
     assert '"verdict"' in pr.REVIEW_SYSTEM
 
 
@@ -249,6 +302,17 @@ def test_posture_typo_reads_off_with_a_warning(monkeypatch, caplog):
         assert warned is (raw not in ("live", "off"))
 
 
+def test_review_live_on_the_baseline_driver_warns(caplog):
+    with caplog.at_level(logging.WARNING, logger=rcfg.__name__):
+        caplog.clear()
+        rcfg._warn_unreviewed_baseline("live", "off")
+        assert any("WITHOUT the package review" in r.getMessage() for r in caplog.records)
+        caplog.clear()
+        rcfg._warn_unreviewed_baseline("live", "live")
+        rcfg._warn_unreviewed_baseline("off", "off")
+        assert not caplog.records
+
+
 def test_unknown_posture_attribute_reads_off(monkeypatch):
     monkeypatch.setattr(rcfg, "CAD_REPAIR_PACKAGE_REVIEW", "LIVE")
     assert pr.posture() == "off"
@@ -259,3 +323,44 @@ def test_unknown_posture_attribute_reads_off(monkeypatch):
 def test_the_review_settings_default_off_and_twenty_seconds():
     assert rcfg.CAD_REPAIR_PACKAGE_REVIEW == "off"
     assert rcfg.CAD_REPAIR_PACKAGE_REVIEW_TIMEOUT_S == 20.0
+
+
+# THE LOOP-LEVEL INVARIANT: posture live => every COMMITTED package was reviewed and accepted.
+
+
+def _loop(monkeypatch, *replies):
+    from tests.unit.cad.test_repair_region_loop import _author, _Part, _run
+
+    fake = FakeAsk(*replies)
+    monkeypatch.setattr(pr, "_ask", fake)
+    monkeypatch.setattr(pr, "_configured", lambda: True)
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_PACKAGE_REVIEW", "live")
+    part = _Part()
+    asked: list[int] = []
+    inner = _author(part)
+
+    def author(region, defects, attempts):
+        asked.append(int(region.index))
+        return inner(region, defects, attempts)
+
+    return _run(part, author, attempts=3), fake, asked
+
+
+def test_live_review_every_committed_package_was_accepted(monkeypatch):
+    run, fake, _ = _loop(monkeypatch, {"verdict": "reject", "reason": "r1"},
+                         {"verdict": "accept", "reason": "ok"},
+                         {"verdict": "accept", "reason": "ok"})
+    committed = [p for p in run.packages if p.committed]
+    assert committed and len(fake.calls) == 3
+    assert all(p.reviewed == "accept" for p in committed)
+    assert [p.status for p in run.packages] == ["reverted", "committed", "committed"]
+
+
+def test_live_review_a_region_rejected_twice_is_escalated_and_not_authored_again(monkeypatch):
+    run, fake, asked = _loop(monkeypatch, *({"verdict": "reject", "reason": "no"},) * 6)
+    assert not any(p.committed for p in run.packages)
+    assert run.escalated == (0, 1)
+    # Two attempts per region - the reject and the one retry - never the third the bound allows.
+    assert asked == [0, 0, 1, 1] and len(fake.calls) == 4
+    assert [p.reason for p in run.packages] == [
+        "review: rejected by review", "review: rejected by review twice"] * 2

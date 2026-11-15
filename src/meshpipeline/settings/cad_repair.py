@@ -356,6 +356,19 @@ def _package_review_posture() -> str:
 #: nothing else on; without the mesh probe the evidence simply lacks mesh and deviation fields.
 CAD_REPAIR_PACKAGE_REVIEW: str = _package_review_posture()
 
+
+def _warn_unreviewed_baseline(review: str, region_loop: str) -> None:
+    """Say out loud when review is live but the driver it lives in is not: the review sits in
+    `RepairSession.try_package`, which only the region-scoped driver calls, so with
+    CAD_REPAIR_REGION_LOOP off the operation-at-a-time baseline commits every repair unreviewed."""
+    if review == "live" and region_loop != "live":
+        logger.warning("CAD_REPAIR_PACKAGE_REVIEW=live but CAD_REPAIR_REGION_LOOP=%r: the "
+                       "operation-at-a-time driver commits repairs WITHOUT the package review",
+                       region_loop)
+
+
+_warn_unreviewed_baseline(CAD_REPAIR_PACKAGE_REVIEW, CAD_REPAIR_REGION_LOOP)
+
 #: Seconds one package-review call may take; cut further to what is left of the run's time. A
 #: call that does not answer in time is a reject.
 CAD_REPAIR_PACKAGE_REVIEW_TIMEOUT_S: float = float(

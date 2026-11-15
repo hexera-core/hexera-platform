@@ -42,6 +42,7 @@ from meshpipeline.cad.repair.session import (
     DECLINED,
     ESCALATED,
     HEAL_OP,
+    REVIEW_REJECTED,
     ROLLED_BACK,
     PackageVerdict,
     RepairSession,
@@ -551,6 +552,11 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
             elif verdict.status == ESCALATED and not queued:
                 escalated.append(int(region.index))
                 queued = True
+            if verdict.status == ESCALATED and verdict.reason.startswith(REVIEW_REJECTED):
+                # THE REVIEWER'S CAP ENDS THE REGION (session: a second review reject, or the one
+                # attempt after a first, escalates). Authoring again would only buy a model call
+                # for a package the session will escalate unrun.
+                break
             if len(tried) >= per_region:
                 # THE REGION'S OWN BOUND. What is left in it reaches the final scan and the
                 # report; the walk goes on to the next region, which is the whole reason this

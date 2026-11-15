@@ -184,3 +184,20 @@ def test_receipt_words_the_largest_committed_deviation_as_a_sampled_lower_bound(
     assert "new surface filling an opening" in rows[0]["why"]
     assert _deviation_rows(_record({"status": "committed"})) == []
     assert _deviation_rows({}) == []
+
+
+def test_a_later_package_is_measured_against_the_upload_not_its_own_start(monkeypatch,
+                                                                          _no_probe_scan):
+    # Fix round 1 (I2): the spec's "deviation from the upload". A second package starts from the
+    # first one's result, and is still measured against what repair received.
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
+    calls: list = []
+    monkeypatch.setattr(deviation, "measure_deviation",
+                        lambda before, after, faces=(), **kw: calls.append(before)
+                        or deviation.DeviationResult(0.1, 4, 1, 0, 0.0))
+    session = pkg._session()
+    first = session.try_package(pkg._package(session, cleared={pkg._EDGE}))
+    assert first.committed and session.shape == "repaired"
+    second = session.try_package(pkg._package(session, unchanged={pkg._FACE}))
+    assert second.committed, second.reason
+    assert calls == ["original", "original"]

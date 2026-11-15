@@ -252,6 +252,19 @@ DECLINED = "declined:"
 #: the prefix says the claim held and the reviewer still refused it.
 REVIEW_REJECTED = "review:"
 
+#: THE REASONS A REVIEW REJECT CARRIES IN `PackageVerdict.reason` - GENERIC, ON PURPOSE. `reason`
+#: is what the author's next observation shows it (observe._attempt_of), and an author handed the
+#: grader's reasoning would learn to word its way past the grader. The reviewer's own words go
+#: to `review_reason`, which reaches the report and the reviewer's next evidence, never the
+#: author (controller ruling, P3 Task 4 fix round 1).
+REVIEW_REJECTED_REASON = f"{REVIEW_REJECTED} rejected by review"
+#: A region's SECOND review reject escalates it to a person: no retry-until-accept.
+REVIEW_TWICE_REASON = f"{REVIEW_REJECTED} rejected by review twice"
+#: A region with one review reject gets ONE more authored attempt; a package after that is
+#: escalated unrun, whatever became of the extra attempt.
+REVIEW_SPENT_REASON = (f"{REVIEW_REJECTED} rejected by review, and the one attempt allowed after "
+                       "it is spent")
+
 
 @dataclass(frozen=True, slots=True)
 class PackageVerdict:
@@ -289,7 +302,7 @@ class PackageVerdict:
     #: instrumentation built to make that cost visible could not see the cost this driver added.
     measure_s: float = 0.0
     #: MEASURED EVIDENCE, NEVER A GATE: the sampled largest distance in mm from the surface this
-    #: package changed to the shape it started from (`cad/repair/deviation.py`). None - and absent
+    #: package changed to THE UPLOAD as repair received it (`cad/repair/deviation.py`). None - and absent
     #: from `to_dict` - when it was not measured: the mesh probe posture is off, the package did
     #: not pass its predicate, or the measurement failed or ran out of its budget. A reviewer
     #: reads it (CAD_REPAIR_PACKAGE_REVIEW), so a package the REVIEWER rejected keeps it too - the
@@ -309,10 +322,12 @@ class PackageVerdict:
     #: "reject", the reviewer's reason (or the named no-answer that made it a reject), and the
     #: seconds the review took on the run's clock. All None - and absent from `to_dict` - when the
     #: posture is off or the package never passed its predicate (the reviewer is consulted for
-    #: nothing else).
+    #: nothing else). `review_evidence` is the evidence the verdict was made on, clipped to
+    #: `package_review.EVIDENCE_RECORD_MAX` bytes under a stated marker.
     reviewed: str | None = None
     review_reason: str | None = None
     review_s: float | None = None
+    review_evidence: dict | None = None
 
     @property
     def committed(self) -> bool:
@@ -332,7 +347,8 @@ class PackageVerdict:
                     ("deviation_s", self.deviation_s),
                     ("reviewed", self.reviewed),
                     ("review_reason", self.review_reason),
-                    ("review_s", self.review_s)) if v is not None}}
+                    ("review_s", self.review_s),
+                    ("review_evidence", self.review_evidence)) if v is not None}}
 
 
 def _measure_total(own_s: float, verdicts: Iterable[OpVerdict]) -> float:
@@ -397,6 +413,15 @@ class RepairSession:
         #: THE UPLOAD'S OWN MEASUREMENT, taken once and never replaced. Every cumulative check is
         #: against this, which is what stops six small operations drifting past a cap together.
         self.original = measurer(shape)
+        #: THE UPLOAD ITSELF, as repair received it: what a package's deviation is measured
+        #: against (`_deviation_evidence`), never the shape the package happened to start from -
+        #: a run of small packages must not hide how far they moved the part together.
+        self._upload = shape
+        #: THE SEMANTIC REVIEWER'S REJECTS, per region index, in order (its own reasons). Read
+        #: back into the reviewer's evidence and used to cap a region's attempts after a reject.
+        self._review_rejects: dict[int, list[str]] = {}
+        #: Packages tried in a region SINCE its first review reject (the cap allows one).
+        self._after_review_reject: dict[int, int] = {}
         self.accounting = Accounting()
         self._defects: tuple | None = None
         self.complete_scan: bool = True
@@ -897,6 +922,17 @@ class RepairSession:
             return self._record_package(PackageVerdict(
                 region_index=region.index, status=REVERTED, reason=f"{REFUSED}{refusal}"))
 
+        rejects = self._review_rejects.get(region.index, [])
+        if rejects:
+            # NO RETRY-UNTIL-ACCEPT. One review reject buys one more authored attempt; past that
+            # the region goes to a person, unrun - the existing escalation route.
+            if len(rejects) >= 2 or self._after_review_reject.get(region.index, 0) >= 1:
+                return self._record_package(PackageVerdict(
+                    region_index=region.index, status=ESCALATED,
+                    reason=REVIEW_TWICE_REASON if len(rejects) >= 2 else REVIEW_SPENT_REASON))
+            self._after_review_reject[region.index] = (
+                self._after_review_reject.get(region.index, 0) + 1)
+
         if len(package.plan) > package.budget.max_ops:
             return self._record_package(PackageVerdict(
                 region_index=region.index, status=ESCALATED,
@@ -1044,21 +1080,32 @@ class RepairSession:
                 scan_s=scan_s, apply_s=apply_s,
                 measure_s=_measure_total(measure_s, verdicts)))
 
-        deviation = self._deviation_evidence(
-            snapshot[0], cap_s=package.budget.timeout_s - (self.clock() - started))
+        deviation, deviation_status = self._deviation_evidence(
+            cap_s=package.budget.timeout_s - (self.clock() - started))
         review: dict = {}
         if package_review.posture() == "live":
             # 8. THE SEMANTIC REVIEW, AFTER THE CLAIM HELD AND BEFORE THE COMMIT IS DURABLE. A
             # separate model reads the measured evidence (the author's intent only as a claim)
             # and a reject - or any no-answer - takes the failed predicate's revert below.
-            review = self._review(package, verdicts, boundary, found, whole=whole,
-                                  before=before, after=after, declared=declared,
-                                  deviation=deviation)
+            review_started = self.clock()
+            try:
+                review = self._review(package, verdicts, boundary, found, whole=whole,
+                                      before=before, after=after, declared=declared,
+                                      deviation={**deviation,
+                                                 "deviation_status": deviation_status})
+            except Exception as exc:  # noqa: BLE001 - a broken review is a reject, never a commit
+                logger.warning("session: package review failed (%s)", type(exc).__name__)
+                review = {"reviewed": package_review.REJECT,
+                          "review_reason": f"review failed: {type(exc).__name__}",
+                          "review_s": self.clock() - review_started}
             if review["reviewed"] != package_review.ACCEPT:
                 self.shape, self._defects, self.complete_scan, self.accounting = snapshot
+                rejects = self._review_rejects.setdefault(region.index, [])
+                rejects.append(str(review["review_reason"]))
+                twice = len(rejects) >= 2
                 return self._record_package(PackageVerdict(
-                    region_index=region.index, status=REVERTED,
-                    reason=f"{REVIEW_REJECTED}{review['review_reason']}",
+                    region_index=region.index, status=ESCALATED if twice else REVERTED,
+                    reason=REVIEW_TWICE_REASON if twice else REVIEW_REJECTED_REASON,
                     verdicts=tuple(verdicts), reclassified=reclassified,
                     scan_s=scan_s, apply_s=apply_s,
                     measure_s=_measure_total(measure_s, verdicts), **deviation, **review))
@@ -1079,7 +1126,8 @@ class RepairSession:
         region before it is compared with the region's proof.
 
         THE CLOCK. The call's timeout is the lesser of CAD_REPAIR_PACKAGE_REVIEW_TIMEOUT_S and
-        what is left of the RUN (`remaining_s`), the model_author pattern. It is NOT cut by the
+        what is left of the RUN (`remaining_s`) less `package_review.DEADLINE_MARGIN_S`, the
+        model_author pattern. It is NOT cut by the
         package's own budget: that budget bounds the plan and its proof, and letting an overrun
         there skip the review would commit exactly the unreviewed package this posture exists to
         forbid. And WITH NO RUN TIME LEFT THE VERDICT IS A REJECT ("no time left to review"),
@@ -1095,21 +1143,30 @@ class RepairSession:
                  "before": before.to_dict(), "after": after.to_dict(),
                  "declared_area_mm2": declared.declared_area_mm2,
                  "declared_volume_mm3": declared.declared_volume_mm3}
+        started = self.clock()
         evidence = package_review.evidence_of(
             package, delta, deviation,
             package_review.probe_of(was, mesh_probed=mesh_probed),
-            package_review.probe_of(now, mesh_probed=mesh_probed))
-        started = self.clock()
-        deadline = (started + float(self.remaining_s())
+            package_review.probe_of(now, mesh_probed=mesh_probed),
+            original=self.original.to_dict(),
+            review_rejects=tuple(self._review_rejects.get(package.region.index, ())))
+        deadline = (started + float(self.remaining_s()) - package_review.DEADLINE_MARGIN_S
                     if self.remaining_s is not None else None)
         verdict, reason = package_review.review_package(
             evidence, timeout_s=float(rcfg.CAD_REPAIR_PACKAGE_REVIEW_TIMEOUT_S),
             deadline_s=deadline, clock=self.clock)
         return {"reviewed": verdict, "review_reason": reason,
-                "review_s": self.clock() - started}
+                "review_s": self.clock() - started,
+                "review_evidence": package_review.clip_evidence(evidence)}
 
-    def _deviation_evidence(self, before_shape, *, cap_s: float) -> dict:
-        """The deviation fields for a committed package: {} when not measured at all.
+    def _deviation_evidence(self, *, cap_s: float) -> tuple[dict, str]:
+        """The deviation fields for a package that passed its predicate ({} when not measured at
+        all), and the `package_review` deviation status saying whether and why not it was.
+
+        MEASURED AGAINST THE UPLOAD (`self._upload`, the shape repair received), on the faces this
+        package's kept operations added or rebuilt - the spec's "deviation from the upload". Not
+        against the package's own starting shape, which would let a run of packages each measure
+        small while together moving the part far; the cost is the same.
 
         THE SAME POSTURE AS THE MESH PROBE, no new flag: attempted only when CAD_REPAIR_MESH_PROBE
         is live, so flag-off runs make no measurement and carry no new key. EVIDENCE, NOT A GATE -
@@ -1120,20 +1177,20 @@ class RepairSession:
         module at call time so a test can patch it.
         """
         if rcfg.CAD_REPAIR_MESH_PROBE != "live":
-            return {}
+            return {}, package_review.DEVIATION_PROBE_OFF
         from meshpipeline.cad.repair import deviation
         from meshpipeline.cad.repair.operations import _diagonal_of
 
         budget = min(10.0, cap_s,
                      float(self.remaining_s()) if self.remaining_s is not None else 10.0)
-        if budget <= 0:
-            return {"deviation_s": 0.0}
+        if not budget > 0:
+            return {"deviation_s": 0.0}, package_review.DEVIATION_NO_TIME
         try:
             diagonals = tuple(dict.fromkeys(_diagonal_of(shape) for shape in self._kept_inputs))
         except Exception:  # noqa: BLE001 - evidence only
             diagonals = ()
         result = deviation.measure_deviation(
-            before_shape, self.shape, tuple(dict.fromkeys(self._kept_faces)),
+            self._upload, self.shape, tuple(dict.fromkeys(self._kept_faces)),
             budget_s=budget, diagonals=diagonals)
         out: dict = {"deviation_s": result.seconds}
         if result.faces is not None:
@@ -1141,7 +1198,10 @@ class RepairSession:
                        deviation_faces_skipped=result.faces_skipped)
         if result.mm is not None:
             out["deviation_mm"] = result.mm
-        return out
+            return out, package_review.DEVIATION_MEASURED
+        if result.faces == 0:
+            return out, package_review.DEVIATION_NO_FACES
+        return out, package_review.DEVIATION_FAILED
 
     @staticmethod
     def _package_refusal(package: TargetPackage) -> str:

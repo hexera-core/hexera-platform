@@ -2,6 +2,9 @@
 #                 distance from points on the changed or added faces of the repaired shape to the
 #                 original. EVIDENCE for a reviewer, never a gate: nothing may refuse on it (spec
 #                 "Owner Answers" 2), so every failure is None rather than a raise or a guess.
+#                 `before_shape` is THE UPLOAD as repair received it - the session passes its own
+#                 original shape, never a package's starting shape, so packages cannot each measure
+#                 small while together moving the part far.
 from __future__ import annotations
 
 import math
