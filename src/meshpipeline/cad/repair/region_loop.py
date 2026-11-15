@@ -41,6 +41,7 @@ from meshpipeline.cad.repair.regions import Region, decompose
 from meshpipeline.cad.repair.session import (
     DECLINED,
     ESCALATED,
+    FINAL_PROBE_SLACK_S,
     HEAL_OP,
     REVIEW_REJECTED,
     ROLLED_BACK,
@@ -340,15 +341,47 @@ def _with_tolerance(package: TargetPackage, tolerance_mm: float) -> TargetPackag
     return replace(package, plan=plan)
 
 
+def final_reserve_s() -> float:
+    """Seconds the walk keeps in hand for its final whole-shape verification (final review I2).
+
+    With the mesh probe live the final scan probes the whole part, so the walk stops authoring
+    while one probe's timeout plus `session.FINAL_PROBE_SLACK_S` is still left - the final
+    verification always has room, and its probe then gets whatever remains. 0 with the probe off,
+    so a flag-off walk stops exactly where it always did.
+    """
+    if rcfg.CAD_REPAIR_MESH_PROBE != "live":
+        return 0.0
+    return float(rcfg.CAD_REPAIR_MESH_PROBE_TIMEOUT_S) + FINAL_PROBE_SLACK_S
+
+
+def _observe_shape(author: Author, shape) -> None:
+    """Tell the author the session's CURRENT shape before it is asked (final review M1).
+
+    Read off the callable and optional, like `_observe_part`. An author that reads faces by index
+    (the model author's observation) must read them from the shape the defects' indices belong to;
+    a committed split or fragment renumbers faces, so the upload is the wrong shape after one.
+    """
+    observe = getattr(author, "observe_shape", None)
+    if observe is not None:
+        observe(shape)
+
+
 def run_regions(shape, *, author: Author, tolerance_mm: float,
                 budget: LoopBudget | None = None, reserved: frozenset = frozenset(),
                 session: RepairSession | None = None, attempts: int | None = None,
-                clock: Callable[[], float] = time.monotonic) -> RegionRun:
+                clock: Callable[[], float] = time.monotonic,
+                deadline_s: float | None = None) -> RegionRun:
     """Repair `shape` one region at a time, and report what each region's package did.
 
     `attempts` BOUNDS THE PACKAGES ONE REGION MAY BE OFFERED, defaulting to the deployment's
     CAD_REPAIR_REGION_ATTEMPTS. The run's `max_ops` and `timeout_s` are still the outer bounds and
     are checked before every attempt, not merely before every region.
+
+    `deadline_s` IS THE RUN'S ONE ABSOLUTE DEADLINE, a `clock()` reading
+    (`conservative.repair_step_file` takes it at entry, before the STEP is read, less a margin), so
+    every slice of time - the probes', the author's, the walk's - is a slice of what the attempt
+    node's clock actually has left. None, for a direct caller, is the old behaviour: the budget's
+    `timeout_s` from when this function started. Given, the walk has the lesser of the two.
 
     `session` and `clock` are injectable so the walk and the budget arithmetic can be tested
     without a kernel and without waiting. `reserved` reaches a session this function CONSTRUCTS;
@@ -377,7 +410,10 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
     started = clock()
 
     def remaining() -> float:
-        return limits.timeout_s - (clock() - started)
+        left = limits.timeout_s - (clock() - started)
+        return left if deadline_s is None else min(left, deadline_s - clock())
+
+    reserve = final_reserve_s()
 
     # `reserved` reaches the SESSION as well as the author: the author will not aim at a held
     # entity, and the session will not let a sweep remove one it never aimed at. Nothing here
@@ -458,12 +494,13 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
         queued = False
 
         while True:
-            if clock() - started >= limits.timeout_s:
+            if remaining() <= reserve:
                 # THE WHOLE RUN, not one region and not one attempt. A per-region allowance is the
                 # package's own (`PackageBudget.timeout_s`); this is the job's deadline, and the
                 # regions already committed stay committed. CHECKED PER ATTEMPT, because an
                 # attempt is the unit of work now - checking only per region would let one region
-                # spend its whole bound past the deadline.
+                # spend its whole bound past the deadline. `reserve` is the final verification's
+                # share (`final_reserve_s`), 0 with the probe off.
                 stopped, out_of_budget = TIME_BUDGET, True
                 break
             if charged >= limits.max_ops:
@@ -499,6 +536,7 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
                 # locus needs and what the baseline got for free from its whole-shape walk.
                 break
 
+            _observe_shape(author, work.shape)
             package = author(region, mine, tuple(tried))
             if package is None:
                 # NOT A FAILURE AND NOT AN ESCALATION. The author has nothing further to propose,
@@ -571,7 +609,8 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
         # and taken ONLY when something actually changed: a run that committed nothing is still
         # sitting on the list it started from, and re-measuring it would buy the same answer
         # twice. A sound part therefore costs exactly one scan.
-        after = work._rescan(face_scan=True)  # noqa: SLF001 - the session's own whole-shape scan
+        # `final`: its mesh probe may spend everything left (the reserve kept above).
+        after = work._rescan(face_scan=True, final=True)  # noqa: SLF001 - the session's own scan
         verification_scans += 1
     else:
         after = work.defects()

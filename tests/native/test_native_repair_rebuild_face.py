@@ -207,7 +207,9 @@ def test_corpus_overlap_file_under_the_region_loop(monkeypatch, rebuild_on, caps
 
     monkeypatch.setattr(rcfg, "CAD_REPAIR_ENABLED", True)
     monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
-    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE_TIMEOUT_S", 300.0)
+    # BELOW THE RUN'S 300 s (final review I2): the walk keeps one probe timeout + 10 s in hand
+    # for its final whole-shape probe, so a probe timeout equal to the run's would author nothing.
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE_TIMEOUT_S", 60.0)
     # THE IMPORT-TIME MAPPING WAS BUILT WITH THE FLAG OFF; the run gets the flag-on one.
     monkeypatch.setattr(rules_author_module, "MESH_OPS", mesh_ops(rebuild_face=True))
     monkeypatch.setattr(rules_author_module, "MESH_FALLBACKS", mesh_fallbacks(rebuild_face=True))

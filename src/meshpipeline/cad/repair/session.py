@@ -50,6 +50,34 @@ FAILED = "failed"
 #: ruling 1b). Every other operation is judged on the status walk alone, as before the analyzer.
 HEAL_OP = "heal_self_intersections"
 
+#: THE SHARE OF THE RUN'S REMAINING TIME ONE MESH PROBE MAY TAKE (final review I2), the
+#: `localize.face_scan_budget_s` pattern. A half, so a probe that times out - a real family on the
+#: corpus - always leaves the run as much time again for its after-checks, its final whole-shape
+#: probe and the STEP write; a whole-remainder budget let one probe spend the run.
+MESH_PROBE_FRACTION = 0.5
+
+#: Seconds the region loop keeps IN HAND beyond one probe's timeout for its final whole-shape
+#: verification (region_loop.final_reserve_s): the final scan's kernel walk and measure.
+FINAL_PROBE_SLACK_S = 10.0
+
+
+def mesh_probe_budget_s(remaining_s: float, *, final: bool = False) -> float:
+    """Seconds one mesh probe may take with `remaining_s` left before the run's deadline.
+
+    The lesser of CAD_REPAIR_MESH_PROBE_TIMEOUT_S and `MESH_PROBE_FRACTION` of what is left, floor
+    0 (a 0 skips the probe: `_with_mesh` carries forward what it knew). The run's FINAL whole-shape
+    probe is the exception: the region loop stopped authoring with a reserve in hand for exactly
+    this scan, so it gets whatever remains. A NaN reads as nothing left.
+    """
+    remaining = float(remaining_s)
+    if not remaining > 0.0:
+        return 0.0
+    if final:
+        return remaining
+    return max(0.0, min(float(rcfg.CAD_REPAIR_MESH_PROBE_TIMEOUT_S),
+                        MESH_PROBE_FRACTION * remaining))
+
+
 #: A new defect at this severity or worse means the operation made things worse. An `info`
 #: finding is a remark, not damage.
 _HELD_AGAINST = (DefectSeverity.warning, DefectSeverity.error, DefectSeverity.fatal)
@@ -97,7 +125,8 @@ def _face_names_of(shape) -> frozenset[str]:
 
 
 def _revealed(op, outcome, targets, defect_code, previous, found, *,
-              pre_op_names: Callable[[], frozenset[str]] = frozenset) -> tuple:
+              pre_op_names: Callable[[], frozenset[str]] = frozenset,
+              standing: frozenset | None = None) -> tuple:
     """The mesh findings an operation REVEALED rather than caused. APPLIES TO EVERY MESH OPERATION.
 
     gmsh reports only its FIRST failure. An operation that clears the mesh failure it aimed at
@@ -130,8 +159,12 @@ def _revealed(op, outcome, targets, defect_code, previous, found, *,
     defect list (it blocks `resolved`) and the run's final whole-shape probe still scores the part.
     A revealed finding is NOT dropped: it stays in the rescan and so in the session's list, where
     the loop must answer or escalate it, and `try_op` records it under the delta's `revealed` key.
-    Unlocated mesh findings never reach this: `_mesh_judged` already holds them neither new nor
-    cleared.
+
+    AN UNLOCATED EVIDENCE FINDING (no volume, `mesh_other`, a failure the probe could not place)
+    that newly appears is judged by the same (a) and (b), and passes (c) BY CONSTRUCTION: it names
+    no face, so it cannot sit on geometry the operation made (final review I1). (a) already means
+    the pre-op list held a mesh finding - the target - so a part that meshed and now does not is
+    never excused here; that is `new_defect`. A no-answer never reaches this (`_mesh_judged`).
     """
     if not _is_mesh_code(defect_code) or defect_code not in frozenset(
             getattr(op, "answers", ())):
@@ -142,18 +175,20 @@ def _revealed(op, outcome, targets, defect_code, previous, found, *,
         names = {ref.fingerprint, successor} - {""}
         if any(d.fingerprint in names and d.code.value == wanted for d in found):
             return ()
-    previous, found = _mesh_judged(previous, found)
+    previous, found = _mesh_judged(previous, found, standing=standing)
     before = {(d.fingerprint, d.code.value) for d in previous}
     touched = set(outcome.added) | set(outcome.mapping.moved) | set(outcome.mapping.moved.values())
     rebuilt = frozenset(outcome.rebuilt)
     candidates = [d for d in found
-                  if _is_mesh(d) and d.fingerprint and (d.fingerprint, d.code.value) not in before
-                  and d.fingerprint not in touched]
-    if any(d.fingerprint in rebuilt for d in candidates):
+                  if _is_mesh(d) and (d.fingerprint, d.code.value) not in before
+                  and (_unlocated_mesh(d)
+                       or (d.fingerprint and d.fingerprint not in touched))]
+    if any(d.fingerprint and d.fingerprint in rebuilt for d in candidates):
         # A REBUILT FACE IS THE OP'S OWN ONLY IF THE REBUILD CHANGED ITS NAME (see above).
         existed = pre_op_names()
         candidates = [d for d in candidates
-                      if d.fingerprint not in rebuilt or d.fingerprint in existed]
+                      if not d.fingerprint or d.fingerprint not in rebuilt
+                      or d.fingerprint in existed]
     return tuple(candidates)
 
 
@@ -161,21 +196,46 @@ def _is_mesh_code(code) -> bool:
     return getattr(code, "value", str(code)).startswith("mesh_")
 
 
-def _mesh_judged(previous, found) -> tuple[tuple, tuple]:
+def _standing(previous) -> frozenset:
+    """The codes of the unlocated mesh findings a defect list holds, no-answers included."""
+    return frozenset(d.code for d in previous if _unlocated_mesh(d))
+
+
+def _mesh_judged(previous, found, *, standing: frozenset | None = None) -> tuple[tuple, tuple]:
     """Both sides of the progress rule, less the mesh findings that cannot speak to one operation.
 
-    AN UNLOCATED MESH FINDING IS NEVER NEW AND NEVER CLEARED: a probe that timed out after an
-    operation says nothing about what the operation did, and one that finished after timing out
-    before says nothing either. And WHEN EITHER SIDE TIMED OUT, located mesh findings are not
-    compared at all for this operation - one side was not walked, so what appears on the other
-    is not news. Non-mesh codes are judged exactly as before; with the probe off nothing here
-    has a mesh code, so both sides come back as they went in.
+    A NO-ANSWER (`mesh_probe.NO_ANSWER_CODES`: a timeout, a dead probe) IS NEVER NEW AND NEVER
+    CLEARED: a probe that timed out after an operation says nothing about what the operation did,
+    and one that finished after timing out before says nothing either. And WHEN EITHER SIDE TIMED
+    OUT, no mesh finding is compared at all for this operation - one side was not walked, so what
+    appears on the other is not news.
+
+    AN UNLOCATED EVIDENCE FINDING IS JUDGED (final review I1). It is the mesher's answer about the
+    whole part - no volume, `mesh_other`, a failure it could not place - so one that appears after
+    an operation is `new_defect` unless the pre-op list already held that code - or held a
+    no-answer, so the before side was never walked (the either-side-timed-out rule) - or
+    `_revealed` excuses it. `standing` is those pre-op unlocated codes, read off `previous` unless
+    the caller names them: a scoped judgement's `previous` was cut to the region, which drops
+    every unlocated finding, so `try_op` reads them off the whole list first. It is still kept out
+    of `previous`: it is the part's, not any scope's, so it may not inflate the count the
+    "improved to warnings" allowance reads.
+
+    Non-mesh codes are judged exactly as before; with the probe off nothing here has a mesh code,
+    so both sides come back as they went in.
     """
     timed_out = any(d.code in mesh_probe.NO_ANSWER_CODES for d in (*previous, *found))
+    held = _standing(previous) if standing is None else frozenset(standing)
+    unwalked = bool(held & mesh_probe.NO_ANSWER_CODES)
 
-    def keep(d) -> bool:
+    def keep_before(d) -> bool:
         return not _unlocated_mesh(d) and not (timed_out and _is_mesh(d))
-    return tuple(d for d in previous if keep(d)), tuple(d for d in found if keep(d))
+
+    def keep_after(d) -> bool:
+        if timed_out and _is_mesh(d):
+            return False
+        return not (_unlocated_mesh(d) and (unwalked or d.code in held))
+    return (tuple(d for d in previous if keep_before(d)),
+            tuple(d for d in found if keep_after(d)))
 
 
 def _geometric_defect_key(defect) -> tuple | None:
@@ -441,7 +501,8 @@ class RepairSession:
         self._kept_faces: list[str] = []
         self._kept_inputs: list = []
 
-    def _default_scan(self, shape, *, face_scan: bool = True, within: Region | None = None):
+    def _default_scan(self, shape, *, face_scan: bool = True, within: Region | None = None,
+                      final: bool = False):
         """`localize_scan`, with a face-level scan only when the self-intersection heal is on.
 
         `_localize_scan` is looked up AT CALL TIME, so a test patching the module attribute is
@@ -468,9 +529,10 @@ class RepairSession:
             # part.
             found, complete = _localize_scan(shape, face_scan_s=budget, within=within,
                                              scope_diagonal_mm=self.original.diagonal_mm)
-        return self._with_mesh(found, shape, within=within), complete
+        return self._with_mesh(found, shape, within=within, final=final), complete
 
-    def _with_mesh(self, found, shape, *, within: Region | None, cap_s: float | None = None):
+    def _with_mesh(self, found, shape, *, within: Region | None, cap_s: float | None = None,
+                   final: bool = False):
         """`found`, followed by why gmsh will not mesh `shape` when CAD_REPAIR_MESH_PROBE is live.
 
         OFF RETURNS `found` ITSELF, untouched, and `mesh_probe` is never called - the flag-off
@@ -492,10 +554,12 @@ class RepairSession:
         `mesh_timeout` defect on the list, not a stopped kernel walk, so it does not lower
         `complete_scan`.
 
-        The budget is the lesser of CAD_REPAIR_MESH_PROBE_TIMEOUT_S and what is left of the run -
-        and, for a package's proof, what is left of the package (`cap_s`); a non-positive (or NaN)
-        budget skips the probe. The diagonal is the upload's, as every
-        scope in this session is.
+        The budget is `mesh_probe_budget_s` of what is left before the run's deadline - the lesser
+        of CAD_REPAIR_MESH_PROBE_TIMEOUT_S and half the time left, or for the run's `final`
+        whole-shape scan everything left - and, for a package's proof, no more than the package
+        has left (`cap_s`); a non-positive (or NaN) budget skips the probe. A session nobody gave
+        a clock (`remaining_s` None) gives the probe its own timeout. The diagonal is the
+        upload's, as every scope in this session is.
 
         ABSENCE IS NEVER CLAIMED FOR GROUND THE PROBE DID NOT WALK. A skipped probe, or one that
         came back with nothing but a `mesh_timeout`, is not evidence the part now meshes - and the
@@ -508,7 +572,8 @@ class RepairSession:
             return found
         timeout = float(rcfg.CAD_REPAIR_MESH_PROBE_TIMEOUT_S)
         remaining = float(self.remaining_s() if self.remaining_s is not None else timeout)
-        budget = min(timeout, remaining)
+        budget = (mesh_probe_budget_s(remaining, final=final) if self.remaining_s is not None
+                  else timeout)
         if cap_s is not None:
             # A PACKAGE'S PROOF IS CAPPED BY WHAT THE PACKAGE HAS LEFT (`try_package`).
             budget = min(budget, float(cap_s))
@@ -561,7 +626,8 @@ class RepairSession:
             self.complete_scan = bool(complete)
         return self._defects
 
-    def _rescan(self, *, face_scan: bool, within: Region | None = None) -> tuple:
+    def _rescan(self, *, face_scan: bool, within: Region | None = None,
+                final: bool = False) -> tuple:
         """Re-inspect the current shape for a keep/rollback judgement, and cache the result.
 
         SCAN PLACEMENT (floor-fix ruling 1). The face scan runs for the session's first scan and
@@ -584,6 +650,9 @@ class RepairSession:
         AN INJECTED SCANNER IS NEVER TOLD ABOUT THE SCOPE - it is called as `scanner(shape)`, as
         it always was - so under one its findings are filtered after the fact, the same idiom
         `localize_scan` uses for the face analyzer, which has no scoped form either.
+
+        `final` marks the run's last whole-shape verification, whose mesh probe may spend all the
+        time left rather than half of it (`mesh_probe_budget_s`).
         """
         self.scan_count += 1
         if within is not None:
@@ -593,7 +662,8 @@ class RepairSession:
             if within is not None:
                 found = scoped_to(found, within, diagonal_mm=self.original.diagonal_mm)
         else:
-            found, complete = self._default_scan(self.shape, face_scan=face_scan, within=within)
+            found, complete = self._default_scan(self.shape, face_scan=face_scan, within=within,
+                                                 final=final)
         if not face_scan:
             found = [d for d in found if not analyzer_only(d)]
         found = tuple(found)
@@ -784,6 +854,10 @@ class RepairSession:
                 apply_s=apply_s, measure_s=measure_s))
 
         previous = self.defects()
+        # THE UNLOCATED MESH EVIDENCE THE PART HELD BEFORE THE OPERATION, read off the WHOLE list
+        # before a scope cuts it: a whole-part finding still there after the op is not news,
+        # whichever scope the re-inspection walked (`_mesh_judged`).
+        standing = _standing(previous)
         # THE HEAL IS JUDGED ON THE FACE SCAN, so `crossing_remains`/`new_defect` still police it;
         # everything else on the status walk alone, against a `previous` without the analyzer's
         # findings, which is the comparison the flag-off run makes.
@@ -816,10 +890,12 @@ class RepairSession:
 
         basis = self._basis(outcome, targets)
         revealed = _revealed(op, outcome, targets, defect_code, previous, found,
-                             pre_op_names=lambda: _face_names_of(snapshot[0]))
+                             pre_op_names=lambda: _face_names_of(snapshot[0]),
+                             standing=standing)
         reason = self._progress_refusal(
             outcome, targets, defect_code, previous, found, op_name=op.name,
-            revealed=frozenset((d.fingerprint, d.code.value) for d in revealed))
+            revealed=frozenset((d.fingerprint, d.code.value) for d in revealed),
+            standing=standing)
         if reason:
             self.shape, self._defects, self.complete_scan = snapshot
             return self._record(OpVerdict(
@@ -1323,7 +1399,8 @@ class RepairSession:
         return any(d.fingerprint in names and d.code.value == wanted for d in self.defects())
 
     def _progress_refusal(self, outcome, targets, defect_code, previous, found, *,
-                           op_name: str, revealed: frozenset = frozenset()) -> str:
+                           op_name: str, revealed: frozenset = frozenset(),
+                           standing: frozenset | None = None) -> str:
         """"" if this operation made progress, otherwise why it did not.
 
         PROGRESS IS ABOUT THE DEFECT, NOT THE ENTITY. A hole patch leaves the rim edges exactly
@@ -1341,9 +1418,16 @@ class RepairSession:
             names = {ref.fingerprint, successor} - {""}
             if any(d.fingerprint in names and d.code.value in wanted for d in found):
                 return "target_remains"
+        if _is_mesh_code(defect_code) and any(
+                _unlocated_mesh(d) and d.code.value in wanted
+                and d.code not in mesh_probe.NO_ANSWER_CODES for d in found):
+            # THE MESH FAILURE PERSISTED, JUST UNPLACEABLE NOW (final review I1b). gmsh still
+            # fails with the kind aimed at, but the probe could not name a face, so the target's
+            # fingerprint is gone from the rescan - which is not the failure going.
+            return "target_remains"
 
         # Judged on what the mesh probe can actually speak to (`_mesh_judged`); identity when off.
-        previous, found = _mesh_judged(previous, found)
+        previous, found = _mesh_judged(previous, found, standing=standing)
         before_names = {(d.fingerprint, d.code.value) for d in previous}
         before_geometry = {key for d in previous if (key := _geometric_defect_key(d)) is not None}
         added = set(outcome.added)

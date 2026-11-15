@@ -469,3 +469,46 @@ def test_a_pass_or_verdict_builds_no_kernel_guards(ask, monkeypatch):
     assert author(REGION, DEFECTS, ()) is None
     assert author(REGION, DEFECTS, ()) is None
     assert [c["outcome"] for c in author.calls] == ["pass", "verdict"]
+
+
+# FINAL REVIEW M1: a defect's `entity_index` is the CURRENT shape's, so the observation's faces
+# must be read from the current shape, not the upload, once a commit has renumbered faces.
+
+
+def test_the_observation_reads_faces_from_the_shape_the_loop_last_observed(ask):
+    ask(_package_reply(), _package_reply())
+    read: list = []
+
+    def faces(shape, indices):
+        read.append(shape)
+        return _faces(shape, indices)
+
+    author = ma.model_author("upload", original=ORIGINAL, face_reader=faces)
+    author(REGION, DEFECTS, ())
+    author.observe_shape("after-a-split")
+    author(REGION, DEFECTS, ())
+    assert read == ["upload", "after-a-split"]
+
+
+def test_a_shadow_author_forwards_the_current_shape_to_its_model(ask):
+    ask(_package_reply())
+    read: list = []
+    author = ma.shadow_author("upload", original=ORIGINAL, rules=lambda *a: None,
+                              face_reader=lambda shape, idx: read.append(shape) or {})
+    author.observe_shape("current")
+    author(REGION, DEFECTS, ())
+    assert read == ["current"]
+
+
+@pytest.mark.parametrize("posture, loop, warned", [
+    ("live", "off", True), ("shadow", "off", True), ("live", "live", False),
+    ("shadow", "live", False), ("off", "off", False)])
+def test_a_model_author_without_the_region_loop_is_warned_about(caplog, posture, loop, warned):
+    # Final review M2: the author is read only by the region-scoped driver, so with the region
+    # loop off a shadow or live posture is inert - said out loud, as _warn_unreviewed_baseline.
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger=rcfg.__name__):
+        caplog.clear()
+        rcfg._warn_inert_author(posture, loop)
+    assert any("CAD_REPAIR_LLM_AUTHOR" in r.getMessage() for r in caplog.records) is warned

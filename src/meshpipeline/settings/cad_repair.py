@@ -315,10 +315,13 @@ def _mesh_probe_posture() -> str:
 #: reads as off.
 CAD_REPAIR_MESH_PROBE: str = _mesh_probe_posture()
 
-#: Seconds one mesh probe may take. The session hands it the lesser of this and what is left of
-#: the run's time, and skips the probe outright when nothing is left.
+#: Seconds one mesh probe may take. The session hands it the lesser of this and HALF of what is
+#: left before the run's deadline (session `_with_mesh`), and skips the probe outright when nothing
+#: is left; the run's final whole-shape probe gets whatever remains. Defaults BELOW
+#: CAD_REPAIR_TIMEOUT_S (final review I2): at the old 120 one probe that timed out could spend the
+#: whole run, and the after-checks and STEP write then ran past the attempt node's clock.
 CAD_REPAIR_MESH_PROBE_TIMEOUT_S: float = float(
-    optional_env("CAD_REPAIR_MESH_PROBE_TIMEOUT_S", "120.0"))
+    optional_env("CAD_REPAIR_MESH_PROBE_TIMEOUT_S", "60.0"))
 
 
 def _llm_author_posture() -> str:
@@ -383,6 +386,19 @@ def _warn_unreviewed_baseline(review: str, region_loop: str) -> None:
 
 
 _warn_unreviewed_baseline(CAD_REPAIR_PACKAGE_REVIEW, CAD_REPAIR_REGION_LOOP)
+
+
+def _warn_inert_author(author: str, region_loop: str) -> None:
+    """Say out loud when a model author is asked for but the driver it lives in is not: the author
+    is read only by the region-scoped driver, so with CAD_REPAIR_REGION_LOOP off a shadow or live
+    CAD_REPAIR_LLM_AUTHOR is silently inert (the `_warn_unreviewed_baseline` rule)."""
+    if author != "off" and region_loop != "live":
+        logger.warning("CAD_REPAIR_LLM_AUTHOR=%s but CAD_REPAIR_REGION_LOOP=%r: the model author "
+                       "is never asked - only the region-scoped driver reads it", author,
+                       region_loop)
+
+
+_warn_inert_author(CAD_REPAIR_LLM_AUTHOR, CAD_REPAIR_REGION_LOOP)
 
 
 def _warn_unreviewed_rebuild(rebuild_face: bool, review: str) -> None:

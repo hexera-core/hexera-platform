@@ -183,11 +183,15 @@ def _unreached(chosen) -> list[dict]:
 
 def run(shape, *, planner=None, budget: LoopBudget | None = None, tolerance_mm: float,
         session: RepairSession | None = None, clock=time.monotonic,
-        reserved: frozenset = frozenset()) -> RepairRun:
+        reserved: frozenset = frozenset(), deadline_s: float | None = None) -> RepairRun:
     """Repair `shape` by trying one operation at a time, and report everything that happened.
 
     `session` and `clock` are injectable so the driver's budget arithmetic can be tested without
     a kernel and without waiting.
+
+    `deadline_s` is the run's one absolute deadline on `clock` (`conservative.repair_step_file`
+    takes it at entry, before the read); given, the loop has the lesser of it and its budget's
+    `timeout_s`. None, for a direct caller, is the old behaviour (region_loop.run_regions says why).
 
     WHY THE PLANNER DECIDES WHETHER THERE IS WORK, rather than a blanket severity test on the
     defect list. A warning-only run must still reach operations such as `fix_small_edges`; a sound
@@ -203,7 +207,8 @@ def run(shape, *, planner=None, budget: LoopBudget | None = None, tolerance_mm: 
     started = clock()
 
     def remaining() -> float:
-        return limits.timeout_s - (clock() - started)
+        left = limits.timeout_s - (clock() - started)
+        return left if deadline_s is None else min(left, deadline_s - clock())
 
     # `reserved` reaches the SESSION as well as the planner: the planner will not aim at a held
     # entity, and the session will not let a whole-shape sweep remove one it never aimed at.
@@ -238,7 +243,7 @@ def run(shape, *, planner=None, budget: LoopBudget | None = None, tolerance_mm: 
         if len(work.log) >= limits.max_ops:
             stopped = _terminal(work, OP_BUDGET)
             break
-        if clock() - started >= limits.timeout_s:
+        if remaining() <= 0.0:
             # THE WHOLE LOOP, not one operation. Applied per operation, a six-operation run could
             # spend six times a job's allowance before admission has judged the original at all.
             stopped = _terminal(work, TIME_BUDGET)

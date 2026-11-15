@@ -13,7 +13,8 @@ Settings: the Plan 1 Task 8 arm-B environment (`CAD_REPAIR_ENABLED/AUTONOMOUS/FI
 FILL_NONPLANAR_HOLES/FIX_SMALL_FACES=true`, `MAX_OPS=200`, `STALL_LIMIT=50`, `TIMEOUT_S=300`,
 `REGION_LOOP=live`, `REGION_ATTEMPTS=6`, `MESH_PROBE=live`) plus `CAD_REPAIR_SPLIT_CLOSED_FACES`,
 `CAD_REPAIR_FRAGMENT_BODIES`, `CAD_REPAIR_REBUILD_FACE` all `true`; runner flags `--mesh-probe
---force-repair`. Model author and reviewer off (`llm_planner: off`, `review_enabled: false`). Files:
+--force-repair`. Model author and reviewer off (`llm_author: off`, `package_review: off` in both
+bundles' `settings.json`). Files:
 `bundle-ops/` (sealed), `rows-ops.json`, `run-ops.log`; control `bundle-clean-control/`,
 `rows-clean-control.json`, `run-clean-control.log`; census `overlap-stage-census.{json,log}`;
 `run-status.txt`.

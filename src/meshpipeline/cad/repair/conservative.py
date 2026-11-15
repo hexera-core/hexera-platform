@@ -142,6 +142,11 @@ def _is_valid(shape) -> bool:
 
 
 #: OpenCASCADE's `write.step.unit` name for each unit the pipeline resolves.
+#: Seconds of CAD_REPAIR_TIMEOUT_S the repair keeps back from its drivers for the after-checks,
+#: the final measure and the STEP write (`repair_step_file`'s deadline, final review I2) - the
+#: margin the model author already kept on its own clock.
+DEADLINE_MARGIN_S = 5.0
+
 _STEP_UNIT_NAMES = {"mm": "MM", "cm": "CM", "m": "M", "in": "INCH"}
 
 
@@ -836,9 +841,13 @@ def repair_step_file(source: Path, destination: Path, *,
     if profile is not RepairProfile.conservative:
         raise RepairUnavailable(
             f"only the conservative profile is implemented; {profile.value} needs an operator")
+    # THE RUN'S ONE ABSOLUTE DEADLINE (final review I2), taken at entry - BEFORE the STEP is read
+    # and measured - because the attempt node's `wait_for(CAD_REPAIR_TIMEOUT_S)` started its clock
+    # before this call, not after the read. Every driver, probe and model call below spends a
+    # slice of THIS, and `DEADLINE_MARGIN_S` is left for the after-checks and the STEP write, so
+    # the session no longer races the outer clock and loses the whole repair to it.
+    deadline = time.monotonic() + float(rcfg.CAD_REPAIR_TIMEOUT_S) - DEADLINE_MARGIN_S
     _occ()
-    # THE RUN'S START, the clock a model author's deadline is measured from (below).
-    started = time.monotonic()
 
     from meshpipeline.cad.repair.brep import _read_shape
     from meshpipeline.cad.repair.caps import (
@@ -887,16 +896,16 @@ def repair_step_file(source: Path, destination: Path, *,
             from meshpipeline.cad.repair.model_author import select_author
 
             # MODEL CALLS SPEND THE RUN'S OWN CLOCK - the attempt node bounds this whole function
-            # by CAD_REPAIR_TIMEOUT_S - so model work must finish 5 s before it does.
+            # by CAD_REPAIR_TIMEOUT_S - so model work must finish by the run's deadline.
             author, label = select_author(
-                before_shape, original=original, reserved=reserved,
-                deadline_s=started + float(rcfg.CAD_REPAIR_TIMEOUT_S) - 5.0)
+                before_shape, original=original, reserved=reserved, deadline_s=deadline)
             model_record = getattr(author, "report", None)
         else:
             author, label = rules_author(before_shape, original=original,
                                          reserved=reserved), LABEL
         regions_run = run_regions(
-            before_shape, tolerance_mm=tolerance, reserved=reserved, author=author)
+            before_shape, tolerance_mm=tolerance, reserved=reserved, author=author,
+            deadline_s=deadline)
         final = measure(regions_run.shape)
         result = as_repair_run(regions_run, original=original.to_dict(), final=final.to_dict(),
                                planner_label=label)
@@ -907,7 +916,7 @@ def repair_step_file(source: Path, destination: Path, *,
     else:
         planner = RepairPlanner(directives or (), reserved=reserved)
         result = run_loop(before_shape, planner=planner, tolerance_mm=tolerance,
-                          reserved=reserved)
+                          reserved=reserved, deadline_s=deadline)
         final = measure(result.shape)
 
     measurements = {

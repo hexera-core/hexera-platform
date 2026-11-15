@@ -139,7 +139,30 @@ def test_the_budget_is_what_remains_when_less_than_the_timeout(monkeypatch):
     _scan(monkeypatch, ((), True))
     probes = _probe(monkeypatch, ())
     RepairSession("shape", measurer=lambda s: MEASURE, remaining_s=lambda: 30.0).defects()
-    assert probes[0]["budget_s"] == 30.0
+    # HALF of what is left (final review I2): a probe that times out leaves the run as much again.
+    assert probes[0]["budget_s"] == 15.0
+
+
+@pytest.mark.parametrize("remaining,expected", [(300.0, 120.0), (200.0, 100.0), (100.0, 50.0)])
+def test_a_probe_is_capped_at_half_the_time_left(monkeypatch, remaining, expected):
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
+    _scan(monkeypatch, ((), True))
+    probes = _probe(monkeypatch, ())
+    session = RepairSession("shape", measurer=lambda s: MEASURE, remaining_s=lambda: remaining)
+    session.defects()
+    session._rescan(face_scan=False)
+    session._rescan(face_scan=False, within=_REGION)
+    assert [p["budget_s"] for p in probes] == [expected] * 3
+    assert all(p["budget_s"] <= 0.5 * remaining for p in probes)
+
+
+def test_the_final_whole_shape_probe_gets_everything_left(monkeypatch):
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
+    _scan(monkeypatch, ((), True))
+    probes = _probe(monkeypatch, ())
+    session = RepairSession("shape", measurer=lambda s: MEASURE, remaining_s=lambda: 70.0)
+    session._rescan(face_scan=True, final=True)
+    assert probes[-1]["budget_s"] == 70.0
 
 
 @pytest.mark.parametrize("remaining", [0.0, -5.0, float("nan")])
@@ -285,12 +308,13 @@ class _Sew:
 
 @pytest.mark.parametrize("before,after", [
     ((), (_TIMEOUT,)),                    # the probe times out after the operation
-    ((), (_NOVOL,)),                      # an unlocated whole-part verdict appears
     ((_TIMEOUT,), (_OVERLAP,)),           # it finished after timing out before: not news
     ((_OVERLAP,), (_TIMEOUT,)),           # carried forward, plus the timeout: not news
+    ((_NOVOL,), (_NOVOL,)),               # an unlocated verdict that was already there
 ])
 def test_mesh_probe_noise_does_not_roll_back_a_good_operation(monkeypatch, before, after):
-    # Finding 2, both directions.
+    # Finding 2, both directions. ONLY a no-answer (timeout, probe error) is exempt from the
+    # progress rule; an unlocated EVIDENCE code is judged (final review I1).
     monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
     _scan(monkeypatch, ((_OPENING,), True), ((), True))
     _probe(monkeypatch, before, after)
@@ -298,6 +322,78 @@ def test_mesh_probe_noise_does_not_roll_back_a_good_operation(monkeypatch, befor
     opening = session.defects()[0]
     verdict = session.try_op(_Sew(), _Sew().targets_for(opening), opening.code, tolerance_mm=0.01)
     assert verdict.kept, verdict.reason
+
+
+_OTHER = EntityDefect(code=DefectCode.mesh_other, severity=DefectSeverity.error,
+                      entity_type="shape", entity_index=0, message="unplaceable failure",
+                      measurements={"mesh_kind": "other", "gmsh_surfaces": []})
+_OVERLAP_UNPLACED = EntityDefect(code=DefectCode.mesh_overlapping_facets,
+                                 severity=DefectSeverity.error, entity_type="shape",
+                                 entity_index=0, message="overlapping facets, unplaceable",
+                                 measurements={"mesh_kind": "overlapping_facets",
+                                               "gmsh_surfaces": []})
+
+
+@pytest.mark.parametrize("before,after", [
+    ((), (_NOVOL,)),                      # a part that meshed now has no volume
+    ((), (_OTHER,)),                      # an unplaceable failure where there was none
+    ((), (_OVERLAP_UNPLACED,)),           # a located-family failure the probe could not place
+    ((_OVERLAP,), (_OVERLAP, _NOVOL)),    # a kernel op earns no reveal amnesty
+], ids=["no_volume", "other", "unplaced_overlap", "kernel_op_beside_mesh"])
+def test_a_new_unlocated_mesh_failure_rolls_back(monkeypatch, before, after):
+    # Final review I1(a): the mesh test says the operation made meshing worse; it is not kept.
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
+    _scan(monkeypatch, ((_OPENING,), True), ((), True))
+    _probe(monkeypatch, before, after)
+    session = RepairSession("shape", measurer=lambda s: MEASURE)
+    opening = session.defects()[0]
+    verdict = session.try_op(_Sew(), _Sew().targets_for(opening), opening.code, tolerance_mm=0.01)
+    assert not verdict.kept and verdict.reason == "new_defect"
+    assert session.shape == "shape"
+
+
+def test_a_scoped_judgement_after_a_whole_part_timeout_does_not_read_unlocated_as_news(
+        monkeypatch):
+    # The pre-op whole-shape probe timed out, so the before side was never walked; the region's
+    # previous list drops unlocated findings, so the timeout must reach the judgement another way.
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
+    _scan(monkeypatch, ((_OPENING,), True), ((), True))
+    _probe(monkeypatch, (_TIMEOUT,), (_OTHER,))
+    session = RepairSession("shape", measurer=lambda s: MEASURE)
+    opening = session.defects()[0]
+    verdict = session.try_op(_Sew(), _Sew().targets_for(opening), opening.code, tolerance_mm=0.01,
+                             within=_REGION)
+    assert verdict.kept, verdict.reason
+
+
+def test_a_mesh_target_that_persists_unplaceable_remains(monkeypatch):
+    # Final review I1(b): the rescan still fails with the targeted kind but cannot place it. The
+    # failure persisted; the target's fingerprint is merely gone.
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
+    _scan(monkeypatch, ((), True))
+    _probe(monkeypatch, (_OVERLAP,), (_OVERLAP_UNPLACED,))
+    session = RepairSession("shape", measurer=lambda s: MEASURE)
+    target = session.defects()[0]
+    verdict = session.try_op(_Remesh(), _Remesh().targets_for(target), target.code,
+                             tolerance_mm=0.01)
+    assert not verdict.kept and verdict.reason == "target_remains"
+    assert session.shape == "shape"
+
+
+def test_an_unlocated_failure_behind_a_cleared_mesh_target_is_revealed(monkeypatch):
+    # The pre-op list held mesh findings, the mesh op cleared its target, and the probe then met
+    # a DIFFERENT failure it could not place: revealed, not damage (it names no geometry, so it
+    # cannot be the op's own) - and it stays on the list.
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
+    _scan(monkeypatch, ((), True))
+    _probe(monkeypatch, (_THROUGH,), (_OTHER,))
+    session = RepairSession("shape", measurer=lambda s: MEASURE)
+    target = session.defects()[0]
+    op = _Fragment(rebuilt=("face:f4",))
+    verdict = session.try_op(op, op.targets_for(target), target.code, tolerance_mm=0.01)
+    assert verdict.kept, verdict.reason
+    assert verdict.delta["revealed"] == [{"fingerprint": "", "code": "mesh_other"}]
+    assert _OTHER in session.defects()
 
 
 def test_a_new_located_mesh_error_still_rolls_back_when_both_probes_finished(monkeypatch):
@@ -641,3 +737,143 @@ def test_a_non_mesh_operation_aimed_at_a_mesh_defect_gets_no_amnesty(monkeypatch
     verdict = session.try_op(op, op.targets_for(target), target.code, tolerance_mm=0.01)
     assert not verdict.kept and verdict.reason == "new_defect"
     assert "revealed" not in verdict.delta
+
+
+# ONE ABSOLUTE DEADLINE (final review I2). A probe that times out spends its whole budget, so the
+# fake below advances the clock by exactly the budget it was handed whenever it answers a timeout
+# (and answers anything else at once).
+
+
+class _Clock:
+    def __init__(self, now: float = 0.0) -> None:
+        self.now = now
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def _spending_probe(monkeypatch, clock, answers):
+    """Each call returns the next answer (the last repeats); a timeout spends its whole budget."""
+    calls: list[dict] = []
+
+    def fake(shape, **kw):
+        calls.append({**kw, "at": clock.now})
+        answer = answers[min(len(calls), len(answers)) - 1]
+        if any(d.code is DefectCode.mesh_timeout for d in answer):
+            clock.now += float(kw["budget_s"])
+        return answer
+    monkeypatch.setattr(mesh_probe, "mesh_defects", fake)
+    return calls
+
+
+def test_a_run_whose_probes_time_out_still_verifies_inside_its_deadline(monkeypatch):
+    from meshpipeline.cad.repair import deviation
+    from meshpipeline.cad.repair.loop import LoopBudget
+    from meshpipeline.cad.repair.package import PackageBudget, Predicate, TargetPackage
+
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE_TIMEOUT_S", 60.0)
+    monkeypatch.setattr(deviation, "measure_deviation",
+                        lambda *a, **kw: deviation.DeviationResult(seconds=0.0))
+    clock = _Clock()
+    deadline = 115.0                       # CAD_REPAIR_TIMEOUT_S 120, less the 5 s margin
+    _scan(monkeypatch, ((_OPENING,), True), ((), True))
+    # The first probe answers at once; every later one runs out of time.
+    probes = _spending_probe(monkeypatch, clock, ((), (_TIMEOUT,)))
+    asked: list = []
+
+    def author(region, mine, tried):
+        asked.append(clock.now)
+        if tried:
+            return None
+        opening = mine[0]
+        return TargetPackage(
+            region=region, intent="sew the opening",
+            plan=({"op": _Sew(), "targets": _Sew().targets_for(opening),
+                   "defect_code": opening.code},),
+            predicate=Predicate(cleared=frozenset({"edge:a"}), reclassified=frozenset(),
+                                unchanged=frozenset(), max_area_delta_mm2=10.0,
+                                max_volume_delta_mm3=10.0),
+            budget=PackageBudget(max_ops=1, timeout_s=100.0, model_calls=0, deviation_mm=0.0))
+
+    run = region_loop.run_regions(
+        "shape", author=author, tolerance_mm=0.01, clock=clock, deadline_s=deadline,
+        budget=LoopBudget(max_ops=10, stall_limit=3, timeout_s=120.0),
+        session=RepairSession("shape", measurer=lambda s: MEASURE, clock=clock))
+    assert [p.status for p in run.packages] == [session_mod.COMMITTED]
+    # Every probe but the last took at most HALF of what was left; the last - the final
+    # whole-shape verification - took what remained, and the run ended ON its deadline, leaving
+    # the attempt node's 5 s margin for the after-checks and the STEP write.
+    *walk, final = probes
+    assert all(p["budget_s"] <= 0.5 * (deadline - p["at"]) + 1e-9 for p in walk)
+    assert final["within"] is None and final["budget_s"] == pytest.approx(deadline - final["at"])
+    assert clock.now <= deadline + 1e-9
+    # Authoring stopped with the final probe's reserve still in hand (one timeout + 10 s).
+    assert len(asked) == 1 and deadline - final["at"] < 60.0 + 10.0
+
+
+def test_a_first_probe_that_times_out_ends_the_walk_with_time_left(monkeypatch):
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE_TIMEOUT_S", 60.0)
+    clock = _Clock(1000.0)
+    deadline = 1115.0
+    _scan(monkeypatch, ((_OPENING,), True))
+    probes = _spending_probe(monkeypatch, clock, ((_TIMEOUT,),))
+
+    def author(region, mine, tried):
+        raise AssertionError("authored with less than the final probe's reserve left")
+
+    from meshpipeline.cad.repair.loop import LoopBudget
+
+    run = region_loop.run_regions(
+        "shape", author=author, tolerance_mm=0.01, clock=clock, deadline_s=deadline,
+        budget=LoopBudget(max_ops=10, stall_limit=3, timeout_s=120.0),
+        session=RepairSession("shape", measurer=lambda s: MEASURE, clock=clock))
+    assert probes[0]["budget_s"] == 57.5          # half of 115, not the whole run
+    assert run.stopped_because != region_loop.RESOLVED
+    assert deadline - clock.now == 57.5           # as much again left for everything after
+
+
+def test_with_the_probe_off_the_walk_keeps_no_reserve(monkeypatch):
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "off")
+    assert region_loop.final_reserve_s() == 0.0
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE_TIMEOUT_S", 60.0)
+    assert region_loop.final_reserve_s() == 70.0
+
+
+def test_the_default_probe_timeout_is_below_the_run_timeout():
+    from meshpipeline.settings.inventory import default_of
+
+    probe = float(default_of("CAD_REPAIR_MESH_PROBE_TIMEOUT_S"))
+    assert probe == 60.0 and probe < float(default_of("CAD_REPAIR_TIMEOUT_S"))
+
+
+def test_the_author_is_shown_the_current_shape_after_a_commit(monkeypatch):
+    # Final review M1: the region loop tells the author the session's shape before every call.
+    from meshpipeline.cad.repair.package import PackageBudget, Predicate, TargetPackage
+
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "off")
+    other = EntityDefect(code=DefectCode.open_shell, severity=DefectSeverity.error,
+                         entity_type="edge", entity_index=2, message="free",
+                         fingerprint="edge:b", location=dict(_BOX))
+    answers = iter([((_OPENING, other), True)])
+    session = RepairSession("upload", measurer=lambda s: MEASURE,
+                            scanner=lambda s: next(answers, ((other,), True)))
+    shown: list = []
+
+    def author(region, mine, tried):
+        if shown[-1] != "upload":
+            return None
+        return TargetPackage(
+            region=region, intent="sew edge a",
+            plan=({"op": _Sew(), "targets": _Sew().targets_for(_OPENING),
+                   "defect_code": _OPENING.code},),
+            predicate=Predicate(cleared=frozenset({"edge:a"}), reclassified=frozenset(),
+                                unchanged=frozenset(), max_area_delta_mm2=10.0,
+                                max_volume_delta_mm3=10.0),
+            budget=PackageBudget(max_ops=1, timeout_s=60.0, model_calls=0, deviation_mm=0.0))
+    author.observe_shape = shown.append
+    run = region_loop.run_regions("upload", author=author, tolerance_mm=0.01, session=session)
+    assert [p.status for p in run.packages] == [session_mod.COMMITTED]
+    assert shown == ["upload", "sewn"]

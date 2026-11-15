@@ -369,21 +369,28 @@ def model_author(shape, *, original: Measure, reserved: frozenset = frozenset(),
       - `verdicts`: every accepted "the geometry is sound, the mesher is at fault" verdict.
       - `refusals`: the run-level paired-rim refusals, in the shape rules_author reports them.
       - `observe_part`: the whole part's defects, once per run (the paired-rim guard).
+      - `observe_shape`: the session's CURRENT shape, before every call (region_loop).
       - `report()`: all of the above as one JSON-safe dict, for the repair report.
 
-    `shape` IS THE UPLOAD, as for rules_author: the observation's faces and the paired-rim check
-    are read from it.
+    `shape` IS THE UPLOAD, as for rules_author, and the paired-rim check is read from it. THE
+    OBSERVATION'S FACES ARE READ FROM THE CURRENT SHAPE (`observe_shape`, final review M1): a
+    defect's `entity_index` is the current shape's, and once a split or fragment commit renumbers
+    faces, reading the upload by that index would show the model the wrong faces' type, area and
+    bbox. Until the loop says otherwise the current shape is the upload.
     """
     calls: list[dict] = []
     verdicts: list[dict] = []
     refusals: list[dict] = []
     asked: dict[int, int] = {}
-    state: dict = {"part_rims": frozenset()}
+    state: dict = {"part_rims": frozenset(), "shape": shape}
     held_codes = frozenset(reserved)
 
     def observe_part(part_defects: tuple) -> None:
         state["part_rims"] = (paired_rim_fingerprints(shape, tuple(part_defects))
                               if shape is not None else frozenset())
+
+    def observe_shape(current) -> None:
+        state["shape"] = current
 
     def _rims(defects: tuple) -> frozenset:
         # THE WHOLE PART'S RIMS, WIDENED BY THE REGION'S OWN, exactly as rules_author seeds its
@@ -427,7 +434,7 @@ def model_author(shape, *, original: Measure, reserved: frozenset = frozenset(),
         if deadline_s is not None:
             timeout = min(timeout, deadline_s - clock())
         asked[region.index] = asked.get(region.index, 0) + 1
-        obs = observe.observation_of(region, tuple(defects), tuple(attempts), shape,
+        obs = observe.observation_of(region, tuple(defects), tuple(attempts), state["shape"],
                                      original=original, face_reader=face_reader)
         user = json.dumps(obs, sort_keys=True, allow_nan=False)
         record.update(observation_bytes=len(user.encode()),
@@ -468,6 +475,7 @@ def model_author(shape, *, original: Measure, reserved: frozenset = frozenset(),
     author.verdicts = verdicts  # type: ignore[attr-defined]
     author.refusals = refusals  # type: ignore[attr-defined]
     author.observe_part = observe_part  # type: ignore[attr-defined]
+    author.observe_shape = observe_shape  # type: ignore[attr-defined]
     author.report = report  # type: ignore[attr-defined]
     author.label = LABEL  # type: ignore[attr-defined]
     return author
@@ -525,6 +533,7 @@ def shadow_author(shape, *, original: Measure, reserved: frozenset = frozenset()
     author.shadow_proposals = proposals  # type: ignore[attr-defined]
     author.refusals = getattr(driver, "refusals", [])  # type: ignore[attr-defined]
     author.observe_part = observe_part  # type: ignore[attr-defined]
+    author.observe_shape = model.observe_shape  # type: ignore[attr-defined]
     author.report = report  # type: ignore[attr-defined]
     author.label = RULES_LABEL  # type: ignore[attr-defined]
     return author
