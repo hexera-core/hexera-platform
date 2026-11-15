@@ -458,3 +458,26 @@ def test_receipt_is_unchanged_without_a_verdict():
     with_empty = R.repair_receipt_rows(_state(), _out(
         measurements={"model_author": {"label": "x", "calls": [], "verdicts": []}}))
     assert plain == with_empty
+
+
+@pytest.mark.parametrize("entry", ["junk", None, 3, {}, {"region": 1}, {"mesher_problem": []},
+                                   {"mesher_problem": None, "reason": "x"}])
+def test_a_malformed_verdict_entry_makes_no_row_and_never_raises(entry):
+    out = _out(measurements={"model_author": {"verdicts": [entry]}})
+    assert not any("judged this geometry sound" in r["label"]
+                   for r in R.repair_receipt_rows(_state(), out))
+
+
+def test_a_real_fingerprint_shape_survives_the_leak_guard():
+    fp = "face:856b02113a079741"
+    row = _find(R.repair_receipt_rows(_state(), _out(
+        measurements={"model_author": {"verdicts": [_verdict(fp)]}})), "judged this geometry sound")
+    assert fp in row["why"]
+
+
+def test_a_tripped_leak_guard_drops_the_names_and_keeps_the_explanation(monkeypatch):
+    monkeypatch.setattr(R, "_safe", lambda words: "")
+    row = _find(R.repair_receipt_rows(_state(), _out(
+        measurements={"model_author": {"verdicts": [_verdict("face:856b02113a079741")]}})),
+        "judged this geometry sound")
+    assert row["why"] == "the mesher could not handle it"

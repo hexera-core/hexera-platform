@@ -539,3 +539,49 @@ def test_deviation_against_a_known_offset_pins_direction_and_scale():
     result = measure_deviation(before, after)
     assert result.mm is not None and abs(result.mm - 1.0) < 1e-6, result
     assert result.faces and result.samples >= 4 * result.faces
+
+
+def test_a_mesher_problem_verdict_reaches_the_record_and_the_receipt(tmp_path, monkeypatch):
+    """END TO END on the real kernel: a model author (live, its call faked) answers every region
+    with a mesher-problem verdict. The verdict must land in the report's `model_author` record and
+    the receipt built from the record the attempt node forwards must render it."""
+    import re
+
+    from meshpipeline.cad.repair import model_author as ma
+    from meshpipeline.cad.repair.conservative import (
+        RepairRefused,
+        _write_step,
+        repair_step_file,
+    )
+    from meshpipeline.pipeline import repair_receipt as receipt
+    from meshpipeline.pipeline.repair_attempt import _forwarded
+
+    async def ask(system, user, *, job_id, timeout_s):
+        fingerprint = re.search(r'"fingerprint":\s*"([^"]+)"', user).group(1)
+        return {"verdict": {"mesher_problem": [fingerprint], "reason": "the notch is sound"}}
+
+    monkeypatch.setattr(ma, "_ask", ask)
+    monkeypatch.setattr(ma, "_configured", lambda: True)
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_REGION_LOOP", "live")
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_LLM_AUTHOR", "live")
+    source, destination = tmp_path / "in.step", tmp_path / "out.step"
+    _write_step(_two_notched_plates(tmp_path), source)
+
+    # A run whose only outcome is a verdict keeps nothing, so the real entry point REFUSES it
+    # ("nothing to promote"); the loop's measurements travel in the refusal, exactly as the
+    # attempt node's `_declined` carries them to the receipt.
+    with pytest.raises(RepairRefused) as refused:
+        repair_step_file(source, destination)
+    measured = dict(refused.value.measurements)
+
+    verdicts = measured["model_author"]["verdicts"]
+    assert verdicts and all(v["author"] == ma.LABEL and v["mesher_problem"] and v["reason"]
+                            for v in verdicts)
+
+    record = {"attempted": False, "outcome": "refused", "route": "conservative_repair",
+              "detail": {"measurements": _forwarded(measured)}}
+    state = {"job_id": "j", "repair_report": {"status": "repairable", "report": {
+        "summary": "s", "defects": [], "entities": []}}}
+    rows = receipt.repair_receipt_rows(state, {"repair_attempt": record})
+    row = next(r for r in rows if "judged this geometry sound" in r["label"])
+    assert verdicts[0]["mesher_problem"][0] in row["why"]

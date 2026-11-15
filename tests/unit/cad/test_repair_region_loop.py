@@ -1129,8 +1129,8 @@ def test_mesh_errors_plus_an_abandoned_fingerprint_is_unmeshable():
                      fallback="no_candidate") == "unmeshable"
 
 
-def test_mesher_problem_discharges_nothing():
-    """A verdict ends the region's attempts and clears NOTHING: the run stops for the same reason,
+def test_a_verdict_ends_the_region_and_leaves_the_defect():
+    """A verdict ends the region's attempts and the defect stays in the final list: the run stops for the same reason,
     with the same defects left, as an author that simply had nothing to propose."""
     def verdict_author(part):
         inner = _author(part)

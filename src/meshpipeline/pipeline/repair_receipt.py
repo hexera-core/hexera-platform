@@ -446,8 +446,11 @@ def _verdict_rows(record: Mapping) -> list[dict]:
         shown = ", ".join(named[:_VERDICT_NAMED_MAX])
         if len(named) > _VERDICT_NAMED_MAX:
             shown += f" and {len(named) - _VERDICT_NAMED_MAX} more"
-        rows.append(_row("The repair judged this geometry sound", "Left for the mesher",
-                         _safe(f"the mesher could not handle it at: {shown}")))
+        # ONLY THE NAMES ARE GUARDED: a tripped leak guard drops the places, never the
+        # explanation that the repair judged the geometry sound and the mesher is what failed.
+        places = _safe(shown)
+        why = "the mesher could not handle it" + (f" at: {places}" if places else "")
+        rows.append(_row("The repair judged this geometry sound", "Left for the mesher", why))
     return rows
 
 
@@ -490,7 +493,8 @@ def repair_receipt_rows(state: Mapping, out: Mapping) -> list[dict]:
     if view.get("undone"):
         # The restatement row is worth sending only beside something measured: on its own it says
         # no more than the lane's line already did, under a heading claiming a record.
-        measured = (_undone_rows(view) + _refusal_rows(view) + _shape_rows(view, undone=True))
+        measured = (_undone_rows(view) + _refusal_rows(view) + _shape_rows(view, undone=True)
+                    + _verdict_rows(view))
         rows = measured + _undone_whole_rows(view) if measured else []
     elif not view.get("attempted") and not (view.get("refusals") or ()):
         return []
