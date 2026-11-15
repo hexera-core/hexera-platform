@@ -7,8 +7,12 @@
 #             measurements are injectable so the classifier is tested without OCP.
 """A pair of solids whose boolean common has volume above `eps_mm3` interpenetrates; one whose
 bounding boxes meet but whose common is empty (or dust) touches. Pairs whose boxes are disjoint
-are neither. A file is `complete` only if every box-meeting pair was measured inside the pair cap
-and the per-file deadline; otherwise the counts are a lower bound.
+are neither. A pair the kernel could not measure is counted in `failed`, never as touching. A file
+is `complete` only if every box-meeting pair was measured successfully inside the pair cap and the
+deadline; otherwise the counts are a lower bound.
+
+The deadline is checked between pairs only: one runaway `BRepAlgoAPI_Common` cannot be
+interrupted and can overrun it.
 """
 
 from __future__ import annotations
@@ -28,9 +32,9 @@ DEADLINE_S = 120.0
 def classify_pairs(
     solids: list,
     *,
-    eps_mm3: float,
-    pair_cap: int,
-    deadline_s: float,
+    eps_mm3: float = EPS_MM3,
+    pair_cap: int = PAIR_CAP,
+    deadline_s: float = DEADLINE_S,
     boxes_meet: Callable | None = None,
     common_volume: Callable | None = None,
     clock: Callable[[], float] = time.monotonic,
@@ -38,7 +42,7 @@ def classify_pairs(
     boxes_meet = boxes_meet or _boxes_meet
     common_volume = common_volume or _common_volume
     start = clock()
-    overlapping = touching = checked = 0
+    overlapping = touching = failed = checked = 0
     complete = True
     for i in range(len(solids)):
         for j in range(i + 1, len(solids)):
@@ -49,7 +53,10 @@ def classify_pairs(
                 complete = False
                 break
             checked += 1
-            if common_volume(a, b) > eps_mm3:
+            volume = common_volume(a, b)
+            if volume is None:
+                failed += 1
+            elif volume > eps_mm3:
                 overlapping += 1
             else:
                 touching += 1
@@ -58,8 +65,9 @@ def classify_pairs(
     return {
         "overlapping": overlapping,
         "touching": touching,
+        "failed": failed,
         "pairs_checked": checked,
-        "complete": complete,
+        "complete": complete and failed == 0,
     }
 
 
@@ -82,17 +90,21 @@ def _boxes_meet(a, b) -> bool:
     return not _box(a).IsOut(_box(b))
 
 
-def _common_volume(a, b) -> float:
+def _common_volume(a, b) -> float | None:
+    """Volume of the boolean common, or None when the kernel could not compute it."""
     from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
     from OCP.BRepGProp import BRepGProp
     from OCP.GProp import GProp_GProps
 
-    op = BRepAlgoAPI_Common(a, b)
-    if not op.IsDone():
-        return 0.0
-    props = GProp_GProps()
-    BRepGProp.VolumeProperties_s(op.Shape(), props)
-    return abs(props.Mass())
+    try:
+        op = BRepAlgoAPI_Common(a, b)
+        if not op.IsDone():
+            return None
+        props = GProp_GProps()
+        BRepGProp.VolumeProperties_s(op.Shape(), props)
+        return abs(props.Mass())
+    except Exception:  # noqa: BLE001 - a kernel failure is a failed pair, never a touch
+        return None
 
 
 def read_solids(path: Path) -> list:
@@ -161,6 +173,7 @@ def main(argv: list[str] | None = None) -> int:
         "files": len(rows),
         "with_overlap": sum(1 for r in rows if r.get("overlapping", 0) > 0),
         "touch_only": sum(1 for r in done if r["overlapping"] == 0),
+        "failed_pairs": sum(r.get("failed", 0) for r in rows),
         "incomplete": sum(1 for r in rows if not r["complete"]),
         "missing": missing,
     }

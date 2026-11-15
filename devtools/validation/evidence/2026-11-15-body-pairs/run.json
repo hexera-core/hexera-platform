@@ -3,6 +3,7 @@
     "files": 23,
     "with_overlap": 11,
     "touch_only": 12,
+    "failed_pairs": 0,
     "incomplete": 3,
     "missing": []
   },
@@ -13,6 +14,7 @@
       "solids_read": 6,
       "overlapping": 2,
       "touching": 1,
+      "failed": 0,
       "pairs_checked": 3,
       "complete": true
     },
@@ -22,6 +24,7 @@
       "solids_read": 41,
       "overlapping": 5,
       "touching": 35,
+      "failed": 0,
       "pairs_checked": 40,
       "complete": false
     },
@@ -31,6 +34,7 @@
       "solids_read": 11,
       "overlapping": 0,
       "touching": 18,
+      "failed": 0,
       "pairs_checked": 18,
       "complete": true
     },
@@ -40,6 +44,7 @@
       "solids_read": 11,
       "overlapping": 1,
       "touching": 15,
+      "failed": 0,
       "pairs_checked": 16,
       "complete": true
     },
@@ -49,6 +54,7 @@
       "solids_read": 11,
       "overlapping": 7,
       "touching": 9,
+      "failed": 0,
       "pairs_checked": 16,
       "complete": true
     },
@@ -58,6 +64,7 @@
       "solids_read": 11,
       "overlapping": 0,
       "touching": 18,
+      "failed": 0,
       "pairs_checked": 18,
       "complete": true
     },
@@ -67,6 +74,7 @@
       "solids_read": 11,
       "overlapping": 3,
       "touching": 15,
+      "failed": 0,
       "pairs_checked": 18,
       "complete": true
     },
@@ -76,6 +84,7 @@
       "solids_read": 11,
       "overlapping": 0,
       "touching": 18,
+      "failed": 0,
       "pairs_checked": 18,
       "complete": true
     },
@@ -85,6 +94,7 @@
       "solids_read": 11,
       "overlapping": 0,
       "touching": 18,
+      "failed": 0,
       "pairs_checked": 18,
       "complete": true
     },
@@ -94,6 +104,7 @@
       "solids_read": 11,
       "overlapping": 0,
       "touching": 18,
+      "failed": 0,
       "pairs_checked": 18,
       "complete": true
     },
@@ -103,6 +114,7 @@
       "solids_read": 11,
       "overlapping": 3,
       "touching": 15,
+      "failed": 0,
       "pairs_checked": 18,
       "complete": true
     },
@@ -112,6 +124,7 @@
       "solids_read": 11,
       "overlapping": 0,
       "touching": 18,
+      "failed": 0,
       "pairs_checked": 18,
       "complete": true
     },
@@ -121,6 +134,7 @@
       "solids_read": 11,
       "overlapping": 1,
       "touching": 15,
+      "failed": 0,
       "pairs_checked": 16,
       "complete": true
     },
@@ -130,6 +144,7 @@
       "solids_read": 11,
       "overlapping": 0,
       "touching": 18,
+      "failed": 0,
       "pairs_checked": 18,
       "complete": true
     },
@@ -139,6 +154,7 @@
       "solids_read": 32,
       "overlapping": 3,
       "touching": 37,
+      "failed": 0,
       "pairs_checked": 40,
       "complete": false
     },
@@ -148,6 +164,7 @@
       "solids_read": 5,
       "overlapping": 0,
       "touching": 4,
+      "failed": 0,
       "pairs_checked": 4,
       "complete": true
     },
@@ -157,6 +174,7 @@
       "solids_read": 5,
       "overlapping": 1,
       "touching": 2,
+      "failed": 0,
       "pairs_checked": 3,
       "complete": true
     },
@@ -166,6 +184,7 @@
       "solids_read": 178,
       "overlapping": 3,
       "touching": 7,
+      "failed": 0,
       "pairs_checked": 10,
       "complete": true
     },
@@ -175,6 +194,7 @@
       "solids_read": 35,
       "overlapping": 15,
       "touching": 25,
+      "failed": 0,
       "pairs_checked": 40,
       "complete": false
     },
@@ -184,6 +204,7 @@
       "solids_read": 2,
       "overlapping": 0,
       "touching": 1,
+      "failed": 0,
       "pairs_checked": 1,
       "complete": true
     },
@@ -193,6 +214,7 @@
       "solids_read": 2,
       "overlapping": 0,
       "touching": 1,
+      "failed": 0,
       "pairs_checked": 1,
       "complete": true
     },
@@ -202,6 +224,7 @@
       "solids_read": 2,
       "overlapping": 0,
       "touching": 1,
+      "failed": 0,
       "pairs_checked": 1,
       "complete": true
     },
@@ -211,6 +234,7 @@
       "solids_read": 4,
       "overlapping": 0,
       "touching": 0,
+      "failed": 0,
       "pairs_checked": 0,
       "complete": true
     }
