@@ -384,6 +384,26 @@ def _shape_rows(record: Mapping, *, undone: bool = False) -> list[dict]:
     return rows
 
 
+def _deviation_rows(record: Mapping) -> list[dict]:
+    """How far the repaired surface moved from the upload, in millimetres, when it was measured.
+
+    The largest `deviation_mm` over the packages that kept their repair. SILENT WHEN ABSENT: the
+    measurement exists only under the mesh-probe posture and is None when it failed, and a row
+    claiming "0 mm" for an unmeasured part would be the guess this receipt never makes. It is a
+    measurement shown, not a limit: nothing here says it passed or failed.
+    """
+    measured = record.get("measurements")
+    regions = measured.get("regions") if isinstance(measured, Mapping) else None
+    packages = regions.get("packages") if isinstance(regions, Mapping) else None
+    found = [n for p in (packages or ())
+             if isinstance(p, Mapping) and p.get("status") == "committed"
+             and (n := _num(p.get("deviation_mm"))) is not None and n >= 0]
+    if not found:
+        return []
+    return [_row("Repaired surface moved", f"up to {max(found):.2g} mm",
+                 "measured from the repaired surface back to your original")]
+
+
 def _volume_was_compared(before: Mapping, after: Mapping) -> bool:
     """Whether `cad/repair/caps.cumulative_refusal` actually judged the volume, by its own rule:
     both sides must have an inside, and a body must not have closed during the run."""
@@ -429,7 +449,7 @@ def repair_receipt_rows(state: Mapping, out: Mapping) -> list[dict]:
         return []
     else:
         rows = (_kept_rows(view) + _undone_rows(view) + _refusal_rows(view)
-                + _shape_rows(view) + _outcome_row(view))
+                + _shape_rows(view) + _deviation_rows(view) + _outcome_row(view))
     return [r for r in rows if r["label"]]
 
 

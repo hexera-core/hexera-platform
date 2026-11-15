@@ -505,3 +505,22 @@ def test_a_file_no_operation_answers_ends_unmeshable_not_resolved(monkeypatch):
     assert DefectCode.mesh_overlapping_facets in codes, codes
     assert not codes & {DefectCode.mesh_timeout, DefectCode.mesh_probe_error}, codes
     assert run.stopped_because == UNMESHABLE, run.stopped_because
+
+
+def test_a_committed_fill_records_a_plausible_deviation(tmp_path, _filling_on, monkeypatch):
+    """Under the mesh-probe posture a committed fill carries `deviation_mm`: measured on the real
+    kernel, positive (a patch is new surface off the original) and far under the part."""
+    from tests.cad_fixtures import write_open_shell_step
+
+    from meshpipeline.cad.repair.brep import _read_shape
+    from meshpipeline.cad.repair.localize import _diagonal
+
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE_TIMEOUT_S", 60.0)
+    shape = _read_shape(write_open_shell_step(tmp_path / "holed.step"))
+    run = _region_run(shape)
+
+    measured = [p.deviation_mm for p in run.packages if p.committed]
+    assert measured and all(d is not None for d in measured), run.to_dict()["packages"]
+    assert max(measured) > 0.0
+    assert max(measured) < _diagonal(shape)

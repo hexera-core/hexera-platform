@@ -283,6 +283,12 @@ class PackageVerdict:
     #: Without this field the region loop's own measures appeared in no timing at all, so the
     #: instrumentation built to make that cost visible could not see the cost this driver added.
     measure_s: float = 0.0
+    #: MEASURED EVIDENCE, NEVER A GATE: the sampled largest distance in mm from the surface this
+    #: package changed to the shape it started from (`cad/repair/deviation.py`). None - and absent
+    #: from `to_dict` - when it was not measured: the mesh probe posture is off, the package did
+    #: not commit, or the measurement failed or ran out of its budget. A reviewer reads it; no
+    #: code branches on it.
+    deviation_mm: float | None = None
 
     @property
     def committed(self) -> bool:
@@ -293,7 +299,9 @@ class PackageVerdict:
                 "reason": self.reason, "verdicts": [v.to_dict() for v in self.verdicts],
                 "reclassified": sorted(self.reclassified),
                 "scan_s": self.scan_s, "apply_s": self.apply_s,
-                "measure_s": self.measure_s}
+                "measure_s": self.measure_s,
+                **({"deviation_mm": self.deviation_mm}
+                   if self.deviation_mm is not None else {})}
 
 
 def _measure_total(own_s: float, verdicts: Iterable[OpVerdict]) -> float:
@@ -368,6 +376,10 @@ class RepairSession:
         #: The package-level truth, beside the per-operation `log`. A reader of the log alone
         #: cannot tell a kept operation that shipped from one discarded with its package.
         self.packages: list[PackageVerdict] = []
+        #: Fingerprints of the faces every KEPT operation reported adding or rebuilding, in the
+        #: order kept - what `try_package` hands `deviation.surface_deviation_mm` as the faces to
+        #: measure. Appended only on a keep, read only by a committing package.
+        self._kept_faces: list[str] = []
 
     def _default_scan(self, shape, *, face_scan: bool = True, within: Region | None = None):
         """`localize_scan`, with a face-level scan only when the self-intersection heal is on.
@@ -779,6 +791,7 @@ class RepairSession:
                 for d in carried if (d.fingerprint, d.code) not in present))
 
         self.accounting = self.accounting.plus(outcome.evidence)
+        self._kept_faces.extend((*outcome.added, *outcome.rebuilt))
         return self._record(OpVerdict(
             op=op.name, targets=fingerprints, defect_code=code, status=KEPT, basis=basis,
             evidence=dict(outcome.evidence), delta=delta,
@@ -891,6 +904,7 @@ class RepairSession:
         # MORE than a scoped one - the conservative direction for every check `evaluate` makes.
         whole = _judged_whole(package)
         scope = None if whole else region
+        self._kept_faces = []
 
         for item in package.plan:
             spent = self.clock() - started
@@ -993,7 +1007,24 @@ class RepairSession:
         return self._record_package(PackageVerdict(
             region_index=region.index, status=COMMITTED, verdicts=tuple(verdicts),
             reclassified=reclassified, scan_s=scan_s, apply_s=apply_s,
-            measure_s=_measure_total(measure_s, verdicts)))
+            measure_s=_measure_total(measure_s, verdicts),
+            deviation_mm=self._deviation_evidence(snapshot[0])))
+
+    def _deviation_evidence(self, before_shape) -> float | None:
+        """How far the committed shape moved from `before_shape`, or None.
+
+        THE SAME POSTURE AS THE MESH PROBE, no new flag: measured only when CAD_REPAIR_MESH_PROBE
+        is live, so flag-off runs make no measurement and carry no new key. EVIDENCE, NOT A GATE -
+        the result is recorded on the verdict and nothing here branches on it; a None (failure,
+        empty sample, spent 10 s budget) is recorded as absent, never invented. Looked up on the
+        module at call time so a test can patch it.
+        """
+        if rcfg.CAD_REPAIR_MESH_PROBE != "live":
+            return None
+        from meshpipeline.cad.repair import deviation
+
+        return deviation.surface_deviation_mm(
+            before_shape, self.shape, tuple(dict.fromkeys(self._kept_faces)), budget_s=10.0)
 
     @staticmethod
     def _package_refusal(package: TargetPackage) -> str:
