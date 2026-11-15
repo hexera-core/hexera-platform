@@ -80,6 +80,13 @@ CAD_REPAIR_FILL_NONPLANAR_HOLES: bool = bool_env("CAD_REPAIR_FILL_NONPLANAR_HOLE
 #: it on.
 CAD_REPAIR_HEAL_SELF_INTERSECTIONS: bool = bool_env("CAD_REPAIR_HEAL_SELF_INTERSECTIONS", "false")
 
+#: Split a CLOSED face - a full cylinder, sphere or torus carrying a single seam - in two
+#: (`operations.SplitClosedFaces`), the standard answer when gmsh refuses a periodic surface. It
+#: adds faces and moves no surface or volume, but it still rewrites the topology of the customer's
+#: file, so it is off by default and a deployment opts in. Off keeps the operation out of the
+#: catalogue and out of the rules baseline's MESH_OPS entirely.
+CAD_REPAIR_SPLIT_CLOSED_FACES: bool = bool_env("CAD_REPAIR_SPLIT_CLOSED_FACES", "false")
+
 #: Sweep away SLIVER FACES - the sub-tolerance strips and spots a Boolean that just missed leaves
 #: behind. Separate from CAD_REPAIR_ALLOW_FACE_REMOVAL on purpose: that knob waives the
 #: face-removal check for EVERY operation in a run, while this one consents to a single bounded

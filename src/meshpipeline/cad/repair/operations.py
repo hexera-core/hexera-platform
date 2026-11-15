@@ -302,6 +302,184 @@ class FixSmallEdges:
                                    "precision_mm": float(tolerance_mm)})
 
 
+def _closed_directions(face) -> tuple[bool, bool]:
+    """Is this face's surface closed in U, and in V? The periodic surface gmsh refuses is one
+    closed in at least one direction (a full cylinder, cone, sphere or torus with one seam)."""
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.TopoDS import TopoDS
+
+    surface = BRepAdaptor_Surface(TopoDS.Face_s(face))
+    return bool(surface.IsUClosed()), bool(surface.IsVClosed())
+
+
+def _owner_of(shape, face):
+    """The SOLID that owns `face` in `shape` - or its shell when the shape has no solid - or None.
+
+    The body is what the divider must be handed: splitting a closed face also splits the edges it
+    shares with its neighbours (a cylinder's two rim circles), so the neighbours must be rebuilt
+    with it or the part comes back with two unshared rims.
+    """
+    from OCP.TopAbs import TopAbs_FACE, TopAbs_SHELL, TopAbs_SOLID
+    from OCP.TopExp import TopExp
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+
+    for kind in (TopAbs_SOLID, TopAbs_SHELL):
+        ancestors = TopTools_IndexedDataMapOfShapeListOfShape()
+        TopExp.MapShapesAndAncestors_s(shape, TopAbs_FACE, kind, ancestors)
+        if not ancestors.Contains(face):
+            continue
+        owners = ancestors.FindFromKey(face)
+        if owners.Size() > 0:
+            return owners.First()
+    return None
+
+
+def _face_count(shape) -> int:
+    from OCP.TopAbs import TopAbs_FACE
+
+    from meshpipeline.cad.repair.localize import _indexed
+
+    return int(_indexed(shape, TopAbs_FACE).Extent())
+
+
+def _divide_closed(owner, *, tolerance_mm: float):
+    """Split every closed face of `owner` in two. Returns `(result, the divider's ReShape context)`.
+
+    ONE SPLIT POINT: two faces per closed face is all gmsh needs (each half has a real boundary,
+    no seam), and every further split is topology nobody asked for.
+    """
+    from OCP.ShapeUpgrade import ShapeUpgrade_ShapeDivideClosed
+
+    divider = ShapeUpgrade_ShapeDivideClosed(owner)
+    divider.SetNbSplitPoints(1)
+    divider.SetPrecision(tolerance_mm)
+    divider.SetMaxTolerance(tolerance_mm)
+    divider.Perform()
+    return divider.Result(), divider.GetContext()
+
+
+def _diagonal_of(shape) -> float:
+    from meshpipeline.cad.repair.localize import _diagonal
+
+    return float(_diagonal(shape))
+
+
+def _split_fingerprints(owner, divided, *, diagonal_mm: float) -> tuple[str, ...]:
+    """The faces of `divided` that `owner` did not have - the halves the split created - by name.
+
+    Named at the WHOLE PART's quantum (`diagonal_mm`), which is the quantum the next scan names
+    them by; a name computed at the body's own would denote nothing the session can find.
+    """
+    from OCP.TopAbs import TopAbs_FACE
+
+    from meshpipeline.cad.repair.localize import _indexed
+
+    quantum = quantum_for(diagonal_mm)
+    before_map = _indexed(owner, TopAbs_FACE)
+    before = {fingerprint_of("face", box_of(before_map.FindKey(i)), quantum=quantum)
+              for i in range(1, before_map.Extent() + 1)}
+    after_map = _indexed(divided, TopAbs_FACE)
+    added: list[str] = []
+    for i in range(1, after_map.Extent() + 1):
+        name = fingerprint_of("face", box_of(after_map.FindKey(i)), quantum=quantum)
+        if name and name not in before and name not in added:
+            added.append(name)
+    return tuple(added)
+
+
+class SplitClosedFaces:
+    """Split a CLOSED (periodic) face in two, so gmsh has a bounded patch to mesh instead of a
+    surface that wraps onto itself.
+
+    WHAT IT ANSWERS: `mesh_periodic_surface` - gmsh's 2D stage refusing a full cylinder, cone,
+    sphere or torus that carries a single seam. Splitting such a face at one parameter value is the
+    standard CAE fix: each half has an ordinary four-sided boundary, and nothing about the surface
+    itself changes.
+
+    WHAT IT MAY TOUCH: the target face's OWNING BODY (its solid, or its shell when the part has no
+    solid). Not the face alone: splitting the face also splits the edges it shares with its
+    neighbours (a cylinder's rim circles), so a lone split face spliced back would sit beside caps
+    still bounded by the unsplit circles - two unshared rims. `ShapeUpgrade_ShapeDivideClosed` is
+    run on the body and its result replaces the body whole. A consequence stated rather than
+    hidden: every other closed face of that body is split too, and `faces_added` counts them all.
+
+    WHAT IT DECLARES: `faces_added`, the exact face-count delta of the body (one per face split),
+    and AREA_DELTA = VOLUME_DELTA = 0.0 - explicitly, because a split moves no surface and no
+    volume; any kernel noise is the cumulative cap's to judge at its existing thresholds.
+
+    WHY EACH DECLINE EXISTS, in the order they are checked:
+      splitting_disabled - CAD_REPAIR_SPLIT_CLOSED_FACES, the consent, is absent.
+      no face was named  - nothing to aim at.
+      one_face_only      - it is aimed at one located failure; two targets are two packages.
+      not_resolved       - the target index names no face in this shape (stale ref).
+      not_periodic       - the face is closed in neither U nor V: there is no seam to split away,
+                           and a split would be topology for its own sake.
+      no_owner           - the face belongs to no solid or shell, so there is no body to re-stitch.
+      nothing_split      - the divider ran and the body has no more faces than before: a no-op is
+                           a decline, not a kept operation.
+    """
+
+    name = "split_closed_faces"
+    answers = frozenset({DefectCode.mesh_periodic_surface})
+    scope = 1
+
+    def targets_for(self, defect) -> tuple[EntityRef, ...]:
+        import meshpipeline.settings.cad_repair as rcfg
+
+        if not rcfg.CAD_REPAIR_SPLIT_CLOSED_FACES:
+            return ()
+        if getattr(defect, "code", None) not in self.answers:
+            return ()
+        if defect.entity_type != "face" or not getattr(defect, "fingerprint", ""):
+            return ()
+        return (EntityRef(entity_type="face", fingerprint=defect.fingerprint,
+                          entity_index=int(defect.entity_index),
+                          ambiguous=bool(getattr(defect, "ambiguous", False))),)
+
+    def apply(self, shape, targets: tuple[EntityRef, ...], *,
+              tolerance_mm: float) -> OpOutcome:
+        import meshpipeline.settings.cad_repair as rcfg
+
+        def declined(reason: str, **measured) -> OpOutcome:
+            # NO DECLARATION ON A DECLINE: the shape comes back unchanged, and a declared delta on
+            # it would reach the run's accounting before the session reads `declined`.
+            return OpOutcome(shape=shape, evidence={"declined": reason,
+                                                    "faces_targeted": len(targets), **measured})
+
+        if not rcfg.CAD_REPAIR_SPLIT_CLOSED_FACES:
+            return declined("splitting_disabled (CAD_REPAIR_SPLIT_CLOSED_FACES)")
+        if not targets:
+            return declined("no face was named")
+        if len(targets) > 1:
+            return declined(f"one_face_only ({len(targets)} targets named)")
+        ref = targets[0]
+        face = sub_shape(shape, "face", ref.entity_index) if ref.entity_type == "face" else None
+        if face is None:
+            return declined("not_resolved (the target face is not in this shape)")
+        u_closed, v_closed = _closed_directions(face)
+        closed = "uv" if u_closed and v_closed else "u" if u_closed else "v" if v_closed else ""
+        if not closed:
+            return declined("not_periodic (the face is closed in neither U nor V)")
+        owner = _owner_of(shape, face)
+        if owner is None:
+            return declined("no_owner (the face belongs to no solid or shell)", closed=closed)
+
+        divided, context = _divide_closed(owner, tolerance_mm=tolerance_mm)
+        added = _face_count(divided) - _face_count(owner)
+        if added <= 0:
+            return declined("nothing_split (the divider split no closed face)", closed=closed)
+
+        # THE BODY IS REPLACED WHOLE (see the class docstring); every other body is untouched.
+        spliced, _ = splice(shape, [(owner, divided)])
+        diagonal = _diagonal_of(shape)
+        mapping = mapping_from_context(context, targets, shape_before=shape, diagonal_mm=diagonal)
+        return OpOutcome(shape=spliced, mapping=mapping,
+                         added=_split_fingerprints(owner, divided, diagonal_mm=diagonal),
+                         evidence={"faces_added": int(added), AREA_DELTA: 0.0, VOLUME_DELTA: 0.0,
+                                   "faces_targeted": 1, "closed": closed,
+                                   "precision_mm": float(tolerance_mm)})
+
+
 class FixFaceBoundary:
     """Repair one face's own wires: ordering, pcurves, same-parameter, missing seams.
 
@@ -1765,19 +1943,33 @@ class FixShapeGlobal:
                                    "modes": "solid,free_shell,free_face,same_parameter"})
 
 
-#: Every operation the loop may run, narrowest first. The ORDER here is documentation - the
-#: planner sorts on `scope`, so adding one in the wrong place changes nothing but a reader's
-#: expectations.
-OPERATIONS: tuple[RepairOp, ...] = (
-    FixSmallEdges(),
-    FixFaceBoundary(),
-    FixSmallFaces(),
-    SewFaces(),
-    FillPlanarHole(),
-    FillNonplanarHole(),
-    HealSelfIntersections(),
-    FixShapeGlobal(),
-)
+def catalogue(*, split_closed_faces: bool | None = None) -> tuple[RepairOp, ...]:
+    """Every operation the loop may run, narrowest first.
+
+    `split_closed_faces` ENTERS ONLY WITH ITS CONSENT (CAD_REPAIR_SPLIT_CLOSED_FACES, read when not
+    told): flag off, the catalogue is today's, byte for byte. The ORDER here is documentation - the
+    planner sorts on `scope`, so adding one in the wrong place changes nothing but a reader's
+    expectations.
+    """
+    if split_closed_faces is None:
+        import meshpipeline.settings.cad_repair as rcfg
+
+        split_closed_faces = bool(rcfg.CAD_REPAIR_SPLIT_CLOSED_FACES)
+    return (
+        FixSmallEdges(),
+        *((SplitClosedFaces(),) if split_closed_faces else ()),
+        FixFaceBoundary(),
+        FixSmallFaces(),
+        SewFaces(),
+        FillPlanarHole(),
+        FillNonplanarHole(),
+        HealSelfIntersections(),
+        FixShapeGlobal(),
+    )
+
+
+#: The catalogue as the deployment's flags read at import - what the planners default to.
+OPERATIONS: tuple[RepairOp, ...] = catalogue()
 
 #: Names of the operations that FILL a hole. Every one of them is held back by the through-hole
 #: (paired rim) guard, so a new fill operation joins this set or it runs unguarded.

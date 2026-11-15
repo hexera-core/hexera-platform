@@ -401,6 +401,8 @@ INVENTORY: list[Group] = [
                help="close a hole whose rim is not flat with a patch that follows the surrounding curvature; invents geometry the customer never drew, so it needs its own consent beyond the planar fill"),
         EnvVar("CAD_REPAIR_HEAL_SELF_INTERSECTIONS", "false", kind="bool", exposure="internal",
                help="heal self-intersections by rebuilding only the faces the kernel's analysis names, leaving the rest of the shape untouched"),
+        EnvVar("CAD_REPAIR_SPLIT_CLOSED_FACES", "false", kind="bool", exposure="internal",
+               help="split a closed (periodic) face - a full cylinder, sphere or torus with one seam - in two so gmsh can mesh it; adds faces, moves no surface or volume"),
         EnvVar("CAD_REPAIR_FIX_SMALL_FACES", "false", kind="bool", exposure="internal",
                help="sweep away sliver faces left by a Boolean that just missed; every removal is re-measured, declared and refused if undeclared - narrower consent than CAD_REPAIR_ALLOW_FACE_REMOVAL, which waives the face check run-wide"),
         EnvVar("CAD_REPAIR_SLIVER_PRECISION_RATIO", "0.001", kind="float", exposure="internal",
