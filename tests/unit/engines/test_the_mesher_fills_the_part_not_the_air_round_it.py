@@ -92,7 +92,10 @@ def test_a_shell_cuts_its_ports_where_they_already_are():
     from meshpipeline.engines.cfmesh_conjugate import mouths as MO
 
     src = inspect.getsource(D)
-    assert "MO.shell_stubs(rec[\"ports\"])" in src
+    # The call gained the record's `open_rims` as a second argument: `clear_ahead` alone is one
+    # ray down the mouth's normal and reads False for a mouth that opens to air across a gap, so
+    # a sealed rim at the mouth is what makes it safe to refuse a run on. See mouths.sealed_rows.
+    assert "MO.shell_stubs(rec[\"ports\"], rec.get(\"open_rims\"))" in src
     assert "MO.stubs_for(rec[\"ports\"], lo, hi)" in src, "the box path must still exist"
     stubs = MO.shell_stubs([{"centroid_m": (0.1, 0.05, 0.04), "normal": (0, 1, 0),
                              "diameter_m": 0.0114, "passage": 0}])

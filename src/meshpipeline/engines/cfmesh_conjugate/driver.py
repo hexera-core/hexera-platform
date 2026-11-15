@@ -51,8 +51,8 @@ SEVERED_COOLANT = "conjugate_coolant_severed"
 #: SEVERED_COOLANT has one: nothing about the budget, the resolution or the machine changes it, and
 #: it is a different defect from a severed circuit. There the two ends are real and do not connect;
 #: here one of the ends is not an end. It is also the one of the two that the CUSTOMER can fix
-#: without touching the CAD, by declaring the port on a mouth that opens to the outside. See
-#: `mouths.sealed_declared` for the two runs that paid for it.
+#: without touching the CAD, when the part has another mouth on that passage to move it to. See
+#: `mouths.sealed_rows` for the two runs that paid for it and for the two signals it needs.
 SEALED_PORT = "conjugate_port_sealed"
 
 #: The gate a refusal before meshing stands in for. `manifest_valid` is the one that already
@@ -744,7 +744,10 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         # surface, so each is a patch cut where it is - `mouths.shell_stubs`, written against this
         # exact assembly and until now called by nothing. On a box the mouths are inside it and
         # have to reach a face first, which is what `stubs_for` does.
-        stubs, mouth_said = ((MO.shell_stubs(rec["ports"]), [])
+        # `open_rims` is the second signal `sealed_rows` needs. Without it every mouth reads
+        # unsealed and no port can ever be refused for sitting on one, which is the safe
+        # direction and the useless one.
+        stubs, mouth_said = ((MO.shell_stubs(rec["ports"], rec.get("open_rims")), [])
                              if shell else MO.stubs_for(rec["ports"], lo, hi))
         for line in mouth_said:
             logger.info("conjugate: %s - job_id=%s", line, job_id)
@@ -762,11 +765,20 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
             _named, _named_why = MO.declared_for(stubs, _declared)
             if _named_why:
                 logger.info("conjugate: %s - job_id=%s", _named_why, job_id)
-            # ASKED HERE, where the binding of names to mouths has just been done and the mouths'
-            # own measurements are in hand. Acted on below, beside `ports_on_one_passage`, because
-            # that is the path a refusal before meshing already takes.
-            sealed_said = MO.sealed_declared(stubs, _named)
+            elif _asked_ports and _named is None:
+                # THE SILENT PATH, which is the one that cost a run. `declared_for` returns
+                # (None, "") when the declaration names roles but carries no position to bind
+                # them by, so nothing was logged and `port_rows` quietly fell through to its own
+                # defaults - naming mouth 0 the inlet, which on this part is the blind one.
+                logger.info("conjugate: ports were declared at intake but none carries a position "
+                            "to bind it to a mouth, so this engine's own names are used - "
+                            "job_id=%s", job_id)
             port_patches, ports_said = MO.port_rows(stubs, named=_named, roles=_asked_ports)
+            # ASKED OF THE ROWS ABOUT TO BE CUT, not of the declaration they were built from.
+            # Every path that can name an end - the customer's declaration, this module's
+            # defaults, and anything added later - ends in `port_patches`, so asking here is the
+            # only place that covers all of them. Acted on below, beside `ports_on_one_passage`.
+            sealed_said = MO.sealed_rows(stubs, port_patches)
             logger.info("conjugate: %d stub(s) added %.4f mm3 to the coolant; %s - job_id=%s",
                         len(stubs), added * 1e9, ports_said, job_id)
             # the coolant is a different shape now, so what the split is checked against moves
@@ -799,7 +811,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     # end", which the customer can fix at intake by naming a mouth that opens to the outside. The
     # two are complementary rather than alternatives - on job e8256476 the declared inlet and the
     # declared outlet_2 are both on passage 0, so the connectivity check passes and only this one
-    # fires. `mouths.sealed_declared` carries both runs it is written against.
+    # fires. `mouths.sealed_rows` carries both runs it is written against.
     if sealed_said:
         logger.info("conjugate: refusing to start - %s - job_id=%s", sealed_said, job_id)
         _say_why_before_meshing(ws, sealed_said, job_id=job_id, priced_out=False, geometry=True)

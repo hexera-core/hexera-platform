@@ -70,17 +70,40 @@ class Stub:
     radius: float                   # metres, from the mouth's own flow area
     length: float                   # metres, mouth to just past the face
     volume: float                   # metres^3 it adds to the coolant
-    #: Whether anything of the assembly lies straight ahead of the mouth, from the surface
-    #: record's own `clear_ahead`. False means it opens into another part rather than into air, so
-    #: no coolant reaches it and it is not a port in EITHER direction. `stubs_for`, the box path,
-    #: has refused such a mouth since it was written, and `cad/scout._name_openings` was corrected
-    #: the same way on 2026-11-13 and 2026-11-14; the SHELL path, which every real customer part
-    #: takes, read the flag at neither end.
+    #: Whether the surface reading found NOTHING of the assembly straight ahead of this mouth,
+    #: from the record's own `clear_ahead`. Named for what it measures and not for what it is
+    #: taken to mean: `cad/fluid_volume._port` sets it False when a single ray along the mouth's
+    #: normal meets any solid or loose face before leaving the assembly's own bounding box. A
+    #: mouth that opens to real air still reads False whenever anything of the same assembly sits
+    #: further along inside that box - the producer's own comment names a bracket and a cross-over
+    #: tube - and such a mouth WOULD mesh and WOULD carry faces. So this is one signal, not a
+    #: verdict: `fluid_volume_check` prints it as a question for the picture and scores it 0.5,
+    #: and `cad/scout._name_openings` was deliberately moved OFF it for role decisions on
+    #: 2026-11-13 and 2026-11-14 because it does not mean the same thing at each of the three
+    #: producers that set it.
     #:
     #: True when nobody measured it, which neither promotes nor demotes a mouth: an older record
-    #: or another extractor must not start refusing parts that were fine, so the flag has to be
-    #: explicitly False to mean anything.
-    reaches_air: bool = True
+    #: or another extractor must not start refusing parts that were fine. An explicit null counts
+    #: as unmeasured too, which `.get(key, True)` alone would not give.
+    ahead_is_clear: bool = True
+    #: Whether the surface reading ALSO found an open rim at this mouth that it marked sealed.
+    #: This is the second signal, and the one that makes the first safe to refuse a run on: a
+    #: mouth with air in front of it and a bracket beyond has `ahead_is_clear` False and no sealed
+    #: rim, while the customer cold plate's blind 11.8 mm lid port has both - its rim of 63 edges,
+    #: 35.941 mm long, sits 0.4998 mm along its own normal and is marked `"sealed": true`.
+    sealed_rim: bool = False
+
+    @property
+    def is_sealed(self) -> bool:
+        """BOTH SIGNALS, because either alone is wrong in a way that costs something real.
+
+        `ahead_is_clear` False alone would refuse a part whose mouth opens to air across a gap
+        from a bracket, which meshes and delivers. A sealed rim alone says the coolant surface
+        closes there without saying the metal does. Together they are the measured shape of the
+        one case this is for: a mouth capped by its own surface with the rest of the assembly
+        immediately beyond it.
+        """
+        return (not self.ahead_is_clear) and self.sealed_rim
 
     @property
     def flush(self) -> bool:
@@ -413,7 +436,7 @@ def declared_for(stubs: list, declared: list) -> tuple[list | None, str]:
                   + (f"; the other {spare} mouth(s) are cut as walls" if spare else ""))
 
 
-def shell_stubs(ports: list) -> list:
+def shell_stubs(ports: list, rims: list | None = None) -> list:
     """Every mouth as a port to cut on the part's own outside, with nothing to extend.
 
     A STUB EXISTS BECAUSE THE COOLANT HAS TO REACH A BLOCK FACE. On a shell domain it already
@@ -427,18 +450,22 @@ def shell_stubs(ports: list) -> list:
     customer assembly for reaching no opposite pair of faces, which was true of its cuboid and
     said nothing about its plumbing.
 
-    EVERY MOUTH, INCLUDING ONE WITH NOTHING CLEAR AHEAD OF IT. `stubs_for` skips such a mouth and
-    is right to: there a stub would be a passage bored through metal that is not in the CAD. Here
-    there is nothing to bore, cutting is free, and the cut is what produces the measurement. Job
-    6ddb58aa cut the blind 11.8 mm lid port, topoSet selected 0 of the coolant's 2,640 wall_outer
-    faces into its box, createPatch removed the zero-sized patch and `empty_patches` came out
-    EMPTY, so no gate can fire on it - while a face count of zero in the delivered boundary is the
-    only thing that tells "the coolant does not reach it" from "we chose not to look". The flag is
-    carried on the Stub instead, so `sealed_declared` can refuse a port DECLARED on such a mouth
-    before the mesher starts, which is the one thing that was costing whole runs.
+    EVERY MOUTH, INCLUDING ONE NOTHING IS CLEAR AHEAD OF. `stubs_for` skips such a mouth and is
+    right to: there a stub would be a passage bored through metal that is not in the CAD. Here
+    there is nothing to bore, cutting is free, and `empty_patches` came out EMPTY on job 6ddb58aa
+    because createPatch deletes a zero-sized patch, so no gate can fire on it. The two signals are
+    carried on the Stub instead, so `sealed_rows` can refuse a port DECLARED on such a mouth
+    before the mesher starts, which is the thing that was costing whole runs.
+
+    `rims` is the record's `open_rims`, matched to a mouth by position. Pass it: without it every
+    mouth reads unsealed and `sealed_rows` can never refuse, which is the safe direction but not
+    the useful one.
     """
     from meshpipeline.engines.cfmesh_conjugate import conjugate as C
 
+    sealed_at = [tuple(float(v) for v in (r.get("centroid") or ()))
+                 for r in (rims or [])
+                 if isinstance(r, dict) and r.get("sealed") and len(r.get("centroid") or ()) == 3]
     out: list[Stub] = []
     for k, port in enumerate(ports or []):
         centroid = tuple(float(v) for v in (port.get("centroid_m") or ()))
@@ -446,21 +473,39 @@ def shell_stubs(ports: list) -> list:
         radius = 0.5 * float(port.get("diameter_m") or 0.0)
         if len(centroid) != 3 or len(normal) != 3 or radius <= 0.0:
             continue
+        # An EXPLICIT null is unmeasured, not sealed. `.get(key, True)` only defaults an ABSENT
+        # key, so `{"clear_ahead": None}` would otherwise read as a mouth with metal in front.
+        ahead = port.get("clear_ahead", True)
+        # Within one diameter of the mouth, which on the part this was written against is a rim
+        # 0.4998 mm from an 11.8 mm mouth. Wide enough for the rim of the mouth itself and far
+        # too narrow to reach another one: that part's other mouths are 23 mm and 34 mm away.
+        near = any(math.dist(centroid, c) <= 2.0 * radius for c in sealed_at)
         out.append(Stub(port=k, passage=int(port.get("passage") or 0), face=C.OUTER_PATCH,
                         centroid=centroid, normal=normal, radius=radius,
                         length=0.0, volume=0.0,
-                        reaches_air=bool(port.get("clear_ahead", True))))
+                        ahead_is_clear=True if ahead is None else bool(ahead),
+                        sealed_rim=bool(near)))
     return out
 
 
-def sealed_declared(stubs: list, named: list | None) -> str:
-    """Why a port DECLARED at intake cannot be cut where it was declared, or "" when it can.
+def sealed_rows(stubs: list, rows: list | None) -> str:
+    """Why a port cannot be cut where it is about to be cut, or "" when it can.
 
-    ONE QUESTION ONLY: does a mouth the customer named an inlet or an outlet have anything of the
-    assembly straight ahead of it? If it does, no coolant reaches it, the patch comes back with
-    zero faces, createPatch deletes it for being empty, and the run is refused at the END for a
-    boundary the mesh does not carry. The flag that answers it is measured by the surface
-    extraction and written into its own record; until now nothing on the shell path read it.
+    ASKED OF THE ROWS `port_rows` PRODUCED, not of the declaration it was built from, and that is
+    the whole of the fix. An earlier version read `declared_for`'s output instead, which left the
+    exact failure it exists to stop still reachable: a declaration that carries inlet and outlet
+    roles but no bindable `near_mm` makes `declared_for` return None with an EMPTY reason, so
+    nothing is logged, `port_rows(roles=True)` falls through to its own defaults, and mouth 0 is
+    named `coolant_in`. Driven on job e8256476's own record with one `near_mm` moved out of
+    tolerance, that rebuilds job 6ddb58aa's recorded plan field for field - `coolant_in`, inlet,
+    diameter 0.0118, at the blind mouth - the plan that meshed 283,410,955 cells in 11,217.3 s and
+    was refused at the end. Reading the rows closes the declared path, the defaulted path, the box
+    path and any default added later, because all four end here.
+
+    TWO SIGNALS, NOT ONE, and `Stub.is_sealed` carries the argument. `clear_ahead` alone is a
+    single ray down the mouth's normal bounded at the assembly's bounding box, so a mouth opening
+    to real air with a bracket beyond it reads False - and that mouth meshes, carries faces and
+    delivers. Refusing a run on it would be worse than the defect being fixed.
 
     MEASURED TWICE ON THE SAME PART, both at the end of a mesh:
 
@@ -474,41 +519,60 @@ def sealed_declared(stubs: list, named: list | None) -> str:
                     box, the identical 0 faces, the same removal, refused for "the outlet was to
                     be outlet_2". 14,910.8 s, on a second 64-core machine.
 
-    The first case is closed by naming no ends when nothing was declared (`port_rows(roles=False)`).
-    This is the second, and it has to be a REFUSAL rather than a warning: the customer approved a
-    boundary the mesh cannot carry, so `flowable` and `patch_contract` will refuse it anyway. What
-    changes is that they are told now, and told which two things would fix it.
+    A REFUSAL rather than a warning, because the mesh is refused either way: run through job
+    e8256476's own figures, `_gate_flowable` and `verify`'s port block both refuse a declared port
+    that ends with no faces. What changes is that it is said before the machine is paid for.
 
-    `named` is `declared_for`'s output - one (name, role) per stub, or None when the declaration
-    could not be bound by position. A None is not a claim about any mouth, so it is not refused.
-    A `wall` is not a flow boundary either: job 6ddb58aa's own plan put a wall on its third mouth
-    and that was correct.
+    A `wall` is not a flow boundary and is not refused: job 6ddb58aa's own plan put one on its
+    third mouth and that was correct.
     """
-    if not stubs or not named:
+    if not stubs or not rows:
         return ""
-    bad = []
+    bad, by_passage = [], {}
     for k, st in enumerate(stubs):
-        row = named[k] if k < len(named) else None
-        if not row:
+        row = rows[k] if k < len(rows) else None
+        if not isinstance(row, dict):
             continue
-        name, role = str(row[0]), str(row[1]).strip().lower()
-        if role not in ("inlet", "outlet") or st.reaches_air:
+        role = str(row.get("type") or "").strip().lower()
+        if role not in ("inlet", "outlet") or not st.is_sealed:
             continue
         where = ", ".join(f"{v * 1000:.1f}" for v in st.centroid)
-        bad.append(f"the declared {role} {name} is on the {2000.0 * st.radius:.3f} mm mouth at "
-                   f"({where}) mm")
+        bad.append(f"the {role} {row.get('name')} is to be cut on the "
+                   f"{2000.0 * st.radius:.3f} mm mouth at ({where}) mm")
+        by_passage.setdefault(st.passage, []).append(k)
     if not bad:
         return ""
     many = len(bad) > 1
-    return ("; ".join(bad)
-            + (". Those mouths open" if many else ". That mouth opens")
-            + " into another part rather than into air - the surface reading found nothing clear "
-            "ahead of " + ("them" if many else "it") + " - so no coolant reaches "
-            + ("them" if many else "it") + " and a patch cut there comes back with zero faces. "
-            "The mesh would be built and then refused for a boundary it does not carry, which has "
-            "happened twice on this shape. Either declare the port on a mouth that opens to the "
-            "outside, or open the metal ahead of this one in the CAD. The mouth is still cut, "
-            "unassigned, so its face count stays in the delivered boundary as the evidence.")
+    it, they, that = ("them", "those mouths", "Those mouths") if many else ("it", "that mouth",
+                                                                            "That mouth")
+    said = ("; ".join(bad) + f". {that} "
+            + ("have" if many else "has")
+            + " another part of the assembly straight ahead of "
+            + f"{it}, inside the part's own bounding box, and the surface reading closed "
+            + ("them" if many else "it")
+            + " off with a rim of its own that it marked sealed. Both readings together are what "
+            "a capped mouth looks like, and a patch cut on one comes back with no faces at all, "
+            "so createPatch deletes it and the finished mesh is refused for a boundary it does "
+            "not carry. That has cost two full runs on this shape already")
+
+    # THE REMEDY THE PART CAN ACTUALLY TAKE, decided from the passage numbers already in hand
+    # rather than offered blind. "Declare it on a mouth that opens to the outside" is impossible
+    # on the part this was written against: its stubs carry passages [0, 0, 1] and only mouth 2
+    # on passage 0 opens outward, and that one is already the other end - so the advice sent the
+    # customer straight into `ports_on_one_passage`'s refusal instead, which is the check that
+    # knows the answer and which never runs because this one refuses first.
+    free = [(k, st) for k, st in enumerate(stubs)
+            if not st.is_sealed and st.passage in by_passage]
+    if free:
+        where = "; ".join(f"{2000.0 * st.radius:.3f} mm at "
+                          + ", ".join(f"{v * 1000:.1f}" for v in st.centroid) + " mm"
+                          for _k, st in free)
+        said += (f". On the same passage {'these mouths do' if len(free) > 1 else 'this mouth does'}"
+                 f" open outward and could carry the role instead: {where}")
+    else:
+        said += (". No other mouth on the same passage opens outward, so there is nowhere on this "
+                 "part to move the role to: the metal ahead has to be opened in the CAD")
+    return said
 
 
 def port_rows(stubs: list, *, inlet: str = "coolant_in",
