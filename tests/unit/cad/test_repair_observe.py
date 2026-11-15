@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import sys
 
+from meshpipeline.cad.repair import observe
 from meshpipeline.cad.repair.caps import Measure
 from meshpipeline.cad.repair.contracts import DefectCode, DefectSeverity
 from meshpipeline.cad.repair.localize import EntityDefect
@@ -145,7 +146,7 @@ def test_ceiling_holds_with_huge_attempts_and_faces_and_nonfinite_numbers():
     obs = observation_of(_region(30), tuple(_defect(i) for i in range(30)), attempts, None,
                          original=ORIGINAL, face_reader=fat)
     text = json.dumps(obs, allow_nan=False)
-    assert len(text.encode()) < 16_000
+    assert len(text.encode()) <= observe.BYTES_MAX
     assert obs["attempts_omitted"] >= 5
     assert obs["defects_omitted"] + len(obs["defects"]) == 30
 
@@ -157,3 +158,16 @@ def test_attempt_ops_carry_targets_and_long_reasons():
                          face_reader=_faces)
     assert obs["attempts"][0]["ops"][0]["targets"] == ["fpA", "fpB"]
     assert obs["attempts"][0]["reason"] == "z" * 390
+
+
+def test_minimal_last_resort_keeps_markers_and_error_codes(monkeypatch):
+    defects = tuple(_defect(i, DefectSeverity.error if i < 3 else DefectSeverity.warning)
+                    for i in range(6))
+    monkeypatch.setattr(observe, "BYTES_MAX", 380)
+    obs = observation_of(_region(6), defects, (), None, original=ORIGINAL, face_reader=_faces)
+    assert obs["truncated"] == "minimal"
+    assert obs["defects_scope"] == "region" and obs["faces_status"] == "ok"
+    assert obs["error_defects_total"] == 3
+    listing = obs.get("error_defects") or obs["error_codes"]
+    assert listing and "invalid_brep" in json.dumps(listing)
+    assert len(json.dumps(obs, allow_nan=False).encode()) <= 380

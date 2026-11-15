@@ -170,8 +170,27 @@ def _size(obj: dict) -> int:
     return len(json.dumps(obj, allow_nan=False).encode())
 
 
+def _minimal(out: dict[str, Any], errors: list[dict]) -> dict[str, Any]:
+    """The last resort. It still says what it is (`truncated`), where the defects came from, whether
+    the faces were readable, and WHICH error defects exist: an empty-but-confident view is the one
+    thing this dict must never be."""
+    base = {"truncated": "minimal", "region": {"index": out["region"]["index"]},
+            "defect_count": out["defect_count"], "defects_scope": out["defects_scope"],
+            "faces_status": out["faces_status"], "caps": out["caps"]}
+    tiers = ([{"code": d["code"], "fingerprint": d["fingerprint"]} for d in errors],
+             sorted({d["code"] for d in errors}))
+    for key, listing in zip(("error_defects", "error_codes"), tiers, strict=True):
+        candidate = {**base, key: listing, "error_defects_total": len(errors)}
+        if _size(candidate) <= BYTES_MAX:
+            return candidate
+    return base
+
+
 def _bounded(out: dict[str, Any]) -> dict[str, Any]:
     """Shrink to BYTES_MAX: faces, then oldest attempts, then defects, each leaving its count."""
+    # Taken BEFORE shrinking: the shrink may empty `defects`, and the last resort needs these.
+    errors = [d for d in out["defects"] if d.get("severity") in ("error", "fatal")]
+
     def drop_face() -> bool:
         if len(out["faces"]) <= 0:
             return False
@@ -203,8 +222,7 @@ def _bounded(out: dict[str, Any]) -> dict[str, Any]:
         out["region"]["face_indices_omitted"] = len(out["region"]["face_indices"])
         out["region"]["face_indices"] = []
     if _size(out) > BYTES_MAX:
-        out = {"truncated": "minimal", "region": {"index": out["region"]["index"]},
-               "defect_count": out["defect_count"], "caps": out["caps"]}
+        out = _minimal(out, errors)
     return out
 
 
