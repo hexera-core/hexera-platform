@@ -32,16 +32,21 @@ FILL_NONPLANAR_HOLES/FIX_SMALL_FACES=true`, `MAX_OPS=200`, `STALL_LIMIT=50`, `TI
 | no_volume / probe_error / unreadable | 1 / 2 / 1 | 1 / 2 / 1 |
 | stopped `unmeshable` | 5 | 14 |
 | forced repairs (`--force-repair`) | n/a | 35 (refused 32, repaired 2, no_change 1) |
-| outcomes | refused 35, manual_cleanup 22, nothing_to_repair 15, repaired 4, no_change 3, repair_failed 1 | refused 60, no_change 11, repaired 6, manual_cleanup 2, repair_failed 1 |
+| outcomes | refused 35, manual_cleanup 22, nothing_to_repair 15, repaired 4, no_change 3, repair_failed 1 | refused 60, no_change 11, repaired 6, not_attempted:manual_cleanup 2, repair_failed 1 |
 
 Who the three newly meshed files are:
 
 - `trj3_s1-tc-214.stp` (edge_through_face): kept `fragment_bodies` once plus nine small-edge/face
-  fixes. Baseline meshed it too, without `fragment_bodies`. Not attributable to the new op.
+  fixes. Baseline meshed it too, without `fragment_bodies`. `fragment_bodies` WAS kept on this file, so "not the new op" rests on the baseline comparison (same file meshed without it), not on row evidence alone; with one arm and nondeterminism unmeasured, a contribution from the op cannot be excluded outright.
 - `trj7_k1-id-214.stp` (kind `other`): kept `sew_faces`. Baseline meshed it too.
 - `00502800_...step_000.step` (periodic_surface): the only gain beyond baseline. It was
   `not_attempted:manual_cleanup` in the baseline; `--force-repair` ran a session and three kept
   `fix_small_edges` meshed it. An existing operation, newly reachable; again not a new op.
+
+**newly_broken = 0 was barely exercised.** The two files that meshed before (`trj6_pm4-ec-203.stp`,
+routed `not_attempted:manual_cleanup`; `00503200_...`, `not_attempted:manual_cleanup`) never entered
+a session, so their `meshes_after` is null and carries the before verdict. The gate therefore says
+nothing about the don't-break direction on this track; the clean control is what covers it.
 
 Meshed before: 2 here vs 1 in the baseline. The extra file (`00503200_...`) meshes under the probe
 here and did not at the baseline; one pass each, so that is nondeterminism or engine change, and it
@@ -64,7 +69,18 @@ is not a repair.
 
 `fragment_bodies` was kept on 10 files, all edge_through_face; one file meshed afterwards (above,
 and the baseline got it without the op). The other nine are `no_change`/`refused` and stay failing.
-`split_closed_faces` ran once and rolled back. "Declined" is 0 because no row records a declined
+`split_closed_faces` ran once and rolled back.
+
+**The `00506275_...` row (abc).** It kept `fragment_bodies` once and `fix_small_edges` three times, yet
+its outcome reads `no_change`, `meshes_after` false. Read from the row: the result was not discarded
+(`result_discarded` unset) and the delivered file did change (faces 1271 to 1279, edges 7123 to 7141,
+2 solids). `no_change` is credited by re-inspection of the original defects, and none of its 96
+`small_edge` / 675 `small_face` findings was cleared (`fixed={}`), so the outcome label does not mean
+the geometry was untouched. The BEFORE mesh kind was `edge_through_face`; after the kept
+`fragment_bodies` the probe fails differently, one `mesh_overlapping_facets` (face:943) remaining,
+stopped `unmeshable`. That overlap is the failure revealed after fragmenting, not a file that
+started as an overlapping_facets case, which reconciles with the sentence below that `fragment_bodies`
+was kept on no file whose starting kind was overlapping_facets. "Declined" is 0 because no row records a declined
 status; the planner's own refusals were 6 `no_operation_claims_it`. The rows record no
 revealed-not-damage counts (the operation records carry only op, status, reason, basis, defect code
 and targets), so **revealed counts are not reported: that is an instrumentation gap, not a zero.**
@@ -88,8 +104,8 @@ located from the log.) The session located 40 overlapping_facets defect entries 
 files, all on the same failures. **Conclusion: `rebuild_face` has no reach on this track** and could
 not have run, which is why it is "never exercised". Its real-world value is unproven either way:
 this corpus does not contain a case it is built for. The 3D-stage overlap is the contact between
-solids that `fragment_bodies` addresses; that op was kept on no overlapping_facets file here (its 10
-keeps are edge_through_face). Caveat: the census is a probe of the input, not the session's stored
+solids that `fragment_bodies` addresses; that op was kept on no file that started as overlapping_facets (its 10
+keeps are all edge_through_face files; `00506275_...` ended in an overlap, see above). Caveat: the census is a probe of the input, not the session's stored
 measurement; same probe code, but not the same run.
 
 ## Cost
