@@ -99,10 +99,19 @@ def test_a_skipped_export_is_not_reported_as_a_failed_one(tmp_path, monkeypatch)
 
 def test_the_runner_tells_it_what_the_mesh_was():
     """THE GAP THIS PACKAGE HAS HAD TWICE: a function that takes the facts and a caller that does
-    not pass them."""
+    not pass them.
+
+    The pin is that both facts ARE passed, not how `refused` is spelled. It used to require
+    `refused=bool(report.problems)` literally, and that expression was itself the defect: it counts
+    the two non-gating "checkMesh did not report Mesh OK" lines, so job 57b613d7's mesh - which
+    passed every declared criterion - was called refused, its export skipped above
+    VOLUME_SKIP_ABOVE_CELLS, and the reviewer refused for the surface that export would have built.
+    See test_a_mesh_that_passed_its_gates_gets_its_review_aids.
+    """
     src = inspect.getsource(N._run_conjugate_local)
-    assert "refused=bool(report.problems)" in src
+    assert "refused=" in src, "the caller still has to say whether there is a mesh"
     assert "cells=int(report.fluid.cells + report.solid.cells)" in src
+    assert "refused=bool(report.problems)" not in src, "and not by counting non-gating readings"
 
 
 def test_the_default_is_to_export(tmp_path, monkeypatch):

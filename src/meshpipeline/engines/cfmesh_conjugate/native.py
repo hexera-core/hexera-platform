@@ -228,7 +228,29 @@ def _run_conjugate_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
     _write_report(ws, body)
     # THE REVIEW AIDS, built here because this is where OpenFOAM is. Neither can fail the run:
     # a mesh is never lost over a picture of it.
-    body["review"] = _review_aids(ws, bashrc=bashrc, refused=bool(report.problems),
+    # WHAT "REFUSED" MEANS HERE, and it is not "has any problem at all". `report.problems` holds
+    # every reading `verify` takes, and two of them - "checkMesh did not report Mesh OK", once per
+    # region - gate nothing: there is no `mesh_ok` criterion in this engine's CRITERIA_ROWS, and
+    # both regions of a perfectly deliverable conjugate mesh fail the same five -allGeometry
+    # checks. Passing `bool(report.problems)` therefore called a mesh refused that its own gates
+    # were about to pass, skipped the export above VOLUME_SKIP_ABOVE_CELLS, and left the surface
+    # unbuilt.
+    #
+    # MEASURED, job 57b613d7, 2026-11-15, and it is the whole reason the reviewer has never
+    # produced a verdict: `quality_floor` PASSED, every declared criterion passed, the executor
+    # recorded success=True and the reviewer STARTED for the first time in eleven jobs - then
+    # refused with "required artifact 'mesh_paths.surface' does not exist", because this call had
+    # already decided the mesh was refused and skipped the export its evidence is built from.
+    #
+    # finalize.py drew exactly this line once before, for the run's success: "SUCCESS IS 'A MESH
+    # CAME OUT', NOT 'THE MESH IS GOOD'", written after a 367-piece coolant made mesh_ok False and
+    # NOT ONE of the eight gates ran. This is the same distinction in the one place that fix did
+    # not reach, so it uses the same test `finalize.a_mesh_came_out` does: cells in both regions
+    # and no fatal checkMesh class. Everything else is for the gates to judge - and for the
+    # reviewer to be shown.
+    _no_mesh = not (int(report.fluid.cells) and int(report.solid.cells))
+    _fatal = bool(report.fluid.fatal) or bool(report.solid.fatal)
+    body["review"] = _review_aids(ws, bashrc=bashrc, refused=_no_mesh or _fatal,
                                   cells=int(report.fluid.cells + report.solid.cells),
                                   budget_left_s=_left())
     _write_report(ws, body)
