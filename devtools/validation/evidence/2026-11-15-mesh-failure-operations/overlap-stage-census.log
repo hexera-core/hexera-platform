@@ -1,0 +1,33 @@
+{'file': 'bug32239.STEP', 'kind': 'overlapping_facets', 'stage': '3d', 'surfaces': [320, 324], 'from_log': False}
+[32;1m**** ERR StepFile : Incorrect Syntax : Fails Count : 5 ****[0m
+[32;1m*** ERR StepReaderData : Unresolved Reference : Fails Count : 65 ***[0m
+{'file': 'bug32314_corrupted.stp', 'kind': 'overlapping_facets', 'stage': '3d', 'surfaces': [8], 'from_log': False}
+{'file': 'trj3_s1-ct-203.stp', 'kind': 'overlapping_facets', 'stage': '3d', 'surfaces': [67, 68], 'from_log': False}
+{'file': 'trj3_s1-ct-214.stp', 'kind': 'overlapping_facets', 'stage': '3d', 'surfaces': [67, 68], 'from_log': False}
+{'file': 'trj4_s1-ai-214.stp', 'kind': 'overlapping_facets', 'stage': '3d', 'surfaces': [3], 'from_log': False}
+{'file': 'trj6_b1-ec-214.stp', 'kind': 'overlapping_facets', 'stage': '3d', 'surfaces': [113, 114], 'from_log': False}
+{'file': '00500350_cf6391333569f6a17439ce66_step_000.step', 'kind': 'overlapping_facets', 'stage': '3d', 'surfaces': [3], 'from_log': False}
+{'file': '00500400_bce216c87d2d17025db6ab36_step_000.step', 'kind': 'overlapping_facets', 'stage': '3d', 'surfaces': [1], 'from_log': False}
+{'file': '00501275_58950467b204b50ff2cc07c9_step_013.step', 'kind': 'overlapping_facets', 'stage': '3d', 'surfaces': [19], 'from_log': False}
+{'file': '00501300_58950467b204b50ff2cc07c9_step_038.step', 'kind': 'overlapping_facets', 'stage': '3d', 'surfaces': [8], 'from_log': False}
+{'file': '00502600_5895f9dd54620e0fdd79706b_step_000.step', 'kind': 'overlapping_facets', 'stage': '3d', 'surfaces': [5], 'from_log': False}
+{'file': '00502900_46dbba28aa960b1c0b680bda_step_007.step', 'kind': 'overlapping_facets', 'stage': '3d', 'surfaces': [5, 19], 'from_log': False}
+{'file': '00503000_32f660ff2a08b13b584f0693_step_000.step', 'kind': 'overlapping_facets', 'stage': '3d', 'surfaces': [212, 213], 'from_log': False}
+{'file': '00503625_3ece9c6bb503a673c7105a4b_step_006.step', 'kind': 'overlapping_facets', 'stage': '3d', 'surfaces': [113], 'from_log': False}
+{'file': '00504200_58971a35c1f05a10f76b8a78_step_009.step', 'kind': 'overlapping_facets', 'stage': '3d', 'surfaces': [121], 'from_log': False}
+{'file': '00504475_79b4cdbab23d7acd4e4b5fbc_step_000.step', 'kind': 'overlapping_facets', 'stage': '3d', 'surfaces': [123], 'from_log': False}
+{'file': '00504775_75dc3fef19fbaaff412bb388_step_006.step', 'kind': 'overlapping_facets', 'stage': '3d', 'surfaces': [1, 15], 'from_log': False}
+{'file': '00505075_58978ae07e864b0f6501330a_step_000.step', 'kind': 'overlapping_facets', 'stage': '3d', 'surfaces': [768], 'from_log': False}
+{'file': '00505550_5897b8ef36235f0f71862899_step_000.step', 'kind': 'overlapping_facets', 'stage': '3d', 'surfaces': [133], 'from_log': False}
+{'file': '00505625_5897c0de69a9d0103bc02adf_step_018.step', 'kind': 'overlapping_facets', 'stage': '3d', 'surfaces': [8], 'from_log': False}
+{'file': '00506325_589844ae8460820fe9280f95_step_012.step', 'kind': 'overlapping_facets', 'stage': '3d', 'surfaces': [9], 'from_log': False}
+{'file': '00506725_067fcf75ee0eae49a8b1f2e1_step_003.step', 'kind': 'overlapping_facets', 'stage': '3d', 'surfaces': [18, 21], 'from_log': False}
+{'file': '00506900_417ada9d4c34002e49e704fa_step_001.step', 'kind': 'overlapping_facets', 'stage': '3d', 'surfaces': [33], 'from_log': False}
+{'file': '00506975_da054becdab299df20251eaf_step_000.step', 'kind': 'overlapping_facets', 'stage': '3d', 'surfaces': [21], 'from_log': False}
+{'file': '00507025_765ba085f20aa7fcb2def3ae_step_000.step', 'kind': 'overlapping_facets', 'stage': '3d', 'surfaces': [22], 'from_log': False}
+{'file': '00507200_15997739fe66ef86060150e6_step_001.step', 'kind': 'overlapping_facets', 'stage': '3d', 'surfaces': [5], 'from_log': False}
+{'file': '00508150_5898cfe0f3cd940f71b7b650_step_069.step', 'kind': 'overlapping_facets', 'stage': '3d', 'surfaces': [122], 'from_log': False}
+{'file': '00508750_11d8d571a2f54aa924e0c995_step_000.step', 'kind': 'overlapping_facets', 'stage': '3d', 'surfaces': [69], 'from_log': False}
+{'file': '00509250_589954b73503790fce559ec7_step_032.step', 'kind': 'overlapping_facets', 'stage': '3d', 'surfaces': [3], 'from_log': False}
+{'file': '00509675_58998b763052da0f6bdf8e3f_step_018.step', 'kind': 'overlapping_facets', 'stage': '3d', 'surfaces': [1], 'from_log': False}
+{'file': '00509825_ad14112a53dcabe002ca167f_step_000.step', 'kind': 'overlapping_facets', 'stage': '3d', 'surfaces': [18, 1081], 'from_log': False}
