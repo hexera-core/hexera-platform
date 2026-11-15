@@ -6,12 +6,42 @@ numbers; the cause is below.
 
 Track `mesh-failure-real`, 80 files (33 OCCT + 47 ABC; manifest
 `devtools/validation/corpora/mesh-failure-real.json`), host darwin-arm64. Two arms, run
-sequentially, identical NIST-2026-11-13 settings (`CAD_REPAIR_ENABLED/AUTONOMOUS/FILL_PLANAR_HOLES/
+sequentially, the same NIST-2026-11-13 settings (`CAD_REPAIR_ENABLED/AUTONOMOUS/FILL_PLANAR_HOLES/
 FILL_NONPLANAR_HOLES/FIX_SMALL_FACES=true`, `MAX_OPS=200`, `STALL_LIMIT=50`, `TIMEOUT_S=300`,
-`REGION_LOOP=live`, `REGION_ATTEMPTS=6`); only `CAD_REPAIR_MESH_PROBE` differs (`off` = arm A,
-`live` = arm B). Both scored with `--mesh-probe` (gmsh file probe on the input and on the repaired
+`REGION_LOOP=live`, `REGION_ATTEMPTS=6`); `CAD_REPAIR_MESH_PROBE` is `off` in arm A and `live` in arm B, **but the arms also ran at
+different engine commits (see Provenance and confound)**. Both scored with `--mesh-probe` (gmsh file probe on the input and on the repaired
 file). Bundles: `bundle-off-probe/`, `bundle-live-probe/` (manifest, settings, summary, rows);
 rows with logs: `rows-*.json`, `run-*.log`.
+
+## Provenance and confound: the arms ran at different engine commits
+
+| | arm A (probe off) | arm B (probe live) |
+|---|---|---|
+| `engine_commit` (manifest) | `d567502e` | `9b296a1e` |
+| `created_at` (manifest) | 2026-11-15T01:06:46Z | 2026-11-15T05:04:19Z |
+
+The "only the probe differs" reading is therefore not what the bundles show. Arm B was re-run (see
+Instrumentation) after the engine had moved on, and `settings.json` differs in more than
+`mesh_probe`: arm B's records `split_closed_faces: false` and `fragment_bodies: false`, keys that
+did not exist at `d567502e` (so the settings digests differ). Between the two commits the engine
+gained the `split_closed_faces` and `fragment_bodies` operations, the model author
+(`model_author.py`, `observe.py`), and changes in `session.py`, `rules_author.py` and
+`conservative.py` (e.g. the revealed-finding rule, a per-package cap on the proof's probe budget).
+
+Which paths were exercised: both new operations are behind flags that were false in arm B, and the
+model author is off in these runs, so none of the new operations or model-directed planning ran.
+That is why I expect the confound to be small. I do not claim it is zero: the `session.py` and
+`rules_author.py` edits are not all flag-gated (the package-proof cap applies whenever a package is
+proved, and the revealed-finding rule applies to any mesh operation, which includes the existing ones
+aimed at mesh failures), and I did not isolate their effect. **The A/B deltas (meshed 2 to 4 vs 1 to 3,
+timeout counts 7 vs 10, stop reasons) may partly reflect the engine change, not only the probe.**
+The within-arm facts (arm B's located counts, `newly_broken`, the `unmeshable` count and the 0/15
+result) are unaffected by this, since they are read from arm B alone.
+
+Arm A's rows were produced before the instrumentation below, so they have no
+`mesh_located_remaining`; "located" counts are arm-B-only by construction. The code that wrote the
+new row fields was committed after both runs (`fe254a5d`); arm B's `engine_commit` predates it, and
+the fields came from the uncommitted working tree at run time.
 
 ## Previously invisible files
 
@@ -49,7 +79,7 @@ files fail to mesh. Making the inspector or triage consult the mesh probe is out
   `mesh_*` defect (located or not): 40. Defect kinds: mesh_edge_through_face 19,
   mesh_overlapping_facets 17, mesh_timeout 5, mesh_no_volume 1. Unlocated ones carry no fingerprint
   and are never aimed at.
-- Only 43 of 80 rows entered a session (35 refused, 4 repaired, 3 no_change, 1 repair_failed); 22 were
+- Only 43 of 80 rows entered the repair path (35 refused, 4 repaired, 3 no_change, 1 repair_failed; 42 carry `timings`, the repair_failed row has none); 22 were
   `not_attempted:manual_cleanup` and 15 `nothing_to_repair`.
 
 ## meshing_summary
@@ -67,7 +97,7 @@ files fail to mesh. Making the inspector or triage consult the mesh probe is out
 | no_volume / probe_error / unreadable | 1 / 2 / 1 | 1 / 2 / 1 |
 
 Arm A and B differ by one meshed file before and after (2 vs 1, 4 vs 3) and by timeouts (7 vs 10);
-see "What this does NOT show" on nondeterminism and budget.
+see Provenance (engine-commit confound) and "What this does NOT show" on nondeterminism and budget.
 
 ## Stop reasons and outcomes
 
@@ -89,7 +119,7 @@ The 5 `unmeshable` rows (arm B): no_change 3, repaired 2. In arm A the same file
 | run seconds (sum of timings.total_s) | 1155 | 4858 |
 | row seconds (sum, incl. scoring probes) | 1411 | 5185 |
 
-The live probe costs about 3700 s over the 43 session rows. Scan counts differ because the runs are
+The live probe costs about 3700 s over the 42 rows that carry timings. Scan counts differ because the runs are
 not the same path once the probe changes which defects exist.
 
 ## Instrumentation (a code change, for review)
@@ -108,11 +138,12 @@ unmeshable 5) and are not part of this bundle. `run-status.txt` therefore lists 
 
 - **No new operations.** Existing operations are only aimed at mesh failures; the operations that
   answer these families arrive in Plan 2. Nothing here says the failures can be repaired.
-  `newly_meshed` is 2 in both arms, so the probe adds no repairs (and the same 2 gains occur with it off).
+  `newly_meshed` is 2 in both arms, so the probe adds no repairs (and 2 gains occur with it off); the arms also differ in engine commit, so even that comparison is not clean.
 - **gmsh is not the product mesher.** Meshing is scored with gmsh 4.15.2 at diagonal/40 and a 120 s
   budget; a part that meshes here may still fail the engine the product uses, and vice versa.
-- **Nondeterminism was not measured.** One pass per arm. The A/B differences in meshed counts and
-  timeouts could be run-to-run noise rather than an effect of the probe.
+- **Nondeterminism was not measured, and the arms differ in engine commit.** One pass per arm at
+  `d567502e` vs `9b296a1e`. The A/B differences in meshed counts and timeouts could be run-to-run
+  noise, the engine change, or the probe; this evidence cannot separate them.
 - **Reader effect.** 17 files (calibration README) mesh or fail differently depending on whether
   gmsh reads the upload or OCP reads and re-exports it; two (trj10, abc/00509500) mesh once OCP has
   read them, so a repair that changes nothing already "fixes" them. Scores here use the delivered STEP.
