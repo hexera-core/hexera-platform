@@ -535,8 +535,8 @@ def test_a_kernel_operation_reveals_nothing(monkeypatch):
     assert not verdict.kept and verdict.reason == "new_defect"
 
 
-# THE OPERATION'S OWN GEOMETRY INCLUDES WHAT IT REBUILT (fix round 2): a body replaced whole keeps
-# most of its faces' NAMES, so `added` and `moved` alone would excuse a failure the rebuild caused.
+# THE OPERATION'S OWN GEOMETRY INCLUDES WHAT ITS REBUILD CHANGED (fix rounds 2-3, ruling P2-R7):
+# a face of a rebuilt body is the op's own only when its fingerprint did not exist before the op.
 
 _PERIODIC = EntityDefect(code=DefectCode.mesh_periodic_surface, severity=DefectSeverity.error,
                          entity_type="face", entity_index=4, message="periodic surface",
@@ -553,35 +553,61 @@ class _Split(_Fragment):
     scope = 1
 
 
-@pytest.mark.parametrize("op, first", [(_Fragment(rebuilt=("face:f4", "face:f9")), _THROUGH),
-                                       (_Split(rebuilt=("face:f4", "face:f9")), _PERIODIC)],
-                         ids=["fragment_bodies", "split_closed_faces"])
-def test_a_mesh_failure_on_a_rebuilt_body_s_surviving_face_is_damage(monkeypatch, op, first):
+def _pre_op(monkeypatch, *names):
+    """The pre-op shape's face names, as `_face_names_of` would read them off the kernel."""
+    calls: list = []
+    monkeypatch.setattr(session_mod, "_face_names_of",
+                        lambda shape: calls.append(shape) or frozenset(names))
+    return calls
+
+
+_BOTH = pytest.mark.parametrize("op, first", [
+    (_Fragment(rebuilt=("face:f4", "face:f9")), _THROUGH),
+    (_Split(rebuilt=("face:f4", "face:f9")), _PERIODIC)],
+    ids=["fragment_bodies", "split_closed_faces"])
+
+
+def _try(monkeypatch, op, first, after=(_NEXT,)):
     monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
     _scan(monkeypatch, ((), True))
-    _probe(monkeypatch, (first,), (_NEXT,))
+    _probe(monkeypatch, (first,), after)
     session = RepairSession("shape", measurer=lambda s: MEASURE)
     target = session.defects()[0]
-    verdict = session.try_op(op, op.targets_for(target), target.code, tolerance_mm=0.01)
+    return session, session.try_op(op, op.targets_for(target), target.code, tolerance_mm=0.01)
+
+
+@_BOTH
+def test_a_mesh_failure_on_a_face_the_rebuild_renamed_is_damage(monkeypatch, op, first):
+    calls = _pre_op(monkeypatch, "face:f4")          # face:f9 is a name the rebuild made
+    session, verdict = _try(monkeypatch, op, first)
     assert not verdict.kept and verdict.reason == "new_defect"
     # A ROLLED-BACK VERDICT LISTS NO REVEALS: nothing it names reached the defect list.
     assert "revealed" not in verdict.delta
     assert session.shape == "shape"
+    assert calls == ["shape"]                         # the PRE-op shape was the one named
+
+
+@_BOTH
+def test_a_mesh_failure_on_a_rebuilt_face_whose_name_survived_is_revealed(monkeypatch, op, first):
+    _pre_op(monkeypatch, "face:f4", "face:f9")       # face:f9 crossed the rebuild unchanged
+    session, verdict = _try(monkeypatch, op, first)
+    assert verdict.kept, verdict.reason
+    assert verdict.delta["revealed"] == [{"fingerprint": "face:f9",
+                                          "code": "mesh_overlapping_facets"}]
+    assert _NEXT in session.defects()
 
 
 @pytest.mark.parametrize("op, first", [(_Fragment(rebuilt=("face:f4",)), _THROUGH),
                                        (_Split(rebuilt=("face:f4",)), _PERIODIC)],
                          ids=["fragment_bodies", "split_closed_faces"])
-def test_a_mesh_failure_off_the_rebuilt_bodies_is_still_revealed(monkeypatch, op, first):
-    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
-    _scan(monkeypatch, ((), True))
-    _probe(monkeypatch, (first,), (_NEXT,))
-    session = RepairSession("shape", measurer=lambda s: MEASURE)
-    target = session.defects()[0]
-    verdict = session.try_op(op, op.targets_for(target), target.code, tolerance_mm=0.01)
+def test_a_mesh_failure_off_the_rebuilt_bodies_is_revealed_without_naming_faces(
+        monkeypatch, op, first):
+    calls = _pre_op(monkeypatch)
+    _session, verdict = _try(monkeypatch, op, first)
     assert verdict.kept, verdict.reason
     assert verdict.delta["revealed"] == [{"fingerprint": "face:f9",
                                           "code": "mesh_overlapping_facets"}]
+    assert calls == []                                # no candidate on a rebuilt face: no kernel
 
 
 def test_a_rolled_back_verdict_lists_no_reveals_even_beside_damage(monkeypatch):
@@ -591,6 +617,7 @@ def test_a_rolled_back_verdict_lists_no_reveals_even_beside_damage(monkeypatch):
                            entity_type="face", entity_index=5, message="overlap",
                            fingerprint="face:f5", location=dict(_BOX_9),
                            measurements={"mesh_kind": "overlapping_facets", "stage": "3d"})
+    _pre_op(monkeypatch, "face:f4")                  # face:f5 is a name the rebuild made
     session, target = _revealing_session(monkeypatch, (_NEXT, damaged))
     op = _Fragment(rebuilt=("face:f5",))
     verdict = session.try_op(op, op.targets_for(target), target.code, tolerance_mm=0.01)

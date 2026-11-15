@@ -87,7 +87,17 @@ def _judged_whole(package) -> bool:
                for item in package.plan)
 
 
-def _revealed(op, outcome, targets, defect_code, previous, found) -> tuple:
+def _face_names_of(shape) -> frozenset[str]:
+    """Every face of `shape` named exactly as `OpOutcome.rebuilt` names them - at the part's
+    quantum (`operations._face_names` over `operations._diagonal_of`, the very pair the rebuilding
+    operations use on the shape they were handed). Looked up at call time so a test can patch it."""
+    from meshpipeline.cad.repair.operations import _diagonal_of, _face_names
+
+    return frozenset(_face_names(shape, diagonal_mm=_diagonal_of(shape)))
+
+
+def _revealed(op, outcome, targets, defect_code, previous, found, *,
+              pre_op_names: Callable[[], frozenset[str]] = frozenset) -> tuple:
     """The mesh findings an operation REVEALED rather than caused. APPLIES TO EVERY MESH OPERATION.
 
     gmsh reports only its FIRST failure. An operation that clears the mesh failure it aimed at
@@ -103,10 +113,21 @@ def _revealed(op, outcome, targets, defect_code, previous, found) -> tuple:
           mesh code (a kernel fixer a directive or MESH_OPS aims at a mesh failure) earns no
           amnesty: it does not declare what it rebuilt, so (c) would be hollow for it;
       (b) the new finding is itself a `mesh_*` code - a kernel finding is never excused here;
-      (c) it does not sit on geometry the operation created, moved or REBUILT: its fingerprint is
-          in none of `outcome.added`, the mapping's moved names, or `outcome.rebuilt` (every face
-          of a body the operation rebuilt, even one whose name survived). If it does, it is
-          damage, and rolls back as it always did.
+      (c) it does not sit on geometry the operation created, moved or CHANGED: its fingerprint is
+          in neither `outcome.added` nor the mapping's moved names, and it is not a face of
+          `outcome.rebuilt` whose name did NOT exist on the pre-op shape. If it does, it is
+          damage, and rolls back as it always did (ruling P2-R7).
+
+    WHY A REBUILT FACE WITH A SURVIVING NAME IS NOT THE OPERATION'S OWN. `rebuilt` is the candidate
+    set: every face of a body the op replaced whole - on a two-body part, every face of the part.
+    A face whose fingerprint is unchanged crossed the rebuild unchanged to the grid's precision,
+    so a mesh failure there is one gmsh's serial coverage now reaches, not one the rebuild made.
+    WHERE THE PRE-OP NAMES COME FROM: the session holds only the pre-op DEFECTS' fingerprints, not
+    every face's, so the pre-op shape's faces are fingerprinted (`_face_names_of`, the way
+    `rebuilt` is computed) - lazily, and only when a candidate actually lands on a rebuilt face.
+    THE CAVEAT, stated: the fingerprint grid has a quantum, so a sub-quantum deformation could in
+    principle keep a name and pass as unchanged. That is bounded: a revealed finding stays on the
+    defect list (it blocks `resolved`) and the run's final whole-shape probe still scores the part.
     A revealed finding is NOT dropped: it stays in the rescan and so in the session's list, where
     the loop must answer or escalate it, and `try_op` records it under the delta's `revealed` key.
     Unlocated mesh findings never reach this: `_mesh_judged` already holds them neither new nor
@@ -123,11 +144,17 @@ def _revealed(op, outcome, targets, defect_code, previous, found) -> tuple:
             return ()
     previous, found = _mesh_judged(previous, found)
     before = {(d.fingerprint, d.code.value) for d in previous}
-    touched = (set(outcome.added) | set(outcome.rebuilt) | set(outcome.mapping.moved)
-               | set(outcome.mapping.moved.values()))
-    return tuple(d for d in found
-                 if _is_mesh(d) and d.fingerprint and (d.fingerprint, d.code.value) not in before
-                 and d.fingerprint not in touched)
+    touched = set(outcome.added) | set(outcome.mapping.moved) | set(outcome.mapping.moved.values())
+    rebuilt = frozenset(outcome.rebuilt)
+    candidates = [d for d in found
+                  if _is_mesh(d) and d.fingerprint and (d.fingerprint, d.code.value) not in before
+                  and d.fingerprint not in touched]
+    if any(d.fingerprint in rebuilt for d in candidates):
+        # A REBUILT FACE IS THE OP'S OWN ONLY IF THE REBUILD CHANGED ITS NAME (see above).
+        existed = pre_op_names()
+        candidates = [d for d in candidates
+                      if d.fingerprint not in rebuilt or d.fingerprint in existed]
+    return tuple(candidates)
 
 
 def _is_mesh_code(code) -> bool:
@@ -716,7 +743,8 @@ class RepairSession:
             previous = tuple(d for d in previous if not analyzer_only(d))
 
         basis = self._basis(outcome, targets)
-        revealed = _revealed(op, outcome, targets, defect_code, previous, found)
+        revealed = _revealed(op, outcome, targets, defect_code, previous, found,
+                             pre_op_names=lambda: _face_names_of(snapshot[0]))
         reason = self._progress_refusal(
             outcome, targets, defect_code, previous, found, op_name=op.name,
             revealed=frozenset((d.fingerprint, d.code.value) for d in revealed))

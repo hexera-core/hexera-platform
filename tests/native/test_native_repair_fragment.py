@@ -326,29 +326,26 @@ def test_the_single_solid_corpus_file_is_declined(fragment_on):
     assert outcome.evidence["declined"].startswith("single_body (the part has 1 solid(s)")
 
 
-def test_the_session_rolls_fragment_back_when_the_next_failure_is_on_a_rebuilt_body(
-        monkeypatch, fragment_on):
-    """THE SESSION-LEVEL OUTCOME of the revealed rule on the real file and the real probe, as
-    MEASURED after fix round 2 (2026-11-14) - the operation is ROLLED BACK `new_defect`.
+def test_the_session_keeps_fragment_and_lists_the_revealed_overlap(monkeypatch, fragment_on):
+    """THE SESSION-LEVEL PROOF of the revealed rule, on the real file and the real probe.
 
     The probe cannot locate this file's edge-through-face (no coordinates in gmsh's error; Task
     3b's subject), so ONE thing is stood in: an UNLOCATED edge-through-face from the real probe is
     re-reported on the contact face, which is where a contact locator would put it. Everything
     else - the kernel scan, the fragment, the caps, the post-op probe - is real.
 
-    After the fragment the edge through a face is gone and the real probe reports overlapping
-    facets in the 3D stage on face 943 - a face that existed before, was not added and was not
-    moved, but lies on one of the two bodies the fuse REBUILT. The file HAS only two bodies, so
-    `rebuilt` names every face of the part (1275 names; 1271 faces before), and by the round-2
-    ruling a mesh failure on a rebuilt body is the operation's own doing. So nothing is excused,
-    the verdict lists no reveals, and the shape is restored. (Round 1 kept the op here.)
+    Measured 2026-11-14: after the fragment the edge through a face is gone and the real probe
+    reports overlapping facets in the 3D stage on face 943. The file has two bodies, so `rebuilt`
+    names every face of the part - but face 943's fingerprint PREDATES the op (it crossed the
+    rebuild unchanged), so by ruling P2-R7 it is REVEALED: the op is KEPT and the overlap stays in
+    the session's defects. (Round 2's blunter rule rolled it back here.)
     """
     from dataclasses import replace
 
     from meshpipeline.cad.repair import mesh_probe
     from meshpipeline.cad.repair.brep import _read_shape
     from meshpipeline.cad.repair.contracts import DefectCode
-    from meshpipeline.cad.repair.session import ROLLED_BACK, RepairSession
+    from meshpipeline.cad.repair.session import KEPT, RepairSession
 
     monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
     monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE_TIMEOUT_S", 300.0)
@@ -374,6 +371,57 @@ def test_the_session_rolls_fragment_back_when_the_next_failure_is_on_a_rebuilt_b
     verdict = session.try_op(FragmentBodies(), (contact,), DefectCode.mesh_edge_through_face,
                              tolerance_mm=0.1)
 
+    assert verdict.status == KEPT, (verdict.reason, verdict.delta.get("revealed"))
+    revealed = verdict.delta.get("revealed") or []
+    assert {r["code"] for r in revealed} == {"mesh_overlapping_facets"}, revealed
+    remaining = {(d.fingerprint, d.code.value) for d in session.defects()}
+    assert all((r["fingerprint"], r["code"]) in remaining for r in revealed)
+    assert DefectCode.mesh_edge_through_face not in {d.code for d in session.defects()}
+
+
+def test_a_mesh_failure_on_the_new_interface_face_rolls_the_fragment_back(
+        monkeypatch, fragment_on):
+    """THE OTHER DIRECTION, on the real kernel: a mesh failure on a face whose fingerprint the
+    rebuild CHANGED is the operation's own. A box overhanging the big box's side touches it on a
+    patch with a NEW box - the shared interface face, a name that did not exist before. The probe
+    is a double (synthetic is the point: the input condition is under test), reporting the edge
+    through the contact face first and then overlapping facets on that interface face."""
+    from meshpipeline.cad.repair import mesh_probe
+    from meshpipeline.cad.repair.contracts import DefectCode, DefectSeverity
+    from meshpipeline.cad.repair.localize import EntityDefect
+    from meshpipeline.cad.repair.session import ROLLED_BACK, RepairSession
+
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_HEAL_SELF_INTERSECTIONS", False)
+    shape = _assembly(_box(0, 0, 0, 10, 10, 10), _box(10, 5, 5, 10, 10, 10))
+    contact = _ref(shape, _contact_face(shape, 10.0))
+    rehearsal = FragmentBodies().apply(shape, (contact,), tolerance_mm=0.01)
+    interface = _shared_face_boxes(rehearsal.shape)
+    assert len(interface) == 1
+    diagonal = measure(shape).diagonal_mm
+    interface_name = fingerprint_of("face", interface[0], quantum=quantum_for(diagonal))
+    assert interface_name in rehearsal.rebuilt
+
+    def defect(code, fingerprint, index, location, stage):
+        return EntityDefect(code=code, severity=DefectSeverity.error, entity_type="face",
+                            entity_index=index, message=code.value, fingerprint=fingerprint,
+                            location=dict(location),
+                            measurements={"mesh_kind": code.value, "stage": stage})
+
+    first = defect(DefectCode.mesh_edge_through_face, contact.fingerprint, contact.entity_index,
+                   box_of(sub_shape(shape, "face", contact.entity_index)), "3d")
+    after = defect(DefectCode.mesh_overlapping_facets, interface_name, 1, interface[0], "3d")
+    calls: list = []
+
+    def probe(target, **kw):
+        calls.append(target)
+        return (first,) if len(calls) == 1 else (after,)
+
+    monkeypatch.setattr(mesh_probe, "mesh_defects", probe)
+    session = RepairSession(shape)
+    session.defects()
+    verdict = session.try_op(FragmentBodies(), (contact,), DefectCode.mesh_edge_through_face,
+                             tolerance_mm=0.01)
     assert verdict.status == ROLLED_BACK and verdict.reason == "new_defect", verdict.reason
     assert "revealed" not in verdict.delta
     assert session.shape is shape
