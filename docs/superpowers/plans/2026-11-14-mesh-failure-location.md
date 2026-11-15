@@ -289,3 +289,28 @@ def test_receipt_has_words_for_unmeshable()       # _STOPPED["unmeshable"] is no
   **Acceptance:** at least 12 of the 15 previously invisible files are located, and `newly_broken == 0`. A small `newly_meshed` is expected: the operations that answer these families arrive in Plan 2.
 
 - [ ] **Step 3: Commit** `Evidence: mesh failures located on the real-world track`.
+
+### Task 9: The benchmark reaches inspector-clean failures (force-repair)
+
+Added 2026-11-15 after Task 8 measured located 0/15: the 15 inspector-clean files never get a
+repair session (triage routes a clean inspection to mesh-as-is), so the in-session probe cannot
+locate them and Plans 2/3 cannot be scored on them. Production's answer is the Plan-4 handback;
+the benchmark's answer is a runner-only switch. The customer path (triage) is untouched.
+
+**Files:**
+- Modify: `devtools/validation/repair_corpus.py`
+- Test: `tests/unit/dev/test_repair_corpus_meshing.py`
+
+**Interfaces:**
+- Produces: with `--mesh-probe --force-repair`, a file whose probe fails before repair
+  (`meshes_before is False`) runs the repair session even when triage routed it away; its row
+  carries `forced_repair: true` and keeps the triage route it would have taken under
+  `triage_route`. Without the flag, behaviour is byte-identical. `corpus_summary`'s meshing block
+  gains `forced_repairs` (count). The bundle settings record `force_repair`.
+
+- [ ] **Step 1: Failing unit tests** — `test_force_repair_runs_the_session_on_clean_inspections`
+  (fake seams), `test_force_repair_rows_are_marked`, `test_without_the_flag_rows_are_unchanged`.
+- [ ] **Step 2: Implement; PASS; lint; check-fast.**
+- [ ] **Step 3: One-arm smoke** over 5 of the 15 files (probe live, force-repair): report how many
+  now hold a located `mesh_*` fingerprint; no full-track re-run in this task.
+- [ ] **Step 4: One targeted commit.**
