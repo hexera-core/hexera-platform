@@ -36,6 +36,13 @@ _DEFECT_WORDS: dict[str, str] = {
     "tolerance_outlier": "a tolerance far above the rest of the part",
     "duplicate_surface_data": "a surface stored twice",
     "engine_staging_failure": "geometry the mesh machine could not take",
+    "mesh_overlapping_facets": "surfaces that overlap where the mesher needs them apart",
+    "mesh_edge_through_face": "an edge that passes through a face",
+    "mesh_open_loop": "a boundary loop that does not close",
+    "mesh_periodic_surface": "a curved surface the mesher cannot wrap",
+    "mesh_no_volume": "a closed surface with no solid inside it to fill",
+    "mesh_timeout": "a part the mesher gave up on after too long",
+    "mesh_other": "a place the mesher refused for a reason it did not give",
 }
 
 #: WHY AN ATTEMPT WAS UNDONE, by the prefix the session records. The recorded reason is a code or
@@ -76,6 +83,7 @@ _STOPPED: dict[str, str] = {
     "time_budget": "the repair reached its time limit",
     "stalled": "several attempts in a row changed nothing",
     "scan_incomplete": "the defect scan did not finish, so nothing can be called absent",
+    "unmeshable": "the geometry checks pass but the part still cannot be meshed",
     # The region-scoped driver's two endings (cad/repair/region_loop.py). A customer reading this
     # row has to be told plainly that part of their file was repaired and part was handed on.
     "escalated": "part of the file was repaired and a region was passed to an engineer",

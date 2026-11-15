@@ -31,8 +31,10 @@ from meshpipeline.cad.repair.loop import (
     RESOLVED,
     SCAN_INCOMPLETE,
     TIME_BUDGET,
+    UNMESHABLE,
     LoopBudget,
     RepairRun,
+    only_mesh_errors,
 )
 from meshpipeline.cad.repair.package import TargetPackage
 from meshpipeline.cad.repair.regions import Region, decompose
@@ -220,6 +222,8 @@ def _terminal(session: RepairSession, defects, *, escalated, packages,
         return ESCALATED_REGIONS
     if not _errors_remain(defects) and not _abandoned(packages, defects):
         return RESOLVED
+    if only_mesh_errors(_judged(defects)):
+        return UNMESHABLE
     return fallback
 
 

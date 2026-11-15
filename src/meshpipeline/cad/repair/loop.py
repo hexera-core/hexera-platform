@@ -36,6 +36,8 @@ TIME_BUDGET = "time_budget"
 STALLED = "stalled"
 #: The defect scan hit its own budget, so the list is partial and no absence can be claimed.
 SCAN_INCOMPLETE = "scan_incomplete"
+#: Every error left is a `mesh_*` one: the geometry checks pass but gmsh will not mesh the part.
+UNMESHABLE = "unmeshable"
 
 _ERRORS = (DefectSeverity.error, DefectSeverity.fatal)
 
@@ -109,6 +111,16 @@ def _errors_remain(session: RepairSession) -> bool:
     return any(d.severity in _ERRORS for d in _judged(session))
 
 
+def only_mesh_errors(defects) -> bool:
+    """Are there error-severity defects, and is every one of them a `mesh_*` code?
+
+    Only a live mesh probe emits those codes, so with the flag off this is always False.
+    """
+    errors = [d for d in defects if d.severity in _ERRORS]
+    return bool(errors) and all(str(getattr(d.code, "value", d.code)).startswith("mesh_")
+                                for d in errors)
+
+
 def _abandoned(session: RepairSession) -> bool:
     """Is a defect still present at a fingerprint that a rolled-back attempt targeted?
 
@@ -153,6 +165,8 @@ def _terminal(session: RepairSession, fallback: str) -> str:
         return SCAN_INCOMPLETE
     if not _errors_remain(session) and not _abandoned(session):
         return RESOLVED
+    if only_mesh_errors(_judged(session)):
+        return UNMESHABLE
     return fallback
 
 

@@ -1047,3 +1047,57 @@ def test_an_author_with_nothing_to_say_about_refusals_reports_none():
     run = _run(part, _author(part))
 
     assert run.refusals == ()
+
+
+# --- A run whose only errors are mesh failures ends unmeshable -----------------------------------
+
+def _mesh_defect(code=DefectCode.mesh_overlapping_facets) -> EntityDefect:
+    return EntityDefect(code=code, severity=DefectSeverity.error, entity_type="face",
+                        entity_index=1, message="gmsh will not mesh this", fingerprint=f"{code}:1",
+                        location=None)
+
+
+def _terminals(defects, *, complete=True, escalated=False, fallback="no_candidate"):
+    from types import SimpleNamespace
+
+    from meshpipeline.cad.repair import loop as loop_module
+    from meshpipeline.cad.repair import region_loop as region_module
+    session = SimpleNamespace(complete_scan=complete, defects=lambda: tuple(defects), log=[])
+    region = region_module._terminal(session, tuple(defects), escalated=escalated,
+                                     packages=(), fallback=fallback)
+    baseline = loop_module._terminal(session, fallback) if not escalated else None
+    return region, baseline
+
+
+def test_a_final_list_of_only_mesh_errors_is_unmeshable():
+    from meshpipeline.cad.repair.loop import UNMESHABLE
+    for codes in ([DefectCode.mesh_timeout], [DefectCode.mesh_open_loop, DefectCode.mesh_other]):
+        region, baseline = _terminals([_mesh_defect(c) for c in codes])
+        assert region == baseline == UNMESHABLE == "unmeshable"
+
+
+def test_a_list_without_mesh_codes_gives_the_old_results():
+    assert _terminals([]) == ("resolved", "resolved")
+    assert _terminals([_defect("a")]) == ("no_candidate", "no_candidate")
+    assert _terminals([_defect("a", DefectSeverity.warning)]) == ("resolved", "resolved")
+    assert _terminals([_defect("a")], fallback="stalled") == ("stalled", "stalled")
+
+
+def test_mixed_mesh_and_other_errors_keep_the_old_fallback():
+    region, baseline = _terminals([_mesh_defect(), _defect("a")])
+    assert region == baseline == "no_candidate"
+
+
+def test_incomplete_scan_and_escalation_still_win_over_unmeshable():
+    only_mesh = [_mesh_defect()]
+    assert _terminals(only_mesh, complete=False)[0] == "scan_incomplete"
+    assert _terminals(only_mesh, complete=False)[1] == "scan_incomplete"
+    assert _terminals(only_mesh, escalated=True)[0] == "escalated"
+
+
+def test_receipt_has_words_for_unmeshable():
+    from meshpipeline.pipeline.repair_receipt import _DEFECT_WORDS, _STOPPED
+    assert _STOPPED["unmeshable"].strip()
+    for code in DefectCode:
+        if code.value.startswith("mesh_"):
+            assert _DEFECT_WORDS[code.value].strip()
