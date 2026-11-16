@@ -240,8 +240,12 @@ def fold(facts: dict, answer: dict) -> None:
                      "valve drawn shut, or a part sealing the passage; each space is meshed on its own")
     blind = [o for o in openings if not o.get("clear_ahead")]
     for o in blind:
-        notes.append(f"opening {o['id']} opens into another part whose inside reaches the outside some "
-                     "other way (a gap in it?): check it on the picture")
+        # NOT "CHECK IT ON THE PICTURE", which is the one place this cannot be checked: the
+        # reading is a ray down the mouth's own normal and a capped bore looks exactly like an
+        # open one in a render. Said plainly instead, and `geometry_check.vet_by_reach` acts on
+        # the same measurement by not offering that mouth as a port at all.
+        notes.append(f"opening {o['id']} has another part of the assembly straight ahead of it, "
+                     "inside the part's own box, so the fluid may have no way out there")
     gaps = [g for p in passages for g in p["openings"] if g.get("gap")]
     if gaps:
         widest = max(g["area_mm2"] / max(math.pi * math.sqrt(4.0 * g["hole_mm2"] / math.pi), 1e-9) for g in gaps)

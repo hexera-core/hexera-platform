@@ -1296,6 +1296,8 @@ def _scout_exact(local_path: Path, work: Path, interp_ref, ref, on_skin=None) ->
         if wants_fluid_volume(facts):
             read_fluid_volume(facts, local_path, work=work, kind="cad",
                               scale=occ_scale_transform(prepared).ScaleFactor())
+        # ...and a mouth of that fluid with the part itself straight ahead of it is not a port
+        vet_by_reach(facts)
         read_whole_shape(facts, skin)
     return facts, skin
 
@@ -1348,6 +1350,66 @@ def vet_openings(facts: dict, skin: Path) -> None:
             o["role"] = "not_an_opening"
             facts.setdefault("notes", []).append(
                 f"opening {o.get('id')} ({o.get('name')}) is proposed as not an opening: {stranded[o['name']]}")
+    kept = [o for o in ops if o.get("role") != "not_an_opening"]
+    if kept and not any(o.get("role") == "inlet" for o in kept):
+        max(kept, key=lambda o: float(o.get("area_mm2") or 0.0))["role"] = "inlet"
+
+
+#: A mouth the measurement puts metal in front of scores this, and the pictures may not raise it:
+#: `cad/fluid_volume_check` has scored a non-reaching mouth 0.5 since the plate was first read, and
+#: the vision step was overwriting that with its own 0.98.
+BLIND_MOUTH_CONFIDENCE = 0.5
+
+
+def vet_by_reach(facts: dict) -> None:
+    """A MOUTH WITH THE PART ITSELF STRAIGHT AHEAD OF IT IS NOT OFFERED AS A PORT. The same shape
+    as `vet_openings` and `vet_by_map` above, on the third thing that makes a proposed mouth
+    undeliverable: not that it opens into no passage, nor that it is a step inside one, but that
+    the fluid has nowhere to go when it gets there.
+
+    MEASURED, TWICE, AT THE END OF A MESH. ColdPlateAssembly_CLEAN.step has three mouths: two
+    8 mm hose mouths that reach the outside and an 11.8 mm lid port that opens into 0.500 mm of
+    flat metal under a tube it never joins. The card offered that third one as a port anyway, and
+    a port cut there comes back with no faces at all, so createPatch deletes it and the finished
+    mesh is refused for a boundary it does not carry:
+
+      job 6ddb58aa  the engine named it `coolant_in`   283,410,955 cells, 11,217.3 s
+      job e8256476  the USER declared it `outlet_2`     14,910.8 s, a second 64-core machine
+
+    `engines/cfmesh_conjugate/mouths.sealed_rows` now refuses such a declaration before the
+    mesher, which is the backstop. This is the layer above it: the customer is never asked to
+    confirm a port that is going to be refused. Session dff9eb3b, 2026-11-16, is the card this was
+    written against - sticker 3, `reaches_outside: false`, offered as `outlet_2` at confidence
+    0.98.
+
+    IT READS `reaches_outside`, NEVER `clear_ahead`. `clear_ahead` does not mean the same thing at
+    its three producers (`cad/scout._name_openings` carries that argument in full), and None is
+    "nobody measured it", which must neither promote a mouth nor demote one. Only a mouth MEASURED
+    not to reach the outside is held back.
+
+    AND ONE SIGNAL DEMOTES A PROPOSAL, WHICH IT MAY NOT DO TO A RUN. The engine's refusal takes
+    TWO - `mouths.Stub.is_sealed` is `not ahead_is_clear AND sealed_rim` - because a single ray
+    down a mouth's normal reads False for a mouth that opens to real air with a bracket beyond it,
+    and that mouth meshes and delivers. The second signal is a surface-tessellation fact that does
+    not exist yet at intake. The costs are not symmetric, which is what makes one signal enough
+    HERE and not there: withholding a proposal wrongly costs the user one click on a card they are
+    already reading, and offering one wrongly costs a four-hour mesh and a refused job.
+
+    NEVER BELOW TWO, for the reason `vet_openings` gives: a vetting cannot empty a part. Where
+    this would leave fewer than two mouths still reaching the outside there is no better pair to
+    offer, so nothing is held back and the reading the part had stands.
+    """
+    ops = [o for o in facts.get("openings") or [] if o.get("role") in ("inlet", "outlet")]
+    blind = [o for o in ops if o.get("reaches_outside") is False]
+    if not blind or len(ops) - len(blind) < MIN_ASSEMBLY_OPENINGS:
+        return
+    for o in blind:
+        o["role"] = "not_an_opening"
+        o["confidence"] = min(float(o.get("confidence") or 0.0), BLIND_MOUTH_CONFIDENCE)
+        facts.setdefault("notes", []).append(
+            f"opening {o.get('id')} ({o.get('name')}) is proposed as not an opening: the part "
+            "itself is straight ahead of it, inside the part's own box, so the fluid has no way "
+            "out there - make it an opening again if you know better")
     kept = [o for o in ops if o.get("role") != "not_an_opening"]
     if kept and not any(o.get("role") == "inlet" for o in kept):
         max(kept, key=lambda o: float(o.get("area_mm2") or 0.0))["role"] = "inlet"
@@ -1536,6 +1598,7 @@ def _scout_triangles(local_path: Path, work: Path, interp_ref, ref,
         # several closed parts in one triangle file: the fluid is the space inside them, as for a
         # CAD assembly (the skin is in metres)
         read_fluid_volume(facts, skin, work=work, scale=1.0, kind="triangles")
+        vet_by_reach(facts)
         read_whole_shape(facts, skin)
         if facts.get("openings_from") != "fluid_volume":
             # the extracted openings bound the fluid by construction; the skin's own passages
@@ -2171,7 +2234,10 @@ _SYSTEM = (
     "whether fluid flows through it or around it, and for every sticker which opening it is and "
     "whether fluid enters (inlet) or leaves (outlet) there - or that it is not an opening at all "
     "(a bolt hole, a mounting face). The stickers and the measuring step's guess of the kind are a "
-    "machine's first reading, not facts: a closed solid with flat ends may be the water inside a "
+    "machine's first reading, not facts, with ONE exception: where a sticker is said to have the "
+    "part itself straight ahead of it, that was measured by a ray and the pictures cannot see it "
+    "- a capped bore and an open one are the same dark circle - so answer not_an_opening for that "
+    "sticker whatever it looks like. Otherwise: a closed solid with flat ends may be the water inside a "
     "pipe, or a wing, a car body, a rotor with flat hub faces. The user's own description decides "
     "what the part is and which way the fluid goes; when they say the fluid flows AROUND the part, "
     "or the part is plainly a body, answer external / solid-body and mark every sticker "
@@ -2269,8 +2335,17 @@ def _facts_text(facts: dict, shots, purpose_text: str) -> str:
         for o in stickered(facts):
             size = f"{o['diameter_mm']:.0f} mm across" if o["shape"] == "circle" \
                 else f"{o.get('width_mm', 0):.0f} x {o.get('height_mm', 0):.0f} mm"
+            # WHAT THE PICTURES CANNOT ANSWER IS SAID IN WORDS. The measuring step rays each
+            # mouth along its own normal, and the one thing that reading settles - is there metal
+            # of this same part immediately in front of this mouth - is invisible in a render: a
+            # capped bore and an open one are the same dark circle. The model was being asked for
+            # it anyway, and on the customer cold plate it answered `outlet` at 0.98 on a mouth
+            # this same record had measured blind and scored 0.5.
+            shut = "; the part itself is straight ahead of this one" \
+                if o.get("reaches_outside") is False else ""
             lines.append(f"  {o['id']}: {o['shape']} opening, {size}, at ({o['centroid_mm'][0]:.0f}, "
-                         f"{o['centroid_mm'][1]:.0f}, {o['centroid_mm'][2]:.0f}) mm; guessed {o['role']}")
+                         f"{o['centroid_mm'][1]:.0f}, {o['centroid_mm'][2]:.0f}) mm; guessed "
+                         f"{o['role']}{shut}")
     elif facts.get("flow") == "external":
         lines.append("The measuring step reads this as a body in a flow, so no stickers are drawn.")
     else:
@@ -2560,9 +2635,17 @@ def _proposal(facts: dict, vision: dict | None) -> dict:
             continue
         if named.get("name"):
             o["name"] = str(named["name"]).strip()[:40]
-        if named.get("role") in ("inlet", "outlet", "not_an_opening"):
+        # A RAY OUTRANKS A RENDER ON THE ONE QUESTION A RENDER CANNOT ANSWER. `vet_by_reach`
+        # has already taken the port role off a mouth measured with the part itself in front of
+        # it; without this the model hands it straight back, which is what the card did on
+        # session dff9eb3b - `outlet_2` at 0.98 on the mouth the same card measured blind and
+        # scored 0.5. Only a mouth the measurement demoted is protected: where the vetting left
+        # the role alone there is nothing here to undo.
+        held = o.get("reaches_outside") is False and o.get("role") == "not_an_opening"
+        if named.get("role") in ("inlet", "outlet", "not_an_opening") and not held:
             o["role"] = named["role"]
-        o["confidence"] = round(float(named.get("confidence", o.get("confidence", 0.5))), 2)
+        said = round(float(named.get("confidence", o.get("confidence", 0.5))), 2)
+        o["confidence"] = min(said, BLIND_MOUTH_CONFIDENCE) if held else said
     try:
         # how long a real one is, by the model's knowledge of what it is: what the stage checks
         # the unit against (unit_suggestion), never a size applied to anything
