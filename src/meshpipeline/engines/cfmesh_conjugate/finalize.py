@@ -238,6 +238,14 @@ def quality_of(ws: Path, report: dict) -> dict:
         "coolant_piece_cells": [int(x) for x in (fluid.get("piece_cells") or ())],
         "coolant_pieces_expected": int(plan.get("expect_fluid_pieces") or 0),
         "empty_patches": blank,
+        # THE MOUTHS THE PLAN ASKED FOR AND THE ONES THE MESH DOES NOT CARRY. `empty_patches`
+        # cannot see a dropped mouth - createPatch REMOVES a patch whose face set came out empty
+        # rather than leaving it at zero faces, so the name is simply gone. Lifted out of the
+        # conjugate report and into the manifest so the viewer, the verdict and the review can
+        # see it: otherwise the only way to learn that the delivered plan names an opening the
+        # mesh lacks is to untar a multi-gigabyte bundle and read its second member.
+        "port_patches_planned": list(report.get("port_patches_planned") or []),
+        "port_patches_dropped": list(report.get("port_patches_dropped") or []),
         "ports": report.get("ports"),
         "patch_names": dict(report.get("patch_names") or {}),
         "native_problems": list(report.get("problems") or []),
@@ -605,6 +613,8 @@ def _said(q: dict) -> str:
         bits.append(f"fatal={q['fatal'][:6]}")
     if q["empty_patches"]:
         bits.append(f"empty={q['empty_patches'][:6]}")
+    if q.get("port_patches_dropped"):
+        bits.append(f"planned but not in the mesh={q['port_patches_dropped'][:6]}")
     if q["native_problems"]:
         bits.append("problems: " + "; ".join(q["native_problems"][:4]))
     if not q.get("review_volume"):

@@ -782,6 +782,13 @@ def _as_dict(report, plan: PL.ConjugatePlan) -> dict:
         "ports": ({"inlet": report.ports.inlet, "outlet": report.ports.outlet,
                    "reason": report.ports.reason} if report.ports else None),
         "patch_names": dict(report.patch_names or {}),
+        # THE ASK AND THE OUTCOME, side by side. conjugate_plan.json ships to the customer and
+        # records what was ASKED of the mesher - it is written before the mesh exists, so it
+        # cannot know which mouths survived. This is where the mesh answers it. A dropped mouth
+        # is invisible to `empty_patches`, because createPatch removes the patch rather than
+        # leaving it empty (job 57b613d7, mouth_1).
+        "port_patches_planned": list(report.port_patches_planned or ()),
+        "port_patches_dropped": list(report.port_patches_dropped or ()),
         "seconds": dict(report.seconds),
         "peak_rss_bytes": int(report.peak_rss_bytes or 0),
         "plan": {"background_cell_m": plan.background_cell_m, "levels": plan.levels,

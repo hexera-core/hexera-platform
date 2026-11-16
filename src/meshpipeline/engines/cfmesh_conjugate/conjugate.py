@@ -529,10 +529,21 @@ def render_port_patch_dicts(ports: list) -> tuple[str, str]:
     So the port is cut out of the face instead: the faces of that block face lying inside a box
     around the mouth become a patch of their own, and what is left of the face stays a wall.
 
-    CUT BEFORE THE SPLIT, on the block mesh, which is where `renameBoundary` acts too and for the
-    same reason: the coolant's end and the metal's outer face at that end are two faces of one
-    plane, and both should carry the name the user gave that end of the part. splitMeshRegions
-    then hands each region the part of the patch it owns.
+    CUT AFTER THE SPLIT, ON THE FLUID REGION ALONE. This used to say the opposite - "cut before
+    the split, on the block mesh ... splitMeshRegions then hands each region the part of the patch
+    it owns" - and the chain assembled 380 lines below says otherwise: it appends
+    `topoSet -constant -region fluid` and `createPatch -overwrite -region fluid` AFTER
+    splitMeshRegions. `renameBoundary` really does act on the block, which is probably where the
+    claim came from, but these two do not.
+
+    IT MATTERS, because it is why a capped mouth vanishes. patchToFace selects from the FLUID
+    region's `wall_outer`, so a mouth with metal behind it has no coolant face anywhere under its
+    box: measured on job 57b613d7, `faceSet port_mouth_1 now size 2640` on the block and `now
+    size 0` after the box subset, then "Removed zero-sized patch mouth_1". The 2,640 is exactly
+    mouth_2's 1,306 plus mouth_3's 1,334 - the whole of the coolant's outer skin - and never the
+    metal's 485,526. Had the cut really happened before the split, the mouth would have found
+    faces on the metal and survived as a patch with nothing behind it, which is the case
+    `empty_patches` was built for and the one that never fires here.
 
     `ports` rows carry: name, type (inlet/outlet/...), face (which block face), centre_m, and
     diameter_m. An empty list gives two empty dictionaries and no stage runs.
@@ -1376,6 +1387,14 @@ class ConjugateReport:
     #: promise that budgets only for the mesher is a promise about the wrong stage. Nothing here is
     #: optimised yet; this is the measurement that says where to start.
     seconds: dict[str, float] = field(default_factory=dict)
+    #: EVERY MOUTH THE PLAN ASKED FOR, by name, whatever role it carried.
+    port_patches_planned: tuple[str, ...] = ()
+    #: The ones the delivered mesh does not carry. A mouth whose face set comes out empty is not
+    #: left at zero faces - createPatch REMOVES it ("Removed zero-sized patch mouth_1 type patch at
+    #: position 2", job 57b613d7) - so `empty_patches` cannot see it and neither could any gate.
+    #: The plan ships to the customer inside the same tarball as `constant/`, so an unrecorded drop
+    #: is a file that contradicts the mesh beside it.
+    port_patches_dropped: tuple[str, ...] = ()
 
     @property
     def mesher_seconds(self) -> float:
@@ -1490,7 +1509,8 @@ DEFAULT_VOLUME_TOL = 0.05
 
 def verify(report: ConjugateReport, *, expect_fluid_volume_m3: float | None = None,
            expect_fluid_pieces: int | None = None, volume_tol: float = DEFAULT_VOLUME_TOL,
-           narrowest_m: float | None = None) -> ConjugateReport:
+           narrowest_m: float | None = None,
+           port_patches: list | None = None) -> ConjugateReport:
     """Decide whether this mesh can be handed on, and say exactly why not when it cannot.
 
     FIVE CHECKS, and each one catches something the others cannot.
@@ -1552,6 +1572,46 @@ def verify(report: ConjugateReport, *, expect_fluid_volume_m3: float | None = No
                 f"fluid volume is {err * 100:.2f}% from the {expect_fluid_volume_m3:.6g} m^3 the "
                 f"CAD declares, past the {volume_tol * 100:.0f}% staircase allowance. The tagged "
                 "cells are not the coolant.")
+    # EVERY PLANNED MOUTH AGAINST THE DELIVERED PATCHES - deliberately OUTSIDE the port-plan
+    # guard below, which is what let this through.
+    #
+    # `ports_from` returns None when no mouth was typed inlet or outlet, and a customer who asks
+    # for no ports to be named puts every job on exactly that road: all mouths come back typed
+    # `opening`, so the whole block below is skipped and nothing compares the plan with the mesh.
+    # Measured on job 57b613d7 (the 283M-cell cold plate): the plan declared mouth_1, mouth_2 and
+    # mouth_3 as openings; topoSet found 2,640 faces under mouth_1's box and then 0 after the
+    # subset; createPatch removed the patch; and the delivered fluid region carries mouth_2 and
+    # mouth_3 only. `quality.empty_patches` was [] - it looks for a patch with no faces, and this
+    # patch was GONE - so the one gate aimed at this reported nothing.
+    #
+    # A NOTE AND NOT A PROBLEM. The mesh is correct: the lid port is capped in the CAD, no coolant
+    # reaches it, and dropping the patch is what should happen. What was missing is the record.
+    # The structured fields beside this note are what a gate can act on if a run ever needs one.
+    # THE FLUID REGION ALONE, because that is the only place a port patch can exist: the chain
+    # appends `topoSet -constant -region fluid` and `createPatch -overwrite -region fluid` AFTER
+    # the split, so a mouth is cut out of the coolant's own outer skin and never the metal's.
+    # Taking the union with the solid's patches would let an unrelated solid patch of the same
+    # name mask a genuine drop - it can only ever produce a false negative here.
+    _delivered = set(report.fluid.patches)
+    _planned = [n for n in (str((c or {}).get("name") or "").strip()
+                            for c in (port_patches or ())) if n]
+    report.port_patches_planned = tuple(_planned)
+    report.port_patches_dropped = tuple(n for n in _planned if n not in _delivered)
+    if _planned:
+        _kept = [n for n in _planned if n in _delivered]
+        if _kept:
+            report.notes.append(
+                "the plan asked for " + ", ".join(_planned) + " to be cut, and the mesh carries "
+                + ", ".join(f"{n} ({report.fluid.patches[n]:,} faces)" for n in _kept) + ".")
+        if report.port_patches_dropped:
+            _d = report.port_patches_dropped
+            report.notes.append(
+                f"the mesh does NOT carry {', '.join(_d)}: the face set came out empty, so "
+                f"createPatch removed {'those patches' if len(_d) > 1 else 'that patch'} rather "
+                "than leaving it with zero faces. That is a mouth the coolant does not reach - "
+                "capped in the CAD, or a face inside the part. The mesh is right; "
+                f"conjugate_plan.json records what was ASKED, so it still names "
+                f"{', '.join(_d)} and the mesh beside it does not.")
     if (plan := report.ports) is not None:
         # THE NAME THE MESH CARRIES, not the block face it was cut from. A declared port is
         # renamed before the split (render_meshdict's patch_names), so the fluid region's patch is
@@ -1560,6 +1620,13 @@ def verify(report: ConjugateReport, *, expect_fluid_volume_m3: float | None = No
         # the fluid region coolant_in with 128 faces, exactly what ymin had.
         renamed = report.patch_names or {}
         for role, face in (("inlet", plan.inlet), ("outlet", plan.outlet)):
+            if not face:
+                # NO SUCH ROLE WAS NAMED, which is legal: `ports_from` returns a plan as soon as
+                # EITHER end is named, so a part with an inlet and no outlet reaches here with
+                # `outlet` empty. Looking that up found no patch called "" and announced "the
+                # outlet was to be , and the fluid region has no patch of that name" - a missing
+                # port on a part that never declared one.
+                continue
             want = renamed.get(face, face)
             n = report.fluid.patches.get(want)
             as_cut = "" if want == face else f" (the {face} face, renamed)"
@@ -1585,8 +1652,14 @@ def verify(report: ConjugateReport, *, expect_fluid_volume_m3: float | None = No
             # said were not ports, so the coolant runs right up to them and stops. Measured on
             # job b6762d5c: mouth_3 carries 1,743 faces, within 2% of the inlet's 1,714, and the
             # outlet the user named carried none at all.
-            carried = ", ".join(f"{w} ({report.fluid.patches.get(w, 0):,} faces)"
-                                for w in plan.walls)
+            # ABSENT IS NOT ZERO. `patches.get(w, 0)` returned 0 both for a patch carrying no
+            # faces and for a patch that is not in the mesh at all, so a mouth createPatch had
+            # REMOVED was described as one the coolant reaches with 0 faces - which is false on
+            # its face, and hides the one of the two that needs looking at.
+            carried = ", ".join(
+                (f"{w} ({report.fluid.patches[w]:,} faces)" if w in report.fluid.patches
+                 else f"{w} (not in the mesh)")
+                for w in plan.walls)
             report.notes.append(
                 f"the coolant also reaches {carried}, which were declared openings and then "
                 "sealed as walls. That is a choice, not a defect - but an opening of about the "
@@ -2077,7 +2150,7 @@ def build(workspace, *, block_stl: str = "constant/triSurface/block.stl",
                 "moves if any of them were coolant.")
     return verify(rep, expect_fluid_volume_m3=expect_fluid_volume_m3,
                   expect_fluid_pieces=expect_fluid_pieces, volume_tol=volume_tol,
-                  narrowest_m=narrowest_m)
+                  narrowest_m=narrowest_m, port_patches=port_patches)
 
 
 __all__ = ["ConjugateError", "ConjugateReport", "RegionReport", "PortPlan",
