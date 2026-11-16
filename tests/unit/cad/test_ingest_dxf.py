@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from meshpipeline.cad.ingest import IngestError, canonicalise, check_upload, sniff_format
+from meshpipeline.cad.ingest import IngestError, canonicalise, check_upload, dxf, sniff_format
 from meshpipeline.cad.ingest.dxf import BINARY_SENTINEL, read_dxf
 from meshpipeline.cad.ingest.surface import read_stl, stats
 
@@ -243,6 +243,35 @@ def test_the_blank_line_a_writer_leaves_after_eof_is_not_damage(tmp_path):
     _, measured = _canonical(_write(tmp_path, _drawing(_polyface()) + "\n\n"), tmp_path)
 
     assert measured["triangles"] == 12
+
+
+@pytest.mark.parametrize("entities, why", [
+    #: vertices with no face record: they are held until the SEQEND that would join them
+    (_tags((0, "POLYLINE"), (8, "bloat"), (66, "1"), (70, "64"))
+     + "".join(_tags((0, "VERTEX"), (8, "bloat"), (10, "1"), (20, "2"), (30, "3"), (70, "192"))
+               for _ in range(40)), "a polyface mesh of vertices alone"),
+    #: one MESH entity states its whole vertex list, so one entity's codes are held at once
+    (_tags((0, "MESH"), (8, "bloat"), (92, "40"))
+     + "".join(_tags((10, "1"), (20, "2"), (30, "3")) for _ in range(40)), "one MESH entity"),
+])
+def test_a_drawing_of_vertices_alone_is_bounded(tmp_path, monkeypatch, entities, why):
+    """Vertices never become triangles on their own, so the triangle ceiling never fires on them.
+    Unbounded, a 500 MB drawing of nothing but vertices would be read until memory ran out."""
+    monkeypatch.setattr(dxf.limits, "MAX_TRIANGLES", 20)
+
+    with pytest.raises(IngestError) as caught:
+        canonicalise(_write(tmp_path, _drawing(entities)), tmp_path / "out")
+
+    assert "triangles" in str(caught.value), why
+
+
+def test_the_triangle_ceiling_still_refuses_a_drawing_of_faces(tmp_path, monkeypatch):
+    monkeypatch.setattr(dxf.limits, "MAX_TRIANGLES", 4)
+
+    with pytest.raises(IngestError) as caught:
+        canonicalise(_write(tmp_path, _drawing(_polyface())), tmp_path / "out")
+
+    assert "triangles" in str(caught.value)
 
 
 def test_a_binary_dxf_is_refused_with_the_way_on(tmp_path):

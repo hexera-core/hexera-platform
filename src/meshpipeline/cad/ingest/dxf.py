@@ -137,7 +137,7 @@ class _Builder:
         self._check()
 
     def _check(self) -> None:
-        if len(self.tris) > limits.MAX_TRIANGLES:
+        if len(self.tris) > limits.MAX_TRIANGLES or len(self.points) > limits.MAX_TRIANGLES:
             raise SurfaceError(limits.too_many_triangles())
 
     def mesh(self) -> SurfaceMesh:
@@ -256,6 +256,11 @@ def read_dxf(path: Path) -> SurfaceMesh:
                     poly["verts"].append((float(d[10][0]), float(d[20][0]), float(d[30][0])))
                 except (KeyError, IndexError, ValueError):
                     pass
+                if len(poly["verts"]) > limits.MAX_TRIANGLES:
+                    # a mesh's vertices are held until its SEQEND says how they are joined, so
+                    # they are paid for as they arrive: a drawing of nothing but vertices never
+                    # reaches the triangle count, and would otherwise be read until memory ran out
+                    raise SurfaceError(limits.too_many_triangles())
         elif kind == "SEQEND" and poly is not None:
             if poly["flags"] & _POLYFACE:
                 faces = [i for i in poly["faces"] if max(i) < len(poly["verts"])]
@@ -281,10 +286,12 @@ def read_dxf(path: Path) -> SurfaceMesh:
         elif kind == "INSERT":
             saw_insert = True
 
+    held = 0                                    # values held for the entity being read
     for code, value in _tags(p):
         if code == 0:
             flush()
             d = {}
+            held = 0
             kind = value.strip().upper()
             if kind == "SECTION":
                 section = ""
@@ -298,6 +305,12 @@ def read_dxf(path: Path) -> SurfaceMesh:
         if section != "ENTITIES":
             continue
         d.setdefault(code, []).append(value.strip())
+        held += 1
+        if held > limits.MAX_TRIANGLES:
+            # a MESH states its whole vertex and face list in one entity, so one entity's codes
+            # are held before any of it is turned into triangles; the hold is bounded for the
+            # same reason the vertices of a polyface mesh are
+            raise SurfaceError(limits.too_many_triangles())
     flush()
 
     if not build.tris:
