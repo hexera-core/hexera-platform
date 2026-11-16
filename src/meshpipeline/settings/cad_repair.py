@@ -324,8 +324,10 @@ CAD_REPAIR_MESH_PROBE_TIMEOUT_S: float = float(
     optional_env("CAD_REPAIR_MESH_PROBE_TIMEOUT_S", "60.0"))
 
 
-#: Seconds beyond one probe timeout the region loop keeps for the final whole-shape probe
-#: (session.FINAL_PROBE_SLACK_S + the loop's own margin); the warning below mirrors that sum.
+#: Seconds beyond one probe timeout before the region loop authors nothing: the authoring
+#: reserve's extra 10 s (region_loop.final_reserve_s = probe timeout + 10) plus the 5 s the run
+#: deadline is set back from CAD_REPAIR_TIMEOUT_S (conservative.DEADLINE_MARGIN_S). Mirrored
+#: here rather than imported, because settings must not depend upward on cad.repair.
 _AUTHORING_RESERVE_EXTRA_S = 15.0
 
 
