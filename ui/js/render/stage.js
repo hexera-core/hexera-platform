@@ -128,7 +128,7 @@ export const Stage = {
     // one still counted as open).
     this._att=null;this._attSep=null;this._built=new Set();this._seq=0;this.meshBar=null;this._ended=false;
     // ...and so did the stopped clock and the last event's time
-    this.finished=false;this._evt=0;Run.reset();},
+    this.finished=false;this._evt=0;this._t1=0;Run.reset();},
   // Fill the empty state's format line from the SERVER's capability description. Advisory and
   // best-effort: when capabilities are unavailable the line stays empty and the neutral lead
   // sentence still invites an upload, because the server is the authority on what it accepts.
@@ -704,13 +704,13 @@ export const Stage = {
     this.col().appendChild(p);this.proc=p;this.tl=p.querySelector('#tl');
     this.rows={};ROWS.forEach(d=>{this.rows[d.key]=this._row(d);});this.nodes=this.rows;
     p.querySelector('#proc-cancel').onclick=()=>onCancel();
-    this.t0=Date.now();
+    this.t0=this.serverNow();
     // one ticker drives every live time - the run's total and the running row's
     clearInterval(this._tick);
     this._tick=setInterval(()=>{
       const c=p.querySelector('.proc-clock');
-      if(c&&!this.finished)c.textContent=fmtDur(Date.now()-this.t0);
-      Object.values(this.rows||{}).forEach(r=>{if(r.state==='active')r.dur.textContent=fmtDur(r.spent+Math.max(0,Date.now()-r.t0));});
+      if(c&&!this.finished)c.textContent=fmtDur(this.serverNow()-this.t0);
+      Object.values(this.rows||{}).forEach(r=>{if(r.state==='active')r.dur.textContent=fmtDur(this._capped(r.spent+Math.max(0,this.serverNow()-r.t0)));});
       if(!this.finished&&(this._lineTick=(this._lineTick||0)+1)%2===0)this.drawLive();
     },500);
     this.drawLive();
@@ -749,14 +749,23 @@ export const Stage = {
   clock(createdAt,endedAt){
     const t0=Date.parse(createdAt||''),t1=Date.parse(endedAt||'');
     if(this.finished&&!(t1>0))return;
-    if(t0>0)this.t0=Math.min(t0,Date.now());
-    if(t1>0)this.finished=true;
+    this._learn(t0);
+    if(t0>0)this.t0=Math.min(t0,this.serverNow());
+    if(t1>0){this.finished=true;this._t1=t1;}
     const c=this.proc&&this.proc.querySelector('.proc-clock');
-    if(c&&this.t0)c.textContent=fmtDur((t1>0?t1:Date.now())-this.t0);},
+    if(c&&this.t0)c.textContent=fmtDur((t1>0?t1:this.serverNow())-this.t0);},
   // WHEN, BY THE SERVER'S CLOCK. Every event says when it happened; a row opens and closes at those
   // times, so a replayed run's rows last as long as they did - not the instant the replay took.
-  at(ts){const t=Date.parse(ts||'');this._evt=t>0?Math.min(t,Date.now()):0;},
-  now(){return this._evt||Date.now();},
+  at(ts){const t=Date.parse(ts||'');this._learn(t);this._evt=t>0?Math.min(t,this.serverNow()):0;},
+  now(){return this._evt||this.serverNow();},
+  /* ONE CLOCK, THE SERVER'S. A browser whose clock is behind the server's used to hold the run's start at its own
+     "now" while the steps counted from when their events arrived - two clocks a skew apart, so a step could read
+     longer than its run (22:23 against 21:40, 16 Nov). How far ahead the server is shows in any time it sends that
+     is still in this page's future; every live time is read on the server's clock from then on. */
+  _learn(t){if(!(t>0))return;const a=t-Date.now();if(a>(this._ahead||0)&&a<36e5)this._ahead=a;},
+  serverNow(){return Date.now()+(this._ahead||0);},
+  // ...and a step's time is never shown longer than its run's
+  _capped(ms){const tot=this.t0?(this._t1||this.serverNow())-this.t0:0;return tot>0?Math.min(ms,tot):ms;},
 
   /* WHICH ROW. The dispatch shows the renderer every event first (`seen`); the one table
      (core/run_rows.js) says which row its stage feeds, and the builder's work is its design until
@@ -787,7 +796,7 @@ export const Stage = {
     return row;},
   _close(r){if(!r||r.state!=='active')return;
     r.spent+=Math.max(0,this.now()-r.t0);r.state='done';r.tEnd=this.now();
-    r.dur.textContent=fmtDur(r.spent);if(this._activeKey===r.key)this._activeKey=null;
+    r.dur.textContent=fmtDur(this._capped(r.spent));if(this._activeKey===r.key)this._activeKey=null;
     this.paint(r);this._drawSaid(r);this.drawLive();},
   done(a){const r=this.rows&&this.rows[ROW_KEYS.includes(a)?a:(STAGE_ROW[a]||'')];if(r)this._close(r);},
 
@@ -1134,7 +1143,9 @@ export const Stage = {
     open.forEach(n=>this._close(n));
     this.clock(data.createdAt,data.endedAt);
     if(!this.finished){this.finished=true;
-      const c=this.proc&&this.proc.querySelector('.proc-clock');if(c&&this.t0)c.textContent=fmtDur(Date.now()-this.t0);}
+      const c=this.proc&&this.proc.querySelector('.proc-clock');if(c&&this.t0)c.textContent=fmtDur(this.serverNow()-this.t0);}
+    // the run's total is known now: no row reads longer than it
+    rows.forEach(n=>{if(n.state==='done'&&n.spent)n.dur.textContent=fmtDur(this._capped(n.spent));});
     // HOW MANY ATTEMPTS, as the run counted them: only one that ran a mesher counts. Said on the build
     // row when there was more than one, or when none built anything.
     const opened=this._att!=null||this._built.size>0;

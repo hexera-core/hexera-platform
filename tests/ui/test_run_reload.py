@@ -70,3 +70,31 @@ def test_a_finished_job_carries_its_own_times(live):
                              ended_at:'2026-10-03T22:49:40Z'}, '');
     })()""")
     assert out["createdAt"] == "2026-10-03T22:49:30Z" and out["endedAt"] == "2026-10-03T22:49:40Z"
+
+
+def test_a_step_is_never_longer_than_its_run_when_the_servers_clock_is_ahead(live):
+    # Seen live (16 Nov): "Designing the mesh" read 22:23 while the run read 21:40. The run's clock counted from the
+    # server's created_at, held at this browser's now while that was still "in the future", while each step counted
+    # from when its event reached the page - two clocks a skew apart. The page now reads the server's clock throughout.
+    out = live.evaluate("""(async () => {
+      const { Stage } = await import('/static/js/render/stage.js');
+      const { dispatch } = await import('/static/js/core/events.js');
+      const realNow = Date.now;
+      let now = realNow.call(Date);
+      Date.now = () => now;
+      try {
+        const iso = (ms) => new Date(ms).toISOString();
+        const B0 = now, AHEAD = 60000;                 // the server's clock is a minute ahead of this browser's
+        Stage.mount(); Stage.newRun(); Stage.ensureProc();
+        Stage.clock(iso(B0 + AHEAD));                  // the job was created just now, by the server's clock
+        now = B0 + 10000;                              // ten seconds on, the design starts
+        let c = dispatch({type: 'stage', stage: 'builder', ts: iso(B0 + AHEAD + 10000)}, Stage, null);
+        c = dispatch({type: 'narrate', stage: 'builder', kind: 'say', text: 'Designing', ts: iso(B0 + AHEAD + 10000)}, Stage, c);
+        now = B0 + 20000; Stage.clock(iso(B0 + AHEAD));     // the status polls
+        now = B0 + 100000; Stage.clock(iso(B0 + AHEAD));
+        await new Promise(r => setTimeout(r, 1200));         // the ticker draws
+        const design = [...document.querySelectorAll('#tl .tl-node')].find(n => n.dataset.row === 'design');
+        return {total: document.getElementById('proc-clock').textContent, design: design.querySelector('.dur').textContent};
+      } finally { Date.now = realNow; }
+    })()""")
+    assert out == {"total": "1:40", "design": "1:30"}, out

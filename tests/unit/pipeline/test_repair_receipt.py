@@ -278,14 +278,16 @@ def test_the_event_drops_a_leaking_row_and_keeps_the_rest():
 
 
 def test_the_event_caps_the_rows_and_every_field():
-    event = E.receipt("repair", "R" * 80,
-                      [{"label": "L" * 90, "value": "V" * 90, "why": "W" * 400}] * 30)
+    fits = {"label": "L" * E.MAX_RECEIPT_LABEL, "value": "V" * E.MAX_RECEIPT_VALUE, "why": "W" * E.MAX_RECEIPT_WHY}
+    event = E.receipt("repair", "R" * 80, [fits] * 30)
     rows = event.data["rows"]
     assert len(rows) == E.MAX_RECEIPT_ROWS
     assert len(event.data["title"]) <= E.MAX_RECEIPT_TITLE + 16
-    assert rows[0]["label"].startswith("L" * E.MAX_RECEIPT_LABEL)
-    assert rows[0]["value"].startswith("V" * E.MAX_RECEIPT_VALUE)
-    assert rows[0]["why"].startswith("W" * E.MAX_RECEIPT_WHY)
+    assert rows[0] == fits
+    # a field over its limit is never cut short ("…[truncated]" on the page): its row is left out
+    for k, n in (("label", E.MAX_RECEIPT_LABEL), ("value", E.MAX_RECEIPT_VALUE), ("why", E.MAX_RECEIPT_WHY)):
+        over = E.receipt("repair", "R", [{**fits, k: "X" * (n + 1)}, fits])
+        assert over.data["rows"] == [fits], k
 
 
 def test_a_value_carries_its_number_without_being_judged_as_prose():
