@@ -52,6 +52,19 @@ def test_compose_restates_no_application_default():
     assert restated == [], f"docker-compose.yml restates a default the .env already carries: {restated}"
 
 
+
+@pytest.mark.parametrize("var", ["OPENAI_API_KEY", "DEEPSEEK_API_KEY", "DEEPINFRA_API_KEY", "TAVILY_API_KEY"])
+def test_a_provider_key_with_a_trailing_newline_is_read_without_it(monkeypatch, var):
+    # prod's OpenAI secret carried a trailing newline: every intake call failed as "Connection error"
+    import meshpipeline.settings.providers as prov
+    try:
+        with monkeypatch.context() as m:
+            m.setenv(var, "  sk-proj-abc123\n")
+            assert getattr(importlib.reload(prov), var) == "sk-proj-abc123"
+    finally:
+        importlib.reload(prov)
+
+
 # MinIO bucket validity
 def test_the_authoritative_bucket_default_is_mesh_artifacts():
     # The settings inventory is the authority; the generated .env must carry the same value, or a
