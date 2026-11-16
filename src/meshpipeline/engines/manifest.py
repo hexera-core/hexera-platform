@@ -226,6 +226,55 @@ def write_manifest(workspace, *, patch_types: dict, patch_entities: dict,
     ws = Path(workspace)
     volume_path = _published_volume(ws, volume_path)
     fc = _patch_face_counts(ws)
+    # THE BUILD'S OWN EXIT, carried to the one place every engine's manifest is written.
+    #
+    # `rc` and `timed_out` are DECLARED GATING BARS on seven engines, and until this they could
+    # never fail: `finalize` is reached through one fixed contract that carries no native result
+    # (executor calls it with workspace, patches, engine, domain, internal_flow, params,
+    # topology), so each engine rebuilt `quality` by re-reading checkMesh output or its own report
+    # from disk, and both keys arrived absent. `gate_declared_criteria` then skipped them via
+    # `BUILD_TIME_KEYS`, whose comment asserted they "CANNOT be measured after the build". The
+    # process has exited; its RECORD has not. `contracts.mesh_execution` keeps every native run of
+    # the attempt and publishes it through `native_runs`, which outlives the process by design.
+    #
+    # Here rather than in seven finalizes: the first one to forget would revert to the old
+    # behaviour silently, with no test able to see it.
+    from meshpipeline.contracts.mesh_execution import RC_INFRASTRUCTURE, native_runs
+    _runs = native_runs(ws)
+    _build: dict | None = None
+    if _runs is not None:
+        # THE LAST RUN THAT ACTUALLY LAUNCHED, which is the same selector the executor classifies
+        # failures with - so the manifest and the executor can never disagree about which run this
+        # was. A refusal before launch is not the build.
+        _launched = [r for r in _runs if not r.get("refused_before_launch")]
+        _build = _launched[-1] if _launched else None
+    # AN OUTAGE IS NOT A VERDICT ON THE MESH, and this is the half of "the same selector" that is
+    # easy to miss: the executor does not trust the selected run's rc either, it branches on
+    # `never_started` and `uncollected` first and returns an INFRASTRUCTURE result rather than a
+    # mesh verdict. RC_INFRASTRUCTURE comes back as an ordinary result, so it passes the filter
+    # above and would be stamped here as the build's exit code - after which the quality floor
+    # refuses with MESH_QUALITY, the fallback ladder calls that fixable, and a storage blip on a
+    # perfectly good mesh is told to the user as cells too badly shaped to use and buys a second
+    # engine run. A `None` rc is the same hazard from the other side: at schema 2.2 it reads as
+    # not-measured, which the gate turns into a refusal.
+    #
+    # In all of those the mesher's own exit is genuinely UNKNOWN, so both keys stay absent and the
+    # schema stays 2.1 - the same answer as an unopened record.
+    if _build is not None and (_build.get("never_started") or _build.get("uncollected")
+                               or _build.get("rc") == RC_INFRASTRUCTURE
+                               or _build.get("rc") is None):
+        _build = None
+    if _build is not None:
+        # COPIED, never mutated in place: the caller reuses its own dict after this returns
+        # (cfmesh's finalize reads `fatal` back out of it, snapgrid formats from it).
+        # `bool()` on timed_out because `0 == False` in Python and a bare 0 would read to
+        # Criterion.evaluate as a build that finished inside its budget.
+        quality = {**quality, "rc": _build.get("rc"), "timed_out": bool(_build.get("timed_out"))}
+    # AN UNOPENED RECORD IS UNKNOWN, NOT CLEAN. `native_runs` returns None when this process never
+    # opened the attempt's record; writing rc 0 there would publish a clean build on no evidence,
+    # which is worse than publishing nothing. Both keys stay absent and the schema stays 2.1, so
+    # the gate goes on skipping them for exactly the manifests that cannot carry them.
+    _schema = "2.2" if _build is not None else "2.1"
     roles = dict(patch_types)
     types = set(roles.values())
     # "the mesh physically exists" - asked of THE ARTIFACT THIS ENGINE DELIVERS, which each spec
@@ -270,8 +319,9 @@ def write_manifest(workspace, *, patch_types: dict, patch_entities: dict,
     # Evidence-backed production-grade report card (engines.quality_criteria):
     # per-criterion threshold vs measured vs verdict, each with rationale + a
     # curated citation - so the reviewer/intake can JUSTIFY quality to the
-    # user instead of asserting it. Build-time-only keys (rc/timed_out) are absent
-    # at manifest time and show as not-evaluated; the build judge already gated them.
+    # user instead of asserting it. `rc` and `timed_out` are in here too, from the block near the
+    # top of this function - they used to be absent, and the claim that they could not be known
+    # at manifest time was false: the process has exited, its record has not.
     from meshpipeline.engines.quality_criteria import evaluate as _qc_evaluate
     from meshpipeline.engines.quality_criteria import measurements_from_manifest
     # The engine's WHOLE quality dict feeds the criteria (each engine's rows pick their own keys;
@@ -284,7 +334,7 @@ def write_manifest(workspace, *, patch_types: dict, patch_entities: dict,
          "flow_topology": flow_topology or ""}))
     _gating = [r for r in _qc_rows if r["gating"] and r["passed"] is not None]
     manifest = {
-        "schema_version": "2.1", "mesh_mode": mesh_mode, "mesh_written": owner,
+        "schema_version": _schema, "mesh_mode": mesh_mode, "mesh_written": owner,
         "engine_params": dict(engine_params or {}),
         "flow_topology": flow_topology or "",   # neutral flow-regime fact (NOT an engine_param)
         "cell_count": quality.get("cells", 0), "mesh_units": mesh_units,

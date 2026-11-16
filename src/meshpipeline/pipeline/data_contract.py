@@ -528,7 +528,7 @@ STATE_FIELDS: dict[str, str] = {
 }
 
 
-# mesh-manifest key registry: the schema-2.1 contract written ONCE by
+# mesh-manifest key registry: the contract written ONCE by
 # openfoam/manifest.write_manifest and consumed by the executor (validation),
 # reviewer (context + navigation), viewer endpoints, worker (dispute seeding)
 # and exporter. Dot-paths; a trailing ".*" marks a dynamic mapping keyed by
@@ -536,7 +536,9 @@ STATE_FIELDS: dict[str, str] = {
 # path is registered, and every key any consumer reads must be one the writer
 # actually emits - ghost reads and dead registry rows both fail.
 MANIFEST_KEYS: dict[str, str] = {
-    "schema_version":        "manifest schema version (2.1)",
+    # 2.2 when the quality block carries the build's own exit (rc, timed_out), 2.1 when this
+    # process never opened the attempt's native record and so cannot know it
+    "schema_version":        "manifest schema version (2.1, or 2.2 with the build keys)",
     "mesh_mode":             "engine that built the mesh (dispute rebuilds pin to it)",
     "mesh_written":          "polyMesh owner file exists - the mesh physically exists",
     "cell_count":            "executor-measured cell total (executor-only concept)",

@@ -146,8 +146,15 @@ def _declared_advisory(engine: str) -> list[dict]:
 
 
 def gating_rows(engine: str, manifest: Mapping) -> list[dict]:
-    """The engine's own gating criteria, measured on the manifest (VER-1). The build-time rows
-    (exit code, time-out) describe a process that has exited; the executor judged them."""
+    """The engine's own gating criteria, measured on the manifest (VER-1).
+
+    THE BUILD-TIME ROWS ARE LEFT OUT ON PURPOSE, and not for the reason this used to give. It
+    said "the executor judged them", which was not true of the quality gate: they were skipped
+    there too, so nothing judged them at all. They are judged now
+    (`quality_criteria.gate_declared_criteria`, from manifest schema 2.2). They stay out of THIS
+    table because it is the MESH's limits - what the mesh measured against what it had to clear -
+    and the mesher's exit code is a fact about the process, not a dimension of the mesh.
+    """
     from meshpipeline.engines.quality_criteria import (
         BUILD_TIME_KEYS,
         criteria_for,

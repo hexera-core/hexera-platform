@@ -34,11 +34,41 @@ def production_grade(engine: str, measurements: dict) -> tuple[bool, dict | None
     return True, None
 
 
-#: Gating criteria that CANNOT be measured after the build. `rc` and `timed_out` describe the native
-#: process, which has already exited by the time a manifest is written, so they read as
-#: not-evaluated there (see write_manifest). The build judge gates them before finalize runs; the
-#: pre-review quality gate below must therefore skip them rather than treat their absence as a fault.
+#: Gating criteria that describe the native PROCESS rather than the mesh: its exit code and
+#: whether the budget stopped it.
+#:
+#: THIS USED TO SAY THEY CANNOT BE MEASURED AFTER THE BUILD, and that was false. The process has
+#: exited by the time a manifest is written; its RECORD has not. `contracts.mesh_execution` keeps
+#: every native run of the attempt and publishes it through `native_runs`, which outlives the
+#: process by design - nothing on the manifest path had ever asked. `engines.manifest.write_manifest`
+#: now reads it, so a manifest at schema 2.2 or above carries both keys and they are judged like
+#: any other declared bar.
+#:
+#: The set is KEPT, for two reasons that have nothing to do with the gate. A manifest written
+#: before 2.2 carries neither key, and an absent key reads as not-evaluated, which
+#: `gate_declared_criteria` turns into a refusal - so every mesh delivered before this change
+#: would fail retroactively if the skip simply went away. And two other readers want the
+#: distinction for its own sake: `verdict_limits.gating_rows` keeps process facts out of the
+#: verdict's MESH-limits table, and `review_delivery._quality_rows` keeps them out of the
+#: candidate-ranking rows. Both exclusions stay unconditional.
 BUILD_TIME_KEYS = frozenset({"rc", "timed_out"})
+
+#: The first manifest schema whose quality block carries the build keys.
+_BUILD_KEYS_FROM = (2, 2)
+
+
+def _carries_build_keys(manifest: dict) -> bool:
+    """Was this manifest written by a version that records the build's exit?
+
+    Asked of the manifest rather than of the keys' presence on purpose: "absent because this
+    engine never recorded it" and "absent because the mesher never exited" must not look the same,
+    and only the schema version can tell them apart.
+    """
+    try:
+        parts = str(manifest.get("schema_version") or "0").split(".")
+        return tuple(int(p) for p in parts[:2]) >= _BUILD_KEYS_FROM
+    except (TypeError, ValueError):
+        return False
 
 
 def measurements_from_manifest(manifest: dict) -> dict:
@@ -68,7 +98,11 @@ def gate_declared_criteria(engine: str, manifest: dict) -> tuple[bool, str]:
     measurements = measurements_from_manifest(manifest)
     bars = {c.key: c for c in criteria_for(engine)}
     for row in evaluate(engine, measurements):
-        if not row["gating"] or row["key"] in BUILD_TIME_KEYS:
+        if not row["gating"]:
+            continue
+        if row["key"] in BUILD_TIME_KEYS and not _carries_build_keys(manifest):
+            # written before the build keys were recorded: skip rather than refuse it for a
+            # measurement its own version could not take
             continue
         if row["passed"] is None:
             return False, refuse(
