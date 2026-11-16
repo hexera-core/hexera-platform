@@ -849,6 +849,7 @@ async def _run_async(req: JobRequest) -> dict:
 
             async def _beat():
                 from datetime import UTC, datetime
+                _said_deadline = False          # say the deadline hold once, not every minute
                 while not _stop.is_set():
                     try:
                         await asyncio.wait_for(_stop.wait(), timeout=_interval)
@@ -865,18 +866,37 @@ async def _run_async(req: JobRequest) -> dict:
                         _extend = (datetime.fromtimestamp(_to, tz=UTC)
                                    if _to is not None and _to > _pb.effective_deadline(_pipeline_deadline)
                                    else None)
+                        from meshpipeline.persistence import lease as _lease
                         async with AsyncSessionLocal() as _hb:
-                            _ok = await lease_repo.heartbeat(_hb, ownership, extend_deadline_to=_extend)
+                            _why = await lease_repo.heartbeat_reason(
+                                _hb, ownership, extend_deadline_to=_extend)
                             await _hb.commit()
+                        _ok = _why == _lease.RENEWED
                         if _ok and _extend is not None:
                             _pb.extend(_pipeline_deadline, _extend.timestamp())
+                        if not _ok and not _lease.ends_renewal(_why):
+                            # PAST THE DEADLINE, WHICH CAN REVERSE. This beat carried no progress
+                            # recent enough to move the deadline on, but a later one may: the
+                            # mesher can start logging again a second after a quiet minute. The
+                            # old code returned here on ANY refusal, so one silent moment ended
+                            # renewal for the rest of a run that was still working, and the lease
+                            # then expired on a job nobody had taken from it.
+                            if not _said_deadline:
+                                _said_deadline = True
+                                jlog.warning(
+                                    "Lease not renewed - job_id=%s generation=%d: past the "
+                                    "pipeline deadline with no recent progress. Still beating: "
+                                    "fresh progress may move the deadline on and recover it.",
+                                    job_id, ownership.execution_generation)
+                            continue
                         if not _ok:
-                            jlog.error("Lease LOST - job_id=%s generation=%d token=%s: a newer "
+                            jlog.error("Lease LOST (%s) - job_id=%s generation=%d token=%s: a newer "
                                        "generation/token owns this job, or its owner cancelled it; "
                                        "the terminal fence makes this worker's side effects inert.",
-                                       job_id,
+                                       _why, job_id,
                                        ownership.execution_generation, ownership.token_hash())
                             return
+                        _said_deadline = False
                     except Exception as _hbx:  # noqa: BLE001 - a transient heartbeat error is retried
                         jlog.warning("heartbeat error job_id=%s: %s - retrying next interval",
                                      job_id, _hbx)

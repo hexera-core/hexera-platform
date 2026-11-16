@@ -80,9 +80,22 @@ CONJUGATE_RUN_TIMEOUT_S: int = int(optional_env("CONJUGATE_RUN_TIMEOUT_S", "2160
 # derived from the job's durable `created_at` (created_at + this), so it is set once, survives restart/
 # redelivery/lease-takeover, and NEVER resets on a retry/rebuild/new-generation. Child budgets
 # (Builder Reviewer, native, Planner) are each capped at the pipeline's REMAINING time; exhaustion
-# fails the job truthfully (timed_out) and starts no new expensive work. Default 6h - generous for the
-# largest real mesh, far under the Celery/Cloud Run backend timeout that coarsely bounds it.
-PIPELINE_TOTAL_TIMEOUT_SECONDS: int = int(optional_env("PIPELINE_TOTAL_TIMEOUT_SECONDS", "21600"))
+# fails the job truthfully (timed_out) and starts no new expensive work.
+#
+# DEFAULT 10h, RAISED FROM 6h, because 6h did not fit one mesh. "Generous for the largest real
+# mesh" is what this used to say and it was false for the engine that needs it most:
+# CONJUGATE_RUN_TIMEOUT_S above is itself 21,600 s, and the client waits
+# `timeout + 600 + VM_START_S(1800)` = 24,000 s for a single mesh on a VM - 2,400 s MORE than the
+# whole job was allowed, before CAD prep, extraction, the review surface or the boundary index.
+# A conjugate run that used its mesher's own allowance was therefore dead on the clock before it
+# started. Measured on job 4860d75f (2026-11-15): `pipeline_deadline_at` was `started_at` plus
+# exactly 06:00:00 and the mesh was still legitimately running hours later.
+#
+# The ceiling on raising it is the task that waits to COLLECT the result: celery's soft limit is
+# 86,400 s and its hard limit 90,000 s, and a budget past those kills the collector before the VM,
+# which loses a finished mesh rather than saving one. BROKER_VISIBILITY_TIMEOUT_SECONDS follows
+# this value plus two hours, so 36,000 puts redelivery at 14 h, still well inside both.
+PIPELINE_TOTAL_TIMEOUT_SECONDS: int = int(optional_env("PIPELINE_TOTAL_TIMEOUT_SECONDS", "36000"))
 if PIPELINE_TOTAL_TIMEOUT_SECONDS <= 0:
     from meshpipeline.settings.env import ConfigurationError as _CfgErr
     raise _CfgErr(

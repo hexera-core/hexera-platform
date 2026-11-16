@@ -224,7 +224,9 @@ def test_renewal_extends_postgresql_before_it_refreshes_the_mirror():
 
     from meshpipeline.persistence.lease import LeaseRepository
 
-    src = inspect.getsource(LeaseRepository.heartbeat)
+    # `heartbeat_reason` holds the body; `heartbeat` is the bool wrapper over it. The ordering
+    # property being pinned here is unchanged - it just lives in the method that does the work.
+    src = inspect.getsource(LeaseRepository.heartbeat_reason)
     assert src.index("row.lease_expires_at = now") < src.index("refresh"), (
         "the mirror is refreshed before the authoritative lease is extended")
     # `install` is an unconditional SET and would overwrite a newer generation's fence, handing a
@@ -246,7 +248,7 @@ def test_renewal_can_restore_a_lapsed_mirror_but_only_by_filling_a_hole():
 
     from meshpipeline.persistence.lease import LeaseRepository
 
-    src = inspect.getsource(LeaseRepository.heartbeat)
+    src = inspect.getsource(LeaseRepository.heartbeat_reason)   # the body; heartbeat wraps it
     assert "heal" in src, "a lapsed mirror can never come back: refresh alone cannot restore it"
     assert src.index("refresh") < src.index("heal"), (
         "renewal must try to extend its own fence before restoring a missing one")

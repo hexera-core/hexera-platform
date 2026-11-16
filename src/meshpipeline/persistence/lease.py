@@ -20,6 +20,37 @@ from meshpipeline.persistence.models import JobStatus, SimulationJob
 logger = logging.getLogger(__name__)
 
 
+# WHY A RENEWAL WAS REFUSED, because the four reasons are not the same kind of thing and treating
+# them alike cost a finished mesh.
+#
+# `heartbeat` returned a bare False whether the row was gone, the generation had moved on, the
+# token had been rotated, or the deadline had simply passed - and BOTH renewal paths (the beat in
+# application/pipeline_run and the keeper subprocess) took any False as permanent supersession and
+# stopped for good. Two of the four are permanent. A deadline is not: a later beat that sees fresh
+# progress may legitimately move it forward again, so a single refusal at a quiet moment ended
+# renewal for the rest of a run that was still working.
+#
+# It also made the logs lie. On job 4860d75f the beat printed "a newer generation/token owns this
+# job" at 20:26:45.474 - 0.6 s BEFORE generation 2 was claimed. Nothing owned it; the reaper had
+# just cleared the token.
+RENEWED = "renewed"
+#: Another generation or another token holds the job. Nothing this worker does can win it back.
+SUPERSEDED = "superseded"
+#: The job row is gone or has reached a terminal state. Also final.
+TERMINAL = "terminal"
+#: Past the whole-pipeline deadline with no progress recent enough to move it. REVERSIBLE: the
+#: very next beat may carry an extension earned by progress and be renewed.
+PAST_DEADLINE = "past_deadline"
+
+
+def ends_renewal(reason: str) -> bool:
+    """Should a caller stop renewing for good on this answer?
+
+    Only for a refusal that can never reverse. A deadline refusal is a `hold`, not a `stop`.
+    """
+    return reason in (SUPERSEDED, TERMINAL)
+
+
 #: One seam, so a test can observe the ORDER of the mirror calls relative to the PostgreSQL
 #: transaction - which is the whole safety property.
 def _fence_ops():
@@ -172,14 +203,29 @@ class LeaseRepository:
     async def heartbeat(self, db: AsyncSession, own: ExecutionOwnership, *,
                         now: datetime | None = None, lease_seconds: int | None = None,
                         extend_deadline_to: datetime | None = None) -> bool:
+        """Renew the lease. True when it was renewed, False for any of the four refusals.
+
+        KEPT AS A BOOL on purpose: it is the contract every other caller and a dozen tests already
+        assert on. A caller that must tell a reversible refusal from a permanent one - the beat and
+        the keeper, which otherwise stop renewing for good on a deadline that a later beat could
+        legitimately move - asks `heartbeat_reason` instead and passes the answer to `ends_renewal`.
+        """
+        return (await self.heartbeat_reason(
+            db, own, now=now, lease_seconds=lease_seconds,
+            extend_deadline_to=extend_deadline_to)) == RENEWED
+
+    async def heartbeat_reason(self, db: AsyncSession, own: ExecutionOwnership, *,
+                               now: datetime | None = None, lease_seconds: int | None = None,
+                               extend_deadline_to: datetime | None = None) -> str:
+        """Renew the lease and say what happened: RENEWED, SUPERSEDED, TERMINAL or PAST_DEADLINE."""
         now = now or _now()
         lease_seconds = int(lease_seconds if lease_seconds is not None else rtcfg.WORKER_LEASE_SECONDS)
         row = (await db.execute(_locked_job(own.job_id))).scalar_one_or_none()
         if row is None or row.status in TERMINAL_STATES:
-            return False
+            return TERMINAL
         if (row.execution_generation != own.execution_generation
                 or row.active_worker_token != own.worker_token):
-            return False                                       # fenced: an old token/generation
+            return SUPERSEDED                                  # fenced: an old token/generation
         deadline = _aware(row.pipeline_deadline_at)
         extend_to = _aware(extend_deadline_to)
         if extend_to is not None and deadline is not None and extend_to > deadline:
@@ -194,7 +240,11 @@ class LeaseRepository:
             # Past the whole-pipeline deadline nothing may extend ownership - neither the
             # periodic beat nor the publish-seam recovery. A worker wedged past its deadline with
             # no progress is a zombie; letting it renew would let it hold the job forever.
-            return False
+            #
+            # REVERSIBLE, THOUGH, which is why it is named rather than merged into the refusals
+            # above: the next beat may carry an extension earned by real progress and be renewed.
+            # A caller that stops renewing here stops for a condition that may already be over.
+            return PAST_DEADLINE
         row.lease_heartbeat_at = now
         row.lease_expires_at = now + timedelta(seconds=lease_seconds)
         await db.flush()
@@ -219,7 +269,7 @@ class LeaseRepository:
                                "this heartbeat verified", own.job_id)
         except Exception:  # noqa: BLE001 - a mirror blip costs availability, never safety
             logger.warning("could not refresh the execution fence for job %s", own.job_id)
-        return True
+        return RENEWED
 
     # Remaining PostgreSQL lease, measured AFTER the write, so query and network time shorten
     # the mirror rather than letting it outlive the claim it stands for. Pure row-derived

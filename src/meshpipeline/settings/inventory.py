@@ -503,7 +503,7 @@ INVENTORY: list[Group] = [
         EnvVar("FAILED_JOB_RETENTION_HOURS", "24", kind="int"),
         EnvVar("UPLOAD_RETENTION_DAYS", "30", kind="int"),
         EnvVar("STALLED_JOB_TIMEOUT_HOURS", "4", kind="int", help="a job with no progress for this long is reaped and failed truthfully"),
-        EnvVar("PIPELINE_TOTAL_TIMEOUT_SECONDS", "21600", kind="int", help="one absolute wall-clock ceiling for an ENTIRE job across every attempt, retry and restart"),
+        EnvVar("PIPELINE_TOTAL_TIMEOUT_SECONDS", "36000", kind="int", help="one absolute wall-clock ceiling for an ENTIRE job across every attempt, retry and restart; must exceed the longest single mesh wait (timeout + 600 + VM start) and stay under the worker task's 86400 s soft limit"),
     ]),
 
     Group("Worker lease and fencing", note="A claim is valid for the lease without a heartbeat; the owner heartbeats well inside it, and a takeover is only allowed once the lease has EXPIRED.", vars=[

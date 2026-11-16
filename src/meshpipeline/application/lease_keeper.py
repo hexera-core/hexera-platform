@@ -160,15 +160,23 @@ def _resolve(target: str) -> Callable[[Mapping], bool]:
     return getattr(importlib.import_module(mod), fn)
 
 
-def renew_in_database(cfg: Mapping) -> bool:
-    """Renew the lease once, as its owner (persistence/lease.heartbeat), on a connection of the
-    keeper's own. False when the lease is refused: the job is over, a newer worker owns it, or
-    its pipeline deadline has passed (the beat's own rules - nothing is extended here)."""
+def renew_in_database(cfg: Mapping) -> str:
+    """Renew the lease once, as its owner (persistence/lease.heartbeat_reason), on a connection of
+    the keeper's own.
+
+    RETURNS THE REASON, not a bool, because the caller has to tell two kinds of refusal apart: a
+    rotated token or a finished job can never come back, but a passed pipeline deadline can - the
+    very next beat may carry an extension earned by fresh progress. Treating all refusals alike is
+    what made the keeper exit for good on a run that was still working. `lease.ends_renewal` is
+    the predicate; nothing is extended here, the beat owns that.
+
+    A substitute `renew` that still returns a bool is accepted by `run` for compatibility.
+    """
     import asyncio
     return asyncio.run(_renew_in_database(cfg))
 
 
-async def _renew_in_database(cfg: Mapping) -> bool:
+async def _renew_in_database(cfg: Mapping) -> str:
     import uuid
     from datetime import datetime
 
@@ -188,9 +196,11 @@ async def _renew_in_database(cfg: Mapping) -> bool:
     engine = create_async_engine(provcfg.POSTGRES_DSN, poolclass=NullPool)
     try:
         async with AsyncSession(engine, expire_on_commit=False) as db:
-            ok = await LeaseRepository().heartbeat(db, own)
+            # THE REASON, not a bare bool: a deadline refusal can reverse on the next beat and
+            # must not end this keeper, where a rotated token must.
+            why = await LeaseRepository().heartbeat_reason(db, own)
             await db.commit()
-        return bool(ok)
+        return why
     finally:
         await engine.dispose()
 
@@ -233,10 +243,24 @@ def run(cfg: Mapping, stop: threading.Event, *, clock: Callable[[], float] = tim
             except Exception as exc:  # noqa: BLE001 - a blip is tried again next look
                 logger.warning("lease keeper: renewal for job %s failed (%s) - trying again", job, exc)
                 continue
-            if not owned:
-                logger.error("lease keeper: the lease of job %s was refused (the job is over, a newer "
-                             "worker owns it, or its pipeline deadline has passed) - stopping", job)
-                return "lost"
+            # `renew` is pluggable and its old contract was a bool, so both shapes are accepted:
+            # a reason string from `renew_in_database`, or True/False from a substitute.
+            from meshpipeline.persistence.lease import RENEWED, SUPERSEDED, ends_renewal
+            why = owned if isinstance(owned, str) else (RENEWED if owned else SUPERSEDED)
+            if why != RENEWED:
+                if ends_renewal(why):
+                    logger.error("lease keeper: the lease of job %s was refused (%s - the job is "
+                                 "over, or a newer worker owns it) - stopping", job, why)
+                    return "lost"
+                # PAST THE DEADLINE, WHICH CAN REVERSE. Keep watching: the worker may yet show
+                # progress that moves the deadline on, and a keeper that exited here left the run
+                # with one renewal path instead of two for the rest of its life.
+                if said != "deadline":
+                    logger.warning("lease keeper: job %s is past its pipeline deadline with no "
+                                   "recent progress - still watching, because progress may move "
+                                   "the deadline on", job)
+                    said = "deadline"
+                continue
             if said != "renew":
                 logger.warning("lease keeper: job %s - the worker is busy in one long step (its own "
                                "beat silent for %.0f s, its processes still working): renewing its "
