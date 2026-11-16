@@ -1,13 +1,14 @@
 # Responsibility: Verify a DXF (.dxf) file becomes the canonical STL at its true size, with one group per layer, whichever mesh entity the drawing used.
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import numpy as np
 import pytest
 
 from meshpipeline.cad.ingest import IngestError, canonicalise, check_upload, sniff_format
-from meshpipeline.cad.ingest.dxf import BINARY_SENTINEL
+from meshpipeline.cad.ingest.dxf import BINARY_SENTINEL, read_dxf
 from meshpipeline.cad.ingest.surface import read_stl, stats
 
 #: The shape every fixture holds: a 10 x 10 x 10 box at the origin.
@@ -164,6 +165,84 @@ def test_a_drawing_with_no_mesh_entity_says_so(tmp_path):
         canonicalise(_write(tmp_path, _drawing(lines)), tmp_path / "out")
 
     assert "no mesh faces" in str(caught.value)
+
+
+def _annotation() -> str:
+    """The furniture a drawing carries beside its model: text and a centreline, each on a layer of
+    its own, neither holding a surface."""
+    return (_tags((0, "TEXT"), (8, "ANNOTATION"), (10, "0"), (20, "0"), (30, "0"), (1, "VR8"))
+            + _tags((0, "LINE"), (8, "CENTRELINE"), (10, "0"), (20, "0"), (30, "0"),
+                    (11, "1"), (21, "1"), (31, "1")))
+
+
+def test_a_layer_carrying_no_face_is_not_a_region(tmp_path):
+    src = _write(tmp_path, _drawing(_polyface(layer="hub") + _annotation()))
+
+    assert read_dxf(src).names == ["hub"]
+
+
+def test_tens_of_thousands_of_drawn_layers_cost_nothing(tmp_path):
+    """A layer is looked up, not searched for, and only one that carries a face is kept: a drawing
+    of many thousands of annotation layers must not take a worker's time quadratically."""
+    many = "".join(_tags((0, "LINE"), (8, f"L{i}"), (10, "0"), (20, "0"), (30, "0"),
+                         (11, "1"), (21, "1"), (31, "1")) for i in range(20_000))
+    src = _write(tmp_path, _drawing(_polyface(layer="hub") + many))
+
+    started = time.monotonic()
+    mesh = read_dxf(src)
+
+    assert mesh.names == ["hub"]
+    assert mesh.n_triangles == 12
+    assert time.monotonic() - started < 10.0
+
+
+def test_paper_space_furniture_is_not_part_of_the_model(tmp_path):
+    """A layout's title block sits in the ENTITIES section beside the model, marked 67 = 1, at the
+    sheet's position and scale. Reading it would move and dwarf the real geometry."""
+    title_block = _tags((0, "3DFACE"), (8, "TITLEBLOCK"), (67, "1"),
+                        *[(10 + k, v) for k, v in enumerate(("0", "500", "500", "0"))],
+                        *[(20 + k, v) for k, v in enumerate(("0", "0", "300", "300"))],
+                        *[(30 + k, "0") for k in range(4)])
+
+    src = _write(tmp_path, _drawing(_polyface(layer="hub") + title_block))
+
+    assert read_dxf(src).names == ["hub"]
+    measured = _canonical(src, tmp_path)[1]
+    assert measured["triangles"] == 12
+    assert measured["volume"] == pytest.approx(VOLUME)
+
+
+def test_a_drawing_a_text_editor_re_saved_with_a_bom_still_opens(tmp_path):
+    src = tmp_path / "bom.dxf"
+    src.write_bytes(b"\xef\xbb\xbf" + _drawing(_polyface()).encode("latin-1"))
+
+    assert sniff_format(src) == "dxf"
+    assert _canonical(src, tmp_path)[1]["triangles"] == 12
+
+
+def test_the_comments_an_exporter_stamps_at_the_head_do_not_hide_the_drawing(tmp_path):
+    #: group code 999 is a comment, and a DXF may open with any number of them
+    src = _write(tmp_path, _tags((999, "Created by Deswik.CAD"), (999, "rev 3"))
+                 + _drawing(_polyface()))
+
+    assert sniff_format(src) == "dxf"
+    assert _canonical(src, tmp_path)[1]["triangles"] == 12
+
+
+def test_a_drawing_damaged_part_way_through_is_refused_not_half_read(tmp_path):
+    """Writing the bodies before the damage as the model would quietly deliver half a drawing."""
+    text = _drawing(_polyface()).replace(_tags((0, "ENDSEC"), (0, "EOF")), "GARBAGE\nmore\n")
+
+    with pytest.raises(IngestError) as caught:
+        canonicalise(_write(tmp_path, text), tmp_path / "out")
+
+    assert "damaged" in str(caught.value)
+
+
+def test_the_blank_line_a_writer_leaves_after_eof_is_not_damage(tmp_path):
+    _, measured = _canonical(_write(tmp_path, _drawing(_polyface()) + "\n\n"), tmp_path)
+
+    assert measured["triangles"] == 12
 
 
 def test_a_binary_dxf_is_refused_with_the_way_on(tmp_path):

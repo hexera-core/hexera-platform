@@ -21,6 +21,15 @@ BINARY_SENTINEL = b"AutoCAD Binary DXF\r\n\x1a\x00"
 #: Codes are right-aligned in three columns by most writers and bare in some, so the space is loose.
 _ASCII_HEAD = re.compile(rb"^\s*0\s*\r?\n\s*SECTION\s*\r?\n\s*2\s*\r?\n\s*"
                          rb"(?:HEADER|CLASSES|TABLES|BLOCKS|ENTITIES|OBJECTS|THUMBNAILIMAGE)\s*\r?\n")
+#: Group code 999 is a comment, and a DXF may open with any number of them (Deswik and Surpac both
+#: stamp the exporter there). They are skipped before the head is matched - bounded, because a file
+#: that is nothing but comments must not be read to its end to be turned away.
+_COMMENT_PAIR = re.compile(rb"^\s*999\s*\r?\n[^\n]*\n")
+MAX_LEADING_COMMENTS = 64
+
+#: The byte-order mark a Windows text editor leaves at the head of a DXF it has re-saved. It is not
+#: part of the first group code, and `int()` would choke on it.
+_BOM_TEXT = "﻿\xef\xbb\xbf"
 
 #: POLYLINE flags (group code 70) that say what the vertices after it mean.
 _POLYFACE = 64          # a polyface mesh: free vertices, then one record per face
@@ -38,25 +47,47 @@ def looks_like_dxf(head: bytes) -> bool:
     """True when the bytes open as a DXF - tagged or binary - whatever the file is named."""
     if head.startswith(BINARY_SENTINEL):
         return True
-    return _ASCII_HEAD.match(head.lstrip(b"\xef\xbb\xbf")) is not None
+    text = head.lstrip(b"\xef\xbb\xbf")
+    for _ in range(MAX_LEADING_COMMENTS):
+        comment = _COMMENT_PAIR.match(text)
+        if comment is None:
+            break
+        text = text[comment.end():]
+    return _ASCII_HEAD.match(text) is not None
 
 
 def _tags(path: Path) -> Iterator[tuple[int, str]]:
-    """The (group code, value) pairs of a tagged DXF, in file order. A line that is not a group
-    code ends the read: the file is malformed from there on and nothing after it can be trusted."""
+    """The (group code, value) pairs of a tagged DXF, in file order.
+
+    A line where a group code should be, that is not one, is the end of what can be trusted: a
+    file damaged there holds entities after it that will not be read, and writing the ones before
+    it as the model would quietly deliver half a drawing. It is refused instead."""
     with path.open("r", encoding="latin-1", errors="replace") as fh:
+        first = True
         while True:
             code_line = fh.readline()
             if not code_line:
                 return
+            if first:
+                code_line = code_line.lstrip(_BOM_TEXT)
+                first = False
+            if not code_line.strip():
+                # a blank line is not a group code; writers leave one after the final EOF
+                continue
             value_line = fh.readline()
             if not value_line:
-                return
+                raise SurfaceError(_damaged(code_line, "it ends in the middle of one"))
             try:
                 code = int(code_line.strip())
             except ValueError:
-                return
+                raise SurfaceError(_damaged(code_line, "this is not a group code")) from None
             yield code, value_line.rstrip("\r\n")
+
+
+def _damaged(line: str, said: str) -> str:
+    shown = line.strip()[:40]
+    return (f"this DXF file is damaged: every value in it is preceded by a group code on its own "
+            f"line, and {said} ({shown!r}). Export it again from the program that made it.")
 
 
 class _Builder:
@@ -66,34 +97,43 @@ class _Builder:
         self.points: list[tuple[float, float, float]] = []
         self.tris: list[tuple[int, int, int]] = []
         self.group: list[int] = []
-        self.names: list[str] = []
+        #: layer name -> group index, in the order the layers first carried a face. A drawing can
+        #: hold tens of thousands of layers, so this is a lookup and not a scan of a growing list,
+        #: and a layer is only given an index when a face is actually drawn on it - the layers
+        #: holding a drawing's text, dimensions and centrelines are not regions of the model.
+        self._index: dict[str, int] = {}
 
     def layer(self, name: str) -> int:
         if not name or name == _DEFAULT_LAYER:
             return -1
-        if name not in self.names:
-            self.names.append(name)
-        return self.names.index(name)
+        at = self._index.get(name)
+        if at is None:
+            at = self._index[name] = len(self._index)
+        return at
 
-    def face(self, corners: list[tuple[float, float, float]], layer: int) -> None:
+    def face(self, corners: list[tuple[float, float, float]], layer: str) -> None:
         """One flat face of any number of corners, fanned into triangles."""
+        at = self.layer(layer)
         base = len(self.points)
         self.points.extend(corners)
         for k in range(1, len(corners) - 1):
             self.tris.append((base, base + k, base + k + 1))
-            self.group.append(layer)
+            self.group.append(at)
         self._check()
 
     def indexed(self, verts: list[tuple[float, float, float]],
-                faces: list[list[int]], layer: int) -> None:
+                faces: list[list[int]], layer: str) -> None:
         """Faces given as 0-based indices into `verts`, which is added whole: a polyface mesh
         shares its vertices between faces and splitting them would lose that."""
+        if not faces:
+            return
+        at = self.layer(layer)
         base = len(self.points)
         self.points.extend(verts)
         for idx in faces:
             for k in range(1, len(idx) - 1):
                 self.tris.append((base + idx[0], base + idx[k], base + idx[k + 1]))
-                self.group.append(layer)
+                self.group.append(at)
         self._check()
 
     def _check(self) -> None:
@@ -103,7 +143,7 @@ class _Builder:
     def mesh(self) -> SurfaceMesh:
         return SurfaceMesh(np.asarray(self.points, dtype=np.float64).reshape(-1, 3),
                            np.asarray(self.tris, dtype=np.int64).reshape(-1, 3),
-                           np.asarray(self.group, dtype=np.int64), self.names)
+                           np.asarray(self.group, dtype=np.int64), list(self._index))
 
 
 def _corners(d: dict[int, list[str]], codes: tuple[int, ...]) -> list[tuple[float, float, float]]:
@@ -195,7 +235,12 @@ def read_dxf(path: Path) -> SurfaceMesh:
     def flush() -> None:
         """The entity whose codes have just been read, turned into triangles."""
         nonlocal poly, saw_insert
-        layer = build.layer(d.get(8, [""])[0])
+        if d.get(67) and d[67][0].strip() in ("1", "1.0"):
+            # Paper space: a layout's title block, border and detail views live in the ENTITIES
+            # section beside the model, at the sheet's position and scale. They are drawing
+            # furniture, not geometry, and adding them would move and dwarf the real model.
+            return
+        layer = d.get(8, [""])[0]
         if kind == "POLYLINE":
             flags = int(float(d.get(70, ["0"])[0]))
             poly = {"layer": layer, "flags": flags, "verts": [], "faces": [],
