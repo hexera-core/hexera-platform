@@ -123,6 +123,20 @@ def test_an_unrecognised_posture_is_warned_about(monkeypatch, caplog, raw, warne
     assert any("CAD_REPAIR_MESH_PROBE" in r.getMessage() for r in caplog.records) is warned
 
 
+@pytest.mark.parametrize("posture,probe_s,run_s,warns", [
+    ("live", 60.0, 70.0, True),     # 60 + 15 >= 70: the reserve is the whole run
+    ("live", 60.0, 75.0, True),     # the boundary
+    ("live", 60.0, 120.0, False),   # the defaults
+    ("off", 60.0, 70.0, False),     # probe off: no reserve
+])
+def test_a_probe_timeout_that_leaves_no_time_to_author_is_warned(caplog, posture, probe_s, run_s,
+                                                                 warns):
+    with caplog.at_level(logging.WARNING, logger=rcfg.__name__):
+        rcfg._warn_no_authoring_time(posture, probe_s, run_s)
+    assert any("CAD_REPAIR_MESH_PROBE_TIMEOUT_S" in r.getMessage()
+               for r in caplog.records) is warns
+
+
 def test_live_appends_after_localize(monkeypatch):
     monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
     calls = _scan(monkeypatch, ((_OPENING,), True))
@@ -156,13 +170,41 @@ def test_a_probe_is_capped_at_half_the_time_left(monkeypatch, remaining, expecte
     assert all(p["budget_s"] <= 0.5 * remaining for p in probes)
 
 
-def test_the_final_whole_shape_probe_gets_everything_left(monkeypatch):
+def test_the_final_whole_shape_probe_is_never_handed_the_slack(monkeypatch):
     monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
     _scan(monkeypatch, ((), True))
     probes = _probe(monkeypatch, ())
     session = RepairSession("shape", measurer=lambda s: MEASURE, remaining_s=lambda: 70.0)
     session._rescan(face_scan=True, final=True)
-    assert probes[-1]["budget_s"] == 70.0
+    assert probes[-1]["budget_s"] == 70.0 - session_mod.FINAL_PROBE_SLACK_S
+
+
+@pytest.mark.parametrize("remaining", [200.0, 70.0, 25.0, 10.5])
+def test_a_final_probe_that_spends_its_budget_leaves_the_slack(monkeypatch, remaining):
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
+    _scan(monkeypatch, ((), True))
+    now = [0.0]
+    spent = []
+
+    def probe(shape, **kw):
+        now[0] += kw["budget_s"]  # the probe uses its whole budget
+        spent.append(kw["budget_s"])
+        return ()
+    monkeypatch.setattr(mesh_probe, "mesh_defects", probe)
+    session = RepairSession("shape", measurer=lambda s: MEASURE,
+                            remaining_s=lambda: remaining - now[0])
+    session._rescan(face_scan=True, final=True)
+    assert remaining - now[0] >= session_mod.FINAL_PROBE_SLACK_S
+
+
+@pytest.mark.parametrize("remaining", [10.0, 4.0])
+def test_a_final_probe_with_only_the_slack_left_is_skipped(monkeypatch, remaining):
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
+    _scan(monkeypatch, ((), True))
+    probes = _probe(monkeypatch, ())
+    session = RepairSession("shape", measurer=lambda s: MEASURE, remaining_s=lambda: remaining)
+    session._rescan(face_scan=True, final=True)
+    assert probes == []
 
 
 @pytest.mark.parametrize("remaining", [0.0, -5.0, float("nan")])
@@ -802,12 +844,13 @@ def test_a_run_whose_probes_time_out_still_verifies_inside_its_deadline(monkeypa
         session=RepairSession("shape", measurer=lambda s: MEASURE, clock=clock))
     assert [p.status for p in run.packages] == [session_mod.COMMITTED]
     # Every probe but the last took at most HALF of what was left; the last - the final
-    # whole-shape verification - took what remained, and the run ended ON its deadline, leaving
-    # the attempt node's 5 s margin for the after-checks and the STEP write.
+    # whole-shape verification - took what remained LESS the slack, so the run ended
+    # FINAL_PROBE_SLACK_S before its deadline, leaving room for the after-checks and STEP write.
     *walk, final = probes
     assert all(p["budget_s"] <= 0.5 * (deadline - p["at"]) + 1e-9 for p in walk)
-    assert final["within"] is None and final["budget_s"] == pytest.approx(deadline - final["at"])
-    assert clock.now <= deadline + 1e-9
+    assert final["within"] is None and final["budget_s"] == pytest.approx(
+        deadline - final["at"] - session_mod.FINAL_PROBE_SLACK_S)
+    assert clock.now <= deadline - session_mod.FINAL_PROBE_SLACK_S + 1e-9
     # Authoring stopped with the final probe's reserve still in hand (one timeout + 10 s).
     assert len(asked) == 1 and deadline - final["at"] < 60.0 + 10.0
 

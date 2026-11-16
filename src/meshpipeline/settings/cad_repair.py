@@ -324,6 +324,25 @@ CAD_REPAIR_MESH_PROBE_TIMEOUT_S: float = float(
     optional_env("CAD_REPAIR_MESH_PROBE_TIMEOUT_S", "60.0"))
 
 
+#: Seconds beyond one probe timeout the region loop keeps for the final whole-shape probe
+#: (session.FINAL_PROBE_SLACK_S + the loop's own margin); the warning below mirrors that sum.
+_AUTHORING_RESERVE_EXTRA_S = 15.0
+
+
+def _warn_no_authoring_time(posture: str, probe_timeout_s: float, run_timeout_s: float) -> None:
+    """Say out loud when the live probe's reserve consumes the whole run: the region loop stops
+    authoring while one probe timeout plus the final-probe slack is still left, so with
+    CAD_REPAIR_MESH_PROBE_TIMEOUT_S + 15 >= CAD_REPAIR_TIMEOUT_S it authors nothing, silently."""
+    if posture == "live" and probe_timeout_s + _AUTHORING_RESERVE_EXTRA_S >= run_timeout_s:
+        logger.warning("CAD_REPAIR_MESH_PROBE_TIMEOUT_S=%s plus the %ss final-probe reserve is not "
+                       "below CAD_REPAIR_TIMEOUT_S=%s: the repair will author nothing",
+                       probe_timeout_s, _AUTHORING_RESERVE_EXTRA_S, run_timeout_s)
+
+
+_warn_no_authoring_time(CAD_REPAIR_MESH_PROBE, CAD_REPAIR_MESH_PROBE_TIMEOUT_S,
+                        CAD_REPAIR_TIMEOUT_S)
+
+
 def _llm_author_posture() -> str:
     """The model-author posture, FAILING CLOSED: only the exact strings `shadow` and `live` turn it
     on, and anything else but `off` is read as off OUT LOUD - the mesh probe's rule, because this

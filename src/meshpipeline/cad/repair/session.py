@@ -67,13 +67,16 @@ def mesh_probe_budget_s(remaining_s: float, *, final: bool = False) -> float:
     The lesser of CAD_REPAIR_MESH_PROBE_TIMEOUT_S and `MESH_PROBE_FRACTION` of what is left, floor
     0 (a 0 skips the probe: `_with_mesh` carries forward what it knew). The run's FINAL whole-shape
     probe is the exception: the region loop stopped authoring with a reserve in hand for exactly
-    this scan, so it gets whatever remains. A NaN reads as nothing left.
+    this scan, so it gets what remains MINUS `FINAL_PROBE_SLACK_S`: that slack is reserved for what
+    follows the probe (the kernel walk, measure, checks and STEP write), and a timed-out final
+    probe must not spend it. At or under the slack the probe is skipped (0). A NaN reads as
+    nothing left.
     """
     remaining = float(remaining_s)
     if not remaining > 0.0:
         return 0.0
     if final:
-        return remaining
+        return max(0.0, remaining - FINAL_PROBE_SLACK_S)
     return max(0.0, min(float(rcfg.CAD_REPAIR_MESH_PROBE_TIMEOUT_S),
                         MESH_PROBE_FRACTION * remaining))
 
@@ -556,7 +559,7 @@ class RepairSession:
 
         The budget is `mesh_probe_budget_s` of what is left before the run's deadline - the lesser
         of CAD_REPAIR_MESH_PROBE_TIMEOUT_S and half the time left, or for the run's `final`
-        whole-shape scan everything left - and, for a package's proof, no more than the package
+        whole-shape scan everything left but `FINAL_PROBE_SLACK_S` - and, for a package's proof, no more than the package
         has left (`cap_s`); a non-positive (or NaN) budget skips the probe. A session nobody gave
         a clock (`remaining_s` None) gives the probe its own timeout. The diagonal is the
         upload's, as every scope in this session is.
