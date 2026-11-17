@@ -65,11 +65,13 @@ import math
 import re
 from collections.abc import Mapping
 
+from meshpipeline.contracts import mesh_controls as _MC
 from meshpipeline.contracts.event_stream import StaleExecutionPublish
 
 logger = logging.getLogger(__name__)
 
 RULE_READ = "NOTE-7"
+RULE_CONTROLS = "NOTE-13"       # the controls declared once (contracts/mesh_controls), read by one generic output
 RULE_NOT_APPLIED = "NOTE-8"
 RULE_NOTHING = "NOTE-9"
 RULE_FLOW = "NOTE-10"          # the flow fields of the same reading (a count, layers, a size at the walls or in a place)
@@ -198,7 +200,7 @@ words for it, copied exactly (one line or phrase, as short as holds the whole re
   size given: "refine around the wing to 2 mm" -> where "the wing", value 2, mm; "wake cells 10 mm" -> where "the
   wake"), finer ("finer near the inlet", "refine the wake"; value 0, unit "none"), coarser ("coarser at the outlet";
   value 0, unit "none"). The walls, the surface or the body as a whole are not one place: a size there is near_wall;
-  the far field is max_edge. A number of refinement LEVELS ("4 levels at the surface") is no size: other, "mesh".
+  the far field is max_edge. A number of refinement LEVELS ("4 levels at the surface") is no size: a control.
 - physics: the flow's numbers, ONLY as written, so a y+ can be turned into a first layer height. velocity ("air at
   30 m/s", "60 mph", "120 km/h"; unit m/s, km/h, mph, kn, ft/s), length (the reference length: "chord 0.5 m", "car
   length 4.2 m"; a length unit), kinematic_viscosity ("nu = 1.5e-5 m2/s"; unit m2/s), reynolds ("Re = 3e6"; unit
@@ -226,8 +228,8 @@ words for it, copied exactly (one line or phrase, as short as holds the whole re
   allowed_percent 0, has_outer false, outer 0.
   A limit on element LENGTH ("Min. Element Length > 0.5 x Global Size") is a size (min_edge / max_edge), not a limit.
 - other: every other thing they wrote, one entry per line, sentence or clause, never left out. kind "mesh": about
-  the mesh but fitting no field above (chordal deviation, elements through the thickness or across a flange,
-  cells across a gap, a named solver's own check, a quality measure not in the list, a
+  the mesh but fitting no field above or control below (chordal deviation, elements across a flange, a named
+  solver's own check, a quality measure not in the list, a
   preference like "quads preferred" or "hex-dominant", a vague wish like "good quality mesh" or "resolve the
   boundary layer well").
   "elsewhere": ONLY shell or solid (what to mesh the part as). "not_mesh": loads, supports, materials, the
@@ -241,6 +243,11 @@ the LATEST one is kept (the user changed their mind).
 A number the user names as the one being REPLACED ("3 prism layers instead of 8", "3 layers, not 8", "2 mm rather
 than 5 mm") is not a request: list only the value they ask for (3, 3, 2).
 An empty note, or one with no mesh requirement: empty lists (other still lists what was written)."""
+#: NOTE-13: the controls the registry declares, one line each, generated from contracts/mesh_controls
+SYSTEM += ("\n- controls: a setting from this list, each with its key, the user's number (`value`, 0 for a choice) or "
+           "choice (`choice`, \"\" for a number), the unit written beside it, `where` (\"\" for the whole mesh, else "
+           "the place in the user's words), `strict` (true only when they say it must hold) and the quote:\n"
+           + _MC.prompt_lines())
 
 
 def tool() -> dict:
@@ -251,7 +258,7 @@ def tool() -> dict:
         "parameters": {
             "type": "object", "additionalProperties": False,
             "required": ["stated_unit", "sizes", "counts", "layers", "local", "physics", "element_kind", "limits",
-                         "other"],
+                         "other", "controls"],
             "properties": {
                 "stated_unit": {"type": "string", "enum": [*UNITS_MM, "none"]},
                 "sizes": {"type": "array", "items": {
@@ -293,6 +300,16 @@ def tool() -> dict:
                 "other": {"type": "array", "items": {
                     "type": "object", "additionalProperties": False, "required": ["quote", "kind"],
                     "properties": {"quote": q, "kind": {"type": "string", "enum": list(OTHER_KINDS)}}}},
+                # NOTE-13: ONE generic output for every control the registry declares (contracts/mesh_controls)
+                "controls": {"type": "array", "items": {
+                    "type": "object", "additionalProperties": False,
+                    "required": ["key", "value", "choice", "unit", "where", "strict", "quote"],
+                    "properties": {"key": {"type": "string", "enum": [c.key for c in _MC.read_by_reader()]},
+                                   "value": {"type": "number"},
+                                   "choice": {"type": "string", "enum": sorted({"", *(x for c in _MC.read_by_reader()
+                                                                                       for x in c.choices)})},
+                                   "unit": {"type": "string", "enum": [*UNITS_MM, "none"]},
+                                   "where": {"type": "string"}, "strict": {"type": "boolean"}, "quote": q}}},
             }}}}
 
 
@@ -824,7 +841,8 @@ def is_empty(req: Mapping | None) -> bool:
     return (not any(v is not None for v in (r.get("sizes") or {}).values())
             and not any(v is not None for v in (r.get("kind") or {}).values()) and not r.get("limits")
             and not any(v is not None for v in (r.get("cells") or {}).values())
-            and not any(v is not None for v in (r.get("layers") or {}).values()) and not r.get("local"))
+            and not any(v is not None for v in (r.get("layers") or {}).values()) and not r.get("local")
+            and not r.get("controls"))
 
 
 def check(arguments: str, notes: str, route: str = "") -> tuple[dict, list[str], list[str]]:
@@ -1219,8 +1237,10 @@ def _check(arguments: str, notes: str, route: str = "") -> tuple[dict, list[str]
             dropped.append(f"{tag}: not a size this step reads: not applied")
             continue
         if _COUNTED.search(quote):
-            # "3 elements through the thickness" counts elements; it is no length (read once as a 3 inch wall)
-            dropped.append(f"{tag}: a count of elements through or across a wall is not a size: not applied")
+            # "3 elements through the thickness" counts elements; it is no length (read once as a 3 inch wall) - told
+            # unless the same words were read as a control (NOTE-13: wall_elements)
+            if not any(_squash(quote) == _squash(str(x.get("quote") or "")) for x in _rows_of(raw, "controls")):
+                dropped.append(f"{tag}: a count of elements through or across a wall is not a size: not applied")
             continue
         if value is None or value <= 0 or not _in_quote(value, numbers):
             dropped.append(f"{tag}: the number {e.get('value')!r} is not in those words: not applied")
@@ -1431,6 +1451,54 @@ def _check(arguments: str, notes: str, route: str = "") -> tuple[dict, list[str]
         out["limits"].append(lim)
         seen[(measure, shape, direction)] = lim
     _replaced_only(limits_swapped, seen, dropped)
+
+    # NOTE-13: THE CONTROLS the registry declares (contracts/mesh_controls) - one generic branch, the same checks as
+    # every field: the quote is the user's, the number is in it (not the one being replaced), the unit is theirs, the
+    # range is sane, a choice is named in their words, a whole-mesh control is not asked for one place, the latest wins
+    controls: dict[str, dict] = {}
+    for e in order(_rows_of(raw, "controls")):
+        c = _MC.CONTROLS.get(str(e.get("key") or ""))
+        got_q = quoted(e) if c is not None and not c.field else None
+        if c is None or c.field:
+            dropped.append(f'"{_short(str(e.get("quote") or ""))}": not a setting this step reads: not applied')
+            continue
+        if got_q is None:
+            continue
+        quote, numbers = got_q
+        tag = f'"{_short(quote)}"'
+        where = " ".join(str(e.get("where") or "").split())[:120]
+        if where and c.where == ("mesh",) and not re.search(r"\b(?:whole|every|all|entire)\b", where, re.I):
+            dropped.append(f"{tag}: this setting is for the whole mesh only, not for {where} yet: not applied")
+            continue
+        if c.kind == "choice":
+            choice = str(e.get("choice") or "")
+            said_it = {"mm": r"\bmm\b|millimet", "m": r"\bm\b|\bmetres?\b|\bmeters?\b"}.get(choice, re.escape(choice))
+            if choice not in c.choices or not re.search(said_it, quote, re.I):
+                dropped.append(f"{tag}: {choice or 'the choice'} is not in those words: not applied")
+                continue
+            entry: dict = {"choice": choice}
+            words = _MC.asked_words(c, choice=choice)
+        else:
+            value = _f(e.get("value"))
+            if value is None or not _in_quote(value, numbers):
+                dropped.append(f"{tag}: the number {e.get('value')!r} is not in those words: not applied")
+                continue
+            if _in_quote(value, replaced_numbers(quote)):
+                continue
+            if c.kind == "length":
+                value = _length_mm(value, str(e.get("unit") or "none"), quote, stated)[0]
+            if (c.integer and value != int(value)) or (c.sane and not (c.sane[0] <= value <= c.sane[1])):
+                dropped.append(f"{tag}: {_g(value)} is not a value anyone means for this: not applied")
+                continue
+            entry = {"value": int(value) if c.integer else float(value)}
+            words = _MC.asked_words(c, value=value)
+        if c.key in controls:
+            _later(controls[c.key]["quote"], quote)
+            unrow(f"control:{c.key}")
+        entry.update(quote=quote, strict=bool(e.get("strict")), id=row(f"control:{c.key}", quote, words))
+        controls[c.key] = entry
+    if controls:
+        out["controls"] = controls
 
     # what fits no field (NOTE-8): told, never silently dropped
     not_applied: list[str] = []

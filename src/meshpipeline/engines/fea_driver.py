@@ -907,6 +907,13 @@ def make_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | None
     zone_list, applied = FA.apply_zones(P.zones(record, tighten=L.tightened(levers)), _used(ai), record,
                                         diag_m=diag_m)
     s, u = float(scale or 1.0), float(beyond or 1.0)
+    # NOTE-13: THE CONTROLS the user's words set (contracts/mesh_controls), applied at this one seam by the
+    # registry's appliers (the measurement record carries the set into every plan of the run)
+    from meshpipeline.engines import control_appliers as CA
+    growth = L.growth(levers)
+    knobs: dict = {"zones": zone_list, "growth": growth, "gentle": growth < P.GROWTH}
+    controls = CA.apply("fea_solid", record.get(CA.RECORD_KEY), knobs)
+    zone_list, growth = knobs["zones"], float(knobs["growth"])
     if sizes:
         zone_list = P.user_sized(zone_list, sizes)
     if s != 1.0 or u != 1.0:
@@ -922,8 +929,10 @@ def make_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | None
     if hist is None:
         hist = _histogram(surface, zone_list, levers, diag_m, limit=limit, recount=recount, scale=s,
                           walls=walls_of(record), base_m=base_m)
-    plan = P.finish(record, zone_list, hist, diag_m=diag_m, limit=limit, levers=levers, growth=L.growth(levers),
+    plan = P.finish(record, zone_list, hist, diag_m=diag_m, limit=limit, levers=levers, growth=growth,
                     scale=s, beyond=u, base_m=base_m)
+    if controls:
+        plan["controls"] = controls
     if sizes:
         plan["user_sizes"] = {k: dict(v) for k, v in sorted(sizes.items())}
     if zone_floors:
@@ -2611,6 +2620,12 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         from meshpipeline.engines import mesh_requirements as MR
         sizes = FR.whole_sizes(sizes, MR.requirements_of(asked), FR.part_ids(P.zones(record)),
                                base_m=P.base_size(diag_m))
+    if asked.get("status") == "used":
+        # NOTE-13: the controls the notes set ride with the record into every plan of the run (make_plan's one seam)
+        from meshpipeline.engines import control_appliers as CA
+        from meshpipeline.engines import mesh_requirements as MR
+        if CA.asked(MR.requirements_of(asked)):
+            record[CA.RECORD_KEY] = MR.requirements_of(asked)
     if scaled:
         sizes = {**sizes, **PS.resolve_scales(scaled, P.zones(record), base_m=P.base_size(diag_m), whole=sizes)}
         _cite(job_id, [{"stage": "fea_plan", "decided": "parts asked finer or coarser", "value": len(scaled),

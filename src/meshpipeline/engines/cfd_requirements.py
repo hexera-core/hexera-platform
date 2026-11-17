@@ -48,6 +48,8 @@ RULE_REPORT = "CFDREQ-6"
 RULE_SAME = "CFDREQ-7"
 ROUTE = MR.FLOW
 CONSUMER = "mesh_requirements"
+#: each CFD engine's lane in the controls registry (contracts/mesh_controls.LANES): gmsh's flow lane is its own
+LANES = {"gmsh": "gmsh_flow"}
 #: what each engine built for each requirement (beside the case; the report reads it after the mesh)
 PLAN_FILE = "cfd_requirements_plan.json"
 #: the CFD engines (engines/registry names)
@@ -361,6 +363,15 @@ class Ask:
             return field_or_id
         return self.rid(field_or_id)
 
+    def controls(self, target: dict) -> dict:
+        """NOTE-13: the one loop at this engine's plan seam - each control the set asks for applied on `target` by the
+        registry's applier, or not applied with its reason; the rows say what was done. Returns `target`."""
+        from meshpipeline.engines import control_appliers as CA
+
+        for got in CA.apply(LANES.get(self.engine, self.engine), self.req, target).values():
+            self._set(got.get("id"), got["status"], got["built"])
+        return target
+
     def limit(self, measure: str) -> dict | None:
         return next((lim for lim in self.limits if lim["measure"] == measure), None)
 
@@ -382,6 +393,12 @@ class Ask:
             if str(r["field"]).startswith("limit:"):
                 self.rows[r["id"]] = {"status": "measured", "built": f"{name} has no setting for it while meshing; "
                                                                      "it is measured on the mesh"}
+            elif str(r["field"]).startswith("control:"):
+                # NOTE-13: "not on this mesher", with the registry's own reason
+                from meshpipeline.contracts import mesh_controls as MC
+                how = MC.lane_of(LANES.get(self.engine, self.engine), str(r["field"]).split(":", 1)[1])
+                self.rows[r["id"]] = {"status": "not_applied", "built": how.why if isinstance(how, MC.NotHere)
+                                      else f"{name} has no setting for it on this case"}
             else:
                 self.rows[r["id"]] = {"status": "not_applied", "built": f"{name} has no setting for this"}
         try:

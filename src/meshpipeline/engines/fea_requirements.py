@@ -100,10 +100,12 @@ def _measures(mesh) -> dict[str, np.ndarray]:
     return {k: np.concatenate(v) if v else np.zeros(0) for k, v in parts.items()}
 
 
-def report(mesh, req: Mapping | None, *, mm_per_unit: float = 1000.0, order: int = 2) -> dict | None:
+def report(mesh, req: Mapping | None, *, mm_per_unit: float = 1000.0, order: int = 2,
+           applied: Mapping | None = None) -> dict | None:
     """PLAN-fea-34: for every requirement read from the notes, what was asked and what the built solid mesh
     delivers (the shape of engines/shell_requirements.report). None with no requirement. `mm_per_unit`: the
-    mesh's coordinates in millimetres each (the solid is meshed in metres)."""
+    mesh's coordinates in millimetres each (the solid is meshed in metres). `applied`: what the plan's seam did with
+    each control (the plan's "controls", NOTE-13), when the caller has the plan."""
     if not req or not req.get("rows"):
         return None
     m = _measures(mesh)
@@ -140,9 +142,10 @@ def report(mesh, req: Mapping | None, *, mm_per_unit: float = 1000.0, order: int
         elif field == "linear":
             got = {"applied": False, "met": None, "delivered": "not applied - a solid is meshed with quadratic "
                                                                "tetrahedra (10-node); linear ones are not offered yet"}
-        elif field == "growth":
-            got = {"applied": False, "met": None, "delivered": "not applied - on a solid, sizes grow by our own "
-                                                               "fixed rate"}
+        elif field == "growth" or field.startswith("control:"):
+            # NOTE-13: a control's row from the registry (the growth rate is one since the plan's seam applies it)
+            from meshpipeline.engines import control_appliers as CA
+            got = CA.report_row("fea_solid", field.split(":", 1)[-1], applied)
         elif field == "thickness":
             got = {"applied": False, "met": None, "delivered": "not applied - a solid keeps the thickness of your CAD"}
         elif field in ("free_mesh", "no_washers", "structured"):

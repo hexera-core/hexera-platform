@@ -2488,6 +2488,11 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
             cells_across, surface_level, feature_level = _ask_internal_sizes(
                 _ask, bore_D=float(bore_D), cells_across=cells_across, surface_level=surface_level,
                 feature_level=feature_level)
+            # NOTE-13: the controls the user's words set (cells across the bore, the wall's level) - one loop
+            _knobs = _ask.controls({"internal": True, "cells_across": cells_across, "surface_level": surface_level,
+                                    "feature_level": feature_level})
+            cells_across, surface_level, feature_level = (int(_knobs["cells_across"]), int(_knobs["surface_level"]),
+                                                          int(_knobs["feature_level"]))
         # base cell sized so the wall cell (base / 2^level) resolves the bore into `cells_across`
         base_cell = (bore_D / cells_across) * (2 ** surface_level)
         # THIN FEATURES. The wall cell above is sized from the BORE, so a feature thinner

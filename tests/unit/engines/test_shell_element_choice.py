@@ -46,7 +46,8 @@ def test_a_kind_the_model_left_in_no_field_is_read_from_the_users_line(text):
     req, _d, na = MR.check(_answer(), notes)
     assert req["kind"]["shell"] == "triangles"
     assert [r["field"] for r in req["rows"]] == ["triangles_only"]
-    assert req["rows"][0]["asked"] == "shell elements: triangles only" and na == []
+    # NOTE-12: the global size the (empty) reading left in no field is told, never silently dropped
+    assert req["rows"][0]["asked"] == "shell elements: triangles only" and na == ["Global size 10 mm"]
 
 
 def test_a_kind_the_model_did_read_is_never_overridden_by_the_phrases():
