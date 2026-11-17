@@ -176,12 +176,13 @@ class _NoCut(Exception):
     solver's own limits: the mesh is made again with those faces left ungridded (the neighbours whole)."""
 
     def __init__(self, faces: set[int], why: dict[int, dict] | None = None, holes: list | None = None,
-                 hole_faces: list | None = None) -> None:
+                 hole_faces: list | None = None, hole_why: list | None = None) -> None:
         super().__init__(f"{len(faces)} gridded face(s)")
         self.faces = faces
         self.why = why or {}
         self.holes = holes or []        # (SHMESH-51c: bolt holes whose two-ring box failed in a grid: one ring there)
         self.hole_faces = hole_faces or []  # (SHMESH-51f: each such hole's sewn face: its rounds are its face's own)
+        self.hole_why = hole_why or []  # (SHMESH-51h: why each takes one ring)
         self.unmap: list = []           # (SHMESH-51f: grid cells of other faces found past the limits on the same pass)
 
 
@@ -228,6 +229,9 @@ KEY_AREA = 1e-4
 #: beside = within BOX_BLAME_REACH box half widths of the box's centre (one box width past its side)
 BOX_BLAME = True
 BOX_BLAME_REACH = 3.0
+#: SHMESH-51h: with GATHER, how many rounds of one ring a face may have (each round sends every hole a fault is put on
+#: at once; the rounds go on while they send holes - the fixed 3 had thrown away a web's 41 made bands for 5 holes)
+HOLE_ROUNDS_MAX = 8
 
 
 def _generate(gmsh, tag_of: dict[int, int]) -> None:
@@ -2013,7 +2017,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                     # SHMESH-51f: face by face - the holes of each face whose own fault is its free cells, while that
                     # face has rounds left (another face's refusal on this pass no longer sends this one's whole grid
                     # to one ring: that face is judged again on the next pass)
-                    go_ = [w for w in bad_holes if _rounds(hole_rounds, int(w.owner)) < ST.BOLT_HOLE_ROUNDS
+                    go_ = [w for w in bad_holes if _round_left(hole_rounds, int(w.owner))
                            and why_cut.get(int(w.owner), {}).get("why", "").startswith("its free cells")]
                 else:
                     go_ = bad_holes if hole_rounds < ST.BOLT_HOLE_ROUNDS and bad_holes and all(why_cut.get(kg, {}).get("why", "").startswith("its free cells") for kg in hurt) else []  # noqa: E501
@@ -2487,37 +2491,47 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
             # cells paved), those holes alone take one ring and the face is meshed again; its other holes keep two
             # (SHMESH-51f: each face while it has rounds of its own left)
             bad_b = [w for w in boxed if w.radii and int(w.owner) in hurt_p and int(w.owner) in grid_faces_made
-                     and w.info.get("box_band") != "made" and _rounds(hole_rounds, int(w.owner)) < ST.BOLT_HOLE_ROUNDS]
-            if not bad_b and GATHER and BOX_BLAME:
-                # SHMESH-51g: a gridded face refused for elements past the solver's limits or over the user's longest
-                # edge, every one of them in or beside a two-ring bolt hole's box (a cell there paved, its counts not
-                # meeting the box's): those holes alone take one ring and the face keeps its grid and its other rings
+                     and w.info.get("box_band") != "made" and _round_left(hole_rounds, int(w.owner))]
+            why_b = {id(w): "its band was not made (" + str(w.info.get("box_band"))[:80] + ")" for w in bad_b}
+            if GATHER and BOX_BLAME:
+                # SHMESH-51g/51h: in the same round, every element the face was refused for that lies in or beside a
+                # two-ring bolt hole's box (a cell there paved, its counts not meeting the box's) puts that hole to one
+                # ring too: elements past the solver's limits or over the user's longest edge, and for a face refused
+                # against its free mesh its triangles and its edges under the user's shortest edge. The face keeps its
+                # grid and its other rings; a fault on no hole's box is judged on the next pass (SHMESH-51b if alone)
+                low_p = (sizing or {}).get("low_mm")
                 for kp in sorted(hurt_p & set(grid_faces_made)):
-                    if str(why_p.get(kp, {}).get("why")) not in ("elements past the solver's own limits",
-                                                                 "an edge over the user's longest edge"):
+                    why_k = str(why_p.get(kp, {}).get("why"))
+                    guard = why_k.endswith("(set against its free mesh)")
+                    if why_k not in ("elements past the solver's own limits", "an edge over the user's longest edge") \
+                            and not guard:
                         continue
                     two_k = [w for w in boxed if w.radii and int(w.owner) == kp and len(w.box_corners) == 4
-                             and _rounds(hole_rounds, kp) < ST.BOLT_HOLE_ROUNDS]
+                             and _round_left(hole_rounds, kp)]
                     at_k = []
                     for els, faces_, measure, past_fn in ((Q, q_face, shell_quality.quad_measures,
                                                            shell_quality._quad_past),
                                                           (T, t_face, shell_quality.tria_measures,
                                                            shell_quality._tria_past)):
-                        mine = els[np.asarray(faces_, dtype=np.int64) == kp] if len(els) else els
+                        mine = els[np.asarray(faces_, dtype=np.int64) == kp] if len(els) and two_k else els[:0]
                         if len(mine):
-                            flag = past_fn(measure(xyz, mine))
-                            if high_p is not None:
-                                flag = flag | (np.linalg.norm(xyz[mine] - xyz[np.roll(mine, -1, axis=1)],
-                                                              axis=2).max(axis=1) > float(high_p))
+                            ed = np.linalg.norm(xyz[mine] - xyz[np.roll(mine, -1, axis=1)], axis=2)
+                            if guard:
+                                flag = np.full(len(mine), mine.shape[1] == 3)
+                                if low_p is not None:
+                                    flag = flag | (ed.min(axis=1) < float(low_p))
+                            else:
+                                flag = past_fn(measure(xyz, mine))
+                                if high_p is not None:
+                                    flag = flag | (ed.max(axis=1) > float(high_p))
                             at_k.extend(xyz[mine[flag]].mean(axis=1))
-                    got_k = _boxes_at(np.asarray(at_k, dtype=float).reshape(-1, 3), two_k, mm) if two_k else None
-                    bad_b += got_k or []
-                if bad_b:
-                    raise _NoCut(set(), {}, holes=[[float(x) for x in w.centre] for w in bad_b],
-                                 hole_faces=[int(w.owner) for w in bad_b])
+                    for w in _boxes_at(np.asarray(at_k, dtype=float).reshape(-1, 3), two_k, mm, partial=True) or []:
+                        if w not in bad_b:
+                            bad_b.append(w)
+                            why_b[id(w)] = f"{why_k}: in or beside its box"
             if bad_b:
                 raise _NoCut(set(), {}, holes=[[float(x) for x in w.centre] for w in bad_b],
-                             hole_faces=[int(w.owner) for w in bad_b])
+                             hole_faces=[int(w.owner) for w in bad_b], hole_why=[why_b[id(w)] for w in bad_b])
         _grid_first(hurt_p, why_p, {int(w.owner) for w in boxed + gridded if w.radii}, set(grid_faces_made), no_cut)
         if hurt_p:
             raise _NoCut(hurt_p, {k: why_p[k] for k in hurt_p})
@@ -2687,10 +2701,11 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
 BOLT_GRID_KEY = 1 << 30
 
 
-def _boxes_at(at: np.ndarray, ws: list, mm: float) -> list | None:
+def _boxes_at(at: np.ndarray, ws: list, mm: float, partial: bool = False) -> list | None:
     """SHMESH-51g: the two-ring bolt holes (of `ws`, each with its box's four corners) whose box holds each point of
     `at` (mm), or has it beside it (within BOX_BLAME_REACH of the box's half widths from its centre: one box width
-    past its side); None when a point is beside none of them (the fault is not the rings')."""
+    past its side); None when a point is beside none of them (the fault is not the rings'). `partial` (SHMESH-51h): the
+    holes of the points that are, the others left out."""
     if not len(at):
         return None
     reach = np.full(len(at), np.inf)
@@ -2702,9 +2717,15 @@ def _boxes_at(at: np.ndarray, ws: list, mm: float) -> list | None:
         f = np.maximum(2 * np.abs(d @ u) / max(float(u @ u), 1e-300), 2 * np.abs(d @ v) / max(float(v @ v), 1e-300))
         better = f < reach
         reach[better], who[better] = f[better], i
-    if (reach > BOX_BLAME_REACH).any():
+    if (reach > BOX_BLAME_REACH).any() and not partial:
         return None
-    return [ws[i] for i in sorted(set(who.tolist()))]
+    return [ws[i] for i in sorted(set(who[reach <= BOX_BLAME_REACH].tolist()))]
+
+
+def _round_left(hole_rounds, k: int) -> bool:
+    """SHMESH-51h: whether a face may send bolt holes to one ring again: with GATHER while it has had fewer than
+    HOLE_ROUNDS_MAX rounds (each round sends one hole or more, so it ends), else BOLT_HOLE_ROUNDS rounds in all."""
+    return _rounds(hole_rounds, k) < (HOLE_ROUNDS_MAX if isinstance(hole_rounds, dict) else ST.BOLT_HOLE_ROUNDS)
 
 
 def _rounds(hole_rounds, k: int) -> int:

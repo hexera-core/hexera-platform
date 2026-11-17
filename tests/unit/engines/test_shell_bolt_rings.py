@@ -339,3 +339,20 @@ def test_a_freed_cell_is_let_go_when_a_face_its_freeing_came_from_changes():
     assert SA._keys_kept({k}, {7}) == set() and SA._keys_kept({k}, {4}) == set()
     body = {4: "a", 7: "a", 9: "a", 12: "b"}.get
     assert SA._keys_kept({k}, {9}, body) == set() and SA._keys_kept({k}, {12}, body) == {k}   # (a ring changed in its body)
+
+
+def test_rounds_of_one_ring_go_on_while_they_send_holes_and_blame_every_hole_at_once():
+    """SHMESH-51h: with faults gathered a face is not stopped after BOLT_HOLE_ROUNDS rounds (a real web had 41 made
+    bands thrown away for 5 holes when its fourth round was refused), only after HOLE_ROUNDS_MAX; and a round puts the
+    faults it can on their holes even when others lie on no box (those are judged on the next pass)."""
+    from types import SimpleNamespace
+
+    from meshpipeline.engines.gmsh import shell_adapter as SA
+
+    assert SA._round_left({3: ST.BOLT_HOLE_ROUNDS}, 3) and not SA._round_left({3: SA.HOLE_ROUNDS_MAX}, 3)
+    assert not SA._round_left(ST.BOLT_HOLE_ROUNDS, 3)                   # (rounds for the whole model: the fixed cap)
+    c = np.zeros(3)
+    w = SimpleNamespace(centre=c, box_corners=[c + np.array(d) for d in ((-28, -28, 0), (28, -28, 0), (28, 28, 0),
+                                                                         (-28, 28, 0))])
+    pts = np.array([[5.0, 5.0, 0.0], [500.0, 0.0, 0.0]])
+    assert SA._boxes_at(pts, [w], 1.0) is None and SA._boxes_at(pts, [w], 1.0, partial=True) == [w]
