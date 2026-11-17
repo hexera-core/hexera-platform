@@ -1193,9 +1193,11 @@ class IntakeToolExecutor:
                      and prior.get("intent_fingerprint") == at.fingerprint(intent_canon)
                      and _same_submission(prior.get("payload"), payload))
         # ...and when it did change, the summary says WHAT, so the user sees their correction taken
+        # (a plan for ANOTHER analysis - the user went from CFD to FEA or back - is a new plan, not a change)
+        same_case = (prior.get("payload") or {}).get("purpose") == payload.get("purpose")
         changed = (ap.changed_line(ap.changes_between(prior.get("payload"), payload),
                                    since_run=prior.get("status") == ap.DISPATCHED)
-                   if prior.get("payload") and not unchanged else "")
+                   if prior.get("payload") and not unchanged and same_case else "")
         # THE PLAN STEP'S ONE LINE (agents/intake/flow PLAN): the card shows the plan, the notes and
         # Proceed; the chat says one line - and, on a plan redone, what changed (or that nothing did)
         st.submit_summary = ((f"{changed}\n\n" if changed else "")

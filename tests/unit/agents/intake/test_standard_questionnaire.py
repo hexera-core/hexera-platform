@@ -78,6 +78,9 @@ class _Repo:
     async def append_message(self, db, session_id, role, content):
         self.w.session.messages = [*self.w.session.messages, {"role": role, "content": content}]
 
+    async def set_messages(self, db, session_id, messages):
+        self.w.session.messages = list(messages)
+
     async def set_intake_gate(self, db, session_id, gate):
         self.w.session.intake_gate = dict(gate or {})
 
@@ -253,6 +256,12 @@ class World:
             return True
         monkeypatch.setattr(gh, "queue_naming", _queue)
 
+        def _reopen(sid):
+            self.confirmed, self.queued, self.restaged = False, False, self.restaged + 1
+        self.restaged = 0
+        monkeypatch.setattr(gh, "reopen_stage", _reopen)
+        monkeypatch.setattr(gh, "stage_can_reopen", lambda sid: True)
+
         async def _none(*a, **k):
             return None
 
@@ -399,6 +408,17 @@ CASES = {
                                "", [P, S, C, F, PL, ANS, PL, ST]),
     "cfd_question_with_the_plan_due": ([("say", "CFD of water through this elbow at 2 m/s"), ("stage", INTERNAL_DECL),
                                         ("say", "hmm"), ("say", "Proceed")], "", [P, S, C, PL, PL, ST]),
+    # a change of analysis after the stage: the stage opens again on the new route, nothing asked in chat
+    "fea_then_cfd_after_stage": ([("say", "FEA"), ("stage", FEA_DECL), ("say", "actually it is CFD, air flowing through it"),
+                                  ("stage", INTERNAL_DECL), ("say", "OK"), ("say", "Proceed")],
+                                 "", [P, S, A, S, C, F, PL, ST]),
+    "cfd_then_fea_after_stage": ([("say", "water flowing through this elbow"), ("stage", INTERNAL_DECL),
+                                  ("say", "now a static stress analysis of the same part"), ("stage", FEA_DECL),
+                                  ("say", "Proceed")], "", [P, S, F, S, C, PL, ST]),
+    "cfd_change_of_mind_at_the_plan": ([("say", "water flowing through this elbow"), ("stage", INTERNAL_DECL),
+                                        ("say", "OK"), ("say", "actually I want a structural FEA of it"),
+                                        ("stage", FEA_DECL), ("say", "Static stress"), ("say", "Proceed")],
+                                       "", [P, S, F, PL, S, C, A, PL, ST]),
     # CFD external
     "cfd_external_standard": ([("say", "external aero over this car"), ("stage", EXTERNAL_DECL), ("say", "OK"),
                                ("say", "Proceed")], "", [P, S, C, F, PL, ST]),
@@ -436,7 +456,10 @@ async def test_no_chat_shows_a_retired_line_the_stages_words_as_the_users_or_a_c
     if flow.route_of(world.session.messages) == flow.ROUTE_FEA:
         # every line the APPLICATION wrote on an FEA chat speaks FEA (the model's own answers are checked by
         # fea_wording; a declaration is the stage's card)
-        for got, steps in flow.read_messages(world.session.messages):
+        # (from the FEA stage on: a chat that came from CFD said CFD words while it was CFD)
+        read = flow.read_messages(world.session.messages)
+        start = max((i for i, (_m, st_) in enumerate(read) if C in st_), default=0)
+        for got, steps in read[start:]:
             # (the purpose questions come before any route: they name both)
             if got.get("role") == "assistant" and not {ANS, C, P, PC} & set(steps):
                 assert not CFD_WORDS.search(str(got["content"])), got["content"]
@@ -496,6 +519,16 @@ async def test_the_conditions_question_has_its_buttons_and_reads_a_named_fluid(m
     asked = world.session.messages[-1]["content"]
     assert asked.startswith(flow.INTERNAL_LEAD) and "air at 20 °C at 1 m/s at the inlet" in asked
     assert [c["label"] for c in pm.choices_for(asked)] == ["OK", "Resolve the wall (y⁺ ≈ 1)"]
+
+
+@pytest.mark.asyncio
+async def test_a_change_of_analysis_after_the_stage_opens_the_stage_again(monkeypatch):
+    world = await _run(monkeypatch, [("say", "FEA"), ("stage", FEA_DECL)])
+    out = await world.say("actually it is CFD, air flowing through it")
+    assert out.restage is True and world.restaged == 1 and world.model.calls == 0
+    assert out.reply == gh.HOLD_REPLY                     # the stage step's own line, nothing asked in chat
+    assert not flow.latest_declaration(world.session.messages)     # the old confirmation is withdrawn
+    assert pm.reading_for(world.session.messages).route == pm.ROUTE_FLOW
 
 
 @pytest.mark.asyncio

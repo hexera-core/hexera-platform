@@ -461,6 +461,11 @@ async function sendText(txt, { again = false } = {}) {
       if (getState.sessionId() === sessionId) return sendText(txt, { again: true });
       return;
     }
+    if (d.restage) {
+      // THE STAGE OPENS AGAIN (the analysis changed after it): the part is checked on the new route's stage
+      _checkState = null; _stageOpen = false; holdForDrawing(); watchGeometryCheck(sessionId);
+      return;
+    }
     if (d.done && d.job_id) deps.onJobStarted(d.job_id);
     else if (_stageOpen || String(d.reply || "").startsWith(DRAWING_PREFIX)) holdForDrawing();
     else enableInput();

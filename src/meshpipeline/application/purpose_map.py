@@ -369,6 +369,13 @@ def reading_for(messages) -> PurposeReading:
     has said, read together. After the one question, words that still settle nothing take the
     generic path (a flow, whose stage asks through-or-around) - never a second question."""
     texts = _user_texts(messages)
+    # THE LATEST WORD ON THE ANALYSIS WINS: a message that names one outright ("actually it is CFD, air
+    # flowing through it") after the route was read sends the job down its path - the stage opens again
+    for text in reversed(texts[1:]):
+        named = named_analysis(text)
+        if named.settled:
+            full = read_purpose(text)
+            return full if full.route == named.route else named
     asked = question_asked(messages)
     said = _answer_to(messages, asked) if asked else ""
     if said:

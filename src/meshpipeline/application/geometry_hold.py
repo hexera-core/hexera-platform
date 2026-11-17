@@ -390,6 +390,32 @@ async def record_unit(db, session, owner_id: str, organization_id: str, unit: st
     return asdict(GeometryInterpretationRef.from_domain(recorded))
 
 
+def stage_can_reopen(session_id: str) -> bool:
+    """Whether the part can be shown on a stage again: the check is on and has read the part."""
+    import meshpipeline.settings.geometry_check as gcfg
+
+    if not gcfg.GEOMETRY_CHECK_ENABLED:
+        return False
+    try:
+        from meshpipeline.application.geometry_check import read_check
+        return str((read_check(session_id) or {}).get("status") or "") in ("scouted", "ready")
+    except Exception:  # noqa: BLE001 - a check we cannot read is not shown again
+        return False
+
+
+def reopen_stage(session_id: str) -> None:
+    """The part's confirmation and its naming request withdrawn, so the stage asks again (the analysis
+    changed after the stage). The scout's own reading of the part stands."""
+    from meshpipeline.application.geometry_check import check_object_key, clear_naming_request
+    from meshpipeline.contracts.object_storage import ObjectNotFound, get_object_store
+
+    try:
+        get_object_store().delete_object(object_key=check_object_key(session_id, "confirmed.json"))
+    except ObjectNotFound:
+        pass
+    clear_naming_request(session_id)
+
+
 def queue_naming(session_id: str, owner_id: str, purpose_text: str, interpretation: dict | None) -> bool:
     """Hand the words and the unit to the naming step and leave the marker that says so. False
     when nothing is configured to run it, so the caller lets the intake carry on."""
@@ -414,7 +440,7 @@ def withdraw_naming(session_id: str) -> None:
     logger.warning("geometry naming request withdrawn after a failed turn - session_id=%s", session_id)
 
 
-__all__ = ["CONTINUE_TEXT", "DRAWING_MARK", "HOLD_REPLY", "THERMAL_HOLD_REPLY", "THERMAL_OPENING_REPLY",
+__all__ = ["CONTINUE_TEXT", "DRAWING_MARK", "HOLD_REPLY", "reopen_stage", "stage_can_reopen", "THERMAL_HOLD_REPLY", "THERMAL_OPENING_REPLY",
            "THERMAL_WAIT_REPLY", "WAIT_GRACE_S", "WAIT_REPLY", "ensure_fixed_unit", "hold_applies",
            "hold_decision", "hold_reply", "interpretation_payload", "measured_size_mm", "purpose_from",
            "queue_naming", "record_unit", "should_hold", "stored_thermal", "unit_fixing_format",
