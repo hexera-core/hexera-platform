@@ -6,18 +6,11 @@ function dashboardSource(relativePath: string): string {
   return readFileSync(new URL(`../(dashboard)/${relativePath}`, import.meta.url), "utf8");
 }
 
-test("overview summary omits filler metrics", () => {
-  const source = dashboardSource("page.tsx");
+test("the runs list keeps the pitch and leaves the money to billing", () => {
+  const source = dashboardSource("runs/page.tsx");
 
-  assert.match(source, /className="summary-grid summary-grid--compact"/);
-  assert.doesNotMatch(
-    source,
-    /<div className="metric-card">\s*<p className="label">Recent runs<\/p>/,
-  );
-  assert.doesNotMatch(
-    source,
-    /<div className="metric-card">\s*<p className="label">How it works<\/p>/,
-  );
+  assert.match(source, /Upload a part, answer a few questions/);
+  assert.doesNotMatch(source, /metric-card/);
 });
 
 test("API key summary omits the self-evident account scope card", () => {
@@ -33,12 +26,13 @@ test("billing summary omits payment-provider implementation detail", () => {
   assert.doesNotMatch(source, /<p className="label">Payment system<\/p>/);
 });
 
-test("usage keeps the charging consequence without a filler card", () => {
-  const source = dashboardSource("usage/page.tsx");
+test("billing keeps the charging consequence where the ledger now lives", () => {
+  const source = dashboardSource("settings/billing/page.tsx");
 
-  assert.match(source, /className="summary-grid summary-grid--compact"/);
-  assert.doesNotMatch(source, /<p className="label">Charge rule<\/p>/);
-  assert.match(source, /Credits are charged only for completed runs\./);
+  // The words live in billing.ts chargingNote - qualified by the plan the API describes, so the
+  // page never promises a metered bill an unmetered plan does not charge.
+  assert.match(source, /chargingNote\(subscription, catalogue\)/);
+  assert.match(source, /credits\/history/);
 });
 
 test("organisation names the workspace boundary", () => {
@@ -47,9 +41,16 @@ test("organisation names the workspace boundary", () => {
   assert.match(source, /Members, billing, credits and runs belong to this workspace\./);
 });
 
-test("CAD Repair System evidence is available without a console feature gate", () => {
-  const source = dashboardSource("repair/page.tsx");
+test("meshing settings name the team's standard, the scope and the notes rule, and nothing else", () => {
+  const source = dashboardSource("settings/meshing/page.tsx");
 
-  assert.match(source, />CAD Repair System</);
-  assert.doesNotMatch(source, /CAD_REPAIR_POC|notFound/);
+  assert.match(source, /<h1 className="page__title">Meshing<\/h1>/);
+  assert.match(source, /<p className="page__intro">\{SCOPE\}<\/p>/);
+  assert.match(source, /title="We couldn't load your meshing standard"/);
+  // no summary cards and no per-field controls: one box, the one Shell elements switch, its line, Save and Clear
+  assert.doesNotMatch(source, /summary-grid|metric-card/);
+  const view = readFileSync(new URL("./meshing-standard-view.tsx", import.meta.url), "utf8");
+  assert.doesNotMatch(view, /<input|<select/);
+  assert.equal((view.match(/<button/g) ?? []).length, 3);   // Save, Clear and the switch's one mapped choice
+  assert.equal((view.match(/role="radiogroup"/g) ?? []).length, 1);
 });

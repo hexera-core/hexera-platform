@@ -15,6 +15,8 @@ from meshpipeline.agents.intake.agent import node_intake
 from meshpipeline.agents.reviewer.visual import node_reviewer
 from meshpipeline.contracts.failure_cause import retry_can_help
 from meshpipeline.contracts.pipeline_state import PipelineState
+from meshpipeline.pipeline import cfd_wrap as _wrap
+from meshpipeline.pipeline.cfd_wrap import node_cfd_wrap
 from meshpipeline.pipeline.classifier import node_classifier
 from meshpipeline.pipeline.engine_fallback import another_engine_takes_over, node_engine_fallback
 from meshpipeline.pipeline.engine_select import node_engine_select
@@ -199,7 +201,12 @@ async def node_review_retry(state: PipelineState) -> dict:
 
 def route_after_builder(
     state: PipelineState,
-) -> Literal["node_executor", "node_failure_handler", "node_infra_retry", "__end__"]:
+) -> Literal["node_executor", "node_failure_handler", "node_infra_retry", "node_cfd_wrap", "__end__"]:
+    if state.get("builder_stop") and _wrap.wanted(state):
+        # THE RUN'S TIME RAN OUT before a mesh: the wrap rung brings its own (LAD-cfd-5)
+        logger.warning("route_after_builder: the run's time ran out with no mesh → node_cfd_wrap "
+                       "(LAD-cfd-5) - job_id=%s", state.get("job_id"))
+        return "node_cfd_wrap"
     if state.get("builder_stop"):
         # The builder built nothing on purpose: another attempt provably cannot change the outcome
         # (a review's retry wrote exactly the case that review rejected). The verdict already
@@ -241,22 +248,32 @@ def route_after_geometry_admission(
     return "node_builder"
 
 
-def _sound_or_end(state: PipelineState) -> Literal["node_deliver_sound", "__end__"]:
+def _sound_or_end(
+    state: PipelineState,
+) -> Literal["node_deliver_sound", "node_cfd_wrap", "__end__"]:
     """THE RUN ENDS ON A FAILED ATTEMPT: when an earlier attempt built a sound mesh, that mesh is
     delivered instead of the failure (LAD-cfd-3, node_deliver_sound) - a retry that came out broken
-    never throws an earlier sound mesh away. Otherwise the run ends as it always did."""
+    never throws an earlier sound mesh away. With none, a flow run whose engines all failed on the
+    surface as drawn meshes a wrapped copy of it once (LAD-cfd-5, node_cfd_wrap). Otherwise the
+    run ends as it always did."""
     from meshpipeline.engines import resolution_policy as _rp
     if not state.get("user_dispute") and _rp.deliverable_sound(state) is not None:
         logger.warning("route_after_executor: the last attempt failed, and an earlier attempt "
                        "built a sound mesh → node_deliver_sound (LAD-cfd-3) - job_id=%s",
                        state.get("job_id"))
         return "node_deliver_sound"
+    if _wrap.wanted(state):
+        logger.warning("route_after_executor: every engine failed on the surface as drawn, and "
+                       "no attempt built a sound mesh → node_cfd_wrap (LAD-cfd-5) - job_id=%s",
+                       state.get("job_id"))
+        return "node_cfd_wrap"
     return _END
 
 
 def route_after_executor(
     state: PipelineState,
 ) -> Literal["node_reviewer", "node_classifier", "node_guard_replay", "node_deliver_sound",
+             "node_cfd_wrap",
              "__end__"]:
     success            = state.get("executor_success", False)
     retry_count        = state.get("retry_count", 0)
@@ -316,6 +333,18 @@ def route_after_executor(
         logger.warning("route_after_executor: a guard clock stopped the attempt again after its "
                        "replay → END (ran out of time), unless an earlier attempt built a sound "
                        "mesh (LAD-cfd-3) - job_id=%s", state.get("job_id"))
+        return _sound_or_end(state)
+
+    if _wrap.tried(state):
+        # THE WRAP RUNG IS THE LAST (LAD-cfd-5): a failure on the wrapped surface moves to the
+        # rung's next engine on the same skin; with none left the run ends - on an earlier sound
+        # mesh when there is one, else on the failure
+        if _wrap.next_step(state):
+            logger.warning("route_after_executor: the wrapped surface did not mesh on %s → the "
+                           "rung's next engine - job_id=%s", state.get("engine"), state.get("job_id"))
+            return "node_cfd_wrap"
+        logger.warning("route_after_executor: the wrapped surface did not mesh on any engine → END "
+                       "- job_id=%s", state.get("job_id"))
         return _sound_or_end(state)
 
     # RETRY ONLY WHAT A RETRY CAN FIX. Some failures are decided by inputs the next attempt
@@ -588,6 +617,7 @@ def build_graph(checkpointer):
     b.add_node("node_review_retry",    _fenced("node_review_retry", node_review_retry))
     b.add_node("node_guard_replay",    _fenced("node_guard_replay", node_guard_replay))
     b.add_node("node_deliver_sound",   _fenced("node_deliver_sound", node_deliver_sound))
+    b.add_node("node_cfd_wrap",        _fenced("node_cfd_wrap", node_cfd_wrap))
 
     b.add_edge(START, "node_intake")
     b.add_conditional_edges(
@@ -615,7 +645,7 @@ def build_graph(checkpointer):
         "node_builder",
         route_after_builder,
         {"node_executor": "node_executor", "node_failure_handler": "node_failure_handler",
-         "node_infra_retry": "node_infra_retry", END: END},
+         "node_infra_retry": "node_infra_retry", "node_cfd_wrap": "node_cfd_wrap", END: END},
     )
     b.add_edge("node_infra_retry", "node_builder")
     b.add_conditional_edges(
@@ -626,11 +656,14 @@ def build_graph(checkpointer):
             "node_classifier":    "node_classifier",
             "node_guard_replay":  "node_guard_replay",
             "node_deliver_sound": "node_deliver_sound",
+            "node_cfd_wrap":      "node_cfd_wrap",
             END:                  END,
         },
     )
     # A GUARD-CLOCK REPLAY runs the same attempt again (docs/RULES.md TIME-3)
     b.add_edge("node_guard_replay", "node_builder")
+    # THE CFD LADDER'S LAST RUNG (LAD-cfd-5): one more attempt, on a wrapped copy of the surface
+    b.add_edge("node_cfd_wrap", "node_builder")
     # THE NEWEST SOUND MESH, when the last attempt failed (LAD-cfd-3): reviewed and delivered as a
     # caveated delivery candidate is
     b.add_edge("node_deliver_sound", "node_reviewer")

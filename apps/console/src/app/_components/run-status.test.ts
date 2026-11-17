@@ -48,12 +48,14 @@ test("runTitle still says untitled for a genuinely unlabelled first run", () => 
 });
 
 test("a run delivered with the review's concerns never reads as a plain success", () => {
-  assert.equal(statusLabel("succeeded", "delivered_with_concerns"), "delivered with concerns");
+  assert.equal(statusLabel("succeeded", "delivered_with_concerns"), "Ready, with concerns");
   assert.equal(statusClass("succeeded", "delivered_with_concerns"), "status status--warn");
-  assert.equal(statusLabel("succeeded", "passed"), "mesh ready");
+  assert.equal(statusLabel("succeeded", "passed"), "Ready");
   assert.equal(statusClass("succeeded", "passed"), "status status--ok");
-  assert.equal(statusLabel("failed", "wrong_problem"), "failed");
-  assert.equal(statusLabel("running"), "running");
-  assert.equal(statusLabel("pending_review"), "waiting for your review");
-  assert.equal(statusLabel("some_new_state"), "some new state");
+  assert.equal(statusLabel("failed", "wrong_problem"), "Failed");
+  assert.equal(statusLabel("running"), "Running");
+  assert.equal(statusLabel("cancelled"), "Cancelled");
+  assert.equal(statusLabel("pending_review"), "Needs your review");
+  assert.equal(statusClass("pending_review"), "status status--wait");
+  assert.equal(statusLabel("some_new_state"), "Some new state");
 });

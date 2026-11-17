@@ -115,6 +115,28 @@ export function creditCheckoutFailureMessage(status: number): string {
   return "Could not start checkout just now. Try again.";
 }
 
+/** The charging rule the page states, qualified by the plan the API actually describes.
+ *
+ * "Credits are charged only for completed runs" is always true. What happens PAST the allowance
+ * is promised only where it is true: a paying plan with a metered price (`overage_billed`) bills
+ * at month end, an invoiced tier names its own path, and everything else - an unmetered plan, a
+ * catalogue the API could not serve, no plan at all - gets no claim, exactly as planTerms stays
+ * silent for them. */
+export function chargingNote(subscription: Subscription | null, catalogue: Catalogue | null): string {
+  const rule = "Credits are charged only for completed runs. A plan adds its credits when it renews.";
+  const plan = catalogue?.plans.find((candidate) => candidate.name === subscription?.plan);
+  if (!isPaying(subscription) || !plan) {
+    return rule;
+  }
+  if (plan.overage_billed) {
+    return `${rule} Use beyond them is billed at the end of the month.`;
+  }
+  if (!plan.purchasable) {
+    return `${rule} Use beyond them is agreed with us and invoiced.`;
+  }
+  return rule;
+}
+
 /** What a tier's card says about use beyond its allowance - promised only where it is billed. */
 export function planTerms(plan: Plan): string {
   const limits = `Up to ${plan.max_jobs_per_owner} active runs, ${plan.rate_limit_per_minute} API requests a minute.`;

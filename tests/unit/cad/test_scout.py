@@ -457,3 +457,76 @@ def test_flats_on_a_thin_skin_are_not_the_mouths_of_a_fluid_body(tmp_path):
     assert r.input_kind != "fluid-domain"
     # the pads have the skin's half millimetre behind them: not even kept as openings for a flip
     assert r.flow == "external" and r.openings == []
+
+
+# ------------------------------------------------ flat pieces of the wall are not mouths (cad/flat_cut) ----
+def _bend_and_leg(leg=80.0, bend_deg=30.0):
+    """The fluid of a rectangular duct, 60 x 40: a 30-degree bend (curved inner and outer walls)
+    running straight on into an 80 mm leg. The leg's two side walls are flat, but the bend's
+    curved walls run on into them tangentially - they are wall, and they sit 60 mm apart, too far
+    for the side-wall pairing to catch them (s_duct_001's square exit section, 2026-11-02)."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeRevol
+    from OCP.gp import gp_Ax1
+
+    poly = BRepBuilderAPI_MakePolygon()
+    for y, z in ((100, 0), (160, 0), (160, 40), (100, 40)):
+        poly.Add(gp_Pnt(0.0, float(y), float(z)))
+    poly.Close()
+    section = BRepBuilderAPI_MakeFace(poly.Wire()).Face()
+    bend = BRepPrimAPI_MakeRevol(section, gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)),
+                                 math.radians(bend_deg)).Shape()
+    return BRepAlgoAPI_Fuse(bend, BRepPrimAPI_MakeBox(gp_Pnt(0, 100, 0), leg, 60.0, 40.0).Shape()).Shape()
+
+
+def test_a_flat_side_wall_the_curved_wall_runs_on_into_is_not_a_mouth(tmp_path):
+    r = _scout(_write(_bend_and_leg(), tmp_path / "bend_leg.step"))
+    assert len(r.openings) == 2
+    ends = sorted(o.centroid[0] for o in r.openings)
+    assert ends[1] == pytest.approx(0.080, abs=1e-4)      # the leg's end, x = 80 mm
+    assert ends[0] < 0.0                                   # the bend's far end
+    # the side walls at y = 100 and 160 mm are measured flats, not proposed
+    assert not any(abs(o.centroid[1] - 0.100) < 1e-4 or abs(o.centroid[1] - 0.160) < 1e-4
+                   for o in r.openings)
+
+
+def test_runs_on_reads_the_wall_run_on_and_leaves_cuts_and_filleted_lips_alone():
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.BRepFilletAPI import BRepFilletAPI_MakeFillet
+    from OCP.BRepMesh import BRepMesh_IncrementalMesh
+    from OCP.GeomAbs import GeomAbs_Plane
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    from meshpipeline.cad.flat_cut import RUNS_ON_SHARE, edge_faces, runs_on_share
+
+    def flats(shape):
+        BRepMesh_IncrementalMesh(shape, 0.5, False, 0.3, True)
+        m = edge_faces(shape)
+        out = {}
+        e = TopExp_Explorer(shape, TopAbs_FACE)
+        while e.More():
+            f = TopoDS.Face_s(e.Current())
+            e.Next()
+            s = BRepAdaptor_Surface(f)
+            if s.GetType() == GeomAbs_Plane:
+                n = s.Plane().Axis().Direction()
+                out[(round(n.X(), 3), round(n.Y(), 3), round(n.Z(), 3), len(out))] = runs_on_share(f, m)
+        return out
+
+    duct = flats(_bend_and_leg())
+    walls = [v for k, v in duct.items() if abs(k[1]) > 0.99]            # the leg's +-y side walls
+    assert walls and all(v >= RUNS_ON_SHARE for v in walls)
+    leg_end = [v for k, v in duct.items() if abs(k[0]) > 0.99]          # the leg's end, along x
+    assert leg_end and all(v == 0.0 for v in leg_end)
+    # a mouth whose lip is filleted: the fillet is tangent to the end face at the rim but turns
+    # a quarter round, so the end stays a cut
+    cyl = _cyl(40.0, 300.0)
+    fillet = BRepFilletAPI_MakeFillet(cyl)
+    e = TopExp_Explorer(cyl, TopAbs_EDGE)
+    while e.More():
+        fillet.Add(5.0, TopoDS.Edge_s(e.Current()))
+        e.Next()
+    ends = flats(fillet.Shape())
+    assert ends and all(v < RUNS_ON_SHARE for v in ends.values())

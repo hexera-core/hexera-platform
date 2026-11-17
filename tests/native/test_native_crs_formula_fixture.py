@@ -139,3 +139,43 @@ def test_formula_profile_repairs_errors_and_slivers_inside_the_demo_operation_bu
     assert sanity_refusal(before, after) == ""
     assert cumulative_refusal(before, after, declared_area_mm2=declared_area,
                               declared_volume_mm3=0.0) == ""
+
+
+def test_the_demo_subset_keeps_only_the_solids_asked_for_and_selects_by_measurement(tmp_path):
+    # THE RECORDING'S CAR IS A SUBSET, because the whole donor body costs ~59 s to read and scan
+    # and an inspection that runs past CAD_INSPECT_TIMEOUT_S aims no repair at all. Dropping solids
+    # must not disturb face selection: selectors are measured, never indexed.
+    fixture_builder = pytest.importorskip(
+        "tools.demo.build_crs_formula_fixture",
+        reason="the release image intentionally does not ship repository demo tooling",
+    )
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCP.TopAbs import TopAbs_SOLID
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS_Compound
+
+    def _solids(shape) -> int:
+        n, explorer = 0, TopExp_Explorer(shape, TopAbs_SOLID)
+        while explorer.More():
+            n += 1
+            explorer.Next()
+        return n
+
+    compound = TopoDS_Compound()
+    builder = BRep_Builder()
+    builder.MakeCompound(compound)
+    for offset in (0.0, 100.0, 200.0):
+        box = BRepPrimAPI_MakeBox(10.0, 10.0, 10.0).Shape()
+        from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
+        from OCP.gp import gp_Trsf, gp_Vec
+        move = gp_Trsf()
+        move.SetTranslation(gp_Vec(offset, 0.0, 0.0))
+        builder.Add(compound, BRepBuilderAPI_Transform(box, move, True).Shape())
+
+    kept = fixture_builder.keep_solids(compound, (1, 3))
+
+    assert _solids(compound) == 3
+    assert _solids(kept) == 2
+    with pytest.raises(ValueError, match="only the source holds|holds only"):
+        fixture_builder.keep_solids(compound, (1, 9))

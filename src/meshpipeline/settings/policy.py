@@ -178,12 +178,21 @@ DOMAIN_EXTENT_GATE_ENABLED: bool = optional_env("DOMAIN_EXTENT_GATE_ENABLED", "t
 # the engine fallback ladder (pipeline/engine_fallback.py): a run whose engine cannot mesh the
 # shape moves to the next engine that delivers the same approved mesh
 ENGINE_FALLBACK_ENABLED: bool = optional_env("ENGINE_FALLBACK_ENABLED", "true").lower() == "true"
+# the CFD ladder's last rung (pipeline/cfd_wrap.py, LAD-cfd-5): a flow run whose engines all failed
+# on the surface as drawn meshes a wrapped copy of it once
+CFD_WRAP_ENABLED: bool = optional_env("CFD_WRAP_ENABLED", "true").lower() == "true"
+CFD_WRAP_TIME_S: int = int(optional_env("CFD_WRAP_TIME_S", "7200"))
 # THE VERDICT BY MEASURED LIMITS (docs/RULES.md VER-1..4, engines/verdict_limits.py). Off = SHADOW:
 # the review-led verdict still decides, and the limits verdict is worked out beside it, logged and
 # written into the run's why record so the two can be compared. On = the measured limits decide
 # pass, delivered with concerns or fail; the AI reviewer only adds notes, shown to the customer as
 # notes - it can no longer change a status, start a rebuild or a bonus attempt, or fail a job.
 VERDICT_BY_LIMITS: bool = optional_env("VERDICT_BY_LIMITS", "false").lower() == "true"
+
+# the CAD fidelity checks (engines/cad_fidelity.py): a sound mesh that is not the part - its
+# boundary off the CAD, part of the CAD missing, the volume far off - is rebuilt (off = every
+# miss is only said beside the delivered mesh; the numbers are recorded either way)
+CAD_FIDELITY_RETRY_ENABLED: bool = optional_env("CAD_FIDELITY_RETRY_ENABLED", "true").lower() == "true"
 MESH_SCRIPT_SCAN_ENABLED: bool = optional_env("MESH_SCRIPT_SCAN_ENABLED", "true").lower() == "true"
 RUN_PYTHON_REQUIRE_SANDBOX: bool = optional_env("RUN_PYTHON_REQUIRE_SANDBOX", "true").lower() == "true"
 

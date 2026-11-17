@@ -1,6 +1,6 @@
-# Responsibility: Say WHERE a mesh runs - the Cloud Run mesh job, or a Compute Engine VM sized to fit - from the memory the plan needs, before anything is meshed; and one size up when a run still runs out of memory.
+# Responsibility: Say WHERE a mesh runs - the Cloud Run mesh job, or a Compute Engine VM sized to fit - from the memory the plan needs, or (RUN-9) from a flow plan's cell count past the standard machine's, before anything is meshed; and one size up when a run still runs out of memory.
 # Boundaries: engine-neutral and pure: no provider call. A driver writes the decision into its workspace; the mesh executor (adapters/mesh_execution) reads it and dispatches there.
-# Collaborates with: engines/fea_driver.py (writes it from the FEA memory model), adapters/mesh_execution/cloud_run_client.py and gce_vm.py (read it, run there), docs/RULES.md RUN-1..4.
+# Collaborates with: engines/fea_driver.py (writes it from the FEA memory model), engines/snappy/drivers.py and engines/cfmesh/cfmesh_runner.py (a user's cell count, RUN-9), adapters/mesh_execution/cloud_run_client.py and gce_vm.py (read it, run there), docs/RULES.md RUN-1..9.
 """THE MACHINE A MESH RUNS ON (Areen, 24 Oct: a bigger machine replaces shrinking a mesh to fit).
 
 The plan is sized by the accuracy rules alone. Its memory need is then routed:
@@ -178,5 +178,76 @@ def ceiling_gib() -> float:
     return usable_gib(CEILING)
 
 
-__all__ = ["CEILING", "CLOUD_RUN_GIB", "MACHINES", "MACHINE_FILE", "TIME_MARGIN", "Machine", "ceiling_gib", "choose",
-           "for_time", "off_the_wall", "read", "step_up", "usable_gib", "write"]
+# #
+# RUN-9: a flow mesh's CELL COUNT picks its machine (Areen, 14 Nov: "if the person writes 16 M in the notes, move to
+# the big machine; if they say 5 M, we don't")
+# #
+
+#: A FLOW MESHER'S PEAK MEMORY PER MILLION CELLS, with room (snappyHexMesh, cfMesh): an estimate, not a measurement.
+#: snappyHexMesh is usually quoted at 1-2 GB a million cells, more while it adds layers; the standard machine carries
+#: its 8 M (settings/policy.CELL_HARD_LIMIT) in 32 GiB with the workspace in that memory too, which allows up to about
+#: 3. A run that still needs more is stopped before the machine runs out and goes one machine up (RUN-3, step_up).
+FLOW_GIB_PER_MCELL = 2.5
+
+
+def normal_cells() -> int:
+    """The most cells the STANDARD machine (the Cloud Run mesh job) is sized for: settings/policy.CELL_HARD_LIMIT."""
+    import meshpipeline.settings.policy as polcfg
+    return int(polcfg.CELL_HARD_LIMIT)
+
+
+def _mcells(n: float) -> str:
+    return f"{float(n) / 1e6:.3g} M"
+
+
+def for_cells(cells: float, *, why: str = "cell count") -> dict:
+    """RUN-9: WHERE A FLOW PLAN OF `cells` CELLS RUNS. Up to normal_cells() the standard machine, as always; past it
+    the smallest VM whose memory holds the mesher (cells x FLOW_GIB_PER_MCELL), with no question. Past even the
+    largest machine: the largest, said (the plan is held to what it carries, ceiling_cells)."""
+    n = max(0.0, float(cells or 0.0))
+    process, files = n / 1e6 * FLOW_GIB_PER_MCELL, n * FLOW_FILE_BYTES_PER_CELL / 2**30
+    if n <= normal_cells():
+        return _decision(None, process, files, need=process + files, why=why,
+                         words=f"{_mcells(n)} cells: it runs on the standard machine.")
+    machine = next((m for m in MACHINES if process <= usable_gib(m)), CEILING)
+    over = process > usable_gib(CEILING)
+    words = (f"{_mcells(n)} cells is more than the {_mcells(normal_cells())} our standard machine is sized for, so it "
+             f"runs on a {machine.name} VM ({machine.memory_gib:.0f} GiB).")
+    if over:
+        words += f" That is the largest machine we run; it carries about {_mcells(ceiling_cells())} cells."
+    return _decision(machine, process, files, need=process, words=words, why=why, over_ceiling=over)
+
+
+def cells_carried(decision: dict | None) -> int:
+    """The most flow cells the machine of `decision` carries: the standard machine's normal_cells() on Cloud Run (or no
+    decision), else what the VM's memory holds at FLOW_GIB_PER_MCELL - never less than the standard machine."""
+    m = _by_name((decision or {}).get("machine")) if (decision or {}).get("where") == "gce" else None
+    if m is None:
+        return normal_cells()
+    return max(normal_cells(), int(usable_gib(m) / FLOW_GIB_PER_MCELL * 1e6))
+
+
+def ceiling_cells() -> int:
+    """The most flow cells the largest machine we run carries: the cap on any cell count, the user's included."""
+    return max(normal_cells(), int(usable_gib(CEILING) / FLOW_GIB_PER_MCELL * 1e6))
+
+
+def route_cells(workspace, cells: float, *, why: str = "cell count") -> dict | None:
+    """RUN-9 BEFORE MESHING: a plan of more cells than the standard machine is sized for runs on a VM that carries
+    them - written into the workspace, where the mesh executor reads it (adapters/mesh_execution). The decision there
+    already when it is as big or bigger (a run that stepped up) is kept. None when the plan fits the standard machine
+    (nothing is written: the run is the one it always was)."""
+    if float(cells or 0.0) <= normal_cells():
+        return None
+    want = for_cells(cells, why=why)
+    have = read(workspace)
+    if have and have.get("where") == "gce" and usable_gib(_by_name(have.get("machine"))) >= usable_gib(
+            _by_name(want.get("machine"))):
+        return have
+    write(workspace, want)
+    return want
+
+
+__all__ = ["CEILING", "CLOUD_RUN_GIB", "FLOW_GIB_PER_MCELL", "MACHINES", "MACHINE_FILE", "TIME_MARGIN", "Machine",
+           "ceiling_cells", "ceiling_gib", "cells_carried", "choose", "for_cells", "for_time", "normal_cells",
+           "off_the_wall", "read", "route_cells", "step_up", "usable_gib", "write"]

@@ -4,8 +4,10 @@
 /* /
    THEME - the console's one visual layer, loaded last.
 
-   A calm instrument, not a dashboard. Near-neutral blacks; ONE hot accent, international orange,
-   for the primary action and the active state only; steel blue for linework and secondary marks.
+   A calm instrument, not a dashboard. Black, stone ink, and ONE accent - crimson - for the
+   selection, the focus ring and links only. The primary action is the site's solid stone button
+   and the running state is stone in motion: a red button or a red ring would read as a failure
+   (see tokens.css). Stone carries the linework and the secondary marks.
    Labels are sentence case in Geist, at the scale tokens.css defines (11 / 12 / 13 / 14 / 15 /
    18 px); numbers are tabular; monospace is kept for what a user could type into a case file -
    patch names, file names, opening names. Structure comes from spacing and hairline dividers,
@@ -26,27 +28,44 @@ header{height:48px;padding:0 16px;gap:12px;background:var(--background);color:va
 /* the drawer control carries a small panel mark, so it reads as a layout switch */
 #wb-toggle::before{content:'';width:13px;height:10px;flex:none;border:1.3px solid currentColor;
   border-radius:2px;background:linear-gradient(90deg,currentColor 0 4px,transparent 4px)}
-.chip-status,.chip-status:hover{border-color:transparent;background:transparent;
-  color:var(--text-faint);cursor:default}
-.dot{width:7px;height:7px;border-radius:50%;background:var(--steel-muted)}
+.chip-status,.chip-status:hover{height:24px;padding:0 9px 0 8px;gap:7px;border-color:var(--border);
+  background:var(--surface-1);color:var(--text-muted);font-size:var(--fs-xs);cursor:default}
+/* QUIET WHEN CONNECTED: the readiness chip shows only when something is actually wrong
+   (shell/settings.js sets data-state); its words stay in the DOM for a screen reader */
+.chip-status[data-state="ok"],.chip-status[data-state="checking"]{display:none}
+.chip-status[data-state="down"]{color:var(--warn);border-color:rgba(241,189,99,.28);background:var(--warn-soft)}
+.dot{width:6px;height:6px;border-radius:50%;background:var(--stone-muted)}
 .dot.online{background:var(--ok)}
-.dot.error{background:var(--danger)}
+.dot.error{background:var(--warn);animation:dot-wait 1.6s ease-in-out infinite}
+@keyframes dot-wait{50%{opacity:.35}}
+/* the console's header holds only the drawer switch and the status chip: when neither has
+   anything to say the bar takes no room (ui/index.html's own header keeps its brand) */
+#app>header:not(:has(.brand)):not(:has(#wb-toggle:not([hidden]))):not(:has(.chip-status[data-state="down"],.chip-status[data-state="unknown"])){display:none}
 
-#upload-bar{min-height:48px;padding:8px 16px;gap:12px;background:var(--background);
+/* the file bar names the file once there is one; before that the drop zone holds the button */
+#upload-bar{min-height:44px;padding:6px 16px;gap:12px;background:var(--background);
   border-bottom:1px solid var(--border)}
+#upload-bar:not(:has(#upload-btn)):not(:has(#file-label.ready)){display:none}
 #file-label{font:var(--fs-md)/1.4 var(--sans);color:var(--text-faint);letter-spacing:0}
-#file-label.ready{font:var(--fs-sm)/1.4 var(--mono);color:var(--text)}
+#file-label:not(.ready){display:none}
+#file-label.ready{display:inline-flex;align-items:center;gap:8px;min-width:0;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap;font:var(--fs-sm)/1.4 var(--mono);color:var(--text)}
+#file-label.ready::before{content:'';flex:none;width:6px;height:6px;border-radius:50%;background:var(--ok)}
 
-/* THE PRIMARY ACTION, wherever it is: one look, the accent, no lift and no glow */
+/* THE PRIMARY ACTION, wherever it is: one look, the site's solid stone button, no lift and no glow */
 #upload-btn,#send-btn,.gc-proceed,.v-btn.primary{height:32px;padding:0 14px;
-  border:1px solid var(--accent);border-radius:var(--r-md);background:var(--accent);
-  color:var(--accent-ink);font:600 var(--fs-md)/1 var(--sans);letter-spacing:0;
+  border:1px solid var(--primary);border-radius:var(--r-md);background:var(--primary);
+  color:var(--primary-ink);font:600 var(--fs-md)/1 var(--sans);letter-spacing:0;
   cursor:pointer;transform:none;box-shadow:none;transition:background .12s,border-color .12s}
 #upload-btn:hover,#send-btn:hover:not(:disabled),.gc-proceed:hover:not(:disabled),
-.v-btn.primary:hover:not(:disabled){background:var(--accent-hover);border-color:var(--accent-hover);
+.v-btn.primary:hover:not(:disabled){background:var(--primary-hover);border-color:var(--primary-hover);
   transform:none;box-shadow:none;opacity:1}
 #upload-btn.done{background:var(--surface-2);border-color:var(--border);color:var(--text);font-weight:500}
 #upload-btn.done:hover{background:var(--surface-raised);border-color:var(--border-strong)}
+/* in the file bar (a reopened run) the upload is a quiet secondary action, not the page's lead */
+#upload-bar #upload-btn{background:var(--surface-2);border-color:var(--border);color:var(--text);font-weight:500}
+#upload-bar #upload-btn:hover:not(:disabled){background:var(--surface-raised);border-color:var(--border-strong)}
+#upload-btn:disabled{opacity:.7;cursor:progress}
 
 /* THE SECONDARY ACTION: a quiet filled button; .v-quiet drops even that until hovered */
 .v-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:32px;
@@ -57,20 +76,44 @@ header{height:48px;padding:0 16px;gap:12px;background:var(--background);color:va
 .v-btn:disabled{opacity:.42;cursor:default}
 .v-btn.v-quiet{background:transparent;border-color:transparent;color:var(--text-muted)}
 .v-btn.v-quiet:hover:not(:disabled){background:var(--hover);border-color:transparent;color:var(--text)}
-/* a mode that is on is the active state: the accent, softly */
-.v-btn.armed{background:var(--accent-soft);border-color:var(--accent-line);color:var(--accent-hover)}
+/* a mode that is on is the active state: a bright stone line on a stone wash */
+.v-btn.armed{background:var(--selected);border-color:var(--border-bright);color:var(--text-bright)}
 
 .scroll::-webkit-scrollbar-thumb{background:var(--border-strong)}
 /* the column carries the plan and the run as well as the prose, so it is sized for the widest
    thing in it; the prose itself keeps a reading measure */
 .chat-col{max-width:1060px;padding:32px 28px 44px;gap:22px}
 
-/* the empty console: one invitation, the formats, and what happens next */
-#empty{padding:18vh 0 0;text-align:center;color:var(--text-faint);font-size:var(--fs-md);line-height:1.6}
+/* THE EMPTY CONSOLE IS A DROP ZONE: one invitation, one button, the formats in small type */
+#empty{padding:12vh 0 0;text-align:center;color:var(--text-faint);font-size:var(--fs-md);line-height:1.6}
 #empty p{max-width:560px;margin:0 auto}
-#empty-lead{margin-bottom:8px!important;color:var(--text);font-size:var(--fs-lg);font-weight:500}
+#empty .drop-box{display:flex;flex-direction:column;align-items:center;gap:6px;max-width:600px;margin:0 auto;
+  padding:44px 32px 30px;border:1px dashed var(--border-strong);border-radius:10px;background:var(--surface-1);
+  transition:border-color .18s cubic-bezier(.16,1,.3,1),background .18s cubic-bezier(.16,1,.3,1)}
+#empty .drop-icon{width:36px;height:36px;margin-bottom:10px;padding:8px;border-radius:8px;
+  color:var(--text-muted);background:var(--surface-2);border:1px solid var(--border)}
+#empty-lead{margin:0!important;color:var(--text-bright);font-size:var(--fs-lg);font-weight:500}
+#empty .empty-sub{margin:0!important;color:var(--text-muted)}
+#empty .drop-slot{display:flex;margin:16px 0 4px}
+#empty .drop-slot:empty{display:none}
+#empty #upload-btn{display:inline-flex;align-items:center;gap:8px;height:34px;padding:0 14px}
+#empty #upload-btn::before{content:'';width:14px;height:14px;background:currentColor;
+  -webkit-mask:var(--upload-mark) center/contain no-repeat;mask:var(--upload-mark) center/contain no-repeat}
+#empty-formats{max-width:52ch!important;margin-top:14px!important;font-size:var(--fs-xs);line-height:1.55;
+  color:var(--text-faint);text-wrap:pretty}
 #empty-formats:empty{display:none}
-#empty .empty-sub{margin-top:2px!important;color:var(--text-muted)}
+#empty-formats .drop-formats summary{cursor:pointer;list-style:none;color:var(--text-faint)}
+#empty-formats .drop-formats summary::-webkit-details-marker{display:none}
+#empty-formats .drop-formats summary::after{content:" \00B7  all formats";opacity:.7}
+#empty-formats .drop-formats[open] summary::after{content:""}
+#empty-formats .drop-formats[open] summary{margin-bottom:6px}
+#empty-formats .drop-formats summary:hover{color:var(--text)}
+:root{--upload-mark:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 15V4M8 8l4-4 4 4M4 14v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4'/%3E%3C/svg%3E")}
+/* a file held over the page: the zone answers, the rest of the stage stays still */
+.dragover #stage:has(#empty){outline:0}
+.dragover #empty .drop-box{border-color:var(--border-bright);background:color-mix(in srgb,var(--stone) 6%,var(--surface-1))}
+.dragover #empty .drop-icon{color:var(--text-bright)}
+@media (prefers-reduced-motion:reduce){.dot.error{animation:none}}
 
 #notice.show{margin:8px 16px 0;padding:10px 14px;border:1px solid var(--border);
   border-radius:var(--r-md);background:var(--surface-2);color:var(--text);box-shadow:none;
@@ -79,15 +122,15 @@ header{height:48px;padding:0 16px;gap:12px;background:var(--background);color:va
 #notice.warn{background:var(--warn-soft);border-color:rgba(241,189,99,.32);color:var(--warn)}
 #notice.error{background:var(--danger-soft);border-color:rgba(255,107,94,.32);color:var(--danger)}
 #notice .nt-act{padding:5px 10px;border-radius:var(--r-sm);font-weight:500}
-#notice .nt-act:hover{background:rgba(255,255,255,.06)}
+#notice .nt-act:hover{background:var(--hover)}
 
 /* Chat. */
 /* the speaker is a label, not a bubble ornament: a small name in sentence case, with a
-   steel dot for the agent */
+   stone dot for the agent */
 .im .who{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:600;
   letter-spacing:0;text-transform:none;color:var(--text-muted);margin-bottom:6px}
 .im.assistant .who::before{content:'';width:6px;height:6px;border-radius:50%;
-  background:var(--steel);flex:none}
+  background:var(--stone);flex:none}
 .im.user .who{color:var(--text-faint)}
 .im.assistant .txt{color:var(--text-bright);font-size:14.5px;line-height:1.72;letter-spacing:-.003em;max-width:76ch}
 .im.assistant .txt strong{color:var(--text);font-weight:650}
@@ -101,12 +144,12 @@ header{height:48px;padding:0 16px;gap:12px;background:var(--background);color:va
   border-radius:12px 12px 4px 12px;padding:10px 16px;max-width:72%;width:fit-content}
 /* One code chip, everywhere. The base rule still carried a light-mode fill, so
    any inline identifier OUTSIDE a chat bubble - the validation ticks, a table
-   cell - rendered as a pale block. Same steel-on-panel treatment as the tool
+   cell - rendered as a pale block. Same stone-on-panel treatment as the tool
    calls in the timeline, so a name the user could type reads the same wherever
    it appears. */
 code{font-family:var(--mono);font-size:.87em;background:var(--surface-2);
   border:1px solid var(--border);border-radius:2px;padding:1px 5px;
-  color:var(--steel-bright)}
+  color:var(--stone-bright)}
 th,td{border-color:var(--border)}
 .im .txt ul{margin:8px 0 8px 2px;padding-left:16px}
 .im .txt li{margin:3px 0}
@@ -121,7 +164,7 @@ th,td{border-color:var(--border)}
 #chat-input{min-height:42px;padding:10px 14px;border:1px solid var(--border);border-radius:8px;
   background:var(--surface-1);color:var(--text);font:var(--fs-base)/1.5 var(--sans)}
 #chat-input:hover:not(:disabled){border-color:var(--border-strong)}
-#chat-input:focus{border-color:var(--accent-line)}
+#chat-input:focus{border-color:var(--focus-edge)}
 #chat-input::placeholder{color:var(--text-faint)}
 #chat-input:disabled{background:transparent;color:var(--text-faint)}
 #send-btn{height:42px;padding:0 18px;border-radius:8px}
@@ -163,7 +206,7 @@ th,td{border-color:var(--border)}
 .req-card .rc-note{position:relative;padding:3px 0 3px 14px;color:var(--text);font-size:var(--fs-md);
   line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere}
 .req-card .rc-note::before{content:'';position:absolute;left:2px;top:.72em;width:4px;height:4px;
-  border-radius:50%;background:var(--steel-muted)}
+  border-radius:50%;background:var(--stone-muted)}
 .req-card .rc-notes-box{padding:6px 16px 4px}
 .req-card .rc-notes-row{display:flex;align-items:flex-end;gap:8px}
 .req-card .rc-notes-in{flex:1;min-width:0;box-sizing:border-box;height:34px;min-height:34px;max-height:240px;
@@ -174,7 +217,7 @@ th,td{border-color:var(--border)}
 /* a placeholder that wraps in a narrow card never shows a scrollbar; the box grows with typed text */
 .req-card .rc-notes-in:placeholder-shown{overflow-y:hidden;white-space:nowrap;text-overflow:ellipsis}
 .req-card .rc-notes-in:hover{border-color:var(--border)}
-.req-card .rc-notes-in:focus{outline:none;min-height:64px;border-color:var(--accent-line);background:var(--surface-1)}
+.req-card .rc-notes-in:focus{outline:none;min-height:64px;border-color:var(--focus-edge);background:var(--surface-1)}
 .req-card .rc-notes-add{flex:none;height:34px;padding:0 12px;border:1px solid var(--border);border-radius:var(--r-md);
   background:var(--surface-2);color:var(--text);font:500 var(--fs-sm)/1 var(--sans);cursor:pointer;
   transition:background .12s,border-color .12s,opacity .12s}
@@ -182,39 +225,67 @@ th,td{border-color:var(--border)}
 .req-card .rc-notes-add:disabled{opacity:.45;cursor:default}
 .req-card .rc-notes-msg{display:block;margin-top:4px;color:var(--danger);font-size:var(--fs-sm)}
 .req-card .rc-notes-msg:empty{display:none}
-.req-card .rc-ck code{font-family:var(--mono);font-size:.9em;color:var(--steel-bright)}
+/* the parts the notes mean: one picture, a quiet row per phrase that opens the part list */
+.req-card .rc-pm:empty{display:none}
+.req-card .rc-pm{padding:6px 16px 2px}
+/* a flow mesh's notes as they were read (NOTES-CFD-1): the reader's own lines, quiet */
+.req-card .rc-pm-lines{margin:2px 0 6px;padding:0;list-style:none}
+.req-card .rc-pm-lines li{padding:2px 0;color:var(--text-muted);font-size:var(--fs-md);line-height:1.5;overflow-wrap:anywhere}
+.req-card .rc-pm-h{margin:2px 0 6px;color:var(--text-faint);font-size:var(--fs-sm)}
+.req-card .rc-pm-wait{padding:2px 0 4px;color:var(--text-faint);font-size:var(--fs-md);
+  animation:rc-pm-pulse 1.6s ease-in-out infinite}
+@keyframes rc-pm-pulse{50%{opacity:.45}}
+@media (prefers-reduced-motion:reduce){.req-card .rc-pm-wait{animation:none}}
+.req-card .rc-pm-fig{position:relative;margin:4px 0 10px;text-align:center}
+.req-card .rc-pm-pic{display:inline-block;max-width:100%;max-height:250px;vertical-align:top}
+/* the model in 3D: drag turns it, the wheel zooms; the tags ride on it */
+.req-card .rc-pm-fig.rc-pm-3d{height:300px;overflow:hidden;cursor:grab;touch-action:none}
+.req-card .rc-pm-fig.rc-pm-3d:active{cursor:grabbing}
+.req-card .rc-pm-3d canvas{display:block}
+.pv-tags{position:absolute;inset:0;pointer-events:none;z-index:1}
+.pv-tag{position:absolute;left:0;top:0;margin:-9px 0 0 0;translate:-50% 0;height:18px;min-width:18px;
+  padding:0 5px;box-sizing:border-box;border:1.5px solid var(--c);border-radius:9px;background:rgba(255,255,255,.94);
+  color:#111;font:600 11px/15px var(--sans);text-align:center;white-space:nowrap;font-variant-numeric:tabular-nums;
+  transition:opacity .15s}
+.pv-ring{position:absolute;left:0;top:0;width:18px;height:18px;margin:-9px 0 0 -9px;box-sizing:border-box;
+  border:1.5px solid var(--c);border-radius:50%;background:color-mix(in srgb,var(--c) 18%,transparent);transition:opacity .15s}
+.pv-tag.dim,.pv-ring.dim{opacity:.28}
+.pv-tip{position:absolute;left:0;top:0;z-index:2;padding:3px 8px;border:1px solid var(--border);
+  border-radius:var(--r-sm,6px);background:var(--surface-raised);color:var(--text);font:500 var(--fs-sm)/1.35 var(--sans);
+  white-space:nowrap;pointer-events:none;box-shadow:0 2px 8px rgba(0,0,0,.25)}
+/* Finalize notes: under the notes box, the one step that reads the parts the words name */
+.req-card .rc-fin{display:flex;align-items:center;justify-content:flex-end;gap:12px;padding:2px 0 8px}
+.req-card .rc-fin-msg{color:var(--danger);font-size:var(--fs-sm)}
+.req-card .rc-fin-msg:empty{display:none}
+/* an older reading's rows wait, quiet, while the notes changed since */
+.req-card .rc-pm-body.stale .rc-pm-rows{opacity:.55}
+/* a row per size request: its colour, its words and its size, its parts as small chips under it. Hovered it lights
+   its parts on the model; the active one (clicked) carries its colour on the edge and takes clicks on the model. */
+.req-card .rc-pm-item{margin:0 -8px;padding:1px 8px 3px;border-radius:var(--r-md);transition:background .12s,box-shadow .12s}
+.req-card .rc-pm-item:hover,.req-card .rc-pm-item.hot{background:var(--surface-2)}
+.req-card .rc-pm-item.active{background:var(--surface-2);box-shadow:inset 2px 0 0 var(--pm-c)}
+.req-card .rc-pm-row{display:grid;grid-template-columns:8px minmax(0,1fr) auto;align-items:center;gap:10px;
+  padding:5px 0;color:var(--text);font:var(--fs-md)/1.45 var(--sans);cursor:pointer;outline:none}
+.req-card .rc-pm-row:focus-visible{outline:2px solid var(--accent-line);outline-offset:1px;border-radius:var(--r-sm)}
+.req-card .rc-pm-dot{width:8px;height:8px;border-radius:50%;background:var(--pm-c)}
+.req-card .rc-pm-dot.none{box-sizing:border-box;background:transparent;border:1.5px dashed var(--warn)}
+.req-card .rc-pm-q{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)}
+.req-card .rc-pm-s{white-space:nowrap;color:var(--text-muted);font-variant-numeric:tabular-nums}
+.req-card .rc-pm-item.unk .rc-pm-q{color:var(--warn)}
+.req-card .rc-pm-chips{display:flex;flex-wrap:wrap;gap:4px;padding:0 0 4px 18px;max-height:84px;overflow-y:auto}
+.req-card .rc-pm-chip{display:inline-flex;align-items:center;gap:1px;height:22px;padding:0 1px 0 8px;box-sizing:border-box;
+  border:1px solid var(--border);border-radius:11px;background:var(--surface-1);color:var(--text-muted);
+  font:500 var(--fs-xs)/1 var(--sans);white-space:nowrap;font-variant-numeric:tabular-nums}
+.req-card .rc-pm-item.active .rc-pm-chip{border-color:color-mix(in srgb,var(--pm-c) 45%,var(--border))}
+.req-card .rc-pm-x{display:inline-grid;place-items:center;width:18px;height:18px;padding:0;border:0;border-radius:50%;
+  background:transparent;color:var(--text-faint);font:9px/1 var(--sans);cursor:pointer;transition:background .12s,color .12s}
+.req-card .rc-pm-x:hover{background:var(--surface-raised);color:var(--text)}
+.req-card .rc-pm-x:focus-visible{outline:2px solid var(--accent-line);outline-offset:0}
+.req-card .rc-pm-hint{padding:0 0 4px 18px;color:var(--text-faint);font-size:var(--fs-sm)}
+.req-card .rc-pm-msg{display:block;color:var(--danger);font-size:var(--fs-sm)}
+.req-card .rc-pm-msg:empty{display:none}
+.req-card .rc-ck code{font-family:var(--mono);font-size:.9em;color:var(--stone-bright)}
 
-/* the engine choice under the one engine question: every engine that can take the file, its fit
-   and its measured reason, one button each; the recommendation carries the accent, never a pick */
-.eng-choice{max-width:680px;margin-top:4px;padding:4px 0 8px;border:1px solid var(--border);
-  border-radius:10px;background:var(--surface-1)}
-.eng-choice .ec-h{padding:12px 16px 2px;font:600 var(--fs-md)/1.3 var(--sans);color:var(--text)}
-.eng-choice .ec-shape{padding:2px 16px 6px;font-size:var(--fs-sm);color:var(--text-faint)}
-.eng-choice .ec-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 12px;
-  margin:6px 10px 0;padding:10px 12px;border:1px solid var(--divider);border-radius:var(--r-md)}
-.eng-choice .ec-row.rec{border-color:var(--accent-line);background:var(--accent-soft)}
-.eng-choice .ec-row.out{opacity:.75}
-.eng-choice .ec-row.picked{border-color:var(--text)}
-.eng-choice .ec-top{display:flex;align-items:baseline;gap:8px;min-width:0;flex-wrap:wrap}
-.eng-choice .ec-name{font:600 var(--fs-md)/1.3 var(--sans);color:var(--text)}
-.eng-choice .ec-badge{padding:1px 7px;border-radius:999px;background:var(--accent);color:var(--accent-ink);
-  font:600 var(--fs-xs)/1.5 var(--sans)}
-.eng-choice .ec-fit{font-size:var(--fs-sm);color:var(--text-muted)}
-.eng-choice .ec-why{grid-column:1;font-size:var(--fs-sm);line-height:1.45;color:var(--text-muted);
-  overflow-wrap:anywhere}
-.eng-choice .ec-note{grid-column:1;font-size:var(--fs-sm);line-height:1.45;color:var(--warn);
-  overflow-wrap:anywhere}
-.eng-choice .ec-pick{grid-column:2;grid-row:1/span 3;align-self:center;height:30px;padding:0 12px;
-  border:1px solid var(--border);border-radius:var(--r-md);background:var(--surface-2);color:var(--text);
-  font:500 var(--fs-sm)/1 var(--sans);cursor:pointer;white-space:nowrap}
-.eng-choice .ec-row.rec .ec-pick{border-color:var(--accent-line)}
-.eng-choice .ec-pick:hover:not(:disabled){border-color:var(--border-strong);background:var(--surface-raised)}
-.eng-choice .ec-pick:disabled{cursor:default;opacity:.6}
-.eng-choice .ec-foot{padding:10px 16px 2px;font-size:var(--fs-xs);color:var(--text-faint)}
-@media (max-width:560px){
-  .eng-choice .ec-row{grid-template-columns:minmax(0,1fr)}
-  .eng-choice .ec-pick{grid-column:1;grid-row:auto;justify-self:start}
-}
 
 /* ----------------------------------------------------------------- run ---- */
 .proc{border:1px solid var(--border);border-radius:10px;background:var(--surface-1);box-shadow:none}
@@ -224,16 +295,16 @@ th,td{border-color:var(--border)}
 
    Two arcs closing a ring, each ending in an arrowhead, turning anticlockwise:
    the circular-arrows motif, drawn in the app's own hairline vocabulary rather
-   than borrowed as a glyph. It is stroke and geometry only, so it takes the
-   accent while it runs and the success colour when the work lands - and every
+   than borrowed as a glyph. It is stroke and geometry only, so it is stone
+   while it runs and takes the success colour when the work lands - and every
    place that says "working" now says it the same way.
 / */
 .proc-orb,.v-spin{display:block;flex-shrink:0;overflow:visible;
   animation:spin 1.5s linear infinite}
 @keyframes spin{to{transform:rotate(-360deg)}}   /* anticlockwise */
-.sp-arm{fill:none;stroke:var(--accent);stroke-width:2.0;stroke-linecap:butt;
+.sp-arm{fill:none;stroke:var(--live);stroke-width:2.0;stroke-linecap:butt;
   stroke-dasharray:17.59 5.03}
-.sp-hd{fill:var(--accent);stroke:none}
+.sp-hd{fill:var(--live);stroke:none}
 /* landed: the ring closes, stops turning, and takes the success colour.
    The base rule filled this element with --ink for its old dot state, which
    under a dark theme is a near-white tile behind the mark. */
@@ -259,8 +330,8 @@ th,td{border-color:var(--border)}
 .tl-node::before{left:7px;top:24px;bottom:0;width:1px;background:var(--divider)}
 .tl-dot{left:0;top:6px;width:15px;height:15px;border-radius:50%;
   background:var(--surface-1);border:1.5px solid var(--border-strong)}
-.tl-dot.active{border-color:var(--accent);background:var(--surface-1)}
-.tl-dot.active::after{width:5px;height:5px;border-radius:50%;background:var(--accent)}
+.tl-dot.active{border-color:var(--live);background:var(--surface-1)}
+.tl-dot.active::after{width:5px;height:5px;border-radius:50%;background:var(--live)}
 .tl-dot.done{border-color:transparent;background:var(--ok-soft)}
 .tl-dot.done::after{content:'✓';color:var(--ok);font-size:9px;font-weight:700}
 /* a tick is earned (Stage.markOf): a lane that failed, was sent back, warned or built nothing
@@ -303,9 +374,9 @@ th,td{border-color:var(--border)}
 .e-tool.bad .tag{background:var(--warn-soft);color:var(--warn)}
 .e-detail{margin-left:16px;border-left:1px solid var(--divider);color:var(--text-faint);
   font:11px/1.5 var(--mono);max-height:80px}
-.e-mcp{padding:6px 10px;border:0;border-radius:var(--r-md);background:var(--steel-soft);
-  color:var(--steel-bright);font:var(--fs-sm)/1.4 var(--sans)}
-.e-mcp .lbl{color:var(--steel-bright);font-weight:600;letter-spacing:0}
+.e-mcp{padding:6px 10px;border:0;border-radius:var(--r-md);background:var(--stone-soft);
+  color:var(--stone-bright);font:var(--fs-sm)/1.4 var(--sans)}
+.e-mcp .lbl{color:var(--stone-bright);font-weight:600;letter-spacing:0}
 .e-mcp .q{color:var(--text)}
 .e-mcp .hid{color:var(--text-faint);font-style:normal}
 .e-edit{border:1px solid var(--border);border-radius:var(--r-md);background:var(--surface-2)}
@@ -315,9 +386,9 @@ th,td{border-color:var(--border)}
 .e-edit .act,.e-edit .badge{color:var(--text-faint);font-size:11px;font-weight:400}
 
 /* the agent's reasoning: quoted, not styled like a system message */
-.e-think{margin:8px 0;padding:2px 0 2px 12px;border:0;border-left:2px solid var(--steel-muted);
+.e-think{margin:8px 0;padding:2px 0 2px 12px;border:0;border-left:2px solid var(--stone-muted);
   border-radius:0;background:transparent}
-.e-think .lbl{margin-bottom:4px;color:var(--steel-bright);font:500 var(--fs-sm)/1.4 var(--sans);
+.e-think .lbl{margin-bottom:4px;color:var(--stone-bright);font:500 var(--fs-sm)/1.4 var(--sans);
   letter-spacing:0;text-transform:none}
 /* the completed line carries MEASURED values - "8.4s", "1,276 tokens" - so it is set as data */
 .e-think .lbl.measured{font-variant-numeric:tabular-nums}
@@ -325,14 +396,14 @@ th,td{border-color:var(--border)}
 .e-think .body{color:var(--text-muted);font-size:var(--fs-sm);line-height:1.65;font-style:normal}
 /* an agent's thinking: a live beat while it runs, a measured line when it lands */
 .e-think.active .lbl::after{content:'';display:inline-block;width:4px;height:4px;
-  margin-left:6px;border-radius:50%;background:var(--accent);
+  margin-left:6px;border-radius:50%;background:var(--live);
   animation:demo-pulse 1.2s ease-in-out infinite}
 .e-think .body:empty{display:none}
 /* The live beat an agent's "thinking" card breathes with while it runs. Named for the
    pulsing marker it was written for; `.e-think.active` is the surface that uses it now. */
 @keyframes demo-pulse{0%,100%{opacity:1}50%{opacity:.25}}
 /* the APPLICATION's own conclusion - stated, not quoted */
-.e-rat{margin:8px 0;padding:2px 0 2px 12px;border-left:2px solid var(--steel)}
+.e-rat{margin:8px 0;padding:2px 0 2px 12px;border-left:2px solid var(--stone)}
 .e-rat .rat-c{color:var(--text);font-size:var(--fs-md);line-height:1.6}
 .e-rat .rat-w{color:var(--text-muted);font-size:var(--fs-sm);line-height:1.6;margin-top:3px}
 
@@ -369,14 +440,14 @@ th,td{border-color:var(--border)}
 .v-concern-list{margin:6px 0 4px 18px;padding:0;color:var(--warn)}
 .tl-verd .mt{color:var(--text-faint);font:var(--fs-sm)/1 var(--sans)}
 
-/* mesh progress: elapsed against a real bound - orange while running, green once it lands */
+/* mesh progress: elapsed against a real bound - stone while running, green once it lands */
 .meshbar{margin:8px 0 6px;padding:10px 12px;border:1px solid var(--divider);border-radius:var(--r-md);
   background:transparent}
 .mb-top{margin-bottom:8px}
 .mb-lbl{color:var(--text-muted);font:var(--fs-sm)/1 var(--sans);letter-spacing:0}
 .mb-num{color:var(--text);font:500 var(--fs-sm)/1 var(--sans);font-variant-numeric:tabular-nums}
 .mb-track{height:4px;border:0;border-radius:2px;background:var(--surface-2)}
-.mb-fill{border-radius:2px;background:var(--accent)}
+.mb-fill{border-radius:2px;background:var(--live)}
 .mb-fill.over{background:var(--warn)}
 .meshbar.done{opacity:1}
 .meshbar.done .mb-fill{background:var(--ok)}
@@ -405,7 +476,7 @@ th,td{border-color:var(--border)}
 .v-status::first-letter{text-transform:uppercase}
 .v-sec-h{margin-bottom:10px;color:var(--text);font:600 var(--fs-md)/1.3 var(--sans)}
 
-/* downloads: the case the user asked for leads in the accent; the rest are quiet rows */
+/* downloads: the case the user asked for leads as the primary button; the rest are quiet rows */
 .v-dl{display:flex;flex-direction:column;align-items:stretch;gap:8px}
 .v-dl:empty{display:none}
 .v-dlbtn{display:flex;flex-direction:row;align-items:center;justify-content:space-between;gap:12px;
@@ -419,10 +490,10 @@ th,td{border-color:var(--border)}
   -webkit-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 2.5v7.5M4.8 7 8 10.2 11.2 7M3 13.2h10' fill='none' stroke='%23000' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center/contain no-repeat;
   mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 2.5v7.5M4.8 7 8 10.2 11.2 7M3 13.2h10' fill='none' stroke='%23000' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center/contain no-repeat}
 .v-dlbtn span{flex:none;color:var(--text-faint);font:var(--fs-sm)/1 var(--sans);font-variant-numeric:tabular-nums;opacity:1}
-.v-dlbtn.primary{height:40px;border-color:var(--accent);background:var(--accent);color:var(--accent-ink)}
+.v-dlbtn.primary{height:40px;border-color:var(--primary);background:var(--primary);color:var(--primary-ink)}
 .v-dlbtn.primary b{font-weight:600}
-.v-dlbtn.primary span{color:var(--accent-ink);opacity:.7}
-.v-dlbtn.primary:hover{border-color:var(--accent-hover);background:var(--accent-hover)}
+.v-dlbtn.primary span{color:var(--primary-ink);opacity:.7}
+.v-dlbtn.primary:hover{border-color:var(--primary-hover);background:var(--primary-hover)}
 .v-dlbtn.off{opacity:.5}
 
 /* the reviewer would not sign it off: the reason, then the way on */
@@ -438,64 +509,9 @@ th,td{border-color:var(--border)}
 .v-review .v-row+.v-row{margin-top:8px}
 .v-brush{display:inline-flex;align-items:center;gap:8px;margin-left:auto;color:var(--text-faint);
   font:var(--fs-sm)/1 var(--sans);font-variant-numeric:tabular-nums}
-.v-brush input[type=range]{width:88px;accent-color:var(--steel)}
+.v-brush input[type=range]{width:88px;accent-color:var(--stone)}
 .v-act{gap:8px}
 .v-cost{margin-top:10px;color:var(--text-faint);font:var(--fs-sm)/1.5 var(--sans)}
-
-/* THE DELIVERED MESH'S FIGURES: grouped, labelled in plain words, numbers set as data */
-.mx{margin-top:14px;border:1px solid var(--border);border-radius:10px;padding:14px 16px}
-.v-facts .mx{margin:0;padding:16px 18px;border:0;border-top:1px solid var(--divider);border-radius:0}
-.mx-h{display:flex;align-items:baseline;gap:8px;padding:0 0 14px;border:0;background:transparent;
-  color:var(--text);font:600 var(--fs-md)/1.3 var(--sans);letter-spacing:0;text-transform:none}
-.mx-h>span:first-child{margin-right:auto}
-.mx-h .eng{color:var(--text-faint);font:var(--fs-sm)/1 var(--sans);letter-spacing:0}
-.mx-h .eng+.eng::before{content:'·';margin-right:8px;opacity:.6}
-.mx-c{padding:0;background:transparent}
-.mx-k{color:var(--text-muted);font:var(--fs-md)/1.4 var(--sans);letter-spacing:0;text-transform:none}
-.mx-k::first-letter{text-transform:uppercase}
-.mx-v{margin:0;color:var(--text);font:500 var(--fs-md)/1.4 var(--sans);font-variant-numeric:tabular-nums;
-  letter-spacing:0;white-space:nowrap}
-.mx-v small{margin-left:1px;color:var(--text-muted);font-size:inherit;font-weight:400}
-/* how big: three headline numbers */
-.mx-size{display:grid;grid-template-columns:1.2fr 1.2fr .7fr;gap:12px}
-.mx-stat .mx-v{color:var(--text-bright);font-size:var(--fs-xl);line-height:1.2;letter-spacing:-.01em}
-.mx-stat .mx-k{margin-top:2px;color:var(--text-faint);font-size:var(--fs-sm)}
-/* what the cells are, and how good they are: rows of label and value */
-.mx-group{margin-top:18px}
-.mx-gh{margin-bottom:4px;color:var(--text-faint);font:500 var(--fs-sm)/1.3 var(--sans)}
-.mx-row{display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:12px;align-items:baseline;
-  padding:7px 0}
-.mx-row+.mx-row{border-top:1px solid var(--divider)}
-.mx-type{grid-template-columns:minmax(0,1fr) auto 38px;row-gap:6px;padding:6px 0}
-.mx-type+.mx-type{border-top:0}
-.mx-pct{color:var(--text-faint);font:var(--fs-sm)/1.4 var(--sans);font-variant-numeric:tabular-nums;text-align:right}
-.mx-bar{grid-column:1/-1;height:3px;overflow:hidden;border-radius:2px;background:var(--surface-2)}
-.mx-bar i{display:block;height:100%;border-radius:2px;background:var(--steel)}
-.mx-q{grid-template-columns:minmax(0,1fr) auto minmax(52px,auto);grid-template-areas:"k c v" "s s s";row-gap:1px}
-.mx-q .mx-k{grid-area:k}
-.mx-q .mx-v{grid-area:v;text-align:right}
-.mx-sub{grid-area:s;color:var(--text-faint);font:var(--fs-sm)/1.5 var(--sans)}
-.mx-sub:empty{display:none}
-/* a figure the mesh can be coloured by is a toggle: the row is the control, the swatch says so */
-.mx-c.live{margin:0 -10px;padding:8px 10px;border-radius:var(--r-md);cursor:pointer;
-  transition:background .12s,box-shadow .12s}
-.mx-c.live+.mx-c,.mx-c+.mx-c.live{border-top-color:transparent}
-.mx-c.live:hover{background:var(--hover)}
-.mx-c.live.on{background:var(--accent-soft);box-shadow:inset 2px 0 0 var(--accent)}
-.mx-show{grid-area:c;justify-self:end;align-self:center;display:inline-flex;align-items:center;gap:6px;
-  padding:2px 6px;border-radius:var(--r-sm);color:var(--text-faint);font:500 var(--fs-xs)/1.4 var(--sans);
-  white-space:nowrap}
-.mx-ramp{width:16px;height:6px;border-radius:2px;
-  background:linear-gradient(90deg,#5c7898,#8eb2da 45%,#ffa85a 75%,#ff5800)}
-.mx-c.live:hover .mx-show{background:var(--hover);color:var(--text)}
-.mx-c.live.on .mx-show{background:transparent;color:var(--accent-hover)}
-.mx table{width:100%;margin:0;border-collapse:collapse;border-top:1px solid var(--divider);font-size:var(--fs-md)}
-.mx th{padding:8px 0;border:0;border-bottom:1px solid var(--divider);background:transparent;
-  color:var(--text-faint);font:500 var(--fs-sm)/1.3 var(--sans);letter-spacing:0;text-align:left;text-transform:none}
-.mx td{padding:8px 0;border:0;border-bottom:1px solid var(--divider);color:var(--text)}
-.mx tr:last-child td{border-bottom:0}
-.mx td.n{font-variant-numeric:tabular-nums;text-align:right}
-.mx td.nm{font:var(--fs-sm)/1.4 var(--mono)}
 
 /* A DELIVERED THERMAL MODEL: the file's parts as a table, the quality in words, the slices */
 .v-thermal:empty{display:none}
@@ -505,13 +521,13 @@ th,td{border-color:var(--border)}
 .tr-q{margin:10px 0 0;padding:0;list-style:none}
 .tr-q li{position:relative;padding:3px 0 3px 14px;color:var(--text);font:var(--fs-md)/1.5 var(--sans)}
 .tr-q li::before{content:'';position:absolute;left:2px;top:.75em;width:5px;height:5px;border-radius:50%;
-  background:var(--steel)}
+  background:var(--stone)}
 .tr-sl-list{display:flex;flex-wrap:wrap;gap:6px}
 .tr-sl{height:30px;padding:0 10px;border:1px solid var(--border);border-radius:var(--r-md);
   background:var(--surface-1);color:var(--text);font:500 var(--fs-sm)/1 var(--sans);cursor:pointer;
   transition:background .12s,border-color .12s}
 .tr-sl:hover{border-color:var(--border-strong);background:var(--surface-2)}
-.tr-sl.on{border-color:var(--accent);background:var(--accent-soft);color:var(--text)}
+.tr-sl.on{border-color:var(--border-bright);background:var(--selected);color:var(--text)}
 .tr-sl-why{margin-top:8px;color:var(--text-faint);font:var(--fs-sm)/1.5 var(--sans)}
 .tr-sl-why:empty{display:none}
 .tr-legend{display:flex;flex-wrap:wrap;gap:4px 12px;margin-top:6px}
@@ -542,7 +558,7 @@ th,td{border-color:var(--border)}
 .tr-tab td.ok{color:var(--text-muted)}
 .tr-row{cursor:pointer;transition:background .1s}
 .tr-row:hover{background:var(--hover)}
-.tr-row.sel{background:var(--accent-soft);box-shadow:inset 2px 0 0 var(--accent)}
+.tr-row.sel{background:var(--selected);box-shadow:inset 2px 0 0 var(--accent)}
 .tr-row:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
 .tr-air,.tr-hint{margin-top:8px;color:var(--text-faint);font:var(--fs-sm)/1.5 var(--sans)}
 .tr-hint{margin-top:2px}
@@ -560,7 +576,7 @@ th,td{border-color:var(--border)}
 .fe-spot{padding:6px 18px;margin:0 -18px;color:var(--text);font:var(--fs-md)/1.45 var(--sans);cursor:pointer;
   transition:background .1s}
 .fe-spot:hover{background:var(--hover)}
-.fe-spot.on{background:var(--accent-soft);box-shadow:inset 2px 0 0 var(--accent)}
+.fe-spot.on{background:var(--selected);box-shadow:inset 2px 0 0 var(--accent)}
 .fe-spot:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
 .fe-spot b{font:var(--fs-sm)/1.4 var(--mono);margin-right:4px}
 .fe-spot small{display:block;color:var(--text-faint);font-size:var(--fs-xs)}
@@ -593,14 +609,14 @@ th,td{border-color:var(--border)}
   color:var(--text);font:var(--fs-md)/1.3 var(--sans);text-align:left;white-space:nowrap;cursor:pointer;
   transition:background .12s}
 .v-bnd-chip:hover{background:var(--hover)}
-.v-bnd-chip .sw{width:8px;height:8px;border-radius:2px;background:var(--steel-muted)}
+.v-bnd-chip .sw{width:8px;height:8px;border-radius:2px;background:var(--stone-muted)}
 .v-bnd-chip .nm{overflow:hidden;text-overflow:ellipsis;font:var(--fs-sm)/1.3 var(--mono);letter-spacing:0}
 .v-bnd-chip .fc{min-width:56px;color:var(--text-faint);font:var(--fs-sm)/1 var(--sans);
   font-variant-numeric:tabular-nums;text-align:right}
 .v-bnd-chip .v-bnd-vis{color:var(--text-faint);font:var(--fs-xs)/1 var(--sans);letter-spacing:0}
-.v-bnd-chip.meta .sw{background:transparent;border:1px dashed var(--steel-muted)}
+.v-bnd-chip.meta .sw{background:transparent;border:1px dashed var(--stone-muted)}
 .v-bnd-chip.meta .nm{color:var(--text-muted)}
-.v-bnd-chip.sel{border-left-color:var(--accent);background:var(--accent-soft)}
+.v-bnd-chip.sel{border-left-color:var(--accent);background:var(--selected)}
 .v-bnd-chip.sel .sw{background:var(--accent)}
 .v-bnd-chip.sel .nm{color:var(--text)}
 .v-bnd-chip.hidden-b .nm{color:var(--text-faint)}
@@ -610,8 +626,8 @@ th,td{border-color:var(--border)}
 .ins-empty .ins-off{margin-top:4px;color:var(--warn);font-family:var(--sans)}
 .ins-top{display:flex;align-items:center;gap:8px;margin-bottom:12px}
 .ins-nm{color:var(--text);font:500 var(--fs-base)/1.3 var(--mono);letter-spacing:-.01em}
-.ins-badge{padding:4px 7px;border:0;border-radius:var(--r-sm);background:var(--steel-soft);
-  color:var(--steel-bright);font:500 var(--fs-xs)/1 var(--sans);letter-spacing:0}
+.ins-badge{padding:4px 7px;border:0;border-radius:var(--r-sm);background:var(--stone-soft);
+  color:var(--stone-bright);font:500 var(--fs-xs)/1 var(--sans);letter-spacing:0}
 .ins-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px 16px;margin:0 0 14px;border:0;background:none}
 .ins-cell{padding:0;background:none}
 .ins-k{color:var(--text-faint);font:var(--fs-sm)/1.3 var(--sans);letter-spacing:0;text-transform:none}
@@ -624,12 +640,12 @@ th,td{border-color:var(--border)}
   cursor:pointer;transition:background .12s,border-color .12s}
 .v-bnd-act:hover:not(:disabled){border-color:var(--border-strong);background:var(--surface-raised)}
 .v-bnd-act:disabled{opacity:.42;cursor:default}
-.v-bnd-act.on{border-color:var(--accent-line);background:var(--accent-soft);color:var(--accent-hover)}
+.v-bnd-act.on{border-color:var(--border-bright);background:var(--selected);color:var(--text-bright)}
 .v-bnd-act.v-quiet{height:26px;padding:0 8px;border-color:transparent;background:transparent;color:var(--text-muted)}
 .v-bnd-act.v-quiet:hover:not(:disabled){border-color:transparent;background:var(--hover);color:var(--text)}
 .v-bnd-op{display:flex;align-items:center;gap:10px;grid-column:1/-1;padding:8px 0 0;border:0;
   color:var(--text-faint);font:var(--fs-sm)/1 var(--sans);letter-spacing:0;text-transform:none}
-.v-bnd-op input{flex:1;min-width:0;accent-color:var(--steel)}
+.v-bnd-op input{flex:1;min-width:0;accent-color:var(--stone)}
 .v-bnd-op span{width:36px;color:var(--text);font-size:var(--fs-sm);font-variant-numeric:tabular-nums;text-align:right}
 
 /* marked regions, under the panel */
@@ -648,36 +664,37 @@ th,td{border-color:var(--border)}
 .v-flag .fx:hover{background:var(--hover);color:var(--text)}
 .v-flag .fx-del:hover{color:var(--danger)}
 .f-edit{border-color:var(--border);border-radius:var(--r-md);background:var(--canvas);color:var(--text)}
-.f-edit:focus{border-color:var(--accent-line)}
-.v-pin{border-color:rgba(238,235,225,.9)}
+.f-edit:focus{border-color:var(--focus-edge)}
+.v-pin{border-color:rgba(226,224,212,.9)}
 
 /* ON THE CANVAS: view tools top left, the probe top right, the scale bottom right, the hint and
    the cell count along the bottom - small, translucent, never in the way of the mesh */
 .v-tools{position:absolute;left:12px;top:12px;z-index:6;display:flex;align-items:center;gap:6px}
 .v-up{display:inline-flex;align-items:center;gap:4px;height:30px;padding:0 2px 0 10px;
-  border:1px solid var(--border);border-radius:var(--r-md);background:rgba(13,13,12,.74);
+  border:1px solid var(--border);border-radius:var(--r-md);background:rgba(5,5,5,.74);
   -webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);color:var(--text-faint);
   font:500 var(--fs-sm)/1 var(--sans)}
 .v-up select{height:28px;padding:0 22px 0 4px;border:0;border-radius:var(--r-sm);
   -webkit-appearance:none;appearance:none;cursor:pointer;color:var(--text);font:600 var(--fs-sm)/1 var(--sans);
-  background:transparent url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%238a8884' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right 7px center/9px 6px}
+  background:transparent url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%2386857c' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right 7px center/9px 6px}
 .v-up select option{background:var(--surface-2);color:var(--text)}
 .v-up:hover{border-color:var(--border-strong)}
-.v-btn.v-tool{height:30px;background:rgba(13,13,12,.74);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);
+.v-btn.v-tool{height:30px;background:rgba(5,5,5,.74);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);
   font-size:var(--fs-sm)}
 .v-hint,.v-count{bottom:12px;padding:5px 10px;border:0;border-radius:var(--r-md);
-  background:rgba(13,13,12,.66);color:var(--text-faint);font:var(--fs-sm)/1.3 var(--sans)}
+  background:rgba(5,5,5,.66);color:var(--text-faint);font:var(--fs-sm)/1.3 var(--sans)}
 .v-hint{left:12px;max-width:calc(100% - 180px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .v-count{right:12px;color:var(--text-muted);font-variant-numeric:tabular-nums}
-.v-heatctl{left:12px;top:52px;padding:6px 10px;border:1px solid var(--border);border-radius:var(--r-md);
-  background:rgba(13,13,12,.74);color:var(--text-faint);font:var(--fs-sm)/1.4 var(--sans)}
+/* "Colour by": under the toolbar with room to spare, the toolbar's touch-size buttons included */
+.v-heatctl{left:12px;top:66px;padding:6px 10px;border:1px solid var(--border);border-radius:var(--r-md);
+  background:rgba(5,5,5,.74);color:var(--text-faint);font:var(--fs-sm)/1.4 var(--sans)}
 .v-heatctl a{color:var(--text);text-decoration:underline;text-decoration-color:var(--text-faint);text-underline-offset:3px}
-.v-heatctl a.on{color:var(--accent-hover);text-decoration-color:var(--accent)}
+.v-heatctl a.on{color:var(--text-bright);text-decoration-color:var(--accent-text)}
 
 /* the heatmap's scale: an upright bar with the limit as a tick, the reading, and the two tools */
 .v-legend{left:auto;right:12px;top:auto;bottom:52px;transform:none;display:flex;flex-direction:column;
   align-items:stretch;gap:6px;width:200px;padding:12px;border:1px solid var(--border);border-radius:10px;
-  background:rgba(13,13,12,.86);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);
+  background:rgba(5,5,5,.86);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);
   color:var(--text-muted);font:var(--fs-sm)/1.3 var(--sans);white-space:nowrap}
 .v-legend .lg-h{display:flex;align-items:center;gap:8px}
 .v-legend b{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--text);
@@ -699,8 +716,9 @@ th,td{border-color:var(--border)}
 .v-legend .ok{color:var(--ok)}
 
 /* problem areas: the bad cells gathered into places under the scale, worst first. Quiet rows -
-   the only colour is the orange of a count over the limit; the chosen row takes a faint wash */
-.v-legend{width:244px;max-height:calc(100% - 64px);overflow-y:auto;overscroll-behavior:contain}
+   the only colour is the red of a count over the limit; the chosen row takes a faint wash */
+/* the scale stops short of the "Colour by" line above it, so on a short canvas neither hides the other */
+.v-legend{width:244px;max-height:calc(100% - 156px);overflow-y:auto;overscroll-behavior:contain}
 .v-legend .v-areas{display:flex;flex-direction:column;gap:1px;margin-top:6px;padding-top:10px;
   border-top:1px solid var(--divider);white-space:normal}
 .v-legend .ar-h{display:flex;align-items:center;gap:8px;margin:0 0 4px;color:var(--text-muted);
@@ -715,7 +733,7 @@ th,td{border-color:var(--border)}
   width:100%;padding:5px 6px;border:1px solid transparent;border-radius:var(--r-md);background:transparent;
   color:var(--text-muted);font:var(--fs-sm)/1.35 var(--sans);text-align:left;cursor:pointer}
 .v-legend .v-area:hover{background:var(--hover)}
-.v-legend .v-area[aria-pressed="true"]{border-color:var(--border);background:rgba(238,235,225,.06)}
+.v-legend .v-area[aria-pressed="true"]{border-color:var(--border);background:var(--hover)}
 .v-legend .v-area:focus-visible,.v-legend .v-only:focus-visible{outline:1px solid var(--border-strong);outline-offset:1px}
 .v-legend .ar-i{color:var(--text-faint);font-variant-numeric:tabular-nums}
 .v-legend .v-area[aria-pressed="true"] .ar-i{color:var(--text)}
@@ -724,13 +742,13 @@ th,td{border-color:var(--border)}
 .v-legend .ar-p{color:var(--text)}
 .v-legend .ar-w{color:var(--text-faint)}
 .v-legend .ar-c{display:block;color:var(--text-faint);font-size:var(--fs-xs);font-variant-numeric:tabular-nums}
-.v-legend .ar-over{color:var(--accent-hover)}
+.v-legend .ar-over{color:var(--danger)}
 .v-legend .ar-v{color:var(--text);font-variant-numeric:tabular-nums}
 .v-legend .ar-none{margin:0;color:var(--text-faint);font-size:var(--fs-xs);line-height:1.4}
 
 /* the readout: what the face reads, against the bar, and why it likely does */
 .v-probe{right:12px;top:12px;max-width:340px;padding:12px 14px;border:1px solid var(--border);
-  border-radius:10px;background:rgba(13,13,12,.9);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);
+  border-radius:10px;background:rgba(5,5,5,.9);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);
   color:var(--text-muted);font:var(--fs-md)/1.5 var(--sans)}
 .v-probe .pk{margin-bottom:8px;color:var(--text-faint);font:var(--fs-sm)/1.4 var(--sans)}
 .v-probe .pr-rows{display:grid;grid-template-columns:auto auto minmax(0,1fr);column-gap:12px;row-gap:3px;
@@ -750,13 +768,13 @@ th,td{border-color:var(--border)}
 .v-probe .acts .v-btn{height:28px;font-size:var(--fs-sm)}
 
 /* dialogs */
-.v-modal{background:rgba(9,9,8,.7)}
+.v-modal{background:rgba(0,0,0,.7)}
 .v-modal .box{border:1px solid var(--border);border-radius:10px;background:var(--surface-1);
   color:var(--text);box-shadow:var(--shadow-2)}
 .v-modal .box h3{color:var(--text);font-size:var(--fs-lg);font-weight:600;letter-spacing:-.01em}
 .v-modal .box b{color:var(--text)}
 .v-modal textarea{border:1px solid var(--border);border-radius:var(--r-md);background:var(--canvas);color:var(--text)}
-.v-modal textarea:focus{outline:none;border-color:var(--accent-line)}
+.v-modal textarea:focus{outline:none;border-color:var(--focus-edge)}
 .v-modal textarea::placeholder{color:var(--text-faint)}
 .res{border:1px solid var(--border);border-radius:10px;background:var(--surface-1)}
 #lb img{border-radius:var(--r-md)}
@@ -774,7 +792,7 @@ th,td{border-color:var(--border)}
 .gc-banner{gap:10px;padding:10px 12px;border:1px solid var(--border);border-radius:var(--r-md);
   background:var(--surface-2);color:var(--text-muted);font-size:var(--fs-sm);line-height:1.5}
 .gc-banner.warn{border-color:rgba(241,189,99,.3);background:var(--warn-soft);color:var(--warn)}
-.gc-spin{border-color:rgba(238,235,225,.18);border-top-color:var(--accent)}
+.gc-spin{border-color:rgba(175,174,162,.22);border-top-color:var(--live)}
 .gc-banner .gc-retry{height:28px;padding:0 10px;border:1px solid var(--border-strong);border-radius:var(--r-md);
   background:transparent;color:inherit;font:500 var(--fs-sm)/1 var(--sans)}
 
@@ -784,11 +802,11 @@ th,td{border-color:var(--border)}
 .gc-sel,.gc-role,.gc-name,.gc-num{height:32px;padding:0 10px;border:1px solid var(--border);
   border-radius:var(--r-md);background:var(--surface-1);color:var(--text);font:var(--fs-md)/1.2 var(--sans)}
 .gc-sel,.gc-role{-webkit-appearance:none;appearance:none;padding-right:28px;cursor:pointer;
-  background:var(--surface-1) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%238a8884' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right 10px center/9px 6px}
+  background:var(--surface-1) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%2386857c' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right 10px center/9px 6px}
 .gc-sel option,.gc-role option{background:var(--surface-2);color:var(--text)}
 .gc-sel:hover,.gc-role:hover,.gc-name:hover,.gc-num:hover{border-color:var(--border-strong)}
-.gc-sel:focus,.gc-role:focus{border-color:var(--accent-line)}
-.gc-name:focus,.gc-num:focus{outline:none;border-color:var(--accent-line)}   /* a text box shows focus by its edge */
+.gc-sel:focus,.gc-role:focus{border-color:var(--focus-edge)}
+.gc-name:focus,.gc-num:focus{outline:none;border-color:var(--focus-edge)}   /* a text box shows focus by its edge */
 .gc-sel:disabled,.gc-role:disabled,.gc-name:disabled,.gc-num:disabled{opacity:.6;cursor:default}
 .gc-name{width:100%;min-width:72px;font:var(--fs-sm)/1.2 var(--mono)}
 .gc-role{width:100%;min-width:96px}
@@ -800,7 +818,7 @@ th,td{border-color:var(--border)}
 .gc-guess{margin-left:8px;color:var(--warn);font-size:var(--fs-sm)}
 .gc-extents{gap:6px 12px}
 .gc-extents label{gap:6px;color:var(--text-faint);font-size:var(--fs-sm)}
-.gc-ground{accent-color:var(--accent)}
+.gc-ground{accent-color:var(--stone)}
 
 /* the openings: one row each, numbered with the same sticker the part wears */
 .gc-table{width:100%;margin:6px 0 2px;border-collapse:collapse;font-size:var(--fs-md)}
@@ -812,9 +830,9 @@ th,td{border-color:var(--border)}
 .gc-table tr:last-child td{border-bottom:0}
 .gc-table .gc-n{width:30px;cursor:pointer}
 .gc-badge{display:inline-grid;place-items:center;min-width:20px;height:20px;padding:0 5px;border-radius:10px;
-  background:#ffd400;color:#14171c;font:700 11px/1 var(--sans);font-variant-numeric:tabular-nums}
-.gc-table tr.sel .gc-badge{background:var(--accent);color:#fff}
-.gc-table tr.sel td{background:rgba(255,79,0,.06)}
+  background:var(--primary);color:var(--primary-ink);font:700 11px/1 var(--sans);font-variant-numeric:tabular-nums}
+.gc-table tr.sel .gc-badge{background:var(--accent);color:var(--accent-ink)}
+.gc-table tr.sel td{background:var(--hover)}
 .gc-table .gc-dim,.gc-table .gc-conf{color:var(--text-muted);font-size:var(--fs-sm);
   font-variant-numeric:tabular-nums;white-space:nowrap}
 .gc-table .gc-conf{color:var(--text-faint)}
@@ -822,7 +840,7 @@ th,td{border-color:var(--border)}
 .gc-x:hover{background:var(--hover);color:var(--danger)}
 .gc-tools{gap:10px;padding:10px 0 2px}
 .gc-tools .gc-add,.gc-tools .gc-measure{height:30px;font-size:var(--fs-sm)}
-.gc-tools .gc-add.armed,.gc-tools .gc-measure.armed{border-color:var(--accent-line);background:var(--accent-soft);color:var(--accent-hover)}
+.gc-tools .gc-add.armed,.gc-tools .gc-measure.armed{border-color:var(--border-bright);background:var(--selected);color:var(--text-bright)}
 .gc-tools-hint{color:var(--text-faint);font-size:var(--fs-sm)}
 .gc-note{padding:0;margin-top:10px;color:var(--text-faint);font-size:var(--fs-sm);line-height:1.55}
 .gc-actions{display:flex;align-items:center;flex-wrap:wrap;gap:10px 14px;margin-top:14px;padding:16px 0 0;
@@ -844,9 +862,48 @@ th,td{border-color:var(--border)}
 .gc-thumb{height:56px;border:1px solid var(--border);border-radius:var(--r-sm);background:#fff;cursor:zoom-in}
 .gc-thumb:hover,.gc-overview:hover{border-color:var(--border-strong)}
 
-/* stickers: the yellow of the check's pictures; the selected one wears the product's orange */
-.gc-pin{background:#ffd400;color:#14171c;font-weight:700;border-color:rgba(255,255,255,.95)}
-.gc-pin.sel{background:var(--accent);color:#fff}
+/* ------------------------------------------------------- marks on the part ---- */
+/* THE MARKS ON A STAGE'S PART (viewer/scene/marks.js): small flat dots of a fixed size on screen - never
+   balls that grow with the part - with no shading, no white ring and no shadow. A hot spot is a stone dot;
+   a join (where two parts meet) a stone ring; what the user should see (parts that pass into each other,
+   plates that do not meet) a muted red dot; a region that stays solid a muted amber one. What a mark is
+   shows beside it only when it is pointed at or chosen; the chosen one wears the crimson. Marks that would
+   overlap at this zoom are one quiet chip with their count, which zooms in when clicked. */
+.vm{position:absolute;z-index:6;width:16px;height:16px;transform:translate(-50%,-50%);cursor:pointer;
+  user-select:none;font-size:0;line-height:0}
+.vm::before{content:"";position:absolute;left:50%;top:50%;width:7px;height:7px;border-radius:50%;
+  transform:translate(-50%,-50%);background:var(--stone);box-shadow:0 0 0 1px rgba(5,5,5,.6);
+  transition:transform .12s ease,background-color .12s ease}
+.vm.k-join::before{width:8px;height:8px;background:transparent;
+  box-shadow:inset 0 0 0 1.5px var(--stone),0 0 0 1px rgba(5,5,5,.5)}
+.vm.k-problem::before{background:#d9645a}
+.vm.k-solid::before{background:#cc9e52}
+.vm:hover::before,.vm.hot::before{transform:translate(-50%,-50%) scale(1.4)}
+.vm.sel::before{background:var(--accent);box-shadow:0 0 0 1.5px rgba(5,5,5,.75),0 0 0 4px rgba(210,19,25,.25)}
+.vm.hot,.vm.sel,.vm:hover{z-index:8}
+.vm.back{opacity:.35}
+/* the words beside a mark: its tag and what it is, only while pointed at or chosen */
+.vm-l{display:none;position:absolute;left:calc(50% + 9px);top:50%;transform:translateY(-50%);padding:2px 7px;
+  border:1px solid var(--border-strong);border-radius:var(--r-sm);background:rgba(12,12,12,.88);
+  color:var(--text);font:500 11px/1.4 var(--sans);white-space:nowrap;pointer-events:none}
+.vm-l i{font-style:normal;color:var(--text-muted);margin-left:6px}
+.vm:hover .vm-l,.vm.hot .vm-l,.vm.sel .vm-l{display:block}
+/* an opening (the flow stage's sticker) keeps its number: naming the openings is the step, and the number
+   is the row's. A small flat chip in stone ink; the chosen one in the crimson. (The check's own pictures
+   still draw them yellow: they are rendered by the server.) */
+.vm.vm-chip{width:auto;min-width:17px;height:17px;padding:0 5px;border-radius:9px;background:rgba(226,224,212,.92);
+  color:var(--primary-ink);font:600 10.5px/17px var(--sans);text-align:center;font-variant-numeric:tabular-nums;
+  box-shadow:0 0 0 1px rgba(5,5,5,.55)}
+.vm.vm-chip::before{content:none}
+.vm.vm-chip:hover{background:var(--primary-hover)}
+.vm.vm-chip.sel{background:var(--accent);color:var(--accent-ink)}
+/* marks merged at this zoom: their count, quietly */
+.vm-group{position:absolute;z-index:7;min-width:18px;height:18px;padding:0 5px;transform:translate(-50%,-50%);
+  border:1px solid rgba(175,174,162,.5);border-radius:9px;background:rgba(12,12,12,.8);color:var(--text-muted);
+  font:600 10.5px/16px var(--sans);text-align:center;font-variant-numeric:tabular-nums;cursor:zoom-in;user-select:none}
+.vm-group:hover{border-color:var(--text);color:var(--text-bright)}
+.vm-group.warn{border-color:rgba(217,100,90,.75)}
+.vm-group.back{opacity:.4}
 
 /* ----------------------------------------------------- thermal model (ECXML) ---- */
 /* An ECXML upload opens as the file's own model: the title and four totals, the air box in one
@@ -884,7 +941,7 @@ th,td{border-color:var(--border)}
 .tm-sort button.on{background:var(--surface-raised);color:var(--text)}
 .tm-search{width:100%;height:30px;margin:0 0 8px;padding:0 10px;border:1px solid var(--border);
   border-radius:var(--r-md);background:var(--surface-1);color:var(--text);font:var(--fs-sm)/1 var(--sans)}
-.tm-search:focus{outline:none;border-color:var(--accent-line)}
+.tm-search:focus{outline:none;border-color:var(--focus-edge)}
 .tm-search::placeholder{color:var(--text-faint)}
 .tm-cols,.tm-row{display:grid;grid-template-columns:10px minmax(0,1.3fr) minmax(0,1fr) 46px 100px 40px;
   column-gap:8px;align-items:center}
@@ -903,8 +960,8 @@ th,td{border-color:var(--border)}
   transition:opacity .12s}
 .tm-gh:hover .tm-only,.tm-only:focus-visible,.tm-group.sel .tm-only{opacity:1}
 .tm-only:hover{border-color:var(--border-strong);color:var(--text)}
-.tm-group.sel>.tm-gh{border-left-color:var(--accent);background:var(--accent-soft)}
-.tm-group.sel .tm-only{border-color:var(--accent-line);color:var(--accent-hover)}
+.tm-group.sel>.tm-gh{border-left-color:var(--accent);background:var(--selected)}
+.tm-group.sel .tm-only{border-color:var(--border-bright);color:var(--text-bright)}
 .tm-caret{flex:none;width:0;height:0;border-top:5px solid currentColor;border-right:4px solid transparent;
   border-left:4px solid transparent;transition:transform .12s}
 .tm-group.folded .tm-caret{transform:rotate(-90deg)}
@@ -914,7 +971,7 @@ th,td{border-color:var(--border)}
 .tm-row{padding:5px 18px 5px 28px;border-left:2px solid transparent;cursor:pointer;transition:background .1s}
 .tm-root .tm-row{padding-left:18px}
 .tm-row:hover,.tm-row.hov{background:var(--hover)}
-.tm-row.sel{border-left-color:var(--accent);background:var(--accent-soft)}
+.tm-row.sel{border-left-color:var(--accent);background:var(--selected)}
 .tm-row.out{cursor:default;opacity:.55}
 .tm-sw{width:10px;height:10px;border-radius:2px;box-shadow:inset 0 0 0 1px rgba(0,0,0,.28)}
 .tm-row.out .tm-sw{box-shadow:none;border:1px dashed var(--text-faint)}
@@ -929,7 +986,7 @@ th,td{border-color:var(--border)}
 .tm-sz{font-size:var(--fs-xs)}
 .tm-heat{position:absolute;right:0;bottom:0;width:34px;height:2px;overflow:hidden;border-radius:1px;
   background:var(--surface-raised)}
-.tm-heat i{display:block;height:100%;border-radius:1px;background:linear-gradient(90deg,#ffa85a,#ff5800)}
+.tm-heat i{display:block;height:100%;border-radius:1px;background:linear-gradient(90deg,#ecb45c,#e22c2c)}
 .tm-zero{color:var(--text-faint)}
 .tm-row.sel .tm-nm b{color:var(--text-bright)}
 .tm-more{height:26px;margin:4px 18px 6px 28px;padding:0 10px;border:1px solid var(--border);border-radius:var(--r-md);
@@ -950,14 +1007,14 @@ th,td{border-color:var(--border)}
   background:var(--warn-soft);color:var(--text);font-size:var(--fs-sm);line-height:1.5}
 .tm-warn.info{border-color:var(--border);background:var(--surface-1);color:var(--text-muted)}
 .tm-mark{flex:none;display:inline-grid;place-items:center;width:16px;height:16px;margin-top:1px;border-radius:50%;
-  background:var(--warn);color:var(--accent-ink);font:700 10px/1 var(--sans)}
+  background:var(--warn);color:var(--primary-ink);font:700 10px/1 var(--sans)}
 .tm-mark::before{content:'!'}
-.tm-warn.info .tm-mark{background:var(--steel-muted);color:var(--text-bright)}
+.tm-warn.info .tm-mark{background:var(--stone-muted);color:var(--text-bright)}
 .tm-warn.info .tm-mark::before{content:'i'}
 .tm-chips{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}
 .tm-chip{height:22px;padding:0 8px;border:1px solid var(--border-strong);border-radius:var(--r-sm);
   background:transparent;color:var(--text);font:var(--fs-xs)/1 var(--mono);cursor:pointer}
-.tm-chip:hover{border-color:var(--accent-line);color:var(--accent-hover)}
+.tm-chip:hover{border-color:var(--border-bright);color:var(--text-bright)}
 .tm-report summary{color:var(--text-muted);font-size:var(--fs-sm);cursor:pointer}
 .tm-report summary:hover{color:var(--text)}
 .tm-report ul{margin:8px 0 0 16px;color:var(--text-faint);font-size:var(--fs-xs);line-height:1.55}
@@ -972,29 +1029,29 @@ th,td{border-color:var(--border)}
 .tm-level b{font:600 var(--fs-sm)/1.2 var(--sans)}
 .tm-level span{color:var(--text-faint);font-size:var(--fs-xs);line-height:1.35}
 .tm-level:hover{border-color:var(--border-strong)}
-.tm-level.on{border-color:var(--accent-line);background:var(--accent-soft)}
-.tm-level.on b{color:var(--accent-hover)}
+.tm-level.on{border-color:var(--border-bright);background:var(--selected)}
+.tm-level.on b{color:var(--text-bright)}
 .tm-level.on span{color:var(--text-muted)}
 .tm-level.bad span{color:var(--warn)}
 .tm-promise{margin:8px 0 0;color:var(--text-faint);font-size:var(--fs-xs);line-height:1.45}
 .tm-go{display:flex;align-items:center;flex-wrap:wrap;gap:8px 12px;margin-top:12px}
-.tm-mesh{height:36px;padding:0 18px;border:1px solid var(--accent);border-radius:var(--r-md);background:var(--accent);
-  color:var(--accent-ink);font:600 var(--fs-md)/1 var(--sans);cursor:pointer;transition:background .12s,border-color .12s}
-.tm-mesh:hover:not(:disabled){border-color:var(--accent-hover);background:var(--accent-hover)}
+.tm-mesh{height:36px;padding:0 18px;border:1px solid var(--primary);border-radius:var(--r-md);background:var(--primary);
+  color:var(--primary-ink);font:600 var(--fs-md)/1 var(--sans);cursor:pointer;transition:background .12s,border-color .12s}
+.tm-mesh:hover:not(:disabled){border-color:var(--primary-hover);background:var(--primary-hover)}
 .tm-mesh:disabled{opacity:.6;cursor:default}
 .tm-hint{flex:1 1 160px;min-width:0;color:var(--warn);font-size:var(--fs-sm)}
 
 /* on the canvas: the tool that is on, the reading under the pointer, the probes */
-.v-btn.v-tool.on{border-color:var(--accent-line);color:var(--accent-hover)}
+.v-btn.v-tool.on{border-color:var(--border-bright);color:var(--text-bright)}
 .v-btn.v-tool[hidden]{display:none}
 .tm-tip{position:absolute;z-index:7;display:flex;flex-direction:column;gap:1px;max-width:240px;padding:6px 10px;
-  border:1px solid var(--border);border-radius:var(--r-md);background:rgba(13,13,12,.88);pointer-events:none;
+  border:1px solid var(--border);border-radius:var(--r-md);background:rgba(5,5,5,.88);pointer-events:none;
   -webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px)}
 .tm-tip[hidden]{display:none}
 .tm-tip b{color:var(--text-bright);font:500 var(--fs-sm)/1.35 var(--mono)}
 .tm-tip span{color:var(--text-muted);font-size:var(--fs-xs)}
 .tm-probe{position:absolute;z-index:6;width:9px;height:9px;transform:translate(-50%,-50%) rotate(45deg);
-  border:1.5px solid var(--text-bright);background:var(--steel);box-shadow:0 1px 4px rgba(0,0,0,.6)}
+  border:1.5px solid var(--text-bright);background:var(--stone);box-shadow:0 1px 4px rgba(0,0,0,.6)}
 .tm-probe.sel{background:var(--accent)}
 
 /* stacked under the model on a narrow screen the panel is short: its foot scrolls with it */
@@ -1019,63 +1076,139 @@ th,td{border-color:var(--border)}
   background:var(--surface-2);color:var(--text);font:500 var(--fs-sm)/1 var(--sans);cursor:pointer}
 .qc-btn:hover:not(:disabled){border-color:var(--border-strong);background:var(--surface-raised)}
 .qc-btn.soon{color:var(--text-faint);border-style:dashed}
-.qc-btn.picked{border-color:var(--accent);color:var(--text)}
+.qc-btn.picked{border-color:var(--text);color:var(--text)}
 .qc.done .qc-btn:not(.picked){opacity:.45}
 .qc-btn:disabled{cursor:default}
 
 /* ------------------------------------------------------------ FEA part ---- */
-/* an FEA part's check: its size, unit, bodies and clean check, and the one question */
-.fea-form .rc-row{align-items:center}
-.fea-clean{display:inline-flex;gap:6px;align-items:baseline;line-height:1.45}
-.fea-clean .ic{font-weight:600}
+/* an FEA part's panel: a header (name, purpose tag), a few key facts, folds that open on a click (hot spots,
+   shell, parts & joins) and Proceed at the foot, held at the bottom of the panel */
+.gc-stage .fea-panel{padding-bottom:0}
+.fea-head{display:flex;align-items:baseline;gap:10px;min-width:0}
+.fea-head .fea-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fea-tag{flex:none;margin-left:auto;padding:2px 8px;border:1px solid var(--border);border-radius:var(--r-sm);
+  color:var(--text-muted);font:500 var(--fs-xs)/1.4 var(--sans);letter-spacing:.02em;white-space:nowrap}
+.fea-form{display:flex;flex-direction:column;gap:10px;flex:1 0 auto}
+.fea-form .rc-row{align-items:center;min-height:30px}
+.fea-facts{display:flex;flex-direction:column}
+.gc-stage .fea-facts .rc-k{width:96px}
+.fea-unit-row .gc-sel{width:auto;min-width:120px;height:28px}
+.fea-form .gc-unit-hint[data-sure="1"]{display:none}
+.fea-form .gc-unit-hint{margin-top:3px;font-size:var(--fs-xs)}
+.fea-line{display:block;font-size:var(--fs-sm);line-height:1.5}
+.fea-muted{color:var(--text-faint)}
+.fea-where{color:var(--text-faint);font-size:var(--fs-sm);margin-left:4px}
+.fea-unmeasured{color:var(--text-faint)}
+/* the clean check in one line; its detail opens under it */
+.fea-clean{display:inline-flex;flex-direction:column;align-items:flex-start;gap:4px;line-height:1.45;min-width:0}
+.fea-clean:not([data-fold]){flex-direction:row;align-items:baseline}
+.fea-clean .ic{font-weight:600;margin-right:6px}
 .fea-clean.ok .ic{color:var(--ok)}
 .fea-clean.bad .ic{color:var(--warn)}
 .fea-clean.unk .ic{color:var(--text-faint)}
-.fea-blocked{margin:12px 0 2px;padding:10px 12px;border:1px solid var(--warn);border-radius:var(--r-md);
+.fea-clean-btn{display:inline-flex;align-items:baseline;padding:0;border:0;background:none;color:var(--text);
+  font:inherit;text-align:left;cursor:pointer}
+.fea-clean-btn .fea-chev{margin-left:8px;align-self:center}
+.fea-clean-more{display:flex;flex-direction:column;gap:4px;color:var(--text-faint);font-size:var(--fs-sm)}
+.fea-clean-more[hidden]{display:none}
+.fea-blocked{margin:2px 0;padding:10px 12px;border:1px solid var(--warn);border-radius:var(--r-md);
   color:var(--text);font-size:var(--fs-sm);line-height:1.5}
-.fea-q{margin:14px 0 8px;color:var(--text);font-weight:600}
 .fea-card{padding:0 16px 12px}
-/* an FEA part's measurement: the thinnest wall and the hot spots, listed and tagged on the part
-   (shown only). The tags wear a quiet steel blue, apart from the stickers' yellow. */
-.fea-where{color:var(--text-faint)}
-.fea-unmeasured{color:var(--text-faint)}
-.fea-spots{list-style:none;margin:6px 0 0;padding:0;font-size:var(--fs-sm);line-height:1.5}
-.fea-spot-row{display:flex;gap:8px;align-items:baseline;padding:2px 6px;border-radius:var(--r-sm,4px);cursor:default}
+/* a fold: one line with a chevron, a title, a count and a short summary; its body opens under it */
+.fea-chev{flex:none;display:inline-block;width:6px;height:6px;border-right:1.5px solid var(--text-faint);
+  border-bottom:1.5px solid var(--text-faint);transform:rotate(-45deg);transition:transform .15s;margin:0 3px 0 1px}
+.open>.fea-sec-head .fea-chev,.open>.fea-fold-btn .fea-chev,.open>.fea-pair-line .fea-chev,
+.fea-clean.open>.fea-clean-btn .fea-chev{transform:rotate(45deg)}
+.fea-sec{border-top:1px solid var(--divider)}
+.fea-sec-head{display:flex;align-items:center;gap:8px;min-height:40px}
+.fea-sec-btn{flex:1;min-width:0;display:flex;align-items:center;gap:8px;padding:9px 0;border:0;background:none;
+  color:var(--text);font:inherit;font-size:var(--fs-md);text-align:left;cursor:pointer}
+.fea-sec-btn:hover .fea-sec-t{color:var(--text-bright)}
+.fea-sec-t{flex:none;font-weight:600}
+.fea-sec-n{flex:none;color:var(--text-muted);font-variant-numeric:tabular-nums}
+.fea-sec-sum{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-faint);font-size:var(--fs-sm)}
+.fea-sec-sum .gc-spin{display:inline-block;vertical-align:-2px;margin-right:4px}
+.fea-sec-body{padding:0 0 10px}
+.fea-sec-body[hidden],.fea-fold-body[hidden]{display:none}
+.fea-sub-h{display:flex;align-items:center;gap:6px;margin:10px 0 3px;color:var(--text-muted);font-size:var(--fs-sm);font-weight:600}
+.fea-sub-h .fea-spot-n{font-weight:400;color:var(--text-faint)}
+/* an always-shown section's title (no toggle), and a small fold inside it for the extra detail */
+.fea-sec-title{flex:1;min-width:0;display:flex;align-items:center;gap:8px;padding:9px 0;font-size:var(--fs-md)}
+.fea-subfold>.fea-fold-btn{width:100%;padding:0;border:0;background:none;font:inherit;font-size:var(--fs-sm);font-weight:600;
+  color:var(--text-muted);text-align:left;cursor:pointer}
+.fea-subfold>.fea-fold-btn:hover{color:var(--text)}
+.fea-subfold.open>.fea-fold-btn .fea-chev{transform:rotate(45deg)}
+.fea-subfold>.fea-fold-body{padding-left:14px}
+/* the tagged lines (hot spots, joins, what is not in the shell): a click lights the mark on the part */
+.fea-spots{list-style:none;margin:2px 0 0;padding:0;font-size:var(--fs-sm);line-height:1.5}
+.fea-spot-row{display:flex;gap:8px;align-items:baseline;padding:2px 6px;border-radius:var(--r-sm,4px);cursor:pointer}
+.fea-spot-row:hover{background:var(--hover)}
 .fea-spot-row.sel{background:var(--surface-2)}
-.fea-spot-id{min-width:2.4em;color:var(--text-faint);font-variant-numeric:tabular-nums}
-.fea-spot-more{padding:2px 6px;color:var(--text-faint)}
-.fea-spot{min-width:26px;padding:0 4px;background:#6b9edb;color:#0e1620;font-size:11px;font-weight:600;
-  border-color:rgba(255,255,255,.85)}
-.fea-spot.sel{background:var(--accent);color:#fff}
-.fea-spot-open{border:0;background:none;padding:0;color:var(--text-faint);font:inherit;text-decoration:underline;cursor:pointer}
-.fea-spot-open:hover{color:var(--text)}
-.fea-spot-unsent{padding:2px 6px;color:var(--text-faint)}
-.fea-spot-row[hidden]{display:none}
-/* the list in groups by type, each with its count; a long group opens whole with "Show all N" */
-.fea-spot-group{margin:4px 0 0}
-.fea-spot-head{padding:2px 6px;color:var(--text-faint);font-weight:600}
-.fea-spot-n{font-weight:400;font-variant-numeric:tabular-nums}
-.fea-spot-rows{list-style:none;margin:0;padding:0}
-/* an assembly: its parts, where they touch (a muted green mark) or pass into each other (a muted
-   red one), and the one question, bonded or contact */
-.fea-parts{list-style:none;margin:2px 0 6px;padding:0;font-size:var(--fs-sm);line-height:1.5}
-.fea-part-row{padding:1px 6px}
-.fea-itf-row.overlap .fea-spot-id{color:#c97a72}
-.fea-itf-row.touching .fea-spot-id{color:#6fae86}
-.fea-spot.fea-itf{background:#7fbf95}
-.fea-conn{display:flex;flex-direction:column;gap:6px;margin:0 0 6px}
-.fea-conn-opt{display:flex;gap:6px;align-items:baseline;font-size:var(--fs-sm);line-height:1.45;cursor:pointer}
-.fea-conn-words{color:var(--text-faint)}
-/* each pair (PLAN-fea-19/20): what was measured, its type to pick, who keeps an overlap, the reason */
-.fea-pair{align-items:flex-start}
-.fea-pair-body{display:flex;flex-direction:column;gap:3px;min-width:0}
-.fea-pair-set{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
-.fea-pair-set select,.fea-pair-set input{font:inherit;font-size:var(--fs-sm);padding:1px 4px;
+.fea-spot-id{flex:none;min-width:2.4em;color:var(--text-faint);font-variant-numeric:tabular-nums}
+.fea-spot-unsent{padding:2px 6px}
+/* the hot spots in groups by type, each its own line with its count and range */
+.fea-spot-group{margin:0}
+.fea-grp-btn{width:100%;display:flex;align-items:center;gap:8px;padding:4px 6px;border:0;border-radius:var(--r-sm);
+  background:none;color:var(--text);font:inherit;text-align:left;cursor:pointer}
+.fea-grp-btn:hover{background:var(--hover)}
+.fea-grp-t{flex:none}
+.fea-spot-n{font-weight:400;font-variant-numeric:tabular-nums;color:var(--text-muted)}
+.fea-spot-sum{min-width:0;margin-left:auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-faint)}
+.fea-spot-rows{list-style:none;margin:0 0 4px;padding:0 0 0 14px}
+.fea-spot-head{color:var(--text-faint);font-weight:600}
+/* an assembly: its parts, where they meet (a stone ring on the part) or pass into each other (a muted
+   red mark, its tag the same red here); the one answer, bonded or contact, a two-way switch in the fold's header */
+.fea-parts{list-style:none;display:flex;flex-wrap:wrap;gap:4px;margin:4px 0 2px;padding:0;font-size:var(--fs-sm);line-height:1.4}
+.fea-part-row{max-width:100%;padding:1px 7px;border:1px solid var(--border);border-radius:var(--r-sm);color:var(--text-muted);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fea-itf-row.overlap .fea-spot-id{color:#d9645a}
+.fea-seg{flex:none;display:inline-flex;border:1px solid var(--border);border-radius:var(--r-md);overflow:hidden}
+.fea-seg .fea-conn-opt{position:relative;cursor:pointer}
+.fea-seg .fea-conn-opt input{position:absolute;opacity:0;pointer-events:none}
+.fea-seg .fea-conn-opt span{display:block;padding:4px 9px;color:var(--text-faint);font-size:var(--fs-sm);line-height:1.3}
+.fea-seg .fea-conn-opt+.fea-conn-opt span{border-left:1px solid var(--border)}
+.fea-seg .fea-conn-opt input:checked+span{background:var(--surface-raised);color:var(--text)}
+.fea-seg .fea-conn-opt input:focus-visible+span{outline:1px solid var(--accent-line);outline-offset:-1px}
+.fea-seg .fea-conn-opt input:disabled+span{opacity:.6;cursor:default}
+.fea-conn-said{margin:0 0 2px}
+/* SHSTAGE-8: a shell's elements, "Elements  Quads | Triangles", in the shell line's header */
+.fea-el{flex:none;display:inline-flex;align-items:center;gap:7px}
+.fea-el-k{color:var(--text-faint);font-size:var(--fs-sm)}
+.fea-el-ask{display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin:0 0 6px;color:var(--text)}
+.fea-el-ask span{margin-right:4px}
+.fea-el-ask .v-btn{height:26px;padding:0 10px;font-size:var(--fs-sm)}
+/* each pair (PLAN-fea-19/20): one line - its tag, its two parts, what was measured in a word, its type;
+   behind it, what was measured in full, the reason, who keeps an overlap and the reach */
+.fea-pair{display:block;padding:0}
+.fea-pair-line{display:flex;align-items:center;gap:6px;padding:1px 0 1px 6px;min-width:0}
+.fea-pair-name{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fea-pair-kind{flex:none;color:var(--text-faint);white-space:nowrap}
+.fea-pair-type,.fea-pair-set select,.fea-pair-set input{flex:none;font:inherit;font-size:var(--fs-sm);height:24px;padding:0 4px;
   background:var(--surface-2);color:var(--text);border:1px solid var(--border);border-radius:var(--r-sm)}
-.fea-pair-reach{width:9em}
-.fea-pair-reach[hidden]{display:none}
-.fea-pair-why{color:var(--text-faint);font-size:var(--fs-xs);line-height:1.4}
-.fea-itf-row.gap .fea-spot-id{color:#b9a35f}
+.fea-pair-type,.fea-pair-set .fea-pair-keep{-webkit-appearance:none;appearance:none;width:86px;padding:0 20px 0 7px;cursor:pointer;
+  background:var(--surface-2) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%2386857c' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right 7px center/8px 5px}
+.fea-pair-set .fea-pair-keep{width:auto}
+.fea-pair-type option{background:var(--surface-2);color:var(--text)}
+.fea-pair-type:hover{border-color:var(--border-strong)}
+.fea-pair-btn{flex:none;display:inline-grid;place-items:center;width:18px;height:22px;padding:0;border:0;background:none;cursor:pointer}
+.fea-pair-more{display:flex;flex-direction:column;gap:3px;padding:2px 6px 6px calc(2.4em + 14px);color:var(--text-faint)}
+.fea-pair-more[hidden]{display:none}
+.fea-pair-what{color:var(--text-muted)}
+.fea-pair-set{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.fea-pair-reach-l{display:inline-flex;align-items:center;gap:4px;color:var(--text-faint)}
+.fea-pair-reach{width:6em}
+.fea-pair-reach[hidden],.fea-pair-reach-l[hidden]{display:none}
+.fea-pair-why{font-size:var(--fs-xs);line-height:1.4}
+.fea-gaps{margin-top:2px}
+.fea-gap-opt{cursor:pointer}
+.fea-gap-opt input{accent-color:var(--stone);margin:0}
+.fea-gap-opt .fea-muted{font-weight:400;font-size:var(--fs-xs);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.fea-notes-btn{width:100%;padding:0;border:0;background:none;font:inherit;font-size:var(--fs-sm);font-weight:600;
+  color:var(--text-muted);text-align:left;cursor:pointer}
+.fea-notes>.fea-fold-body{display:flex;flex-direction:column;gap:4px;padding-left:14px}
+.fea-notes>.fea-fold-body[hidden]{display:none}
+/* the foot: Proceed, held at the bottom of the panel while the folds scroll */
+.fea-foot{position:sticky;bottom:0;z-index:2;margin-top:auto;padding:12px 0 16px;background:var(--background)}
 /* an open bonded pair on the result (PLAN-fea-21): red, named, with the way on */
 .fe-open{margin:6px 0 8px;padding:8px 10px;border:1px solid var(--danger);border-radius:var(--r-md);
   background:var(--danger-soft);color:var(--text);font-size:var(--fs-sm);line-height:1.5}
@@ -1084,9 +1217,30 @@ th,td{border-color:var(--border)}
 .fe-pairs{margin:4px 0}
 .fe-pairs summary{cursor:pointer;color:var(--text-faint)}
 .fe-pair.off{color:var(--text-faint)}
+/* PLAN-fea-22: the size choice - the full-rules mesh or a quicker one, each with its size, machine and time */
+.fea-plan-opts{display:flex;flex-direction:column;gap:6px;margin:0 0 6px}
+.fea-plan-opt{display:block;font-size:var(--fs-sm);line-height:1.45;cursor:pointer}
+.fea-plan-words{color:var(--text-faint)}
+.fea-plan-rec{font-size:var(--fs-xs,11px);color:var(--text-muted);border:1px solid var(--border,currentColor);border-radius:3px;padding:0 4px;margin-left:2px}
+.fea-plan-short{margin:2px 0 0 22px;padding:0;color:var(--text-faint);font-size:var(--fs-xs,11px)}
 /* many hot spots: each a small mark without its number, until it is pointed at or chosen */
 .fea-spot.mark{min-width:0;width:9px;height:9px;padding:0;font-size:0;line-height:0;border-width:1.5px}
 .fea-spot.mark:hover,.fea-spot.mark.sel{width:auto;min-width:26px;height:22px;padding:0 4px;font-size:11px;line-height:22px;z-index:8}
+/* SHSTAGE-2..4: a shell the user asked for: what is not in the shell (a muted amber mark), where the
+   plates do not meet (red), and the legend of the mid-surface's wall colours */
+.fea-meshas-v{color:var(--text-muted)}
+.fea-meshas-v b{font-weight:500;color:var(--text)}
+.fea-meshas-measuring{display:flex;gap:6px;align-items:center;margin-top:4px}
+.fea-meshas-why{margin-top:4px}
+.fea-shell-list{margin:2px 0 0}
+.fea-shell-rows{list-style:none;margin:0;padding:0}
+.fea-shell-head{padding:2px 6px;color:var(--text-faint)}
+.fea-shell-row.solid .fea-spot-id{color:#cc9e52}
+.fea-shell-row.open .fea-spot-id{color:#d9645a}
+.fea-shell-legend{display:flex;gap:8px;align-items:center;font-size:var(--fs-sm);margin:8px 0 2px}
+.fea-shell-legend-k{color:var(--text-faint)}
+.fea-shell-ramp{flex:0 0 120px;height:10px;border-radius:2px}
+.fea-shell-legend-v{font-variant-numeric:tabular-nums}
 
 /* ------------------------------------------------------- run outcome ---- */
 /* a finished run's closing account (render/outcome.js) and the review's points on the mesh panel:
@@ -1178,9 +1332,9 @@ th,td{border-color:var(--border)}
    name and size, then the Mesh report - in the panel's flow, so it can never hang off the edge. */
 .v-sec.v-dl{gap:4px}
 .rp-dltrig{display:flex;align-items:center;gap:10px;width:100%;min-width:0;height:38px;padding:0 12px;
-  border:1px solid var(--accent);border-radius:var(--r-md);background:var(--accent);color:var(--accent-ink);
+  border:1px solid var(--primary);border-radius:var(--r-md);background:var(--primary);color:var(--primary-ink);
   font:600 var(--fs-md)/1 var(--sans);cursor:pointer;transition:background .12s,border-color .12s}
-.rp-dltrig:hover{background:var(--accent-hover);border-color:var(--accent-hover)}
+.rp-dltrig:hover{background:var(--primary-hover);border-color:var(--primary-hover)}
 .rp-dltrig:focus-visible{outline:2px solid var(--accent-line);outline-offset:2px}
 .rp-dltrig>svg{flex:none;width:14px;height:14px}
 .v-bar .rp-dltrig b{color:inherit;font-weight:600}
@@ -1200,15 +1354,15 @@ th,td{border-color:var(--border)}
 .v-dl .v-dlbtn b::before{display:none}
 .v-dl .v-dlbtn b{display:block;flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
 .v-dl .v-dlbtn.rp-all b{font-weight:600}
-.v-dl .v-dlbtn.rp-all>svg{color:var(--accent)}
+.v-dl .v-dlbtn.rp-all>svg{color:var(--text)}
 .v-dl .v-dlbtn em{flex:none;font-style:normal;color:var(--text-faint);font-size:var(--fs-xs);white-space:nowrap}
 .v-dl .v-dlbtn em.rp-tag{padding:1px 5px;border-radius:var(--r-sm);background:var(--surface-2)}
 .v-dl .v-dlbtn span{flex:none;margin-left:auto;padding-left:6px;white-space:nowrap}
-.v-dl .rp-report>svg{color:var(--steel-bright)}
+.v-dl .rp-report>svg{color:var(--stone-bright)}
 /* a plain list of downloads (the CAD repair panel) still leads with one filled row */
-.v-dl .v-dlbtn.primary{height:38px;margin-bottom:4px;background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
-.v-dl .v-dlbtn.primary:hover{background:var(--accent-hover);border-color:var(--accent-hover)}
-.v-dl .v-dlbtn.primary span{color:var(--accent-ink);opacity:.75}
+.v-dl .v-dlbtn.primary{height:38px;margin-bottom:4px;background:var(--primary);border-color:var(--primary);color:var(--primary-ink)}
+.v-dl .v-dlbtn.primary:hover{background:var(--primary-hover);border-color:var(--primary-hover)}
+.v-dl .v-dlbtn.primary span{color:var(--primary-ink);opacity:.75}
 
 /* Notes and Hot spots: each one folded list, grouped by kind */
 .rp-lists{display:flex;flex-direction:column;gap:8px}
@@ -1232,12 +1386,42 @@ th,td{border-color:var(--border)}
 .rp-kind b{font-weight:500;color:var(--text);font-size:var(--fs-md)}
 .rp-c{font:var(--fs-sm)/1 var(--sans);color:var(--text-faint);font-variant-numeric:tabular-nums}
 .rp-why{grid-column:1/3;font-size:var(--fs-sm);color:var(--text-faint)}
-.rp-at{grid-column:1/3;font-size:var(--fs-xs);color:var(--accent)}
+.rp-at{grid-column:1/3;font-size:var(--fs-xs);color:var(--accent-text)}
 .rp-at:empty{display:none}
 button.rp-kind{cursor:pointer;border-radius:var(--r-sm,6px)}
-button.rp-kind:hover b,button.rp-kind.on b{color:var(--accent)}
+button.rp-kind:hover b,button.rp-kind.on b{color:var(--accent-text)}
 button.rp-kind:focus-visible{outline:2px solid var(--accent-line,var(--accent));outline-offset:2px}
 .rp-foot{margin:8px 0 0;font-size:var(--fs-xs);color:var(--text-faint)}
 .rp-body .oc-more{margin-top:8px}
 .fe .fe-faces-short{margin-top:6px}
 @media (prefers-reduced-motion:reduce){.rp-chev{transition:none}}
+
+/* THE RUN BOX'S FOUR ROWS (render/stage.js, core/run_rows.js): one name and one time per row, a few
+   plain lines always in view, the live line inside the row running now, and the steps folded away */
+.rr-box .tl-node{padding-bottom:10px}
+.rr-box .tl-name{cursor:default}
+.rr-box .tl-node:has(.tl-chev:not([hidden])) .tl-name{cursor:pointer}
+.tl-chev[hidden]{display:none}
+.rr-said{margin:0 0 2px}
+.rr-said:empty{display:none}
+.rr-line{margin:1px 0;font:var(--fs-sm)/1.55 var(--sans);color:var(--text-muted)}
+.rr-line.bad{color:var(--danger)}
+.rr-line.none{color:var(--text-faint)}
+.rr-dec{list-style:none;margin:2px 0 4px;padding:0;display:grid;gap:2px}
+.rr-dec li{position:relative;padding-left:12px;font:var(--fs-sm)/1.55 var(--sans);color:var(--text-muted)}
+.rr-dec li::before{content:'';position:absolute;left:2px;top:.68em;width:4px;height:4px;border-radius:50%;background:var(--border-strong)}
+.rr-k{margin-right:6px;font-weight:500;color:var(--text)}
+.rr-live{display:flex;flex-wrap:wrap;align-items:center;gap:4px 10px;margin:2px 0 4px;font:var(--fs-sm)/1.5 var(--sans);color:var(--text)}
+.rr-live[hidden]{display:none}
+.rr-note{color:var(--text-faint)}
+.rr-bar{flex-basis:100%;height:2px;border-radius:2px;background:var(--divider);overflow:hidden}
+.rr-bar>i{display:block;height:100%;background:var(--accent);transition:width .6s ease}
+.tl-dot.skip{border-color:var(--border-strong);background:var(--surface-2)}
+.tl-dot.skip::after{content:'–';color:var(--text-faint);font-size:9px;font-weight:700}
+.e-rc{margin:4px 0;font:var(--fs-sm)/1.5 var(--sans);color:var(--text-muted)}
+.e-rc-h{font-weight:500;color:var(--text)}
+.rr-dec .rr-more{display:none}
+.tl-node.open .rr-dec .rr-more{display:list-item}
+.tl-node.open .rr-dec .rr-count{display:none}
+.rr-dec .rr-count{color:var(--text-faint)}
+.rr-dec .rr-count::before{display:none}

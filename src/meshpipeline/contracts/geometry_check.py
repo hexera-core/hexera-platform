@@ -50,6 +50,50 @@ def enqueue_naming(**kwargs: Any) -> bool:
     return True
 
 
+PartWordsEnqueuer = Callable[..., Any]
+"""Starts one reading of the notes against the check's parts (application/part_matches.run_reading):
+enqueue_part_words(session_id=..., key=..., owner_id=..., user_notes=..., request_txt=...)."""
+
+_part_words_enqueuer: PartWordsEnqueuer | None = None
+
+
+def set_part_words_enqueuer(enqueuer: PartWordsEnqueuer | None) -> None:
+    global _part_words_enqueuer
+    _part_words_enqueuer = enqueuer
+
+
+def enqueue_part_words(**kwargs: Any) -> bool:
+    """Hand the notes and the check's parts to the geometry worker (the vision model may take minutes, so never
+    on a request). False when nothing is configured to run it: the card then shows no rows, and the run reads
+    the notes itself."""
+    if _part_words_enqueuer is None:
+        logger.info("part words reading not configured - skipping enqueue for session=%s", kwargs.get("session_id"))
+        return False
+    _part_words_enqueuer(**kwargs)
+    return True
+
+
+ShellCheckEnqueuer = Callable[..., Any]
+"""Starts one shell check (SHSTAGE-2): enqueue_shell_check(session_id=..., owner_id=..., interpretation=...)."""
+
+_shell_enqueuer: ShellCheckEnqueuer | None = None
+
+
+def set_shell_check_enqueuer(enqueuer: ShellCheckEnqueuer | None) -> None:
+    global _shell_enqueuer
+    _shell_enqueuer = enqueuer
+
+
+def enqueue_shell_check(**kwargs: Any) -> bool:
+    """Hand an FEA part's shell check to whoever runs it. False when nothing is configured to, so the
+    stage says the walls were not measured instead of measuring forever."""
+    if _shell_enqueuer is None:
+        logger.info("shell check not configured - skipping enqueue for session=%s", kwargs.get("session_id"))
+        return False
+    _shell_enqueuer(**kwargs)
+    return True
+
+
 QueueReader = Callable[[str], Any]
 """Where one geometry task stands: reader(task_id) -> {"ahead": N} while it waits in the queue (N checks will
 be taken before it), {"running": True} once a worker has it, or None when the queue cannot say."""

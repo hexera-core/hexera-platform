@@ -25,6 +25,23 @@ router = APIRouter()
 svc = JobService()
 
 
+async def _brief(session, owner_id: str):
+    """The request card, with the parts checklist read off the event loop (store reads only: drawing the card never
+    starts a reading - Finalize notes does)."""
+    import asyncio
+
+    from meshpipeline.application import part_matches as PM
+    if session is None or not getattr(session, "request_txt", None):
+        return build_brief(session)
+    pm = await asyncio.to_thread(lambda: PM.view(session, owner_id=owner_id))
+    brief = build_brief(session, part_matches=pm)
+    # the approval question the console says again once the notes are finalized and their parts shown
+    if brief is not None and getattr(session, "job_id", None) is None \
+            and ap.is_live((getattr(session, "intake_gate", None) or {}).get("approval")):
+        brief["proceed_ask"] = ap.PROCEED_ASK
+    return brief
+
+
 @router.get("")
 async def list_sessions(limit: int = pagination.DEFAULT_LIMIT, cursor: str | None = None,
                         owner_id: str = Depends(owner_dep),
@@ -135,9 +152,15 @@ async def chat_message(body: ChatMessageIn, owner_id: str = Depends(owner_dep),
         # A turn the authority settled with no model call: the deferral question, or the units
         # question. The reply is the authority's; the route only carries it.
         from meshpipeline.application.purpose_map import choices_for
+        brief, again = None, False
+        if outcome.status is msg.MessageStatus.reading_first:
+            # the yes waits for the notes: the card shows the reading, and the console sends the yes again
+            async with get_db() as db:
+                held = await session_repo.get_for_owner(db, session_id, owner_id, organization_id=organization_id)
+            brief, again = await _brief(held, owner_id), True
         return ChatResponse(session_id=session_id, reply=outcome.reply,
                             awaiting_confirmation=outcome.awaiting_confirmation,
-                            choices=choices_for(outcome.reply))
+                            choices=choices_for(outcome.reply), brief=brief, yes_after_reading=again)
 
     session = _require_session(outcome.session, session_id)
     previous_run = outcome.previous_run
@@ -174,11 +197,15 @@ async def chat_message(body: ChatMessageIn, owner_id: str = Depends(owner_dep),
     async with get_db() as db:
         _sess = await session_repo.get_for_owner(db, session_id, owner_id,
                                                   organization_id=organization_id)
+    from meshpipeline.application.purpose_map import choices_for
+    _reply = _extract_reply(result)
     return ChatResponse(
         session_id=session_id,
-        reply=_extract_reply(result),
+        reply=_reply,
+        # the buttons under the application's own question (a purpose question; never a cell count)
+        choices=choices_for(_reply),
         awaiting_confirmation=bool(_sess.request_txt) and _sess.job_id is None,
-        brief=build_brief(_sess),
+        brief=await _brief(_sess, owner_id),
         # re-projected for the mode running NOW: a session written under raw must
         # not be served raw by a server that has since restarted safe
         trace=project_all(result.get("_public_trace", [])),
@@ -208,7 +235,16 @@ async def chat_notes(body: ChatNoteIn, owner_id: str = Depends(owner_dep),
     from meshpipeline.contracts.user_notes import clean as _clean_notes
     notes = [{"id": n["id"], "text": n["text"], "source": n["source"]}
              for n in _clean_notes(getattr(session, "user_notes", None))]
-    return {"session_id": str(body.session_id), "brief": build_brief(session), "user_notes": notes}
+    out = {"session_id": str(body.session_id), "brief": await _brief(session, owner_id), "user_notes": notes}
+    # "use cfMesh" IN THE NOTES chooses the engine as it does in the chat: the console says it in the
+    # chat for the user, and the intake takes it from there (engine_selection.switch_by_words)
+    from meshpipeline.agents.intake.engine_selection import note_chooses_engine
+    gate = getattr(session, "intake_gate", None) or {}
+    current = str((gate.get("selection") or {}).get("engine") or getattr(session, "mesh_engine", "") or "")
+    say = note_chooses_engine(body.text, current)
+    if say:
+        out["say"] = say
+    return out
 
 
 #: Typed approval outcome -> HTTP status. The route owns this table and nothing else about

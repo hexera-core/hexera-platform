@@ -10,7 +10,7 @@ tool call against a strict schema:
      "zones": [{"id": "H3", "priority": "refine" | "standard" | "coarser", "reason": "..."}],
      "features": [{"id": "M2" | "H3", "action": "keep" | "set_aside", "reason": "..."}],
      "joints": [{"pair": "...", "suggest": "bonded" | "contact", "reason": "..."}],
-     "budget_elements": 0 | n, "words": ["...", ...]}
+     "target_elements": 0 | n, "target_min": 0 | n, "target_max": 0 | n, "words": ["...", ...]}
 
 The rules turn it into sizes (AI-fea-n, docs/RULES.md):
 
@@ -20,7 +20,9 @@ The rules turn it into sizes (AI-fea-n, docs/RULES.md):
             corner is capped at half its wall. Walls and rounds are at their minimum already.
   AI-fea-3  set aside: a hot spot no larger than 2% of the part is meshed as coarser; a wall never.
             Keep: a micro detail at least a fiftieth of the base size gets a zone its own size.
-  AI-fea-4  a budget the user named lowers the element limit, never raises it.
+  AI-fea-4  an element count the user named (a target, a range, a ceiling or a floor) is read here, checked
+            (whole, within sane bounds, min <= max); the whole plan is scaled to it (engines/fea_plan
+            PLAN-fea-27), both ways, never past the largest machine. No answer: not applied, and said.
   AI-fea-5  THE MINIMUMS HOLD after every choice: 2 through every wall, 4 per quarter-turn of every
             round, the corner cap, valid elements, the element, memory and time limits, the gates.
   AI-fea-6  no answer, a wrong answer or a busy AI: the decision saved for this same question, else the
@@ -70,8 +72,10 @@ COARSER_CORNER_DIVISIONS = 2
 #: AI-fea-3
 SET_ASIDE_MAX = 0.02
 KEEP_MIN = 1.0 / 50.0
-#: AI-fea-4: a budget under this is not an element budget anyone means
-MIN_BUDGET = 10_000
+#: AI-fea-4: the bounds of an element count anyone means for a whole mesh (a small part's whole mesh can be a few
+#: thousand: the textbook groove is 8,700; past MAX_TARGET is no machine's) - outside them, not a count
+MIN_TARGET = 1_000
+MAX_TARGET = 10_000_000_000
 
 _SPOTS = ("hole", "fillet", "notch")
 
@@ -118,7 +122,14 @@ sizes and keep every minimum, whatever you choose.
 - joints: only when the part is an assembly with touching pairs: bonded (welded, glued, press-fit, one piece in effect)
   or contact (parts that can slide or separate: bolted flanges, a pin in a hole, parts that only rest on each other)
   per pair id, as a suggestion the user confirms; the user's own choice on the stage is shown. Otherwise an empty list.
-- budget_elements: an element budget only if the user stated one in their words, else 0.
+- target_elements, target_min, target_max: ONLY when the user's words ask for a total element COUNT for the mesh
+  (elements, cells or tetrahedra in the whole mesh), else 0 for all three. "about 1M elements" -> target_elements
+  1000000. A range, "700k-1.5M elements" -> target_min 700000, target_max 1500000, target_elements 1100000 (its middle).
+  "at most 300k elements" -> target_max 300000 only; "at least 2M elements" -> target_min 2000000 only. Read any
+  way they write it ("1.2mil", "half a million", "2-3M", "one million cells"). A count of NODES: elements are about
+  the nodes / 1.5 for this 10-node mesh - convert, and say so in words. NOT a count: lengths and sizes (2.5 m,
+  3 mm fillets, "2 mm elements"), bolt and thread sizes (M8), loads (1000 N), pressures and stresses (500 MPa),
+  elements per quarter-turn or through a wall. Never invent one.
 - words: two to five short plain sentences for the user: what you prioritised and why. No jargon, no ids, no numbers you
   were not given.
 Reasons are short and concrete (what the user said, or what the analysis needs)."""
@@ -147,7 +158,8 @@ def _decision_tool(reason: dict) -> dict:
         "description": "The judgement calls for this part's FEA mesh. The rules turn them into sizes.",
         "parameters": {
             "type": "object", "additionalProperties": False,
-            "required": ["analysis", "matters", "zones", "features", "joints", "budget_elements", "words"],
+            "required": ["analysis", "matters", "zones", "features", "joints", "target_elements", "target_min",
+                         "target_max", "words"],
             "properties": {
                 "analysis": {"type": "string", "enum": list(ANALYSES)},
                 "matters": {"type": "string"},
@@ -163,7 +175,9 @@ def _decision_tool(reason: dict) -> dict:
                     "type": "object", "additionalProperties": False, "required": ["pair", "suggest", "reason"],
                     "properties": {"pair": {"type": "string"}, "suggest": {"type": "string", "enum": list(JOINTS)},
                                    "reason": reason}}},
-                "budget_elements": {"type": "integer"},
+                "target_elements": {"type": "integer"},
+                "target_min": {"type": "integer"},
+                "target_max": {"type": "integer"},
                 "words": {"type": "array", "items": {"type": "string"}},
             }}}}
 
@@ -229,7 +243,7 @@ def brief(record: Mapping, state: Mapping, zone_list: list[dict], *, diag_m: flo
         out["user_notes_fea"] = (
             "On this path: a feature they want removed or simplified can be set aside when it "
             "qualifies (it is meshed coarser and kept - the mesh never removes geometry); a region "
-            "they care about is a zone to refine; a budget they named is budget_elements; supports, "
+            "they care about is a zone to refine; an element count they named is target_elements (a range: target_min and target_max); supports, "
             "loads, load histories and joints between parts are theirs to set in their solver on the "
             "named faces (joints may be suggested). Say in notes_remark what you did with them.")
     # AN ASSEMBLY (PLAN-fea-17, engines/fea_driver.prepare_assembly): its parts and where they meet,
@@ -254,6 +268,44 @@ def messages_for(b: Mapping) -> list[dict]:
 # #
 # the answer, checked
 # #
+
+def _count(raw: Mapping, key: str, notes: list[str]) -> int:
+    """One count field of the answer: a whole number within [MIN_TARGET, MAX_TARGET], else 0 (said)."""
+    v = raw.get(key)
+    if v in (None, 0, "", False):
+        return 0
+    if isinstance(v, bool) or not isinstance(v, int | float) or not math.isfinite(float(v)):
+        notes.append(f"{key} {v!r} is not a count: ignored")
+        return 0
+    n = int(round(float(v)))
+    if not (MIN_TARGET <= n <= MAX_TARGET):
+        notes.append(f"{key} {n} is not an element count anyone means for a mesh: ignored")
+        return 0
+    return n
+
+
+def _target(raw: Mapping, notes: list[str]) -> dict:
+    """AI-fea-4: the element count the user named, checked: {"target_elements", "target_min", "target_max",
+    "target_mode": "about" | "range" | "at_most" | "at_least" | ""}. A range whose min is over its max is
+    refused; a target outside its range is replaced by the range's middle. An answer saved before 5 Nov names
+    the count budget_elements, read as target_elements."""
+    t = _count(raw, "target_elements", notes) or _count(raw, "budget_elements", notes)
+    lo, hi = _count(raw, "target_min", notes), _count(raw, "target_max", notes)
+    if lo and hi and lo > hi:
+        notes.append(f"the range {lo}-{hi} has its minimum over its maximum: ignored")
+        lo = hi = 0
+    if lo and hi:
+        mid = int(round((lo + hi) / 2.0))
+        if t and not (lo <= t <= hi):
+            notes.append(f"target_elements {t} is outside its own range {lo}-{hi}: the middle {mid} is used")
+            t = 0
+        return {"target_elements": t or mid, "target_min": lo, "target_max": hi, "target_mode": "range"}
+    if hi and not t:
+        return {"target_elements": hi, "target_min": 0, "target_max": hi, "target_mode": "at_most"}
+    if lo and not t:
+        return {"target_elements": lo, "target_min": lo, "target_max": 0, "target_mode": "at_least"}
+    return {"target_elements": t, "target_min": 0, "target_max": 0, "target_mode": "about" if t else ""}
+
 
 def validate(arguments: str, b: Mapping) -> tuple[dict | None, list[str]]:
     """(the decision, what was dropped from it) - None when the answer is not a decision at all.
@@ -309,19 +361,13 @@ def _validate(arguments: str, b: Mapping) -> tuple[dict | None, list[str]]:
     for j in _list_of_objects(raw, "joints"):
         if str(j.get("pair")) in shown_pairs and j.get("suggest") in JOINTS:
             joints.append({"pair": str(j["pair"]), "suggest": str(j["suggest"]), "reason": str(j.get("reason") or "")[:300]})
-    try:
-        budget = int(raw.get("budget_elements") or 0)
-    except (TypeError, ValueError):
-        budget = 0
-    if budget and budget < MIN_BUDGET:
-        notes.append(f"a budget of {budget} elements is not one anyone means: ignored")
-        budget = 0
+    target = _target(raw, notes)
     said = raw.get("words") or []
     if not isinstance(said, list):
         raise TypeError("words is not a list")
     words = [" ".join(str(w).split())[:400] for w in said if str(w).strip()][:5]
     out = {"analysis": analysis, "matters": " ".join(str(raw.get("matters") or "").split())[:500],
-           "zones": zones, "features": features, "joints": joints, "budget_elements": max(0, budget),
+           "zones": zones, "features": features, "joints": joints, **target,
            "words": words}
     # what was done with the user's notes, one plain line for the result - never checked
     remark = " ".join(str(raw.get("notes_remark") or "").split())[:400] if b.get("user_notes") else ""
@@ -487,12 +533,6 @@ def without_refines(ai: Mapping) -> dict:
     return {**ai, "decision": d, "refines_dropped": dropped}
 
 
-def budget_limit(limit: int, decision: Mapping | None) -> tuple[int, str]:
-    """AI-fea-4: the element limit with the user's own budget, which only ever lowers it."""
-    b = int((decision or {}).get("budget_elements") or 0)
-    if b and b < int(limit):
-        return b, f"the user's own budget of {b:,} elements"
-    return int(limit), ""
 
 
 def section(decision: Mapping | None, applied: list[dict], *, status: str, note: str = "",
@@ -528,12 +568,7 @@ def words(ai: Mapping | None, plan: Mapping | None = None) -> list[str]:
     if ai.get("refines_dropped"):
         out.append(f"The {len(ai['refines_dropped'])} refinement(s) asked for would take the mesh over its element "
                    "limit, so they were left out: the limit never costs the rules' own minimums for an extra.")
-    asked = int(d.get("budget_elements") or 0)
-    if asked:
-        held = int(((plan or {}).get("limit") or {}).get("elements") or asked)
-        out.append(f"Your element budget, {asked:,}, is the limit this mesh is held to." if held >= asked else
-                   f"You asked for at most {asked:,} elements; the mesh job's own limit, {held:,}, is lower, so "
-                   "the mesh is held to that.")
+    # an element count the user named is said with the plan's own words (fea_plan.target_words, PLAN-fea-27)
     for j in d.get("joints") or []:
         out.append(f"Suggested for {j['pair']}: {j['suggest']} ({j['reason']}). Please confirm.")
     return [w for w in out if w]
@@ -565,9 +600,12 @@ def decisions(ai: Mapping | None) -> list[dict]:
         out.append({"stage": "fea_ai", "decided": "refinements left out", "value": len(ai["refines_dropped"]),
                     "rule": "AI-fea-5", "source": SOURCE_AI_LEVER, "inputs": {"zones": ai["refines_dropped"]},
                     "words": "The refinements would take the plan over the element limit: left out."})
-    if int(d.get("budget_elements") or 0):
-        out.append({"stage": "fea_ai", "decided": "budget", "value": int(d["budget_elements"]), "rule": "AI-fea-4",
-                    "source": SOURCE_AI_LEVER, "inputs": {}, "words": "The user's element budget lowers the limit."})
+    if int(d.get("target_elements") or 0):
+        out.append({"stage": "fea_ai", "decided": "element count", "value": int(d["target_elements"]),
+                    "rule": "AI-fea-4", "source": SOURCE_AI_LEVER,
+                    "inputs": {k: d.get(k) for k in ("target_min", "target_max", "target_mode")},
+                    "words": "The element count the AI read in the user's words; the whole plan is scaled to it "
+                             "(PLAN-fea-27)."})
     for j in d.get("joints") or []:
         out.append({"stage": "fea_ai", "decided": f"joint {j['pair']}", "value": j["suggest"], "rule": "AI-fea-7",
                     "source": SOURCE_AI_LEVER, "inputs": {"reason": j["reason"]},
@@ -725,5 +763,5 @@ async def choose_lever(options: list[dict], facts: Mapping, *, ai: Mapping | Non
 
 
 __all__ = ["ANALYSES", "FEA_AI", "KEEP_MIN", "REFINE_FLOOR", "SET_ASIDE_MAX", "apply_zones", "brief",
-           "budget_limit", "refines", "without_refines", "choose_lever", "decide", "decision_tool", "decisions", "lever_tool", "messages_for",
+           "refines", "without_refines", "choose_lever", "decide", "decision_tool", "decisions", "lever_tool", "messages_for",
            "section", "validate", "words"]

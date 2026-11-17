@@ -1,4 +1,4 @@
-# Responsibility: Ship what landed on main - Gate C on the merge commit, publish those exact images, then provision by digest.
+# Responsibility: Ship what landed on main - release validation on the merge commit, publish those exact images, then provision by digest.
 # Owns: the pinned action digests, the federated identity each environment deploys as, and every deployment target it pins.
 # Boundaries: it builds nothing of its own and touches no cloud resource directly; deploy/gcp/scripts/deploy.sh owns every mutation.
 
@@ -149,6 +149,15 @@ on:
         description: "cad_repair_review - keep the repair review on when cad_repair is ticked (untick for the autonomous posture: repairs run under caps without parking for a person)"
         required: false
         default: true
+        type: boolean
+      # BUDGETS ONLY, for a demonstration part carrying many defects at once. It raises the number
+      # of operations the loop may try, the two clocks and the stall limit; it changes no cap that
+      # decides whether a repair is ACCEPTABLE. Never ticked for shared dev or production, which
+      # key off their own deployment ids above.
+      cad_repair_demo:
+        description: "cad_repair_demo - raise the CAD repair BUDGETS (operations, stall limit, repair and inspection clocks) for a part with many defects. Changes no acceptance cap: the validity check, solid-count check, cumulative residuals and paired-rim guard all stand"
+        required: false
+        default: false
         type: boolean
       # OPTIONAL MODEL GUIDANCE INSIDE CAD REPAIR SYSTEM, chosen here like cad_repair. "off" exports
       # nothing, so the API and fleet use the bounded fallback. "shadow" records guidance beside
@@ -579,13 +588,13 @@ jobs:
               echo "worker_env_uri=gs://${_did}-transfer-${_num}/worker.env"
               # the measured limits decide pass, concerns or fail; the AI review only adds notes
               echo "verdict_by_limits=true"
-              # THE IN-PROGRESS MESH FRAME, on in every dev environment and unstated on prod, the
-              # same posture the verdict above takes. It needs BOTH levers: the flag, and the rank
-              # pin, because a parallel run never snapshots and the flag alone would read as a
-              # feature that does nothing. A repository variable of either name still wins, so an
-              # environment that wants its meshes parallel can say so without editing this.
-              echo "mesh_snapshots=true"
-              echo "mesh_snappy_ranks=1"
+              # THE IN-PROGRESS MESH FRAME is OFF (2026-11-14, the founder): the viewer holds the part
+              # until the mesh is finished and checked, as FEA does, and snappyHexMesh runs on every
+              # core of the mesh job (rank count from its CPU quota). The frame only ever worked on a
+              # serial run, so having it on cost every dev mesh its parallel speed. A repository
+              # variable of either name still wins.
+              echo "mesh_snapshots=false"
+              echo "mesh_snappy_ranks="
               # THE OBJECT STORE. Every field is pinned EXCEPT the access id, and the exception is
               # the point.
               #
@@ -744,10 +753,9 @@ jobs:
               echo "worker_env_uri=gs://dev-transfer-224734058693/worker.env"
               # the measured limits decide pass, concerns or fail; the AI review only adds notes
               echo "verdict_by_limits=true"
-              # the in-progress mesh frame, as on every personal environment: both levers together,
-              # and unstated on prod until it is cut there deliberately
-              echo "mesh_snapshots=true"
-              echo "mesh_snappy_ranks=1"
+              # the in-progress mesh frame is off here too, and snappyHexMesh runs on every core
+              echo "mesh_snapshots=false"
+              echo "mesh_snappy_ranks="
               # THE OBJECT STORE DEV ALREADY OWNS. Everything below RESTATES live configuration -
               # the bucket, the HMAC key and the secret container all exist and the worker fleet
               # has been reading exactly these values out of worker.env all along. Only the API
@@ -1097,7 +1105,7 @@ jobs:
             sleep 30
           done
 
-  # WHY THE DEPLOY IS SIX JOBS AND NOT ONE. It used to be one - checkout, toolchain, auth, Gate C,
+  # WHY THE DEPLOY IS SIX JOBS AND NOT ONE. It used to be one - checkout, toolchain, auth, release validation,
   # the push, deploy.sh, two post-deploy verifications and the records upload, in a single
   # 300-minute lane. That shape cost three things. A red X said "the deploy failed" without saying whether it
   # failed BUILDING, PUBLISHING, PROVISIONING or VERIFYING, which are four different pages and
@@ -1179,7 +1187,7 @@ jobs:
       GCP_REGION: ${{ needs.target.outputs.region }}
       ARTIFACT_REGISTRY_REPOSITORY: ${{ needs.target.outputs.ar_repository }}
     steps:
-      # Gate C refuses a dirty tree, identifies the artifact by commit, and adds a git worktree at
+      # Release validation refuses a dirty tree, identifies the artifact by commit, and adds a git worktree at
       # that exact commit to stage the native fixtures. Full history so the worktree and the
       # record's commit/tree assertions have everything they name.
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
@@ -1201,7 +1209,7 @@ jobs:
 
       # release-publish pushes with `docker push`, which needs the credential helper for this
       # registry host. create-artifact-registry.sh configures it too, but that runs INSIDE the
-      # deploy - a whole job later, after publication - so the helper has to exist before Gate C's
+      # deploy - a whole job later, after publication - so the helper has to exist before release validation's
       # push, not after.
       - name: Configure docker for Artifact Registry
         run: gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet
@@ -1213,7 +1221,7 @@ jobs:
       # registry - so it produced a new image ID that publish.sh rightly refused to write over the
       # published tag, and every such run failed. reuse.sh adopts the earlier run's record only
       # when the registry still serves exactly the images it names for exactly this commit and
-      # tree; anything it cannot prove falls through to Gate C below, unchanged.
+      # tree; anything it cannot prove falls through to release validation below, unchanged.
       - name: Reuse this commit's already-published release, if there is one
         id: reuse
         env:
@@ -1223,7 +1231,7 @@ jobs:
         run: bash devtools/release/reuse.sh
 
       # A stock runner has ~14 GB free; the mesh image alone (OpenFOAM 2412 + vmtk + gmsh) is
-      # several of them, and Gate C builds the app image beside it. These four toolchains are
+      # several of them, and release validation builds the app image beside it. These four toolchains are
       # preinstalled on the image and are used by nothing in this repository.
       - name: Reclaim runner disk for the image builds
         if: steps.reuse.outputs.reused != 'true'
@@ -1233,14 +1241,24 @@ jobs:
 
       - id: python
         if: steps.reuse.outputs.reused != 'true'
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: "3.11"
           # NO pip cache here, deliberately. This job builds and publishes the release artifacts,
           # and a cache is writable by workflows that run on untrusted pull requests - restoring
           # one into the publishing path is how poisoned bytes reach a registry. A deploy runs
           # once per release; the seconds a cache saves are not worth that.
-      # The full profile installs the same pinned environment ci.yml installs. Gate C runs the UI
+      # The UI suite builds some of its fixtures on the host (a real gmsh shell run, for one), and
+      # gmsh's wheel dlopen()s libGLU and the X libraries at import even headless. Without them
+      # that fixture ERRORs at setup and fails the gate. Same list setup-hexera gives every CI lane.
+      - name: Install the native libraries the UI suite's host fixtures load
+        if: steps.reuse.outputs.reused != 'true' && needs.target.outputs.environment != 'dev'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgl1 libglu1-mesa libegl1 libxrender1 libxext6 libxt6 \
+            libxft2 libxcursor1 libxinerama1 libxrandr2 libxi6
+      # The full profile installs the same pinned environment ci.yml installs. Release validation runs the UI
       # suite on the host against the containerised app image, so full validation needs the test
       # dependencies. The dev-fast profile builds a wheel and images only, so it installs just the
       # pinned PEP 517 frontend instead of minutes of runtime/test wheels.
@@ -1263,7 +1281,7 @@ jobs:
         if: steps.reuse.outputs.reused != 'true'
         run: pip install -e . --no-deps
 
-      # GATE C, part 1 for production. Development targets use RELEASE_VALIDATION_PROFILE=dev-fast:
+      # RELEASE VALIDATION, part 1 for production. Development targets use RELEASE_VALIDATION_PROFILE=dev-fast:
       # still a clean commit, wheel identity, image builds, digest publication and promotion by
       # immutable reference, but without entrypoint smoke, browser smoke, native tiers or the
       # pricing audit. That is the iteration trade: dev deploys quickly; production tags keep the
@@ -1314,7 +1332,7 @@ jobs:
 
       # THE HANDOFF. deploy.sh promotes by digest and builds nothing, so this one file is the
       # entire contract between the two jobs - not the images, which stay on this runner and die
-      # with it. `if: always()` because Gate C writes a record with verdict=failed or
+      # with it. `if: always()` because release validation writes a record with verdict=failed or
       # verdict=incomplete too, and that record is the evidence of WHAT failed; losing it on the
       # runs that need it most is how "the deploy went red" becomes an archaeology exercise.
       - name: Publish the release record
@@ -1350,7 +1368,7 @@ jobs:
     environment:
       name: ${{ needs.target.outputs.environment }}
     # deploy.sh waits on Google - a Cloud SQL instance that has to be created is tens of minutes on
-    # its own - but it neither builds nor tests. The old 300 was sized for Gate C, which now lives
+    # its own - but it neither builds nor tests. The old 300 was sized for release validation, which now lives
     # a job away.
     timeout-minutes: 120
     outputs:
@@ -1532,8 +1550,34 @@ jobs:
       CAD_REPAIR_FIX_SMALL_FACES: ${{ (needs.target.outputs.deployment_id == 'dev' || inputs.cad_repair) && 'true' || '' }}
       # Development repair carries enough room for a mixed defect case. Production retains the
       # shipped six-operation default unless a release changes it deliberately.
-      CAD_REPAIR_MAX_OPS: ${{ (needs.target.outputs.deployment_id == 'dev' || inputs.cad_repair) && '12' || '' }}
-      CAD_REPAIR_TIMEOUT_S: ${{ (needs.target.outputs.deployment_id == 'dev' || inputs.cad_repair) && '420' || '' }}
+      #
+      # `cad_repair_demo` RAISES THREE BUDGETS, AND ONLY BUDGETS. A part with many open rims
+      # needs fourteen fills and fourteen re-inspections, and the re-inspection is what costs: at
+      # MAX_OPS=12 the loop runs out of turns less than half way through and the run ends with the
+      # part still unmeshable, which reads as "the repair does not work" when what happened is "the
+      # repair was not allowed to finish". These four numbers are deadline protection - they stop a
+      # pathological part spending a job's time proving it is pathological - so moving them changes
+      # how LONG a repair may take and nothing about what it may do.
+      #
+      # WHAT IT DELIBERATELY DOES NOT TOUCH: the validity cap, the solid-count check, the
+      # cumulative residuals and the paired-rim guard. Those decide WHETHER a result is acceptable,
+      # and a demonstration that switched them off would be demonstrating a different product. The
+      # validity cap in particular cannot be traded for a louder demo: an invalid solid is one gmsh
+      # then refuses, so the success it buys is a failure one stage later.
+      CAD_REPAIR_MAX_OPS: ${{ inputs.cad_repair_demo && '200' || (needs.target.outputs.deployment_id == 'dev' || inputs.cad_repair) && '12' || '' }}
+      CAD_REPAIR_TIMEOUT_S: ${{ inputs.cad_repair_demo && '3600' || (needs.target.outputs.deployment_id == 'dev' || inputs.cad_repair) && '420' || '' }}
+      # THE STALL LIMIT IS NOT RAISED, and that is deliberate. Raising it to 40 on a part with 22
+      # open rims produced 43 attempts in three hours, of which ONE was kept: 38 of the rollbacks
+      # were `sew_faces` returning `target_remains` against rims no sewing could close (the check
+      # measured them: "22 free boundary(ies) that no sewing within 0.458 mm closes; the largest
+      # boundary runs 4780 mm round"). The shipped limit of two stops that after a few minutes
+      # with the same result, which is the honest outcome arriving sooner. A planner that has
+      # proposed two things in a row that did not work has run out of ideas the rules can express.
+      # The inspection's own clock, raised for the same reason: a five-solid car costs ~40 s to read
+      # and scan, and an inspection that runs past its limit reports INCONCLUSIVE - after which
+      # triage aims at nothing and no repair is attempted at all. This is the setting that decides
+      # how big a part may be demonstrated.
+      CAD_INSPECT_TIMEOUT_S: ${{ inputs.cad_repair_demo && '600' || '' }}
       # The planner posture, stated only when it is not "off"; empty means "not stated". Shared dev
       # runs the planner LIVE, so model guidance enters the same planner, caps and measurements as
       # the rule planner's own directives - a push carries no input at all, so the empty value
@@ -1565,7 +1609,7 @@ jobs:
       # not this HEAD - so a download that silently produced the wrong bytes stops the deploy
       # rather than shipping them.
       - name: Fetch the release record
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           name: release-record-${{ needs.target.outputs.environment }}-${{ github.sha }}
           path: deploy/output
@@ -1723,7 +1767,7 @@ jobs:
 
   # POST-DEPLOY VERIFICATION (design spec docs/superpowers/specs/2026-09-07-saas-console-design.md
   # §4): an HTTP check against the console's own URL, the one thing nothing before this ever proves
-  # against a REAL deployed revision - Gate C's console smoke only proves the image can serve
+  # against a REAL deployed revision - release validation's console smoke only proves the image can serve
   # /api/internal/health in isolation, with no Auth.js, no live API origin and no Cloud Run front
   # end in the loop.
   #
@@ -1747,7 +1791,7 @@ jobs:
   #                                  miss a broken .next/static or public/ path, which no smoke
   #                                  has ever covered
   #   3. GET /api/internal/health -> 200 with a JSON body whose status is "ok" - the same
-  #                                  unauthenticated route Gate C's in-container smoke already
+  #                                  unauthenticated route release validation's in-container smoke already
   #                                  curls, so post-deploy and build-time verification agree on
   #                                  one endpoint instead of two
   #   4. GET /readyz              -> 401 unauthenticated. /readyz is deliberately session-gated
@@ -1824,7 +1868,7 @@ jobs:
           echo "OK: /sign-in rendered, $(printf '%s\n' "${assets}" | grep -c .) static asset(s) served"
 
           # 3) /api/internal/health returns 200 with a JSON body whose status is "ok". This route
-          #    is unauthenticated by design and is already what Gate C's in-container smoke curls,
+          #    is unauthenticated by design and is already what release validation's in-container smoke curls,
           #    so post-deploy and build-time verification agree on one endpoint.
           hcode="$(curl -s -o /tmp/console-verify-health.json --max-time 10 -w '%{http_code}' \
             "${CONSOLE_URL}/api/internal/health")"
@@ -1849,15 +1893,22 @@ jobs:
           #    crossed Cloud Run's front end, the relay and the API's socket route. A 5xx, or no
           #    answer, is the bug this check exists for: Next dropped the upgrade and the browser
           #    saw 503 on every stream while the run page showed "Generating mesh" and nothing else.
+          #    The relay waits 15 s for the API to answer a handshake and then says 504 itself. A
+          #    scaled-to-zero dev API takes ~26 s to cold-start (measured 30 Oct), and the first
+          #    cold start of a freshly rolled revision can take longer, so a single 504 here is the
+          #    API waking, not a dropped upgrade (deploy 40984476463 failed exactly so). Keep
+          #    asking for about two and a half minutes; a relay that really drops upgrades never
+          #    turns into a 403, so the check still fails for the bug it exists for.
           wcode=000
-          for _try in 1 2 3; do
+          for _try in 1 2 3 4 5 6 7 8; do
             wcode="$(curl -s --http1.1 -o /dev/null --max-time 20 -w '%{http_code}' \
               -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' \
               -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
               "${CONSOLE_URL}/api/v1/ws/00000000-0000-4000-8000-000000000000/stream?ticket=deploy-check&since=0" \
               || true)"
             [ "${wcode}" = "403" ] && break
-            sleep 3
+            echo "job-stream upgrade attempt ${_try} returned ${wcode}; retrying (the API may be cold-starting)"
+            sleep 5
           done
           [ "${wcode}" = "403" ] || { echo "::error::a job-stream upgrade through the console returned ${wcode}, not the API's 403 for a bad ticket - live run steps will not reach the browser"; exit 1; }
           echo "OK: job-stream upgrade through the console reached the API (403 for a bad ticket)"

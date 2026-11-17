@@ -100,7 +100,9 @@ def test_a_body_in_a_flow_shows_the_arrow_and_the_box_and_confirms_the_far_field
     assert body["reference_length_typed"] is False
     # a blank box keeps its default and a zero is held to half a length: never a zero margin
     assert body["extents"] == {"upstream": 3, "downstream": 10, "lateral": 5, "vertical": 0.5}
-    assert live.evaluate(f"!document.getElementById('gstage-{SESSION}')") is True
+    # answered, the stage settles: the form goes, the part stays beside the conversation until the run starts
+    live.wait_for(f"document.getElementById('gstage-{SESSION}').classList.contains('iv-plain')", timeout=10,
+                  what="the stage to settle")
     assert_clean(live, "the external geometry stage")
 
 

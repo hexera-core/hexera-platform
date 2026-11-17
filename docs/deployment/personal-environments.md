@@ -258,6 +258,26 @@ unlabelled resource survives. Read that list before assuming the environment is 
 Unlike deleting a project, none of this has a 30-day undelete window. Your database and its
 contents go for good.
 
+### The Sunday sweep
+
+An environment nobody has deployed for **14 days** is destroyed for you.
+[`sweep-personal-envs.yml`](../../.github/workflows/sweep-personal-envs.yml) runs every Sunday at
+10:00 UTC, finds every slug that still has resources labelled `deployment-id=dev-<slug>`, and runs
+`destroy-env.sh` on each one whose newest `Deploy (… -> <slug>)` run is older than that. Each slug is
+re-checked right before its teardown, and a deploy of it that is queued or running counts as fresh.
+A teardown never overlaps a deploy of the same slug; one queued behind a running deploy can displace
+another deploy pending there, which then needs re-dispatching.
+
+- **Keep yours:** add the slug to the `PERSONAL_ENV_KEEP` repository variable (comma or space
+  separated), or just redeploy it - any deploy run resets the clock.
+- **Change the threshold:** the `PERSONAL_ENV_IDLE_DAYS` repository variable (3 at the least).
+- **See what it would do:** run the workflow by hand; a manual run is a dry run unless you untick
+  `dry_run`, and its summary lists every environment with its last deploy and verdict.
+
+The deploy identity cannot delete service accounts or secrets, so a swept environment's six runtime
+identities and its `minio-secret-key-<slug>` survive and are reported as FAILED. Neither bills, and
+a later deploy of the same slug adopts them.
+
 ## 8. When something goes wrong
 
 **`slug 'x' is not a valid environment name`** — lowercase letters, digits and hyphens; start with

@@ -37,10 +37,10 @@ export default async function DashboardLayout({ children }: { children: React.Re
       <DashboardStyles />
       <Shell initialHidden={sidebarHidden(jar.get(SIDEBAR_COOKIE)?.value)}>
         <Sidebar
-          credits={credits ? `${credits.balance}` : "--"}
+          credits={credits && typeof credits.balance === "number" ? credits.balance : null}
           email={ownerId}
           recent={recent && Array.isArray(recent.items) ? recent.items : null}
-          signOut={<SignOutButton />}
+          signOut={<SignOutButton compact />}
         />
         <main className="main">{children}</main>
       </Shell>

@@ -348,6 +348,13 @@ def fea_confirmation_message(body) -> str:
         pairs_said = str(getattr(body, "pairs_summary", "") or "").strip()
         if pairs_said:
             parts.append(pairs_said)
+    plan_said = str(getattr(body, "plan_summary", "") or "").strip()
+    if plan_said:
+        parts.append(plan_said)       # PLAN-fea-22: the size the user picked
+    # SHSTAGE-5: shell or solid, as settled at Proceed, and why
+    mesh_as = str(getattr(body, "mesh_as_summary", "") or "").strip()
+    if mesh_as:
+        parts.append(mesh_as)
     clean = str(getattr(body, "clean_summary", "") or "").strip().rstrip(".")
     if clean:
         parts.append(f"Clean check: {clean}.")
@@ -488,6 +495,26 @@ def confirmed_leak_closing(session_id: str) -> dict | None:
     return leak_closing_of(record)
 
 
+def confirmed_up_axis(session_id: str) -> str:
+    """Which way is up in the file, as the user confirmed it on the stage ("+z", "-y", ...): the
+    ground is laid under it (INS-9). "" when nothing was confirmed or it cannot be read - the run
+    then takes +z up, as before."""
+    import json
+
+    from meshpipeline.contracts.geometry_fields import UP_AXES
+
+    if not session_id:
+        return ""
+    from meshpipeline.application.geometry_check import check_object_key
+    from meshpipeline.contracts.object_storage import get_object_store
+    try:
+        record = json.loads(get_object_store().get_bytes(object_key=check_object_key(session_id, "confirmed.json")))
+    except Exception:  # noqa: BLE001 - unknown is +z up, never a refusal
+        return ""
+    up = str((record or {}).get("up_axis") or "").strip().lower() if isinstance(record, dict) else ""
+    return up if up in UP_AXES else ""
+
+
 def leak_closing_of(record) -> dict | None:
     """The run's leak closing from a stored confirmation (its size is in the confirmed unit's
     millimetres, which are millimetres), in metres; None when there is none."""
@@ -513,9 +540,14 @@ _THERMAL_DECLARED = re.compile(re.escape(_THERMAL_CASE))
 
 
 #: A user message that says what the file is or how the fluid moves - after the stage, a correction
-#: the stage's sentence no longer speaks for.
+#: the stage's sentence no longer speaks for. These are the common words for it; a correction in any
+#: other words is the user's too, and is kept when the model quotes it (agents/intake/executor KIND-1).
+#: The air or fluid space by name ("the upload already includes the air box") and a box the user says
+#: not to add ("without adding another box") speak of what the file is (review on #465).
 _RESTATES = re.compile(
     r"fluid[ -]?(?:volume|domain|region)|body[ -]?surface|solid[ -]?body|input[ _-]?kind|"
+    r"\b(?:air|water|gas|coolant)[ -]?(?:box|volume|domain|region|enclosure)\b|"
+    r"\b(?:another|second|extra|outer|own|new)\s+(?:air\s+|fluid\s+|flow\s+)?(?:box|far[ -]?field|enclosure)\b|"
     r"\b(?:file|part|geometry|model|it|this)(?:'s| is| was)\s+(?:actually\s+|really\s+)?(?:the |a |an |just )?"
     r"(?:wall|walls|solid|surface|skin|shell|fluid|hollow|filled)\b|"
     r"\bnot the (?:fluid|wall|solid|surface)|\b(?:internal|external) (?:flow|cfd)\b|"

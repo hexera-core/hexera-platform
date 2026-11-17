@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Responsibility: Push the exact images Gate C validated and record the immutable digest each push produced.
+# Responsibility: Push the exact images release validation passed and record the immutable digest each push produced.
 # Boundaries: it never builds; a record that is not a clean, matching pass is refused rather than published.
 
-# RELEASE PUBLICATION - push the exact images Gate C validated, and record their digests.
+# RELEASE PUBLICATION - push the exact images release validation passed, and record their digests.
 #
 # This is the step that makes a release record deployable. It never builds. It takes the LOCAL
-# IMAGE IDs from a Gate C PASS record, confirms those exact images are still present unchanged,
+# IMAGE IDs from a release validation PASS record, confirms those exact images are still present unchanged,
 # tags and pushes THOSE image objects, resolves the immutable registry digest each push produced,
 # and folds the mapping back into the record.
 #
@@ -38,7 +38,7 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "${REPO_ROOT}"
 REC="${RELEASE_RECORD:-${REPO_ROOT}/deploy/output/release.json}"
-# Same interpreter contract as Gate C (devtools/release/validate.sh): RELEASE_PYTHON wins, then
+# Same interpreter contract as release validation (devtools/release/validate.sh): RELEASE_PYTHON wins, then
 # the repository virtualenv, then whatever python3 the host resolves to. Without the override this
 # fell through to a host python3 that can be older than the project floor - record.py uses
 # datetime.UTC (3.11+), so publishing a validated release died with
@@ -88,7 +88,7 @@ ok "verdict passed, state ${REC_STATE}, components: ${REC_COMPONENTS}"
 HEAD_SHA="$(git rev-parse HEAD 2>/dev/null || echo none)"
 HEAD_TREE="$(git rev-parse HEAD^{tree} 2>/dev/null || echo none)"
 [ "${HEAD_SHA}" = "${REC_COMMIT}" ] \
-  || die "the record is for ${REC_COMMIT:0:12} but HEAD is ${HEAD_SHA:0:12} - re-run Gate C"
+  || die "the record is for ${REC_COMMIT:0:12} but HEAD is ${HEAD_SHA:0:12} - re-run release validation"
 [ "${HEAD_TREE}" = "${REC_TREE}" ] || die "the record's tree does not match the current tree"
 if ! git diff --quiet HEAD || [ -n "$(git diff --cached --name-only)" ]; then
   die "the working tree is dirty - publish only from the exact commit that was validated"
@@ -162,10 +162,10 @@ PY
   # The image object the record named must still be here, unchanged. A tag that now points
   # somewhere else is exactly the substitution this step exists to prevent.
   actual="$(docker image inspect "${C_TAG}" --format '{{.Id}}' 2>/dev/null)" \
-    || die "${comp}: the validated image ${C_TAG} is no longer present locally - re-run Gate C"
+    || die "${comp}: the validated image ${C_TAG} is no longer present locally - re-run release validation"
   [ "${actual}" = "${C_ID}" ] \
     || die "${comp}: ${C_TAG} now resolves to ${actual:0:19}, but the record validated ${C_ID:0:19}
-       a different image is wearing the validated tag - re-run Gate C"
+       a different image is wearing the validated tag - re-run release validation"
   ok "${comp}: local image ${C_ID:0:19} matches the record"
 
   target="${REGISTRY}/${comp}:${PUBLISH_TAG}"

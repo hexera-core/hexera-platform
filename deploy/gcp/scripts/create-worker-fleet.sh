@@ -563,6 +563,117 @@ if [ -n "${CLOUDRUN_MESH_JOB:-}" ]; then
   fi
 fi
 
+# 2d) WHAT THE WORKER'S OWN BOOT NEEDS, checked before anything rolls. startup.sh pulls ${APP_IMAGE}
+#     and copies ${WORKER_ENV_URI} as ${WORKER_SA_EMAIL}, and a VM that cannot do either never starts
+#     a container. Without this check that showed up 40 minutes into the roll as "its watchdog has
+#     published nothing yet" (v0.2.5 in prod, 2026-11-14: the default compute account had lost the
+#     project role that used to cover both). Each grant is attempted. A refusal is then judged from
+#     the IAM policies: a binding proven absent stops the deploy here, with the command that adds it.
+#     A policy this identity cannot read proves nothing, so that case only warns, and the roll in
+#     step 7 reads the VM's serial console and stops within minutes if the boot really fails.
+_access_py='
+import json, subprocess, sys
+member, permission, sufficient = "serviceAccount:" + sys.argv[1], sys.argv[2], set(sys.argv[3].split(","))
+indirect = ("group:", "domain:", "principalSet:", "principal:", "allUsers", "allAuthenticatedUsers")
+unknown = False
+for doc in sys.argv[4:]:
+    try:
+        parsed = json.loads(doc) if doc.strip() else None
+    except ValueError:
+        parsed = None
+    if parsed is None:
+        unknown = True
+        continue
+    policies = [p.get("policy") or {} for p in parsed] if isinstance(parsed, list) else [parsed]
+    for binding in (b for p in policies for b in p.get("bindings") or []):
+        role, members = binding.get("role", ""), binding.get("members") or []
+        custom = role.startswith(("projects/", "organizations/"))
+        if binding.get("condition") and member in members and (role in sufficient or custom):
+            unknown = True  # a condition may leave this repo or bucket out
+        elif member in members:
+            if role in sufficient:
+                sys.exit(0)
+            if custom:
+                got = subprocess.run(["gcloud", "iam", "roles", "describe", role, "--format=json"],
+                                     capture_output=True, text=True)
+                try:
+                    if permission in json.loads(got.stdout or "{}").get("includedPermissions", []):
+                        sys.exit(0)
+                except ValueError:
+                    unknown = True
+                if got.returncode != 0:
+                    unknown = True
+        elif (role in sufficient or custom) and any(m.startswith(indirect) for m in members):
+            unknown = True
+sys.exit(2 if unknown else 1)
+'
+WORKER_BOOT_GRANTS=""
+_boot_missing=""
+_boot_unknown=""
+_boot_access() {  # <what> <permission> <sufficient roles> <grant command> <policy json>...
+  local what="$1" permission="$2" sufficient="$3" cmd="$4" rc=0
+  shift 4
+  python3 -c "${_access_py}" "${WORKER_SA_EMAIL}" "${permission}" "${sufficient}" "$@" || rc=$?
+  case "${rc}" in
+    0) log "worker boot     ${WORKER_SA_EMAIL} may ${what} (already granted)" ;;
+    1) _boot_missing+="       - ${what}: ${cmd}"$'\n' ;;
+    *) _boot_unknown+="       - ${what}: ${cmd}"$'\n' ;;
+  esac
+}
+_ancestors_policy="$(gc projects get-ancestors-iam-policy "${GCP_PROJECT_ID}" --format=json 2>/dev/null || true)"
+if [[ "${APP_IMAGE}" =~ ^([a-z0-9-]+)-docker\.pkg\.dev/([^/]+)/([^/]+)/ ]]; then
+  _app_repo="projects/${BASH_REMATCH[2]}/locations/${BASH_REMATCH[1]}/repositories/${BASH_REMATCH[3]}"
+  _cmd="gcloud artifacts repositories add-iam-policy-binding ${BASH_REMATCH[3]} --project ${BASH_REMATCH[2]} --location ${BASH_REMATCH[1]} --member serviceAccount:${WORKER_SA_EMAIL} --role roles/artifactregistry.reader"
+  WORKER_BOOT_GRANTS+="     ${_cmd}"$'\n'
+  if gc artifacts repositories add-iam-policy-binding "${_app_repo}" \
+       --member "serviceAccount:${WORKER_SA_EMAIL}" --role roles/artifactregistry.reader >/dev/null; then
+    log "${_app_repo} += roles/artifactregistry.reader -> ${WORKER_SA_EMAIL}"
+  else
+    _repo_ancestors="${_ancestors_policy}"
+    [ "${BASH_REMATCH[2]}" = "${GCP_PROJECT_ID}" ] \
+      || _repo_ancestors="$(gc projects get-ancestors-iam-policy "${BASH_REMATCH[2]}" --format=json 2>/dev/null || true)"
+    _boot_access "pull ${APP_IMAGE}" artifactregistry.repositories.downloadArtifacts \
+      roles/artifactregistry.reader,roles/artifactregistry.writer,roles/artifactregistry.repoAdmin,roles/artifactregistry.admin,roles/viewer,roles/editor,roles/owner \
+      "${_cmd}" \
+      "$(gc artifacts repositories get-iam-policy "${_app_repo}" --format=json 2>/dev/null || true)" \
+      "${_repo_ancestors}"
+  fi
+else
+  warn "${APP_IMAGE} is not in Artifact Registry: make sure ${WORKER_SA_EMAIL} may pull it, or every
+       worker boots and never starts a container"
+fi
+_cmd="gcloud storage buckets add-iam-policy-binding gs://${_worker_env_bucket} --member serviceAccount:${WORKER_SA_EMAIL} --role roles/storage.objectViewer"
+WORKER_BOOT_GRANTS+="     ${_cmd}"$'\n'
+if gcloud storage buckets add-iam-policy-binding "gs://${_worker_env_bucket}" --project "${GCP_PROJECT_ID}" \
+     --member "serviceAccount:${WORKER_SA_EMAIL}" --role roles/storage.objectViewer >/dev/null; then
+  log "gs://${_worker_env_bucket} += roles/storage.objectViewer -> ${WORKER_SA_EMAIL}"
+else
+  # project-level grants count only from the project that owns the bucket; an owner not
+  # established leaves them unproven
+  _bucket_ancestors=""
+  _bucket_owner="$(gcloud storage buckets describe "gs://${_worker_env_bucket}" --project "${GCP_PROJECT_ID}" \
+    --raw --format='value(projectNumber)' 2>/dev/null || true)"
+  _own_number="${GCP_PROJECT_NUMBER:-$(gc projects describe "${GCP_PROJECT_ID}" --format='value(projectNumber)' 2>/dev/null || true)}"
+  if [ -n "${_bucket_owner}" ] && [ "${_bucket_owner}" = "${_own_number}" ]; then
+    _bucket_ancestors="${_ancestors_policy}"
+  elif [ -n "${_bucket_owner}" ]; then
+    _bucket_ancestors="$(gc projects get-ancestors-iam-policy "${_bucket_owner}" --format=json 2>/dev/null || true)"
+  fi
+  _boot_access "read ${WORKER_ENV_URI}" storage.objects.get \
+    roles/storage.objectViewer,roles/storage.objectUser,roles/storage.objectAdmin,roles/storage.admin,roles/storage.legacyObjectReader,roles/storage.legacyObjectOwner,roles/viewer,roles/editor,roles/owner \
+    "${_cmd}" \
+    "$(gcloud storage buckets get-iam-policy "gs://${_worker_env_bucket}" --project "${GCP_PROJECT_ID}" --format=json 2>/dev/null || true)" \
+    "${_bucket_ancestors}"
+fi
+[ -z "${_boot_missing}" ] || die "${WORKER_SA_EMAIL}, which every worker runs as, cannot boot a worker. Its IAM
+   policies show no grant for:
+${_boot_missing}   Nothing was rolled: a worker made now would start no container. This deploy identity cannot
+   grant IAM, so an owner runs the command(s) above once, then reruns the deploy."
+[ -z "${_boot_unknown}" ] || warn "could not grant ${WORKER_SA_EMAIL} what every worker's boot needs, and could not read
+       the IAM policies that would show it already holds it. If it does not, the roll below stops
+       as soon as a worker's startup script fails. An owner makes the grants with:
+${_boot_unknown}"
+
 # 3) the metadata the instance reads. Names in the clear, credentials never - the values were
 #    checked above, before anything was created.
 WORKER_METADATA=(
@@ -617,6 +728,12 @@ WORKER_METADATA=(
   || WORKER_METADATA+=("cad-repair-max-ops=${CAD_REPAIR_MAX_OPS}")
 [ -z "${CAD_REPAIR_TIMEOUT_S:-}" ] \
   || WORKER_METADATA+=("cad-repair-timeout-s=${CAD_REPAIR_TIMEOUT_S}")
+# The WORKER is where both of these actually bite: node_repair_inspect and node_repair_attempt
+# run here, so an inspection clock set only on the API changes nothing about what gets repaired.
+[ -z "${CAD_REPAIR_STALL_LIMIT:-}" ] \
+  || WORKER_METADATA+=("cad-repair-stall-limit=${CAD_REPAIR_STALL_LIMIT}")
+[ -z "${CAD_INSPECT_TIMEOUT_S:-}" ] \
+  || WORKER_METADATA+=("cad-inspect-timeout-s=${CAD_INSPECT_TIMEOUT_S}")
 [ -z "${CAD_REPAIR_LLM_PLANNER:-}" ] \
   || WORKER_METADATA+=("cad-repair-llm-planner=${CAD_REPAIR_LLM_PLANNER}")
 # The verdict by measured limits (docs/RULES.md VER), only when the target states it (dev does,
@@ -667,11 +784,33 @@ if [ "${WORKER_SELF_RETIRE}" = true ]; then
 else
   SELF_RETIRE_LABEL=""
 fi
+
+# THE PROVISIONING FLAGS, composed HERE so that the hash below covers them. A template is reused
+# when its NAME matches, and the name is the digest plus this hash - so a provisioning flag that is
+# not hashed is a flag that cannot be changed. That is not hypothetical: the first Spot deploy
+# (dev-spotcheck, 2026-11-06) built a template carrying --instance-termination-action DELETE, the
+# group refused it, and removing the flag changed no hashed input - so the next run would have
+# found the same name, reported "reused - the specification is unchanged", and failed identically.
+# Hashing the flags makes a change to them a new template, which is the only thing that can fix it.
+#
+# NO --instance-termination-action. It reads like the right thing - a reclaimed VM that merely
+# STOPS would sit in the group as a TERMINATED instance for the group to repair, where a deleted
+# one is just recreated - and Compute Engine REFUSES it outright for a group member:
+#
+#   ERROR: (gcloud.compute.instance-groups.managed.create) Could not fetch resource:
+#    - Spot virtual machines with termination action set to DELETE cannot be used with
+#      Managed Instance Groups.
+#
+# The group already owns that decision: a managed instance group deletes and recreates its own
+# reclaimed Spot VMs. gcloud derives the rest of what SPOT implies - automaticRestart false,
+# onHostMaintenance TERMINATE - so stating those here would only conflict with it.
+PROVISIONING_FLAGS=(--provisioning-model "${WORKER_PROVISIONING_MODEL}")
+
 SPEC_HASH="$(printf '%s\n' "${APP_IMAGE}" "${WORKER_MACHINE_TYPE}" "${WORKER_BOOT_DISK_GB}" \
+  "${PROVISIONING_FLAGS[@]}" \
   "${WORKER_BOOT_DISK_TYPE}" "${WORKER_IMAGE_FAMILY}" "${WORKER_IMAGE_PROJECT}" "${VPC_NETWORK}" \
   "${VPC_SUBNET}" "${WORKER_SA_EMAIL}" "${WORKER_SCOPES}" "${WORKER_METADATA[@]}" \
   "${SELF_RETIRE_LABEL}" \
-  "${WORKER_PROVISIONING_MODEL}" \
   | cat - "${STARTUP}" "${SHUTDOWN}" "${WATCHDOG}" \
   | python3 -c 'import hashlib,sys;print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest()[:6])')"
 TEMPLATE="${WORKER_TEMPLATE_PREFIX:-${WORKER_MIG}-tpl}-${DIGEST:0:12}-${SPEC_HASH}"
@@ -692,15 +831,11 @@ else
 # [default]". The fleet's subnet is the one in the deployment's own region.
 WORKER_SUBNET_REF="projects/${GCP_PROJECT_ID}/regions/${GCP_REGION}/subnetworks/${VPC_SUBNET}"
 info "Creating instance template ${TEMPLATE} (${WORKER_PROVISIONING_MODEL})"
-  # THE PROVISIONING FLAGS. --provisioning-model carries STANDARD or SPOT. On SPOT the termination
-  # action is DELETE rather than the default STOP: a reclaimed VM that merely STOPS stays in the
-  # group as a TERMINATED instance for the group to repair, where a deleted one is simply recreated
-  # from this template by the group's own sizing. gcloud derives the rest of what SPOT requires -
-  # no automatic restart, no live migration - so passing those here would only conflict with it.
-  PROVISIONING_FLAGS=(--provisioning-model "${WORKER_PROVISIONING_MODEL}")
-  if [ "${WORKER_PROVISIONING_MODEL}" = SPOT ]; then
-    PROVISIONING_FLAGS+=(--instance-termination-action DELETE)
-  fi
+  # THE PROVISIONING MODEL, and the flag that must NOT accompany it. --provisioning-model carries
+  # STANDARD or SPOT; gcloud derives the rest of what SPOT implies - no automatic restart, no live
+  # migration - so passing those here would only conflict with it.
+  #
+  # The flags were composed ABOVE, before SPEC_HASH, so that changing them rotates the template.
   # --no-address: a worker has no public address and reaches Artifact Registry, Secret Manager and
   # the model providers through Cloud NAT, which is what the live fleet already does.
   gc compute instance-templates create "${TEMPLATE}" \
@@ -941,13 +1076,13 @@ fi
 #
 #    A GROUP AT ZERO is done at once: the next VM the autoscaler starts boots from ${TEMPLATE}.
 _roll_verdict_py='
-import json, sys, time
-instances_file, attrs_dir, template, image, max_age, progress_file = sys.argv[1:7]
+import json, os, sys, time
+instances_file, attrs_dir, template, image, max_age, progress_file, silent_file = sys.argv[1:8]
 with open(instances_file) as fh:
     text = fh.read().strip()
 instances = json.loads(text) if text else []
 now = time.time()
-rows, outdated, pending, where = [], 0, 0, []
+rows, outdated, pending, where, silent = [], 0, 0, [], []
 for inst in instances:
     name = inst.get("name") or str(inst.get("instance", "")).rsplit("/", 1)[-1]
     tpl = str((inst.get("version") or {}).get("instanceTemplate") or inst.get("instanceTemplate") or "").rsplit("/", 1)[-1]
@@ -970,6 +1105,8 @@ for inst in instances:
     beat = attrs.get("heartbeat", "")
     if not beat.isdigit():
         problems.append("its watchdog has published nothing yet (or its guest attributes cannot be read)")
+        if not os.path.exists(f"{attrs_dir}/{name}.unreadable"):
+            silent.append("%s %s" % (name, inst.get("id") or "-"))
     elif now - int(beat) > float(max_age):
         problems.append(f"its watchdog last reported {now - int(beat):.0f}s ago")
     for label in ("worker", "geometry"):
@@ -991,16 +1128,54 @@ for inst in instances:
 # on THIS standing still, never on a total time.
 with open(progress_file, "w") as fh:
     json.dump(sorted(where), fh)
+with open(silent_file, "w") as fh:
+    fh.write("".join(line + "\n" for line in silent))
 for name, what in rows:
     print(f"    {name}: {what}")
 sys.exit(0 if not outdated and not pending else (10 if outdated else 11))
 '
+#    A VM ON THE NEW TEMPLATE THAT NEVER REPORTS is not moved by that escalation, which only
+#    replaces VMs on an older template, and its startup script does not run again by itself. So the
+#    serial console of every such VM is read on each look. A startup script that failed gets the VM
+#    recreated once: the cause may be fixed since that boot (an owner's IAM grant, before the
+#    deploy was rerun). If it fails again on the recreated VM, the stage stops at once with the
+#    console's error lines and does not wait out the stall window. A VM that stays silent for
+#    WORKER_ROLL_FORCE_AFTER_SECONDS is recreated once as well, but only when its console is
+#    readable and shows its boot neither failed nor finished: a console showing the watchdog up
+#    means only its guest attributes are unreadable, and recreating it would kill running jobs.
+_boot_failure_py='
+import re, sys
+text = open(sys.argv[1], errors="replace").read()
+boots = [m.start() for m in re.finditer(r"Linux version ", text)]
+text = text[boots[-1]:] if boots else text
+if not re.search(r"Script \"startup-script\" failed", text):
+    # a boot that got as far as the watchdog is up; only its guest attributes are unreadable
+    sys.exit(5 if re.search(r"hexera-watchdog: watching|Finished running startup scripts", text) else 0)
+lines = []
+for line in text.splitlines():
+    _, sep, said = line.partition("startup-script: ")
+    if sep and re.search(r"error|denied|fatal|forbidden|403", said, re.I) and said not in lines:
+        lines.append(said.strip())
+print("\n".join("       | " + line[:400] for line in lines[-4:]) or "       | (no error line before the failure)")
+sys.exit(3 if re.search(r"denied|forbidden|403|does not have|permission", "\n".join(lines), re.I) else 4)
+'
+_recreate_vm() {  # <vm> <instance id> <why>
+  warn "${1} is on ${TEMPLATE} but ${3}. Recreating it once, so its startup script runs again:
+       gcloud compute instance-groups managed recreate-instances ${WORKER_MIG} --instances ${1} --zone ${WORKER_MIG_ZONE} --project ${GCP_PROJECT_ID}"
+  gc compute instance-groups managed recreate-instances "${WORKER_MIG}" --zone "${WORKER_MIG_ZONE}" \
+      --instances "${1}" >/dev/null \
+    || die "could not recreate ${1}, which never started its workers. Recreate it with the command above."
+  printf '%s' "${2}" > "${_roll_dir}/recreated.${1}"
+  _roll_moved="$(date +%s)"
+  _roll_recreated="${_roll_recreated}, ${1} recreated"
+}
 _roll_dir="$(mktemp -d)"
 trap 'rm -rf "${_roll_dir}"' EXIT
 _roll_started="$(date +%s)"
 _roll_moved="${_roll_started}"
 _roll_where=""
 _roll_forced=false
+_roll_recreated=""
 info "Waiting for every ${WORKER_MIG} VM to run ${APP_IMAGE##*@} and report healthy"
 log "replace what has not moved after ${WORKER_ROLL_FORCE_AFTER_SECONDS}s; fail only when no VM has moved for ${WORKER_ROLL_TIMEOUT_SECONDS}s"
 while :; do
@@ -1018,9 +1193,13 @@ text = open(sys.argv[1]).read().strip()
 for i in (json.loads(text) if text else []):
     print(i.get("name") or str(i.get("instance", "")).rsplit("/", 1)[-1])
 ' "${_roll_dir}/instances.json"); do
-      gc compute instances get-guest-attributes "${_vm}" --zone "${WORKER_MIG_ZONE}" \
-        --query-path "hexera/" --format=json > "${_roll_dir}/${_vm}.json" 2>/dev/null \
-        || echo '[]' > "${_roll_dir}/${_vm}.json"
+      rm -f "${_roll_dir}/${_vm}.unreadable"
+      if ! gc compute instances get-guest-attributes "${_vm}" --zone "${WORKER_MIG_ZONE}" \
+           --query-path "hexera/" --format=json > "${_roll_dir}/${_vm}.json" 2> "${_roll_dir}/${_vm}.err"; then
+        echo '[]' > "${_roll_dir}/${_vm}.json"
+        # nothing published yet is a 404; anything else is a read that failed, not a silent VM
+        grep -qiE "404|not ?found" "${_roll_dir}/${_vm}.err" || : > "${_roll_dir}/${_vm}.unreadable"
+      fi
     done
   fi
   _verdict_rc=0
@@ -1030,13 +1209,45 @@ for i in (json.loads(text) if text else []):
   else
     _verdict_text="$(python3 -c "${_roll_verdict_py}" "${_roll_dir}/instances.json" "${_roll_dir}" \
       "${TEMPLATE}" "${APP_IMAGE}" "${WORKER_ROLL_HEARTBEAT_MAX_AGE_SECONDS}" \
-      "${_roll_dir}/where.json")" || _verdict_rc=$?
+      "${_roll_dir}/where.json" "${_roll_dir}/silent")" || _verdict_rc=$?
     # PROGRESS: any VM standing somewhere new since the last look restarts the stall window
     _where_now="$(cat "${_roll_dir}/where.json" 2>/dev/null || true)"
     if [ -n "${_where_now}" ] && [ "${_where_now}" != "${_roll_where}" ]; then
       [ -n "${_roll_where}" ] && _roll_moved="${_now}"
       _roll_where="${_where_now}"
     fi
+  fi
+  if [ ! -e "${_roll_dir}/unlisted" ] && [ -s "${_roll_dir}/silent" ]; then
+    while read -r -u 3 _vm _id; do
+      [ -e "${_roll_dir}/silent-since.${_vm}.${_id}" ] || printf '%s' "${_now}" > "${_roll_dir}/silent-since.${_vm}.${_id}"
+      _boot_rc=0
+      _boot_lines=""
+      if gc compute instances get-serial-port-output "${_vm}" --zone "${WORKER_MIG_ZONE}" \
+           > "${_roll_dir}/serial.txt" 2>/dev/null; then
+        _boot_lines="$(python3 -c "${_boot_failure_py}" "${_roll_dir}/serial.txt")" || _boot_rc=$?
+      else
+        _boot_rc=5  # no console to judge by: silence alone never recreates a VM
+      fi
+      if [ -e "${_roll_dir}/recreated.${_vm}" ]; then
+        # the same instance id is the VM before the recreate took effect, not its replacement
+        if [ "${_boot_rc}" -ne 0 ] && [ "${_boot_rc}" -ne 5 ] && { [ "${_id}" = "-" ] || [ "$(cat "${_roll_dir}/recreated.${_vm}")" != "${_id}" ]; }; then
+          _hint=""
+          [ "${_boot_rc}" -eq 3 ] && _hint="
+   That is a permission ${WORKER_SA_EMAIL} lacks. What every worker's boot needs:
+${WORKER_BOOT_GRANTS}"
+          die "${_vm} cannot start its workers: its startup script failed again after this deploy
+   recreated it, so another recreate will not help. From its serial console:
+${_boot_lines}${_hint}
+   The deploy is NOT done. Fix the cause and rerun the deploy (it recreates the VM itself). The whole log:
+     gcloud compute instances get-serial-port-output ${_vm} --zone ${WORKER_MIG_ZONE} --project ${GCP_PROJECT_ID}"
+        fi
+      elif [ "${_boot_rc}" -eq 3 ] || [ "${_boot_rc}" -eq 4 ]; then
+        _recreate_vm "${_vm}" "${_id}" "its startup script failed:
+${_boot_lines}"
+      elif [ "${_boot_rc}" -eq 0 ] && [ $(( _now - $(cat "${_roll_dir}/silent-since.${_vm}.${_id}") )) -ge "${WORKER_ROLL_FORCE_AFTER_SECONDS}" ]; then
+        _recreate_vm "${_vm}" "${_id}" "has reported nothing for $(( _now - $(cat "${_roll_dir}/silent-since.${_vm}.${_id}") ))s"
+      fi
+    done 3< "${_roll_dir}/silent"
   fi
   _still=$(( _now - _roll_moved ))
   _vms="$(python3 -c 'import json,sys; t=open(sys.argv[1]).read().strip(); print(len(json.loads(t)) if t else 0)' \
@@ -1098,6 +1309,7 @@ ${_verdict_text}"
   sleep "${WORKER_ROLL_POLL_SECONDS}"
 done
 
+MIG_DISPOSITION="${MIG_DISPOSITION}${_roll_recreated}"
 if [ "${WORKER_MIG_MIN_REPLICAS}" -eq 0 ]; then
   FLOOR_STATE="0 - scales to zero (Decision 4: dev pays for nothing while idle)"
 else

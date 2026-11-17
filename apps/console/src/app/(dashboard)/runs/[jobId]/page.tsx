@@ -17,5 +17,5 @@ export default async function RunPage({
   // The id is handed to main.js as a global rather than checked here. bootLive() already resolves
   // it against the API and says so honestly when the job belongs to somebody else -- duplicating
   // that check server-side would be a second source of truth for the same refusal.
-  return <Workbench bootJobId={jobId} ownerId={ownerId} />;
+  return <Workbench bootJobId={jobId} key={jobId} ownerId={ownerId} />;
 }

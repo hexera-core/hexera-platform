@@ -101,6 +101,13 @@ def test_an_iges_file_is_not_repaired_yet(tmp_path):
         "IGES files are not repaired yet; meshing your original file"
 
 
+def test_a_proof_that_ran_out_of_clock_does_not_say_the_file_failed(tmp_path):
+    """"Failed our checks" is a verdict. A proof that never finished reached none."""
+    out = {"repair_attempt": {"attempted": False, "outcome": "not_proved"}}
+    assert W.repair_check_words(_state(tmp_path, _GAP), out) == \
+        "The repaired file was not checked in time; meshing your original file"
+
+
 # the edges
 
 
@@ -125,6 +132,7 @@ def test_every_line_is_plain_words(tmp_path):
         ({"attempted": False, "outcome": "off"}, (_GAP,)),
         ({"attempted": False, "outcome": "timeout"}, (_GAP,)),
         ({"attempted": False, "outcome": "not_promoted"}, (_GAP,)),
+        ({"attempted": False, "outcome": "not_proved"}, (_GAP,)),
         ({"attempted": False, "outcome": "triage", "route": "ask_customer"}, (_GAP,)),
         ({"attempted": False, "outcome": "triage", "route": "abstain"}, (_GAP,)),
     ]

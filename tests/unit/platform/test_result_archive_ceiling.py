@@ -41,7 +41,14 @@ def test_the_mesh_the_result_document_reports_sizes_the_limits(monkeypatch):
 def test_no_result_document_can_lift_the_limits_without_end(monkeypatch):
     monkeypatch.setattr(polcfg, "CELL_HARD_LIMIT", 8_000_000)
     huge = crc.result_extraction_limits({"quality": {"cells": 10 ** 12}})
-    assert huge.max_archive_bytes == 2 * 8_000_000 * crc.RESULT_ARCHIVE_BYTES_PER_MEASURED_CELL
+    # bounded by the most the largest machine carries (RUN-9: a count the user asked for is meshed on a
+    # bigger machine, and its mesh must come home), and never past RESULT_MAX_BYTES
+    from meshpipeline.contracts import mesh_machine as MM
+    assert huge.max_archive_bytes == min(MM.ceiling_cells() * crc.RESULT_ARCHIVE_BYTES_PER_MEASURED_CELL,
+                                         crc.RESULT_MAX_BYTES)
+    # a 30 M-cell mesh from the big machine is not held to twice the standard machine's cells
+    big = crc.result_extraction_limits({"quality": {"cells": 30_000_000}})
+    assert big.max_archive_bytes == 30_000_000 * crc.RESULT_ARCHIVE_BYTES_PER_MEASURED_CELL
     for junk in ({"quality": {"cells": "many"}}, {"quality": None}, {"quality": {"cells": -5}}):
         assert crc.result_extraction_limits(junk) == crc.result_extraction_limits()
 

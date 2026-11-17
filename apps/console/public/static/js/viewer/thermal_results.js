@@ -18,7 +18,7 @@ const SEARCH_FROM = 30;
 const SLICE_COLS = [[0.86, 0.74, 0.52], [0.52, 0.74, 0.69], [0.82, 0.57, 0.49], [0.60, 0.67, 0.86],
                     [0.77, 0.64, 0.82], [0.69, 0.80, 0.53], [0.88, 0.62, 0.67], [0.56, 0.79, 0.86],
                     [0.86, 0.80, 0.58], [0.66, 0.60, 0.79]];
-const AIR_COL = [0.40, 0.45, 0.51];
+const AIR_COL = [0.44, 0.44, 0.41];
 
 /** The colour a part (or the air) is drawn in on a slice. */
 export function sliceColour(t, region) {

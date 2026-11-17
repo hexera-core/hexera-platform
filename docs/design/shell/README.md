@@ -1,0 +1,1571 @@
+# Shell meshing: design note
+
+Status: draft 1, 28 Oct 2026. PR 1 is being built from this note (branch `feat/shell-midsurface`).
+Rule numbers (SHELL-n, SHMESH-n) are placeholders until they get rulebook numbers at merge.
+
+## 0. The goal
+
+You upload a 3D part. We find its thin walls, pull out their mid-surfaces, and mesh them with shell elements.
+It must be deterministic and general. Nothing is tuned to one part.
+
+Why now:
+
+- A marine-engineering prospect wants automated 2D (shell) pre-processing of marine structures for FEMAP and Nastran.
+- Our thin-sheet assemblies blow solid plans up to 10 to 125M elements, and onto big machines. Examples: a cyclone filter, sheet-metal enclosures, CAx-IF S1, and 0.1 to 0.85 mm films. A shell mesh of the same parts is about 10 to 100 times smaller.
+
+The shell path reuses the FEA path's parts:
+
+- the CAD reading and the `Face_k` / `Part_k_Face_j` names;
+- the wall rays (`cad/fea_features.wall_reach`);
+- the joints (`cad/fea_joins.py`);
+- the deck writers;
+- the verdict by limits, the plan, the driver and the ladder.
+
+## 1. What is a shell
+
+### 1.1 Wall pairs (SHELL-1)
+
+A wall pair is two faces of one body that face each other across an even wall.
+
+- **Found by the rays we already fire for FEA sizing.** A ray fired inward from face A leaves the material through face B. B is A's partner when at least 3 rays, and at least 10% of A's rays, leave through it. The ray walk now also says which face each ray left by (`exit_label`); its readings are unchanged.
+- **Confirmed on the exact CAD faces.** Points spread over the smaller face are projected onto the other face's surface. The pair is an even wall when two things hold:
+  - the distances agree within 2%;
+  - the normals are opposite within 2 degrees.
+- **The surface type does not matter.** Two planes, two coaxial cylinders or cones, two concentric spheres and two offset free-form faces all pass the same test. There is no list of shapes.
+- **A face can have several partners.** A deck plate's bottom face pairs with each top face between the stiffeners.
+- **Tapered walls (SHELL-9, 29 Oct).** A pair that is not even, but whose faces turn from each other by at most 10 degrees where they face each other (the points of A whose foot lies on B itself, at least 6 of them), is a tapered wall: a draft, a wedge, a printed funnel's drafted side, a twisted strap. Whether it is a shell is judged at its thickest point. Its mid-surface is fitted (section 2.2). Steeper than 10 degrees, the two faces are two sides of a solid region and stay so.
+
+### 1.2 Sheets and the shell-or-solid rule (SHELL-2)
+
+Pairs are grouped into **sheets**. A sheet is the pairs of one body and one thickness (within 2%) whose faces are the same or meet at a CAD edge. A bent sheet's flanges and bends form one sheet. So do a deck plate's pieces between stiffeners.
+
+A sheet is a shell when both of these hold:
+
+- **t ≤ L / 10.** L is the sheet's size: the square root of its mid-surface area. Mindlin shells (the S4R and CQUAD4 kind) hold to about t / L = 1/10, where L is a typical structural size.
+- **t ≤ width / 4,** so a shell element there can be a few walls wide.
+
+**Since SHELL-23 (10 Nov) these two figures are advice, not a gate.** A sheet that fails them is still a shell when it is plate-like (section 1.5): a shell is only ever made because the user asked for one. The figures now decide one thing: which walls get the line of advice.
+
+Why per sheet and not per pair: a 2 mm sheet's 3 mm bend is only 5.7 mm wide. Judged alone, it reads as thick. Judged with its flanges, it is clearly a shell. The same goes for a flat-bar stiffener web, 8 mm thick and 50 mm deep.
+
+**The width of a split wall (SHELL-2b, 30 Oct, 12th helper).** A sheet's width is read on its CAD faces as one region: an edge two of its faces share is inside it, not its outline. Its mid-faces share no edge, so their outlines added up: a printed cone split lengthwise into strips read as wide as one strip and stayed solid. The same width decides whether a tapered pair is fitted at all (a strip of a wide wall is fitted). Failure map: the split printed cones (cone_taper_split, 2 cases) solid to shell; training sh0012's 5.4 mm duct body mixed to shell.
+
+**A wall whose thickness changes is judged whole (SHELL-19, 9 Nov).** A sheet is one thickness, so a plate with pockets, grooves, a thicker band or a thread is cut into many small sheets, each judged alone and each too short against its own wall. Sheets of one body whose faces are the same or meet at a CAD edge, whatever their thickness, form a **wall region**. A sheet that fails alone is a shell when its own thickness passes both rules against its region: t ≤ L / 10 with L the square root of the region's mid area, and t ≤ width / 4 with the region's CAD faces read as one region (SHELL-2b). A sheet that fails against its region is taken out and the regions are read again, until none fails, so a thick block never lends its size to a thin plate on it. A sheet narrower than one of its own walls (a chamfer's or a thread crest's sliver) joins no region. Only a body with no shell sheet of its own is read this way: on a body already shelled where its walls pass alone, adding its thicker steps left open edges at the steps (two printed enclosures that were good before), so those steps stay solid (mixed) as before. Mesh sizes still come from each sheet's own size. Found on a new 60-file development set drawn like the sealed set (brackets, frames, enclosures, panels from open-hardware repositories not used anywhere else): a 60 mm printed angle with 2.0, 2.4 and 3.7 mm stretches and a 27 mm threaded ring were solid because every stretch was judged alone. Most of that set's other "no shell found" parts are right to stay solid (see below).
+
+**Brackets and frames (30 Oct, 12th helper).** The sealed set's "no shell found" is mostly brackets and frames. 38 generated brackets and frames (angle, gusseted, cast corner, strap, U, pocketed, flat-bar, angle and tube frames, T-slot extrusion; walls 2 to 8 mm) were judged against the plate rule (shell when span over about 10 walls, solid under 6, either between): 38 of 38 right on the code as it was. The call is not too strict; such brackets are thick. What was missing is the reason (SHELL-2c, section 1.4).
+
+### 1.3 Every face gets a role (SHELL-2)
+
+| Role | What it is | Rule |
+|---|---|---|
+| paired | one side of a shell wall | in a shell sheet's pair |
+| rim | a plate's edge face, or a hole's bore through the plate | strip width (2 × area / perimeter) ≤ 1.5 × the wall it touches |
+| blend | a fillet or chamfer where walls meet | round with radius ≤ 2 × wall and a strip (never a cylinder or cone that closes round its axis: that is a boss, a pin or a bore), or flat and ≤ 2 × wall wide with no parallel face across the metal |
+| thick | a side only of walls too thick to be a shell | in pairs, none of them shell |
+| solid | anything else | |
+
+Rims become the mid-surface's free edges. Blends are bridged when the mid-faces are extended to meet (section 2.3).
+
+### 1.4 Body verdicts
+
+- **shell:** every face is paired, rim or blend.
+- **mixed:** shell sheets plus thick or solid faces. The thick and solid faces are grouped into named solid regions, so the stage can say "this boss stays solid".
+- **solid:** no shell sheet.
+
+The verdict is a recommendation. The user picks (section 7).
+
+**A solid body says why, in numbers (SHELL-2c, 30 Oct; the words are SHELL-23's since 10 Nov).** Its most plate-like wall (the widest against its thickness) is named: "no wall of it is a plate: its most plate-like wall is 30 mm thick but only 40 mm wide, 1.3 times its thickness; under 2 times, it is a bar or a block, not a plate". A thick ring says so ("18 mm thick round a tight bore, a thick ring; a curved wall is a shell when its radius is at least 2 times its thickness"). The record keeps it as `closest_wall`, with what it failed. The stage shows it (SHSTAGE-3b), and the part is meshed solid.
+
+### 1.5 Every plate is a shell (SHELL-23, 10 Nov)
+
+**The founder's call.** "If the user says shell, why wouldn't we convert everything into a shell?" A shell is only ever made because the user asked for one in words. Their request beats our accuracy minimums: warn, do not refuse. So the 10 walls of SHELL-2 stop being a gate.
+
+**What showed it.** A welded plate pedestal with a rolled channel, which its users mesh all as shells: a pipe column, base and top plates, eight triangular gussets, a channel beam. Its plates and pipe came out right (mid-surfaces within 0.2 mm of the users' own shell mesh, thicknesses equal). Its eight gussets, 12.7 mm thick over a 96.5 mm face, stayed solid ("only 7.6 times its thickness; a shell needs at least 10 times") and were left out of the shell files: 8 of 14 bodies.
+
+**The rule.** A sheet that fails SHELL-2's thin rule is still a shell when it is plate-like. All four must hold:
+
+| it is | measured | what fails | why this line |
+|---|---|---|---|
+| wide against its wall | at least 2 walls wide, on its own mid-faces: the narrower of `width_of` and its widest place (the largest circle that fits in a mid-face, holes counted). A plate split by a wall standing on it (a beam's flange, either side of the web) is read on the face its pairs share. | a bar, a block, a cube, a flange ring 1.9 walls across | Narrower, the pair of faces across the width is nearly as close as the pair across the thickness: no one mid-surface. And the mesh's own rules meet there: four elements across (SHMESH-1), none under half the wall (SHMESH-2). |
+| no thick ring | at least half its mid-surface is flat, or round a radius of 2 walls or more | a bush, a nut, a hollow boss (a bore under 3 walls across) | No shell stands for a wall thicker than half its radius. A tight bend rides with the flat plates it joins, as in SHELL-2. |
+| metal between its faces | 90% of the points read on its mid-face lie in the body | two faces that look at each other across a gap (a channel's two flanges, across its open side) | A mid-face in air is no wall. |
+| no pad on a thinner wall | neither of its faces is a side of a shell wall under half its thickness (SHELL-23c: a step up to twice the wall is a shell) | a pad, a boss, a land or a foot standing on a plate | It shares the plate's far face: thicker metal on that plate, not a plate of its own. It stays solid, as it always did. Two plates stacked are a lap (SHELL-8), as before. |
+
+The thin sheets are settled first, then the laps, then the others from the thinnest up, so a pad is told by the wall under it.
+
+Two more guards, both on the whole body:
+
+- **The body must be mostly plate** (off since SHELL-23b, section 2.4.6). The plates found in a body are kept only when its shell walls (the thin ones and these) then hold at least half its metal: its sewn mid-faces times their walls, over its volume. This is MIXED-4's measure and MIXED-4's half. A plate with a lump on it is a shell with a solid region. A lump with a tab on it is a lump: a shell of the tab alone would be a scrap of the part, where the user got a whole solid mesh and the reason before. Under half, the body is left exactly as it was. The line is drawn twice: on the bare mid-faces before any join (junction metal is not in them), and on the sewn shell after. With the first line at a quarter, 7 more dev parts came in: 5 shelled well (a flag plate, a cable-chain mount, a chassis floor, a channel block, a panel clip), and 2 frames that meshed before lost their mesh (gmsh could not close a boundary where the short walls join). So both lines stay at half until those junctions mesh.
+- **The plates must join.** A body whose new plates (or flat flanges, SHELL-24) leave edges open where they meet its other walls is read again without them, and the reading with fewer open edges is kept, said in a note. So a body that sewed shut before still does. At most two more passes, inside the same work budget.
+
+**What stays solid.** Anything with no mid-surface: a block, a cube, a bar under 2 walls wide, a bolt, a shaft, a ball, a thick ring, a boss or pad on a plate. Measured on generated parts (`~/plates_lab`): a 30 mm cube, a 50 x 40 x 30 block, a 20 x 20 bar, a round bar, an M12 bolt, a stepped shaft, a block with a boss, a thick bush, a block with a pocket, a ball: all solid, each with its reason. A 100 x 50 x 25 block is the line itself (2.0 walls wide): a shell.
+
+**What is a shell now.** Flat plates and triangular gussets from 3 to 12 walls across (24 parts): all shell, mid-surface exact, volume held 1.000. Flat bars 2, 3, 4 and 6 walls wide: shell; 1 and 1.5: solid. The look-alike pedestal (13 bodies: plates, a pipe, eight gussets, a rolled channel, a support plate 4 walls across): 13 of 13 shell, 0 left solid, 0 open edges, every thickness the plate's own (4 shell and 9 solid before).
+
+**The advice, one line** (`cad/shell_words.py`; the record's `short_walls` and `advice`). The stage shows it in the shell fold's own muted line, and the result says it after the element count. No new control.
+
+- one wall: "Part_6: 12.7 mm thick over 96.5 mm, 7.6 times its thickness. Shell theory is less exact under 10 times (about 2% off on a free plate this short, more where it bends from a joint)."
+- several: "9 walls are short for their thickness (the shortest, Part_13: 31.8 mm thick over 126 mm, 4 times its thickness). Shell theory is less exact under 10 times (about 5% off on a free plate this short, more where it bends from a joint)."
+- a wall 10 walls across but under 4 wide: "... 5 mm thick and 15 mm wide, 3 times its thickness. Shell theory is less exact under 4 times (about 2% off on a free strip this narrow, ...)."
+
+**What a short plate costs, measured** (CalculiX 2.21 on one thread; free-free modes 7 to 12; the product's shell mesh, S4, against a C3D10 solid of the same part, three elements through the plate; the worst of the six modes, and the first):
+
+| walls across | 12 | 10 | 9 | 7.6 | 6 | 5 | 4 | 3 |
+|---|---|---|---|---|---|---|---|---|
+| square plate, worst | +2.4% | +2.3% | +2.3% | +2.1% | -2.3% | -3.2% | -4.7% | -7.4% |
+| square plate, first mode | +2.4% | +2.3% | +2.3% | +2.1% | +2.0% | +1.9% | +2.2% | +3.0% |
+| triangular gusset, worst | +2.1% | +1.6% | +1.5% | +1.3% | +1.2% | -2.0% | +1.6% | -2.6% |
+
+Flat bars 200 mm long, 2, 3, 4 and 6 walls wide: 3.2%, 2.2%, 2.1%, 2.0%.
+
+So a plate ALONE loses nothing down to about 6 walls (2.1% at 7.6 walls, as at 12), and reads 3% off at 5, 5% at 4, 7% at 3. The advice quotes the figure for the wall's own ratio. On structured meshes (the accuracy lane's test: a plate clamped at one end and pushed at the other, S4 against C3D20R four through the wall) the shell's tip is -0.05% off the solid's at 7.6 walls, -0.05% at 5, -0.30% at 3: so the 2% left at every ratio above looks like the mesh, not the theory (not separated here). CalculiX expands a shell into one layer of solid elements; Nastran's plate elements were not run.
+
+The advice also says where the real cost is: a short wall bending from a joint. A shell wall bends from the middle of its joint, and MIXED-8's box (4 mm walls reaching 5 to 6.7 walls from their joints) read +23%.
+
+**Knock-on effects** (the lab and the dev set): section 2.4.4.
+
+## 2. Mid-surface from the B-rep
+
+### 2.1 The approaches we looked at
+
+| Approach | Good | Bad | Verdict |
+|---|---|---|---|
+| Offset the whole solid inward by t/2 (OCC `BRepOffsetAPI_MakeThickSolid` / `MakeOffsetShape` on the solid) | one call | fails at thickness changes and self-intersections; gives a solid, not a mid-surface | no |
+| OCC medial axis | exact in theory | OCC has only a 2D one (`BRepMAT2d`); no 3D medial axis | no |
+| **Face pairs: mid-face per pair, extend to meet, trim, sew** | exact B-rep output; keeps each mid-face tied to its CAD faces (names, groups); what Femap, NX, ANSA and HyperMesh do | needs good pairs; only even walls; junction logic to get right | **chosen** |
+| Voxel or distance-field skeleton | works on anything (cast, organic) | faceted and approximate; noisy branches at corners; loses the CAD face names; voxels must be about t/4, so a 20 m hull with 10 mm plate needs about 10^12 voxels | fallback only, later |
+| Triangle midsurface (pair triangles by rays, average) | general; reuses our rays | faceted; needs remeshing; weaker names | fallback for variable walls (PR 3) |
+
+**Chosen:** face pairs on the exact B-rep, with the ray pairing as the evidence layer. Regions this cannot do stay solid (mixed part), are named on the stage, and are never dropped silently.
+
+### 2.2 The mid-face of a pair
+
+1. Offset each face of the pair halfway into the material. This is OCC's simple offset (`PerformBySimple`, −t/2 along the face's outward normal).
+2. Take the overlap of the two offsets (a Boolean common, one thread). The mid-face covers only where the two faces really face each other.
+
+This is exact for every even wall. The prototype got exact results:
+
+- plate: 20,000.0 mm² for 20,000;
+- tube: 30,159.3 mm² for 2π · 24 · 200;
+- bend: 314.16 mm² for a quarter-cylinder of radius 4, 50 mm deep.
+
+### 2.2.1 The fitted mid-face (SHELL-9, 29 Oct)
+
+For a tapered wall, and for an even wall whose two half-offsets do not overlap (two free-form faces whose offsets are not quite the same surface: a twisted strap):
+
+1. Over a 17 x 17 grid of face A's parameters, each point of A is paired with its foot on B's surface. Their midpoint is moved along the line between them until it lies as far from A's surface as from B's (3 steps).
+2. A cubic B-spline surface interpolates the grid of midpoints, its parameters A's own scaled to 0..1, so A's outline maps onto it exactly (an affine map of B-spline poles). An approximation of higher degree waved between the points: a twisted strap's mid-surface came out 14 times its area.
+3. When B does not lie across the whole of A, B's outline is projected onto A's surface too, and the mid-face is where the two outlines overlap. The overlap is worked out flat, in the plane of the parameters, and laid back onto the surface: a Boolean on a fitted surface closed round a cylinder's seam found nothing.
+4. A wall closed round its axis (a drafted tube) has its two seam sides sewn into one edge.
+5. The thickness at a point is its distance to A plus its distance to B; the record keeps the thinnest and thickest (`thickness_range_mm`), and PR 2 writes it per node (CQUAD4 T1 to T4, `*NODAL THICKNESS`). **SHELL-9b (30 Oct):** a fitted mid-face whose wall varies by more than 1% carries its wall read at points over it (`wall_samples_mm`: a 9 x 9 grid inside it and 9 points along each edge, distance to A plus distance to B). Meshed at the pair's one (thickest) wall, a 2-degree wedge came out 41 to 68% too stiff and a printed cone 49 to 147%, with every check passing.
+
+A fitted mid-face is kept only when:
+- every point read on it lies as far from A as from B, within 2% of the local thickness (|dA - dB| <= 0.02 (dA + dB));
+- it is itself at least four walls wide (as a shell sheet is). A narrower one is a local feature of the wall beside it, which that wall's own mid-face runs across when it is joined (a flat dimple 1.4 walls wide in a printed cylinder's side).
+
+Otherwise the pair stays a variable wall, with the reason.
+
+### 2.2.2 A rolled flange is one flat plate at its mean thickness (SHELL-24, 10 Nov)
+
+**What showed it.** The same pedestal's rolled channel: its web was right, but only 19% of the users' flange surface lay within 2 mm of ours, and what we had carried 23.0 mm where the section table says 17.8. A rolled channel's flange is tapered (thin at the toe, thick at the web), with a root fillet and a rounded toe. On main the pair is a tapered wall (SHELL-9): judged at its thickest point (23.0), fitted over the sloped face only (short of the toe and of the web), and tilted. Three of seven look-alike channels came out "mixed" with their flanges solid.
+
+**The rule.** A tapered wall whose two faces are both PLANES, and which is at most 10 of its mean thickness long ALONG its taper, is one flat plate:
+
+- **Flat, and where.** Parallel to the larger of its two faces (the flange's flat outside: the datum), half the mean thickness inside it. That is the plate every section table, hand check and solver property card assumes.
+- **Its thickness: the mean.** Read on the two planes at the middle of the wall's whole length along the taper: from the face of the wall it grows out of (the next flat face past its root fillet: the web's) to its own end face (past its toe round). The wall is linear between, so that is its mean over that length, which is what the tables call the flange thickness.
+- **Its outline.** The datum face's own outline: it runs to the wall's true end under a rounded toe. On a side where another wall begins it stops at the smaller face's end, and SHELL-3 carries it on to that wall's mid-plane. So the flange is sewn to the web.
+- **Its check.** Half its wall inside its datum face, everywhere (it is not midway between two faces that taper; the record says `flat`, its `datum` and `taper_mm`).
+
+A longer tapered wall (a wedge, a drafted side, a printed cone) keeps SHELL-9's fitted mid-surface and its true wall at every node: it bends along its taper, where stiffness goes with the cube of the thickness (a 2-degree wedge meshed at one wall was 41 to 68% too stiff).
+
+**Measured on rolled sections** drawn from the public shape tables with their true taper, fillet and toe round (`~/plates_lab/tools/parts.py`; AISC C, MC, S, W, L, WT, ST; EN UPN, IPN; 600 mm long). Coverage: the share of the table's flange mid-plane rectangle (web mid-plane to toe) within 0.25 mm of our surface.
+
+| section | before: flange coverage, thickness against the table | now |
+|---|---|---|
+| C15x50, C6x13, MC12x50, MC18x58 | 6 to 13%, -3.3 to -4.3% (fitted, tilted) | 100%, exact |
+| C10x30, MC12x31, UPN200 | 0%: flanges solid, body "mixed" | 100%, exact |
+| S12x50, S8x18.4, IPN200, ST6x25 (four or two tapered half flanges) | 8 to 17%, -2.1 to -4.3% | 100%, exact |
+| W8x31, W12x26, W14x90, WT6x25 (flat flanges) | 100%, exact | the same |
+| W14x730 (a jumbo: 125 mm flanges 3.6 walls wide) | solid | 100%, exact (SHELL-23) |
+| L4x4x1/2, L6x4x3/8, L2x2x3/8 | 100%, exact | the same |
+| L8x8x1-1/8 | 95.8% | 95.8% (below) |
+
+Every section: one body, verdict shell, 0 open edges, flanges sewn to the web. "Exact" is against the mean over the clear outstand, which is the AISC tables' flange thickness. The EN tables read a UPN's (up to 300 mm) at half the flange width and an IPN's at a quarter: 3.0% and 2.4% over the mean. Ours is the mean, so it is that much under those two tables' figure; the metal is right (the look-alikes' section areas match the tables).
+
+**Not done: the stockiest angle.** An even wall with a rounded toe stops at the toe round's start when the straight join is kept (the general join runs it on to the skin). An L8x8x1-1/8 keeps the straight join and covers 95.8% of its legs, on main as here. Carrying every even plate to its own end changes the mid-surface of every plate with a one-sided round or bevel in the corpus; it needs its own regression run.
+
+**Flat at the mean, or the true wall? Measured both ways** (CalculiX on one thread; free-free modes 7 to 12 against a C3D10 solid of the CAD, two elements a wall, 1.5 on the 1500 mm ones; first mode / worst of six):
+
+| 600 mm long | flat, mean thickness (the default) | flat, true wall at each node | fitted and tilted, true wall (SHELL-9, as before) |
+|---|---|---|---|
+| C15x50 | -3.6% / -9.0% | -2.1% / -5.2% | -1.9% / -5.4% |
+| MC12x50 | -5.8% / -16.9% | -3.4% / -6.9% | -3.7% / -6.0% |
+| S12x50 | -10.2% / -15.0% | -7.5% / -8.2% | -8.0% / -8.0% |
+| C10x30 | -3.5% / -5.9% | -2.3% / -5.7% | flanges solid (-15% / -50%) |
+| UPN200 | -5.3% / -14.5% | not run | flanges solid (-36% / -50%) |
+| C15x50, 1500 mm | -2.9% / +6.7% | -1.6% / -3.6% | -3.0% / -4.3% |
+| MC12x50, 1500 mm | -6.0% / +7.4% | -4.2% / -4.2% | not run |
+| S12x50, 1500 mm | -11.0% / -11.0% | -7.9% / -7.9% | -9.4% / -9.4% |
+
+- **What the code does best:** the flat plate in its table place with the wall's true thickness at every node (`FLAT_TAPER_WALL = "true"`, one constant: the record then carries SHELL-9b's readings, taken on the two planes). It is as good as the fitted surface and keeps the flat plate's full coverage and simple join.
+- **What is the default, and why:** the mean thickness (`"mean"`), as the founder leaned: it is what the users' own shell models, their property cards and their hand checks carry, so our mesh can be laid over theirs and agree. It costs accuracy on modes where the flange bends as a plate from the web: at the web the true flange is 1.4 times the mean (and the fillet's metal is in no shell model), so the mean plate is soft there. On a short stub's higher modes that is up to 17%. The users' own convention has the same error.
+- The section's area, and its distance from the section's middle, are kept either way (the look-alikes' sewn faces times their walls hold 0.99 to 1.02 of the volume).
+
+### 2.3 Junctions: extend to meet (SHELL-3)
+
+At a junction the mid-faces stop short of each other.
+
+- At a T, the stiffener's mid-face stops at the plate's top face, half a plate thickness short of the plate's mid-plane.
+- At an L, each leg stops at the other leg's inside face.
+
+The rule: a straight edge of a planar mid-face is carried on to the mid-plane it runs into when all of these hold:
+
+- all three sample points along the edge, moved outward in the face's own plane, meet the same target plane;
+- they meet it within the reach: half the target's wall plus 2 × the thicker wall, so a fillet up to 2 walls at the junction is bridged;
+- the whole way there is inside the part's material;
+- the target is a mid-face of the same body, not within 5 degrees of parallel.
+
+The new edge is the line where the two mid-planes meet. Corners are re-cut as the meeting points of the new lines. An edge that already touches another mid-face (a bend's flange and its bend cylinder) is left alone. An edge that cannot be redrawn keeps its own shape and shows up as an open edge.
+
+Each junction type:
+
+- **T (stiffener on plate):** the stiffener goes down to the plate's mid-plane. The plate's two pieces each go across to the stiffener's mid-plane. Three faces share one line.
+- **L corner:** each leg goes to the other's mid-plane, and they meet on one line.
+- **Cross (two webs through a plate):** the same as two Ts.
+- **Laps (SHELL-8):** two shell plates laid one on the other and fused (a lap joint, a doubler, a bracket flange on a plate). The stacked region is a pair whose two faces are each a side of a shell pair and whose wall is the two walls added up (within 2%). It is a few walls wide, so it fails the width rule on its own; it is shelled with the plates it is made of, and SHELL-7 snaps both plates onto its mid-plane with their offsets: one flat shell.
+- **Plates of different thickness meeting in-plane (a butt step):** the mid-planes are parallel and offset, so nothing above joins them. PR 3 snaps the thinner plate onto the thicker plate's mid-plane and records the offset per element (ZOFFS in Nastran, OFFSET in Abaqus and CalculiX). Stiffness and mass stay right, and the user sees one flat shell. Until then the step shows as an open edge.
+- **Cut-outs and holes:** the overlap keeps them. Their edges are real free edges (the outside lies just past them). Holes smaller than about one element are named for defeaturing later. They are never filled silently.
+- **Fillets and chamfers:** up to 2 walls, absorbed (blend role). Larger rounds with an even wall are their own sheet (a sheet-metal bend). Others are solid and named.
+- **Tapers:** fitted mid-faces (section 2.2.1), joined like any other mid-face.
+- **Bends whose outside is not concentric (SHELL-10, 29 Oct).** A CAD model that rounds both corners of a sheet alike (inside and outside radius the same) gives a bend whose wall is t at the flanges and about t x 1.41 mid-bend: a tapered wall. Its fitted mid-face ends where its two faces stop facing each other, short of the flanges' mid-planes, which run on almost tangent to it, so neither the extension nor the general fuse meets them (a fan housing's 1 mm duct, sh0021 Part_33: 16 open edges). The rule: a free edge of a fitted mid-face that runs alongside a free edge of another mid-face of the body - every one of 5 points along each edge within one wall (the thicker) of the other edge, further apart than the sewing tolerance, the strip between them in the material - is joined to it by the ruled strip between the two edges, which is part of the fitted mid-face. Part_33: 0 open edges, volume 1.002.
+- **Cylinder ends on plates (tube frames, nozzles):** PR 3. The same rule, with the cylinder carried along its axis to the target and cut by it.
+
+### 2.4 Sewing (SHELL-4)
+
+The extended mid-faces of each body are run through OCC's general fuse (`BOPAlgo_Builder`, one thread):
+
+- the fuzzy tolerance is 1/1000 of the thinnest wall;
+- edges that meet become one edge;
+- a face that another face's edge lies on is split along it.
+
+The result is a conformal shell: shared nodes along every junction once meshed.
+
+**Speed (29 Oct).** No corpus file may take more than 10 minutes. The same answers, read faster:
+- An offset mid-face (a drafted or free-form wall) is re-made as a B-spline before the join, only when every point read stays within 1/10,000 of the wall. One fuse of an offset against a plane ran past 40 minutes; the B-spline takes 0.01 s. The checks still read the offset.
+- Inside-or-outside: a point well clear of the skin is told by the body's own closed triangulation (three rays that must agree). Near the skin, the exact classifier answers.
+- Faces that cannot touch are fused apart. The part's own faces go into the general join as one argument, so they are not intersected with each other.
+- Readers are built once per face (projectors, surface analysers), and each point's inside state is kept.
+- The taper test stops at the first point turned past 10 degrees; a pair whose two faces are both narrower than four walls (1.5 margin) is not fitted (29 Oct: a fan housing 1,055 to 832 s alone). Each general-join variant past the first (mid-faces in beside their patches; no re-making) runs only when an open edge is left within a grown patch's reach of a wall it treats differently (free-form; offset), measured to the wall itself: a fan housing's free-form wall spans its body, so its box held every open edge (sh0020 / sh0021 833 / 851 to 528 / 536 s at 8 at once).
+- **A free-form mid-face's grown patch goes into the general join alone** (29 Oct). The patch is the mid-face's parameter box widened, so it lies over the mid-face itself, on a surface the fuse does not merge with the mid-face's own. With both in, the wall was there twice: a twisted strap held 29% more metal than it has, and its join left 4 open edges. Its pieces inside the mid-face are the mid-face's own, read by geometry. The general join is also run with the mid-face in beside its patch, and the one leaving fewer open edges is kept (on a tie, the patch alone): on a cyclone of re-made offset walls (sh0011) the patch alone left 29 open edges where both left 5.
+- **A deadline on each general join (SHELL-11, 29 Oct).** OpenCASCADE gives its general fuse no time budget, and on a cone meeting a ring (fresh-set fr018) one fuse ran past 40 minutes. The general join now runs in a forked child process, stopped at 5 minutes (no join of the training corpus comes near it); the joins already made stand, and the record says so. The child hands back the fused surface as a binary BRep file (every number exact) and each mid-face's faces by index, so the record is the same as a join made in-process (a unit test holds this). Where the system cannot fork, the join runs in-process, unbounded.
+- **No join with a widened tolerance (SHELL-12, 30 Oct).** The general fuse can close a gap by widening a vertex's tolerance until it covers it: on a funnel's cone (sh0011) one vertex came back with 39 mm on 5 mm walls. Its edges then stand that far off their faces, gmsh cannot close the face's loop, and the mesh failed. A general join that leaves any tolerance over half the body's thinnest wall is not used; the straight join stands, and the record says so. Corpus: only the four files whose sewn surface carried such a tolerance can change. sh0011 now meshes (its open edges, 5 before, are 29: the 5 were closed only by the widened vertices); sh0048's open edges go 206 to 272 for the same reason; sh0015 and fr018 are byte-identical (their wide tolerances come from the straight join, which meshes).
+
+- **An open edge bridged to the junction beside it (SHELL-13, 30 Oct).** After the join, an edge still open that runs alongside an edge of another mid-face of the body (a junction line, or another free edge) is joined to it by the ruled strip between the two: every one of 5 points of each edge within SHELL-3's reach of the other (half the other wall plus 2 walls), further apart than the sewing tolerance, the strip's middle in the material; the nearest such edge. The surface is kept only when it leaves fewer open edges. An extruded profile's curved (fitted) wall stopped 0.7 mm short of the corner of its two flat walls (fresh fr013: 1 open edge to 0); a funnel's cone (sh0011) went from 29 open edges to 2.
+- **Offsets carry their direction (SHELL-7, 30 Oct).** A snapped plate's record gives the direction its true mid-plane lies in (`offset_normal`, with `offset_mm`), so the mesh writes it per element (Nastran ZOFFS, Abaqus and CalculiX OFFSET, Ansys SECOFFSET).
+
+- **A grown face is one face where it can be (SHELL-14, 30 Oct, 12th helper).** A mid-face grown only along directions that do not close (a tube past its ends, a cone past its rims, a cap past its edge) is grown as one face on its own surface, not its own face plus a band each side. The bands' edges stayed in the joined surface half a wall from the junction, as slivers whose two long edges were nearly one: gmsh's 1D mesh "not a closed loop" (an equal tee, a 45 degree lateral, a mitred bend), and open edges where a curved cap meets a crease (a dome on a flange ring, a dished end, a nozzle on a torispherical head: 1 open edge each, now 0). Faces that close in a grown direction still grow as tiles (a torus).
+- **Slivers dropped (SHELL-16, 30 Oct).** After the join, a sewn face under a tenth of its wall wide is dropped and its neighbours sewn across it at 1.5 times its width (never past SHELL-12). Kept only when no edge opens and every face stays valid (a face a join handed back twice is counted once).
+- **No join holding more metal than the part (SHELL-17, 30 Oct).** On a shell body, a general join whose sewn faces times their walls hold over 1.10 times the body's volume, and 10% of it more than the straight join, is not used: it kept grown pieces that are no wall. A ring frame on a curved skin held 5.8 times the metal and a pipe saddle 1.27 (gmsh then failed their loops); with the straight join and SHELL-13 both mesh, 0 open edges, 1.01 and 1.00. A mixed body is left out: its mid-faces run on into its thick regions (a PVC tee's sockets, fresh fr017, 1.2 with every junction met).
+
+### 2.4.1 IGES and other loose surfaces (SHELL-15, 30 Oct, 12th helper)
+
+An IGES file is trimmed surfaces with no topology, read as loose faces in no solid; none was shelled (fresh-set IGES copies: 0 of 20). Now:
+
+1. **Analytic again (SHELL-15c).** A face whose surface is a plane, cylinder, cone, sphere or torus written as a surface of revolution or a B-spline is re-made on that surface (OCC's `GeomConvert_SurfToAnaSurf`, within the first sewing tolerance), its own edges kept. A bend written as a surface of revolution had its mid-face 1.1 mm off the middle of a 2 mm wall: its offset is no exact offset.
+2. **Sewn at a measured tolerance (SHELL-15).** First at a millionth of the part. Then each free edge's gap to the nearest other free edge, read as the farthest of 5 points along it (two edges that meet at a corner and part along their length are that far apart, not 0), times 1.5, never over a tenth of the narrowest face: a tolerance that reached across a rim would sew a wall's two sides together. Closed shells become solids, oriented.
+3. **Touching bodies (SHELL-15b).** Where sewing makes no valid solid or leaves faces in no body (a frame's tubes end to end, a duct and its insulation), the faces are read as the volumes they bound (OCC's volume maker): each volume whose largest faces' own normals point out of it is material.
+
+Results (OpenCASCADE IGES copies of the fresh set's 20 STEPs): the judge passed 0 of 20 before, 15 of 20 now (the STEPs: 19); 14 of 20 give the same verdicts, walls and open edges as their STEP. Still apart: bodies that touch (fr011's four tubes, one volume lost; fr014; fr015's duct and insulation read as four solid bodies) and the printed cones fr018 and fr019 (no body closes). On the training set's IGES copies, single bodies mostly match their STEP and touching multi-body assemblies mostly do not (state line).
+
+More IGES rules (30 Oct, 13th helper):
+
+4. **Each body owns its faces (SHELL-15d).** The volume maker hands two touching bodies ONE face where they meet. A face is read as one body's only, so the other lost a side of its walls: a bent duct's 52 faces read as 35, both bodies "solid" with 250 mm walls. Each volume is now copied, so each owns its faces, as in the STEP.
+5. **A shared face does not vote (SHELL-15e).** A face made from two of the file's faces (a duct's outside and its insulation's inside) is turned one way in one body and the other way in the other. It no longer votes on "material or cavity"; the next largest faces do.
+6. **A seam written twice (SHELL-15f).** A closed face (a bend's cylinder) whose seam the file wrote as two edges of its one wire: sewing never joins a face to itself, both stayed free and the body never closed (a sheet-metal part with 129 faces: 2 free edges, gap 0). Only such a face is split in two across its closed direction; the seam is then sewn.
+7. **Re-made the right way round (SHELL-15g).** The analytic surface can run the other way from the surface of revolution it replaces; the file's wire then turns against it and the face reads invalid, so it was kept as written (13 of a part's 26 bends, its spheres and tori). It is made again with its wires reversed (a general mend made the complement: a 62 mm2 torus face came back as 1,747). The material side is read from the two surfaces' normals. A re-made face that will not tessellate (a sphere whose wire now crosses its seam) is kept as written: with no triangles, no ray found it and its wall went unpaired.
+8. **Voids (SHELL-15h).** A closed shell sewn inside another is that one's inner void (a closed box with a sealed cavity: one body, two shells, as in the STEP), not a second body the size of the cavity. Checked: the volume must come out as the outer less the voids.
+
+9. **Bodies lying on each other along edges (SHELL-15i, 1 Nov, 14th helper).** A frame whose short tube lies on a longer one over its length (sh0102): sewing pairs the edges where four faces meet as the faces come, so it made one closed shell that is no valid solid - and, in another face order, one valid solid made of both tubes' faces. The faces are now sewn letting an edge hold more than two, and taken round each such edge in the order of the angle at which they leave it:
+   - each face at its own angle (bodies touching along the edge): the two faces either side of each wedge of material are one body's. A wedge is material when a ray from a point in it crosses an odd number of the file's faces (the most of three rays);
+   - two pairs of faces lying on each other (one body on another): each body holds one face of each pair. The two faces of a pair are in different bodies; the bodies are two-coloured by that.
+
+   Each group of faces is then sewn alone and must close into one valid solid, or nothing changes. sh0102's IGES copy now reads as its STEP: two tubes, 394058 and 1105222 mm3 (STEP 394058 and 1105220).
+
+IGES on the real path (11 Nov, input stream; section 13 has the parity numbers):
+
+10. **MESH-1 reads loose faces as the extraction does (SHELL-15j).** The run stages the file and calls MESH-1 (`fea_driver.solids_from_shells`) before anything else. MESH-1 sewed an IGES file's trimmed surfaces at a ten-thousandth of the part and made solids of them as read - cylinders still surfaces of revolution, one tolerance for every file - so by the time the extraction ran the file held solids and none of SHELL-15 ran. The lab's IGES work called the extraction on the IGES file directly and never saw this. MESH-1 now also reads the faces with `solidify` and keeps that reading when it puts at least as many of the file's faces into valid solids.
+11. **No solid of no volume (SHELL-15k, SHELL-15l).** A closed shell that encloses less than cad/validity's ZERO_VOLUME_RATIO of the part's size cubed is no body: a face written twice sews into a pocket of nothing, and two touching bodies' coincident faces (a pipe's outside, its insulation's inside) pair off into one. MESH-1 made such pockets 0 mm3 "solids" beside the real ones and `solidify` kept them as bodies. Now neither does: in MESH-1 the file stays the surface it is (SURF-9 leaves the copy out); in `solidify` the shell counts as bad and the volumes are read.
+12. **Swept faces converted whole (SHELL-15m).** A face on a surface of revolution or extrusion (how an IGES writer stores a cylinder, cone, sphere or torus) is first re-made by OpenCASCADE's whole-face conversion (`ShapeCustom.SweptToElementary`: the surface and the face's curves on it together), kept only valid, with its area within 1e-6, its material side kept and meshing. SHELL-15c re-made the surface alone and left curves made for the old one: on a torus bend, a funnel's cone and a frame's tori the face read invalid and was kept as written (8 of a pipe bend's 16 faces, 213 of a frame's 225), and no body closed. On 15 IGES copies the whole-face conversion turned every surface of revolution into its plane, cylinder, cone or torus (1 face of 461 read invalid and was kept as written).
+
+Still open: bodies that touch over PART of a face (sh0013's duct and its insulation). There an edge of one body lies inside a face of the other, so the faces round it are neither each at their own angle nor in two pairs (one edge of sh0013 has six faces in four clusters: 2, 1, 1, 2). Reading them needs the larger face split along the other body's edge first.
+
+### 2.4.2 The work budget (SHELL-18, 30 Oct, 13th helper)
+
+An open-hardware part ran its extraction past 30 minutes. The extraction now plans its work against a work budget (1500 s; first 540 s, see SHELL-18c below):
+- the stages before the joins check the clock as they go and stop, in words, when it is spent ("the mid-surface extraction used its 540 s work budget while making the mid-faces ...");
+- each general join gets at most what is left (less 60 s kept for the checks after it), and none starts with under 30 s left: the straight join then stands and the notes say so;
+- the whole extraction runs in a child process stopped at 1800 s (first 780 s; see SHELL-18c below), because one OpenCASCADE call cannot be stopped from inside.
+
+A part out of time is meshed solid, told why: never a wait with no end. The child must not be a daemon: a daemon may not fork, and the general joins (SHELL-11) fork. The first try made it one, every general join failed quietly, and the training set fell from 61 to 48 passes; a test now holds a general join inside the bounded extraction.
+
+When the deadline stops the extraction, the general join it forked is stopped with it (SHELL-18b): killed alone, the join would run on, orphaned, holding a core and its memory until its OpenCASCADE call ends. Its processes are read from /proc and killed first.
+
+Two corrections from the 14th helper's lab-VM sweep (1 Nov):
+- **SHELL-18c, the budget sits far above any part that finishes.** The clock is the machine's. At 540 / 780 s, on a lab VM running eight at once (about as slow per part as a worker), five training parts that shell in 290-410 s on a laptop (sh0020, sh0021, sh0049, sh0083, sh0105) ran out and were thrown back solid whole. On that VM the code before these rules takes up to 1244 s (sh0105). The budget is now 1500 s and the hard stop 1800 s; and running out while joining no longer throws the part back: a body keeps its straight join, as when a general join is skipped.
+- **SHELL-18d, a new process, not a fork.** A fork copies the caller's locks but not its threads. Once a parallel OpenCASCADE call has started its thread pool (the intake and stage meshes run parallel), a forked child waits for pool workers that are not there: in a long test run a 2 s extraction hung to the deadline, twice. The bounded extraction now starts a new Python process that reads the file itself, with the caller's import path; a test holds it after a parallel mesh.
+
+### 2.4.3 Open edges on real parts (SHELL-21, SHELL-22, 10 Nov)
+
+On the sealed real-world set, open edges are the largest real defect (22 of 80 files by first failure on main). Measured first, on real parts the lab was not tuned on: 195 files drawn like the sealed set from open-hardware repositories used nowhere else (the 60-file wall set and 135 new ones: ducts, tanks, tubes, enclosures, frames, brackets). Every open edge was read by what lies past it, walking outward from the edge in its own face:
+
+| what lies past the open edge (on main) | edges | files |
+|---|---|---|
+| thicker metal, no shell wall there (a boss, a rib's foot, a corner post, a block) | 73 | 12 |
+| the wall's own end, under one wall on (a bevelled or rounded edge, a lip) | 44 | 9 |
+| the wall going on at its own thickness, not shelled there (uneven, drafted, narrow) | 43 | 10 |
+| another mid-face under the junction reach away (a junction the joins did not close) | 11 | 4 |
+| another mid-face further than the reach | 14 | 7 |
+| a wall in line, its mid-surface a step away (a thickness change) | 6 | 3 |
+
+(All 20 files with open edges of the 195, 191 edges.) So on real parts the edges that stop "half a wall short at a T or an L" are the smaller part. Most open edges were not gaps in the shell at all: the wall runs into a thick region, or simply ends. And where a junction was left open, a join had given up on a whole face or a whole body for one local reason (on these parts the general join often runs past its 5 minutes, loses mid-faces, or dies inside OpenCASCADE). Two rules, each general:
+
+**SHELL-21, what lies past an edge the joins left open is read on the part.** An edge with metal past it used to be a solid link only when a face NAMED thick or solid lay within 0.8 walls of it. But a thick region's faces beside the edge are often its own chamfers, fillets and small steps, named rim or blend by their size, and the link was not seen; and a plate whose two faces stop facing each other before the plate ends (a bevel, a rounded end) has its own metal past its mid-face's edge. The body's last census now walks outward from such an edge, at three places along it, while it stays in the metal:
+
+- **A shell wall ahead: open, as before.** Within SHELL-3's reach the walk comes inside another sewn wall's slab (half its wall of its mid-face: a plate it runs into, a wall in line a step away, another piece of its own wall), or the edge carried straight on meets another wall's surface within half of each wall of its mid-face (a corner whose two walls both stop short). That is what SHELL-22 joins. Such an edge is a junction the joins did not close; it is never taken for a link or a free edge (a unit test holds a web stopped at its plate's face open in a mixed body).
+- **The wall's own end: a free edge.** No wall ahead, the metal stops within 2 walls (SHELL-2's largest blend), and all the way it stays inside the wall's own slab (half a wall each side of the mid-face). Counted in `boundary_edges`, and apart as `rim_edges`.
+- **A thick region: a solid link, in a mixed body only.** No wall ahead, and within 1.5 walls past the edge the metal reaches a whole wall off the mid-plane (half a wall past where the wall's own face would be). Counted in `solid_link_edges`, and apart as `bulk_link_edges`. A body with no thick region has nothing to link to: there the edge stays open.
+- **Anything else stays open:** a wall that goes on at its own thickness and was not shelled.
+
+It is read LAST, on the edges still open when the joins, SHELL-13 and SHELL-22 are done. Those all see every edge with metal past it as open, as they always did, so every join and strip is made exactly as before.
+
+**SHELL-22, an open edge is carried on to the wall it stops short of.** After the joins and SHELL-13, and before SHELL-21 reads anything, each edge still open is carried on, point by point (one a wall, 8 to 128), in its own face's surface to the SURFACE of the nearest other mid-face within SHELL-3's reach; the way must be in the metal and the meeting point within half of each wall of that mid-face itself. The strip between the edge and the meeting curve is sewn in. When the way is the same at every point the far side is the edge itself, moved: the strip is the edge's own surface carried on exactly (a plane, a cylinder along its axis). An edge that meets no surface that way but lies within the reach of another mid-face, the way to it in the metal, is joined to its nearest points on it: walls in line whose mid-surfaces are a step apart (a tube whose wall steps from 2 to 1.7 mm: two cylinders 0.15 mm apart), or two pieces of one wall. Kept only when it leaves fewer open edges and no tolerance past SHELL-12, and only with time left in the work budget (SHELL-18). It works one edge at a time, so one face the straight extension cannot redraw, or a general join that crashed, ran out of time or was thrown out (SHELL-11, 12, 17), no longer leaves every junction of the body open. A T joint with both joins switched off comes out as the straight extension makes it (the same area: a unit test); so do a tube on a plate and an L.
+
+SHELL-13 looked only for a whole edge lying alongside a whole edge, and skipped two edges closer than ten times the sewing tolerance, which the sewing (at one times it) had not joined: a stepped tube whose two mid-cylinders are 0.01 to 0.4 mm apart was open at every step size tried. SHELL-22 takes any gap past the sewing tolerance itself; a strip under a tenth of a wall wide is then dropped and sewn across by SHELL-16.
+
+**A part with no open edge on main is untouched.** Both rules act only on an edge still open after main's own joins and strips: every record and mesh of a part those close is byte-identical to main's.
+
+**What stays open, said so.** A wall that goes on unshelled; a junction further than the reach (walls meeting through a corner post more than 2 walls deep); a piece of a wall cut off under a boss; a rib ending at a wall beside its plate. These are still counted, shown on the stage and told in the result ("the plates do not meet at N edges").
+
+**Results (10 Nov; one WSL machine, one process at a time).** "Fully good" is the sealed set's own measure: a shell found, every extraction check, a valid mesh inside all Nastran limits.
+
+| set | files | fully good | files with open edges | open edges | fully good before, not after |
+|---|---|---|---|---|---|
+| wall set (real parts, step 1) | 60 | 34 to 36 | 3 to 1 | 13 to 1 | none |
+| new set (real parts: ducts, tanks, tubes, enclosures, frames) | 135 | 70 to 76 | 17 to 9 | 178 to 53 | none |
+| lab (87 parts the code was tuned on) | 87 | 69 to 71 | 4 to 2 | 10 to 3 | none |
+
+- **Which rule did it.** 12 parts are left with no open edge. 4 needed a SHELL-22 strip (a cartridge case whose wall steps, a flange with two tube stubs, an enclosure floor split under its screw posts, one more enclosure); 8 the SHELL-21 reading alone: their open edges were links to thick regions (6 parts) or the wall's own end (2), and their mid-surface and mesh are main's own. 10 of the 12 are fully good; one is outside the Nastran limits; one fails in the mesher (below).
+- **Nothing else moved.** Every part with no open edge on main has the same record as on main (261 of the 282 files have), and every mesh is byte-identical to main's but on the 11 parts that got strips.
+- **Known defects, both on parts with strips.** The flange with two tube stubs: its 2 open edges are closed by strips, and gmsh then cannot recover an edge at the tilted tube's foot, where the strips meet an older SHELL-13 strip and a 1.3 mm2 sliver mid-face. On main it meshed, with its 2 gaps said; here it is delivered solid, said so. And a keycap with free-form walls meshes in 554 s where it took 67 s (still inside the limit, and now inside the Nastran limits). The other 9 parts with strips mesh as on main (one of them not at all, on main either).
+- **Accuracy** (CalculiX on one thread, free-free modes 7 to 12, S4 shell against C3D10 solid of the CAD): a T joint closed only by SHELL-22 -2.5 to +2.4% (the same joint by the straight extension -2.7 to +1.1%); a tube whose wall steps 3 to 2 mm (SHELL-22 across the step; two loose tubes on main) +1.8 to +6.3%, where the plain 3 mm tube of the same size, with no junction, is +3.6 to +5.0%: about one point of it is the step, the rest that short thick tube as a shell.
+- **The same twice.** The 28 quicker parts of the 32 that can differ from main were run twice on the final code: the same record and the same surface file 28 of 28, and the same mesh and the same three decks, byte for byte, on all 26 that mesh. (On the first commit 54 parts were run twice, 22 of them touched by the rules: 54 of 54 and 51 of 51.)
+- **Sealed set.** Run once, on this branch's first commit (0529473e, which also held SHELL-20 and read SHELL-21 before SHELL-13): fully good 28 to 37 of 80, files with open edges 22 to 8, open edges 90 to 23; by an aggregate count the 14 files left with no open edge were all cleared by the SHELL-21 reading, none by a strip. The two commits after it (SHELL-20 out; SHELL-21 read last) were made for the lab bracket and the dev duct named in their messages and were not run on the sealed set: it is run once. On the dev sets and the lab the first commit cleared 13 parts and the final one 12 of those 13; SHELL-20 was in play in 2 sealed files. So the final commit is expected a file or two under 37; the number to quote is the next milestone run's.
+
+**What is still open, and the next class.** Of the 54 edges still open on the real parts (10 files), 26 are a wall that goes on past the edge at its own thickness and is not shelled there (a drafted or free-form stretch, a strip under four walls wide between two features: SHELL-1 and SHELL-2 leave it out, and with the general join timed out on such parts nothing runs across it); 15 have thicker metal past them and another wall beside the way (a rib ending at a wall, a floor piece cut off under a post); 8 end under a wall short of the part's skin with another wall beside them; 5 are junctions past the reach or inside one face. The first is wall finding, not joining: step 3.
+
+**Found, not fixed here.**
+- **The straight join models a relieved gusset soft.** SHELL-20 (a plate with holes redrawn hole by hole, so the straight extension works on it) was written, measured and taken out. It closed a printed chassis of slotted plates (13 open edges to 3). But the straight join wins a tie, so five lab parts the general join already closed changed their join, and a motor bracket with two relieved gussets went from 1.8% stiff to 6.1% soft on its first elastic mode against the solid: the straight join joins each gusset to its plates over 2 mm less than the general join does (16.5 and 12.5 mm against 18.5 and 14.5). (The three tube frames among them meshed with 2 to 8 times fewer elements; the one checked kept its modes within 0.3% at half the elements.) The tie rule and the gusset's foot come first.
+- **A wall through air.** A flat hollow profile with solid edges (two 1.5 mm skins 4 mm apart): its two OUTER faces face each other through the solid edges, pass as a 7 mm shell wall, and their mid-face is laid through the cavity (the body holds 2.7 times its metal; the volume check is read on shell bodies only, and this one is mixed). On main as here.
+- **SHELL-13 before SHELL-22.** One duct lost its last open edge on the first commit and keeps it on the final one: main's SHELL-13 strip beside it is made first again and leaves SHELL-22 no clean way. The better strip should win, whichever rule makes it.
+
+### 2.4.4 Every plate a shell: what moved in the lab (SHELL-23, SHELL-24, 10 Nov)
+
+Run on a lab VM, 10 at once, extraction then mesh then the three decks: the code before (the open-edges branch, 9ad6948d) against this one. "Fully good" as in 2.4.3: a shell found, every extraction check, a valid mesh inside all Nastran limits.
+
+| set | files | fully good | no shell found | fully good before, not after |
+|---|---|---|---|---|
+| lab (87) and the dev set of real parts (60) | 147 | 107 to 112 | 25 to 21 | none |
+| look-alikes (plates, gussets, bars, rolled sections, the pedestal, lumps) | 64 | 25 to 52 | 39 to 12 | none |
+
+The 12 look-alikes with no shell are the ten lumps and the two bars under 2 walls wide: all meant to stay solid.
+
+**Every file that changed, and the call on each.** 11 files of the 147. Every other file keeps its surface file byte for byte (134 of the 145 run on the final code) and, where it meshes, its mesh and three decks byte for byte (112 files). Two files were run on the commit before only: a chassis that stops at the 30-minute limit before and after, and a cone adapter that takes 25 minutes and is unchanged.
+
+| file | what it is | before | now | call |
+|---|---|---|---|---|
+| d011 | a flat strip bracket, 3 mm by 6 mm by 67 mm | solid: "6.7 times" | shell, 269 elements | Right: a flat strip. It sits on the line (2.0 walls wide). |
+| d041 | an extrusion foot, a 9 mm plate 5 walls across | solid | shell holds 97%, one thick region | Right. |
+| d046 | a rail section, 2.5 mm wall, 5.3 walls across | solid | shell holds 78% | Right. |
+| d053 | a pivot plate, 10 mm, 9.3 walls across | solid | shell holds 80% | Right. |
+| d010 | an IMU mount; its second body has 5 mm walls 3.5 to 6.7 walls across | that body solid | shell and solid regions | A shell, as asked. Weak spot: its sewn faces times their walls hold 1.18 of the body (thick short walls overlap where they join; the volume check is read on all-shell bodies only). |
+| d028 | a switch enclosure | shell holds 79% | 94%: two 5 mm walls and two small 1 mm ones joined in | Better. |
+| d029 | a camera cover | shell held 6% of the part | all of it: two 5 mm walls and a short drafted wall, flat at its mean | Better: the shell was a scrap before. Triangles 1% to 14%. |
+| d030 | a flight-controller housing | shell holds 75%, outside the Nastran limits | 85%, inside them | Better. |
+| d038 | a tube holder | a 4 mm patch of the wall was a hole in the shell | filled: all shell | Better. |
+| d048 | a tube base | shell holds 57% | 89%: six 2.5 mm tabs joined in | Better. |
+| sh0089 | a CubeSat frame | 1 mid-face | 11: ten 2 mm tabs joined in | Better. |
+
+No part that was rightly solid turned into a shell. What kept them out:
+
+- **The body share.** Five dev parts that were solid, and one body of a sixth, have a plate-like tab or lip on a thick body: their plates hold 8% to 19% of the metal. Without the share they came out "shell and solid regions" with a scrap of shell in the files; with it they are solid, as before. A skin panel whose new plates held 26% (and brought 34 open edges) keeps the shell it had. Seven more parts sit between a quarter and a half and are left as they were (above).
+- **The plates must join.** A printed buoy's seventh body gained 12 short walls and 12 open edges with them; it is read again without them and keeps its sewn shell.
+- **No flat plate under two walls wide.** A drafted rib's two sides are a tapered pair too. They get no flat mid-face, so a part with no new plate keeps its record's mid-face numbers, and its decks, as they were.
+
+**Costs, said plainly.**
+- Triangles. Short walls mesh with more triangles: six of the eleven are over the 5% target (5.2% to 14.9%; one of them was at 5.7% before). All are inside every Nastran limit.
+- Time. Extraction is 10 to 20% slower on parts with many thick or tapered pairs (a hull part alone on the VM: 36 s to 43 s). A body read again without its plates costs up to two more passes (a skin panel 11 s to 36 s).
+
+**The same twice.** The 145 files run twice on the final code: the same record and the same surface file 145 of 145; the same mesh and the same three decks, byte for byte, on all 123 that mesh.
+
+### 2.4.5 Joins that close and mesh (SHELL-30 to SHELL-32, SHMESH-30, 11 Nov)
+
+Measured first on #432's head (9ad6948d), on the same 282 files (lab 87, wall set 60, new set 135), every open edge
+read by what lies past it and every mesh failure by where it fails. Leaving out one frame that spends its whole work
+budget before any general join (d040: 93 open edges, below), 57 edges (613 mm) were open in 12 files:
+
+| what lies past the open edge (9ad6948d) | edges | mm | files |
+|---|---|---|---|
+| the metal stops under a wall on, no wall ahead: two walls both stopped short of a corner the edge meets only in pieces | 9 | 235 | 3 |
+| the wall goes on at its own thickness, not shelled (walls stream) | 26 | 175 | 7 |
+| a cyclone's re-made cone edge (as the row above it) | 1 | 70 | 1 |
+| thick metal (a corner post, a rib's foot), a piece of another wall BESIDE the way | 16 | 66 | 6 |
+| a T through a corner post, past the reach | 2 | 60 | 1 |
+| a 1 x 2 mm hole in one wall | 2 | 4 | 1 |
+| a wall in line, oblique | 1 | 2 | 1 |
+
+and 6 files gave a shell the mesher failed on (t0010, t0039, fr017: gmsh "could not close the boundary of 5 faces
+in turn"; e0009, t0057: the mesh ran past 15 minutes; t0056: "impossible to recover the edge").
+
+**SHELL-31, no join with a face that is no face.** The general fuse can hand back a face whose boundary does not
+close or cannot be oriented (OpenCASCADE's own checker, BRepCheck: NotClosed, UnorientableShape). gmsh cannot mesh
+it, and the whole shell fell back to a solid mesh (a valve body: 19 of its 104 sewn faces; a tank's nozzle: 2 of
+26). A general join that leaves any such face is not used; the straight join and the strips stand, and the record
+says so. It turned a general join down in 11 of the 282 parts: t0010, t0039 and t0052 became fully good, a cyclone
+(sh0011) with SHELL-30 too, an enclosure whose general join ran its mesh past 15 minutes now meshes in 7 s (e0009),
+the other 6 kept their verdict.
+
+**SHELL-30, an open edge carried on piece by piece, and the wall it meets carried on to the same line.** SHELL-22
+carries an edge on only when EVERY point along it meets the other wall, and takes the other wall as it stands. On
+real parts a wall meets its neighbour over part of its length (the neighbour notched for ribs or slots, or giving
+way to a corner post) and both walls stop short of the corner; SHELL-22 then fell back to the nearest points - a
+strip laid across the corner - and the two walls did not meet. Now, before SHELL-22, each edge still open is read
+at one point a wall (8 to 128, as SHELL-22), each point carried on in its own surface to another wall's surface on
+SHELL-22's conditions (within SHELL-3's reach, the way in the metal, the meeting point within half of each wall of
+that wall's mid-face) and with that wall square across from the meeting point (its nearest point within 30 degrees
+of square: a piece ends where the other wall ends). Every run of points that meet, at least one wall long, its ends
+found by halving 6 times (1/64 of a wall), gets the strip from that piece of the edge to the meeting line in its own
+surface; where the meeting line lies off the other wall's mid-face, that wall gets the strip from its border to the
+same line. Both end on the one line: the corner SHELL-3 would draw, for the pieces that have one. An edge that meets
+the other wall over its whole length is left to SHELL-22, made as before. Kept only when fewer junctions are left
+open (read as SHELL-21 reads them), no tolerance past SHELL-12 and no face SHELL-31 turns down.
+
+**SHELL-32, a wall ahead is a wall the walk comes over, within the reach.** SHELL-21 called an edge a junction left
+open when its walk out of the edge came within half a wall of another sewn face. A piece of wall lying BESIDE the way
+(above and below the edge along a seam, either side of a rib's foot, the border of the next piece of a curved wall a
+straight walk drifts off) is within half a wall of the walk and is no wall to meet. The walk's point now counts only
+when its nearest point on the other mid-face lies inside it (a twentieth of a wall clear of its border) and the line
+to it is within 45 degrees of that face's normal (halfway between straight over the face, 0, and straight out past
+its border, 90), and the mid-face itself lies within the reach (the way so far plus the distance to it): a slab the
+walk only enters at the end of its last step belongs to a wall no join reaches. Edges with thick metal past them and
+no wall to meet are then the links to thick regions (or the wall's own end) that SHELL-21 meant them to be.
+
+**SHMESH-30, the mesher fuses back only the re-made faces and the faces they can touch.** SHMESH-11 re-makes a few
+faces before meshing (cut at their seams; offsets as B-splines) and fused the WHOLE surface again to join them. On a
+printed keycap's free-form walls (t0044: 4 of its 53 faces re-made) that fuse took over 700 s of a 704 to 862 s mesh,
+gmsh itself 3.6 s. Now the re-made faces are fused only with the faces whose boxes meet theirs (grown by twice the
+surface's largest tolerance: the only pairs the general fuse intersects that hold a re-made face; two faces neither
+of which is re-made already meet as sewn), and the others are put back as they were, keeping the edges their
+neighbours share. Kept only when the surface comes back with no more free edge than it had (to a millionth) and
+every face traced to its mid-face; else the whole surface is fused, as before. t0044 meshes in 11 s (862 s); of the 213
+meshes, 203 decks are byte-identical, 10 differ by a few elements (1961 to 1964, 2037 to 2054, 7472 to 7583), every
+one valid; one leaves Nastran's limits (t0044: one triangle past T3_IAMAX; it has open edges, so it was not fully
+good before either). Every one of the 10 is the same twice.
+
+**Results (11 Nov, lab VM, 16 files at once).** "Fully good": a shell found, every extraction check, a valid mesh
+inside all Nastran limits.
+
+| set | files | fully good | files with open edges | open edges | files that mesh | fully good before, not after |
+|---|---|---|---|---|---|---|
+| lab (87) | 87 | 71 to 72 | 2 to 0 | 3 to 0 | 81 to 81 | none |
+| wall set (60) | 60 | 36 to 36 | 2 to 2 | 94 to 86 | 40 to 40 | none |
+| new set (135) | 135 | 76 to 80 | 9 to 7 | 53 to 30 | 88 to 91 | none |
+
+- Open edges without the budget-bound frame: 57 to 31 edges, 613 to 198 mm, 12 to 8 files. Of what is left, 172 mm
+  (87%) is a wall that goes on at its own thickness and was not shelled (the walls stream); 16 mm thick metal past an
+  edge beside a wall (t0032); 8 mm two short ends (e0009, t0032); 2 mm one oblique wall in line (t0033).
+- Every verdict change: sh0011, e0004, t0010, t0039, t0052 to fully good; sh0010 and e0032 from open edges to closed
+  and meshed but with 2 elements past Nastran's limits each, in the strips that close them; d040 93 to 85 open edges,
+  e0007 6 to 3, e0009 2 to 1 (and now meshes), t0032 12 to 11, t0033 7 to 4, t0044 9 to 4. No other record changed
+  but those of 6 parts whose general join SHELL-31 turned down (same verdict).
+- The same twice: the 14 changed parts that finish in minutes were run again: 14 records, 14 surface files and the
+  three decks of all 14 byte for byte the same.
+- Time: extraction 6179 to 6321 s in all (+2%); no file over 1.5 times slower but t0039 (6 to 17 s: the general join
+  turned down, the straight join and 30 strips made instead - it now meshes); mesh 4583 to 3749 s before SHMESH-30
+  (e0009 900 to 7 s), and the keycap-like part 710 to 11 s with it.
+- Accuracy through a junction (CalculiX, one thread, free-free modes 7 to 12, S4 shell of the sewn mid-surface
+  against C3D10 of the CAD): an L bracket (100 x 80 x 3 leg, 60 high upright) whose leg is slotted twice at the
+  corner, closed ONLY by SHELL-30 and SHELL-22 (the straight extension, the general join and SHELL-13 off): -2.5 to
+  +3.2%; the same bracket as the straight extension closes it: +0.5 to +4.0%; a T bracket by the straight join:
+  -2.7 to +1.1%.
+
+**Handed over by the plates stream (#436).** With its body-share line at a quarter instead of a half, two dev frames
+(d037, d047) lost their mesh ("could not close the boundary"). With these rules on top of #436 (539845e1) and the line
+at a quarter, the dev set goes from 42 fully good (#436 alone) to 44: both frames are fully good again. But not
+because their new plates join: SHELL-31 turns down the general join that left 9 and 4 unsound faces, and with the
+straight join d037's plates hold 49% of its metal (under the half the body guard asks) and d047's leave 6 open edges
+(the plates guard), so both keep the shell they had. d047 with its plates kept (the guard off) meshes, valid and inside
+Nastran's limits, with 6 open edges, all where a 1 mm plate meets a 0.6 mm bend with thicker metal past the edge. The
+skin panel and the buoy body whose new plates bring 34 and 12 open edges (d057, sh0114): with these rules 33 and 12.
+d057's: 12 with thick metal past them, 8 + 6 walls in line a step apart (3.1 mm plates into 2.5 mm ones, flat and
+curved: SHELL-7 snaps flat plates only, and SHELL-22 does not close them there), 7 plate ends short of the
+skin; sh0114's 12 all plate ends short of the skin (under a wall from it, no wall ahead, not the wall's own end by
+SHELL-21's slab test). Those are the next junction classes for the plates' new walls.
+
+**What is still open, and why.**
+- A frame (d040) spends its whole 1500 s work budget before its general join (SHELL-18): 85 open edges. Speed, not a
+  junction rule.
+- Diagonal strips. A strip laid across a corner (SHELL-13's ruled strips, SHELL-22's nearest points) closes the edge
+  but leaves its own mid-face's surface. Counted as kinks of over 5 degrees between two faces of one mid-face: 28 files,
+  15.3 m before; 31 files, 16.3 m after, the increase from the parts whose general join SHELL-31 turned down (their
+  straight join is closed by such strips: t0039 100 kinked edges, d047 43). SHELL-30 makes square corners where the
+  edge has a meeting line; replacing SHELL-13's and SHELL-22's diagonal strips by SHELL-30's is the next step.
+- Meshes. fr017 (a PVC tee: "could not close the boundary", no unsound face), t0057 (past 15 minutes), t0056 (the
+  flange with two tube stubs: the general join loses the tilted tube's whole mid-face - the fuse hands back 127 of its
+  grown cylinder's 358 mm2 - so the straight join and strips stand, with 0.001 mm edges where they meet; merging the
+  short edges made it worse).
+- Elements past Nastran's limits lie in strips and at their short edges (13 of the 14 parts whose only fault is those
+  limits). Meshing each mid-face's pieces as one face (ShapeUpgrade_UnifySameDomain on faces of one mid-face, every
+  junction edge kept) took 4 tube frames inside the limits, but grew their meshes 1.4 to 4.6 times (the plan sizes a
+  merged face by its narrowest part) and broke two others; it is kept out (the sizing belongs with the notes stream).
+- The junction check, read from the decks as written (`shell.bdf`): along every CAD edge three or more sewn faces
+  share, the deck's nodes on the line are joined by element edges that at least three elements use, covering it; no
+  two nodes of one body within a thousandth of the thinnest wall; no element edge used by one element off the
+  surface's free edges. On the final meshes (211 decks): 883 junction lines in 40 parts, 708 with every sheet on shared
+  nodes, 24 shorter than the elements round them and meshed away (SHMESH-12), 151 not shared in 10 parts (117 of them
+  in one enclosure, r0047; on #432's head 163 in 13 parts); coincident nodes only in d040 (186 pairs, as before); and
+  element edges free where the surface is closed in 36 parts (2811; 2979 before) - a hull panel (sh0004) has a 999 mm
+  edge between an offset wall and its band meshed on one side only (436 such edges). The parts these rules changed
+  have no new ones. They are the mesher's (gmsh's 1D mesh and SHMESH-12's merges), named for the next round.
+
+### 2.4.6 Walls never found as walls (SHELL-40 to SHELL-44, 11 Nov)
+
+The last round found that most open edges left on real parts sit beside a wall the pairing never made a wall. So
+the walls were measured on the part itself, not on the extractor's pairs.
+
+**How "wall missed" is measured.** 4,000 points over the solid's skin (by area, a fixed seed). From each, a ray
+inward gives the local wall and the skin across it; the point is a wall's side when the skin across faces it back
+within 12 degrees (SHELL-9's 10, plus 2 for the triangles). From the wall's middle there, a walk along the wall in 8
+directions, half a wall a step, re-centred between the skins each step, while the wall keeps its thickness within
+1.5 times. The skin is THIN-WALL skin when the wall is at least 4 walls wide and 10 walls long there (SHELL-2's own
+1/4 and 1/10, read locally, with no faces, pairs or sheets), or when a walk from it runs into such wall of about
+its thickness (a strip between cut-outs, a stretch beside a boss). It is COVERED when the delivered mid-surface
+passes within half the local wall of the wall's middle. Each point not covered is put down to its two CAD faces and
+to what the record says of that pair. Tools: `~/shellcamp/walls/tools/skin.py`, `classes.py`. A corner whose two
+skins turn by more than 12 degrees is not counted as wall skin: that class shows in open edges, not here.
+
+**What was missed (282 real and lab parts: the 60-file wall set, the 135 new real parts, the 87 lab parts; 225 have
+thin-wall skin).** Ranked by the sum over files of each file's missed share (1.00 = one whole file):
+
+| class | files | share | whose |
+|---|---|---|---|
+| a whole wall judged too thick against its span or width | 51 | 22.3 | the shell-or-solid verdict (plates stream) |
+| a bore, a round or a blend beside a flat face, turned past 10 degrees | 34 | 3.4 | mostly no wall |
+| a drafted or free-form wall whose outline did not close or whose overlap came back empty | 8 | 2.3 | SHELL-42 |
+| a free-form wall whose fitted mid-surface was off the middle between the fitted points | 4 | 0.9 | SHELL-43 |
+| a face that fills little of its parameter box: "too few points of the face could be read" | 15 | 0.7 | SHELL-40 |
+| a piece of a wall judged too thick beside a shell piece of it (a step, a strip) | 8 | 0.6 | verdict |
+| a drafted tube (a cone facing a cylinder) whose wall read "the two faces do not overlap" | 2 | 0.3 | SHELL-41 |
+| a shell pair whose mid-face is not in the sewn surface | 3 | 0.3 | joins |
+| never named a pair by the rays | 16 | 0.1 | SHELL-44 |
+
+So the pairing's own misses are few in area against the verdict's, but they are whole walls, and each leaves a hole
+in the shell beside walls that are found.
+
+**SHELL-40, the wall read on the face itself.** The even-wall and taper tests read a 7 x 7 grid over a face's
+PARAMETER BOX and keep the points inside the face. A face that fills little of its box (a frame round a cut-out, a
+ring, an L, a strip lying askew in its plane's parameters) kept under 3 points and was thrown out ("too few points
+of the face could be read": a 2 mm duct's flange 12 walls wide, a 9.5 mm plate's pocket floors). When fewer than 12
+of the 49 points lie in the face, the grid is made twice as fine, at most three times (7, 14, 28, 56 a side), until
+12 do. 12 is a quarter of 49: a face filling a quarter of its box or more is read exactly as before.
+
+**SHELL-41, a foot on a closed face in the face's own turn.** A point projected onto a cylinder, a cone or any closed
+surface comes back in the surface's first period; a face on it may run from pi to 3 pi. Read as it came, half the
+feet of a drafted tube's wall lay "off" the tube and its two faces "did not overlap" (a moulded tank's cone in its
+cylinder, a dust jar's drafted wall). The parameters are moved by whole periods into the face's range first, in the
+taper test and in the fitted mid-face's "B lies across A".
+
+**SHELL-42, an outline is closed as the file says it is.** The pieces of a face's outline share their end points in
+the B-rep, but their parameter curves meet only within the file's tolerance (up to 7e-6 of the parameter box on the
+parts measured: a cyclone's free-form walls, a duct's, an enclosure's, a bracket's drafted walls), and the wire
+builder asks 1e-7: the fitted mid-face's outline came out in pieces ("the two faces do not overlap") or not closed
+("not a valid face"). Each piece is made to start where the one before ends (CHAIN_GAP 1e-3 of the box keeps apart
+ends that are not one point: an outline wound round a closed surface ends a whole period away). OpenCASCADE's flat
+Boolean of the two outlines also found NOTHING at one tolerance where it finds the overlap either side of it
+(0.358 of the box at 1e-7, 1e-5, 1e-4, 1e-3, nothing at 1e-6); an empty overlap is asked again at 10, 0.1 and 100
+times. A wrong piece cannot pass: every fitted mid-face is read against both its faces (SHELL-9).
+
+**SHELL-43, a finer fit where the first is off the middle.** A free-form wall that curves between the 17 x 17 fitted
+midpoints (a blow-moulded tank's side) was up to 5% of its wall off the middle between them and thrown out
+(FIDELITY_SHARE 2%). It is fitted once more through 33 a side (a cubic fit's error falls about 16 times: 5% to
+0.4% on that tank) and kept only if it holds the middle. Once, not twice: 65 a side took 5 to 7 s a pair. A fitted
+overlap under a tenth of a wall wide (SHELL-16's sliver) is no mid-face: read finely enough, a sliver along A's own
+edge lies in the middle of its wall.
+
+**SHELL-44, no pairing ray lost on a flat face.** VTK's line test, asked with a tolerance of exactly 0, misses a
+triangle whose box has no thickness - a flat face square to an axis, the far side of the commonest wall there is -
+for part of the rays that meet it. On 237 parts: 2.5% of the pairing rays read no wall that way on average, over 5%
+on 23 parts, 85% on one; every ray lost left through such a triangle; on 71 parts the faces named as
+partners changed. The pairing's rays now ask 1e-9 mm. The FEA wall readings (`fea_features.wall_thickness`) are left
+as they were (the FEA path's regression is not this stream's); they lose the same rays.
+
+**Tried and taken out: SHELL-45, a bend whose rounds are not concentric.** A pair turned past 10 degrees was let
+through as a tapered wall when it faced squarely somewhere (within 2 degrees), turned at most 22.5 degrees and kept
+its wall within 1 + tan 10 / 0.25 = 1.71 times. On the 282 parts it changed 4: an enclosure's 2 open edges closed but
+its mesh then ran past 15 minutes (SHMESH-21); a fully good tank got 1 open edge at its knuckle and went 10 s to 386
+s; a frame's rounded tube took 18% more metal than it has (a fitted range check took that back). The generated
+sheet-metal brackets it was meant for (2 mm sheet, both rounds 4 to 6 mm, not concentric) still read MIXED with or
+without it: their bends pass the taper test but are fitted only when narrower than four walls is excused, and their
+thinnest reading (2.4 mm at the grid's band middles) does not join them to their 2 mm flanges' wall (SHELL-2b). That
+grouping, at the bend's own edges, is the next step for bends.
+
+**Results (11 Nov, lab VM; "fully good" as the sealed set reads it).** Skin coverage is the mean over files of the
+share of thin-wall skin with shell.
+
+| set | files | fully good | skin coverage | files 99% covered | files with open edges | open edges |
+|---|---|---|---|---|---|---|
+| wall set (real parts) | 60 | 36 to 36 | 87.3 to 87.4% | 25 to 26 of 40 | 1 to 1 | 1 to 1 |
+| new set (real parts) | 135 | 76 to 76 | 77.2 to 78.4% | 56 to 61 of 104 | 9 to 8 | 53 to 137 |
+| lab (tuned on) | 87 | 71 to 70 | 96.9 to 98.0% | 70 to 76 of 81 | 2 to 4 | 3 to 70 |
+
+On the plates stream's head (#436) the same rules move the same files: fully good 41 / 78 / 71 to 41 / 78 / 70, skin
+coverage 87.8 / 80.7 / 96.5% to 87.9 / 81.8 / 97.9%.
+
+- **Better.** 15 files hold more of their walls (coverage up a point or more, none down): a duct bend and a reducer
+  now shell whole (their bodies mixed or solid before), an octagonal chamber's 7 more bodies, a tank's drafted cone
+  in its cylinder (open edge 1 to 0, now fully good), two tanks and an enclosure 7, 9 and 6 open edges to 0, 4, 4.
+- **Worse by the count, judged.** Three parts whose walls are now found open new junctions the joins do not close:
+  a cyclone inlet body ("fully good" before with 10% of its metal shelled; now 51%, 14 open edges; the general join
+  runs to its 300 s deadline: 58 to 693 s), an enclosure plate whose pocket floors are now walls (62% of its metal to
+  102%, 100 open edges at the pocket steps), a cyclone cone (outside the Nastran limits before, now one shell with 53
+  open edges). The shell they had before was the wrong model (most walls missing); the open edges are joins work.
+- **Run time** (base and this branch side by side under the same load, 281 files): 12,233 s to 11,326 s. Five files
+  more than 1.5 times slower, each holding new walls: the cyclone inlet (the general join above), a duct reducer's mesh
+  (12 to 106 s: 18,250 to 88,271 elements, its two new walls are 20-across panels), a duct bend (37 to 65 s mesh), a
+  bracket and the enclosure plate (1.6 times).
+- **The same twice.** All 281 records and surfaces byte-identical over two runs; meshes identical but on two files
+  whose gmsh quad recombination differs run to run on the base code too.
+
+### 2.4.7 Thin walls still judged too thick (SHELL-23b, 23c, 25, 26; 11 Nov)
+
+**How it was found.** The walls stream's skin measure (section 2.4.6) put down the thin-wall skin still missed on #436 to the record of each pair: "judged too thick" was 44 files and 18.5 file-shares of the 282 lab and real parts. Each was traced to the rule that refused it:
+
+| what refused it | files | file-shares |
+|---|---|---|
+| the body share (the body's plates under half its metal) | 24 | 14.0 |
+| the pad test (a face shared with a thinner shell wall) | 4 | 2.0 |
+| a tapered sheet judged at its thickest point | 2 | 1.0 |
+| a thick ring | 1 | 1.0 |
+| under two walls wide (strips beside a wall, mostly) | 27 | 0.9 |
+| its plates would leave edges open (SHELL-23's last guard) | 6 | 0.2 |
+
+**SHELL-23b, the body share is off.** It refused plates 7 walls wide and 14 long on thick bodies. A plate on a lump is a shell with a solid region, as a thin plate on a lump always was: SHELL-2 never had this guard. The two frames it had been kept for (their short plates' joins would not mesh) are made by SHELL-26 instead.
+
+**SHELL-23c, a step is no pad.** A wall flush with a thinner shell wall is a shell when it is at most twice that wall. Its mid-plane then lies inside the thinner wall's metal, and SHELL-7 lays the thinner wall onto it with its offset (a doubler, a land, a thicker band). Thicker than that, it is a pad and stays solid, as before.
+
+**SHELL-25, a drafted wall is fitted once it is two walls wide.** SHELL-9 fitted a tapered or free-form wall only when it was four walls wide (SHELL-2's width rule, read early). Now the line is the plate's own, two walls. A drafted enclosure wall 4.4 to 5.3 mm thick and 4 walls wide had been left solid while an even plate beside it, as wide, was a shell. Cost: a printed enclosure fits its 31 narrow drafted pairs and its extraction goes 43 s to 474 s. With the quick test before fitting kept at four walls, that cost goes away, but an enclosure goes back to 1 open edge and a frame back to solid, so the quick test is at two walls too.
+
+**SHELL-26, the shell without its short plates when the mesher cannot close them.** On two dev frames, gmsh could not close the boundary of small curved pieces where short plates (0.6 and 1.25 mm, 5 to 10 walls across) join ("could not close the boundary of 5 faces in turn"). The run then reads the part again without SHELL-23 and SHELL-24 (`extract(plates=False)`), meshes that, and says one line: "The walls short for their thickness could not be meshed with the rest, so they stay solid and are not in the shell files." Both frames then mesh exactly as before. Two enclosures whose mesh failed before this round also mesh now this way.
+
+**Results** (lab VM; before = #436 merged with #441, fb444b45; "fully good" as the sealed set reads it).
+
+| set | files | fully good | mean skin coverage | files under 50% covered | fully good before, not after |
+|---|---|---|---|---|---|
+| wall set (real) | 60 | 41 to 49 | 87.9 to 93.4% | 5 to 3 | none |
+| new real set | 135 | 78 to 104 | 81.8 to 94.9% | 18 to 4 | none |
+| lab | 87 | 70 to 70 | 97.9 to 97.9% | 1 to 1 | none |
+| look-alikes (plates, sections, pedestal, lumps) | 64 | 52 to 52 | | | none |
+
+- "Judged too thick" skin: 44 files and 18.5 file-shares to 27 and 3.9. What is left: pads over twice their wall (1.7), the tapered hull judged at its thickest (1.0), a thick ring (1.0), strips beside walls, and the six plates SHELL-26 left out.
+- Census DEV (305 files, the census stream's scorer): fully good 138 to 139; whole part judged solid 19 to 8 (the 8 left are under two walls wide: bars, rails, posts); mean scorer coverage 90.7% to 94.3% (29 files up, none down); no file that was fully good is worse. The files that now make a shell mostly move to "wall missing" (44 to 54): the scorer still finds walls of theirs missing (pads, rings, junctions) or the shell cut open round the solid region.
+- The ten generated lumps stay solid. The look-alikes are unchanged.
+- No lab file gains an open edge. On the census DEV half, two files do (the product's own count): a keyboard plate 0 to 467 and an enclosure 4 to 89 (handed to the joins stream).
+- Run time: lab 9,859 s to 6,961 s, real sets the same (the VM was shared by two runs: rough). Two files more than 1.5 times slower: the printed enclosure above (SHELL-25) and a duct, 355 s to 649 s.
+- The same twice: 279 of 281 records and surfaces byte-identical, 247 of 249 meshes. The two records that differ are a cyclone inlet and the printed enclosure: their general join runs into its 300 s deadline under load (SHELL-11), as on the base. The two meshes that differ: one gmsh recombination that differs on the base too, one large assembly meshed in only one of the runs.
+- Accuracy (CalculiX, free-free modes 7 to 12, against a C3D10 solid of the part): a 4 mm plate with a 2 mm land (SHELL-23c), +2.1% to +3.0%; with a 4 mm land (twice the wall), +3.0% to +4.1% (a free plate alone reads +2.3% the same way: the step adds 1 to 2 points); a narrow wedge 4 to 8 mm, 3 walls wide (SHELL-25), +1.0% on its first mode and +7.8% on its fifth (48 elements, 4 across).
+
+**Not done.**
+- Sheet-metal bends whose two rounds have the same radius (not concentric). Measured on generated 2 mm brackets: at a bend radius of 6 sheet thicknesses or more, the bend already passes the taper test and is a shell. At 2 to 3 thicknesses, the bend's two faces turn more than 10 degrees, so the pair is "not parallel". The thickness at the bend's edges is not what stops them. That is the walls stream's SHELL-45 (tried and taken out for its side effects).
+- Pads over twice their wall, rings, and walls under two walls wide stay solid, by rule.
+
+### 2.4.8 Walls off the middle round bends, walls never found: what the census found (11 Nov, walls round 2)
+
+The census (630 new public parts, DEV half 305; `~/shellcamp/census`) named two classes for the walls stream. Each
+was read on its DEV files, against the extraction's own surface and the delivered mesh.
+
+**"Wall misplaced", 10 DEV files: mostly not the mid-surface.** Every mesh node's exact distance to the sewn
+mid-surface was read, as delivered and with the mesh's sliver merge (SHMESH-12) off. On 8 files (two square and one
+rectangular hollow section, a hollow-section column base, a Z and a hat bracket, two rectangular ducts) the
+mid-surface is exact and the mesh leaves it: 6 to 249 nodes more than 0.3 of a wall off it, none with the merge off.
+A rounded corner or bend is a mapped strip (SHMESH-16), its elements sized across by the curvature rule (an SHS
+40x40x2's 4.7 mm corner: 6 across, 0.78 mm, under the 1 mm floor) and stretched up to 5 times along it. SHMESH-12
+calls an edge a CAD sliver when it is under the floor and under a fifth of its elements' longest edge: 0.78 is under
+both, so every edge across every corner is merged, the corner closes to a line and the flat faces' nodes are pulled
+over it into the hollow (1.25 mm off a 2 mm wall). The strip's stretch (5) and the merge's share (1/5) meet exactly.
+That is the mesh stream's code; it was handed over with a measured patch (landed as SHMESH-38, rule 38 above): a mapped strip's edges are slivers only under a fifth of the floor (the strip's own sizes are planned). On the census DEV half (the walls round's head with only that patch) fully good went 124 to 130 and no fully good file got worse: five hollow sections and brackets wall misplaced to fully good, two ducts misplaced to an open junction, an enclosure base wall missing to fully good; one printed box open junction to extra shell (199 to 215 open edges). Of the other two,
+a robot-arm chassis's off-middle nodes lie on SHELL-13 / SHELL-22 strips laid on a skin, and a joggled hat rail's on
+a straight extension run on past a bend (joins); a fuselage panel's mid-surface is exact (a fillet torus of radius 5
+between 4 and 6) and its reading 0.56 of a wall off is left to the mesh and the scorer.
+
+**"Never found as a wall", 8 DEV files: mostly found by section 2.4.6.** On the walls round's head (#441) an RHS
+trailer frame is fully good (coverage 0.49 before), three hoppers and a duct reach full coverage (they now stop
+later: an open junction, the Nastran limits, the mesh merge above). Left: a sprocket case whose cylinder mid-face
+(14,257 mm2) is in the sewn surface whole but carries no element (gmsh leaves the face empty, without a word: mesh);
+a rocket nose cone, a cone over a cylindrical bore turned 22.6 degrees (a wedge by SHELL-9, no wall); and a vessel's
+elliptical head (2.5 m2, an even 12 mm pair) whose mid-face is never made: the two half-offsets of a surface of
+revolution and a revolved ellipse do not overlap as one surface, and for the fitted mid-face the outside face's
+outline, mapped onto the inside face's parameters (closed both ways), does not close: its bottom circle comes back
+to where it started instead of a whole turn on. The next step for vessel heads.
+
+**Tried and taken out: SHELL-46, a bend between flanges.** The bend whose rounds are not concentric (section 2.4.6's
+SHELL-45) again, read differently: a pair turned past 10 degrees (or a taper reading thicker than its flanges) whose
+wall along the CAD edge it shares with an even pair, read to the far side of the metal, is that flange's wall
+within 2% - one side's edge lies square over the flange's other face - is a tapered wall up to 30 degrees, facing
+squarely somewhere, its span starting at the flange's wall, so it is judged with its flanges. Rounds no bigger than
+a blend were left to the joins. It made the generated brackets one shell (a 2 mm sheet with both rounds 5 mm; 1.5 mm
+with 4 mm; 2 mm with 6 and 7 mm: mixed to shell, metal 1.00 to 1.01) and a rounded 3 mm tube. On the census DEV half
+it read bends on 50 files - printed and sheet parts whose fillets are rounder than two walls - and fully good went
+124 to 122: a rack panel was judged solid (the bend's thickest reading, 41% over its flanges', became the sheet's
+wall), a baseplate's body left solid, an anti-slip pad got 2 open edges, two faceplates ran past the 1800 s
+extraction clock; no file became fully good by it. A bend's wall must be judged with its flanges by the flanges'
+wall, not by its own thickest point, before it can come back.
+
+**Census DEV, #432 head to the walls round's head (#441):** fully good 122 to 124; 9 files better (an RHS trailer
+frame and a deck angle fully good, an enclosure's open junction closed, hoppers and ducts covered), 2 worse (a frame
+and hood extra shell to wall misplaced, 140 to 38 open edges; a pedestal box one element past the Nastran limits).
+
+### 2.4.9 The walls the walls round found, joined (SHELL-33 to SHELL-35, 11 Nov)
+
+The walls round (§2.4.6) found real walls nobody had shelled - skin coverage up on every set - and the junctions
+round them were left open: open edges 53 to 137 on the new set and 3 to 70 on the lab with #441 alone. On #437 and
+#441 together, before the rules below, what was left open came from three causes, none a new kind of junction:
+
+| cause | files | open edges (#437 + #441) |
+|---|---|---|
+| more than 50 open edges in one body: no closing pass ran at all (a 9.525 mm plate with 18 pocket floors, r0061) | 1 | 100 |
+| the general fuse fails outright on the straight join's mid-faces, and the general join runs past its deadline: every mid-face handed back loose (two cyclone parts, fr018, fr019) | 2 | 66 |
+| a new wall's small leftovers (e0007) | 1 | 1 more |
+
+**SHELL-33, every open edge is offered to the closing passes.** The record lists the first 50 open edges of a body,
+and SHELL-13, SHELL-22 and SHELL-30 ran only when every open edge was listed: a body with more than 50 got none of
+them. The census now keeps every open edge for the passes; the record still lists 50. r0061's 100 open edges at its
+pocket steps are closed (SHELL-13's strips down each step: butt steps between 3.175, 6.35 and 9.525 mm floors), and
+a frame that runs out of its work budget before any general join (d040) goes from 85 open edges to 2.
+
+**SHELL-34, a surface the general fuse cannot sew is sewn edge to edge.** When OpenCASCADE's general fuse fails on a
+body's joined surface, the straight join handed its mid-faces back unsewn, and every pass after it failed on the
+same fuse (about 36 s a pass on fr019). Now the faces are sewn edge to edge (BRepBuilderAPI_Sewing at ten times the
+sewing tolerance: it joins edges lying on each other and cuts no face), and once the fuse has failed on a body its
+passes sew that way at once. Tried and dropped: the fuse again at 2 and 10 times its tolerance (176 s on fr019, never
+sewing), and OpenCASCADE's glue, oriented-box and no-inverted-check options (all failed; full glue dropped faces).
+fr018 goes from 53 open edges to 18 and fr019 from 13 to 2. What is left is not a junction rule's: on fr019 both edges
+are a wall that goes on unshelled (113 mm, the walls class); on fr018 five are that class and 13 are steps and gaps
+between pieces of its cone wall, where the passes make their strips but a strip whose far end lands inside another
+face cannot be sewn edge to edge - it needs the general fuse that fails there.
+
+**SHELL-35, square corners where the strips leave a junction open.** The passes after the joins run SHELL-13 (a
+ruled strip from an open edge to the nearest edge of another mid-face, at whatever angle) first, then SHELL-30 and
+SHELL-22. A corner SHELL-13 closes is closed by a strip laid across it, off both walls' surfaces (31 files, 16.3 m of
+such kinks on #437). When that order leaves a junction open, a second order runs: SHELL-30, then SHELL-22 only where
+the edge carried on in its own surface meets the other wall's surface, then SHELL-13 and SHELL-22's nearest points;
+the one leaving fewer junctions open, read as the record reads them (SHELL-21), is kept, the old one on a tie.
+Measured and not kept: the square order as the rule (taking ties itself) took four fully good parts out of Nastran's
+limits (t0039, t0052, r0008, r0053: 1 to 9 elements in the new corners' strips), and judged before SHELL-21's
+reading it left two enclosures (e0004, e0032) open that the old order closes. So the strips laid across corners
+mostly stay; drawing those corners square without the strips' Nastran cost is still open.
+
+**Decks in plain ASCII.** Two census files whose names held a non-ASCII letter lost their shell mesh whole: the
+deck's comment line naming the source file could not be written as ASCII. The three decks now write an accented
+letter as its plain letter and any other non-ASCII character as "_" (engines/shell_writers.py).
+
+**Accuracy through a step** (CalculiX, one thread, free-free modes 7 to 12, S4 shell of the sewn mid-surface against
+C3D10 of the CAD; a 160 x 100 x 6 mm plate with a 60 x 40 pocket to a 3 mm floor): the step as SHELL-7's offset +0.8
+to +2.5%; the step closed by strips, as r0061's pocket steps are, -0.6 to +1.6%.
+
+**Results (11 Nov; lab VM, #437 alone and this branch side by side, 15 files at once each).** "Fully good": a shell
+found, every extraction check, a valid mesh inside all Nastran limits.
+
+| set | fully good | files with open edges | open edges | files that mesh | inside Nastran | skin coverage (mean of files) |
+|---|---|---|---|---|---|---|
+| lab (87) | 72 to 71 | 0 to 2 | 0 to 20 | 81 to 80 | 72 to 71 | 96.8 to 98.2% |
+| wall set (60) | 36 to 36 | 1 to 1 | 1 to 1 | 39 to 39 | 37 to 37 | 85.2 to 87.7% |
+| new set (135) | 80 to 81 | 7 to 5 | 30 to 24 | 91 to 92 | 86 to 86 | 77.1 to 78.5% |
+
+- Every verdict change: fr019 fully good to 2 open edges (on #437 alone 90% of its walls were missing: coverage 25.7
+  to 79.8%; both edges are a wall that goes on unshelled); fr018 from past Nastran's limits to 18 open edges (coverage
+  65.1 to 94.6%; 5 of the walls class, 13 where the general fuse fails, above) and its mesh past 15 minutes; e0003
+  from no shell to a shell past Nastran's limits (a wall the walls round found); t0033 4 open edges to closed, past
+  Nastran's limits; t0048 1 open edge to fully good; t0032 11 to 9; e0007 3 to 4 (a new wall's two leftovers).
+  d040 (85 to 2 open edges in an earlier run of this code) stopped at its 1800 s deadline in both runs here.
+- Skin coverage went down on no file of the 228 with thin-wall skin; 18 files went up by a point or more.
+- The same twice: the 247 files whose record differs from #437's were run again: 247 records and 247 surface files the
+  same, and the three decks byte for byte the same on all 190 that mesh.
+- Time: extraction and mesh 1.01 times #437's on the wall set, 1.39 on the lab, 0.91 on the new set. Files over 1.5
+  times slower: fr019 9.9x, sh0014 6.1x, sh0012 2.6x, fr018 2.4x, e0003 2.9x, r0019 2.0x, r0061 1.6x - all parts where
+  the walls round found more walls (it reports fr019 11.7x, sh0014 6.2x, sh0012 1.7x, r0019 1.6x, r0061 1.6x on #441
+  alone); fr018's mesh runs to the 15-minute stop on its edge-sewn surface.
+- Census DEV (305 public files, the scorer's verdicts, #437 alone against this branch): fully good 123 to 125; open
+  junction 18 to 17; mesh failed 8 to 7; extra shell 4 to 3. 12 files moved on (r0033 and r0443, open junctions of 38
+  and 1,564 edges, now fully good), 6 moved back: s0046 (1 element past Nastran's limits; its record is #441's own,
+  made the same without these rules), s0084 (the same mesh, 33,057 elements; 604 s against 542 s, past the scorer's
+  time limit on a loaded VM), s0163 (135 open edges closed by SHELL-33, and its mesh then runs past 15 minutes), r0368
+  (3,036 open edges to 1,480, read as a wall missing), r0134 and s0102.
+- Two parts the plates round (#449) shells: r0228, whose new plates left 89 open edges (kept solid by #449's guard,
+  56 open), is closed by SHELL-33 on this branch merged with #449: 0 open edges, valid and inside Nastran's limits.
+  r0399, a keyboard plate, has 1 open edge with and without these rules on the lab VM (the census counted 467 on
+  #449); its extraction runs to its 1500 s work budget (two of its bodies get no general join), so what the census
+  saw is the budget, not a junction class.
+
+### 2.5 Assemblies and mixed parts (PR 3)
+
+**Bonded plates in different bodies:**
+- The same extension rule, aimed across bodies that `cad/fea_joins` says touch. Touching plates share nodes.
+- Where a gap exists (PLAN-fea-18's small-gap rule), a tie is used, never shared nodes:
+  - Nastran: RBE3 or BSURF/BCONTACT glue;
+  - Abaqus and CalculiX: `*TIE`;
+  - Ansys: bonded contact.
+
+**Mixed part (shell meets solid):**
+- The shell's edge on the solid region is a "solid link" in the record, with its place. The same holds for every SHELL-6 fallback region (an open edge meshed solid).
+- **The join must carry BENDING MOMENTS, not just forces (Areen, 29 Oct).** Shell nodes have rotations; solid nodes have none. A plain node tie or shared nodes lets the shell hinge at the joint, which no check on forces will show. So never a plain tie; the connection, per solver:
+  - Abaqus: `*SHELL TO SOLID COUPLING` (or a distributing coupling over the solid face across the shell's thickness band);
+  - CalculiX: it has no `*SHELL TO SOLID COUPLING`. Candidates, decided by the textbook cases below: the overlap method (the shell edge runs one wall deep into the solid and shares its nodes there, so the moment passes as a force couple), or a `*COUPLING` / `*DISTRIBUTING` over the solid face's thickness band with the shell edge node as the reference node;
+  - Nastran: RBE3 from each shell edge node (all six DOFs) to the solid face nodes across the thickness band, or glued shell-to-solid edge contact (BSURF/BCONTACT);
+  - Ansys: MPC184 or shell-solid assembly contact (CONTA175 / TARGE170 with the shell-solid KEYOPT).
+- **Decided by the CalculiX cases (29 Oct, `engines/shell_links.py`, SHLINK-1..3, placeholders).** CalculiX's
+  `*DISTRIBUTING` coupling needs element-face surfaces and takes a node into one coupling only, so per-node
+  couplings along a shell edge cannot be written; rotations of shell nodes do not reach `*EQUATION`. What works,
+  with translations only:
+  - **SHLINK-1, edge link: the shell runs into the solid** by one wall (at least one element row), and each of
+    its nodes there is tied (`*EQUATION`) to the mean of the solid nodes on its wall's thickness line (within half
+    the wall along its normal, their foot within a quarter of the shell's element size). The moment crosses as the
+    couple between the overlapped node rows. Wider bands stiffen the join (half an element: 15% stiff), so the
+    solid is meshed with nodes on the overlapped strip.
+  - **SHLINK-2, face link: a solid standing on a shell's face** (a thick web on a shelled plate): each solid node
+    on the contact face rides on the shell point under it, moved rigidly by its offset from the mid-surface.
+  - Measured (`tests/unit/engines/test_shell_textbook.py`, CI's accuracy lane):
+    - half-shell, half-solid cantilever 200 x 20 x 2: tip 0.6% off the pure shell, 1.7% off PL³/3EI;
+    - shell and solid sharing only their meeting line: the tip moved 10^9 times too far (a hinge);
+    - T-joint in bending, web shell into a solid plate: 4.6% off the all-solid T (1.6% off the all-shell T,
+      which is itself 6.3% softer than all-solid: its junction has no corner metal);
+    - T-joint, plate shell under a solid web: 4.0% off the all-solid T.
+  - Nastran and Ansys, and the mixed-part mesher: PR 3, section 2.6 (the same ties as MPC and CE).
+- **The solid region gets at least 2 quadratic elements through the thickness** at the link, so its face can carry the linear stress through the wall that a moment puts on it.
+- **Proved in CalculiX, in the accuracy lane (PR 2):**
+  - a cantilever plate, half shell and half solid, tip load: the tip deflection within 2% of the pure-shell model and of beam theory (PL³/3EI);
+  - a T-joint under bending (the stiffener shell, the plate solid, and the other way round), against the all-solid mesh;
+  - a plate with a solid boss, against the all-solid mesh.
+
+### 2.6 Mixed parts: shell where thin, solid where thick (PR 3, MIXED-1..6, SHLINK-4, placeholders)
+
+A part that is mostly thin walls with some thick regions (a boss, a pad, a mounting block, a flange, cast corners)
+was meshed fully solid. Now its thin walls are shelled, only its thick regions stay solid, and the two are joined so
+loads and moments pass. Code: `cad/mixed_split.py`, `engines/mixed_links.py`, `engines/mixed_mesh.py`,
+`engines/mixed_run.py`.
+
+**What industry does.** Femap, HyperMesh, ANSA and Abaqus all mesh such parts mixed and join shell to solid with a
+constraint that carries moment: Abaqus `*SHELL TO SOLID COUPLING` (each shell edge node spread over the solid face
+nodes within half a wall of it), Nastran RBE3 or RSSCON, Ansys shell-solid assembly contact (MPC). Each says the
+same thing about where the joint goes: away from the junction, where the wall's stress is a plate's again. The 3D
+stress near a junction dies out within about one wall (Saint-Venant); one to two walls is the usual choice.
+
+**MIXED-1, the thick core.** Each shell wall's slab (its sewn mid-face thickened to its wall, half each side, 2%
+over) is taken from the body. What is left and holds a face the extraction called thick or solid is a thick core.
+What is left and holds none is junction metal a shell model leaves out (fillets, the corner of an L); over 2% of
+the body's volume of it means a wall was missed, and the split is not used.
+
+**MIXED-2, the cut.** Each core is grown CUT_WALLS = 2 of the thickest wall running into it, in every direction (OCC's
+3D offset), and the body's metal inside the grown core is the solid region. Inside a wall the grown core's side is
+the wall's own cross-section, square to it: a straight edge's offset is a plane, a boss's circle a cylinder of
+radius r + 2t, a tube's end a plane across the tube. Each mid-face is trimmed by the same grown core, so the shell
+edge lies on the cut face, along the wall's middle. No list of shapes: a distance from the thick region.
+
+**MIXED-3, accounted for.** The solid region's volume plus each trimmed mid-face's area times its wall must hold the
+body's volume within the shell check's band (0.85 to 1.10). On the seven generated parts: 1.000 to 1.016.
+
+**SHLINK-4, the join.** CalculiX takes no shell rotation in an `*EQUATION`: tied that way (each shell edge node's
+rotation to the least-squares rigid motion of the cut face, the RBE3 / Abaqus form) a half-shell, half-solid
+cantilever was still a hinge (tip 10^8 times too far), with or without a moment put on the nodes to make CalculiX
+knot them. So the join is the form CalculiX solves, written the same in every solver (SHLINK-1's idea, carried to
+tetrahedra):
+- the shell runs one wall on past the cut face into the solid (one row of overlap quads, group `SHLINK_overlap`);
+- its row on the cut face is tied, translations only, to the cut face's nodes; its inner row to the solid's nodes
+  in a band round it (half a wall each way along the shell, inside the wall);
+- each tie is the weighted least-squares LINEAR field through those nodes read at the shell node (weights: the
+  node's area share times the row's hat function). A plain weighted mean is linear-exact only where its weights
+  centre on the node: at a row's end node it sat a third of an element inward, and the in-plane bend of a
+  cantilever crossed short (21% stiff). The linear fit reads any linear field exactly (a unit test holds it).
+
+The moment crosses as the couple of the two rows, a wall apart, each spread over the wall's whole section.
+Measured on a 2 mm, 200 x 20 cantilever, half C3D10 and half S4, against the all-solid C3D10 model: out-of-plane
+bend 0.03% (pure shell 0.2%), in-plane bend 0.2%, tension 0.1%; the same with one tetrahedron through the wall.
+The solid side keeps the FEA path's own rule of at least two quadratic elements through every wall (PLAN-fea-3),
+so the stub of wall in the solid region is meshed as any wall is.
+
+Per solver: CalculiX and Abaqus `*EQUATION`, Nastran MPC (set 1; the deck says "add MPC = 1"), Ansys CE. The solid
+region is C3D10 / CTETRA (10 nodes) / SOLID187 in the same deck as the shells, numbered after them. Only CalculiX
+solves for real; the others are read back and labelled "not yet tested in the real solver" as every deck is.
+
+**MIXED-4, Auto.** Auto recommends Mixed when the part is one body the shell check calls mixed, its mid-surfaces meet
+everywhere (no open edge), and its thin walls hold at least half its metal. Under that, the joins cost more than
+the shell saves, and the part is meshed solid. Several bodies are meshed solid in this version.
+
+**MIXED-6, the words.** "Thin walls meshed as shell (78% of the part, 2 mm thick); 3 thick regions kept solid and
+joined to them."
+
+**The solid region's mesh** is the FEA path's own: the region is staged in metres and measured, planned and meshed by
+`fea_driver.measure_staged` / `choose_plan` and `gmsh/fea_adapter.mesh` (no AI pass and no ladder in this version).
+
+**MIXED-1b, rims are no cores.** A left-over piece thinner than half the thinnest wall (twice its volume over its
+area) is a rim the slabs left, not a thick region: a 4 mm plate whose hole bores were read thick left a 0.6 mm ring
+round each hole, and growing those crashed OCC. It counts as left-over metal, as a junction's does.
+
+**MIXED-2b, repeatable.** OCC's offset hands back the same faces, surfaces and curves (bit for bit, as sets) in a
+different order each run (it orders by memory address). `canonical()` stores the grown core's solids, shells,
+faces, wires and edges again in an order read from exact geometric keys (an edge's end points and middle point; a
+face's edges and the surface point at its parameters' middle), so every Boolean on it and both meshes repeat.
+
+**MIXED-2c, cores that grow.** A concave round tighter than the growth turns inside out in OCC's plain offset (no
+solid). The core is then grown with the offset's complete intersection; then with its tight concave faces taken out
+by OCC's defeaturing (grown that far the round is inside the grown core anyway); last with sharp joins, which reach
+a little further round the core's edges, never less far. The plain offset is tried first, so every core it grew
+grows as before.
+
+**MIXED-7, mixed walls are panels.** A thick region stiffens the wall round it, so the wall's free modes bend in
+half-waves a fraction of its width. In a mixed part every shell wall at least a tenth of its body's largest sheet
+wide gets SHMESH-15's 20 elements across, however few walls wide it is: a 2 mm plate 18 walls wide round a boss
+was meshed 7 across and its modes 7-12 came out up to 6.8% stiff of a converged solid; as a panel, within 0.9%.
+
+**MIXED-8, walls too thick for shells stay solid (2 Nov, Areen's call).** The box and the casting were outside 5%
+however fine the shell or wherever the cut: shell theory itself, on walls too short for their thickness. So each
+shell wall is measured: its REACH is the farthest any point of it lies from its nearest support - a joint (an edge
+where another wall meets it at an angle; a sheet's bend running on into its flange is no joint), a free edge the
+body's metal goes on past (a thick region), or a stretch of the wall with metal past its faces (the wall running
+through a corner column). A wall is a shell only if it reaches at least 10 of its walls (`REACH_WALLS`); fewer, and
+it is kept solid with the thick regions (its mid-face marks it as a core), the rest still shell. If the walls left
+as shell hold under half the part's metal (MIXED-4's share), or none is left, the part is meshed solid, said so:
+"Walls too thick for shells: 5 of its 5 thin walls reach less than 10 times their thickness from the nearest joint or
+thick region (the shortest, 4 mm thick, reaches 19.8 mm: 4.9 times). ..."
+
+**Since SHELL-23 (10 Nov) MIXED-8 is advice, not a gate** (`engines/mixed_run.REACH_GATE = False`). A plate the extraction calls a shell is meshed as shell in the mixed mesh too, however short: a gusset or a rolled flange is never kept solid with the thick regions. The reach is still measured and the short walls named: "... 5 walls reach under 10 times their thickness from a joint: shell theory is less exact there." The measurements below are why the line is said; the rule as it was is one constant away. The box, the casting and the stiffened panel are meshed shell and solid again (as before 2 Nov), said so.
+
+Why 10, and why the reach. 10 is the shell check's own 1/10 (SHELL-2: Mindlin shells hold to t / L of about 1/10;
+plate texts put the thin / thick plate line at a span of 8 to 10 thicknesses). SHELL-2 reads L as the square root of
+the whole sheet's area, which called the box's five walls one sheet 30 walls across. The reach is the length a wall
+really bends over, and where the idealisation's error sits: a shell wall bends from the middle of its joint, half
+the other wall's thickness from where the solid wall starts to bend, and the 3D stress round a joint reaches about a
+wall into it - both a fixed length, so a share of the reach that grows as the reach shortens. The accuracy table
+says the same: every part that read within 5% of a converged solid has all its walls at 11 walls or more (L
+bracket 11 and 25, plate with a boss 26, tube 40, strip 99; failure-map plates 23 to 51); the two outside have walls
+of 3.5 to 6.7 (box 4.9 to 6.7, back wall +23%; casting 3.5 to 6.7, mode 12 -6.8%). Not fitted to a part: the line is
+the shell check's own.
+
+What it costs. The stiffened panel's 3 mm walls reach 7.8 (plate, from its stiffeners) to 8.3 walls (the 25 mm
+stiffeners), so it is meshed solid too, though it read within 3% mixed - even pushed sideways at a stiffener's tip,
+where a short wall's bend is worst (+3.0%; its plate +0.5%). The rule is cautious there: it costs that panel the
+smaller mesh (33,179 elements against 167,056), never accuracy. Training part sh0025 (a tray: 3 mm side walls
+reaching 2 to 3 walls, a 4 mm one 9) had read within 3.2% on its free modes, which its floor carries; the rule keeps
+the floor as shell and the walls solid, but the core grown round those walls does not grow (OCC's offset), so it is
+meshed solid with both reasons said. sh0052 keeps one 5 mm flange solid (5.3 walls) and still mixes, modes within
+1.2% (0.8% before). A plate with a lip too thick for shells (`plate_lip_block` in the accuracy lane: 2 mm, the 12 mm
+lip kept solid with the block) reads within 0.3% on its statics.
+
+Code: `cad/mixed_split.wall_reach` (a fixed grid over each mid-face, exact distances to points along the supports:
+deterministic), `engines/mixed_run.too_thick` / `reach_of` / `kept_solid`. `recommend(record, reach)` reads MIXED-8
+when it is given the reach; the stage (#377) measures it with `reach_of` before offering Mixed.
+
+(The casting's wall / 3 truth ran past CalculiX's one-hour limit on one thread; its truth is wall / 2.5, 254,288
+elements, which the product's all-solid mesh matches within 0.6% on every mode and 0.1% on the statics.)
+
+**Proof (2 Nov, lab VM, CalculiX 2.21 on one thread).** The CI accuracy lane's parts against a CONVERGED all-solid
+truth: a uniform C3D10 mesh of wall / 3 everywhere (24 a turn on curves; `MIXED_TRUTH_WALLS=3`, too big for a
+runner). The product's own all-solid mesh is within 0.25% of it on every mode, so CI's comparison against it holds.
+Static displacements and stress are read AT the probe point (a weighted linear fit over the directions the nodes
+span, within three local node spacings), and each load is shared so it acts at the loaded face's middle (equal
+nodal shares put it where a graded mesh's nodes are: the casting's all-solid mesh put the block's load 8.7 mm
+nearer the clamp and read 11% stiff); modes 7-12 free-free:
+
+| part | elements, mixed / all-solid | displacements | stress | modes 7-12 |
+|---|---|---|---|---|
+| cantilever strip in a block | 13,367 / 55,600 | tip -0.2%; in-plane -1.2%; stretch -0.2% | | -0.1 to +0.7% |
+| plate with a thick boss | 13,320 / 55,276 | -0.2%, -0.4% | | +0.1 to +0.8% |
+| L bracket with a thick pad | 22,279 / 67,691 | +0.9%, +1.0% | +0.1% | -1.2 to -0.6% |
+| stiffened panel with a thick mount | 33,179 / 167,056 | +0.2%, +0.1% | +0.6% | -2.7 to -0.7% (before MIXED-8; now meshed solid, walls 7.8 to 8.3) |
+| tube with a thick flange | 31,038 / 113,227 | end -2.2%, middle -3.1% | -0.7% | +0.2 to +0.5% |
+| casting with ribs and a block (truth wall / 2.5) | 36,249 / 127,221 | -0.6%, +0.2% | -3.3% | -3.1 to -0.2%; mode 12 -6.8% (open) (before MIXED-8; now meshed solid, walls 3.5 to 6.7) |
+| box with thick corners | 45,954 / 63,586 | column top -1.4%; back wall +23.2% (open) | +3.0% | -4.0 to -1.4%; mode 11 -5.5% (open) (before MIXED-8; now meshed solid, walls 4.9 to 6.7) |
+| plate with a lip too thick for shells and a block (MIXED-8: lip kept solid; truth wall / 2, 209,256) | 55,127 / 206,155 | block -0.2%, plate -0.2%, lip top -0.2% | -0.2% | -0.8 to +0.4% |
+
+The flanged tube's old -15.7% stress and +5.5% middle were the readings, not the mesh: the stress was a plane fit
+through a fixed count of nodes, and on a 15-degree faceted wall the band keeps one line of nodes, so it reached
+44 mm along the wall into the flange's junction (7.16 MPa; the shell node beside the point read 8.56, beam theory
+8.55); the middle was the mean of four nodes sitting 3 mm above the box's middle, where the deflection rises 2.5%
+a millimetre. Read at the point, the tube is within 3.1% everywhere.
+
+Closed by MIXED-8 (both now meshed solid), as it was explained: the box and the casting's 12th mode. Both are as far from the converged truth as from the product's
+own solid mesh, and are unchanged by a shell mesh twice as fine (-0.7%) or a cut 3 walls in (0.0%): the shell
+idealisation itself. The box's 4 mm walls are 10 walls tall: a shell wall bends from the bottom's mid-plane, 2 mm
+lower than the solid wall's inner corner, so it is (38 / 36)^3 = 1.18 times as flexible out of plane - the back
+wall's +23.2%. The casting's ribs are 20 mm by 3 mm (6.7 walls tall), the same thick-shell regime. Keeping the junction metal solid as well (grown 2 walls) made 140,094 tetrahedra, more than the whole
+all-solid mesh (63,586): such a box gains nothing from a mixed mesh.
+
+Training parts that mix (sh0004/12/23/24/25/28/52/53/58/59/88/89) and the failure map's 20 "mixed" cases, against the
+product's all-solid mesh (modes 7-12) and run twice (decks hashed): see the PR. Repeat: every mixed deck made is
+byte-identical in two processes - the 7 accuracy parts and the training parts that mix.
+
+## 3. Meshing (PR 2)
+
+**Engine.** gmsh on the sewn mid-surface: Frontal-Delaunay (algorithm 6) plus Blossom recombination, and quad-dominant output. (Frontal-Delaunay for quads, algorithm 8, left faces of B-spline mid-surfaces up to 7 times coarser than their size, with long thin quads past Nastran's limits; QuadQS, algorithm 11, made 3 to 5 times the elements asked for.) If gmsh leaves too many triangles on a family of parts, Salome SMESH (quadrangle mapping, LGPL) is the second engine. The system recommends one, the user picks, and the plan is engine-neutral as on the FEA path.
+
+**Element size rules** (SHMESH-1..7, placeholders). Each is general and measured:
+
+1. **Base:** the coarsest the sheet allows. At most 1/10 of the sheet's size L, and at least 4 elements across every mid-face's narrowest width.
+2. **Floor:** no element smaller than half the wall. Smaller than that, a shell is the wrong element. Where a rule asks for less, the part is meshed at the floor with a plain note.
+3. **Holes and cut-outs:** 6 elements per quarter-turn (24 around), as PLAN-fea-4. Each arc is refined to its own radius and grown from there; the face's straight edges and wider arcs keep the face's size. (Refining every edge of a face to its smallest hole's size filled a 0.5 x 1.2 m bulkhead plate with 329,000 elements; it now takes 3,100 and 1 second.) Plus one ring of quads round the hole (a washer) and at least 2 element rows between a hole and a free edge.
+4. **Curvature:** at most 15 degrees per element on curved mid-faces (6 per quarter-turn), and at least 3 elements across a bend.
+5. **Small features:** at least 3 elements across any flange, strip or web.
+6. **Growth:** 1.3 at most, as PLAN-fea-6. Held by grading fields from every finer face's edges and every refined arc, each growing up to the largest size in the part, never capped below it. gmsh's own spreading of edge sizes into a face is off: it carried a 2.5 mm bend strip's size over the whole of a 1.7 m flange (800,000 elements, over 20 minutes; now 50,000 in 25 s).
+7. **Junction lines:** always meshed with shared nodes. Both sides use the same seeds.
+
+**Sizes for modal accuracy (SHMESH-15, 30 Oct).** A free-free modal check of 14 corpus parts (CalculiX S4 shells against C3D10 solids of the CAD, modes 7 to 12) found the rules above too coarse: 5 parts were 10 to 23% too stiff. A grid study over the base divisions, the elements across, the curve sizes and a panel threshold (`~/shell_lab/modal/g1` to `g11`) showed that one thing matters: the elements across a wide face. The base divisions and the curve sizes changed nothing. 16 across everywhere put all 14 parts within 4.7%, for 2.3 times the elements. The rule kept:
+
+- **A panel gets 20 elements across.** A panel is a face at least 20 walls wide and at least a tenth of the size of its body's largest sheet. It bends across its own width in the part's first modes.
+- **Narrower faces keep 4 across.** These are bends, flanges and strips. They do not bend across in those modes.
+- **Result:** all 14 parts within 4.1% of the solid (the worst, sh0055, is 4% soft at every size: the shell model's own difference, not its mesh), for 1.1 times the elements.
+- **Why "a tenth of the body's largest sheet".** Without it, a corrugated roof sheet's 23 mm flanks (48 walls of 0.49 mm) were panels: 399,000 elements instead of 38,700. The 2 m sheet bends as a whole long before a flank bends across.
+
+**Mapped bends (SHMESH-16, 30 Oct).** A narrow curved strip with four sides is meshed as a mapped grid of quads (gmsh transfinite):
+
+- a bend, or a tube's rounded corner;
+- its two long sides alike within 5%, and its ends alike;
+- the long sides at least 1.5 times the ends;
+- under 20 walls across.
+
+Across, it keeps its planned size. Along, it takes the size of the faces beside it, at most 5 times the size across (Femap's aspect target). Its neighbours grade from its long sides at that size.
+
+**Every count is even.** With an odd count on a strip's side, Blossom left hundreds of triangles in the face next to it: 485 on one sheet-metal flange, 0 with even counts. A count another strip has already set is kept; a strip that cannot agree stays free. Flat strips are not mapped: a lone plate stretched 5 times along was 5 times too coarse (sh0086: 45 elements, 11% stiff).
+
+On the corpus, a floor-sized bend no longer fills its length with floor-sized elements:
+
+- sh0107's 400 tube corners: 1.5 million elements and over 20 minutes before, now 213,000 elements in 201 s;
+- the welded tube frames (sh0106, sh0109 to sh0113): 2 to 8 times fewer elements, and 2 to 6 times faster.
+
+**The sliver merge never folds a corner.** SHMESH-12's guard checked only each element's mean normal. A quad can keep its normal with one corner turned back, and 3 such quads made sh0021's mesh invalid once the panels were finer. A merge is now undone when any corner of an element turns against its old normal. Cost, still open: sh0083 keeps slivers the merge used to close, and 3.6% of its elements are past a Nastran limit (0.8% before).
+
+**Quality** (SHMESH-8, verdict by limits as VER-1..4).
+
+- **Blocker:** a valid mesh only. No inverted or zero-area element, a positive Jacobian at every corner, and consistent normals in each sheet.
+- **Notes:** everything else, judged against Nastran's GEOMCHECK defaults and the Femap or industry targets below.
+
+| Measure | Nastran GEOMCHECK default (CQUAD4 / CTRIA3) | Femap / industry target |
+|---|---|---|
+| aspect ratio | IAR 100 (warn) | ≤ 5 |
+| warp | Q4_WARP 0.05, the warping coefficient 2H / (D1 + D2) | ≤ 10 degrees between the two halves (notes) |
+| skew | Q4_SKEW 30° min, T3_SKEW 10° min | ≥ 45° (quad) |
+| taper | Q4_TAPER 0.5 | ≤ 0.5 |
+| interior angle | Q4_IAMIN 30°, Q4_IAMAX 150°, T3_IAMAX 160° | quad 45 to 135°, tria 20 to 120° |
+| Jacobian | (must be positive) | ≥ 0.6 |
+| triangle share | | ≤ 5% of elements |
+
+The GEOMCHECK figures are as we read MSC's Quick Reference Guide; the warping coefficient's formula is Altair's statement of Nastran's (H: the corners' height off the mean plane, D1 and D2 the diagonals). Held as an angle of 5 degrees (as first written here) it was 4.5 times stricter than the solver: a square whose corners stand 0.05 of a diagonal off its plane is 22.6 degrees.
+
+**Every delivered element inside Nastran's own limits** (SHMESH-10..13, placeholders). After gmsh, in this order:
+
+10. **Cut:** a quad past any GEOMCHECK limit becomes two triangles, on the diagonal whose triangles are better (fewer past a limit, then the larger smallest angle). A triangle has no warp or taper.
+11. **Seams:** every closed sewn face (a full ring, a torus) is cut at its seams before meshing and fused back conformal. A face gmsh still cannot mesh as a periodic surface is re-made as a B-spline (the same surface) and meshed again.
+12. **Slivers:** an element edge under the floor and either under a fifth of the longest edge of every element on it or under a fifth of the floor is a CAD sliver; its ends become one node (the one most faces meet at stays put). Run before the cut and once after it (a quad folded nearly flat cuts into two slivers along its short diagonal, which then closes).
+13. **Swaps:** a triangle past a limit swaps its longest edge with the triangle across it (same face, never a face's own edge) when both come out better.
+14. **Relax first:** before any quad is cut, a node inside a flat face (on no CAD edge) of an element past a limit moves to the middle of its neighbours when that leaves fewer of its elements past a limit and none turned over (a tie goes to the larger smallest angle). Nodes sharing no element move together; at most 6 passes. The middle of coplanar points stays in their plane, so the node stays on its face. This halves the cut quads on flat sheet parts.
+14b. **Relax, second pass (30 Oct):** what the middle left past a limit is tried again with two more points per node: where each quad round it would be a parallelogram (b + d - c, averaged), and half-way to it. Tried in one pass with the middle, the parallelogram moves mended quads and left sliver triangles the middle had mended (sh0039: one triangle past T3_SKEW). A past triangle outweighs every quad round a node (a cut quad mostly gives good triangles; a past triangle stays past), and a quad that no cut can mend counts as a triangle. After the cut, one more pass for the triangles the cut left past, where no quad may come out past a limit.
+14c. **Relax on curved faces (30 Oct, 11th helper):** the nodes inside a cylinder, cone or any curved face move too; each point tried is laid back onto the face's own surface (its closest point) before it is judged. sh0007's slotted cylinder: 11.3% to 7.2% triangles; sh0004: 5.8% to 2.7%. Every node stays on its surface (a test holds a relaxed cylinder's nodes on its radius to 1e-6 mm).
+11b. **A boundary gmsh cannot recover (30 Oct, 11th helper):** gmsh's 2D mesher stopped on a ship's 3 m hull cylinder with 25 mm slots (sh0048: "impossible to recover the edge", algorithms 6, 1 and 5 alike). The same face scaled down 10 times meshed, and so did the same surface made a B-spline at full size: gmsh's handling of the large periodic analytic surface, not the face's shape. The face gmsh was meshing when it stopped (read from its log) is re-made as a B-spline and the part meshed again, as for a periodic failure (SHMESH-11). Only failing faces change, and with each one every sewn face on the same surface (the hull's four slotted halves each stopped gmsh in turn: four whole re-meshes). Still open: sh0048 meshed that way runs past an hour on the lab machine, so it does not yet finish inside the sweep's 20 minutes.
+11c. **A loop gmsh cannot close (30 Oct, 12th helper):** "the 1D mesh seems not to be forming a closed loop" on an analytic or trimmed face (a tee's run, a mitred bend's pieces, a nozzle's saddle) is handled as 11b: that face is re-made as a B-spline and the part meshed again. A face gmsh already names a B-spline is not re-made again: the old guard compared "BSplineSurface" with gmsh's "BSpline surface", never matched, and re-made a failing B-spline face up to 16 times. At most 4 faces are re-made for loops in one mesh; past that it stops in words (fresh fr017, a PVC tee: its faces failed one after another, 14 were re-made, then gmsh hung; now it stops in 4 s).
+11d. **Closed faces that will not fuse back:** the pieces of the closed faces are fused back exactly, then with a fuzzy value of twice the surface's own largest tolerance; if they still will not fuse (a 45 degree cone's pieces), the surface is meshed as sewn, said in the notes.
+11e. **A budget on re-made faces:** no face is re-made once the meshes so far have taken 300 s; the mesh stops and says why.
+11g. **Offset faces as B-splines:** faces on OCC offset surfaces (a drafted wall's mid-face) are re-made as B-splines before the closed faces are cut. Cut at the seam as offsets, a printed cone's halves came out invalid, the fuse dropped them, and the mesh had 0 elements (fresh fr018; now 338 elements, valid).
+20. **A plan too big stops before gmsh (SHMESH-20):** a plan asking for over 1.5 million elements (each face's area over its size squared, summed) fails at once, in words. gmsh makes about 1,000 elements a second here, and its counts run 0.4 to 3.3 times the plan's on the corpus. sh0048 (a ship's slotted hull, about 3.2 million planned, over an hour of gmsh) now stops in seconds and the solid mesh is delivered.
+21. **A deadline on every shell mesh (SHMESH-21):** the mesh runs in a forked child stopped after 15 minutes (gmsh can hang in one 2D mesh with no way back to Python). Never reached on the corpus.
+24. **The user's sizes (SHMESH-24, 10 Nov):** a global size written in the notes (NOTE-7) IS the shell's size field: every face takes it, whatever our own rules planned - finer than half the wall or coarser than our accuracy rules is said, never refused; only a plan past the 1.5 million elements a shell mesh is made of in the time allowed is stepped to the nearest size that builds, and said. With a global size G and no edge limits, elements are "about G": between 0.5 and 1.5 times it (the band the typical criteria sheet writes itself). A shortest edge given with no global size holds the finest size any curve or face is given (times a margin of 1.3, a working value not tuned yet: gmsh's edges come out round the size, not at it); a longest edge caps how far a mapped strip is stretched; a strip narrower than the size has one element across it, its length held to the user's aspect ratio of its own width. A curve keeps its shape whatever the shortest edge: at least 4 elements a full turn (a hole is never closed to a slit), and a bend turning under 100 degrees has one element across. Growth is the user's when they give one. A count asked beside a global size is set aside, and said. gmsh's own curvature sizing is off under the user's sizes (it would refine past both limits); the plan sizes every curved face and arc itself.
+25. **The limits in force (SHMESH-25):** the tidy-up steps (relaxing, cutting, swapping, pairing, walking, caps) take one object, the limits in force (`engines/shell_quality.InForce`): the solver's own limits, exactly as before, and the user's limits as AIMS - each with its target, its outer limit and the share of elements it allows between the two. An element between a target and its outer limit weighs 1, one past an outer limit 8; a step never trades a solver limit for an aim. Nodes move when their elements' score comes down; a quad past a user limit is cut only when both triangles are inside every limit, every one past an outer limit and of the rest only those over the allowed share (the furthest past first) - never when the user asked for quads; two triangles are paired only into a quad that scores no worse. With no requirement the object is the module's constants and every step does exactly what it did (`tests/unit/engines/test_shell_requirements.py`).
+26. **Asked against delivered (SHMESH-26):** every requirement is measured on the built mesh by the common pre-processor definitions when the user names no tool - warpage: the quad split along each diagonal, the angle between the two triangles' normals, the larger; Jacobian: the smallest over the largest determinant at the 2 x 2 Gauss points in the element's mean plane; aspect ratio: longest edge over shortest; angles: the interior corner angles; percentages of all the elements - and told in one plain line each: met, or not fully met with how many elements and what percent are outside and the worst value. The edge-length lines are targets reported with a percent outside. A requirement not reached is a note on a delivered shell ("Delivered, with notes"), never a failure and never "met"; one a shell cannot take (a wall thickness: measured from the CAD; quadratic elements) is listed as not applied. The rows are the same rows the verdict reads.
+
+**The mesh under a user's criteria list (11 Nov, mesh stream, PR on #435).** Measured on the 80 lab parts with the typical automotive list (`~/notesreq_lab/crit.py`); the lab tools are in `~/shellcamp/mesh/tools` (`one.py --diag` names, for every element outside a line, the step that made it and where it sits). Where the poor elements came from, on #435: 3,025 triangles under 20 degrees decided 50 of the 51 parts outside the triangle line (only 9 were outside by the 1% band); 46% were halves of a quad cut for Nastran's limits with all three corners on CAD edges, 21% leftovers of pairs, walks and caps, 15% gmsh's own; their shortest edge joined two CAD edges (a face narrower than the size) in 69%, was a CAD edge shorter than half the size in 14%. 33 of the 57 parts outside the list were outside by 15 elements or fewer. Nothing under the user's size was sized to a piece of the CAD smaller than it.
+
+27. **Sizes beside small pieces of the CAD (SHMESH-27, the user's sizes only):** a CAD edge shorter than 1/2.5 of its faces' size is graded from 2.5 times its length (a quad on an edge s with sides h reads Jacobian 0.6 at s/h = 0.4; a triangle 23 degrees), never under the floor; not at the corners of a mapped strip (a grid cannot grade: sh0110's 30 triangles under 20 degrees became 168). Narrow faces sized to twice their width were measured and left off (4,300 more triangles, 3 more parts past Nastran's limits); a face narrower than the floor takes the floor only where a first mesh left elements past the solver's limits on it (SHMESH-31; on every such face it put 16 quads past Nastran's limits on each welded tube frame).
+28. **The last clean-up (SHMESH-28, under the user's limits):** every element past a solver limit or outside one of the user's lines is mended by the best local change that lowers its neighbourhood's cost (past a solver limit 1,000, past an outer limit 8, in a band 1; an edge over the user's longest edge 1; nothing that is not valid is ever made): a node merged into a neighbour (inside a face anywhere; on a CAD edge only along a straight piece of it; a CAD vertex never), two neighbours' outline cut again, or a node moved to where its element is well shaped (laid back on its surface or straight CAD edge). Relax and mend again, 3 times at most. 14d: under the user's limits the nodes on straight CAD edges relax too, along their edge.
+29. **"Ignore edges under X" (SHMESH-29, only when asked):** the mend may then merge the two ends of a CAD edge shorter than X (the mesh stands at most X off the CAD there; the geometry is untouched). The mesher reads `sizes.ignore_edges_mm`; the notes reader does not fill it yet (open: NOTE-7's schema).
+37. **A sheet drawn as many patches is sized by the sheet (SHMESH-37; numbered 30 on PR #440, renumbered where the shell work lands, since SHMESH-30 is #437's local fuse-back):** faces of one wall that meet where the surface runs on smoothly (normals within 5 degrees; a bend joins only a bend of the same radius) are one region, and each is planned with the region's width, measured as one face's is. The 400 x 240 mm patch-study panel: 1,979 elements as 1 patch; 2,005 / 2,178 / 2,513 as 4 / 12 / 30 (patch by patch: 7,937 / 22,468 / 2,523). On for surface files (record `source: surface`, PR #434's route); on extracted mid-surfaces only with SHEET_REGIONS_ALL (a change to the rules' own mesh: not signed off).
+31. **Nothing past the solver's limits because the user asked for a size (SHMESH-31):** a mesh under the user's sizes that leaves elements past Nastran's own limits is made again with our own size for that face inside a box round each (graded back out), and on sliver faces the floor; the mesh with fewer past is kept (2 tries).
+32. **gmsh's fallback off (SHMESH-32):** when gmsh's Frontal-Delaunay reports a face failed it re-meshes it with MeshAdapt by default; that hung over an hour on one face (d2 t0057: 19 s, valid and inside Nastran's limits without it). A change to the rules' own mesh on the 10 parts where gmsh fell back (listed in the PR for sign-off).
+33. **Holes and curves under the user's size (SHMESH-33):** a hole gets at least 8 edges round it, no more than the size allows; a count the user asks for that is coarser than our rules coarsens gmsh's curvature sizing by the same factor, never under 8 a turn (it held 24 a turn: a bracket asked 221 elements got 503, a curved panel asked 1,263 got 21,256).
+34. **Chordal deviation (SHMESH-34):** under the user's size a curved face takes that size, held so an element's middle stands at most a tenth of the size off the arc of the face's radius; the largest distance of an element centre from the CAD on curved faces is measured and told.
+35. **Bead and dart walls (SHMESH-35):** a face narrower than the user's size held along its sides by other faces (its shared edges at least twice its free ones) and met by at least two fillets (tight bends), not itself a tight bend, keeps 2 elements across, never under the floor; told as "kept finer at N narrow walls". Without the fillet test, on the 80 lab parts: the same 54 inside the list, for 154,000 more elements and 20,000 more triangles.
+28b. **The worst element never gets worse in the mend (SHMESH-28b):** a change is made only when, under every line, no new element is further past it than the elements it replaces were (an element may come into a user's band, which costs; never further). By cost alone a change could trade several elements in a band for one past an outer limit.
+36. **Never past a limit where #435 kept inside (SHMESH-36):** a mesh under the user's limits left with an element past the solver's limits or past one of the user's outer limits is set against the mesh #435's steps make, and the better is kept: fewer past the solver's limits, then fewer lines on which it is past an outer limit where the other is inside (or less far past), then fewer past an outer limit, then more lines met. "#435's steps" are the whole path again from the sewn surface with every switch this PR added at #435's value (gmsh's own fallback included): byte-identical to #435 on the 80 lab parts and 7 welded look-alikes. Where the shell work lands together, #437's local fuse-back (SHMESH-30) is in the tree and is not one of these switches, so it stays on: the mesh compared is then #435's steps plus #437's, the mesh the combined tree makes without SHMESH-27..29 and 31..37 (the record still names it "#435's steps"). Both candidates (elements past the solver's limits, per line outside / beyond / worst / met) and the one kept, with the figure that decided, are written into the record (`kept`). A real welded plate structure at 10 mm (plates 9.5 to 31.8 mm) had 2 triangles past each triangle line with #440 (9.1 and 159 degrees) where #435 had none; the first version of this net compared against one mesh on the already re-made surface with gmsh's fallback off, not #435's path, and kept #440's.
+38. **A mapped strip's edges are not slivers at its own stretch (SHMESH-38, walls stream, 11 Nov):** SHMESH-12 merges an element edge under the floor that is under SHORT_SHARE (1/5) of its elements' longest edge. A mapped strip (SHMESH-16) stretches its elements up to STRETCH_MAX = 5 times along it, exactly 1 / SHORT_SHARE, so every edge across a rounded corner met the test and was merged: the corner's nodes collapsed and the flat walls' nodes beside it were pulled up to 1.25 mm into the hollow of a 40 x 40 x 2 square tube. On a mapped strip an edge is now a sliver only under SHORT_SHARE of the floor itself. Census DEV (the walls stream's run walls1m, on #441): fully good 124 to 130, none lost; better 8, worse 1 (s0128: an open junction became an extra shell, open edges 199 to 215). A change to the rules' own mesh. SHMESH-36's comparison keeps it on (it is not one of #440's switches). Test: a 40 x 40 x 2 tube with concentric 4 / 2 mm corners has every node within 0.3 of a wall of its mid-surface (without the rule, more).
+
+**Structured quads (11 Nov, structured stream; `engines/gmsh/shell_structured.py`, `engines/shell_structure.py`).** An engineer's hand-made shell mesh (HyperMesh) has washers round bolt holes, straight rows along a plate's edges, pipes as a grid and fixed rows along strips; ours was free paving everywhere. These steps make that look, by geometry rules alone, and are on for every shell mesh (the user can turn them off in the notes).
+
+39. **Washers (SHMESH-39):** every inner loop of a flat face that is one round hole no other face shares, at most 3 element sizes of its face across (a bigger hole is a cut-out: the field already follows it), gets a ring of quads: a count round it that is a multiple of 4, at least 8 and never fewer than the plan put round that hole (the hole keeps its shape), and one or two near-square rows out to 1.4 to 2 times the hole's diameter, no wider than lets the ring's outer elements stay at the face's size. The ring is drawn on the face as a circle (`gmsh occ.fragment`: edges the face shares keep their tags, so junctions stay conformal) and meshed by our own structured ring (each hole node joined to the ring node at its angle). A ring squeezed by an edge or another hole shrinks to 1.25 times the hole; past that the hole has none, and the record says why per hole (`structure.no_washer`).
+40. **Mapped faces (SHMESH-40):** every face whose one loop has four corners (curves meeting at 40 to 140 degrees; where they run on within 20 degrees of straight it is no corner, so a side may be a chain of curves) and whose opposite sides are alike within 2.25 times is a transfinite grid. Opposite sides of one curve each share one count, and so does every curve they share with other mapped faces (one class, union-find); a class's count is its curves' mean length over the finest size of the faces it bounds (an arc's own curve size for arcs: a pipe keeps its round), never so few that a segment of its longest curve passes 1.4 sizes (or the user's longest edge), never so many that a segment falls under the user's shortest edge, even where the class also bounds a free face (Blossom's condition there). A chain side takes its opposite side's count spread by length. A face whose counts cannot agree is left free and the rest counted again. A face with a smaller piece of the CAD at a corner stays free (a grid cannot grade). A grid that comes out with a quad past the solver's own limits (a face whose shape bends the rows too far) is meshed free on a second pass, the others mapped again (at most two passes; `structure.grids_freed`). Pipes are split at their seams (SHMESH-11), so each piece is four-sided: rows along the axis, columns round it. Bends, flanges and strips are four-sided too: a fixed number of rows across from the radius and the size (SHMESH-16's narrow strips keep their own counts, which the classes take as given).
+41. **Gridded faces round washers (SHMESH-41):** a flat face whose inner loops are all washer holes is cut into a grid along its own frame (its longest straight edge): round each hole a box, every box side drawn right across the face; lines closer than 0.75 face sizes are one, and a box side that near a straight edge of the face is that edge. The cells are four-sided where the face's edges run along the frame, and SHMESH-40 maps them. A washer whose ring can meet the grid's size is an O-GRID (the ring and its box in four mapped quarters, cut from the box's corners to the hole, a box side carrying a quarter of the count: 8, 16, 24 round so each quarter is even and the hole's own seam sits mid-quarter; the box side's elements 0.8 to 1.4 face sizes and under the user's longest edge; the ring's rows no thinner than the user's shortest edge); any other washer keeps its own ring inside a FREE BOX one face size out, paved from ring to box, so the transition stays inside the box. A face is left free (its washers in a free field) when a line would cross a box, a ring would not fit its box, a cell edge would come out under 0.4 face sizes, or a line would end inside an edge the face shares with another face (the other face would keep that edge whole: a crack at the junction; cutting the neighbour too was tried and dropped: on the 80 lab parts it made two parts 2 to 4.5 times as many elements and one past Nastran's limits) - all tried on a copy of the face first. A ring is drawn only when it comes out one circle round its hole (tried on a copy too). Nodes on the drawn lines are inside the CAD face: they relax and mend as the face's own inside nodes do.
+42. **Flat faces left free (SHMESH-42):** `PLANE_ALGORITHM` can set gmsh's quad-aligned Frontal-Delaunay (8) on flat faces left free. Measured on the look-alikes: better rows on some faces, more triangles on others (pedestal look-alike 9 -> 45 triangles); left off (None: Frontal-Delaunay 6 as before).
+43. **The user's word (SHMESH-43, NOTE-7's element kind):** "free mesh" (`free_mesh`: no washers, no mapped faces), "no washers" (`no_washers`: mapped faces stay), "washers round holes" / "mapped mesh" (`structured`: the default, read so it is not "not applied") - one slot, `requirements.kind.structure` (only present when said), the first one written kept. The team's standard and the notes merge it as one field (STD-2). The shell report says it is applied; the solid route says it is a shell mesh's.
+44. **The regularity measure (SHMESH-44, `engines/shell_structure.measure`):** the share of interior nodes with four quads round them, of quads within 10 degrees of square, of element edges within 10 degrees of the nearest boundary edge (a free edge, a junction, a fold past 30 degrees) or square to it; per round hole (a free-edge circle) whether a ring of quads hugs it and how many elements go round. The record carries `quality.structure` (washers, holes, rings in a grid or a free box, mapped faces of all, why a hole or face has none) and the mesh notes say "Washers on N of M round hole(s) ... Mapped quads on K of F face(s)".
+
+SHMESH-36's candidate "#435's steps" is made with SHMESH-39..42 off too.
+
+Repeatability (30 Oct, 11th helper): 65 of 66 meshed training files byte-identical run to run. sh0038 is not: gmsh hands back the same nodes but its quad recombination differs between runs (2 quads, 2 triangles), and it does at the 10th helper's head too; open.
+12b. **Sliver fold guard, local (30 Oct):** a merge that folds an element's corner in is undone at that element's own moved nodes, not over its whole cluster; the last round still undoes whole clusters. Undoing whole clusters (as added on 29 Oct for sh0021) kept 2,600 sliver edges of sh0083 and doubled its triangles (8% to 20%). sh0021 stays valid.
+17. **Pairs (SHMESH-17):** two triangles of one face across an edge theirs alone become one quad when that quad is valid and inside every Nastran quad limit; best pairs first.
+18. **Walks (SHMESH-18):** a triangle walks through at most 6 quads of its face to the nearest other triangle: each step re-cuts the triangle and the quad ahead (a pentagon) into a quad and a triangle that touches the next element; the last step joins the two triangles. A walk is kept only when every quad it leaves is valid, turns as the face does and is inside every limit; nodes never move and the outline stays.
+19. **Even boundaries (SHMESH-19):** Blossom pairs every triangle of a face only when the face's boundary has an even number of segments. After the 1D mesh, each odd face gets one segment more on one of its own free curves (the most evenly divided, then the most segments; never one whose segments would come out under the floor - a 0.7 mm spline cut in 3 left slivers), else on a curve shared with another odd face. sh0019: 13.5% triangles to 0.7%.
+20. **Speed for very large parts:** one size field per size, not per face; past 48 grading sizes, sizes are taken down to quarter-octave steps (finer, never coarser); gmsh integrates sizes along curves to 1e-3 (its 1e-9 held a ship's 1D mesh, 24,000 curves, past 30 minutes; counts move under 0.2%).
+
+What was tried and dropped for the triangle share (29 Oct, 8th helper): Frontal-Delaunay-for-quads on flat faces only (better on some parts, worse on as many); QuadQS (3 to 5 times slower, no fewer triangles); gmsh's transfinite-automatic (maps wide faces from a narrow neighbour's count: 15 times the elements); mapping only floor-width four-sided strips (left skewed triangles at their ends); meshing a strip narrower than the floor as one compound with its neighbour (gmsh crashed on one part - a whole-process crash). gmsh's Laplace smoothing helped less than rule 14. (30 Oct) Mapped flat strips (no stretch) did not help either: most flat strips have more than four sides. (30 Oct, 10th helper) gmsh's packing of parallelograms (algorithm 9) on flat faces: 2 to 4% triangles on holed plates, but it ignored the sizes on one part (2.3 times the elements, sh0059), ran past 20 minutes on B-spline parts and failed boundary recovery on the ship; dropped. A tri-plus-quad re-cut for past triangles mended 2 elements corpus-wide; dropped. gmsh's full-quad recombination needs every curve even and its sub-quads were cut more; Blossom options (minimum quality, topology passes, recombine angle) changed nothing.
+
+**Normals.** Every sheet's normals point one way. They point from face B toward face A of each pair, and outward on closed sections. Offsets and pressures in the user's solver then mean the same thing everywhere.
+
+## 4. Properties and groups (PR 2)
+
+- **One PSHELL per sheet thickness, per part** (SHWRITE-1, 11 Nov: a customer's HyperMesh deck has one property per part, named after the part). A part is named as the CAD names it (the STEP instance "PEDESTAL FOOTPAD GUSSET.57", else its product), else Part_k; a part of one thickness has one property with the part's name, a part of several one per thickness, "<part> t=6mm". Every element is in its part: a `$HMNAME COMP` block per part (Nastran), an ELSET per part (Abaqus / CalculiX), a component per part (Ansys). Material: exactly as today's solid decks - mesh only, no material: PSHELL k names MAT1 k (Abaqus: MATERIAL=MAT_k) and the deck header says "add MAT1 k" (decided 29 Oct). The textbook tests add their own material.
+- **Groups:** one element group per original CAD face pair, named after the CAD faces (`Part_3_Face_12+Face_15`), and one per part.
+- **Joints are marked:**
+  - shared-node lines at sewn junctions get a node group per junction;
+  - ties exist only where there is a gap, as PLAN-fea-18;
+  - solid links (mixed parts) get a node group per link.
+
+**Walls that vary, and offset mid-planes (30 Oct, 11th helper).**
+- A mid-face whose wall varies (SHELL-9b) gives each of its nodes its own wall: a plane through the 8 wall readings nearest the node, kept within the readings' range. Its elements are written per corner (CQUAD4 / CTRIA3 T1 to T4, `*NODAL THICKNESS` in a section of their own, an Ansys section per element at its corners' mean). A varying mid-face with no readings is never meshed at one wall: the mesh stops and says why.
+- A plate snapped onto a thicker neighbour's mid-plane (SHELL-7: steps, laps) carries its true mid-plane's distance from its nodes along each element's normal: Nastran ZOFFS, Abaqus and CalculiX `OFFSET` (in walls, the nodes off the mid-surface), Ansys `SECOFFSET,USER`. Offsets and varying walls each get their own property (`..._z0p25`, `..._varies`). A varying wall is sized by its thinnest point (SHMESH-1/2/15 read that wall). Synthetic failure map, free-free modes 7 to 12 against the solid: a 2-degree wedge +67.5% to +2.8%, a printed tapered cone +146.7% to +5.9%; steps and laps with offsets unchanged at 3 to 4%.
+
+## 5. Export (PR 2; Ansys in PR 2 too)
+
+**Nastran bulk data (.bdf), first-class for FEMAP.**
+- Cards: GRID, CQUAD4 and CTRIA3 (T1 to T4 corner thicknesses when the wall varies), PSHELL (MID1 = MID2 = MID3, 12I/T³ = 1, TS/T = 5/6), MAT1.
+- Names: Femap's own comment form for property and material names (`$ Femap Property 1 : PEDESTAL FOOTPAD GUSSET.57`), and HyperMesh's (`$HMNAME PROP 1"PEDESTAL FOOTPAD GUSSET.57"`) on the line after it, both right before the PSHELL. Our ingest already reads that form back (`cad/ingest/readers.py`).
+- **Groups:** Nastran bulk data has no group card. We write each group as a named comment block of element ranges, and read it back in our tests.
+- **The FEMAP-native route is a neutral file (.neu)**, whose group block is public. We offer it as soon as the prospect confirms the import in their FEMAP. Until then the BDF says "not yet tested in the real solver", as the solid writers do.
+
+**Abaqus and CalculiX (.inp).**
+- Elements: `*ELEMENT, TYPE=S4R` and `S3` for Abaqus; **`S4` and `S3` for CalculiX** (29 Oct). CalculiX expands shells into solids: S4R into one layer of C3D8R, which has next to no bending stiffness (the 200 x 20 x 2 cantilever bent 96 mm for 9.4); S4 into C3D8I, 0.6% off.
+- Sections: `*SHELL SECTION, ELSET=…, MATERIAL=…` with the thickness, or `*NODAL THICKNESS`.
+- Sets: an ELSET per group and an NSET per junction.
+- CalculiX solves for real. It expands shells into solid elements, and we check it against the textbook cases.
+
+**Ansys MAPDL (.cdb).**
+- Elements: SHELL181 (ET; SECTYPE/SECDATA per thickness), CMBLOCK components per group.
+- Checked with readers and round trips only (no licence), labelled as such.
+
+Every writer is engine-neutral. They read one internal shell mesh (nodes, quads and triangles, a thickness per element or node, groups). Each is read back in a round trip, as the solid writers are.
+
+## 6. Checks
+
+**Per mid-face and per body, in PR 1:**
+- **Fidelity:** every point read on a mid-face lies half the wall from both of its faces, within 2% of the wall.
+- **Volume:** a shell body's sewn faces (the mid-faces as extended to their junctions) times their walls hold its volume within −15% to +10%. Junction corners are counted once (a short-legged angle's corner is a fifth of its metal).
+- **Every face accounted for:** each face of a shell body is paired, rim or blend. Nothing is lost.
+- **Connectivity:** every free edge of the sewn surface is either a real boundary (outside just past it) or, on a mixed part, a solid link. An OPEN edge is material past a free edge with no solid region there. It is a junction we did not reach, and it is listed with its place.
+  - The outside is read at 0.05, 0.15 and 0.3 walls past the edge: outside anywhere along the way is a real cut, however narrow (a lanced slit).
+  - **A link across a blend or into a thick wall (SHELL-6b, 30 Oct).** The material past an edge also meets a thick region when a blend that rounds into that region lies within the plain test's reach (a pad whose foot is all fillet and round: the plate's edge stops where the fillet starts), or when the point just past the edge lies in the wall of a thick pair (its distances to the pair's two faces add up to that wall: a plate edge inside a pad's slab). Such links are counted apart (`blend_link_edges`) and the joins are chosen as if they were open, so a join that meets the walls themselves is still preferred. Fresh fr003 (a bracket's pad, 4 open edges), fr010 (a plate meeting a 10 mm boss, 1) and fr019 (3) now have none.
+  - **What lies past an edge still open at the end, read on the part (SHELL-21, 10 Nov; section 2.4.3).** With a shell wall ahead within the reach the edge is open, always. With none: an edge whose metal stops within 2 walls, inside the wall's own slab all the way, is the wall's own end, a real boundary (`rim_edges`); in a mixed body an edge whose metal grows thicker than the wall is a solid link (`bulk_link_edges`). Read in the body's last census only: the joins and the strips are made and judged with these edges open, as before.
+  - An edge ENDS IN A JUNCTION, not open, when it runs along a thicker wall inside it, or when both its ends lie inside sewn walls and one of them on a sewn mid-face (a gusset's slanted edge carried into the plate it stands on).
+  - An edge shorter than half its wall is below the shell mesh's floor (SHMESH-2) and is counted apart, not as open.
+  - A join must keep every mid-face whole: one whose sewn faces hold less than 99% of the mid-faces' own area is not used (a join that loses its mid-faces has no free edge left to count).
+
+**On the mesh, from PR 2:**
+- the same connectivity count on elements: free element edges must lie on free mid-surface edges;
+- the quality figures above;
+- every original face accounted for in a group;
+- the deck read back.
+
+**Textbook accuracy in CalculiX (PR 2),** each with a closed form, and each also run on our solid FEA mesh as a cross-check:
+
+1. Cantilever plate, tip load. Tip deflection PL³/3EI, root stress.
+2. Plate with a hole in tension. Kt from Peterson (finite width, Howland).
+3. Pressurised thin cylinder with closed ends. Hoop stress pr/t, axial stress pr/2t, radial growth.
+4. Simply supported plate:
+   - modal: f_mn from the Kirchhoff plate formula;
+   - buckling: σcr = 4π²E/(12(1−ν²)) · (t/b)²;
+   - then the stiffened panel modal case against our fine solid mesh.
+5. Shell-to-solid moment transfer (section 2.5): the half-shell, half-solid cantilever (tip within 2% of pure shell and of PL³/3EI) and the T-joint in bending against all-solid.
+
+## 7. Intake and stage
+
+**Intake: two routes into shell (Areen, 29 Oct).** Shell adds no new question.
+
+1. **The user says it.** At the first question ("what are you meshing this for?"), shell words set **Mesh as: Shell** with no follow-up question:
+   - shell words: "shell", "2D", "mid-surface" / "midsurface", "plate model", "Femap shell", "CQUAD4", "sheet-metal shell" and the like;
+   - "solid", "3D", "tets" or "hex" set **Solid** the same way.
+
+   This uses the intake's existing deterministic mapping plus the AI guard-rail pattern: a fixed word table first, then the model only for paraphrases, its answer checked against the allowed values (shell, solid, or nothing said). Intake tests cover the word table and a set of paraphrases.
+2. **The user says nothing.** After the check measures the part, the FEA stage shows **"Mesh as: Auto (recommended) / Shell / Solid"**:
+   - **Auto** recommends Shell when the measured thin-wall share is high. The reason is in plain words, for example: "90% of this part is plate under 6 mm thick, so a shell mesh is about 100× smaller, and it is what engineers use for sheet metal."
+   - Mixed parts: Auto reads "Shell + solid" (shell where thin, solid where thick) only when MIXED-4 and MIXED-8 pass; otherwise Solid, with the reason (the land PR, 7 Nov).
+   - The user can switch.
+
+**A user's explicit choice is never overridden.** If they say Shell but the part has solid regions, the stage says which regions stay solid and why.
+
+**Stage:**
+- The extracted mid-surfaces are drawn over the part, coloured by thickness. We use a muted sequential map with a legend in mm.
+- A list of what could not be shelled, in plain words: "Boss near the centre stays solid: it is 30 mm thick." "Two plates do not meet at 1 place: shown in red."
+- Open edges show as red marks at their places.
+
+The system recommends and the user picks. Nothing here blocks meshing. A part we cannot shell is meshed solid, with the reason.
+
+**As built (PR 4 draft, rule numbers SHSTAGE-1..6 are placeholders until merge):**
+- SHSTAGE-1, words: `application/purpose_map.mesh_as_of` is the word table; `application/mesh_as` asks the model only for words the table cannot read (a paraphrase, both kinds, a word taken back) and keeps its answer only when it is shell, solid or none. Read once, in the FEA naming step, and stored with the check's facts. Shell-model words (CQUAD4, Femap, mid-surface, plate model, shell mesh) are FEA words too, so they take the FEA path with no question.
+- SHSTAGE-2, the shell check: started with the FEA measurement, run on the geometry-check queue in a child process (`cad/shell_preview`, limit 15 min). The stage opens at once and says the walls are being measured.
+- SHSTAGE-3, Auto: Shell when every body is a shell, the plates meet everywhere (no open edge) and the thin walls are at least 90% of the surface. A part the extraction calls mixed is "Shell + solid" only when `engines/mixed_run.recommend(record, reach)` says so with EVERY shell wall's reach measured (`cad/shell_preview.mixed_auto`, in the check's child process): one body, no open edge, thin walls at least half the metal, and the walls too thick for shells (MIXED-8) kept solid. A reach that cannot be measured is no Mixed. Otherwise Solid, with the reason ("Walls too thick for shells: ...", "Only 42% of this part is thin wall ..."). Mixed is Auto's only: there is no fourth button, so a part Auto does not call mixed is never meshed mixed (the box and the casting, +23% and -6.8% mixed, stay solid); Shell and Solid can still be picked.
+- SHSTAGE-4, the stage: the mid-surface over the part (wall colours on a muted ramp, legend in mm), open edges in red, solid regions and open places tagged (S1.., O1..) and listed.
+- SHSTAGE-5, Proceed settles it: the user's pick (a click, else their words) stands; Auto takes the recommendation, or Solid while still measuring. A triangle file, or a part with no thin wall, is meshed solid with the reason. Stored in `confirmed.json` (`fea_mesh_as`) and read into the run.
+- SHSTAGE-6, the run: when Auto settled Shell + solid, the FEA driver runs `engines/mixed_run` the same way (child process, the staged solid, MIXED-5 cited) and the downloads offer mixed.bdf (first), mixed.inp, mixed_abaqus.inp and mixed.cdb; a part the run's own MIXED-8 check stops makes no mixed files and says why. When Shell was settled, the FEA driver makes the shell (`engines/shell_run`, child process, extraction on the staged solid) and the downloads offer shell.bdf (first), shell.inp, shell_abaqus.inp and shell.cdb. In this draft the solid mesh is still made beside it, so the result screen, the verdict and the 3D view are unchanged; a shell-only run needs those taught about shells.
+
+## 8. Plan: five PRs, each to the deep-test bar
+
+The deep-test bar for every PR:
+- end-to-end on the shell corpus, not plan-only;
+- the FEA regression set byte-identical, or every difference explained;
+- a CalculiX accuracy check for anything that changes a delivered mesh;
+- real-path testing (dev-areen) for anything a user sees.
+
+| PR | Scope | Proof |
+|---|---|---|
+| 1 | Wall pairs, sheets, shell or solid, mid-faces, T and L extension, sewing, the checks, `shell.json` + `midsurface.brep`. No user-facing change. | Unit tests on known parts. Corpus sweep of extraction with the judge (fidelity, connectivity, accounting, against each file's truth notes). FEA regression unchanged (the ray change adds an output only). |
+| 2 | Shell mesh (gmsh quads), the SHMESH rules, quality, normals, PSHELL and groups, Nastran, CalculiX and Ansys writers, textbook cases. | CalculiX textbook cases. Corpus meshed end to end. Deck validity (our read-back plus pyNastran in the lab). A CalculiX free-free modal solve on every corpus part, compared with our solid mesh's modes. |
+| 3 | Thickness steps (offsets), tapers and variable walls, cylinder-to-plate and tube frames, bonded assemblies across bodies, ties at gaps, mixed shell-solid links per solver. | The same, plus the mixed textbook case. |
+| 4 | Stage and intake: the Auto/Shell/Solid choice, mid-surface overlay, not-shelled list, downloads (BDF, INP, CDB, NEU). | Clicked through in the browser, and run once on dev-areen end to end. |
+| 5 | Corpus proof: the full training corpus and, at the milestone, the sealed holdout. | Pass rates with 95% ranges. |
+
+## 9. Test corpus and judge (Areen, 28 Oct)
+
+**Corpus.** Real engineering models only, from public sources with their licences recorded, never NDA files. The categories:
+
+- ship hull blocks and stiffened panels;
+- offshore structures;
+- sheet-metal enclosures and brackets;
+- automotive body-in-white style panels;
+- ducts and tanks;
+- cyclone and hopper plate structures;
+- aircraft skin-stringer panels;
+- tube frames.
+
+Also:
+- As many CAD exporters as we can find, mostly STEP.
+- Plus our own sheet-metal and thin parts from the FEA hunt and the assembly corpus.
+- Lab: `~/shell_lab` (corpus, manifest, tools, runs).
+
+**Truth notes for every file:** the expected plates and thicknesses, the junction types, and the holes. The judge holds each run against them.
+
+**The judge, end to end on each file:**
+- mid-surface fidelity;
+- connectivity (no open edges);
+- every face accounted for;
+- thicknesses found against the truth notes;
+- element quality (PR 2);
+- Nastran deck validity (PR 2);
+- a CalculiX solve on each (PR 2). A free-free modal solve needs no supports, so it runs on any part. Its modes are compared with the solid mesh's.
+
+Pass rates are reported with 95% ranges (Wilson).
+
+**Sealed holdout.** About 30 untouched files, kept apart from the start. Aggregate-only, never fixed on, run only at milestones.
+
+## 10. Open questions for Areen
+
+1. FEMAP: can the prospect send one sample model, or confirm that our .neu groups import? Until then the BDF and NEU say "not yet tested in the real solver".
+2. Decided 29 Oct: no material in the deck, exactly as the solid decks (mesh only, "add MAT1").
+3. Answered 29 Oct: mixed parts in Auto are recommended Solid until PR 3 lands.
+
+## 11. Surface files (SURF-1..6, 10 Nov)
+
+Shell users often upload the surface itself: a stamped part exported as its mid-surface, or one skin, as an open shell in a STEP or IGES file. There is no solid in such a file and nothing to extract. Before this, the FEA stage stopped it ("This is a surface, not a closed solid ... shell meshes for surfaces like this are coming"), and a run that got past the stage said "no wall of the part is thin enough to be a shell" and then failed on "no solid volume".
+
+Now the surface is meshed as it is. The surface is the mid-surface.
+
+**What a surface part is (SURF-1).** FEA purpose, no solid in the file, and the faces do not close after the clean check's own sewing (one ten-thousandth of the part's size). One number separates it from a closed skin with a gap: the **open share**. Each free boundary loop spans an area (its vector area: exact for a flat loop, and never more than any surface that closes it). The open share is the area all the loops span, over the file's surface area.
+
+- A flat sheet reads 100%. The lab's stamped panels, brackets, hat section, tray and cup read 44% to 104%. A deep channel reads 9%, an open tube 20 diameters long 2.4%, one 40 diameters long 1.2%, a tank skin with a nozzle hole 1.3%.
+- A loop whose edges lie along a neighbouring face (a seam the sewing did not close) or that is a slit spans nothing. It is a crack, not an opening.
+- **At or under 1% the file is a closed skin with a gap.** It is stopped as before, and the stop names both ways on: close the gaps in CAD, or say it is a shell.
+- **Over 1% it is a surface part**, meshed as a shell without the user saying "shell".
+- The user's own words settle a file under 1%: "shell", "mid-surface", or a thickness. A tube 120 diameters long is 0.4% open; by shape alone it cannot be told from a rod with its two ends missing.
+
+Measured on 86 public closed solids (FEA corpus dev side and the shell corpus; `~/surface_lab/tools/gap_study.py`):
+
+| What was done to the closed skin | Variants | Read as a gap | Read as a surface |
+|---|---|---|---|
+| One face pulled 3 sew tolerances off its neighbours (a crack) | 549 | 542 (the other 7 still closed) | 0 |
+| One face left out, the face under 1% of the skin | 1,125 | 1,085 (96%) | 40 |
+| One face left out, the face over 1% of the skin | 645 | 45 (7%) | 600 |
+
+So cracks and small missing faces stay CAD repair's business. A skin missing a face bigger than 1% of its area reads as a surface: it is the same shape as a tray or a channel, and no measure of shape tells them apart. Two other measures were tried and dropped. Whether the skin encloses a volume does not separate them either (a cup, a tray and a tube enclose one). Whether the skin carries on beside an opening (an "end" against a "hole") rescued slender tubes but called 30% more small missing faces surfaces.
+
+A file with a solid is never read this way. Faces that close are read as the solid they bound, as before (MESH-1).
+
+**Sewing (SURF-2).** The clean check's sewing at its own tolerance, nothing more. Every free edge stays free. A free edge that lies along another face within 5 tolerances is an edge that does not meet its neighbour: counted, placed and said ("The surfaces do not meet at N edge(s): the shell has gaps there"), never closed. When such edges are left, the file is sewn once more with junctions allowed (three faces at one edge: a rib's foot on the line two plate faces share) and that is kept when it leaves fewer of them. A rib whose foot lands inside one face has no edge there to sew to; it stays a separate part with a gap, said.
+
+**The record (SURF-3).** `cad/surface_model.py` writes the same `shell.json` and `midsurface.brep` the extractor writes, from the sewn file:
+
+- every sheet (faces joined through shared edges) is a part and one wall;
+- every CAD face is its own mid-face, so its own group in every solver file (`Face_k`);
+- a sheet's size is the square root of its area, as an extracted sheet's.
+
+From there nothing is new: the sizing rules, gmsh and the clean-up, the four solver files, the viewer mesh, the delivery and the result are the shell path's own. The FEA driver calls it for a file with no solid none of whose shells closes (`engines/surface_run.py`, a process of its own), before anything of the solid plan. The shell is the result. There is no solid to fall back to: a surface whose shell cannot be made fails with that reason in words.
+
+**Thickness (SURF-4).** A surface has none. It comes from the user's words, read by one fixed word table (`contracts/shell_thickness.py`, no model): "1.2 mm thick", "thickness 0.8", "t = 0.8", "gauge 2 mm", "2 mm wall", in mm, cm, m, inches, thou or microns. A bare number is millimetres, and the line the user reads says the millimetres back. The latest word stands: a note beats what the stage settled, which beats the intake's summary. Not read as a thickness, and said so: a bare gauge number ("16 gauge": the tables differ by metal), a range, a second different thickness (one is used for the whole file). A thickness past a tenth of the sheet's size is said, and used.
+
+**No thickness given (SURF-5).** The shell is still delivered. Nothing is asked and nothing is refused: the mesh itself does not depend on the thickness, and shell tools hand over a mesh with the property still to set. No thickness is invented:
+
+- every property carries 0 and is named `Part_k_thickness_not_set`;
+- every file's head says "WALL THICKNESS NOT SET" and to set it before solving (no solver runs a zero thickness);
+- the stage and the result say how to set it: add it to the notes and run again, or edit the one property line.
+
+The sizing rules use the wall for three things: the floor (no element under half a wall), what counts as a panel (20 walls wide), and the sliver clean-up. With no thickness the sheet is sized as for a thin sheet: a wall of its size over 300. On the shell corpus's 72 parts the thinnest wall over the largest sheet's size is 1/120 at the middle and 1/300 at the lower quarter, so three real parts in four are at least that thick and their own floor would be no finer. Tried on the 28 lab parts of known wall (`~/surface_lab/tools/sizing_study.py`): at size/60 the sizing wall is thicker than the real one on 21 parts and the mesh has 0.56 times the elements the real wall asks for (too coarse); at size/120 on 6 parts, 1.2 times; at size/300 on 1 part, 2.1 times. The thin side costs elements, never accuracy. The sliver clean-up also works in walls, so a thin wall cleans little: when the mesh leaves elements past Nastran's own limits the sheet is sized again at twice, then four times, that wall and the first mesh inside the limits is kept. On the lab set the count with no thickness is 1.04 times at the middle and 1.3 times in total (2.0 times on the 28 parts whose real wall is known; a 12.7 mm plate, far thicker than the thin sheet assumed, gets 24 times) of the count with one.
+
+**Several sheets.** Each sewn sheet is a part with its own property, so each can be given its own thickness in the file. One thickness from the words is used for all of them. Words about single parts ("the bracket is 2 mm, the plate 3 mm") are not read yet.
+
+**What the user reads (SURF-6).** One line, in the stage's existing shell fold and on the result, and no new control:
+
+- "This file is a surface, not a solid. It is meshed as a shell, 1.2 mm thick."
+- with no thickness: "This file is a surface, not a solid. It is meshed as a shell." and under it "No thickness given yet. Add it to your notes (for example "1.2 mm thick"), or set it later in the solver file."
+
+The stage's check row says "A surface, not a solid" (a sheet's open edges are its own, not a fault), and shows no thinnest wall and no hot spots: both are measurements of a solid.
+
+**Proof** (`~/surface_lab`, every file public or drawn there; 10 Nov):
+
+The set: 58 surface files and 43 files that must not be read as one.
+
+- 22 of our own mid-surfaces (shell corpus parts run through the solid route, their mid-surface written as an open-shell STEP with the wall the extraction measured) and 6 skins (one side of the sheet of the same parts).
+- 28 drawn files: stamped panels as B-spline patches with beads, dimples, flanges and holes (flat, curved, doubly curved), a bracket with darts, a hat section, a drawn cup, a tray, a deep channel, open tubes, a tank skin with a nozzle hole, two files of several sheets, and the three textbook shapes. Four are also written unsewn and six as IGES.
+- 2 public hull surfaces (IGES, NURBS).
+- Not surfaces: 8 public solids, their 16 skins with no solid entity (STEP and IGES) and one public closed hull, 8 skins with the smallest face left out, 8 with one face pulled 3 tolerances off, an open tube 120 diameters long and a tank skin with a pinhole. All 43 read as they should (solid, closed, gap).
+
+| The bar | Result |
+|---|---|
+| Read as a surface | 58 of 58 with a thickness in the words. With no words 57: one skin (a folded box-like part, 0.72% open) reads as a gap until a shell or a thickness is said. |
+| Free edges only where the sheet ends | Free-edge length equals the truth on 56 of 56 files that have one (the unsewn and IGES copies among them). Every face kept, 58 of 58. Edges that do not meet: 8, all on one part (lanced tabs; free in the solid route's mid-surface too). A gusseted bracket's 4 rib feet that land inside a face are joined (the solid route's census: 27 shared edges, 4 junctions, 0 open - the same). |
+| Mesh valid | 58 of 58, no folded element; 747,000 elements. |
+| Inside Nastran's own limits | 57 of 58. One 2-face NURBS hull leaves 6 triangles past the triangle skew and angle limits. |
+| Solver files read back | 58 of 58 by our readers (all four files), with the thickness asked. pyNastran reads all 115 Nastran files (58 with a thickness, 57 with none) with the thickness asked. |
+| Thickness in the file | Equal to what was asked on 58 of 58; 0 with the "NOT SET" head and name on 57 of 57. |
+| The same file twice | 58 of 58 byte for byte the same (all five files). |
+| Against the solid route (22 parts) | Elements 0.995 to 1.008 times the solid route's (middle 1.000). Both inside Nastran's limits on all 22. Seconds: about the same or less (the surface route extracts nothing). |
+| Textbook, CalculiX (`test_surface_textbook.py`) | Cantilever plate: tip deflection -1.5% (limit 3%). Plate with a hole: Kt -3.0% of Heywood (limit 6%). Pressurised cylinder: radial growth -1.3% (limit 2%). |
+| No thickness given | 57 of 57 made, valid and inside Nastran's limits. 5 were sized again for a thicker sheet (2 to 5 triangles past the limits at the thin wall). |
+| The run's own code | Staged by the real staging, the real FEA driver, finalize, the gates and the result block: delivered, the solid mesher never called. |
+
+Time: 1 to 55 s a file (a 400 x 240 mm curved panel of 30 patches, 67,000 elements). A stamped panel is fine by today's shell rules: 360 x 240 mm with beads is 43,600 elements.
+
+**Not done.**
+
+- A count or sizes in the notes are not applied to a surface file yet: they are read by the FEA plan's AI step on a measured solid, which a surface has none of. `surface_run.run` takes the count; the notes-requirements reader can hand it over.
+- A rib whose foot lands inside a face is not joined (it needs the face split there).
+- A closed skin the user wants as a shell (a tank with no opening) is still read as the solid it bounds.
+- Thickness per part from words.
+- A panel drawn as many patches is sized patch by patch (each patch's own width), so it gets more elements than the same panel drawn as one face.
+- A triangle file (STL) that is an open surface is still stopped: it has no faces to group.
+
+## 12. The notes on a surface file (SURF-7, 11 Nov, the combined branch)
+
+Before this, a surface file was meshed before the notes were read, so "Global Mesh Size = 4 mm", a quality list or
+a thickness written as a size field never reached it. Now:
+
+- **Read first, once.** For a file with no solid whose faces do not close, the FEA driver reads the notes' mesh
+  requirements (NOTE-7) before the surface run, and the surface run hands them to the shell mesher as any shell run
+  does (SHMESH-24..26). A file that turns out not to be a surface carries the same reading on: the model is asked
+  once per run.
+- **One thickness.** Two places read a thickness: the fixed word table (SURF-4, `contracts/shell_thickness.py`: the
+  notes, else the stage, else the request) and the "thickness" entry of the notes' typed set. The word table wins
+  whenever it reads one: it is what the stage showed the user before Proceed, and fixed rules read it the same every
+  run, model or no model. The typed set is used only when the word table read nothing and refused nothing (a bare
+  gauge number or a range stays refused). When both read one and they differ, the word table's is used and the
+  other is said as a second thickness. On a surface file the thickness row reads "met - every shell property
+  carries 1.2 mm" (a solid part's says the wall is measured from the CAD).
+- **A global size and no thickness.** The sheet is worked at a wall of the global size (`WALL_PER_GLOBAL` 1.0), not
+  at SURF-5's thin-sheet guess (the sheet's size over 300), and meshed once. The wall only sizes the clean-up: the
+  shell rules' floor (half a wall) is then half the size asked, the shortest edge the usual criteria list allows.
+  No thickness is written.
+
+Measured on the surface lab's 57 surface files that read as surfaces with no words (`~/shellcamp/land`, the criteria
+list at 4 mm, stepped to the part for the smallest and largest; no thickness):
+
+| working wall | size met | limit lines met | all 7 met | inside Nastran |
+|---|---|---|---|---|
+| thin-sheet guess (SURF-5) | 57 | 345 / 399 | 36 | 56 |
+| 0.25 x global | 57 | 349 | 35 | 56 |
+| 0.5 x global | 57 | 353 | 36 | 56 |
+| **1.0 x global (in force)** | 57 | 351 | 36 | 56 |
+| 2.0 x global | 57 | 364 | 37 | 56 |
+
+The size is met at every wall (the global size is the size field either way); the working wall moves only how much
+the clean-up merges, and the aspect-ratio line is where it shows (46 files met with the thin-sheet wall, 54 at 1.0).
+2.0 meets a few more lines but puts the floor at the global size itself, above the shortest edge the user's own list
+allows: not taken. Notes with no global size keep SURF-5 as it was.
+
+## 13. Surfaces that are not clean, and IGES (SURF-8..11, SHELL-15j..m, 11 Nov, input stream)
+
+### 13.1 Geometry clean-up of a surface file
+
+Real surface models carry small gaps, overlaps, slivers, faces written twice, split and tiny edges, and pinholes. A pre-processor user fixes these by hand: stitch within a tolerance, merge slivers, fill pinholes. The safe part of that is now done by rule (`cad/surface_clean.py`), and only after SURF-1 has read the file as a surface part from the file as written (a closed skin with a crack is still a closed skin with a crack). Nothing is moved, added or reshaped: only edges that lie along each other are made one, a copy is left out, a pinhole's loop is taken off its face.
+
+- **The ladder (SURF-8).** The faces are sewn again at 2 and 5 sew tolerances (one tolerance is 1e-4 of the part's diagonal, the clean check's own), lowest first. OpenCASCADE's sewing reports every pair of edges it joined, and each pair is judged before the rung is kept: the two edges are on different faces (one face's own two edges are a slot drawn in it); the two faces leave the edge to opposite sides (within 10 degrees of the same side they lie on each other - a copy of a face a little off, a patch laid over the sheet - and would sew into a closed pocket); the gap is no wider than a tenth of the narrower face (the extraction's own SEW_CAP); no face, area or other free edge is lost. A join that fails does not cost the others: the joins that pass are taken one at a time, each judged again on its own, and why the rest were left is said (11 Nov, second pass: on a clean-up exercise file a single join the sewing could not name - a piece of an edge it cut at a T-meet - refused the whole rung, so 3 gaps of 0.13 mm stayed open under a 0.19 mm limit, and a stated 2 mm left 29 edges open). Pieces of an edge the sewing cut where a neighbour's corner meets it in the middle are traced to their face by where they lie. The rule's limit is 5 tolerances, 1/2000 of the part: the reach inside which SURF-2 already said an edge "does not meet" its neighbour, so what used to be said as a gap is now closed.
+- **The user's tolerance.** "stitch gaps up to 0.5 mm", "sewing tolerance 0.2", "close gaps under 0.3 mm" (a fixed word table, `contracts/surface_stitch.py`, the latest word standing) replaces the limit and the narrow-face cap; "do not stitch" turns the ladder off. A stated tolerance never leaves more open than the rule's: both are run, and when the stated one leaves more free edges along a neighbour the rule's result is kept and said ("Stitching up to 2 mm, as your notes asked, would have left more open than the usual 0.19 mm, so the usual result is kept.").
+- **One count of what is open (11 Nov, third pass).** An open place is a run of free edges, each lying along a face that is not its own within 1/100 of the part's size; every other free edge is the sheet's own rim. "Along" is parallel (within 15 degrees of the face where it is nearest) and not merely leaving a corner the two share - a rim leaving a corner moves away about as fast as it runs - but a crack opening from a shared corner at a slant under 1/10 (about 6 degrees: two edges meant to be one, joined at one end) is a place (two damaged-matrix files had left a 0.03 mm crack along 6 mm open and unsaid). The edges joined end to end and the two sides of one gap (face A's edges along face B and B's along A) are one place, so an edge the sewing cut into pieces, or a gap seen from both sides, is counted once. A place's gap is how far its longest edge lies from the face beside it. The same count, measured the same way whatever tolerance was asked, is the record's open edges, the words, and the check on a stated tolerance. Before it, a clean-up exercise file read 3 open edges with no notes and 19 with "stitch gaps up to 2 mm" (the stated run counted every piece of free edge within 2 mm, the rule's within 0.19 mm), and 6 pairs "side by side" became 63 (one per piece the sewing had cut); with it, the same file reads 32 places both ways.
+- **What is said.** "Closed 6 of the 32 places where the surfaces did not meet, the widest X mm." Then "The surfaces do not meet at 26 places: the shell has gaps there": a join inside a place that stays open is not a place closed. Every sentence after it stands alone, names what was stitched and its own count out of those places, and the counts add up ("At 1 of these 26 places, the gap is narrower than the 2 mm stitched here ...", "At 25 of these 26 places, the surfaces run side by side 3 to 4 mm apart, wider than the 2 mm stitched here."; "that place", "both places", "all 3 places"; never "of them" or "(s)"), the same with or without a stated tolerance. Those within what was stitched are said with why they were left ("an edge lies over its neighbour's face, or a corner is off its neighbour's corner": sewing joins edges to edges, and an edge lying over a face's inside has no edge to meet), with no tolerance offered (a larger one would not close them either); those wider are said with the span of their gaps, and a tolerance is offered ('add to your notes: "stitch gaps up to 0.6 mm"', a tenth over the widest, rounded up) only after it has been tried on the file and closed them - otherwise "Stitching does not close them cleanly, so they are left as drawn." Closing overlaps by trimming or extending surfaces is not done (a separate decision).
+- **A face written twice (SURF-9).** Same area, same box, and each lying on the other within the sew tolerance (5 points inside it, found on a fine UV grid so a ring's are found, and 3 points on each edge): the later copy is left out before anything is sewn, and said.
+- **Pinholes (SURF-10).** An inner loop of a face whose every edge is free and which is no bigger across (the farthest two of its points) than the gaps being closed is filled with the face's own surface. "ignore holes under 5 mm" fills holes up to that size instead.
+- **The user's count (SURF-11).** The element count in the notes is read for a surface file by the FEA plan's own reader (shown the file with no zones, asked only when there are words) and reaches the shell's sizes (SHMESH-23) as it does for a solid. The notes' other mesh requirements reach the surface run through the land branch's Glue 1.
+
+**The damaged-surface matrix** (`~/shellcamp/input/tools/damage.py`, `matrix_read.py`, `matrix_judge.py`). 46 public surface files (the surface lab's synth, mids and skins written as sewn STEP) damaged in 13 ways at 0.5, 2, 4, 10, 20 and 50 sew tolerances: a face pulled off along its normal and in its plane, an edge split, a tiny edge, a sliver cut off along an edge, a face written twice (exactly, and offset), a pinhole in a face and at a corner; and, meant to stay apart, a slot in one face, a copy laid over the sheet, the part cut in two with a clearance (closed by rule up to 5 tolerances, kept past it). 2,212 files, judged against the product's own reading of the clean file:
+
+| | closed | kept as drawn | left open and said | left open, silent | wrongly welded | joined as before (SURF-2's junction rule) |
+|---|---|---|---|---|---|---|
+| this branch | 888 | 927 | 374 | 0 | **0** | 23 |
+| the code before | 597 | 927 | 400 | 190 | 98 | - |
+
+The 98 welded before were copies of a face read as a closed pocket, or the file as a closed skin. The 23 "as before": a copy of a face laid 2 to 50 tolerances off whose edge lies inside a neighbouring face (a shelf), joined there by SURF-2's scoring exactly as before this branch. Left open and said: faces pulled 10 to 50 tolerances off (with the note that closes them), slivers narrower than 10 tolerances (kept as a face, the edge it does not meet said), corner pinholes 2 to 4 tolerances across (the corner's faces are narrow against the hole, so the face cap refuses).
+
+### 13.2 IGES
+
+An IGES copy of a part that passes as STEP came out fully good 1 time in 13 on the sealed set. Reproduced on public parts (`~/shellcamp/input/tools/iges_export.py`, `parity_jobs.py`, `route_one.py`, `parity_table.py`): every STEP or BREP part of the shell lab, the wall lab's dev set and the surface lab (170 parts), exported by OpenCASCADE as trimmed surfaces (type 144, mm), as manifold solids (186), in inches, and with every real rounded to 7 and to 5 digits; each copy and its original run through the run's own order (the clean check, the real staging, MESH-1, then the shell run or the surface run). The cause and the rules are in section 2.4.1, items 10 to 12.
+
+Same as its STEP (the same route, made alike, the same verdicts, mid-surface area within 1%, the same open edges, valid and inside Nastran's limits alike, elements within 10%), on 168 public parts (2 originals did not run):
+
+| IGES flavour | before (PR #434 code) | now | fully good parts lost now (before) |
+|---|---|---|---|
+| manifold solid (186) | 163 (97%) | 163 (97%) | 0 (0) |
+| trimmed surfaces (144), mm | 101 (60%) | 140 (83%) | 4 (31) |
+| trimmed surfaces, inches | 100 (60%) | 138 (82%) | 5 (32) |
+
+By set, trimmed surfaces: shell lab 13 -> 42 of 59, wall lab 38 -> 49 of 59, surface lab 50 -> 49 of 50. **The 90% target is not reached.** What still differs (parts, the mm and inch copies together):
+
+- 10 are touching or overlapping bodies (sh0014, sh0017, sh0042, sh0100, sh0101, sh0112, sh0113, d008; sh0003, sh0058 and sh0110's verdict in inches only): the open item in 2.4.1 - coincident faces of two bodies.
+- 8 differ only in element count with the same verdicts (sh0004, sh0054, sh0109, sh0110, sh0114, d010, sh0007 with one open edge more, sh0011 a few elements past Nastran's limits): the IGES faces re-made as planes and cylinders where the STEP has B-splines, so the sizing reads other curvatures.
+- 4 differ in the brep flavour too (sh0009, sh0013, d029, d039): the extraction or the mesher reads the copy differently whatever the format; sh0009's copies mesh where its STEP does not.
+- 3 crash in the run on the copy (d045, d058 a segmentation fault, d003 gmsh "could not fix wire").
+- 3 are better as IGES (d035, d047: no open edges where the STEP left some; mid_sh0055: read as the surface it is).
+- d057's copy reads as a closed skin with a gap (its faces do not sew closed).
+
+The copies written with every real rounded to 7 or 5 digits (a single-precision exporter) were run on the first 52 parts only: 49% and 52% the same, solids read invalid. A named open item.
+
+### 13.3 Sizing of surface files (for the notes stream; `engines/shell_plan.py` not changed)
+
+The same 400 x 240 mm panel drawn as 1, 4, 12 and 30 B-spline patches, flat and bent to a 600 mm radius, 1.2 mm thick (`tools/sizing_patches.py`):
+
+| patches | elements (flat / bent) | element size | rule |
+|---|---|---|---|
+| 1 | 1,981 / 1,988 | 7.5 mm | SHMESH-15 (a panel: width / 20) |
+| 4 | 7,933 / 7,923 | 3.75 mm | SHMESH-15 on each patch's width |
+| 12 | 22,479 / 22,478 | 2.22 mm | SHMESH-15 on each patch's width |
+| 30 | 2,522 / 2,541 | 6.98 mm | SHMESH-1 (each patch under span / 10: no panel, width / 4) |
+
+With no thickness the counts are the same (sizing wall 1.03 mm). Patches cost 4 and 11 times the elements, and not even steadily: the panel test and the width are read per patch. **Proposed rule:** read the width and the panel test on the smooth panel (patches joined across edges whose normals turn under about 5 degrees), not on each patch. The industry stamping's 25,765 elements of about 1 mm where 4 mm was wanted is the thin-sheet floor (SURF-5) on top of this; a global size in the notes (Glue 1) is the user's way out today.
+
+### 13.4 Features at 4 to 10 mm (beads, darts, holes, fillets)
+
+Nine lab stamped files, 1 mm thick, at the rules' own size and at the element count a 4, 6 and 10 mm global size gives (`tools/feature_one.py`):
+
+- **Small holes** (up to 12 mm across) get 24 to 26 element edges round them at every size (SHMESH-3, 6 per quarter turn): they hold the elements fine around them whatever is asked (a bracket asked for 221 elements at 10 mm got 503).
+- **Beads** (a panel with three beads): 3.35 elements across the beads' flanks and radii at the rules' size; 0.92 at 4 mm (12 of 18 faces one element across); 0.38 at 10 mm (all 18): the bead is washed out. Darts: 1.04 across at 10 mm, and the mesh then leaves Nastran's limits.
+- **Doubly curved stamped panels** keep their curvature sizing (SHMESH-4): a curved panel asked for 1,263 elements at 10 mm got 21,256 (median edge 0.8 mm); element centres sit up to 0.98 mm off the CAD surface at 6 mm.
+- **Fillets** (a hat section) at 10 mm: 0.53 elements across, centres 0.30 mm off.
+
+Industry practice: beads and darts are kept as geometry with at least two elements across a bead's flank; small holes under a stated size are filled on request, larger ones get a ring of elements; fillets under the element size are often meshed as a sharp bend. The one request that maps onto a lever here, "ignore holes under 5 mm", is SURF-10. A minimum of elements across a bead and a per-hole budget under a global size are for the sizing stream.
+
+### 13.5 Still open
+
+- Touching bodies in IGES: a pipe and its insulation, coaxial reductions (sh0003, sh0013, sh0014, sh0017, sh0046). Their coincident faces leave an edge at one angle beside faces at their own, which SHELL-15i does not read (a strict xfail test pins it).
+- IGES written with every real rounded to 7 or 5 digits: solids read invalid; not worked on.
+- The sizing rule above and a bead minimum, for the sizing stream.
+
+### 13.6 Surfaces made to meet (SURF-12, 11 Nov, input stream; founder's decision)
+
+A surface file written as a clean-up exercise (or simply exported loosely) has places where the surfaces do not meet: an edge stopping short of its neighbour, a face running over its neighbour, a corner off its neighbour's corner. A pre-processor user closes each by hand: extend the face to its neighbour, trim the overlap back, move the corner. Commercial tools leave this to the engineer. Here it is done by rule (`cad/surface_mend.py`), on the surface route only (open sheets, no solid; solids, the extraction and `cad/repair` are not touched), before stitching - so a gap across a face is closed by continuing the face, never papered over by a sewing tolerance.
+
+**The places** are SURF-8's: free edges running alongside another face within 1/100 of the part. They are taken one at a time, nearest gap first. For each, by which way the neighbour lies:
+
+- **Extended** (the neighbour lies across the face: an edge stopping short). The face is continued past the edge on its own surface. A natural patch (its one wire the four sides of its surface): on a plane, cylinder, cone, sphere or torus, the same surface over a wider stretch of its own parameters; on a B-spline, the patch rebuilt through its own points and continued past the edge with the surface's first and second derivatives, kept only when it lies on the old patch within a tenth of the sew tolerance. A trimmed face (a bead or dart cut out of a larger patch - most faces of a real stamped file): a strip of its own surface between the edge and a line past it, the strip's sides continuing the face's own neighbouring edges (a rim stays a straight rim), joined into the face as one face. The continued face is then cut where it crosses its neighbour, or - when the two are one sheet continued - cut back along the neighbour's own edge. A web's foot extended onto its plate is joined by scoring the plate (SURF-2's imprint).
+- **Trimmed** (an overlap: the face runs over its neighbour): cut back along the neighbour's edge.
+- **Moved** (the neighbour lies off the face: a step, a corner off its neighbour's corner): the two faces sewn alone at the gap - a tolerance join, the faces' surfaces unchanged.
+
+**An edge stopping short of a face's INSIDE** (a T: a wall or flange whose foot stops short of the sheet it should butt onto; 12 Nov, from a prospect's training sheet where five places on one line, 3.4 to 3.6 mm, were left open). The sheet it stops short of is often drawn in several patches, so:
+
+- **Found as one place**: an edge lying along no one face over its whole length still lies along the sheet when each of its probe points is within reach of its own nearest face and runs alongside it (`cad/surface_model._along_several`). A face the edge meets at a corner is never one of them (that is the edge's own sheet running on: a panel's outline along short bead strips is no gap).
+- **Extended and cut on the whole sheet**: the face continued along its own surface is cut by every face it reaches that is not its own neighbour (`surface_mend._cutters`), not only by the one named for the place; it may then end across those faces' inside (a T), but cross none.
+- **Continued by a tangent strip** where its own surface does not run on (a natural B-spline that does not extend well, a trimmed face whose surface ends at the edge): a ruled strip from the edge's own points, straight on along the face's tangent plane, square to the edge and away from the face - a pre-processor's "extend edge" - cut on the sheet the same way, added as a face of its own under the face's name. Said "Face_7 was extended 3.4 mm straight on past its edge to meet Face_55".
+- **Joined by scoring only the faces concerned**: the changed face (or the strip), its own neighbours and every face it touches or ends on are fused with the sew tolerance as the fuzzy value; every other face is kept as it was (the whole part fused took minutes a try on a 124-patch look-alike).
+
+**A sliver between two faces that run on into each other is filled** (12 Nov, from the same training sheet: 9 places along fillets where a small B-spline patch and the fillet beside it are tangent - the angle between them nil, the gap lying in both faces' planes - but leave a strip between their edges, touching or nearly at one end and opening to 3.4 mm at the other; five lay along one fillet line, the gap opening and closing along it). Continuing either face does not close a tapered strip (a B-spline patch does not extend well, and a uniform extension covers the wide end only), so - as an analyst fills the strip between the two edges in a pre-processor - a NEW FACE spans it (`surface_mend._with_fill`), and neither face is moved:
+
+- the place's faces are put on two sides (each pair's two faces on opposite sides); the new faces are ruled from the free edges of the side more of whose edges lie along the other, through 25 points of each edge's own (so they sew to it at the sew tolerance), straight across to the nearest points of the other side's free edges - all of them, since an edge often runs on past the faces it was paired with;
+- only where the edge looks across a strip at the other side: within the reach, the way across within 45 degrees of square to the edge and within 15 degrees of the face's own tangent plane; where the two edges touch (within a tenth of the sew tolerance), the new face closes to a point there;
+- each new face valid, crossing no other face (it ends on the faces it fills between, along its own rim), then everything sewn again with junctions kept. Tried only once both faces' own extension, trim and move have failed, and kept only when the place is gone whole (fewer places after): a fill along part of a place leaves the rest harder for the mesh to close than the whole was (a 1.5 mm place three faces round, which the mesh closed, filled along one face left 0.75 mm the mesh could not). Said "At (185, 0, -4) mm, a strip up to 3.4 mm wide between Face_17 and Face_23 was filled with a new face." The new face carries its side's face name (the same group in the solver files).
+
+**A corner both sides stop short of** (12 Nov: a large plane and a small B-spline at 48 degrees, 3.3 mm apart and 0.4 mm off along both normals - the B-spline continued alone meets the plane's surface just past the plane's trimmed edge, so it "does not reach its neighbour"). Two ways, the first that passes (`surface_mend._with_both`):
+
+- **both continued**: every face of the place continued past its edge there (along its own surface, else by the tangent strip) and each cut where it meets the other side's continuation, so both end on the one line where they cross - an analyst's "extend both and trim";
+- **onto the other's surface, then filled**: where only the small side's edges lie along the other (a small face beside a long edge), the small side alone is continued and cut on the large face's SURFACE run on past its edge (a plane, cylinder, cone, sphere or torus; any other surface: the face itself), and the strip it then leaves in that surface, between the large face's edge and the new edge, is filled as a sliver is.
+Said "At (320, 90, 0) mm, Face_11 and Face_28 were both extended, by up to 3.2 mm, to meet each other." Like the fill, tried last and kept only when the place is gone whole.
+
+**A hole closed round by its faces is filled** (12 Nov, from the stamped training sheet itself: of its 11 places, 9 stayed open after the fill and corner above). There the gap is not a strip between two edges but part of a HOLE - a face the drawing left out: the tapering end of a missing strip where it runs into a bend (closed round by a bead wall's end arc, the round below, the dart above and a 0.7 mm stub of the panel), a corner patch between three rounds, a missing stretch of a round at a 48 degree corner whose ends are closed by the round's pieces. The place is often one short edge (4.5 mm) beside a face whose own edge runs away from it at an angle, so no edge faces another across a strip, the faces' normals differ by 26 to 48 degrees at the edge's middle, and every face continued would cross the faces round the hole. Two faces' corners often meet at one spot with no edge between them (each face's corner its own point). So, as an analyst fills a hole from its edges (`surface_mend._with_hole`):
+
+- the hole is the SHORTEST LOOP OF FREE EDGES through each of the place's edges, corners within the sew tolerance of each other taken as one point (a loop longer than 60 reaches is the sheet's own outline or an opening, never filled);
+- ONE NEW FACE spans each loop: OpenCASCADE's n-sided filling, tangent to every face round the hole (its tangency within 15 degrees), else through the rim alone; mended where its outline is a little off (a corner of no angle at a tapering tip), on the rim within a tenth of the sew tolerance so it sews there, its side up as the face of the loop's longest edge;
+- filled only when the hole is no more than TWO REACHES ACROSS (the widest circle inside the new face, read on a 13 x 13 grid): a gap is closed when narrower than one element, and the hole round it may be up to two (on the training sheet 3.7 to 6.2 mm, at a 3.74 mm reach);
+- each new face valid and crossing no other face (it ends on the faces round it, along its own rim), then everything sewn again. Where the place's edges lie on two holes (it runs past a sliver of a face left between them), both are filled in the one change; where filling one leaves the sliver's other edge beside the new face (a new place), the hole there is filled in the same change (up to 2 more). Tried after the fill and the corner, and kept only when the place is gone whole. Nothing is moved. Never for a gap the stitching closes next (within SURF-8's rule, 5 sew tolerances): a 0.05 mm hole filled with a face of its own meshed to slivers that did not join (70 free mesh edges more on a look-alike).
+Said "At (108.5, 0, 0) mm, a hole up to 3.3 mm across between Face_1, Face_2, Face_3 and Face_4 was filled with a new face." On the training sheet at 4 mm: all 11 places closed in the surfaces (9 holes filled in 8 changes - one hole held two places, one change filled the holes either side of a sliver - and 1 strip filled), one sheet, nothing past Nastran's own limits, 5,052 elements (4,843 quads, 209 triangles). Tests: a bent sheet (a panel turning through an r 4 round into a flange at 48 degrees) with 17 mm of the round missing, with a tapering wedge of it missing (the two pieces' corners meeting unsewn at the tip), and with a sliver of it left between two missing stretches - each left open before, each filled; a hole wider than twice the reach is left and said why.
+
+**Every change is judged** before it is kept: the face valid (BRepCheck), its normal side kept, its area changed by no more than a strip as wide as the reach along the edge (an extension: no wider than one and a half times the gap - a strip much wider would lie over the neighbour), and crossing no other face (touching along edges is allowed). A B-spline continued past its edge is rebuilt through its own points, so after the cut-back the piece kept is the one within the sew tolerance of the old face's inside, not the one exactly on it (a bead continued down to its fillet had kept none, and stayed open). The sheet then sewn again at the sew tolerance; the change is kept only when it leaves less open by SURF-8's count (fewer places, or as many with less open edge - a place of several pieces is closed piece by piece) and never more places.
+
+**Both faces are tried.** A place is two faces: each is tried in turn (the face with the longer free edge there first), and why each was refused is kept in the record (the words give the first face's reason). On the real stamped file a small fillet and the bead beyond it, 1 mm apart, stayed open because only the fillet was tried, and its own curve bends away from the bead; the bead, continued down, lands on the fillet's edge.
+
+**The order** (12 Nov, product owner's decision): the cheapest change that keeps the part's shape first - extended or trimmed along the face's own surface; only when neither passes is the edge moved onto its neighbour. Each kind that does not leave less open gives way to the next.
+
+**The reach** (12 Nov, product owner's decision): a gap narrower than one element is closed by default - the element size the user asked for, else the size the run will mesh at (engines/shell_plan's base size of the part's largest sheet as a panel: SHMESH-1, SHMESH-15, SHMESH-2, at the user's wall or SURF-5's sizing wall) - but never past 1/100 of the part: a gap wider than that is not a place where the surfaces fail to meet (SURF-8), it is a drawn opening. "close gaps up to 4 mm" (or "stitch gaps up to ...") sets it instead; "do not stitch" / "do not close gaps" and "do not change the surfaces" turn this off. (Until 12 Nov a change was also held to half the width of the face that is changed: on a stamped training part 5 of 8 places, beside 4 to 6 mm fillet and bead strips, stayed open for it. The first version held every change to a quarter of the NARROWER face.)
+
+**What is said** (12 Nov): "Closed K of the N places where the surfaces did not meet", then ONE SENTENCE PER PLACE - what was done there, by how much and where: "At (112, 0, -7.6) mm, Face_4 was extended 3.6 mm along its own surface to meet Face_14.", "... Face_48 was trimmed back 1.5 mm to the edge of Face_58.", "... the edge of Face_53 was moved 2.4 mm onto Face_52.", "... the faces were stitched together across a 0.15 mm gap.", "... the 2.4 mm gap between Face_53 and its 4 neighbours was closed in the mesh: 22 nodes joined across it, none moved more than 1.2 mm.", or "... is left open: <why>." At most 12 sentences; the rest are counted and are in the run's record. When the user asked to keep the surfaces as drawn, only stitching ran and it is told as before.
+
+### 13.7 Gaps closed in the mesh (SURF-13, 12 Nov; product owner's decision)
+
+What is still open after SURF-12 and stitching, and narrower than the same reach, is closed in the shell mesh (`engines/surface_mesh_close.py`) - the analyst's "equivalence the free edges" in a pre-processor, done by rule:
+
+- **The sides of the gap**: each open place is named by its two faces (`cad/surface_model.named`: Face_k on each side, pair by pair, and how far apart the two sides' free EDGES are - an overlap's gap to the face under it is nil, but its edge lies its width from the other's edge). In the mesh, a face's free element edges facing the other face's: both ends within two gaps of the other side's free edges, running along them (within 45 degrees) and looking across at them (the way across at least 55 degrees off the edge) - a face's short end, or two outlines running on in one line, are no sides of a gap.
+- **The join**: the two rows of nodes measured along the gap; nodes facing each other (nearer along the gap than 0.45 of the shorter element edge beside them, and than 1.7 gaps) become one node half way between them, nearest first, never crossing; a node with no partner across is put into the element edge it faces, half way to it, and that element is cut into a quad and a triangle or into triangles (the cut whose worst element is best, inside Nastran's limits first).
+- **One side kept where it is** (12 Nov): where meeting half way folds an element or leaves one past the limits (a 3.6 mm gap beside small elements: each side squeezed by 1.8 mm), the join is tried again with one side kept and the other brought the whole gap to it, each side in turn - still no node moved farther than the gap. **The move is measured on what the try did** (14 Nov; it was counted as half the distance across, which is right only half way: a side brought the whole way across a gap opening to 1.9 mm, read 1.45 mm at its middle, moved 1.84 mm and was kept and told 0.92 mm): how far every node now stands from where it was, every node put into an edge from that edge as it was, every node an imprint added from the point it stands for - that is the number checked against the gap and the number told.
+- **A T** (12 Nov: an edge stopping short of the other face's INSIDE, whose mesh has no free edge there - "the mesh has no free edges facing each other"): the free edges lying along the other face's mesh (both ends within two gaps of it, running within 45 degrees of its plane) have their nodes moved onto it (the nearest point of its elements); along the line they then draw, the other mesh's own nodes within the gap of it are moved onto it (the shortest row of its edges from end to end, kept close to the line); the two rows are then joined as two free edges are, the other face's nodes kept where they are. The foot becomes a junction (three elements on each edge).
+- **An imprint** (12 Nov: on the training sheet 7 places were left with "the mesh has no row of nodes along the line the edge should meet" - a small gap over 4 mm elements, the line farther than the gap from every node): the line is imprinted on the other mesh (`surface_mesh_close._imprint`), as a pre-processor imprints an edge - a new node where the line crosses each element edge (an edge node within 0.15 of the edge's length and half the gap of the crossing moved onto the line instead), each element the line crosses cut in two along it and each part made a quad or triangles, the elements beside taking the new nodes into their edges. The new nodes are the row the short side is joined to; no existing node moves farther than the gap, and the same limits judge it. **Its ends too** (14 Nov): a line ending inside an element (a foot running y 5 to 35 over rows 4 mm apart crosses element edges only from 8 to 32) gets a node at its end - the element's nearest node moved onto it when within 0.15 of its shortest edge and half the gap, else a new node inside the element and the element cut from the line's last crossing to it and on to one of its corners (the cut whose worst element is best, none turned; a fan round the end when that is best) - so the row runs the line's whole length; before, the foot's last 3 mm at each end were joined to nothing and the place was told closed.
+- **Kept only when** no element turns more than 60 degrees or folds (a corner Jacobian not positive), no element is past Nastran's own limits that was not before, no node moved farther than the gap, and the gap's free edges are gone (at most a quarter of them, or two gaps' length, left) - and, at a T, no stretch of the short edge is left lying along the other face unjoined (the face has no free edge there, so the count of free edges facing free edges cannot see it). Otherwise the mesh there is as meshed and the place is told open with why. Every sheet's normals are then turned one way again (SHMESH-9) and the quality measured again on the closed mesh.
+- **A flat triangle at a seam** (12 Nov): a triangle past Nastran's limits whose third corner lies within 5% of its longest edge's length of that edge - a seam meshed with a node more on one side, zipped by a triangle of no area (the training sheet's exercise had two, 0.03 degrees, where an extended face meets its neighbour's corner) - is taken into the one element across its longest edge (`surface_mesh_close.absorb_flat`): the corner put into that element's edge (it does not move), the element cut again, the triangle dropped; kept only when nothing there is past the limits or folded. Run on every surface mesh, closed or not.
+- **Turned off** by "do not stitch" / "do not close gaps" and by "do not change the surfaces" (then only stitching closes anything). Deterministic: the same mesh and places give the same mesh.
+
+**Proof** (`tests/unit/engines/test_surface_mesh_close.py`): a 2.4 mm in-sheet gap with the nodes off by 1 mm, a 2.1 mm step, a 1.5 mm overlap 0.3 mm above - each one connected sheet, valid, inside Nastran's limits, no node moved farther than the gap; a side meshed twice as fine has its extra nodes put into the coarse side's edges; past the reach the mesh is untouched; a join that would fold 0.5 mm elements across a 3 mm gap is refused; the same mesh twice the same. Look-alikes `~/surf3_lab/tools/training_part.py` (a stamped training sheet of 120 small natural B-spline patches with 6 to 10 mm strips: edges 2.1 to 3.6 mm short, a bend 0.99 to 2 mm short, a 2.1 to 3 mm step, overlaps, corners off by 0.8 to 1.6 mm, and an exercise with eight at once). Readings on the training look-alikes (12 Nov, VM sweep t9, 56 runs plus 4 new): at the 4 mm the user asked, every damaged training variant (16 of 16, the eight-at-once exercise too) is one connected sheet with no place left open; the T-gap walls (3.4 and 1 mm short, on a patch seam, leaning 20 degrees, flat) the same. The new look-alikes `~/surf3_lab/tools/sliver_part.py` - a tapered sliver 0 to 3.4 mm along a fillet line (8 B-spline flange patches beside 6 cylinder pieces, one a 1.2 mm sliver), a cylinder run-out beside a plane 0.7 to 3.4 mm, a B-spline lip at 48 degrees 3.2 mm out and 0.41 mm up - gave the old code's exact reasons ("could not be continued on its own surface", "does not reach its neighbour", "would not leave less open"); now each is closed in the geometry, one sheet, nothing past Nastran's limits.
+
+**Proof** (`tests/unit/cad/test_surface_mend.py`, `test_surface_textbook.py`; look-alikes `~/shellcamp/input/tools/stamped_gaps.py`, `trimmed_gaps.py`, `small_patches.py`): an edge stopping short, an overlap, a step, a web's foot, a trimmed plate cut back - each closed, the area the clean part's; a gap past the reach left and told; "do not change" changes nothing; a slot never closed; before - closed = after; the same file twice the same. A cantilever drawn as four patches with a 0.6 mm short edge and a 0.8 mm step, made to meet, bends within 2% of the clean patches (CalculiX). On the 172-file corpus (12 Nov, VM sweeps c10/c10b, then c11 for the 13 files the last ways touch): open places 128 before this work's base, 63 after (of 232 before any clean-up), 55 of them closed in the mesh; 37 files better, 134 the same, 1 worse - stamp_tmeet_curved exercise3, 3 sliver triangles past Nastran's limits at a corner where two edges were moved 0.12 and 0.02 mm (there since the T-gap commit, not from the fill). The last ways fired 11 fills and 3 both-faces extensions across the corpus. The same corpus run twice: all 172 the same.
+
+**Not done**: a trimmed B-spline face (a face cut from a larger patch) stopping short: its strip is built, but the joined face does not come out as one face of the right area (the cut edge's curve lies within its tolerance of the surface, not on it), so it is not extended and the place is said - "stitch gaps up to ..." closes it by stitching; a trimmed face whose surface does not run on past the edge is continued by a tangent strip only where it meets its neighbour at an angle (a T, a corner) - stopping short of a neighbour in its own sheet it is still not (it would need the surface itself extended and the face rebuilt on it); a "moved" step is a tolerance join, not a reshaped face; bodies touching in IGES stay open (section 2.4.1).
+
+## Quads or triangles (SHSTAGE-8, STD-4, NOTE-11, SHWRITE-2; 11 Nov)
+
+A shell is quad-dominant by default (a real welded column: 63,074 quads, 84 triangles). The user can ask for an
+all-triangle shell instead, in three places, one field (`kind.shell` of the notes' typed set):
+
+- the Meshing settings page's one switch beside its box, "Shell elements: Quads | Triangles" (Quads by default);
+- the notes ("triangles only", "tri mesh", "use triangles for shells" ...: the model's reading, or NOTE-11's fixed
+  phrases when it put the words in no field) - the notes win over the settings;
+- the stage's shell line, "Elements: Quads | Triangles", drawn as Bonded | Contact. It starts on the notes' value when
+  they say one, else the settings switch, else Quads. A flip away from the settings or the notes asks one short line
+  first ("Your settings say Quads. Use Triangles for this run?"; Yes keeps it, No puts it back); which sources ask is
+  `application/shell_elements.CONFIRM_FROM`, one line. A click is the last word for that run (source "stage"); a
+  control left where it started is no pick.
+
+Triangles: gmsh without recombination at the same plan sizes, no mapped strips, no pairing or walks, caps cut into
+triangles only (`shell_quality.absorb_caps(quads_too=False)`). On 20 lab parts (shellcamp/shellkind): Quads is
+byte-identical to the base in every deck and the viewer mesh; Triangles is valid, inside Nastran's limits and read
+back by pyNastran (all CTRIA3) on all 20, about 2 times the elements (1.9 to 2.1) - 2.9 to 5.4 times where the quad mesh
+stretched mapped strips (sh0031, a hat section, darted brackets): triangles are not stretched.
+
+SHWRITE-2: CalculiX expands S3 into one layer of C3D6 wedges, which lock in bending (a cantilever strip 64% too stiff,
+a simply supported plate 44%). An all-triangle shell's CalculiX deck writes S6 (mid-side nodes at the middle of each
+edge, numbered after the corner nodes; C3D15): the plate +0.8% against Navier and +1.3% against the S4 shell, the
+strip +0.7% against the S4 shell (both S4 within 0.5% and 3.2% of theory). A
+quad-dominant shell's few triangles stay S3. Abaqus S3, Nastran CTRIA3 and SHELL181 triangles are written as they are
+(not solved here: no licence).

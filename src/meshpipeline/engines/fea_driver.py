@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Any
 from meshpipeline.engines import bucket_files as BF
 from meshpipeline.engines import fea_ai as FA
 from meshpipeline.engines import fea_ladder as L
+from meshpipeline.engines import fea_part_sizes as PS
 from meshpipeline.engines import fea_plan as P
 
 if TYPE_CHECKING:
@@ -60,7 +61,16 @@ CAD_DEFECT_GATE = "fea_cad_defect"
 #: stops at cad/fea_measure.MAX_RAY_TRIANGLES for speed; the plan cannot hold an unmeasured wall).
 MAX_RAY_TRIANGLES = 5_000_000
 #: What the remote mesher receives besides the plan: the solid and the facts the deck reads.
-PAYLOAD = (*P.STAGED_SOLIDS, "cad_face_names.json", P.PLAN_FILE, "gmsh_spec.json", "assembly.brep", "assembly.json")
+PAYLOAD = (*P.STAGED_SOLIDS, "cad_face_names.json", P.PLAN_FILE, "gmsh_spec.json", "assembly.brep", "assembly.json",
+           # LAD-fea-11: the parts an earlier pass meshed, kept for this one
+           "fea_kept_parts.msh", "fea_kept_parts.json",
+           # PLAN-fea-34 / MESH-mmg-1: the user's requirements read from the notes (engines/mesh_requirements.FILE).
+           # The mesh job's adapter reads them to measure each asked-for limit and to aim the MMG pass; without
+           # this file in the payload neither happened on the cloud mesher (dev-areen 11 Nov, job a8cc1718:
+           # no limit rows, MMG with no targets), though both did in a run on one machine
+           "mesh_requirements.json")
+#: LAD-fea-11's files (engines/gmsh/fea_adapter.KEEP_MSH / KEEP_JSON)
+KEPT_FILES = ("fea_kept_parts.msh", "fea_kept_parts.json")
 #: Where each pass's deliverables are kept until the best one is chosen.
 PASS_FOLDER = "_fea_pass_{n}"  # noqa: S105 - a folder name, not a secret
 #: every file a pass writes that the delivery reads: the solver files ride with their mesh, so the
@@ -181,33 +191,42 @@ def named_as_cad(record: dict, surface, info: dict) -> dict:
     return out
 
 
-def solids_from_shells(ws: Path) -> int:
-    """MESH-1: A FILE OF FACES THAT CLOSE is read as the solid it bounds: a STEP or IGES written as closed
-    shells with no solid entity (aircraft and keel surfaces, 24 Oct gate) - the shells are made solids,
-    sewn first only within the clean check's own tight tolerance (cad/validity_brep), nothing else
-    touched. Writes geometry.brep and returns how many solids it made (0: nothing to do, or no shell
-    closes - the part is then meshed, or refused, as it stands)."""
+def _faces_in(shape) -> int:
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+
+    m = TopTools_IndexedMapOfShape()
+    TopExp.MapShapes_s(shape, TopAbs_FACE, m)
+    return m.Extent()
+
+
+def _encloses(solid, diag: float) -> bool:
+    """SHELL-15k: whether a solid made from a closed shell encloses a volume at all (more than cad/validity's
+    ZERO_VOLUME_RATIO of the file's size cubed). A face written twice sews into a closed pocket of no volume: no
+    solid, and the file is still the surface it is (SURF-9 leaves the second copy out)."""
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
+
+    from meshpipeline.cad.validity import ZERO_VOLUME_RATIO
+
+    g = GProp_GProps()
+    BRepGProp.VolumeProperties_s(solid, g)
+    return abs(float(g.Mass())) > ZERO_VOLUME_RATIO * diag ** 3
+
+
+def _plain_solids(shape, tol: float, diag: float) -> tuple[Any, int, int]:
+    """MESH-1 as it always was: the file's shells sewn within `tol`, each closed one made a solid. Returns (the
+    compound of those solids, how many, how many faces they hold)."""
     from OCP.BRep import BRep_Builder, BRep_Tool
     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeSolid
-    from OCP.BRepTools import BRepTools
-    from OCP.TopAbs import TopAbs_SHELL, TopAbs_SOLID
+    from OCP.TopAbs import TopAbs_SHELL
     from OCP.TopExp import TopExp_Explorer
     from OCP.TopoDS import TopoDS, TopoDS_Compound
 
-    from meshpipeline.cad.scout import read_cad
-    from meshpipeline.cad.validity_brep import SEW_TOLERANCE, _bbox, _sew
+    from meshpipeline.cad.validity_brep import _sew
 
-    step = staged_solid(ws)
-    if step is None:
-        return 0
-    shape = read_cad(step)
-    if TopExp_Explorer(shape, TopAbs_SOLID).More():
-        return 0
-    lo, hi = _bbox(shape)
-    if lo is None:
-        return 0
-    diag = float(math.dist(tuple(lo), tuple(hi)))
-    sewn = _sew(shape, SEW_TOLERANCE * diag) or shape
+    sewn = _sew(shape, tol) or shape
     comp = TopoDS_Compound()
     b = BRep_Builder()
     b.MakeCompound(comp)
@@ -219,11 +238,84 @@ def solids_from_shells(ws: Path) -> int:
         if not BRep_Tool.IsClosed_s(shell):
             continue
         mk = BRepBuilderAPI_MakeSolid(shell)
-        if mk.IsDone():
+        if mk.IsDone() and _encloses(mk.Solid(), diag):
             b.Add(comp, mk.Solid())
             made += 1
+    return comp, made, _faces_in(comp) if made else 0
+
+
+def _solidified(shape, diag: float) -> tuple[Any, int, int] | None:
+    """SHELL-15j: the file's loose faces read as the solids they bound THE WAY THE MID-SURFACE EXTRACTION READS THEM
+    (cad/midsurface.solidify, SHELL-15): a surface written in another form (an IGES file's surface of revolution or
+    B-spline) re-made as the plane, cylinder, cone, sphere or torus it is, the sewing tolerance measured from the
+    faces' own gaps, bodies that touch kept apart, a sealed cavity put into its body, every solid checked valid.
+    Returns (the compound of those solids, how many, how many faces they hold); None when it makes none or fails."""
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepCheck import BRepCheck_Analyzer
+    from OCP.TopAbs import TopAbs_SOLID
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS_Compound
+
+    from meshpipeline.cad import midsurface as ms
+
+    try:
+        read_as, _notes = ms.solidify(shape, 1.0)
+        comp = TopoDS_Compound()
+        b = BRep_Builder()
+        b.MakeCompound(comp)
+        made = 0
+        ex = TopExp_Explorer(read_as, TopAbs_SOLID)
+        while ex.More():
+            solid = ex.Current()
+            ex.Next()
+            if not BRepCheck_Analyzer(solid).IsValid():
+                return None
+            if not _encloses(solid, diag):
+                continue
+            b.Add(comp, solid)
+            made += 1
+        return (comp, made, _faces_in(comp)) if made else None
+    except Exception as exc:  # noqa: BLE001 - the plain sewing stands
+        logger.warning("fea driver: the loose faces were not read as the extraction reads them (%s)",
+                       type(exc).__name__)
+        return None
+
+
+def solids_from_shells(ws: Path, seen: dict | None = None) -> int:
+    """MESH-1: A FILE OF FACES THAT CLOSE is read as the solid it bounds: a STEP or IGES written as closed
+    shells with no solid entity (aircraft and keel surfaces, 24 Oct gate) - the shells are made solids,
+    sewn first only within the clean check's own tight tolerance (cad/validity_brep), nothing else
+    touched. SHELL-15j: the same faces are also read the way the mid-surface extraction reads loose faces
+    (_solidified), and that reading is the staged solid when it puts at least as many of the file's faces into
+    solids - so an IGES copy's staged solid is its STEP's, for the solid mesh and the shell alike. Writes
+    geometry.brep and returns how many solids it made (0: nothing to do, or no shell closes - the part is then
+    meshed, or refused, as it stands). `seen` (when given) is told "open": True for a file with no solid none of
+    whose shells closes - a surface for engines/surface_run to read (SURF-1)."""
+    from OCP.BRepTools import BRepTools
+    from OCP.TopAbs import TopAbs_SOLID
+    from OCP.TopExp import TopExp_Explorer
+
+    from meshpipeline.cad.scout import read_cad
+    from meshpipeline.cad.validity_brep import SEW_TOLERANCE, _bbox
+
+    step = staged_solid(ws)
+    if step is None:
+        return 0
+    shape = read_cad(step)
+    if TopExp_Explorer(shape, TopAbs_SOLID).More():
+        return 0
+    lo, hi = _bbox(shape)
+    if lo is None:
+        return 0
+    diag = float(math.dist(tuple(lo), tuple(hi)))
+    comp, made, held = _plain_solids(shape, SEW_TOLERANCE * diag, diag)
+    read_as = _solidified(shape, diag)
+    if read_as is not None and read_as[2] >= held:
+        comp, made, held = read_as
     if made:
         BRepTools.Write_s(comp, str(ws / "geometry.brep"))
+    elif seen is not None:
+        seen["open"] = True
     return made
 
 
@@ -289,6 +381,124 @@ def measure_staged(ws: Path) -> tuple[dict, Any, float]:
     return record, surface, diag_m
 
 
+def staged_mm_per_unit(step: Path) -> float:
+    """The staged solid's millimetres per unit as OpenCASCADE reads it - measure_staged's own reading (the two
+    readers' boxes, the ratio snapped to a power of ten) - for the shell run (SHSTAGE-6)."""
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
+
+    from meshpipeline.cad.scout import read_cad
+
+    _box, diag_m = _metre_box(step)
+    b = Bnd_Box()
+    BRepBndLib.AddOptimal_s(read_cad(step), b, False, False)
+    x0, y0, z0, x1, y1, z1 = b.Get()
+    diag_read = math.dist((x0, y0, z0), (x1, y1, z1))
+    if diag_read <= 0 or diag_m <= 0:
+        raise ValueError("the staged solid has no size")
+    ratio = 1000.0 * diag_m / diag_read
+    return 10.0 ** round(math.log10(ratio))
+
+
+#: SHSTAGE-6: THE SHELL RUN's time limit, seconds (the extraction takes up to about ten minutes on the biggest
+#: corpus parts, the shell mesh up to about nine) - and never more than half of what the attempt has left, so
+#: the solid mesh beside it keeps its time.
+SHELL_RUN_LIMIT_S = 2400
+SHELL_GATE = "fea_shell"
+
+
+MIXED_GATE = "fea_mixed"
+
+
+def mesh_as_of(state) -> str:
+    """SHSTAGE-5: "shell" when the user's words asked for a shell (settled at Proceed), "mixed" from a confirmation
+    stored before shell + solid left the stage (MIXED-4), else "solid" (state fea_mesh_as)."""
+    got = str((state or {}).get("fea_mesh_as") or "").strip().lower()
+    return got if got in ("shell", "mixed") else "solid"
+
+
+async def read_requirements(ws: Path, state, *, job_id: str, run=None, publish=None) -> dict:
+    """NOTE-7..9: THE MESH REQUIREMENTS IN THE USER'S NOTES (engines/mesh_requirements), read once per run and
+    checked: sizes for the whole mesh, the element kind, quality limits. The reading is cited, told to the user
+    before any mesh is made (one short line each, and what was not applied), and kept in the workspace for the
+    shell and mixed runs (their own processes). With no words nothing is asked of the model, nothing is cited,
+    said or written: the run is exactly the run it always was. Returns the reading's section."""
+    from meshpipeline.contracts import narration as _N
+    from meshpipeline.engines import mesh_requirements as MR
+    from meshpipeline.engines import meshing_standard as MS
+
+    # STD-1..3: the notes merged with the team's meshing standard (settings < notes, field by field); with no
+    # standard this is the notes' own reading, exactly as before
+    read = await MS.decide(state or {}, route="fea", job_id=job_id, run=run, enabled=FA.FEA_AI, wait_s=ai_wait_s(run))
+    # STD-4: a shell's elements picked on the stage (Quads | Triangles) are the last word on that one field; no
+    # pick (the control left where it started, or a solid run): the section as read, the same object
+    sec = MS.stage(read, (state or {}).get(MS.STAGE_KEY)) if mesh_as_of(state) != "solid" else read
+    MR.write(ws, sec)
+    if sec.get("status") == "none":
+        return sec
+    entries = ([*MR.decisions(read, stage="fea_ai"), *MS.decisions(read, stage="fea_ai")]
+               if read.get("status") != "none" else [])
+    _cite(job_id, [*entries, *MS.stage_decisions(sec, stage_name="fea_ai")])
+    for i, line in enumerate(MR.live_words(sec)):
+        await _N.asay(publish, line, op_id=f"fea:notes:{i}")
+    return sec
+
+
+async def shell_pass(ws: Path, state, *, job_id: str, run=None, target: dict | None = None) -> dict | None:
+    """SHSTAGE-6: when the user's words asked for a shell, the staged solid's shell mesh and its solver files
+    (engines/shell_run, in a process of its own) - delivered as THE result by drive() (SHSTAGE-7, no solid beside
+    it); a shell that cannot be made is said, and a solid mesh is delivered instead. None when Solid was settled.
+    MIXED-5: when Auto settled Mixed, the same in engines/mixed_run (thin walls shell, thick regions solid, joined).
+    `target`: the element count the user asked for (element_target) - the shell's sizes follow it as the solid's do
+    (SHMESH-23)."""
+    kind = mesh_as_of(state)
+    if kind == "solid":
+        return None
+    import subprocess
+    import sys
+
+    from meshpipeline.engines import mixed_run, shell_run
+
+    mod = mixed_run if kind == "mixed" else shell_run
+
+    step = staged_solid(ws)
+    limit = float(SHELL_RUN_LIMIT_S)
+    left = attempt_left_s(run)
+    if left is not None:
+        limit = max(120.0, min(limit, 0.5 * left))
+    try:
+        argv = [sys.executable, "-m", mod.__name__, str(ws), str(step), "staged"]
+        if kind == "shell" and target and int(target.get("elements") or 0) > 0:
+            argv.append(json.dumps({k: target[k] for k in ("elements", "mode", "low", "high") if k in target}))
+        proc = await asyncio.to_thread(
+            subprocess.run, argv,
+            capture_output=True, text=True, timeout=limit, check=False)
+        rec = mod.read(ws)
+        if not rec:
+            rec = {"made": False, "why": f"the {kind} run stopped (exit {proc.returncode})"}
+    except subprocess.TimeoutExpired:
+        rec = {"made": False, "why": f"it took longer than the {int(limit) // 60} minutes allowed"}
+    except Exception as exc:  # noqa: BLE001 - the solid mesh is still delivered
+        rec = {"made": False, "why": f"it could not be started ({type(exc).__name__})"}
+    if not rec.get("words"):
+        rec["words"] = mod.words(rec)
+        (ws / mod.RECORD).write_text(json.dumps(rec, indent=1, sort_keys=True, default=float))
+    if kind == "mixed":
+        c = rec.get("counts") or {}
+        _cite(job_id, [{"stage": MIXED_GATE, "decided": "mixed mesh" if rec.get("made") else "no mixed mesh",
+                        "value": (int(c.get("shell_elements") or 0) + int(c.get("solid_elements") or 0)) or None,
+                        "rule": "MIXED-5",
+                        "inputs": {k: rec.get(k) for k in ("thin_share", "too_thick", "regions", "seconds", "why")},
+                        "words": rec["words"]}])
+        return rec
+    _cite(job_id, [{"stage": SHELL_GATE, "decided": "shell mesh" if rec.get("made") else "no shell mesh",
+                    "value": rec.get("elements"), "rule": "SHSTAGE-6",
+                    "inputs": {k: rec.get(k) for k in ("bodies", "open_edges", "solid_bodies", "walls_mm", "seconds",
+                                                         "why", "target")},
+                    "words": rec["words"]}])
+    return rec
+
+
 def _surface_again(shape, mm_per_unit: float, *, healed: bool):
     """The labelled surface measure_cad_surface measured `shape` on (healed first when it was), tessellated
     again; None when it cannot be (the solid is then measured as before)."""
@@ -336,6 +546,29 @@ def defect_at_failure(record: dict, passes: list[dict]) -> dict | None:
     return {"faces": hit, "suspects": sus, "confirmed": any(s.get("confirmed") for s in sus)}
 
 
+def crossing_located(record: dict, state: dict | None) -> dict | None:
+    """LAD-fea-16: faces of the CAD already located as crossing each other, before meshing - the geometry
+    check's self-overlap confirmed by its two independent measures (cad/suspect_defects), or the repair
+    inspection's self-intersection (pipeline/repair_inspect, cad/repair). None when neither found one."""
+    faces = sorted({str(f) for s in record.get("suspects") or []
+                    if s.get("kind") == "self_overlap" and s.get("confirmed") for f in s.get("faces") or []})
+    report = (((state or {}).get("repair_report") or {}).get("report") or {})
+    crossing = sum(int(d.get("count") or 1) for d in report.get("defects") or []
+                   if str(d.get("code")) == "self_intersection")
+    if not faces and not crossing:
+        return None
+    return {"faces": faces, "repair_self_intersections": crossing,
+            "by": " and ".join(w for w, on in (("the geometry check", bool(faces)),
+                                              ("the repair inspection", bool(crossing))) if on)}
+
+
+def crossing_words(found: dict, n: int) -> str:
+    where = f" ({', '.join(found['faces'][:6])}{', ...' if len(found['faces']) > 6 else ''})" if found["faces"] else ""
+    return (f"Pass {n}'s fill failed, and {found['by']} had already found faces of the CAD crossing each other{where}. "
+            "Another gmsh algorithm cannot mend a crossing in the CAD, so the part goes straight to fTetWild, which "
+            "meshes through it (LAD-fea-16, LAD-fea-9).")
+
+
 def suspect_note(record: dict) -> str:
     """The note a delivered mesh carries when a check flagged a spot (MESH-1)."""
     from meshpipeline.cad import suspect_defects as SD
@@ -374,6 +607,105 @@ def pairs_of(state) -> dict:
     from meshpipeline.cad import fea_pairs as FP
 
     return FP.clean_overrides((state or {}).get("fea_pairs") or {})
+
+
+def kept_plans(state) -> dict | None:
+    """PLAN-fea-22: the plans the stage made for this part (engines/fea_plan_options.PLANS_FILE), read from where the
+    check kept them (state fea_plans_object); None when there are none or they cannot be read."""
+    key = str((state or {}).get("fea_plans_object") or "")
+    if not key:
+        return None
+    import tempfile
+    try:
+        from meshpipeline.contracts.object_storage import get_object_store
+        with tempfile.TemporaryDirectory(prefix="fea_plans_") as tmp:
+            dest = Path(tmp) / "plans.json"
+            get_object_store().download_file(object_key=key, destination=dest)
+            got = json.loads(dest.read_text())
+    except Exception:  # noqa: BLE001 - none kept is the run planning it itself
+        return None
+    return got if isinstance(got, dict) else None
+
+
+def size_choice(state, record: dict, surface, diag_m: float, *, levers, ceiling_s, ai, kept: dict | None,
+                key: str, target: dict | None = None, sizes: dict | None = None,
+                correction: float | None = None) -> tuple[dict, dict]:
+    """PLAN-fea-22, SETTLED BEFORE THE RUN - IT NEVER WAITS (Areen, 28 Oct): the plan of the mesh the user picked on
+    the stage; with nothing picked (the stage had not sized it yet, or no answer came), the RECOMMENDED one, decided
+    here from the run's own plans by the stage's own rule (fea_plan_options.decide) and said. The stage's kept plans
+    are reused when they were made for this staged solid and this code, and the AI changed nothing in them. Returns
+    (the plan, the why record's entry)."""
+    from meshpipeline.engines import fea_plan_options as PO
+
+    pick = str((state or {}).get("fea_plan_choice") or "").strip().lower()
+    if (target and not target.get("unread")) or sizes:
+        # PLAN-fea-27/29: THE USER'S OWN COUNT OR SIZES SET THE MESH - the stage's two sizes were made without them,
+        # so neither is offered or reused; a pick made on the stage is set aside, and said
+        plan = choose_plan(record, surface, diag_m, levers=levers, ceiling_s=ceiling_s, ai=ai, target=target,
+                           sizes=sizes, correction=correction)
+        if pick not in (PO.FULL, PO.QUICKER):
+            return plan, {}
+        asked = "element sizes" if sizes else "element count"
+        return plan, {"stage": "fea_plan", "decided": "size choice", "value": "yours", "rule": "PLAN-fea-22",
+                      "inputs": {"picked": True, "set_aside": pick, "by": "sizes" if sizes else "count"},
+                      "words": f"The {asked} you asked for sets the mesh, so the size picked on the stage is not used."}
+    unchanged, applied = _ai_changes_nothing(record, ai, diag_m)
+    reuse = kept if (unchanged and not levers) else None
+
+    def plan_of(which: str) -> dict:
+        got = PO.kept_plan(reuse, key, which)
+        if got is not None:
+            if _used(ai) is not None:
+                got = {**got, "ai": {**(ai or {}), "applied": applied}}      # said, though it changed no size
+            return _restate(record, got)
+        cap = PO.standard_elements() if which == PO.QUICKER else None
+        return choose_plan(record, surface, diag_m, levers=levers, ceiling_s=ceiling_s, ai=ai, cap=cap)
+
+    reused = bool(PO.kept_plan(reuse, key, PO.FULL) or PO.kept_plan(reuse, key, PO.QUICKER))
+    if pick in (PO.FULL, PO.QUICKER):
+        plan = plan_of(pick)
+        words = ("You picked the quicker mesh: it is sized to the standard machine, the low-stress zones coarsened "
+                 "first." if pick == PO.QUICKER else "You picked the full-rules mesh: every zone at its rule size.")
+        entry = {"stage": "fea_plan", "decided": "size choice", "value": pick, "rule": "PLAN-fea-22",
+                 "inputs": {"picked": True, "reused_stage_plan": reused}, "words": words}
+        return plan, entry
+    full = plan_of(PO.FULL)
+    out, qplan = PO.decide(record, full, lambda: plan_of(PO.QUICKER))
+    if not out["choice"]:
+        return full, {}
+    rec = out["recommended"]
+    plan = qplan if (rec == PO.QUICKER and qplan is not None) else full
+    words = (f"No size was picked before the run started, so the run took the recommended mesh, the "
+             f"{'quicker' if rec == PO.QUICKER else 'full-rules'} one: {out['why']}")
+    entry = {"stage": "fea_plan", "decided": "size choice", "value": rec, "rule": "PLAN-fea-22",
+             "inputs": {"picked": False, "recommended": rec, "reused_stage_plan": reused,
+                        "full_elements": out["full"]["elements"],
+                        "quicker_elements": (out["quicker"] or {}).get("elements")},
+             "words": words}
+    return plan, entry
+
+
+def _ai_changes_nothing(record: dict, ai: dict | None, diag_m: float) -> tuple[bool, list[dict]]:
+    """Whether the AI's decision leaves the plan exactly as the rules make it (no zone size or reach changed, no
+    budget, no micro detail kept) - the stage planned without it, so only then are its plans this run's. Returns
+    (unchanged, the AI's rows as the rules applied them)."""
+    used = _used(ai)
+    if used is None:
+        return True, []
+    plain = P.zones(record)
+    zl, applied = FA.apply_zones(plain, used, record, diag_m=diag_m)
+    same = (element_target(None, ai) is None and not FA.refines(used)
+            and [(z.get("id"), z.get("size_m"), z.get("reach_m")) for z in zl]
+            == [(z.get("id"), z.get("size_m"), z.get("reach_m")) for z in plain])
+    return same, applied
+
+
+def plan_cap_of(state) -> int | None:
+    """PLAN-fea-22: the element cap the user's size choice puts on the plan (state fea_plan_choice): the standard
+    mesh job's when they picked the quicker mesh, else None - the full-rules mesh, on the machine it needs."""
+    from meshpipeline.engines import fea_plan_options as PO
+    said = str((state or {}).get("fea_plan_choice") or "").strip().lower()
+    return PO.standard_elements() if said == PO.QUICKER else None
 
 
 def prepare_assembly(ws: Path, record: dict, surface, *, connection: str, source_path: str = "",
@@ -498,15 +830,33 @@ def restage_tied(ws: Path, record: dict) -> dict:
 MAX_CUBES_CEILING = 12_000_000
 
 
+def walls_of(record: dict) -> dict[str, float]:
+    """PLAN-fea-31: every face's measured wall in metres (the wall most of it agrees on, else its median)."""
+    out: dict[str, float] = {}
+    for name, row in (record.get("faces") or {}).items():
+        row = row or {}
+        t = row.get("thickness_wall_mm") or row.get("thickness_median_mm") or row.get("thickness_min_mm")
+        if t is None:
+            continue
+        try:
+            v = float(t)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(v) and v > 0:
+            out[str(name)] = v * 1e-3
+    return out
+
+
 def _histogram(surface, zone_list: list[dict], levers: list[dict], diag_m: float, *, limit: float | None = None,
-               recount: bool = True):
+               recount: bool = True, scale: float = 1.0, walls: dict[str, float] | None = None,
+               base_m: float | None = None):
     """The zones' volume histogram (engines/fea_size_field). With `limit`, it is counted to 1.5 times it
     (never less than STOP_ELEMENTS), and a count that ran out of cubes under the limit is counted again
-    with more (MAX_CUBES_CEILING)."""
+    with more (MAX_CUBES_CEILING). `scale`: PLAN-fea-27's factor on the base size."""
     from meshpipeline.engines import fea_size_field as SF
 
-    field = SF.SizeField(surface, zone_list, growth=L.growth(levers), scale_to_m=1e-3)
-    coarsest = diag_m / P.MIN_DIVISIONS
+    field = SF.SizeField(surface, zone_list, growth=L.growth(levers), scale_to_m=1e-3, walls=walls)
+    coarsest = float(base_m) if base_m else P.base_size(diag_m, scale)
     stop = STOP_ELEMENTS if limit is None else max(STOP_ELEMENTS, 1.5 * float(limit))
     cubes = SF.MAX_CUBES
     while True:
@@ -521,23 +871,40 @@ def _histogram(surface, zone_list: list[dict], levers: list[dict], diag_m: float
 def make_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | None = None,
               limit: int = P.ELEMENT_LIMIT, zone_floor_m: float | None = None, hist=None,
               through: float | None = None, ai: dict | None = None,
-              zone_floors: dict[str, float] | None = None, recount: bool = True) -> dict:
+              zone_floors: dict[str, float] | None = None, recount: bool = True,
+              scale: float | None = None, beyond: float | None = None, sizes: dict | None = None) -> dict:
     """The plan for this part, with the ladder's levers applied: the zones the rules ask for, the
     coarsest base the part allows, the estimate against `limit`. `zone_floor_m`: PLAN-fea-8's
     coarsening (the finest zones floored, never past their validity minimums); `hist`: the zones'
     histogram when the caller already has it; `ai`: the AI's checked decision (engines/fea_ai), made
     exact by the rules before any coarsening. `zone_floors`: PLAN-fea-8's coarsening kind by kind (zone
-    kind -> floor), the low-stress zones first (COARSEN_ORDER)."""
+    kind -> floor), the low-stress zones first (COARSEN_ORDER). `scale`: PLAN-fea-27's one factor on
+    every size (the base and every zone, the minimums re-applied) for the user's element count; beyond:
+    PLAN-fea-30's factor past those minimums, as far as valid elements allow. sizes: PLAN-fea-29's sizes the
+    user asked for, part by part (engines/fea_part_sizes.per_part), held before any count moves the rest."""
     levers = list(levers or [])
     zone_list, applied = FA.apply_zones(P.zones(record, tighten=L.tightened(levers)), _used(ai), record,
                                         diag_m=diag_m)
+    s, u = float(scale or 1.0), float(beyond or 1.0)
+    if sizes:
+        zone_list = P.user_sized(zone_list, sizes)
+    if s != 1.0 or u != 1.0:
+        zone_list = P.scaled(zone_list, s, u)
+    base_m = P.base_size(diag_m, s, u)
+    ub = P.user_base(sizes or {})
+    if ub:
+        base_m = ub if not record.get("part_bases") else max(base_m, ub)
     for kind, f in sorted((zone_floors or {}).items()):
         zone_list = P.floored(zone_list, float(f), through or P.KEEP_THROUGH, kinds=(kind,))
     if zone_floor_m:
         zone_list = P.floored(zone_list, float(zone_floor_m), through or P.KEEP_THROUGH)
     if hist is None:
-        hist = _histogram(surface, zone_list, levers, diag_m, limit=limit, recount=recount)
-    plan = P.finish(record, zone_list, hist, diag_m=diag_m, limit=limit, levers=levers, growth=L.growth(levers))
+        hist = _histogram(surface, zone_list, levers, diag_m, limit=limit, recount=recount, scale=s,
+                          walls=walls_of(record), base_m=base_m)
+    plan = P.finish(record, zone_list, hist, diag_m=diag_m, limit=limit, levers=levers, growth=L.growth(levers),
+                    scale=s, beyond=u, base_m=base_m)
+    if sizes:
+        plan["user_sizes"] = {k: dict(v) for k, v in sorted(sizes.items())}
     if zone_floors:
         plan["zone_floors_m"] = {k: float(v) for k, v in sorted(zone_floors.items())}
     if zone_floor_m:
@@ -571,12 +938,12 @@ FLOOR_STEPS = 14
 #: PLAN-fea-8: THE ORDER A PLAN OVER ITS LIMIT IS COARSENED IN, kind by kind - the low-stress bulk first,
 #: the stress raisers last (27 Oct): rounds (sized for their shape only), capped sharp corners (their
 #: stress never settles), walls and the parts' own sizes, then holes, fillets and notches.
-COARSEN_ORDER: tuple[tuple[str, ...], ...] = (("round",), ("corner",), ("wall", "wall_spot", "part"),
+COARSEN_ORDER: tuple[tuple[str, ...], ...] = (("round", "relief"), ("corner",), ("wall", "wall_spot", "part"),
                                               ("hole", "fillet", "notch"))
 
 
 def _coarsen_group(record: dict, surface, diag_m: float, *, levers: list[dict], limit: int, ai, group,
-                   zone_list: list[dict], floors_done: dict[str, float]):
+                   zone_list: list[dict], floors_done: dict[str, float], sizes: dict | None = None):
     """One step of PLAN-fea-8's coarsening: the first floor for `group`'s zones (the others as `floors_done`
     already floors them) under which the plan fits, found by halving the list of floors - each twice the
     last, from the group's finest zone, while it still changes a zone's size - then one step back where
@@ -593,10 +960,10 @@ def _coarsen_group(record: dict, surface, diag_m: float, *, levers: list[dict], 
     last: list[float] | None = None
     for _ in range(FLOOR_STEPS):
         floor *= 2.0
-        sizes = [float(z["size_m"]) for z in P.floored(base, floor, kinds=group)]
-        if sizes == last:
+        got = [float(z["size_m"]) for z in P.floored(base, floor, kinds=group)]
+        if got == last:
             break
-        last = sizes
+        last = got
         floors.append(floor)
     if not floors:
         return None
@@ -604,7 +971,7 @@ def _coarsen_group(record: dict, surface, diag_m: float, *, levers: list[dict], 
 
     def at(k: int) -> dict:
         if k not in tried:
-            tried[k] = make_plan(record, surface, diag_m, levers=levers, limit=limit, ai=ai, recount=False,
+            tried[k] = make_plan(record, surface, diag_m, levers=levers, limit=limit, ai=ai, sizes=sizes, recount=False,
                                  zone_floors=floors_with(floors[k]))
         return tried[k]
 
@@ -619,7 +986,7 @@ def _coarsen_group(record: dict, surface, diag_m: float, *, levers: list[dict], 
         else:
             lo = mid + 1
     best, f = at(hi), floors[hi]
-    finer = make_plan(record, surface, diag_m, levers=levers, limit=limit, ai=ai, zone_floors=floors_with(0.75 * f),
+    finer = make_plan(record, surface, diag_m, levers=levers, limit=limit, ai=ai, sizes=sizes, zone_floors=floors_with(0.75 * f),
                       recount=False)
     if finer["fits"]:
         best, f = finer, 0.75 * f
@@ -705,28 +1072,243 @@ def _with_ai(plan: dict) -> dict:
     return plan
 
 
+def element_target(state: dict | None, ai: dict | None) -> dict | None:
+    """AI-fea-4 / PLAN-fea-27: the element count the user named, as the AI read it from their words and the
+    rules checked it (engines/fea_ai._target): {"elements", "mode", "low"/"high" for a range, "source": "ai"};
+    None when it named none. The AI alone reads the notes (a saved decision answers for it when it is down,
+    AI-fea-6). When the AI gave no answer and the user left notes, {"unread": True}: the plan is the rules'
+    own and the words say a count in the notes was not applied this run."""
+    d = _used(ai)
+    if d is None:
+        return {"unread": True} if (state or {}).get("user_notes") else None
+    n = int(d.get("target_elements") or d.get("budget_elements") or 0)
+    if not n:
+        return None
+    mode = str(d.get("target_mode") or "about")
+    out: dict = {"elements": n, "mode": mode, "quote": "", "source": "ai"}
+    if mode == "range":
+        out.update(low=int(d["target_min"]), high=int(d["target_max"]))
+    return out
+
+
+#: PLAN-fea-27: a count that falls slower than s^-FLAT_SLOPE as the factor grows is held by the minimums
+FLAT_SLOPE = 0.3
+
+
+def _gap(n: float, t: float) -> float:
+    """How far an estimate is from the count, as a log ratio (0 = on it)."""
+    return abs(math.log(max(float(n), 1.0) / max(float(t), 1.0)))
+
+
+def _solve(at, lo: float, hi: float, n_lo: float, n_hi: float, aim: float, hit, steps: int) -> list:
+    """PLAN-fea-27/30's search on ONE factor x whose count falls as x grows, with f(lo) = n_lo over the aim and
+    f(hi) = n_hi under it: the line through the bracket's ends (log count against log x), kept inside the bracket
+    (its geometric middle when the line leaves it or is flat), until an estimate is a hit or the steps run out.
+    Returns [(x, count, plan)] tried."""
+    tried: list = []
+    side = [0, 0]                   # how many steps in a row moved the low end, the high end
+    for _ in range(steps):
+        if hi / lo < 1.0 + 1e-3:
+            break
+        ln_lo, ln_hi = math.log(max(n_lo, 1.0)), math.log(max(n_hi, 1.0))
+        slope = (ln_hi - ln_lo) / (math.log(hi) - math.log(lo))
+        x = math.exp(math.log(lo) + (math.log(aim) - ln_lo) / slope) if slope < -1e-6 else math.sqrt(lo * hi)
+        if not (lo * (1 + 1e-6) < x < hi * (1 - 1e-6)) or max(side) >= 2:
+            # the line keeps landing on one side (a count far from straight in log-log): halve the bracket
+            x = math.sqrt(lo * hi)
+            side = [0, 0]
+        plan = at(x)
+        n = float(plan["estimate"]["elements"])
+        tried.append((x, n, plan))
+        if hit(n):
+            break
+        if n > aim:
+            lo, n_lo = x, n
+            side = [side[0] + 1, 0]
+        else:
+            hi, n_hi = x, n
+            side = [0, side[1] + 1]
+    return tried
+
+
+def _full_scale(zone_list: list[dict]) -> float:
+    """PLAN-fea-27: the factor past which no zone moves (each at its accuracy minimum) - the base reaches its
+    fifth of the part at 2."""
+    out = TARGET_FULL
+    for z in zone_list:
+        cap = P.scale_cap(z)
+        if cap is not None and not z.get("user") and float(z["size_m"]) > 0:
+            out = max(out, cap[0] / float(z["size_m"]))
+    return min(out, 1.0 / P.SCALE_MIN) * (1.0 + 1e-6)
+
+
+def beyond_full(zone_list: list[dict], base_m: float, diag_m: float) -> float:
+    """PLAN-fea-30: the second factor past which nothing moves - every zone at its validity limit (a curve at 3 per
+    quarter-turn, a part's own base at a third of the part) or, with no such limit (a wall), at a third of the whole
+    part, and the base at a third of the part. The search runs all the way there: only validity stops a count."""
+    top = float(diag_m) / P.VALID_DIVISIONS
+    out = top / float(base_m) if base_m else 1.0
+    for z in zone_list:
+        if z.get("user") or float(z.get("size_m") or 0.0) <= 0.0:
+            continue
+        vc = P.valid_cap(z)
+        out = max(out, min(vc[0] if vc else top, top) / float(z["size_m"]))
+    return max(1.0, out) * (1.0 + 1e-6)
+
+
+#: PLAN-fea-27: the base reaches PLAN-fea-28's fifth at twice its tenth
+TARGET_FULL = P.MIN_DIVISIONS / P.TARGET_MIN_DIVISIONS
+
+
+def target_plan(record: dict, surface, diag_m: float, *, levers: list[dict], ai: dict | None, target: dict,
+                limit: int, rules: dict, sizes: dict | None = None, correction: float | None = None) -> dict:
+    """PLAN-fea-27/30: the plan sized to the user's element count. `rules` is the rules' own plan (its estimate
+    N0). Over the count, in this order, each solved on the REAL estimate (the size field's histogram):
+      1. ONE factor s on every size - the base (to a fifth of the part) and every zone - inside the accuracy
+         minimums (2 through every wall, 4 per quarter-turn of every curve, the corner cap);
+      2. still over: a second factor past those minimums, as far as valid elements allow (PLAN-fea-30: 3 per
+         quarter-turn of every curve, 3 elements across every part) - the minimums crossed are named;
+      3. still over at the validity limits: that plan, the lowest this part can go, and said so.
+    Under the count, s < 1: finer, never past the largest machine (the count is aimed at LIMIT_AIM of `limit` at
+    most). The count only ever moves the sizes the user did not set (PLAN-fea-29: their sizes per part come
+    first). The factors are monotone in the count, so a smaller count never plans more. `correction`: built over
+    planned on a pass already built of this count (PLAN-fea-31's re-aim) - the estimates are read times it. Returns
+    the plan with its `target` record."""
+    asked = int(target["elements"])
+    mode = str(target.get("mode") or "about")
+    # the most the largest machine holds, with the solve's own tolerance to spare (an estimate near it still fits)
+    cap = int(P.LIMIT_AIM * float(limit) / (1.0 + P.TARGET_TOLERANCE))
+    aim: float = min(asked, cap)
+    if mode == "range":
+        # A RANGE: aimed at its middle, and any estimate inside it is a hit (the solve stops there)
+        low, high = int(target["low"]), int(target["high"])
+        ok_lo, ok_hi = float(min(low, cap)), float(min(high, int(P.LIMIT_AIM * float(limit))))
+        if ok_lo >= ok_hi:
+            ok_lo, ok_hi = aim / (1.0 + P.TARGET_TOLERANCE), aim * (1.0 + P.TARGET_TOLERANCE)
+    else:
+        ok_lo, ok_hi = aim / (1.0 + P.TARGET_TOLERANCE), aim * (1.0 + P.TARGET_TOLERANCE)
+
+    k = float(correction or 1.0)
+
+    def hit(n: float) -> bool:
+        return ok_lo <= n * k <= ok_hi
+
+    def miss(n: float) -> float:
+        """How far outside what counts as a hit (0 inside)."""
+        return 0.0 if hit(n) else min(_gap(n * k, ok_lo), _gap(n * k, ok_hi))
+
+    n0 = float(rules["estimate"]["elements"])
+    rec = {"asked": asked, "mode": mode, "source": target.get("source"), "quote": target.get("quote") or "",
+           "aim": aim, "machine": aim < asked or (mode == "range" and int(target["low"]) > cap),
+           "rules_elements": int(n0), "rules_base_m": rules["base_size_m"],
+           **({"sizes_first": True} if sizes else {}), **({"correction": round(k, 4)} if k != 1.0 else {}),
+           **{k: target[k] for k in ("low", "high") if target.get(k)}}
+    if ((mode == "at_most" and n0 * k <= asked) or (mode == "at_least" and n0 * k >= asked)
+            or (mode == "range" and int(target["low"]) <= n0 * k <= int(target["high"]) and rules["fits"])):
+        rules["target"] = {**rec, "scale": 1.0, "kept_rules": True, "steps": 0}
+        return rules
+
+    def at(s: float, u: float = 1.0) -> dict:
+        return make_plan(record, surface, diag_m, levers=levers, limit=limit, ai=ai, scale=s, beyond=u, sizes=sizes)
+
+    tried: list[tuple[float, float, float, dict]] = [(1.0, 1.0, n0, rules)]       # (s, u, count, plan)
+    lowest = False
+    aim = aim / k                                   # the estimate that builds the count (PLAN-fea-31's re-aim)
+    if not hit(n0) and n0 < aim:
+        # FINER: s under 1, down to SCALE_MIN
+        p_min = at(P.SCALE_MIN)
+        n_min = float(p_min["estimate"]["elements"])
+        tried.append((P.SCALE_MIN, 1.0, n_min, p_min))
+        if n_min > aim and not hit(n_min):
+            tried += [(x, 1.0, n, p) for x, n, p in _solve(at, P.SCALE_MIN, 1.0, n_min, n0, aim, hit, P.TARGET_STEPS)]
+    elif not hit(n0):
+        # 1. COARSER INSIDE THE ACCURACY MINIMUMS
+        zs = FA.apply_zones(P.zones(record, tighten=L.tightened(levers)), _used(ai), record, diag_m=diag_m)[0]
+        if sizes:
+            zs = P.user_sized(zs, sizes)
+        s_full = _full_scale(zs)
+        p_a = at(s_full)
+        n_a = float(p_a["estimate"]["elements"])
+        tried.append((s_full, 1.0, n_a, p_a))
+        if not hit(n_a) and n_a < aim:
+            tried += [(x, 1.0, n, p) for x, n, p in _solve(at, 1.0, s_full, n0, n_a, aim, hit, P.TARGET_STEPS)]
+        elif not hit(n_a):
+            # 2. PAST THE ACCURACY MINIMUMS, to the validity limits
+            base_a = P.base_size(diag_m, s_full)
+            u_full = beyond_full(p_a.get("zones") or [], base_a, diag_m)
+            if u_full > 1.0 + 1e-3:
+                p_b = at(s_full, u_full)
+                n_b = float(p_b["estimate"]["elements"])
+                tried.append((s_full, u_full, n_b, p_b))
+                if not hit(n_b) and n_b < aim:
+                    tried += [(s_full, x, n, p) for x, n, p in _solve(lambda u: at(s_full, u), 1.0, u_full, n_a, n_b,
+                                                                      aim, hit, P.TARGET_STEPS)]
+                elif not hit(n_b):
+                    lowest = True              # 3. even at the validity limits: the lowest this part can go
+            else:
+                lowest = True
+    fitting = [x for x in tried if x[3]["fits"]] or tried
+    if lowest:
+        s, u, n, best = max(fitting, key=lambda x: (x[1], x[0]))
+    else:
+        s, u, n, best = min(fitting, key=lambda x: (miss(x[2]), _gap(x[2], aim), x[0], x[1]))
+    rec["aim"] = int(round(aim * k))
+    zs = best.get("zones") or []
+    best["target"] = {**rec, "scale": round(float(s), 4), "beyond": round(float(u), 4), "steps": len(tried) - 1,
+                      "hit": hit(n), "lowest": bool(lowest and not hit(n)),
+                      "held_by_minimums": False,
+                      "crossed": sorted({str(z["crossed"]) for z in zs if z.get("crossed") and not z.get("user")}),
+                      "base_capped": bool(s > 1.0 and u <= 1.0 and P.base_size(diag_m, s) < P.base_size(diag_m) * s * (1 - 1e-9)),
+                      "tried": [[round(x[0], 4), round(x[1], 4), int(x[2])] for x in tried]}
+    return best
+
+
 def choose_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | None = None,
-                ceiling_s: float | None = None, ai: dict | None = None) -> dict:
+                ceiling_s: float | None = None, ai: dict | None = None, target: dict | None = None,
+                sizes: dict | None = None, correction: float | None = None, cap: int | None = None) -> dict:
     """PLAN-fea-8, NEVER A STOP BEFORE MESHING (Areen, 21 Oct): the rules' own plan when it fits under
     the limit; else the finest zones coarsened until it fits, never past what keeps elements valid,
     what that leaves short named (resolution_short); else - every zone at its validity minimum and
-    still over - meshed so anyway. The returned plan always meshes."""
+    still over - meshed so anyway. The returned plan always meshes.
+    `target`: the element count the user named (element_target): PLAN-fea-27 scales the whole plan to it,
+    both ways, inside the minimums and the largest machine; only a scaled plan that still does not fit the
+    machine goes on to PLAN-fea-8's coarsening, as any plan over its limit does."""
     levers = list(levers or [])
     limit, why = element_limit(record, ceiling_s)
-    # AI-fea-4: the user's own budget lowers the limit, never raises it
-    mine, said = FA.budget_limit(limit, _used(ai))
-    if said:
-        limit, why = mine, said
-    plan = make_plan(record, surface, diag_m, levers=levers, limit=limit, ai=ai)
+    if cap is not None and int(cap) < limit:
+        # PLAN-fea-22: THE QUICKER MESH THE USER PICKED - sized to the standard mesh job, the low-stress zones
+        # coarsened first (COARSEN_ORDER)
+        limit, why = int(cap), (f"the quicker mesh you picked: what the standard machine holds "
+                                f"({MESH_JOB_MEMORY_GIB:g} GiB)")
+    plan = make_plan(record, surface, diag_m, levers=levers, limit=limit, ai=ai, sizes=sizes)
+    missed: dict | None = None
+    # AI-fea-4: the AI gave no answer and the user left notes - a count in them is not applied, and said
+    unread = bool(target and target.get("unread"))
+    if unread:
+        target = None
+    if target:
+        scaled_plan = target_plan(record, surface, diag_m, levers=levers, ai=ai, target=target, limit=limit,
+                                  rules=plan, sizes=sizes, correction=correction)
+        if scaled_plan["fits"]:
+            scaled_plan["limit"].update(why=why, memory=limit_facts())
+            return _restate(record, scaled_plan)
+        missed = {k: v for k, v in scaled_plan["target"].items() if k != "tried"}
+        plan = make_plan(record, surface, diag_m, levers=levers, limit=limit, ai=ai, sizes=sizes)
     if not plan["fits"] and FA.refines(_used(ai)):
         # AI-fea-5: THE AI'S REFINEMENTS NEVER COST THE RULES' OWN ZONES. Over the limit, they are
         # left out first (its other choices stand) - the limit's coarsening is only ever for what
         # the rules themselves need (lab, 24 Oct: three parts the rules meshed whole came back with
         # walls short of 2 elements because a refinement had pushed the plan over the limit)
         ai = FA.without_refines(ai or {})
-        plan = make_plan(record, surface, diag_m, levers=levers, limit=limit, ai=ai)
+        plan = make_plan(record, surface, diag_m, levers=levers, limit=limit, ai=ai, sizes=sizes)
     zone_list, _ = FA.apply_zones(P.zones(record, tighten=L.tightened(levers)), _used(ai), record, diag_m=diag_m)
+    if sizes:
+        zone_list = P.user_sized(zone_list, sizes)
     plan["limit"].update(why=why, memory=limit_facts())
+    if missed:
+        plan["target_missed"] = missed
+    if unread:
+        plan["target_unread"] = True
     if plan["fits"]:
         return _restate(record, plan)
     needed = int(plan["estimate"]["elements"])
@@ -744,7 +1326,7 @@ def choose_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | No
         if not sel:
             continue
         found = _coarsen_group(record, surface, diag_m, levers=levers, limit=limit, ai=ai, group=group,
-                               zone_list=zone_list, floors_done=floors_done)
+                               zone_list=zone_list, floors_done=floors_done, sizes=sizes)
         if found is None:
             continue
         best, floors_done, fitted = found
@@ -757,13 +1339,13 @@ def choose_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | No
                 if not any(k in floors_done for k in back):
                     continue
                 others = {k: v for k, v in floors_done.items() if k not in back}
-                whole = make_plan(record, surface, diag_m, levers=levers, limit=limit, ai=ai, zone_floors=others,
+                whole = make_plan(record, surface, diag_m, levers=levers, limit=limit, ai=ai, sizes=sizes, zone_floors=others,
                                   recount=False)
                 if whole["fits"]:
                     best, floors_done = whole, others          # this kind needs no coarsening at all
                     continue
                 again = _coarsen_group(record, surface, diag_m, levers=levers, limit=limit, ai=ai, group=back,
-                                       zone_list=zone_list, floors_done=others)
+                                       zone_list=zone_list, floors_done=others, sizes=sizes)
                 if again is not None and again[2]:
                     best, floors_done = again[0], again[1]
             break
@@ -776,7 +1358,7 @@ def choose_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | No
     if floors_done and not best.get("histogram_complete", True):
         # THE CHOSEN PLAN, COUNTED IN FULL ONCE (the search compared the candidates on the plain count)
         fits = best["fits"]
-        best = make_plan(record, surface, diag_m, levers=levers, limit=limit, ai=ai, zone_floors=floors_done)
+        best = make_plan(record, surface, diag_m, levers=levers, limit=limit, ai=ai, sizes=sizes, zone_floors=floors_done)
         best["fits"] = best["fits"] or fits or at_minimums
     best["limit"].update(why=why, memory=limit_facts())
     best["coarsened"] = {"needed": needed, "needed_words": said, "zone_floor_m": floor, "at_minimums": at_minimums,
@@ -786,7 +1368,55 @@ def choose_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | No
                          # past even the largest machine allowed: meshed anyway, said (RUN-2)
                          "over_memory": bool(at_minimums and int(best["estimate"]["elements"])
                                              > memory_elements(_ceiling_gib()))}
+    if missed:
+        best["target_missed"] = missed
+    if unread:
+        best["target_unread"] = True
     return _restate(record, best)
+
+
+#: PLAN-fea-31: a built count further than this share from the count asked is re-aimed once
+REAIM_SHARE = 0.10
+#: PLAN-fea-31: the share of the measured built-over-planned (in log) the rebuild corrects by
+REAIM_DAMP = 0.6
+
+
+def closer_of_reaimed(passes: list[dict], asked) -> None:
+    """PLAN-fea-31: after a re-aim, of the valid passes the one whose built count is closer to what was asked is
+    delivered (the other is marked `off_count`, which LAD-fea-5 ranks after) - a re-aim never delivers a worse miss."""
+    if not asked or not any(f.get("off_count") for f in passes):
+        return
+    valid = [f for f in passes if f.get("valid") and f.get("cells")]
+    if len(valid) < 2:
+        return
+    best = min(valid, key=lambda f: _gap(float(f["cells"]), float(asked)))
+    for f in valid:
+        f["off_count"] = f is not best
+
+
+def reaim_factor(plan: dict, facts: dict) -> float | None:
+    """PLAN-fea-31: built over planned when a VALID pass of a plan sized to the user's count built a count off what
+    they asked by more than REAIM_SHARE and another plan can move it (not the lowest valid plan, not the most the
+    machine holds, not the rules' own plan kept); else None."""
+    t = plan.get("target") or {}
+    cells, est = int(facts.get("cells") or 0), int((plan.get("estimate") or {}).get("elements") or 0)
+    if not t or not facts.get("valid") or not cells or not est or t.get("kept_rules") or t.get("lowest"):
+        return None
+    asked = float(t["asked"])
+    mode = t.get("mode")
+    if mode == "range":
+        off = not (float(t["low"]) <= cells <= float(t["high"]))
+    elif mode == "at_most":
+        off = cells > asked * (1 + REAIM_SHARE)
+    elif mode == "at_least":
+        off = cells < asked / (1 + REAIM_SHARE)
+    else:
+        off = abs(cells / asked - 1.0) > REAIM_SHARE
+    if not off or (t.get("machine") and cells < asked):
+        return None
+    # 0.6 OF THE MEASURED RATIO (in log): built over planned moves with the plan itself (a coarser plan reads a little
+    # differently), and the full ratio overshot as often as it landed (corpus sweep, 6 Nov: -16% then +17%)
+    return (cells / est) ** REAIM_DAMP
 
 
 def _restate(record: dict, plan: dict) -> dict:
@@ -797,7 +1427,70 @@ def _restate(record: dict, plan: dict) -> dict:
         # MESH-1: the spot a check flagged, said beside the mesh (meshed anyway)
         plan["words"] = [*plan["words"], note]
     plan["decisions"] = P.decisions(record, plan)
-    return _with_ai(plan)
+    plan = _with_ai(plan)
+    # AI-fea-9: how the sizes in the notes were tied to the parts, and what was not applied
+    plan["words"] = [*plan["words"], *PS.words(plan.get("part_sizes"))]
+    if plan.get("requirements"):
+        # NOTE-7, 8: what was read from the notes for the whole mesh, and what was not applied
+        from meshpipeline.engines import mesh_requirements as MR
+        plan["words"] = [*plan["words"], *MR.words(plan["requirements"])]
+    if plan.get("by_choice_failed"):
+        plan["words"] = [*plan["words"], BY_CHOICE_WORDS[str(plan["by_choice_failed"])]]
+    return plan
+
+
+#: PLAN-fea-29/30: what is said when the plan the user's choices made could not be built valid
+BY_CHOICE_WORDS = {
+    "sizes": ("The sizes you asked for could not be built as a valid mesh on any pass, so this mesh is the rules' "
+              "own plan instead; your sizes were not applied."),
+    "count": ("The element count you asked for could not be built as a valid mesh on any pass, so this mesh is the "
+              "rules' own plan instead; your count was not applied."),
+}
+
+
+def built_remark(ws: Path, record: dict | None = None) -> None:
+    """PLAN-fea-27: the result's "From your notes" line says what was asked, planned AND built (the delivered
+    pass's count), and whether the count was reached; the sizes per part too (PLAN-fea-29). The delivered plan's
+    words say the built count as well (a plan at the lowest valid sizes that built under the count is not said to
+    have missed it)."""
+    from meshpipeline.contracts.user_notes import record_remark
+    try:
+        plan = json.loads((ws / P.PLAN_FILE).read_text())
+        cells = int(json.loads((ws / "quality.json").read_text()).get("cells") or 0)
+    except (OSError, ValueError, TypeError):
+        return
+    if plan.get("target") and cells and record is not None:
+        plan["target"]["built"] = cells
+        try:
+            write_plan(ws, _restate(record, plan))
+        except Exception:  # noqa: BLE001 - the words are a courtesy; the delivered mesh stands
+            logger.warning("fea driver: the plan's words were not restated with the built count", exc_info=True)
+    line = P.target_remark(plan, built=cells or None)
+    if plan.get("by_choice_failed") == "count":
+        line = BY_CHOICE_WORDS["count"]
+    if line:
+        record_remark(ws, line, by="fea_target")
+    if plan.get("user_sizes") or (plan.get("part_sizes") or {}).get("status") not in (None, "none"):
+        said = P.user_words(plan)[:1] or PS.words(plan.get("part_sizes"))[:1]
+        if plan.get("by_choice_failed") == "sizes":
+            said = [BY_CHOICE_WORDS["sizes"]]
+        if said:
+            # STD-2: a size for the whole mesh the team's standard set is said as the standard's
+            from meshpipeline.engines.meshing_standard import size_remark
+            record_remark(ws, size_remark(plan.get("requirements"), said[0]), by="fea_part_sizes")
+    try:
+        delivered = json.loads((ws / "quality.json").read_text()).get("requirements")
+    except (OSError, ValueError):
+        delivered = None
+    if delivered or (plan.get("requirements") or {}).get("status") == "used":
+        # PLAN-fea-34 / NOTE-8: asked against delivered, and what was not applied, in the result's "From your
+        # notes" line
+        from meshpipeline.engines import mesh_requirements as MR
+        from meshpipeline.engines.fea_requirements import summary as asked_summary
+        from meshpipeline.engines.meshing_standard import remark as led
+        record_remark(ws, led(plan.get("requirements"),
+                              asked_summary(delivered, len(MR.not_applied_words(plan.get("requirements"))))),
+                      by="mesh_requirements")
 
 
 #: PLAN-fea-13: THE FILL RATE BY COMPLEXITY - elements per second of one native gmsh pass, at the
@@ -807,6 +1500,11 @@ def _restate(record: dict, plan: dict) -> dict:
 #: built at 165 a second, now 1,539): the slowest of each class was simple 1,779, moderate 1,243,
 #: complex 1,539 elements a second. Each rate sits under its class's slowest with margin.
 FILL_RATES: dict[str, float] = {"simple": 1500.0, "moderate": 1100.0, "complex": 1000.0}
+#: PLAN-fea-22: WHAT A RUN USUALLY TAKES - elements per second of the WHOLE run (check, plan, mesher, decks), the
+#: median of the single-pass runs of each class on the lab (28 Oct, 21 runs of 2-16M elements at the size of the
+#: machine their plan names: simple 1,650, moderate 2,490, complex 1,929), said beside the slow rate's upper end. A
+#: pass the ladder repeats takes longer; the stage says so.
+FEA_USUAL_FILL_RATES: dict[str, float] = {"simple": 1650.0, "moderate": 2400.0, "complex": 1900.0}
 #: the class boundaries (CAD faces, hot spots); any micro detail makes a part complex
 SIMPLE_FACES, SIMPLE_SPOTS = 40, 20
 COMPLEX_FACES, COMPLEX_SPOTS = 200, 100
@@ -892,6 +1590,47 @@ def planned_work(plan: dict, *, rate: float | None = None, cls: str = "", ceilin
             "planned_s": planned_s, "ceiling_s": int(ceiling_s), "stall_window_s": int(stall_window())}
 
 
+#: LAD-fea-15: A PASS'S BUDGET IS SIZED FROM ITS ESTIMATE - this many times its planned time at the part's
+#: slow fill rate (PLAN-fea-13), never under BUDGET_FLOOR_S, never over the machine's wall. Calibrated on the
+#: corpus (docs/RULES.md LAD-fea-15): on this code, the slowest pass that built a mesh took under 3 times its
+#: planned time at the fastest rate (1,500 a second), so no such pass is cut by it. A pass past it is the part's
+#: slowness, not ours: the ladder goes on (a 20-hour wall let one surface grind for hours, 1 Nov).
+BUDGET_FACTOR = 5.0
+BUDGET_FLOOR_S = 3600.0
+
+
+def pass_work(plan: dict, *, rate: float, cls: str, machine: dict | None) -> dict:
+    """planned_work with LAD-fea-15's budget as its ceiling: `budget` is True when the budget, not the
+    machine's wall, is what stops the pass."""
+    wall = ceiling_for(None, machine)
+    planned = planned_seconds(plan, rate)
+    budget = min(wall, max(BUDGET_FLOOR_S, BUDGET_FACTOR * planned)) if planned else wall
+    work = planned_work(plan, rate=rate, cls=cls, ceiling_s=budget)
+    work["budget"] = bool(budget < wall)
+    work["wall_s"] = int(wall)
+    return work
+
+
+def note_budget(ws: Path, work: dict) -> None:
+    """LAD-fea-15's budget into the workspace, for the mesher's machine (gmsh_runner.FillBudget): it
+    stops a pass still filling past its budget, never one already filled. The mesher's own clock is the
+    machine's wall (work['wall_s']). The payload is noted again so the file travels with the pass."""
+    from meshpipeline.contracts.mesh_execution import note_native_payload
+    from meshpipeline.engines.gmsh.gmsh_runner import BUDGET_FILE
+    f = ws / BUDGET_FILE
+    if work.get("budget"):
+        f.write_text(json.dumps({"budget_s": int(work["ceiling_s"]), "rule": "LAD-fea-15"}))
+    else:
+        f.unlink(missing_ok=True)
+    note_native_payload(ws, [p for p in (*PAYLOAD, BUDGET_FILE) if (ws / p).exists()])
+
+
+def budget_words(work: dict, n: int, surface: int | None) -> str:
+    where = f", meshing surface {surface}" if surface is not None else ""
+    return (f"Pass {n} was still working{where} when the {int(work['ceiling_s']) // 60} minutes its size allows ran "
+            "out, so it was stopped and the next way to mesh it is tried (LAD-fea-15).")
+
+
 def watchdog_words(trip: dict) -> str:
     """What the watchdog saw, in plain words, for the why record and the refusal."""
     seen = trip.get("watchdog") or {}
@@ -928,10 +1667,12 @@ def _cite(job_id: str, entries: list[dict]) -> None:
 
 
 async def _narrate_pass(publish, *, n: int, first: bool, plan: dict, levers: list[dict], machine: dict,
-                        budget_s: int) -> None:
+                        budget_s: int, job_id: str = "", ws: Path | None = None) -> None:
     """Say a pass out loud before it meshes: on the first pass the plan's own decisions (their
-    words, through the leak guard), on a later one why it runs again (the lever's words); then the
-    machine it runs on, and the mesh start the run line counts from."""
+    words, through the leak guard), on a later one why it runs again (the lever's words); the whole
+    design as one receipt (contracts/mesh_design); then the machine it runs on, and the mesh start
+    the run line counts from."""
+    from meshpipeline.contracts import mesh_design
     from meshpipeline.contracts import narration as N
 
     if first:
@@ -939,6 +1680,8 @@ async def _narrate_pass(publish, *, n: int, first: bool, plan: dict, levers: lis
             await N.asay(publish, line, op_id=f"fea:plan:{n}:{i}")
     elif levers:
         await N.asay(publish, N.retry_line(n, levers[-1]), op_id=f"fea:retry:{n}")
+    await mesh_design.apublish(publish, job_id=job_id, workspace=ws, attempt=n,
+                               planned=(int((plan.get("estimate") or {}).get("elements") or 0), "elements"))
     await N.astep(publish, "machine", N.machine_words(machine), op_id=f"fea:machine:{n}")
     meshing = getattr(publish, "ameshing", None)
     if meshing is not None:
@@ -1013,6 +1756,24 @@ def _killed(result: dict) -> bool:
 def _out_of_memory(result: dict) -> bool:
     """Killed for memory, with nothing built."""
     return bool(_killed(result) and result.get("rc") not in (0, 4))
+
+
+def memory_measured(result: dict, plan: dict) -> dict | None:
+    """PLAN-fea-16: the pass's measured mesher peak against the model ({peak_gib, elements, bytes_per_element,
+    model_bytes_per_element, margin, predicted_gib}); None when the pass measured none."""
+    peak = _peak_gib(result)
+    q = result.get("remote_quality") or result.get("quality") or {}
+    try:
+        cells = int((q or {}).get("cells") or 0)
+    except (TypeError, ValueError):
+        cells = 0
+    if not peak or cells <= 0:
+        return None
+    per = max(0.0, (peak * 1024.0 - MEMORY_BASE_MB) * 1024.0 * 1024.0 / cells)
+    return {"peak_gib": round(peak, 2), "elements": cells, "bytes_per_element": round(per),
+            "model_bytes_per_element": BYTES_PER_ELEMENT, "margin": MEMORY_MARGIN,
+            "planned_elements": int((plan.get("estimate") or {}).get("elements") or 0),
+            "predicted_gib": round(memory_need(float(cells))[0], 2)}
 
 
 def _peak_gib(result: dict) -> float | None:
@@ -1160,11 +1921,102 @@ def _restore_pass(ws: Path, n: int) -> None:
             (ws / name).unlink(missing_ok=True)      # the delivered pass did not write it
 
 
+def _pass_kept(ws: Path, n: int) -> bool:
+    """Whether pass `n`'s mesh is in its pass folder: its deck there, or named in the folder's own record of the
+    files that stay in the bucket (RUN-7). A folder with only the pass's log and quality (_keep_pass_log) is not."""
+    return BF.present(ws / PASS_FOLDER.format(n=n), "mesh.inp")
+
+
+def _deliver_pass(ws: Path, best: int, passes: list[dict], job_id: str) -> int:
+    """The workspace becomes the chosen pass's; returns the pass it then holds. A PASS WHOSE MESH WAS NEVER KEPT
+    IS NEVER RESTORED FROM ITS FOLDER - that folder holds its log at most, and restoring from it deletes every
+    deliverable in hand (job d03f1bf6, 10 Nov: a refinement pass whose decks stayed in the bucket was read as
+    having made no mesh, so it was not kept; chosen as the better pass, its restore removed the record of the
+    kept decks and the run ended "the mesher stopped before it finished writing the mesh"). Such a pass is
+    delivered from the workspace while that is still its own (no pass ran after it); else the best valid pass
+    that WAS kept is delivered instead; the decision record says which. Only when no valid pass's mesh is held
+    anywhere is the workspace cleared as before, so no other pass's mesh goes out under this pass's name."""
+    if _pass_kept(ws, best):
+        _restore_pass(ws, best)
+        return best
+    held = [{**p, "deliverable": True} for p in passes if p["valid"] and _pass_kept(ws, int(p["pass"]))]
+    in_hand = int(passes[-1]["pass"]) == best and BF.present(ws, "mesh.inp")
+    other = None if in_hand else L.best_pass(held)[0]
+    delivered = best
+    if in_hand:
+        how = "the workspace still holds it (no pass ran after it), so it is delivered from there"
+    elif other is not None:
+        delivered = other
+        how = f"pass {delivered}, the best pass that was kept, is delivered instead"
+        for p in passes:
+            if int(p["pass"]) == best:
+                p.update(deliverable=False, not_kept=True)
+            elif int(p["pass"]) == delivered:
+                p.pop("deliverable", None)
+        _restore_pass(ws, delivered)
+    else:
+        how = "no other valid pass was kept either, so there is no mesh to deliver"
+        _restore_pass(ws, best)
+    logger.warning("fea driver: pass %s was chosen but its mesh was not kept in its pass folder: %s - job_id=%s",
+                   best, how, job_id)
+    _cite(job_id, [{"stage": "fea_ladder", "decided": "delivered pass not kept", "value": delivered,
+                    "rule": "LAD-fea-5",
+                    "inputs": {"pass": best, "delivered": delivered, "kept": sorted(int(p["pass"]) for p in held)},
+                    "words": f"Pass {best} was chosen, but its mesh was not kept in its pass folder: {how}."}])
+    return delivered
+
+
 def _read_failure(ws: Path) -> dict:
     try:
         return json.loads((ws / "fea_failure.json").read_text())
     except (OSError, ValueError):
         return {}
+
+
+def _drop_kept(ws: Path) -> None:
+    """LAD-fea-11: no pass reads parts kept under another staging or plan series."""
+    for name in KEPT_FILES:
+        (ws / name).unlink(missing_ok=True)
+
+
+def _kept_after(ws: Path, n: int, job_id: str) -> dict | None:
+    """LAD-fea-11: what the pass just run kept - the parts it filled while others failed - for the passes after
+    it (they mesh only the parts that failed, and keep the rest as they are); None when it kept nothing."""
+    from meshpipeline.engines.gmsh.fea_adapter import KEEP_JSON, KEEP_RULE
+
+    try:
+        meta = json.loads((ws / KEEP_JSON).read_text())
+    except (OSError, ValueError):
+        return None
+    if not meta.get("kept_volumes"):
+        return None
+    failed = list(meta.get("failed_parts") or [])
+    _cite(job_id, [{"stage": "fea_ladder", "decided": "keep the parts that meshed", "value": len(meta["kept_volumes"]),
+                    "rule": KEEP_RULE, "inputs": {"pass": n, "failed_parts": failed[:20],
+                                                  "kept_parts": len(meta.get("kept_parts") or [])},
+                    "words": (f"Pass {n} meshed {len(meta['kept_volumes'])} part volume(s) and could not fill "
+                              f"{', '.join(failed[:6]) or 'some'}; the next passes mesh only "
+                              f"{'that part' if len(failed) == 1 else 'those parts'} and keep the rest as they are.")}])
+    return {"rule": KEEP_RULE, "from_pass": int(n)}
+
+
+def _not_kept(ws: Path, bodies: int) -> list[int] | None:
+    """LAD-fea-11: the parts (k of Part_k, 1..bodies) the latest kept file does not keep - those that still
+    failed and those the last gmsh pass's fill never reached (it stops at its first failure); None when there
+    is no kept file."""
+    from meshpipeline.engines.gmsh.fea_adapter import KEEP_JSON
+
+    try:
+        meta = json.loads((ws / KEEP_JSON).read_text())
+    except (OSError, ValueError):
+        return None
+    kept: set[int] = set()
+    for p in meta.get("kept_parts") or []:
+        try:
+            kept.add(int(str(p).rsplit("_", 1)[-1]))
+        except ValueError:
+            continue
+    return [k for k in range(1, int(bodies) + 1) if k not in kept]
 
 
 def _clear_outputs(ws: Path) -> None:
@@ -1174,18 +2026,22 @@ def _clear_outputs(ws: Path) -> None:
 
 
 async def _native(ws: Path, machine: dict, work: dict, job_id: str, n: int, run,
-                  publish=None, of: int | None = None) -> tuple[dict, dict, dict]:
+                  publish=None, of: int | None = None, *, escalate: bool = True) -> tuple[dict, dict, dict]:
     """One native pass on `machine`: RUN-3 (out of memory: one machine up) and RUN-5 (still working at
-    the Cloud Run wall: a VM) as every pass. Returns (the result, the machine it ran on, its work).
+    the Cloud Run wall: a VM) as every pass - but a pass that need not escalate (`escalate` False: LAD-fea-13's
+    refinement, a mesh already in hand) ends where it stops. Returns (the result, the machine it ran on, its work).
     `of`: the elements THIS pass's plan estimates, for the live line's "N of about M" - the plan's
     own number or nothing."""
     from meshpipeline.contracts import mesh_machine as MM
 
     while True:
         result = await _relayed_mesh(publish, ws, seq=900 + n, timeout=work["ceiling_s"], of=of)
+        if not escalate:
+            return result, machine, work
         if _out_of_memory(result):
             moved, rule, decided = MM.step_up(machine, measured_gib=_peak_gib(result)), "RUN-3", "step up"
-        elif result.get("timed_out") and not result.get("stalled"):
+        elif result.get("timed_out") and not result.get("stalled") and not work.get("budget"):
+            # (a pass its own budget stopped - LAD-fea-18's rung - is not moved: it would only grind on elsewhere)
             moved, rule, decided = MM.off_the_wall(machine), "RUN-5", "off the wall"
         else:
             return result, machine, work
@@ -1193,7 +2049,7 @@ async def _native(ws: Path, machine: dict, work: dict, job_id: str, n: int, run,
             return result, machine, work
         machine = moved
         MM.write(ws, machine)
-        work = {**work, "ceiling_s": int(ceiling_for(run, machine))}
+        work = {**work, "ceiling_s": int(min(ceiling_for(run, machine), work.get("budget_ceiling_s") or math.inf))}
         _cite(job_id, [{"stage": "fea_machine", "decided": decided, "value": machine["machine"], "rule": rule,
                         "inputs": {"pass": n, "from": machine.get("stepped_from"), "need_gib": machine["need_gib"]},
                         "words": machine["words"]}])
@@ -1227,7 +2083,8 @@ def _rung_error(result: dict) -> str:
 
 
 async def _last_rung(ws: Path, record: dict, diag_m: float, first_plan: dict, passes: list[dict], *,
-                     job_id: str, run, publish=None) -> tuple[dict, list[dict]]:
+                     job_id: str, run, publish=None, crossing: dict | None = None,
+                     kept: dict | None = None) -> tuple[dict, list[dict]]:
     """LAD-fea-9: at most fea_tetwild.MAX_RUNG_PASSES passes - an assembly's parts the failed passes
     named first, then every part - each on the plan the last round of gmsh passes started from (the other
     parts meshed as that pass meshed them), plus fTetWild's settings (engines/fea_tetwild.params).
@@ -1235,42 +2092,68 @@ async def _last_rung(ws: Path, record: dict, diag_m: float, first_plan: dict, pa
     import copy
 
     from meshpipeline.contracts import mesh_machine as MM
-    from meshpipeline.contracts.mesh_execution import note_native_pass, note_native_payload
+    from meshpipeline.contracts.mesh_execution import note_native_pass
     from meshpipeline.engines import fea_tetwild as TW
 
     if (record.get("assembly_plan") or {}).get("mode") == "bonded":
         # the rung meshes a part on its own: a fused assembly is staged apart and tied first (PLAN-fea-17)
         record = await asyncio.to_thread(restage_tied, ws, record)
+        kept = None
+    if kept is None:
+        _drop_kept(ws)
     gm = [p for p in passes if p.get("engine") != TW.ENGINE]
     ran: list[dict] = []
     for rung in range(1, TW.MAX_RUNG_PASSES + 1):
         parts = TW.rung_parts(record, gm, rung)
+        if rung == 1 and kept is not None and int(record.get("bodies") or 1) > 1:
+            # LAD-fea-11: every part not kept goes to fTetWild, each with its own settings - the parts that STILL
+            # failed, and the parts the last gmsh pass never reached (gmsh has had its passes: tried again here, one
+            # that fails would send every part to fTetWild on the whole assembly's settings, the kept ones too). A
+            # part a later gmsh pass did fill is kept as gmsh filled it
+            rest = _not_kept(ws, int(record.get("bodies") or 1))
+            parts = rest if rest else parts
         n = len(passes) + len(ran) + 1
         plan = copy.deepcopy(first_plan)
         if record.get("assembly_plan"):
             plan["assembly"] = dict(record["assembly_plan"])          # as staged now (PLAN-fea-17)
-        settings = TW.params(plan, record, diag_m, parts)
-        plan["mesh"] = {**(plan.get("mesh") or {}), "engine": TW.ENGINE, "ftetwild": settings}
-        said = L.rung_words(parts, rung)
+        # LAD-fea-17: the rung's own sizes (the envelope from the real walls - never a crossing face's reading)
+        settings = TW.params(plan, record, diag_m, parts, crossing=crossing)
+        # RUN-6: gmsh's model for the parts gmsh holds, fTetWild's own measured model for the parts it builds
+        elements = float((plan.get("estimate") or {}).get("elements") or 0)
+        process_gib, files_gib = memory_need(elements)
+        machine = TW.rung_machine(elements, process_gib, files_gib, margin=MEMORY_MARGIN)
+        # LAD-fea-18: THE RUNG'S TIME, sized from the part (its estimate at fTetWild's measured rate on the
+        # machine's cores), within the machine's wall; the pass's own backstop a margin past it
+        timed = TW.rung_budget(elements, cpus=int(machine.get("cpus") or TW.CLOUD_RUN_CPUS),
+                               wall_s=ceiling_for(run, machine))
+        settings["budget_s"] = timed["budget_s"]
+        plan["mesh"] = {**(plan.get("mesh") or {}), "engine": TW.ENGINE, "ftetwild": settings,
+                        # LAD-fea-11: the other parts as an earlier pass meshed them (its first rung pass)
+                        **({"keep": kept} if kept is not None and rung == 1 else {})}
+        said = L.rung_words(parts, rung, crossing=crossing)
         plan["words"] = [*(plan.get("words") or []), said]
         _cite(job_id, [{"stage": "fea_ladder", "decided": "last rung", "value": TW.ENGINE, "rule": "LAD-fea-9",
                         "inputs": {"pass": n, "rung": rung, "parts": parts, "per_part": settings["per_part"],
                                    "version": settings["version"], "threads": settings["threads"]},
                         "words": said}])
+        _cite(job_id, [{"stage": "fea_ladder", "decided": "rung sizes", "value": TW.SIZE_RULE, "rule": TW.SIZE_RULE,
+                        "inputs": {"pass": n, "per_part": settings["per_part"], "basis": settings["basis"]},
+                        "words": TW.size_words(settings)}])
+        _cite(job_id, [{"stage": "fea_time", "decided": "rung budget", "value": timed["budget_s"],
+                        "rule": TW.TIME_RULE, "inputs": {"pass": n, **timed}, "words": TW.budget_words(timed)}])
         write_plan(ws, plan)
         run.note_authoring()
         _clear_outputs(ws)
         note_native_pass(ws, n)
-        note_native_payload(ws, [p for p in PAYLOAD if (ws / p).exists()])
-        # RUN-6: gmsh's model for the parts gmsh holds, fTetWild's own measured model for the parts it builds
-        elements = float((plan.get("estimate") or {}).get("elements") or 0)
-        process_gib, files_gib = memory_need(elements)
-        machine = TW.rung_machine(elements, process_gib, files_gib, margin=MEMORY_MARGIN)
+        # LAD-fea-18 times the rung (fTetWild's own budget, the pass's ceiling): no gmsh pass's LAD-fea-15 fill
+        # budget is left in the workspace to stop it
+        note_budget(ws, {})
         _cite(job_id, [{"stage": "fea_machine", "decided": machine["where"], "value": machine["machine"],
                         "rule": TW.MEMORY_RULE, "inputs": {"pass": n, **machine["ftetwild"]},
                         "words": machine["words"]}])
         MM.write(ws, machine)
-        work = planned_work(plan, ceiling_s=ceiling_for(run, machine))
+        work = planned_work(plan, ceiling_s=min(ceiling_for(run, machine), timed["ceiling_s"]))
+        work.update(budget=timed["ceiling_s"] < ceiling_for(run, machine), budget_ceiling_s=timed["ceiling_s"])
         await run.fence("start native mesh")
         t0 = time.monotonic()
         from meshpipeline.contracts import narration as _N
@@ -1306,13 +2189,217 @@ async def _last_rung(ws: Path, record: dict, diag_m: float, first_plan: dict, pa
                                   f"fTetWild's pass {n} built no valid mesh ({facts.get('rung_error')}).")}])
         if made:
             _keep_pass(ws, n)
-        if facts["valid"] or parts is None or result.get("timed_out"):
+        # LAD-fea-18: a rung pass out of its time is not followed by another (it would only spend more)
+        if (facts["valid"] or parts is None or result.get("timed_out")
+                or TW.OUT_OF_TIME in str(facts.get("rung_error") or "")):
             break
+    last = ran[-1] if ran else None
+    if last is not None and last["valid"] and last["short"] and not first_plan.get("coarsened"):
+        # LAD-fea-13: THE RUNG'S MESH IS SHORT OF A RULE (a wall under 2 elements, a hot spot under its count) and no
+        # pass is left for LAD-fea-3: one pass more, on the parts whose zones fell short only, those zones 20%
+        # finer and held through fTetWild's sizing grid; every other part's run is the one before. The better of
+        # the two is delivered, the rung's own when the refinement is no better (or runs out of memory or time)
+        refined = await _rung_refine(ws, record, diag_m, first_plan, passes, ran, last, job_id=job_id, run=run,
+                                     kept=kept if last.get("rung") == 1 else None, publish=publish,
+                                     crossing=crossing)
+        if refined is not None:
+            ran.append(refined)
     if not any(f["valid"] for f in ran) and gm and (ws / PASS_FOLDER.format(n=gm[-1]["pass"])).exists():
         # the rung built nothing valid either: the workspace is the last gmsh pass's again, as it was
         # before the rung, so the exhausted ladder is told from that pass's measures
         _restore_pass(ws, int(gm[-1]["pass"]))
     return record, ran
+
+
+#: LAD-fea-13: the refinement after the rung takes at most this many times the rung's own pass, never less than
+#: the floor - a mesh is already in hand (g_c0109: a 20-minute part ran past 2 hours refined, 10-micron walls)
+REFINE_TIME_SHARE = 2.0
+REFINE_TIME_FLOOR_S = 600.0
+
+
+async def _rung_refine(ws: Path, record: dict, diag_m: float, first_plan: dict, passes: list[dict],
+                       ran: list[dict], last: dict, *, job_id: str, run, kept: dict | None = None,
+                       publish=None, crossing: dict | None = None) -> dict | None:
+    """LAD-fea-13: one refinement pass after the rung's valid but short pass `last`. None when no short zone is on
+    a part fTetWild meshed (a gmsh part's zone is not this pass's to change)."""
+    import copy
+
+    from meshpipeline.contracts import mesh_machine as MM
+    from meshpipeline.contracts.mesh_execution import note_native_pass
+    from meshpipeline.engines import fea_tetwild as TW
+
+    parts = last.get("parts")
+    q_last = _read_quality(ws)
+    walls = (((q_last.get("fea") or {}).get("rules") or {}).get("through_wall") or {}).get("short") or []
+    targets = TW.refine_targets(first_plan, list(last["short"]), list(walls), parts)
+    if not targets["ftetwild"] and not targets["gmsh"]:
+        return None
+    n = len(passes) + len(ran) + 1
+    plan = copy.deepcopy(first_plan)
+    if record.get("assembly_plan"):
+        plan["assembly"] = dict(record["assembly_plan"])
+    # gmsh's parts made finer the LAD-fea-3 way: their own short zone entries in the plan
+    plan["zones"] = TW.tighten_zones(list(plan.get("zones") or []), targets["gmsh"], L.TIGHTEN)
+    # LAD-fea-17: the rung's own sizes, as the rung pass had them (never a crossing face's reading)
+    settings = TW.params(plan, record, diag_m, parts, crossing=crossing)
+    settings["refine"] = {"rule": TW.REFINE_RULE, "factor": L.TIGHTEN, "parts": targets["ftetwild"],
+                          "gmsh_parts": targets["gmsh"], "after_pass": last["pass"]}
+    again = sorted(int(k.split("_")[1]) for k in targets["gmsh"])
+    plan["mesh"] = {**(plan.get("mesh") or {}), "engine": TW.ENGINE, "ftetwild": settings,
+                    # LAD-fea-11: the gmsh parts as the rung's first pass had them - but the ones made finer here
+                    **({"keep": {**kept, "remesh_parts": again}} if kept is not None else {})}
+    every = {**targets["ftetwild"], **targets["gmsh"]}
+    zones = sorted({z for zs in every.values() for z in zs})
+    said = (f"The last rung's mesh (pass {last['pass']}) fell short of {len(set(last['short']))} zone rule(s) and no "
+            f"pass was left to make them finer, so one more pass re-meshes {', '.join(sorted(every))} only, with "
+            f"{', '.join(zones[:8])}{', ...' if len(zones) > 8 else ''} {int(round((1 - L.TIGHTEN) * 100))}% finer (on "
+            "fTetWild's parts, held through its sizing grid); the better of the two is delivered (LAD-fea-13).")
+    plan["words"] = [*(plan.get("words") or []), said]
+    _cite(job_id, [{"stage": "fea_ladder", "decided": "rung refinement", "value": TW.ENGINE, "rule": TW.REFINE_RULE,
+                    "inputs": {"pass": n, "after_pass": last["pass"], "short": sorted(set(last["short"])),
+                               "through_wall_min": last.get("through_wall_min"), "parts": targets},
+                    "words": said}])
+    write_plan(ws, plan)
+    run.note_authoring()
+    _clear_outputs(ws)
+    note_native_pass(ws, n)
+    # LAD-fea-13 times the refinement (below): no gmsh pass's LAD-fea-15 fill budget is left in the workspace
+    note_budget(ws, {})
+    # RUN-6: the refined parts hold more elements than before - the rung's measured mesh, doubled, at the least
+    elements = max(float((plan.get("estimate") or {}).get("elements") or 0), 2.0 * float(last.get("cells") or 0))
+    process_gib, files_gib = memory_need(elements)
+    machine = TW.rung_machine(elements, process_gib, files_gib, margin=MEMORY_MARGIN)
+    MM.write(ws, machine)
+    # a mesh is in hand: the refinement may take at most REFINE_TIME_SHARE times the rung's own pass (never less
+    # than REFINE_TIME_FLOOR_S), on its machine, and ends there - never a bigger machine, never longer
+    budget = max(REFINE_TIME_FLOOR_S, REFINE_TIME_SHARE * float(last.get("native_s") or 0.0))
+    budget = min(ceiling_for(run, machine), budget)
+    # LAD-fea-18 inside it: fTetWild is asked to finish the mesh it has before the refinement's time is spent
+    settings["budget_s"] = TW.rung_budget(elements, cpus=int(machine.get("cpus") or TW.CLOUD_RUN_CPUS),
+                                          wall_s=budget)["budget_s"]
+    write_plan(ws, plan)
+    work = planned_work(plan, ceiling_s=budget)
+    await run.fence("start native mesh")
+    t0 = time.monotonic()
+    result, machine, work = await _native(ws, machine, work, job_id, n, run, publish=publish, escalate=False)
+    await run.fence("accept native mesh output")
+    q = _read_quality(ws) if result.get("rc") in (0, 4) else {}
+    # as every pass: a big deck that stayed in the bucket is this pass's deck all the same (RUN-7)
+    made = bool(q) and BF.present(ws, "mesh.inp")
+    run.note_native_run(produced_usable_mesh=made and result.get("rc") == 0)
+    facts = {**L.pass_facts(n, result.get("rc"), q, plan, log=str(result.get("log_tail") or ""), killed=_killed(result)),
+             "budget_s": round(budget, 1),
+             "native_s": round(time.monotonic() - t0, 1), "engine": TW.ENGINE, "rung": last.get("rung"),
+             "parts": parts, "refine": {"after_pass": last["pass"], "parts": targets},
+             "ran_on": {k: machine.get(k) for k in ("where", "machine", "memory_gib", "why")}}
+    if result.get("timed_out"):
+        facts["timed_out"] = True
+    if not facts["valid"]:
+        facts["rung_error"] = ("the refinement ran past its time budget" if result.get("timed_out")
+                               else _rung_error(result))
+    better = L.refined_better(facts, last)
+    # the better of the two is the one delivered (LAD-fea-5 alone would weigh the worst element first)
+    if better:
+        last["deliverable"] = False
+    else:
+        facts["deliverable"] = False
+    if made:
+        _keep_pass(ws, n)
+    _keep_pass_log(ws, n)
+    _cite(job_id, [{"stage": "fea_ladder", "decided": "rung refinement kept", "value": better,
+                    "rule": TW.REFINE_RULE,
+                    "inputs": {"pass": n, "valid": facts["valid"], "short": sorted(set(facts["short"])),
+                               "through_wall_min": facts.get("through_wall_min"),
+                               "before": {"pass": last["pass"], "short": sorted(set(last["short"])),
+                                          "through_wall_min": last.get("through_wall_min")},
+                               "error": facts.get("rung_error")},
+                    "words": (f"The refinement pass {n} is better than pass {last['pass']} and is delivered." if better
+                              else f"The refinement pass {n} is no better than pass {last['pass']}"
+                              + (f" ({facts.get('rung_error')})" if not facts["valid"] else "")
+                              + f", so pass {last['pass']} is delivered, its short walls named.")}])
+    return facts
+
+
+class _NoCount(Exception):
+    """surface_asks: no element count to ask for (no words, or no staged file)."""
+
+
+async def surface_asks(ws: Path, state, *, job_id: str, run=None, publish=None) -> tuple[dict | None, dict | None]:
+    """SURF-11: WHAT THE USER'S WORDS ASK OF A SURFACE FILE'S MESH, read by the same readers the solid route uses,
+    so a count or a size written in the notes reaches a surface file as it reaches a solid: (the element count,
+    PLAN-fea-27 / SHMESH-23 - the FEA plan's AI step shown the file with no zones, its answer checked by the same
+    rules; the notes' mesh requirements, NOTE-7..9 - read by this module's read_requirements and left in the
+    workspace for the surface run, SURF-7). The count is asked only when the user left words to read
+    (cad/part_words.wanted): a run without words asks no model for it. The requirements are read on every run, as
+    before SURF-11 (Glue 1): a team's meshing standard (STD-2) reaches a surface file with no notes, and with neither
+    the reading is "none" with no model asked. Never raises (but a fenced worker's stale publish): no answer is no
+    count."""
+    from meshpipeline.cad.part_words import wanted
+    from meshpipeline.contracts.event_stream import StaleExecutionPublish
+
+    target = None
+    try:
+        staged = staged_solid(ws) if wanted(state or {}) else None
+        if staged is None:
+            raise _NoCount
+        _box, diag_m = await asyncio.to_thread(_metre_box, staged)
+        ai = await FA.decide({"faces": {}, "bodies": 1}, state or {}, [], diag_m=diag_m, limit=element_limit({})[0],
+                             job_id=job_id, run=run, wait_s=ai_wait_s(run))
+        target = element_target(state, ai)
+        if target and target.get("elements"):
+            _cite(job_id, [{"stage": "fea_ai", "decided": "element count", "value": int(target["elements"]),
+                            "rule": "SURF-11", "inputs": {k: target.get(k) for k in ("mode", "low", "high")},
+                            "words": f"The notes ask for {int(target['elements']):,} elements: the shell's sizes "
+                                     "follow that count."}])
+    except StaleExecutionPublish:
+        raise
+    except _NoCount:
+        target = None
+    except Exception as exc:  # noqa: BLE001 - no count read is the rules' own sizes
+        logger.warning("fea driver: the element count was not read for the surface file (%s)", type(exc).__name__)
+        target = None
+    # NOTE-7..9 / SURF-7: the notes' mesh requirements, read once, BEFORE the surface is meshed (a file that turns
+    # out not to be a surface carries the same reading on)
+    asked = await read_requirements(ws, state, job_id=job_id, run=run, publish=publish)
+    return (target if target and target.get("elements") else None), asked
+
+
+async def _deliver_surface(ws: Path, rec: dict, *, job_id: str, run, target: dict | None = None,
+                           asked: dict | None = None):
+    """SURF-3: a surface file's shell delivered as THE result (as SHSTAGE-7 delivers a said shell); one that could not
+    be made is the run's plain reason - the file holds no solid to mesh instead. SURF-11: the user's count and the
+    notes' requirements are told as asked against delivered, as for a mid-surface shell."""
+    from meshpipeline.contracts.failure_cause import FailureCause
+    from meshpipeline.engines import shell_delivery as SD
+    from meshpipeline.engines import surface_run as SR
+
+    if rec.get("made") and await asyncio.to_thread(lambda: SD.deliver(ws, rec, target=target)):
+        from meshpipeline.contracts.user_notes import record_remark
+        from meshpipeline.engines.shell_plan import count_words
+
+        counted = count_words(rec.get("target"))
+        if counted:
+            record_remark(ws, counted, by="fea_target")
+        if asked and asked.get("status") == "used":
+            # SHMESH-26 / NOTE-8 on a surface file: asked against delivered, and what was not applied (SURF-7)
+            from meshpipeline.engines import mesh_requirements as MR
+            from meshpipeline.engines.meshing_standard import remark as led
+            from meshpipeline.engines.shell_requirements import summary as asked_summary
+            said = led(asked, asked_summary(rec.get("requirements"), len(MR.not_applied_words(asked))))
+            if said:
+                record_remark(ws, said, by="mesh_requirements")
+        _cite(job_id, [{"stage": SR.GATE, "decided": "shell delivered", "value": rec.get("elements"),
+                        "rule": "SURF-3", "inputs": {"solid_made": False},
+                        "words": "The shell on the surface is the delivered mesh: the file holds no solid to mesh."}])
+        await run.fence("deliver builder outcome")
+        outcome = run.outcome(produced_deliverable=True, exhausted=False, failure_marker="")
+        return outcome.produced_deliverable, (outcome.terminal_value or BUILD_FAILED), outcome
+    why = str(rec.get("words") or SR.words(rec))
+    _refuse(ws, cause=FailureCause.NOT_BUILT.value, text=why, gate=SR.GATE,
+            reason=str(rec.get("why") or "the shell mesh of the surface could not be made"))
+    await run.fence("deliver builder outcome")
+    outcome = run.outcome(produced_deliverable=False, failure_marker=BUILD_FAILED)
+    return False, BUILD_FAILED, outcome
 
 
 async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublisher,
@@ -1327,14 +2414,36 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         outcome = run.outcome(produced_deliverable=False, failure_marker=NO_SOURCE)
         return False, NO_SOURCE, outcome
 
+    # PLAN-fea-22: what the stage's kept plans must have been made for (read before anything restages the solid)
+    from meshpipeline.engines import fea_plan_options as PO
     try:
-        made = await asyncio.to_thread(solids_from_shells, ws)
+        plans_key = PO.plans_key(ws, connection=connection_of(state), gap_joins=gap_joins_of(state))
+    except Exception:  # noqa: BLE001 - no key is planning it here
+        plans_key = ""
+    stage_plans = await asyncio.to_thread(kept_plans, state) if plans_key else None
+
+    seen: dict = {}
+    try:
+        made = await asyncio.to_thread(solids_from_shells, ws, seen)
         if made:
             _cite(job_id, [{"stage": "fea_plan", "decided": "closed shells read as solids", "value": made,
                             "rule": "MESH-1", "inputs": {"solids": made},
                             "words": f"The file's {made} closed shell(s) were read as the solid(s) they bound."}])
     except Exception as exc:  # noqa: BLE001 - the part is meshed, or refused, as it stands
         logger.warning("fea driver: closed shells not read as solids (%s)", type(exc).__name__)
+    asked: dict | None = None
+    if seen.get("open"):
+        # SURF-3: A FILE THAT IS A SURFACE, NOT A SOLID (no solid, its faces do not close: cad/surface_model) is
+        # meshed as a shell on the surface as given, and that shell is the result - there is no solid to measure,
+        # plan or fall back to. Any other file with no solid carries on exactly as before.
+        from meshpipeline.engines import surface_run as SR
+
+        # SURF-11: the user's count and the notes' mesh requirements, read as the solid route reads them
+        target, asked = await surface_asks(ws, state, job_id=job_id, run=run, publish=publish)
+        surfaced = await SR.surface_pass(ws, state, job_id=job_id, run=run, cite=_cite, left_s=attempt_left_s(run),
+                                         target=target)
+        if surfaced is not None:
+            return await _deliver_surface(ws, surfaced, job_id=job_id, run=run, target=target, asked=asked)
     # MESH-8 FOR A SINGLE PART: its skins left out, its faces still named for the CAD faces they came from
     skins = await asyncio.to_thread(open_single_skins, ws)
     from meshpipeline.contracts import narration as _N
@@ -1424,8 +2533,69 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     if (ai.get("decision") or {}).get("notes_remark"):
         from meshpipeline.contracts.user_notes import record_remark
         record_remark(ws, ai["decision"]["notes_remark"], by="fea_ai")
+    # PLAN-fea-27: an element count the user named, as the AI read it from their notes (AI-fea-4)
+    target = element_target(state, ai)
+    # NOTE-7..9: the mesh requirements the notes ask for (a global size, edge lengths, quality limits, the element
+    # kind), read once; the shell and mixed runs read them from the workspace, the solid plan takes the sizes below
+    if asked is None:
+        asked = await read_requirements(ws, state, job_id=job_id, run=run, publish=publish)
+    # SHSTAGE-6: MESH AS: SHELL - the shell mesh and its solver files first, from the staged solid as read (the
+    # assembly staging above never rewrites it). SHMESH-23: once the user's element count is read, so the shell's
+    # sizes follow it as the solid's do.
+    shelled = await shell_pass(ws, state, job_id=job_id, run=run, target=target)
+    if mesh_as_of(state) == "shell" and shelled and shelled.get("made"):
+        # SHSTAGE-7: THE SHELL IS THE RESULT - no solid tet mesh beside it (one element through a 1 mm wall is poor
+        # and reads as the shell extruded); a shell that could not be made falls through to the solid, said
+        from meshpipeline.engines import shell_delivery as SD
+        from meshpipeline.engines.shell_plan import count_words
+
+        if await asyncio.to_thread(SD.deliver, ws, shelled, target=target):
+            counted = count_words(shelled.get("target"))
+            if counted:
+                from meshpipeline.contracts.user_notes import record_remark
+                record_remark(ws, counted, by="fea_target")
+            if asked.get("status") == "used":
+                # SHMESH-26 / NOTE-8: asked against delivered, and what was not applied, in the result's "From your
+                # notes" line
+                from meshpipeline.contracts.user_notes import drop_remark, record_remark
+                from meshpipeline.engines import mesh_requirements as MR
+                from meshpipeline.engines.meshing_standard import remark as led
+                from meshpipeline.engines.shell_requirements import summary as asked_summary
+                notes_line = led(asked, asked_summary(shelled.get("requirements"), len(MR.not_applied_words(asked))))
+                if notes_line:
+                    # the AI's own remark (above) says what it did with the notes for the SOLID plan, which is not
+                    # made: beside the shell's asked-against-delivered line it told the user of a solid mesh
+                    drop_remark(ws, by="fea_ai")
+                    record_remark(ws, notes_line, by="mesh_requirements")
+            _cite(job_id, [{"stage": SHELL_GATE, "decided": "shell delivered", "value": shelled.get("elements"),
+                            "rule": "SHSTAGE-7", "inputs": {"solid_made": False},
+                            "words": "The shell is the delivered mesh: no solid mesh is made beside it."}])
+            await run.fence("deliver builder outcome")
+            outcome = run.outcome(produced_deliverable=True, exhausted=False, failure_marker="")
+            return outcome.produced_deliverable, (outcome.terminal_value or BUILD_FAILED), outcome
+    # AI-fea-9 / PLAN-fea-29: the element sizes the user asked for, part by part, tied to the parts by the vision
+    # model from the parts' facts and pictures, checked by the rules; nothing applied when it cannot be read
+    part_sizes = await PS.decide(ws, record, surface, state or {}, job_id=job_id, run=run, wait_s=ai_wait_s(run))
+    sizes = PS.sizes_of(part_sizes)
+    if part_sizes.get("status") != "none":
+        _cite(job_id, PS.decisions(part_sizes))
+    if asked.get("status") != "none":
+        # PLAN-fea-33: a size the notes ask for the WHOLE mesh, held like the sizes per part (on every part the
+        # user did not size themselves)
+        from meshpipeline.engines import fea_requirements as FR
+        from meshpipeline.engines import mesh_requirements as MR
+        sizes = FR.whole_sizes(sizes, MR.requirements_of(asked), FR.part_ids(P.zones(record)),
+                               base_m=P.base_size(diag_m))
+    # A COUNT OR SIZES THE USER ASKED FOR NEVER FAIL THE RUN: when no pass builds a valid mesh of the plan their
+    # choices made, the rules' own plan is meshed instead, and said (PLAN-fea-29)
+    by_choice_failed = ""
+    # PLAN-fea-31: the count the user asked for is checked on the BUILT mesh; off by more than REAIM_SHARE, the plan
+    # is solved again once with the measured built-over-planned and built again
+    correction: float | None = None
+    reaim = False
     levers: list[dict] = []
     passes: list[dict] = []
+    crossing_found: dict | None = None
     tripped: dict | None = None
     too_big: dict | None = None
     unrun: dict | None = None
@@ -1433,6 +2603,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     chosen: dict = {}
     first_plan: dict = {}
     n0 = 0
+    kept: dict | None = None
     while True:
         for n in range(n0 + 1, n0 + L.MAX_PASSES + 1):
             await _N.astep(publish, "plan", f"Planning the mesh · {_N.pass_words(n - n0, L.MAX_PASSES)}"
@@ -1440,11 +2611,35 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
             if n == n0 + 1:
                 # PLAN-fea-8: the rules' own plan, coarsened to fit under the limit when it must - never a
                 # stop before meshing
-                plan = await asyncio.to_thread(choose_plan, record, surface, diag_m, levers=levers,
-                                               ceiling_s=ceiling_for(run), ai=ai)
+                # PLAN-fea-22: the size the user picked on the stage, else the recommended one - never a wait. A
+                # count or sizes the user named win over it (PLAN-fea-27/29); the stage's plans are reused only on
+                # the first planning (a restart re-plans: a tied restage, a re-aim, the rules' own plan)
+                plan, said = await asyncio.to_thread(size_choice, state, record, surface, diag_m, levers=levers,
+                                                     ceiling_s=ceiling_for(run), ai=ai,
+                                                     kept=stage_plans if n0 == 0 else None, key=plans_key,
+                                                     target=target, sizes=sizes or None, correction=correction)
+                if said:
+                    _cite(job_id, [said])
+                    # said in the plan's own words too: the result screen and the report show them
+                    plan["words"] = [*(plan.get("words") or []), said["words"]]
+                    plan["size_choice"] = said["inputs"] | {"value": said["value"]}
+                plan["part_sizes"] = part_sizes
+                if asked.get("status") != "none":
+                    plan["requirements"] = asked
+                if by_choice_failed:
+                    plan["by_choice_failed"] = by_choice_failed
+                plan = _restate(record, plan)
                 chosen = {"limit": plan["limit"], "zone_floor_m": plan.get("zone_floor_m"),
-                          "zone_floors": plan.get("zone_floors_m"), "coarsened": plan.get("coarsened")}
+                          "zone_floors": plan.get("zone_floors_m"), "coarsened": plan.get("coarsened"),
+                          # PLAN-fea-27: every later pass keeps the factor the user's count gave
+                          "scale": plan.get("scale"), "beyond": plan.get("beyond"), "target": plan.get("target"),
+                          "sizes": sizes or None, "by_choice_failed": by_choice_failed,
+                          "target_missed": plan.get("target_missed"), "target_unread": plan.get("target_unread")}
                 first_plan = plan
+                if P.target_remark(plan):
+                    # PLAN-fea-27: what was done with the count the notes named, for the result's line
+                    from meshpipeline.contracts.user_notes import record_remark
+                    record_remark(ws, P.target_remark(plan), by="fea_target")
                 # every later pass plans with the decision the first one kept (refinements left out
                 # when they would not fit stay out)
                 if plan.get("ai"):
@@ -1454,18 +2649,33 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                 if L.coarse_factor(levers) < 1.0:
                     # LAD-fea-4: the built mesh was over the limit - the finest zones coarser, from the
                     # floor already in force (or the finest zone), never past their validity minimums
-                    start = floor_m or min([float(z["size_m"]) for z in P.zones(record)] or [diag_m / P.MIN_DIVISIONS])
+                    sized = first_plan.get("zones") if chosen.get("scale") else P.zones(record)
+                    start = floor_m or min([float(z["size_m"]) for z in sized or []] or [diag_m / P.MIN_DIVISIONS])
                     floor_m = start / L.coarse_factor(levers)
                 plan = await asyncio.to_thread(make_plan, record, surface, diag_m, levers=levers,
                                                limit=int(chosen["limit"]["elements"]), zone_floor_m=floor_m, ai=ai,
-                                               zone_floors=chosen.get("zone_floors"))
+                                               zone_floors=chosen.get("zone_floors"), scale=chosen.get("scale"),
+                                               beyond=chosen.get("beyond"), sizes=chosen.get("sizes"))
                 plan["limit"] = chosen["limit"]
+                plan["part_sizes"] = part_sizes
+                if asked.get("status") != "none":
+                    plan["requirements"] = asked
+                if chosen.get("by_choice_failed"):
+                    plan["by_choice_failed"] = chosen["by_choice_failed"]
+                for key in ("target", "target_missed", "target_unread"):
+                    if chosen.get(key):
+                        plan[key] = chosen[key]
                 if chosen.get("coarsened"):
                     plan["coarsened"] = chosen["coarsened"]
                     plan["fits"] = True
                 plan = _restate(record, plan)
             if n == n0 + 1:
                 _cite(job_id, plan["decisions"])
+            if kept is not None:
+                # LAD-fea-11: only the parts that failed are meshed; the rest as the pass before kept them
+                plan["mesh"] = {**(plan.get("mesh") or {}), "keep": kept}
+            else:
+                _drop_kept(ws)
             write_plan(ws, plan)
             run.note_authoring()
             _clear_outputs(ws)
@@ -1490,36 +2700,40 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                                                             "wall_s": ceiling_for(run)},
                                 "words": machine["words"]}])
             MM.write(ws, machine)
-            # NO GUESSED TIME LIMIT (PLAN-fea-13): watched for progress, stopped only when stuck or at the
-            # hard ceiling of the machine it runs on
-            work = planned_work(plan, rate=rate, cls=cls, ceiling_s=ceiling_for(run, machine))
+            # PLAN-fea-13 / LAD-fea-15: watched for progress, and given the time its estimate allows (BUDGET_FACTOR
+            # times its planned time, at least BUDGET_FLOOR_S, at most the machine's wall)
+            work = pass_work(plan, rate=rate, cls=cls, machine=machine)
             _cite(job_id, [{"stage": "fea_time", "decided": "watchdog", "value": work["stall_window_s"],
                             "rule": "PLAN-fea-13",
                             "inputs": {k: work[k] for k in ("amount", "rate", "class", "planned_s", "ceiling_s",
                                                              "stall_window_s")} | {"pass": n},
-                            "words": (f"Pass {n}: about {int(work['amount'] or 0):,} elements. The mesher runs until "
-                                      f"it is done; it is stopped only if it makes no progress for "
-                                      f"{work['stall_window_s'] // 60} minutes, or at the hard limit of "
-                                      f"{work['ceiling_s'] // 60} minutes.")}])
+                            "words": (f"Pass {n}: about {int(work['amount'] or 0):,} elements. It is stopped if it makes "
+                                      f"no progress for {work['stall_window_s'] // 60} minutes, or after "
+                                      f"{work['ceiling_s'] // 60} minutes"
+                                      + (" - the time its size allows; past that the next way to mesh it is tried."
+                                         if work.get("budget") else ", the hard limit of the machine."))}])
             await run.fence("start native mesh")
             # THE LIVE LINE (contracts/narration): what was decided and why, where it runs, and the
             # mesher's own stages as it reports them. This path used to say nothing here, so a run
             # meshing for an hour on a VM still read "Planning the mesh..." on the page.
             await _narrate_pass(publish, n=n, first=n == n0 + 1, plan=plan, levers=levers,
-                                machine=machine, budget_s=int(work["ceiling_s"]))
+                                machine=machine, budget_s=int(work["ceiling_s"]), job_id=job_id, ws=ws)
             native_t0 = time.monotonic()
             runs_here = 0
             while True:
                 runs_here += 1
-                result = await _relayed_mesh(publish, ws, seq=n * 10 + runs_here, timeout=work["ceiling_s"],
+                note_budget(ws, work)
+                result = await _relayed_mesh(publish, ws, seq=n * 10 + runs_here,
+                                             timeout=work.get("wall_s") or work["ceiling_s"],
                                              of=int((plan.get("estimate") or {}).get("elements") or 0) or None)
                 if _out_of_memory(result):
                     # RUN-3: OUT OF MEMORY -> THE SAME PLAN ONE MACHINE UP (no lever, no coarsening, no
                     # re-plan), sized from the peak seen when there is one, up to the largest machine
                     moved, rule, decided = MM.step_up(machine, measured_gib=_peak_gib(result)), "RUN-3", "step up"
-                elif result.get("timed_out") and not result.get("stalled"):
+                elif result.get("timed_out") and not result.get("stalled") and not result.get("budget_spent"):
                     # RUN-5: STILL WORKING AT THE CLOUD RUN WALL -> THE SAME PLAN ON A VM, which has no
-                    # wall (nothing coarsened, no lever); on a VM already there is nowhere to move
+                    # wall (nothing coarsened, no lever); on a VM already there is nowhere to move. A pass
+                    # stopped by its own budget (LAD-fea-15) is not moved: it would only grind on elsewhere
                     moved, rule, decided = MM.off_the_wall(machine), "RUN-5", "off the wall"
                 else:
                     break
@@ -1527,13 +2741,23 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                     break
                 machine = moved
                 MM.write(ws, machine)
-                work = {**work, "ceiling_s": int(ceiling_for(run, machine))}
+                work = pass_work(plan, rate=rate, cls=cls, machine=machine)
                 _cite(job_id, [{"stage": "fea_machine", "decided": decided, "value": machine["machine"],
                                 "rule": rule, "inputs": {"pass": n, "from": machine.get("stepped_from"),
                                                          "need_gib": machine["need_gib"]},
                                 "words": machine["words"]}])
                 _clear_outputs(ws)
             native_s = round(time.monotonic() - native_t0, 1)
+            measured = memory_measured(result, plan)
+            if measured:
+                # PLAN-fea-16: THE MARGIN IS LEARNED FROM MEASURED PEAKS - every pass records its mesher's peak per
+                # element against the model's, the evidence the cautious margin is revisited on (Areen, 28 Oct)
+                _cite(job_id, [{"stage": "fea_machine", "decided": "memory measured", "value": measured["peak_gib"],
+                                "rule": "PLAN-fea-16", "inputs": {"pass": n, **measured},
+                                "words": (f"The mesher's peak was {measured['peak_gib']:.1f} GiB, "
+                                          f"{measured['bytes_per_element']:,.0f} bytes an element "
+                                          f"(the model plans {BYTES_PER_ELEMENT:,.0f}, with {MEMORY_MARGIN:g} times "
+                                          "to spare).")}])
             await run.fence("accept native mesh output")
             if not_run(result):
                 # RUN-4: OUR SIDE NEVER RAN THIS PASS (its machine could not be started, its result never
@@ -1546,8 +2770,18 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                 _cite(job_id, [{"stage": "fea_machine", "decided": "not run", "value": machine.get("where"),
                                 "rule": "RUN-4", "inputs": unrun, "words": not_run_words(unrun).capitalize() + "."}])
                 break
-            stuck_on = L.stalled_surface(str(result.get("log_tail") or "")) if result.get("stalled") else None
+            # LAD-fea-15: THE PASS'S OWN BUDGET RAN OUT (the time its estimate allows, not the machine's wall):
+            # the part's slowness, not ours - the pass is a fill that failed, and the ladder goes on (a surface
+            # stage that ran over: LAD-fea-8 first; then the other 3D algorithm; at the end the last rung)
+            spent = bool(result.get("budget_spent"))
+            stuck_on = (L.stalled_surface(str(result.get("log_tail") or ""))
+                        if result.get("stalled") or spent else None)
             stall_lever = L.surface_stall_lever(stuck_on, levers, n=n) if stuck_on is not None else None
+            if spent:
+                _cite(job_id, [{"stage": "fea_time", "decided": "budget spent", "value": work["ceiling_s"],
+                                "rule": "LAD-fea-15", "inputs": {"pass": n, "planned_s": work.get("planned_s"),
+                                                                 "budget_s": work["ceiling_s"], "surface": stuck_on},
+                                "words": budget_words(work, n, stuck_on)}])
             if result.get("timed_out") and stall_lever is not None:
                 # LAD-fea-8: A SURFACE STAGE THAT STALLED is the part's, not ours - gmsh's own switch to
                 # MeshAdapt on one face ran past the watchdog - so the next pass meshes the surfaces without it
@@ -1571,6 +2805,9 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                                 "words": (spin_words((refine.get("iterations"), refine.get("kept"),
                                                       refine.get("rejected"))).capitalize()
                                           + f", so pass {n} was stopped as a fill that failed.")}])
+            elif spent:
+                # LAD-fea-15: read on as a fill that failed (no mesh came back): the ladder's levers, then the rung
+                pass
             elif result.get("timed_out"):
                 # A GUARD TRIP is our infrastructure, never the part's: it pulls no lever and changes no
                 # plan. The attempt ends here; the run's own retry takes it again (D3: replayed once)
@@ -1597,6 +2834,14 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                                           killed=killed), "native_s": native_s,
                            # RUN-4: where it ran, and why
                            "ran_on": {k: machine.get(k) for k in ("where", "machine", "memory_gib", "why")}})
+            if not passes[-1].get("valid"):
+                # LAD-fea-8 riding along: the faces gmsh switched to MeshAdapt by itself in this failed pass
+                try:
+                    switched = L.switched_surfaces((ws / "gmshfea.log").read_text(errors="replace"))
+                except OSError:
+                    switched = []
+                if switched:
+                    passes[-1]["switched"] = switched
             _keep_pass_log(ws, n)
             if made:
                 _keep_pass(ws, n)
@@ -1606,6 +2851,8 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                 if said:
                     passes[-1]["bad_faces"] = passes[-1].get("bad_faces") or said.get("bad_faces") or []
                     passes[-1]["bad_surfaces"] = passes[-1].get("bad_surfaces") or said.get("bad_surfaces") or []
+                # LAD-fea-11: the parts this pass did fill are kept for the passes after it
+                kept = _kept_after(ws, n, job_id) or kept
             if ((record.get("assembly_plan") or {}).get("mode") == "bonded" and not passes[-1].get("valid")
                     and (_fused_fill_failed(result, passes[-1]) if not made else _fused_joints_invalid(q))):
                 # PLAN-fea-17 AT ONCE: the fill could not build the FUSED bonded parts (a volume left
@@ -1617,6 +2864,30 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                 _cite(job_id, [{"stage": "fea_ladder", "decided": "tie now", "value": "fused fill failed",
                                 "rule": "PLAN-fea-17", "inputs": {"pass": n},
                                 "words": "The fused parts could not be filled as one, so the parts are tied now."}])
+                break
+            k_built = reaim_factor(plan, passes[-1]) if correction is None else None
+            if k_built is not None:
+                # PLAN-fea-31: the mesh is valid but its count is off what the user asked by more than REAIM_SHARE -
+                # the plan is solved again with the measured built-over-planned, and built again (once)
+                passes[-1]["off_count"] = True
+                correction, reaim = k_built, True
+                _cite(job_id, [{"stage": "fea_plan", "decided": "re-aimed on the built count", "value": round(k_built, 4),
+                                "rule": "PLAN-fea-31",
+                                "inputs": {"asked": (plan.get("target") or {}).get("asked"), "pass": n,
+                                           "planned": plan["estimate"]["elements"], "built": passes[-1]["cells"]},
+                                "words": (f"Pass {n} built {passes[-1]['cells']:,} elements where about "
+                                          f"{plan['estimate']['elements']:,} were planned, off the count you asked for; "
+                                          "the plan is solved again with that measured and built again.")}])
+                break
+            found = crossing_located(record, state) if not passes[-1].get("built") else None
+            if found and not passes[-1].get("out_of_memory") and L.lever_options(passes[-1], levers, plan):
+                # LAD-fea-16: A FILL THAT FAILED ON A PART WHOSE CAD FACES CROSS - located before meshing - is not
+                # sent round gmsh's algorithm swaps (job bc3d4271, 1 Nov: 29 minutes, then every face on MeshAdapt);
+                # the ladder ends here and the last rung meshes it (LAD-fea-9; a bonded assembly is tied first)
+                crossing_found = found
+                _cite(job_id, [{"stage": "fea_ladder", "decided": "crossing faces", "value": "last rung",
+                                "rule": "LAD-fea-16", "inputs": {"pass": n, **found},
+                                "words": crossing_words(found, n)}])
                 break
             # AI-fea-8: the AI may pick among the levers this failure allows; the ladder's own first else
             lever, picked = await FA.choose_lever(L.lever_options(passes[-1], levers, plan), passes[-1], ai=ai,
@@ -1650,10 +2921,33 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
             # slivers it cannot fill): the parts are meshed apart and tied where they meet - still
             # bonded, never a stop. Not after a memory kill: that ends the attempt (LAD-fea-7)
             record = await asyncio.to_thread(restage_tied, ws, record)
+            kept = None
+            _drop_kept(ws)
             _cite(job_id, [{"stage": "fea_ladder", "decided": "tied", "value": "tie", "rule": "PLAN-fea-17",
                             "inputs": {"passes": len(passes)},
                             "words": ("No pass built the bonded parts as one mesh, so each part is meshed on its "
                                       "own and tied where they meet.")}])
+            n0, levers = len(passes), []
+            continue
+        if reaim:
+            reaim = False
+            n0, levers = len(passes), []
+            continue
+        oom_bigger = bool(passes and passes[-1].get("out_of_memory")
+                          and (sizes or int((first_plan.get("target") or {}).get("rules_elements") or 0)
+                               >= int((first_plan.get("estimate") or {}).get("elements") or 0)))
+        if (tripped is None and too_big is None and unrun is None and passes and first_plan
+                and not any(f["valid"] for f in passes) and not by_choice_failed and not oom_bigger
+                and crossing_found is None and (sizes or L.by_choice(first_plan))):
+            # PLAN-fea-29/30: THE USER'S CHOICES NEVER FAIL THE RUN. No pass built a valid mesh of the plan their
+            # count or sizes made: the rules' own plan is meshed instead, and said. Not when the fill failed on CAD faces
+            # found crossing (LAD-fea-16): that is the part's geometry, not the user's choice, and goes to the last rung
+            by_choice_failed = ("sizes" if sizes else "count")
+            _cite(job_id, [{"stage": "fea_ladder", "decided": "the rules' own plan", "value": by_choice_failed,
+                            "rule": "PLAN-fea-30", "inputs": {"passes": len(passes)},
+                            "words": ("No pass built a valid mesh of the plan your " + ("sizes" if sizes else "element count")
+                                      + " made, so the rules' own plan is meshed instead.")}])
+            target, sizes = None, {}
             n0, levers = len(passes), []
             continue
         break
@@ -1665,7 +2959,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         # still without one, the other parts as the tie meshed them. Never for our infrastructure (a
         # guard trip, a worker too small) or a plan out of memory on the largest machine (LAD-fea-7)
         record, ran = await _last_rung(ws, record, diag_m, first_plan, passes, job_id=job_id, run=run,
-                                       publish=publish)
+                                       publish=publish, crossing=crossing_found, kept=kept)
         passes.extend(ran)
         if ran and ran[-1].get("not_run") and not any(f["valid"] for f in ran):
             last = ran[-1]
@@ -1704,14 +2998,16 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         await run.fence("deliver builder outcome")
         outcome = run.outcome(produced_deliverable=False, exhausted=False, failure_marker=GUARD_TRIP)
         return False, GUARD_TRIP, outcome
+    closer_of_reaimed(passes, (first_plan.get("target") or {}).get("asked"))
     best, rule = L.best_pass(passes)
     _cite(job_id, [{"stage": "fea_ladder", "decided": "delivered pass", "value": best, "rule": "LAD-fea-5",
                     "inputs": {"passes": passes, "deciding": rule},
                     "words": (f"Pass {best} of {len(passes)} delivered." if best else "No pass built a valid mesh.")}])
     ok = best is not None
     if best is not None:
-        _restore_pass(ws, best)
+        best = _deliver_pass(ws, best, passes, job_id)
         _cite(job_id, open_pairs_decision(ws))
+        built_remark(ws, record)
     (ws / "fea_passes.json").write_text(json.dumps({"passes": passes, "delivered": best, "levers": levers}, indent=1))
     if not ok and passes:
         # THE LADDER RAN OUT on a mesh it built: every pass this plan allows was tried, so the same
@@ -1745,7 +3041,8 @@ def applies(state) -> bool:
     s = state or {}
     if str(s.get("purpose") or "").strip() != "structural":
         return False
-    if str(s.get("dimensionality") or "").strip().upper() == "2D":
+    if str(s.get("dimensionality") or "").strip().upper() == "2D" and mesh_as_of(s) != "shell":
+        # (a shell asked for in words like "2D elements" is still this driver's: SHSTAGE-1)
         return False
     return not any(isinstance(p, dict) and str(p.get("name") or "").strip() for p in s.get("intake_patches") or [])
 
@@ -1755,6 +3052,6 @@ def driver_for(state):
     return drive if applies(state) else None
 
 
-__all__ = ["connection_of", "prepare_assembly", "restage_tied", "BYTES_PER_ELEMENT", "MESH_JOB_MEMORY_GIB", "limit_facts", "memory_elements", "FILL_RATES", "FLOOR_STEPS", "WORKSPACE_BYTES_PER_ELEMENT", "memory_need", "MESH_JOB_LIMIT_S", "VM_CEILING_S", "attempt_left_s", "ceiling_for", "planned_seconds", "choose_plan",
+__all__ = ["FEA_USUAL_FILL_RATES", "kept_plans", "memory_measured", "size_choice", "MIXED_GATE", "SHELL_RUN_LIMIT_S", "mesh_as_of", "shell_pass", "connection_of", "element_target", "target_plan", "prepare_assembly", "restage_tied", "BYTES_PER_ELEMENT", "MESH_JOB_MEMORY_GIB", "limit_facts", "memory_elements", "FILL_RATES", "FLOOR_STEPS", "WORKSPACE_BYTES_PER_ELEMENT", "memory_need", "MESH_JOB_LIMIT_S", "VM_CEILING_S", "attempt_left_s", "ceiling_for", "planned_seconds", "choose_plan",
            "complexity", "element_limit", "fill_rate", "watchdog_words", "BUILD_FAILED", "GUARD_TRIP", "NO_SOURCE", "QUALITY_GATE", "applies", "drive",
            "driver_for", "NOT_RUN", "NOT_RUN_GATE", "not_run", "not_run_words", "ladder_facts", "ladder_words", "make_plan", "measure_staged", "planned_work", "write_plan"]

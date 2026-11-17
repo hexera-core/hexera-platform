@@ -13,7 +13,8 @@
  * loads this module, and this module is the only thing index.html loads.
  */
 import { apiFetch, setNotifier, useIdentity } from "./api/client.js";
-import { addNote, getJob } from "./api/endpoints.js";
+import { addNote, finalizePartMatches, getChatHistory, getJob, getPartMatches, getPartModel,
+  getPartPicture, pickPartMatch } from "./api/endpoints.js";
 import { dispatch, resultSurface } from "./core/events.js";
 import { beginRun, get as getState, isTerminalStatus, set as setState, waitingCopy }
   from "./core/state.js";
@@ -26,11 +27,14 @@ import { configure as configureStream, lastSeq, replay, start as startStream, te
   from "./realtime/stream.js";
 import { confirmCancel } from "./shell/cancel.js";
 import { clearNewRunOffer, configureComposer, disableInput, enableInput, mountComposer,
-  offerNewRun, setPlaceholder, showRunFile } from "./shell/composer.js";
+  offerNewRun, say, setPlaceholder, showRunFile } from "./shell/composer.js";
 import { refreshHealth } from "./shell/settings.js";
 import { configureDispute } from "./viewer/dispute.js";
 import { offerReview, openParked } from "./review/review.js";
 import { openGeometryStage } from "./viewer/geometry_stage.js";
+import { dropPartsHost, endIntake, partsHost } from "./viewer/intake_view.js";
+import { mountPartsView } from "./viewer/parts_view.js";
+import { savedUp } from "./viewer/view_controls.js";
 import { openViewer } from "./viewer/viewer.js";
 import { dropMeshPartial, showMeshPartial } from "./viewer/mesh_partial.js";
 
@@ -188,6 +192,8 @@ setResultHandler((data, anchor) => {
 function attachJob(id, { replayHistory = false, message = "", origin = getState.sessionId() } = {}) {
   clearNewRunOffer();      // a run is starting; the "run again" offer belonged to the last one
   Stage.mount();
+  // THE INTAKE'S VIEWER GOES as the mesher starts: the run's own view takes over from here
+  endIntake();
   // the message goes on the NEW stage: said before the mount, it was wiped the instant it was
   // drawn, so "re-review started" never reached the user
   if (message) Stage.chat("assistant", message);
@@ -208,17 +214,44 @@ function attachJob(id, { replayHistory = false, message = "", origin = getState.
 /* THE NOTES BOX under the plan: the user's own text, kept as typed; the card redraws with it */
 async function addBriefNote(text) {
   const d = await addNote(getState.sessionId(), text);
-  Stage.brief(d.brief, addBriefNote);
+  Stage.brief(d.brief, addBriefNote, briefParts);
+  // "use cfMesh" in a note chooses the engine as it does in the chat: said there for the user
+  if (d.say) say(d.say);
 }
+
+/* THE PARTS CHECKLIST under the notes: which parts the notes mean, and the user's fix for one phrase */
+const briefParts = {
+  get: () => getPartMatches(getState.sessionId()),
+  pick: (phrase, parts) => pickPartMatch(getState.sessionId(), phrase, parts),
+  picture: (name) => getPartPicture(getState.sessionId(), name),
+  // the model in 3D, turned and picked on; the way up the user chose for this file's check
+  model: () => getPartModel(getState.sessionId()),
+  mount: (host, model, opts) => mountPartsView(host, model,
+    { ...opts, upAxis: savedUp("session", getState.sessionId()) || "+z" }),
+  // WHERE the model is drawn: the intake's one viewer, beside the conversation (never a second one in the card)
+  host: () => partsHost(),
+  drop: (el) => dropPartsHost(el),
+  // Finalize notes: the parts the words name are read now
+  finalize: () => finalizePartMatches(getState.sessionId()),
+};
 
 configureComposer({
   notice: Notice,
   chat: (role, text) => Stage.chat(role, text),
-  brief: (b) => Stage.brief(b, addBriefNote),
-  engineChoice: (c, pick) => Stage.engineChoice(c, pick),
+  brief: (b) => Stage.brief(b, addBriefNote, briefParts),
+  // a yes before Finalize notes: wait (a minute at most) for the reading the server started
+  notesRead: async () => {
+    const t0 = Date.now();
+    while (Date.now() - t0 < 60e3) {
+      let m = null;
+      try { m = await getPartMatches(getState.sessionId()); } catch { /* try again */ }
+      if (m && m.status !== "reading" && m.status !== "waiting") return;
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+  },
   // the buttons under an application question: what the mesh is for, an FEA part's analysis type
   choices: (list, pick) => Stage.choices(list, pick),
-  supportedCopy: (t) => Stage.setSupportedCopy(t),
+  supportedCopy: (t, short) => Stage.setSupportedCopy(t, short),
   onJobStarted: (id) => attachJob(id),
   // THE GEOMETRY CHECK TAKES THE STAGE, the way a delivered mesh does: the part in 3D with its
   // stickers, the form beside it. When the stage cannot open, the same form arrives as a card.
@@ -305,6 +338,16 @@ function bootLive() {
     showRunFile(job.geometry_filename);
     Stage.clock(job.created_at, isTerminalStatus(job.status) ? job.ended_at : null);
     Stage.waiting(waitingCopy(job));
+    // THE QUESTIONS THE RUN ANSWERED. Intake ran against the session BEFORE the job existed, so
+    // the job's own event log cannot replay it - it is served beside the job and read back here,
+    // ahead of the run's events, in the order they happened. A run that began without intake
+    // (or whose session cannot be read) simply skips this.
+    if (job.session_id) {
+      const history = await getChatHistory(job.session_id);
+      for (const m of history?.messages || []) {
+        if (m.role === "user" || m.role === "assistant") Stage.chat(m.role, m.content);
+      }
+    }
     if (isTerminalStatus(job.status)) {
       // REPLAY THE WHOLE RUN FIRST. A finished job still has its event log, and the point of
       // keeping one is that a user can see HOW they got their mesh, not just that they got it.

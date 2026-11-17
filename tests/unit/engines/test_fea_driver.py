@@ -17,9 +17,11 @@ pytest.importorskip("vtkmodules.vtkFiltersCore")
 from tests import fea_fixtures as fx  # noqa: E402
 
 from meshpipeline.contracts import decision_record as dr  # noqa: E402
+from meshpipeline.contracts.mesh_execution import NATIVE_PAYLOAD_FACT  # noqa: E402
 from meshpipeline.engines import fea_driver as FD  # noqa: E402
 from meshpipeline.engines import fea_plan as P  # noqa: E402
 from meshpipeline.engines.gmsh import fea_adapter  # noqa: E402
+from meshpipeline.engines.gmsh.gmsh_runner import BUDGET_FILE  # noqa: E402
 
 
 def _stage(shape, ws: Path) -> Path:
@@ -187,8 +189,10 @@ def test_a_guard_trip_pulls_no_lever_and_ends_the_attempt(tmp_path, monkeypatch)
     assert not ok and marker == FD.GUARD_TRIP and len(calls) == 1
     rec = json.loads((ws / "fea_passes.json").read_text())
     assert rec["levers"] == [] and rec["guard_trip"]["unit"] == "elements"
-    # the hard ceiling is what the mesher gets - never a guess at how long it should take
+    # the mesher's clock is the machine's wall; LAD-fea-15's budget (a small plate: its floor) rides in the
+    # workspace for the mesher's machine, where it only stops a pass still filling (gmsh_runner.FillBudget)
     assert calls[0] == FD.MESH_JOB_LIMIT_S - FD.JOB_MARGIN_S
+    assert json.loads((ws / BUDGET_FILE).read_text())["budget_s"] == int(FD.BUDGET_FLOOR_S)
     assert not any(e["rule"].startswith("LAD-fea-") and e["decided"] == "lever" for e in dr.cited_for("t-trip"))
     from meshpipeline.engines.preflight import read_refusal
 
@@ -205,6 +209,8 @@ def test_a_pass_still_working_at_the_cloud_run_wall_runs_again_on_a_vm(tmp_path,
 
     ws = _stage(fx.plate_with_hole(), tmp_path / "wall")
     calls: list[tuple[int, str]] = []
+    # a plan whose budget (LAD-fea-15) reaches past the Cloud Run wall: the wall is what stops it there
+    monkeypatch.setattr(FD, "BUDGET_FLOOR_S", float(FD.VM_CEILING_S))
 
     def _run(w, timeout):
         where = (MM.read(w) or {}).get("where")
@@ -220,6 +226,59 @@ def test_a_pass_still_working_at_the_cloud_run_wall_runs_again_on_a_vm(tmp_path,
     moved = [e for e in dr.cited_for("t-wall") if e["rule"] == "RUN-5"]
     assert moved and moved[0]["value"] == MM.MACHINES[0].name
     assert not any(e["rule"].startswith("LAD-fea-") and e["decided"] == "lever" for e in dr.cited_for("t-wall"))
+
+
+def test_a_pass_past_its_budget_goes_on_down_the_ladder(tmp_path, monkeypatch):
+    """LAD-fea-15: a pass still working when the time its estimate allows runs out is the part's slowness,
+    not ours: it is read as a fill that failed and the ladder goes on - never ground on, never moved."""
+    from meshpipeline.engines import runtime
+
+    ws = _stage(fx.plate_with_hole(), tmp_path / "budget")
+    calls: list[int] = []
+
+    def _run(w, timeout):
+        calls.append(timeout)
+        if len(calls) == 1:
+            return {"rc": -1, "timed_out": True, "budget_spent": True,
+                    "log_tail": "Meshing 2D...\nInfo    : Meshing surface 3 (Plane, MeshAdapt)"}
+        return {"rc": fea_adapter.mesh(w)}
+
+    monkeypatch.setattr(runtime, "get_engine", lambda _n: SimpleNamespace(run_cartesian_mesh=_run))
+    ok, marker, _o = asyncio.run(FD.drive(ws, {}, job_id="t-budget", publish=None, run=_Run()))
+    assert ok, marker
+    assert calls[0] == FD.MESH_JOB_LIMIT_S - FD.JOB_MARGIN_S and len(calls) == 2
+    assert json.loads((ws / BUDGET_FILE).read_text())["budget_s"] == int(FD.BUDGET_FLOOR_S)
+    assert BUDGET_FILE in json.loads((ws / NATIVE_PAYLOAD_FACT).read_text())
+    cited = dr.cited_for("t-budget")
+    spent = [e for e in cited if e["rule"] == "LAD-fea-15"]
+    assert spent and spent[0]["inputs"]["surface"] == 3
+    # stopped in the surface stage: the next pass keeps gmsh's first mesh of every face (LAD-fea-8)
+    assert any(e["rule"] == "LAD-fea-8" and e["decided"] == "lever" for e in cited)
+    assert not any(e["rule"] == "RUN-5" for e in cited)
+
+
+def test_a_failed_fill_on_crossing_cad_faces_goes_straight_to_the_last_rung(tmp_path, monkeypatch):
+    """LAD-fea-16: the fill failed, and the CAD's faces were already located as crossing each other - no
+    gmsh algorithm swap (LAD-fea-2, LAD-fea-6) is spent on it: one gmsh pass, then the last rung."""
+    from meshpipeline.engines import runtime
+
+    ws = _stage(fx.plate_with_hole(), tmp_path / "crossing")
+    calls: list[int] = []
+
+    def _run(w, timeout):
+        calls.append(timeout)
+        return {"rc": 1}                                   # no mesh came back from the fill
+    monkeypatch.setattr(runtime, "get_engine", lambda _n: SimpleNamespace(run_cartesian_mesh=_run))
+    monkeypatch.setattr(FD, "crossing_located", lambda _r, _s: {"faces": ["Face_3", "Face_5"],
+                                                                "repair_self_intersections": 0,
+                                                                "by": "the geometry check"})
+    asyncio.run(FD.drive(ws, {}, job_id="t-crossing", publish=None, run=_Run()))
+    cited = dr.cited_for("t-crossing")
+    crossing = [e for e in cited if e["rule"] == "LAD-fea-16"]
+    assert crossing and "Face_3" in crossing[0]["words"] and "fTetWild" in crossing[0]["words"]
+    assert not any(e["decided"] == "lever" and e["rule"] in ("LAD-fea-1", "LAD-fea-2", "LAD-fea-6") for e in cited)
+    assert any(e["rule"] == "LAD-fea-9" for e in cited)    # the last rung was tried next
+    assert len([c for c in calls if c]) >= 1
 
 
 def test_a_plan_planned_past_the_cloud_run_wall_starts_on_a_vm(tmp_path, monkeypatch):

@@ -1,5 +1,5 @@
 # Responsibility: Verify a reload keeps what the run view showed - the file's name, the run's clock
-# and how long each stage took - read back from the server, not from the page's memory.
+# and how long each row took - read back from the server, not from the page's memory.
 from __future__ import annotations
 
 import pytest
@@ -39,8 +39,8 @@ def test_a_replayed_runs_stages_last_as_long_as_they_did(live):
       Stage.final({pass:true, attempts:1, text:'', createdAt: at(-5), endedAt: at(200)});
       return read();""")
     durs = {lane["name"]: lane["dur"] for lane in out["lanes"]}
-    assert durs["Mesh creation"] == "1:30" and durs["Mesh validation"] == "1:00", durs
-    assert durs["Review"] == "0:50", durs
+    # the checks and the review are one row: one time, from the checks starting to the run ending
+    assert durs["Designing the mesh"] == "1:30" and durs["Reviewing the mesh"] == "1:50", durs
     assert out["clock"] == "3:25"
 
 

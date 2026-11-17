@@ -1,6 +1,6 @@
 "use client";
 
-import Link from "next/link";
+import { NavLink } from "@/app/_components/nav-link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 
@@ -60,7 +60,7 @@ export function RecentRunsList({ initial }: { initial: RecentRun[] | null }) {
         const current = pathname === row.href;
         return (
           <li key={run.id}>
-            <Link
+            <NavLink
               aria-current={current ? "page" : undefined}
               className={`sidebar__run${current ? " sidebar__run--current" : ""}`}
               href={row.href}
@@ -70,7 +70,7 @@ export function RecentRunsList({ initial }: { initial: RecentRun[] | null }) {
               <span className="sidebar__run-title">{row.title}</span>
               <span className="sr-only">, {row.words}</span>
               <span className="sidebar__run-age">{row.age}</span>
-            </Link>
+            </NavLink>
           </li>
         );
       })}

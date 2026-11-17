@@ -460,6 +460,85 @@ def test_the_kept_pass_shares_its_mesh_files_and_copies_its_records(tmp_path):
     assert (ws / "mesh.inp").read_text() == "mesh.inp" and (ws / "fea_plan.json").read_text() == "fea_plan.json"
 
 
+def _pass_result(ws: Path, n: int, *, in_bucket: bool = False) -> None:
+    """The workspace as pass `n` left it: its records, and its deck here or (a big result) in the bucket."""
+    from meshpipeline.engines import fea_driver as FD
+    FD._clear_outputs(ws)
+    (ws / "quality.json").write_text(f"quality {n}")
+    (ws / "fea_plan.json").write_text(f"plan {n}")
+    if in_bucket:
+        BF.write_record(ws, [BF.Kept(rel="mesh.inp", bucket="ex", key=f"o.kept/run{n}/mesh.inp.gz", bytes=9,
+                                     gz_bytes=5, gz_md5="0" * 32, mode=0o644, crc32=1)])
+    else:
+        (ws / "mesh.inp").write_text(f"deck {n}")
+
+
+def _not_kept_cited(job: str) -> list[dict]:
+    from meshpipeline.contracts import decision_record as dr
+    return [e for e in dr.cited_for(job) if e["decided"] == "delivered pass not kept"]
+
+
+def test_a_kept_pass_is_one_whose_deck_is_in_its_folder_or_in_its_own_bucket_record(tmp_path):
+    from meshpipeline.engines import fea_driver as FD
+    ws = tmp_path
+    _pass_result(ws, 1)
+    FD._keep_pass(ws, 1)
+    _pass_result(ws, 2, in_bucket=True)
+    FD._keep_pass(ws, 2)
+    _pass_result(ws, 3)
+    FD._keep_pass_log(ws, 3)                 # its log and quality only: the folder is there, the mesh is not
+    assert FD._pass_kept(ws, 1) and FD._pass_kept(ws, 2)
+    assert (ws / FD.PASS_FOLDER.format(n=3)).is_dir() and not FD._pass_kept(ws, 3) and not FD._pass_kept(ws, 4)
+
+
+def test_a_chosen_pass_never_kept_is_delivered_from_the_workspace_it_still_holds(tmp_path):
+    """Job d03f1bf6, 10 Nov: the chosen pass's decks were in the bucket and its folder held only its log;
+    restoring from that folder deleted the record of the kept decks, and the run had no mesh."""
+    from meshpipeline.engines import fea_driver as FD
+    ws = tmp_path
+    _pass_result(ws, 1)
+    FD._keep_pass(ws, 1)
+    _pass_result(ws, 2, in_bucket=True)
+    FD._keep_pass_log(ws, 2)
+    passes = [{"pass": 1, "valid": True, "deliverable": False}, {"pass": 2, "valid": True}]
+    assert FD._deliver_pass(ws, 2, passes, "t-in-hand") == 2
+    assert BF.present(ws, "mesh.inp") and BF.kept(ws)["mesh.inp"].key == "o.kept/run2/mesh.inp.gz"
+    assert (ws / "fea_plan.json").read_text() == "plan 2" and (ws / "quality.json").read_text() == "quality 2"
+    said = _not_kept_cited("t-in-hand")
+    assert len(said) == 1 and said[0]["value"] == 2 and said[0]["inputs"]["kept"] == [1]
+
+
+def test_a_chosen_pass_never_kept_and_no_longer_in_the_workspace_falls_back_to_the_best_kept_pass(tmp_path):
+    from meshpipeline.engines import fea_driver as FD
+    ws = tmp_path
+    _pass_result(ws, 1)
+    FD._keep_pass(ws, 1)
+    _pass_result(ws, 2, in_bucket=True)
+    FD._keep_pass_log(ws, 2)
+    _pass_result(ws, 3)                      # a later pass ran: the workspace is no longer pass 2's
+    passes = [{"pass": 1, "valid": True, "short": ["W1"], "over": False, "min_sicn": 0.2, "deliverable": False},
+              {"pass": 2, "valid": True, "short": [], "over": False, "min_sicn": 0.3},
+              {"pass": 3, "valid": False, "short": [], "over": False, "min_sicn": None}]
+    assert FD._deliver_pass(ws, 2, passes, "t-fall-back") == 1
+    assert (ws / "mesh.inp").read_text() == "deck 1" and (ws / "fea_plan.json").read_text() == "plan 1"
+    assert passes[1]["not_kept"] and passes[1]["deliverable"] is False and "deliverable" not in passes[0]
+    said = _not_kept_cited("t-fall-back")
+    assert len(said) == 1 and said[0]["value"] == 1 and "pass 1" in said[0]["words"]
+
+
+def test_no_other_passes_mesh_goes_out_under_the_name_of_a_pass_that_left_none(tmp_path):
+    from meshpipeline.engines import fea_driver as FD
+    ws = tmp_path
+    _pass_result(ws, 1)
+    (ws / "mesh.inp").unlink()               # read as valid from its quality record, but no deck anywhere
+    FD._keep_pass_log(ws, 1)
+    _pass_result(ws, 2)                      # a later, invalid pass left its own deck in the workspace
+    passes = [{"pass": 1, "valid": True}, {"pass": 2, "valid": False}]
+    assert FD._deliver_pass(ws, 1, passes, "t-none") == 1
+    assert not BF.present(ws, "mesh.inp")
+    assert len(_not_kept_cited("t-none")) == 1
+
+
 def test_the_reviewer_surface_has_the_faces_and_no_volume(tmp_path):
     gmsh = pytest.importorskip("gmsh")
     _gmsh_fea_msh(tmp_path / "mesh.msh")

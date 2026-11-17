@@ -94,8 +94,9 @@ def test_the_stage_opens_greyed_out_while_naming_then_takes_the_models_labels_an
     }})()""")
     assert naming["fellBack"] is False and naming["naming"] is False and naming["pins"] == 2, naming
     assert naming["edges"] == 12 and naming["smooth"] is True and naming["bare"] is True, naming
-    # before the user has answered, the banner says the stage is waiting on the chat
-    assert naming["bannerHidden"] is False and "Answer the question" in naming["banner"], naming
+    # before the naming is asked, the banner says the names are the measuring step's (the chat is closed
+    # while the stage is up, so it never sends the user there)
+    assert naming["bannerHidden"] is False and "fix them here and proceed" in naming["banner"], naming
     assert naming["greyed"] is False and naming["allOn"] is True and naming["names"] == ["inlet", "outlet"], naming
     # the axes overlay: three lines with their letters, and from the opening view Z runs up the screen
     ax = naming["axes"]
@@ -211,7 +212,9 @@ def test_the_stage_opens_greyed_out_while_naming_then_takes_the_models_labels_an
     assert body["openings"][3]["diameter_mm"] == 55 and body["openings"][3]["centroid_mm"] == [200.0, 0.0, 100.0]
     assert body["part"] == "test duct" and body["flow"] == "internal"
     assert body["unit"] == "mm" and body["scale_to_m"] is None      # the unit box, untouched, says what was assumed
-    assert live.evaluate(f"!document.getElementById('gstage-{SESSION}')") is True
+    # answered, the stage settles: the form goes, the part stays beside the conversation until the run starts
+    live.wait_for(f"document.getElementById('gstage-{SESSION}').classList.contains('iv-plain')", timeout=10,
+                  what="the stage to settle")
     assert_clean(live, "the naming-mode geometry stage")
 
 

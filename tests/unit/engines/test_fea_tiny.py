@@ -207,9 +207,13 @@ def test_a_sliver_at_a_capped_corner_collapses_too(tmp_path):
     assert q["fea_set_aside"]["elements"] == 0 < q_off["fea_set_aside"]["elements"] and q["min_sicn"] > q_off["min_sicn"]
 
 
-def test_a_curved_strip_is_merged_and_the_quadratic_mesh_still_lies_on_the_cylinder(tmp_path):
+def test_a_curved_strip_is_merged_and_the_quadratic_mesh_still_lies_on_the_cylinder(tmp_path, monkeypatch):
     import numpy as np
 
+    from meshpipeline.engines import fea_mmg
+    # MESH-9's own effect, both arms without the MMG post-pass (MESH-mmg-1): where mmg3d is installed (the mesh
+    # image, a lab VM) it reshapes the unmerged arm's slivers too, and the two arms no longer compare MESH-9
+    monkeypatch.setattr(fea_mmg, "ENABLED", False)
     ws = _stage(fx.split_cylinder(), tmp_path / "cyl")
     off = _copy(ws, tmp_path / "off")
     assert A.mesh(ws) == 0
@@ -338,11 +342,11 @@ def test_a_build_the_merges_break_is_built_again_as_drawn(strip, strip_meshed, t
             merged.append(merges)
         return real_apply(gmsh_, merges)
 
-    def surface(gmsh_, surfaces, remesh):
+    def surface(gmsh_, surfaces, remesh, workers=0):
         if merged and len(merged) == 1 and not getattr(surface, "failed", False):
             surface.failed = True  # type: ignore[attr-defined]
             raise RuntimeError(f"Impossible to mesh surface {next(iter(merged[0]['faces'].values()))}")
-        return real_surface(gmsh_, surfaces, remesh)
+        return real_surface(gmsh_, surfaces, remesh, workers=workers)
 
     monkeypatch.setattr(T, "apply", apply)
     monkeypatch.setattr(A, "surface_mesh", surface)

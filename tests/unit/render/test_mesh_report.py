@@ -122,6 +122,23 @@ def test_a_closed_assembly_has_no_red_warning_and_a_cfd_mesh_lists_its_limits():
     assert "metres" in text
 
 
+def test_a_cfd_report_holds_what_the_result_screen_no_longer_shows():
+    # the result screen dropped its "Delivered mesh" block (cell types with their share, the quality
+    # figures, the worst aspect ratio from the heat-map pass); the report is where they are read now
+    cfd = {"engine": "snappy", "surface": {
+        "kind": "polymesh", "is_mesh": True,
+        "quality": {"cells": 1000, "faces": 3100, "regions": 1, "hexahedra": 900, "polyhedra": 97, "prisms": 3,
+                    "max_non_ortho": 64.2, "avg_non_ortho": 8.1, "max_skewness": 3.1, "skew_faces": 2,
+                    "skew_fraction": 0.000645},
+        "quality_fields": {"metrics": {"aspect_ratio": {"max": 41.27, "limit": 1000}}}},
+        "quality": {"cell_count": 1000, "mesh_units": "m", "criteria": []}}
+    text = _text(mesh_report_html(cfd))
+    for said in ("Hexahedra 900 (90%)", "Polyhedra 97 (10%)", "Prisms 3 (<1%)", "Faces 3,100", "Regions 1",
+                 "Max non ortho 64.2", "Avg non ortho 8.1", "Max skewness 3.1", "Skew faces 2",
+                 "Max aspect ratio 41.3"):
+        assert said in text, said
+
+
 def test_a_value_from_the_part_is_escaped():
     p = _fea_payload(spots=1)
     p["surface"]["fea"]["faces"] = [{"name": "<img src=x onerror=alert(1)>", "cad_name": "a&b"}]

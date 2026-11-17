@@ -75,9 +75,64 @@ async def test_an_fea_part_with_no_unit_is_held_for_its_stage_not_asked_the_unit
 
 
 @pytest.mark.asyncio
-async def test_a_cfd_part_with_no_unit_is_still_asked_the_unit_first(monkeypatch):
+async def test_a_cfd_part_with_no_stage_is_still_asked_the_unit_first(monkeypatch):
+    monkeypatch.setattr(gh, "stage_settles_unit", lambda sid: False)
     out, queued, _ = await _settle(monkeypatch, "external aero around this car, 30 m/s")
     assert out.status is msg.MessageStatus.unit_question and queued == []
+
+
+@pytest.mark.asyncio
+async def test_a_cfd_part_with_a_stage_is_held_for_it_not_asked_the_unit(monkeypatch):
+    # Areen, 2026-11-13: the chat asked "I'll take inches - say ok, or name the unit" while the stage stood
+    # beside it with its own unit box. While a stage will show the part, its unit box settles the unit.
+    monkeypatch.setattr(gh, "stage_settles_unit", lambda sid: True)
+    said = "external aero around this car, 30 m/s"
+    out, queued, repo = await _settle(monkeypatch, said)
+    assert out.status is msg.MessageStatus.geometry_hold, out.reply
+    assert queued == [said]
+    replies = [c.args[2] for c in repo.append_message.call_args_list]
+    assert uc.QUESTION not in replies and not any("unit" in r.lower() for r in replies)
+
+
+@pytest.mark.asyncio
+async def test_a_unit_the_cfd_user_names_is_still_recorded_with_a_stage(monkeypatch):
+    monkeypatch.setattr(gh, "stage_settles_unit", lambda sid: True)
+    recorded = SimpleNamespace(interpretation_id=str(uuid.uuid4()))
+
+    async def _record(*a, **k):
+        return recorded
+    monkeypatch.setattr(uc, "record", _record)
+    out, queued, repo = await _settle(monkeypatch, "external aero around this part, the file is in millimetres")
+    assert repo.bind_geometry_interpretation.await_count == 1
+
+
+def test_the_stage_settles_the_unit_only_while_a_check_is_open(monkeypatch):
+    import meshpipeline.settings.geometry_check as gcfg
+    from meshpipeline.application import geometry_check as gc
+    from meshpipeline.contracts import object_storage as osto
+
+    class _Store:
+        def __init__(self, confirmed):
+            self.confirmed = confirmed
+
+        def get_bytes(self, object_key):
+            if self.confirmed:
+                return b"{}"
+            raise osto.ObjectNotFound(object_key)
+
+    monkeypatch.setattr(gcfg, "GEOMETRY_CHECK_ENABLED", True)
+    monkeypatch.setattr(gc, "naming_requested", lambda sid: None)
+    monkeypatch.setattr(gc, "time_boxed", lambda stored, requested, progress=None: stored)
+    from meshpipeline.application import geometry_progress as gp
+    monkeypatch.setattr(gp, "read_progress", lambda sid: {})
+    for status, confirmed, want in (("scouted", False, True), ("ready", False, True), ("pending", False, True),
+                                    ("failed", False, False), ("unsupported", False, False),
+                                    ("ready", True, False)):
+        monkeypatch.setattr(osto, "get_object_store", lambda c=confirmed: _Store(c))
+        monkeypatch.setattr(gc, "read_check", lambda sid, s=status: {"status": s})
+        assert gh.stage_settles_unit("s") is want, (status, confirmed)
+    monkeypatch.setattr(gcfg, "GEOMETRY_CHECK_ENABLED", False)
+    assert gh.stage_settles_unit("s") is False
 
 
 @pytest.mark.asyncio

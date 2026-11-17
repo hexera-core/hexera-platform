@@ -76,7 +76,8 @@ logger = logging.getLogger(__name__)
 review_surface_is_body_only = True
 
 
-def tessellate_to_stl(geom_path, out_stl, *, context=None, prepared=None):
+def tessellate_to_stl(geom_path, out_stl, *, context=None, prepared=None,
+                      stage_timeout_s: float | None = None):
     import shutil as _shutil
 
     from meshpipeline.contracts.intake_formats import is_cad
@@ -361,10 +362,12 @@ def fits_one_run(estimated_seconds: float) -> bool:
     return RUN_CAP_HEADROOM * float(estimated_seconds) <= run_ceiling_s()
 
 
-def machine_for_plan(workspace, plan: dict | None) -> dict:
+def machine_for_plan(workspace, plan: dict | None, *, user_cells: int = 0) -> dict:
     """RUN-5 FOR cfMesh: where the case written in `workspace` runs, from its run plan - the Cloud
     Run job, or (its estimated time with the margin past the job's wall) the smallest VM, which has
-    no such wall. Written into the workspace (contracts/mesh_machine) and returned."""
+    no such wall. RUN-9: a cell count the USER asked for (`user_cells`, their budget) past the
+    standard machine's runs on the VM whose memory carries it. Written into the workspace
+    (contracts/mesh_machine) and returned."""
     from meshpipeline.contracts import mesh_machine as MM
     from meshpipeline.contracts.native_time import CLOUD_RUN_WALL_S
     # THE FILES IT WILL WRITE, from the plan (RUN-7): the machine's disk - and the Cloud Run job's
@@ -375,6 +378,9 @@ def machine_for_plan(workspace, plan: dict | None) -> dict:
         cells = 0
     decision = MM.choose(process_gib=0.0, workspace_gib=cells * MM.FLOW_FILE_BYTES_PER_CELL / 2**30,
                          why="cfMesh run plan")
+    if int(user_cells or 0) > MM.normal_cells():
+        # RUN-9: the user's own count past the standard machine's cells runs on a VM that carries it
+        decision = MM.for_cells(max(int(user_cells), cells), why="the cell count asked for")
     seconds = (plan or {}).get("estimated_seconds")
     decision = MM.for_time(decision, planned_s=float(seconds) if seconds else None,
                            wall_s=float(CLOUD_RUN_WALL_S))
@@ -596,6 +602,18 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
     strategy = strategy or {}
     ext = [float(domain_max[i] - domain_min[i]) for i in range(3)]
     vol = max(ext[0] * ext[1] * ext[2], 1e-30)
+    # CFDREQ-1: THE USER'S REQUIREMENTS from their notes (engines/cfd_requirements) - the one seam. None: every line
+    # below writes exactly the case it always has
+    from meshpipeline.engines import cfd_requirements as CR
+    _ask = CR.Ask.of(ws, "cfmesh")
+    if _ask is not None:
+        strategy = CR.cfmesh_strategy(_ask, strategy, length_m=L)
+        if _ask.user_budget() or _ask.floor is not None:
+            import meshpipeline.settings.policy as _polr
+            from meshpipeline.contracts import mesh_machine as _MM
+            # CFDREQ-3 x RUN-9: the user's count up to the largest machine - a plan past the standard machine's
+            # cells runs on a bigger one (machine_for_plan)
+            cell_budget = _ask.budget(int(cell_budget or _polr.CELL_HARD_LIMIT), hard=_MM.ceiling_cells())
 
     # maxCellSize = COARSE background cell. factor is (largest extent / cell);
     # higher factor = finer background. cfMesh refines DOWN from this, so a
@@ -609,6 +627,8 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
         floor_cell = (vol / (0.4 * cell_budget)) ** (1.0 / 3.0)
         if max_cell < floor_cell:
             max_cell = floor_cell
+    if _ask is not None:
+        max_cell = CR.cfmesh_max_cell(_ask, max_cell, vol)
     # wall refinement cell (absolute m): default L/20, never finer than
     # max_cell/16 (cfMesh halves - an unreachable size just wastes the run).
     wall_cell = float(strategy.get("wall_cell", L / 20.0))
@@ -642,6 +662,13 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
     # 79 across turned a tee into 16.4 M hexes, an 886 MB deliverable and a 161-minute run.
     _floor = float(_caps.get("wall_cell_floor") or 0.0)
     wall_cell = max(wall_cell, _floor)
+    _ask_local, _ask_boxes = "", []
+    if _ask is not None:
+        wall_cell, _floor, _fit, max_cell = CR.cfmesh_wall(_ask, wall_cell, max_cell, _floor)
+        fit_run = fit_run and _fit
+        _ask_local, _ask_boxes, wall_cell = CR.cfmesh_local(
+            _ask, patches, wall_patch, max_cell=max_cell, wall_cell=wall_cell, floor=_floor,
+            body_bbox=body_bbox, domain=(domain_min, domain_max), budget=cell_budget)
     _thick = (f" refinementThickness {_caps['refinement_thickness']:.6g};" if _caps else "")
 
     # THE RUN, TIMED BEFORE IT RUNS (CELLS_PER_SECOND): the cap it gets, and - for a wall the
@@ -652,6 +679,9 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
                      coarsest=(wall_ceiling if wall_ceiling else L / 20.0), fit=fit_run)
     if plan is not None:
         wall_cell = plan["wall_cell"]
+    if _ask is not None:
+        wall_cell = CR.cfmesh_fit_count(_ask, volume=vol, max_cell=max_cell, wall_cell=wall_cell,
+                                        wall_area=wall_area, n_layers=max(0, int(strategy.get("n_layers", 0))))
 
     # EVERY OPENING, ITS OWN CELLS ACROSS (PLAN-cfd-2): a port narrower than PORT_CELLS_ACROSS wall
     # cells gets its own finer cell, on the port's surface only - an outlet smaller than a cell came
@@ -666,6 +696,8 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
         if 0.0 < _c < wall_cell and _pn != wall_patch:
             _port_cells[str(_pn)] = max(_c, _floor, max_cell / float(2 ** 12))
     _local = "".join(f"    {_pn} {{ cellSize {_c:.6g}; }}\n" for _pn, _c in _port_cells.items())
+    if _ask is not None:
+        _local += _ask_local
     dict_parts = [
         _MESHDICT_HDR,
         f'surfaceFile "{surface_file}";\n',
@@ -750,7 +782,8 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
             if _gap.status in (GS.LIMITED, GS.OVER_LIMIT) else "")
             if _gap.resolution_short else "")
     # the builder's own regions stop at the ceiling; a narrow passage's box is sized for it
-    _blocks = (_object_refinement_blocks(strategy.get("features") or [], cell_floor=_floor)
+    _blocks = (_object_refinement_blocks([*(strategy.get("features") or []), *(_ask_boxes if _ask else [])],
+                                         cell_floor=_floor)
                + _object_refinement_blocks(
                    [{"name": f"narrowPassage{i}", "type": "box", "cellSize": b["cell_needed_m"],
                      "centre": [0.5 * (b["min"][k] + b["max"][k]) for k in range(3)],
@@ -770,7 +803,15 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
                                        n_layers=max(0, int(strategy.get("n_layers", 0))))
     _planned = _planned_total(
         base=_planned_base, narrow=_narrow, wall_cell=wall_cell, max_cell=max_cell,
-        features=strategy.get("features") or [], cell_floor=_floor)
+        features=[*(strategy.get("features") or []), *(_ask_boxes if _ask else [])], cell_floor=_floor)
+    if _ask is not None and _planned:
+        # CFDREQ-3: the user's count over the case's own estimate - the wall a level coarser at a time to fit it
+        _w2 = CR.cfmesh_fit_planned(_ask, wall_cell=wall_cell, max_cell=max_cell, planned=_planned)
+        if _w2 > wall_cell:
+            dict_parts[3] = dict_parts[3].replace(f"{wall_patch} {{ cellSize {wall_cell:.6g};",
+                                                  f"{wall_patch} {{ cellSize {_w2:.6g};", 1)
+            _planned = int(_planned * (wall_cell / _w2) ** 2)
+            wall_cell = _w2
 
     n_layers = max(0, int(strategy.get("n_layers", 0)))
     if n_layers > 0:
@@ -821,10 +862,15 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
 
     (ws / "system").mkdir(parents=True, exist_ok=True)
     (ws / "system" / "meshDict").write_text("".join(dict_parts))
+    if _ask is not None:
+        _ask.write(ws)
+        CR.say_sync(ws, _ask.lines())
     _plan_path = ws / RUN_PLAN_FILE
     # WHERE IT RUNS (RUN-5): a plan whose time passes the Cloud Run job's wall goes to a VM before
-    # anything is made coarser
-    machine_for_plan(ws, plan)
+    # anything is made coarser - and (RUN-9) a count the user asked for past the standard machine's
+    # cells runs on a VM that carries them
+    machine_for_plan(ws, plan, user_cells=int(cell_budget or 0) if _ask is not None and (
+        _ask.user_budget() or _ask.floor is not None) else 0)
     if plan is not None:
         _plan_path.write_text(json.dumps({k: v for k, v in plan.items() if k != "wall_cell"}))
     else:

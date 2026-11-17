@@ -105,6 +105,11 @@ def read_stage(workspace) -> dict | None:
             import json
             step = json.loads((ws / "fea_stage.json").read_text()) if (ws / "fea_stage.json").exists() else {}
             key, label = str(step.get("key") or "fea"), str(step.get("label") or "starting the FEA mesher")
+            if step.get("n") is not None:
+                # the FEA mesher's own count within its step (LAD-fea-18: fTetWild's rounds, of its cap)
+                return {"key": key, "label": label, "tool": tool, "n": int(step["n"]),
+                        **({"of": int(step["of"])} if step.get("of") else {}),
+                        **({"unit": str(step["unit"])} if step.get("unit") else {})}
         elif tool in _TOOLS:
             key, label = _TOOLS[tool]
         else:

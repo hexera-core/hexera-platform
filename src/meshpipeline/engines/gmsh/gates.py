@@ -7,6 +7,7 @@ import logging
 from pathlib import Path
 
 from meshpipeline.contracts.failure_cause import FailureCause
+from meshpipeline.engines.cad_fidelity import gate_cad_fidelity
 from meshpipeline.engines.gates import GateCtx, GateSpec, refuse
 from meshpipeline.engines.gmsh.gmsh_runner import quality_shortfalls
 from meshpipeline.engines.region_check import gate_port_areas
@@ -64,6 +65,13 @@ def _gate_gmsh_manifest_valid(ctx: GateCtx) -> tuple[bool, str]:
 def _gate_sicn_floor(ctx: GateCtx) -> tuple[bool, str]:
     q = (ctx.manifest_or_load().get("quality") or {})
     sicn = q.get("min_sicn")
+    if (q.get("fea") or {}).get("shell"):
+        # A DELIVERED SHELL is judged by its own validity (plates have no SICN: engines/shell_delivery)
+        shell_misses = quality_shortfalls(q)
+        if not shell_misses:
+            return True, ""
+        return False, refuse(f"[QUALITY] {shell_misses[0]['measured']} shell elements are folded or flat - no solver "
+                             "can use them", FailureCause.MESH_QUALITY, checks=shell_misses)
     if sicn is None:
         return False, refuse("[QUALITY] min_sicn missing from quality report - the mesh "
                              "was not quality-checked; run_mesh again",
@@ -206,5 +214,12 @@ GMSH_GATES: tuple[GateSpec, ...] = (
     # region, is refused here though every other gate passes
     GateSpec(key="port_areas", check=gate_port_areas, section="GROUPS",
              proves="Every inlet and outlet is the opening you declared, at its size",
+             cause=FailureCause.PATCH_NOT_CAPTURED),
+    # SHARED with every flow engine (engines/cad_fidelity.py), and LAST: a sound, correctly named mesh
+    # is held to the CAD it was built from - its boundary on the surface, none of the surface
+    # missing, the fluid volume the CAD's. The numbers are recorded either way; only a mesh that is
+    # not the part is refused (a smaller miss is said beside the delivered mesh)
+    GateSpec(key="cad_fidelity", check=gate_cad_fidelity, section="GEOMETRY",
+             proves="The mesh follows your CAD - its boundary lies on the surface, none of the surface is missing, and the volume matches",
              cause=FailureCause.PATCH_NOT_CAPTURED),
 )

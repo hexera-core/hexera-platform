@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import logging
+import math
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import meshpipeline.engines.snappy.settings as scfg
 import meshpipeline.settings.policy as polcfg
+from meshpipeline.engines.cfd_requirements import guarded as _guarded
 from meshpipeline.engines.gap_sizing import LIMITED, OVER_LIMIT, accepted_fewer
 from meshpipeline.engines.ground_contact import describe as describe_contact
-from meshpipeline.engines.ground_plane import VERTICAL_AXIS, ground_patch_name
+from meshpipeline.engines.ground_plane import floor_of, ground_patch_name, up_word
 from meshpipeline.engines.port_binding import BindError as _PortBindError
 from meshpipeline.engines.preflight import PreflightRefusal, PreflightStop, check_domain
 from meshpipeline.engines.wake_region import WakeRequest
@@ -147,33 +149,6 @@ def _prev_attempt_overshoot(workspace: Path) -> tuple[float, float] | None:
     if not (budget and actual):
         return None
     return float(budget), float(actual)
-
-
-def _raised_over_limit(workspace: Path) -> int | None:
-    """The plan's own cell budget of the SIBLING attempt this retry follows, when that attempt's
-    gap plan raised its cell ceiling (engines/gap_sizing) and its mesh still came out over the cell
-    limit - else None. The retry then holds the narrow spots to that budget, as before gap sizing,
-    instead of raising it again past what was just measured to be too much."""
-    import json as _json
-    import re as _re
-
-    from meshpipeline.engines.gap_sizing import read_record
-
-    m = _re.fullmatch(r"attempt_(\d+)", workspace.name)
-    if m is None or int(m.group(1)) < 2:
-        return None
-    prev = workspace.parent / f"attempt_{int(m.group(1)) - 1}"
-    rec = read_record(prev)
-    if not rec:
-        return None
-    try:
-        cells = _json.loads((prev / "mesh_manifest.json").read_text()).get("cell_count")
-        raised = int(rec.get("ceiling") or rec.get("budget") or 0) > int(rec.get("budget_in") or 0)
-        if raised and cells and float(cells) > float(polcfg.CELL_HARD_LIMIT):
-            return int(rec["budget_in"])
-    except Exception:  # noqa: BLE001 - absent or partial records mean nothing to hold
-        return None
-    return None
 
 
 def _sibling_plan_memories(workspace: Path):
@@ -367,6 +342,206 @@ def _release_size_brake(workspace: Path, oversize: dict, *, attempt: int, job_id
     except Exception:  # noqa: BLE001 - the why record never stops a mesh
         logger.debug("RUN-8 not cited", exc_info=True)
     return True
+
+
+def _requirements(workspace, engine: str, strategy: dict, state, analysis: dict | None):
+    """CFDREQ-1: the user's requirements for this pass (engines/cfd_requirements.Ask), with the case's reference
+    length for a y+ - None when the notes ask nothing (the pass is exactly what it always was)."""
+    from meshpipeline.engines import cfd_requirements as CR
+    ask = CR.Ask.of(workspace, engine)
+    if ask is None:
+        return None
+    ruler = (state or {}).get("reference_length_m") or strategy.get("reference_length_m")
+    if ruler:
+        ask.length_m, ask.length_from = float(ruler), "the reference length you confirmed"
+    elif analysis and analysis.get("bbox_min") is not None:
+        ext = [float(b) - float(a) for a, b in zip(analysis["bbox_min"], analysis["bbox_max"], strict=False)]
+        if ext and max(ext) > 0:
+            ask.length_m, ask.length_from = max(ext), "the body's length"
+    return ask
+
+
+@_guarded(lambda ask, budget, prev: int(budget))
+def _ask_budget(ask, budget: int, prev) -> int:
+    """CFDREQ-3: the user's count as the pass's budget, held to the largest machine (RUN-9: past the standard
+    machine's cells the pass runs on a bigger one, _route_big) - and still corrected when the last pass overshot it."""
+    from meshpipeline.contracts import mesh_machine as MM
+    out = ask.budget(int(budget), hard=MM.ceiling_cells())
+    if prev is not None and ask.user_budget():
+        from meshpipeline.engines.snappy.planner import overshoot_corrected_budget
+        # against what the machine for this count carries (the standard machine's 8 M for a count within it)
+        corr = overshoot_corrected_budget(prev[0], prev[1], ceiling=MM.cells_carried(MM.for_cells(out)))
+        if corr is not None and corr < out:
+            out = int(corr)
+    return out
+
+
+def _plan_limit(ask) -> int | None:
+    """CFDREQ-3: the most cells this pass's plan may grow to when the user set a count (their own count - our gap
+    boxes never raise it past theirs), else None (the standard machine's, CELL_HARD_LIMIT, as always)."""
+    if ask is None or not (ask.user_budget() or ask.floor is not None):
+        return None
+    from meshpipeline.contracts import mesh_machine as MM
+    return min(int(ask.cell_limit(int(polcfg.CELL_HARD_LIMIT))), MM.ceiling_cells())
+
+
+def _route_big(workspace: Path, budget: int, *, job_id: str = "", attempt: int = 0) -> dict | None:
+    """RUN-9 (contracts/mesh_machine.route_cells): a pass planned to more cells than the standard machine is sized for
+    - only ever the user's own count - runs on a VM that carries them, decided before it meshes, with no question.
+    The decision is written into the workspace the mesh executor ships; None when the pass fits the standard machine."""
+    from meshpipeline.contracts import mesh_machine as MM
+    moved = MM.route_cells(workspace, int(budget), why="the cell count asked for")
+    if moved and moved.get("where") == "gce":
+        logger.warning("snappy pass %d: %s (RUN-9) - job_id=%s", attempt, moved.get("words"), job_id)
+        try:
+            from meshpipeline.contracts import decision_record as _dr
+            _dr.cite(str(job_id or ""), stage="snappy_machine", decided="big machine", value=moved.get("machine"),
+                     rule="RUN-9", inputs={"pass": attempt, "cells": int(budget)},
+                     words=str(moved.get("words") or ""))
+        except Exception:  # noqa: BLE001 - the why record never stops a mesh
+            logger.debug("RUN-9 not cited", exc_info=True)
+    return moved
+
+
+@_guarded(lambda ask, strategy, budget: dict(strategy))
+def _ask_strategy(ask, strategy: dict, budget: int) -> dict:
+    """The plan with the user's layer count in it (the planner's 3-5 is ours; theirs wins), and the budget they set
+    as the plan's own (the size brake measures against it)."""
+    out = dict(strategy)
+    if ask.n_layers is not None:
+        out["n_layers"] = int(ask.n_layers)
+        ask.done("layers:count", "no boundary layers" if int(ask.n_layers) == 0 else
+                 f"{int(ask.n_layers)} layers on every wall (fewer only where a thin edge cannot hold them)")
+    if ask.user_budget():
+        out["_plan_cells"] = int(budget)
+    return out
+
+
+@_guarded(lambda ask, **k: (k["cells_across"], k["surface_level"], k["feature_level"]))
+def _ask_internal_sizes(ask, *, bore_D: float, cells_across: int, surface_level: int,
+                        feature_level: int) -> tuple[int, int, int]:
+    """CFDREQ-2 on an internal flow: (cells across the bore, the wall's level, the feature level) for the user's
+    size at the walls (the wall cell is bore / cells across), their global or largest cell (the fill's cell, base =
+    wall cell x 2^level) and their smallest cell. Fewer than 8 cells across the bore is no mesh of a passage: the
+    nearest, said (validity)."""
+    from meshpipeline.engines import cfd_requirements as CR
+    wall = bore_D / cells_across
+    if ask.wall_m is not None:
+        n = int(round(bore_D / ask.wall_m))
+        if n < 8:
+            cells_across = 8
+            ask.nearest("near_wall", f"cells of {CR._mm(bore_D / 8)} at the walls: 8 across the bore is the fewest a "
+                                     "passage is meshed with", built_m=bore_D / 8)
+        else:
+            cells_across = n
+            ask.done("near_wall", f"cells of {CR._mm(bore_D / n)} at the walls ({n} across the bore)",
+                     built_m=bore_D / n)
+        wall = bore_D / cells_across
+    if ask.min_m is not None and wall < ask.min_m:
+        n = max(8, int(math.floor(bore_D / ask.min_m)))
+        cells_across, wall = n, bore_D / n
+        if bore_D / n < ask.min_m * 0.999:
+            ask.nearest("min_edge", f"cells of {CR._mm(wall)} at the walls: 8 across the bore is the fewest a "
+                                    "passage is meshed with", built_m=wall)
+        else:
+            ask.done("min_edge", f"cells of {CR._mm(wall)} at the walls, none finer planned (narrow spots may still "
+                                 "get finer boxes)", built_m=wall)
+    elif ask.min_m is not None:
+        ask.done("min_edge", f"the wall cells are {CR._mm(wall)}, over it", built_m=wall)
+    fill = ask.global_m or ask.max_m
+    if fill is not None:
+        lv = max(0, int(round(math.log2(max(fill, wall) / wall))))
+        if ask.max_m is not None and wall * 2 ** lv > ask.max_m * 1.0001:
+            lv = max(0, lv - 1)
+        surface_level, feature_level = lv, max(lv, min(feature_level, lv + 1))
+        field = "global" if ask.global_m is not None else "max_edge"
+        built = wall * 2 ** lv
+        if abs(built - fill) / fill > 0.25 and fill > wall:
+            ask.nearest(field, f"cells of {CR._mm(built)} away from the walls (the wall cell {CR._mm(wall)} doubled "
+                               "to the nearest size)", built_m=built)
+        elif fill < wall:
+            ask.nearest(field, f"cells of {CR._mm(wall)} everywhere: the wall cells set the finest size",
+                        built_m=wall)
+        else:
+            ask.done(field, f"cells of {CR._mm(built)} away from the walls, {CR._mm(wall)} at them", built_m=built)
+        if field == "global" and ask.max_m is not None:
+            ask.done("max_edge", f"the largest cells are {CR._mm(built)}")
+    return int(cells_across), int(surface_level), int(feature_level)
+
+
+async def _say_requirements(publish, lines: list, *, job_id: str) -> None:
+    """What this mesher does with the notes, said once before it meshes (CFDREQ-2..5)."""
+    from meshpipeline.engines import cfd_requirements as CR
+    try:
+        await CR.say(publish, lines)
+    except StaleExecutionPublish:
+        raise
+    except Exception:  # noqa: BLE001 - the words never stop a mesh
+        logger.debug("CFDREQ lines not said", exc_info=True)
+
+
+async def _part_sizes(workspace, state, *, job_id: str, run=None) -> dict | None:
+    """PLAN-cfd-4: the notes read on the staged surface's named parts (engines/snappy/part_levels), with the parts'
+    triangles kept for their own refinement surfaces; None when there is nothing to read. Never fails a run."""
+    try:
+        from meshpipeline.engines.snappy import part_levels as PL
+        stl = Path(workspace) / "input.stl"
+        if not stl.exists():
+            return None
+        from meshpipeline.cad.stl_io import drop_degenerate, read_stl_solids
+        solids = {n: drop_degenerate(v) for n, v in read_stl_solids(stl).items()}
+        got = await PL.decide(Path(workspace), solids, state or {}, job_id=job_id, run=run)
+        if (got.get("reading") or {}).get("status") in (None, "none"):
+            return None
+        return {**got, "solids": solids}
+    except StaleExecutionPublish:
+        raise
+    except Exception as exc:  # noqa: BLE001 - the parts keep the surface's levels
+        logger.warning("snappy part levels: not read (%s) - job_id=%s", type(exc).__name__, job_id)
+        return None
+
+
+def _write_part_surfaces(workspace, got: dict | None, regions: list) -> None:
+    """Each part the notes sized that is NOT its own region in the staged surface, written as its own surface
+    (constant/triSurface/partref_<name>.stl) for a distance refinement on it alone. Never raises."""
+    if not got or (got.get("reading") or {}).get("status") != "used":
+        return
+    try:
+        from meshpipeline.cad.stl_io import _write_solid
+        from meshpipeline.engines.snappy import part_levels as PL
+        own = {PL.safe(r) for r in regions or []}
+        by_id = got.get("by_id") or {}
+        named = {by_id[p] for e in got["reading"].get("entries") or []
+                 for p in [*e.get("parts", []), *e.get("rest_parts", [])] if p in by_id}
+        tri = Path(workspace) / "constant" / "triSurface"
+        tri.mkdir(parents=True, exist_ok=True)
+        for name in named:
+            if PL.safe(name) in own or not (got.get("solids") or {}).get(name):
+                continue
+            with (tri / f"partref_{PL.safe(name)}.stl").open("w") as fh:
+                _write_solid(fh, f"partref_{PL.safe(name)}", got["solids"][name])
+    except Exception as exc:  # noqa: BLE001 - that part keeps the surface's level
+        logger.warning("snappy part levels: a part's own surface was not written (%s)", type(exc).__name__)
+
+
+async def _say_part_levels(workspace, publish, got: dict, levels: dict | None, *, job_id: str) -> None:
+    """The notes about parts, said once per run: in the run's words, the "From your notes" line, the why record."""
+    from meshpipeline.engines.snappy import part_levels as PL
+    lines = PL.words(got, levels)
+    try:
+        for d in PL.decisions(got, levels):
+            from meshpipeline.contracts import decision_record as _dr
+            _dr.cite(job_id, stage=str(d.get("stage")), decided=str(d.get("decided")), value=d.get("value"),
+                     rule=str(d.get("rule")), inputs=d.get("inputs") or {},
+                     source=str(d.get("source") or _dr.SOURCE_RULE), words=str(d.get("words") or ""))
+        if lines:
+            from meshpipeline.contracts.user_notes import record_remark
+            record_remark(Path(workspace), lines[0], by=PL.CONSUMER)
+            await publish.anote("From your notes: " + " ".join(lines[:4]), op_id="internal:part-levels-notes")
+    except StaleExecutionPublish:
+        raise
+    except Exception:  # noqa: BLE001 - the words never stop a mesh
+        logger.debug("PLAN-cfd-4 not said", exc_info=True)
 
 
 def _write_timed_out_plan(workspace: Path, strategy: dict) -> None:
@@ -566,6 +741,36 @@ def plan_refinements(*, surface_level=None, wake: bool = False, boxes: int = 0,
     return out
 
 
+def _cell_sizes(summary: dict | None) -> tuple[float | None, float | None]:
+    """(base cell, finest wall cell) in metres, from the authored case's own numbers: the background
+    box over its divisions, halved once per surface refinement level. (None, None) when the case
+    does not carry them - the plan is then said without its sizes, never with guessed ones."""
+    s = summary or {}
+    lo, hi, div, level = s.get("domain_min"), s.get("domain_max"), s.get("divisions"), s.get("surface_level")
+    if not (isinstance(lo, (list, tuple)) and isinstance(hi, (list, tuple)) and isinstance(div, (list, tuple))):
+        return None, None
+    try:
+        base = max((float(h) - float(lo_)) / float(d) for lo_, h, d in zip(lo, hi, div, strict=True) if float(d) > 0)
+        top = max(int(v) for v in level) if isinstance(level, (list, tuple)) else int(str(level))
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None, None
+    if not (base > 0):
+        return None, None
+    return base, base / (2 ** max(0, top))
+
+
+def _sizes_words(summary: dict | None) -> str:
+    """The plan's cell sizes for its run note, in millimetres: "base cells about 160 mm, down to
+    about 5 mm at the walls, " - or nothing when the case does not carry them."""
+    from meshpipeline.contracts.narration import length_words
+
+    base, wall = _cell_sizes(summary)
+    if base is None:
+        return ""
+    finer = f", down to about {length_words(wall)} at the walls" if wall and wall < base else ""
+    return f"base cells about {length_words(base)}{finer}, "
+
+
 async def _run_snappy_timed(R, workspace, cap, publish: ExecutionEventPublisher,
                             engine, purpose, *, run,
                             native_attempt: int = 1):
@@ -724,7 +929,8 @@ def _domain_preflight(state, analysis: dict, dmin, dmax, *,
         strict=bool(state.get("requirements_strict")),
         flow_axis=state.get("flow_axis"),
         body_min=analysis["bbox_min"], body_max=analysis["bbox_max"],
-        domain_min=dmin, domain_max=dmax, grounded=grounded, symmetry_faces=symmetry_faces)
+        domain_min=dmin, domain_max=dmax, grounded=grounded, symmetry_faces=symmetry_faces,
+        floor=floor_of(state.get("up_axis")))
 
 
 async def _preflight_stopped(publish: ExecutionEventPublisher, workspace: Path,
@@ -925,6 +1131,7 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
     # sealed-space readings, one per wall-cell size this build plans (engines/sealed_cavities),
     # and the thin-feature field re-read with each reading's wetted sides
     _cavity_cache: dict = {}
+    _part_cache: dict = {}
     _field_cache: dict = {}
 
     # SYMMETRY (3D external) comes in two shapes, told apart by how many patches were declared:
@@ -965,16 +1172,23 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                  "a half-model - it has no coplanar cut face to place a symmetry plane on (a "
                  "full-span body straddles the centreline).")
                 + " Mesh the full domain without symmetry, or supply a half-model.")
+    # THE FLOOR FOLLOWS THE UP AXIS the user confirmed on the stage (INS-9): z-min on a +z-up
+    # file, y-min on a +y-up one. A hard-coded z refused flow along z over a Y-up file's floor.
+    _floor = floor_of(state.get("up_axis"))
+    _up_letter = "xyz"[int(_floor[0])]
     if _ground and not _refusal:
         _axis = str(state.get("flow_axis") or "").strip().lower()
-        if _axis[-1:] == "xyz"[VERTICAL_AXIS]:
+        if _axis[-1:] == _up_letter:
             _refusal_op = "snappy:ground-unusable"
-            _refusal = (f"The ground '{_ground}' lies under the body, across z, but the flow was "
-                        f"declared along {_axis} - the floor and the flow cannot share an axis. "
-                        "Say which horizontal axis (+x, -x, +y or -y) the flow travels along, or "
-                        f"drop '{_ground}' if the body is free in the flow.")
-        elif symmetry and int(symmetry["axis"]) == VERTICAL_AXIS and (
-                symmetry.get("slab") or symmetry.get("side") == "min"):
+            _flat = [("+" + a, "-" + a) for a in "xyz" if a != _up_letter]
+            _refusal = (f"The ground '{_ground}' lies under the body, across {_up_letter} (up is "
+                        f"{up_word(_floor)}), but the flow was declared along {_axis} - into the "
+                        "ground. Say which way along the ground the flow travels ("
+                        + ", ".join(x for pair in _flat for x in pair)
+                        + f"), or say which way is up in the file, or drop '{_ground}' if the body "
+                        "is free in the flow.")
+        elif symmetry and int(symmetry["axis"]) == int(_floor[0]) and (
+                symmetry.get("slab") or symmetry.get("side") == _floor[1]):
             _refusal_op = "snappy:ground-unusable"
             _refusal = (f"The ground '{_ground}' and the symmetry plane both fall on the bottom "
                         "face of the domain, and one face can be only one boundary. Drop the "
@@ -1002,7 +1216,7 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
     _contact = None
     if _ground:
         try:
-            _contact = R.measure_ground_contact(workspace)
+            _contact = R.measure_ground_contact(workspace, floor=_floor)
         except Exception:  # noqa: BLE001 - a measurement, never a reason to stop the build
             logger.warning("ground contact not measured - the floor goes at the body's lowest "
                            "point (job_id=%s)", job_id, exc_info=True)
@@ -1021,8 +1235,7 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
         _layout.append(
             "The body stands on the ground - "
             + (describe_contact(_contact) if _contact is not None else
-               f"the floor of the domain sits at its lowest point "
-               f"(z = {float(analysis['bbox_min'][VERTICAL_AXIS]):.4g} m)")
+               f"the floor of the domain sits at its lowest point along {up_word(_floor)}")
             + f". The floor is the wall '{_ground}'; the other box faces stay far field.")
     if _layout:
         await publish.anote(
@@ -1137,7 +1350,20 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                                 _prev[0], _prev[1], _prev[1] / _prev[0], _corr,
                                 polcfg.CELL_HARD_LIMIT)
                     _budget = _corr
+            # CFDREQ-1: THE USER'S REQUIREMENTS from their notes (engines/cfd_requirements) - the one seam. Their
+            # count beats the plan's budget (an overshoot of it is still corrected), their layer count the plan's
+            _ask = _requirements(workspace, "snappy", strategy, state, analysis)
+            if _ask is not None:
+                _budget = _ask_budget(_ask, _budget, _prev)
+                strategy = _ask_strategy(_ask, strategy, _budget)
+                # CFDREQ-3: the gaps between the body's parts are sized within the user's own count
+                _lim = _plan_limit(_ask)
+                if _lim is not None:
+                    strategy = {**strategy, "_cell_limit": int(_lim)}
             strategy = {**strategy, "max_cells": _budget}
+            # RUN-9: a count past the standard machine runs on a bigger one, decided before it meshes
+            _route_big(workspace, max(_budget, int(strategy.get("_cell_limit") or 0)), job_id=job_id,
+                       attempt=attempt)
             rec = recommend_refinement(analysis, max_cells=_budget)
             # THE USER'S CONFIRMED MARGINS WIN. The planner writes domain_margin itself, and a
             # brief cannot bind a model: an F1 front wing confirmed at 10 reference lengths
@@ -1152,7 +1378,7 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
             dmin, dmax = R.domain_from_strategy(analysis, strategy, symmetry,
                                                 flow_axis=state.get("flow_axis"),
                                                 ruler_m=state.get("reference_length_m"),
-                                                ground=bool(_ground), contact=_contact)
+                                                ground=bool(_ground), contact=_contact, floor=_floor)
             # DOMAIN PRE-FLIGHT, before the box is written: the post-mesh extent gate measures
             # exactly this prepared box, so a box it would block is known now. Re-plan instead of
             # meshing it (nothing is written yet, so the previous pass's files stay as they were).
@@ -1197,6 +1423,12 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
             # faces. Only the policy's split is folded back after meshing.
             _split = _policy is not None and _policy.mode == "split"
             _dict_regions = prep.get("surface_regions") or None
+            # PLAN-cfd-4: THE SIZES THE NOTES ASK FOR ON PARTICULAR PARTS (engines/snappy/part_levels), read once
+            # per run (the reading the user checked before approval first); each pass writes them on its own cell
+            if "got" not in _part_cache:
+                _part_cache["got"] = await _part_sizes(workspace, state, job_id=str(job_id or ""), run=run)
+            _part_got = _part_cache["got"]
+            _write_part_surfaces(workspace, _part_got, prep.get("surface_regions") or [])
             summary = R.render_snappy_case(
                 workspace, surface_name=prep["surface_name"], feature_file=prep["feature_file"],
                 analysis=analysis, recommendation=rec, domain_min=dmin, domain_max=dmax,
@@ -1212,7 +1444,16 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                                  or strategy.get("reference_length_m")),
                 contact=_contact,
                 # the gaps between the body's parts, 13 cells across (engines/gap_sizing)
-                gap_field=_gap_field)
+                gap_field=_gap_field,
+                part_sizes=_part_got, ground_floor=_floor,
+                requirements=_ask)
+            if summary.get("requirements_lines") and not _part_cache.get("req_said"):
+                _part_cache["req_said"] = True
+                await _say_requirements(publish, summary["requirements_lines"], job_id=str(job_id or ""))
+            if _part_got and not _part_cache.get("said"):
+                _part_cache["said"] = True
+                await _say_part_levels(workspace, publish, _part_got, summary.get("part_levels"),
+                                       job_id=str(job_id or ""))
             if int(summary.get("max_cells") or 0) > int(strategy.get("max_cells") or 0):
                 # the gap boxes raised snappy's cell ceiling: the plan memory carries the budget
                 # the pass really used, so an overshoot correction reads it right
@@ -1244,8 +1485,8 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                 await publish.anote(f"Meshing pass {attempt}: the last pass was stopped as bigger than "
                                     "its plan, and no re-plan makes it smaller - meshing it at the size "
                                     "it needs", op_id=f"snappy:brake-released:{attempt}")
-            await publish.anote("Carving the body out of the background mesh - refinement level "
-                            f"{summary['surface_level']}, {summary['n_layers']} boundary layers"
+            await publish.anote("Shaping the cells around your part - " + _sizes_words(summary)
+                            + f"{summary['n_layers']} wall layers"
                             + _sealed_note(_cavities)
                             + (f"; {summary['wake_note']}" if summary.get("wake_note") else "")
                             + (f"; {summary['gap_note']}" if summary.get("gap_note") else ""),
@@ -1259,10 +1500,16 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                                 op_id=f"snappy:plan:{attempt}")
             if attempt == 1:
                 from meshpipeline.contracts import narration as _N
+                _base_m, _wall_m = _cell_sizes(summary)
                 for _i, _line in enumerate(_N.cfd_plan_lines(
                         internal=False, cells=strategy.get("max_cells"), layers=summary.get("n_layers"),
-                        wake=bool(summary.get("wake_note")), boxes=len(strategy.get("local_boxes") or []))):
+                        wake=bool(summary.get("wake_note")), boxes=len(strategy.get("local_boxes") or []),
+                        base_m=_base_m, wall_m=_wall_m)):
                     await _N.asay(publish, _line, op_id=f"snappy:say:{attempt}:{_i}")
+            # THE WHOLE DESIGN as one receipt, as every route says it (contracts/mesh_design)
+            from meshpipeline.contracts import mesh_design as _MD
+            # (its size is in its own plan lines above, so the receipt does not say it twice)
+            await _MD.apublish(publish, job_id=job_id, workspace=workspace, attempt=attempt)
             # RUN (deterministic; Cloud Run Job / local) + user-facing instrumentation, under the
             # GUARD its planned cells give it (TIME-2) - the only clock, and it decides nothing
             _guard = pass_guard(_budget, job_id=job_id, attempt=attempt, workspace=workspace)
@@ -2150,11 +2397,12 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
     _gated_plan = _sibling_plan_memory(workspace) if _under else None
     # ... and WHERE it fell short, as the measure beside that mesh recorded it
     _measured_short = _sibling_under_floor(workspace) if _under else None
-    # THE GAP PLAN HELD TO THE PLAN'S OWN BUDGET (engines/gap_sizing): once a mesh whose cell
-    # ceiling the gap plan raised came out over the cell limit - in this attempt or the one before
-    # - the narrow spots get what the plan's own budget holds, as before gap sizing, never another
-    # raise past what was just measured to be too much (_raised_over_limit)
-    _hold_gaps: int | None = _raised_over_limit(workspace)
+    # THE GAP PLAN HELD TO THE PLAN'S OWN BUDGET (engines/gap_sizing) only after a timeout (below).
+    # A sound mesh that came out OVER the standard machine's cells is never re-meshed smaller
+    # (Areen, 14 Nov: "if they say 7 M but we produce a mesh over 8 M, just move it onto the big
+    # machine"): it is delivered as it is (LAD-cfd-4), and a mesher that runs out of memory on the
+    # standard machine runs the same case again on a bigger one (RUN-3, _run_snappy_on_its_machine)
+    _hold_gaps: int | None = None
 
     for attempt in range(1, max_attempts + 1):
         _timed_out_now, _repeat_stop, _mesh_minutes = False, False, 0.0
@@ -2228,6 +2476,18 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
         if quality not in ("balanced", "strict"):
             quality = "balanced"
         feature_level = max(0, plan_int(strategy, "feature_level", surface_level + 1))
+        # CFDREQ-1: THE USER'S REQUIREMENTS from their notes (engines/cfd_requirements) - the one seam: their count
+        # beats the plan's budget, their layer count the plan's, their sizes set the wall cell and the fill
+        _ask = _requirements(workspace, "snappy", strategy, state, None)
+        _user_limit = _plan_limit(_ask)          # CFDREQ-3: the user's own count holds the gap plan too
+        if _ask is not None:
+            _ask.length_m, _ask.length_from = (_ask.length_m or float(bore_D)), (_ask.length_from or "the bore")
+            _budget = _ask_budget(_ask, _budget, _prev)
+            strategy = _ask_strategy(_ask, strategy, _budget)
+            n_layers = max(0, plan_int(strategy, "n_layers", 3))
+            cells_across, surface_level, feature_level = _ask_internal_sizes(
+                _ask, bore_D=float(bore_D), cells_across=cells_across, surface_level=surface_level,
+                feature_level=feature_level)
         # base cell sized so the wall cell (base / 2^level) resolves the bore into `cells_across`
         base_cell = (bore_D / cells_across) * (2 ** surface_level)
         # THIN FEATURES. The wall cell above is sized from the BORE, so a feature thinner
@@ -2281,7 +2541,7 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
                          budget=_budget, band_m=_band_m, near_cell=_near_cell,
                          surface_cell=_wall_cell, base_cell=base_cell,
                          accept_fewer=accepted_fewer(state.get("engine_params")),
-                         n_layers=n_layers, limit=_hold_gaps)
+                         n_layers=n_layers, limit=_hold_gaps if _hold_gaps is not None else _user_limit)
         _gap.write(workspace)
         _narrow_regions = _over_band(list(_gap.regions), _near_offset)
         _narrow_surfaces_, _narrow_regions = _narrow_surfaces(workspace, _narrow_regions,
@@ -2295,6 +2555,8 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
                 _near_offset)
         if _gap.ceiling() > _budget:
             _budget = int(_gap.ceiling())
+        # RUN-9: a count past the standard machine runs on a bigger one, decided before it meshes
+        _route_big(workspace, max(_budget, int(_user_limit or 0)), job_id=job_id, attempt=attempt)
         # the raised ceiling is this pass's alone: the plan's own budget travels beside it, so a
         # later pass or attempt re-plans the narrow spots from the plan's budget, never on top of
         # a raise (gap_budget_in, read back above)
@@ -2377,14 +2639,16 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
                 thin_regions=[*_thin_regions, *_narrow_regions,
                               *(strategy.get("local_boxes") or [])],
                 near_band_depth=_band_m if _band_set else None,
-                distance_regions=_narrow_surfaces_)
+                distance_regions=_narrow_surfaces_, requirements=_ask)
+            if _ask is not None and attempt == 1:
+                await _say_requirements(publish, _ask.lines(), job_id=str(job_id or ""))
             _stop_on_repeated_case(workspace, _reviewed_ws, job_id=job_id,
                                    where=f"internal pass {attempt}")
             if _repeats_timed_out_case(workspace, _timeout_case):
                 raise TimedOutCaseRepeats(f"internal pass {attempt}")
             await publish.anote(f"Filling the cavity - about {cells_across} cells across the bore, "
-                         f"refinement level {summary['surface_level']}, {n_layers} "
-                         f"boundary layers" + (f"; {_band_note}" if _band_note else ""),
+                         + _sizes_words(summary) + f"{n_layers} wall layers"
+                         + (f"; {_band_note}" if _band_note else ""),
                     op_id=f"internal:filling:{attempt}")
             await publish.aplan(cells=_budget, layers=n_layers,
                                 refinements=plan_refinements(
@@ -2394,10 +2658,15 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
                                 op_id=f"internal:plan:{attempt}")
             if attempt == 1:
                 from meshpipeline.contracts import narration as _N
+                _base_m, _wall_m = _cell_sizes(summary)
                 for _i, _line in enumerate(_N.cfd_plan_lines(
                         internal=True, cells=_budget, layers=n_layers, cells_across=cells_across,
-                        boxes=len(strategy.get("local_boxes") or []))):
+                        boxes=len(strategy.get("local_boxes") or []), base_m=_base_m, wall_m=_wall_m)):
                     await _N.asay(publish, _line, op_id=f"internal:say:{attempt}:{_i}")
+            # THE WHOLE DESIGN as one receipt, as every route says it (contracts/mesh_design)
+            from meshpipeline.contracts import mesh_design as _MD
+            # (its size is in its own plan lines above, so the receipt does not say it twice)
+            await _MD.apublish(publish, job_id=job_id, workspace=workspace, attempt=attempt)
             run.note_authoring()
             # the pass's GUARD, from its planned cells (TIME-2) - the only clock
             _guard = pass_guard(_budget, job_id=job_id, attempt=attempt, workspace=workspace)
@@ -2447,21 +2716,12 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
                               f"its refinement is raised for the next pass")
                 else:
                     (workspace / ".sealed_ports.json").unlink(missing_ok=True)
-            # OVER THE CELL LIMIT ON A CEILING THE GAP PLAN RAISED: the narrow spots cost more
-            # than priced. Delivered as it is, the mesh fails the manifest gate and the run moves
-            # to another engine, where this one meshes the file within the limit at its plan's own
-            # budget (a shell-side heat exchanger 13.0 M and a valve cage adapter 9.4 M against
-            # 6.5 M and 2.7 M before gap sizing, lab 2026-10-21). So the next pass keeps the
-            # plan's own budget, as before gap sizing.
-            _cells_now = int(q.get("cells") or 0)
-            if (production and _hold_gaps is None and _budget > _planned_budget
-                    and _cells_now > int(polcfg.CELL_HARD_LIMIT)):
-                production = False
-                _hold_gaps = int(_planned_budget)
-                reason = (f"{_cells_now:,} cells, over the {int(polcfg.CELL_HARD_LIMIT):,}-cell "
-                          "limit of one job: the narrow spots cost more than priced, so the next "
-                          "pass keeps the plan's own cell budget of "
-                          f"{int(_planned_budget):,}")
+            # OVER THE STANDARD MACHINE'S CELLS ON A CEILING THE GAP PLAN RAISED: the narrow spots
+            # cost more than priced. It is no longer thrown away and re-meshed smaller (a shell-side
+            # heat exchanger 13.0 M and a valve cage adapter 9.4 M were cut back to 6.5 M and 2.7 M,
+            # lab 2026-10-21, when the cell limit still failed the run): a sound mesh over it is
+            # delivered as it is, with the note (LAD-cfd-4), and the mesh the rules asked for is
+            # the one the user gets (Areen, 14 Nov).
             run.note_native_run(produced_usable_mesh=last_valid)
         except (_fence.StaleWorkerFenced, StaleExecutionPublish, ReviewedCaseRepeats):
             raise                      # supersession stops the invocation; see the external build

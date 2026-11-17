@@ -378,7 +378,7 @@ async def test_a_form_that_does_not_say_which_way_is_up_confirms_what_the_check_
                            reference_length_mm=840.0, scale_to_m=0.001, unit="mm")
     out = await route.confirm_check(SID, body, "alice", "org-1")
     assert json.loads(store.objects[_key("confirmed.json")])["up_axis"] == "-z"
-    assert "drawn with -z up" in out["message"] and "wall patch named ground" not in out["message"]
+    assert "Up in this file is -z" in out["message"] and "wall patch named ground" in out["message"]   # INS-9
     # the user's own answer is what counts once they give one
     out = await route.confirm_check(SID, body.model_copy(update={"up_axis": "+z"}), "alice", "org-1")
     assert json.loads(store.objects[_key("confirmed.json")])["up_axis"] == "+z"

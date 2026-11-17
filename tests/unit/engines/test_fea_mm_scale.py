@@ -138,7 +138,7 @@ def test_a_surface_gmsh_cannot_mesh_is_a_named_failure_not_a_bare_traceback(stag
     reads it (the housing's tied passes failed naming nothing before)."""
     ws = _ws(staged, tmp_path / "2d")
 
-    def surface_mesh(gmsh_, surfaces, remesh):
+    def surface_mesh(gmsh_, surfaces, remesh, workers=0):
         raise Exception("Impossible to mesh periodic surface 2")
 
     monkeypatch.setattr(A, "surface_mesh", surface_mesh)

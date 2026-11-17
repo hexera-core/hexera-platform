@@ -83,8 +83,10 @@ def _rescued(ws: Path, q: dict, *, bashrc: str, timing: dict, t0: float, timeout
     """The quality record after a near-edge rescue (engines/cfmesh/rescue.py) - `q` unchanged
     when the mesh is not near its validity edge. The rescue runs inside the run's own cap, less
     what the steps after it need, so the run still returns inside the time it was given."""
+    from meshpipeline.engines.cfd_requirements import non_ortho_limit
     from meshpipeline.engines.cfmesh.rescue import near_edge, rescue
-    if not near_edge(q):
+    limit = non_ortho_limit(ws)          # CFDREQ-5: a tighter non-orthogonality the user asked for, else None
+    if not near_edge(q, limit):
         return q
     t = time.monotonic()
     deadline = t0 + float(timeout) - (2.0 * float(timing.get("checkMesh_s") or 0.0)
@@ -92,7 +94,7 @@ def _rescued(ws: Path, q: dict, *, bashrc: str, timing: dict, t0: float, timeout
     mesher_s = float(timing.get(f"{CARTESIAN_2D_MESH if is_2d else CARTESIAN_MESH}_s") or 0.0)
     try:
         out = rescue(ws, q, bashrc=bashrc, deadline=deadline, mesher_seconds=mesher_s,
-                     check_seconds=float(timing.get("checkMesh_s") or 0.0), is_2d=is_2d)
+                     check_seconds=float(timing.get("checkMesh_s") or 0.0), is_2d=is_2d, limit=limit)
     except Exception:  # noqa: BLE001 - a second chance must never lose the first mesh
         logger.warning("cfMesh rescue errored; the mesh as built stands", exc_info=True)
         return q

@@ -28,7 +28,8 @@ def test_the_marks_are_stripped_in_the_conversation_and_plain_text_is_untouched(
     out = live.evaluate(js, timeout=60)
     assert out["fn"][0] == "Thanks - I'm drawing your part now." and out["fn"][1] == "plain" and out["fn"][2] == ""
     assert out["txt"][-3] == "Thanks - I'm drawing your part now."
-    assert out["txt"][-2].startswith("Confirmed on the picture: the file is the part's wall")
+    # a short card, never the declaration the intake reads (Areen, 2026-11-13)
+    assert out["txt"][-2].startswith("✓ Confirmed") and "input_kind" not in out["txt"][-2]
     assert out["txt"][-1] == "Which fluid is it?"
     assert "GEOMETRY CHECK" not in " ".join(out["txt"])
     assert out["user"][-1] == DRAWING            # what a person typed is shown as typed
@@ -58,5 +59,5 @@ def test_the_hold_follows_what_the_poll_saw(live):
     assert out["released"]["disabled"] is False and out["released"]["held"] is False
     assert out["over"]["disabled"] is False and out["over"]["held"] is False       # the check gave up: no hold
     assert out["done"]["disabled"] is False and out["done"]["held"] is False       # already confirmed: no hold
-    assert out["ready"]["disabled"] is True and "press Proceed" in out["ready"]["placeholder"]
+    assert out["ready"]["disabled"] is True and out["ready"]["placeholder"] == "Finish on the panel →"
     assert out["afterProceed"]["disabled"] is False and out["afterProceed"]["held"] is False

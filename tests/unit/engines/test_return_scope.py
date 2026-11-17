@@ -99,6 +99,28 @@ def test_every_engine_run_is_scoped_before_it_goes_home(tmp_path, monkeypatch):
     assert out["rc"] == 0 and out["return_scope"]["scratch_removed"] == ["_rescue/"]
 
 
+def test_a_file_sent_home_on_its_own_is_never_left_out_for_the_archive(tmp_path, monkeypatch):
+    # A solver file big enough to go to the bucket on its own (RUN-7, engines/bucket_files.packable)
+    # never rides in the archive, so the estimate never counted it. When what does ride there is too
+    # big anyway, deleting that file saves the archive nothing: the user only loses the download,
+    # and taking its bytes off the estimate makes the estimate read low.
+    import meshpipeline.engines.bucket_files as BF
+    ws = _ws(tmp_path, volume_bytes=50_000)
+    big = ws / "export_fluent.zip"
+    big.write_bytes(os.urandom(3_000_000))
+    monkeypatch.setattr(BF, "PACK_FROM_BYTES", 2_000_000)
+    assert big in BF.packable(ws)
+    small = RS.estimate_archive_bytes(ws)              # the export is not in it
+    rec = RS.scope_return(ws, ceiling=int(small * 0.5))
+    assert big.exists(), "a file that never rides in the archive was deleted to make the archive fit"
+    assert "export_fluent.zip" not in [x["file"] for x in rec["left_out"]]
+    # only what the estimate holds comes off it: the volume export's share, nothing more
+    assert [x["file"] for x in rec["left_out"]] == ["VTK/case_0/internal.vtu"]
+    # (the record itself, written after, adds its own few hundred bytes)
+    after = RS.estimate_archive_bytes(ws) - RS.compressed_size(ws / RS.RETURN_SCOPE_FILE)
+    assert rec["archive_bytes_est"] == after and not rec["fits"]
+
+
 def test_an_empty_file_still_costs_its_archive_header(tmp_path):
     p = tmp_path / "empty"
     p.write_bytes(b"")

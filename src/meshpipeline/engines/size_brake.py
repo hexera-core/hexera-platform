@@ -118,7 +118,7 @@ def case_budget(workspace) -> int | None:
     NEVER BELOW THE BACKGROUND MESH (background_cells): the brake answers a mesh REFINED far past its
     plan, and re-plans the castellation budget smaller - which cannot shrink the background the case
     starts from. A plan whose budget is under its own background (a 40,000-cell plan on a 138,240-cell
-    blockMesh: release Gate C's native snappy pass, 26 Oct) read "3.3 times its budget" before any
+    blockMesh: release validation's native snappy pass, 26 Oct) read "3.3 times its budget" before any
     refinement, was stopped and could only be stopped again on every re-plan. And whether it was
     stopped at all depended on timing - the watch looks every 10 s, so a fast run on 4 ranks finished
     first and passed while the same case on 8 oversubscribed ranks was stopped - a size brake must

@@ -28,6 +28,8 @@ export function sessionScript({
   return [
     `globalThis.__HEXERA_API_WS_BASE_URL__ = ${jsLiteral(publicApiBaseUrl)};`,
     "globalThis.__HEXERA_ROUTED__ = true;",
+    // read once by WorkbenchGuard: this document was loaded for the workbench, so main.js starts
+    "globalThis.__HEXERA_FRESH_DOC__ = true;",
     `globalThis.__HEXERA_BOOT_JOB__ = ${jsLiteral(bootJobId)};`,
     `try { localStorage.setItem("mg_uid", ${jsLiteral(ownerId)}); } catch {}`,
   ].join("\n");

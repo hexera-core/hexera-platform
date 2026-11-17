@@ -70,7 +70,7 @@ def check_gates_proven(record: dict | None) -> None:
 
     if record is None:
         raise Refused(
-            "no Gate C release record was supplied, so nothing states that this commit was "
+            "no release record was supplied, so nothing states that this commit was "
             "validated. Promotion may not run while the required gates are unproven.")
     promotable, problems = promotability(record)
     if not promotable:

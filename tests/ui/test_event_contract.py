@@ -40,20 +40,24 @@ def test_a_run_is_interpreted_into_the_cards_and_lanes_a_user_sees(live):
     assert {"attempt", "toolCall", "toolResult", "file", "startMesh", "endMesh", "check"} <= named
 
     assert next(c for c in calls if c[0] == "file")[3] == "2.4 KB", "a raw byte count reached a card"
-    assert next(c for c in calls if c[0] == "endMesh")[1] == "3,907,590 cells"
+    # the count travels as a number: the box says it in the engine's own word for one
+    assert next(c for c in calls if c[0] == "endMesh")[1] == 3907590
 
     # A card with no stage of its own belongs to whichever lane is open.
     stray = next(c for c in calls if c[0] == "check" and "no stage of its own" in str(c[2]))
     assert stray[1] == "builder", "a card was filed under no lane"
 
-    # A stage becoming active retires the one before it, so no lane is left open behind.
-    assert [c[1] for c in calls if c[0] == "done"] == ["builder", "executor"]
+    # The renderer sees every event first, with its stage: that is what moves a run from designing
+    # to creating the mesh and which of the four rows it fills (core/run_rows.js)
+    seen = [c for c in calls if c[0] == "seen"]
+    assert len(seen) == 12 and seen[6][1]["type"] == "meshing" and seen[6][2] == "builder"
+    assert not any(c[0] == "done" for c in calls), "the dispatch closed a row: the box decides that"
 
     # the verdict reaches its lane as a verdict, so the lane's mark can never contradict it
     verdict = next(c for c in calls if c[0] == "verdict")
     assert verdict[1] == "reviewer" and verdict[2] is True and "meets your brief" in verdict[3], \
         "a PASS was worded or toned as a failure"
-    assert not any("closing" in str(c) for c in calls), \
+    assert not any("closing" in str(c) for c in calls if c[0] != "seen"), \
         "`closing` drew a card - the result card owns that text"
     assert out["cursor"] == "reviewer"
 
@@ -111,7 +115,7 @@ def test_the_browser_can_render_everything_the_backend_publishes(live, event_voc
                   byte_count:1, operation:'created', id:'i', tool_call_id:'i',
                   tool_name:'tool', phase:'completed', conclusion:'c', because:'b',
                   engine:'e', budget_s:1, cells:2, verdict:'PASS'}, R, 'builder');
-        rendered[t] = calls.length;
+        rendered[t] = calls.filter(x => x[0] !== 'seen').length;
       }
       return {rendered, labels: Object.fromEntries(stages.map(s => [s, laneLabel(s)]))};
     })()""".replace("__VOCABULARY__", json.dumps([list(types), list(stages)])))
@@ -123,11 +127,11 @@ def test_the_browser_can_render_everything_the_backend_publishes(live, event_voc
         f"the backend publishes {sorted(silent)} and the browser draws nothing for them - "
         f"a user would see their run stall")
 
+    rows = {"Choosing the engine", "Designing the mesh", "Creating the mesh", "Reviewing the mesh"}
     for stage, label in out["labels"].items():
-        assert "_" not in label and label[:1].isupper(), \
-            f"stage {stage!r} reaches the user as a raw key: {label!r}"
-    assert out["labels"]["adaptive_refinement_sweep"] == "Adaptive refinement sweep", \
-        "a stage the UI has no word for must degrade to English, not require a UI release"
+        assert label in rows, f"stage {stage!r} reaches the user as {label!r}, not one of the four rows"
+    assert out["labels"]["adaptive_refinement_sweep"] in rows, (
+        "a stage the UI has no word for must join a row, not require a UI release")
 
 
 def test_a_tool_call_is_labelled_tool_call_and_reasoning_fills_one_card(live):
@@ -196,3 +200,23 @@ def test_the_review_lane_never_shows_raw_json(live):
     for raw in ('"screen_x"', "magnification", '"axis_key"', "{", "Render crop", "**"):
         assert raw not in out["lane"], (raw, out["lane"])
     assert out["bodies"] == ["", "Resubmitting corrected material I need to cite the iso view."], out
+
+
+def test_every_stage_the_backend_publishes_is_in_the_one_row_table(live, event_vocabulary):
+    # THE ONE TABLE (core/run_rows.js): every route's stages map onto the same four rows, so a new
+    # backend stage is one line there - and a stage left out would silently join whatever row is open
+    _types, stages = event_vocabulary
+    out = live.evaluate("""(async () => {
+      const R = await import('/static/js/core/run_rows.js');
+      const [stages] = __STAGES__;
+      return {keys: R.ROW_KEYS, titles: R.ROWS.map(r => r.title),
+              mapped: Object.fromEntries(stages.map(s => [s, R.STAGE_ROW[s] || null])),
+              design: R.rowFor('builder', {type:'narrate', kind:'say'}, false),
+              build: [R.rowFor('builder', {type:'meshing'}, false), R.rowFor('builder', {type:'note'}, true)],
+              receipt: R.rowFor('builder', {type:'receipt'}, true)};
+    })()""".replace("__STAGES__", json.dumps([list(stages)])))
+    assert out["keys"] == ["engine", "design", "build", "review"]
+    assert out["titles"] == ["Choosing the engine", "Designing the mesh", "Creating the mesh", "Reviewing the mesh"]
+    missing = [s for s, row in out["mapped"].items() if row not in out["keys"]]
+    assert not missing, f"stages with no row in core/run_rows.js: {missing}"
+    assert out["design"] == "design" and out["build"] == ["build", "build"] and out["receipt"] == "design"

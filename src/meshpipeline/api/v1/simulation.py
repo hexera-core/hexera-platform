@@ -147,8 +147,10 @@ def _is_cancelled(job) -> bool:
 def _artifact_label(artifact_type, engine: str, logical_key: str = "") -> str:
     _t = getattr(artifact_type, "value", str(artifact_type))
     # an FEA mesh's solver files, one per solver, each saying whether that solver has really run it
+    from meshpipeline.engines.cfd_exports import EXPORT_ARTIFACTS as FLOW_EXPORTS
     from meshpipeline.engines.fea_writers import EXPORT_ARTIFACTS
-    for _key, _file, _label in EXPORT_ARTIFACTS:
+    # ...and a flow mesh's: the OpenFOAM case, the Fluent mesh, the EnSight case (engines/cfd_exports.py)
+    for _key, _file, _label in (*EXPORT_ARTIFACTS, *FLOW_EXPORTS):
         if logical_key == _key:
             return _label
     if _t == "mesh":
@@ -166,6 +168,27 @@ def _artifact_label(artifact_type, engine: str, logical_key: str = "") -> str:
         except Exception:  # noqa: BLE001 - an unknown engine still gets a true name
             return "Mesh case (.tar.gz)"
     return _t.replace("_", " ").capitalize()
+
+
+def _menu_rank(artifact) -> int:
+    """Where a download sits in the menu: the bundle first, then the solver files in their table's
+    order (engines/fea_writers, engines/cfd_exports), then the rest as stored."""
+    from meshpipeline.engines.cfd_exports import EXPORT_ARTIFACTS as FLOW_EXPORTS
+    from meshpipeline.engines.fea_writers import EXPORT_ARTIFACTS
+    if getattr(artifact.artifact_type, "value", artifact.artifact_type) == ArtifactType.mesh_bundle.value:
+        return 0
+    keys = [k for k, _f, _l in (*FLOW_EXPORTS, *EXPORT_ARTIFACTS)]
+    key = str(getattr(artifact, "logical_key", "") or "")
+    return 1 + keys.index(key) if key in keys else 1000
+
+
+def _surface_preview_hidden(artifact, engine: str) -> bool:
+    """A flow mesh's boundary .msh ("Surface preview") is the viewer's own file, not a download: it is
+    no longer stored for a flow mesh (application/artifact_uploader), and one an older run stored is
+    not offered either."""
+    from meshpipeline.engines.cfd_exports import ENGINES
+    return (engine in ENGINES and str(getattr(artifact, "logical_key", "") or "") == ArtifactType.mesh.value
+            and getattr(artifact.artifact_type, "value", artifact.artifact_type) == ArtifactType.mesh.value)
 
 
 #: The durable record's verdict, in the words the job status has always served.
@@ -320,11 +343,13 @@ async def get_job(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
         # after the cancel commits, but a worker that registered them a moment BEFORE it did left
         # rows behind - on a job its owner stopped. They are never offered: what the owner asked
         # for was the run to end, and a mesh from it is not a delivery.
-        for a in ([] if _is_cancelled(job) else (job.artifacts or [])):
+        for a in ([] if _is_cancelled(job) else sorted(job.artifacts or [], key=_menu_rank)):
             # The viewer payload is what the VIEWER consumes, not something the user downloads.
             # Listing it would put an internal JSON blob in the deliverables panel beside the
             # engine case.
             if a.artifact_type == ArtifactType.viewer_data:
+                continue
+            if _surface_preview_hidden(a, _engine):
                 continue
             artifacts_out.append(
                 ArtifactOut(
@@ -395,6 +420,10 @@ async def get_job(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
                            else None),
             worker_wake_minutes=worker_wake_estimate(job),
             geometry_filename=geometry_filename_of(job),
+            session_id=(str(job.dispatch_payload["session_id"])
+                        if isinstance(getattr(job, "dispatch_payload", None), dict)
+                        and job.dispatch_payload.get("session_id")
+                        else None),
         )
 
 
@@ -694,7 +723,10 @@ async def dispute_job(job_id: uuid.UUID, body: DisputeIn, owner_id: str = Depend
             GeometryInterpretationRef,
             GeometrySourceRef,
         )
-        _payload = _build_dispatch(**{
+        # THE TEAM'S MESHING STANDARD the disputed run was meshed under (engines/meshing_standard): the
+        # re-run keeps it, so it is held to the same standing requirements as the mesh it answers
+        _standard = (parent.dispatch_payload or {}).get("meshing_standard")             if isinstance(parent.dispatch_payload, dict) else None
+        _payload = _build_dispatch(**({"meshing_standard": _standard} if _standard else {}), **{
             "job_id":           str(new_job.id),
             "owner_id":         owner_id,
             "geometry_source":  (GeometrySourceRef.from_row(parent.geometry_source).to_payload()

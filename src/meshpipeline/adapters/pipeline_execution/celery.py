@@ -13,6 +13,7 @@ from meshpipeline.application.geometry_check import (
     SCOUT_SOFT_LIMIT_S,
 )
 from meshpipeline.application.pipeline_run import run_pipeline
+from meshpipeline.application.shell_check import SHELL_CHECK_LIMIT_S
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +133,25 @@ def name_geometry(**kwargs) -> dict:
         return run_geometry_naming(**kwargs)
 
 
+@celery_app.task(
+    name="worker.tasks.read_part_words",
+    bind=False,
+    max_retries=0,
+    acks_late=True,
+    # the vision model's own limit is 3 minutes (cad/part_words.TIMEOUT_S); the pictures and the store besides
+    soft_time_limit=300,
+    time_limit=360,
+)
+def read_part_words(**kwargs) -> dict:
+    # THE PARTS CHECKLIST BEFORE APPROVAL (application/part_matches): the user's words about parts tied to the
+    # check's parts by the vision model, while the user waits on the card. The geometry queue: the same worker
+    # slot as the naming, the same toolchain-free model call.
+    from meshpipeline.adapters.pipeline_execution.geometry_running import running
+    from meshpipeline.application.part_matches import run_reading
+    with running(_task_id(read_part_words, f"part-words-{kwargs.get('session_id', '')}")):
+        return run_reading(**kwargs)
+
+
 #: the naming's yields so far (a task argument the naming body never sees), and how many it may make: each
 #: one lets a waiting task run first, so a busy queue can never keep a naming from its turn for long
 NAMING_YIELDED = "naming_yielded"
@@ -141,6 +161,21 @@ NAMING_YIELD_MAX = 12
 def _task_id(task, fallback: str) -> str:
     request = getattr(task, "request", None)
     return str(getattr(request, "id", None) or fallback)
+
+
+@celery_app.task(
+    name="worker.tasks.shell_check_geometry",
+    bind=False,
+    max_retries=0,
+    soft_time_limit=SHELL_CHECK_LIMIT_S + 120,
+    time_limit=SHELL_CHECK_LIMIT_S + 180,
+)
+def shell_check_geometry(**kwargs) -> dict:
+    # SHSTAGE-2: AN FEA PART'S SHELL CHECK, started once the part is measured: its mid-surface found and
+    # drawn for the stage's "Mesh as" choice. Same queue as the scout and the naming (the user is on the
+    # stage); the extraction runs in a child process with its own time limit (application/shell_check).
+    from meshpipeline.application.shell_check import run_shell_check
+    return run_shell_check(**kwargs)
 
 
 async def launch(db, job_id: str, payload: dict) -> None:

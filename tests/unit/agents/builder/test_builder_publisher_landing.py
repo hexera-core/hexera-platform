@@ -26,7 +26,7 @@ CLOSURE = {
     # that cannot produce the approved boundaries stopped before the mesher ran
     # 16th note: a case the size brake stopped, which no re-plan can make smaller, is meshed with
     # the brake released (RUN-8) - said once, instead of the run ending with no mesh
-    "engines/snappy/drivers.py": {"ameshing": 1, "aerror": 4, "anote": 16, "ameshed": 2, "aplan": 2,
+    "engines/snappy/drivers.py": {"ameshing": 1, "aerror": 4, "anote": 17, "ameshed": 2, "aplan": 2,
                                   "atool_call": 1, "atool_result": 1},
     "engines/snappy/planner.py": {"areasoning": 2},
     "contracts/rationale.py": {"arationale": 1},
@@ -144,12 +144,13 @@ def test_each_closure_module_publishes_exactly_its_gated_sites(rel):
 
 def test_the_closure_is_the_size_the_migration_landed():
     total = sum(sum(m.values()) for m in CLOSURE.values())
-    assert total == 45, (
-        f"the closure is {total} sites, not the 45 it holds since the no-progress\n"
+    assert total == 46, (
+        f"the closure is {total} sites, not the 46 it holds since the no-progress\n"
         "stop, the port-binding refusal, the thin-feature disclosure, the two pre-flight "
         "sites (a box re-planned before meshing, a case stopped before meshing), the "
         "narrow-passage disclosure, the two snappy drivers' mesh plans and the size brake's "
-        "release (RUN-8) joined the user-facing narration")
+        "release (RUN-8), and the per-part sizes said from the user's notes (PLAN-cfd-4) joined the "
+        "user-facing narration")
 
 
 @pytest.mark.parametrize("rel", sorted(CLOSURE))

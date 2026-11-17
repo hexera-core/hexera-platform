@@ -297,7 +297,7 @@ still refer to it, though no longer in any user-visible workflow name.
 | --- | --- | --- |
 | A | `make check-fast` | seconds, no services — is this worth running the suite on? |
 | B | `make check` | the full blocking suite — may this commit produce a release? |
-| C | `make release-validate` → `make release-publish` | build the images **once**, validate *those artifacts*, push exactly what was validated, record the digests |
+| release validation | `make release-validate` → `make release-publish` | build the images **once**, validate *those artifacts*, push exactly what was validated, record the digests |
 | D | `make mesh-preflight` | read-only — may the validated image be promoted into this project? |
 
 The property that matters: **there is one image producer and one consumer of what it produced.**

@@ -183,6 +183,11 @@ class BuilderToolExecutor:
             # measured estimate, published before the mesher starts. A lost claim raises here
             # and the run below is never submitted.
             self._mesh_seq += 1
+            # THE DESIGN, said before the build (contracts/mesh_design): every route's row 2
+            from meshpipeline.contracts import mesh_design
+            await mesh_design.apublish(self._publish, job_id=self._context.job_id,
+                                       workspace=self._context.workspace,
+                                       planned=(prepared.planned, prepared.unit), attempt=self._mesh_seq)
             await self._publish.ameshing(prepared.engine, prepared.cap, prepared.history,
                                          op_id=f"meshing:{self._mesh_seq}")
         from meshpipeline.contracts import mesh_progress

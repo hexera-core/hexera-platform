@@ -199,6 +199,11 @@ async def node_reviewer(state: PipelineState) -> dict:
     # checklist axes name; the 3D preview shows the part's surface as one group by design.
     from meshpipeline.engines import fea_review
     _fea_facts = fea_review.facts_text(workspace) if fea_review.is_fea(purpose) else ""
+    # A FLOW MESH: what the user's notes asked of it against what was delivered, as the pipeline measured it
+    # (engines/cfd_requirements, CFDREQ-6) - facts to read, never to re-derive from a picture
+    if not _fea_facts:
+        from meshpipeline.engines.cfd_requirements import facts_text as _asked_facts
+        _fea_facts = _asked_facts(manifest)
     # THE USER'S OWN NOTES (contracts/user_notes): CONTEXT for the judge, never a criterion - they
     # ride the brief the reviewer reads, and stay out of `brief_text`, the only text a finding may
     # quote to ask for a rebuild, so no note can fail a mesh (NOTE-3).

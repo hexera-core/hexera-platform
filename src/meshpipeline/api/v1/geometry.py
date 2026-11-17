@@ -144,6 +144,25 @@ class ConfirmIn(BaseModel):
     fea_gap_joins: bool | None = None
     #: SET BY THE SERVER for an FEA assembly with small-gap joints: what the switch decided, in words.
     gap_summary: str = ""
+    #: SHSTAGE-5: SET BY THE SERVER at Proceed (application/shell_check.settle): "shell" only when the user's words
+    #: asked for one, else "solid" - whatever a client sends here is ignored (the stage has no pick). Said in the
+    #: declaration and read into the run from the stored confirmation.
+    fea_mesh_as: str = ""
+    #: SET BY THE SERVER with the settled choice: "shell (words)" when a shell was asked for ("" otherwise), and
+    #: the declaration line that says it.
+    fea_mesh_as_picked: str = ""
+    mesh_as_summary: str = ""
+    #: SHSTAGE-8: A SHELL'S ELEMENTS, "quads" or "triangles", from the shell line's one choice. Sent by the stage; the
+    #: server keeps it only when it is the user's own click (it differs from where the control started) - "" when
+    #: the control was left as it started, the notes and settings then decide as the run reads them. Read into the
+    #: run from the stored confirmation (application/shell_elements.confirmed).
+    fea_shell_elements: str = ""
+    #: SET BY THE SERVER with it: where the elements in force came from ("stage", "notes", "settings", "default").
+    fea_shell_elements_by: str = ""
+    #: SURF-4: SET BY THE SERVER at Proceed for a file that is a surface: the wall thickness the user's words gave,
+    #: in millimetres (None: none given - the run delivers the shell with its thickness not set). Whatever a client
+    #: sends here is ignored. Read into the run from the stored confirmation (application/surface_check).
+    fea_shell_thickness_mm: float | None = None
     #: INS-8: THE LEAK SIZE, in the reading's millimetres, when the check found leaks in the
     #: surface: every leak up to that wide is closed for the mesh (never in the file). Sent by the
     #: stage's switch and box; left out, the check's proposal; 0 switches it off. Checked by the
@@ -159,6 +178,11 @@ class ConfirmIn(BaseModel):
     fea_pairs: dict | list | None = None
     #: SET BY THE SERVER for an FEA assembly: the pairs the user set, in words.
     pairs_summary: str = ""
+    #: PLAN-fea-22: the size the user picked on the stage ("full" or "quicker"), checked against what the check
+    #: offered; read into the run from the stored confirmation (application/fea_check.confirmed_plan_choice).
+    fea_plan: str = ""
+    #: SET BY THE SERVER: the size choice in words, for the declaration.
+    plan_summary: str = ""
 
     @field_validator("extents")
     @classmethod
@@ -250,6 +274,22 @@ def _take_back(store, object_key: str, *, ours: bytes, earlier: bytes | None, se
         logger.warning("geometry check: could not take back the stored confirmation - session_id=%s", session_id)
 
 
+async def _meshing_standard_of(organization_id: str) -> dict | None:
+    """SHSTAGE-8: the team's meshing standard, for where a shell's element choice starts (its kept reading only:
+    no model is asked); None with none, or when it cannot be read (the control then starts on the notes or Quads)."""
+    if not organization_id:
+        return None
+    try:
+        from meshpipeline.application import meshing_standard_service
+        from meshpipeline.persistence.session import get_db
+
+        async with get_db() as db:
+            return await meshing_standard_service.for_dispatch(db, organization_id=organization_id)
+    except Exception as exc:  # noqa: BLE001 - a setting never breaks the stage
+        logger.warning("geometry check: the meshing standard could not be read (%s)", type(exc).__name__)
+        return None
+
+
 @router.get("/{session_id}/check")
 async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
                     organization_id: str = Depends(org_dep)) -> dict:
@@ -304,7 +344,29 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
     payload["route"] = fea_check.stage_route(payload, getattr(session, "messages", None))
     if payload["route"] == fea_check.STAGE_FEA:
         # the part, its unit and size (the proposal), its bodies and the clean check - no flow form
-        payload["fea"] = await asyncio.to_thread(fea_check.fea_view, payload.get("facts"))
+        payload["fea"] = await asyncio.to_thread(fea_check.fea_view, payload.get("facts"),
+                                                 getattr(session, "messages", None))
+        # SHSTAGE-2: A SHELL ONLY WHEN THE USER'S WORDS ASKED FOR ONE - the shell check as it stands (started now when
+        # it was asked for after the naming); nothing at all for a solid, the stage from before shell existed
+        from meshpipeline.application import shell_check
+        _msgs = getattr(session, "messages", None)
+        # SURF-6: A FILE THAT IS A SURFACE is a shell by what it is: its one line, and no mid-surface to extract
+        from meshpipeline.application import surface_check
+        _shell = surface_check.view(payload.get("facts"), _msgs)
+        if _shell is None:
+            try:
+                await asyncio.to_thread(shell_check.start_if_asked, str(session_id), owner_id,
+                                        facts=payload.get("facts"), messages=_msgs, interpretation=interpretation)
+            except Exception as exc:  # noqa: BLE001 - not started: the run still makes a said shell
+                logger.warning("geometry check: the shell check was not started (%s)", type(exc).__name__)
+            _shell = await asyncio.to_thread(shell_check.view_for, str(session_id), payload.get("facts"), _msgs)
+        if _shell is not None:
+            # SHSTAGE-8: a shell's one element choice, Quads | Triangles, on its line (none for a solid)
+            from meshpipeline.application import shell_elements
+            if _shell.get("mesh_as") == "shell":
+                _std = await _meshing_standard_of(organization_id)
+                _shell = {**_shell, "elements": shell_elements.view(_shell, _msgs, standard=_std)}
+            payload["fea"]["shell"] = _shell
         # ...and NO OPENINGS: a solid part for structural analysis has no inlet or outlet, so the
         # scout's flow openings (read before the purpose was known) are not served on its check
         # (the dry run's stud punch carried 18, the knuckle 7). Stored as they were, for a user who
@@ -543,6 +605,99 @@ async def get_check_skin(session_id: uuid.UUID, owner_id: str = Depends(owner_de
     return Response(content=raw, media_type="application/json")
 
 
+class PartPickIn(BaseModel):
+    #: the phrase of the notes the row stands for (its index in the reading), and the parts the user picked for it
+    phrase: int = Field(ge=0, le=500)
+    parts: list[str] = Field(default_factory=list, max_length=500)
+
+
+@router.get("/{session_id}/check/parts")
+async def get_check_parts(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
+                          organization_id: str = Depends(org_dep)) -> dict:
+    """The parts checklist on the request card (NOTE-4 before approval): which parts the notes mean.
+    {"status": "none"} when the notes name no part; "waiting" / "reading" while it is worked out; "done" with
+    the rows, the parts and a link to the picture."""
+    session = await _owned_session(session_id, owner_id, organization_id)
+    from meshpipeline.application import part_matches as PM
+    got = await asyncio.to_thread(lambda: PM.view(session, owner_id=owner_id))
+    return got or {"status": "none"}
+
+
+@router.get("/{session_id}/check/parts/{name}.png")
+async def get_check_parts_picture(session_id: uuid.UUID, name: str, owner_id: str = Depends(owner_dep),
+                                  organization_id: str = Depends(org_dep)) -> Response:
+    """One of the checklist card's pictures (a side of the model, shaded or its part ids), served from the API so the
+    console can read which part is under the cursor. 404 when there is none."""
+    await _owned_session(session_id, owner_id, organization_id)
+    from meshpipeline.application import part_matches as PM
+    data = await asyncio.to_thread(PM.card_picture, str(session_id), name)
+    if data is None:
+        raise HTTPException(404, "No such picture for this session's parts")
+    return Response(content=data, media_type="image/png", headers={"Cache-Control": "private, max-age=3600"})
+
+
+@router.get("/{session_id}/check/parts/model")
+async def get_check_parts_model(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
+                                organization_id: str = Depends(org_dep)) -> Response:
+    """The checklist's model in 3D (render/part_model): the measured surface, simplified for the browser, each
+    triangle's part or area, for the console to turn and pick parts on. The stored JSON is handed through as it is
+    (the gzip middleware compresses it). 404 when there is none (the console shows the pictures)."""
+    await _owned_session(session_id, owner_id, organization_id)
+    from meshpipeline.application import part_matches as PM
+    data = await asyncio.to_thread(PM.model_bytes, str(session_id))
+    if data is None:
+        raise HTTPException(404, "No parts model for this session")
+    return Response(content=data, media_type="application/json", headers={"Cache-Control": "private, max-age=3600"})
+
+
+@router.post("/{session_id}/check/parts/finalize")
+async def finalize_check_parts(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
+                               organization_id: str = Depends(org_dep)) -> dict:
+    """The user finalized their notes: the parts their words name (the first answer and every note) are read now,
+    once for the words as they stand; answers with the checklist ("reading", then the rows on the next poll)."""
+    session = await _owned_session(session_id, owner_id, organization_id)
+    if session.job_id is not None:
+        raise HTTPException(409, "The run has already started, so its notes cannot change.")
+    from meshpipeline.application import part_matches as PM
+    got = await asyncio.to_thread(lambda: PM.finalize(session, owner_id=owner_id))
+    return got or {"status": "none"}
+
+
+@router.post("/{session_id}/check/parts")
+async def pick_check_parts(session_id: uuid.UUID, body: PartPickIn, owner_id: str = Depends(owner_dep),
+                           organization_id: str = Depends(org_dep)) -> dict:
+    """Fix one row of the parts checklist: the parts the user picked for one phrase of their notes, kept for the
+    run (the normal Approve takes it). Checked by the same rules as the model's reading."""
+    session = await _owned_session(session_id, owner_id, organization_id)
+    if session.job_id is not None:
+        raise HTTPException(409, "The run has already started, so its parts cannot be changed. "
+                                 "Change them before you approve the next run.")
+    from meshpipeline.application import part_matches as PM
+    got = await asyncio.to_thread(lambda: PM.pick(session, body.phrase, body.parts))
+    if got is None:
+        raise HTTPException(409, "Your notes changed since this list was made. Press Finalize notes, then pick again.")
+    return got
+
+
+@router.get("/{session_id}/check/shell-surface")
+async def get_check_shell_surface(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
+                                  organization_id: str = Depends(org_dep)) -> Response:
+    """SHSTAGE-4: an FEA part's mid-surface as the stage draws it over the part - triangles in the reading's
+    millimetres, each with the wall it stands for, and the open edges (cad/shell_preview overlay.json).
+    Fetched once, when the stage's "Mesh as" view says the shell check is ready. 404 until then."""
+    if not gcfg.GEOMETRY_CHECK_ENABLED:
+        raise HTTPException(404, "The geometry check is not enabled on this deployment")
+    await _owned_session(session_id, owner_id, organization_id)
+    from meshpipeline.application.shell_check import OVERLAY_FILE, key
+    from meshpipeline.contracts.object_storage import ObjectNotFound, get_object_store
+
+    try:
+        raw = await asyncio.to_thread(get_object_store().get_bytes, object_key=key(str(session_id), OVERLAY_FILE))
+    except ObjectNotFound:
+        raise HTTPException(404, "No mid-surface has been stored for this session's part") from None
+    return Response(content=raw, media_type="application/json")
+
+
 @router.post("/{session_id}/check/confirm")
 async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = Depends(owner_dep),
                         organization_id: str = Depends(org_dep)) -> dict:
@@ -608,7 +763,7 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
         else fea_check.STAGE_FEA if _fea else ""})
     if body.check_mode == fea_check.STAGE_FEA:
         facts = _stored_check.get("facts") or {}
-        blocked, _kind, way_out = fea_check.blocker(facts)
+        blocked, _kind, way_out = fea_check.blocker(facts, session.messages)
         if blocked:
             # VERSION 1 MESHES ONE CLOSED SOLID AT A TIME: no guessing at how parts connect, and no
             # solid mesh of a surface - said with the way on, never a silent failure later
@@ -635,6 +790,38 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
             "gap_summary": (("Joined across small gaps: " if gap_on else "Left open (small gaps not joined): ")
                             + "; ".join(g["words"].split(" - ")[0] for g in gaps[:8])
                             + (f" and {len(gaps) - 8} more" if len(gaps) > 8 else "") + ".") if gaps else ""})
+        # PLAN-fea-22: the size the user picked, when the check offered a choice (the recommended one when unsent)
+        plan = fea_check.plan_answer(body.fea_plan, facts)
+        body = body.model_copy(update={"fea_plan": plan, "plan_summary": fea_check.plan_words(plan, facts)})
+        # SHSTAGE-5: SHELL OR SOLID, SETTLED NOW - a shell only when the user's words asked for one (never the
+        # form's: it has no pick), else a solid as before shell existed. The run never waits on the user after this.
+        from meshpipeline.application import shell_check, surface_check
+        # SURF-6: a surface file is a shell by what it is, at the thickness the user's words gave (None: not set)
+        _view = surface_check.view(facts, session.messages)
+        if _view is None:
+            try:
+                await asyncio.to_thread(shell_check.start_if_asked, str(session_id), owner_id, facts=facts,
+                                        messages=session.messages, interpretation=interpretation)
+            except Exception as exc:  # noqa: BLE001 - not started: the run still makes a said shell
+                logger.warning("geometry confirm: the shell check was not started (%s)", type(exc).__name__)
+            _view = await asyncio.to_thread(shell_check.view_for, str(session_id), facts, session.messages)
+        _settled = shell_check.settle(_view)
+        # SHSTAGE-8: the shell's elements - the user's click is the last word for this run; a control left where it
+        # started is no pick (the notes and settings decide as the run reads them)
+        from meshpipeline.application import shell_elements
+        _elements = {"pick": "", "by": "", "words": ""}
+        if _settled["mesh_as"] == "shell":
+            _started = shell_elements.start(session.messages, standard=await _meshing_standard_of(organization_id))
+            _elements = shell_elements.settle(body.fea_shell_elements, _started)
+        body = body.model_copy(update={"fea_mesh_as": _settled["mesh_as"],
+                                       "fea_shell_thickness_mm": (_view or {}).get("thickness_mm")
+                                       if (_view or {}).get("surface") else None,
+                                       "fea_mesh_as_picked": (f"{_settled['picked']} ({_settled['by']})"
+                                                              if _settled["picked"] else ""),
+                                       "fea_shell_elements": _elements["pick"],
+                                       "fea_shell_elements_by": _elements["by"],
+                                       "mesh_as_summary": " ".join(w for w in (shell_check.declaration_words(_settled),
+                                                                               _elements["words"]) if w)})
         proposed = _stored_check.get("proposal") or {}
         body = body.model_copy(update={
             "input_kind": "solid-body", "flow": None, "openings": [], "seed_point_mm": None,
@@ -642,7 +829,7 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
             "size_mm": body.size_mm or proposed.get("size_mm"),
             "scale_to_m": body.scale_to_m or proposed.get("scale_to_m") or facts.get("scale_to_m"),
             "bodies": fea_check.body_count(facts),
-            "clean_summary": fea_check.clean_words(facts)[1]})
+            "clean_summary": fea_check.declared_clean(facts, session.messages)})
     elif body.check_mode == THERMAL_CHECK:
         # the panel sends only the detail level: a thermal model is always an assembly of solid
         # parts with the air among them, so its kind and flow are the server's to fill - and its

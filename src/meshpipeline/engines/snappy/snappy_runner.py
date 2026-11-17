@@ -33,7 +33,14 @@ from meshpipeline.engines.domain_extent_gate import (
     extent_gate_for_request as check_domain_extents,  # noqa: F401  (engine-adapter seam; cross-engine-neutral case-level gate)
 )
 from meshpipeline.engines.ground_contact import GroundContact, measure_contact
-from meshpipeline.engines.ground_plane import VERTICAL_AXIS, ground_patch_name, is_ground
+from meshpipeline.engines.ground_plane import (
+    DEFAULT_FLOOR,
+    VERTICAL_AXIS,
+    from_up_frame,
+    ground_patch_name,
+    is_ground,
+    to_up_frame,
+)
 from meshpipeline.engines.manifest import (  # noqa: F401
     _patch_face_counts,
     write_manifest,
@@ -451,7 +458,8 @@ def axis_roles(analysis: dict, symmetry: dict | None = None) -> tuple[int, int, 
     return stream, vert, span
 
 
-def _lay_floor(dmin: list, bmin, contact: GroundContact | None = None) -> None:
+def _lay_floor(dmin: list, bmin, contact: GroundContact | None = None, *,
+               dmax: list | None = None, bmax=None, floor: tuple[int, str] = DEFAULT_FLOOR) -> None:
     """A body ON THE GROUND stands on the box's floor: the z-min face moves up to the body's
     lowest point, with no gap under it. A clearance would leave a sliver of fluid under the body
     that no mesher resolves; the other margins are untouched.
@@ -461,9 +469,18 @@ def _lay_floor(dmin: list, bmin, contact: GroundContact | None = None) -> None:
     stands its buildings on the ground. A body that meets the floor at points or along lines -
     wheels, a rounded nose - has the floor raised a measured few millimetres into it, so the
     contact is a small flat patch instead of a wedge of fluid that closes to nothing. Without a
-    measured contact the floor goes at the lowest point, as it always has."""
-    dmin[VERTICAL_AXIS] = (float(contact.floor_z) if contact is not None
-                           else float(bmin[VERTICAL_AXIS]))
+    measured contact the floor goes at the lowest point, as it always has.
+
+    The floor is the box face under the body for the up axis the user confirmed (INS-9,
+    ground_plane.floor_of): z-min on a +z-up file, y-min on +y up, y-max on -y up. The contact
+    is measured in that up frame, so its heights read along the up axis."""
+    ax, side = int(floor[0]), floor[1]
+    if side == "min":
+        dmin[ax] = float(contact.floor_z) if contact is not None else float(bmin[ax])
+    else:
+        if dmax is None or bmax is None:
+            raise ValueError("a floor on the max side of the box needs the box's max")
+        dmax[ax] = -float(contact.floor_z) if contact is not None else float(bmax[ax])
 
 
 #: The feature-edge file the renderer writes for the line where a raised floor cuts the body.
@@ -481,10 +498,21 @@ def _contact_line_emesh(contact: GroundContact) -> str:
             + f"{len(contact.line_points)}\n(\n{pts})\n{len(contact.line_edges)}\n(\n{edges})\n")
 
 
-def measure_ground_contact(workspace, geometry_file: str = "input.stl") -> GroundContact:
+def measure_ground_contact(workspace, geometry_file: str = "input.stl",
+                           floor: tuple[int, str] = DEFAULT_FLOOR) -> GroundContact:
     """How the staged body meets the ground: read its triangles and measure (metres in, as
-    every surface staged into a workspace is)."""
-    return measure_contact(read_stl_triangles(Path(workspace) / geometry_file))
+    every surface staged into a workspace is). Measured with the up axis as z (INS-9): its
+    heights are along the up axis, and its contact line is given back in the file's frame."""
+    import dataclasses
+
+    tris = read_stl_triangles(Path(workspace) / geometry_file)
+    if tuple(floor) == DEFAULT_FLOOR:
+        return measure_contact(tris)
+    c = measure_contact(to_up_frame(tris, floor))
+    if not c.line_points:
+        return c
+    pts = tuple((float(p[0]), float(p[1]), float(p[2])) for p in from_up_frame(c.line_points, floor))
+    return dataclasses.replace(c, line_points=pts)
 
 
 def domain_from_strategy(analysis: dict, strategy: dict | None = None,
@@ -492,11 +520,12 @@ def domain_from_strategy(analysis: dict, strategy: dict | None = None,
                          flow_axis: str | None = None,
                          ruler_m: float | None = None,
                          ground: bool = False,
-                         contact: GroundContact | None = None) -> tuple[list, list]:
+                         contact: GroundContact | None = None,
+                         floor: tuple[int, str] = DEFAULT_FLOOR) -> tuple[list, list]:
     bmin, bmax, L = analysis["bbox_min"], analysis["bbox_max"], analysis["L"]
-    if ground and flow_axis and flow_axis.strip().lower()[-1:] == "xyz"[VERTICAL_AXIS]:
-        raise ValueError(f"a ground plane lies across z, so the flow cannot travel along "
-                         f"{flow_axis} as well")
+    if ground and flow_axis and flow_axis.strip().lower()[-1:] == "xyz"[int(floor[0])]:
+        raise ValueError(f"a ground plane lies across {'xyz'[int(floor[0])]}, so the flow cannot "
+                         f"travel along {flow_axis} as well")
     m = (strategy or {}).get("domain_margin") or {}
     from meshpipeline.engines.snappy.planner import plan_float
     m = m if isinstance(m, dict) else {}
@@ -539,7 +568,7 @@ def domain_from_strategy(analysis: dict, strategy: dict | None = None,
             else:
                 dmax[axx] = symmetry["pos"]
         if ground:
-            _lay_floor(dmin, bmin, contact)
+            _lay_floor(dmin, bmin, contact, dmax=dmax, bmax=bmax, floor=floor)
         return dmin, dmax
 
     roles = axis_roles(analysis, symmetry)
@@ -583,7 +612,7 @@ def domain_from_strategy(analysis: dict, strategy: dict | None = None,
         else:
             dmax[ax] = symmetry["pos"]
     if ground:
-        _lay_floor(dmin, bmin, contact)
+        _lay_floor(dmin, bmin, contact, dmax=dmax, bmax=bmax, floor=floor)
     return dmin, dmax
 
 
@@ -711,6 +740,26 @@ def planned_cells_on_record(workspace) -> int | None:
     return int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0 else None
 
 
+def _user_background(ask, ext, base, div, deficit):
+    from meshpipeline.engines import cfd_requirements as CR
+    return CR.snappy_background(ask, ext, base, div, deficit)
+
+
+def _user_levels(ask, base_actual, **kw):
+    from meshpipeline.engines import cfd_requirements as CR
+    return CR.snappy_levels(ask, base_actual, **kw)
+
+
+def _user_wake(ask, wake, *, wall_cell):
+    from meshpipeline.engines import cfd_requirements as CR
+    return CR.snappy_wake(ask, wake, wall_cell=wall_cell)
+
+
+def _user_budget_for_sizes(ask, max_cells, estimate):
+    from meshpipeline.engines import cfd_requirements as CR
+    return CR.budget_for_sizes(ask, max_cells, estimate)
+
+
 def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analysis: dict,
                        recommendation: dict, domain_min, domain_max,
                        strategy: dict | None = None, dimensionality: str = "3D",
@@ -724,11 +773,17 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
                        outside_points: list | None = None,
                        wake: WakeRequest | None = None,
                        contact: GroundContact | None = None,
-                       gap_field: tuple | None = None) -> dict:
+                       gap_field: tuple | None = None,
+                       part_sizes: dict | None = None,
+                       ground_floor: tuple[int, str] = DEFAULT_FLOOR,
+                       requirements=None) -> dict:
     ws = Path(workspace)
     strategy = strategy or {}
     rec = recommendation
     base = rec["base_cell"]
+    # CFDREQ-1..7: THE USER'S REQUIREMENTS from their notes (engines/cfd_requirements.Ask, the driver reads it). None:
+    # every line below writes exactly the case it always has
+    _ask = requirements
     if (dimensionality or "3D").upper() == "2D":
         # UPSTREAM TRUTH: snappyHexMesh is a 3D mesher. The former pseudo-2D workflow
         # (thin slab + extrudeMesh collapse) was removed - real 2D Cartesian meshing is
@@ -753,6 +808,8 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
     # So budget the background directly - with CUBIC cells (background_grid): the same cell on
     # every axis, coarsened in whole doublings until the box fits the budget.
     div, deficit = background_grid(ext, base)
+    if _ask is not None and (_ask.global_m or _ask.max_m or _ask.wall_m):
+        div, deficit = _user_background(_ask, ext, base, div, deficit)
 
     # DOMAIN-DECOUPLED RESOLUTION. A refinement LEVEL is relative to the background base cell,
     # but the budget (needed so a large far-field doesn't explode the background) makes the
@@ -772,6 +829,8 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
     # (going finer explodes the count). The strategy may move WITHIN [floor, afford], never below.
     # Each level is shifted up by `deficit` to undo the clamp's coarsening (see above).
     floor = min(_HARD_MAX_LEVEL, int(rec["surface_level"][0]) + deficit)
+    if _ask is not None:
+        floor = max(0, floor)
     ceil_ = min(_HARD_MAX_LEVEL, max(floor, int(rec.get("afford_level", floor)) + deficit))
     from meshpipeline.engines.snappy.planner import plan_float, plan_int
     so = strategy.get("surface_level")
@@ -781,6 +840,13 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
     flevel = plan_int(strategy, "feature_level", int(rec["feature_level"]))
     flevel = min(_HARD_MAX_LEVEL, max(smax, min(flevel, int(rec["feature_level"])) + deficit))
     bands = rec["distance_bands"]
+    if _ask is not None:
+        # CFDREQ-2: the size at the walls (or the body's own size in a note), and the smallest cell - as levels
+        # on the background cell really used; the body-sealing level is never undercut (validity)
+        _HARD_MAX_LEVEL, smin, smax, flevel = _user_levels(
+            _ask, base_actual, floor=floor, level=smax, flevel=flevel, regions=surface_regions or [],
+            part_levels=bool(part_sizes and (part_sizes.get("reading") or {}).get("status") == "used"))
+        wake = _user_wake(_ask, wake, wall_cell=base_actual / 2 ** smax)
     if deficit:
         logger.info("render_snappy_case: clamp deficit=%d → levels bumped (base_assumed=%.4g "
                     "base_actual=%.4g surf=%d feat=%d) to hold absolute wall resolution",
@@ -840,10 +906,10 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
         _claims.append((symmetry["name"], "symmetryPlane",
                         _BOX_FACES[(symmetry["axis"], symmetry["side"])]))
     if ground:
-        _floor = _BOX_FACES[(VERTICAL_AXIS, "min")]
+        _floor = _BOX_FACES[(int(ground_floor[0]), ground_floor[1])]     # INS-9: under the confirmed up axis
         if any(face == _floor for _, _, face in _claims):
             raise ValueError(f"the ground plane '{ground}' and a symmetry plane both claim the "
-                             "box's z-min face")
+                             f"box's {'xyz'[int(ground_floor[0])]}-{ground_floor[1]} face")
         _claims.append((ground, "wall", _floor))
     _ff = "".join(f for f in _ALL_BOX_FACES if f not in {face for _, _, face in _claims})
     _boundary = ("boundary (" + " ".join(
@@ -872,6 +938,8 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
     _min_thick = float((layer_overrides or {}).get("min_thickness_rel", 0.05))
     (b0d, b0l), (b1d, b1l) = bands
     near_band_level = min(int(b0l) + deficit, smax + 2)   # bumped with the surface (see deficit above)
+    if _ask is not None:
+        near_band_level = max(smax, min(near_band_level, _HARD_MAX_LEVEL))
 
     # quality vs coverage: "balanced" buys layer coverage with relaxed cell quality (some
     # high-skew cells); "strict" enforces a real tet quality + tighter relaxed bounds so
@@ -892,10 +960,30 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
     _names = [str(r) for r in (surface_regions or []) if str(r).strip()]
     _geo_regions = (" regions { " + " ".join(f"{r} {{ name {r}; }}" for r in _names) + " }"
                     if _names else "")
+    # PLAN-cfd-4: THE SIZES THE USER ASKED FOR, PART BY PART (engines/snappy/part_levels): a part that is its own
+    # region gets its own level, finer or coarser; a part merged into a wall with others is refined near its own
+    # surface (a distance region on its own file). None: the dict is exactly what it has always been.
+    _part_lv: dict = {"regions": {}, "refine": {}, "words": []}
+    if part_sizes and (part_sizes.get("reading") or {}).get("status") == "used":
+        from meshpipeline.engines.snappy import part_levels as PL
+        _part_lv = PL.plan(part_sizes.get("reading"), part_sizes.get("by_id") or {}, base_m=float(base_actual),
+                           smin=int(smin), smax=int(smax), regions=_names)
+    _lv_of = {r: _part_lv["regions"].get(r, (smin, smax)) for r in _names}
+    if _ask is not None:
+        _lv_of.update({r: v for r, v in getattr(_ask, "region_levels", {}).items() if r in _lv_of})
     _ref_regions = (" regions { "
-                    + " ".join(f"{r} {{ level ({smin} {smax}); patchInfo {{ type wall; }} }}"
+                    + " ".join(f"{r} {{ level ({_lv_of[r][0]} {_lv_of[r][1]}); patchInfo {{ type wall; }} }}"
                                for r in _names) + " }"
                     if _names else "")
+    _part_geom = _part_refine = ""
+    for _pname, _plevel in _part_lv["refine"].items():
+        from meshpipeline.engines.snappy import part_levels as PL
+        _pf = f"partref_{PL.safe(_pname)}"
+        if not (ws / "constant" / "triSurface" / f"{_pf}.stl").exists():
+            continue
+        _band = PL.BAND_CELLS * float(base_actual) / 2 ** int(_plevel)
+        _part_geom += f" {_pf}.stl {{ type triSurfaceMesh; name {_pf}; }}"
+        _part_refine += f" {_pf} {{ mode distance; levels (({_band:.6g} {int(_plevel)})); }}"
     # ONE ENTRY PER REGION, by the patch's real name. snappyHexMesh names a region patch after the
     # region itself, not <surface>_<region>: a pattern built on the surface name matches nothing,
     # and OpenFOAM says so in the log and then adds no layers at all - a wall-resolved case would
@@ -923,7 +1011,7 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
                           domain_min=domain_min, domain_max=domain_max,
                           flow_axis=wake.flow_axis, base_cell=base_actual, surface_level=smax,
                           budget_cells=max_cells, knobs=wake.knobs, ruler_m=wake.ruler_m,
-                          grounded=bool(ground),
+                          grounded=bool(ground), floor=ground_floor,
                           # what the body itself costs, so the wake never starves the wall's
                           # refinement of the budget snappyHexMesh stops refining at
                           body_cells=castellated_estimate(
@@ -942,6 +1030,14 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
     # with snappy's cell ceiling raised to what they cost - within the compute limit. External
     # flow has no floor gate to refuse a mesh, so over the limit the gaps get as many as it holds,
     # and the run says so. No field (one body, or none read) authors the historical dict.
+    if _ask is not None:
+        # CFDREQ-3: a budget of ours gives way to the user's sizes (up to the largest machine); theirs stands
+        max_cells = _user_budget_for_sizes(_ask, max_cells, final_estimate(
+            castellated=castellated_estimate(
+                area=analysis.get("surface_area"), divisions=div, base_cell=base_actual,
+                surface_level=smax, near=(b0d, near_band_level), far=(b1d, max(1, smin - 1))),
+            budget=10 ** 12, area=analysis.get("surface_area"), wall_cell=base_actual / (2 ** smax),
+            n_layers=max([n_layers, *layer_counts.values()]) if _any_layers else 0))
     _gap = None
     _gap_geom = _gap_refine = ""
     _planned_cells = max_cells          # the plan's budget before the gap boxes price themselves in
@@ -952,7 +1048,9 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
                 area=analysis.get("surface_area"), divisions=div, base_cell=base_actual,
                 surface_level=smax, near=(b0d, near_band_level), far=(b1d, max(1, smin - 1))),
             n_layers=max([n_layers, *layer_counts.values()]) if _any_layers else 0,
-            wall_area=analysis.get("surface_area"))
+            wall_area=analysis.get("surface_area"),
+            # CFDREQ-3: within the user's own count when they set one (engines/snappy/drivers._plan_limit)
+            limit=strategy.get("_cell_limit"))
         for k, b in enumerate(_gap.regions if _gap is not None else []):
             _lvl = min(_HARD_MAX_LEVEL, smax + int(b.get("level_bump", 1)))
             _gap_geom += (f" {_GAP_BOX}{k} {{ type searchableBox; min {vf(b['min'])}; "
@@ -985,6 +1083,9 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
     # at 6.24M without the brake - and no re-plan could shrink it (the boxes price themselves back
     # in), so no mesh came out at all. A plan the boxes did not raise keeps exactly its old record.
     _plan_rec: dict = {"plan_cells": int(strategy.get("_plan_cells") or _planned_cells)}
+    if _ask is not None and (_ask.user_budget() or getattr(_ask, "raised", False)):
+        # CFDREQ-3: the budget the user's count or sizes set is the plan the brake measures against
+        _plan_rec["plan_cells"] = int(_planned_cells)
     if max_cells > _planned_cells:
         _gap_cells = int(max_cells - _planned_cells)
         _plan_rec = {"plan_cells": _plan_rec["plan_cells"] + _gap_cells,
@@ -995,14 +1096,14 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
                     "%.1f times the %d budget - castellation budget %d", _final, _final / max_cells,
                     max_cells, cast_cells)
 
-    (ws / "system" / "snappyHexMeshDict").write_text(
+    _shm = (
         _HDR.format(cls="dictionary", obj="snappyHexMeshDict") + f"""
 castellatedMesh true; snap true; addLayers {'true' if _any_layers else 'false'};
-geometry {{ {surface_name}.stl {{ type triSurfaceMesh; name {surface_name};{_geo_regions} }}{_wake_geom}{_gap_geom} }}
+geometry {{ {surface_name}.stl {{ type triSurfaceMesh; name {surface_name};{_geo_regions} }}{_wake_geom}{_gap_geom}{_part_geom} }}
 castellatedMeshControls {{ maxLocalCells {cast_cells}; maxGlobalCells {cast_cells}; minRefinementCells 10;
   maxLoadUnbalance 0.10; nCellsBetweenLevels 3; features ( {{ file "{feature_file}"; level {flevel}; }}{_contact_feature} );
   refinementSurfaces {{ {surface_name} {{ level ({smin} {smax});{_ref_regions} }} }} resolveFeatureAngle {ang:.0f};
-  refinementRegions {{ {surface_name} {{ mode distance; levels (({b0d:.6g} {near_band_level}) ({b1d:.6g} {max(1, smin - 1)})); }}{_wake_refine}{_gap_refine} }}
+  refinementRegions {{ {surface_name} {{ mode distance; levels (({b0d:.6g} {near_band_level}) ({b1d:.6g} {max(1, smin - 1)})); }}{_wake_refine}{_gap_refine}{_part_refine} }}
   locationInMesh {vf(loc)}; allowFreeStandingZoneFaces true;{_outside} }}
 snapControls {{ nSmoothPatch 3; tolerance 2.0; nSolveIter 50; nRelaxIter 8; nFeatureSnapIter 15;
   implicitFeatureSnap false; explicitFeatureSnap true; multiRegionFeatureSnap false; }}
@@ -1018,6 +1119,11 @@ meshQualityControls {{ maxNonOrtho 65; maxBoundarySkewness 20; maxInternalSkewne
   relaxed {{ maxNonOrtho {relaxed_no}; maxInternalSkewness 4;{relaxed_tet} }} }}
 mergeTolerance 1e-6; debug 0;
 """)
+    if _ask is not None:
+        from meshpipeline.engines import cfd_requirements as CR
+        _shm = CR.snappy_dict(_ask, _shm, wall_cell_m=base_actual / (2 ** smax))
+        _ask.write(ws)
+    (ws / "system" / "snappyHexMeshDict").write_text(_shm)
     # SYNTHETIC CLASS REGIONS ARE A MESHING DEVICE, NOT A DELIVERABLE. The layer policy splits
     # a monolithic wall into <wall>_thin / <wall>_razor so each class can carry its own layer
     # count, and snappyHexMesh makes every region its own PATCH. The user declared exactly one
@@ -1052,11 +1158,16 @@ mergeTolerance 1e-6; debug 0;
         out["castellation_budget"] = cast_cells
     if layer_counts:
         out["layer_counts"] = dict(layer_counts)
+    if _ask is not None:
+        out["requirements_lines"] = _ask.lines()
     if _synthetic:
         out["merged_regions"] = list(_synthetic)
     if ground:
         _floor_rec: dict = {"patch": ground,
                             "floor_z": round(float(domain_min[VERTICAL_AXIS]), 6)}
+        _fax, _fside = int(ground_floor[0]), ground_floor[1]
+        out["ground_floor"] = {"axis": _fax, "side": _fside,
+                               "at": round(float((domain_min if _fside == "min" else domain_max)[_fax]), 6)}
         if contact is not None:
             _floor_rec.update({"contact": contact.kind,
                                "penetration_m": round(float(contact.penetration_m), 6),
@@ -1079,6 +1190,10 @@ mergeTolerance 1e-6; debug 0;
         out["gap_plan"] = _gap.record()
         out["gap_note"] = _gap.words(base_actual / (2 ** smax), auto=True)
         _gap.write(ws)
+    if _part_lv["regions"] or _part_lv["refine"] or _part_lv["words"]:
+        # PLAN-cfd-4: the parts the notes sized, and how (the driver says it and records it)
+        out["part_levels"] = {"regions": {k: list(v) for k, v in _part_lv["regions"].items()},
+                              "refine": dict(_part_lv["refine"]), "words": list(_part_lv["words"])}
     return out
 
 
@@ -1087,14 +1202,15 @@ _GAP_BOX = "gapZone"
 
 
 def _plan_body_gaps(field, *, wall_cell: float, budget: int, base_cells: float | None,
-                    n_layers: int = 0, wall_area: float | None = None):
+                    n_layers: int = 0, wall_area: float | None = None, limit: int | None = None):
     """(gap plan, the cell ceiling to mesh with) for the gaps between an external body's parts
     (engines/gap_sizing.plan_gaps on the body gap field): the boxes put 13 across every gap the
-    wall cell leaves short, the ceiling rises to what they cost within the compute limit, and over
-    it the gaps get as many as the limit holds. The wall layers snappy adds after refinement are
-    priced too - `n_layers` per wall face on the body's `wall_area`, and on each gap's finer wall -
-    so the ceiling leaves room for them under the limit, as the internal plan does.
-    (None, budget) when the plan cannot be made."""
+    wall cell leaves short, the ceiling rises to what they cost within the compute limit (`limit`:
+    the user's own count when they set one, CFDREQ-3; else the standard machine's CELL_HARD_LIMIT),
+    and over it the gaps get as many as the limit holds. The wall layers snappy adds after
+    refinement are priced too - `n_layers` per wall face on the body's `wall_area`, and on each
+    gap's finer wall - so the ceiling leaves room for them under the limit, as the internal plan
+    does. (None, budget) when the plan cannot be made."""
     import numpy as np
 
     import meshpipeline.settings.policy as polcfg
@@ -1124,7 +1240,7 @@ def _plan_body_gaps(field, *, wall_cell: float, budget: int, base_cells: float |
                                             * (1.0 / c ** 2 - 1.0 / wall_cell ** 2))
             return boxes
         plan = GS.plan_gaps(at, cell_m=wall_cell, budget=int(budget),
-                            limit=int(polcfg.CELL_HARD_LIMIT), base_cells=base_cells,
+                            limit=int(limit or polcfg.CELL_HARD_LIMIT), base_cells=base_cells,
                             accept_fewer=True, whole_box=True, base_after=after)
     except Exception:  # noqa: BLE001 - a plan we cannot make leaves the case as planned
         logger.warning("render_snappy_case: the body-gap plan failed - meshing as planned",
@@ -1353,8 +1469,10 @@ def render_internal_case(workspace, *, names: dict, features: dict, interior_poi
                          sealed_before: frozenset[str] | set[str] = frozenset(),
                          thin_regions: list | None = None,
                          near_band_depth: float | None = None,
-                         distance_regions: list | None = None) -> dict:
+                         distance_regions: list | None = None,
+                         requirements=None) -> dict:
     ws = Path(workspace)
+    _ask = requirements          # CFDREQ-1..7 (engines/cfd_requirements.Ask); None: the case it always wrote
     ext = [float(bbox_max[i] - bbox_min[i]) for i in range(3)]
     maxext = max(ext)
     pad = max(2.0 * base_cell, 0.03 * maxext)
@@ -1389,6 +1507,10 @@ def render_internal_case(workspace, *, names: dict, features: dict, interior_poi
     port_lvls = _port_levels(base_cell=base_actual, default_level=port_level, smin=smin,
                              port_sizes=port_sizes, sealed_before=sealed_before,
                              hard_max=_HARD_MAX_LEVEL)
+    if _ask is not None:
+        from meshpipeline.engines import cfd_requirements as CR
+        port_lvls = CR.snappy_port_levels(_ask, port_lvls, names, wall_key, base_m=base_actual,
+                                          hard_max=_HARD_MAX_LEVEL)
     # The near-wall band exists to give the wall a few FINE cells of depth. Scaling it by
     # base_cell made it 3 base cells deep - with an inflated base_cell that was most of
     # the domain at max level (the same detonation). Scale by the actual WALL cell.
@@ -1505,7 +1627,7 @@ def render_internal_case(workspace, *, names: dict, features: dict, interior_poi
                   for r in [*_thin, *_dist])])
     _min_vol = layer_min_vol(min(dext[i] / max(div[i], 1) for i in range(3)) / (2 ** _top),
                              n_layers=n_layers, min_thickness_rel=0.05)
-    (ws / "system" / "snappyHexMeshDict").write_text(
+    _shm = (
         _HDR.format(cls="dictionary", obj="snappyHexMeshDict") + f"""
 castellatedMesh true; snap true; addLayers {'true' if n_layers > 0 else 'false'};
 geometry {{ {geom} }}
@@ -1528,6 +1650,11 @@ meshQualityControls {{ maxNonOrtho 65; maxBoundarySkewness 20; maxInternalSkewne
   relaxed {{ maxNonOrtho {relaxed_no}; maxInternalSkewness 4;{relaxed_tet} }} }}
 mergeTolerance 1e-6; debug 0;
 """)
+    if _ask is not None:
+        from meshpipeline.engines import cfd_requirements as CR
+        _shm = CR.snappy_dict(_ask, _shm, wall_cell_m=wall_cell_actual)
+        _ask.write(ws)
+    (ws / "system" / "snappyHexMeshDict").write_text(_shm)
     return {"divisions": div, "surface_level": [smin, smax], "feature_level": flevel,
             "near_band_m": round(near_dist, 6), "near_band_level": near_level,
             "location_in_mesh": [round(x, 9) for x in location], "max_cells": max_cells,

@@ -287,13 +287,14 @@ def test_the_naming_never_asks_it_of_a_part_the_fluid_flows_through(monkeypatch)
 
 
 # ------------------------------------------------------------ the words the intake reads ----
-def test_a_grounded_part_drawn_another_way_up_is_declared_free_in_the_flow_and_says_why():
-    body = ConfirmIn(input_kind="solid-body", flow="external", part="a car", flow_axis="+x",
-                     reference_length_mm=840.0, grounded=True, up_axis="-z")
-    m = confirmation_message(body)
-    assert "drawn with -z up" in m and "meshed free in the flow" in m
-    assert "no ground patch is declared" in m and "re-exporting the file with +z up" in m
-    assert "wall patch named ground" not in m
+def test_a_grounded_part_drawn_another_way_up_stands_on_the_ground_under_its_own_up():
+    # INS-9: the floor follows the confirmed up axis - a Y-up or -z-up file is not meshed free
+    for up, along in (("-z", "z"), ("+y", "y")):
+        body = ConfirmIn(input_kind="solid-body", flow="external", part="a car", flow_axis="+x",
+                         reference_length_mm=840.0, grounded=True, up_axis=up)
+        m = confirmation_message(body)
+        assert "wall patch named ground" in m and f"Up in this file is {up}" in m
+        assert f"never along the {along} axis" in m and "free in the flow" not in m
 
 
 def test_a_grounded_upright_part_still_stands_on_the_ground():

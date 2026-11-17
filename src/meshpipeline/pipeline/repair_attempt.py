@@ -112,8 +112,8 @@ def _declined(reason: str, *, outcome: str, route: str = "", detail: dict | None
     """Nothing was changed, and the run says why. Never an error: the gate judges the original.
 
     `outcome` is the same why as a closed word (no_report, off, not_autonomous, no_geometry,
-    format, triage, timeout, unavailable, refused, failed, not_promoted): the run's Repair check
-    line (pipeline/repair_words.py) is read from it, never from the reason's prose."""
+    format, triage, timeout, unavailable, refused, failed, not_promoted, not_proved): the run's
+    Repair check line (pipeline/repair_words.py) is read from it, never from the reason's prose."""
     record = {"attempted": False, "reason": reason, "outcome": outcome, "route": route}
     if detail:
         record["detail"] = detail
@@ -449,16 +449,32 @@ async def _attempt(state: PipelineState) -> dict:
         repaired = _derived_source(original, destination)
         # OFF THE EVENT LOOP AND ON A CLOCK, like the repair itself: the staging proof is a
         # tessellation, and run here synchronously it held the job's heartbeat and cancellation
-        # checks for as long as it took. A proof past the bound is a refusal (the thread is
-        # abandoned, as the repair's is) and the run stays on the original.
+        # checks for as long as it took. The thread is abandoned on expiry, as the repair's is,
+        # and the run stays on the original.
         try:
             update = await asyncio.wait_for(
                 asyncio.to_thread(promote, state, repaired=repaired, engine=engine,
                                   attempt=int(state.get("retry_count", 0) or 0)),
                 timeout=rcfg.CAD_REPAIR_TIMEOUT_S)
-        except TimeoutError as exc:
-            raise PromotionRefused(
-                f"the staging proof exceeded {rcfg.CAD_REPAIR_TIMEOUT_S:.0f}s") from exc
+        except TimeoutError:
+            # A PROOF THAT DID NOT FINISH IS NOT A REFUSAL. `PromotionRefused` means the geometry
+            # was judged and found unusable; a clock of OURS running out judged nothing, and
+            # reporting it as a refusal told a customer their sound repair "failed our checks" -
+            # the Formula car, where the proof's own engine staging was still drawing a report
+            # picture nobody meshes (engines/gmsh/gmsh_runner.STAGE_EXTRAS_TIMEOUT_S). The run
+            # still stays on the original, because bytes we never proved may not be promoted.
+            logger.warning("node_repair_attempt: the staging proof exceeded %.1fs - continuing on "
+                           "the original - job_id=%s", rcfg.CAD_REPAIR_TIMEOUT_S, job_id)
+            from meshpipeline.engines.determinism import note_time_limit
+            note_time_limit("cad_repair_promote", "the staging proof ran past its time limit: the "
+                            "original file is meshed",
+                            budget_s=float(rcfg.CAD_REPAIR_TIMEOUT_S))
+            _shadow_row(job_id, shadow_plan, "not_executed")
+            why = (f"the staging proof did not finish within "
+                   f"{rcfg.CAD_REPAIR_TIMEOUT_S:.0f}s, so the repair was not proved")
+            return {**_declined(why, outcome="not_proved", route=advice.route),
+                    **await _triage_only(report, source),
+                    **_not_promoted(state, job_id, advice.route, directives, repair_report, why)}
     except PromotionRefused as exc:
         # It repaired, but the result is not something the mesher can use - so the run stays on the
         # original and the repair becomes evidence rather than geometry.

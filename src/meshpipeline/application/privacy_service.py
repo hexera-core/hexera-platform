@@ -33,6 +33,7 @@ from meshpipeline.persistence.models import (
     Membership,
     MembershipRole,
     Organization,
+    OrganizationMeshingStandard,
     SimulationJob,
     SourceObjectCleanup,
     User,
@@ -130,6 +131,10 @@ async def export_account(db: AsyncSession, *, owner_id: str, organization_id: st
         tables["artifacts"] = rows
         if cut:
             truncated.append("artifacts")
+        # the team's meshing standard: words a member typed for the organisation
+        rows, _cut = await _rows(db, select(OrganizationMeshingStandard)
+                                 .where(OrganizationMeshingStandard.organization_id == parsed))
+        tables["organization_meshing_standards"] = rows
 
     audit.record("privacy.export", actor=str(user.id) if user else "",
                  organization_id=organization_id, detail={"truncated": bool(truncated)})
@@ -220,6 +225,10 @@ async def request_erasure(db: AsyncSession, *, owner_id: str, organization_id: s
                      .where(_belongs(SimulationJob),
                             SimulationJob.status.in_(sorted(s.value for s in TERMINAL_STATES)))
                      .values(dispatch_payload=None))
+
+    # THE TEAM'S MESHING STANDARD is free text a member typed, and names who saved it: it goes now
+    await db.execute(delete(OrganizationMeshingStandard)
+                     .where(OrganizationMeshingStandard.organization_id == parsed))
 
     member_ids = select(Membership.user_id).where(Membership.organization_id == parsed)
     users = list((await db.execute(select(User).where(User.id.in_(member_ids)))).scalars())
@@ -390,6 +399,10 @@ async def _erase_bytes(db: AsyncSession, store, org_id: uuid.UUID, at: datetime)
             scout = {}
         picture_keys = [s.get("object_key") for s in (scout.get("snapshots") or [])]
         picture_keys.append((scout.get("upright_sheet") or {}).get("object_key"))
+        # the parts checklist's pictures and records (application/part_matches)
+        from meshpipeline.application import part_matches as _pm
+        picture_keys.extend(_pm.picture_keys(sid))
+        picture_keys.extend(check_object_key(sid, n) for n in (_pm.MATCHES, _pm.PICKS))
         for key in picture_keys + [check_object_key(sid, name) for name in _CHECK_RECORDS]:
             if key:
                 _delete_if_present(store, key)

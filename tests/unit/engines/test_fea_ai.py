@@ -37,7 +37,8 @@ RECORD = {"faces": {f"Face_{i}": {} for i in range(1, 9)}, "bodies": 1,
 
 def _decision(**kw) -> dict:
     d = {"analysis": "static", "matters": "the bolt hole", "zones": {}, "features": {}, "joints": [],
-         "budget_elements": 0, "words": ["The bolt hole matters."]}
+         "target_elements": 0, "target_min": 0, "target_max": 0, "target_mode": "",
+         "words": ["The bolt hole matters."]}
     d.update(kw)
     return d
 
@@ -121,13 +122,6 @@ def test_no_decision_is_the_rules_own_zones():
     assert zs == ZONES and applied == []
 
 
-# ------------------------------------------------------------------ AI-fea-4: the budget ----------------
-def test_the_users_budget_lowers_the_limit_never_raises_it():
-    assert A.budget_limit(5_000_000, _decision(budget_elements=300_000)) == (300_000, "the user's own budget of 300,000 elements")
-    assert A.budget_limit(5_000_000, _decision(budget_elements=20_000_000)) == (5_000_000, "")
-    assert A.budget_limit(5_000_000, None) == (5_000_000, "")
-
-
 # ------------------------------------------------------------------ the answer, checked -------------------
 def _brief():
     return A.brief(RECORD, {"request_txt": "static stress, care about the bolt holes"}, ZONES, diag_m=DIAG, limit=5_000_000)
@@ -153,7 +147,7 @@ def test_an_answer_that_is_not_a_decision_is_refused(raw):
 def test_a_budget_nobody_means_is_ignored():
     raw = {"analysis": "static", "matters": "", "zones": [], "features": [], "joints": [], "budget_elements": 50, "words": []}
     d, dropped = A.validate(json.dumps(raw), _brief())
-    assert d["budget_elements"] == 0 and dropped
+    assert d["target_elements"] == 0 and dropped
 
 
 def test_the_same_part_and_words_make_the_same_message():
@@ -372,13 +366,18 @@ def test_the_plan_carries_the_decision_its_words_and_its_why(tmp_path):
     record, surface, diag = FD.measure_staged(ws)
     rules = FD.choose_plan(record, surface, diag)
     spot = next(z for z in rules["zones"] if z["kind"] in ("hole", "fillet", "notch"))
-    ai = A.section(_decision(zones={spot["id"]: {"priority": "refine", "reason": "named"}}, budget_elements=200_000),
+    ai = A.section(_decision(zones={spot["id"]: {"priority": "refine", "reason": "named"}}, target_elements=200_000, target_mode="about"),
                    [], status="used", key="k")
     plan = FD.choose_plan(record, surface, diag, ai=ai)
     assert _by_id(plan["zones"])[spot["id"]]["size_m"] < spot["size_m"]
-    assert plan["limit"]["elements"] == 200_000 and "budget" in plan["limit"]["why"]
     assert plan["ai"]["applied"][0]["done"] and any("bolt hole" in w for w in plan["words"])
     assert any(d["rule"] == "AI-fea-1" and d.get("source") == "ai-lever" for d in plan["decisions"])
+    # AI-fea-4: the count the AI read is no longer a lower limit - it is the count the whole plan is scaled to
+    assert plan["limit"]["elements"] == rules["limit"]["elements"]
+    aimed = FD.choose_plan(record, surface, diag, ai=ai, target=FD.element_target({}, ai))
+    assert aimed["target"]["asked"] == 200_000 and aimed["target"]["source"] == "ai"
+    assert abs(aimed["estimate"]["elements"] / 200_000 - 1.0) <= P.TARGET_TOLERANCE
+    assert _by_id(aimed["zones"])[spot["id"]]["size_m"] < _by_id(plan["zones"])[spot["id"]]["size_m"]
 
 
 # ------------------------------------------------------------------ review follow-ups ---------------------
@@ -404,14 +403,13 @@ def test_a_refined_zone_carries_the_targets_the_checks_hold_it_to():
     assert w["wall_elements"] == pytest.approx(3, rel=1e-2)
 
 
-def test_the_words_name_the_limit_the_plan_holds():
-    ai = A.section(_decision(budget_elements=2_000_000, zones={"H1": {"priority": "refine", "reason": ""}}),
+def test_the_words_say_the_limit_coarsened_it_and_leave_the_count_to_the_plan():
+    ai = A.section(_decision(target_elements=2_000_000, target_mode="about", zones={"H1": {"priority": "refine", "reason": ""}}),
                    [{"id": "H1", "choice": "refine", "done": True}], status="used")
     said = A.words(ai, {"limit": {"elements": 1_000_000}, "coarsened": {"zone_floor_m": 0.001}})
-    assert any("own limit, 1,000,000, is lower" in w for w in said)
     assert any("coarser, as it does for any plan" in w for w in said)
-    said = A.words(ai, {"limit": {"elements": 2_000_000}})
-    assert any("2,000,000, is the limit" in w for w in said)
+    # the count the user named is said once, by the plan's own words (fea_plan.target_words, PLAN-fea-27)
+    assert not any("2,000,000" in w for w in said)
 
 
 def test_a_zone_the_ai_did_not_touch_is_exactly_the_rules_own():

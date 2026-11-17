@@ -178,19 +178,25 @@ def test_dispose_releases_the_context_and_is_idempotent(live):
     assert_clean(live, "the scene module")
 
 
-def test_dispose_is_not_wired_to_anything_yet():
-    """It exists so there is something to call. Wiring it - tearing a scene down under a running
-    render - is a separate change with its own evidence, so nothing may call it yet."""
+def test_dispose_is_called_only_by_a_view_that_owns_its_scene():
+    """Tearing a scene down under a running render is the danger, so only a view that owns its
+    canvas, and stops its own drawing first, may call `dispose()`: the parts checklist's 3D view
+    (parts_view.js stops its overlay, then disposes). Other code releases that view through the
+    view's own `dispose`, never the canvas directly."""
+    allowed = {"ui/js/viewer/parts_view.js"}
     callers = []
     for path in sorted((REPO / "ui" / "js").rglob("*.js")):
-        if path.name == "canvas.js":
+        rel = path.relative_to(REPO).as_posix()
+        if path.name == "canvas.js" or rel in allowed:
             continue
         for n, line in enumerate(path.read_text().splitlines(), 1):
-            if ".dispose()" in line:
-                callers.append(f"{path.relative_to(REPO)}:{n}: {line.strip()}")
+            if "canvas.dispose()" in line:
+                callers.append(f"{rel}:{n}: {line.strip()}")
     assert not callers, (
-        "mountCanvas().dispose() is meant to be unwired in this step; found callers:\n  "
+        "mountCanvas().dispose() is called from outside a view that owns its scene:\n  "
         + "\n  ".join(callers))
+    owner = (REPO / "ui/js/viewer/parts_view.js").read_text()
+    assert "overlay.stop(); canvas.dispose()" in owner, "the parts view must stop drawing before it disposes"
 
 
 def test_a_wheel_zoom_takes_the_camera_so_a_resize_does_not_throw_it_away(live):

@@ -1,6 +1,6 @@
 # Responsibility: Verify the geometry check opens as a 3D stage in a real browser - the part with a
-# pin on every opening, a pin click selecting its row, and proceeding confirming the edited form
-# and handing the workbench back.
+# pin on every opening, a pin click selecting its row, and proceeding confirming the edited form,
+# the part staying beside the conversation (the intake's one viewer) until the run starts.
 # Boundaries: the skin payload is the one the worker stores; only the network is stood in for.
 from __future__ import annotations
 
@@ -93,11 +93,23 @@ def test_the_check_opens_as_a_stage_and_proceeding_confirms_the_edited_form(live
       root.querySelector('.gc-proceed').click();
     }})()""")
     live.wait_for("window.__confirmed !== null", timeout=30, what="the confirmation to be sent")
-    done = live.evaluate(f"""(() => ({{
-      body: window.__confirmed,
-      gone: !document.getElementById('gstage-{SESSION}'),
-      wb: document.getElementById('app').classList.contains('wb'),
-      hook: !!(window._vdbg && window._vdbg['gstage:{SESSION}'])}}))()""")
+    live.wait_for(f"document.getElementById('gstage-{SESSION}').classList.contains('iv-plain')", timeout=10,
+                  what="the stage to settle")
+    kept = live.evaluate(f"""(() => ({{
+      kept: !!document.getElementById('gstage-{SESSION}'),
+      panel: !document.querySelector('#gstage-{SESSION} .gc-panel').hidden,
+      split: document.getElementById('app').classList.contains('intake'),
+      wb: document.getElementById('app').classList.contains('wb')}}))()""")
+    # THE INTAKE'S ONE VIEWER: the form goes, the part stays beside the conversation until the run starts
+    assert kept == {"kept": True, "panel": False, "split": True, "wb": True}, kept
+    done = live.evaluate(f"""(async () => {{
+      const {{ endIntake }} = await import('/static/js/viewer/intake_view.js');
+      endIntake();
+      return {{body: window.__confirmed,
+        gone: !document.getElementById('gstage-{SESSION}'),
+        wb: document.getElementById('app').classList.contains('wb'),
+        hook: !!(window._vdbg && window._vdbg['gstage:{SESSION}'])}};
+    }})()""")
     body = done["body"]
     assert body["input_kind"] == "body-surface" and body["flow"] == "internal"
     assert [o["name"] for o in body["openings"]] == ["water_in", '2" outlet']

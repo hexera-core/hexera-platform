@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -41,11 +41,19 @@ QUESTION = ("Anything specific about this simulation we should know? For example
 
 SOURCE_CHAT = "chat"
 SOURCE_CONSOLE = "console"
+#: the team's meshing standard (engines/meshing_standard): read by the notes' reader as a note of its own, never
+#: stored among a run's notes
+SOURCE_SETTINGS = "settings"
 
 #: The file every attempt's workspace gets (verbatim notes, for any step that reads the workspace)
 NOTES_FILE = "user_notes.txt"
 #: The one-line remarks steps leave for the result ("From your notes: ...")
 REMARKS_FILE = "user_notes_remarks.json"
+
+#: TEXT THE APPLICATION WRITES, never the user's own words, though a conversation may carry it as a user turn: the
+#: geometry check's declaration and drawing marks (application/geometry_confirmation CONFIRMED_MARK and DRAWING_MARK;
+#: a test holds them equal). A message or note that begins with one is never kept as a note, never read as one.
+SYSTEM_LEADS = ("GEOMETRY CHECK (confirmed by the user):", "GEOMETRY CHECK (drawing your part):")
 
 #: The most of one note kept (a pasted spec sheet fits many times over)
 MAX_NOTE_CHARS = 20_000
@@ -70,6 +78,14 @@ CONSUMERS: dict[str, str] = {
     "builder_model": "agents/builder/attempt.py: the model-led builder's first message carries them",
     "snappy_planner": "engines/snappy/planner.py: the plan's request carries them",
     "fea_ai": "engines/fea_ai.py: the FEA judgement calls are shown them",
+    "fea_part_sizes": "engines/fea_part_sizes.py: the phrases about particular parts are tied to the parts by the "
+                      "vision model (cad/part_words), and the sizes they ask for applied part by part",
+    "mesh_requirements": "engines/mesh_requirements.py: what a note asks of the mesh - sizes, the element kind, "
+                         "quality limits, a cell count, boundary layers, sizes in a named place - read into one "
+                         "checked set (NOTE-7, NOTE-10), applied by the shell and solid FEA meshes and by every CFD "
+                         "engine (engines/cfd_requirements.py), and told asked against delivered",
+    "snappy_part_levels": "engines/snappy/part_levels.py: the same reading on the flow route; each part's size "
+                          "becomes its own snappyHexMesh level against the background cell",
     "reviewer": "agents/reviewer/visual.py: shown as context, never as criteria",
     "delivery": "application/final_result.py: a step's 'From your notes' line on the result",
     "chat": "agents/intake/chat_facts.py: every chat answer, before and after the run, is given "
@@ -79,20 +95,23 @@ CONSUMERS: dict[str, str] = {
 COMMON_CONSUMERS = ("intake", "builder_workspace", "reviewer", "delivery", "chat")
 #: Each route of application/purpose_map.ROUTES, and the AI steps that read the notes on it.
 ROUTE_CONSUMERS: dict[str, tuple[str, ...]] = {
-    "flow": (*COMMON_CONSUMERS, "builder_model", "snappy_planner"),
-    "fea": (*COMMON_CONSUMERS, "fea_ai", "builder_model"),
+    "flow": (*COMMON_CONSUMERS, "builder_model", "snappy_planner", "snappy_part_levels", "mesh_requirements"),
+    "fea": (*COMMON_CONSUMERS, "fea_ai", "fea_part_sizes", "mesh_requirements", "builder_model"),
     # an ECXML model is built by snapgrid's deterministic driver: no AI step in the build, so the
     # intake sets what fits a field and the reviewer reads them beside the result
-    "electronics": COMMON_CONSUMERS,
+    "electronics": (*COMMON_CONSUMERS, "mesh_requirements"),
 }
 #: Each implemented engine (engines/registry.engine_names), and the build step that reads them.
 ENGINE_CONSUMERS: dict[str, tuple[str, ...]] = {
-    "cfmesh": ("builder_model",),
-    "gmsh": ("builder_model", "fea_ai"),
-    "snapgrid": ("intake",),
-    "snappy": ("snappy_planner",),
-    "snappy_multiregion": ("builder_model",),
-    "vmtk": ("builder_model",),
+    "cfmesh": ("builder_model", "mesh_requirements"),
+    "gmsh": ("builder_model", "fea_ai", "fea_part_sizes", "mesh_requirements"),
+    # Netgen is built by its deterministic plan (engines/netgen/plan.py): no AI step in the build; the plan reads the
+    # requirements from the notes through engines/cfd_requirements (CFDREQ-1)
+    "netgen": ("intake", "mesh_requirements"),
+    "snapgrid": ("intake", "mesh_requirements"),
+    "snappy": ("snappy_planner", "snappy_part_levels", "mesh_requirements"),
+    "snappy_multiregion": ("builder_model", "mesh_requirements"),
+    "vmtk": ("builder_model", "mesh_requirements"),
 }
 
 
@@ -114,11 +133,18 @@ def _norm(text: Any) -> str:
     return " ".join(str(text or "").split()).casefold()
 
 
+def system_written(text: Any) -> bool:
+    """Whether a text is the application's own (SYSTEM_LEADS), never the user's words."""
+    t = str(text or "").lstrip()
+    return any(t.startswith(lead) for lead in SYSTEM_LEADS)
+
+
 def _own(messages: Iterable[Any]) -> list[dict]:
     """The conversation as the user and the assistant said it - the application's synthetic
-    nudges left out."""
+    nudges, and any user turn the application wrote (SYSTEM_LEADS), left out."""
     return [m for m in messages or [] if isinstance(m, dict) and not m.get("_synthetic")
-            and m.get("role") in ("user", "assistant")]
+            and m.get("role") in ("user", "assistant")
+            and not (m.get("role") == "user" and system_written(m.get("content")))]
 
 
 def asked(messages: Iterable[Any]) -> bool:
@@ -170,22 +196,46 @@ def make(text: str, *, source: str, turn: int | None = None, at: str = "") -> di
             "turn": int(turn) if turn is not None else None, "at": at or _now()}
 
 
-def capture(messages: Iterable[Any], quotes: Sequence[Any] = (), *,
-            consumer: str = "intake") -> tuple[list[dict], list[str]]:
+def clicked(text: Any, asked: Any, offered: Callable[[str], Iterable[Mapping]] | None) -> bool:
+    """Whether a user message is a click on a button the application offered under its message just before
+    (`offered(asked)`: the buttons under that message, application/purpose_map.choices_for) - the button's own words,
+    sent for the user. Such a message chooses among what WE offered; it is never the user's own note (NOTE-1)."""
+    if offered is None:
+        return False
+    said = _norm(text)
+    if not said:
+        return False
+    try:
+        choices = list(offered(str(asked or "")) or ())
+    except Exception:  # noqa: BLE001 - a question we cannot read offered no button
+        logger.debug("user notes: the offered choices could not be read", exc_info=True)
+        return False
+    return any(said in (_norm(c.get("send")), _norm(c.get("label"))) for c in choices if isinstance(c, Mapping))
+
+
+def capture(messages: Iterable[Any], quotes: Sequence[Any] = (), *, consumer: str = "intake",
+            offered: Callable[[str], Iterable[Mapping]] | None = None) -> tuple[list[dict], list[str]]:
     """The conversation's notes, and the quotes that matched no message of the user's.
 
     Two ways in, both the user's WHOLE message verbatim: the answer to the question (unless it
     says no), and every message the intake quoted as saying something specific. A quote that
-    matches nothing the user wrote is not the user's words, so it is not kept - it is returned."""
+    matches nothing the user wrote is not the user's words, so it is not kept - it is returned.
+    A CLICK ON A BUTTON WE OFFERED (`offered`, see clicked) is never a note: the founder's "Keep
+    8.0 M" was kept as one and read as his cell count over the 3 M he typed after it (14 Nov)."""
     _reader(consumer)
-    turns, turn = [], 0
+    turns, turn, asked_before, clicks = [], 0, "", set()
     for m in _own(messages):
         if m.get("role") == "user":
             turn += 1
-            turns.append((turn, str(m.get("content") or "")))
+            text = str(m.get("content") or "")
+            turns.append((turn, text))
+            if clicked(text, asked_before, offered):
+                clicks.add(turn)
+        else:
+            asked_before = str(m.get("content") or "")
     picked: dict[int, str] = {}
     got = answer(messages)
-    if got is not None and got[1].strip() and not is_skip(got[1]):
+    if got is not None and got[1].strip() and not is_skip(got[1]) and got[0] not in clicks:
         picked[got[0]] = got[1]
     unmatched: list[str] = []
     for q in quotes or ():
@@ -195,7 +245,7 @@ def capture(messages: Iterable[Any], quotes: Sequence[Any] = (), *,
         hit = next(((t, text) for t, text in turns if quote in _norm(text)), None)
         if hit is None:
             unmatched.append(str(q))
-        elif not is_skip(hit[1]):
+        elif not is_skip(hit[1]) and hit[0] not in clicks:
             picked[hit[0]] = hit[1]
     return [make(text, source=SOURCE_CHAT, turn=t) for t, text in sorted(picked.items())], unmatched
 
@@ -231,7 +281,15 @@ def merge(existing: Any, new: Any) -> list[dict]:
 def _where(note: Mapping) -> str:
     if note.get("source") == SOURCE_CONSOLE:
         return "typed in the notes box"
+    if note.get("source") == SOURCE_SETTINGS:
+        return "the team's meshing standard, from settings"
     return f"said in the chat, message {note['turn']}" if note.get("turn") else "said in the chat"
+
+
+def own_notes(notes: Any) -> list[dict]:
+    """The notes that are the user's own words: what they typed in the notes box and their own chat messages as
+    kept - never a text the application wrote (SYSTEM_LEADS). Numbered as clean() numbers them."""
+    return clean([n for n in clean(notes) if not system_written(n.get("text"))])
 
 
 def render(notes: Any, *, limit: int | None = None) -> str:
@@ -355,6 +413,22 @@ def record_remark(workspace: Any, remark: Any, *, by: str) -> None:
         logger.warning("user notes: could not keep %s's remark", by, exc_info=True)
 
 
+def drop_remark(workspace: Any, *, by: str) -> None:
+    """Take a step's remark out of the workspace: the step's work was set aside, so its line would tell the user
+    of something that was not made. Best effort, as record_remark; nothing kept by that step is no change."""
+    import json
+    if not workspace:
+        return
+    rows = read_remarks(workspace, raw=True)
+    left = [r for r in rows if r.get("by") != by]
+    if len(left) == len(rows):
+        return
+    try:
+        (Path(workspace) / REMARKS_FILE).write_text(json.dumps(left, indent=1), encoding="utf-8")
+    except OSError:
+        logger.warning("user notes: could not drop %s's remark", by, exc_info=True)
+
+
 def read_remarks(workspace: Any, *, raw: bool = False) -> list:
     """The remarks the steps left in this workspace: their lines, or (raw) the stored rows."""
     import json
@@ -388,15 +462,18 @@ def given_remark(engines: Sequence[str]) -> str:
 
 
 def result_lines(remarks: Sequence[Any], *, consumer: str = "delivery") -> list[str]:
-    """The result's 'From your notes' lines, one per remark ([] with none)."""
+    """The result's 'From your notes' lines, one per remark ([] with none). A remark that already says where it came
+    from ("From your settings: ...", engines/meshing_standard.remark) is kept as it is."""
     _reader(consumer)
-    return [f"From your notes: {str(r).strip()}" for r in remarks or () if str(r).strip()]
+    return [str(r).strip() if str(r).strip().startswith("From your ") else f"From your notes: {str(r).strip()}"
+            for r in remarks or () if str(r).strip()]
 
 
 __all__ = ["COMMON_CONSUMERS", "CONSUMERS", "ENGINE_CONSUMERS", "GUIDANCE", "NOTES_FILE",
            "QUESTION", "REMARKS_FILE", "REMARK_DESCRIPTION", "ROUTE_CONSUMERS", "RULE_EVERY_ROUTE",
-           "RULE_NEVER_FAILS", "RULE_VERBATIM", "SOURCE_CHAT", "SOURCE_CONSOLE", "answer",
-           "answers_now", "asked", "capture", "chat_block", "clean", "context_block", "is_skip", "make", "merge",
-           "prompt_block",
+           "RULE_NEVER_FAILS", "RULE_VERBATIM", "SOURCE_CHAT", "SOURCE_CONSOLE", "SOURCE_SETTINGS", "answer",
+           "answers_now", "asked", "capture", "chat_block", "clean", "clicked", "context_block", "drop_remark", "is_skip", "make",
+           "merge", "own_notes",
+           "prompt_block", "SYSTEM_LEADS", "system_written",
            "read_remarks", "record_remark", "render", "result_lines", "workspace_block",
            "write_file"]

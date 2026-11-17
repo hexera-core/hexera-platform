@@ -29,8 +29,9 @@ from collections.abc import Iterable, Mapping
 import numpy as np
 
 #: An element touches a cusp when one of its corners lies within this many of its own longest edges
-#: of the cusp point.
-CUSP_REACH = 2.0
+#: of the cusp point. Three, not two: the punch's link pins (4 Nov) left a bad element 1.2 mm from its
+#: cusp, a little over two of its own edges out, still part of the cusp's fan of slivers.
+CUSP_REACH = 3.0
 #: ...and a micro detail (PLAN-fea-12) when one of its corners lies this close to a point along it.
 MICRO_REACH = 2.0
 #: gmsh's 10-node tetrahedron: midside node 4+k sits on the edge between these corners (gmsh's own
@@ -53,32 +54,124 @@ def _corners(gmsh, tag: int) -> tuple[list[int], np.ndarray]:
     return [int(n) for n in nodes], np.array([gmsh.model.mesh.getNode(int(n))[0] for n in nodes[:4]], dtype=float)
 
 
-def straighten(gmsh, tag: int) -> int:
-    """Put the element's midside nodes back on its straight edges; how many moved. A midside node is
-    shared with the neighbours on that edge, which become straight on that edge too."""
+def _straighten_nodes(gmsh, tag: int) -> list[int]:
     nodes, c = _corners(gmsh, tag)
-    moved = 0
+    moved = []
     for n, (i, j) in zip(nodes[4:10], GMSH_TET10_EDGES, strict=False):
         mid = 0.5 * (c[i] + c[j])
         if float(np.linalg.norm(np.array(gmsh.model.mesh.getNode(n)[0], dtype=float) - mid)) > 0.0:
             gmsh.model.mesh.setNode(n, mid.tolist(), [])
-            moved += 1
+            moved.append(int(n))
     return moved
+
+
+def straighten(gmsh, tag: int) -> int:
+    """Put the element's midside nodes back on its straight edges; how many moved. A midside node is
+    shared with the neighbours on that edge, which become straight on that edge too."""
+    return len(_straighten_nodes(gmsh, tag))
+
+
+#: PLAN-fea-11's rounds: straightening an element straightens its neighbours on the shared edges too,
+#: and a neighbour left half straight, half curved can fold (dev-areen 9 Nov: 590 straightened in one
+#: round left 4 of 6.47M inverted - each straight on 4 edges by its neighbours, curved on 2 - and the
+#: whole mesh was refused). Each round looks again only at the elements that share a node moved in the
+#: last one. A round only ever makes edges straight, so the rounds end; this is the backstop.
+MAX_ROUNDS = 50
+
+
+def _volume_nodes(gmsh) -> tuple[np.ndarray, np.ndarray]:
+    """(element tags, midside node ids per element) of every 10-node tetrahedron of the current model."""
+    types, tags, nodes = gmsh.model.mesh.getElements(3)
+    ts, ms = [], []
+    for typ, t, n in zip(types, tags, nodes, strict=True):
+        k = int(gmsh.model.mesh.getElementProperties(int(typ))[3])
+        if k == 10:
+            ts.append(np.asarray(t, dtype=np.int64))
+            ms.append(np.asarray(n, dtype=np.int64).reshape(-1, 10)[:, 4:])
+    if not ts:
+        return np.zeros(0, dtype=np.int64), np.zeros((0, 6), dtype=np.int64)
+    return np.concatenate(ts), np.concatenate(ms)
+
+
+def _straighten_until_settled(gmsh, straight: Mapping[int, float], floor: float) -> tuple[int, int]:
+    """PLAN-fea-11 to the end: (elements straightened, rounds)."""
+    tags, q = qualities(gmsh)
+    done: set[int] = set()
+    todo = [t for t, qq in zip(tags.tolist(), q.tolist(), strict=True)
+            if qq < floor and qq < float(straight.get(t, 1.0))]
+    mids: tuple[np.ndarray, np.ndarray] | None = None
+    rounds = 0
+    while todo and rounds < MAX_ROUNDS:
+        rounds += 1
+        moved: list[int] = []
+        for t in todo:
+            done.add(int(t))
+            moved += _straighten_nodes(gmsh, t)
+        if not moved:
+            break
+        if mids is None:
+            mids = _volume_nodes(gmsh)
+        near = mids[0][np.isin(mids[1], np.asarray(moved, dtype=np.int64)).any(axis=1)]
+        near = np.asarray([t for t in near.tolist() if t not in done], dtype=np.int64)
+        if not len(near):
+            break
+        qn = gmsh.model.mesh.getElementQualities(near.tolist(), "minSICN")
+        todo = [t for t, qq in zip(near.tolist(), qn, strict=True)
+                if qq < floor and qq < float(straight.get(t, 1.0))]
+    return len(done), rounds
+
+
+def _shape_limits() -> tuple[float, float, float]:
+    """(largest aspect, smallest dihedral, largest dihedral) the verdict allows (VER-2 FEA rows)."""
+    from meshpipeline.engines.fea_quality import LIMITS
+
+    lim = {k: float(v) for k, _lab, _op, v, _src in LIMITS}
+    return lim["fea_max_aspect_ratio"], lim["fea_min_dihedral_deg"], lim["fea_max_dihedral_deg"]
+
+
+def misses_shape_limits(gmsh, tags: np.ndarray) -> np.ndarray:
+    """Per element of `tags` (gmsh volume element tags, as qualities() gives them): whether its
+    straight shape misses the verdict's aspect or dihedral limit, measured the verdict's way
+    (engines/fea_quality.element_measures on the 4 corners)."""
+    from meshpipeline.engines.fea_quality import element_measures
+
+    tags = np.asarray(tags, dtype=np.int64)
+    out = np.zeros(len(tags), dtype=bool)
+    if not len(tags):
+        return out
+    ntag, xyz, _ = gmsh.model.mesh.getNodes()
+    ntag = np.asarray(ntag, dtype=np.int64)
+    idx = np.full(int(ntag.max()) + 1, -1, dtype=np.int64)
+    idx[ntag] = np.arange(len(ntag))
+    xyz = np.asarray(xyz, dtype=float).reshape(-1, 3)
+    etags_all, corners_all = [], []
+    for typ, et, en in zip(*gmsh.model.mesh.getElements(3), strict=True):
+        k = int(gmsh.model.mesh.getElementProperties(int(typ))[3])
+        etags_all.append(np.asarray(et, dtype=np.int64))
+        corners_all.append(np.asarray(en, dtype=np.int64).reshape(-1, k)[:, :4])
+    et = np.concatenate(etags_all)
+    cn = np.concatenate(corners_all)
+    pos = {int(t): i for i, t in enumerate(et.tolist())}
+    rows = np.array([pos.get(int(t), -1) for t in tags.tolist()], dtype=np.int64)
+    ok = rows >= 0
+    max_aspect, min_dih, max_dih = _shape_limits()
+    sel = np.where(ok)[0]
+    for s in range(0, len(sel), 100_000):
+        part = sel[s:s + 100_000]
+        X = xyz[idx[cn[rows[part]]]]
+        m = element_measures(X)
+        out[part] = (m["aspect"] > max_aspect) | (m["min_dihedral"] < min_dih) | (m["max_dihedral"] > max_dih)
+    return out
 
 
 def settle(gmsh, straight: Mapping[int, float], cusps_m: Iterable, floor: float,
            micro: Iterable[Mapping] = ()) -> dict:
     """PLAN-fea-11, then PLAN-fea-10 and PLAN-fea-12 on the current (curved) model. `straight` is
     each element's minSICN before curving (tag -> value); `micro` the plan's micro details, each with
-    `points_m` along it. Returns {"straightened": n, "set_aside": [tags], "cusp_places_m": [...] (the
-    cusps that had elements set aside), "cusp_elements": n, "micro_used": [index into micro],
+    `points_m` along it. Returns {"straightened": n, "rounds": n, "set_aside": [tags], "cusp_places_m":
+    [...] (the cusps that had elements set aside), "cusp_elements": n, "micro_used": [index into micro],
     "micro_elements": n}."""
-    tags, q = qualities(gmsh)
-    straightened = 0
-    for t, qq in zip(tags.tolist(), q.tolist(), strict=True):
-        if qq < floor and qq < float(straight.get(t, 1.0)):
-            straighten(gmsh, t)
-            straightened += 1
+    straightened, rounds = _straighten_until_settled(gmsh, straight, floor)
     pts = np.asarray([list(c) for c in cusps_m], dtype=float).reshape(-1, 3)
     details = list(micro or ())
     mpts, mown = [], []
@@ -97,7 +190,12 @@ def settle(gmsh, straight: Mapping[int, float], cusps_m: Iterable, floor: float,
     n_cusp = n_micro = 0
     if len(pts) or mtree is not None:
         tags, q = qualities(gmsh)
-        for t in tags[q < floor].tolist():
+        # AN ELEMENT A CUSP SPOILS is one under the SICN floor OR one that misses the verdict's own
+        # shape limits (aspect, dihedral angles: engines/fea_quality.LIMITS). The score alone let
+        # through elements by a cusp the verdict then counted against the mesh (the punch, 4 Nov:
+        # aspect 23, dihedral 2.9 degrees, 1.2 mm from a cusp, minSICN above the floor)
+        spoiled = (q < floor) | misses_shape_limits(gmsh, tags)
+        for t in tags[spoiled].tolist():
             _nodes, c = _corners(gmsh, t)
             h = max(float(np.linalg.norm(c[i] - c[j])) for i, j in _EDGES)
             if len(pts):
@@ -117,9 +215,10 @@ def settle(gmsh, straight: Mapping[int, float], cusps_m: Iterable, floor: float,
                     set_aside.append(int(t))
                     used.add(mown[int(idx[j])])
                     n_micro += 1
-    return {"straightened": straightened, "set_aside": set_aside,
+    return {"straightened": straightened, "rounds": rounds, "set_aside": set_aside,
             "cusp_places_m": [pts[k].round(9).tolist() for k in sorted(places)], "cusp_elements": n_cusp,
             "micro_used": sorted(used), "micro_elements": n_micro}
 
 
-__all__ = ["CUSP_REACH", "GMSH_TET10_EDGES", "MICRO_REACH", "qualities", "settle", "straighten"]
+__all__ = ["CUSP_REACH", "GMSH_TET10_EDGES", "MAX_ROUNDS", "MICRO_REACH", "misses_shape_limits",
+           "qualities", "settle", "straighten"]

@@ -32,6 +32,9 @@ CARRY_FILES = (
     # vmtk: the engine-opened lumen and its staging facts (engines/vmtk/lumen_staging.py)
     "lumen_open.vtp", "lumen.vtp", "vmtk_staging.json",
     ".last_plan.json",    # planner memory across an across-node retry
+    # the CFD wrap rung (pipeline/cfd_wrap, cad/surface_wrap): the surface as drawn beside its
+    # wrap, so a later attempt on the rung wraps the drawn surface again, never the wrap
+    "input.unwrapped.stl", "cfd_wrap_report.json",
 )
 
 
@@ -233,6 +236,25 @@ def _stage_surface(geometry, workspace: Path, engine: str) -> None:
     prepared = prepare_surface(geometry, workspace / "input.stl", engine=engine)
     logger.info("Builder: surface prepared in metres (converted from %s at the %s boundary)",
                 prepared.consumed.current_unit.value, prepared.origin.value)
+
+
+def _stage_wrap(workspace: Path, state, engine: str) -> None:
+    """ON THE CFD WRAP RUNG (pipeline/cfd_wrap, LAD-cfd-5): the request beside the run's surface,
+    which every internal staging route reads, and - for flow round a body - the body wrapped now
+    (cad/surface_wrap.wrap_body_if_asked). A wrap that cannot be made is the attempt's recorded
+    staging failure, said in its own words. Off the rung: nothing, and no request left behind."""
+    from meshpipeline.pipeline.cfd_wrap import write_request
+    if not write_request(workspace, state):
+        return
+    from meshpipeline.cad.surface_wrap import WrapError, wrap_body_if_asked
+    try:
+        wrap_body_if_asked(workspace)
+    except _SYSTEM_ERRORS as exc:
+        logger.exception("Builder: the wrap hit a system error - the attempt stops")
+        _record_staging_failure(workspace, engine, exc, ours=True)
+    except (WrapError, ValueError) as exc:
+        logger.warning("Builder: the surface could not be wrapped: %s", exc)
+        _record_staging_failure(workspace, engine, WrapError(f"the surface could not be wrapped: {exc}"))
 
 
 def _stage_declared(workspace: Path, geometry, state, engine: str) -> None:
@@ -445,6 +467,7 @@ def prepare(state, *, job_id: str, mode: str) -> BuilderAttempt:
             # the leak size the user confirmed (INS-8), beside the surface before any staging reads it
             from meshpipeline.agents.builder.workspace import write_leak_closing
             write_leak_closing(workspace, state.get("leak_closing") or None)
+            _stage_wrap(workspace, state, engine)
             _stage_declared(workspace, geometry, state, engine)
         messages = _opening(workspace, state, engine=engine, source_path=source_path)
         if mode == "rebuild":
@@ -467,6 +490,7 @@ def prepare(state, *, job_id: str, mode: str) -> BuilderAttempt:
             _carry_forward(prev, workspace, engine, job_id)
         _ensure_surface(workspace, geometry, source_path, engine, job_id)
         if source_path and Path(source_path).exists():
+            _stage_wrap(workspace, state, engine)
             _stage_declared(workspace, geometry, state, engine)
         messages = _opening(workspace, state, engine=engine, source_path=source_path)
         _append_to_opening(messages, _retry_note(state, retry_count))

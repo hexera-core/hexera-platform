@@ -11,12 +11,15 @@ licenses, see `requirements/runtime.txt` and the `Dockerfile`, and are not vendo
 - **Licence:** Mozilla Public License 2.0 (its `LICENSE.MPL2` is installed beside the binary at
   `/opt/ftetwild/LICENSE.MPL2` in the mesh image).
 - **What we ship:** the `FloatTetwild_bin` command-line program, built in the `ftetwild-build` stage
-  of the `Dockerfile` from commit `8118f810478e0e65a7bf2d8cecdc5e203a876e97`, with two one-line source
-  changes that make it repeatable: the shuffle of the input triangles (fTetWild's
-  `src/TriangleInsertion.cpp`) and geogram's `random_shuffle` (`basic/algorithm.h`) are seeded by a
-  constant instead of `std::random_device`. MPL-2.0 is file-level copyleft: those modified files stay
-  under MPL-2.0 and their source (upstream plus the two `sed` lines in the `Dockerfile`) is what we
-  would provide with any distribution of the binary. Today the binary runs only inside our cloud mesh
+  of the `Dockerfile` from commit `8118f810478e0e65a7bf2d8cecdc5e203a876e97`, with small source
+  changes, each applied and checked by `deploy/docker/ftetwild_patch.sh`: the shuffle of the input
+  triangles (fTetWild's `src/TriangleInsertion.cpp`) and geogram's `random_shuffle` (`basic/algorithm.h`)
+  are seeded by a constant instead of `std::random_device`; the tets the TBB threads gather for a
+  triangle are sorted (`src/TriangleInsertion.cpp`) and the vertex smoothing's parallel sets use a fixed
+  threshold (`src/VertexSmoothing.cpp`), so the mesh is the same on any thread count; and a stop file
+  (`<output>.stop`) ends the optimisation and sizing-field rounds (`src/MeshImprovement.cpp`). MPL-2.0 is
+  file-level copyleft: those modified files stay under MPL-2.0 and their source (upstream plus that
+  script) is what we would provide with any distribution of the binary. Today the binary runs only inside our cloud mesh
   runner and is not distributed.
 - **Its build dependencies, statically linked:** geogram (BSD-3-Clause), libigl (MPL-2.0), Eigen
   (MPL-2.0), oneTBB (Apache-2.0), fmt (MIT), spdlog (MIT), CLI11 (BSD-3-Clause), nlohmann-style json
@@ -24,6 +27,33 @@ licenses, see `requirements/runtime.txt` and the `Dockerfile`, and are not vendo
   (`libgmp10`, LGPL-3.0-or-later / GPL-2.0-or-later) and libgomp (`libgomp1`, GPL-3.0 with the GCC
   Runtime Library Exception), both from Ubuntu's archive.
 - **Used by:** `src/meshpipeline/engines/fea_tetwild.py` (rule LAD-fea-9 in `docs/RULES.md`).
+
+## Netgen, installed into the mesh image (not vendored here)
+
+- **Project:** Netgen (Joachim Schöberl, TU Wien), the mesher of NGSolve - <https://github.com/NGSolve/netgen>.
+- **Licence:** GNU Lesser General Public License 2.1. Its OpenCASCADE build (`netgen-occt`) is under
+  the LGPL-2.1 with the OCCT exception; numpy and scipy (installed beside it) are BSD-3-Clause.
+- **What we ship:** the unmodified `netgen-mesher 6.2.2608` and `netgen-occt 7.8.1` wheels from PyPI,
+  installed by hash (`requirements/netgen.txt`) into an isolated interpreter at `/opt/netgen-env` in
+  the `mesh-toolchain` stage of the `Dockerfile`. We call it only as a separate process (dynamic use
+  of an unmodified LGPL library); nothing of Netgen is linked into our code. Today it runs only inside
+  our cloud mesh runner and is not distributed.
+- **Used by:** `src/meshpipeline/engines/netgen/` (the internal-flow CFD engine, rules NG-1..NG-5 in
+  `engines/netgen/plan.py`).
+
+## MMG, built into the mesh image (not vendored here)
+
+- **Project:** Mmg (Charles Dapogny, Cecile Dobrzynski, Pascal Frey, Algiane Froehly and contributors;
+  Bordeaux INP, CNRS, Inria, Sorbonne Universite) - <https://github.com/MmgTools/mmg>.
+- **Licence:** GNU Lesser General Public License 3.0 (its `LICENSE` is installed beside the programs at
+  `/opt/mmg/LICENSE` in the mesh image).
+- **What we ship:** the unmodified `mmg3d_O3` and `mmgs_O3` command-line programs, built in the
+  `mmg-build` stage of the `Dockerfile` from the v5.8.0 release commit
+  `4d8232c8aebfed877935d75d4d4a67e850962422`, with no optional dependency (no SCOTCH, Elas or VTK).
+  They run as separate programs, never linked into our code. **Dynamically linked system
+  libraries:** libc and libm only. Today they run only inside our cloud mesh runner and are not
+  distributed; a distribution would carry the LGPL-3.0 text and the source location above.
+- **Used by:** `src/meshpipeline/engines/fea_mmg.py` (rule MESH-mmg-1 in `docs/RULES.md`).
 
 ## vtk.js, `ui/vendor/vtk.js`
 
@@ -110,7 +140,7 @@ licenses, see `requirements/runtime.txt` and the `Dockerfile`, and are not vendo
   cd ui/vendor && sha256sum -c SHA256SUMS      # -> vtk.js: OK
   ```
 
-  `ui/vendor/SHA256SUMS` is the pin. Gate C runs the same command **inside the built
+  `ui/vendor/SHA256SUMS` is the pin. Release validation runs the same command **inside the built
   application image**, so a release fails if what ships is not the audited bundle. Updating
   the vendored file therefore requires updating the pin, which is the point: it forces this
   note to be revisited rather than silently drifting.

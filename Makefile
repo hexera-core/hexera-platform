@@ -198,13 +198,13 @@ check: lint typecheck dependencies ## GATE B - may this commit produce a release
 	$(PY) -m pytest -q tests/unit -m "not external_fixture"
 	$(PY) -m pytest -q tests/ui
 
-release-validate: ##! GATE C - build the deployable images ONCE from this commit and validate THOSE artifacts, native-terminal included (writes deploy/output/release.json)
+release-validate: ##! RELEASE VALIDATION - build the deployable images ONCE from this commit and validate THOSE artifacts, native-terminal included (writes deploy/output/release.json)
 	@bash devtools/release/validate.sh
 
-release-publish: ##! GATE C, part 2 - push the exact validated images without rebuilding and record their immutable registry digests
+release-publish: ##! RELEASE VALIDATION, part 2 - push the exact validated images without rebuilding and record their immutable registry digests
 	@bash devtools/release/publish.sh
 
-mesh-preflight: ##! GATE D - read-only: may the mesh image Gate C validated be promoted here? Deploys nothing.
+mesh-preflight: ##! GATE D - read-only: may the mesh image release validation passed be promoted here? Deploys nothing.
 	@bash deploy/gcp/scripts/deploy-preflight.sh
 
 test: test-fast ## Run the everyday hermetic unit suite

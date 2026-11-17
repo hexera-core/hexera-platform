@@ -46,7 +46,8 @@ FIDELITY_PLANS: dict[str, dict] = {
 #: The plan keys that are grid.GridPlan fields (the rest - "fidelity" - are the run's own).
 PLAN_FIELDS: tuple[str, ...] = ("max_cells", "background_cells", "min_cells_across",
                                 "cylinder_cells", "growth", "hot_cells_across", "gap_cells",
-                                "band_cells", "spread_cells", "opening_cells", "air_aspect")
+                                "band_cells", "spread_cells", "opening_cells", "air_aspect",
+                                "background_size")
 
 
 def grid_plan(plan: dict):

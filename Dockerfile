@@ -26,8 +26,10 @@
 #             build:  make test-container-smoke  (supplies APP_VERSION from the product authority)
 #
 #   mesh-toolchain  the STABLE native floor for the mesh runner: OpenFOAM 2412 (apt, pinned to
-#             an exact package version), vmtk (conda, isolated), the gmsh runtime libs, and
-#             fTetWild (built from a pinned commit in `ftetwild-build`, FEA's last rung).
+#             an exact package version), vmtk (conda, isolated), the gmsh runtime libs,
+#             fTetWild (built from a pinned commit in `ftetwild-build`, FEA's last rung),
+#             MMG (built from a pinned commit in `mmg-build`, FEA's quality post-pass), and
+#             Netgen (pip wheels by hash, isolated in /opt/netgen-env: the internal-flow engine).
 #             Slow, ~2 GB, and the only layer that needs the ESI package repository - which is
 #             served by SourceForge mirrors and is the least reliable thing in this build.
 #             The `mesh` target builds it automatically - it is not a separate artefact and
@@ -35,7 +37,7 @@
 #             build (optional, to prewarm the cache):  make mesh-toolchain
 #
 #   mesh      the off-box mesh runner (Cloud Run mesh job). Runs OpenFOAM (cfMesh/snappy),
-#             vmtk, and OCC tessellation. No db/redis/LLM.
+#             vmtk, Netgen, and OCC tessellation. No db/redis/LLM.
 #             build:  make mesh-image      (supplies APP_VERSION from the product authority)
 #
 # SELF-CONTAINED. This file is everything needed to build every image: no private registry, no
@@ -208,15 +210,17 @@ FROM base AS ftetwild-build
 # dependencies with the reviewed set - a moved tag or a new dependency fails the build here. (Its
 # unit tests are not configured: they would fetch Catch2 as an unverified archive.)
 #
-# REPEATABLE (the same input gives the same mesh, byte for byte - lab, 25 Oct): upstream seeds two
-# shuffles from std::random_device - fTetWild's triangle insertion order and geogram's
-# random_shuffle (the Delaunay's insertion order) - so two runs of one surface gave two meshes. Both
-# seeds are made constants here, each rewrite checked; with one thread (--max-threads 1, the
-# driver's own setting) the mesh is then the same every run.
+# PATCHED, EACH REWRITE CHECKED (deploy/docker/ftetwild_patch.sh): REPEATABLE (the same input gives
+# the same mesh, byte for byte - lab, 25 Oct): upstream seeds two shuffles from std::random_device,
+# made constants here; THE SAME ON ANY NUMBER OF THREADS (LAD-fea-18): the cut tets the TBB threads
+# gather are taken in index order and the smoothing's parallel sets no longer depend on the thread
+# count, so the rung uses every core of the job; A STOP FILE (LAD-fea-18) ends the optimisation where
+# it is and fTetWild writes the mesh it has, so the rung's time is bounded with a mesh in hand.
 ARG FTETWILD_COMMIT=8118f810478e0e65a7bf2d8cecdc5e203a876e97
 ARG FTETWILD_DEPS="cli11-src=4160d259d961cd393fd8d67590a8c7d210207348 eigen-src=3147391d946bb4b6c68edd901f2add6ac1f31f8c fmt-src=40626af88bd7df9a5fb80be7b25ac85b122d6c21 geogram-src=fc3eb9bf44d2ee29686592e3ef5f5f4daeda27f8 json-src=0901d33bf6e7dfe6f70fd9d142c8f5c6695c6c5b libigl-src=40e7900ccbd767f1f360e0eb10f0f1a6432e0993 predicates-src=decb7bc1260e689cbe008109e3cc5d3a5a433aea spdlog-src=6fa36017cfd5731d617e1a934f0e5ea9c4445b13 tbb-src=06ce6212da6710f4bb2d20a1904b018aa44069bf"
 RUN apt-get update && apt-get install -y --no-install-recommends cmake git libgmp-dev \
     && rm -rf /var/lib/apt/lists/*
+COPY deploy/docker/ftetwild_patch.sh /src/ftetwild_patch.sh
 RUN mkdir -p /src/ftetwild && cd /src/ftetwild \
     && git init -q && git remote add origin https://github.com/wildmeshing/fTetWild.git \
     && git fetch -q --depth 1 origin "${FTETWILD_COMMIT}" && git checkout -q FETCH_HEAD \
@@ -232,19 +236,41 @@ RUN mkdir -p /src/ftetwild && cd /src/ftetwild \
          test "$got" = "$want" || { echo "ERROR: fTetWild dependency $d is at $got, reviewed $want" >&2; exit 1; }; \
        done \
     && test "$(ls -d build/_deps/*-src | wc -l)" = "$(echo ${FTETWILD_DEPS} | wc -w)" \
-    && grep -q 'std::mt19937 g(rd());' src/TriangleInsertion.cpp \
-    && sed -i 's/std::mt19937 g(rd());/std::mt19937 g(1);/' src/TriangleInsertion.cpp \
-    && grep -q 'std::mt19937 g(1);' src/TriangleInsertion.cpp \
-    && grep -q 'std::mt19937 urng(rng());' build/_deps/geogram-src/src/lib/geogram/basic/algorithm.h \
-    && sed -i 's/std::mt19937 urng(rng());/std::mt19937 urng(1);/' build/_deps/geogram-src/src/lib/geogram/basic/algorithm.h \
-    && grep -q 'std::mt19937 urng(1);' build/_deps/geogram-src/src/lib/geogram/basic/algorithm.h \
+    && bash /src/ftetwild_patch.sh \
     && cmake --build build -j"$(nproc)" --target FloatTetwild_bin \
     && install -D -m 0755 build/FloatTetwild_bin /opt/ftetwild/bin/fTetWild \
     && install -D -m 0644 LICENSE.MPL2 /opt/ftetwild/LICENSE.MPL2 \
-    && printf '%s\n' "wildmeshing/fTetWild ${FTETWILD_COMMIT} (MPL-2.0); insertion and Delaunay shuffles seeded" \
+    && printf '%s\n' "wildmeshing/fTetWild ${FTETWILD_COMMIT} (MPL-2.0); seeded, thread-stable, stop file (deploy/docker/ftetwild_patch.sh)" \
          > /opt/ftetwild/VERSION \
     && /opt/ftetwild/bin/fTetWild --help >/dev/null \
     && rm -rf /src/ftetwild
+
+
+FROM base AS mmg-build
+# MMG, THE FEA QUALITY POST-PASS (MESH-mmg-1, engines/fea_mmg.py): mmg3d improves the inside of a volume
+# that still holds an element the production limits would note, its surface frozen (-nosurf), before the
+# elements are curved. MmgTools/mmg (Dapogny, Dobrzynski, Frey), LGPL-3.0 - see
+# docs/reference/third-party.md. BUILT FROM SOURCE in this discarded stage; only the two programs, the
+# licence and a VERSION line reach the image. PINNED BY COMMIT: the v5.8.0 release's commit, fetched by
+# its full SHA and checked after checkout. No optional dependency is enabled (no SCOTCH, Elas or VTK), so
+# the build fetches nothing else and the programs link only libc and libm. mmg3d is single-threaded and
+# deterministic: the same volume gives the same mesh.
+ARG MMG_COMMIT=4d8232c8aebfed877935d75d4d4a67e850962422
+RUN apt-get update && apt-get install -y --no-install-recommends cmake git \
+    && rm -rf /var/lib/apt/lists/*
+RUN mkdir -p /src/mmg && cd /src/mmg \
+    && git init -q && git remote add origin https://github.com/MmgTools/mmg.git \
+    && git fetch -q --depth 1 origin "${MMG_COMMIT}" && git checkout -q FETCH_HEAD \
+    && test "$(git rev-parse HEAD)" = "${MMG_COMMIT}" \
+    && cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DUSE_SCOTCH=OFF -DUSE_ELAS=OFF -DUSE_VTK=OFF \
+         -DBUILD_SHARED_LIBS=OFF -DBUILD_TESTING=OFF \
+    && cmake --build build -j"$(nproc)" --target mmg3d mmgs \
+    && install -D -m 0755 build/bin/mmg3d_O3 /opt/mmg/bin/mmg3d_O3 \
+    && install -D -m 0755 build/bin/mmgs_O3 /opt/mmg/bin/mmgs_O3 \
+    && install -D -m 0644 LICENSE /opt/mmg/LICENSE \
+    && printf '%s\n' "MmgTools/mmg ${MMG_COMMIT} (v5.8.0, LGPL-3.0)" > /opt/mmg/VERSION \
+    && { /opt/mmg/bin/mmg3d_O3 -h >/dev/null || true; } \
+    && rm -rf /src/mmg
 
 
 FROM base AS mesh-toolchain
@@ -416,6 +442,29 @@ RUN apt-get update && apt-get install -y --no-install-recommends libgmp10 libgom
     && rm -rf /var/lib/apt/lists/* \
     && ln -s /opt/ftetwild/bin/fTetWild /usr/local/bin/fTetWild \
     && fTetWild --help >/dev/null
+
+# MMG (built in `mmg-build` above): mmg3d and mmgs, on PATH where engines/fea_mmg.binary() finds them;
+# they link only libc and libm. The capability smoke runs mmg3d on a box (tests/native).
+COPY --from=mmg-build /opt/mmg /opt/mmg
+RUN ln -s /opt/mmg/bin/mmg3d_O3 /usr/local/bin/mmg3d_O3 \
+    && ln -s /opt/mmg/bin/mmgs_O3 /usr/local/bin/mmgs_O3 \
+    && test -x /usr/local/bin/mmg3d_O3
+
+# NETGEN (ISOLATED), the internal-flow tetrahedra + prism-layer CFD engine (engines/netgen/).
+# netgen-mesher (LGPL-2.1) ships its own OpenCASCADE (netgen-occt) and numpy 2, which cannot share
+# an interpreter with the app's pinned OCP/vtk/numpy - so, like vmtk, it lives in its own venv on the
+# image's pinned Python and is reached ONLY as a subprocess (engines/netgen/runner.py runs
+# engines/netgen/netgen_mesh.py under /opt/netgen-env/bin/python). Every wheel is installed by hash
+# (requirements/netgen.txt); the import smoke fails the build if the env cannot mesh. Last in this
+# stage so a change to it never rebuilds OpenFOAM, vmtk or fTetWild.
+COPY requirements/netgen.txt /tmp/netgen.txt
+RUN python3 -m venv /opt/netgen-env \
+    && /opt/netgen-env/bin/pip install --no-cache-dir --only-binary=:all: --require-hashes \
+         -r /tmp/netgen.txt \
+    && rm -f /tmp/netgen.txt \
+    && /opt/netgen-env/bin/python -c "import netgen.meshing, netgen.stl, scipy.spatial; from netgen import config; print('netgen', config.version)" \
+    && printf '#!/bin/sh\nexec /opt/netgen-env/bin/python "$@"\n' > /usr/local/bin/netgen-python \
+    && chmod 755 /usr/local/bin/netgen-python
 
 
 FROM base AS runtime-base
@@ -709,7 +758,7 @@ COPY apps/admin-console/package.json ./apps/admin-console/
 RUN pnpm install --frozen-lockfile --filter @hexera/admin-console...
 COPY apps/admin-console/ ./apps/admin-console/
 # 4 GB of V8 heap for `next build`: its TypeScript pass exceeded the ~2 GB default on a 16 GB
-# laptop (Gate C, 2026-09-12) and V8 sizes that default from the memory free at start-up.
+# laptop (release validation, 2026-09-12) and V8 sizes that default from the memory free at start-up.
 RUN NODE_OPTIONS=--max-old-space-size=4096 pnpm --filter @hexera/admin-console build
 # The outreach sender, bundled as one file. It is a Cloud Run JOB rather than a route, so Next does
 # not build it; esbuild resolves its imports into the same tree the console uses, so the job and the

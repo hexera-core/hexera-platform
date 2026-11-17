@@ -177,6 +177,36 @@ def hold_applies(session_id: str) -> str | None:
                          working=working)
 
 
+def stage_settles_unit(session_id: str) -> bool:
+    """WHETHER THE STAGE WILL SETTLE THE FILE'S UNIT: a geometry check is under way or ready and not
+    yet confirmed, so the part will be shown with its unit box and Proceed records the unit (Areen,
+    2026-11-13: while the stage is up, every setting is made on it - the chat asks none of them).
+    False when the check is off, missing, failed or already confirmed: the chat asks, as before."""
+    import meshpipeline.settings.geometry_check as gcfg
+
+    if not gcfg.GEOMETRY_CHECK_ENABLED:
+        return False
+    from meshpipeline.application import geometry_progress as gp
+    from meshpipeline.application.geometry_check import check_object_key, naming_requested, read_check, time_boxed
+    from meshpipeline.contracts.object_storage import ObjectNotFound, get_object_store
+
+    try:
+        get_object_store().get_bytes(object_key=check_object_key(session_id, "confirmed.json"))
+        return False
+    except ObjectNotFound:
+        pass
+    except Exception:  # noqa: BLE001 - unreadable store: the chat asks, as before
+        return False
+    try:
+        stored = time_boxed(read_check(session_id), naming_requested(session_id),
+                            progress=gp.read_progress(session_id) or {})
+    except Exception:  # noqa: BLE001
+        return False
+    if not isinstance(stored, dict):
+        return False
+    return str(stored.get("status") or "") in ("pending", "scouted", "ready")
+
+
 def measured_size_mm(session_id: str) -> list[float] | None:
     """The part's size as the scout measured it - the file's own numbers read as millimetres -
     for the unit question to show in each candidate unit. None when the check is off, has not
