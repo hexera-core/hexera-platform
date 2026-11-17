@@ -99,7 +99,26 @@ export const Stage = {
       +'<p id="empty-lead">Drop a CAD or mesh file here</p><p class="empty-sub">Hexera will guide you through the simulation setup.</p>'
       +'<span class="drop-slot"></span><p id="empty-formats"></p></div></div></div></div>';
     seatUploadButton();
-    this.nodes={};this.rows=null;this._activeKey=null;this._building=false;this._ev=null;this._unit='';this.proc=null;this.tl=null;this._briefEl=null;this._briefSig='';
+    this._followScroll();
+    clearInterval(this._tick);this.proc=null;this._briefEl=null;this._briefSig='';
+    this._reset();},
+  /* A RUN STARTS IN THE CONVERSATION. Nothing said so far is cleared: the last run's box (if any) stays where it
+     is, finished, and gives up the live ids; the plan card stays as approved, without the notes box the run can
+     no longer take. The next box is drawn at the end of the conversation (ensureProc), under the message that
+     started the run - live and on a reload alike (core/conversation.js). */
+  newRun(){
+    clearInterval(this._tick);
+    const p=this.proc;
+    if(p){p.querySelectorAll('[id]').forEach(e=>e.removeAttribute('id'));
+      const cb=p.querySelector('.proc-cancel');if(cb){cb.hidden=true;cb.onclick=null;}}
+    const b=this._briefEl;
+    if(b){b.querySelectorAll('.rc-notes-box,.rc-fin-btn,.rc-go').forEach(e=>e.remove());
+      const pm=b.querySelector('.rc-pm');if(pm)pm.onclick=pm.onkeydown=pm.onmouseover=pm.onmouseleave=null;}
+    this.proc=null;this._briefEl=null;this._briefSig='';
+    this._reset();},
+  // what belongs to one run, cleared for the next
+  _reset(){
+    this.nodes={};this.rows=null;this._activeKey=null;this._building=false;this._ev=null;this._unit='';this.proc=null;this.tl=null;
     // the run started (or a new conversation): the card's model gives its GL context back
     clearTimeout(this._pmTimer);if(this._pmDrop)this._pmDrop();this._pm=null;this._pmOpen=null;this._pmHover=null;this._pmHoverPart=null;this._pm3dFailed=false;
     if(this._pmSaves){this._pmSaves.forEach(t=>clearTimeout(t));this._pmSaves.clear();}
@@ -109,7 +128,7 @@ export const Stage = {
     // one still counted as open).
     this._att=null;this._attSep=null;this._built=new Set();this._seq=0;this.meshBar=null;this._ended=false;
     // ...and so did the stopped clock and the last event's time
-    this.finished=false;this._evt=0;Run.reset();},
+    this.finished=false;this._evt=0;this._t1=0;Run.reset();},
   // Fill the empty state's format line from the SERVER's capability description. Advisory and
   // best-effort: when capabilities are unavailable the line stays empty and the neutral lead
   // sentence still invites an upload, because the server is the authority on what it accepts.
@@ -118,7 +137,16 @@ export const Stage = {
     const esc=t=>String(t).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
     el.innerHTML=!text?'':short?`<details class="drop-formats"><summary>${esc(short)}</summary>${esc(text)}</details>`:esc(text);},
   col(){return document.getElementById('cc');},
-  scrollBottom(){const s=document.querySelector('#stage .scroll');if(s)s.scrollTop=s.scrollHeight;},
+  /* THE CONVERSATION FOLLOWS THE NEWEST LINE ONLY WHILE THE READER IS AT IT. Scrolled up to read, it stays where
+     they put it however the run updates; back at the bottom, it follows again. `force` is for what the user just
+     did or must see: their own message, a run's box appearing. */
+  scrollBottom(force){const s=document.querySelector('#stage .scroll');if(!s)return;
+    if(!force&&this._follow===false)return;
+    s.scrollTop=s.scrollHeight;this._follow=true;this._ownTop=s.scrollTop;},
+  // a scroll the page made itself is not the reader's: only theirs decides whether it follows
+  _followScroll(){const s=document.querySelector('#stage .scroll');this._follow=true;this._ownTop=null;if(!s)return;
+    s.addEventListener('scroll',()=>{if(s.scrollTop===this._ownTop)return;this._ownTop=null;
+      this._follow=s.scrollHeight-s.scrollTop-s.clientHeight<48;},{passive:true});},
   clearEmpty(){returnUploadButton();document.getElementById('empty')?.remove();},
   // There is ONE assistant identity in this product and it is Hexera - the same
   // one that took the request also delivers the result, so the default names it
@@ -130,7 +158,7 @@ export const Stage = {
   chat(role,text,who){this.clearEmpty();const g=document.createElement('div');g.className='im '+(role==='user'?'user':'assistant');
     if(role==='user')g.innerHTML=`<div class="who">${esc(who||'You')}</div><div class="bub">${mdBlock(text)}</div>`;
     else g.innerHTML=`<div class="who">${esc(who||'Hexera')}</div><div class="txt">${mdBlock(prettyText(displayText(text)))}</div>`;
-    this.col().appendChild(g);this.scrollBottom();},
+    this.col().appendChild(g);this.scrollBottom(role==='user');},
   // THE CLOSING ACCOUNT of a finished run, in the same voice as every other turn (render/outcome.js)
   outcome(text,opts){this.clearEmpty();const g=document.createElement('div');g.className='im assistant';
     g.innerHTML=`<div class="who">Hexera</div><div class="txt">${outcomeHtml(displayText(text),opts)}</div>`;
@@ -683,16 +711,18 @@ export const Stage = {
     this.col().appendChild(p);this.proc=p;this.tl=p.querySelector('#tl');
     this.rows={};ROWS.forEach(d=>{this.rows[d.key]=this._row(d);});this.nodes=this.rows;
     p.querySelector('#proc-cancel').onclick=()=>onCancel();
-    this.t0=Date.now();
+    this.t0=this.serverNow();
     // one ticker drives every live time - the run's total and the running row's
     clearInterval(this._tick);
     this._tick=setInterval(()=>{
-      const c=document.getElementById('proc-clock');
-      if(c&&!this.finished)c.textContent=fmtDur(Date.now()-this.t0);
-      Object.values(this.rows||{}).forEach(r=>{if(r.state==='active')r.dur.textContent=fmtDur(r.spent+Math.max(0,Date.now()-r.t0));});
+      const c=p.querySelector('.proc-clock');
+      if(c&&!this.finished)c.textContent=fmtDur(this.serverNow()-this.t0);
+      Object.values(this.rows||{}).forEach(r=>{if(r.state==='active')r.dur.textContent=fmtDur(this._capped(r.spent+Math.max(0,this.serverNow()-r.t0)));});
       if(!this.finished&&(this._lineTick=(this._lineTick||0)+1)%2===0)this.drawLive();
     },500);
-    this.drawLive();},
+    this.drawLive();
+    // the box appears where the run started: in view, whatever the reader was looking at
+    this.scrollBottom(true);},
   _row(d){
     const n=document.createElement('div');n.className='tl-node rr';n.dataset.row=d.key;
     n.innerHTML=`<div class="tl-dot"></div>
@@ -726,14 +756,23 @@ export const Stage = {
   clock(createdAt,endedAt){
     const t0=Date.parse(createdAt||''),t1=Date.parse(endedAt||'');
     if(this.finished&&!(t1>0))return;
-    if(t0>0)this.t0=Math.min(t0,Date.now());
-    if(t1>0)this.finished=true;
+    this._learn(t0);
+    if(t0>0)this.t0=Math.min(t0,this.serverNow());
+    if(t1>0){this.finished=true;this._t1=t1;}
     const c=this.proc&&this.proc.querySelector('.proc-clock');
-    if(c&&this.t0)c.textContent=fmtDur((t1>0?t1:Date.now())-this.t0);},
+    if(c&&this.t0)c.textContent=fmtDur((t1>0?t1:this.serverNow())-this.t0);},
   // WHEN, BY THE SERVER'S CLOCK. Every event says when it happened; a row opens and closes at those
   // times, so a replayed run's rows last as long as they did - not the instant the replay took.
-  at(ts){const t=Date.parse(ts||'');this._evt=t>0?Math.min(t,Date.now()):0;},
-  now(){return this._evt||Date.now();},
+  at(ts){const t=Date.parse(ts||'');this._learn(t);this._evt=t>0?Math.min(t,this.serverNow()):0;},
+  now(){return this._evt||this.serverNow();},
+  /* ONE CLOCK, THE SERVER'S. A browser whose clock is behind the server's used to hold the run's start at its own
+     "now" while the steps counted from when their events arrived - two clocks a skew apart, so a step could read
+     longer than its run (22:23 against 21:40, 16 Nov). How far ahead the server is shows in any time it sends that
+     is still in this page's future; every live time is read on the server's clock from then on. */
+  _learn(t){if(!(t>0))return;const a=t-Date.now();if(a>(this._ahead||0)&&a<36e5)this._ahead=a;},
+  serverNow(){return Date.now()+(this._ahead||0);},
+  // ...and a step's time is never shown longer than its run's
+  _capped(ms){const tot=this.t0?(this._t1||this.serverNow())-this.t0:0;return tot>0?Math.min(ms,tot):ms;},
 
   /* WHICH ROW. The dispatch shows the renderer every event first (`seen`); the one table
      (core/run_rows.js) says which row its stage feeds, and the builder's work is its design until
@@ -764,7 +803,7 @@ export const Stage = {
     return row;},
   _close(r){if(!r||r.state!=='active')return;
     r.spent+=Math.max(0,this.now()-r.t0);r.state='done';r.tEnd=this.now();
-    r.dur.textContent=fmtDur(r.spent);if(this._activeKey===r.key)this._activeKey=null;
+    r.dur.textContent=fmtDur(this._capped(r.spent));if(this._activeKey===r.key)this._activeKey=null;
     this.paint(r);this._drawSaid(r);this.drawLive();},
   done(a){const r=this.rows&&this.rows[ROW_KEYS.includes(a)?a:(STAGE_ROW[a]||'')];if(r)this._close(r);},
 
@@ -1111,7 +1150,9 @@ export const Stage = {
     open.forEach(n=>this._close(n));
     this.clock(data.createdAt,data.endedAt);
     if(!this.finished){this.finished=true;
-      const c=this.proc&&this.proc.querySelector('.proc-clock');if(c&&this.t0)c.textContent=fmtDur(Date.now()-this.t0);}
+      const c=this.proc&&this.proc.querySelector('.proc-clock');if(c&&this.t0)c.textContent=fmtDur(this.serverNow()-this.t0);}
+    // the run's total is known now: no row reads longer than it
+    rows.forEach(n=>{if(n.state==='done'&&n.spent)n.dur.textContent=fmtDur(this._capped(n.spent));});
     // HOW MANY ATTEMPTS, as the run counted them: only one that ran a mesher counts. Said on the build
     // row when there was more than one, or when none built anything.
     const opened=this._att!=null||this._built.size>0;

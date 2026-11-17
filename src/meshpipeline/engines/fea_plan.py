@@ -1173,13 +1173,19 @@ def decisions(record: Mapping, plan: Mapping) -> list[dict]:
          "inputs": {"min_divisions": MIN_DIVISIONS, "per_h3": PER_H3},
          "words": f"Base size {plan['base_size_m'] * 1e3:.3g} mm: a tenth of the part, the rules refine below it."},
     ]
+    base = float(plan.get("base_size_m") or 0.0)
     for rule, kinds, what in (("PLAN-fea-3", ("wall", "wall_spot"), "walls"), ("PLAN-fea-4", ("hole", "fillet", "notch"), "hot spots"),
                               ("PLAN-fea-5", ("corner",), "capped corners"), ("PLAN-fea-7", ("round",), "rounds")):
         sel = [z for z in zs if z["kind"] in kinds]
         if sel:
+            # SAID ONLY WHERE IT REFINES: a zone at the base size is meshed like the rest of the part, so the words
+            # count the zones finer than the base (16 Nov: every wall at the base size read "475 wall areas, the
+            # finest 279 mm" beside "Base size 279 mm", as if a wall were that thick); none finer, nothing said
+            finer = [z for z in sel if not base or float(z["size_m"]) < base * (1 - 1e-6)]
             out.append({"stage": "fea_plan", "decided": what, "value": len(sel), "rule": rule,
-                        "inputs": {"finest_m": min(z["size_m"] for z in sel)},
-                        "words": f"{len(sel)} {what} zone(s), the finest {min(z['size_m'] for z in sel) * 1e3:.3g} mm."})
+                        "inputs": {"finest_m": min(z["size_m"] for z in sel), "finer_than_base": len(finer)},
+                        "words": (f"{len(finer)} {what} zone(s), the finest {min(z['size_m'] for z in finer) * 1e3:.3g} mm."
+                                  if finer else "")})
     asm = plan.get("assembly") or {}
     if asm:
         out.append({"stage": "fea_plan", "decided": "assembly", "value": asm.get("mode"), "rule": "PLAN-fea-17",

@@ -57,6 +57,15 @@ export function disableInput() {
 
 export function setPlaceholder(text) { $("chat-input").placeholder = text; }
 
+/** A RUN IS GOING: the box is closed until it ends, and says why. It used to keep "Type your reply…" on a box that
+ *  took nothing, or - after a reload - "Upload a geometry file to begin…" beside a run that plainly had one. */
+export const RUN_GOING = "Generating the mesh…";
+export function holdForRun() {
+  clearNewRunOffer();
+  disableInput();
+  setPlaceholder(RUN_GOING);
+}
+
 /** THE FILE A RUN MESHES, named by the server. The label was only ever filled by this page's own
  *  upload, so a reload - or a run opened from a link - read "No geometry file selected" beside a
  *  run that plainly had one. A page that holds an upload of its own keeps naming that upload. */
@@ -264,7 +273,7 @@ export async function watchGeometryCheck(sessionId) {
     _checkState = "done"; _stageOpen = false;
     releaseHold();
     if (reply.next) {
-      if (reply.next.reply) deps.chat("assistant", reply.next.reply);
+      if (reply.next.reply && !startsRun(reply.next)) deps.chat("assistant", reply.next.reply);
       deps.choices(reply.next.choices || [], sendText);
       deps.brief(reply.next.brief);
       if (reply.next.done && reply.next.job_id) { disableInput(); deps.onJobStarted(reply.next.job_id); }
@@ -423,6 +432,10 @@ export function clearNewRunOffer() {
   if (_offerEl) { _offerEl.remove(); _offerEl = null; }
 }
 
+/* A REPLY THAT STARTS A RUN is answered by the run's box, drawn next. Its words ("accepted and queued … Job ID: …")
+   are not kept in the conversation, so a reload could never draw them again: live and reloaded read the same. */
+function startsRun(d) { return !!(d && d.done && d.job_id); }
+
 async function send() {
   const inp = $("chat-input");
   await sendText(inp.value.trim());
@@ -438,7 +451,7 @@ async function sendText(txt, { again = false } = {}) {
   disableInput();
   try {
     const d = await sendMessage(sessionId, txt);
-    deps.chat("assistant", d.reply);
+    if (!startsRun(d)) deps.chat("assistant", d.reply);
     deps.choices(d.choices || [], sendText);
     deps.brief(d.brief);
     if (d.yes_after_reading && !again) {
