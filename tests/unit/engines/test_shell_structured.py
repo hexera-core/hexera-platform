@@ -707,6 +707,9 @@ def test_holes_out_of_step_keep_their_grid(tmp_path, monkeypatch, limited):
     side moved 7.5 mm into its ring's room and the web was left free; now the chain is two lines, every ring keeps
     its room and the web is gridded with every line met."""
     monkeypatch.setattr(ST, "SNAP_LIMITS", limited)
+    # (the rule under test is the grid's; the four alike holes are bolt holes to SHMESH-51, whose two rings this web has
+    # no grid for - its free mesh with them is the better one there, and the guard keeps it)
+    monkeypatch.setattr(ST, "BOLTS", False)
     brep, rec = _plate_with_holes(tmp_path, [(97.3, 61.5, 17.4), (147.7, 140.0, 17.4), (152.7, 301.5, 17.4),
                                              (112.3, 220.0, 17.4)], size=(400.0, 363.0, 10.0))
     mesh, applied = _mesh(brep, rec, _criteria())
@@ -750,6 +753,9 @@ def test_a_channels_web_and_flanges_are_gridded_across_their_joints(tmp_path, mo
     BRepTools.Write_s(surf, str(brep))
     monkeypatch.setattr(ST, "JOIN", join)
     monkeypatch.setattr(ST, "JOIN_STRIPS", join)      # (this channel's faces meet through narrow strips)
+    # (the joints' rule is under test, with the strips joined - off in the product; there the web's two-ring bolt boxes
+    # of SHMESH-51 leave edges over the 15 mm line and the guard keeps the free mesh with its rings)
+    monkeypatch.setattr(ST, "BOLTS", False)
     mesh, applied = _mesh(brep, rec, _criteria())
     s = applied["quality"]["structure"]
     assert "guard" not in s, s.get("guard")

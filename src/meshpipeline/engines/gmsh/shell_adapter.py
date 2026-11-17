@@ -22,6 +22,7 @@ import numpy as np
 from meshpipeline.engines import shell_mesh, shell_quality
 from meshpipeline.engines import shell_plan as plan_rules
 from meshpipeline.engines import shell_requirements as SR
+from meshpipeline.engines import shell_structure as SSM
 from meshpipeline.engines.gmsh import shell_structured as ST
 from meshpipeline.engines.shell_mesh import ShellMesh, edge_census, orient
 
@@ -1258,7 +1259,8 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
                 if k_c in refused and "free_figures" in v_c:
                     refused[k_c]["free_figures"] = v_c["free_figures"]
             applied["quality"]["structure"]["refused"] = [
-                {"face": owners[k] if 0 <= k < len(owners) else str(k), **v} for k, v in sorted(refused.items())]
+                {"face": owners[k] if 0 <= k < len(owners) else owners[-k - 1] if 0 <= -k - 1 < len(owners) else str(k),
+                 **v} for k, v in sorted(refused.items())]
             # SHMESH-49g: each round plate meshed in rings and strips, with its triangles in the mesh delivered
             tri_at = applied.pop("_polar_tri_at", {})
             was_judged = applied.pop("_polar_judged", None)
@@ -1513,7 +1515,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
             names = {k: (owners[k], str(mids_of.get(owners[k], {}).get("body", ""))) for k in set(tag_of.values())}
             washers, washer_skipped, hole_lines = ST.plan_washers(
                 gmsh, tag_of, {t: float(rows[k]["size_mm"]) for t, k in tag_of.items()}, hole_size, mm,
-                names=names, before=list(hole_before),
+                names=names, before=list(hole_before), no_bolt=frozenset(-x - 1 for x in no_cut if x < 0),
                 across=ST.WASHER_ACROSS_USER if (sizing or {}).get("global_mm") is not None else ST.WASHER_ACROSS,
                 low_mm=(sizing or {}).get("low_mm"), high_mm=(sizing or {}).get("high_mm"))
             washers_planned = list(washers)
@@ -2277,6 +2279,25 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                         break
         if hurt_p:
             raise _NoCut(hurt_p, {k: why_p[k] for k in hurt_p})
+    if judge_faces and ST.BOLT_CHECK and not seam_due and requirements and requirements.get("limits"):
+        # SHMESH-51: a face whose bolt holes took two rings and that leaves a quality line of the user's unmet on its
+        # own elements is meshed again with one ring round them (as their size gives): -k-1 in the faces refused
+        import types as _types
+
+        qk_b, tk_b = np.asarray(q_face, dtype=np.int64), np.asarray(t_face, dtype=np.int64)
+        hurt_b: dict[int, dict] = {}
+        for kp in sorted({int(w.owner) for w in rings if w.radii}):
+            plate_q = shell_quality.quad_measures(xyz, Q[qk_b == kp], extra=True) if (qk_b == kp).any() else {}
+            plate_t = shell_quality.tria_measures(xyz, T[tk_b == kp], extra=True) if (tk_b == kp).any() else {}
+            sub_b = _types.SimpleNamespace(n_elements=int((qk_b == kp).sum() + (tk_b == kp).sum()))
+            for lim_ in requirements["limits"]:
+                row_ = SR._limit_row(lim_, sub_b, plate_q, plate_t)
+                if row_.get("applied") and row_.get("met") is not True:
+                    hurt_b[-kp - 1] = {"kind": "bolt rings", "why": "a quality line not met on its own elements",
+                                       "line": str(lim_.get("measure")), "worst": row_.get("worst")}
+                    break
+        if hurt_b:
+            raise _NoCut(set(hurt_b), hurt_b)
     mids = {m["id"]: m for m in record["mids"]}
     pairs = {p["id"]: p for p in record["pairs"]}
     mid_of = [owners[k] for k in face_of.tolist()]
@@ -2331,6 +2352,12 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
     if grids or mapped:
         mesh.notes.append(f"Mapped quads (a regular grid) on {len(grids) + len(mapped)} of {len(tag_of) - len(rings)} "
                           "face(s): every face with four sides (SHMESH-40).")
+    bolt_lines = _bolt_rings(mesh, hole_lines) if any(h.get("bolt") for h in hole_lines) else []
+    if bolt_lines:
+        quality["structure"]["bolt_holes"] = len(bolt_lines)
+        quality["structure"]["bolt_rings"] = dict(sorted(Counter(min(int(h.get("rings") or 0), ST.BOLT_RINGS)
+                                                                 for h in bolt_lines).items()))
+        mesh.notes += _bolt_words(bolt_lines)
     if washers:
         why = "; ".join(f"{n} {reason}" for reason, n in sorted(washer_skipped.items()))
         mesh.notes.append(f"Washers on {len(washers)} of {holes_seen} round hole(s): a ring of quads round each, "
@@ -2411,6 +2438,55 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                            for w in seam_w]
     out["_seam_owners"] = [int(w.owner) for w in seam_w]
     return mesh, out
+
+
+def _bolt_rings(mesh: ShellMesh, hole_lines: list[dict]) -> list[dict]:
+    """SHMESH-51: the bolt holes' lines, each with the whole rings of quads round it in the mesh as built (`rings`,
+    measured: the hole found by its centre)."""
+    measured = SSM.holes(mesh)
+    out = []
+    for h in hole_lines:
+        if not h.get("bolt"):
+            continue
+        at = np.asarray(h.get("at_mm") or [math.inf] * 3, dtype=float)
+        tol = 0.25 * float(h.get("diameter_mm") or 0.0)
+        got = [m for m in measured if float(np.linalg.norm(np.asarray(m["centre"], dtype=float) - at)) <= tol
+               and abs(float(m["diameter_mm"]) - float(h["diameter_mm"])) <= 0.1 * float(h["diameter_mm"])]
+        h["rings"] = max((int(m.get("rings") or 0) for m in got), default=0)
+        out.append(h)
+    return out
+
+
+def _bolt_words(lines: list[dict]) -> list[str]:
+    """SHMESH-51: what the user reads - one line for which holes were taken as bolt holes and why, one for their
+    rings as built (plain words, counts)."""
+    kinds = Counter(str(h["bolt"]).split(" (")[0] for h in lines)
+    short = {"it lines up with a hole in another plate": "line up with a hole in another plate",
+             "its plate is joined to another plate": "are in a plate joined to another plate"}
+    parts = []
+    for k, n in sorted(kinds.items(), key=lambda x: (-x[1], x[0])):
+        parts.append(f"{n} " + (short.get(k) or ("are one of a pattern of alike holes" if k.startswith("one of")
+                                                 else k)))
+    out = [f"{len(lines)} round hole(s) taken as bolt holes, so they get two rings of elements where they fit: "
+           + "; ".join(parts) + "."]
+    two = [h for h in lines if int(h.get("rings") or 0) >= ST.BOLT_RINGS]
+    one = [h for h in lines if int(h.get("rings") or 0) == 1]
+    none = [h for h in lines if int(h.get("rings") or 0) == 0]
+    words = f"Two rings round {len(two)} of the {len(lines)} bolt holes" if two else \
+        f"No bolt hole has two rings ({len(lines)} found)"
+    if one:
+        said = {"no room": "there was no room for a second",
+                "the edge lengths": "your edge lengths leave no room for a second",
+                "two rings left": "a second left one of your quality lines unmet"}
+        why_one = Counter(next((v for k_, v in said.items() if str(h.get("one_ring", "")).startswith(k_)), "")
+                          for h in one)
+        words += f"; one ring round {len(one)}" + (
+            f" ({', '.join(f'{n} where {w}' if len(why_one) > 1 else f'where {w}' for w, n in sorted(why_one.items()) if w)})"
+            if any(why_one) else "")
+    if none:
+        words += f"; no ring round {len(none)} (too near an edge or another hole)"
+    out.append(words + ".")
+    return out
 
 
 def _wants_redraw(w, drawn_at: list) -> bool:
