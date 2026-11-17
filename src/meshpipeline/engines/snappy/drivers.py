@@ -2469,9 +2469,9 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
         surface_level = max(0, plan_int(strategy, "surface_level", 2))
         cells_across = max(8, plan_int(strategy, "cells_across_diameter", 24))
         n_layers = max(0, plan_int(strategy, "n_layers", 3))
-        first_rel = plan_float(strategy, "first_layer_rel", 0.3)
-        if first_rel <= 0.0:
-            first_rel = 0.3
+        last_rel = plan_float(strategy, "last_layer_rel", 0.3)
+        if last_rel <= 0.0:
+            last_rel = 0.3
         quality = strategy.get("quality", "balanced")
         if quality not in ("balanced", "strict"):
             quality = "balanced"
@@ -2633,7 +2633,7 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
                 wall_key=_wall_key,
                 interior_point=t["interior_point"], bbox_min=t["bbox_min"],
                 bbox_max=t["bbox_max"], base_cell=base_cell, surface_level=surface_level,
-                feature_level=feature_level, n_layers=n_layers, first_layer_rel=first_rel,
+                feature_level=feature_level, n_layers=n_layers, last_layer_rel=last_rel,
                 max_cells=_budget, quality=quality,
                 port_sizes=_port_sizes, sealed_before=_sealed_before,
                 thin_regions=[*_thin_regions, *_narrow_regions,

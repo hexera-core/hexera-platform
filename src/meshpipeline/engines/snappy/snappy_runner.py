@@ -928,9 +928,9 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
     # (layer_counts) and relax the termination knobs (layer_overrides); with neither given the
     # authored dict is byte-identical to the historical one - pinned by regression test.
     n_layers = max(0, plan_int(strategy, "n_layers", 3))
-    first_rel = plan_float(strategy, "first_layer_rel", 0.35)
-    if first_rel <= 0.0:
-        first_rel = 0.35
+    last_rel = plan_float(strategy, "last_layer_rel", 0.35)
+    if last_rel <= 0.0:
+        last_rel = 0.35
     layer_counts = {str(k): max(0, int(v)) for k, v in (layer_counts or {}).items()}
 
     def _n_for(patch: str) -> int:
@@ -1108,7 +1108,7 @@ castellatedMeshControls {{ maxLocalCells {cast_cells}; maxGlobalCells {cast_cell
 snapControls {{ nSmoothPatch 3; tolerance 2.0; nSolveIter 50; nRelaxIter 8; nFeatureSnapIter 15;
   implicitFeatureSnap false; explicitFeatureSnap true; multiRegionFeatureSnap false; }}
 addLayersControls {{ relativeSizes true; layers {{ {_layers} }}
-  expansionRatio 1.2; finalLayerThickness {first_rel:g}; minThickness {_min_thick:g}; nGrow 0; featureAngle 130;
+  expansionRatio 1.2; finalLayerThickness {last_rel:g}; minThickness {_min_thick:g}; nGrow 0; featureAngle 130;
   slipFeatureAngle 30; nRelaxIter 8; nSmoothSurfaceNormals 2; nSmoothNormals 3; nSmoothThickness 10;
   maxFaceThicknessRatio 0.5; maxThicknessToMedialRatio {medial}; minMedialAxisAngle 90;
   layerTerminationAngle {LAYER_TERMINATION_ANGLE};
@@ -1463,7 +1463,7 @@ _off_grid = off_grid_point
 
 def render_internal_case(workspace, *, names: dict, features: dict, interior_point,
                          bbox_min, bbox_max, base_cell: float, surface_level: int,
-                         feature_level: int, n_layers: int, first_layer_rel: float = 0.3,
+                         feature_level: int, n_layers: int, last_layer_rel: float = 0.3,
                          max_cells: int = 8_000_000, quality: str = "balanced",
                          wall_key: str = "wall", port_sizes: dict[str, float] | None = None,
                          sealed_before: frozenset[str] | set[str] = frozenset(),
@@ -1524,7 +1524,7 @@ def render_internal_case(workspace, *, names: dict, features: dict, interior_poi
                    if near_dist > 0.0 else "")
     max_cells = int(max_cells)
     n_layers = max(0, int(n_layers))
-    first_rel = float(first_layer_rel)
+    last_rel = float(last_layer_rel)
     if deficit or surplus:
         logger.info("render_internal_case: clamp correction deficit=%d surplus=%d "
                     "(base_cell=%.4g base_actual=%.4g) → surf=%d feat=%d wall_cell=%.4g",
@@ -1639,7 +1639,7 @@ castellatedMeshControls {{ maxLocalCells {max_cells}; maxGlobalCells {max_cells}
 snapControls {{ nSmoothPatch 3; tolerance 2.0; nSolveIter 50; nRelaxIter 8; nFeatureSnapIter 15;
   implicitFeatureSnap false; explicitFeatureSnap true; multiRegionFeatureSnap false; }}
 addLayersControls {{ relativeSizes true; layers {{ {wall} {{ nSurfaceLayers {n_layers}; }} }}
-  expansionRatio 1.2; finalLayerThickness {first_rel:g}; minThickness 0.05; nGrow 0; featureAngle 130;
+  expansionRatio 1.2; finalLayerThickness {last_rel:g}; minThickness 0.05; nGrow 0; featureAngle 130;
   slipFeatureAngle 30; nRelaxIter 8; nSmoothSurfaceNormals 2; nSmoothNormals 3; nSmoothThickness 10;
   maxFaceThicknessRatio 0.5; maxThicknessToMedialRatio {medial}; minMedialAxisAngle 90;
   layerTerminationAngle {LAYER_TERMINATION_ANGLE};

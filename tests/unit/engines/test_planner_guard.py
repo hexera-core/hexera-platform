@@ -19,7 +19,7 @@ GOOD_EXTERNAL = {
     "domain_margin": {"up": 10.0, "down": 20.0, "side": 10.0, "vert": 10.0},
     "reference_length_m": 1.0,
     "n_layers": 4,
-    "first_layer_rel": 0.35,
+    "last_layer_rel": 0.35,
     "quality": "balanced",
     "max_cells": 3_000_000,
     "wake": {"enabled": True, "length": 4.0, "levels_below_surface": 1, "tiers": 3},
@@ -28,7 +28,7 @@ GOOD_EXTERNAL = {
 }
 GOOD_INTERNAL = {
     "approach": "bore-relative", "cells_across_diameter": 24, "surface_level": 2,
-    "feature_level": 3, "n_layers": 5, "first_layer_rel": 0.3, "quality": "strict",
+    "feature_level": 3, "n_layers": 5, "last_layer_rel": 0.3, "quality": "strict",
     "max_cells": 2_000_000, "focus": "the bend", "risks": "skew at the bend",
 }
 
@@ -50,7 +50,7 @@ def test_a_good_internal_plan_passes_unchanged():
                                  {"a": 1}, True])
 def test_a_knob_that_is_not_a_number_is_dropped(bad):
     out, notes = validate_plan({"cells_across_diameter": bad, "n_layers": bad,
-                                "first_layer_rel": bad, "surface_level": bad,
+                                "last_layer_rel": bad, "surface_level": bad,
                                 "feature_level": bad, "max_cells": bad},
                                flow_regime="internal")
     assert out == {}
@@ -60,9 +60,9 @@ def test_a_knob_that_is_not_a_number_is_dropped(bad):
 
 def test_clean_numeric_strings_and_whole_floats_are_read():
     out, notes = validate_plan({"n_layers": "4", "cells_across_diameter": 24.0,
-                                "first_layer_rel": "0.3", "surface_level": [1, 2]},
+                                "last_layer_rel": "0.3", "surface_level": [1, 2]},
                                flow_regime="internal")
-    assert out == {"n_layers": 4, "cells_across_diameter": 24, "first_layer_rel": 0.3,
+    assert out == {"n_layers": 4, "cells_across_diameter": 24, "last_layer_rel": 0.3,
                    "surface_level": 2}
     assert isinstance(out["n_layers"], int) and isinstance(out["cells_across_diameter"], int)
 
@@ -70,20 +70,31 @@ def test_clean_numeric_strings_and_whole_floats_are_read():
 # out-of-range values are clamped to the brief's own stated ranges
 def test_internal_knobs_are_held_to_the_briefs_ranges():
     out, notes = validate_plan({"cells_across_diameter": 400, "surface_level": 9,
-                                "feature_level": 12, "n_layers": 40, "first_layer_rel": 3.0},
+                                "feature_level": 12, "n_layers": 40, "last_layer_rel": 3.0},
                                flow_regime="internal")
     assert out == {"cells_across_diameter": 40, "surface_level": 3, "feature_level": 4,
-                   "n_layers": 6, "first_layer_rel": 0.4}
+                   "n_layers": 6, "last_layer_rel": 0.4}
     assert len(notes) == 5
     low, _ = validate_plan({"cells_across_diameter": 2, "surface_level": -3, "n_layers": 0,
-                            "first_layer_rel": 0.001}, flow_regime="internal")
+                            "last_layer_rel": 0.001}, flow_regime="internal")
     assert low == {"cells_across_diameter": 16, "surface_level": 1, "n_layers": 3,
-                   "first_layer_rel": 0.2}
+                   "last_layer_rel": 0.2}
 
 
 def test_external_knobs_are_held_to_the_briefs_ranges():
-    out, _ = validate_plan({"n_layers": 12, "first_layer_rel": 0.01}, flow_regime="external")
-    assert out == {"n_layers": 5, "first_layer_rel": 0.25}
+    out, _ = validate_plan({"n_layers": 12, "last_layer_rel": 0.01}, flow_regime="external")
+    assert out == {"n_layers": 5, "last_layer_rel": 0.25}
+
+
+def test_the_layer_knob_is_named_for_the_layer_it_sets():
+    # it is written to snappyHexMesh's finalLayerThickness - the OUTERMOST layer - so it is last_layer_rel; a plan
+    # saved under the old name still reads, as the new one
+    from meshpipeline.engines.snappy import planner
+
+    assert "OUTERMOST prism layer" in planner.PLANNER_SYSTEM and "OUTERMOST prism layer" in planner.INTERNAL_PLANNER_SYSTEM
+    assert "first_layer_rel" not in planner.PLANNER_SYSTEM + planner.INTERNAL_PLANNER_SYSTEM
+    out, notes = validate_plan({"n_layers": 4, "first_layer_rel": 0.3}, flow_regime="external")
+    assert out == {"n_layers": 4, "last_layer_rel": 0.3} and notes == []
 
 
 def test_feature_level_never_below_the_surface_level():
@@ -201,7 +212,7 @@ def test_plan_with_accounting_returns_the_guarded_plan(monkeypatch, tmp_path):
         from meshpipeline.contracts.model_inference import ModelRoundResult
         return ModelRoundResult(
             assistant_text='{"cells_across_diameter": "30-40", "n_layers": null, '
-                           '"surface_level": 7, "first_layer_rel": 0.3, "bogus": 1}',
+                           '"surface_level": 7, "last_layer_rel": 0.3, "bogus": 1}',
             finish_reason="stop", input_tokens=1, output_tokens=1)
 
     monkeypatch.setattr(planner.llm_router, "call_planner_model", _fake_call)
@@ -209,7 +220,7 @@ def test_plan_with_accounting_returns_the_guarded_plan(monkeypatch, tmp_path):
     out = asyncio.run(planner.plan_with_accounting(
         workspace=tmp_path, job_id="j", request_txt="mesh it", flow_regime="internal",
         surface=prepared_surface(tmp_path / "input.stl")))
-    assert out.plan == {"surface_level": 3, "first_layer_rel": 0.3}
+    assert out.plan == {"surface_level": 3, "last_layer_rel": 0.3}
     assert out.guard_notes and not out.failure_marker
 
 
@@ -220,7 +231,7 @@ def test_internal_driver_survives_unusable_knobs(internal, monkeypatch):  # noqa
     internal.timeouts = 0                                    # the first pass meshes
     seen: list = []
     _same_plan_every_time(monkeypatch, {"cells_across_diameter": "30-40", "n_layers": None,
-                                        "surface_level": None, "first_layer_rel": "thin",
+                                        "surface_level": None, "last_layer_rel": "thin",
                                         "feature_level": [], "quality": 7,
                                         "max_cells": "lots"}, seen)
     _ws, (ok, _value, _outcome), pub = internal.go()
