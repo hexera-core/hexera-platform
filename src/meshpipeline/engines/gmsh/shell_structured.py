@@ -53,6 +53,8 @@ BOLT_CHECK = True
 BOLT_GRID_FIRST = True
 #: SHMESH-51c: a two-ring bolt hole's free box asks for its band's counts up to the user's longest edge
 BOLT_BAND_LONG = True
+#: SHMESH-51d: at most this many rounds of holes taken back to one ring, one by one, before the whole face is
+BOLT_HOLE_ROUNDS = 3
 #: two holes are one bolt's when their axes are parallel within BOLT_AXIS_DEG, each centre lies on the other's axis
 #: within BOLT_AXIS_OFF of the smaller radius, their diameters are alike within BOLT_ALIKE, at most BOLT_REACH
 #: diameters apart along the axis
@@ -491,7 +493,8 @@ def _square_presets(gmsh, w: Washer, curves: list[int], preset: dict[int, int], 
 def plan_washers(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], hole_size, mm: float,
                  names: dict[int, tuple[str, str]] | None = None, before: list | None = None,
                  across: float | None = None, low_mm: float | None = None, high_mm: float | None = None,
-                 no_bolt: dict | None = None) -> tuple[list[Washer], dict[str, int], list[dict]]:
+                 no_bolt: dict | None = None, one_ring_at: list | None = None
+                 ) -> tuple[list[Washer], dict[str, int], list[dict]]:
     """SHMESH-39: the washers to make: every inner loop of a flat face that is one round hole (a circle no other face
     shares), at most WASHER_ACROSS of the face's element size across. `size_mm`: each surface's element size;
     `hole_size(r_mm, owner)`: the element length the plan puts round a hole of that radius. Returns (the washers,
@@ -587,6 +590,10 @@ def plan_washers(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], hole_s
                 got_b = (_count_bolt(r * mm, hole_size(r * mm, k), size_mm[t], low_mm, high_mm,
                                      room_mm=(gap_mm, share_mm)) if k not in (no_bolt or {})
                          else (no_bolt or {})[k])
+                if any(float(np.linalg.norm(np.asarray(c_, dtype=float) - centre)) <= 0.25 * r
+                       for c_ in one_ring_at or []):
+                    # (SHMESH-51d: its two-ring box failed in its face's grid on an earlier pass)
+                    got_b = "one ring so its face keeps its grid"
                 if isinstance(got_b, tuple) and got_b[0] >= len(cl):
                     cnt, rows, ratio, radii = got_b
                 else:
@@ -607,7 +614,8 @@ def plan_washers(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], hole_s
         if not w.radii:
             continue
         kin = [o for o in found if o.face == w.face and not o.corners and abs(o.r - w.r) <= PATTERN_ALIKE * w.r]
-        if any(not o.radii for o in kin):
+        # (a hole held to one ring so its face keeps its grid does not hold its alike holes to one)
+        if any(not o.radii and not str(o.info.get("one_ring", "")).startswith("one ring so") for o in kin):
             n_, rows_, ratio_ = w.plain
             w.n, w.rows, w.R, w.radii = n_, rows_, ratio_ * w.r, []
             w.out_mm = 2 * math.pi * w.R * mm / w.n
@@ -1578,6 +1586,30 @@ def _mark_box(gmsh, w: Washer, corners: list[np.ndarray], cells: list[int], h: f
             break
 
 
+#: SHMESH-51d: a two-ring bolt hole's band takes box sides of unequal counts (a pitch along a plate that is not the pitch
+#: across it: sides of 4 and 5, 4 and 6 segments) - each corner a kite (one segment of each side) or a block (two of
+#: each, round one new node), each side's middle joined to its own share of the ring
+BAND_UNEQUAL = True
+
+
+def _band_split(gaps: list[int], n: int) -> tuple[list[int], list[int]] | None:
+    """SHMESH-51d: (segments each corner takes of both its sides - 1 a kite, 2 a block -, each side's share of the
+    ring's n segments) for box sides of these counts: every side's middle (its count less its two corners') is its
+    share, at least one, the shares adding up to n; the shares nearest n/4 each, then the fewest blocks. None when no
+    such split exists (the counts' sum and n of different parity, or too few segments)."""
+    m = n / 4
+    best = None
+    for code in range(16):
+        cs = [1 + ((code >> k) & 1) for k in range(4)]          # corner k sits between side k - 1 and side k
+        arcs = [gaps[k] - cs[k] - cs[(k + 1) % 4] for k in range(4)]
+        if min(arcs) < 1 or sum(arcs) != n:
+            continue
+        key = (sum(abs(a - m) for a in arcs), sum(cs), code)
+        if best is None or key < best[0]:
+            best = (key, cs, arcs)
+    return None if best is None else (best[1], best[2])
+
+
 def box_band(gmsh, w: Washer, index: np.ndarray, xyz: np.ndarray, mm: float, limits=None,
              high_mm: float | None = None) -> tuple[np.ndarray, np.ndarray]:
     """SHMESH-48q: a free box's own mesh between its ring and its box, in place of gmsh's paving: one row of quads, two
@@ -1642,17 +1674,26 @@ def box_band(gmsh, w: Washer, index: np.ndarray, xyz: np.ndarray, mm: float, lim
                 big[c_] = s
         else:
             fans = [0, 0, 0, 0]
-    if any(g - m - 2 < 0 or (g - m - 2) % 2 for g in gaps) or any(f > 0 for f in fans) and (
-            not BAND_TWO or any(f > 2 for f in fans)):
+    corner = [1, 1, 1, 1]                   # SHMESH-51d: segments each corner takes of both its sides (1 kite, 2 block)
+    arc_n = [m, m, m, m]                    # ... and each side's share of the ring
+    if BAND_UNEQUAL and not big and (any(g - m - 2 for g in gaps)) and w.radii:
+        got_u = _band_split(gaps, n)
+        if got_u is not None:
+            corner, arc_n = got_u
+            fans = [0, 0, 0, 0]
+    if corner == [1, 1, 1, 1] and arc_n == [m, m, m, m] and (
+            any(g - m - 2 < 0 or (g - m - 2) % 2 for g in gaps) or any(f > 0 for f in fans) and (
+            not BAND_TWO or any(f > 2 for f in fans))):
         raise ValueError(f"its box sides carry {gaps} segments, not {m + 2} (or {m + 2} + 2 a kite) each")
 
     def off(x: float) -> float:
         return abs((x + math.pi) % (2 * math.pi) - math.pi)
 
     # the ring node at each corner's angle (one turn of the ring for all four)
-    first = min(range(n), key=lambda s: (sum(off(a_r[(s + k * m) % n] - a_b[cidx[k]]) for k in range(4)), s))
+    at0 = [sum(arc_n[:k]) for k in range(4)]
+    first = min(range(n), key=lambda s: (sum(off(a_r[(s + at0[k]) % n] - a_b[cidx[k]]) for k in range(4)), s))
     sides = [[int(box[(cidx[k] + q) % N]) for q in range(gaps[k] + 1)] for k in range(4)]
-    arcs = [[int(ring[(first + k * m + j) % n]) for j in range(m + 1)] for k in range(4)]
+    arcs = [[int(ring[(first + at0[k] + j) % n]) for j in range(arc_n[k] + 1)] for k in range(4)]
     quads: list[list[int]] = []
     new: list[np.ndarray] = []
     base = len(xyz)
@@ -1663,11 +1704,16 @@ def box_band(gmsh, w: Washer, index: np.ndarray, xyz: np.ndarray, mm: float, lim
             new.append(p_)
             return base + len(new) - 1
 
-        start = [3 if big.get(k) == k else 1 for k in range(4)]                    # segments corner k takes of side k
-        end = [3 if big.get((k + 1) % 4) == k else 1 for k in range(4)]            # ... corner k + 1 takes of side k
+        start = [3 if big.get(k) == k else corner[k] for k in range(4)]            # segments corner k takes of side k
+        end = [3 if big.get((k + 1) % 4) == k else corner[(k + 1) % 4] for k in range(4)]  # ... corner k + 1 of side k
         for k in range(4):
             apex, C = arcs[k][0], sides[k][0]
-            if k not in big:
+            if k not in big and corner[k] == 2:
+                # SHMESH-51d: a block - 2 segments of each side round one new node X near the corner, 3 quads
+                nxt, prv = sides[k], sides[k - 1]
+                X = add1((xyz[apex] + xyz[nxt[1]] + xyz[prv[-2]] + xyz[C]) / 4.0)
+                quads += [[apex, nxt[2], nxt[1], X], [X, nxt[1], C, prv[-2]], [apex, X, prv[-2], prv[-3]]]
+            elif k not in big:
                 quads.append([apex, sides[k][1], C, sides[k - 1][-2]])
             else:
                 if big[k] == k:
@@ -1678,10 +1724,10 @@ def box_band(gmsh, w: Washer, index: np.ndarray, xyz: np.ndarray, mm: float, lim
                 Y = add1(0.25 * (xyz[one] + xyz[three[0]] - xyz[C] + xyz[three[1]] + xyz[three[2]] + xyz[apex]))
                 quads += [[one, C, three[0], X], [X, three[0], three[1], Y], [Y, three[1], three[2], apex],
                           [apex, one, X, Y]]
-            for j in range(m):
+            for j in range(arc_n[k]):
                 t0 = start[k]
                 quads.append([arcs[k][j], arcs[k][j + 1], sides[k][t0 + j + 1], sides[k][t0 + j]])
-            if start[k] + m + end[k] != gaps[k]:
+            if start[k] + arc_n[k] + end[k] != gaps[k]:
                 raise ValueError("its box side's segments did not add up")
     else:
         # two rows: an inner row of new nodes (a node on each corner's diagonal, then each side's), the ring to it

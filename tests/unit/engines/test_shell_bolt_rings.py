@@ -192,3 +192,23 @@ def test_a_web_too_tight_for_two_rings_in_its_grid_keeps_the_grid_with_one(tmp_p
     assert s["mapped_faces"] >= 40
     assert any("a second would break the plate's straight grid" in n for n in mesh.notes), mesh.notes
     _check(applied)
+
+
+def test_a_web_with_unequal_pitches_keeps_its_grid_and_two_rings_on_most_holes(tmp_path):
+    """SHMESH-51d, a real channel web: three rows of bolt holes about 115 mm apart across, columns in pairs 160 mm apart
+    along, the pairs 410 mm apart, an end column of four holes. Its boxes are not square in counts (sides of 4 and 6
+    segments), so most two-to-one bands were refused and the whole web went back to one ring. Now a band takes sides
+    of unequal counts, and only a hole whose band still cannot be made goes back to one ring: the grid stays and at
+    least half the holes keep two (the centre row's boxes, cut by the end column's lines, still cannot)."""
+    xs = [170.0 + 572.0 * p + d for p in range(4) for d in (0.0, 159.0)]
+    holes = [(x, 181.5 + dy, 17.4) for x in xs for dy in (-116.0, 0.0, 116.0)]
+    holes += [(x, 181.5 + dy, 17.4) for x in (67.0, xs[-1] + 103.0) for dy in (-114.0, -38.0, 38.0, 114.0)]
+    brep, rec = _plates(tmp_path, [(xs[-1] + 170.0, 363.0, 10.0, 0.0, holes)])
+    mesh, applied = _mesh(brep, rec)
+    s = applied["quality"]["structure"]
+    assert not s.get("not_gridded"), s.get("not_gridded")
+    assert all(h["kind"].endswith("gridded face") for h in s["hole_list"])
+    two = [h for h in s["hole_list"] if h["rings"] >= 2]
+    assert len(two) >= len(s["hole_list"]) / 2, s.get("bolt_rings")      # (2277d1ec..11d4ccc3: none)
+    assert all(h.get("one_ring") for h in s["hole_list"] if h["rings"] < 2)
+    _check(applied)

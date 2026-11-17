@@ -175,10 +175,11 @@ class _NoCut(Exception):
     """SHMESH-47b: gridded faces (sewn face indices) whose lines cut a joined face into triangles or elements past the
     solver's own limits: the mesh is made again with those faces left ungridded (the neighbours whole)."""
 
-    def __init__(self, faces: set[int], why: dict[int, dict] | None = None) -> None:
+    def __init__(self, faces: set[int], why: dict[int, dict] | None = None, holes: list | None = None) -> None:
         super().__init__(f"{len(faces)} gridded face(s)")
         self.faces = faces
         self.why = why or {}
+        self.holes = holes or []        # (SHMESH-51c: bolt holes whose two-ring box failed in a grid: one ring there)
 
 
 class _Regrid(Exception):
@@ -1046,6 +1047,8 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
         unmap: set[int] = set()
         unmapped = 0
         no_cut: set[int] = set()
+        hole_rounds = 0
+        one_ring_at: list = []              # SHMESH-51c: bolt holes back to one ring (their box failed)
         refused: dict[int, dict] = {}
         compare: dict[int, dict] = {}       # SHMESH-48x: refused grids' figures, to set against their free meshes
         kept: set[int] = set()
@@ -1117,6 +1120,7 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
                                            correction=correction, requirements=requirements, unmap=frozenset(unmap),
                                            no_cut=frozenset(no_cut), check_maps=unmapped < UNMAP_ROUNDS,
                                            judge_faces=True, compare=compare, grids_kept=frozenset(kept),
+                                           one_ring_at=tuple(one_ring_at), hole_rounds=hole_rounds,
                                            redraw_now=redraw if EARLY_REDRAW and not redraw_pass and not resplined
                                            else None)
                 passes.append(["made", round(time.monotonic() - t_pass, 1)])
@@ -1124,6 +1128,17 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
                 passes.append(["holes drawn again", round(time.monotonic() - t_pass, 1)])
                 continue
             except _NoCut as nc:
+                if nc.holes and not nc.faces and not resplined:
+                    # SHMESH-51c: bolt holes whose two-ring box failed in their grid take one ring - start again
+                    passes.append(["one ring round some bolt holes so a grid stays (start again)",
+                                   round(time.monotonic() - t_pass, 1)])
+                    one_ring_at.extend(nc.holes)
+                    hole_rounds += 1
+                    no_cut = {f for f in no_cut if f < 0}
+                    refused = {k: v for k, v in refused.items() if k < 0}
+                    unmap, unmapped, compare, kept, before_guard = set(), 0, {}, set(), None
+                    brep, reseated, redrawn, redraw_pass, asked, seated_now = unseated, 0, [], redraw_off, [], []
+                    continue
                 if ST.BOLT_GRID_FIRST and not resplined and any(f < 0 and -f - 1 >= BOLT_GRID_KEY for f in nc.faces):
                     # SHMESH-51b: a face's bolt holes back to one ring so it keeps its grid - the run starts again with
                     # only that, so the face goes through the passes as it would with one ring from the start (the
@@ -1235,7 +1250,8 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
                                                  hole_before=tuple((tuple(c), e) for c, e in redrawn),
                                                  target=target, correction=correction, requirements=requirements,
                                                  own_spots=tuple(own), unmap=frozenset(unmap),
-                                                 no_cut=frozenset(no_cut), check_maps=False)
+                                                 no_cut=frozenset(no_cut), check_maps=False,
+                                                 one_ring_at=tuple(one_ring_at))
                     passes.append(["finer at spots past the solver's limits", round(time.monotonic() - t_pass, 1)])
                 except (ValueError, _Periodic) as exc:
                     logger.info("shell mesh: the spots past the solver's limits were not meshed again (%s)", exc)
@@ -1362,7 +1378,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                requirements: dict | None = None, own_spots: tuple = (), unmap: frozenset = frozenset(),
                hole_before: tuple = (), no_cut: frozenset = frozenset(), judge_faces: bool = False,
                check_maps: bool = False, compare: dict | None = None, grids_kept: frozenset = frozenset(),
-               redraw_now=None) -> tuple[ShellMesh, dict]:
+               redraw_now=None, one_ring_at: tuple = (), hole_rounds: int = 0) -> tuple[ShellMesh, dict]:
     """One mesh. `unmap` (SHMESH-40): gmsh surfaces left free (their grid came out past the solver's limits once);
     `check_maps`: raise _Unmap when a mapped face's grid comes out past them. `own_spots` (SHMESH-31): (sewn face, box low corner, box high corner - mm) round elements a mesh
     under the user's sizes left past the solver's own limits: inside each box the face's own rules' size, where
@@ -1525,7 +1541,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
             names = {k: (owners[k], str(mids_of.get(owners[k], {}).get("body", ""))) for k in set(tag_of.values())}
             washers, washer_skipped, hole_lines = ST.plan_washers(
                 gmsh, tag_of, {t: float(rows[k]["size_mm"]) for t, k in tag_of.items()}, hole_size, mm,
-                names=names, before=list(hole_before), no_bolt=_bolt_refused(no_cut),
+                names=names, before=list(hole_before), no_bolt=_bolt_refused(no_cut), one_ring_at=list(one_ring_at),
                 across=ST.WASHER_ACROSS_USER if (sizing or {}).get("global_mm") is not None else ST.WASHER_ACROSS,
                 low_mm=(sizing or {}).get("low_mm"), high_mm=(sizing or {}).get("high_mm"))
             washers_planned = list(washers)
@@ -1846,6 +1862,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
 
             # (SHMESH-47c: a joined face's strips are held to the same; its own cells as any gridded face's, SHMESH-48f)
             either = {k_: cut_of.get(k_, set()) | join_of.get(k_, set()) for k_ in set(cut_of) | set(join_of)}
+            tri_cells: dict[int, dict[int, int]] = {}   # (SHMESH-51c: triangles per free cell)
             for kg, nbrs in sorted(either.items()):
                 # the joined faces its lines cut: no triangle, no quad past the solver's limits
                 for s_ in sorted(x for x, kx in tag_of.items() if kx in nbrs):
@@ -1866,6 +1883,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                 n_face, n_tri = 0, 0
                 for s_ in sorted(x for x, kx in tag_of.items() if kx == kg):
                     tri_here = 0
+                    tri_cell = tri_cells.setdefault(kg, {})
                     for et, c_ in elements_of(s_):
                         if et == 3:
                             quads_ = c_.reshape(-1, 4)
@@ -1883,6 +1901,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                                 if bad_.any():
                                     hurt.add(kg)
                     n_tri += tri_here
+                    tri_cell[s_] = tri_here
                     if tri_here > (1 if s_ not in grids else 0):
                         hurt.add(kg)
                 if n_tri > BOX_TRIA_SHARE * max(n_face, 1):
@@ -1892,6 +1911,23 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                                                           "past the tria angle lines, a quad past the solver's limits "
                                                           "or triangles over BOX_TRIA_SHARE",
                                    "triangles": n_tri, "elements": n_face}
+            if hurt and ST.BOLT_BAND_LONG:
+                # SHMESH-51c: where the face's only fault is in two-ring bolt holes' boxes (their band not made, paved
+                # with triangles), those holes take one ring and the face keeps its grid and its other holes' rings
+                bad_holes = []
+                for kg_ in sorted(hurt):
+                    two_ = [w for w in boxed if w.radii and int(w.owner) == kg_]
+                    for s_c, n_c in sorted(tri_cells.get(kg_, {}).items()):
+                        if not n_c or not two_:
+                            continue
+                        # (the cell's own two-ring hole: the nearest, its box cell round it - a cell's tag is the
+                        # mesh's, not the one the box was noted under)
+                        at_c = np.asarray(gmsh.model.occ.getCenterOfMass(2, s_c), dtype=float)
+                        w_c = min(two_, key=lambda w_: float(np.linalg.norm(w_.centre - at_c)))
+                        if float(np.linalg.norm(w_c.centre - at_c)) <= 2.5 * w_c.R and w_c not in bad_holes:
+                            bad_holes.append(w_c)
+                if hole_rounds < ST.BOLT_HOLE_ROUNDS and bad_holes and all(why_cut.get(kg, {}).get("why", "").startswith("its free cells") for kg in hurt):
+                    raise _NoCut(set(), {}, holes=[[float(x) for x in w.centre] for w in bad_holes])
             if hurt:
                 _grid_first(hurt, why_cut, {int(w.owner) for w in boxed + gridded if w.radii}, set(grid_faces_made),
                             no_cut)
@@ -2335,6 +2371,13 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                                          outside_pct=row_.get("outside_pct"), worst=row_.get("worst"))
                         break
         # SHMESH-51b: a gridded face holding two-ring bolt holes keeps its grid and gives up the second ring first
+        if hurt_p and ST.BOLT_BAND_LONG and hole_rounds < ST.BOLT_HOLE_ROUNDS:
+            # SHMESH-51d: on a gridded face refused while some of its two-ring bolt holes' bands were not made (their box
+            # cells paved), those holes alone take one ring and the face is meshed again; its other holes keep two
+            bad_b = [w for w in boxed if w.radii and int(w.owner) in hurt_p and int(w.owner) in grid_faces_made
+                     and w.info.get("box_band") != "made"]
+            if bad_b:
+                raise _NoCut(set(), {}, holes=[[float(x) for x in w.centre] for w in bad_b])
         _grid_first(hurt_p, why_p, {int(w.owner) for w in boxed + gridded if w.radii}, set(grid_faces_made), no_cut)
         if hurt_p:
             raise _NoCut(hurt_p, {k: why_p[k] for k in hurt_p})
@@ -2555,6 +2598,10 @@ def _bolt_rings(mesh: ShellMesh, hole_lines: list[dict]) -> list[dict]:
         got = [m for m in measured if float(np.linalg.norm(np.asarray(m["centre"], dtype=float) - at)) <= tol
                and abs(float(m["diameter_mm"]) - float(h["diameter_mm"])) <= 0.1 * float(h["diameter_mm"])]
         h["rings"] = max((int(m.get("rings") or 0) for m in got), default=0)
+        if h["rings"] >= ST.BOLT_RINGS and h.get("one_ring"):
+            # (the line says what was built: a hole planned with one ring that has two or more round it in the mesh - an
+            # O-grid's rows to its box, a round plate's square - keeps no "one ring" reason)
+            h["planned_one_ring"] = h.pop("one_ring")
         out.append(h)
     return out
 
