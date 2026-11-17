@@ -1,4 +1,4 @@
-# Responsibility: Verify PLAN-fea-35 - "finer" or "coarser" on a whole part with no number (read by cad/part_words and shown on the request card) reaches the solid plan: the part's own size halved or doubled, nothing in it raised past what the rules make finer, and said in the plan's words.
+# Responsibility: Verify PLAN-fea-36 - "finer" or "coarser" on a whole part with no number (read by cad/part_words and shown on the request card) reaches the solid plan: the part's own size halved or doubled, nothing in it raised past what the rules make finer, and said in the plan's words.
 # Boundaries: pure over plain data; no model, no mesher.
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ ZONES = [{"id": "P2", "kind": "part", "part": "Part_2", "size_m": 0.004},
 
 
 def test_a_part_asked_finer_or_coarser_is_no_longer_dropped():
-    # before PLAN-fea-35 only the size entry reached the plan (cad/part_words.per_part keeps "size" asks only)
+    # before PLAN-fea-36 only the size entry reached the plan (cad/part_words.per_part keeps "size" asks only)
     sizes = PS.sizes_of(READING)
     assert sizes["Part_2"]["scale"] == 2.0 and sizes["Part_3"]["scale"] == 0.5
     assert sizes["Part_4"]["min_m"] == 0.001 and "scale" not in sizes["Part_4"]

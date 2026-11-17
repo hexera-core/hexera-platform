@@ -2698,7 +2698,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     sizes = PS.sizes_of(part_sizes)
     if part_sizes.get("status") != "none":
         _cite(job_id, PS.decisions(part_sizes))
-    # PLAN-fea-35: a whole part asked "finer" or "coarser" with no number is sized once the plan's own sizes are known
+    # PLAN-fea-36: a whole part asked "finer" or "coarser" with no number is sized once the plan's own sizes are known
     scaled = {k: v for k, v in sizes.items() if "scale" in v}
     sizes = {k: v for k, v in sizes.items() if "scale" not in v}
     if asked.get("status") != "none":
@@ -2717,7 +2717,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     if scaled:
         sizes = {**sizes, **PS.resolve_scales(scaled, P.zones(record), base_m=P.base_size(diag_m), whole=sizes)}
         _cite(job_id, [{"stage": "fea_plan", "decided": "parts asked finer or coarser", "value": len(scaled),
-                        "rule": "PLAN-fea-35", "inputs": {k: {"scale": v["scale"], "min_m": v["min_m"],
+                        "rule": "PLAN-fea-36", "inputs": {k: {"scale": v["scale"], "min_m": v["min_m"],
                                                               "max_m": v["max_m"]} for k, v in sizes.items()
                                                           if k in scaled},
                         "words": "Each part asked finer or coarser with no number: its own size halved or doubled; "

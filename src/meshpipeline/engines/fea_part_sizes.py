@@ -31,7 +31,7 @@ async def decide(ws: Path, record: Mapping, surface, state: Mapping, *, job_id: 
 def sizes_of(ps: Mapping | None) -> dict[str, dict]:
     """The plan's sizes from a reading: part id -> {"min_m", "max_m"}; an area inside a part (NOTE-6, PLAN-fea-32)
     also carries its faces and its plain name. A whole part asked "finer" or "coarser" with no number carries
-    {"scale", "quote"} instead (PLAN-fea-35), turned into sizes by `resolve_scales` once the plan's own sizes are
+    {"scale", "quote"} instead (PLAN-fea-36), turned into sizes by `resolve_scales` once the plan's own sizes are
     known. {} when nothing was read."""
     if not ps or ps.get("status") != "used":
         return {}
@@ -52,7 +52,7 @@ def sizes_of(ps: Mapping | None) -> dict[str, dict]:
     return out
 
 
-#: PLAN-fea-35: "finer" or "coarser" on a whole part with no number - the part's own size halved or doubled, the
+#: PLAN-fea-36: "finer" or "coarser" on a whole part with no number - the part's own size halved or doubled, the
 #: same one step the flow route's part levels take (engines/snappy/part_levels: one octree level)
 SCALES = {"refine": 0.5, "coarsen": 2.0}
 
@@ -67,7 +67,7 @@ def _zone_key(z: Mapping) -> str:
 
 def resolve_scales(sizes: Mapping[str, Mapping], zones, *, base_m: float,
                    whole: Mapping[str, Mapping] | None = None) -> dict[str, dict]:
-    """PLAN-fea-35: each part asked "finer" or "coarser" with no number as a size band the plan holds
+    """PLAN-fea-36: each part asked "finer" or "coarser" with no number as a size band the plan holds
     (engines/fea_plan.user_sized): the part's own size - the whole mesh's size when the notes gave one (`whole`, the
     PLAN-fea-33 entry for that part), else the rules' size for that part - times the scale, and nothing in the part
     raised: what the rules make finer there (walls, rounds, hot spots) stays as fine, so "coarser" never coarsens past
