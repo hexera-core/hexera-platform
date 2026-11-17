@@ -266,3 +266,76 @@ def test_a_web_with_unequal_pitches_keeps_its_grid_and_two_rings_on_most_holes(t
     assert len(two) >= len(s["hole_list"]) / 2, s.get("bolt_rings")      # (2277d1ec..11d4ccc3: none)
     assert all(h.get("one_ring") for h in s["hole_list"] if h["rings"] < 2)
     _check(applied)
+
+
+def test_a_fault_after_meshing_is_put_on_the_two_ring_holes_whose_boxes_hold_it():
+    """SHMESH-51g: elements past the limits in or beside two-ring bolt boxes name those holes (and only those); a
+    fault away from every box names none, so the face is judged whole as before (SHMESH-51b)."""
+    from types import SimpleNamespace
+
+    from meshpipeline.engines.gmsh import shell_adapter as SA
+
+    def hole(x: float) -> SimpleNamespace:
+        c = np.array([x, 0.0, 0.0])
+        return SimpleNamespace(centre=c, box_corners=[c + np.array(d) for d in ((-28, -28, 0), (28, -28, 0),
+                                                                                (28, 28, 0), (-28, 28, 0))])
+
+    ws = [hole(0.0), hole(200.0), hole(400.0)]
+    inside, beside = np.array([[10.0, 5.0, 0.0]]), np.array([[200.0, 70.0, 0.0]])
+    assert SA._boxes_at(np.vstack([inside, beside]), ws, 1.0) == ws[:2]
+    assert SA._boxes_at(np.vstack([inside, [[300.0, 0.0, 0.0]]]), ws, 1.0) is None      # (72 mm past a side: none)
+    assert SA._boxes_at(np.array([[200.0, 120.0, 0.0]]), ws, 1.0) is None              # (two box widths out)
+    assert SA._boxes_at(np.zeros((0, 3)), ws, 1.0) is None
+
+
+def test_bolt_hole_rounds_are_counted_per_face_and_refused_keys_name_their_face():
+    """SHMESH-51f: one face's rounds of one ring do not use up another's; a refused key names its sewn face."""
+    from meshpipeline.engines.gmsh import shell_adapter as SA
+
+    assert SA._rounds({3: 2}, 3) == 2 and SA._rounds({3: 2}, 4) == 0 and SA._rounds(1, 9) == 1
+    assert SA._face_of_key(5) == 5 and SA._face_of_key(-6) == 5
+    assert SA._face_of_key(-(5 + SA.BOLT_GRID_KEY) - 1) == 5
+
+
+def test_a_freed_cell_is_found_again_by_its_key_when_the_tags_change():
+    """SHMESH-51f: a cell freed on one pass is named by its sewn face, centre and area, not by gmsh's tag: drawn
+    again in another order (other tags) it is the same cell; a cell cut otherwise is none."""
+    import gmsh
+
+    from meshpipeline.engines.gmsh import shell_adapter as SA
+
+    gmsh.initialize()
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+
+        def draw(order: list[int]) -> dict[int, int]:
+            gmsh.clear()
+            rects = {0: (0.0, 0.0, 50.0, 30.0), 1: (60.0, 0.0, 50.0, 30.0), 2: (120.0, 0.0, 50.0, 30.0)}
+            tag_of = {gmsh.model.occ.addRectangle(rects[k][0], rects[k][1], 0.0, rects[k][2], rects[k][3]): 7
+                      for k in order}
+            gmsh.model.occ.synchronize()
+            return tag_of
+
+        tag_of = draw([0, 1, 2])
+        keys = SA._cell_keys(gmsh, tag_of, [2], 1.0)                 # (the middle one)
+        tag_of = draw([2, 1, 0])
+        assert SA._cells_of_keys(gmsh, tag_of, keys, 1.0) == {2}      # (now tag 2 again, by its place: the middle)
+        tag_of = draw([1, 0, 2])
+        assert SA._cells_of_keys(gmsh, tag_of, keys, 1.0) == {1}
+        tag_of = draw([1, 0, 2])
+        assert SA._cells_of_keys(gmsh, dict.fromkeys(tag_of, 8), keys, 1.0) == set()   # (another sewn face)
+        assert SA._cells_of_keys(gmsh, tag_of, [], 1.0) == set()
+    finally:
+        gmsh.finalize()
+
+
+def test_a_freed_cell_is_let_go_when_a_face_its_freeing_came_from_changes():
+    """SHMESH-51f: a cell freed beside another face's free face is kept across a change to a third face, and let go
+    when its own face or that face has its holes drawn again or its rings changed."""
+    from meshpipeline.engines.gmsh import shell_adapter as SA
+
+    k = (4, 0.0, 0.0, 0.0, 100.0, (4, 7))
+    assert SA._keys_kept({k}, {9}) == {k}
+    assert SA._keys_kept({k}, {7}) == set() and SA._keys_kept({k}, {4}) == set()
+    body = {4: "a", 7: "a", 9: "a", 12: "b"}.get
+    assert SA._keys_kept({k}, {9}, body) == set() and SA._keys_kept({k}, {12}, body) == {k}   # (a ring changed in its body)
