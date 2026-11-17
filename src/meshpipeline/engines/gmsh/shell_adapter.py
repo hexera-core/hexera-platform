@@ -1620,7 +1620,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                     gmsh, washers + squares, tag_of, {t: float(rows[k]["size_mm"]) for t, k in tag_of.items()}, hole_size, mm,
                     cuts=cut_curves, low_mm=(sizing or {}).get("low_mm"), high_mm=(sizing or {}).get("high_mm"),
                     cells_out=grid_cells, no_cut=no_cut, cut_out=cut_of, made_out=grid_faces_made, join_out=join_of,
-                    why_where=skipped_where, wish_out=box_wish, wish_long=box_wish_long)
+                    why_where=skipped_where, wish_out=box_wish, wish_long=box_wish_long, quad_aims=tuple(lim.aims or ()))
                 if ST.BOLT_GRID_FIRST:
                     # SHMESH-51b: a face refused a grid while it holds two-ring bolt holes is tried again with one
                     # ring round them; where it still is refused its holes keep their two rings in its free mesh
@@ -1639,7 +1639,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                             cuts=cut_curves, low_mm=(sizing or {}).get("low_mm"),
                             high_mm=(sizing or {}).get("high_mm"), cells_out=grid_cells, no_cut=no_cut,
                             cut_out=cut_of, made_out=grid_faces_made, join_out=join_of, why_where=where_b,
-                            wish_out=box_wish, wish_long=box_wish_long)
+                            wish_out=box_wish, wish_long=box_wish_long, quad_aims=tuple(lim.aims or ()))
                         gridded, boxed = gridded + g2, boxed + b2
                         block_preset.update(p2)
                         block_holes = block_holes | h2
@@ -2499,7 +2499,6 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                 # ring too: elements past the solver's limits or over the user's longest edge, and for a face refused
                 # against its free mesh its triangles and its edges under the user's shortest edge. The face keeps its
                 # grid and its other rings; a fault on no hole's box is judged on the next pass (SHMESH-51b if alone)
-                low_p = (sizing or {}).get("low_mm")
                 for kp in sorted(hurt_p & set(grid_faces_made)):
                     why_k = str(why_p.get(kp, {}).get("why"))
                     guard = why_k.endswith("(set against its free mesh)")
@@ -2517,9 +2516,9 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                         if len(mine):
                             ed = np.linalg.norm(xyz[mine] - xyz[np.roll(mine, -1, axis=1)], axis=2)
                             if guard:
+                                # (SHMESH-51i: its triangles only - a paved cell's; short edges stand in mapped,
+                                # clean cells too, and a hole whose box and cells round it are mapped is not to blame)
                                 flag = np.full(len(mine), mine.shape[1] == 3)
-                                if low_p is not None:
-                                    flag = flag | (ed.min(axis=1) < float(low_p))
                             else:
                                 flag = past_fn(measure(xyz, mine))
                                 if high_p is not None:

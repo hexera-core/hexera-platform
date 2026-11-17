@@ -356,3 +356,19 @@ def test_rounds_of_one_ring_go_on_while_they_send_holes_and_blame_every_hole_at_
                                                                          (-28, 28, 0))])
     pts = np.array([[5.0, 5.0, 0.0], [500.0, 0.0, 0.0]])
     assert SA._boxes_at(pts, [w], 1.0) is None and SA._boxes_at(pts, [w], 1.0, partial=True) == [w]
+
+
+def test_a_line_held_back_from_a_bolt_box_ends_on_a_node_of_its_side(tmp_path):
+    """SHMESH-51i: a web whose middle row of bolt holes sits 25 mm along from its outer rows, with an end column of
+    four holes whose lines run between the rows: each middle box side line runs into an outer box column, is held back
+    and ended in a T on the line across there, cutting it 25 + 31 mm where the box side holds 4 segments. The cell
+    between could not map, gmsh paved it, and every round of one ring put the faults on the next holes until none kept
+    two (f22b2a3c: 0 of 41). Now the T moves on to a node of the box side: the grid maps and every hole keeps two."""
+    holes = [(140.0 + 160.0 * k + (25.4 if y == 180.0 else 0.0), y, 17.4) for k in range(11) for y in (65.0, 180.0, 295.0)]
+    holes += [(x, y, 17.4) for x in (40.0, 1900.0) for y in (66.8, 141.9, 218.1, 293.2)]
+    brep, rec = _plates(tmp_path, [(2000.0, 361.9, 10.0, 0.0, holes)])
+    mesh, applied = _mesh(brep, rec)
+    s = applied["quality"]["structure"]
+    assert s["bolt_rings"] == {2: len(holes)}, s.get("bolt_rings")
+    assert len(mesh.trias) == 0 and applied["quality"]["passes"] == ["made"], applied["quality"]["passes"]
+    _check(applied)
