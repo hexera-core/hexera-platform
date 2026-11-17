@@ -2025,8 +2025,8 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                             continue
                         sides_p = {abs(int(c)) for _d, c in gmsh.model.getBoundary([(2, w_p.box)], oriented=False)
                                    } - {w_p.ring}
-                        if w_p.box in past_cells or (ST.BOX_OWNS_SIDES and sides_p & past_sides and (
-                                not ST.KEEP_BOX or _moved_box(boxed, kg_))):
+                        if w_p.box in past_cells or (ST.BOX_OWNS_SIDES and sides_p & past_sides
+                                                      and _beside_ok(hole_rounds, kg_)):
                             bad_holes.append(w_p)
                     for s_c, n_c in sorted(tri_cells.get(kg_, {}).items()):
                         if not n_c or not two_:
@@ -2036,7 +2036,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                         at_c = np.asarray(gmsh.model.occ.getCenterOfMass(2, s_c), dtype=float)
                         w_c = min(two_, key=lambda w_: float(np.linalg.norm(w_.centre - at_c)))
                         if float(np.linalg.norm(w_c.centre - at_c)) <= (
-                                0.5 if ST.KEEP_BOX and not _moved_box(boxed, kg_) else 2.5) * w_c.R \
+                                2.5 if _beside_ok(hole_rounds, kg_) else 0.5) * w_c.R \
                                 and w_c not in bad_holes:
                             bad_holes.append(w_c)
                 if GATHER:
@@ -2555,7 +2555,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                                     flag = flag | (ed.max(axis=1) > float(high_p))
                             at_k.extend(xyz[mine[flag]].mean(axis=1))
                     at_a = np.asarray(at_k, dtype=float).reshape(-1, 3)
-                    if ST.KEEP_BOX and not _moved_box(boxed, kp):
+                    if ST.KEEP_BOX and not _beside_ok(hole_rounds, kp):
                         # SHMESH-51j: only a fault inside a hole's rings is its rings' (one ring in the box it keeps cures
                         # it); one in its band or beside its box stays the face's: fixed where it starts, else SHMESH-51b.
                         # (Where a hole of the face took one ring in a box of its own - its band was not made - the
@@ -2830,11 +2830,16 @@ def _cells_of_keys(gmsh, tag_of: dict[int, int], keys, mm: float) -> set[int]:
     return got
 
 
-def _moved_box(boxed: list, k: int) -> bool:
-    """SHMESH-51j: whether face k holds a bolt hole taken to one ring in a box of its own (its band was not made): the
-    lines round that box moved, and a fault beside a box of that face may be that move's."""
-    return any(int(w.owner) == k and not w.radii and not w.kept and w.info.get("bolt")
-               and str(w.info.get("one_ring", "")).startswith("one ring so its face") for w in boxed)
+#: SHMESH-51j: faults beside two-ring boxes are put on their holes (one ring in a box of their own, SHMESH-51g) in a face's
+#: first BESIDE_ROUNDS rounds only; after that such a fault goes to SHMESH-51b (one decision for the face). On the real
+#: column every round of that kind moved boxes and broke the next ones (50 to 45 to 28 to the grid lost); the lab's
+#: webreal needs one such round (54 of 70 holes keep two rings), webY8 two (a band not made, then a cell beside it)
+BESIDE_ROUNDS = 2
+
+
+def _beside_ok(hole_rounds, k: int) -> bool:
+    """SHMESH-51j: whether a fault beside a box of face k may still be put on its holes."""
+    return not ST.KEEP_BOX or _rounds(hole_rounds, k) < BESIDE_ROUNDS
 
 
 def _grid_first(hurt: set[int], why: dict[int, dict], two: set[int], made: set[int], no_cut) -> None:
