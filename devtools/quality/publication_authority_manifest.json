@@ -4740,17 +4740,19 @@
   "roots": []
  },
  {
-  "context": "engines/mesh_requirements.py::_left_over::search#1|NotAPublisher|not-a-publisher|",
+  "context": "engines/mesh_requirements.py::_left_over::search#1|NotAPublisher|not-a-publisher|engines/mesh_requirements.py::result of re.findall(\"[a-z][a-z']*\", c)",
   "path": "engines/mesh_requirements.py",
   "qualname": "_left_over",
   "semantic": "search",
   "method": "search",
   "ordinal": 1,
-  "receiver": "_MESH_WORDS",
+  "receiver": "words",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
   "gated_required": false,
-  "roots": []
+  "roots": [
+   "engines/mesh_requirements.py::result of re.findall(\"[a-z][a-z']*\", c)"
+  ]
  },
  {
   "context": "engines/mesh_requirements.py::_left_over::search#2|NotAPublisher|not-a-publisher|",
@@ -4772,6 +4774,32 @@
   "semantic": "search",
   "method": "search",
   "ordinal": 1,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/mesh_requirements.py::_notes_unit::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/mesh_requirements.py",
+  "qualname": "_notes_unit",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/mesh_requirements.py::_notes_unit::search#2|NotAPublisher|not-a-publisher|",
+  "path": "engines/mesh_requirements.py",
+  "qualname": "_notes_unit",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
   "receiver": "re",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
@@ -4825,6 +4853,19 @@
   "method": "search",
   "ordinal": 3,
   "receiver": "_MESH_TERMS",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/mesh_requirements.py::instead_for::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/mesh_requirements.py",
+  "qualname": "instead_for",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "rx",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
   "gated_required": false,

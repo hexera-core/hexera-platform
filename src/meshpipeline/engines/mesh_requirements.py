@@ -74,6 +74,7 @@ RULE_NOT_APPLIED = "NOTE-8"
 RULE_NOTHING = "NOTE-9"
 RULE_FLOW = "NOTE-10"          # the flow fields of the same reading (a count, layers, a size at the walls or in a place)
 RULE_KIND_WORDS = "NOTE-11"
+RULE_TOLD = "NOTE-12"           # every ask is told back: applied, nearest, not applied, or not a mesh setting
 TOOL = "mesh_requirements"
 CONSUMER = "mesh_requirements"
 STEP = "mesh_requirements"
@@ -232,7 +233,8 @@ words for it, copied exactly (one line or phrase, as short as holds the whole re
   "elsewhere": ONLY shell or solid (what to mesh the part as). "not_mesh": loads, supports, materials, the
   analysis, the flow's physics (velocity, fluid, Reynolds number, turbulence model, wall functions, inlet and outlet
   conditions), the solver or file format the mesh is for ("mesh for Fluent", "OpenFOAM format": the export is chosen
-  at download), greetings, thanks, "use your defaults", headings, a yes or a verdict on what was proposed ("looks
+  at download), the units or numbering of the files ("write it in mm", "node ids from 100001"), a time or cost limit,
+  what to do with their files or data ("delete my CAD after"), greetings, thanks, "use your defaults", headings, a yes or a verdict on what was proposed ("looks
   good", "the rest is right", "yes that's right"), anything that asks nothing of the mesh.
 When the notes give the SAME thing twice ("5 layers. Actually 10 layers."), list BOTH entries, in the order written:
 the LATEST one is kept (the user changed their mind).
@@ -448,18 +450,69 @@ def _locate(quote: str, notes: str) -> str | None:
     return best
 
 
-#: words that make a left-over clause one about the mesh (NOTE-8's floor)
+#: words that make a left-over clause one about the mesh (NOTE-8's floor) - "cell", "mesh", "size" and "patch" too
+#: (NOTE-12: "keep the wake cells uniform", left in no field by the model, was told nothing)
 _MESH_WORDS = re.compile(r"\b(?:elements?|nodes?|quads?|trias?|triangles?|tets?|tetrahedr\w+|hex\w*|"
-                         r"layers?|refine\w*|coarse\w*|jacobian|warp\w*|aspect|skew\w*|taper|washers?)\b", re.I)
+                         r"layers?|refine\w*|coarse\w*|jacobian|warp\w*|aspect|skew\w*|taper|washers?|"
+                         r"cells?|mesh|sizes?|patch(?:es)?)\b", re.I)
+#: NOTE-12: words that make a left-over clause an ask AROUND the mesh - the files, their units and numbering, the
+#: run's time or cost, the user's data - told as "not a mesh setting" with what to do instead
+_AROUND_WORDS = re.compile(r"\b(?:export\w*|files?|formats?|decks?|units?|fluent|openfoam|nastran|abaqus|ansys|"
+                           r"calculix|cgns|ls-?dyna|optistruct|star-?ccm\+?|su2|numbering|ids?|offsets?|minutes?|"
+                           r"hours?|cost|credits?|price|delete|erase|confidential|nda)\b", re.I)
+
+
+#: NOTE-12: WHAT TO DO INSTEAD, for an ask that is not a mesh setting - the first that fits, in this order (a file's
+#: units before its format: "export to Fluent in mm" is about the units)
+_NOT_MESH_HINTS: tuple[tuple[re.Pattern, str], ...] = (
+    (re.compile(r"\b(?:delete|remove|erase|wipe)\b.*\b(?:files?|cad|models?|uploads?|data|geometry)\b", re.I),
+     "deleting one file on request is not offered yet"),
+    (re.compile(r"\b(?:train\w*|confidential|nda|privacy)\b", re.I),
+     "how your data is kept is set for your whole organisation, not run by run"),
+    (re.compile(r"\b(?:cost|credits?|price|spend\w*|dollars?|euros?|pounds)\b|[$€£]\s*\d", re.I),
+     "a cost limit is not a setting yet; the run costs what the mesh needs"),
+    (re.compile(r"\b(?:minutes?|hours?|mins?|hrs?|seconds?|deadline)\b", re.I),
+     "a time limit is not a setting yet; the run takes as long as the mesh needs"),
+    (re.compile(r"\b(?:ids?|numbering)\b|\b(?:node|element|cell|grid)s?\b.*\b(?:numbers?|offset|start\w*)\b", re.I),
+     "node and element numbers start at 1; an offset is not a setting yet"),
+    (re.compile(r"\b(?:mm|millimet\w+|cm|centimet\w+|metres?|meters?|inch\w*|units?)\b", re.I),
+     "every file we write is in metres and says so"),
+    (re.compile(r"\b(?:cgns|ls-?dyna|optistruct|star-?ccm\+?|su2|exodus|med|unv|radioss|\.k)\b", re.I),
+     "we do not write that format yet; the formats we write are offered at download"),
+    (re.compile(r"\b(?:export\w*|files?|formats?|decks?|fluent|openfoam|nastran|abaqus|ansys|calculix|bdf|inp|cdb|"
+                r"ensight|solver)\b", re.I),
+     "every solver file we write comes with the mesh; pick the one you want at download"),
+    (re.compile(r"\b(?:load\w*|forces?|pressure|supports?|fixed|clamp\w*|constrain\w*|materials?|steel|alumin\w*|"
+                r"modulus|densit\w*|temperature|heat|inlet|outlet|velocity|speed|turbulen\w*|k-?omega|k-?epsilon|"
+                r"sst|wall functions?|boundary conditions?|reynolds|viscosit\w*)\b", re.I),
+     "it is a setting of your solver, not of the mesh: set it there (every face is a named group in the files)"),
+)
+#: ...and when none fits
+NOT_MESH_DEFAULT = "it asks nothing of the mesh, so the mesh does not change for it"
+
+
+def _notes_unit(text: str, stated: str) -> bool:
+    """Whether a line only gives the unit of the notes' own numbers ("Units: mm", "all dimensions in inches"), read as
+    stated_unit - never an ask about the files' units."""
+    return (stated in UNITS_MM and bool(re.search(r"\b(?:units?|dimensions?|lengths?|numbers?)\b", str(text), re.I))
+            and not re.search(r"\b(?:export\w*|files?|decks?|writ\w*|output\w*|deliver\w*)\b", str(text), re.I))
+
+
+def instead_for(quote: str) -> str:
+    """NOTE-12: what the user can do instead, for an ask that is not a mesh setting (_NOT_MESH_HINTS)."""
+    for rx, said in _NOT_MESH_HINTS:
+        if rx.search(str(quote or "")):
+            return said
+    return NOT_MESH_DEFAULT
 #: ... but a clause about WHAT to mesh the part as (shell or solid, FEA or CFD, the analysis) is another reader's
 #: (SHSTAGE, the purpose map), never a setting left out: "FEA shell mesh of this part" is not told as not applied
 _MESH_AS = re.compile(r"\b(?:shell|mid-?surface|solid|fea|cfd|structural|static|modal|buckling|analysis)\b", re.I)
 _MARKER = re.compile(r"^(?:\[n\d+\]\s*\(.*\)|<<<|>>>|\.\.\. \(cut here.*)$")
 
 
-def _left_over(notes: str, quotes: list[str]) -> list[str]:
-    """The clauses of the user's words that no quote of the reading covers and that speak of the mesh - at least
-    four words, as written. The model is told to list everything; this holds it to that."""
+def _left_over(notes: str, quotes: list[str], *, words: re.Pattern = _MESH_WORDS, least: int = 4) -> list[str]:
+    """The clauses of the user's words that no quote of the reading covers and that speak of the mesh (`words`) - at
+    least `least` words, as written. The model is told to list everything; this holds it to that."""
     text = "\n".join(line for line in str(notes or "").splitlines() if not _MARKER.match(line.strip()))
     mask = bytearray(len(text))
     for q in sorted({" ".join(str(q).split()) for q in quotes if str(q).strip()}, key=len, reverse=True):
@@ -478,7 +531,7 @@ def _left_over(notes: str, quotes: list[str]) -> list[str]:
     for run in runs:
         for piece in re.split(r"[.;!?。；]+\s+|[.;!?。；]+$", run):
             piece = re.sub(r"^(?:[\s,:\-–]+|(?:but|and|also|then)\b)+", "", piece.strip(), flags=re.I).strip(" ,:-–")
-            if (len(piece.split()) >= 4 and _MESH_WORDS.search(piece) and not _MESH_AS.search(piece)
+            if (len(piece.split()) >= least and words.search(piece) and not _MESH_AS.search(piece)
                     and piece not in out):
                 out.append(piece[:400])
     return out
@@ -1381,6 +1434,7 @@ def _check(arguments: str, notes: str, route: str = "") -> tuple[dict, list[str]
 
     # what fits no field (NOTE-8): told, never silently dropped
     not_applied: list[str] = []
+    not_mesh: list[str] = []             # NOTE-12: asks that are no mesh setting, told with what to do instead
     typed = list(covered)                # the quotes read into a field: a line told "not applied" is what is left
     for e in _rows_of(raw, "other"):
         quote = " ".join(str(e.get("quote") or "").split())[:400]
@@ -1389,15 +1443,29 @@ def _check(arguments: str, notes: str, route: str = "") -> tuple[dict, list[str]
             continue        # NOTE-11: read above as the element kind
         if asks_nothing(quote):
             continue        # NOTE-8: a yes or a verdict ("the rest looks good") asks nothing, so nothing is left out
-        if str(e.get("kind")) == "mesh" and _quoted(quote, said, squashed) and quote not in not_applied:
-            over = [t for t in typed if t and (_squash(t) in _squash(quote) or _squash(quote) in _squash(t))]
+        kind = str(e.get("kind"))
+        if kind not in ("mesh", "not_mesh") or not _quoted(quote, said, squashed):
+            continue        # "elsewhere" (shell or solid) is the stage's reader's; a quote not the user's is no ask
+        over = [t for t in typed if t and (_squash(t) in _squash(quote) or _squash(quote) in _squash(t))]
+        if kind == "mesh" and quote not in not_applied:
             if over and not _left_over(quote, over):
                 continue                 # every mesh word of it was read into a field already
             not_applied.append(quote)
+        elif (kind == "not_mesh" and quote not in not_mesh and not over and not quote.rstrip().endswith(":")
+              and not _notes_unit(quote, stated)):
+            # read into no field (the flow's speed for a y+ is read: it is not told again); a heading asks nothing
+            not_mesh.append(quote)
     # NOTE-8's floor: words about the mesh that the reading listed NOWHERE are told too, as the user wrote them
     for piece in _left_over(notes, covered):
         if piece not in not_applied and not (rescued and kind_in_words(piece)) and not asks_nothing(piece):
             not_applied.append(piece)
+    # NOTE-12's floor: an ask AROUND the mesh (the files, their units, numbering, time, cost, the data) that the reading
+    # listed nowhere is told as not a mesh setting - two words are enough ("export CGNS")
+    for piece in _left_over(notes, [*covered, *not_applied], words=_AROUND_WORDS, least=2):
+        if piece not in not_mesh and not asks_nothing(piece) and not _notes_unit(piece, stated):
+            not_mesh.append(piece)
+    if not_mesh:
+        out["not_mesh"] = [{"quote": q, "instead": instead_for(q)} for q in not_mesh[:20]]
     return out, dropped, not_applied[:20]
 
 
@@ -1432,6 +1500,24 @@ def not_applied_words(sec: Mapping | None) -> list[str]:
     return [w for w in words(sec) if w.startswith("Not applied")] if sec and sec.get("status") == "used" else []
 
 
+#: NOTE-12: how a line that is no mesh setting starts
+NOT_MESH_LEAD = "Not a mesh setting"
+
+
+def not_mesh_words(entries) -> list[str]:
+    """NOTE-12: one line per ask that is no mesh setting, with what to do instead."""
+    return [f'{NOT_MESH_LEAD}: "{_short(str(e.get("quote") or ""))}" - {e.get("instead") or NOT_MESH_DEFAULT}.'
+            for e in entries or [] if isinstance(e, Mapping)]
+
+
+def told_words(sec: Mapping | None) -> list[str]:
+    """NOTE-8 and NOTE-12: every line of words() that says an ask was not applied or is no mesh setting - what stays
+    with the result, so no ask of the notes disappears."""
+    if not sec or sec.get("status") != "used":
+        return []
+    return [w for w in words(sec) if w.startswith(("Not applied", NOT_MESH_LEAD))]
+
+
 def write(workspace, sec: Mapping | None) -> bool:
     """Keep the reading in the workspace when it asks for something or has something to tell (what was not
     applied); remove a carried file when it has neither (a run with no notes leaves the workspace exactly as it
@@ -1441,7 +1527,7 @@ def write(workspace, sec: Mapping | None) -> bool:
     path = Path(workspace) / FILE
     try:
         # (a pick on the stage, STD-4, is kept too: the result says which elements were made and why)
-        if requirements_of(sec) is None and not not_applied_words(sec) and not (sec or {}).get("stage"):
+        if requirements_of(sec) is None and not told_words(sec) and not (sec or {}).get("stage"):
             path.unlink(missing_ok=True)
             return False
         path.write_text(json.dumps(sec, indent=1, sort_keys=True), encoding="utf-8")
@@ -1476,6 +1562,7 @@ def words(sec: Mapping | None) -> list[str]:
         out.append(str(sec["note"]))
     out += [f"Not applied: {d}." for d in sec.get("dropped") or []]
     out += [f'Not applied: "{_short(q)}" - no mesh setting of ours matches it yet.' for q in sec.get("not_applied") or []]
+    out += not_mesh_words((sec.get("requirements") or {}).get("not_mesh"))
     return out
 
 
@@ -1504,6 +1591,10 @@ def decisions(sec: Mapping | None, stage: str = "notes") -> list[dict]:
                     "rule": RULE_NOT_APPLIED, "source": SOURCE_AI_LEVER,
                     "inputs": {"not_applied": sec.get("not_applied") or [], "dropped": sec.get("dropped") or []},
                     "words": "What the notes say about the mesh that was not applied, told to the user."})
+    if req.get("not_mesh"):
+        out.append({"stage": stage, "decided": "notes that are no mesh setting", "value": len(req["not_mesh"]),
+                    "rule": RULE_TOLD, "source": SOURCE_AI_LEVER, "inputs": {"not_mesh": req["not_mesh"]},
+                    "words": "What the notes ask that is no mesh setting, told to the user with what to do instead."})
     return out
 
 

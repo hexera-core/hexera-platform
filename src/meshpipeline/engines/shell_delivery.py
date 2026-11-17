@@ -238,9 +238,9 @@ def deliver(workspace, rec: Mapping, *, target: Mapping | None = None) -> bool:
         plan["words"] = [*list(plan["words"] or []), *asked_words(rec["requirements"])]
     from meshpipeline.engines import mesh_requirements as MR
 
-    told = MR.not_applied_words(MR.read(ws))
+    told = MR.told_words(MR.read(ws))
     if told:
-        # NOTE-8: what the notes say about the mesh that was not applied stays with the result
+        # NOTE-8 / NOTE-12: what the notes asked that was not applied, or is no mesh setting, stays with the result
         plan["not_applied"] = told
         plan["words"] = [*list(plan["words"] or []), *told]
     (ws / "fea_plan.json").write_text(json.dumps(plan, indent=1, sort_keys=True, default=float))
