@@ -5,8 +5,6 @@
 # with the model's rounds scripted (as test_thermal_chat does) and the stored check stood in for.
 from __future__ import annotations
 
-import meshpipeline.agents.intake.approval as ap
-
 import asyncio
 import json
 import uuid
@@ -16,6 +14,7 @@ from unittest.mock import patch
 import pytest
 
 import meshpipeline.agents.intake.agent as intake
+import meshpipeline.agents.intake.approval as ap
 import meshpipeline.agents.intake.engine_selection as es
 from meshpipeline.agents.intake import turn
 from meshpipeline.agents.intake.executor import fea_path

@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -55,7 +55,7 @@ INTAKE = ["Geometry received. What are you meshing this for?", "static stress, a
 
 
 def _ago(seconds: int) -> str:
-    return (datetime.now(timezone.utc) - timedelta(seconds=seconds)).isoformat().replace("+00:00", "Z")
+    return (datetime.now(UTC) - timedelta(seconds=seconds)).isoformat().replace("+00:00", "Z")
 
 
 def _job(job: str, session: str, status: str = "running") -> dict:

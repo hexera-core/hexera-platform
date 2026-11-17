@@ -1,8 +1,6 @@
 # Responsibility: Verify an engine is proposed, confirmed, invalidated and expired on its own; only confirmed admits.
 from __future__ import annotations
 
-import meshpipeline.agents.intake.approval as ap
-
 import asyncio
 import json
 import time
@@ -11,6 +9,7 @@ from unittest.mock import patch
 
 import meshpipeline.agents.intake.admission_token as at
 import meshpipeline.agents.intake.agent as intake
+import meshpipeline.agents.intake.approval as ap
 import meshpipeline.agents.intake.engine_selection as es
 from meshpipeline.contracts import user_notes as un
 

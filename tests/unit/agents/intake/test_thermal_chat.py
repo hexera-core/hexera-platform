@@ -8,8 +8,6 @@
 # the repositories stood in for.
 from __future__ import annotations
 
-import meshpipeline.agents.intake.approval as ap
-
 import asyncio
 import json
 import uuid
@@ -19,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 import meshpipeline.agents.intake.agent as intake
+import meshpipeline.agents.intake.approval as ap
 import meshpipeline.agents.intake.engine_selection as es
 import meshpipeline.agents.intake.message as msg
 from meshpipeline.agents.intake import turn
