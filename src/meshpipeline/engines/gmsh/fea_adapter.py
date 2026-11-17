@@ -7,8 +7,10 @@ Each zone group becomes a Distance field (to its CAD faces, or to the edge two f
 capped corner) and a Threshold on it: the group's size out to its reach, then growing at the
 plan's rate to the base size. The smallest of them is the background field, and nothing else
 sizes the mesh (no curvature sizing, no sizes carried in from points or boundaries), so the mesh
-is the plan's. One thread and a fixed seed, as every gmsh run here: the same plan gives the same
-mesh.
+is the plan's. A fixed seed, the curves and surfaces on one thread (the surfaces of a part that can be split
+in worker processes, MESH-23), and the volume filled by HXT on every core the job has (MESH-25: speed over
+sameness, so the fill may differ slightly run to run; on one thread, MESH_GMSH_THREADS=1 in our tests, the
+same plan gives the same mesh). Should HXT fail, Delaunay fills the same pass, as every pass was filled before.
 
 Face_k in the plan is the k-th CAD face (cad/fea_measure numbers them in OpenCASCADE's order),
 which is gmsh's surface tag k for the staged solid, and Face_k in the deck.
@@ -81,10 +83,16 @@ class Ticker:
 
 #: the mesher's threads when the plan names none: 0 = every core the job has (the curve and surface
 #: meshing stay on one thread whatever this says - see mesh(); the surfaces use this many worker processes,
-#: MESH-23)
+#: MESH-23; the HXT fill runs on this many threads, MESH-25)
 DEFAULT_THREADS = 0
-#: the 3D algorithm when the plan names none
-DEFAULT_ALGORITHM_3D = "delaunay"
+#: MESH-25: the 3D algorithm when the plan names none - HXT, on every core (the founder's decision, 13 Nov: speed
+#: wins); should HXT fail, Delaunay fills the same pass (`mesh`)
+DEFAULT_ALGORITHM_3D = "hxt"
+#: MESH-25: the rule the fall-back cites
+HXT_RULE = "MESH-25"
+#: MESH-25: whether a pass whose fill failed is filled again with the other algorithm (off only in tests of other
+#: rules, which count their own attempts)
+SECOND_ATTEMPT = True
 
 
 def mesh_threads(run: dict) -> int:
@@ -96,15 +104,26 @@ def mesh_threads(run: dict) -> int:
         n = 1
     if n > 0:
         return n
-    # every core THE JOB HAS (its CPU quota), never the host's: Cloud Run's os.cpu_count() is the host's
-    from meshpipeline.engines.determinism import job_cpus
-    return job_cpus()
+    # every core THE JOB HAS (its CPU quota), never the host's: Cloud Run's os.cpu_count() is the host's - or
+    # MESH_GMSH_THREADS when set (1: our tests, the repeatable HXT fill)
+    from meshpipeline.engines.determinism import gmsh_threads
+    return gmsh_threads()
 
 
 def algorithm_3d(run: dict) -> str:
-    """The 3D algorithm: the plan's `algorithm3d`, else DEFAULT_ALGORITHM_3D."""
+    """The 3D algorithm: MESH-25's fall-back while it meshes the pass again, else the plan's `algorithm3d`, else
+    DEFAULT_ALGORITHM_3D."""
+    if _ALGO_3D[0]:
+        return _ALGO_3D[0]
     name = str((run or {}).get("algorithm3d") or DEFAULT_ALGORITHM_3D).lower()
-    return name if name in ALGORITHMS_3D else "delaunay"
+    return name if name in ALGORITHMS_3D else DEFAULT_ALGORITHM_3D
+
+
+#: MESH-25: the 3D algorithm a failed pass is filled again with (set by `mesh` around its second attempt)
+_ALGO_3D: list[str | None] = [None]
+#: MESH-25: whether the last build's size fields hold a size through a volume, and the algorithm it filled with
+_VOLUME_SIZED = [False]
+_FILLED: list[str | None] = [None]
 #: gmsh's MeshAdapt 2D algorithm (Mesh.Algorithm 1): the other way to mesh a surface, for the
 #: surfaces a pass went wrong on (LAD-fea-6) - the default (Frontal-Delaunay) left them empty or bad
 MESH_ADAPT = 1
@@ -320,6 +339,7 @@ def size_fields(gmsh, plan: dict, surfaces: set[int], face_tags: dict[str, list[
             # PLAN-fea-17: the part's base through its whole volume (the estimate's ceiling inside it)
             vols = sorted(set((part_volumes or {}).get(str(g["part"])) or []))
             if vols:
+                _VOLUME_SIZED[0] = True
                 const = gmsh.model.mesh.field.add("Constant")
                 gmsh.model.mesh.field.setNumber(const, "VIn", size)
                 gmsh.model.mesh.field.setNumber(const, "VOut", base)
@@ -1561,9 +1581,19 @@ def _build(gmsh, ws: Path, plan: dict, geom: Path, asm: dict | None, sidecar: di
             print(f"[GMSH-FEA] {len(short['edges'])} short CAD edge(s) or narrow face(s) sized at their own size "
                   f"({SHORT.RULE}; {short.get('left', 0)} left as drawn by the budget)", file=sys.stderr)
     note_stage(ws, "sizing", "setting the element sizes")
+    _VOLUME_SIZED[0] = False
     bg = size_fields(gmsh, sized, surfaces, face_tags, part_volumes, whole=whole, short=short)
     if bg is not None:
         gmsh.model.mesh.field.setAsBackgroundMesh(bg)
+    _FILLED[0] = algorithm_3d(run)
+    if _VOLUME_SIZED[0] and _FILLED[0] == "hxt":
+        # MESH-25's measured exception: HXT does not read a size held through a VOLUME (a part's own base,
+        # PLAN-fea-17) - the inside of such a part came out 1.6 times coarser than its base (13 Nov) - so a model
+        # with one is filled by Delaunay, which does
+        _FILLED[0] = "delaunay"
+        gmsh.option.setNumber("Mesh.Algorithm3D", ALGORITHMS_3D["delaunay"])
+        print("[GMSH-FEA] a part's own base size is held through its volume, which HXT does not read - filled "
+              f"with Delaunay ({HXT_RULE})", file=sys.stderr)
     remesh = {int(s) for s in run.get("remesh_surfaces") or []}
     # LAD-fea-9, THE LAST RUNG: fTetWild's parts are left unmeshed; gmsh meshes only the others (their own
     # surfaces, each volume alone), exactly as a pass meshes them. Without a rung nothing here changes
@@ -1726,7 +1756,102 @@ def _short_score(q: dict) -> tuple[int, float]:
     return missed, -float(q.get("fea_min_scaled_jacobian") or 0.0)
 
 
+def _quality(ws: Path) -> dict:
+    try:
+        q = json.loads((ws / "quality.json").read_text())
+    except (OSError, ValueError):
+        return {}
+    return q if isinstance(q, dict) else {}
+
+
+#: the mesher's own log in the workspace (engines/gmsh/gmsh_runner.FEA_LOG): the runner writes it as the mesher runs
+_MESHER_LOG = "gmshfea.log"
+
+
 def mesh(workspace) -> int:
+    """MESH-25: THE FILL ON EVERY CORE, AND NEVER A FAILED PASS FOR IT. The pass is filled with the plan's 3D
+    algorithm - HXT on every core by default (the founder's decision, 13 Nov: speed wins) - ONCE: a mesh that comes
+    back is the pass's mesh, held to every limit as any pass is. Should the fill fail (an error, no mesh, a volume
+    left empty, an invalid mesh), the same pass is filled again with the other algorithm (Delaunay, as every pass
+    was filled before) and that outcome stands, whatever it is - so no pass fails that Delaunay would mesh.
+    quality.json says which algorithm made the mesh and why (`fea_algorithm3d`)."""
+    import shutil
+    import time
+
+    ws = Path(workspace)
+    try:
+        run = json.loads((ws / "fea_plan.json").read_text()).get("mesh") or {}
+    except (OSError, ValueError):
+        run = {}
+    first = algorithm_3d(run)
+    _FILLED[0] = None
+    threads = mesh_threads(run)
+    before = {f.name: f.stat().st_mtime_ns for f in ws.iterdir() if f.is_file()}
+    # what an earlier pass kept (LAD-fea-11) is this pass's input: the second attempt reads it as the first did
+    inputs = ws / "_mesh25_inputs"
+    shutil.rmtree(inputs, ignore_errors=True)
+    for name in (KEEP_MSH, KEEP_JSON):
+        if (ws / name).exists():
+            inputs.mkdir(exist_ok=True)
+            shutil.copy2(ws / name, inputs / name)
+    t0 = time.monotonic()
+    err: BaseException | None = None
+    try:
+        rc = _mesh_short(ws)
+    except Exception as exc:  # noqa: BLE001 - the other algorithm fills the pass again; its outcome stands
+        rc, err = -1, exc
+    first_s = round(time.monotonic() - t0, 1)
+    asked, first = first, _FILLED[0] or first
+    other = "delaunay" if first == "hxt" else "hxt"
+    q1 = _quality(ws) if rc == 0 else {}
+    # (no times in the record: the same mesh must give the same quality.json; the times are in the log)
+    record = {"rule": HXT_RULE, "first": first, "threads": threads,
+              **({"why_not_hxt": "a part's own base size is held through its volume"} if asked != first else {})}
+    if rc in (2, 3) or (rc == 0 and q1) or asked != first or not SECOND_ATTEMPT:
+        # no geometry or no solid is never the algorithm's; a mesh that came back is the pass's, once
+        _note_algorithm(ws, {**record, "used": first}, f"{first_s} s")
+        shutil.rmtree(inputs, ignore_errors=True)
+        if err is not None:
+            raise err
+        return rc
+    why = (f"{type(err).__name__}: {str(err)[:200]}" if err is not None else
+           f"exit {rc}" if rc != 0 else "no quality record")
+    # the failed attempt's files go - never the mesher's own log, which the runner is still writing and the
+    # watchdog reads (gmsh_runner.FEA_LOG); what the pass read comes back for the second attempt
+    for f in ws.iterdir():
+        if f.is_file() and f.name != _MESHER_LOG and before.get(f.name) != f.stat().st_mtime_ns:
+            f.unlink()
+    for f in (inputs.iterdir() if inputs.is_dir() else []):
+        shutil.copy2(f, ws / f.name)
+    print(f"[GMSH-FEA] the {first} fill failed ({why}) - the pass filled again with {other} ({HXT_RULE})",
+          file=sys.stderr)
+    _ALGO_3D[0] = other
+    t1 = time.monotonic()
+    try:
+        rc2 = _mesh_short(ws)
+    finally:
+        _ALGO_3D[0] = None
+        shutil.rmtree(inputs, ignore_errors=True)
+        record.update(second=other, why=why)
+        _note_algorithm(ws, {**record, "used": other},
+                        f"{first} {first_s} s, then {other} {round(time.monotonic() - t1, 1)} s")
+    return rc2
+
+
+def _note_algorithm(ws: Path, record: dict, took: str = "") -> None:
+    """MESH-25's record in quality.json (`fea_algorithm3d`), and its line in the log (with the times)."""
+    q = _quality(ws)
+    if q:
+        q["fea_algorithm3d"] = record
+        try:
+            (ws / "quality.json").write_text(json.dumps(q, indent=1))
+        except OSError:
+            pass
+    print(f"[GMSH-FEA] 3D fill: {record.get('used')} on {record.get('threads')} thread(s)"
+          f"{f' ({took})' if took else ''} ({HXT_RULE})", file=sys.stderr)
+
+
+def _mesh_short(workspace) -> int:
     """Mesh the staged solid by the plan (_mesh_tiny). MESH-24: A SIZED MESH NEVER COSTS A PART THE MESH IT HAD.
     When short edges or narrow faces were sized and the mesh still misses an element-quality limit (or was not
     built), the same pass is meshed again with them as drawn, and the better of the two is kept (fewer
@@ -1836,12 +1961,13 @@ def _mesh(workspace) -> int:
     gmsh.initialize(interruptible=False)
     try:
         gmsh.option.setNumber("General.Terminal", 1)
-        # THE JOB'S CORES, REPEATABLY (Areen, 24 Oct; lab 24 Oct, 12 largest training parts run twice):
-        # gmsh's own parallel work (the optimiser, the curving) on every core, while the curve and
-        # surface meshing stay on ONE thread - their parallel versions are not repeatable (0/17 meshes
-        # the same twice at 8 threads; and 3 of 5 on 22 Oct). So the mesh is byte-identical to the
-        # one-thread mesh (12/12) and to itself run twice (12/12), about 1.5 times sooner. The surfaces still
-        # use every core: MESH-23 meshes them in worker processes, the same mesh on any number (surface_mesh).
+        # THE JOB'S CORES (Areen, 24 Oct; lab 24 Oct, 12 largest training parts run twice): gmsh's own
+        # parallel work (the optimiser, the curving) on every core, while the curve and surface meshing stay
+        # on ONE thread - their parallel versions are not repeatable (0/17 meshes the same twice at 8
+        # threads; and 3 of 5 on 22 Oct). The surfaces still use every core: MESH-23 meshes them in worker
+        # processes, the same mesh on any number (surface_mesh). MESH-25: the volume is filled by HXT on
+        # every core (Mesh.MaxNumThreads3D), speed over sameness - the fill may differ slightly run to run;
+        # on one thread (MESH_GMSH_THREADS=1, our tests) the mesh is the same to the byte.
         threads = mesh_threads(run)
         gmsh.option.setNumber("General.NumThreads", threads)
         gmsh.option.setNumber("Mesh.MaxNumThreads1D", 1)
@@ -2169,5 +2295,5 @@ def _mesh(workspace) -> int:
         gmsh.finalize()
 
 
-__all__ = ["BAD_FACES", "face_names_of", "ALGORITHMS_3D", "BAD_SURFACES", "MESH_ADAPT", "bad_surfaces", "mesh", "size_fields", "surface_mesh",
+__all__ = ["DEFAULT_ALGORITHM_3D", "HXT_RULE", "BAD_FACES", "face_names_of", "ALGORITHMS_3D", "BAD_SURFACES", "MESH_ADAPT", "bad_surfaces", "mesh", "size_fields", "surface_mesh",
            "surfaces_named"]
