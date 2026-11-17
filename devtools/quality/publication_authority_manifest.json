@@ -2448,6 +2448,21 @@
   "roots": []
  },
  {
+  "context": "application/flow_kind.py::words_reading::search#1|NotAPublisher|not-a-publisher|application/flow_kind.py::re.Pattern",
+  "path": "application/flow_kind.py",
+  "qualname": "words_reading",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_TAKEN_BACK",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": [
+   "application/flow_kind.py::re.Pattern"
+  ]
+ },
+ {
   "context": "application/geometry_confirmation.py::declared_case::search#1|NotAPublisher|not-a-publisher|",
   "path": "application/geometry_confirmation.py",
   "qualname": "declared_case",
@@ -2727,6 +2742,19 @@
   "roots": []
  },
  {
+  "context": "application/part_understanding.py::words_object::search#1|NotAPublisher|not-a-publisher|",
+  "path": "application/part_understanding.py",
+  "qualname": "words_object",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "rx",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "application/pipeline_run.py::_classify_checkpoint::error#1|NotAPublisher|not-a-publisher|",
   "path": "application/pipeline_run.py",
   "qualname": "_classify_checkpoint",
@@ -2999,36 +3027,6 @@
   "gated_required": false,
   "roots": [
    "application/post_terminal.py::callers of enqueue_conversation_export()"
-  ]
- },
- {
-  "context": "application/purpose_map.py::_topology::search#1|NotAPublisher|not-a-publisher|application/purpose_map.py::re.Pattern",
-  "path": "application/purpose_map.py",
-  "qualname": "_topology",
-  "semantic": "search",
-  "method": "search",
-  "ordinal": 1,
-  "receiver": "_INTERNAL",
-  "authority": "NotAPublisher",
-  "lifecycle": "not-a-publisher",
-  "gated_required": false,
-  "roots": [
-   "application/purpose_map.py::re.Pattern"
-  ]
- },
- {
-  "context": "application/purpose_map.py::_topology::search#2|NotAPublisher|not-a-publisher|application/purpose_map.py::re.Pattern",
-  "path": "application/purpose_map.py",
-  "qualname": "_topology",
-  "semantic": "search",
-  "method": "search",
-  "ordinal": 2,
-  "receiver": "_EXTERNAL",
-  "authority": "NotAPublisher",
-  "lifecycle": "not-a-publisher",
-  "gated_required": false,
-  "roots": [
-   "application/purpose_map.py::re.Pattern"
   ]
  },
  {

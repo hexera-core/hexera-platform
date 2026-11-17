@@ -94,12 +94,8 @@ _FLOW = _rx(
     r"\bslosh", r"\bwind tunnel", r"\bair (move|moves|around|over|through)", r"goes in .* out",
     r"\bblood\b", r"\bk-?(omega|epsilon)\b", r"\bpolyhedral\b",
 )
-#: Words that put a flow INSIDE the part, and AROUND it.
-_INTERNAL = _rx(r"\bthrough\b", r"\binside\b", r"\binternal", r"\bpipe", r"\bduct", r"\bmanifold",
-                r"\bvalve", r"\bnozzle", r"pressure (drop|loss)", r"\bfilter\b", r"\bgoes in\b",
-                r"\bartery", r"\bimpeller", r"\bmixing\b", r"\bin the (room|tank|combustor)")
-_EXTERNAL = _rx(r"\baround\b", r"\bover\b", r"\bexternal", r"\baero", r"\bdrag\b", r"\blift\b",
-                r"\bdownforce", r"\bwind\b", r"\bhull\b", r"\bwake\b")
+#: Whether the words put the flow INSIDE the part or AROUND it is the flow-kind authority's reading
+#: (application/flow_kind, FLOW-1), so the route and the stage read the user's words one way.
 
 #: WORDS THAT PUT HEAT IN THE QUESTION. Any one of them and the thermal split decides.
 _HEAT = _rx(r"\bthermal", r"\bheat", r"\bhot\b", r"\bwarm", r"\btemperature", r"\bcool", r"\boverheat",
@@ -250,8 +246,9 @@ def mesh_as_answer(value) -> str:
 
 
 def _topology(text: str) -> str:
-    inside, outside = bool(_INTERNAL.search(text)), bool(_EXTERNAL.search(text))
-    return "internal" if inside and not outside else "external" if outside and not inside else ""
+    from meshpipeline.application.flow_kind import topology_of_words
+
+    return topology_of_words(text)
 
 
 def read_purpose(text: str) -> PurposeReading:
