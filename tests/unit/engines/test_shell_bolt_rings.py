@@ -372,3 +372,21 @@ def test_a_line_held_back_from_a_bolt_box_ends_on_a_node_of_its_side(tmp_path):
     assert s["bolt_rings"] == {2: len(holes)}, s.get("bolt_rings")
     assert len(mesh.trias) == 0 and applied["quality"]["passes"] == ["made"], applied["quality"]["passes"]
     _check(applied)
+
+
+def test_one_ring_in_a_two_ring_box_is_one_row_out_to_the_two_rings_outer_circle():
+    """SHMESH-51j: a bolt hole sent to one ring for a fault in its rings keeps its two-ring box, its count and its outer
+    circle; it takes one row of quads from the hole out to that circle when that row is inside the solver's limits, the
+    quad lines and the user's edges (a 17.4 mm hole, 8 round, out to 19 mm at 5 to 15 mm: 6.8 / 14.9 / 10.3 mm quads,
+    corners 67.5 and 112.5 degrees). A row too wide for the longest edge, or a hole edge under the shortest, is not
+    taken: that hole falls back as before."""
+    assert ST._one_row_fits(8.7, 8, 19.0, 5.0, 15.0)
+    assert not ST._one_row_fits(8.7, 8, 26.1, 5.0, 15.0)           # (its outer edge 20.5 mm, over 15)
+    assert not ST._one_row_fits(8.7, 12, 19.0, 5.0, 15.0)          # (its hole edge 4.55 mm, under 5)
+    w = ST.Washer(face=1, owner=0, hole=[1], centre=np.zeros(3), normal=np.array([0.0, 0.0, 1.0]),
+                  xaxis=np.array([1.0, 0.0, 0.0]), r=8.7, R=19.0, n=8, rows=1, out_mm=14.9, kept=True,
+                  plain=(8, 1, 1.55))
+    assert w.boxed2 and not w.radii
+    # (SHMESH-51b takes the whole face: a kept hole goes back to its plan by size too)
+    assert ST.one_ring(w, 1.0, "one ring so its face keeps its grid") and not w.kept and not w.boxed2
+    assert w.n == 8 and abs(w.R - 1.55 * 8.7) < 1e-9

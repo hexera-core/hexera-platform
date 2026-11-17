@@ -111,6 +111,12 @@ class Washer:
     box: int = 0                    # SHMESH-48q: a free box's cell round its ring (between the ring and the box)
     box_corners: list = field(default_factory=list)   # ... its four corners (model units, round the face's normal)
     owns: bool = False              # SHMESH-51e: its box's sides are its own (no line ends on them)
+    kept: bool = False              # SHMESH-51j: one ring inside the two-ring box it keeps (its n, its outer circle)
+
+    @property
+    def boxed2(self) -> bool:
+        """SHMESH-51j: its box is a two-ring bolt box (two rings in it, or one ring in the two-ring box it kept)."""
+        return bool(self.radii or self.kept)
 
 
 def _curve_loops(gmsh, t: int) -> tuple[list, list]:
@@ -491,10 +497,36 @@ def _square_presets(gmsh, w: Washer, curves: list[int], preset: dict[int, int], 
             cuts.add(c)
 
 
+#: SHMESH-51j: a bolt hole sent to one ring for a fault in its rings keeps its two-ring box (place, size, count) and
+#: takes one row out to its two rings' outer circle, so the band and every line of its face stay as they were
+KEEP_BOX = True
+
+
+def _one_row_fits(r_mm: float, n: int, R_mm: float, low_mm, high_mm, aims=()) -> bool:
+    """SHMESH-51j: whether one row of n quads from a hole of radius r_mm out to the circle R_mm is inside the solver's
+    limits, the user's quad lines (else BAND_AIMS) and the user's shortest and longest edge (one quad: the row's
+    quads are all alike)."""
+    from meshpipeline.engines import shell_quality as SQ
+
+    a = 2 * math.pi / n
+    xyz = np.array([[r_mm, 0.0, 0.0], [R_mm, 0.0, 0.0], [R_mm * math.cos(a), R_mm * math.sin(a), 0.0],
+                    [r_mm * math.cos(a), r_mm * math.sin(a), 0.0]])
+    quads = np.array([[0, 1, 2, 3]])
+    meas = SQ.quad_measures(xyz, quads, extra=True)
+    if SQ._quad_past(meas).any():
+        return False
+    if (SQ.aim_score(meas, "quad", SQ.InForce(aims=tuple(aims) if aims else BAND_AIMS), 1) > 0).any():
+        return False
+    ed = np.linalg.norm(xyz - np.roll(xyz, -1, axis=0), axis=1)
+    if high_mm is not None and float(ed.max()) > 0.98 * float(high_mm):
+        return False
+    return not (low_mm is not None and float(ed.min()) < float(low_mm))
+
+
 def plan_washers(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], hole_size, mm: float,
                  names: dict[int, tuple[str, str]] | None = None, before: list | None = None,
                  across: float | None = None, low_mm: float | None = None, high_mm: float | None = None,
-                 no_bolt: dict | None = None, one_ring_at: list | None = None
+                 no_bolt: dict | None = None, one_ring_at: list | None = None, quad_aims: tuple = ()
                  ) -> tuple[list[Washer], dict[str, int], list[dict]]:
     """SHMESH-39: the washers to make: every inner loop of a flat face that is one round hole (a circle no other face
     shares), at most WASHER_ACROSS of the face's element size across. `size_mm`: each surface's element size;
@@ -582,6 +614,7 @@ def plan_washers(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], hole_s
             cnt, rows, ratio = plan
             plain = (max(cnt, WASHER_STEP * math.ceil(len(cl) / WASHER_STEP)), rows, ratio)
             radii: list[float] = []
+            kept = False
             bolt = bolts.get((t, j))
             if bolt is not None:
                 # SHMESH-51: a bolt hole - BOLT_RINGS rings where they fit (its count chosen for them), else the plan
@@ -591,11 +624,22 @@ def plan_washers(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], hole_s
                 got_b = (_count_bolt(r * mm, hole_size(r * mm, k), size_mm[t], low_mm, high_mm,
                                      room_mm=(gap_mm, share_mm)) if k not in (no_bolt or {})
                          else (no_bolt or {})[k])
-                if any(float(np.linalg.norm(np.asarray(c_, dtype=float) - centre)) <= 0.25 * r
-                       for c_ in one_ring_at or []):
+                sent = [c_ for c_ in one_ring_at or []
+                        if float(np.linalg.norm(np.asarray(c_[:3], dtype=float) - centre)) <= 0.25 * r]
+                if sent and KEEP_BOX and isinstance(got_b, tuple) and got_b[0] >= len(cl) and all(
+                        len(c_) > 3 for c_ in sent) and _one_row_fits(r * mm, got_b[0], got_b[2] * r * mm, low_mm,
+                                                                       high_mm, quad_aims):
+                    # SHMESH-51j: a fault one ring cures - one row out to its two-ring outer circle, in the box its two
+                    # rings had (same place, size and count): no line of its face moves, its neighbours stay as they are
+                    cnt, rows, ratio, radii, kept = got_b[0], 1, got_b[2], [], True
+                    info["one_ring"] = "one ring in its two-ring box (a fault in its rings)"
+                    got_b = None
+                elif sent:
                     # (SHMESH-51d: its two-ring box failed in its face's grid on an earlier pass)
                     got_b = "one ring so its face keeps its grid"
-                if isinstance(got_b, tuple) and got_b[0] >= len(cl):
+                if got_b is None:
+                    pass
+                elif isinstance(got_b, tuple) and got_b[0] >= len(cl):
                     cnt, rows, ratio, radii = got_b
                 else:
                     info["one_ring"] = (got_b if isinstance(got_b, str) else "a hole drawn in many pieces") + (
@@ -608,7 +652,7 @@ def plan_washers(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], hole_s
             info.update(planned_round=cnt, planned_rows=rows, planned_width_mm=float(f"{(ratio - 1) * r * mm:.4g}"))
             found.append(Washer(face=t, owner=k, hole=cl, centre=centre, normal=n, xaxis=xa, r=r, R=ratio * r,
                                 n=cnt, rows=rows, out_mm=2 * math.pi * ratio * r * mm / cnt, info=info,
-                                radii=radii, plain=plain if radii else ()))
+                                radii=radii, plain=plain if (radii or kept) else (), kept=kept))
     # SHMESH-51: alike holes of one face take one plan - two rings only when every one of them has room for two (a row
     # of bolt holes with one roomier hole gave that one a bigger box than its neighbours', and the grid broke)
     for w in found:
@@ -616,7 +660,8 @@ def plan_washers(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], hole_s
             continue
         kin = [o for o in found if o.face == w.face and not o.corners and abs(o.r - w.r) <= PATTERN_ALIKE * w.r]
         # (a hole held to one ring so its face keeps its grid does not hold its alike holes to one)
-        if any(not o.radii and not str(o.info.get("one_ring", "")).startswith("one ring so") for o in kin):
+        if any(not o.radii and not o.kept and not str(o.info.get("one_ring", "")).startswith("one ring so")
+               for o in kin):
             n_, rows_, ratio_ = w.plain
             w.n, w.rows, w.R, w.radii = n_, rows_, ratio_ * w.r, []
             w.out_mm = 2 * math.pi * w.R * mm / w.n
@@ -637,7 +682,7 @@ def plan_washers(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], hole_s
                 continue
             d = float(np.linalg.norm(o.centre - w.centre))
             limit = min(limit, d * w.r / (w.r + o.r) - 0.5 * WASHER_ROOM * w.out_mm / mm)
-        if w.radii and w.plain:
+        if (w.radii or w.kept) and w.plain:
             # (SHMESH-51: the one-ring plan it falls back to, room-checked as any washer is - kept for one_ring)
             n_p, rows_p, ratio_p = w.plain
             out_p = 2 * math.pi * ratio_p * w.r * mm / n_p
@@ -653,8 +698,8 @@ def plan_washers(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], hole_s
                     R_p = lim_p
                     w.plain = (n_p, max(1, min(rows_p, round(math.log(R_p / w.r) / (2 * math.pi / n_p)))),
                                R_p / w.r, True)
-        if limit < w.R and not (w.radii and limit >= w.R * (1 - 1e-6)):
-            if w.radii and one_ring(w, mm, "no room for two rings (narrowed by the holes beside it)"):
+        if limit < w.R and not ((w.radii or w.kept) and limit >= w.R * (1 - 1e-6)):
+            if (w.radii or w.kept) and one_ring(w, mm, "no room for two rings (narrowed by the holes beside it)"):
                 # (SHMESH-51: narrowed by its neighbours' rings - the one ring its size gives, room-checked)
                 w.info["washer"] = True
                 keep.append(w)
@@ -678,10 +723,10 @@ def plan_washers(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], hole_s
 def one_ring(w: Washer, mm: float, why: str) -> bool:
     """SHMESH-51: a bolt hole's washer back to the one ring its size gives (its plan by size alone, room-checked), the
     reason on its line; False when it has no such plan (it keeps its two rings)."""
-    if not w.radii or not w.plain:
+    if not (w.radii or w.kept) or not w.plain:
         return False
     n_, rows_, ratio_, *shrunk = w.plain
-    w.n, w.rows, w.R, w.radii = n_, rows_, ratio_ * w.r, []
+    w.n, w.rows, w.R, w.radii, w.kept = n_, rows_, ratio_ * w.r, [], False
     w.out_mm = 2 * math.pi * w.R * mm / w.n
     w.shrunk = bool(shrunk and shrunk[0])
     w.info.update(planned_round=n_, planned_rows=rows_, planned_width_mm=float(f"{(ratio_ - 1) * w.r * mm:.4g}"),
@@ -1672,7 +1717,7 @@ def _mark_box(gmsh, w: Washer, corners: list[np.ndarray], cells: list[int], h: f
     w.box_corners = [np.asarray(c, dtype=float) for c in corners]
     k = w.n // 4 + 2
     seg_hi = BAND_SEG[1] * h
-    long_ok = bool(BOLT_BAND_LONG and w.radii and high_mm is not None and wish_long is not None)
+    long_ok = bool(BOLT_BAND_LONG and w.boxed2 and high_mm is not None and wish_long is not None)
     if high_mm is not None:
         # (SHMESH-51c: a two-ring bolt hole's box sides up to the user's longest edge: its ring's outer elements are that
         # long already, and at our own 1.4 sizes a row of such boxes 60 mm apart got 6 segments a side, no band)
@@ -1846,7 +1891,7 @@ def box_band(gmsh, w: Washer, index: np.ndarray, xyz: np.ndarray, mm: float, lim
             fans = [0, 0, 0, 0]
     corner = [1, 1, 1, 1]                   # SHMESH-51d: segments each corner takes of both its sides (1 kite, 2 block)
     arc_n = [m, m, m, m]                    # ... and each side's share of the ring
-    if BAND_UNEQUAL and not big and (any(g - m - 2 for g in gaps)) and w.radii:
+    if BAND_UNEQUAL and not big and (any(g - m - 2 for g in gaps)) and w.boxed2:
         got_u = _band_split(gaps, n)
         if got_u is not None:
             corner, arc_n = got_u
@@ -2053,7 +2098,7 @@ def _face_plan(gmsh, t: int, ws: list[Washer], h_mm: float, mm: float, hole_size
                           float(q[:, 1].min()) - BOX_FREE * h, float(q[:, 1].max()) + BOX_FREE * h])
             continue
         b = p[3] / mm if p is not None else w.R + BOX_FREE * h
-        if p is None and w.radii and FREE_BAND:
+        if p is None and w.boxed2 and FREE_BAND:
             # SHMESH-51: a bolt hole's two rings end in elements longer than the face's: its free box is drawn so each
             # side carries the two-to-one row's n/4 + 2 segments at the longest a band segment may be (else gmsh's
             # paving from 8 long elements out to a box of short ones left triangles round it)
@@ -2114,7 +2159,7 @@ def _face_plan(gmsh, t: int, ws: list[Washer], h_mm: float, mm: float, hole_size
     # check below asks, no further than SNAP from where it was, an O-grid box no longer or shorter than its
     # elements allow (each side half the slack)
     limits: dict[str, tuple[float, float]] = {}
-    two_face = any(w.radii for w in ws)     # (SHMESH-51e: the face holds two-ring bolt holes)
+    two_face = any(w.boxed2 for w in ws)    # (SHMESH-51e: the face holds two-ring bolt holes)
     if SNAP_LIMITS:
         for j, (w, p, bx) in enumerate(zip(ws, plans, boxes, strict=True)):
             cu, cv = uv(w.centre)
@@ -2144,7 +2189,7 @@ def _face_plan(gmsh, t: int, ws: list[Washer], h_mm: float, mm: float, hole_size
                     side = bx[hi_s] - bx[lo_s]
                     grow_ = min(grow_, max(0.0, 0.5 * (1.5 * h * p[0] / 4 - side)))
                     shrink_ = min(shrink_, max(0.0, 0.5 * (side - 0.6 * h * p[0] / 4)))
-                elif (w.radii or (BOX_OWNS_SIDES and w.info.get("bolt") and two_face)) and FREE_BAND \
+                elif (w.boxed2 or (BOX_OWNS_SIDES and w.info.get("bolt") and two_face)) and FREE_BAND \
                         and high_mm is not None and not w.corners:
                     # (SHMESH-51: a bolt hole's free box grows no further than keeps its band's segments under the
                     # user's longest edge)
@@ -2681,10 +2726,10 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
             bends: dict[tuple[int, float, float], tuple[float, float]] = {}
             # SHMESH-51e: the two-ring bolt holes' free boxes own their sides: no other line ends on them
             # (and, in a face that holds two-ring bolt holes, its bolt holes taken back to one ring: their boxes too)
-            two_here = any(w.radii for w in ws)
+            two_here = any(w.boxed2 for w in ws)
             owned = [j for j, (w, p) in enumerate(zip(ws, plans, strict=True))
                      if BOX_OWNS_SIDES and STOP_AT_BOXES and FREE_BAND and p is None and not w.corners
-                     and (w.radii or (two_here and w.info.get("bolt"))) and j not in fp["in_grid"]]
+                     and (w.boxed2 or (two_here and w.info.get("bolt"))) and j not in fp["in_grid"]]
             for j in owned:
                 ws[j].owns = True
 
