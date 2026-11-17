@@ -70,6 +70,7 @@ async function finishRun(job, { streamDown: missedSteps = false } = {}) {
     if (getState.jobId() !== run) return;
     if (!read) Stage.chat("assistant", STEPS_MISSING);
   }
+  // the replayed `closing` event is the fallback only; terminalResult prefers the record
   Stage.final(terminalResult(job, getState.outcomeMessage()));
 }
 
@@ -149,9 +150,12 @@ setResultHandler((data, anchor) => {
         withNotes: data.reviewOutcome === "passed_with_notes" ? (data.concerns || []) : null,
         notes: data.notes || [] });
   } else if (surface === "unreviewed") {
+    // `judged` is the difference between a reviewer that looked and said no, and a review that
+    // never returned a judgement. The mesh is the same mesh; what we may claim about it is not.
     openViewer(job, anchor,
       { metrics: { attempts: data.attempts, pass: false }, files: data.files || [],
-        unreviewed: true, findings: data.findings || [], reasoning: data.reasoning || "" });
+        unreviewed: true, judged: !!data.verdict,
+        findings: data.findings || [], reasoning: data.reasoning || "" });
   } else {
     // A TERMINAL failure - no valid mesh was ever produced. Any mesh file left in the workspace
     // is structurally INVALID; showing it as "your mesh" would be a lie, and the outcome message

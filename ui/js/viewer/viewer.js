@@ -139,10 +139,14 @@ export async function openViewer(job,anchorEl,opts){
   box.innerHTML=`<div class="v-bar">
       <div class="v-sec v-head">
         <div class="v-row v-titlerow">
-          <b class="v-title">${opts.unreviewed?'Mesh - not signed off':'Your mesh'}</b>
+          <b class="v-title">${opts.unreviewed?(opts.judged?'Mesh - not signed off':'Mesh - not reviewed'):'Your mesh'}</b>
           <span class="v-meta">
             ${opts.unreviewed
-              ? `<span class="v-pill fail">DID NOT PASS REVIEW</span>`
+              ? (opts.judged
+                 ? `<span class="v-pill fail">DID NOT PASS REVIEW</span>`
+                 // NOT "did not pass": nothing judged it. Saying it failed a review that never
+                 // returned a judgement would be the one claim this panel must never make.
+                 : `<span class="v-pill">NOT REVIEWED</span>`)
               : opts.concerns
               ? `<span class="v-pill concerns">DELIVERED WITH CONCERNS</span>`
               : opts.withNotes
@@ -153,7 +157,7 @@ export async function openViewer(job,anchorEl,opts){
         </div>
         <div class="v-row"><span class="v-status" id="v-status-${job}">loading…</span></div>
       </div>
-      ${opts.unreviewed?`<div class="v-why">
+      ${opts.unreviewed?(opts.judged?`<div class="v-why">
         <p class="v-why-h">Sound, but not signed off</p>
         <p class="v-why-p">The mesh passed every validity check, so it will solve. The reviewer did
         not sign it off on quality${(opts.findings||[]).length?':':'.'}</p>
@@ -163,7 +167,12 @@ export async function openViewer(job,anchorEl,opts){
           Look at it yourself. If it is good enough for your study, say so: it is checked again
           against <i>your</i> standard and delivered.
           <button class="v-btn primary" id="v-accept-${job}">This is acceptable →</button>
-        </div></div>`:''}
+        </div></div>`:`<div class="v-why">
+        <p class="v-why-h">Valid, and not reviewed</p>
+        <p class="v-why-p">The mesh passed every validity check, so it will solve. Our own review
+        did not finish, so nothing has judged its quality - that is a gap on our side, not a mark
+        against the mesh. Its figures below are measured from the mesh itself.</p>
+        </div>`):''}
       ${opts.withNotes&&opts.withNotes.length?`<div class="v-why v-concerns">
         <p class="v-why-h">Passed, with notes</p>
         <p class="v-why-p">The mesh is valid and passed every check that decides a run. These figures are

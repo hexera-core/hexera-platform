@@ -1070,7 +1070,11 @@ th,td{border-color:var(--border)}
 .oc-done .oc-head{color:var(--text-bright)}
 .oc-h{margin-top:4px!important;color:var(--text);font-weight:600}
 .oc-p{color:var(--text-muted);font-size:var(--fs-md)}
-.oc-failed .oc-p{color:var(--text)}
+/* a failed run's paragraphs, and a delivered-on-a-failed-run's, ARE the message - the recorded
+   cause and the way forward - so they read at full strength, not in the muted grey the standing
+   wording around a successful run's facts is set in. (The headline needs no rule of its own:
+   .oc-head is already --text-bright, which is all .oc-done .oc-head above asks for.) */
+.oc-failed .oc-p,.oc-delivered .oc-p{color:var(--text)}
 .oc-sub{margin-top:-6px!important;color:var(--text-faint);font-size:var(--fs-sm)}
 .oc-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;
   border:1px solid var(--border);border-radius:var(--r-md);overflow:hidden}

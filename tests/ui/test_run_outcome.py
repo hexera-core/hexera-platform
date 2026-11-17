@@ -1,6 +1,8 @@
 # Responsibility: Verify a page carries one run at a time, and offers a mesh only on proof that a gate passed.
 from __future__ import annotations
 
+import json
+
 import pytest
 
 pytestmark = pytest.mark.ui
@@ -99,15 +101,20 @@ def test_a_finished_job_becomes_the_same_result_card_however_it_was_reached(live
 
 
 #: Every way a run can end, and the surface it earns. `unreviewed` is the only case in which a
-#: mesh that did not pass may still be shown: the retry loop gave up, but a mesh reached the
-#: REVIEWER and got a verdict, so it cleared every executor VALIDITY gate and only the quality
-#: bar was missed.
+#: mesh that did not pass may still be shown, and it needs TWO things: something DELIVERED, and
+#: something that proves a validity gate passed. Either proof will do - a real reviewer verdict,
+#: or the executor's own account of its gates - and neither is ever assumed from the other.
 SURFACES = [
     ("{pass:true, attempts:1}", "mesh", "it passed"),
     ('{pass:false, verdict:"FAIL", meshAvailable:true}', "unreviewed",
      "a real verdict proves a real mesh reached the reviewer"),
+    ("{pass:false, meshAvailable:true, executorValidated:true}", "unreviewed",
+     "no verdict, but every executor gate passed and the mesh was delivered - the run whose "
+     "review never returned a judgement"),
     ("{pass:false, meshAvailable:true}", "none",
      "mesh_available alone - no reviewer ever saw it, so no gate was proved"),
+    ("{pass:false, executorValidated:true}", "none",
+     "every gate passed, but nothing was delivered to show"),
     ('{pass:false, verdict:"FAIL", meshAvailable:false}', "none", "a verdict with no mesh"),
     ("{pass:false}", "none", "a terminal failure"),
     ("null", "none", "no result at all"),
@@ -124,3 +131,40 @@ def test_a_mesh_is_only_offered_on_proof_that_a_gate_passed(live):
              for (_, expected, why), got in zip(SURFACES, rows, strict=True)
              if got != expected]
     assert not wrong, "\n".join(wrong)
+
+
+#: What job 0ff6f9e5 actually holds, after its mesh was re-delivered from its own workspace: a
+#: record that has been re-rendered and knows the mesh is stored, beside a `closing` event still
+#: carrying the sentence written at the moment the run ended.
+RECORD_NOW = "Mesh generation completed; the run did not.\nYour mesh was built and it is stored."
+SAID_AT_THE_TIME = ("No mesh this time.\nNo downloadable mesh deliverable is available.\n"
+                    "You can run it again with the same request - nothing needs to change.")
+
+
+def test_the_result_card_reads_the_record_not_the_replayed_closing_event(live):
+    """A finished run keeps two copies of its closing words and they can disagree.
+
+    final_message is re-rendered from the terminal record on every read, so it is what is true
+    NOW. The `closing` event is what we SAID when the run ended, and it is replayed verbatim out
+    of the log. They diverge the moment anything lands after the ending - which is exactly what a
+    re-delivery is. Job 0ff6f9e5's event still reads "No downloadable mesh deliverable is
+    available" while its record says the mesh is stored and the panel beside it offers three
+    downloads.
+    """
+    got = live.evaluate("""(async () => {
+      const { terminalResult } = await import('/static/js/realtime/stream.js');
+      const job = {status: 'failed', current_attempt: 1, mesh_available: true,
+                   artifacts: [], final_message: __RECORD__};
+      const withRecord = terminalResult(job, __SAID__);
+      // and a run whose record carries no message at all still shows what was said
+      const {final_message, ...noRecord} = job;
+      return {withRecord: withRecord.text, withoutRecord: terminalResult(noRecord, __SAID__).text};
+    })()""".replace("__RECORD__", json.dumps(RECORD_NOW)).replace("__SAID__",
+                                                                 json.dumps(SAID_AT_THE_TIME)))
+
+    assert got["withRecord"] == RECORD_NOW, (
+        "the result card showed the replayed closing event instead of the re-rendered record, so "
+        "a mesh that was delivered after the run ended is still announced as missing")
+    # THE TRANSCRIPT IS NOT REWRITTEN. The event is still what was said; it is simply not what the
+    # card is for. A record with nothing in it falls back to it rather than showing nothing.
+    assert got["withoutRecord"] == SAID_AT_THE_TIME

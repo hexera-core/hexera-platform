@@ -122,9 +122,14 @@ export function reasoningHeader(ev) {
  *  statement about what was PROVED, not about layout:
  *
  *    mesh        - it passed; the delivered mesh is the result
- *    unreviewed  - the retry loop gave up, but a mesh reached the REVIEWER and got a verdict,
- *                  so it passed every executor VALIDITY gate and only the quality bar was not
- *                  met. The real verdict is the proof of that.
+ *    unreviewed  - a mesh that cleared every executor VALIDITY gate, shown without a pass.
+ *                  TWO things can prove that, and the panel is told which:
+ *                    - a real reviewer verdict. It reached the reviewer, so it was valid; what
+ *                      it missed was the quality bar.
+ *                    - the executor's own account - executor_success, no failed gate - beside a
+ *                      mesh that was actually DELIVERED. This is the run whose review never
+ *                      returned a judgement at all: not "did not pass review", and the panel
+ *                      must not say so.
  *    none        - a terminal failure. No valid mesh was ever produced; any file left in the
  *                  workspace is structurally INVALID, and showing it as "your mesh" would be a
  *                  lie. The outcome message is the whole result.
@@ -132,7 +137,10 @@ export function reasoningHeader(ev) {
 export function resultSurface(data) {
   if (!data) return "none";
   if (data.pass) return "mesh";
-  if (data.verdict && data.meshAvailable) return "unreviewed";
+  // meshAvailable ALONE is never the proof: it says only that a file can be drawn, never that
+  // what it draws is valid. It is the AND that matters - something delivered, and something
+  // that says a gate passed.
+  if (data.meshAvailable && (data.verdict || data.executorValidated)) return "unreviewed";
   return "none";
 }
 
