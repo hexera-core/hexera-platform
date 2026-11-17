@@ -8,10 +8,20 @@ from pathlib import Path
 SRC = Path(__file__).resolve().parents[3] / "src" / "meshpipeline"
 ORCHESTRATOR = SRC / "application" / "pipeline_run.py"
 UPLOADER = SRC / "application" / "artifact_uploader.py"
+REDELIVERY = SRC / "application" / "redeliver.py"
 
 DELIVER = "deliver_succeeded_run"
 BINDER = "execution_ownership"
 OWNER_CHECK = "is_current_owner"
+
+#: EVERY SITE THAT MAY DELIVER, and there are two because they answer the same question two ways.
+#: `pipeline_run` delivers inside a run it holds the claim for, so it binds that claim. `redeliver`
+#: delivers for a run that ENDED - job 0ff6f9e5, whose 10.6 GB bundle met an int4 size column after
+#: a five-hour mesh - where there is no claim to bind and fabricating one would be a lie about who
+#: is running; it fences the registration on the job's terminal state instead. A THIRD name here is
+#: a defect until this list says otherwise: a delivery that answers for neither is a delivery whose
+#: rows can land on a job somebody else is speaking for.
+DELIVERERS = ["pipeline_run.py", "redeliver.py"]
 
 
 def _tree(path: Path) -> ast.Module:
@@ -42,15 +52,29 @@ def _delivery_span(tree: ast.Module) -> ast.With:
     return spans[0]
 
 
-# the delivery has one orchestration caller, and it binds
+# the delivery has exactly these callers, and each answers for its own execution context
 
 
-def test_the_uploader_delivery_has_exactly_one_production_caller():
+def test_every_caller_of_the_delivery_is_one_that_answers_for_its_execution_context():
     callers = [p for p in sorted(SRC.rglob("*.py"))
                if p != UPLOADER and _calls(_tree(p), DELIVER)]
-    assert [p.name for p in callers] == ["pipeline_run.py"], (
-        "artifact delivery is invoked from somewhere other than the orchestrator; each caller "
-        f"would need its own ownership span. Found: {[p.name for p in callers]}")
+    assert [p.name for p in callers] == DELIVERERS, (
+        "artifact delivery is invoked from somewhere other than the orchestrator and the "
+        "re-delivery entry point; each caller has to answer for the execution context it delivers "
+        f"in - an ownership span, or a fence of its own. Found: {[p.name for p in callers]}")
+
+
+def test_the_re_delivery_caller_fences_its_registration_instead_of_binding_ownership():
+    tree = _tree(REDELIVERY)
+    call = _calls(tree, DELIVER)
+    assert len(call) == 1, f"the re-delivery entry point makes {len(call)} delivery calls"
+    fence = {k.arg: ast.unparse(k.value) for k in call[0].keywords}.get("fence_commit")
+    assert fence and fence != "None", (
+        "the re-delivery registers artifacts unfenced. It holds no claim, so nothing else stops "
+        "its rows landing on a job that was re-run or purged between its guard and its commit.")
+    assert not _binding_spans(tree), (
+        "the re-delivery opens an execution-ownership span. A terminal run is owned by no "
+        "execution; binding one would be a claim that does not exist.")
 
 
 def test_the_delivery_call_is_inside_an_execution_ownership_span():

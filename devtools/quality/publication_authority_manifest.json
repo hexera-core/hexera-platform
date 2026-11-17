@@ -1619,6 +1619,32 @@
   "roots": []
  },
  {
+  "context": "application/artifact_uploader.py::_refused_binding::search#1|NotAPublisher|not-a-publisher|",
+  "path": "application/artifact_uploader.py",
+  "qualname": "_refused_binding",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_INSERT_COLUMNS",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "application/artifact_uploader.py::_refused_binding::search#2|NotAPublisher|not-a-publisher|",
+  "path": "application/artifact_uploader.py",
+  "qualname": "_refused_binding",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "_BIND_ARGUMENT",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "application/artifact_uploader.py::deliver_succeeded_run::error#1|NotAPublisher|not-a-publisher|application/artifact_uploader.py::callers of deliver_succeeded_run()",
   "path": "application/artifact_uploader.py",
   "qualname": "deliver_succeeded_run",
@@ -1634,12 +1660,27 @@
   ]
  },
  {
-  "context": "application/artifact_uploader.py::deliver_succeeded_run::error#2|EventPublisher|post-ownership-terminal|application/artifact_uploader.py::callers of deliver_succeeded_run()",
+  "context": "application/artifact_uploader.py::deliver_succeeded_run::error#2|NotAPublisher|not-a-publisher|application/artifact_uploader.py::callers of deliver_succeeded_run()",
   "path": "application/artifact_uploader.py",
   "qualname": "deliver_succeeded_run",
   "semantic": "error",
   "method": "error",
   "ordinal": 2,
+  "receiver": "jlog",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": [
+   "application/artifact_uploader.py::callers of deliver_succeeded_run()"
+  ]
+ },
+ {
+  "context": "application/artifact_uploader.py::deliver_succeeded_run::error#3|EventPublisher|post-ownership-terminal|application/artifact_uploader.py::callers of deliver_succeeded_run()",
+  "path": "application/artifact_uploader.py",
+  "qualname": "deliver_succeeded_run",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 3,
   "receiver": "publish(job_id)",
   "authority": "EventPublisher",
   "lifecycle": "post-ownership-terminal",
@@ -2951,6 +2992,34 @@
   ]
  },
  {
+  "context": "application/redeliver.py::_restate_delivery::error#1|NotAPublisher|not-a-publisher|application/redeliver.py::callers of _restate_delivery()",
+  "path": "application/redeliver.py",
+  "qualname": "_restate_delivery",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "jlog",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": [
+   "application/redeliver.py::callers of _restate_delivery()"
+  ]
+ },
+ {
+  "context": "application/redeliver.py::_terminal_fence._fence::error#1|NotAPublisher|not-a-publisher|",
+  "path": "application/redeliver.py",
+  "qualname": "_terminal_fence._fence",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "application/terminal_finalize.py::finalize_crash::error#1|NotAPublisher|not-a-publisher|application/terminal_finalize.py::callers of finalize_crash()",
   "path": "application/terminal_finalize.py",
   "qualname": "finalize_crash",
@@ -3779,6 +3848,21 @@
   "lifecycle": "not-a-publisher",
   "gated_required": false,
   "roots": []
+ },
+ {
+  "context": "engines/cfmesh_conjugate/conjugate.py::seed_drop::search#1|NotAPublisher|not-a-publisher|engines/cfmesh_conjugate/conjugate.py::re.Pattern",
+  "path": "engines/cfmesh_conjugate/conjugate.py",
+  "qualname": "seed_drop",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "size",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": [
+   "engines/cfmesh_conjugate/conjugate.py::re.Pattern"
+  ]
  },
  {
   "context": "engines/cfmesh_conjugate/driver.py::drive::error#1|NotAPublisher|not-a-publisher|",
@@ -5589,6 +5673,21 @@
   "lifecycle": "not-a-publisher",
   "gated_required": false,
   "roots": []
+ },
+ {
+  "context": "runtime/redeliver.py::main::error#1|NotAPublisher|not-a-publisher|runtime/redeliver.py::logging.Logger",
+  "path": "runtime/redeliver.py",
+  "qualname": "main",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "log",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": [
+   "runtime/redeliver.py::logging.Logger"
+  ]
  },
  {
   "context": "runtime/startup.py::validate::warn#1|NotAPublisher|not-a-publisher|",

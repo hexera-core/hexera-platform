@@ -9,6 +9,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import tarfile
 import tempfile
 import uuid
@@ -552,6 +553,103 @@ def _reconcile_or_delete(store, orphan: OrphanObject,
 # already-committed `succeeded` back to `failed`.
 # #
 
+# A DATABASE REFUSAL A RETRY CANNOT FIX.
+# Measured on job 0ff6f9e5 (the 283,410,955-cell conjugate plate): the OpenFOAM case bundle was
+# 10,616,027,998 bytes and artifacts.size_bytes was int4, so the row write was refused for the
+# VALUE, which is the same on every attempt. The loop below retried the whole delivery three
+# times - 21:37, 21:46, 21:56 - and each attempt first re-ran exact_surface on both regions
+# (16,584,838 faces for the fluid, 485,526 for the solid) and re-uploaded mesh.msh and
+# viewer_data.json, ~29 minutes spent to arrive at the identical error.
+# SQLSTATE CLASS 22 (data exception) is the predicate, and it is the smallest one this incident
+# supports: class 22 says the value and the column disagree, and neither of them changes while
+# the worker sleeps. Both shapes this incident takes are class 22 - against an int4 column
+# asyncpg refuses the BIND before the statement is sent (22000, "invalid input for query
+# argument $8: 10616027998 (value out of int32 range)"), and with the model on BigInteger but
+# the migration not yet applied the SERVER refuses it (22003, "integer out of range").
+# NOT class 42 (undefined_column/undefined_table). That is what a half-rolled deploy looks like
+# to the worker that reaches the new code first, and the retry is exactly what carries it across
+# to the instance that has the migration; calling it terminal would convert a deploy window into
+# failed jobs.
+# NOT an exception class either. ArtifactDeliveryConflict is returned from two branches of
+# deliver_artifact and the second is an explicit race ("a concurrent delete between the
+# INSERT-conflict and this read"), which a retry is what resolves. The loop cannot tell those two
+# branches apart; only deliver_artifact can.
+_TERMINAL_SQLSTATE_CLASS = "22"
+
+#: asyncpg names the PARAMETER it refused, never the column; SQLAlchemy carries the statement and
+#: the bound row on the same error, and the two together give the column a name.
+_BIND_ARGUMENT = re.compile(r"argument \$(\d+)")
+_INSERT_COLUMNS = re.compile(r"INSERT INTO (\w+) \(([^)]*)\)", re.IGNORECASE)
+
+
+def _cause_chain(exc: BaseException) -> list[BaseException]:
+    # The loop never sees the DBAPI error itself: upload_job_artifacts raises
+    # RequiredArtifactDeliveryError "from exc", and SQLAlchemy keeps the driver's own error on
+    # `.orig` (one more hop: its `__cause__` is the asyncpg exception). Follow those two links and
+    # no others - __context__ would drag in whatever merely happened to be in flight.
+    out: list[BaseException] = []
+    seen: set[int] = set()
+    queue: list[BaseException | None] = [exc]
+    while queue:
+        cur = queue.pop(0)
+        if not isinstance(cur, BaseException) or id(cur) in seen:
+            continue
+        seen.add(id(cur))
+        out.append(cur)
+        queue.extend([getattr(cur, "orig", None), cur.__cause__])
+    return out
+
+
+def _refused_binding(statement, params, driver_message: str) -> str:
+    # EVERY EXIT IS A STRING, never an exception. This runs inside the delivery loop's
+    # `except Exception`, so a raise here does not degrade the message - it escapes
+    # deliver_succeeded_run entirely, past the downgrade, the dead letter and the publish that
+    # tells the customer we could not store it. A missing column name costs a worse log line;
+    # a raise costs the handling.
+    if not isinstance(statement, str):
+        return ""
+    _m = _INSERT_COLUMNS.search(statement)
+    # executemany binds a LIST OF ROWS, and then no single parameter is "the" value - $8 would
+    # index a row, not a column - so say nothing rather than point at the wrong thing.
+    if not _m or not isinstance(params, (list, tuple)) or any(
+            isinstance(p, (list, tuple, dict)) for p in params):
+        return ""
+    table, columns = _m.group(1), [c.strip() for c in _m.group(2).split(",")]
+    _arg = _BIND_ARGUMENT.search(driver_message)
+    if _arg:
+        i = int(_arg.group(1))
+        if 1 <= i <= len(columns) and i <= len(params):
+            try:
+                return f"{table}.{columns[i - 1]}={params[i - 1]!r}"
+            except Exception:
+                # a bound value whose __repr__ raises; the column is still worth naming
+                return f"{table}.{columns[i - 1]}"
+    # A server-side refusal names neither a parameter nor a column, so print the row that was
+    # bound: it is the evidence, and it is what a dead letter would have had to be read for.
+    return f"{table}(" + ", ".join(
+        f"{c}={p!r}"[:56] for c, p in zip(columns, params)) + ")"
+
+
+def _db_refusal_detail(exc: BaseException) -> str | None:
+    statement = params = None
+    state = driver_message = ""
+    for o in _cause_chain(exc):
+        if statement is None:
+            statement = getattr(o, "statement", None)
+        if params is None:
+            params = getattr(o, "params", None)
+        # asyncpg sets both; SQLAlchemy's own `.code` is a documentation slug ("dbapi"), never a
+        # SQLSTATE, so it is not consulted. The DEEPEST bearer is the driver's own message, the
+        # one that carries the value.
+        _code = getattr(o, "sqlstate", None) or getattr(o, "pgcode", None)
+        if isinstance(_code, str) and len(_code) == 5:
+            state, driver_message = _code, str(o)
+    if not state.startswith(_TERMINAL_SQLSTATE_CLASS):
+        return None
+    _where = _refused_binding(statement, params, driver_message)
+    return f"SQLSTATE {state}" + (f" on {_where}" if _where else "") + f" - {driver_message}"
+
+
 _DELIVERY_ATTEMPTS = 3
 
 
@@ -637,6 +735,16 @@ async def deliver_succeeded_run(session_factory, *, job_id: str, owner_id: str, 
                 # Persist any orphans the failed attempt reported, so an undeletable object is
                 # durably reconcilable even on the failure path.
                 await persist_orphans(owner_id, job_id, getattr(exc, "orphans", []))
+                _refusal = _db_refusal_detail(exc)
+                if _refusal is not None:
+                    # Terminal on the FIRST attempt. Everything above this line has already been
+                    # paid for - the surface rebuild, the upload - and the next attempt would pay
+                    # it again to be refused for the same value. The detail names the value and
+                    # the column so this is readable here, without opening the dead letter.
+                    jlog.error("Artifact delivery REFUSED by the database on attempt %d/%d - the "
+                               "value and the column cannot change on a retry, so delivery stops "
+                               "here: %s", attempt + 1, _DELIVERY_ATTEMPTS, _refusal)
+                    break
                 jlog.warning("Artifact upload attempt %d/%d failed: %s",
                              attempt + 1, _DELIVERY_ATTEMPTS, exc)
                 if attempt < _DELIVERY_ATTEMPTS - 1:
