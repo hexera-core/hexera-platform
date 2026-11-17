@@ -1702,6 +1702,9 @@ BAND_JUDGED = True
 #: SHMESH-51e: no line ends on a two-ring bolt hole's box: each side stays one curve and takes its band's count
 BOX_OWNS_SIDES = True
 BOX_OWN_ROUNDS = 6
+#: SHMESH-51e: ... the joint's lines too (a joined face's lines across, carried from its neighbours' holes: held back in
+#: this face, the joint keeps its split point - a smooth corner of the cell along it)
+BOX_OWN_JOINT = True
 #: SHMESH-51e: a mapped cell beside such a box whose sides' counts disagree takes them from the box (map_faces)
 BOX_HOLDS = True
 MAP_ROUNDS = 96
@@ -2678,7 +2681,7 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
 
                     add: list[tuple[int, float, float, float]] = []
                     for (i_, x), segs in sorted(pieces.items()):
-                        if i_ == 0 and jt is not None:
+                        if i_ == 0 and jt is not None and not BOX_OWN_JOINT:
                             continue            # (a joined face's lines across are the joint's: drawn as they are)
                         j_ = 1 - i_
                         # (a box side lying on this line: never cut into; its corners are where lines cross it)
