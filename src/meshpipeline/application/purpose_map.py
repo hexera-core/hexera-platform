@@ -397,7 +397,9 @@ def choices_for(reply: str) -> list[dict]:
     for kind, question in QUESTIONS.items():
         if text == question:
             return [{"label": label, "send": send, "soon": False} for label, send in _CHOICES[kind]]
-    if text == ANALYSIS_QUESTION:
+    # the analysis question also closes a brief answer to an off-script message (agents/intake/flow):
+    # the same step, with the same buttons
+    if text == ANALYSIS_QUESTION or text.endswith("\n\n" + ANALYSIS_QUESTION):
         return [{"label": label + ("" if v1 else " (coming soon)"),
                  "send": label if v1 else f"{label} (coming soon)", "soon": not v1}
                 for _k, label, v1 in ANALYSES]

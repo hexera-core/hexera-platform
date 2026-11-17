@@ -1,6 +1,8 @@
 # Responsibility: Verify an engine is proposed, confirmed, invalidated and expired on its own; only confirmed admits.
 from __future__ import annotations
 
+import meshpipeline.agents.intake.approval as ap
+
 import asyncio
 import json
 import time
@@ -172,7 +174,7 @@ def test_requirements_still_need_canonical_approval_after_a_confirmed_selection(
 
     reply = out["messages"][-1]["content"]
     assert out.get("request_txt"), "the submission was authorized"
-    assert "confirm the requirements" in reply and "Shall I proceed" in reply   # app-rendered
+    assert reply.endswith(ap.PROCEED_ASK)   # app-rendered
     assert out.get("dispatch_confirmed") is False, "approval is a separate user turn"
 
 

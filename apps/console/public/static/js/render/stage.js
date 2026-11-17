@@ -138,7 +138,7 @@ export const Stage = {
   // THE FINALIZED BRIEF, as the application settled it - not the model's prose
   // re-read here. Rendered once and then updated in place, because a later turn
   // re-sends the same brief and a conversation should not accumulate copies of it.
-  brief(b,addNote,parts){
+  brief(b,addNote,parts,go){
     if(!b)return;
     const sig=JSON.stringify(b);
     if(this._briefSig===sig)return;
@@ -182,18 +182,25 @@ export const Stage = {
         aria-label="Add a note" placeholder="Add a note, or paste a spec…"></textarea>
         <button type="button" class="rc-notes-add" disabled>Add</button></div>
         <span class="rc-notes-msg" role="status"></span></div>`:'';
+    // THE PLAN STEP'S ONE BUTTON: the plan stands for approval (the server says so with its line), so
+    // Proceed sits at the card's foot, under the notes - a press says "Proceed" in the chat, as a typed yes would
+    const goRow=b.proceed_ask&&go?'<div class="rc-fin"><button type="button" class="gc-proceed rc-go">Proceed</button></div>':'';
     const html=`<div class="who">Hexera · your request, as understood</div>
       <div class="req-card${(b.checks||[]).every(c=>c.status==='pass')?' ok':''}">
         ${thermal?`<div class="rc-h">Job sheet</div><p class="rc-sheet">${esc(b.job_sheet)}</p>`
           :'<div class="rc-h">Mesh plan</div>'}${rows}
         ${ck?`<div class="rc-h rc-h2">Checked</div>${ck}`:''}
         ${notes||box?`<div class="rc-h rc-h2">Your notes</div>${notes}${box}<div class="rc-pm"></div>`:''}
+        ${goRow}
       </div>`;
     if(this._briefEl){this._briefEl.innerHTML=html;}
     else{this.clearEmpty();
       const g=document.createElement('div');g.className='im assistant';g.innerHTML=html;
       this.col().appendChild(g);this._briefEl=g;}
-    this._partMatches(b.part_matches,parts,b.proceed_ask);
+    // the plan's Proceed is the card's own button now: the line is never said again under the card
+    this._partMatches(b.part_matches,parts,'');
+    const goBtn=this._briefEl.querySelector('.rc-go');
+    if(goBtn)goBtn.onclick=()=>{if(goBtn.disabled)return;goBtn.disabled=true;go();};
     const add=this._briefEl.querySelector('.rc-notes-add');
     const inp=this._briefEl.querySelector('.rc-notes-in');
     if(add&&inp){

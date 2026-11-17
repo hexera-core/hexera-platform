@@ -161,6 +161,12 @@ def without_engine_sentences(reply: str) -> str | None:
     return text
 
 
+def asks_back(text: str) -> bool:
+    """Whether the user's message asks something back (agents/intake/flow.asks_something)."""
+    from meshpipeline.agents.intake.flow import asks_something
+    return asks_something(text)
+
+
 @dataclass
 class IntakeLoopPolicy:
 
@@ -184,7 +190,11 @@ class IntakeLoopPolicy:
     #: The names a thermal model's file gives (its parts, fans, vents...): its own words, which the
     #: thermal vocabulary check leaves alone (application/thermal_wording.forbidden_words).
     thermal_names: tuple[str, ...] = ()
-    plaintext_text: str = ""                   # the model's reply, returned - never diagnosed
+    #: THE PLAN IS THE NEXT STEP (agents/intake/flow.cfd_plan_due): the CFD route's one flow question
+    #: was asked and answered, so a reply that asks again is sent back once to submit
+    plan_due: bool = False
+    plan_nudges: int = 0
+    plaintext_text: str = ""                 # the model's reply, returned - never diagnosed
     finish_reason: str = ""
     input_tokens: int = 0
     output_tokens: int = 0
@@ -314,14 +324,32 @@ class IntakeLoopPolicy:
                 logger.info("Intake: the settled engine was restated again - its sentences "
                             "were taken out of the reply")
                 self.plaintext_text = trimmed
+        # ...except an ANSWER that then returns to it: the user asked something back, the reply answers
+        # it in its own paragraph and asks the open question again - the questionnaire going back to the
+        # same step (agents/intake/flow). A bare re-ask is still sent back.
         if (self.repeated_questions == 0 and may_retry
+                and not self._answers_then_returns()
                 and repeats_a_question(self.plaintext_text, self.prior_questions)):
             self.repeated_questions += 1
             logger.info("Intake: the reply asks a question the user was already asked - sent "
                         "back once to take the proposal and move on")
             return RoundDecision(message=turn.REPEAT_NUDGE, complete=False)
+        # THE QUESTIONNAIRE HAS ONE FLOW QUESTION (agents/intake/flow): once it is answered the next
+        # step is the plan, so a reply that asks something more goes back ONCE to submit - while another
+        # round may start, like every check here. A reply that asks nothing is let through.
+        if (self.plan_due and self.plan_nudges == 0 and self.exec_state.submit_args is None
+                and "?" in self.plaintext_text and may_retry):
+            self.plan_nudges += 1
+            logger.info("Intake: a second question after the flow question - sent back once to submit")
+            return RoundDecision(message=turn.PLAN_DUE_NUDGE, complete=False)
         return RoundDecision(message="", complete=True, payload=self.plaintext_text,
                              exit=LoopExit.turn_complete)
+
+    def _answers_then_returns(self) -> bool:
+        if not asks_back(self.exec_state.latest_user_msg):
+            return False
+        head, _sep, tail = self.plaintext_text.strip().rpartition("\n\n")
+        return bool(head.strip()) and bool(tail.strip()) and not repeats_a_question(head, self.prior_questions)
 
     def _engine_note(self) -> str | None:
         st = self.exec_state

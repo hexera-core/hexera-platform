@@ -499,7 +499,9 @@ def analysis_question_due(messages: list) -> bool:
     if not fea_declared(messages):
         return False
     if any(isinstance(m, dict) and m.get("role") == "assistant"
-           and str(m.get("content") or "").strip() == pm.ANALYSIS_QUESTION for m in messages):
+           and (str(m.get("content") or "").strip() == pm.ANALYSIS_QUESTION
+                or str(m.get("content") or "").strip().endswith("\n\n" + pm.ANALYSIS_QUESTION))
+           for m in messages):
         return False
     buttons = {c["send"] for q in pm.QUESTIONS.values() for c in pm.choices_for(q)}
     said = [str(m.get("content") or "") for m in messages

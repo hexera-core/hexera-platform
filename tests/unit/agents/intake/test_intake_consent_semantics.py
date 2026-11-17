@@ -163,7 +163,7 @@ def _approved_state(monkeypatch):
                         lambda a: [])
     monkeypatch.setattr("meshpipeline.agents.intake.executor.at.verify_for_submit",
                         lambda *a, **k: (True, ""))
-    monkeypatch.setattr("meshpipeline.agents.intake.executor.at.CONFIRM_REQUIREMENTS_ASK",
+    monkeypatch.setattr("meshpipeline.agents.intake.executor.ap.PROCEED_ASK",
                         "CANONICAL SUMMARY")
     monkeypatch.setattr("meshpipeline.agents.intake.executor.ap.create",
                         lambda **k: {"id": "ap1", "status": "awaiting"})

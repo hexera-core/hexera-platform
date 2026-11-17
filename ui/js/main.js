@@ -211,10 +211,13 @@ function attachJob(id, { replayHistory = false, message = "", origin = getState.
   startStream(replayHistory ? 0 : undefined);
 }
 
+/* THE PLAN'S PROCEED, at the card's foot: the same answer a typed yes gives, said in the chat */
+const proceedPlan = () => say("Proceed");
+
 /* THE NOTES BOX under the plan: the user's own text, kept as typed; the card redraws with it */
 async function addBriefNote(text) {
   const d = await addNote(getState.sessionId(), text);
-  Stage.brief(d.brief, addBriefNote, briefParts);
+  Stage.brief(d.brief, addBriefNote, briefParts, proceedPlan);
   // "use cfMesh" in a note chooses the engine as it does in the chat: said there for the user
   if (d.say) say(d.say);
 }
@@ -238,7 +241,7 @@ const briefParts = {
 configureComposer({
   notice: Notice,
   chat: (role, text) => Stage.chat(role, text),
-  brief: (b) => Stage.brief(b, addBriefNote, briefParts),
+  brief: (b) => Stage.brief(b, addBriefNote, briefParts, proceedPlan),
   // a yes before Finalize notes: wait (a minute at most) for the reading the server started
   notesRead: async () => {
     const t0 = Date.now();

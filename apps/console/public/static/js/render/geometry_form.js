@@ -98,7 +98,12 @@ export function feaConfirmedCard(r) {
     lines.push(`- ${bits.join(" · ")}`);
   }
   const clean = (r.match(/Clean check: ([^.]*)/) || [])[1] || "";
-  if (clean) lines.push(/^the geometry is clean/i.test(clean) ? "- ✓ Geometry clean" : "- ⚠ Not clean - we'll still try");
+  // THE STAGE'S OWN VERDICT, never a guess: clean, not checked (a check that did not run is no "not clean"),
+  // a surface (its open edges are what make it one), else not clean - the server leads with the stage's line
+  if (clean) lines.push(/^the geometry is clean/i.test(clean) ? "- ✓ Geometry clean"
+    : /^(not checked|the clean check did not run|the geometry was not checked)/i.test(clean) ? "- Not checked"
+    : /^the file is a surface/i.test(clean) ? "- A surface, meshed as a shell"
+    : "- ⚠ Not clean - we'll still try");
   lines.push("- Every face kept as a named group: set loads and supports in your solver");
   return `**✓ Confirmed${name ? `: ${name}` : ""}**\n${lines.join("\n")}`;
 }

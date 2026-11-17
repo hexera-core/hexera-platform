@@ -87,9 +87,14 @@ async def get_chat_history(session_id: uuid.UUID, owner_id: str = Depends(owner_
         if not session:
             raise HTTPException(404, "Session not found")
     from meshpipeline.agents.intake.measured_choice import choice_payload
+    from meshpipeline.contracts.user_notes import system_written
     return {
         "session_id": str(session_id),
-        "messages": session.messages or [],
+        # a turn the APPLICATION sent in the user's name (the stage's Proceed handing back to the
+        # intake) is never shown as the user's words: the "Confirmed" card already says it
+        "messages": [m for m in session.messages or []
+                     if not (isinstance(m, dict) and m.get("role") == "user"
+                             and system_written(m.get("content")))],
         # the open engine question's choice, so a reload draws it again
         "engine_choice": choice_payload(getattr(session, "intake_gate", None)),
         # the buttons under the last reply when it is an application question, so a reload draws them

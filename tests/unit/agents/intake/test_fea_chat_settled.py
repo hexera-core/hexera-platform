@@ -124,9 +124,11 @@ def _turn(model):
     import meshpipeline.adapters.model_inference.router as llm_router
     from meshpipeline.application import geometry_check as gc
 
+    # A MESSAGE THE MODEL MUST READ (a question): after the stage's plain Proceed the application
+    # submits the FEA plan itself and no model runs (agents/intake/flow, test_standard_questionnaire)
     messages = [{"role": "user", "content": "This is for FEA, static stress."},
                 {"role": "assistant", "content": FEA_DECLARATION},
-                {"role": "user", "content": gh.CONTINUE_TEXT}]
+                {"role": "user", "content": "Will every face be kept for my solver?"}]
     ref = {"source_id": "s1", "owner_id": "u", "object_key": "k", "sha256": "a" * 64, "size_bytes": 10,
            "original_filename": "bracket.step", "suffix_hint": ".step"}
     state = {"job_id": "j", "session_id": str(SID), "user_id": "u", "messages": messages,

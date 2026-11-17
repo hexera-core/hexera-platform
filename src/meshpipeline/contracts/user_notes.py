@@ -33,8 +33,9 @@ RULE_VERBATIM = "NOTE-1"      # asked once; the user's words kept as typed
 RULE_EVERY_ROUTE = "NOTE-2"   # every route's AI steps read them, as guidance
 RULE_NEVER_FAILS = "NOTE-3"   # a note is never a check: it fails no review and no run
 
-#: THE ONE QUESTION, asked by the application before the first summary - once per conversation,
-#: never repeated, never a reason to hold a submission.
+#: THE OLD NOTES QUESTION. The notes are the plan card's box on every route now (agents/intake/flow
+#: PLAN) - never a chat question, which asked FEA users about "cells" and "a layer count". Only a
+#: whole thermal model (ECXML) still asks it, once; every conversation stored with it still reads.
 QUESTION = ("Anything specific about this simulation we should know? For example, a region that "
             "needs finer cells, a layer count, an element type, or a solver you'll use. You can "
             "paste a spec. Say 'no' to skip.")
@@ -133,10 +134,16 @@ def _norm(text: Any) -> str:
     return " ".join(str(text or "").split()).casefold()
 
 
+#: THE TURN THE APPLICATION SENDS IN THE USER'S NAME when the stage's Proceed hands the conversation
+#: back to the intake (application/geometry_hold.CONTINUE_TEXT; a test holds them equal). It is a
+#: button press, never the user's words: never a note, never shown as theirs.
+SYSTEM_TURNS = ("I confirmed the geometry check. Go on.",)
+
+
 def system_written(text: Any) -> bool:
-    """Whether a text is the application's own (SYSTEM_LEADS), never the user's words."""
+    """Whether a text is the application's own (SYSTEM_LEADS, SYSTEM_TURNS), never the user's words."""
     t = str(text or "").lstrip()
-    return any(t.startswith(lead) for lead in SYSTEM_LEADS)
+    return any(t.startswith(lead) for lead in SYSTEM_LEADS) or t.strip() in SYSTEM_TURNS
 
 
 def _own(messages: Iterable[Any]) -> list[dict]:

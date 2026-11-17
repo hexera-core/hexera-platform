@@ -258,12 +258,12 @@ export async function watchGeometryCheck(sessionId) {
     // the confirmation's short card says what stands; a second line listing the edits only repeated it
     void edits;
     deps.chat("assistant", reply.message);
-    // THE INTAKE PICKS UP: the confirm ran one chat turn in the user's name, and its reply
-    // is the next question - or the dispatch, when nothing was left to ask.
+    // THE INTAKE PICKS UP: the confirm ran one chat turn for the user, and its reply is the next
+    // question - or the dispatch, when nothing was left to ask. The turn's own words are the
+    // application's ("continued_with"), never the user's: the Confirmed card above already says it.
     _checkState = "done"; _stageOpen = false;
     releaseHold();
     if (reply.next) {
-      if (reply.continued_with) deps.chat("user", reply.continued_with);
       if (reply.next.reply) deps.chat("assistant", reply.next.reply);
       deps.choices(reply.next.choices || [], sendText);
       deps.brief(reply.next.brief);
