@@ -248,13 +248,20 @@ def test_the_stage_record_names_every_face_by_its_part_and_finds_the_joint(tmp_p
 
 
 def test_a_fuse_that_fails_ties_the_parts_found_pair_by_pair_never_a_stop(tmp_path, monkeypatch):
-    real = A.fuse
+    # every fuse of more than two parts fails (PLAN-fea-35 runs each fuse in a child process, cad/assembly_join):
+    # the pairs fuse, the three together do not, so no fuse joins them and every pair is tied
+    from meshpipeline.cad import bounded_steps as BS
 
-    def fails_all_at_once(parts, *, fuzzy=0.0, mm_per_unit=1.0):
-        return (A.Fused(error="the parts could not be fused") if len(parts) > 2
-                else real(parts, fuzzy=fuzzy, mm_per_unit=mm_per_unit))
+    real = BS.run
 
-    monkeypatch.setattr(A, "fuse", fails_all_at_once)
+    def fails_all_at_once(module, payload, steps, budgets, **kw):
+        got = real(module, payload, steps, budgets, **kw)
+        for s, st in zip(got, steps, strict=True):
+            if st.get("op") == "fuse" and len(st["parts"]) > 2:
+                s.ok, s.why, s.value = True, BS.FINISHED, {"error": "the parts could not be fused"}
+        return got
+
+    monkeypatch.setattr(BS, "run", fails_all_at_once)
     three = fx._compound(fx._box(0, 0, 0, 10, 10, 10), fx._box(10, 0, 0, 10, 10, 10), fx._box(20, 0, 0, 10, 10, 10))
     ws = _stage(three, tmp_path / "tied")
     ok, marker, _o = _drive(ws, monkeypatch)
@@ -264,7 +271,7 @@ def test_a_fuse_that_fails_ties_the_parts_found_pair_by_pair_never_a_stop(tmp_pa
     q = json.loads((ws / "quality.json").read_text())
     asm = q["fea"]["assembly"]
     assert asm["mode"] == "tie" and [j["kind"] for j in asm["joints"]] == ["tie", "tie"]
-    assert any("tied where they touch" in n for n in asm["notes"])
+    assert any("could not be joined in the CAD" in n and "tied where they meet" in n for n in asm["notes"])
     cdb = (ws / "mesh.cdb").read_text()
     assert "KEYOPT,5,12,5" in cdb
     # Nastran: every pair in the contact table is glued (IGLUE, the 7th field of its SLAVE row, is 1), and
@@ -786,3 +793,67 @@ def test_a_fused_fill_that_fails_on_one_parts_own_faces_keeps_the_ladder(tmp_pat
     asyncio.run(FD.drive(ws, {"purpose": "structural"}, job_id=f"t-{ws.name}", publish=None,
                          run=_Run(), source_path=str(ws / "upload.step")))
     assert modes[:2] == ["bonded", "bonded"] and "tie" in modes
+
+
+class _Said:
+    def __init__(self):
+        self.lines = []
+
+    async def anarrate(self, kind, line, n=None, of=None, unit="", op_id=""):
+        self.lines.append((kind, line))
+
+
+def test_the_run_says_the_defect_checks_and_the_join_as_their_own_steps(tmp_path, monkeypatch):
+    """PLAN-fea-35 / MESH-1 (17 Nov): a turbocharger sat on "Measuring your part" for forty minutes while a fuse
+    nobody named ran - the join and the defect checks are each their own line."""
+    class _Reached(Exception):
+        pass
+
+    async def stop(*_a, **_k):
+        raise _Reached
+
+    ws = _stage(fx.touching_blocks(), tmp_path / "said")
+    from meshpipeline.cad import fea_measure_cache as MC
+
+    monkeypatch.setattr(MC, "load", lambda _key: None)         # measured here, not read back from another test
+    monkeypatch.setattr(FD.FA, "decide", stop)                 # the step right after the assembly is staged
+    said = _Said()
+    with pytest.raises(_Reached):
+        asyncio.run(FD.drive(ws, {"purpose": "structural"}, job_id="t-said", publish=said, run=_Run(),
+                             source_path=str(ws / "upload.step")))
+    steps = [ln for ln in said.lines if ln[0] != "say"]
+    assert steps == [("measure", "Measuring your part"), ("check", "Checking for defects"),
+                     ("measure", "Joining the parts")]
+    cited = [e for e in dr.cited_for("t-said") if e["rule"] == "PLAN-fea-35"]
+    assert len(cited) == 1 and cited[0]["inputs"]["groups"][0]["parts"] == [1, 2]
+    assert cited[0]["inputs"]["groups"][0]["outcome"] == "fused" and cited[0]["inputs"]["unfused"] == []
+
+
+def test_a_pair_no_fuse_joined_is_tied_in_the_shared_mesh_of_the_rest(tmp_path, monkeypatch):
+    """PLAN-fea-35: a fuse past its limit never fails the run - Part_2 and Part_3 share their nodes, and the pair
+    no fuse joined (Part_1 with Part_2) is meshed apart in the same mesh and tied where it touches."""
+    from meshpipeline.cad import bounded_steps as BS
+
+    real = BS.run
+
+    def one_pair_past_its_limit(module, payload, steps, budgets, **kw):
+        got = real(module, payload, steps, budgets, **kw)
+        for s, st in zip(got, steps, strict=True):
+            if st.get("op") == "fuse" and {0, 1} <= set(st["parts"]):
+                s.ok, s.why, s.value = False, BS.TIME, None
+        return got
+
+    monkeypatch.setattr(BS, "run", one_pair_past_its_limit)
+    three = fx._compound(fx._box(0, 0, 0, 10, 10, 10), fx._box(10, 0, 0, 10, 10, 10), fx._box(20, 0, 0, 10, 10, 10))
+    ws = _stage(three, tmp_path / "mixed")
+    ok, marker, _o = _drive(ws, monkeypatch)
+    assert ok, marker
+    text = (ws / "mesh.inp").read_text()
+    sets = _elsets(text)
+    assert len(sets["Part_2"] & sets["Part_3"]) > 20           # shared nodes where the fuse joined them
+    assert not sets["Part_1"] & sets["Part_2"]                 # apart where it did not ...
+    assert text.count("*TIE, NAME=") == 1                      # ... and tied there
+    q = json.loads((ws / "quality.json").read_text())
+    asm = q["fea"]["assembly"]
+    assert asm["mode"] == "bonded"
+    assert any("could not be joined in the CAD" in n for n in asm["notes"])
