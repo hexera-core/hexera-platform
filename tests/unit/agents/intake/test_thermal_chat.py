@@ -8,6 +8,8 @@
 # the repositories stood in for.
 from __future__ import annotations
 
+import meshpipeline.agents.intake.approval as ap
+
 import asyncio
 import json
 import uuid
@@ -320,7 +322,7 @@ def test_after_mesh_this_model_the_chat_goes_straight_to_the_approval(view):
     assert sel["engine"] == "snapgrid" and sel["state"] == es.CONFIRMED and sel["via"] == es.VIA_THE_FILE
     assert "SELECTED" in model.tools[0]["content"]
     reply = out["messages"][-1]["content"]
-    assert reply.startswith("Please confirm the requirements above"), reply
+    assert reply.endswith(ap.PROCEED_ASK), reply
     assert "I'd mesh this with" not in reply and forbidden_words(reply) == []
     assert out["intake_gate"]["approval"]["status"] == "awaiting_confirmation"
 

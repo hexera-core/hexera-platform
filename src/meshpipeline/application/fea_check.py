@@ -100,7 +100,17 @@ def declared_clean(facts: dict | None, messages=None) -> str:
 
     if surface_check.is_surface(facts, messages):
         return str((surface_check.clean_view(facts) or {}).get("clean_summary") or surface_check.DECLARED_CLEAN)
-    return clean_words(facts)[1]
+    # THE STAGE'S OWN LINE LEADS (fea_view clean_short): the Confirmed card and the stage say the same
+    # thing about the same part - a part the stage flagged is never declared "clean", and one the check
+    # never ran on is "Not checked", never "not clean"
+    clean, said = clean_words(facts)
+    blocked = blocker(facts, messages)[0]
+    short = clean_line(facts, clean, blocked, [] if blocked else warnings(facts))
+    if short == "Not checked":
+        return said if said.lower().startswith("not checked") else f"Not checked: {said}"
+    if short == "Clean" or short.rstrip(".") in said:
+        return said
+    return f"{short}. {said}"
 
 
 #: NOT A CLOSED SOLID (Areen's Camaro STL, 2026-10-23: a car body of 395 open, overlapping surface

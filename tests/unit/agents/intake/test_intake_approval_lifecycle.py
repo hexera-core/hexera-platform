@@ -217,7 +217,7 @@ def test_a_supported_submit_persists_a_pending_snapshot_bound_to_everything():
     assert snap["expected_confirmation_msg_count"] == snap["proposal_msg_count"] + 1 == 2
     # the summary the user sees IS the stored summary, rendered from the stored canonical
     assert snap["summary"] == out["messages"][-1]["content"]
-    assert "confirm the requirements" in snap["summary"]   # the ask; the brief states them
+    assert snap["summary"].endswith(ap.PROCEED_ASK)   # the ask; the brief states them
     # the stored payload is the exact submission - what the builder will consume
     assert ap.builder_payload(snap)["patches"] == _PATCHES
     assert ap.builder_payload(snap)["request_txt"] == _R

@@ -140,7 +140,8 @@ def test_a_message_during_the_drawing_waits_and_one_after_the_grace_does_not():
     assert gf_hold.hold_decision({"status": "ready", "named": True}, requested, None, now=1010.0) is None
     assert gf_hold.hold_decision({"status": "failed"}, requested, None, now=1010.0) is None
     assert gf_hold.hold_decision({"status": "scouted"}, requested, {"confirmed_at": 1}, now=1010.0) is None
-    assert gf_hold.WAIT_REPLY.startswith(DRAWING_MARK) and "still drawing" in gf_hold.WAIT_REPLY
+    # a message while the part is drawn gets the stage step's own line again (agents/intake/flow STAGE)
+    assert gf_hold.WAIT_REPLY.startswith(DRAWING_MARK) and gf_hold.WAIT_REPLY == gf_hold.HOLD_REPLY
 
 
 def test_the_console_strips_the_same_marks_the_api_writes():

@@ -307,8 +307,10 @@ def unsettled_reply(state, exit_reason=None) -> str:
     engine = _vocab.to_display(_vocab.ENGINE, str(selection.get("engine") or "").strip())
     chosen = es.state_of(selection)
     if ap.is_live(state.approval):
-        ask = "say 'go ahead' to run the summary above, or tell me what to change,"
-    elif chosen == es.PROPOSED:
+        # THE PLAN STANDS: the turn returns to it in its own words (agents/intake/flow), never a
+        # second way of asking for the same yes
+        return ap.PROCEED_ASK
+    if chosen == es.PROPOSED:
         ask = (f"say yes to use {engine}, or name another engine," if engine
                else "tell me which engine you want")
     elif chosen == es.CONFIRMED:

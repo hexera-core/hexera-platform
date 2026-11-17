@@ -47,10 +47,13 @@ def _op(name: str, code: str, *targets: str, status: str = "kept") -> dict:
 
 def test_a_clean_part_needed_no_repair(tmp_path):
     out = {"repair_attempt": {"attempted": False, "outcome": "triage", "route": "mesh_as_is"}}
-    assert W.repair_check_words(_state(tmp_path), out) == "Your part needed no repair"
+    # ONE CLEAN VERDICT - the stage's (the Confirmed card): the run box says what the repair check found
+    assert W.repair_check_words(_state(tmp_path), out) == "The repair check found nothing to fix"
     # with repair switched off in the deployment, a clean part still needed none
     off = {"repair_attempt": {"attempted": False, "outcome": "off", "route": ""}}
-    assert W.repair_check_words(_state(tmp_path), off) == "Your part needed no repair"
+    assert W.repair_check_words(_state(tmp_path), off) == "The repair check found nothing to fix"
+    for line in (W.repair_check_words(_state(tmp_path), out), W.repair_check_words(_state(tmp_path), off)):
+        assert "clean" not in line.lower()
 
 
 def test_a_repair_says_how_many_defects_and_what_was_done(tmp_path):
@@ -173,7 +176,7 @@ def test_the_repair_lane_sits_between_engine_selection_and_mesh_creation():
     import meshpipeline.events as E
     stages = list(E.STAGES)
     assert stages.index("engine_select") < stages.index("repair") < stages.index("builder")
-    assert E.note("repair", "Your part needed no repair").wire()["stage"] == "repair"
+    assert E.note("repair", "The repair check found nothing to fix").wire()["stage"] == "repair"
 
 
 # THE SAME WORD AS THE STAGE (demo dry run, 2 Nov: the stud punch's stage said "The geometry is clean",
@@ -191,7 +194,7 @@ def test_a_clean_part_with_only_small_details_is_called_clean_not_defective(tmp_
     state = _state(tmp_path, *details, repair_status="clean")
     off = {"repair_attempt": {"attempted": False, "outcome": "off", "route": ""}}
     line = W.repair_check_words(state, off)
-    assert "defect" not in line and line.startswith("Your part is clean and needed no repair")
+    assert "defect" not in line and line.startswith("The repair check found nothing to fix; the part has") and "clean" not in line
     assert "36 tiny edges and 6 sliver faces" in line and line.endswith("meshing your original file")
 
 

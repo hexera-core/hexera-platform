@@ -1,6 +1,8 @@
 # Responsibility: Verify only a token bound to this owner, session, revision and confirmed selection can authorise.
 from __future__ import annotations
 
+import meshpipeline.agents.intake.approval as ap
+
 import asyncio
 import json
 import time
@@ -154,7 +156,7 @@ def test_submit_with_a_matching_seeded_token_is_authorized_and_shows_canonical_s
     assert out.get("request_txt")                        # authorized + persisted
     reply = out["messages"][-1]["content"]
     # app-rendered: the application asks, and the structured brief states what will be built
-    assert "confirm the requirements" in reply and "Shall I proceed" in reply
+    assert reply.endswith(ap.PROCEED_ASK)
     assert [n["text"] for n in out["user_notes"]] == [_MSGS[0]["content"]]
 
 

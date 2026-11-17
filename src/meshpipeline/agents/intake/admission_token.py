@@ -268,7 +268,7 @@ def verify_for_confirm(pending: dict | None, token: str, *,
     return _selection_binding(pending, selection)
 
 
-#: The ASK shown with a submitted brief. The requirements themselves are stated by the
-#: structured brief beside it, from the same persisted session and with the checks the
-#: application ran - restating them here too would let two renderings of one decision disagree.
+#: The ASK once shown with a submitted brief, kept so a conversation stored with it still reads.
+#: Never said now: the plan step has one line (approval.PROCEED_ASK), and the card it points at is
+#: not "above" it.
 CONFIRM_REQUIREMENTS_ASK = "Please confirm the requirements above before I mesh anything."

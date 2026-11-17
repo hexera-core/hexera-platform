@@ -294,7 +294,7 @@ def receipt(stage_: str, title: str, rows: list[dict]) -> UiEvent:
     """What a stage did, row by row: the thing, its value, and - optionally - why.
 
     A row whose `label` or `why` fails the narration leak guard is DROPPED rather than published,
-    exactly as a leaking narration line is. `value` is exempt from the guard because it carries
+    exactly as a leaking narration line is; so is a row with a field over its limit (never cut short). `value` is exempt from the guard because it carries
     measured numbers and units (an underscore-free "2.4 mm", but also a bare count a regex meant
     for prose has no business judging); it is still scrubbed. A receipt whose rows all fall away
     still constructs - whether an empty receipt is worth sending is the caller's decision.
@@ -310,6 +310,10 @@ def receipt(stage_: str, title: str, rows: list[dict]) -> UiEvent:
         value = " ".join(str(row.get("value") or "").split())
         why = " ".join(str(row.get("why") or "").split())
         if not label or leaks(label) or (why and leaks(why)):
+            continue
+        # A ROW IS SHORT ENOUGH OR IT IS NOT SHOWN: one cut at its limit reached the page ending "…[truncated]" (the
+        # run box's design row, 16 Nov)
+        if len(label) > MAX_RECEIPT_LABEL or len(value) > MAX_RECEIPT_VALUE or len(why) > MAX_RECEIPT_WHY:
             continue
         item: dict[str, Any] = {"label": scrub_text(label, limit=MAX_RECEIPT_LABEL),
                                 "value": scrub_text(value, limit=MAX_RECEIPT_VALUE)}

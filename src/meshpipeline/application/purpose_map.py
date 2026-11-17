@@ -334,7 +334,7 @@ def question_asked(messages) -> str:
         if isinstance(m, dict) and m.get("role") == "assistant":
             content = str(m.get("content") or "").strip()
             for kind, question in QUESTIONS.items():
-                if content == question:
+                if content == question or content.endswith("\n\n" + question):
                     return kind
     return ""
 
@@ -353,7 +353,7 @@ def _answer_to(messages, asked: str) -> str:
             continue
         content = str(m.get("content") or "").strip()
         if not seen:
-            seen = m.get("role") == "assistant" and content == question
+            seen = m.get("role") == "assistant" and (content == question or content.endswith("\n\n" + question))
         elif m.get("role") == "user" and content:
             return content
     return ""
@@ -369,6 +369,13 @@ def reading_for(messages) -> PurposeReading:
     has said, read together. After the one question, words that still settle nothing take the
     generic path (a flow, whose stage asks through-or-around) - never a second question."""
     texts = _user_texts(messages)
+    # THE LATEST WORD ON THE ANALYSIS WINS: a message that names one outright ("actually it is CFD, air
+    # flowing through it") after the route was read sends the job down its path - the stage opens again
+    for text in reversed(texts[1:]):
+        named = named_analysis(text)
+        if named.settled:
+            full = read_purpose(text)
+            return full if full.route == named.route else named
     asked = question_asked(messages)
     said = _answer_to(messages, asked) if asked else ""
     if said:
@@ -395,14 +402,18 @@ def choices_for(reply: str) -> list[dict]:
     (still clickable: it is meshed as for static stress, with a note)."""
     text = str(reply or "").strip()
     for kind, question in QUESTIONS.items():
-        if text == question:
+        if text == question or text.endswith("\n\n" + question):
             return [{"label": label, "send": send, "soon": False} for label, send in _CHOICES[kind]]
-    if text == ANALYSIS_QUESTION:
+    # the analysis question also closes a brief answer to an off-script message (agents/intake/flow):
+    # the same step, with the same buttons
+    if text == ANALYSIS_QUESTION or text.endswith("\n\n" + ANALYSIS_QUESTION):
         return [{"label": label + ("" if v1 else " (coming soon)"),
                  "send": label if v1 else f"{label} (coming soon)", "soon": not v1}
                 for _k, label, v1 in ANALYSES]
     # (no cell-count buttons: the count is the user's to state, never ours to ask - Areen, 14 Nov)
-    return []
+    # the questionnaire's own steps (the CFD conditions, through-or-around): agents/intake/flow
+    from meshpipeline.agents.intake.flow import step_choices
+    return step_choices(text)
 
 
 #: THE HOLD LINE an FEA part is checked under (after the drawing mark, which the intake never

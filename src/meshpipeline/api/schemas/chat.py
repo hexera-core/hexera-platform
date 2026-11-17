@@ -46,3 +46,6 @@ class ChatResponse(BaseModel):
     # A YES THAT WAITS FOR THE NOTES TO BE READ (NOTE-5): the console shows the reading on the card and sends the
     # same yes again once it lands (a minute at most); that second yes starts the run.
     yes_after_reading: bool = False
+    # THE STAGE OPENS AGAIN: the user changed the analysis after the stage (FEA <-> CFD); the console watches
+    # the geometry check again and shows the part on the new route's stage (agents/intake/message)
+    restage: bool = False
