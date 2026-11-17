@@ -435,6 +435,10 @@ async def _settle(inbound: InboundMessage, db, *, gate: dict, locked, messages: 
                                        session_repo=session_repo, logger=logger)
     if asked is not None:
         return asked
+    asked = await _settle_cfd_conditions(inbound, db, messages=messages, revision=revision,
+                                         session_repo=session_repo, logger=logger)
+    if asked is not None:
+        return asked
     hold = await _settle_geometry_hold(inbound, db, locked=locked, messages=messages,
                                        revision=revision, session_repo=session_repo, logger=logger,
                                        note=uc.ON_STAGE if unit_to_stage else "")
@@ -527,6 +531,23 @@ async def _settle_fea_analysis(inbound: InboundMessage, db, *, messages: list, r
                           transition=GateTransition(revision=revision))
 
 
+async def _settle_cfd_conditions(inbound: InboundMessage, db, *, messages: list, revision: str,
+                                 session_repo, logger) -> MessageOutcome | None:
+    """THE CFD ROUTE'S ONE QUESTION (agents/intake/flow FLOW_QUESTION), asked by the application in
+    fixed words once a flow part is confirmed on the stage: what flows and how fast, with the wall
+    treatment, as one proposal with its buttons. Skipped when the user already named a fluid and its
+    speed; asked once."""
+    from meshpipeline.agents.intake import flow
+
+    if not flow.conditions_due(messages):
+        return None
+    reply = flow.conditions_question(messages)
+    await session_repo.append_message(db, inbound.session_id, "assistant", reply)
+    logger.info("intake message: a flow part - the conditions asked - session=%s", inbound.session_id)
+    return MessageOutcome(status=MessageStatus.purpose_question, reply=reply,
+                          transition=GateTransition(revision=revision))
+
+
 async def _settle_geometry_hold(inbound: InboundMessage, db, *, locked, messages: list,
                                 revision: str, session_repo, logger, note: str = "") -> MessageOutcome | None:
     """THE GEOMETRY CHECK'S TURN, taken here because it must be decided under the same row lock
@@ -569,6 +590,14 @@ async def _settle_geometry_hold(inbound: InboundMessage, db, *, locked, messages
 
         reading = pm.reading_for(messages)
         question = pm.question_for(reading, messages)
+        from meshpipeline.agents.intake import flow
+        if question and flow.asks_something(inbound.content):
+            # A QUESTION BEFORE THE PURPOSE is answered first, briefly, by the intake - which closes its
+            # answer with this same purpose question (agents/intake/flow.return_line)
+            return None
+        if not question and flow.flow_kind_question_due(messages, flow.geometry_flow_kind(session_id)):
+            # THROUGH OR AROUND, when neither the geometry nor the words decide it: asked once, with buttons
+            question = flow.FLOW_KIND_QUESTION
         if question:
             await session_repo.append_message(db, inbound.session_id, "assistant", question)
             logger.info("intake message: the purpose is unclear (%s) - asked once - session=%s",

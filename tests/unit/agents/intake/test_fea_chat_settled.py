@@ -5,6 +5,8 @@
 # with the model's rounds scripted (as test_thermal_chat does) and the stored check stood in for.
 from __future__ import annotations
 
+import meshpipeline.agents.intake.approval as ap
+
 import asyncio
 import json
 import uuid
@@ -154,7 +156,9 @@ def test_the_engine_is_selected_without_a_question_and_the_element_order_is_not_
     assert "SELECTED" in model.tools[0]["content"]
     assert turn.FEA_SETTLED_NUDGE in model.user_lines
     reply = out["messages"][-1]["content"]
-    assert reply == "Static stress it is: every face of the part is kept as a named group."
+    # the question is answered, then the plan follows - the FEA plan is due (agents/intake/flow)
+    assert reply.startswith("Static stress it is: every face of the part is kept as a named group.")
+    assert reply.endswith(ap.PROCEED_ASK)
     assert "I'd mesh it with" not in reply and settled_asks(reply) == []
 
 

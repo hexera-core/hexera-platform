@@ -34,8 +34,8 @@ from meshpipeline.application.geometry_confirmation import (
 from meshpipeline.contracts import user_notes as un
 
 SID = uuid.UUID("5eed0000-1111-4222-8333-444455556666")
-P, S, C, A, F, PL, ST, ANS, PC = (flow.PURPOSE, flow.STAGE, flow.CONFIRMED, flow.ANALYSIS, flow.FLOW_QUESTION,
-                                  flow.PLAN, flow.STARTED, flow.ANSWER, flow.PURPOSE_CLARIFY)
+P, S, C, A, F, PL, ST, ANS, PC, FK = (flow.PURPOSE, flow.STAGE, flow.CONFIRMED, flow.ANALYSIS, flow.FLOW_QUESTION,
+                                      flow.PLAN, flow.STARTED, flow.ANSWER, flow.PURPOSE_CLARIFY, flow.FLOW_KIND)
 
 FEA_DECL = fea_confirmation_message(SimpleNamespace(
     part="Bracket", bodies=1, fea_connection="", clean_summary="The geometry is clean.",
@@ -51,6 +51,10 @@ EXTERNAL_DECL = (
     "4000 mm along the flow. Far-field margins in reference lengths: 5 upstream, 10 downstream, 5 to each "
     "side, 5 above. The part is free in the flow; every far-field face is open. Part size: 4000 x 1800 x "
     "1400 mm. The file is in millimetres.")
+#: the openings the stage stores with an internal declaration (geometry_confirmation.patches_from)
+INTERNAL_PATCHES = [{"name": "inlet", "type": "inlet", "diameter_mm": 40.0, "near_mm": [0.0, 0.0, 0.0]},
+                    {"name": "outlet", "type": "outlet", "diameter_mm": 40.0, "near_mm": [100.0, 60.0, 0.0]},
+                    {"name": "wall", "type": "wall"}]
 FLOW_Q = ("Flow conditions - I'd go with:\n1. Air at 20 °C and sea-level pressure\n2. 10 m/s\n"
           "3. k-ω SST with wall functions\nOK, or tell me what to change?")
 #: words a chat on the FEA route never shows in any line the application wrote
@@ -148,16 +152,14 @@ class _Model:
             if flow.asks_something(user_said) and not nudged:
                 return _resp(text="Every face is kept as a named group, so you set it up in your own solver.")
             return _resp("propose_engine_selection", {"engine": "Gmsh"})
-        # CFD
-        asked = any(flow.is_flow_question(m.get("content")) for m in convo if m.get("role") == "assistant"
-                    and not str(m.get("content") or "").startswith(CONFIRMED_MARK))
+        # CFD (and before any route): the model only answers what was asked
         if flow.asks_something(user_said) and not nudged:
             planned = any(flow.PLAN in flow.step_of(m.get("content")) for m in convo if m.get("role") == "assistant")
             if planned:
                 return _resp(text="The run sizes the mesh from the part; the plan shows what it will be.")
-            return _resp(text="y⁺ is how far the first cell sits from the wall, in wall units.\n\n" + FLOW_Q)
-        if not asked and not re.search(r"\d+\s*m/s", " ".join(str(m["content"]) for m in said)):
-            return _resp(text=FLOW_Q)
+            if not decl:
+                return _resp(text="I mesh parts for CFD and FEA.")
+            return _resp(text="y⁺ is how far the first cell sits from the wall, in wall units.")
         if self._misbehave("cfd_second_question"):
             return _resp(text="How many prism layers do you want on the walls?")
         if self._misbehave("own_notes_question"):
@@ -296,7 +298,7 @@ class World:
         self.shown.append(("assistant", out.reply))
         return out
 
-    async def proceed_on_stage(self, declaration: str):
+    async def proceed_on_stage(self, declaration: str, patches=None):
         """The panel's Proceed, as api/v1/geometry.confirm_check ends: the declaration replaces any earlier
         one, then one chat turn runs for the user - whose words the console never draws."""
         from fastapi import HTTPException
@@ -304,6 +306,8 @@ class World:
         from meshpipeline.api.schemas.chat import ChatMessageIn
         from meshpipeline.api.v1.chat import chat_message
         self.session.messages = with_declaration(self.session.messages, declaration)
+        self.session.intake_patches = list(patches if patches is not None else
+                                           (INTERNAL_PATCHES if declaration == INTERNAL_DECL else []))
         self.confirmed = True
         self.shown.append(("assistant", declaration))
         try:
@@ -321,8 +325,9 @@ class World:
         return [*read, ST] if self.dispatched else read
 
 
-async def _run(monkeypatch, script, *, bad=""):
+async def _run(monkeypatch, script, *, bad="", geometry_kind=""):
     world = World(monkeypatch, _Model(bad))
+    monkeypatch.setattr(flow, "geometry_flow_kind", lambda sid: geometry_kind)
     for kind, value in script:
         if kind == "say":
             await world.say(value)
@@ -372,31 +377,37 @@ CASES = {
     "fea_model_says_nothing_at_analysis": (
         [("say", "FEA"), ("stage", FEA_DECL), ("say", "what does modal mean?"), ("say", "Static stress"),
          ("say", "Proceed")], "empty", [P, S, C, A, A, PL, ST]),
+    # a question before any route: answered, then the purpose question
+    "first_message_is_a_question": ([("say", "what can you mesh?"), ("say", FEA_BUTTON), ("stage", FEA_DECL),
+                                     ("say", "Static stress"), ("say", "Proceed")], "", [P, ANS, PC, S, C, A, PL, ST]),
     # CFD internal
-    "cfd_model_says_nothing_after_stage": ([("say", "water flowing through this elbow"), ("stage", INTERNAL_DECL),
-                                            ("say", "ok"), ("say", "Proceed")], "empty", [P, S, C, F, PL, ST]),
     "cfd_internal_standard": ([("say", "water flowing through this elbow"), ("stage", INTERNAL_DECL),
-                               ("say", "ok"), ("say", "Proceed")], "", [P, S, C, F, PL, ST]),
+                               ("say", "OK"), ("say", "Proceed")], "", [P, S, C, F, PL, ST]),
+    "cfd_internal_resolve_the_wall": ([("say", "water flowing through this elbow"), ("stage", INTERNAL_DECL),
+                                       ("say", "Resolve the wall (y⁺ ≈ 1)"), ("say", "Proceed")], "", [P, S, C, F, PL, ST]),
+    "cfd_internal_own_values": ([("say", "water flowing through this elbow"), ("stage", INTERNAL_DECL),
+                                 ("say", "no, oil at 3 m/s"), ("say", "Proceed")], "", [P, S, C, F, PL, ST]),
     "cfd_internal_conditions_early": ([("say", "CFD of water through this elbow at 2 m/s"), ("stage", INTERNAL_DECL),
                                        ("say", "Proceed")], "", [P, S, C, PL, ST]),
     "cfd_internal_off_script_at_flow": ([("say", "water flowing through this elbow"), ("stage", INTERNAL_DECL),
-                                         ("say", "what is y+?"), ("say", "ok"), ("say", "Proceed")],
-                                        "", [P, S, C, F, ANS, PL, ST]),
-    "cfd_internal_model_asks_a_second_question": (
-        [("say", "water flowing through this elbow"), ("stage", INTERNAL_DECL), ("say", "ok"), ("say", "Proceed")],
-        "cfd_second_question", [P, S, C, F, PL, ST]),
-    "cfd_internal_model_asks_its_own_notes_question": (
-        [("say", "water flowing through this elbow"), ("stage", INTERNAL_DECL), ("say", "ok"), ("say", "Proceed")],
-        "own_notes_question", [P, S, C, F, PL, ST]),
+                                         ("say", "what is y+?"), ("say", "OK"), ("say", "Proceed")],
+                                        "", [P, S, C, F, ANS, F, PL, ST]),
+    "cfd_internal_model_misbehaves": ([("say", "water flowing through this elbow"), ("stage", INTERNAL_DECL),
+                                       ("say", "OK"), ("say", "Proceed")], "cfd_second_question", [P, S, C, F, PL, ST]),
     "cfd_off_script_at_plan": ([("say", "water flowing through this elbow"), ("stage", INTERNAL_DECL),
-                                ("say", "ok"), ("say", "how many cells will it have?"), ("say", "Proceed")],
+                                ("say", "OK"), ("say", "how many cells will it have?"), ("say", "Proceed")],
                                "", [P, S, C, F, PL, ANS, PL, ST]),
+    "cfd_question_with_the_plan_due": ([("say", "CFD of water through this elbow at 2 m/s"), ("stage", INTERNAL_DECL),
+                                        ("say", "hmm"), ("say", "Proceed")], "", [P, S, C, PL, PL, ST]),
     # CFD external
-    "cfd_external_standard": ([("say", "external aero over this car"), ("stage", EXTERNAL_DECL), ("say", "ok"),
+    "cfd_external_standard": ([("say", "external aero over this car"), ("stage", EXTERNAL_DECL), ("say", "OK"),
                                ("say", "Proceed")], "", [P, S, C, F, PL, ST]),
     "cfd_external_hedge_then_yes": ([("say", "external aero over this car"), ("stage", EXTERNAL_DECL),
-                                     ("say", "ok"), ("say", "hmm, maybe"), ("say", "yes")],
+                                     ("say", "OK"), ("say", "hmm, maybe"), ("say", "yes")],
                                     "", [P, S, C, F, PL, PL, ST]),
+    "cfd_flow_kind_undecided": ([("say", "CFD please"), ("say", "The flow goes through the inside"),
+                                 ("stage", INTERNAL_DECL), ("say", "OK"), ("say", "Proceed")],
+                                "", [P, FK, S, C, F, PL, ST]),
 }
 
 
@@ -404,8 +415,11 @@ CASES = {
 @pytest.mark.parametrize("name", sorted(CASES))
 async def test_every_chat_follows_the_standard_questionnaire(monkeypatch, name):
     script, bad, expected = CASES[name]
-    world = await _run(monkeypatch, script, bad=bad)
+    world = await _run(monkeypatch, script, bad=bad, geometry_kind="undecided" if "undecided" in name else "")
     assert world.errors == []
+    # THE ORDER IS NEVER THE MODEL'S: a chat with no question in it never calls the model at all
+    if not any(flow.asks_something(v) for k, v in script if k == "say"):
+        assert world.model.calls == 0, (name, world.model.calls)
     assert world.steps() == expected, (name, world.steps(), [m["content"][:90] for m in world.session.messages])
 
 
@@ -413,7 +427,7 @@ async def test_every_chat_follows_the_standard_questionnaire(monkeypatch, name):
 @pytest.mark.parametrize("name", sorted(CASES))
 async def test_no_chat_shows_a_retired_line_the_stages_words_as_the_users_or_a_cfd_word_on_fea(monkeypatch, name):
     script, bad, _ = CASES[name]
-    world = await _run(monkeypatch, script, bad=bad)
+    world = await _run(monkeypatch, script, bad=bad, geometry_kind="undecided" if "undecided" in name else "")
     assistant = [t for r, t in world.shown if r == "assistant"]
     # the old notes chat question and the old three-line confirmation are never said
     assert not any(un.QUESTION in t or CONFIRM_REQUIREMENTS_ASK in t or "Shall I proceed" in t for t in assistant)
@@ -450,6 +464,41 @@ async def test_a_changed_analysis_is_the_one_the_new_plan_carries(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("answer,fluid,speed,band", [
+    ("OK", "water at 20 °C", "1 m/s", "y⁺ 30–300"),
+    ("Resolve the wall (y⁺ ≈ 1)", "water at 20 °C", "1 m/s", "y⁺ ≈ 1"),
+    ("no, oil at 3 m/s", "oil", "3 m/s", "y⁺ 30–300"),
+])
+async def test_the_cfd_plan_is_the_applications_and_carries_the_answer(monkeypatch, answer, fluid, speed, band):
+    world = await _run(monkeypatch, [("say", "water flowing through this elbow"), ("stage", INTERNAL_DECL),
+                                     ("say", answer)])
+    assert world.model.calls == 0
+    s_ = world.session
+    assert s_.purpose == "internal_cfd" and s_.input_kind == "fluid-domain"
+    assert f"Fluid: {fluid} at {speed}" in s_.request_txt and band in s_.request_txt
+    assert [p["name"] for p in s_.intake_patches] == ["inlet", "outlet", "wall"]
+    assert s_.domain == "Elbow internal flow"
+
+
+@pytest.mark.asyncio
+async def test_the_external_plan_carries_the_far_field_the_stage_confirmed(monkeypatch):
+    world = await _run(monkeypatch, [("say", "external aero over this car"), ("stage", EXTERNAL_DECL), ("say", "OK")])
+    assert world.model.calls == 0 and world.session.purpose == "external_cfd"
+    payload = world.session.intake_gate["approval"]["payload"]
+    assert payload["flow_axis"] == "+x" and payload["reference_length_m"] == 4.0
+    assert payload["requested_extents"] == {"upstream": 5.0, "downstream": 10.0, "lateral": 5.0, "vertical": 5.0}
+    assert "Fluid: air at 20 °C at 10 m/s" in world.session.request_txt
+
+
+@pytest.mark.asyncio
+async def test_the_conditions_question_has_its_buttons_and_reads_a_named_fluid(monkeypatch):
+    world = await _run(monkeypatch, [("say", "air flowing through this duct"), ("stage", INTERNAL_DECL)])
+    asked = world.session.messages[-1]["content"]
+    assert asked.startswith(flow.INTERNAL_LEAD) and "air at 20 °C at 1 m/s at the inlet" in asked
+    assert [c["label"] for c in pm.choices_for(asked)] == ["OK", "Resolve the wall (y⁺ ≈ 1)"]
+
+
+@pytest.mark.asyncio
 async def test_a_spec_pasted_early_is_kept_word_for_word_on_the_plan(monkeypatch):
     spec = "FEA static stress. Spec: 2 mm elements near the 4 bolt holes, 5 kN on the tab"
     world = await _run(monkeypatch, [("say", spec), ("stage", FEA_DECL)])
@@ -468,11 +517,11 @@ async def test_the_plan_card_carries_its_proceed_and_the_history_never_shows_the
 
 
 @pytest.mark.asyncio
-async def test_a_failed_model_call_is_an_error_the_user_can_retry_never_a_step(monkeypatch):
-    world = await _run(monkeypatch, [("say", "water flowing through this elbow"), ("stage", INTERNAL_DECL)],
-                       bad="fails")
-    # the stage's turn failed: the card stands, the console says the send failed, and nothing else is said
-    assert world.errors == [503] and flow.steps(world.session.messages) == [P, S, C]
+async def test_the_stage_turn_needs_no_model_so_a_model_failure_cannot_silence_it(monkeypatch):
+    for decl, nxt in ((INTERNAL_DECL, F), (FEA_DECL, A)):
+        world = await _run(monkeypatch, [("say", "water flowing through this elbow" if decl != FEA_DECL else "FEA"),
+                                         ("stage", decl)], bad="fails")
+        assert world.errors == [] and flow.steps(world.session.messages) == [P, S, C, nxt]
 
 
 def test_the_stage_turn_is_the_applications_in_every_reader():
@@ -487,4 +536,7 @@ def test_every_application_step_has_one_fixed_line():
     assert flow.step_of(ap.PROCEED_ASK) == (PL,)
     assert flow.step_of("Changed from the last summary: analysis.\n\n" + ap.PROCEED_ASK) == (PL,)
     assert flow.step_of("A short answer.\n\n" + pm.ANALYSIS_QUESTION) == (ANS, A)
+    assert flow.step_of("A short answer.\n\n" + pm.DOMAIN_QUESTION) == (ANS, PC)
+    assert flow.step_of(flow.FLOW_KIND_QUESTION) == (FK,)
+    assert [c["label"] for c in pm.choices_for(flow.FLOW_KIND_QUESTION)] == ["Through the inside", "Around the outside"]
     assert pm.choices_for("A short answer.\n\n" + pm.ANALYSIS_QUESTION) == pm.choices_for(pm.ANALYSIS_QUESTION)

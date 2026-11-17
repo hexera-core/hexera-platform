@@ -847,9 +847,9 @@ def _block_geometry_check() -> str:
         "patch at all. For a body the fluid flows AROUND, the message states the flow axis, the "
         "reference length in mm and the far-field margins in reference lengths: the user "
         "confirmed them on the picture, so they are user-stated - carry them into flow_axis, "
-        "reference_length_m (mm / 1000) and requested_extents exactly as written. Ask only what "
-        "the message does not contain - typically the purpose, the fluid and its speed, and the "
-        "engine when it is not settled.\n"
+        "reference_length_m (mm / 1000) and requested_extents exactly as written. The application "
+        "itself asks the one thing the stage leaves - what flows and how fast, with the wall treatment - "
+        "in fixed words with buttons, and submits the plan: never ask it, or anything else, yourself.\n"
         "The message also says which unit the file is in and how long the part is; its sizes are "
         "already converted to millimetres for that unit. A LATER CHANGE OF UNIT IS THE "
         "APPLICATION'S, NOT YOURS: when the user says the file is in a different unit, the "
@@ -1372,24 +1372,20 @@ async def node_intake(state: PipelineState) -> dict:
         return await llm_router.call_intake_model(
             messages=messages, job_id=job_id, user_id=user_id, name="Intake", tools=tools)
 
-    # THE QUESTIONNAIRE'S ORDER IS THE APPLICATION'S (agents/intake/flow). On the FEA route the plan is
-    # due once the part is confirmed and the analysis is known: a message that leaves nothing to read
-    # (the stage's Proceed, an analysis button) gets the plan from the application itself, through the
-    # executor's own tools; a model that answers a due plan with prose instead has it set aside. On the
-    # CFD route, a second question after the one flow question is sent back to submit.
+    # THE QUESTIONNAIRE'S ORDER IS THE APPLICATION'S (agents/intake/flow). On a route it owns (an FEA
+    # part, a flow through or around a part) the plan is submitted by the application itself, through
+    # the executor's own tools, once it is due; a user's question is answered by the model in words
+    # only (no tool that changes anything), and the plan or the open step's own words follow it.
     _said = list(state.get("messages", []) or [])
-    _latest_said = flow.latest_user(_said)
     _plan_open = not state.get("previous_run") and not _exec_state.thermal and not _exec_state.answer_only
-    _fea_due = (_plan_open and fea_path(_exec_state)
-                and flow.fea_plan_due(_said, approval_live=ap.is_live(_ctx.approval)))
-    _script = flow.ScriptedFeaTurn(
-        exec_state=_exec_state, messages=_said, model=_intake_provider,
-        active=_fea_due and flow.plain_step_answer(_latest_said),
-        takeover=_fea_due and not flow.asks_something(_latest_said))
-    _policy.plan_due = _plan_open and flow.cfd_plan_due(_said, approval_live=ap.is_live(_ctx.approval))
-    if _script.active:
-        logger.info("Intake: the FEA plan is due and the message leaves nothing to read - the "
-                    "application submits it - job_id=%s", job_id)
+    _mode = (flow.turn_mode(_said, approval_live=ap.is_live(_ctx.approval),
+                            plan_was_shown=bool(state.get("request_txt")))
+             if _plan_open else flow.MODE_FREE)
+    _script = flow.ScriptedPlanTurn(
+        exec_state=_exec_state, messages=_said, model=_intake_provider, mode=_mode,
+        intake_patches=list(state.get("intake_patches") or []))
+    if _mode != flow.MODE_FREE:
+        logger.info("Intake: the questionnaire owns this turn (%s) - job_id=%s", _mode, job_id)
 
     # THE CANONICAL INTAKE LOOP
     # One loop, shared with Builder and Reviewer. It owns rounds, tool-call accounting, malformed
@@ -1414,11 +1410,20 @@ async def node_intake(state: PipelineState) -> dict:
         return turn.provider_failure_patch(_loop_result.failure_marker,
                                            _sanitize_run_record(_loop_result.record))
 
+    # THE PLAN AFTER THE ANSWER (agents/intake/flow): the model answered what the user asked - or read a
+    # change to a plan that stood and did not submit it - and the plan is due: the application submits it
+    _answered_then_planned = ""
+    if (_mode in (flow.MODE_ANSWER_THEN_PLAN, flow.MODE_READ_THEN_PLAN) and not _exec_state.submit_args
+            and not ap.is_live(_exec_state.approval) and _loop_result.exit is not _LoopExit.terminal_action):
+        _answer = str(_loop_result.payload or "").strip() if _mode == flow.MODE_ANSWER_THEN_PLAN else ""
+        if await _script.run_plan(_executor) and _exec_state.submit_summary:
+            _answered_then_planned = (f"{_answer}\n\n" if _answer else "") + _exec_state.submit_summary
+
     # A terminal action carries the APPLICATION's own rendered text; a completed turn carries the
     # model's conversational reply. Round exhaustion carries neither - it says nothing at all,
     # and a turn that says nothing is given one honest sentence below, after the refusal rewrite
     # has had its chance (a refusal is never silent, so the two cannot collide).
-    assistant_text = str(_loop_result.payload or "")
+    assistant_text = _answered_then_planned or str(_loop_result.payload or "")
 
     # An admission refusal the model did not repair ends with the model's OWN reply - it had the
     # finding as a tool result and wrote with it in hand. That reply is checked before it goes
@@ -1445,7 +1450,8 @@ async def node_intake(state: PipelineState) -> dict:
             logger.warning("Intake: reply held to the facts - %d sentence(s) replaced: %s - job_id=%s",
                            len(_held.dropped), " | ".join(d[:80] for d in _held.dropped[:4]), job_id)
             assistant_text = _held.text
-    if _loop_result.exit is not _LoopExit.terminal_action and not _exec_state.submit_args:
+    if (_loop_result.exit is not _LoopExit.terminal_action and not _exec_state.submit_args
+            and (_mode != flow.MODE_FREE or ap.is_live(_exec_state.approval))):
         # BACK TO THE SAME STEP (agents/intake/flow): an answer to an off-script message closes with
         # the open step's own line - the plan's, or the FEA analysis question with its buttons
         _appr = _exec_state.approval
@@ -1456,7 +1462,7 @@ async def node_intake(state: PipelineState) -> dict:
         if _back:
             # a turn that said nothing is the step's own line alone, never "I could not settle this"
             assistant_text = _back if _said_nothing else flow.closed_with(assistant_text, _back)
-    elif _exec_state.submit_args and fea_path(_exec_state):
+    if _exec_state.submit_args and fea_path(_exec_state):
         # A "COMING SOON" ANALYSIS is said with the plan it is meshed by (as for static stress): the
         # plan's line is the application's, and a note the model wrote beside it would be lost
         from meshpipeline.application import purpose_map as _pm

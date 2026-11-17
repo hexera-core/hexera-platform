@@ -130,18 +130,11 @@ NOTES_NUDGE = (
     "a note asks for something the mesher does not do, say so in one plain line. Then re-run "
     "preview_selected_admission and call submit_requirements now. Do not ask the question again, "
     "and ask nothing else unless their answer changed something required.")
-#: Put in front of the model when its reply asked a second question on the CFD route: the one flow
-#: question was asked and answered, so the next step of the questionnaire is the plan (agents/intake/flow).
-PLAN_DUE_NUDGE = (
-    "[SYSTEM] Your reply was not sent. The user has answered the flow question, and nothing else is "
-    "asked in this questionnaire: the next step is the plan. Take their answer (and your own proposal "
-    "for anything they left open - request_txt notes it as assumed), re-run "
-    "preview_selected_admission and call submit_requirements now. Do not ask another question.")
 #: Every user-role line the application writes into a turn. None of them is the user's words, and
 #: the transcript marks them so a reader can tell.
 SYNTHETIC_NUDGES = (BUDGET_NUDGE, REPEAT_NUDGE, DEFAULT_NUDGE, ENGINE_SETTLED_NUDGE,
                     ENGINE_UNSETTLED_NUDGE, GARBLED_NUDGE, THERMAL_WORDS_NUDGE, FEA_INVENTED_NUDGE,
-                    FEA_SETTLED_NUDGE, NOTES_NUDGE, PLAN_DUE_NUDGE)
+                    FEA_SETTLED_NUDGE, NOTES_NUDGE)
 
 # How a user hands a question back. Phrase-level, like the recommendation gate, and deliberately
 # short: a false negative leaves the model to read the reply itself, while a false positive tells

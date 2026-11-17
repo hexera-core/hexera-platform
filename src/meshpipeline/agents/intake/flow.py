@@ -1,31 +1,35 @@
-# Responsibility: Own the intake's standard questionnaire - the fixed steps of each route, in order, and which of them comes next - so the order of a chat is the application's, never the model's mood.
-# Owns: the step ids, the reading of a conversation back into steps, when the plan is due, the FEA plan the application submits itself when the user's answer leaves nothing to understand, and the line an off-script answer returns to.
-# Boundaries: pure over the conversation, except ScriptedFeaTurn, which only ever calls the intake executor's own tools (every gate - selection, admission token, validation, approval - still applies). It stores nothing.
-# Collaborates with: agents/intake/agent.py (runs the turn), agents/intake/message.py (the application's own questions), application/purpose_map.py (the purpose and analysis questions), agents/intake/approval.py (the plan line).
+# Responsibility: Own the intake's standard questionnaire - the fixed steps of each route, in order, their fixed words and buttons, which of them comes next, and the plan the application submits itself - so the order of a chat is the application's, never the model's mood.
+# Owns: the step ids, the reading of a conversation back into steps, the CFD flow-conditions question and the flow-kind question, the reading of their answers, the FEA and CFD plans built from what the user confirmed, and the line an off-script answer returns to.
+# Boundaries: pure over the conversation, except ScriptedPlanTurn, which only ever calls the intake executor's own tools (every gate - selection, admission token, validation, approval - still applies), and geometry_flow_kind, which reads the stored geometry check. It stores nothing.
+# Collaborates with: agents/intake/agent.py (runs the turn), agents/intake/message.py (asks the application's own questions), application/purpose_map.py (the purpose and analysis questions), agents/intake/approval.py (the plan line).
 """THE STANDARD QUESTIONNAIRE.
 
-Every chat is the same short questionnaire. The application asks every fixed step in fixed words;
-the model only reads what the user meant, and writes the one CFD flow question:
+Every chat is the same short questionnaire. The application asks every step in fixed words, reads the
+answers, and submits the plan itself; the model only answers what the user asks off-script (and reads
+a correction to a plan that stands):
 
-    FEA           purpose -> stage -> confirmed -> analysis -> plan -> started
-    CFD external  purpose -> stage -> confirmed -> flow_question -> plan -> started
-    CFD internal  purpose -> stage -> confirmed -> flow_question -> plan -> started
+    FEA           purpose -> stage -> confirmed -> analysis        -> plan -> started
+    CFD external  purpose -> stage -> confirmed -> flow_conditions -> plan -> started
+    CFD internal  purpose -> stage -> confirmed -> flow_conditions -> plan -> started
 
-`purpose`        "Geometry received. What are you meshing this for?" (the upload's greeting)
+`purpose`         "Geometry received. What are you meshing this for?" (the upload's greeting)
 `purpose_clarify` the one two-button question when the words did not say CFD or FEA (or cooling)
-`stage`          "Checking your part - confirm it on the right and press Proceed." The panel shows
-                 the part, its unit and (internal flow) its openings; the chat box is closed while
-                 it is up.
-`confirmed`      the short "Confirmed: <part>" card the panel's Proceed leaves in the chat
-`analysis`       FEA only: "What will you analyze?" with its buttons
-`flow_question`  CFD only: ONE question in the model's words - the fluid and its conditions, as a
-                 proposal ("OK, or tell me what to change"). Skipped when the user already said them.
-`plan`           the plan card - the mesh plan, the notes box, and Proceed - under one fixed line
-`started`        the run starts
+`flow_kind`       CFD, only when neither the geometry nor the words decide it: "Is the flow through
+                  the inside or around the outside?" with two buttons
+`stage`           "Checking your part - confirm it on the right and press Proceed." The panel shows the
+                  part, its unit and (internal flow) its openings; the chat box is closed while it is up.
+`confirmed`       the short "Confirmed: <part>" card the panel's Proceed leaves in the chat
+`analysis`        FEA: "What will you analyze?" with its buttons
+`flow_conditions` CFD: what flows and how fast, with the wall treatment, as one proposal - "OK" or
+                  "Resolve the wall (y⁺ ≈ 1)" buttons, or the user's own words. The mesh uses exactly
+                  these: the fluid and its speed size the first cell at the wall, and the wall
+                  treatment (wall functions, y⁺ 30–300, or a resolved wall, y⁺ ≈ 1) sets the layers.
+`plan`            the plan card - the mesh plan, the notes box, and Proceed - under one fixed line
+`started`         the run starts
 
-A step the user answered early is skipped (an analysis named in the first message, the fluid named
-before the stage). Off-script words are answered briefly and the chat returns to the same next step
-in the same fixed words (`return_line`). Nothing else is ever asked.
+A step the user answered early is skipped (an analysis named in the first message, the fluid and its
+speed named before the stage). Off-script words are answered briefly and the chat returns to the same
+step in the same words (`return_line`). Nothing else is ever asked.
 """
 from __future__ import annotations
 
@@ -38,19 +42,24 @@ from typing import Any
 #: THE STEP IDS - what a test reads a conversation as, whatever prose the model wrote.
 PURPOSE = "purpose"
 PURPOSE_CLARIFY = "purpose_clarify"
+FLOW_KIND = "flow_kind"
 STAGE = "stage"
 CONFIRMED = "confirmed"
 ANALYSIS = "analysis"
-FLOW_QUESTION = "flow_question"
+FLOW_QUESTION = "flow_conditions"
 PLAN = "plan"
 READING = "reading_notes"
 STARTED = "started"
 UNIT = "unit"
-#: the model's own words that are not a step: an answer to an off-script message
+#: the model's own words: a brief answer to an off-script message
 ANSWER = "answer"
 
 ROUTE_FEA, ROUTE_CFD = "fea", "cfd"
-
+#: The standard sequence of each route (FEA; CFD external and internal share one shape).
+STANDARD: dict[str, tuple[str, ...]] = {
+    ROUTE_FEA: (PURPOSE, STAGE, CONFIRMED, ANALYSIS, PLAN, STARTED),
+    ROUTE_CFD: (PURPOSE, STAGE, CONFIRMED, FLOW_QUESTION, PLAN, STARTED),
+}
 
 _DIGIT = re.compile(r"\d")
 _SIZE = re.compile(r"Part size: (\d+) x (\d+) x (\d+) mm")
@@ -58,14 +67,63 @@ _UNIT = re.compile(r"The file is in ([a-z]+)")
 _BODIES = re.compile(r"(\d+) bodies\.")
 
 
-def _found(rx: re.Pattern, text: str) -> re.Match | None:
+def _found(rx: re.Pattern, text: Any) -> re.Match | None:
     """The first place `rx` matches in `text` (None when nowhere)."""
     return next(rx.finditer(str(text or "")), None)
-#: The standard sequence of each route (FEA; CFD external and internal share one shape).
-STANDARD: dict[str, tuple[str, ...]] = {
-    ROUTE_FEA: (PURPOSE, STAGE, CONFIRMED, ANALYSIS, PLAN, STARTED),
-    ROUTE_CFD: (PURPOSE, STAGE, CONFIRMED, FLOW_QUESTION, PLAN, STARTED),
-}
+
+
+# ------------------------------------------------------------- the CFD questions, fixed words ----
+
+#: THE FLOW-CONDITIONS QUESTION's two leads (one per flow kind) - fixed; only the proposal in it
+#: follows a fluid or speed the user already named.
+EXTERNAL_LEAD = "What flows around it, and how fast?"
+INTERNAL_LEAD = "What flows through it, and how fast?"
+_PROPOSAL = " I'd go with {fluid} at {speed}{inlet}, with {wall} - OK, or tell me what to change."
+WALL_FUNCTIONS = "wall functions (y⁺ 30–300)"
+WALL_RESOLVED = "a resolved wall (y⁺ ≈ 1)"
+#: its buttons: (label, what a click sends)
+CONDITIONS_CHOICES = (("OK", "OK"), ("Resolve the wall (y⁺ ≈ 1)", "Resolve the wall (y⁺ ≈ 1)"))
+#: THE FLOW-KIND QUESTION, asked only when neither the geometry nor the words decide it.
+FLOW_KIND_QUESTION = "Is the flow through the inside or around the outside?"
+FLOW_KIND_CHOICES = (("Through the inside", "The flow goes through the inside"),
+                     ("Around the outside", "The flow goes around the outside"))
+
+_DEFAULT_FLUID = {"external": "air at 20 °C", "internal": "water at 20 °C"}
+_DEFAULT_SPEED = {"external": "10 m/s", "internal": "1 m/s"}
+_FLUIDS = re.compile(r"\b(air|water|sea ?water|oil|nitrogen|helium|hydrogen|steam|blood|fuel|gasoline|petrol|"
+                     r"diesel|kerosene|glycol|co2|exhaust gas|natural gas|methane|argon|refrigerant)\b", re.I)
+_SPEED = re.compile(r"(?:\bmach\s*\d+(?:\.\d+)?)|(?:\d+(?:[.,]\d+)?\s*(?:m/s|km/h|kph|mph|knots?|kts?|l/min|lpm|"
+                    r"l/s|m3/s|m³/s|m3/h|m³/h|kg/s|kg/h|g/s|cfm|gpm)\b)", re.I)
+_RESOLVED = re.compile(r"y\s*\+?\s*⁺?\s*(?:≈|~|=|of|below|under|<=?|around)?\s*1\b|resolve(?:d)? (?:the )?wall|"
+                       r"wall[- ]resolved|low[- ]re\b|no wall functions", re.I)
+_FUNCTIONS = re.compile(r"wall functions?|y\s*\+?\s*⁺?\s*(?:≈|~|=|of)?\s*30", re.I)
+_OK = re.compile(r"^\s*(ok|okay|yes|yep|fine|sure|sounds good|looks good|go ahead|that'?s fine|correct|"
+                 r"default|use (?:the )?defaults?)\b[.! ]*$", re.I)
+
+
+def conditions_question(messages: Iterable[Any]) -> str:
+    """The flow-conditions question for this conversation, in its fixed words with its proposal."""
+    kind = flow_kind_of(messages) or "external"
+    got = flow_conditions(messages, answered_only=False)
+    lead = INTERNAL_LEAD if kind == "internal" else EXTERNAL_LEAD
+    return lead + _PROPOSAL.format(fluid=got["fluid"], speed=got["speed"],
+                                   inlet=" at the inlet" if kind == "internal" else "",
+                                   wall=WALL_RESOLVED if got["wall"] == "resolved" else WALL_FUNCTIONS)
+
+
+def is_conditions_question(text: Any) -> bool:
+    t = str(text or "").strip()
+    return any(t.startswith(lead) or ("\n\n" + lead) in t for lead in (EXTERNAL_LEAD, INTERNAL_LEAD))
+
+
+def step_choices(reply: Any) -> list[dict]:
+    """The buttons under a step this module asks, by its words; [] for any other reply."""
+    t = str(reply or "").strip()
+    if is_conditions_question(t):
+        return [{"label": label, "send": send, "soon": False} for label, send in CONDITIONS_CHOICES]
+    if _ends_with(t, FLOW_KIND_QUESTION):
+        return [{"label": label, "send": send, "soon": False} for label, send in FLOW_KIND_CHOICES]
+    return []
 
 
 def _upload_greeting() -> str:
@@ -78,15 +136,14 @@ def plan_line() -> str:
     return PROCEED_ASK
 
 
-def _ends_with(text: str, line: str) -> bool:
+def _ends_with(text: Any, line: str) -> bool:
     t = str(text or "").strip()
     return bool(line) and (t == line or t.endswith("\n\n" + line))
 
 
 def step_of(text: Any) -> tuple[str, ...]:
     """The step(s) one assistant message is: one id, or (ANSWER, step) for a brief answer the
-    application closed with a step's own line. A message no step owns is the model's: on the CFD
-    route that is the flow question, anywhere else an answer (`steps` tells them apart)."""
+    application closed with a step's own words. Any other message is the model's answer."""
     from meshpipeline.agents.intake import message as msg
     from meshpipeline.application import purpose_map as pm
     from meshpipeline.application.geometry_confirmation import CONFIRMED_MARK
@@ -97,21 +154,24 @@ def step_of(text: Any) -> tuple[str, ...]:
         return ()
     if t == _upload_greeting():
         return (PURPOSE,)
-    if t in pm.QUESTIONS.values():
-        return (PURPOSE_CLARIFY,)
     if t.startswith(DRAWING_MARK):
         return (STAGE,)
     if t.startswith(CONFIRMED_MARK):
         return (CONFIRMED,)
     if t == msg.READING_FIRST_REPLY:
         return (READING,)
-    for line, step in ((pm.ANALYSIS_QUESTION, ANALYSIS), (plan_line(), PLAN)):
+    if is_conditions_question(t):
+        return (FLOW_QUESTION,) if any(t.startswith(lead) for lead in (EXTERNAL_LEAD, INTERNAL_LEAD)) \
+            else (ANSWER, FLOW_QUESTION)
+    lines = [(q, PURPOSE_CLARIFY) for q in pm.QUESTIONS.values()]
+    lines += [(FLOW_KIND_QUESTION, FLOW_KIND), (pm.ANALYSIS_QUESTION, ANALYSIS), (plan_line(), PLAN)]
+    for line, step in lines:
         if t == line:
             return (step,)
         if _ends_with(t, line):
             head = t[: -len(line)].strip()
             # the plan's own lead lines (what changed, a coming-soon note) are part of the step
-            return (step,) if _plan_lead(head) else (ANSWER, step)
+            return (step,) if step == PLAN and _plan_lead(head) else (ANSWER, step)
     return (ANSWER,)
 
 
@@ -122,6 +182,16 @@ def _plan_lead(head: str) -> bool:
     h = head.strip()
     return (not h or h.startswith("Changed from the ") or h.startswith(ap.NOTHING_CHANGED)
             or any(h == pm.coming_soon_note(k) for k in pm.ANALYSIS_KEYS if pm.coming_soon_note(k)))
+
+
+def latest_declaration(messages) -> str:
+    """The stage's latest declaration in the conversation ("" when no part was confirmed)."""
+    from meshpipeline.application.geometry_confirmation import _is_declaration
+
+    for m in reversed([m for m in messages or () if isinstance(m, dict)]):
+        if _is_declaration(m):
+            return str(m.get("content") or "")
+    return ""
 
 
 def route_of(messages: Iterable[Any]) -> str:
@@ -135,37 +205,13 @@ def route_of(messages: Iterable[Any]) -> str:
     return ROUTE_FEA if pm.reading_for(msgs).route == pm.ROUTE_FEA else ROUTE_CFD
 
 
-#: What the CFD route's one flow question is about: the fluid and its conditions.
-_FLOW_WORDS = re.compile(r"\b(fluid|air|water|oil|gas|speed|velocity|m/s|km/h|mph|flow rate|mass flow|"
-                         r"conditions?|turbulen\w*|reynolds|mach|temperature|pressure)\b", re.IGNORECASE)
-
-
-def is_flow_question(text: Any) -> bool:
-    """Whether a model's message is the CFD route's flow question: it asks about the fluid and its
-    conditions."""
-    t = str(text or "")
-    return "?" in t and _found(_FLOW_WORDS, t) is not None
-
-
 def read_messages(messages: Iterable[Any]) -> list[tuple[dict, tuple[str, ...]]]:
-    """Each message with the step(s) it is: () for a user's. On the CFD route the model's first
-    question about the fluid and its conditions after the stage is the flow question; every other
-    message of the model's is an answer."""
-    msgs = [m for m in messages or () if isinstance(m, dict)]
-    cfd = route_of(msgs) == ROUTE_CFD
-    seen: list[str] = []
+    """Each message with the step(s) it is: () for a user's."""
     out: list[tuple[dict, tuple[str, ...]]] = []
-    for m in msgs:
-        if m.get("role") != "assistant":
-            out.append((m, ()))
+    for m in messages or ():
+        if not isinstance(m, dict):
             continue
-        got = list(step_of(m.get("content")))
-        for i, step in enumerate(got):
-            if (step == ANSWER and cfd and CONFIRMED in seen and FLOW_QUESTION not in seen
-                    and PLAN not in seen and is_flow_question(m.get("content"))):
-                got[i] = FLOW_QUESTION
-        seen.extend(got)
-        out.append((m, tuple(got)))
+        out.append((m, step_of(m.get("content")) if m.get("role") == "assistant" else ()))
     return out
 
 
@@ -191,11 +237,25 @@ def _purpose_buttons() -> set[str]:
     return {c["send"] for q in pm.QUESTIONS.values() for c in pm.choices_for(q)}
 
 
+def _step_buttons() -> set[str]:
+    return {send for _l, send in CONDITIONS_CHOICES} | {send for _l, send in FLOW_KIND_CHOICES}
+
+
+def _users(messages) -> list[str]:
+    return [str(m.get("content") or "").strip() for m in messages or ()
+            if isinstance(m, dict) and m.get("role") == "user"]
+
+
 def latest_user(messages: Iterable[Any]) -> str:
-    for m in reversed([m for m in messages or () if isinstance(m, dict)]):
-        if m.get("role") == "user":
-            return str(m.get("content") or "").strip()
-    return ""
+    said = _users(messages)
+    return said[-1] if said else ""
+
+
+def asks_something(text: Any) -> bool:
+    """Whether the user's message asks something (it then gets a brief answer first)."""
+    t = str(text or "")
+    return "?" in t or bool(re.match(r"\s*(what|why|how|which|when|where|who|can|could|does|do|is|are|will|"
+                                     r"should|would)\b", t, re.IGNORECASE))
 
 
 def analysis_said(messages: Iterable[Any]) -> str:
@@ -206,12 +266,9 @@ def analysis_said(messages: Iterable[Any]) -> str:
     ("what is the difference between modal and static?")."""
     from meshpipeline.application import purpose_map as pm
 
-    skip = _purpose_buttons() | {_stage_continue()}
+    skip = _purpose_buttons() | _step_buttons() | {_stage_continue()}
     picked = ""
-    for m in messages or ():
-        if not isinstance(m, dict) or m.get("role") != "user":
-            continue
-        content = str(m.get("content") or "").strip()
+    for content in _users(messages):
         if content in skip or asks_something(content):
             continue
         got = pm.analysis_of(content)
@@ -224,30 +281,132 @@ def analysis_said(messages: Iterable[Any]) -> str:
 #: kept as the user's note when the application submits the plan itself.
 _SPECIFIC = re.compile(
     r"\d|\b(mm|cm|metres?|meters?|inch|element|elements|mesh|size|sizes|refine\w*|finer|coarser|layers?|"
-    r"fixed|fix|load\w*|support\w*|material|steel|alumin\w*|solver|nastran|abaqus|ansys|calculix|femap|"
-    r"bolt\w*|holes?|fillets?|contact|bonded|second[- ]order|first[- ]order|quadratic|linear|hex\w*|tet\w*)\b",
+    r"fixed|fix|load\w*|support\w*|material|steel|alumin\w*|solver|nastran|abaqus|ansys|calculix|femap|fluent|"
+    r"openfoam|star-?ccm\+?|bolt\w*|holes?|fillets?|contact|bonded|second[- ]order|first[- ]order|quadratic|"
+    r"linear|hex\w*|tet\w*|prism|wake|bend|gap|cells?|turbulen\w*|k-?(?:omega|epsilon|ω|ε)|sst)\b",
     re.IGNORECASE)
 
 
-def plain_step_answer(text: str) -> bool:
-    """Whether a user message is only the answer to a standard step - the stage's Proceed, an
-    analysis button, or a few words naming the analysis - with nothing else for the model to read."""
+def plain_step_answer(text: Any) -> bool:
+    """Whether a user message is only the answer to a standard step - the stage's Proceed, a step's
+    button, or a few words naming the analysis - with nothing else for the model to read."""
     from meshpipeline.application import purpose_map as pm
 
     t = " ".join(str(text or "").split())
     if not t:
         return False
-    if t == _stage_continue() or t in _analysis_buttons():
+    if t == _stage_continue() or t in _analysis_buttons() or t in _step_buttons():
         return True
     words = re.findall(r"[\w'-]+", t)
     return bool(pm.analysis_of(t)) and len(words) <= 4 and "?" not in t and _found(_DIGIT, t) is None
 
 
-def asks_something(text: Any) -> bool:
-    """Whether the user's message asks something (it then gets a brief answer first)."""
-    t = str(text or "")
-    return "?" in t or bool(re.match(r"\s*(what|why|how|which|when|where|who|can|could|does|do|is|are|will|"
-                                     r"should|would)\b", t, re.IGNORECASE))
+# ------------------------------------------------------------------------- the CFD conditions ----
+
+def flow_kind_of(messages: Iterable[Any]) -> str:
+    """"internal" or "external": the confirmed declaration's, else the words' (the flow-kind question's
+    answer included); "" when nothing says."""
+    from meshpipeline.application import purpose_map as pm
+
+    decl = latest_declaration(messages)
+    if "; the fluid flows through it." in decl:
+        return "internal"
+    if "; the fluid flows around it." in decl:
+        return "external"
+    return pm.reading_for([m for m in messages or () if isinstance(m, dict)]).topology
+
+
+def _condition_words(messages) -> list[str]:
+    """The user's messages that can carry conditions: never a button the application offered for
+    another step, the stage's own turn, or a question."""
+    skip = _purpose_buttons() | _analysis_buttons() | {_stage_continue()} | {s for _l, s in FLOW_KIND_CHOICES}
+    return [t for t in _users(messages) if t not in skip and not asks_something(t)]
+
+
+def flow_conditions(messages: Iterable[Any], *, answered_only: bool = True) -> dict:
+    """The CFD conditions as the user gave them, with the proposal for what they left: {fluid,
+    speed, wall, said_fluid, said_speed, accepted}. The latest word on each wins."""
+    kind = flow_kind_of(messages) or "external"
+    out = {"fluid": _DEFAULT_FLUID[kind], "speed": _DEFAULT_SPEED[kind], "wall": "functions",
+           "said_fluid": False, "said_speed": False, "said_wall": False, "accepted": False}
+    for t in _condition_words(messages):
+        fluid, speed = _found(_FLUIDS, t), _found(_SPEED, t)
+        if fluid:
+            name = fluid.group(1).lower()
+            out["fluid"], out["said_fluid"] = (f"{name} at 20 °C" if name in ("air", "water") else name), True
+        if speed:
+            out["speed"], out["said_speed"] = " ".join(speed.group(0).split()), True
+        if _found(_RESOLVED, t):
+            out["wall"], out["said_wall"] = "resolved", True
+        elif _found(_FUNCTIONS, t):
+            out["wall"], out["said_wall"] = "functions", True
+        if _found(_OK, t):
+            out["accepted"] = True
+    return out
+
+
+def conditions_answered(messages: Iterable[Any]) -> bool:
+    """Whether the CFD conditions are settled: the fixed question was answered (any answer that asks
+    nothing: "OK", a button, the user's own values), or the user named a fluid and its speed already."""
+    msgs = [m for m in messages or () if isinstance(m, dict)]
+    asked = False
+    for m in msgs:
+        if m.get("role") == "assistant" and is_conditions_question(m.get("content")):
+            asked = True
+        elif asked and m.get("role") == "user" and not asks_something(m.get("content")) \
+                and str(m.get("content") or "").strip() != _stage_continue():
+            return True
+    got = flow_conditions(msgs)
+    return got["said_fluid"] and got["said_speed"]
+
+
+def conditions_due(messages: Iterable[Any]) -> bool:
+    """The flow-conditions step is next: a CFD part (through or around it) was confirmed on the stage,
+    the question was never asked, and the words do not already settle the conditions."""
+    msgs = [m for m in messages or () if isinstance(m, dict)]
+    return (cfd_declared(msgs) and not any(m.get("role") == "assistant" and is_conditions_question(m.get("content"))
+                                           for m in msgs) and not conditions_answered(msgs))
+
+
+def cfd_declared(messages: Iterable[Any]) -> bool:
+    """A part confirmed on the flow stage for a flow through or around it - the questionnaire's CFD
+    route. An assembly of regions (conjugate heat transfer) and a whole thermal model have their own."""
+    decl = latest_declaration(messages)
+    return _found(_FLOW_CASE, decl) is not None if decl else False
+
+
+_FLOW_CASE = re.compile(r"input_kind (body-surface|fluid-domain|solid-body); the fluid flows (through|around) it\.")
+_PLANNABLE = re.compile(r"The fluid travels along [+-][xyz]\.|; the fluid flows through it\.")
+
+
+# ------------------------------------------------------------------------- the flow-kind seam ----
+
+def geometry_flow_kind(session_id: str) -> str:
+    """THE SEAM to the geometry check's verdict on the flow kind (another branch makes the check return
+    a kind, its confidence and its reasons, with an explicit "undecided"): "internal", "external",
+    "undecided", or "" when the check says nothing yet. Read from the stored check's facts, under
+    `flow_kind` - {"kind": ..., "confidence": ..., "reasons": [...]} or a bare string."""
+    try:
+        from meshpipeline.application.geometry_check import read_check
+        facts = (read_check(session_id) or {}).get("facts") or {}
+    except Exception:  # noqa: BLE001 - a check we cannot read decides nothing
+        return ""
+    got = facts.get("flow_kind")
+    kind = got.get("kind") if isinstance(got, dict) else got
+    return str(kind or "") if kind in ("internal", "external", "undecided") else ""
+
+
+def flow_kind_question_due(messages: Iterable[Any], geometry_kind: str) -> bool:
+    """The flow-kind step is next: the route is CFD, the geometry check could not decide through or
+    around, the user's words do not say, and the question was never asked."""
+    from meshpipeline.application import purpose_map as pm
+
+    msgs = [m for m in messages or () if isinstance(m, dict)]
+    reading = pm.reading_for(msgs)
+    return (geometry_kind == "undecided" and reading.route == pm.ROUTE_FLOW and not reading.topology
+            and not latest_declaration(msgs)
+            and not any(m.get("role") == "assistant" and _ends_with(m.get("content"), FLOW_KIND_QUESTION)
+                        for m in msgs))
 
 
 # ------------------------------------------------------------------------------- what is due ----
@@ -262,41 +421,48 @@ def fea_plan_due(messages: Iterable[Any], *, approval_live: bool) -> bool:
 
 
 def cfd_plan_due(messages: Iterable[Any], *, approval_live: bool) -> bool:
-    """The CFD route's plan is the next step: the part is confirmed on the flow stage, the model has
-    asked its one flow question since, and the user's latest message answers it (asks nothing)."""
+    """The CFD route's plan is the next step: a flow part is confirmed on the stage, its conditions
+    are settled, and no plan stands yet."""
     msgs = [m for m in messages or () if isinstance(m, dict)]
-    if approval_live or route_of(msgs) != ROUTE_CFD or not latest_declaration(msgs):
-        return False
-    if not msgs or msgs[-1].get("role") != "user" or asks_something(msgs[-1].get("content")):
-        return False
-    # the message the user just answered is the conversation's flow question itself
-    read = read_messages(msgs)
-    last_assistant = next((s for m, s in reversed(read) if m.get("role") == "assistant"), ())
-    return read[-1][0] is msgs[-1] and last_assistant == (FLOW_QUESTION,)
+    return cfd_declared(msgs) and not approval_live and conditions_answered(msgs) \
+        and _found(_PLANNABLE, latest_declaration(msgs)) is not None
 
 
-#: THE FLOW QUESTION IN FIXED WORDS, for the one turn the model said nothing where it was due (it is
-#: the model's own words otherwise): what the fluid is and how fast it goes, as a proposal.
-FLOW_FALLBACK = ("What is the fluid, and how fast does it flow? I'd go with air at 20 °C and 10 m/s - OK, or "
-                 "tell me what to change.")
+def plan_due(messages: Iterable[Any], *, approval_live: bool) -> bool:
+    return fea_plan_due(messages, approval_live=approval_live) or cfd_plan_due(messages, approval_live=approval_live)
+
+
+def owned(messages: Iterable[Any]) -> bool:
+    """Whether the conversation is on a step the questionnaire owns: a part confirmed for FEA or for a
+    flow through or around it, or the purpose question still open before any route."""
+    from meshpipeline.application import purpose_map as pm
+    from meshpipeline.application.geometry_confirmation import fea_declared
+
+    msgs = [m for m in messages or () if isinstance(m, dict)]
+    if latest_declaration(msgs):
+        return fea_declared(msgs) or cfd_declared(msgs)
+    return not pm.reading_for(msgs).settled
 
 
 def return_line(messages: Iterable[Any], *, approval_live: bool, silent: bool = False) -> str:
-    """The fixed line an off-script answer closes with, so the chat returns to the step it left:
-    the plan's when a plan stands, the analysis question while an FEA part's analysis is open, and -
-    only for a turn the model said nothing in (`silent`) - the CFD flow question when it is due; ""
-    when the next step is the model's own or nothing is open."""
+    """The fixed words an off-script answer closes with, so the chat returns to the step it left:
+    the plan's when a plan stands; the analysis question while an FEA part's analysis is open; the
+    flow-conditions question while a CFD part's conditions are open; the purpose question while no
+    route is settled. "" when nothing is open. (`silent`: the model said nothing - the same line.)"""
     from meshpipeline.application import purpose_map as pm
     from meshpipeline.application.geometry_confirmation import fea_declared
 
     msgs = [m for m in messages or () if isinstance(m, dict)]
     if approval_live:
         return plan_line()
-    if fea_declared(msgs) and not analysis_said(msgs):
-        return pm.ANALYSIS_QUESTION
-    if silent and latest_declaration(msgs) and route_of(msgs) == ROUTE_CFD and FLOW_QUESTION not in steps(msgs) \
-            and PLAN not in steps(msgs):
-        return FLOW_FALLBACK
+    if fea_declared(msgs):
+        return "" if analysis_said(msgs) else pm.ANALYSIS_QUESTION
+    if cfd_declared(msgs):
+        return "" if conditions_answered(msgs) else conditions_question(msgs)
+    if not latest_declaration(msgs):
+        reading = pm.reading_for(msgs)
+        if not reading.settled:
+            return pm.QUESTIONS.get(reading.ask, pm.DOMAIN_QUESTION)
     return ""
 
 
@@ -310,37 +476,42 @@ def closed_with(reply: str, line: str) -> str:
     return f"{r}\n\n{line}" if r else line
 
 
-# ----------------------------------------------------------- the FEA plan, by the application ----
-
-def latest_declaration(messages) -> str:
-    """The stage's latest declaration in the conversation ("" when no part was confirmed)."""
-    from meshpipeline.application.geometry_confirmation import _is_declaration
-
-    for m in reversed([m for m in messages or () if isinstance(m, dict)]):
-        if _is_declaration(m):
-            return str(m.get("content") or "")
-    return ""
-
+# ------------------------------------------------------------------- the plan, by the application ----
 
 def _declaration(messages) -> str:
     return latest_declaration(messages)
 
 
 def fea_part_words(messages) -> dict:
-    """What the FEA declaration says of the part: its name, size and unit, as written there."""
+    """What the declaration says of the part: its name, size and unit, as written there."""
     from meshpipeline.application.geometry_confirmation import FEA_LEAD
 
     text = _declaration(messages)
-    after = text.split(FEA_LEAD, 1)[1] if FEA_LEAD in text else ""
     name = ""
-    m = re.match(r"\s*\(([^()]*)\)", after)
-    if m:
-        name = m.group(1).strip()
+    if FEA_LEAD in text:
+        m = re.match(r"\s*\(([^()]*)\)", text.split(FEA_LEAD, 1)[1])
+        name = m.group(1).strip() if m else ""
+    else:
+        m = _found(re.compile(r"the file is [^,(]*\(([^()]*)\), input_kind"), text)
+        name = m.group(1).strip() if m else ""
     size = _found(_SIZE, text)
     unit = _found(_UNIT, text)
     bodies = _found(_BODIES, text)
     return {"name": name, "size": "x".join(size.groups()) if size else "",
             "unit": unit.group(1) if unit else "", "bodies": int(bodies.group(1)) if bodies else 1}
+
+
+def _quotes(messages) -> list[str]:
+    skip = _purpose_buttons() | _analysis_buttons() | _step_buttons() | {_stage_continue()}
+    return [t for t in _users(messages) if t not in skip and _found(_SPECIFIC, t) is not None
+            and not _found(_OK, t)]
+
+
+def _part_phrase(part: dict, default: str) -> tuple[str, str]:
+    what = part["name"] or default
+    size = f", {part['size'].replace('x', ' x ')} mm" if part["size"] else ""
+    unit = f" (the file is in {part['unit']})" if part["unit"] else ""
+    return what, f"{size}{unit}"
 
 
 def fea_submission(messages, *, engine: str, engine_params: dict) -> dict:
@@ -355,16 +526,13 @@ def fea_submission(messages, *, engine: str, engine_params: dict) -> dict:
     analysis = analysis_said(messages) or "static"
     label = pm.ANALYSIS_LABELS.get(analysis, "Static stress")
     soon = analysis not in pm.V1_ANALYSES
-    what = part["name"] or ("the assembly" if part["bodies"] > 1 else "the part")
-    size = f", {part['size'].replace('x', ' x ')} mm" if part["size"] else ""
-    unit = f" (the file is in {part['unit']})" if part["unit"] else ""
-    shell = declared_shell(messages)
-    mesh = (f"The mesh is {shell_summary(messages)}." if shell else
+    what, where = _part_phrase(part, "the assembly" if part["bodies"] > 1 else "the part")
+    mesh = (f"The mesh is {shell_summary(messages)}." if declared_shell(messages) else
             "The mesh is a solid mesh of second-order 10-node elements (element_order 2) with every face kept as "
             "a named group.")
     analysis_words = (f"{label} analysis (coming soon - meshed as for static stress)" if soon
                       else f"{label.lower()} analysis")
-    request = (f"Structural FEA of {what}{size}{unit}, confirmed by the user on the FEA stage. "
+    request = (f"Structural FEA of {what}{where}, confirmed by the user on the FEA stage. "
                f"The user will run a {analysis_words}. {mesh} "
                "No supports, loads or materials were stated in the chat: the user sets them in their own "
                "solver on the named faces. The user's own words are kept as notes, word for word.")
@@ -372,14 +540,95 @@ def fea_submission(messages, *, engine: str, engine_params: dict) -> dict:
               "named group. Elements are well shaped, with no inverted or degenerate elements. Thin walls "
               "and small features are kept.")
     domain = " ".join(f"{part['name'] or ('assembly' if part['bodies'] > 1 else 'part')} {label} FEA".split()[:8])
-    skip = _purpose_buttons() | _analysis_buttons() | {_stage_continue()}
-    quotes = [str(m.get("content") or "") for m in messages or () if isinstance(m, dict)
-              and m.get("role") == "user" and str(m.get("content") or "").strip() not in skip
-              and _found(_SPECIFIC, str(m.get("content") or "")) is not None]
     out = {"domain": domain[:80], "request_txt": request, "review_brief_txt": review, "patches": [],
-           "dimensionality": "3D", "purpose": "structural", "input_kind": "solid-body",
-           "mesh_engine": engine, "engine_source": "suggested_confirmed",
-           "engine_params": dict(engine_params)}
+           "dimensionality": "3D", "purpose": _display("PURPOSE", "structural"),
+           "input_kind": _display("INPUT_KIND", "solid-body"),
+           "mesh_engine": engine, "engine_source": "suggested_confirmed", "engine_params": dict(engine_params)}
+    quotes = _quotes(messages)
+    if quotes:
+        out["user_note_quotes"] = quotes
+    return out
+
+
+_AXIS = re.compile(r"The fluid travels along ([+-][xyz])\.")
+_REF = re.compile(r"Reference length: (\d+(?:\.\d+)?) mm")
+_MARGINS = re.compile(r"Far-field margins in reference lengths: ([\d.]+) upstream, ([\d.]+) downstream, "
+                      r"([\d.]+) to each side, ([\d.]+) above\.")
+_KIND = re.compile(r"input_kind (body-surface|fluid-domain|solid-body); the fluid flows (through|around) it\.")
+
+
+def cfd_case(messages, intake_patches) -> dict | None:
+    """What the CFD plan is built from: the purpose, the kind, the patches and (external flow) the
+    far field, all as the user confirmed them on the stage. None when the declaration does not carry
+    what a plan needs (a flow direction left open, an internal flow with no opening) - the model then
+    reads the conversation, as it always did."""
+    text = _declaration(messages)
+    kind = _found(_KIND, text)
+    if not kind:
+        return None
+    if kind.group(2) == "through":
+        patches = [dict(p) for p in intake_patches or () if isinstance(p, dict)]
+        if not any(p.get("type") == "inlet" for p in patches) or not any(p.get("type") == "outlet" for p in patches):
+            return None
+        return {"purpose": "internal_cfd", "input_kind": kind.group(1), "patches": patches, "extra": {}}
+    axis, ref, margins = _found(_AXIS, text), _found(_REF, text), _found(_MARGINS, text)
+    if not axis:
+        return None
+    patches = [{"name": "wall", "type": "wall"}, {"name": "farfield", "type": "farfield"}]
+    if "The part stands on the ground." in text:
+        patches.insert(1, {"name": "ground", "type": "wall"})
+    extra: dict = {"flow_axis": axis.group(1)}
+    if ref and margins:
+        extra.update(reference_length_m=float(ref.group(1)) / 1000.0, requested_extents=dict(zip(
+            ("upstream", "downstream", "lateral", "vertical"), (float(v) for v in margins.groups()), strict=True)))
+    return {"purpose": "external_cfd", "input_kind": kind.group(1), "patches": patches, "extra": extra}
+
+
+def cfd_submission(messages, case: dict, *, engine: str, engine_params: dict) -> dict:
+    """The CFD plan's submit_requirements arguments, written by the application from the stage's
+    declaration and the conditions the user gave (or accepted). Nothing is invented: a value the
+    user left to the proposal is said to be the proposal; their own words are kept as notes."""
+    part = fea_part_words(messages)
+    ext = case["purpose"] == "external_cfd"
+    got = flow_conditions(messages)
+    what, where = _part_phrase(part, "the part")
+    wall = WALL_RESOLVED if got["wall"] == "resolved" else WALL_FUNCTIONS
+    band = "y⁺ ≈ 1" if got["wall"] == "resolved" else "y⁺ 30–300"
+    left = [w for w, said in (("the fluid", got["said_fluid"]), ("its speed", got["said_speed"]),
+                              ("the wall treatment", got["said_wall"])) if not said]
+    names = ", ".join(str(p.get("name")) for p in case["patches"])
+    ports = ""
+    if not ext:
+        ports = " Openings: " + "; ".join(
+            f"{p['name']} ({p['type']}" + (f", {float(p['diameter_mm']):.0f} mm across" if p.get("diameter_mm") else "")
+            + ")" for p in case["patches"] if p.get("type") in ("inlet", "outlet")) + "."
+    far = ""
+    if ext:
+        x = case["extra"]
+        far = f" The flow travels along {x['flow_axis']}."
+        if x.get("requested_extents"):
+            e = x["requested_extents"]
+            far += (f" Far-field margins in reference lengths of {x['reference_length_m']:g} m: {e['upstream']:g} upstream, "
+                    f"{e['downstream']:g} downstream, {e['lateral']:g} to each side, {e['vertical']:g} above.")
+    request = (f"{'External' if ext else 'Internal'} flow {'around' if ext else 'through'} {what}{where}, confirmed "
+               f"by the user on the geometry stage. Fluid: {got['fluid']} at {got['speed']}"
+               f"{'' if ext else ' at the inlet'}. Near the walls: {wall}; the first-layer thickness is sized "
+               f"for {band} at that speed.{ports}{far} "
+               + (f"Left to the application's proposal, which the user accepted: {', '.join(left)}. " if left else "")
+               + "The user's own words are kept as notes, word for word.")
+    review = (f"The fluid region is meshed whole. Every boundary patch is present: {names}. Near-wall prism "
+              f"layers cover the walls for {band}. Cell sizes grade smoothly from the walls into the "
+              + ("flow and out to the far field, which encloses the body without clipping it." if ext
+                 else "core of the passage, with the openings resolved."))
+    domain = " ".join(f"{part['name'] or 'part'} {'external' if ext else 'internal'} flow".split()[:8])
+    out = {"domain": domain[:80], "request_txt": request, "review_brief_txt": review,
+           "patches": case["patches"], "dimensionality": "3D",
+           "purpose": _display("PURPOSE", case["purpose"]), "input_kind": _display("INPUT_KIND", case["input_kind"]),
+           "mesh_engine": engine, "engine_source": "suggested_confirmed", "engine_params": dict(engine_params),
+           **case["extra"]}
+    if not ext and any("near_mm" in p for p in case["patches"]):
+        out["port_details_note"] = "captured"
+    quotes = _quotes(messages)
     if quotes:
         out["user_note_quotes"] = quotes
     return out
@@ -393,92 +642,156 @@ def _engine_defaults(engine: str) -> dict:
         return {}
 
 
+#: The turn's modes (agents/intake/agent.py picks one; ScriptedPlanTurn runs it).
+MODE_FREE, MODE_PLAN, MODE_ANSWER, MODE_ANSWER_THEN_PLAN, MODE_READ_THEN_PLAN = (
+    "free", "plan", "answer", "answer_then_plan", "read_then_plan")
+#: What the model may call while it answers a question: tools that read, or settle the engine the plan
+#: names (the engine is chosen, never asked) - never the admission check or the submission, which put
+#: a step in front of the user
+READ_ONLY_TOOLS = frozenset({"web_search", "recommend_compatible_engines", "propose_engine_selection",
+                             "confirm_engine_selection"})
+
+
+def turn_mode(messages, *, approval_live: bool, plan_was_shown: bool) -> str:
+    """Who does what this turn. On a route the questionnaire owns:
+    - the plan is due and the user asked nothing: the APPLICATION submits it, no model (MODE_PLAN) -
+      unless a plan was already shown and the user's own words change it on the CFD route: the model
+      reads the change first, and the application submits if it did not (MODE_READ_THEN_PLAN);
+    - the user asked something: the model answers in words only, with no tool that changes anything,
+      and the plan follows when it is due (MODE_ANSWER_THEN_PLAN) or the open step's own words close
+      the answer (MODE_ANSWER);
+    - an FEA part's analysis is still open and the words did not give it: the model answers in words
+      and the analysis question follows (MODE_ANSWER).
+    Anything else is the model's turn as it always was (MODE_FREE)."""
+    from meshpipeline.application.geometry_confirmation import fea_declared
+
+    msgs = [m for m in messages or () if isinstance(m, dict)]
+    if not owned(msgs):
+        return MODE_FREE
+    latest = latest_user(msgs)
+    due = plan_due(msgs, approval_live=approval_live)
+    if asks_something(latest):
+        return MODE_ANSWER_THEN_PLAN if due else MODE_ANSWER
+    if due:
+        if plan_was_shown and cfd_declared(msgs) and not plain_step_answer(latest) and not _found(_OK, latest):
+            return MODE_READ_THEN_PLAN
+        return MODE_PLAN
+    if fea_declared(msgs) and not analysis_said(msgs) and not approval_live:
+        return MODE_ANSWER
+    return MODE_FREE
+
+
 @dataclass
-class ScriptedFeaTurn:
-    """THE FEA PLAN, SUBMITTED BY THE APPLICATION. When the FEA plan is due and the user's message
-    leaves nothing to understand (the stage's Proceed, an analysis button), the turn's rounds are
-    the application's: propose the FEA mesher, preview the exact payload, submit it - through the
-    intake executor's own tools, so every gate applies. `takeover` starts the script when the model
-    answers a due plan with prose instead. Any refusal hands the rest of the turn back to the model."""
+class ScriptedPlanTurn:
+    """THE PLAN, SUBMITTED BY THE APPLICATION. In MODE_PLAN the turn's rounds are the application's:
+    propose the route's mesher, preview the exact payload, submit it - through the intake executor's
+    own tools, so every gate applies; a refusal hands the rest of the turn back to the model, with
+    every result in hand. In an answer mode the model is offered no tool that changes anything.
+    `run_plan` submits the plan directly after a turn the model answered in (agent.py)."""
 
     exec_state: Any
     messages: list
     model: Any
+    mode: str = MODE_FREE
+    intake_patches: list = field(default_factory=list)
     active: bool = False
-    takeover: bool = False
     rounds: int = 0
     handed_back: bool = False
-    took_over: bool = False
     used: list = field(default_factory=list)
 
-    def _resp(self, name: str, args: dict):
+    def __post_init__(self) -> None:
+        self.active = self.mode == MODE_PLAN
+
+    def _call(self, name: str, args: dict):
         from meshpipeline.contracts.model_inference import ModelRoundResult, ToolCallRequest
         self.rounds += 1
         self.used.append(name)
         return ModelRoundResult(
-            tool_calls=(ToolCallRequest(id=f"app-{self.rounds}-{name}", name=name,
-                                        arguments=json.dumps(args)),),
+            tool_calls=(ToolCallRequest(id=f"app-{self.rounds}-{name}", name=name, arguments=json.dumps(args)),),
             assistant_text="", finish_reason="tool_calls")
 
-    @staticmethod
-    def _last_tool(messages) -> dict:
-        for m in reversed(list(messages or [])):
-            if isinstance(m, dict) and m.get("role") == "tool":
-                try:
-                    got = json.loads(str(m.get("content") or "").split("\n\n")[-1])
-                    return got if isinstance(got, dict) else {"text": str(m.get("content") or "")}
-                except ValueError:
-                    return {"text": str(m.get("content") or "")}
-        return {}
+    def _case(self) -> dict | None:
+        from meshpipeline.application.geometry_confirmation import fea_declared
+        if fea_declared(self.messages):
+            return {"purpose": "structural", "input_kind": "solid-body", "patches": [], "extra": {}}
+        return cfd_case(self.messages, self.intake_patches)
 
-    def _next(self, messages):
+    def next_call(self, last_result: str) -> tuple[str, dict] | None:
+        """The application's next tool call (name, arguments), from the last tool result; None when the
+        plan is submitted or a gate refused it."""
         from meshpipeline.agents.intake import engine_selection as es
         st = self.exec_state
-        if not self.used:
-            return self._resp("propose_engine_selection", {"engine": _vocab_display("gmsh")})
-        last = self.used[-1]
+        case = self._case()
+        if case is None:
+            return None
+        last = self.used[-1] if self.used else ""
+        if not last:
+            return "propose_engine_selection", {
+                "engine": _vocab_display("gmsh" if case["purpose"] == "structural" else "snappy")}
+        if (last == "propose_engine_selection" and "Engines that can:" in last_result
+                and self.used.count("propose_engine_selection") < 2):
+            able = last_result.split("Engines that can:", 1)[1].split(".")[0].split(",")[0].strip()
+            return "propose_engine_selection", {"engine": able}
         sel = st.selection or {}
         engine = str(sel.get("engine") or "")
         if last == "propose_engine_selection":
             if es.state_of(sel) != es.CONFIRMED or not engine:
                 return None
-            return self._resp("preview_selected_admission", {
-                "selected_engine": _vocab_display(engine), "purpose": _display("PURPOSE", "structural"),
-                "input_kind": _display("INPUT_KIND", "solid-body"), "dimensionality": "3D", "patches": [],
-                "engine_params": _engine_defaults(engine)})
+            return "preview_selected_admission", {
+                "selected_engine": _vocab_display(engine), "purpose": _display("PURPOSE", case["purpose"]),
+                "input_kind": _display("INPUT_KIND", case["input_kind"]), "dimensionality": "3D",
+                "patches": case["patches"], "engine_params": _engine_defaults(engine)}
         if last == "preview_selected_admission":
-            token = str(self._last_tool(messages).get("preview_token") or "")
+            try:
+                token = str(json.loads(last_result.split("\n\n")[-1]).get("preview_token") or "")
+            except (ValueError, AttributeError):
+                token = ""
             if not token:
                 return None
-            args = fea_submission(self.messages, engine=_vocab_display(engine),
-                                  engine_params=_engine_defaults(engine))
-            args.update(purpose=_display("PURPOSE", "structural"),
-                        input_kind=_display("INPUT_KIND", "solid-body"), preview_token=token)
-            return self._resp("submit_requirements", args)
+            params = _engine_defaults(engine)
+            args = (fea_submission(self.messages, engine=_vocab_display(engine), engine_params=params)
+                    if case["purpose"] == "structural" else
+                    cfd_submission(self.messages, case, engine=_vocab_display(engine), engine_params=params))
+            return "submit_requirements", {**args, "preview_token": token}
         return None
+
+    async def run_plan(self, executor) -> bool:
+        """THE PLAN, SUBMITTED DIRECTLY through the executor's own tools (after a turn the model only
+        answered in). True when it was submitted."""
+        self.used, result = [], ""
+        while True:
+            call = self.next_call(result)
+            if call is None:
+                return self.exec_state.submit_args is not None
+            name, args = call
+            self.used.append(name)
+            result = (await executor.run(name, args)).content
+            if name == "submit_requirements":
+                return self.exec_state.submit_args is not None
 
     async def __call__(self, *, messages, tools, job_id, user_id, tool_choice="auto"):
         # the provider's own signature, never **kwargs: a round offers a reasoning sink only to a
         # provider that names one, and the intake's does not
-        kw = {"messages": messages, "tools": tools, "job_id": job_id, "user_id": user_id,
-              "tool_choice": tool_choice}
         if self.active:
-            step = self._next(kw.get("messages") or [])
-            if step is not None:
-                return step
-            # a gate refused: the rest of the turn is the model's, with every result in hand
+            last = next((str(m.get("content") or "") for m in reversed(list(messages or []))
+                         if isinstance(m, dict) and m.get("role") == "tool"), "")
+            call = self.next_call(last)
+            if call is not None:
+                return self._call(*call)
             self.active, self.handed_back = False, True
-            return await self.model(**kw)
-        got = await self.model(**kw)
-        if (self.takeover and not self.handed_back and not got.tool_calls
-                and self.exec_state.submit_args is None and not _live(self.exec_state.approval)):
-            # PROSE WHERE THE PLAN IS DUE: set aside - the application submits the plan itself
-            self.active, self.took_over = True, True
-            step = self._next(kw.get("messages") or [])
-            if step is not None:
-                return step
-            self.active, self.handed_back = False, True
-        return got
+        if self.mode in (MODE_ANSWER, MODE_ANSWER_THEN_PLAN) and not self.handed_back:
+            # AN ANSWER IN WORDS: no tool that changes anything is offered - the order is not the model's
+            tools = [t for t in tools or () if (t.get("function") or {}).get("name") in READ_ONLY_TOOLS]
+            got = await self.model(messages=messages, tools=tools, job_id=job_id, user_id=user_id,
+                                   tool_choice=tool_choice)
+            kept = tuple(c for c in got.tool_calls if c.name in READ_ONLY_TOOLS)
+            if len(kept) != len(got.tool_calls):
+                # a call to a tool it was not offered is never run: its words are the answer
+                import dataclasses
+                return dataclasses.replace(got, tool_calls=kept, finish_reason=got.finish_reason if kept else "stop")
+            return got
+        return await self.model(messages=messages, tools=tools, job_id=job_id, user_id=user_id,
+                                tool_choice=tool_choice)
 
 
 def _live(approval) -> bool:
@@ -496,8 +809,13 @@ def _vocab_display(engine_or_key: str) -> str:
     return _vocab.to_display(_vocab.ENGINE, engine_or_key)
 
 
-__all__ = ["ANALYSIS", "ANSWER", "CONFIRMED", "FLOW_QUESTION", "PLAN", "PURPOSE", "PURPOSE_CLARIFY",
-           "READING", "ROUTE_CFD", "ROUTE_FEA", "STAGE", "STANDARD", "STARTED", "UNIT", "ScriptedFeaTurn",
-           "analysis_said", "asks_something", "cfd_plan_due", "closed_with", "fea_part_words", "fea_plan_due",
-           "fea_submission", "is_flow_question", "latest_declaration", "latest_user", "plain_step_answer",
-           "plan_line", "read_messages", "return_line", "route_of", "step_of", "steps"]
+__all__ = ["ANALYSIS", "ANSWER", "CONDITIONS_CHOICES", "CONFIRMED", "EXTERNAL_LEAD", "FLOW_KIND",
+           "FLOW_KIND_CHOICES", "FLOW_KIND_QUESTION", "FLOW_QUESTION", "INTERNAL_LEAD", "MODE_ANSWER",
+           "MODE_ANSWER_THEN_PLAN", "MODE_FREE", "MODE_PLAN", "MODE_READ_THEN_PLAN", "PLAN", "PURPOSE",
+           "PURPOSE_CLARIFY", "READING", "ROUTE_CFD", "ROUTE_FEA", "STAGE", "STANDARD", "STARTED", "UNIT",
+           "ScriptedPlanTurn", "analysis_said", "asks_something", "cfd_case", "cfd_declared", "cfd_plan_due",
+           "cfd_submission", "closed_with", "conditions_answered", "conditions_due", "conditions_question",
+           "fea_part_words", "fea_plan_due", "fea_submission", "flow_conditions", "flow_kind_of",
+           "flow_kind_question_due", "geometry_flow_kind", "is_conditions_question", "latest_declaration",
+           "latest_user", "owned", "plain_step_answer", "plan_due", "plan_line", "read_messages", "return_line",
+           "route_of", "step_choices", "step_of", "steps", "turn_mode"]

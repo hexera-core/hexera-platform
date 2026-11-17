@@ -104,7 +104,7 @@ def test_only_a_confirmed_selection_authorizes_admission():
 
 def test_an_engine_the_model_proposes_on_its_own_is_selected_with_no_question():
     # the engine is chosen, not asked (Areen, 2026-11-13): no "I'd mesh this with ... OK?" turn
-    state = _state("Which engine would you suggest for this?")
+    state = _state("Internal flow through this pipe - which engine would you suggest for this?")
     out = _run(state, [_resp([_tc("propose_engine_selection", json.dumps({"engine": "gmsh"}))]),
                        _resp(content="What is the flow speed?")])
     reply = out["messages"][-1]["content"]
