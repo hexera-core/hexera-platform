@@ -319,8 +319,14 @@ def solids_from_shells(ws: Path, seen: dict | None = None) -> int:
     return made
 
 
-def measure_staged(ws: Path) -> tuple[dict, Any, float]:
-    """(the measurement record in mm, its labelled surface in mm, the part's diagonal in m)."""
+#: a measurement made with its suspect checks left for later: the workspace -> (its cache key, healed)
+_PENDING: dict[str, tuple[str, bool]] = {}
+
+
+def measure_staged(ws: Path, *, suspects: bool = True) -> tuple[dict, Any, float]:
+    """(the measurement record in mm, its labelled surface in mm, the part's diagonal in m). `suspects` off: the
+    suspected-defect checks are left for check_staged_suspects (the run says them as their own step); a record
+    measured before already has them."""
     from meshpipeline.cad.fea_measure import measure_cad_surface
     from meshpipeline.cad.scout import read_cad
 
@@ -370,15 +376,49 @@ def measure_staged(ws: Path) -> tuple[dict, Any, float]:
                                               max_ray_triangles=MAX_RAY_TRIANGLES)
         record.setdefault("notes", []).append(f"the CAD was healed before it was measured ({exc})")
         healed = True
-    # MESH-1: WHERE THE CAD MAY BE BROKEN, measured on this very solid (detect only, never a stop): the
-    # mesh is tried; a valid one is delivered with a note, and only a failure AT that spot is the CAD's
-    try:
-        from meshpipeline.cad import suspect_defects as SD
-        record["suspects"] = SD.find(shape, record)
-    except Exception as exc:  # noqa: BLE001 - no suspects measured is no suspects
-        logger.warning("fea driver: suspected defects not measured (%s)", type(exc).__name__)
+    if not suspects:
+        _PENDING[str(ws)] = (cache_key, healed)
+        return record, surface, diag_m
+    _suspects_into(record, shape)
     MC.save(cache_key, {"record": record, "healed": healed})
     return record, surface, diag_m
+
+
+def _suspects_into(record: dict, shape) -> None:
+    """MESH-1: WHERE THE CAD MAY BE BROKEN, measured on this very solid (detect only, never a stop): the mesh is
+    tried; a valid one is delivered with a note, and only a failure AT that spot is the CAD's. Each check is
+    time-boxed (cad/suspect_defects); what it did not check in its time is said (`suspects_unchecked`)."""
+    try:
+        from meshpipeline.cad import suspect_defects as SD
+        found, unchecked = SD.find_bounded(shape, record)
+        record["suspects"] = found
+        if unchecked:
+            record["suspects_unchecked"] = unchecked
+            record.setdefault("notes", []).append(SD.unchecked_words(unchecked))
+    except Exception as exc:  # noqa: BLE001 - no suspects measured is no suspects
+        logger.warning("fea driver: suspected defects not measured (%s)", type(exc).__name__)
+        record.setdefault("suspects", [])
+
+
+def check_staged_suspects(ws: Path, record: dict) -> dict:
+    """measure_staged's suspected-defect checks, for a record measured with `suspects` off (its own step in the
+    run): the staged solid read again, checked, and the whole record kept for the next measurement. A record that
+    already has them is returned as it is."""
+    if "suspects" in record:
+        return record
+    from meshpipeline.cad import fea_measure_cache as MC
+    from meshpipeline.cad.scout import read_cad
+
+    pending = _PENDING.pop(str(ws), None)
+    try:
+        _suspects_into(record, read_cad(staged_solid(ws) or ws / "geometry.step"))
+        if pending is not None:
+            key, healed = pending
+            MC.save(key, {"record": record, "healed": healed})
+    except Exception as exc:  # noqa: BLE001 - no suspects measured is no suspects
+        logger.warning("fea driver: suspected defects not measured (%s)", type(exc).__name__)
+        record.setdefault("suspects", [])
+    return record
 
 
 def staged_mm_per_unit(step: Path) -> float:
@@ -788,7 +828,29 @@ def prepare_assembly(ws: Path, record: dict, surface, *, connection: str, source
         # PLAN-fea-18: how the joints were found, the small-gap joints, and the faces no gap sizing
         # should read (the gap a joint joins, a skin of no thickness)
         record["assembly_plan"]["joins"] = sidecar["joins"]
+    if sidecar.get("join"):
+        # PLAN-fea-35: which parts were fused together, each fuse's limit and time, and what was tied instead
+        record["assembly_plan"]["join"] = sidecar["join"]
     return record
+
+
+def join_decision(join: dict, asm: dict | None = None) -> dict:
+    """PLAN-fea-35's why-record entry: the groups fused, each fuse's limit and time, and the pairs tied instead."""
+    from meshpipeline.cad import assembly_join as AJ
+
+    lost = [list(u) for u in join.get("unfused") or []]
+    groups = join.get("groups") or []
+    fused = sum(1 for g in groups if g.get("outcome") == AJ.FUSED)
+    said = AJ.words(join)
+    words = said[0] if said else (
+        f"The parts were joined where they touch: {len(groups)} group(s) of touching parts, each fused on its own"
+        f" ({fused} within its time limit), {join.get('parts', 0) - sum(len(g.get('parts') or []) for g in groups)}"
+        " part(s) touching no other left as they are.")
+    return {"stage": "fea_plan", "decided": "parts joined", "rule": AJ.RULE, "value": len(lost),
+            "inputs": {"groups": groups, "pairs": join.get("pairs") or [], "regroups": join.get("regroups") or [],
+                       "unfused": lost, "touch": join.get("touch") or {}, "limits": join.get("limits") or {},
+                       "seconds": join.get("seconds"), "mode": (asm or {}).get("mode")},
+            "words": words}
 
 
 def skin_words(skins: list[dict]) -> list[str]:
@@ -2469,7 +2531,22 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     from meshpipeline.contracts import narration as _N
     await _N.astep(publish, "measure", "Measuring your part", op_id="fea:measure")
     try:
-        record, surface, diag_m = await asyncio.to_thread(measure_staged, ws)
+        record, surface, diag_m = await asyncio.to_thread(measure_staged, ws, suspects=False)
+        if "suspects" not in record:
+            # MESH-1's checks for broken CAD, as their own step (each time-boxed, cad/suspect_defects)
+            await _N.astep(publish, "check", "Checking for defects", op_id="fea:defects")
+            record = await asyncio.to_thread(check_staged_suspects, ws, record)
+            if record.get("suspects_unchecked"):
+                from meshpipeline.cad import suspect_defects as SDF
+
+                _cite(job_id, [{"stage": "fea_plan", "decided": "defect checks not finished", "rule": "MESH-1",
+                                "value": len(record["suspects_unchecked"]),
+                                "inputs": {"unchecked": record["suspects_unchecked"],
+                                           "limits": {"crossing_s": SDF.CROSSING_S,
+                                                      "boolean_floor_s": SDF.BOOLEAN_FLOOR_S,
+                                                      "boolean_per_face_s": SDF.BOOLEAN_S_PER_FACE,
+                                                      "boolean_cap_s": SDF.BOOLEAN_CAP_S}},
+                                "words": SDF.unchecked_words(record["suspects_unchecked"])}])
         if skins and skins.get("origin"):
             record = named_as_cad(record, surface, skins)
     except Exception as exc:  # noqa: BLE001 - recorded as the attempt's reason
@@ -2497,6 +2574,8 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         # PLAN-fea-17: AN ASSEMBLY - its parts staged as the user said they are joined (bonded by
         # default), every face Part_k_Face_j, each part sized by its own rules
         connection = connection_of(state)
+        # PLAN-fea-35: the parts joined where they touch (each fuse time-boxed), said as its own step
+        await _N.astep(publish, "measure", "Joining the parts", op_id="fea:join")
         try:
             record = await asyncio.to_thread(prepare_assembly, ws, record, surface, connection=connection,
                                              source_path=source_path, gap_joins=gap_joins_of(state),
@@ -2509,6 +2588,15 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
             outcome = run.outcome(produced_deliverable=False, failure_marker=BUILD_FAILED)
             return False, BUILD_FAILED, outcome
         asm = record.get("assembly_plan") or {}
+        if asm.get("join"):
+            _cite(job_id, [join_decision(asm["join"], asm)])
+            from meshpipeline.cad import assembly_join as AJ
+
+            named = {int(str(p.get("id", "")).rsplit("_", 1)[-1]): str(p.get("name") or "")
+                     for p in asm.get("parts") or [] if str(p.get("id", "")).startswith("Part_")}
+            line = AJ.say_words(asm["join"], lambda p: named.get(p, ""))
+            if line:
+                await _N.asay(publish, line, op_id="fea:join:tied")
         joins = asm.get("joins") or {}
         if joins:
             _cite(job_id, [{"stage": "fea_plan", "decided": "joints", "value": joins.get("found_by"),

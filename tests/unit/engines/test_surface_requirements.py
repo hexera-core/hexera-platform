@@ -401,7 +401,7 @@ def test_a_file_that_is_not_a_surface_carries_the_same_reading_on(tmp_path, monk
     monkeypatch.setattr(FD, "shell_pass", stop)                         # the step right after the solid path's read
     monkeypatch.setattr(FD, "open_single_skins", lambda _ws: None)
     record = {"faces": {"Face_1": {"thickness_min_mm": 1.0}}, "bodies": 1, "notes": []}
-    monkeypatch.setattr(FD, "measure_staged", lambda _ws: (record, None, 0.1))
+    monkeypatch.setattr(FD, "measure_staged", lambda _ws, **_k: (record, None, 0.1))
     monkeypatch.setattr(FD.P, "zones", lambda _record, **_k: [])
 
     async def no_ai(*_a, **_k):

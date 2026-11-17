@@ -90,11 +90,121 @@ def _boolean_faces(shape, body: int) -> set[int] | None:
 def find(shape, record: dict, *, validity: dict | None = None, check_overlaps: bool = True) -> list[dict]:
     """Every suspect on `shape` (the shape `record` measured). The folds come from the record
     (cad/fea_measure keeps cad/fold_back's); the self-overlaps from `validity`'s reasons when the geometry
-    check already ran, else from a fresh crossing search (`check_overlaps`)."""
+    check already ran, else from a fresh crossing search (`check_overlaps`). Each check is time-boxed
+    (find_bounded); what it did not check is logged here (find_bounded says it)."""
+    found, unchecked = find_bounded(shape, record, validity=validity, check_overlaps=check_overlaps)
+    if unchecked:
+        logger.info("suspect defects: not checked in the time set - %s", "; ".join(u["why"] for u in unchecked))
+    return found
+
+
+#: MESH-1's TIME BOX (Areen, 17 Nov: a turbocharger spent minutes of "Measuring your part" in these checks, unbounded):
+#: every check runs in a child process (cad/bounded_steps) under its own limit - the crossing search CROSSING_S, each
+#: solid's Boolean check BOOLEAN_FLOOR_S and BOOLEAN_S_PER_FACE a face of that solid, at most BOOLEAN_CAP_S. A check
+#: past its limit is stopped and said as not checked; the run goes on.
+CROSSING_S = 300.0
+BOOLEAN_FLOOR_S = 60.0
+BOOLEAN_S_PER_FACE = 0.2
+BOOLEAN_CAP_S = 300.0
+MODULE = "meshpipeline.cad.suspect_defects"
+
+
+def boolean_limit_s(faces: int) -> float:
+    """MESH-1: how long one solid's Boolean check may take."""
+    return float(min(BOOLEAN_CAP_S, BOOLEAN_FLOOR_S + BOOLEAN_S_PER_FACE * max(int(faces), 0)))
+
+
+def _solid_faces(shape) -> list[int]:
+    from OCP.TopAbs import TopAbs_FACE, TopAbs_SOLID
+    from OCP.TopExp import TopExp
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+
+    solids = TopTools_IndexedMapOfShape()
+    TopExp.MapShapes_s(shape, TopAbs_SOLID, solids)
+    out = []
+    for k in range(1, solids.Extent() + 1):
+        own = TopTools_IndexedMapOfShape()
+        TopExp.MapShapes_s(solids.FindKey(k), TopAbs_FACE, own)
+        out.append(own.Extent())
+    return out
+
+
+class _Checks:
+    """The time-boxed checks of one shape: written once to a B-rep file the children read (the same faces, in the
+    same order), each check a step (cad/bounded_steps). `unchecked` collects what ran out or stopped."""
+
+    def __init__(self, shape, tmp: str):
+        from pathlib import Path
+
+        from OCP.BRepTools import BRepTools
+
+        self.dir = Path(tmp)
+        self.brep = self.dir / "shape.brep"
+        self.ok = bool(BRepTools.Write_s(shape, str(self.brep)))
+        self.faces = _solid_faces(shape)
+        self.unchecked: list[dict] = []
+        self.runs = 0
+
+    def run(self, steps: list[dict], limits: list[float], *, start_by_s: float | None = None):
+        from meshpipeline.cad import bounded_steps as BS
+
+        self.runs += 1
+        return BS.run(MODULE, {"brep": str(self.brep)}, steps, limits, start_by_s=start_by_s,
+                      workdir=self.dir / f"run{self.runs}")
+
+    def crossings(self) -> list | None:
+        (got,) = self.run([{"op": "cross"}], [CROSSING_S])
+        if got.ok:
+            return list(got.value or [])
+        self.unchecked.append({"check": "crossings",
+                               "why": f"the search for faces crossing each other ({_why(got, CROSSING_S)})"})
+        return None
+
+    def booleans(self, bodies: list[int], *, total_s: float | None = None) -> dict[int, set[int] | None]:
+        bodies = [b for b in bodies if 0 < b <= max(len(self.faces), 1)]
+        limits = [boolean_limit_s(self.faces[b - 1] if b - 1 < len(self.faces) else 0) for b in bodies]
+        got = self.run([{"op": "boolean", "body": b} for b in bodies], limits, start_by_s=total_s)
+        out: dict[int, set[int] | None] = {}
+        for b, s, lim in zip(bodies, got, limits, strict=True):
+            if s.ok:
+                out[b] = None if s.value is None else {int(x) for x in s.value}
+            else:
+                out[b] = None
+                self.unchecked.append({"check": "boolean", "body": b,
+                                       "why": f"body {b}'s Boolean self-interference check ({_why(s, lim)})"})
+        return out
+
+
+def _why(step, limit: float) -> str:
+    from meshpipeline.cad import bounded_steps as BS
+
+    return {BS.TIME: f"past its limit of {limit:.3g} s", BS.NOT_RUN: "not started: the time for it ran out",
+            BS.STOPPED: "it stopped", BS.ERROR: "it failed"}.get(step.why, step.why or "not run")
+
+
+def find_bounded(shape, record: dict, *, validity: dict | None = None,
+                 check_overlaps: bool = True) -> tuple[list[dict], list[dict]]:
+    """find(), and what it did not check in the time set for it: [{"check", "body"?, "why"}] (MESH-1's time box)."""
+    import tempfile
+
     try:
         names = _face_names(shape, record)
     except Exception:  # noqa: BLE001
-        return []
+        return [], []
+    with tempfile.TemporaryDirectory(prefix="suspects_") as tmp:
+        try:
+            checks: _Checks | None = _Checks(shape, tmp)
+        except Exception as exc:  # noqa: BLE001 - checked in this process, as before
+            logger.debug("suspect defects: no time-boxed checks (%s)", type(exc).__name__)
+            checks = None
+        if checks is not None and not checks.ok:
+            checks = None
+        found = _find(shape, record, names, validity=validity, check_overlaps=check_overlaps, checks=checks)
+        return found, (checks.unchecked if checks is not None else [])
+
+
+def _find(shape, record: dict, names: list[str], *, validity: dict | None, check_overlaps: bool,
+          checks: _Checks | None) -> list[dict]:
     index = {n: k + 1 for k, n in enumerate(names)}
     out: list[dict] = []
     for f in record.get("fold_back") or []:
@@ -106,12 +216,15 @@ def find(shape, record: dict, *, validity: dict | None = None, check_overlaps: b
                                  if gap is not None else "the two faces' normals are opposite along an edge"]})
     reasons = (validity or {}).get("reasons") if validity else None
     if reasons is None and check_overlaps:
-        try:
-            from meshpipeline.cad.validity_brep import check_shape
-            reasons = [r.as_dict() if hasattr(r, "as_dict") else r for r in check_shape(shape).reasons]
-        except Exception as exc:  # noqa: BLE001 - no crossing search, no self-overlap suspect
-            logger.debug("suspect defects: the crossing search did not run (%s)", type(exc).__name__)
-            reasons = []
+        if checks is not None:
+            reasons = checks.crossings() or []
+        else:
+            try:
+                from meshpipeline.cad.validity_brep import check_shape
+                reasons = [r.as_dict() if hasattr(r, "as_dict") else r for r in check_shape(shape).reasons]
+            except Exception as exc:  # noqa: BLE001 - no crossing search, no self-overlap suspect
+                logger.debug("suspect defects: the crossing search did not run (%s)", type(exc).__name__)
+                reasons = []
     for r in reasons or []:
         if not isinstance(r, dict) or str(r.get("code")) != "self_intersection":
             continue
@@ -125,6 +238,10 @@ def find(shape, record: dict, *, validity: dict | None = None, check_overlaps: b
     # THE SECOND MEASURE: the Boolean check on that solid alone names one of the faces - run ONCE per
     # solid however many suspects lie on it (the answer is the solid's, not the suspect's)
     checked: dict[int, set[int] | None] = {}
+    if checks is not None:
+        # every suspect's solid checked once, each under its own limit (MESH-1's time box)
+        wanted = sorted({int(s["body"] or 1) for s in out if any(n in index for n in s["faces"])})
+        checked.update(checks.booleans(wanted))
 
     def boolean(body: int) -> set[int] | None:
         if body not in checked:
@@ -142,7 +259,14 @@ def find(shape, record: dict, *, validity: dict | None = None, check_overlaps: b
     # its frame crosses itself where the tessellated crossing search saw nothing). In the run only (no
     # stored check given): the stage stays as quick as it was
     if check_overlaps and validity is None:
-        out.extend(_boolean_only(shape, names, {int(s["body"] or 0) for s in out}, known=checked))
+        covered = {int(s["body"] or 0) for s in out}
+        if checks is not None:
+            rest = [k for k in range(1, len(checks.faces) + 1) if k not in covered and k not in checked]
+            # no check STARTS past BOOLEAN_BUDGET_S (as before); one running keeps its own limit
+            checked.update(checks.booleans(rest, total_s=BOOLEAN_BUDGET_S))
+            out.extend(_boolean_only(shape, names, covered, known=checked, only_known=True))
+        else:
+            out.extend(_boolean_only(shape, names, covered, known=checked))
     return out
 
 
@@ -151,7 +275,7 @@ BOOLEAN_BUDGET_S = 60.0
 
 
 def _boolean_only(shape, names: list[str], covered: set[int],
-                  known: dict[int, set[int] | None] | None = None) -> list[dict]:
+                  known: dict[int, set[int] | None] | None = None, *, only_known: bool = False) -> list[dict]:
     import time
 
     from OCP.TopAbs import TopAbs_SOLID
@@ -164,6 +288,8 @@ def _boolean_only(shape, names: list[str], covered: set[int],
     out = []
     for k in range(1, solids.Extent() + 1):
         if k in covered or time.monotonic() - t0 > BOOLEAN_BUDGET_S:
+            continue
+        if only_known and (known is None or k not in known):
             continue
         hit = known[k] if known is not None and k in known else _boolean_faces(shape, k)
         if not hit:
@@ -185,4 +311,49 @@ def words(s: dict, who: str = "") -> str:
     return f"{who or 'The part'} may have {what} at {faces} ({sure})."
 
 
-__all__ = ["find", "words"]
+def unchecked_words(unchecked: list[dict]) -> str:
+    """What the defect checks did not check in their time, in plain words ("" when they checked everything)."""
+    if not unchecked:
+        return ""
+    bodies = sorted({int(u["body"]) for u in unchecked if u.get("body")})
+    parts = []
+    if any(u.get("check") == "crossings" for u in unchecked):
+        parts.append("the search for faces crossing each other")
+    if bodies:
+        listed = ", ".join(str(b) for b in bodies[:8]) + (" and more" if len(bodies) > 8 else "")
+        parts.append(f"the self-interference check of {'body' if len(bodies) == 1 else 'bodies'} {listed}")
+    return ("Not checked for broken CAD in the time set for it: " + " and ".join(parts)
+            + ". The mesh is tried as usual; only a failure there would point at the CAD.")
+
+
+def _load(payload: dict):
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepTools import BRepTools
+    from OCP.TopoDS import TopoDS_Shape
+
+    shape = TopoDS_Shape()
+    if not BRepTools.Read_s(shape, str(payload["brep"]), BRep_Builder()):
+        raise RuntimeError("the shape could not be read back")
+    return shape
+
+
+def _handle(shape, step: dict, _work, _k: int):
+    if step["op"] == "cross":
+        from meshpipeline.cad.validity_brep import check_shape
+        return [r.as_dict() if hasattr(r, "as_dict") else r for r in check_shape(shape).reasons]
+    if step["op"] == "boolean":
+        got = _boolean_faces(shape, int(step["body"]))
+        return None if got is None else sorted(got)
+    raise ValueError(f"unknown step {step.get('op')}")
+
+
+__all__ = ["find", "find_bounded", "unchecked_words", "words"]
+
+
+if __name__ == "__main__":
+    import sys as _sys
+
+    from meshpipeline.cad import bounded_steps as _BS
+
+    if _BS.is_child(_sys.argv):
+        _sys.exit(_BS.child_main(_sys.argv[2:], _load, _handle))
