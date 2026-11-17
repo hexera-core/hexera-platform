@@ -194,6 +194,60 @@ def test_a_web_too_tight_for_two_rings_in_its_grid_keeps_the_grid_with_one(tmp_p
     _check(applied)
 
 
+def _channel(tmp_path, length: float, web: float, holes: list[tuple[float, float, float]]):
+    """A channel (10 mm plates, flanges 100 tall along both long edges of the web), holes through its web,
+    extracted to a mid-surface: the web's mid-face is `web` wide between the flanges' mid-planes."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCylinder
+    from OCP.BRepTools import BRepTools
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
+    from OCP.ShapeUpgrade import ShapeUpgrade_UnifySameDomain
+
+    from meshpipeline.cad import midsurface as ms
+
+    def unify(s):
+        u = ShapeUpgrade_UnifySameDomain(s, True, True, True)
+        u.Build()
+        return u.Shape()
+
+    w_ = web - 10.0
+    shape = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), length, w_, 10.0).Shape()
+    for y0 in (-10.0, w_):
+        shape = unify(BRepAlgoAPI_Fuse(shape, BRepPrimAPI_MakeBox(gp_Pnt(0, y0, 0), length, 10.0, 100.0).Shape()).Shape())
+    for x, y, d in holes:
+        cyl = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(x, y - 5.0, -1), gp_Dir(0, 0, 1)), d / 2, 12.0).Shape()
+        shape = unify(BRepAlgoAPI_Cut(shape, cyl).Shape())
+    rec, surf = ms.extract(shape, mm_per_unit=1.0)
+    brep = tmp_path / "midsurface.brep"
+    BRepTools.Write_s(surf, str(brep))
+    return brep, rec
+
+
+def test_a_channel_web_with_an_end_column_keeps_its_grid_and_two_rings_round_every_hole(tmp_path):
+    """SHMESH-51e, a channel web's bolt rows (three rows about 115 mm apart across, columns in pairs, an end column of
+    four holes at each end: two 38 mm either side of the middle row, two 2 mm inside the outer rows), joined to its
+    flanges. The end columns' lines ran the length of the web and ended on the other holes' two-ring boxes, cutting
+    their sides into pieces (6 segments where the band needs 4), and the web's free cells were judged on gmsh's
+    paving that the bands replace: the web lost its grid (b6196e02, and main with one ring). Now no line ends on a
+    two-ring box (each stops at the last line before it), the box's sides hold its band's count and the cells beside
+    take it, each box no wider than keeps its corner kites under the longest edge: the grid and two rings round every
+    hole, no triangle, nothing past the user's edges."""
+    mid = 180.0
+    cols = [165.0, 325.0, 1075.0, 1235.0]
+    holes = [(x, mid + dy, 17.5) for x in cols for dy in (-115.0, 0.0, 115.0)]
+    holes += [(x, mid + dy, 17.5) for x in (60.0, 1340.0) for dy in (-113.0, -38.0, 38.0, 113.0)]
+    brep, rec = _channel(tmp_path, 1400.0, 2 * mid, holes)
+    mesh, applied = _mesh(brep, rec)
+    s = applied["quality"]["structure"]
+    assert not s.get("not_gridded"), s.get("not_gridded")
+    assert s["bolt_rings"] == {2: len(holes)}, s.get("bolt_rings")
+    assert all(h.get("box_band") == "made" for h in s["hole_list"] if h.get("bolt"))
+    assert s["mapped_faces"] >= 60 and len(mesh.trias) == 0, (s["mapped_faces"], len(mesh.trias))
+    rows = {r["field"]: r for r in applied["requirements"]["rows"]}
+    assert int(rows["min_edge"].get("outside") or 0) == 0 and int(rows["max_edge"].get("outside") or 0) == 0
+    _check(applied)
+
+
 def test_a_web_with_unequal_pitches_keeps_its_grid_and_two_rings_on_most_holes(tmp_path):
     """SHMESH-51d, a real channel web: three rows of bolt holes about 115 mm apart across, columns in pairs 160 mm apart
     along, the pairs 410 mm apart, an end column of four holes. Its boxes are not square in counts (sides of 4 and 6

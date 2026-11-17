@@ -110,6 +110,7 @@ class Washer:
     plain: tuple = ()               # SHMESH-51: a bolt hole's plan by its size alone (n, rows, ratio), if it falls back
     box: int = 0                    # SHMESH-48q: a free box's cell round its ring (between the ring and the box)
     box_corners: list = field(default_factory=list)   # ... its four corners (model units, round the face's normal)
+    owns: bool = False              # SHMESH-51e: its box's sides are its own (no line ends on them)
 
 
 def _curve_loops(gmsh, t: int) -> tuple[list, list]:
@@ -1044,6 +1045,25 @@ def _spread(total: int, lengths: list[float]) -> list[int] | None:
     return out
 
 
+def _spread_need(out: list[int], need: list[int], lengths: list[float], mm: float,
+                 low_mm: float | None) -> list[int] | None:
+    """SHMESH-51e: a chain's spread (out) with each piece given at least `need` segments, taken one at a time from the
+    piece with the most to spare whose segments stay over the user's shortest edge; None when they do not fit."""
+    out = list(out)
+    for _ in range(sum(out) + 1):
+        short = [i for i in range(len(out)) if out[i] < need[i]]
+        if not short:
+            return out
+        donors = [j for j in range(len(out)) if out[j] > need[j]
+                  and (low_mm is None or lengths[j] * mm / (out[j] - 1) >= low_mm)]
+        if not donors:
+            return None
+        j = max(donors, key=lambda j: (lengths[j] / out[j] - lengths[j] / (out[j] - 1), -j))
+        out[short[0]] += 1
+        out[j] -= 1
+    return None
+
+
 def map_faces(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], mm: float, *, skip: set[int],
               preset: dict[int, int], low_mm: float | None = None, fine_at: dict[int, float] | None = None,
               growth: float = 1.3, arc_mm=None, high_mm: float | None = None, wish: dict[int, int] | None = None,
@@ -1081,6 +1101,7 @@ def map_faces(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], mm: float
     # SHMESH-47: a class whose curve stands opposite a chain of counted curves takes the chain's sum (a fillet cut at a
     # gridded web's lines carries the web's columns on to the flange): {a curve of the class: its count}
     forced: dict[int, int] = {}
+    bump: dict[int, int] = {}       # SHMESH-51e: two-ring bolt box sides given two segments more (a chain beside needs them)
     rounds = 0
     while True:
         rounds += 1
@@ -1113,6 +1134,8 @@ def map_faces(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], mm: float
         bad: set[int] = set()
         counts = {}
         newly = False
+        fixed_roots: set[int] = set()       # (SHMESH-51e: classes whose count is held: a preset, forced or a box's)
+        box_roots: set[int] = set()         # (... a two-ring bolt box's side's)
         for r, cs in sorted(members.items()):
             pre = {preset[c] for c in cs if c in preset} | {forced[c] for c in cs if c in forced}
             if len(pre) > 1:
@@ -1120,6 +1143,7 @@ def map_faces(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], mm: float
                 continue
             wished = sorted({wish[c] for c in cs if c in wish}) if wish else []
             if pre:
+                fixed_roots.add(r)
                 n = pre.pop()
             else:
                 h = min(size_mm[t] for t in faces_of[r]) / mm
@@ -1149,8 +1173,66 @@ def map_faces(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], mm: float
                             and (high_mm is None or longest * mm / k_ <= 0.98 * high_mm)
                             and (low_mm is None or min(length[c] for c in cs) * mm / k_ >= low_mm)):
                         n = k_
+                        if BOX_HOLDS and wish_long and any(c in wish_long for c in cs):
+                            fixed_roots.add(r)      # (SHMESH-51e: a two-ring bolt box's side holds its class)
+                            box_roots.add(r)
             for c in cs:
                 counts[c] = n
+        # SHMESH-51e: a two-ring bolt box's side that is no class's (a cell beside it has a chain opposite) holds its
+        # band's count; the chain opposite takes it (below)
+        held: set[int] = set()
+        if BOX_HOLDS and wish and wish_long:
+            for _t, (sides, _p) in sorted(cand.items()):
+                for sd in sides:
+                    for c in sd:
+                        k_ = bump.get(c, wish.get(c, 0))
+                        if (c in wish_long and c in wish and c not in counts and c not in preset
+                                and (high_mm is None or length[c] * mm / k_ <= 0.98 * high_mm + 1e-9)
+                                and (low_mm is None or length[c] * mm / k_ >= low_mm - 1e-9)):
+                            counts[c] = k_
+                            held.add(c)
+
+        def agree(sa: list[int], sb: list[int], counts=counts, members=members, faces_of=faces_of,
+                  fixed_roots=fixed_roots, single=single, root=root) -> bool:
+            """SHMESH-51e: two opposite sides of a cell beside a two-ring bolt box whose counts disagree are made to
+            agree by the classes on them that nothing holds, one segment at a time, each step the one that leaves a
+            class's elements nearest its faces' size (inside the user's edges); the box's own count never moves.
+            Those classes are forced (and counted again). False when no such steps exist."""
+            d = sum(counts.get(c, preset.get(c, 0)) for c in sa) - sum(counts.get(c, preset.get(c, 0)) for c in sb)
+            roots_a = {root(c) for c in sa if c in single}
+            roots_b = {root(c) for c in sb if c in single}
+            tent: dict[int, int] = {}
+            for _k in range(abs(d)):
+                best = None
+                for side, step in ((sa, -1 if d > 0 else 1), (sb, 1 if d > 0 else -1)):
+                    for c in side:
+                        if c not in single or c in preset:
+                            continue
+                        r_ = root(c)
+                        if r_ in fixed_roots or (r_ in roots_a and r_ in roots_b):
+                            continue
+                        n_new = tent.get(r_, counts[c]) + step
+                        if n_new < 1:
+                            continue
+                        lens = [length[x] for x in members[r_]]
+                        if high_mm is not None and max(lens) * mm / n_new > 0.98 * high_mm:
+                            continue
+                        if low_mm is not None and min(lens) * mm / n_new < low_mm:
+                            continue
+                        h_ = min(size_mm[t_] for t_ in faces_of[r_]) / mm
+                        key = (abs(math.log(float(np.mean(lens)) / n_new / h_)), r_)
+                        if best is None or key < best[0]:
+                            best = (key, r_, n_new)
+                if best is None:
+                    return False
+                tent[best[1]] = best[2]
+            for r_, n_ in sorted(tent.items()):
+                forced[members[r_][0]] = n_
+            return True
+
+        # (SHMESH-51e: with two-ring bolt boxes, rounds enough for their cells to agree one by one)
+        boxy = BOX_HOLDS and bool(wish_long)
+        cap = MAP_ROUNDS if boxy else 8
         # chains: a side of several curves takes its opposite side's count, spread by length
         for t, (sides, _p) in sorted(cand.items()):
             if t in bad:
@@ -1161,20 +1243,28 @@ def map_faces(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], mm: float
                     continue
                 known = lambda sd, counts=counts: all(c in counts or c in preset for c in sd)  # noqa: E731
                 total = lambda sd, counts=counts: sum(counts.get(c, preset.get(c, 0)) for c in sd)  # noqa: E731
+                # (SHMESH-51e: a cell with a two-ring bolt box's side on it, or a class such a side holds)
+                near_box = BOX_HOLDS and bool(held or box_roots) and any(
+                    c in held or (c in single and root(c) in box_roots) for c in sa + sb)
                 for one, many in ((sa, sb), (sb, sa)):
                     if (len(one) == 1 and len(many) > 1 and one[0] in single and one[0] not in preset
-                            and known(many) and total(one) != total(many)):
+                            and known(many) and total(one) != total(many)
+                            and not (BOX_HOLDS and root(one[0]) in box_roots)):
                         # a single curve with a class of its own opposite a counted chain: the class takes the sum
                         if forced.get(one[0]) not in (None, total(many)):
                             bad.add(t)
                         else:
                             forced[one[0]] = total(many)
                             newly = True
-                if newly or t in bad:
+                if (newly and (rounds < cap or not boxy)) or t in bad:
                     continue
                 if known(sa) and known(sb):
                     if total(sa) != total(sb):
-                        bad.add(t)
+                        # (SHMESH-51e: beside a two-ring bolt box the classes on its sides that nothing holds agree)
+                        if near_box and rounds < cap and agree(sa, sb):
+                            newly = True
+                        else:
+                            bad.add(t)
                     continue
                 master, chain = (sa, sb) if known(sa) else (sb, sa) if known(sb) else (None, None)
                 if master is None or chain is None:
@@ -1183,12 +1273,28 @@ def map_faces(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], mm: float
                 fixed = [c for c in chain if c in counts or c in preset]
                 left = [c for c in chain if c not in fixed]
                 spread = _spread(total(master) - total(fixed), [length[c] for c in left]) if left else None
+                if boxy and left and high_mm is not None:
+                    # SHMESH-51e: beside two-ring bolt boxes a chain's pieces are held under the user's longest edge
+                    # (one segment on a 20 mm piece of an outline cut beside a box was past it, and the cell went free);
+                    # where the box's side cannot give them that many, the side takes two more (its band's corner
+                    # blocks take an even surplus, SHMESH-51d) - once
+                    need = [max(1, math.ceil(length[c] * mm / (0.98 * high_mm) - 1e-9)) for c in left]
+                    if spread is not None:
+                        spread = _spread_need(spread, need, [length[c] for c in left], mm, low_mm)
+                    if (spread is None and BOX_BUMP and len(master) == 1 and master[0] in held
+                            and master[0] not in bump):
+                        k_ = counts[master[0]] + 2
+                        if (sum(need) + total(fixed) <= k_ and rounds < cap
+                                and (low_mm is None or length[master[0]] * mm / k_ >= low_mm)):
+                            bump[master[0]] = k_
+                            newly = True
+                            continue
                 if spread is None:
                     bad.add(t)
                     continue
                 for c, m in zip(left, spread, strict=True):
                     counts[c] = m
-        if newly and rounds < 8:
+        if newly and rounds < cap:
             continue            # counted again with the classes the chains set
         if not bad:
             break
@@ -1581,7 +1687,8 @@ def _mark_box(gmsh, w: Washer, corners: list[np.ndarray], cells: list[int], h: f
             seg = float(gmsh.model.occ.getMass(1, c)) / k
             if BAND_WISH and gmsh.model.getType(1, c) == "Line" and BAND_SEG[0] * h <= seg <= seg_hi:
                 wish[c] = k
-                if long_ok and wish_long is not None:
+                # (SHMESH-51e: the sides of a box that owns them are held at that count too)
+                if (long_ok or (BOX_OWNS_SIDES and w.owns)) and wish_long is not None:
                     wish_long.add(c)
             break
 
@@ -1590,6 +1697,18 @@ def _mark_box(gmsh, w: Washer, corners: list[np.ndarray], cells: list[int], h: f
 #: across it: sides of 4 and 5, 4 and 6 segments) - each corner a kite (one segment of each side) or a block (two of
 #: each, round one new node), each side's middle joined to its own share of the ring
 BAND_UNEQUAL = True
+#: SHMESH-51e: a free box's cell whose own band is made is judged on that band, not on gmsh's paving it replaces
+BAND_JUDGED = True
+#: SHMESH-51e: no line ends on a two-ring bolt hole's box: each side stays one curve and takes its band's count
+BOX_OWNS_SIDES = True
+BOX_OWN_ROUNDS = 6
+#: SHMESH-51e: a mapped cell beside such a box whose sides' counts disagree takes them from the box (map_faces)
+BOX_HOLDS = True
+MAP_ROUNDS = 96
+#: SHMESH-51e: a box side two segments more where the chain beside it needs them (else that cell is free)
+BOX_BUMP = True
+#: SHMESH-51e: a two-ring box no bigger than keeps its band's corner kites under the user's longest edge
+BOX_KITE = True
 
 
 def _band_split(gaps: list[int], n: int) -> tuple[list[int], list[int]] | None:
@@ -1901,6 +2020,23 @@ def _face_plan(gmsh, t: int, ws: list[Washer], h_mm: float, mm: float, hole_size
                     for d_along, d_across in ((abs(ou - cu), abs(ov - cv)), (abs(ov - cv), abs(ou - cu))):
                         if d_across < 2 * b_band and d_along > 1e-9:
                             b_band = min(b_band, 0.5 * (d_along - EDGE_MARGIN * float(low_mm) / mm))
+            if BOX_KITE and high_mm is not None:
+                # SHMESH-51e: no bigger than keeps its band's corner kites under the user's longest edge (the edge
+                # from the ring's node at the corner's angle to the side's first node)
+                k_ = w.n // 4 + 2
+                e_max = 0.98 * high_mm / mm
+                rc = w.R / math.sqrt(2.0)
+
+                def kite(b_: float, k_=k_, rc=rc) -> float:
+                    return math.hypot(b_ - rc, b_ - 2 * b_ / k_ - rc)
+
+                if kite(b_band) > e_max:
+                    lo_b, hi_b = w.R + gap_b, b_band
+                    if kite(lo_b) <= e_max:
+                        for _i in range(40):
+                            mid_b = 0.5 * (lo_b + hi_b)
+                            lo_b, hi_b = (mid_b, hi_b) if kite(mid_b) <= e_max else (lo_b, mid_b)
+                        b_band = lo_b
             if b_band >= w.R + gap_b:
                 b = min(b, b_band)
         boxes.append([cu - b, cu + b, cv - b, cv + b])
@@ -1927,6 +2063,7 @@ def _face_plan(gmsh, t: int, ws: list[Washer], h_mm: float, mm: float, hole_size
     # check below asks, no further than SNAP from where it was, an O-grid box no longer or shorter than its
     # elements allow (each side half the slack)
     limits: dict[str, tuple[float, float]] = {}
+    two_face = any(w.radii for w in ws)     # (SHMESH-51e: the face holds two-ring bolt holes)
     if SNAP_LIMITS:
         for j, (w, p, bx) in enumerate(zip(ws, plans, boxes, strict=True)):
             cu, cv = uv(w.centre)
@@ -1946,6 +2083,7 @@ def _face_plan(gmsh, t: int, ws: list[Washer], h_mm: float, mm: float, hole_size
                 inner = [cu, cu, cv, cv]
                 need = (p[2] * w.r + 0.3 * h) if p is not None else (w.R + 0.4 * h)
             need += 1e-6 * h        # (a side moved onto its limit passes the check below)
+            kite_grow: dict[int, float] = {}
             for ax_i in (0, 1):
                 lo_s, hi_s = 2 * ax_i, 2 * ax_i + 1
                 grow_, shrink_ = SNAP * h, SNAP * h
@@ -1955,13 +2093,40 @@ def _face_plan(gmsh, t: int, ws: list[Washer], h_mm: float, mm: float, hole_size
                     side = bx[hi_s] - bx[lo_s]
                     grow_ = min(grow_, max(0.0, 0.5 * (1.5 * h * p[0] / 4 - side)))
                     shrink_ = min(shrink_, max(0.0, 0.5 * (side - 0.6 * h * p[0] / 4)))
-                elif w.radii and FREE_BAND and high_mm is not None and not w.corners:
+                elif (w.radii or (BOX_OWNS_SIDES and w.info.get("bolt") and two_face)) and FREE_BAND \
+                        and high_mm is not None and not w.corners:
                     # (SHMESH-51: a bolt hole's free box grows no further than keeps its band's segments under the
                     # user's longest edge)
                     side = bx[hi_s] - bx[lo_s]
                     grow_ = min(grow_, max(0.0, 0.5 * ((w.n // 4 + 2) * 0.98 * float(high_mm) / mm - side)))
-                limits[str(4 * j + lo_s)] = (bx[lo_s] - grow_, min(bx[lo_s] + shrink_, inner[lo_s] - need))
-                limits[str(4 * j + hi_s)] = (max(bx[hi_s] - shrink_, inner[hi_s] + need), bx[hi_s] + grow_)
+                    if BOX_KITE:
+                        # (SHMESH-51e: nor further from its hole than keeps its band's corner kites under the user's
+                        # longest edge - a side drawn on to a near line 2 mm out left a 15.8 mm kite edge)
+                        cen = (cu, cv)[ax_i]
+                        b_o = 0.5 * (bx[3 - 2 * ax_i] - bx[2 - 2 * ax_i])     # (the box's half-width the other way)
+                        k_ = w.n // 4 + 2
+                        s_ = 2 * b_o / k_
+                        rc_ = w.R / math.sqrt(2.0)
+                        e_max = 0.98 * float(high_mm) / mm
+
+                        def kite_at(d_: float, b_o=b_o, s_=s_, rc_=rc_) -> float:
+                            return max(math.hypot(b_o - s_ - rc_, d_ - rc_), math.hypot(b_o - rc_, d_ - s_ - rc_))
+
+                        for q_ in (lo_s, hi_s):
+                            d0 = abs(bx[q_] - cen)
+                            if kite_at(d0) > e_max:
+                                g_ = 0.0
+                            else:
+                                lo_d, hi_d = d0, d0 + grow_
+                                for _i in range(40):
+                                    md = 0.5 * (lo_d + hi_d)
+                                    lo_d, hi_d = (md, hi_d) if kite_at(md) <= e_max else (lo_d, md)
+                                g_ = lo_d - d0
+                            kite_grow[q_] = g_
+                limits[str(4 * j + lo_s)] = (bx[lo_s] - min(grow_, kite_grow.get(lo_s, grow_)),
+                                             min(bx[lo_s] + shrink_, inner[lo_s] - need))
+                limits[str(4 * j + hi_s)] = (max(bx[hi_s] - shrink_, inner[hi_s] + need),
+                                             bx[hi_s] + min(grow_, kite_grow.get(hi_s, grow_)))
     return {"h": h, "loops": loops, "outer": outer, "frame": (o, u, v), "uv": uv, "plans": plans,
             "square_uv": square_uv, "vals": vals, "lo": lo, "hi": hi, "boxes": boxes, "limits": limits,
             "in_grid": in_grid, "pins": pins}
@@ -2459,15 +2624,25 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                     starts[id(w)] = _diagonals(u, v)[2]          # (u + v) / sqrt 2: where SHMESH-45b starts the hole
 
             trims: list[tuple[int, float, float, float]] = []   # SHMESH-48r: (axis, line, from, to) dropped
+            retr: list[tuple[int, float, float, float]] = []    # SHMESH-51e: (axis, line, from, to) held back
+            # SHMESH-51e: the two-ring bolt holes' free boxes own their sides: no other line ends on them
+            # (and, in a face that holds two-ring bolt holes, its bolt holes taken back to one ring: their boxes too)
+            two_here = any(w.radii for w in ws)
+            owned = [j for j, (w, p) in enumerate(zip(ws, plans, strict=True))
+                     if BOX_OWNS_SIDES and STOP_AT_BOXES and FREE_BAND and p is None and not w.corners
+                     and (w.radii or (two_here and w.info.get("bolt"))) and j not in fp["in_grid"]]
+            for j in owned:
+                ws[j].owns = True
 
             def line_pieces(at: float, axis_: int, start: float, stop: float, boxes=boxes,
-                       eps=eps, trims=trims) -> list[tuple[float, float]]:
+                       eps=eps, trims=trims, retr=retr) -> list[tuple[float, float]]:
                 """SHMESH-48g: a line across the face, stopped at each box it would cross (it ends on that box's
                 side line, drawn right across: a T, the cells four-sided) - holes in rows that do not line up."""
                 cut_at = sorted((bx[2 - 2 * axis_], bx[3 - 2 * axis_]) for bx in boxes
                                 if bx[2 * axis_] + eps < at < bx[2 * axis_ + 1] - eps) if STOP_AT_BOXES else []
-                # (SHMESH-48r: and with the pieces dropped for being too short taken out)
-                cut_at = sorted(cut_at + [(a_, b_) for ax_, at_, a_, b_ in trims
+                # (SHMESH-48r: and with the pieces dropped for being too short taken out; SHMESH-51e: and the pieces
+                # held back from a two-ring bolt hole's box)
+                cut_at = sorted(cut_at + [(a_, b_) for ax_, at_, a_, b_ in trims + retr
                                           if ax_ == axis_ and abs(at_ - at) <= eps])
                 out_, at0 = [], start
                 for g0, g1 in cut_at:
@@ -2477,6 +2652,76 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                 if stop > at0 + eps:
                     out_.append((at0, stop))
                 return out_
+
+            def own_sides(owned=owned, lines=lines, boxes=boxes, retr=retr, eps=eps, lo=lo, hi=hi, pad=pad, jt=jt,
+                          h=h, line_pieces=line_pieces) -> None:
+                """SHMESH-51e: a line that would end on a side of a two-ring bolt hole's box (48g stops it there, and
+                the side came out a chain of pieces: 5 to 8 segments where its band needs n/4 + 2) is held back to
+                the last line across it before the box, and ends there in a T on a line between cells; where none is
+                left before the box the piece goes. The T must not leave a piece of that line under CELL_MIN sizes
+                (else the next line back), never cuts into a box's own side, and stands on a line still drawn there
+                (else it is held back again). The box's sides stay one curve each, corner to corner, and take the
+                band's count (_mark_box); the count changes in the cells between the boxes (map_faces)."""
+                retr.clear()
+                if not owned:
+                    return
+                axes = ("u", "v")
+                t_ends: set[tuple[int, float, float]] = set()
+                for _r in range(BOX_OWN_ROUNDS):
+                    pieces = {(i_, x): line_pieces(x, i_, lo[1 - i_] - pad, hi[1 - i_] + pad)
+                              for i_ in (0, 1) for x in lines[axes[i_]]}
+
+                    def present(i_: int, x: float, along: float, pieces=pieces, eps=eps) -> bool:
+                        # (a line of axis i_ at x drawn through `along` on it)
+                        return any(abs(x_ - x) <= eps and any(a_ - eps <= along <= b_ + eps for a_, b_ in segs_)
+                                   for (k_, x_), segs_ in pieces.items() if k_ == i_)
+
+                    add: list[tuple[int, float, float, float]] = []
+                    for (i_, x), segs in sorted(pieces.items()):
+                        if i_ == 0 and jt is not None:
+                            continue            # (a joined face's lines across are the joint's: drawn as they are)
+                        j_ = 1 - i_
+                        # (a box side lying on this line: never cut into; its corners are where lines cross it)
+                        prot = [(bx[2 * j_], bx[2 * j_ + 1]) for bx in boxes
+                                if any(abs(x - bx[2 * i_ + q]) <= eps for q in (0, 1))]
+                        for a_, b_ in segs:
+                            for end, far in ((b_, a_), (a_, b_)):
+                                if end <= lo[j_] - pad + eps or end >= hi[j_] + pad - eps:
+                                    continue
+                                on_own = any(boxes[k][2 * i_] + eps < x < boxes[k][2 * i_ + 1] - eps and min(
+                                    abs(end - boxes[k][2 * j_]), abs(end - boxes[k][2 * j_ + 1])) <= eps for k in owned)
+                                if not on_own and not ((i_, x, end) in t_ends and not present(j_, end, x)):
+                                    continue
+                                sgn = 1.0 if far > end else -1.0
+                                # the lines across it between this end and its far end, nearest first
+                                cands = sorted((y for y in lines[axes[j_]] if (y - end) * sgn > eps and (far - y) * sgn > eps),
+                                               key=lambda y, end=end: abs(y - end))
+                                to = far
+                                for y in cands:
+                                    if any(p0 - eps <= y <= p1 + eps for p0, p1 in prot):
+                                        to = y          # (a box's own side starts here: the line goes on as it)
+                                        break
+                                    if not present(j_, y, x):
+                                        continue
+                                    near_ = [x2 for x2 in lines[axes[i_]] if abs(x2 - x) > eps and present(i_, x2, y)]
+                                    if near_ and min(abs(x2 - x) for x2 in near_) < CELL_MIN * h:
+                                        continue        # (its T would leave a piece under CELL_MIN sizes)
+                                    to = y
+                                    break
+                                # (never into a box's own side on this line)
+                                for p0, p1 in prot:
+                                    if sgn > 0 and end < p0 - eps and to > p0 + eps:
+                                        to = p0
+                                    elif sgn < 0 and end > p1 + eps and to < p1 - eps:
+                                        to = p1
+                                if abs(to - end) <= eps:
+                                    continue
+                                add.append((i_, x, min(end, to), max(end, to)))
+                                if abs(to - far) > eps:
+                                    t_ends.add((i_, x, to))
+                    if not add:
+                        break
+                    retr.extend(sorted(set(add)))
 
             def tools(o=o, u=u, v=v, lo=lo, hi=hi, pad=pad, lines=lines, ws=ws, plans=plans, corners_of=corners_of,
                       line_pieces=line_pieces,
@@ -2549,6 +2794,7 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
             # tried on a copy of the face first: no edge of a cell under CELL_MIN face sizes
             shared = [c for cl in loops for c in cl if len(gmsh.model.getAdjacencies(1, c)[0]) > 1]
             for _trim in range(TRIM_ROUNDS + 1 if TRIM_SHORT else 1):
+                own_sides()
                 copy = gmsh.model.occ.copy([(2, t)])
                 _o, cmap = gmsh.model.occ.fragment(copy, tools())
                 gmsh.model.occ.synchronize()

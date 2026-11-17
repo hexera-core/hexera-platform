@@ -315,7 +315,8 @@ def _arc_radius(gmsh, curve: int) -> float | None:
 
 def _map_strips(gmsh, tag_of: dict[int, int], rows: list[dict], mm: float,
                 sizing: dict | None = None, fine_at: dict[int, float] | None = None,
-                counts_out: dict[int, int] | None = None) -> dict[int, tuple[tuple[int, ...], float]]:
+                counts_out: dict[int, int] | None = None, held: set[int] | frozenset = frozenset()
+                ) -> dict[int, tuple[tuple[int, ...], float]]:
     """SHMESH-16: every narrow four-sided strip (a bend, a flange, a strip between holes: its two long sides alike in
     length, its two ends alike, the long sides at least STRIP_LONG times the ends) is meshed as a mapped grid of
     quads - its planned size across it, and along it the size of the faces beside its long sides, at most
@@ -343,7 +344,8 @@ def _map_strips(gmsh, tag_of: dict[int, int], rows: list[dict], mm: float,
                 or len(gmsh.model.getBoundary([(2, t)], oriented=False)) != 4):
             continue
         sides = sorted({abs(c) for _d, c in gmsh.model.getBoundary([(2, t)], oriented=False)})
-        if len(sides) != 4:
+        if len(sides) != 4 or (held and any(c in held for c in sides)):
+            # (SHMESH-51e: a strip along a two-ring bolt box's side is the grid's (map_faces): the box's count holds it)
             continue
         ends = {c: {abs(p) for _d, p in gmsh.model.getBoundary([(1, c)], oriented=False)} for c in sides}
         # the side sharing no corner with the first is its opposite; the other two face each other
@@ -1664,7 +1666,8 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         strip_counts: dict[int, int] = {}
         mapped = (_map_strips(gmsh, tag_of, rows, mm, sizing,
                               fine_at=short_edges["fine_at"] if short_edges and FEATURE_UNMAP else None,
-                              counts_out=strip_counts)
+                              counts_out=strip_counts,
+                              held=frozenset(box_wish_long & set(box_wish)) if ST.BOX_HOLDS else frozenset())
                   if MAP_STRIPS and kind != "triangles" else {})
         # SHMESH-40: every other four-sided face is a mapped grid too (counts shared through the curves they share)
         grids: dict[int, list[int]] = {}
@@ -1863,6 +1866,29 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
             # (SHMESH-47c: a joined face's strips are held to the same; its own cells as any gridded face's, SHMESH-48f)
             either = {k_: cut_of.get(k_, set()) | join_of.get(k_, set()) for k_ in set(cut_of) | set(join_of)}
             tri_cells: dict[int, dict[int, int]] = {}   # (SHMESH-51c: triangles per free cell)
+            # SHMESH-51e: a free box's cell whose own band will be made (SHMESH-48q) is judged on that band, not on
+            # gmsh's paving that the band replaces (a paved two-to-one box left quads past the taper limit, and a
+            # face whose bands were all good lost its grid for elements it never delivers); the band keeps its own
+            # checks (the solver's limits, the user's quad lines and longest edge) and the face is judged again on
+            # what it delivers (SHMESH-48f)
+            banded: set[int] = set()
+            past_cells: set[int] = set()        # (SHMESH-51e: free cells with a quad past the solver's limits)
+            if ST.FREE_BAND and ST.BAND_JUDGED and structure != "free":
+                for w in rings:
+                    if not w.box or w.box not in tag_of or tag_of[w.box] not in cut_of:
+                        continue
+                    # (tried as they are made below - its ring first, which may slide the ring's nodes - on a copy:
+                    # nothing here changes the mesh or the washer)
+                    info_, xyz_ = dict(w.info), xyz.copy()
+                    try:
+                        ST.ring_mesh(gmsh, w, index, xyz_, mm)
+                        ST.box_band(gmsh, w, index, xyz_, mm, lim, high)
+                    except ValueError:
+                        continue
+                    finally:
+                        w.info.clear()
+                        w.info.update(info_)
+                    banded.add(w.box)
             for kg, nbrs in sorted(either.items()):
                 # the joined faces its lines cut: no triangle, no quad past the solver's limits
                 for s_ in sorted(x for x, kx in tag_of.items() if kx in nbrs):
@@ -1885,12 +1911,16 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                     tri_here = 0
                     tri_cell = tri_cells.setdefault(kg, {})
                     for et, c_ in elements_of(s_):
+                        if s_ in banded:
+                            n_face += len(c_) // (4 if et == 3 else 3)      # (its band replaces this paving)
+                            continue
                         if et == 3:
                             quads_ = c_.reshape(-1, 4)
                             n_face += len(quads_)
                             if s_ not in grids and shell_quality._quad_past(
                                     shell_quality.quad_measures(xyz, quads_)).any():
                                 hurt.add(kg)
+                                past_cells.add(s_)
                         elif et == 2:
                             tris_ = c_.reshape(-1, 3)
                             n_face += len(tris_)
@@ -1917,6 +1947,17 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                 bad_holes = []
                 for kg_ in sorted(hurt):
                     two_ = [w for w in boxed if w.radii and int(w.owner) == kg_]
+                    # (SHMESH-51e: or its box cell, its band not made, paved with a quad past the solver's limits)
+                    # (... or a free cell beside its box, paved so: the cell a box side's count could not map)
+                    past_sides = {abs(int(c)) for s_p in past_cells if s_p in tag_of and tag_of[s_p] == kg_
+                                  for _d, c in gmsh.model.getBoundary([(2, s_p)], oriented=False)}
+                    for w_p in two_:
+                        if not w_p.box or w_p.box not in tag_of or w_p in bad_holes:
+                            continue
+                        sides_p = {abs(int(c)) for _d, c in gmsh.model.getBoundary([(2, w_p.box)], oriented=False)
+                                   } - {w_p.ring}
+                        if w_p.box in past_cells or (ST.BOX_OWNS_SIDES and sides_p & past_sides):
+                            bad_holes.append(w_p)
                     for s_c, n_c in sorted(tri_cells.get(kg_, {}).items()):
                         if not n_c or not two_:
                             continue
