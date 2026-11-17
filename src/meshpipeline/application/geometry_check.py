@@ -923,8 +923,15 @@ def stickered(facts: dict) -> list[dict]:
     """The openings the pictures carry stickers for: the scout's, when it reads the fluid as flowing
     through the part. A part it reads as a body in a flow still keeps the openings it would have if
     the fluid flowed through it - so a user who says so has openings to confirm - but they are not
-    drawn: the pictures (and the model naming them) see the body as before."""
-    return list(facts.get("openings") or []) if facts.get("flow") != "external" else []
+    drawn: the pictures (and the model naming them) see the body as before. A face the check proposes
+    as NOT an opening (a bolt hole's mouth, a step in the bore, a flat end that is no mouth) wears no
+    sticker either: a sticker says "this is an opening", and the pictures carry the stage's own ids
+    (rule FLOW-8, part_understanding.RULE_STICKERS)."""
+    fk = facts.get("flow_kind")
+    undecided = isinstance(fk, dict) and fk.get("kind") == "undecided"     # FLOW-4: the pictures may help
+    if facts.get("flow") == "external" and not undecided:
+        return []
+    return [o for o in facts.get("openings") or [] if isinstance(o, dict) and o.get("role") != "not_an_opening"]
 
 
 def _scout_thermal(session_id: str, ref, fetched: Path, canonical, sidecar: dict) -> dict:
@@ -1875,8 +1882,11 @@ def _name_after_wait(*, session_id: str, owner_id: str, purpose_text: str, inter
     # for the checklist before approval, as the FEA route's measurement does
     _keep_flow_parts(session_id, stored, facts, interpretation)
     proposal = _proposal(facts, vision, words=purpose_text)
-    # THE FLOW KIND THE INTAKE READS (facts["flow_kind"]): now with the user's words and the pictures
+    # THE FLOW KIND THE INTAKE READS (facts["flow_kind"]): now with the user's words and the pictures - and
+    # what the part is (facts["understanding"]), the same the stage shows
     stamp_flow_kind(facts, proposal["flow_kind"])
+    if proposal.get("understanding"):
+        facts["understanding"] = proposal["understanding"]
     # what the scout stored, minus the fields write_status writes itself: the status, the clock,
     # and the session id - which it also takes as its first argument
     result = {k: v for k, v in stored.items() if k not in _STAMPED_KEYS + _FAILURE_KEYS}
@@ -2013,6 +2023,8 @@ def merged_onto_full(named: dict, named_from: dict, full: dict) -> dict:
     proposal = _proposal(facts, vision, words=str(named.get("purpose_text") or ""))
     if not _is_thermal(facts):
         stamp_flow_kind(facts, proposal["flow_kind"])
+        if proposal.get("understanding"):
+            facts["understanding"] = proposal["understanding"]
     out.update(facts=facts, proposal=proposal)
     out.pop("named_on_preview", None)
     return out
@@ -2966,18 +2978,29 @@ def _apply_vision(proposal: dict, facts: dict, vision: dict, declared_kind: bool
         if o is None or o.get("declared_by"):
             continue
         role, conf = named.get("role"), named.get("confidence")
-        code_conf = _unit_number(o.get("confidence"))
+        # how sure the code is of this ROLE: the assignment's own sureness (application/part_understanding),
+        # else the opening's
+        reason = o.get("role_reason") if isinstance(o.get("role_reason"), dict) else {}
+        code_conf = _unit_number(reason.get("confidence")) if reason else _unit_number(o.get("confidence"))
         code_conf = 0.5 if code_conf is None else code_conf
         if role is not None and role != o.get("role"):
             if conf is None or conf <= code_conf:
                 continue          # the code was as sure: its role, and the name that goes with it, stand
             o["role"], o["confidence"] = role, round(conf, 2)
+            if reason:
+                # the pictures' role is still the user's to confirm: it stays marked a guess
+                o["role_reason"] = {"confidence": round(conf, 2), "guess": True,
+                                    "reason": f"the pictures show it as the {role}; check it"}
         elif conf is not None:
             o["confidence"] = round(max(conf, code_conf), 2)
         if named.get("name"):
             o["name"] = named["name"]
     if proposal["flow"] == "internal" and not _has_port_pair(proposal["openings"]) and _has_port_pair(before):
-        proposal["openings"] = before
+        # the measured role comes back where the pictures changed it; a name the pictures gave an
+        # opening whose role they agreed with stays
+        was = {o["id"]: o for o in before}
+        proposal["openings"] = [was[o["id"]] if o.get("role") != was.get(o["id"], o).get("role") else o
+                                for o in proposal["openings"]]
         proposal["notes"].append("The pictures' roles for the openings would leave no inlet and outlet, "
                                  "so the measured roles stand.")
 
@@ -3014,6 +3037,16 @@ def _proposal(facts: dict, vision: dict | None, words: str = "") -> dict:
     }
     # the pictures' kind set aside for what was measured is said, as it always was
     proposal["notes"].extend(r for r in flow_kind["reasons"] if r.startswith("The pictures suggested"))
+    # FIRST WHAT THE PART IS, THEN WHICH OPENING IS WHICH (application/part_understanding): the user's words,
+    # the measured openings and (named) the pictures' name make one understanding; every opening's role
+    # follows from it, with a sureness, a reason and whether it is a guess for the user to confirm or flip
+    if facts.get("input_kind") != "solid-assembly":
+        from meshpipeline.application.part_understanding import assign, understand
+
+        proposal["understanding"] = understand(facts, proposal["openings"], flow=flow_kind["flow"], words=words,
+                                               vision=vision)
+        if flow_kind["flow"] == "internal":
+            proposal["openings"] = assign(proposal["openings"], proposal["understanding"], facts)
     # THE PART'S INSIDE (INS-1) and the stage's question when "through it" cannot be meshed as
     # proposed (INS-3): asked only if the user says the fluid flows through it
     if isinstance(facts.get("inside"), dict):

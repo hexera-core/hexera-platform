@@ -2742,6 +2742,19 @@
   "roots": []
  },
  {
+  "context": "application/part_understanding.py::words_object::search#1|NotAPublisher|not-a-publisher|",
+  "path": "application/part_understanding.py",
+  "qualname": "words_object",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "rx",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "application/pipeline_run.py::_classify_checkpoint::error#1|NotAPublisher|not-a-publisher|",
   "path": "application/pipeline_run.py",
   "qualname": "_classify_checkpoint",

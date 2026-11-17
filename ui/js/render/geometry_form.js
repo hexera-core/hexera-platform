@@ -219,7 +219,7 @@ export function rowHtml(o, p) {
   const at = (o.centroid_mm || []).map((v) => shown(v, p)).join(", ");
   return `<tr data-id="${id}"${o.added ? ' data-added="1"' : ""}><td class="gc-n" title="opening ${id}"><span class="gc-badge">${id}</span></td>
       <td><input class="gc-name" value="${attr(o.name || "")}" maxlength="40" aria-label="name of opening ${id}"></td>
-      <td>${sel("gc-role", ROLES, o.role)}</td>
+      <td>${sel("gc-role", ROLES, o.role)}${o.role_reason && o.role_reason.guess ? `<span class="gc-guess" title="${attr(o.role_reason.reason || "")}">a guess - check it</span>` : ""}</td>
       <td class="gc-dim">${size}</td><td class="gc-dim gc-pos">(${esc(at)}) ${sym(p)}</td>
       <td class="gc-conf" title="how sure the check is">${o.added ? "you" : Math.round((o.confidence || 0) * 100) + "%"}</td>
       <td class="gc-del"><button class="gc-x" type="button" title="remove this opening" aria-label="remove opening ${id}">×</button></td></tr>`;
