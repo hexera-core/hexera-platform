@@ -220,6 +220,7 @@ class World:
     """One conversation, driven through the real chat route."""
 
     def __init__(self, monkeypatch, model):
+        import meshpipeline.contracts.model_inference as llm_router
         from meshpipeline.agents.intake import measured_choice
         from meshpipeline.api.v1 import chat as chatmod
         from meshpipeline.api.v1.upload import UPLOAD_ACKNOWLEDGEMENT
@@ -227,9 +228,10 @@ class World:
         from meshpipeline.application import part_matches
         from meshpipeline.contracts import object_storage
         from meshpipeline.persistence.repositories import session_repository as srmod
-        import meshpipeline.contracts.model_inference as llm_router
 
         self.model, self.confirmed, self.queued, self.dispatched, self.errors = model, False, False, False, []
+        #: the stored geometry check, as application/geometry_check.read_check serves it ({} until a "named" step)
+        self.check: dict = {}
         self.shown: list[tuple[str, str]] = []          # what the console drew: (role, text)
         self.session = SimpleNamespace(
             id=SID, owner_id="alice", job_id=None, geometry_source_id=uuid.uuid4(),
@@ -248,8 +250,11 @@ class World:
                 return None
             yield SimpleNamespace(commit=_commit)
         monkeypatch.setattr(chatmod, "get_db", _db)
+        self.repo, self.db = repo, _db
+        # the hold lets the chat go once the part is confirmed, or once the naming has landed (a ready check)
         monkeypatch.setattr(gh, "hold_applies",
-                            lambda sid: None if self.confirmed else ("wait" if self.queued else "queue"))
+                            lambda sid: None if self.confirmed or self.check.get("status") == "ready"
+                            else ("wait" if self.queued else "queue"))
 
         def _queue(*a, **k):
             self.queued = True
@@ -278,7 +283,7 @@ class World:
         monkeypatch.setattr(msg, "notes_unread", _false)
         monkeypatch.setattr(part_matches, "view", lambda *a, **k: None)
         monkeypatch.setattr(measured_choice, "staged_upload", lambda *a, **k: "")
-        monkeypatch.setattr(gc, "read_check", lambda sid: {})
+        monkeypatch.setattr(gc, "read_check", lambda sid: self.check)
 
         class _NoStore:
             def get_bytes(self, *, object_key):
@@ -307,6 +312,22 @@ class World:
         self.shown.append(("assistant", out.reply))
         return out
 
+    async def named(self, facts: dict):
+        """THE NAMING LANDS, then the stage reads the check (api/v1/geometry.get_check): the flow-kind record is
+        written as the naming writes it - the real authority over the part's facts and the user's words so far
+        (application/flow_kind.decide; no pictures here) - and the one question is asked when it is due."""
+        import logging
+
+        from meshpipeline.application import flow_kind as fk
+        facts = dict(facts)
+        facts["flow_kind"] = fk.decide(facts, words=gh.purpose_from(self.session.messages))
+        self.check = {"status": "ready", "named": True, "facts": facts}
+        asked = await msg.ask_flow_kind(SID, "alice", facts=facts, session_repo=self.repo, db_factory=self.db,
+                                        logger=logging.getLogger("test"))
+        if asked:
+            self.shown.append(("assistant", asked))
+        return asked
+
     async def proceed_on_stage(self, declaration: str, patches=None):
         """The panel's Proceed, as api/v1/geometry.confirm_check ends: the declaration replaces any earlier
         one, then one chat turn runs for the user - whose words the console never draws."""
@@ -334,12 +355,14 @@ class World:
         return [*read, ST] if self.dispatched else read
 
 
-async def _run(monkeypatch, script, *, bad="", geometry_kind=""):
+async def _run(monkeypatch, script, *, bad=""):
     world = World(monkeypatch, _Model(bad))
-    monkeypatch.setattr(flow, "geometry_flow_kind", lambda sid: geometry_kind)
+    world.answers = []
     for kind, value in script:
         if kind == "say":
-            await world.say(value)
+            world.answers.append(await world.say(value))
+        elif kind == "named":
+            await world.named(value)
         else:
             await world.proceed_on_stage(value)
     return world
@@ -348,6 +371,15 @@ async def _run(monkeypatch, script, *, bad="", geometry_kind=""):
 # --------------------------------------------------------------------------------- the matrix ----
 
 FEA_BUTTON = "The part's strength, stress or vibration (FEA)"
+#: WHAT THE MEASURING STEP READ, as the naming finds it: a straight convex bar with two flat ends - the fluid
+#: inside a straight pipe, or a bar in a cross-flow; the flow-kind authority cannot tell (FLOW-2: undecided)
+BAR = {"body_kind": "bar", "flow": "internal", "input_kind": "fluid-domain", "size_mm": [40.0, 40.0, 200.0],
+       "openings": [{"id": 1, "role": "inlet", "normal": [0, 0, -1], "centroid_mm": [20, 20, 0], "diameter_mm": 40.0},
+                    {"id": 2, "role": "outlet", "normal": [0, 0, 1], "centroid_mm": [20, 20, 200], "diameter_mm": 40.0}]}
+#: ...and a closed solid with no passage mouths: a body in a flow, which the shape decides (FLOW-2: external)
+BODY = {"body_kind": "single_solid", "flow": "external", "input_kind": "solid-body",
+        "size_mm": [4000.0, 1800.0, 1400.0], "openings": []}
+THROUGH, AROUND = (send for _label, send in flow.FLOW_KIND_CHOICES)
 CASES = {
     # FEA
     "fea_standard": ([("say", "FEA"), ("stage", FEA_DECL), ("say", "Static stress"), ("say", "Proceed")],
@@ -425,9 +457,18 @@ CASES = {
     "cfd_external_hedge_then_yes": ([("say", "external aero over this car"), ("stage", EXTERNAL_DECL),
                                      ("say", "OK"), ("say", "hmm, maybe"), ("say", "yes")],
                                     "", [P, S, C, F, PL, PL, ST]),
-    "cfd_flow_kind_undecided": ([("say", "CFD please"), ("say", "The flow goes through the inside"),
+    # through or around: asked once the naming has landed, only when still undecided and no words decided it
+    "cfd_flow_kind_undecided": ([("say", "CFD please"), ("named", BAR), ("say", THROUGH),
                                  ("stage", INTERNAL_DECL), ("say", "OK"), ("say", "Proceed")],
-                                "", [P, FK, S, C, F, PL, ST]),
+                                "", [P, S, FK, S, C, F, PL, ST]),
+    "cfd_flow_kind_undecided_around": ([("say", "CFD please"), ("named", BAR), ("say", AROUND),
+                                        ("stage", EXTERNAL_DECL), ("say", "OK"), ("say", "Proceed")],
+                                       "", [P, S, FK, S, C, F, PL, ST]),
+    "cfd_flow_kind_said_first": ([("say", "CFD of the air flowing around this part"), ("named", BAR),
+                                  ("stage", EXTERNAL_DECL), ("say", "OK"), ("say", "Proceed")],
+                                 "", [P, S, C, F, PL, ST]),
+    "cfd_flow_kind_shape_decides": ([("say", "CFD please"), ("named", BODY), ("stage", EXTERNAL_DECL),
+                                     ("say", "OK"), ("say", "Proceed")], "", [P, S, C, F, PL, ST]),
 }
 
 
@@ -435,7 +476,7 @@ CASES = {
 @pytest.mark.parametrize("name", sorted(CASES))
 async def test_every_chat_follows_the_standard_questionnaire(monkeypatch, name):
     script, bad, expected = CASES[name]
-    world = await _run(monkeypatch, script, bad=bad, geometry_kind="undecided" if "undecided" in name else "")
+    world = await _run(monkeypatch, script, bad=bad)
     assert world.errors == []
     # THE ORDER IS NEVER THE MODEL'S: a chat with no question in it never calls the model at all
     if not any(flow.asks_something(v) for k, v in script if k == "say"):
@@ -447,7 +488,7 @@ async def test_every_chat_follows_the_standard_questionnaire(monkeypatch, name):
 @pytest.mark.parametrize("name", sorted(CASES))
 async def test_no_chat_shows_a_retired_line_the_stages_words_as_the_users_or_a_cfd_word_on_fea(monkeypatch, name):
     script, bad, _ = CASES[name]
-    world = await _run(monkeypatch, script, bad=bad, geometry_kind="undecided" if "undecided" in name else "")
+    world = await _run(monkeypatch, script, bad=bad)
     assistant = [t for r, t in world.shown if r == "assistant"]
     # the old notes chat question and the old three-line confirmation are never said
     assert not any(un.QUESTION in t or CONFIRM_REQUIREMENTS_ASK in t or "Shall I proceed" in t for t in assistant)
@@ -591,3 +632,65 @@ def test_every_application_step_has_one_fixed_line():
     assert flow.step_of(flow.FLOW_KIND_QUESTION) == (FK,)
     assert [c["label"] for c in pm.choices_for(flow.FLOW_KIND_QUESTION)] == ["Through the inside", "Around the outside"]
     assert pm.choices_for("A short answer.\n\n" + pm.ANALYSIS_QUESTION) == pm.choices_for(pm.ANALYSIS_QUESTION)
+
+
+# ------------------------------------------------------------------------- through or around ----
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("button,preset", [(THROUGH, {"flow": "internal", "input_kind": "fluid-domain"}),
+                                           (AROUND, {"flow": "external", "input_kind": "solid-body"})])
+async def test_the_answer_to_the_flow_kind_question_sets_the_stage_before_proceed(monkeypatch, button, preset):
+    world = await _run(monkeypatch, [("say", "CFD please"), ("named", BAR), ("say", button)])
+    record = world.check["facts"]["flow_kind"]
+    assert record["kind"] == "undecided" and record["by"] == "guess" and record["question"] == flow.FLOW_KIND_QUESTION
+    out = world.answers[-1]
+    # the button is read as the user's stated words (FLOW-1) and the stage's form takes the answer
+    assert out.stage_flow == preset, out
+    assert out.reply == gh.HOLD_REPLY and out.choices == []
+    assert world.model.calls == 0
+    # asked once: the stage reading the check again asks nothing more
+    assert await world.named(BAR) == ""
+    assert flow.steps(world.session.messages).count(FK) == 1
+
+
+@pytest.mark.asyncio
+async def test_words_that_say_the_flow_are_never_asked_about(monkeypatch):
+    world = await _run(monkeypatch, [("say", "CFD of the air flowing around this part"), ("named", BAR)])
+    record = world.check["facts"]["flow_kind"]
+    assert record["kind"] == "external" and record["by"] == "words" and record["rule"] == "FLOW-1"
+    assert FK not in flow.steps(world.session.messages)
+
+
+@pytest.mark.asyncio
+async def test_a_flow_said_later_beats_the_stored_verdict(monkeypatch):
+    # the shape decided "around" (FLOW-2); the user says otherwise before Proceed: their words win (FLOW-1)
+    world = await _run(monkeypatch, [("say", "CFD please"), ("named", BODY), ("say", "the water flows through it")])
+    facts = world.check["facts"]
+    assert facts["flow_kind"]["kind"] == "external" and facts["flow_kind"]["by"] == "geometry"
+    assert FK not in flow.steps(world.session.messages)
+    assert world.answers[-1].stage_flow["flow"] == "internal"
+    now = flow.geometry_flow_kind(facts, world.session.messages)
+    assert now["flow"] == "internal" and now["by"] == "words"
+
+
+def test_the_seam_reads_the_record_only_once_the_naming_has_landed(monkeypatch):
+    from meshpipeline.application import flow_kind as fk
+    from meshpipeline.application import geometry_check as gc
+    facts = {**BAR, "flow_kind": fk.decide(BAR)}
+    for stored, seen in (({"status": "scouted", "named": False, "facts": facts}, False),
+                         ({"status": "ready", "named": True, "facts": facts}, True),
+                         ({"status": "ready", "named": True, "facts": {**facts, "check_mode": "thermal"}}, False),
+                         ({}, False)):
+        monkeypatch.setattr(gc, "read_check", lambda sid, s=stored: s)
+        assert bool(flow.geometry_flow_facts(str(SID))) is seen, stored
+    # a question about the flow states nothing
+    assert flow.stated_flow_kind(facts, [{"role": "user", "content": "is the flow through it?"}]) is None
+    assert flow.stated_flow_kind(facts, [{"role": "user", "content": THROUGH}])["kind"] == "internal"
+    assert flow.stated_flow_kind({}, [{"role": "user", "content": THROUGH}]) is None
+
+
+def test_the_flow_kind_question_is_one_string_and_its_buttons_are_the_users_stated_words():
+    from meshpipeline.application import flow_kind as fk
+    assert flow.FLOW_KIND_QUESTION is fk.QUESTION
+    assert [fk.words_reading(send).kind for _l, send in flow.FLOW_KIND_CHOICES] == ["internal", "external"]
+    assert all(fk.words_reading(send).tier == "said" for _l, send in flow.FLOW_KIND_CHOICES)

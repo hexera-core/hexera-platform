@@ -188,6 +188,8 @@ let _checkMode = "";
 const STAGE_HINT = "Finish on the panel →";
 function stageWait() { return STAGE_HINT; }
 let _stageOpen = false;
+// the open stage, so a flow the user says in the chat (the flow-kind question's buttons) reaches its form
+let _stage = null;
 let _holdMs = 0;
 function holdInput(placeholder, ms) {
   _held = true; disableInput(); setPlaceholder(placeholder);
@@ -317,7 +319,7 @@ export async function watchGeometryCheck(sessionId) {
     if (stage && d && d.skin && (d.thermal || d.route) && kindOf(d) !== stageKind) {
       try { stage.release(); } catch (e) { console.warn("geometry stage: release failed", e); }
       stageKind = kindOf(d);
-      stage = await deps.geometryCheck(sessionId, d, confirmFn, retryFn);
+      stage = _stage = await deps.geometryCheck(sessionId, d, confirmFn, retryFn);
       if (stage === null) stageFailed = true;
       noteStageOpen(!!stage);
     }
@@ -360,7 +362,7 @@ export async function watchGeometryCheck(sessionId) {
       // file says it all by itself, so it opens at once.
       if (d.skin && !stage && !stageFailed && (d.thermal || d.route)) {
         stageKind = kindOf(d);
-        stage = await deps.geometryCheck(sessionId, d, confirmFn, retryFn);   // null when the stage cannot draw
+        stage = _stage = await deps.geometryCheck(sessionId, d, confirmFn, retryFn);   // null when the stage cannot draw
         if (stage === null) stageFailed = true;                               // the card stands in
         // the part is on the stage (a preview while a big file is still measured): the box points
         // at the panel, whatever the chat said last
@@ -380,10 +382,13 @@ export async function watchGeometryCheck(sessionId) {
       } else if (!readySeen || !waitingFull) {
         _checkState = "ready";
         if (stage) safeUpdate(stage, d);
-        else if (!readySeen) { stageKind = kindOf(d); stage = await deps.geometryCheck(sessionId, d, confirmFn, retryFn); }
+        else if (!readySeen) { stageKind = kindOf(d); stage = _stage = await deps.geometryCheck(sessionId, d, confirmFn, retryFn); }
         if (stage) noteStageOpen(true);
         else if (isHeld()) holdInput(stageWait(), STAGE_WAIT_MS);
       }
+      // THROUGH OR AROUND, still undecided once the part is named (FLOW-4): the server asked its one question,
+      // drawn here with its two buttons beside the stage; a press sets the stage's form (sendText)
+      if (d.ask && d.ask.reply) { deps.chat("assistant", d.ask.reply); deps.choices(d.ask.choices || [], sendText); }
       readySeen = true;
       if (!waitingFull) {
         if (!fullDone) { fullDone = true; shellSig = shellSigOf(d); }
@@ -457,6 +462,8 @@ async function sendText(txt, { again = false } = {}) {
     if (!startsRun(d)) deps.chat("assistant", d.reply);
     deps.choices(d.choices || [], sendText);
     deps.brief(d.brief);
+    // THE FLOW THE USER SAID (the flow-kind question's buttons): the open stage's form takes it before Proceed
+    if (d.stage_flow && _stage && _stage.preset) _stage.preset(d.stage_flow);
     if (d.yes_after_reading && !again) {
       // A YES BEFORE THE NOTES WERE FINALIZED: the card shows the reading and the parts it finds, and the same
       // yes is sent again once it lands (a minute at most) - the run then starts, never asked twice

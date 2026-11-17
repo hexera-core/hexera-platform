@@ -169,7 +169,7 @@ async def chat_message(body: ChatMessageIn, owner_id: str = Depends(owner_dep),
         return ChatResponse(session_id=session_id, reply=outcome.reply,
                             awaiting_confirmation=outcome.awaiting_confirmation,
                             choices=choices_for(outcome.reply), brief=brief, yes_after_reading=again,
-                            restage=outcome.restage)
+                            restage=outcome.restage, stage_flow=outcome.stage_flow)
 
     session = _require_session(outcome.session, session_id)
     previous_run = outcome.previous_run

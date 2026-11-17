@@ -1,6 +1,6 @@
 # Responsibility: Own the intake's standard questionnaire - the fixed steps of each route, in order, their fixed words and buttons, which of them comes next, and the plan the application submits itself - so the order of a chat is the application's, never the model's mood.
 # Owns: the step ids, the reading of a conversation back into steps, the CFD flow-conditions question and the flow-kind question, the reading of their answers, the FEA and CFD plans built from what the user confirmed, and the line an off-script answer returns to.
-# Boundaries: pure over the conversation, except ScriptedPlanTurn, which only ever calls the intake executor's own tools (every gate - selection, admission token, validation, approval - still applies), and geometry_flow_kind, which reads the stored geometry check. It stores nothing.
+# Boundaries: pure over the conversation, except ScriptedPlanTurn, which only ever calls the intake executor's own tools (every gate - selection, admission token, validation, approval - still applies), and geometry_flow_facts, which reads the stored geometry check once its naming has landed. It stores nothing.
 # Collaborates with: agents/intake/agent.py (runs the turn), agents/intake/message.py (asks the application's own questions), application/purpose_map.py (the purpose and analysis questions), agents/intake/approval.py (the plan line).
 """THE STANDARD QUESTIONNAIRE.
 
@@ -14,8 +14,11 @@ a correction to a plan that stands):
 
 `purpose`         "Geometry received. What are you meshing this for?" (the upload's greeting)
 `purpose_clarify` the one two-button question when the words did not say CFD or FEA (or cooling)
-`flow_kind`       CFD, only when neither the geometry nor the words decide it: "Is the flow through
-                  the inside or around the outside?" with two buttons
+`flow_kind`       CFD, once the naming has landed, only when the flow-kind authority still says
+                  "undecided" and no words of the user's decided it (application/flow_kind, FLOW-4):
+                  "Is the flow through the inside or around the outside?" with two buttons, asked
+                  beside the open stage. The answer sets the stage's "The fluid flows" before
+                  Proceed, and the stage line follows (purpose -> stage -> flow_kind -> stage -> ...)
 `stage`           "Checking your part - confirm it on the right and press Proceed." The panel shows the
                   part, its unit and (internal flow) its openings; the chat box is closed while it is up.
 `confirmed`       the short "Confirmed: <part>" card the panel's Proceed leaves in the chat
@@ -38,6 +41,8 @@ import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
+
+from meshpipeline.application import flow_kind as _fk
 
 #: THE STEP IDS - what a test reads a conversation as, whatever prose the model wrote.
 PURPOSE = "purpose"
@@ -83,8 +88,10 @@ WALL_FUNCTIONS = "wall functions (y⁺ 30–300)"
 WALL_RESOLVED = "a resolved wall (y⁺ ≈ 1)"
 #: its buttons: (label, what a click sends)
 CONDITIONS_CHOICES = (("OK", "OK"), ("Resolve the wall (y⁺ ≈ 1)", "Resolve the wall (y⁺ ≈ 1)"))
-#: THE FLOW-KIND QUESTION, asked only when neither the geometry nor the words decide it.
-FLOW_KIND_QUESTION = "Is the flow through the inside or around the outside?"
+#: THE FLOW-KIND QUESTION, asked only when neither the geometry nor the words decide it - the
+#: flow-kind authority's own words (FLOW-4), one string in one place. Whatever its buttons send is
+#: read back there as the user's stated words (FLOW-1).
+FLOW_KIND_QUESTION = _fk.QUESTION
 FLOW_KIND_CHOICES = (("Through the inside", "The flow goes through the inside"),
                      ("Around the outside", "The flow goes around the outside"))
 
@@ -381,30 +388,72 @@ _PLANNABLE = re.compile(r"The fluid travels along [+-][xyz]\.|; the fluid flows 
 
 # ------------------------------------------------------------------------- the flow-kind seam ----
 
-def geometry_flow_kind(session_id: str) -> str:
-    """THE SEAM to the geometry check's verdict on the flow kind (another branch makes the check return
-    a kind, its confidence and its reasons, with an explicit "undecided"): "internal", "external",
-    "undecided", or "" when the check says nothing yet. Read from the stored check's facts, under
-    `flow_kind` - {"kind": ..., "confidence": ..., "reasons": [...]} or a bare string."""
+def geometry_flow_facts(session_id: str) -> dict:
+    """THE SEAM to the geometry check: the stored check's facts ONCE THE NAMING HAS LANDED, else {}. The
+    flow-kind authority's record (`facts["flow_kind"]`: kind, flow, best_guess, confidence, by, rule,
+    reasons, question, input_kind, geometry) is rewritten at the naming with the user's first words and
+    the pictures (application/geometry_check._name_after_wait), so the scout's earlier record is never
+    the one asked about. A whole thermal model declares its regions (FLOW-5): nothing to ask."""
     try:
         from meshpipeline.application.geometry_check import read_check
-        facts = (read_check(session_id) or {}).get("facts") or {}
+        stored = read_check(session_id) or {}
     except Exception:  # noqa: BLE001 - a check we cannot read decides nothing
-        return ""
-    got = facts.get("flow_kind")
-    kind = got.get("kind") if isinstance(got, dict) else got
-    return str(kind or "") if kind in ("internal", "external", "undecided") else ""
+        return {}
+    facts: dict = stored["facts"] if isinstance(stored.get("facts"), dict) else {}
+    if stored.get("status") != "ready" or not stored.get("named") or not isinstance(facts.get("flow_kind"), dict):
+        return {}
+    return {} if facts.get("check_mode") == "thermal" else facts
 
 
-def flow_kind_question_due(messages: Iterable[Any], geometry_kind: str) -> bool:
-    """The flow-kind step is next: the route is CFD, the geometry check could not decide through or
-    around, the user's words do not say, and the question was never asked."""
+def _flow_words(messages) -> list[str]:
+    """The user's messages that can state a flow: never another step's button, the stage's own turn, or a
+    question (the flow-kind question's own buttons are statements)."""
+    skip = _purpose_buttons() | _analysis_buttons() | {_stage_continue()} | {s for _l, s in CONDITIONS_CHOICES}
+    mine = {s for _l, s in FLOW_KIND_CHOICES}
+    return [t for t in _users(messages) if t in mine or (t not in skip and not asks_something(t))]
+
+
+def stated_flow_kind(facts: dict, messages: Iterable[Any]) -> dict | None:
+    """A FLOW THE USER STATED BEATS THE STORED VERDICT (FLOW-1): the latest of the user's messages that
+    states where the fluid goes - a button of the flow-kind question, or their own words at any time - is
+    decided again over the same facts (application/flow_kind.answer). None when no message states one,
+    or before the naming has landed."""
+    record = facts.get("flow_kind") if isinstance(facts, dict) else None
+    if not isinstance(record, dict):
+        return None
+    for text in reversed(_flow_words(messages)):
+        if _fk.words_reading(text).tier == "said":
+            return _fk.answer(record, facts, text)
+    return None
+
+
+def geometry_flow_kind(facts: dict, messages: Iterable[Any] = ()) -> dict:
+    """The flow kind that stands for this conversation: a flow the user stated (stated_flow_kind), else
+    the record the naming wrote; {} before the naming has landed."""
+    record = facts.get("flow_kind") if isinstance(facts, dict) else None
+    if not isinstance(record, dict):
+        return {}
+    return stated_flow_kind(facts, messages) or record
+
+
+def stage_flow(record: dict) -> dict:
+    """What the stage's form takes from a record: "The fluid flows" (`flow`) and "The file is"
+    (`input_kind`) - set before Proceed, so the user confirms what they answered."""
+    return {"flow": str(record.get("flow") or ""), "input_kind": str(record.get("input_kind") or "")}
+
+
+def flow_kind_question_due(messages: Iterable[Any], record: dict) -> bool:
+    """The flow-kind step is next: the route is CFD, the record the naming wrote (with any flow the user
+    stated since) is "undecided" and no words of the user's decided it - `by` "words" never asks -, no
+    part is confirmed yet, and the question was never asked."""
     from meshpipeline.application import purpose_map as pm
 
     msgs = [m for m in messages or () if isinstance(m, dict)]
+    rec = record if isinstance(record, dict) else {}
+    if rec.get("kind") != _fk.UNDECIDED or rec.get("by") == "words":
+        return False
     reading = pm.reading_for(msgs)
-    return (geometry_kind == "undecided" and reading.route == pm.ROUTE_FLOW and not reading.topology
-            and not latest_declaration(msgs)
+    return (reading.route == pm.ROUTE_FLOW and not reading.topology and not latest_declaration(msgs)
             and not any(m.get("role") == "assistant" and _ends_with(m.get("content"), FLOW_KIND_QUESTION)
                         for m in msgs))
 
@@ -816,6 +865,7 @@ __all__ = ["ANALYSIS", "ANSWER", "CONDITIONS_CHOICES", "CONFIRMED", "EXTERNAL_LE
            "ScriptedPlanTurn", "analysis_said", "asks_something", "cfd_case", "cfd_declared", "cfd_plan_due",
            "cfd_submission", "closed_with", "conditions_answered", "conditions_due", "conditions_question",
            "fea_part_words", "fea_plan_due", "fea_submission", "flow_conditions", "flow_kind_of",
-           "flow_kind_question_due", "geometry_flow_kind", "is_conditions_question", "latest_declaration",
-           "latest_user", "owned", "plain_step_answer", "plan_due", "plan_line", "read_messages", "return_line",
-           "route_of", "step_choices", "step_of", "steps", "turn_mode"]
+           "flow_kind_question_due", "geometry_flow_facts", "geometry_flow_kind", "is_conditions_question",
+           "latest_declaration", "latest_user", "owned", "plain_step_answer", "plan_due", "plan_line",
+           "read_messages", "return_line", "route_of", "stage_flow", "stated_flow_kind", "step_choices", "step_of",
+           "steps", "turn_mode"]

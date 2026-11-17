@@ -128,6 +128,9 @@ class MessageOutcome:
     #: THE STAGE OPENS AGAIN: the user changed the analysis after the stage (FEA <-> CFD), so the part is
     #: checked again on the new route's stage - the console watches the check again
     restage: bool = False
+    #: THE STAGE'S FORM, SET FROM THE CHAT: a flow the user stated while the stage waits on Proceed (the
+    #: flow-kind question's buttons, FLOW-1) - {"flow", "input_kind"} for "The fluid flows" and "The file is"
+    stage_flow: dict | None = None
 
     @property
     def answered(self) -> bool:
@@ -446,6 +449,10 @@ async def _settle(inbound: InboundMessage, db, *, gate: dict, locked, messages: 
                                          session_repo=session_repo, logger=logger)
     if asked is not None:
         return asked
+    stated = await _settle_stated_flow(inbound, db, messages=messages, revision=revision,
+                                       session_repo=session_repo, logger=logger)
+    if stated is not None:
+        return stated
     hold = await _settle_geometry_hold(inbound, db, locked=locked, messages=messages,
                                        revision=revision, session_repo=session_repo, logger=logger,
                                        note=uc.ON_STAGE if unit_to_stage else "")
@@ -594,6 +601,63 @@ async def _settle_cfd_conditions(inbound: InboundMessage, db, *, messages: list,
                           transition=GateTransition(revision=revision))
 
 
+async def _settle_stated_flow(inbound: InboundMessage, db, *, messages: list, revision: str,
+                              session_repo, logger) -> MessageOutcome | None:
+    """THROUGH OR AROUND, SAID WHILE THE STAGE WAITS ON PROCEED (FLOW-1, FLOW-4): the answer to the
+    flow-kind question (its two buttons), or a flow the user states in their own words, decides the flow
+    kind again over the facts the naming wrote (application/flow_kind.answer), and the stage's form takes
+    it - "The fluid flows" and "The file is" - before Proceed. The stage line follows: the panel is where
+    the part is confirmed. Nothing here before the naming has landed (the naming reads these words
+    itself), or once the part is confirmed."""
+    from meshpipeline.agents.intake import flow
+    from meshpipeline.application import flow_kind as fk
+    from meshpipeline.application import geometry_hold as gh
+    from meshpipeline.application import purpose_map as pm
+
+    said = [{"role": "user", "content": inbound.content}]
+    if fk.words_reading(inbound.content).tier != "said":
+        return None
+    reading = pm.reading_for(messages)
+    if flow.latest_declaration(messages) or reading.route not in (pm.ROUTE_FLOW, pm.ROUTE_ELECTRONICS):
+        return None
+    facts = flow.geometry_flow_facts(str(inbound.session_id))
+    record = flow.stated_flow_kind(facts, said) if facts else None
+    if record is None:
+        return None
+    reply = gh.hold_reply(False, "", reading)
+    await session_repo.append_message(db, inbound.session_id, "assistant", reply)
+    logger.info("intake message: the user said the flow goes %s it (%s) - the stage's form takes it - session=%s",
+                "through" if record.get("flow") == "internal" else "around", record.get("rule"), inbound.session_id)
+    return MessageOutcome(status=MessageStatus.geometry_hold, reply=reply, stage_flow=flow.stage_flow(record),
+                          transition=GateTransition(revision=revision))
+
+
+async def ask_flow_kind(session_id: uuid.UUID, owner_id: str, *, facts: dict, session_repo, db_factory,
+                        logger) -> str:
+    """THE FLOW-KIND QUESTION, ASKED ONCE THE NAMING HAS LANDED (FLOW-4; the stage's read of the check calls
+    it, api/v1/geometry.get_check): when the record the naming wrote - with the user's first words and the
+    pictures, and any flow the user stated since - is still "undecided" and no words of the user's decided
+    it, the application's one fixed question, with its two buttons, joins the conversation once, under the
+    session's row lock. Returns the question when this call asked it, else "". The answer is read by
+    `_settle_stated_flow`."""
+    from meshpipeline.agents.intake import flow
+
+    if not isinstance((facts or {}).get("flow_kind"), dict):
+        return ""
+    async with db_factory() as db:
+        locked = await session_repo.get_for_update(db, session_id)
+        if locked is None or locked.owner_id != owner_id or getattr(locked, "job_id", None):
+            return ""
+        messages = list(getattr(locked, "messages", None) or [])
+        if not flow.flow_kind_question_due(messages, flow.geometry_flow_kind(facts, messages)):
+            return ""
+        await session_repo.append_message(db, session_id, "assistant", flow.FLOW_KIND_QUESTION)
+        await db.commit()
+    logger.info("intake: the flow kind is undecided after the naming - the one question asked - session=%s",
+                session_id)
+    return flow.FLOW_KIND_QUESTION
+
+
 async def _settle_geometry_hold(inbound: InboundMessage, db, *, locked, messages: list,
                                 revision: str, session_repo, logger, note: str = "") -> MessageOutcome | None:
     """THE GEOMETRY CHECK'S TURN, taken here because it must be decided under the same row lock
@@ -641,9 +705,8 @@ async def _settle_geometry_hold(inbound: InboundMessage, db, *, locked, messages
             # A QUESTION BEFORE THE PURPOSE is answered first, briefly, by the intake - which closes its
             # answer with this same purpose question (agents/intake/flow.return_line)
             return None
-        if not question and flow.flow_kind_question_due(messages, flow.geometry_flow_kind(session_id)):
-            # THROUGH OR AROUND, when neither the geometry nor the words decide it: asked once, with buttons
-            question = flow.FLOW_KIND_QUESTION
+        # (THROUGH OR AROUND is never asked here, before the naming: the naming decides it again with these
+        # words and the pictures, and the question follows only what is still undecided then - ask_flow_kind)
         if question:
             await session_repo.append_message(db, inbound.session_id, "assistant", question)
             logger.info("intake message: the purpose is unclear (%s) - asked once - session=%s",
@@ -978,5 +1041,5 @@ def _reply_of(result: dict) -> str:
 
 
 __all__ = ["STILL_RUNNING_REPLY", "GateChange", "GateTransition", "InboundMessage", "NoteStatus",
-           "add_console_note",
+           "add_console_note", "ask_flow_kind",
            "MessageOutcome", "MessageStatus", "PreviousRun", "accept", "persist_turn"]
