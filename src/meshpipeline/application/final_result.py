@@ -310,6 +310,11 @@ def build_final_result(*, job_id: str, owner_id: str, status: TerminalStatus, en
                        required_ready: bool, delivered_types: list[str],
                        optional_warnings: list[str],
                        pipeline_timed_out: bool = False,
+                       # THE HANDOVER'S OWN FACT, carried from the delivery that made it
+                       # (apply_delivery -> TerminalAssembly): the run reached `succeeded` and the
+                       # store refused the mesh. Nothing else in this call can establish it -
+                       # `required_ready` is False on every run that never built anything.
+                       delivery_failed: bool = False,
                        requirement_caveats: list | None = None,
                        failure_cause: str = "",
                        failure_facts: Mapping | None = None,
@@ -402,7 +407,8 @@ def build_final_result(*, job_id: str, owner_id: str, status: TerminalStatus, en
                                    failed_gate=failed_gate, api_failure=api_failure,
                                    required_ready=required_ready, attempts=attempts,
                                    attempts_max=attempts_max,
-                                   pipeline_timed_out=pipeline_timed_out)
+                                   pipeline_timed_out=pipeline_timed_out,
+                                   delivery_failed=delivery_failed)
     # THE CAUSE is told only where the category says a gate decided the outcome: the account
     # belongs to the gate that failed on the final attempt, and nowhere else.
     cause, detail, next_step = ("", "", "")
@@ -413,6 +419,20 @@ def build_final_result(*, job_id: str, owner_id: str, status: TerminalStatus, en
         # THE ONLY WAY A REVIEW FAILS A RUN: the mesh is the wrong problem. Say which way, in the
         # taxonomy's own plain words, beside what the reviewer saw.
         detail, next_step = _wrong_problem_account(review_blocking)
+    elif cat is FailureCategory.delivery_failed:
+        # THE HANDOVER IS TOLD AS THE HANDOVER. The category carried no detail and no next step
+        # of its own, so two generic renderer lines spoke for the one failure where a finished
+        # mesh exists and the next step is not "run it again". The mesh's own standing -
+        # reviewed, or reviewed inconclusively - is said here too, because it is the part of
+        # this the user still holds; it rides as a caveat and never as the cause.
+        from meshpipeline.contracts.failure_cause import FailureCause, describe
+        _facts = {"validated": bool(executor_success),
+                  "reviewed": verdict is ReviewVerdict.passed,
+                  "review_marker": (_bare_marker(api_failure)
+                                    if execution is ReviewExecution.failed_to_complete
+                                    and _reviewer_marker else "")}
+        detail, next_step = describe(FailureCause.DELIVERY_FAILED, _facts)
+        cause, failure_facts = FailureCause.DELIVERY_FAILED.value, _facts
     elif cat is FailureCategory.input_rejected:
         # The admission refusal, split by WHOSE it is. Only a MEASURED refusal is the CAD's; a
         # refusal of the DECLARED setup alone (a symmetry patch or a parameter this engine cannot
@@ -434,8 +454,17 @@ def build_final_result(*, job_id: str, owner_id: str, status: TerminalStatus, en
         detail, next_step = describe(FailureCause.REVIEW_INCOMPLETE, _facts)
         cause, failure_facts = FailureCause.REVIEW_INCOMPLETE.value, _facts
     from meshpipeline.contracts.failure_cause import retry_can_help
+    # WHAT SURVIVES A FAILED HANDOVER. Every other failure record carries no caveats, and should
+    # not: there is no delivered mesh for them to qualify. A delivery failure is the one failure
+    # where the mesh was finished and judged - the run WAS `succeeded` until the store refused it
+    # - so the statements that would have ridden with the mesh stay on the record. On job
+    # 0ff6f9e5 the review-inconclusive caveat was the only durable trace that no verdict had been
+    # reached on that mesh, and the downgrade dropped it.
+    _kept_caveats = (list(requirement_caveats or [])
+                     if cat is FailureCategory.delivery_failed else [])
     return FinalResult(
         failure_cause=cause, failure_detail=detail, failure_next_step=next_step,
+        requirement_caveats=_kept_caveats,
         retry_skipped=bool(cause) and not retry_can_help(cause, failure_facts),
         schema_version=FINAL_RESULT_SCHEMA_VERSION, job_id=job_id, owner_id=owner_id, status=status,
         engine=engine, purpose=purpose, dimensionality=dimensionality,
@@ -511,7 +540,24 @@ def _derive_failure_category(*, executor_success: bool, verdict: ReviewVerdict |
                              execution: ReviewExecution, failed_gate: str,
                              api_failure: str, required_ready: bool, attempts: int,
                              attempts_max: int,
-                             pipeline_timed_out: bool = False) -> FailureCategory:
+                             pipeline_timed_out: bool = False,
+                             delivery_failed: bool = False) -> FailureCategory:
+    # 0. THE HANDOVER FAILED. Delivery runs only on a decision that already said `succeeded`
+    #    (pipeline_run), so by the time this is true the mesh is built, every gate has passed and
+    #    the store is the one thing that refused. That is a fact about delivery whatever the
+    #    review did, so it outranks every reading below - including rule 1, whose claim (we have
+    #    no judgement to report) is about the review and not about what failed.
+    #    JOB 0ff6f9e5, 2026-11: a 283,410,955-cell conjugate cold plate, 5h07m on 64 cores, every
+    #    gate passed, the review forgiven by derive_terminal_status - and a 10.6 GB case bundle
+    #    against an int4 size column. Rule 1 fired on the forgiven review, rule 4 was unreachable
+    #    behind `verdict is passed`, and the record said `review_incomplete`: the reviewer was
+    #    blamed for a 32-bit column, and the user was told to re-run a five-hour mesh that would
+    #    have stopped in the same place. A review the status derivation FORGAVE is by definition
+    #    not the reason the run failed; it survives here as a caveat on the record, not as the
+    #    cause. It outranks `timed_out` too - that category is for a run that ran out of time
+    #    mid-flight, and this one reached the end and was handed over.
+    if delivery_failed:
+        return FailureCategory.delivery_failed
     # 1. THE REVIEW DID NOT CONCLUDE. Our side failed, so no judgement about the user's mesh is
     #    available to report. This outranks every product-meaningful cause below, because each of
     #    those asserts something we did not establish. The one thing that still outranks it is a
@@ -533,7 +579,11 @@ def _derive_failure_category(*, executor_success: bool, verdict: ReviewVerdict |
     # ONLY (completed, failed) may be reported as a quality rejection.
     if execution is ReviewExecution.completed and verdict is ReviewVerdict.failed:
         return FailureCategory.review_rejected
-    # 4. Execution succeeded and the mesh was validated, but the required deliverable never stored.
+    # 4. Execution succeeded and the mesh was validated, but the required deliverable never
+    #    stored. The INFERENCE that stands in for rule 0 where no delivery fact was handed in
+    #    (a record rebuilt from durable state, a caller that predates the fact). It stays behind
+    #    the PASS verdict deliberately: `not required_ready` is also true of every run that never
+    #    built anything, so without a concluded review it is not evidence of a delivery at all.
     if executor_success and verdict is ReviewVerdict.passed and not required_ready:
         return FailureCategory.delivery_failed
     # the run exhausted its TOP-LEVEL pipeline budget mid-flight. This outranks the generic
@@ -697,7 +747,23 @@ def _render_parked(count: int) -> str:
 def render_message(fr: FinalResult) -> str:
     """The closing message: the account of the outcome, then the fallback ladder's line - on a
     success that another engine built, which one and why; on a mesh failure, the one offer."""
-    if fr.review_parked > 0 and fr.status == TerminalStatus.failed:
+    # THE PARK IS NOT ASKED ABOUT A FULL SHELF. _holds_a_complete_delivery's docstring claims a
+    # universal - a terminal record holding a complete delivery never says otherwise - and this
+    # short-circuit is the one line in the file that could break it: _render_parked says the run
+    # is waiting on a decision and names nothing that is stored, so a parked record with a mesh
+    # on the shelf would go back to hiding it, which is this whole defect wearing a second hat.
+    # It is unreachable today, and the reason is checkable rather than believed. It is NOT that a
+    # parked run has no mesh manifest: `review_parked` is stamped only where the assembly's
+    # status is `pending_review` (terminal_finalize.build_terminal_result), `required_ready` is
+    # turned on for a FAILED record by application/redeliver.py alone, and redeliver_job refuses
+    # any job row whose status is not exactly JobStatus.failed. The two flags are written on
+    # either side of a status that the second one refuses. Enforced here anyway, in the file that
+    # makes the claim, rather than left resting on a guard in another module that an operator
+    # calls with their own arguments. A parked record that DID hold a delivery still says it is
+    # parked: the line is carried into the full-shelf message rather than dropped, because "a
+    # decision is waiting on you" is the one fact that run cannot afford to lose.
+    if (fr.review_parked > 0 and fr.status == TerminalStatus.failed
+            and not _holds_a_complete_delivery(fr)):
         return _render_parked(fr.review_parked)
     text = _render_outcome(fr)
     # THE USER'S OWN NOTES: what the build did with them, in the steps' own one plain line
@@ -715,14 +781,227 @@ def render_message(fr: FinalResult) -> str:
     if fr.status == TerminalStatus.failed and fr.review_left:
         text = "\n".join((text, _render_left(fr.review_left)))
     if fr.status == TerminalStatus.failed:
-        # NO VALID MESH AT ALL: what each attempt did, in plain words, before the one offer
+        # WHAT EACH ATTEMPT DID, in plain words, before the one offer. Written for a run with no
+        # valid mesh at all, and kept on a full shelf too, unlike the offer below: these are the
+        # run's own per-attempt facts, so beside a stored mesh they read as the history that
+        # produced it rather than as a denial that it exists. attempts_account is [] under two
+        # attempts, which is every record seen on this path so far (0ff6f9e5 made one).
         from meshpipeline.pipeline.engine_fallback import attempts_account
         text = "\n".join([text, *attempts_account(ladder)])
     offer = ladder.get("offer")
+    # THE LADDER OFFER IS WITHHELD FROM A FULL SHELF, and the reason is the offer's own words,
+    # not its subject. A different engine is a reasonable thing to want beside a stored mesh, so
+    # this is not a refusal to switch engines: the message's own next step already invites one
+    # ("tell me what to change in this chat and I will set up a new run"), and an engine is a
+    # change. What cannot be shown is this particular text. pipeline/engine_fallback.offer builds
+    # it for a run that ended with nothing and opens it "<engine> could not mesh this shape:
+    # <reason>."; printed under a download button serving 10.4 GB of that same mesh, that is not
+    # a next step that merely clashes, it denies the thing on the screen. Rewording it is not the
+    # fix either - the sentence is true of the run it was written for, and this branch is the one
+    # record shape it was never written for.
     if (fr.status == TerminalStatus.failed and isinstance(offer, Mapping)
-            and str(offer.get("text") or "").strip()):
+            and str(offer.get("text") or "").strip()
+            and not _holds_a_complete_delivery(fr)):
         return "\n".join((text, str(offer["text"]).strip()))
     return text
+
+
+#: THE SENTINEL, and the FIRST line of the full-shelf message. ui/js/render/outcome.js keys the
+#: panel's headline off exactly one line of the closing message: it matches "Mesh generation
+#: completed successfully." as kind "done", "Mesh generation did not complete successfully." as
+#: kind "failed", strips whichever it found, and looks the kind up in its HEADLINE table. A
+#: message carrying NEITHER gets kind "" - no headline at all, and no oc-<kind> wrapper class for
+#: ui/css/theme.css to style - which is exactly what this message rendered as while it emitted no
+#: sentinel of its own. This line is the third one, mapped there to kind "delivered" and the
+#: headline "Your mesh is ready, after a failure on our side."
+#: DO NOT CHANGE THE WORDING WITHOUT READING ui/js/render/outcome.js. The match is on the whole
+#: line, so one comma moved here silently costs the panel its headline and its styling again.
+#: It is also a true sentence on its own, because a sentinel the parser fails to strip is a
+#: sentence the user reads: the mesh generation did complete, and the run did not.
+DELIVERED_SENTINEL = "Mesh generation completed; the run did not."
+
+#: THE SHELF LINE. Said in place of "No downloadable mesh deliverable is available." when the
+#: record holds the delivery anyway. One line in one place, because the sentence it replaces is
+#: asserted in three places below, and a fourth would have been written the next time someone
+#: added a failure path.
+#: TWO ENDINGS, because the line that follows it is not always a cause. "...and this is what
+#: failed" is a forward pointer, and it is kept only where the record actually wrote an account
+#: of the failure down. Where it did not, that pointer used to land on the CATEGORY headline -
+#: "Something went wrong on our side while running the job." - which is a classification and not
+#: a cause. Promising a cause we do not have is how a message starts being read as filler, and
+#: the cost is the sentences around it: the user stops believing the shelf line too.
+_SHELF_OPENING = ("Your mesh was built and it is stored: the deliverables on this result are "
+                  "ready to download. The run is still recorded as failed")
+DELIVERED_DESPITE_FAILURE = _SHELF_OPENING + ", and this is what failed."
+DELIVERED_NO_RECORDED_CAUSE = _SHELF_OPENING + "."
+
+
+def _holds_a_complete_delivery(fr: FinalResult) -> bool:
+    """Does this record HOLD a finished delivery, whatever its status says?
+
+    Only the record's own facts answer it. `required_ready` is the delivery's own statement that
+    every required class is stored, `missing_outputs` is what it is still short of, and
+    `delivered_types` is what it handed over. The artifact policy is asked again here instead of
+    being taken on the flag's word, because the flag and the list are written by different steps:
+    the one thing this must never do is let "ready" through on a record that is short a required
+    class, because everything it unlocks is a claim that the user can download the mesh.
+
+    Nothing the pipeline writes at terminal time can make this true. build_final_result stamps
+    required_ready=False and delivered_types=[] on EVERY failure record it builds. It becomes
+    true only where a delivery was made good afterwards against a run already written down as
+    failed (application/redeliver.py), which is exactly where job 0ff6f9e5 stands: 283,410,955
+    cells meshed in 5h07m, every gate passed, the handover refused by a 32-bit size column, and
+    the same workspace delivered later without re-running anything. The run failed and the shelf
+    is full. Both are true, and the message has to carry both.
+
+    WHERE IT IS ASKED, and why in three places rather than one. The failure tail asks it to
+    choose the branch. render_message asks it twice more, and both are there to make the universal
+    above the branch ("a terminal record that holds a complete delivery never claims otherwise")
+    something this file enforces rather than something it hopes for: the review-park
+    short-circuit returns before the tail is ever reached, and the engine-ladder offer is appended
+    after it returns, so each one could put the empty-shelf story back on screen on its own. A
+    succeeded record says all of this in its own words already, and a cancelled one cannot reach
+    this state - delivery is fenced off on a cancel - so that message is left as it reads today.
+    """
+    if not (fr.required_ready and fr.delivered_types) or fr.missing_outputs:
+        return False
+    return set(required_output_classes(fr.engine, fr.purpose)) <= set(fr.delivered_types)
+
+
+def _flat_classification(cat: FailureCategory) -> str:
+    """The category said as what it is, claiming nothing about the mesh.
+
+    It must not read as a fact chip, and the reason is NOT its length: outcome.js attempts its
+    "Label: value" rule on any line of at most 90 characters, and the longest of the thirteen
+    is 89, so every one of them is inside that window. What keeps them out of the fact table is
+    that none carries a colon. Do not put one in.
+    """
+    return ("The record does not say what failed beyond classifying it as "
+            f'"{cat.value.replace("_", " ")}".')
+
+
+def _failed_but_delivered(fr: FinalResult, cat: FailureCategory) -> str:
+    """The closing message for a terminal record that FAILED and holds the delivery anyway.
+
+    WHY THIS IS ITS OWN BRANCH. Every line of the failure tail below was written for a run with
+    nothing on the shelf, and three of them assert that outright. Beside a full shelf each one
+    reads as a lie, and the user can see that it is one: the panel this message is rendered into
+    is offering the downloads and drawing the mesh while they read that there are none. On job
+    0ff6f9e5 the next step was the expensive half - "run it again ... nothing needs to change"
+    sends the user into a 283,410,955-cell rebuild, 5h07m on 64 cores, to arrive at the bytes
+    already sitting beside the sentence. Returning early is also what keeps the common case
+    still: a failure with nothing delivered never enters here, so not one word of it moves.
+
+    WHAT DOES NOT MOVE HERE EITHER: the status, the category, the recorded cause. The run failed.
+    This fixes what we say about the shelf, not what we decided about the run.
+
+    It does not restate the FAILURE headline. "Mesh generation did not complete successfully." is
+    untrue of a record holding a stored mesh bundle - there is no bundle without a mesh - and it
+    is also the exact line the console keys its own headline off (ui/js/render/outcome.js), so
+    leaving it out is what stops "No mesh this time." being printed over the drawn mesh. It is
+    REPLACED and not merely dropped: DELIVERED_SENTINEL is the first line below, because a
+    message carrying no sentinel at all gets no headline and no wrapper class from that parser.
+
+    WHICH CATEGORIES REACH HERE. All thirteen, by design - the branch is chosen by the SHELF and
+    never by the category, because the one thing worse than a category whose prose clashes with a
+    stored mesh is a stored mesh told again as an empty one. What reaching here actually costs is
+    set by application/redeliver.py, the only writer that turns `required_ready` on over a failed
+    record, and its guard is: the job row is exactly JobStatus.failed, not purged, the terminal
+    record names a non-empty engine, a workspace carrying the job id and an attempt_<n> is on
+    disk, the required classes are not already ready, and deliver_succeeded_run satisfies that
+    engine's deliverable contract from those bytes. Measured against that guard:
+      - worker_lost and never_started are UNREACHABLE, and for a reason in the record rather than
+        on disk: both come only from _reaped_result (worker_lost_result, never_started_result,
+        refused_result), which never sets `engine`, so redeliver_job refuses them with
+        NO_TERMINAL_RECORD before it looks at any workspace at all.
+      - attempts_exhausted, gate_failed, review_rejected, delivery_failed, timed_out and
+        internal_pipeline_failure carry a real engine and a real workspace, so they are
+        REACHABLE. attempts_exhausted is the plainest of them: a run can use up its attempts
+        after an earlier attempt already left a complete mesh in its attempt_<n> directory.
+      - the rest (input_rejected, incompatible_requirements, authoring_failed,
+        native_execution_failed, required_output_missing) never built a mesh, so no workspace of
+        theirs satisfies the deliverable contract. That is a fact about how those runs end, not a
+        guarantee: redeliver_job takes an explicit workspace= whose only path check is that the
+        job id is a component of it. An unreachable case left to contradict itself is a trap for
+        whoever makes it reachable, so not one of the thirteen is allowed to contradict the shelf.
+    """
+    from meshpipeline.contracts.failure_cause import ACCOUNTS_DENY_A_MESH, FailureCause
+    # WHAT FAILED, in the record's own words wherever it has them - the recorded account is still
+    # the truest thing said about this run. The one carve-out is the handover: its account ends
+    # "so nothing was delivered" and its next step says a re-run only reaches the same store call
+    # that refused it. Both were true when they were written and both are refuted by the shelf
+    # this record now holds, so the handover is told again here, in the past tense it has earned.
+    #
+    # NO CATEGORY PROSE IS BORROWED, and that is what closes three self-contradictions at once.
+    # The category table was written for a message with nothing to download, so beside a full
+    # shelf its lines either deny the mesh ("A valid mesh could not be produced within the allowed
+    # attempts.", "The geometry cannot be meshed as it is.") or carry a re-run instruction INSIDE
+    # the sentence, where no later line can take it back: errors.py's class messages for
+    # worker_lost and never_started both end 'please try again: say "run it again" in this chat',
+    # one line above "Nothing needs to be run again to get this mesh". Picking the safe headlines
+    # out of the thirteen would be a second table to keep in step with the first, and the first is
+    # the one that moves. So where the record wrote down no account of its own, the category is
+    # said as what it is - a classification, flatly, claiming nothing about the mesh.
+    if fr.failure_cause == FailureCause.DELIVERY_FAILED.value:
+        cause, recorded = ("Your mesh was built and every automatic check on it passed, and the "
+                           "handover to the store failed afterwards. That is why the run is "
+                           "recorded as failed."), True
+    elif fr.failure_detail and fr.failure_cause not in {c.value for c in ACCOUNTS_DENY_A_MESH}:
+        cause, recorded = fr.failure_detail, True
+    elif fr.failure_detail:
+        # THE RECORDED ACCOUNT CAN DENY THE SHELF TOO, and screening only the category table
+        # left that open. NOT_BUILT opens "No mesh was built:" and GEOMETRY_REJECTED ends
+        # "Fix the geometry and upload it again" - printed under a download button serving a
+        # mesh, each is the same contradiction the category prose was dropped for, arriving by
+        # the other door. Both are reachable: redeliver_job takes an explicit workspace= whose
+        # only path check is that the job id is a component of it, so one attempt's complete
+        # mesh can be delivered against a later attempt's record. Worse than the category case,
+        # because outcome.js gives the delivered kind whole=true, so this paragraph is never
+        # cut short - the user reads the denial in full, beside the download.
+        #
+        # The account is DROPPED, not paraphrased. Rewriting someone else's recorded words to
+        # agree with the shelf would be inventing a cause; the classification claims nothing
+        # about the mesh, and the cause itself is still in the record for anyone reading it.
+        cause, recorded = _flat_classification(cat), False
+    else:
+        cause, recorded = _flat_classification(cat), False
+    lines = [DELIVERED_SENTINEL,
+             DELIVERED_DESPITE_FAILURE if recorded else DELIVERED_NO_RECORDED_CAUSE,
+             cause]
+    # THE NEXT STEP IS THE WHOLE POINT. Not "run it again, nothing needs to change": the mesh
+    # that run would produce is the one being downloaded. What is left to offer is a DIFFERENT
+    # mesh, and that one needs the user to say what to change. The recorded next step is dropped
+    # rather than shown, because every one that can reach here is some wording of "run it again"
+    # (contracts/failure_cause.describe), and the shelf is what makes that wording wrong.
+    lines.append("Nothing needs to be run again to get this mesh: it is already built and "
+                 "stored, and running the same request again would build the same mesh a "
+                 "second time.")
+    lines.append("If you want a different mesh, tell me what to change in this chat and I will "
+                 "set up a new run.")
+    # THE PARK SURVIVES THE SHELF. render_message's parked short-circuit is skipped on a full
+    # shelf so that the stored mesh is not hidden again; the fact it was carrying is said here
+    # instead, because a run waiting on the user's decision stays waiting whatever is stored, and
+    # dropping the line would leave that decision parked with nothing on screen to prompt it.
+    if fr.review_parked > 0:
+        lines.append(_render_parked(fr.review_parked))
+    # THE FACTS LAST, as the success half says them, and in its words where they are the same
+    # thing (the console reads a short "Label: value" line as a fact chip either way).
+    if cat is FailureCategory.attempts_exhausted and fr.attempts_max:
+        lines.append(f"Attempts used: {fr.attempts}/{fr.attempts_max}.")
+    lines.append("Required deliverable: ready to download")
+    # THE REVIEW'S STANDING, said as a fact and never as a pass. On job 0ff6f9e5 the reviewer was
+    # reached and could not finish, so that mesh carries no verdict in either direction: saying it
+    # passed invents one, saying it failed invents the opposite, and saying nothing at all lets a
+    # mesh nobody judged be downloaded as though somebody had.
+    if fr.reviewer_verdict is ReviewVerdict.passed:
+        lines.append("Review: passed")
+    elif fr.reviewer_verdict is ReviewVerdict.failed:
+        lines.append("Review: did not pass (see above)")
+    elif fr.review_execution is ReviewExecution.failed_to_complete:
+        lines.append("Review: did not finish, so this mesh has no verdict")
+    else:
+        lines.append("Review: not reached, so this mesh has no verdict")
+    return "\n".join(lines)
 
 
 def _render_outcome(fr: FinalResult) -> str:
@@ -875,6 +1154,19 @@ def _render_outcome(fr: FinalResult) -> str:
     cat = FailureCategory(fr.failure_category) if fr.failure_category else \
         FailureCategory.internal_pipeline_failure
     headline, _may_have_mesh, retry_ok, user_change = _CATEGORY_META[cat]
+    # A TERMINAL RECORD THAT HOLDS A COMPLETE DELIVERY NEVER CLAIMS OTHERWISE. Everything
+    # below this line says, in one wording or another, that there is nothing to download and
+    # that the way forward is another run. Both are false on a full shelf, and the user can
+    # see that they are false - the downloads are on the same screen. Asked before the first
+    # line is appended, so that a failure with nothing delivered, which is the common case,
+    # reads exactly as it always has, word for word.
+    # THIS SITE IS NOT ENOUGH ON ITS OWN, and the universal above is only true because of that.
+    # render_message runs two things outside this function - the review-park short-circuit
+    # BEFORE it and the engine-ladder offer AFTER it - and each could put the empty-shelf story
+    # back on screen by itself, so each asks the same question there. Anything new that returns
+    # a closing message without coming through here has to ask it too.
+    if _holds_a_complete_delivery(fr):
+        return _failed_but_delivered(fr, cat)
     lines.append("Mesh generation did not complete successfully.")
     if cat in _CATEGORY_CLASS:
         # ONE SENTENCE OWNS these: whose problem it is and the next step, in errors.py's words.
@@ -1646,6 +1938,11 @@ class StatusDecision:
     #: the gating rows the measured limits failed on a mesh every gate passed (VER-1): told to the
     #: user as the check that failed, with its measured value and limit - never as a storage failure
     limits_failed: tuple = ()
+    #: this decision is a DOWNGRADE from `succeeded` by a failed handover (apply_delivery): the
+    #: mesh was built, every gate passed, and the store refused it. Carried to terminal assembly
+    #: because nothing it can read reconstructs it - the failure categories are otherwise derived
+    #: from graph facts, and the graph knows nothing about delivery.
+    delivery_failed: bool = False
 
     @property
     def succeeded(self) -> bool:
@@ -1815,4 +2112,7 @@ def apply_delivery(decision: StatusDecision, delivery) -> StatusDecision:
 
     if delivery is None or delivery.succeeded:
         return decision
-    return StatusDecision(JobStatus.failed, delivery.failed_reason)
+    # The downgrade also RECORDS that it is one. Without it the terminal record has to guess at
+    # what failed from graph facts that never mention delivery, and job 0ff6f9e5 shows what the
+    # guess costs: a forgiven review read as the cause of a storage failure.
+    return StatusDecision(JobStatus.failed, delivery.failed_reason, delivery_failed=True)

@@ -1257,6 +1257,8 @@ async def _run_async(req: JobRequest) -> dict:
                 attempts_made=_attempts_made,
                 attempts_max=int(bcfg.BUILDER_MAX_TOTAL_ATTEMPTS),
                 pipeline_timed_out=_timed_out,
+                # the handover's own outcome, from the decision that downgraded the run
+                delivery_failed=_decision.delivery_failed,
                 # THE FALLBACK LADDER'S ACCOUNT: which engines ran, why the run moved, and - when
                 # no mesh came out - the one offer the user can accept in a sentence
                 repair_lineage=dict(final_state.get("repair_lineage") or {}),

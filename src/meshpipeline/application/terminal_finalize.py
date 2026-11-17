@@ -215,6 +215,10 @@ class TerminalAssembly:
     #: counted them - what the record says was used; None keeps `attempts`
     attempts_made: int | None = None
     pipeline_timed_out: bool = False
+    #: the run reached `succeeded` and the HANDOVER failed (final_result.apply_delivery): the
+    #: mesh was built and passed every gate, and the store refused it. Not derivable from graph
+    #: state - the graph ends before delivery - so it travels with the decision that made it.
+    delivery_failed: bool = False
     #: the fallback ladder's closing record (pipeline/engine_fallback.final_record) - carried into
     #: the final result verbatim; {} when the run never classified a failure
     engine_ladder: dict = field(default_factory=dict)
@@ -284,7 +288,9 @@ def build_terminal_result(assembly: TerminalAssembly, *, delivered_types: list) 
         review_blocking=list(assembly.review_blocking or []),
         # a run that exhausted its top-level budget mid-graph is reported truthfully as
         # timed_out rather than as the downstream symptom it produced.
-        pipeline_timed_out=assembly.pipeline_timed_out)
+        pipeline_timed_out=assembly.pipeline_timed_out,
+        # and a run that failed at the handover is reported as that, whatever its review did
+        delivery_failed=assembly.delivery_failed)
 
     result = _fr.with_engine_ladder(result, assembly.engine_ladder)
     if assembly.status == JobStatus.pending_review and assembly.review_plan is not None:

@@ -82,6 +82,15 @@ class FailureCause(StrEnum):
     #: marker (which way the review stopped), validated (the executor validated the mesh first),
     #: reruns (how many times the review was already started again on the same mesh).
     REVIEW_INCOMPLETE = "review_incomplete"
+    #: The mesh was built, passed every gate and was already `succeeded` when the handover began,
+    #: and the STORE refused it - nothing reached the user. Our failure, and never a statement
+    #: about the mesh: job 0ff6f9e5's 283M-cell conjugate plate meshed in 5h07m and its 10.6 GB
+    #: case bundle would not fit a 32-bit size column. Not derived until terminal time, after
+    #: every builder attempt is over, so the retry policy never sees it and it stays out of
+    #: `_NOT_RETRYABLE` - what another attempt of the BUILD could change is not the question here.
+    #: Facts: validated (the executor validated the mesh), reviewed (the review reached a PASS),
+    #: review_marker (set only when the review did not conclude either).
+    DELIVERY_FAILED = "delivery_failed"
 
 
 #: The causes another builder attempt cannot change. A contract mismatch is authored from the
@@ -183,6 +192,8 @@ _STOP_CLASS: dict[FailureCause, StopClass] = {
     FailureCause.REGION_SPLIT: StopClass.CHECK_FAILED,
     FailureCause.RUN_INFRASTRUCTURE: StopClass.INFRASTRUCTURE,
     FailureCause.REVIEW_INCOMPLETE: StopClass.INFRASTRUCTURE,
+    # the engine did not stop at all - it finished, and our store would not take what it built
+    FailureCause.DELIVERY_FAILED: StopClass.INFRASTRUCTURE,
 }
 
 #: The words a user reads for each class - the half-sentence the attempt record carries.
@@ -496,12 +507,56 @@ def _review(f: Mapping) -> tuple[str, str]:
                   "change.")
 
 
+def _delivery(f: Mapping) -> tuple[str, str]:
+    """A run that failed at the HANDOVER, said as that. Every word here is about the store, not
+    about the mesh: the mesh exists, it passed every gate, and on job 0ff6f9e5 it was reviewed
+    inconclusively as well - none of which is the reason the run failed.
+
+    The next step is the half that cost that user most. "Run it again, nothing needs to change"
+    is the right sentence for a review that stopped, and the wrong one here: the mesh is rebuilt
+    from scratch (5h07m, on 64 cores) only to end at the same store call that has just refused
+    it. So it names the storing step, and says the re-run is not worth starting until we have
+    fixed our side - which is also the only part of this the user cannot do anything about."""
+    built = ("Your mesh was built and reviewed, and it passed every automatic check"
+             if f.get("reviewed") else
+             "Your mesh was built and passed every automatic check")
+    what = (f"{built}, but it could not be stored for download, so nothing was delivered. "
+            "This is our fault, not your geometry's or your request's.")
+    marker = str(f.get("review_marker") or "").strip()
+    if marker:
+        # the inconclusive review SURVIVES the downgrade instead of replacing it: it is still
+        # true that no verdict was reached, and it is still not why the run failed
+        what += (" Our final review of it did not finish either "
+                 f"({review_stopped_reason(marker)}), so no review verdict was reached on this "
+                 "mesh - but that is not what failed this run.")
+    return what, ("Running it again rebuilds the whole mesh and ends at the same storing step, "
+                  "which has just failed on our side, so it is not worth starting until we have "
+                  "fixed that. Tell me here if you want it re-run once it is.")
+
+
 #: Said after a verdict the builder carried from its last attempt when it stopped without building
 #: again (agents/builder/attempt.carry_last_verdict): why there was no further attempt.
 _STOPPED_WORDS = {
     "time_spent": "The run's time was used up after that, so it was not tried again.",
     "no_progress": "It failed the same way twice in a row, so it was not tried again.",
 }
+
+
+#: The causes whose recorded account ASSERTS THAT NO MESH EXISTS. Their `what` half is true of
+#: the run it was written for and false beside a stored mesh, so a message whose subject is a
+#: delivered mesh must not repeat it: NOT_BUILT opens "No mesh was built:" and
+#: GEOMETRY_REJECTED ends "Fix the geometry and upload it again." Measured over all 16 causes,
+#: these are the only two. DELIVERY_FAILED also says "nothing was delivered" and is deliberately
+#: NOT here: the renderer tells that one again in its own words, in the past tense it earned.
+#:
+#: This lives beside the causes rather than in the renderer because it is a fact about what the
+#: SENTENCE SAYS, so it has to move when the sentence does. A test sweeps every cause's text
+#: and fails if this set and the prose ever disagree, which is what stops a seventeenth cause
+#: being added with a denial in it and nobody noticing.
+ACCOUNTS_DENY_A_MESH = frozenset({
+    FailureCause.NOT_BUILT,
+    FailureCause.GEOMETRY_REJECTED,
+})
 
 
 def describe(cause: object, facts: Mapping | None = None, *,
@@ -753,6 +808,8 @@ def _describe(cause: object, facts: Mapping | None = None, *,
                 f"You can run it again with nothing changed: {_RUN_AGAIN}.")
     if c is FailureCause.REVIEW_INCOMPLETE:
         return _review(f)
+    if c is FailureCause.DELIVERY_FAILED:
+        return _delivery(f)
     if c is FailureCause.GEOMETRY_REJECTED:
         # ONE sentence for a refused input, and errors.py owns it (FailureClass.DOMAIN_REJECTED,
         # the class the input_rejected category renders): lead, the reason, the next step.

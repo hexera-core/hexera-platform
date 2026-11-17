@@ -220,6 +220,10 @@ _LADDER_CLASS: dict[FailureCause, str] = {
     FailureCause.ENGINE_TIMED_OUT: FIXABLE,
     # the service that runs the mesher failed: every engine runs on it, so no engine changes it
     FailureCause.RUN_INFRASTRUCTURE: NEVER,
+    # the engine finished and our store refused what it built. The ladder never classifies this
+    # one in practice - it is derived at terminal time, after the last attempt is over - but one
+    # store serves every engine, so switching engines would change nothing if it ever did.
+    FailureCause.DELIVERY_FAILED: NEVER,
 }
 #: The causes the retry policy calls hopeless that another ENGINE still changes. A refused
 #: geometry is the same file on the next attempt - but a different engine has a different input
@@ -250,6 +254,7 @@ _REASON_BY_CAUSE: dict[FailureCause, str] = {
     FailureCause.NOT_BUILT: "it stopped before its mesher started",
     FailureCause.ENGINE_TIMED_OUT: "its run ran out of time",
     FailureCause.RUN_INFRASTRUCTURE: "the mesh run did not complete on our side",
+    FailureCause.DELIVERY_FAILED: "its mesh could not be stored for download",
 }
 _REASON_REVIEW = "the mesh did not pass review"
 _REASON_CONCERNS = "its mesh passed every check, and the review left concerns"
