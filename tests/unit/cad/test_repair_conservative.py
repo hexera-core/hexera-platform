@@ -267,3 +267,50 @@ def test_a_resolved_summary_names_an_analyzer_crossing_and_never_calls_it_a_warn
     text = _summary(both, SimpleNamespace(valid=True))
     assert "1 advisory defect(s) remain (warnings, not errors)" in text
     assert "1 crossing(s) the face analyzer found, for review" in text
+
+
+# ONE ABSOLUTE DEADLINE, TAKEN BEFORE THE READ (final review I2). The attempt node's
+# `wait_for(CAD_REPAIR_TIMEOUT_S)` starts its clock before `repair_step_file` is even entered, so a
+# driver clock started after the STEP read and measure ran past it and lost the whole repair.
+
+
+class _Stop(Exception):
+    pass
+
+
+@pytest.mark.parametrize("region_loop", ["off", "live"])
+def test_the_drivers_deadline_is_taken_before_the_read(monkeypatch, tmp_path, region_loop):
+    import meshpipeline.cad.repair.caps as caps
+    import meshpipeline.cad.repair.conservative as conservative
+    import meshpipeline.cad.repair.loop as loop
+    import meshpipeline.cad.repair.region_loop as rl
+    from meshpipeline.cad.repair.caps import Measure
+
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(conservative.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_ENABLED", True)
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_TIMEOUT_S", 120.0)
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_REGION_LOOP", region_loop)
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_LLM_AUTHOR", "off")
+    monkeypatch.setattr(conservative, "_occ", lambda: None)
+
+    def slow_read(path):
+        clock["now"] += 50.0          # a slow STEP read: the outer clock is already running
+        return "shape"
+    monkeypatch.setattr("meshpipeline.cad.repair.brep._read_shape", slow_read)
+    monkeypatch.setattr(caps, "measure", lambda shape: Measure(
+        valid=True, solids=1, shells=1, faces=20, edges=60, vertices=40, diagonal_mm=200.0,
+        max_tolerance_mm=0.01, surface_area_mm2=1000.0, volume_mm3=8000.0))
+    seen: dict = {}
+
+    def capture(*args, **kwargs):
+        seen.update(kwargs)
+        raise _Stop
+    monkeypatch.setattr(loop, "run", capture)
+    monkeypatch.setattr(rl, "run_regions", capture)
+    with pytest.raises(_Stop):
+        conservative.repair_step_file(tmp_path / "in.step", tmp_path / "out.step")
+    # Entry (1000) + the run's timeout, less the margin for the after-checks and the STEP write -
+    # inside the outer wait_for's (which started at or before 1000), whatever the read cost.
+    assert seen["deadline_s"] == 1000.0 + 120.0 - conservative.DEADLINE_MARGIN_S
+    assert seen["deadline_s"] < 1000.0 + rcfg.CAD_REPAIR_TIMEOUT_S

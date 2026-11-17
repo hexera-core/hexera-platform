@@ -1,0 +1,457 @@
+[
+  {
+    "file": "00508775_58991615a878da0f8225af98_step_009.step",
+    "size_bytes": 99508,
+    "valid_before": true,
+    "counts_before": {
+      "solids": 1,
+      "shells": 1,
+      "faces": 33,
+      "edges": 138,
+      "vertices": 276
+    },
+    "defects_before": [],
+    "located_before": {},
+    "regions_before": {},
+    "status": "clean",
+    "route": "mesh_as_is",
+    "confidence": 0.9,
+    "targets": [],
+    "abstain_reason": "",
+    "forced_repair": true,
+    "triage_route": "mesh_as_is",
+    "outcome": "refused",
+    "error": "nothing was kept (1 operation(s) attempted, stopped because unmeshable), so there is nothing to promote - re-exporting the upload would change its topology without repairing it",
+    "mesh_located_remaining": [
+      {
+        "code": "mesh_open_loop",
+        "entity": "face:29",
+        "fingerprint": "face:b26310c9743b84ca"
+      }
+    ],
+    "timings": {
+      "total_s": 1.7952100420370698,
+      "scan_count": 3,
+      "measure_s": 0.09519608411937952,
+      "verification_scans": 1,
+      "scoped_scans": 2,
+      "scan_s": 1.2850120000075549,
+      "apply_s": 0.014874375076033175
+    },
+    "operations": [
+      {
+        "op": "fix_face_boundary",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 0 reverted (no operation was kept, so nothing was repaired: the claim to have cleared face:b26310c9743b84ca cannot hold over geometry the package did not change)",
+        "basis": "geometric",
+        "defect_code": "mesh_open_loop",
+        "targets": [
+          "face:b26310c9743b84ca"
+        ]
+      }
+    ],
+    "result_discarded": false,
+    "seconds": 1.95,
+    "meshes_before": false,
+    "mesh_kind_before": "open_loop",
+    "meshes_after": null,
+    "mesh_kind_after": ""
+  },
+  {
+    "file": "00509950_290c7c1160b8ce7723907233_step_000.step",
+    "size_bytes": 12078871,
+    "valid_before": true,
+    "counts_before": {
+      "solids": 5,
+      "shells": 6,
+      "faces": 2885,
+      "edges": 14143,
+      "vertices": 28286
+    },
+    "defects_before": [
+      "small_edge",
+      "small_face"
+    ],
+    "located_before": {
+      "small_edge": 51,
+      "small_face": 589
+    },
+    "regions_before": {
+      "unknown": 51,
+      "exterior": 587,
+      "interior": 2
+    },
+    "status": "clean",
+    "route": "manual_cleanup",
+    "confidence": 0.6,
+    "targets": [
+      {
+        "entity": "face:3",
+        "code": "small_face",
+        "region": "exterior"
+      },
+      {
+        "entity": "face:11",
+        "code": "small_face",
+        "region": "exterior"
+      },
+      {
+        "entity": "face:12",
+        "code": "small_face",
+        "region": "exterior"
+      },
+      {
+        "entity": "face:15",
+        "code": "small_face",
+        "region": "exterior"
+      },
+      {
+        "entity": "face:17",
+        "code": "small_face",
+        "region": "exterior"
+      },
+      {
+        "entity": "face:19",
+        "code": "small_face",
+        "region": "exterior"
+      },
+      {
+        "entity": "face:20",
+        "code": "small_face",
+        "region": "exterior"
+      },
+      {
+        "entity": "face:21",
+        "code": "small_face",
+        "region": "exterior"
+      },
+      {
+        "entity": "face:22",
+        "code": "small_face",
+        "region": "exterior"
+      },
+      {
+        "entity": "face:23",
+        "code": "small_face",
+        "region": "exterior"
+      },
+      {
+        "entity": "face:24",
+        "code": "small_face",
+        "region": "exterior"
+      },
+      {
+        "entity": "face:25",
+        "code": "small_face",
+        "region": "exterior"
+      },
+      {
+        "entity": "face:26",
+        "code": "small_face",
+        "region": "exterior"
+      },
+      {
+        "entity": "face:28",
+        "code": "small_face",
+        "region": "exterior"
+      },
+      {
+        "entity": "face:40",
+        "code": "small_face",
+        "region": "exterior"
+      },
+      {
+        "entity": "face:43",
+        "code": "small_face",
+        "region": "exterior"
+      },
+      {
+        "entity": "face:49",
+        "code": "small_face",
+        "region": "exterior"
+      },
+      {
+        "entity": "face:50",
+        "code": "small_face",
+        "region": "exterior"
+      },
+      {
+        "entity": "face:64",
+        "code": "small_face",
+        "region": "exterior"
+      },
+      {
+        "entity": "face:65",
+        "code": "small_face",
+        "region": "exterior"
+      }
+    ],
+    "abstain_reason": "",
+    "forced_repair": true,
+    "triage_route": "manual_cleanup",
+    "operations": [
+      {
+        "op": "fix_face_boundary",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 23 reverted (no operation was kept, so nothing was repaired: the claim to have cleared face:c5cb45d28e833231 cannot hold over geometry the package did not change)",
+        "basis": "geometric",
+        "defect_code": "mesh_open_loop",
+        "targets": [
+          "face:c5cb45d28e833231"
+        ]
+      },
+      {
+        "op": "fix_small_edges",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 1 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:a4de9ada1432b424 cannot hold over geometry the package did not change)",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:a4de9ada1432b424"
+        ]
+      },
+      {
+        "op": "fix_shape_global",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 1 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:a4de9ada1432b424 cannot hold over geometry the package did not change)",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:a4de9ada1432b424"
+        ]
+      },
+      {
+        "op": "fix_small_edges",
+        "status": "kept",
+        "reason": "",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:f8e9bd77f8fa4288"
+        ]
+      }
+    ],
+    "operations_attempted": 4,
+    "operations_kept": 1,
+    "stopped_because": "unmeshable",
+    "resolved": false,
+    "complete_scan": true,
+    "planner": "regions-rules-v1",
+    "refusals": [
+      {
+        "defect": "face:cf553adc64f1fb25",
+        "reason": "no_operation_claims_it",
+        "detail": "small_face needs a judgement no bounded operation makes"
+      },
+      {
+        "defect": "face:befa591a5a5bcfab",
+        "reason": "no_operation_claims_it",
+        "detail": "small_face needs a judgement no bounded operation makes"
+      },
+      {
+        "defect": "face:a7db6e7ef8f12184",
+        "reason": "no_operation_claims_it",
+        "detail": "small_face needs a judgement no bounded operation makes"
+      },
+      {
+        "defect": "face:6e586e3208681e1e",
+        "reason": "no_operation_claims_it",
+        "detail": "small_face needs a judgement no bounded operation makes"
+      },
+      {
+        "defect": "face:99e8d4b8c531b662",
+        "reason": "no_operation_claims_it",
+        "detail": "small_face needs a judgement no bounded operation makes"
+      },
+      {
+        "defect": "face:ca67af8ed4a06f73",
+        "reason": "no_operation_claims_it",
+        "detail": "small_face needs a judgement no bounded operation makes"
+      },
+      {
+        "defect": "face:4fdd72845e4114e9",
+        "reason": "no_operation_claims_it",
+        "detail": "small_face needs a judgement no bounded operation makes"
+      },
+      {
+        "defect": "face:d7a5cf54fb7d5da6",
+        "reason": "no_operation_claims_it",
+        "detail": "small_face needs a judgement no bounded operation makes"
+      },
+      {
+        "defect": "face:bf32247b4f41e4c0",
+        "reason": "no_operation_claims_it",
+        "detail": "small_face needs a judgement no bounded operation makes"
+      },
+      {
+        "defect": "face:27863eb5f6efc885",
+        "reason": "no_operation_claims_it",
+        "detail": "small_face needs a judgement no bounded operation makes"
+      },
+      {
+        "defect": "face:325534410a73750c",
+        "reason": "no_operation_claims_it",
+        "detail": "small_face needs a judgement no bounded operation makes"
+      },
+      {
+        "defect": "face:4d0f6e70fc1b5a93",
+        "reason": "no_operation_claims_it",
+        "detail": "small_face needs a judgement no bounded operation makes"
+      },
+      {
+        "defect": "face:9558bfd56ce2a2df",
+        "reason": "no_operation_claims_it",
+        "detail": "small_face needs a judgement no bounded operation makes"
+      },
+      {
+        "defect": "face:a9f84de408560d3c",
+        "reason": "no_operation_claims_it",
+        "detail": "small_face needs a judgement no bounded operation makes"
+      },
+      {
+        "defect": "face:15f0f16972787fc5",
+        "reason": "no_operation_claims_it",
+        "detail": "small_face needs a judgement no bounded operation makes"
+      },
+      {
+        "defect": "face:13e1e73e126fa0b2",
+        "reason": "no_operation_claims_it",
+        "detail": "small_face needs a judgement no bounded operation makes"
+      },
+      {
+        "defect": "face:82e729af803b23c9",
+        "reason": "no_operation_claims_it",
+        "detail": "small_face needs a judgement no bounded operation makes"
+      },
+      {
+        "defect": "face:b212d5cac983f045",
+        "reason": "no_operation_claims_it",
+        "detail": "small_face needs a judgement no bounded operation makes"
+      },
+      {
+        "defect": "face:77fd86db7187cb0d",
+        "reason": "no_operation_claims_it",
+        "detail": "small_face needs a judgement no bounded operation makes"
+      },
+      {
+        "defect": "face:c3a98dcc2d5198c1",
+        "reason": "no_operation_claims_it",
+        "detail": "small_face needs a judgement no bounded operation makes"
+      }
+    ],
+    "declared_area_mm2": 0.0,
+    "mesh_located_remaining": [
+      {
+        "code": "mesh_open_loop",
+        "entity": "face:2418",
+        "fingerprint": "face:c5cb45d28e833231"
+      }
+    ],
+    "timings": {
+      "total_s": 147.69451470905915,
+      "scan_count": 10,
+      "measure_s": 78.18883683509193,
+      "verification_scans": 2,
+      "scoped_scans": 8,
+      "scan_s": 50.258723999839276,
+      "apply_s": 3.4840394988423213
+    },
+    "valid_after": true,
+    "counts_after": {
+      "solids": 5,
+      "shells": 6,
+      "faces": 2885,
+      "edges": 14131,
+      "vertices": 28262
+    },
+    "defects_after": [
+      "small_edge",
+      "small_face"
+    ],
+    "located_after": {
+      "small_edge": 48,
+      "small_face": 589
+    },
+    "repaired_defects": {
+      "small_edge": 51
+    },
+    "outcome": "repaired",
+    "seconds": 178.98,
+    "meshes_before": false,
+    "mesh_kind_before": "open_loop",
+    "meshes_after": false,
+    "mesh_kind_after": "edge_through_face"
+  },
+  {
+    "file": "trj10_ch1-id-chs.stp",
+    "size_bytes": 37307,
+    "valid_before": true,
+    "counts_before": {
+      "solids": 1,
+      "shells": 1,
+      "faces": 12,
+      "edges": 55,
+      "vertices": 110
+    },
+    "defects_before": [
+      "small_edge"
+    ],
+    "located_before": {
+      "small_edge": 1
+    },
+    "regions_before": {
+      "unknown": 1
+    },
+    "status": "clean",
+    "route": "conservative_repair",
+    "confidence": 0.7,
+    "targets": [
+      {
+        "entity": "edge:6",
+        "code": "small_edge",
+        "region": "unknown"
+      }
+    ],
+    "abstain_reason": "",
+    "outcome": "refused",
+    "error": "nothing was kept (2 operation(s) attempted, stopped because regions_exhausted), so there is nothing to promote - re-exporting the upload would change its topology without repairing it",
+    "mesh_located_remaining": [],
+    "timings": {
+      "total_s": 4.232564082951285,
+      "scan_count": 5,
+      "measure_s": 0.13894599815830588,
+      "verification_scans": 1,
+      "scoped_scans": 4,
+      "scan_s": 3.111954332794994,
+      "apply_s": 0.010593667975626886
+    },
+    "operations": [
+      {
+        "op": "fix_small_edges",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 0 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:24c50f231c023780 cannot hold over geometry the package did not change)",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:24c50f231c023780"
+        ]
+      },
+      {
+        "op": "fix_shape_global",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 0 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:24c50f231c023780 cannot hold over geometry the package did not change)",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:24c50f231c023780"
+        ]
+      }
+    ],
+    "result_discarded": false,
+    "seconds": 4.32,
+    "meshes_before": false,
+    "mesh_kind_before": "open_loop",
+    "meshes_after": null,
+    "mesh_kind_after": ""
+  }
+]

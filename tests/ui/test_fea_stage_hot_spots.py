@@ -154,15 +154,21 @@ def test_marks_follow_the_panel_and_merge_where_they_would_overlap(live):
     assert sorted(chips) == sorted(before["merged"]), chips
     # a merged mark clicked zooms in on its marks: they come apart. How far apart one zoom takes
     # them depends on the panel's size in pixels, so what is asserted is that the clicked mark is
-    # gone - no mark drawn after the zoom still holds every one of its members.
+    # gone - no mark drawn after the zoom still holds every one of its members - while each of its
+    # members is still drawn, alone or in a smaller merged mark.
     members = live.evaluate(f"""(() => {{
       const c = [...{root}.querySelectorAll('.vm-group')].find((c) => c.style.display !== 'none');
+      window.__clicked = c._members.slice();
       const ids = c._members.map((m) => m.id); c.click(); return ids; }})()""")
     after = _marks(live, sid)
     still_one = live.evaluate(f"""[...{root}.querySelectorAll('.vm-group')]
       .filter((c) => c.style.display !== 'none')
       .some((c) => {json.dumps(members)}.every((id) => (c._members || []).some((m) => m.id === id)))""")
     assert len(members) > 1 and not still_one, (members, before, after)
+    undrawn = live.evaluate(f"""window.__clicked.filter((m) => m.el.style.display === 'none'
+      && ![...{root}.querySelectorAll('.vm-group')]
+        .some((c) => c.style.display !== 'none' && (c._members || []).includes(m))).map((m) => m.id)""")
+    assert undrawn == [], (undrawn, members, after)
     # the chosen mark stands on its own, never merged, in the crimson - and keeps its size on screen at any zoom
     h = f"window._vdbg['gstage:{sid}']"
     live.evaluate(f"""{h}.iso(); {root}.querySelector('.fea-spot-row[data-spot="H104"]').click()""")

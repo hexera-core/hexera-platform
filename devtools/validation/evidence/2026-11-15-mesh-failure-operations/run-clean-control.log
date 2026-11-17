@@ -1,0 +1,87 @@
+CAD_REPAIR_REBUILD_FACE is on but CAD_REPAIR_PACKAGE_REVIEW='off': rebuild_face must not run on customer jobs until the package reviewer is live
+allow_face_removal=False  autonomous=True  enabled=True  fill_nonplanar_holes=True  fill_planar_holes=True  fix_small_faces=True  fragment_bodies=True  heal_self_intersections=False  inspect_max_bytes=134217728  inspect_timeout_s=60.0  llm_author=off  llm_author_calls_max=6  llm_author_timeout_s=20.0  llm_planner=off  llm_planner_calls_max=2  llm_planner_min_confidence=0.5  llm_planner_timeout_s=20.0  max_area_change_ratio=0.02  max_deviation_ratio=0.001  max_hole_span_ratio=0.75  max_ops=200  max_tolerance_mm=0.1  max_volume_change_ratio=0.02  mesh_probe=live  mesh_probe_timeout_s=120.0  package_review=off  package_review_timeout_s=20.0  rebuild_face=True  region_attempts=6  region_loop=live  review_enabled=False  review_llm_calls_max=4  review_llm_timeout_s=20.0  review_sample_size=3  sliver_precision_ratio=0.001  split_closed_faces=True  stall_limit=50  timeout_s=300.0
+40 file(s)
+
+repaired files are written to /var/folders/g6/mq56z4xj1h950wltbq5bscjc0000gn/T/repair_corpus_out
+nothing_to_repair            ahmed_variant__ahmed_variant_001.step                  before=[] located={} -> fixed={}
+nothing_to_repair            ahmed_variant__ahmed_variant_002.step                  before=[] located={} -> fixed={}
+nothing_to_repair            annular__annular_001.step                              before=[] located={} -> fixed={}
+nothing_to_repair            annular__annular_002.step                              before=[] located={} -> fixed={}
+nothing_to_repair            bend_elbow__bend_elbow_001.step                        before=[] located={} -> fixed={}
+nothing_to_repair            bend_elbow__bend_elbow_002.step                        before=[] located={} -> fixed={}
+nothing_to_repair            blade_row_passage__blade_row_passage_001.step          before=[] located={} -> fixed={}
+nothing_to_repair            blade_row_passage__blade_row_passage_002.step          before=[] located={} -> fixed={}
+nothing_to_repair            blade_row_rotor__blade_row_rotor_001.step              before=[] located={} -> fixed={}
+nothing_to_repair            blade_row_rotor__blade_row_rotor_002.step              before=[] located={} -> fixed={}
+nothing_to_repair            bluff_body__bluff_body_001.step                        before=[] located={} -> fixed={}
+nothing_to_repair            bluff_body__bluff_body_002.step                        before=[] located={} -> fixed={}
+nothing_to_repair            cyclone_separator__cyclone_separator_001.step          before=[] located={} -> fixed={}
+nothing_to_repair            cyclone_separator__cyclone_separator_002.step          before=[] located={} -> fixed={}
+refused                      diffuser_plenum__diffuser_plenum_001.step              before=['small_edge', 'small_face'] located={'small_edge': 16, 'small_face': 1} -> fixed={} [nothing was kept (49 operation(s) attempted, stopped because regions_exhausted), so there ]
+nothing_to_repair            diffuser_plenum__diffuser_plenum_002.step              before=[] located={} -> fixed={}
+nothing_to_repair            exhaust_manifold__exhaust_manifold_001.step            before=[] located={} -> fixed={}
+nothing_to_repair            exhaust_manifold__exhaust_manifold_002.step            before=[] located={} -> fixed={}
+nothing_to_repair            freeform_nacelle__freeform_nacelle_001.step            before=[] located={} -> fixed={}
+nothing_to_repair            freeform_nacelle__freeform_nacelle_002.step            before=[] located={} -> fixed={}
+nothing_to_repair            manifold__manifold_001.step                            before=[] located={} -> fixed={}
+nothing_to_repair            manifold__manifold_002.step                            before=[] located={} -> fixed={}
+refused                      mini_housing__mini_housing_001.step                    before=['small_edge'] located={'small_edge': 4} -> fixed={} [nothing was kept (12 operation(s) attempted, stopped because regions_exhausted), so there ]
+refused                      mini_housing__mini_housing_002.step                    before=['small_edge'] located={'small_edge': 4} -> fixed={} [nothing was kept (12 operation(s) attempted, stopped because regions_exhausted), so there ]
+nothing_to_repair            rotor_like__rotor_like_001.step                        before=[] located={} -> fixed={}
+nothing_to_repair            rotor_like__rotor_like_002.step                        before=[] located={} -> fixed={}
+nothing_to_repair            s_duct__s_duct_001.step                                before=[] located={} -> fixed={}
+nothing_to_repair            s_duct__s_duct_001_fluid.step                          before=[] located={} -> fixed={}
+nothing_to_repair            shell_tube_bundle__shell_tube_bundle_001.step          before=[] located={} -> fixed={}
+nothing_to_repair            shell_tube_bundle__shell_tube_bundle_002.step          before=[] located={} -> fixed={}
+nothing_to_repair            static_mixer__static_mixer_001.step                    before=[] located={} -> fixed={}
+nothing_to_repair            static_mixer__static_mixer_002.step                    before=[] located={} -> fixed={}
+nothing_to_repair            straight_reducer__straight_reducer_001.step            before=[] located={} -> fixed={}
+nothing_to_repair            straight_reducer__straight_reducer_002.step            before=[] located={} -> fixed={}
+nothing_to_repair            tee_wye__tee_wye_001.step                              before=[] located={} -> fixed={}
+nothing_to_repair            tee_wye__tee_wye_002.step                              before=[] located={} -> fixed={}
+nothing_to_repair            transition__transition_001.step                        before=[] located={} -> fixed={}
+nothing_to_repair            venturi_orifice__venturi_orifice_001.step              before=[] located={} -> fixed={}
+nothing_to_repair            volute_scroll__volute_scroll_001.step                  before=[] located={} -> fixed={}
+nothing_to_repair            wing__wing_001.step                                    before=[] located={} -> fixed={}
+
+== summary ==
+    37  nothing_to_repair
+     3  refused
+
+  no defect was repaired in this corpus
+
+== what triage advised ==
+    37  mesh_as_is
+     3  conservative_repair
+
+== why the loop stopped ==
+  no file reached the loop
+
+== operations, kept vs rolled back ==
+  fix_small_faces        kept=0    rolled_back=25   declined=0    failed=0
+  fix_small_edges        kept=0    rolled_back=24   declined=0    failed=0
+  fix_shape_global       kept=0    rolled_back=24   declined=0    failed=0
+
+== what the planner refused to attempt ==
+  no refusals
+
+== operations never exercised on this corpus ==
+        split_closed_faces
+        fix_face_boundary
+        rebuild_face
+        sew_faces
+        fill_planar_hole
+        fill_nonplanar_hole
+        heal_self_intersections
+        fragment_bodies
+
+== heals corroborated by the triangle check ==
+  corroborated 0 / kept 0, unknown 0
+
+== meshing, before and after repair ==
+  meshed before 34 / 40, after 34  (newly meshed 0, newly broken 0)
+     1  still failing: edge_through_face
+     5  still failing: overlapping_facets
+
+rows written to devtools/validation/evidence/2026-11-15-mesh-failure-operations/rows-clean-control.json
+bundle sealed at devtools/validation/evidence/2026-11-15-mesh-failure-operations/bundle-clean-control

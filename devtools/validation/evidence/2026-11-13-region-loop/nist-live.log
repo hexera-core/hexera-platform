@@ -1,0 +1,153 @@
+[32;1m
+*******************************************************************
+******        Statistics on Transfer (Write)                 ******[0m
+[32;1m
+*******************************************************************
+******        Transfer Mode = 0  I.E.  As Is       ******[0m
+[32;1m******        Transferring Shape, ShapeType = 0                      ******[0m
+[32;1m** WorkSession : Sending all data[0m
+[32;1m Step File Name : /var/folders/g6/mq56z4xj1h950wltbq5bscjc0000gn/T/repair_corpus_out/nist_ctc_02_asme1_ap242-e2-repaired.step(58726 ents)  Write  Done[0m
+[32;1m
+*******************************************************************
+******        Statistics on Transfer (Write)                 ******[0m
+[32;1m
+*******************************************************************
+******        Transfer Mode = 0  I.E.  As Is       ******[0m
+[32;1m******        Transferring Shape, ShapeType = 0                      ******[0m
+[32;1m** WorkSession : Sending all data[0m
+[32;1m Step File Name : /var/folders/g6/mq56z4xj1h950wltbq5bscjc0000gn/T/repair_corpus_out/nist_ctc_04_asme1_ap203-repaired.step(31014 ents)  Write  Done[0m
+[32;1m
+*******************************************************************
+******        Statistics on Transfer (Write)                 ******[0m
+[32;1m
+*******************************************************************
+******        Transfer Mode = 0  I.E.  As Is       ******[0m
+[32;1m******        Transferring Shape, ShapeType = 0                      ******[0m
+[32;1m** WorkSession : Sending all data[0m
+[32;1m Step File Name : /var/folders/g6/mq56z4xj1h950wltbq5bscjc0000gn/T/repair_corpus_out/nist_ctc_04_asme1_ap242-e1-repaired.step(44937 ents)  Write  Done[0m
+[32;1m
+*******************************************************************
+******        Statistics on Transfer (Write)                 ******[0m
+[32;1m
+*******************************************************************
+******        Transfer Mode = 0  I.E.  As Is       ******[0m
+[32;1m******        Transferring Shape, ShapeType = 0                      ******[0m
+[32;1m** WorkSession : Sending all data[0m
+[32;1m Step File Name : /var/folders/g6/mq56z4xj1h950wltbq5bscjc0000gn/T/repair_corpus_out/nist_ctc_04_asme1_rd-repaired.step(39384 ents)  Write  Done[0m
+[32;1m
+*******************************************************************
+******        Statistics on Transfer (Write)                 ******[0m
+[32;1m
+*******************************************************************
+******        Transfer Mode = 0  I.E.  As Is       ******[0m
+[32;1m******        Transferring Shape, ShapeType = 0                      ******[0m
+[32;1m** WorkSession : Sending all data[0m
+[32;1m Step File Name : /var/folders/g6/mq56z4xj1h950wltbq5bscjc0000gn/T/repair_corpus_out/nist_ctc_05_asme1_rd-repaired.step(17021 ents)  Write  Done[0m
+[32;1m
+*******************************************************************
+******        Statistics on Transfer (Write)                 ******[0m
+[32;1m
+*******************************************************************
+******        Transfer Mode = 0  I.E.  As Is       ******[0m
+[32;1m******        Transferring Shape, ShapeType = 0                      ******[0m
+[32;1m** WorkSession : Sending all data[0m
+[32;1m Step File Name : /var/folders/g6/mq56z4xj1h950wltbq5bscjc0000gn/T/repair_corpus_out/nist_ftc_10_asme1_ap242-e2-repaired.step(49771 ents)  Write  Done[0m
+[32;1m
+*******************************************************************
+******        Statistics on Transfer (Write)                 ******[0m
+[32;1m
+*******************************************************************
+******        Transfer Mode = 0  I.E.  As Is       ******[0m
+[32;1m******        Transferring Shape, ShapeType = 0                      ******[0m
+[32;1m** WorkSession : Sending all data[0m
+[32;1m Step File Name : /var/folders/g6/mq56z4xj1h950wltbq5bscjc0000gn/T/repair_corpus_out/nist_stc_08_asme1_ap242-e3-repaired.step(24596 ents)  Write  Done[0m
+[32;1m*** ERR StepReaderData : Unresolved Reference : Fails Count : 1 ***[0m
+[32;1m*** ERR StepReaderData : Unresolved Reference : Fails Count : 1 ***[0m
+[32;1m*** ERR StepReaderData : Unresolved Reference : Fails Count : 1 ***[0m
+[32;1m
+*******************************************************************
+******        Statistics on Transfer (Write)                 ******[0m
+[32;1m
+*******************************************************************
+******        Transfer Mode = 0  I.E.  As Is       ******[0m
+[32;1m******        Transferring Shape, ShapeType = 0                      ******[0m
+[32;1m** WorkSession : Sending all data[0m
+[32;1m Step File Name : /var/folders/g6/mq56z4xj1h950wltbq5bscjc0000gn/T/repair_corpus_out/nist_stc_10_asme1_ap242-e2-repaired.step(19535 ents)  Write  Done[0m
+allow_face_removal=False  autonomous=True  enabled=True  fill_nonplanar_holes=True  fill_planar_holes=True  fix_small_faces=True  heal_self_intersections=False  inspect_max_bytes=134217728  inspect_timeout_s=60.0  llm_planner=off  llm_planner_calls_max=2  llm_planner_min_confidence=0.5  llm_planner_timeout_s=20.0  max_area_change_ratio=0.02  max_deviation_ratio=0.001  max_hole_span_ratio=0.75  max_ops=200  max_tolerance_mm=0.1  max_volume_change_ratio=0.02  region_attempts=6  region_loop=live  review_enabled=False  review_llm_calls_max=4  review_llm_timeout_s=20.0  review_sample_size=3  sliver_precision_ratio=0.001  stall_limit=50  timeout_s=300.0
+33 file(s)
+
+repaired files are written to /var/folders/g6/mq56z4xj1h950wltbq5bscjc0000gn/T/repair_corpus_out
+refused                      nist_ctc_01_asme1_ap203.stp                            before=['small_edge', 'small_face'] located={'small_edge': 2, 'small_face': 3} -> fixed={} [nothing was kept (9 operation(s) attempted, stopped because regions_exhausted), so there i]
+refused                      nist_ctc_01_asme1_ap242-e1.stp                         before=['small_edge'] located={'small_edge': 4} -> fixed={} [nothing was kept (12 operation(s) attempted, stopped because regions_exhausted), so there ]
+refused                      nist_ctc_01_asme1_rd.stp                               before=['small_edge', 'small_face'] located={'small_edge': 2, 'small_face': 3} -> fixed={} [nothing was kept (9 operation(s) attempted, stopped because regions_exhausted), so there i]
+not_attempted:manual_cleanup nist_ctc_02_asme1_ap203.stp                            before=['small_edge', 'small_face'] located={'small_edge': 87, 'small_face': 26} -> fixed={}
+repaired                     nist_ctc_02_asme1_ap242-e2.stp                         before=['open_shell', 'small_edge', 'small_face'] located={'small_edge': 176, 'open_shell': 3, 'small_face': 2} -> fixed={'open_shell': 3}
+not_attempted:manual_cleanup nist_ctc_02_asme1_rc.stp                               before=['open_shell', 'small_edge', 'small_face'] located={'small_edge': 148, 'open_shell': 2, 'small_face': 26} -> fixed={}
+refused                      nist_ctc_03_asme1_ap203.stp                            before=['small_face'] located={'small_face': 10} -> fixed={} [nothing was kept (6 operation(s) attempted, stopped because resolved), so there is nothing]
+nothing_to_repair            nist_ctc_03_asme1_ap242-e2.stp                         before=[] located={} -> fixed={}
+refused                      nist_ctc_03_asme1_rc.stp                               before=['small_face'] located={'small_face': 10} -> fixed={} [nothing was kept (6 operation(s) attempted, stopped because resolved), so there is nothing]
+repaired                     nist_ctc_04_asme1_ap203.stp                            before=['open_shell', 'small_edge', 'small_face'] located={'small_edge': 44, 'open_shell': 1, 'small_face': 14} -> fixed={'open_shell': 1}
+repaired                     nist_ctc_04_asme1_ap242-e1.stp                         before=['open_shell', 'small_edge', 'small_face'] located={'small_edge': 66, 'open_shell': 1, 'small_face': 4} -> fixed={'open_shell': 1}
+repaired                     nist_ctc_04_asme1_rd.stp                               before=['open_shell', 'small_edge', 'small_face'] located={'small_edge': 66, 'open_shell': 1, 'small_face': 14} -> fixed={'open_shell': 1}
+refused                      nist_ctc_05_asme1_ap203.stp                            before=['small_edge', 'small_face'] located={'small_edge': 14, 'small_face': 9} -> fixed={} [nothing was kept (48 operation(s) attempted, stopped because regions_exhausted), so there ]
+refused                      nist_ctc_05_asme1_ap242-e1.stp                         before=['small_edge', 'small_face'] located={'small_edge': 10, 'small_face': 9} -> fixed={} [nothing was kept (36 operation(s) attempted, stopped because regions_exhausted), so there ]
+repaired                     nist_ctc_05_asme1_rd.stp                               before=['open_shell', 'small_edge', 'small_face'] located={'small_edge': 21, 'open_shell': 1, 'small_face': 10} -> fixed={'open_shell': 1}
+refused                      nist_ftc_06_asme1_ap242-e2.stp                         before=['small_edge', 'small_face'] located={'small_edge': 14, 'small_face': 1} -> fixed={} [nothing was kept (43 operation(s) attempted, stopped because regions_exhausted), so there ]
+refused                      nist_ftc_06_asme1_rd.stp                               before=['small_edge', 'small_face'] located={'small_edge': 8, 'small_face': 1} -> fixed={} [nothing was kept (25 operation(s) attempted, stopped because regions_exhausted), so there ]
+not_attempted:manual_cleanup nist_ftc_07_asme1_ap242-e2.stp                         before=['open_shell', 'small_edge', 'small_face'] located={'small_edge': 29, 'open_shell': 2, 'small_face': 34} -> fixed={}
+not_attempted:manual_cleanup nist_ftc_07_asme1_rd.stp                               before=['small_edge', 'small_face'] located={'small_edge': 8, 'small_face': 34} -> fixed={}
+not_attempted:manual_cleanup nist_ftc_08_asme1_ap242-e1-tg.stp                      before=['invalid_brep'] located={'invalid_brep': 274} -> fixed={}
+refused                      nist_ftc_08_asme1_ap242-e2.stp                         before=['small_edge'] located={'small_edge': 20} -> fixed={} [nothing was kept (60 operation(s) attempted, stopped because regions_exhausted), so there ]
+refused                      nist_ftc_08_asme1_rc.stp                               before=['small_edge'] located={'small_edge': 20} -> fixed={} [nothing was kept (60 operation(s) attempted, stopped because regions_exhausted), so there ]
+refused                      nist_ftc_09_asme1_ap242-e1.stp                         before=['open_shell', 'small_edge'] located={'open_shell': 5, 'small_edge': 183} -> fixed={} [nothing was kept (21 operation(s) attempted, stopped because regions_exhausted), so there ]
+nothing_to_repair            nist_ftc_09_asme1_rd.stp                               before=[] located={} -> fixed={}
+repaired                     nist_ftc_10_asme1_ap242-e2.stp                         before=['open_shell', 'small_edge'] located={'small_edge': 16, 'open_shell': 28} -> fixed={'open_shell': 28}
+refused                      nist_ftc_10_asme1_rb.stp                               before=['small_edge'] located={'small_edge': 8} -> fixed={} [nothing was kept (24 operation(s) attempted, stopped because regions_exhausted), so there ]
+refused                      nist_ftc_11_asme1_ap242-e2.stp                         before=['small_face'] located={'small_face': 3} -> fixed={} [nothing was kept (3 operation(s) attempted, stopped because regions_exhausted), so there i]
+nothing_to_repair            nist_ftc_11_asme1_rb.stp                               before=[] located={} -> fixed={}
+refused                      nist_stc_06_asme1_ap242-e3.stp                         before=['small_edge', 'small_face'] located={'small_edge': 7, 'small_face': 1} -> fixed={} [nothing was kept (22 operation(s) attempted, stopped because regions_exhausted), so there ]
+not_attempted:manual_cleanup nist_stc_07_asme1_ap242-e3.stp                         before=['open_shell', 'small_edge', 'small_face'] located={'open_shell': 2, 'small_edge': 18, 'small_face': 34} -> fixed={}
+repaired                     nist_stc_08_asme1_ap242-e3.stp                         before=['open_shell', 'small_edge'] located={'small_edge': 20, 'open_shell': 1} -> fixed={'open_shell': 1}
+nothing_to_repair            nist_stc_09_asme1_ap242-e3.stp                         before=[] located={} -> fixed={}
+no_change                    nist_stc_10_asme1_ap242-e2.stp                         before=['small_edge'] located={'small_edge': 16} -> fixed={}
+
+== summary ==
+    15  refused
+     7  repaired
+     6  not_attempted
+     4  nothing_to_repair
+     1  no_change
+
+== defects actually repaired, by kind (credited by re-inspection) ==
+    36  open_shell
+
+== what triage advised ==
+    23  conservative_repair
+     6  manual_cleanup
+     4  mesh_as_is
+
+== why the loop stopped ==
+     5  regions_exhausted
+     2  resolved
+     1  time_budget
+
+== operations, kept vs rolled back ==
+  fix_small_faces        kept=2    rolled_back=374  declined=0    failed=0
+  fix_small_edges        kept=57   rolled_back=310  declined=0    failed=0
+  fix_shape_global       kept=0    rolled_back=307  declined=0    failed=0
+  sew_faces              kept=2    rolled_back=17   declined=0    failed=0
+  fill_planar_hole       kept=6    rolled_back=5    declined=0    failed=0
+  fill_nonplanar_hole    kept=0    rolled_back=5    declined=0    failed=0
+
+== what the planner refused to attempt ==
+    20  paired_rim
+
+== operations never exercised on this corpus ==
+        fix_face_boundary
+        heal_self_intersections
+
+== heals corroborated by the triangle check ==
+  corroborated 0 / kept 0, unknown 0
+
+rows written to /tmp/bundles/final-live.json
+bundle sealed at /tmp/bundles/final-live

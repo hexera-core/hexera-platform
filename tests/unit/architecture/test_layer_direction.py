@@ -11,6 +11,9 @@ SRC = Path(__file__).resolve().parents[3] / "src" / "meshpipeline"
 #: layer -> layers it may NOT import
 FORBIDDEN = {
     "engines": ("application",),
+    # The CAD core sits under the agents and the pipeline that use it: a model call from cad/ goes
+    # through contracts/ (cad/repair/model_author.py), never up into agents/.
+    "cad": ("agents", "pipeline"),
     "contracts": ("application", "agents", "api", "engines", "persistence", "pipeline", "runtime"),
 }
 

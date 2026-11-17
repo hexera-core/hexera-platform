@@ -92,8 +92,12 @@ class PipelineState(TypedDict):
     #                     is the evidence an operator wants and the training example a later model
     #                     planner needs.
     #   stopped_because   why the loop ended - resolved, no_candidate, op_budget, time_budget,
-    #                     stalled, scan_incomplete. NOT inferable from the geometry: a run that
-    #                     cleared every error and one that ran out of operations leave the same shape.
+    #                     stalled, scan_incomplete, unmeshable, and the region-scoped driver's two endings,
+    #                     escalated and regions_exhausted (cad/repair/region_loop.py). NOT
+    #                     inferable from the geometry: a run that cleared every error and one that
+    #                     ran out of operations leave the same shape. KEEP THIS LIST AND
+    #                     pipeline/repair_receipt.py's `_STOPPED` IN STEP - a reason missing there
+    #                     prints a blank row, and one missing here misleads the next reader.
     #   refusals          what was deliberately not attempted, and why. The paired rims of a missing
     #                     bore wall are the case this exists for.
     #   defects_remaining the located defects LEFT after the repair, so nothing reads "repaired" next

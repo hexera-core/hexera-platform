@@ -1,0 +1,242 @@
+{
+  "summary": {
+    "files": 23,
+    "with_overlap": 11,
+    "touch_only": 12,
+    "failed_pairs": 0,
+    "incomplete": 3,
+    "missing": []
+  },
+  "files": [
+    {
+      "name": "occt/bm2_ec_exhaust-A.stp",
+      "solids": 6,
+      "solids_read": 6,
+      "overlapping": 2,
+      "touching": 1,
+      "failed": 0,
+      "pairs_checked": 3,
+      "complete": true
+    },
+    {
+      "name": "occt/bug33261.stp",
+      "solids": 24,
+      "solids_read": 41,
+      "overlapping": 5,
+      "touching": 35,
+      "failed": 0,
+      "pairs_checked": 40,
+      "complete": false
+    },
+    {
+      "name": "occt/trj3_s1-ac-214.stp",
+      "solids": 11,
+      "solids_read": 11,
+      "overlapping": 0,
+      "touching": 18,
+      "failed": 0,
+      "pairs_checked": 18,
+      "complete": true
+    },
+    {
+      "name": "occt/trj3_s1-db-214.stp",
+      "solids": 11,
+      "solids_read": 11,
+      "overlapping": 1,
+      "touching": 15,
+      "failed": 0,
+      "pairs_checked": 16,
+      "complete": true
+    },
+    {
+      "name": "occt/trj3_s1-md-214.stp",
+      "solids": 11,
+      "solids_read": 11,
+      "overlapping": 7,
+      "touching": 9,
+      "failed": 0,
+      "pairs_checked": 16,
+      "complete": true
+    },
+    {
+      "name": "occt/trj3_s1-pe-203.stp",
+      "solids": 11,
+      "solids_read": 11,
+      "overlapping": 0,
+      "touching": 18,
+      "failed": 0,
+      "pairs_checked": 18,
+      "complete": true
+    },
+    {
+      "name": "occt/trj3_s1-tc-214.stp",
+      "solids": 11,
+      "solids_read": 11,
+      "overlapping": 3,
+      "touching": 15,
+      "failed": 0,
+      "pairs_checked": 18,
+      "complete": true
+    },
+    {
+      "name": "occt/trj3_s1-ug-214.stp",
+      "solids": 11,
+      "solids_read": 11,
+      "overlapping": 0,
+      "touching": 18,
+      "failed": 0,
+      "pairs_checked": 18,
+      "complete": true
+    },
+    {
+      "name": "occt/trj4_s1-pe-214.stp",
+      "solids": 11,
+      "solids_read": 11,
+      "overlapping": 0,
+      "touching": 18,
+      "failed": 0,
+      "pairs_checked": 18,
+      "complete": true
+    },
+    {
+      "name": "occt/trj4_s1-ug-214.stp",
+      "solids": 11,
+      "solids_read": 11,
+      "overlapping": 0,
+      "touching": 18,
+      "failed": 0,
+      "pairs_checked": 18,
+      "complete": true
+    },
+    {
+      "name": "occt/trj4_s1-tu-214.stp",
+      "solids": 11,
+      "solids_read": 11,
+      "overlapping": 3,
+      "touching": 15,
+      "failed": 0,
+      "pairs_checked": 18,
+      "complete": true
+    },
+    {
+      "name": "occt/trj5_s1-ac-214.stp",
+      "solids": 11,
+      "solids_read": 11,
+      "overlapping": 0,
+      "touching": 18,
+      "failed": 0,
+      "pairs_checked": 18,
+      "complete": true
+    },
+    {
+      "name": "occt/trj5_s1-in-214.stp",
+      "solids": 11,
+      "solids_read": 11,
+      "overlapping": 1,
+      "touching": 15,
+      "failed": 0,
+      "pairs_checked": 16,
+      "complete": true
+    },
+    {
+      "name": "occt/trj5_s1-ug-214.stp",
+      "solids": 11,
+      "solids_read": 11,
+      "overlapping": 0,
+      "touching": 18,
+      "failed": 0,
+      "pairs_checked": 18,
+      "complete": true
+    },
+    {
+      "name": "occt/trj6_pm4-ec-203.stp",
+      "solids": 32,
+      "solids_read": 32,
+      "overlapping": 3,
+      "touching": 37,
+      "failed": 0,
+      "pairs_checked": 40,
+      "complete": false
+    },
+    {
+      "name": "abc/00500875_a97e4a09c926c436c043e3c3_step_028.step",
+      "solids": 5,
+      "solids_read": 5,
+      "overlapping": 0,
+      "touching": 4,
+      "failed": 0,
+      "pairs_checked": 4,
+      "complete": true
+    },
+    {
+      "name": "abc/00502475_5895e91efca3da0f6b68639a_step_003.step",
+      "solids": 5,
+      "solids_read": 5,
+      "overlapping": 1,
+      "touching": 2,
+      "failed": 0,
+      "pairs_checked": 3,
+      "complete": true
+    },
+    {
+      "name": "abc/00502200_5895d152ed2c0c0fe9ef029c_step_093.step",
+      "solids": 178,
+      "solids_read": 178,
+      "overlapping": 3,
+      "touching": 7,
+      "failed": 0,
+      "pairs_checked": 10,
+      "complete": true
+    },
+    {
+      "name": "abc/00503325_58965842fca3da0f6b68cb76_step_006.step",
+      "solids": 35,
+      "solids_read": 35,
+      "overlapping": 15,
+      "touching": 25,
+      "failed": 0,
+      "pairs_checked": 40,
+      "complete": false
+    },
+    {
+      "name": "abc/00504025_5896ef7054620e0fdd79f59d_step_085.step",
+      "solids": 2,
+      "solids_read": 2,
+      "overlapping": 0,
+      "touching": 1,
+      "failed": 0,
+      "pairs_checked": 1,
+      "complete": true
+    },
+    {
+      "name": "abc/00506275_541a2ce632275fed8964367a_step_000.step",
+      "solids": 2,
+      "solids_read": 2,
+      "overlapping": 0,
+      "touching": 1,
+      "failed": 0,
+      "pairs_checked": 1,
+      "complete": true
+    },
+    {
+      "name": "abc/00503600_58969abbfca3da0f6b696760_step_000.step",
+      "solids": 2,
+      "solids_read": 2,
+      "overlapping": 0,
+      "touching": 1,
+      "failed": 0,
+      "pairs_checked": 1,
+      "complete": true
+    },
+    {
+      "name": "abc/00509150_cb7c199fecd1c9d080129028_step_009.step",
+      "solids": 4,
+      "solids_read": 4,
+      "overlapping": 0,
+      "touching": 0,
+      "failed": 0,
+      "pairs_checked": 0,
+      "complete": true
+    }
+  ]
+}

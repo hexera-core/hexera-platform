@@ -106,8 +106,11 @@ def cast_all(points, faces, normals, face_normals, ring, fold, eps: float,
                  face_normals=np.asarray(face_normals, dtype=float), ring_offsets=offsets,
                  ring_flat=flat, fold=np.asarray(fold, dtype=float), eps=float(eps),
                  reach=float(reach))
-        env = {**os.environ, "OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1",
-               "MKL_NUM_THREADS": "1", "VTK_SMP_MAX_THREADS": "1"}
+        # the children get this process's environment through the one helper that hands it on
+        # (no secrets), with one thread each: the split is across processes
+        from meshpipeline.sandbox.safe_exec import scrubbed_subprocess_env
+        env = scrubbed_subprocess_env({"OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1",
+                                       "MKL_NUM_THREADS": "1", "VTK_SMP_MAX_THREADS": "1"})
         procs = []
         try:
             for part in range(k):
