@@ -1,0 +1,2029 @@
+{
+ "engine_commit": "67799856758408ec3a526196ce3dc1c78c24ff2d (PR #420 tip, pranavkannepalli/repair-solve-feedback-loop)",
+ "deployed_ref": "eval/crs-live-fleetfix @ 01872aa5 = 67799856 + cherry-pick of #419 (26d6985c, deploy scripts only)",
+ "image": "us-central1-docker.pkg.dev/hexera-dev/mesh/app@sha256:f09ed556a23bc4f3fa4c0fdd629ce5b42c5008fdc80fea2d9f1647555b8a491d",
+ "environment": "dev-crs (hexera-dev)",
+ "route": "FEA static stress, gmsh, via upload -> intake chat -> approval (devtools/validation/live_repair_eval.py)",
+ "job_wall_s": 2400,
+ "model_route": "INTAKE_ROUTE, INTAKE_MODEL=gpt-5.6-luna (OpenAI) for author and reviewer",
+ "worker_env": "worker-env-arm-b.env",
+ "summary": {
+  "files": 25,
+  "meshed_after": 7,
+  "built_from_repaired_geometry": 0,
+  "meshed_from_repaired_geometry": 0,
+  "status": {
+   "cancelled": 15,
+   "succeeded": 7,
+   "blocked_before_job": 1,
+   "failed": 2
+  },
+  "outcome_code": {
+   "cancelled": 15,
+   "success": 7,
+   "null": 1,
+   "internal_pipeline_failure": 1,
+   "gate_failed": 1
+  },
+  "repair_route": {
+   "mesh_as_is": 6,
+   "conservative_repair": 14,
+   "manual_cleanup": 4,
+   "null": 1
+  },
+  "repair_outcome": {
+   "triage": 10,
+   "refused": 13,
+   "null": 1,
+   "failed": 1
+  },
+  "stopped_because": {
+   "regions_exhausted": 5,
+   "unmeshable": 6,
+   "time_budget": 2
+  },
+  "files_with_kept_ops": 0,
+  "kept_ops": {},
+  "packages": 34,
+  "package_status": {
+   "reverted": 34
+  },
+  "reviewer": {
+   "reject": 1
+  },
+  "reviewer_reject_reasons": {
+   "The repair cleared no defects\u2014the four small_edge defects remain\u2014and the mesh already had no failures before the edit, while measured area and volume changed by -1.68 mm\u00b2 and -73.71 mm\u00b3.": 1
+  },
+  "author_calls": 99,
+  "author_outcomes": {
+   "package": 34,
+   "pass": 24,
+   "refused": 1,
+   "skipped": 40
+  },
+  "author_verdict_rows": 0,
+  "accepted_package_deviation_mm": [],
+  "committed_package_deviation_mm": [],
+  "errors": [
+   [
+    "occt/bug25013_25013face.stp",
+    "Blocked: check/confirm 409: {\"detail\":\"This is a surface, not a closed solid: its faces do not close around a volume. FEA version 1 meshes closed solids only; shell meshes for surfaces like this are coming. To go on, upload the part as one closed solid (a STEP from your CAD, or a watertight STL). If you meant a fluid flowing around or through it (CFD), upload it again and say so.\"}"
+   ]
+  ],
+  "wedged": [
+   "abc/00500350_cf6391333569f6a17439ce66_step_000.step",
+   "abc/00502800_c9fa412b334b0e215cb26434_step_000.step",
+   "abc/00504025_5896ef7054620e0fdd79f59d_step_085.step",
+   "abc/00506275_541a2ce632275fed8964367a_step_000.step",
+   "abc/00506550_b5806bb84542de8e2656bc88_step_114.step",
+   "occt/bm2_ec_exhaust-A.stp",
+   "occt/bm2_ec_leverrod-A.stp",
+   "occt/bug27453_165-174_piattello.stp",
+   "occt/bug32314_corrupted.stp",
+   "occt/bug32596_abc_0_13.step",
+   "occt/trj3_s1-ct-214.stp",
+   "occt/trj3_s1-id-203.stp",
+   "occt/trj3_s1-tc-214.stp",
+   "occt/trj4_s1-ai-214.stp",
+   "occt/trj6_b1-ec-214.stp"
+  ],
+  "t_total_s_median": 2437.0
+ },
+ "timings": {
+  "repair_loop_s_median": 65.3,
+  "repair_loop_s_max": 268.8,
+  "wall_s_median_non_wedged": 404.7
+ },
+ "rows": [
+  {
+   "file": "abc/00500350_cf6391333569f6a17439ce66_step_000.step",
+   "sha256": "55a420985f54a0c7c1267a58947b0c2e66ce21f10264464a26301bc4c9fe3d22",
+   "job_id": "93d73339-67e5-4a5e-b2d6-4dfe18a505d1",
+   "status": "cancelled",
+   "error": null,
+   "wedged": true,
+   "outcome_code": "cancelled",
+   "failure_category": null,
+   "failed_gate": "",
+   "failure_detail": "",
+   "meshed": false,
+   "executor_success": false,
+   "delivered_by": null,
+   "built_from_repaired_geometry": false,
+   "repair_status": "clean",
+   "repair_route": "mesh_as_is",
+   "repair_outcome": "triage",
+   "repair_attempted": false,
+   "repair_reason": "triage routed this to mesh_as_is",
+   "stopped_because": null,
+   "planner": null,
+   "operations_attempted": null,
+   "operations_kept": null,
+   "kept_ops": [],
+   "packages": [],
+   "author_calls": [],
+   "author_verdicts": [],
+   "repair_total_s": null,
+   "t_dispatch_s": 22.5,
+   "t_total_s": 2437.0
+  },
+  {
+   "file": "abc/00500400_bce216c87d2d17025db6ab36_step_000.step",
+   "sha256": "8ef586d1ed8d2e2c46b756e4a8bd87e84d69ca65ecda331cb2967b7c7de421b7",
+   "job_id": "ebbd266e-4923-4672-b2a7-648aa2d18372",
+   "status": "succeeded",
+   "error": null,
+   "wedged": false,
+   "outcome_code": "success",
+   "failure_category": null,
+   "failed_gate": "",
+   "failure_detail": "",
+   "meshed": true,
+   "executor_success": true,
+   "delivered_by": "gmsh",
+   "built_from_repaired_geometry": false,
+   "repair_status": "clean",
+   "repair_route": "conservative_repair",
+   "repair_outcome": "refused",
+   "repair_attempted": false,
+   "repair_reason": "the repair was refused: nothing was kept (1 operation(s) attempted, stopped because regions_exhausted), so there is nothing to promote - re-exporting the upload would change its topology without repairing it",
+   "stopped_because": "regions_exhausted",
+   "planner": "regions-model-v1",
+   "operations_attempted": 1,
+   "operations_kept": 0,
+   "kept_ops": [],
+   "packages": [
+    {
+     "region_index": 0,
+     "status": "reverted",
+     "reason": "no operation was kept, so nothing was repaired: the claim to have cleared edge:afbd20c29550b61a cannot hold over geometry the package did not change",
+     "review_reason": null,
+     "ops": [
+      [
+       null,
+       "rolled_back"
+      ]
+     ]
+    }
+   ],
+   "author_calls": [
+    {
+     "outcome": "package",
+     "reason": "",
+     "observation_bytes": 915
+    },
+    {
+     "outcome": "pass",
+     "reason": "",
+     "observation_bytes": 1295
+    }
+   ],
+   "author_verdicts": [],
+   "repair_total_s": 6.604306916000041,
+   "t_dispatch_s": 36.0,
+   "t_total_s": 187.5
+  },
+  {
+   "file": "abc/00500875_a97e4a09c926c436c043e3c3_step_028.step",
+   "sha256": "aca8b360bbb144ad48a13bb2a169a38ec0f59cfc4a264cd0056cd5ca9fdca820",
+   "job_id": "610d3a40-c556-4695-a98a-1a4efed62890",
+   "status": "succeeded",
+   "error": null,
+   "wedged": false,
+   "outcome_code": "success",
+   "failure_category": null,
+   "failed_gate": "",
+   "failure_detail": "",
+   "meshed": true,
+   "executor_success": true,
+   "delivered_by": "gmsh",
+   "built_from_repaired_geometry": false,
+   "repair_status": "clean",
+   "repair_route": "mesh_as_is",
+   "repair_outcome": "triage",
+   "repair_attempted": false,
+   "repair_reason": "triage routed this to mesh_as_is",
+   "stopped_because": null,
+   "planner": null,
+   "operations_attempted": null,
+   "operations_kept": null,
+   "kept_ops": [],
+   "packages": [],
+   "author_calls": [],
+   "author_verdicts": [],
+   "repair_total_s": null,
+   "t_dispatch_s": 25.1,
+   "t_total_s": 508.6
+  },
+  {
+   "file": "abc/00501275_58950467b204b50ff2cc07c9_step_013.step",
+   "sha256": "b366da2ddd274f1fbbd90d211f91f30995a9d61723e2dc06c29583d02033c61b",
+   "job_id": "2b06cd0c-6b5e-48f2-8857-c84a78252377",
+   "status": "succeeded",
+   "error": null,
+   "wedged": false,
+   "outcome_code": "success",
+   "failure_category": null,
+   "failed_gate": "",
+   "failure_detail": "",
+   "meshed": true,
+   "executor_success": true,
+   "delivered_by": "gmsh",
+   "built_from_repaired_geometry": false,
+   "repair_status": "clean",
+   "repair_route": "conservative_repair",
+   "repair_outcome": "refused",
+   "repair_attempted": false,
+   "repair_reason": "the repair was refused: nothing was kept (3 operation(s) attempted, stopped because unmeshable), so there is nothing to promote - re-exporting the upload would change its topology without repairing it",
+   "stopped_because": "unmeshable",
+   "planner": "regions-model-v1",
+   "operations_attempted": 3,
+   "operations_kept": 0,
+   "kept_ops": [],
+   "packages": [
+    {
+     "region_index": 0,
+     "status": "reverted",
+     "reason": "no operation was kept, so nothing was repaired: the claim to have cleared face:5b21b2756aa149f1 cannot hold over geometry the package did not change",
+     "review_reason": null,
+     "ops": [
+      [
+       null,
+       "rolled_back"
+      ]
+     ]
+    },
+    {
+     "region_index": 0,
+     "status": "reverted",
+     "reason": "no operation was kept, so nothing was repaired: the claim to have cleared face:5b21b2756aa149f1 cannot hold over geometry the package did not change",
+     "review_reason": null,
+     "ops": [
+      [
+       null,
+       "rolled_back"
+      ]
+     ]
+    },
+    {
+     "region_index": 1,
+     "status": "reverted",
+     "reason": "no operation was kept, so nothing was repaired: the claim to have cleared edge:99cbe8d860bf1e85 cannot hold over geometry the package did not change",
+     "review_reason": null,
+     "ops": [
+      [
+       null,
+       "rolled_back"
+      ]
+     ]
+    }
+   ],
+   "author_calls": [
+    {
+     "outcome": "package",
+     "reason": "",
+     "observation_bytes": 1122
+    },
+    {
+     "outcome": "package",
+     "reason": "",
+     "observation_bytes": 1512
+    },
+    {
+     "outcome": "pass",
+     "reason": "",
+     "observation_bytes": 1954
+    },
+    {
+     "outcome": "package",
+     "reason": "",
+     "observation_bytes": 932
+    },
+    {
+     "outcome": "pass",
+     "reason": "",
+     "observation_bytes": 1312
+    }
+   ],
+   "author_verdicts": [],
+   "repair_total_s": 17.55505207500005,
+   "t_dispatch_s": 33.1,
+   "t_total_s": 425.7
+  },
+  {
+   "file": "abc/00502600_5895f9dd54620e0fdd79706b_step_000.step",
+   "sha256": "7f3f35a4c5c38926bbeda004d79071ae9ffec794869fb7ac0648e415d7badbce",
+   "job_id": "a02eb07b-a6a8-4bbe-a070-8c1eacd8b823",
+   "status": "succeeded",
+   "error": null,
+   "wedged": false,
+   "outcome_code": "success",
+   "failure_category": null,
+   "failed_gate": "",
+   "failure_detail": "",
+   "meshed": true,
+   "executor_success": true,
+   "delivered_by": "gmsh",
+   "built_from_repaired_geometry": false,
+   "repair_status": "clean",
+   "repair_route": "mesh_as_is",
+   "repair_outcome": "triage",
+   "repair_attempted": false,
+   "repair_reason": "triage routed this to mesh_as_is",
+   "stopped_because": null,
+   "planner": null,
+   "operations_attempted": null,
+   "operations_kept": null,
+   "kept_ops": [],
+   "packages": [],
+   "author_calls": [],
+   "author_verdicts": [],
+   "repair_total_s": null,
+   "t_dispatch_s": 32.7,
+   "t_total_s": 1182.4
+  },
+  {
+   "file": "abc/00502800_c9fa412b334b0e215cb26434_step_000.step",
+   "sha256": "0a6e269cf694e8712f0ff99263cbfb4090ec9b0faafc2685e53cdba14de51ca1",
+   "job_id": "203efcbc-6c36-459a-987c-a6e590df8dd9",
+   "status": "cancelled",
+   "error": null,
+   "wedged": true,
+   "outcome_code": "cancelled",
+   "failure_category": null,
+   "failed_gate": "",
+   "failure_detail": "",
+   "meshed": false,
+   "executor_success": false,
+   "delivered_by": null,
+   "built_from_repaired_geometry": false,
+   "repair_status": "clean",
+   "repair_route": "manual_cleanup",
+   "repair_outcome": "triage",
+   "repair_attempted": false,
+   "repair_reason": "triage routed this to manual_cleanup",
+   "stopped_because": null,
+   "planner": null,
+   "operations_attempted": null,
+   "operations_kept": null,
+   "kept_ops": [],
+   "packages": [],
+   "author_calls": [],
+   "author_verdicts": [],
+   "repair_total_s": null,
+   "t_dispatch_s": 25.3,
+   "t_total_s": 2441.7
+  },
+  {
+   "file": "abc/00504025_5896ef7054620e0fdd79f59d_step_085.step",
+   "sha256": "6e5f994f65410425d8edd7d10494721b31b4855f7c2df8d9dcacf4cfd63fffb7",
+   "job_id": "3c308e12-161b-412c-b360-9897de37766c",
+   "status": "cancelled",
+   "error": null,
+   "wedged": true,
+   "outcome_code": "cancelled",
+   "failure_category": null,
+   "failed_gate": "",
+   "failure_detail": "",
+   "meshed": false,
+   "executor_success": false,
+   "delivered_by": null,
+   "built_from_repaired_geometry": false,
+   "repair_status": "repairable",
+   "repair_route": "conservative_repair",
+   "repair_outcome": "refused",
+   "repair_attempted": false,
+   "repair_reason": "the repair was refused: nothing was kept (5 operation(s) attempted, stopped because regions_exhausted), so there is nothing to promote - re-exporting the upload would change its topology without repairing it",
+   "stopped_because": "regions_exhausted",
+   "planner": "regions-model-v1",
+   "operations_attempted": 5,
+   "operations_kept": 0,
+   "kept_ops": [],
+   "packages": [
+    {
+     "region_index": 0,
+     "status": "reverted",
+     "reason": "no operation was kept, so nothing was repaired: the claim to have cleared face:1c64296247e154ab, face:6d2133ef79a5b681 cannot hold over geometry the package did not change",
+     "review_reason": null,
+     "ops": [
+      [
+       null,
+       "rolled_back"
+      ]
+     ]
+    },
+    {
+     "region_index": 1,
+     "status": "reverted",
+     "reason": "no operation was kept, so nothing was repaired: the claim to have cleared face:4fd5052401b9024a, wire:eeae64597e4e3031 cannot hold over geometry the package did not change",
+     "review_reason": null,
+     "ops": [
+      [
+       null,
+       "rolled_back"
+      ],
+      [
+       null,
+       "rolled_back"
+      ]
+     ]
+    },
+    {
+     "region_index": 2,
+     "status": "reverted",
+     "reason": "no operation was kept, so nothing was repaired: the claim to have cleared face:4044f635e98471ef, face:d7c0464771a0b4c3 cannot hold over geometry the package did not change",
+     "review_reason": null,
+     "ops": [
+      [
+       null,
+       "rolled_back"
+      ],
+      [
+       null,
+       "rolled_back"
+      ]
+     ]
+    }
+   ],
+   "author_calls": [
+    {
+     "outcome": "package",
+     "reason": "",
+     "observation_bytes": 1742
+    },
+    {
+     "outcome": "pass",
+     "reason": "",
+     "observation_bytes": 2157
+    },
+    {
+     "outcome": "package",
+     "reason": "",
+     "observation_bytes": 1549
+    },
+    {
+     "outcome": "pass",
+     "reason": "",
+     "observation_bytes": 2263
+    },
+    {
+     "outcome": "package",
+     "reason": "",
+     "observation_bytes": 1736
+    },
+    {
+     "outcome": "pass",
+     "reason": "",
+     "observation_bytes": 2332
+    }
+   ],
+   "author_verdicts": [],
+   "repair_total_s": 79.66251941800056,
+   "t_dispatch_s": 24.1,
+   "t_total_s": 2440.2
+  },
+  {
+   "file": "abc/00506275_541a2ce632275fed8964367a_step_000.step",
+   "sha256": "e162f3025af3818c8c11b249be8cc000ac536f2c25530ba052bb6deb03f0296b",
+   "job_id": "1a5117fc-5185-4fab-93ff-3ae391c938b5",
+   "status": "cancelled",
+   "error": null,
+   "wedged": true,
+   "outcome_code": "cancelled",
+   "failure_category": null,
+   "failed_gate": "",
+   "failure_detail": "",
+   "meshed": false,
+   "executor_success": false,
+   "delivered_by": null,
+   "built_from_repaired_geometry": false,
+   "repair_status": "clean",
+   "repair_route": "manual_cleanup",
+   "repair_outcome": "triage",
+   "repair_attempted": false,
+   "repair_reason": "triage routed this to manual_cleanup",
+   "stopped_because": null,
+   "planner": null,
+   "operations_attempted": null,
+   "operations_kept": null,
+   "kept_ops": [],
+   "packages": [],
+   "author_calls": [],
+   "author_verdicts": [],
+   "repair_total_s": null,
+   "t_dispatch_s": 38.2,
+   "t_total_s": 2451.3
+  },
+  {
+   "file": "abc/00506550_b5806bb84542de8e2656bc88_step_114.step",
+   "sha256": "f217075eb16c7d598a2c46244c2c6647af2766216cd1f172a9de7721c0587486",
+   "job_id": "70a6914e-8756-4832-94c6-80527aab5dab",
+   "status": "cancelled",
+   "error": null,
+   "wedged": true,
+   "outcome_code": "cancelled",
+   "failure_category": null,
+   "failed_gate": "",
+   "failure_detail": "",
+   "meshed": false,
+   "executor_success": false,
+   "delivered_by": null,
+   "built_from_repaired_geometry": false,
+   "repair_status": "clean",
+   "repair_route": "mesh_as_is",
+   "repair_outcome": "triage",
+   "repair_attempted": false,
+   "repair_reason": "triage routed this to mesh_as_is",
+   "stopped_because": null,
+   "planner": null,
+   "operations_attempted": null,
+   "operations_kept": null,
+   "kept_ops": [],
+   "packages": [],
+   "author_calls": [],
+   "author_verdicts": [],
+   "repair_total_s": null,
+   "t_dispatch_s": 37.4,
+   "t_total_s": 2451.7
+  },
+  {
+   "file": "occt/bm2_ec_exhaust-A.stp",
+   "sha256": "008f9335a7c0ea8d2c2ddbe1de41e9e495247999d14c89335bbc0930215164a3",
+   "job_id": "0da246a8-1447-436b-9185-943851c9aa08",
+   "status": "cancelled",
+   "error": null,
+   "wedged": true,
+   "outcome_code": "cancelled",
+   "failure_category": null,
+   "failed_gate": "",
+   "failure_detail": "",
+   "meshed": false,
+   "executor_success": false,
+   "delivered_by": null,
+   "built_from_repaired_geometry": false,
+   "repair_status": "clean",
+   "repair_route": "mesh_as_is",
+   "repair_outcome": "triage",
+   "repair_attempted": false,
+   "repair_reason": "triage routed this to mesh_as_is",
+   "stopped_because": null,
+   "planner": null,
+   "operations_attempted": null,
+   "operations_kept": null,
+   "kept_ops": [],
+   "packages": [],
+   "author_calls": [],
+   "author_verdicts": [],
+   "repair_total_s": null,
+   "t_dispatch_s": 40.2,
+   "t_total_s": 2458.4
+  },
+  {
+   "file": "occt/bm2_ec_leverrod-A.stp",
+   "sha256": "798565ef85710dee5fc18511a2d58b9c893c7b9ffdf5b6d90c45da25d7bb6e60",
+   "job_id": "6724ced5-84eb-4fa9-8620-ec26605a57ed",
+   "status": "cancelled",
+   "error": null,
+   "wedged": true,
+   "outcome_code": "cancelled",
+   "failure_category": null,
+   "failed_gate": "",
+   "failure_detail": "",
+   "meshed": false,
+   "executor_success": false,
+   "delivered_by": null,
+   "built_from_repaired_geometry": false,
+   "repair_status": "clean",
+   "repair_route": "mesh_as_is",
+   "repair_outcome": "triage",
+   "repair_attempted": false,
+   "repair_reason": "triage routed this to mesh_as_is",
+   "stopped_because": null,
+   "planner": null,
+   "operations_attempted": null,
+   "operations_kept": null,
+   "kept_ops": [],
+   "packages": [],
+   "author_calls": [],
+   "author_verdicts": [],
+   "repair_total_s": null,
+   "t_dispatch_s": 45.9,
+   "t_total_s": 2463.7
+  },
+  {
+   "file": "occt/bug25013_25013face.stp",
+   "sha256": "9923afaff8a4c95e356438198b80f4897e91101c644db19638c01ffb279bf8ea",
+   "job_id": null,
+   "status": "blocked_before_job",
+   "error": "Blocked: check/confirm 409: {\"detail\":\"This is a surface, not a closed solid: its faces do not close around a volume. FEA version 1 meshes closed solids only; shell meshes for surfaces like this are coming. To go on, upload the part as one closed solid (a STEP from your CAD, or a watertight STL). If you meant a fluid flowing around or through it (CFD), upload it again and say so.\"}",
+   "wedged": false,
+   "outcome_code": null,
+   "failure_category": null,
+   "failed_gate": null,
+   "failure_detail": "",
+   "meshed": false,
+   "executor_success": null,
+   "delivered_by": null,
+   "built_from_repaired_geometry": false,
+   "repair_status": null,
+   "repair_route": null,
+   "repair_outcome": null,
+   "repair_attempted": null,
+   "repair_reason": "",
+   "stopped_because": null,
+   "planner": null,
+   "operations_attempted": null,
+   "operations_kept": null,
+   "kept_ops": [],
+   "packages": [],
+   "author_calls": [],
+   "author_verdicts": [],
+   "repair_total_s": null,
+   "t_dispatch_s": null,
+   "t_total_s": 14.6
+  },
+  {
+   "file": "occt/bug27453_165-174_piattello.stp",
+   "sha256": "95a6b70bc114832ecaaf15b36269f991d9f1a57b9292c801f9918647324eda9f",
+   "job_id": "b3287b59-324b-4e50-90a9-d694533dc63d",
+   "status": "cancelled",
+   "error": null,
+   "wedged": true,
+   "outcome_code": "cancelled",
+   "failure_category": null,
+   "failed_gate": "",
+   "failure_detail": "",
+   "meshed": false,
+   "executor_success": false,
+   "delivered_by": null,
+   "built_from_repaired_geometry": false,
+   "repair_status": "clean",
+   "repair_route": "manual_cleanup",
+   "repair_outcome": "triage",
+   "repair_attempted": false,
+   "repair_reason": "triage routed this to manual_cleanup",
+   "stopped_because": null,
+   "planner": null,
+   "operations_attempted": null,
+   "operations_kept": null,
+   "kept_ops": [],
+   "packages": [],
+   "author_calls": [],
+   "author_verdicts": [],
+   "repair_total_s": null,
+   "t_dispatch_s": 21.9,
+   "t_total_s": 2448.6
+  },
+  {
+   "file": "occt/bug30790.step",
+   "sha256": "74ee52b9efccd50d22d1c74dc312d8f8409adcde3c6902296946c5ec32c0ab59",
+   "job_id": "65a6727e-9048-49ab-a4ff-aaeb1d804b79",
+   "status": "failed",
+   "error": null,
+   "wedged": false,
+   "outcome_code": "internal_pipeline_failure",
+   "failure_category": "internal_pipeline_failure",
+   "failed_gate": "",
+   "failure_detail": "",
+   "meshed": false,
+   "executor_success": false,
+   "delivered_by": null,
+   "built_from_repaired_geometry": false,
+   "repair_status": "repairable",
+   "repair_route": "conservative_repair",
+   "repair_outcome": "failed",
+   "repair_attempted": false,
+   "repair_reason": "the repair failed: Standard_OutOfRange",
+   "stopped_because": null,
+   "planner": null,
+   "operations_attempted": null,
+   "operations_kept": null,
+   "kept_ops": [],
+   "packages": [],
+   "author_calls": [],
+   "author_verdicts": [],
+   "repair_total_s": null,
+   "t_dispatch_s": 38.5,
+   "t_total_s": 189.4
+  },
+  {
+   "file": "occt/bug32314_corrupted.stp",
+   "sha256": "63d79ed926fa37797f7c55416e0f173e088da0fd43b3785b32fb08cf73944e79",
+   "job_id": "d72ef925-f3e7-436f-a02c-88f21cff2fa9",
+   "status": "cancelled",
+   "error": null,
+   "wedged": true,
+   "outcome_code": "cancelled",
+   "failure_category": null,
+   "failed_gate": "",
+   "failure_detail": "",
+   "meshed": false,
+   "executor_success": false,
+   "delivered_by": null,
+   "built_from_repaired_geometry": false,
+   "repair_status": "repairable",
+   "repair_route": "conservative_repair",
+   "repair_outcome": "refused",
+   "repair_attempted": false,
+   "repair_reason": "the repair was refused: nothing was kept (2 operation(s) attempted, stopped because regions_exhausted), so there is nothing to promote - re-exporting the upload would change its topology without repairing it",
+   "stopped_because": "regions_exhausted",
+   "planner": "regions-model-v1",
+   "operations_attempted": 2,
+   "operations_kept": 0,
+   "kept_ops": [],
+   "packages": [
+    {
+     "region_index": 0,
+     "status": "reverted",
+     "reason": "no operation was kept, so nothing was repaired: the claim to have cleared face:aeb001c1a8d0e272 cannot hold over geometry the package did not change",
+     "review_reason": null,
+     "ops": [
+      [
+       null,
+       "rolled_back"
+      ]
+     ]
+    },
+    {
+     "region_index": 0,
+     "status": "reverted",
+     "reason": "no operation was kept, so nothing was repaired: the claim to have cleared face:aeb001c1a8d0e272 cannot hold over geometry the package did not change",
+     "review_reason": null,
+     "ops": [
+      [
+       null,
+       "rolled_back"
+      ]
+     ]
+    }
+   ],
+   "author_calls": [
+    {
+     "outcome": "package",
+     "reason": "",
+     "observation_bytes": 1151
+    },
+    {
+     "outcome": "package",
+     "reason": "",
+     "observation_bytes": 1541
+    },
+    {
+     "outcome": "pass",
+     "reason": "",
+     "observation_bytes": 1939
+    },
+    {
+     "outcome": "refused",
+     "reason": "plan fills edge:41a9deec688ac5df while the part has a paired rim (a missing passage wall); filling is refused for the whole run",
+     "observation_bytes": 2351
+    }
+   ],
+   "author_verdicts": [],
+   "repair_total_s": 22.83586329800005,
+   "t_dispatch_s": 21.5,
+   "t_total_s": 2437.0
+  },
+  {
+   "file": "occt/bug32596_abc_0_13.step",
+   "sha256": "0af8f4f012b3355dd0f2232b9f04df45cdd2ee13c5d36368176b0a50e5c5a5e6",
+   "job_id": "c43f0ff4-dbdb-4699-92c9-a595cf925648",
+   "status": "cancelled",
+   "error": null,
+   "wedged": true,
+   "outcome_code": "cancelled",
+   "failure_category": null,
+   "failed_gate": "",
+   "failure_detail": "",
+   "meshed": false,
+   "executor_success": false,
+   "delivered_by": null,
+   "built_from_repaired_geometry": false,
+   "repair_status": "clean",
+   "repair_route": "conservative_repair",
+   "repair_outcome": "refused",
+   "repair_attempted": false,
+   "repair_reason": "the repair was refused: nothing was kept (2 operation(s) attempted, stopped because time_budget), so there is nothing to promote - re-exporting the upload would change its topology without repairing it",
+   "stopped_because": "time_budget",
+   "planner": "regions-model-v1",
+   "operations_attempted": 2,
+   "operations_kept": 0,
+   "kept_ops": [],
+   "packages": [
+    {
+     "region_index": 0,
+     "status": "reverted",
+     "reason": "no operation was kept, so nothing was repaired: the claim to have cleared edge:07dcc855a7e9e4e7 cannot hold over geometry the package did not change",
+     "review_reason": null,
+     "ops": [
+      [
+       null,
+       "rolled_back"
+      ]
+     ]
+    },
+    {
+     "region_index": 1,
+     "status": "reverted",
+     "reason": "no operation was kept, so nothing was repaired: the claim to have cleared edge:726759131e22ed8f cannot hold over geometry the package did not change",
+     "review_reason": null,
+     "ops": [
+      [
+       null,
+       "rolled_back"
+      ]
+     ]
+    }
+   ],
+   "author_calls": [
+    {
+     "outcome": "package",
+     "reason": "",
+     "observation_bytes": 917
+    },
+    {
+     "outcome": "pass",
+     "reason": "",
+     "observation_bytes": 1297
+    },
+    {
+     "outcome": "package",
+     "reason": "",
+     "observation_bytes": 915
+    }
+   ],
+   "author_verdicts": [],
+   "repair_total_s": 268.80594348599993,
+   "t_dispatch_s": 51.4,
+   "t_total_s": 2466.5
+  },
+  {
+   "file": "occt/bug33100_window.step",
+   "sha256": "ad0a33b0c846e90f70f20e4abc466c8922a41e2beeb707953a6cd8275637a3e0",
+   "job_id": "6788217d-6693-4096-a807-a7ce7b75cab6",
+   "status": "failed",
+   "error": null,
+   "wedged": false,
+   "outcome_code": "gate_failed",
+   "failure_category": "gate_failed",
+   "failed_gate": "fea_plan",
+   "failure_detail": "No mesh was built: gmsh could not prepare its input from your file (the part could not be measured (Exception)), so no mesher was started.",
+   "meshed": false,
+   "executor_success": false,
+   "delivered_by": "",
+   "built_from_repaired_geometry": false,
+   "repair_status": "repairable",
+   "repair_route": "manual_cleanup",
+   "repair_outcome": "triage",
+   "repair_attempted": false,
+   "repair_reason": "triage routed this to manual_cleanup",
+   "stopped_because": null,
+   "planner": null,
+   "operations_attempted": null,
+   "operations_kept": null,
+   "kept_ops": [],
+   "packages": [],
+   "author_calls": [],
+   "author_verdicts": [],
+   "repair_total_s": null,
+   "t_dispatch_s": 310.7,
+   "t_total_s": 371.2
+  },
+  {
+   "file": "occt/trj10_ch1-id-chs.stp",
+   "sha256": "22ca078bbbe1b9ea3fa20e3468f46fd01616f932f1341e7ac1753ebfb1411fb5",
+   "job_id": "75f72727-8a32-4f5a-a3b5-5ccba90eb9e5",
+   "status": "succeeded",
+   "error": null,
+   "wedged": false,
+   "outcome_code": "success",
+   "failure_category": null,
+   "failed_gate": "",
+   "failure_detail": "",
+   "meshed": true,
+   "executor_success": true,
+   "delivered_by": "gmsh",
+   "built_from_repaired_geometry": false,
+   "repair_status": "clean",
+   "repair_route": "conservative_repair",
+   "repair_outcome": "refused",
+   "repair_attempted": false,
+   "repair_reason": "the repair was refused: nothing was kept (1 operation(s) attempted, stopped because regions_exhausted), so there is nothing to promote - re-exporting the upload would change its topology without repairing it",
+   "stopped_because": "regions_exhausted",
+   "planner": "regions-model-v1",
+   "operations_attempted": 1,
+   "operations_kept": 0,
+   "kept_ops": [],
+   "packages": [
+    {
+     "region_index": 0,
+     "status": "reverted",
+     "reason": "no operation was kept, so nothing was repaired: the claim to have cleared edge:24c50f231c023780 cannot hold over geometry the package did not change",
+     "review_reason": null,
+     "ops": [
+      [
+       null,
+       "rolled_back"
+      ]
+     ]
+    }
+   ],
+   "author_calls": [
+    {
+     "outcome": "package",
+     "reason": "",
+     "observation_bytes": 899
+    },
+    {
+     "outcome": "pass",
+     "reason": "",
+     "observation_bytes": 1279
+    }
+   ],
+   "author_verdicts": [],
+   "repair_total_s": 7.248224763000053,
+   "t_dispatch_s": 46.2,
+   "t_total_s": 469.2
+  },
+  {
+   "file": "occt/trj3_s1-ct-214.stp",
+   "sha256": "dc2db5e7868fabd3829bf9eb114f33701543b284e12336be57946a09e9dac8d5",
+   "job_id": "df72d489-b93a-430d-8a58-3e86575fc182",
+   "status": "cancelled",
+   "error": null,
+   "wedged": true,
+   "outcome_code": "cancelled",
+   "failure_category": null,
+   "failed_gate": "",
+   "failure_detail": "",
+   "meshed": false,
+   "executor_success": false,
+   "delivered_by": null,
+   "built_from_repaired_geometry": false,
+   "repair_status": "clean",
+   "repair_route": "conservative_repair",
+   "repair_outcome": "refused",
+   "repair_attempted": false,
+   "repair_reason": "the repair was refused: nothing was kept (22 operation(s) attempted, stopped because unmeshable), so there is nothing to promote - re-exporting the upload would change its topology without repairing it",
+   "stopped_because": "unmeshable",
+   "planner": "regions-model-v1",
+   "operations_attempted": 22,
+   "operations_kept": 0,
+   "kept_ops": [],
+   "packages": [
+    {
+     "region_index": 12,
+     "status": "reverted",
+     "reason": "no operation was kept, so nothing was repaired: the claim to have cleared edge:36293f427fe48110#0, edge:36293f427fe48110#1, edge:36293f427fe48110#2, edge:3e40fd366a0a6fe9#0, edge:3e40fd366a0a6fe9#1, edge:3e40fd366a0a6fe9#2, edge:8c090c830a1",
+     "review_reason": null,
+     "ops": [
+      [
+       null,
+       "rolled_back"
+      ],
+      [
+       null,
+       "rolled_back"
+      ],
+      [
+       null,
+       "rolled_back"
+      ],
+      [
+       null,
+       "rolled_back"
+      ],
+      [
+       null,
+       "rolled_back"
+      ],
+      [
+       null,
+       "rolled_back"
+      ],
+      [
+       null,
+       "rolled_back"
+      ],
+      [
+       null,
+       "rolled_back"
+      ],
+      [
+       null,
+       "rolled_back"
+      ],
+      [
+       null,
+       "rolled_back"
+      ],
+      [
+       null,
+       "rolled_back"
+      ],
+      [
+       null,
+       "rolled_back"
+      ]
+     ]
+    },
+    {
+     "region_index": 12,
+     "status": "reverted",
+     "reason": "no operation was kept, so nothing was repaired: the claim to have cleared face:18e36f816d9412b0, face:b4ddbd422d12ae9f cannot hold over geometry the package did not change",
+     "review_reason": null,
+     "ops": [
+      [
+       null,
+       "rolled_back"
+      ],
+      [
+       null,
+       "rolled_back"
+      ]
+     ]
+    },
+    {
+     "region_index": 0,
+     "status": "reverted",
+     "reason": "no operation was kept, so nothing was repaired: the claim to have cleared edge:7e2b08b243d5379c#0, edge:7e2b08b243d5379c#1, edge:bcd2bcd7fd886583#0, edge:bcd2bcd7fd886583#1 cannot hold over geometry the package did not change",
+     "review_reason": null,
+     "ops": [
+      [
+       null,
+       "rolled_back"
+      ],
+      [
+       null,
+       "rolled_back"
+      ],
+      [
+       null,
+       "rolled_back"
+      ],
+      [
+       null,
+       "rolled_back"
+      ]
+     ]
+    },
+    {
+     "region_index": 1,
+     "status": "reverted",
+     "reason": "no operation was kept, so nothing was repaired: the claim to have cleared edge:28a272dc9aed6f87#0, edge:28a272dc9aed6f87#1, edge:c6b1a0cbeb509484#0, edge:c6b1a0cbeb509484#1 cannot hold over geometry the package did not change",
+     "review_reason": null,
+     "ops": [
+      [
+       null,
+       "rolled_back"
+      ],
+      [
+       null,
+       "rolled_back"
+      ],
+      [
+       null,
+       "rolled_back"
+      ],
+      [
+       null,
+       "rolled_back"
+      ]
+     ]
+    }
+   ],
+   "author_calls": [
+    {
+     "outcome": "package",
+     "reason": "",
+     "observation_bytes": 4433
+    },
+    {
+     "outcome": "package",
+     "reason": "",
+     "observation_bytes": 5925
+    },
+    {
+     "outcome": "pass",
+     "reason": "",
+     "observation_bytes": 6519
+    },
+    {
+     "outcome": "package",
+     "reason": "",
+     "observation_bytes": 1769
+    },
+    {
+     "outcome": "pass",
+     "reason": "",
+     "observation_bytes": 2741
+    },
+    {
+     "outcome": "package",
+     "reason": "",
+     "observation_bytes": 1755
+    },
+    {
+     "outcome": "skipped",
+     "reason": "the run's model calls are spent (CAD_REPAIR_LLM_AUTHOR_CALLS_MAX)"
+    },
+    {
+     "outcome": "skipped",
+     "reason": "the run's model calls are spent (CAD_REPAIR_LLM_AUTHOR_CALLS_MAX)"
+    },
+    {
+     "outcome": "skipped",
+     "reason": "the run's model calls are spent (CAD_REPAIR_LLM_AUTHOR_CALLS_MAX)"
+    },
+    {
+     "outcome": "skipped",
+     "reason": "the run's model calls are spent (CAD_REPAIR_LLM_AUTHOR_CALLS_MAX)"
+    },
+    {
+     "outcome": "skipped",
+     "reason": "the run's model calls are spent (CAD_REPAIR_LLM_AUTHOR_CALLS_MAX)"
+    },
+    {
+     "outcome": "skipped",
+     "reason": "the run's model calls are spent (CAD_REPAIR_LLM_AUTHOR_CALLS_MAX)"
+    },
+    {
+     "outcome": "skipped",
+     "reason": "the run's model calls are spent (CAD_REPAIR_LLM_AUTHOR_CALLS_MAX)"
+    },
+    {
+     "outcome": "skipped",
+     "reason": "the run's model calls are spent (CAD_REPAIR_LLM_AUTHOR_CALLS_MAX)"
+    },
+    {
+     "outcome": "skipped",
+     "reason": "the run's model calls are spent (CAD_REPAIR_LLM_AUTHOR_CALLS_MAX)"
+    },
+    {
+     "outcome": "skipped",
+     "reason": "the run's model calls are spent (CAD_REPAIR_LLM_AUTHOR_CALLS_MAX)"
+    },
+    {
+     "outcome": "skipped",
+     "reason": "the run's model calls are spent (CAD_REPAIR_LLM_AUTHOR_CALLS_MAX)"
+    }
+   ],
+   "author_verdicts": [],
+   "repair_total_s": 75.73357679799983,
+   "t_dispatch_s": 18.2,
+   "t_total_s": 2432.9
+  },
+  {
+   "file": "occt/trj3_s1-id-203.stp",
+   "sha256": "094491e90330dce28ba29a74e9d9f544def008b5af9e3cd9bbc8d582732fdf8e",
+   "job_id": "53eac4c8-bcc3-451a-a65b-cd0034e67bb7",
+   "status": "cancelled",
+   "error": null,
+   "wedged": true,
+   "outcome_code": "cancelled",
+   "failure_category": null,
+   "failed_gate": "",
+   "failure_detail": "",
+   "meshed": false,
+   "executor_success": false,
+   "delivered_by": null,
+   "built_from_repaired_geometry": false,
+   "repair_status": "clean",
+   "repair_route": "conservative_repair",
+   "repair_outcome": "refused",
+   "repair_attempted": false,
+   "repair_reason": "the repair was refused: nothing was kept (6 operation(s) attempted, stopped because unmeshable), so there is nothing to promote - re-exporting the upload would change its topology without repairing it",
+   "stopped_because": "unmeshable",
+   "planner": "regions-model-v1",
+   "operations_attempted": 6,
+   "operations_kept": 0,
+   "kept_ops": [],
+   "packages": [
+    {
+     "region_index": 2,
+     "status": "reverted",
+     "reason": "no operation was kept, so nothing was repaired: the claim to have cleared face:8ce550703dffbd02, face:d19ce53df12143ef cannot hold over geometry the package did not change",
+     "review_reason": null,
+     "ops": [
+      [
+       null,
+       "rolled_back"
+      ]
+     ]
+    },
+    {
+     "region_index": 0,
+     "status": "reverted",
+     "reason": "no operation was kept, so nothing was repaired: the claim to have cleared edge:42df68153e38b416, edge:c0c70d745e0d7c66 cannot hold over geometry the package did not change",
+     "review_reason": null,
+     "ops": [
+      [
+       null,
+       "rolled_back"
+      ],
+      [
+       null,
+       "rolled_back"
+      ]
+     ]
+    },
+    {
+     "region_index": 0,
+     "status": "reverted",
+     "reason": "no operation was kept, so nothing was repaired: the claim to have cleared edge:42df68153e38b416, edge:c0c70d745e0d7c66 cannot hold over geometry the package did not change",
+     "review_reason": null,
+     "ops": [
+      [
+       null,
+       "rolled_back"
+      ]
+     ]
+    },
+    {
+     "region_index": 1,
+     "status": "reverted",
+     "reason": "no operation was kept, so nothing was repaired: the claim to have cleared edge:5f1f9ab211a9ec0b, edge:a1ee232c6a1bad3a cannot hold over geometry the package did not change",
+     "review_reason": null,
+     "ops": [
+      [
+       null,
+       "rolled_back"
+      ],
+      [
+       null,
+       "rolled_back"
+      ]
+     ]
+    }
+   ],
+   "author_calls": [
+    {
+     "outcome": "package",
+     "reason": "",
+     "observation_bytes": 1825
+    },
+    {
+     "outcome": "pass",
+     "reason": "",
+     "observation_bytes": 2236
+    },
+    {
+     "outcome": "package",
+     "reason": "",
+     "observation_bytes": 1197
+    },
+    {
+     "outcome": "package",
+     "reason": "",
+     "observation_bytes": 1769
+    },
+    {
+     "outcome": "pass",
+     "reason": "",
+     "observation_bytes": 2175
+    },
+    {
+     "outcome": "package",
+     "reason": "",
+     "observation_bytes": 1195
+    },
+    {
+     "outcome": "skipped",
+     "reason": "the run's model calls are spent (CAD_REPAIR_LLM_AUTHOR_CALLS_MAX)"
+    },
+    {
+     "outcome": "skipped",
+     "reason": "the run's model calls are spent (CAD_REPAIR_LLM_AUTHOR_CALLS_MAX)"
+    },
+    {
+     "outcome": "skipped",
+     "reason": "the run's model calls are spent (CAD_REPAIR_LLM_AUTHOR_CALLS_MAX)"
+    },
+    {
+     "outcome": "skipped",
+     "reason": "the run's model calls are spent (CAD_REPAIR_LLM_AUTHOR_CALLS_MAX)"
+    },
+    {
+     "outcome": "skipped",
+     "reason": "the run's model calls are spent (CAD_REPAIR_LLM_AUTHOR_CALLS_MAX)"
+    },
+    {
+     "outcome": "skipped",
+     "reason": "the run's model calls are spent (CAD_REPAIR_LLM_AUTHOR_CALLS_MAX)"
+    },
+    {
+     "outcome": "skipped",
+     "reason": "the run's model calls are spent (CAD_REPAIR_LLM_AUTHOR_CALLS_MAX)"
+    },
+    {
+     "outcome": "skipped",
+     "reason": "the run's model calls are spent (CAD_REPAIR_LLM_AUTHOR_CALLS_MAX)"
+    }
+   ],
+   "author_verdicts": [],
+   "repair_total_s": 67.1772588319991,
+   "t_dispatch_s": 20.9,
+   "t_total_s": 2435.3
+  },
+  {
+   "file": "occt/trj3_s1-tc-214.stp",
+   "sha256": "4f0996fa7641dd759af577b9bf0695849eeccc1a31f5f2be6096bc15e23ecf91",
+   "job_id": "0de11dd9-95ee-44b4-9324-ff587cd01c78",
+   "status": "cancelled",
+   "error": null,
+   "wedged": true,
+   "outcome_code": "cancelled",
+   "failure_category": null,
+   "failed_gate": "",
+   "failure_detail": "",
+   "meshed": false,
+   "executor_success": false,
+   "delivered_by": null,
+   "built_from_repaired_geometry": false,
+   "repair_status": "clean",
+   "repair_route": "conservative_repair",
+   "repair_outcome": "refused",
+   "repair_attempted": false,
+   "repair_reason": "the repair was refused: nothing was kept (13 operation(s) attempted, stopped because unmeshable), so there is nothing to promote - re-exporting the upload would change its topology without repairing it",
+   "stopped_because": "unmeshable",
+   "planner": "regions-model-v1",
+   "operations_attempted": 13,
+   "operations_kept": 0,
+   "kept_ops": [],
+   "packages": [
+    {
+     "region_index": 6,
+     "status": "reverted",
+     "reason": "cleared defects still present: edge:03907b036230bf78, edge:08f93e084d43a68c, edge:dcf123e88d2d5f5c, edge:f2a47485798ae177",
+     "review_reason": null,
+     "ops": [
+      [
+       null,
+       "rolled_back"
+      ],
+      [
+       null,
+       "rolled_back"
+      ],
+      [
+       null,
+       "rolled_back"
+      ],
+      [
+       null,
+       "rolled_back"
+      ],
+      [
+       null,
+       "kept"
+      ]
+     ]
+    },
+    {
+     "region_index": 0,
+     "status": "reverted",
+     "reason": "cleared defects still present: edge:807aaa0954b52a87#0, edge:807aaa0954b52a87#1",
+     "review_reason": null,
+     "ops": [
+      [
+       null,
+       "rolled_back"
+      ],
+      [
+       null,
+       "kept"
+      ],
+      [
+       null,
+       "rolled_back"
+      ],
+      [
+       null,
+       "rolled_back"
+      ]
+     ]
+    },
+    {
+     "region_index": 1,
+     "status": "reverted",
+     "reason": "review: rejected by review",
+     "deviation_mm": 0.0,
+     "deviation_samples": 36,
+     "deviation_faces": 7,
+     "reviewed": "reject",
+     "review_reason": "The repair cleared no defects\u2014the four small_edge defects remain\u2014and the mesh already had no failures before the edit, while measured area and volume changed by -1.68 mm\u00b2 and -73.71 mm\u00b3.",
+     "review_s": 4.321029519000149,
+     "ops": [
+      [
+       null,
+       "kept"
+      ],
+      [
+       null,
+       "rolled_back"
+      ],
+      [
+       null,
+       "rolled_back"
+      ],
+      [
+       null,
+       "rolled_back"
+      ]
+     ]
+    }
+   ],
+   "author_calls": [
+    {
+     "outcome": "package",
+     "reason": "",
+     "observation_bytes": 2336
+    },
+    {
+     "outcome": "pass",
+     "reason": "",
+     "observation_bytes": 3340
+    },
+    {
+     "outcome": "package",
+     "reason": "",
+     "observation_bytes": 1746
+    },
+    {
+     "outcome": "pass",
+     "reason": "",
+     "observation_bytes": 2550
+    },
+    {
+     "outcome": "package",
+     "reason": "",
+     "observation_bytes": 1749
+    },
+    {
+     "outcome": "pass",
+     "reason": "",
+     "observation_bytes": 2498
+    },
+    {
+     "outcome": "skipped",
+     "reason": "the run's model calls are spent (CAD_REPAIR_LLM_AUTHOR_CALLS_MAX)"
+    },
+    {
+     "outcome": "skipped",
+     "reason": "the run's model calls are spent (CAD_REPAIR_LLM_AUTHOR_CALLS_MAX)"
+    },
+    {
+     "outcome": "skipped",
+     "reason": "the run's model calls are spent (CAD_REPAIR_LLM_AUTHOR_CALLS_MAX)"
+    },
+    {
+     "outcome": "skipped",
+     "reason": "the run's model calls are spent (CAD_REPAIR_LLM_AUTHOR_CALLS_MAX)"
+    },
+    {
+     "outcome": "skipped",
+     "reason": "the run's model calls are spent (CAD_REPAIR_LLM_AUTHOR_CALLS_MAX)"
+    },
+    {
+     "outcome": "skipped",
+     "reason": "the run's model calls are spent (CAD_REPAIR_LLM_AUTHOR_CALLS_MAX)"
+    }
+   ],
+   "author_verdicts": [],
+   "repair_total_s": 65.29630363199976,
+   "t_dispatch_s": 21.9,
+   "t_total_s": 2436.1
+  },
+  {
+   "file": "occt/trj4_s1-ai-214.stp",
+   "sha256": "a2a04ef2d86bfcb721665e02e811459b966968b86e4e74e4a2092514c5fa085d",
+   "job_id": "a41ca507-735a-4bbd-b26d-0107937f45fc",
+   "status": "cancelled",
+   "error": null,
+   "wedged": true,
+   "outcome_code": "cancelled",
+   "failure_category": null,
+   "failed_gate": "",
+   "failure_detail": "",
+   "meshed": false,
+   "executor_success": false,
+   "delivered_by": null,
+   "built_from_repaired_geometry": false,
+   "repair_status": "clean",
+   "repair_route": "conservative_repair",
+   "repair_outcome": "refused",
+   "repair_attempted": false,
+   "repair_reason": "the repair was refused: nothing was kept (11 operation(s) attempted, stopped because unmeshable), so there is nothing to promote - re-exporting the upload would change its topology without repairing it",
+   "stopped_because": "unmeshable",
+   "planner": "regions-model-v1",
+   "operations_attempted": 11,
+   "operations_kept": 0,
+   "kept_ops": [],
+   "packages": [
+    {
+     "region_index": 0,
+     "status": "reverted",
+     "reason": "no operation was kept, so nothing was repaired: the claim to have cleared face:88908e555d23ba69#0, face:88908e555d23ba69#1 cannot hold over geometry the package did not change",
+     "review_reason": null,
+     "ops": [
+      [
+       null,
+       "rolled_back"
+      ],
+      [
+       null,
+       "rolled_back"
+      ]
+     ]
+    },
+    {
+     "region_index": 1,
+     "status": "reverted",
+     "reason": "no operation was kept, so nothing was repaired: the claim to have cleared edge:4cb0f75466ac9e0a#0, edge:4cb0f75466ac9e0a#1, edge:aa572bc1ae7a5887#0, edge:aa572bc1ae7a5887#1 cannot hold over geometry the package did not change",
+     "review_reason": null,
+     "ops": [
+      [
+       null,
+       "rolled_back"
+      ],
+      [
+       null,
+       "rolled_back"
+      ],
+      [
+       null,
+       "rolled_back"
+      ],
+      [
+       null,
+       "rolled_back"
+      ]
+     ]
+    },
+    {
+     "region_index": 2,
+     "status": "reverted",
+     "reason": "no operation was kept, so nothing was repaired: the claim to have cleared edge:21518490e4b2b18e#0, edge:21518490e4b2b18e#1, edge:bf44594e0e3b82b3#0, edge:bf44594e0e3b82b3#1 cannot hold over geometry the package did not change",
+     "review_reason": null,
+     "ops": [
+      [
+       null,
+       "rolled_back"
+      ],
+      [
+       null,
+       "rolled_back"
+      ],
+      [
+       null,
+       "rolled_back"
+      ],
+      [
+       null,
+       "rolled_back"
+      ]
+     ]
+    },
+    {
+     "region_index": 2,
+     "status": "reverted",
+     "reason": "no operation was kept, so nothing was repaired: the claim to have cleared edge:21518490e4b2b18e#0, edge:21518490e4b2b18e#1, edge:bf44594e0e3b82b3#0, edge:bf44594e0e3b82b3#1 cannot hold over geometry the package did not change",
+     "review_reason": null,
+     "ops": [
+      [
+       null,
+       "rolled_back"
+      ]
+     ]
+    }
+   ],
+   "author_calls": [
+    {
+     "outcome": "package",
+     "reason": "",
+     "observation_bytes": 1603
+    },
+    {
+     "outcome": "pass",
+     "reason": "",
+     "observation_bytes": 2183
+    },
+    {
+     "outcome": "package",
+     "reason": "",
+     "observation_bytes": 1772
+    },
+    {
+     "outcome": "pass",
+     "reason": "",
+     "observation_bytes": 2744
+    },
+    {
+     "outcome": "package",
+     "reason": "",
+     "observation_bytes": 1770
+    },
+    {
+     "outcome": "package",
+     "reason": "",
+     "observation_bytes": 2742
+    },
+    {
+     "outcome": "skipped",
+     "reason": "the run's model calls are spent (CAD_REPAIR_LLM_AUTHOR_CALLS_MAX)"
+    },
+    {
+     "outcome": "skipped",
+     "reason": "the run's model calls are spent (CAD_REPAIR_LLM_AUTHOR_CALLS_MAX)"
+    },
+    {
+     "outcome": "skipped",
+     "reason": "the run's model calls are spent (CAD_REPAIR_LLM_AUTHOR_CALLS_MAX)"
+    }
+   ],
+   "author_verdicts": [],
+   "repair_total_s": 70.029509641,
+   "t_dispatch_s": 21.9,
+   "t_total_s": 2438.4
+  },
+  {
+   "file": "occt/trj5_s1-ac-214.stp",
+   "sha256": "5d81060d0e2d80110acff9a6af8f80d2cfd88881c94852616ba07af3cd8546fb",
+   "job_id": "2edbf57e-59c9-4d56-9d07-f76f576809be",
+   "status": "succeeded",
+   "error": null,
+   "wedged": false,
+   "outcome_code": "success",
+   "failure_category": null,
+   "failed_gate": "",
+   "failure_detail": "",
+   "meshed": true,
+   "executor_success": true,
+   "delivered_by": "gmsh",
+   "built_from_repaired_geometry": false,
+   "repair_status": "clean",
+   "repair_route": "conservative_repair",
+   "repair_outcome": "refused",
+   "repair_attempted": false,
+   "repair_reason": "the repair was refused: nothing was kept (9 operation(s) attempted, stopped because unmeshable), so there is nothing to promote - re-exporting the upload would change its topology without repairing it",
+   "stopped_because": "unmeshable",
+   "planner": "regions-model-v1",
+   "operations_attempted": 9,
+   "operations_kept": 0,
+   "kept_ops": [],
+   "packages": [
+    {
+     "region_index": 12,
+     "status": "reverted",
+     "reason": "no operation was kept, so nothing was repaired: the claim to have cleared face:23bdd9ed56840b50, face:4b8f9bf1bc959395, face:585a9373d5b542c4, face:dceff15d39dfb987 cannot hold over geometry the package did not change",
+     "review_reason": null,
+     "ops": [
+      [
+       null,
+       "rolled_back"
+      ]
+     ]
+    },
+    {
+     "region_index": 0,
+     "status": "reverted",
+     "reason": "no operation was kept, so nothing was repaired: the claim to have cleared edge:a97ad10f70a79eda#0, edge:a97ad10f70a79eda#1, edge:f2bdcf2de1dfc446#0, edge:f2bdcf2de1dfc446#1 cannot hold over geometry the package did not change",
+     "review_reason": null,
+     "ops": [
+      [
+       null,
+       "rolled_back"
+      ],
+      [
+       null,
+       "rolled_back"
+      ],
+      [
+       null,
+       "rolled_back"
+      ],
+      [
+       null,
+       "rolled_back"
+      ]
+     ]
+    },
+    {
+     "region_index": 1,
+     "status": "reverted",
+     "reason": "no operation was kept, so nothing was repaired: the claim to have cleared edge:451fedabad4a1e46#0, edge:451fedabad4a1e46#1, edge:cd6f33e2c7a2b78d#0, edge:cd6f33e2c7a2b78d#1 cannot hold over geometry the package did not change",
+     "review_reason": null,
+     "ops": [
+      [
+       null,
+       "rolled_back"
+      ],
+      [
+       null,
+       "rolled_back"
+      ],
+      [
+       null,
+       "rolled_back"
+      ],
+      [
+       null,
+       "rolled_back"
+      ]
+     ]
+    }
+   ],
+   "author_calls": [
+    {
+     "outcome": "package",
+     "reason": "",
+     "observation_bytes": 2965
+    },
+    {
+     "outcome": "pass",
+     "reason": "",
+     "observation_bytes": 3422
+    },
+    {
+     "outcome": "package",
+     "reason": "",
+     "observation_bytes": 1772
+    },
+    {
+     "outcome": "pass",
+     "reason": "",
+     "observation_bytes": 2744
+    },
+    {
+     "outcome": "package",
+     "reason": "",
+     "observation_bytes": 1770
+    },
+    {
+     "outcome": "pass",
+     "reason": "",
+     "observation_bytes": 2742
+    },
+    {
+     "outcome": "skipped",
+     "reason": "the run's model calls are spent (CAD_REPAIR_LLM_AUTHOR_CALLS_MAX)"
+    },
+    {
+     "outcome": "skipped",
+     "reason": "the run's model calls are spent (CAD_REPAIR_LLM_AUTHOR_CALLS_MAX)"
+    },
+    {
+     "outcome": "skipped",
+     "reason": "the run's model calls are spent (CAD_REPAIR_LLM_AUTHOR_CALLS_MAX)"
+    },
+    {
+     "outcome": "skipped",
+     "reason": "the run's model calls are spent (CAD_REPAIR_LLM_AUTHOR_CALLS_MAX)"
+    },
+    {
+     "outcome": "skipped",
+     "reason": "the run's model calls are spent (CAD_REPAIR_LLM_AUTHOR_CALLS_MAX)"
+    },
+    {
+     "outcome": "skipped",
+     "reason": "the run's model calls are spent (CAD_REPAIR_LLM_AUTHOR_CALLS_MAX)"
+    },
+    {
+     "outcome": "skipped",
+     "reason": "the run's model calls are spent (CAD_REPAIR_LLM_AUTHOR_CALLS_MAX)"
+    },
+    {
+     "outcome": "skipped",
+     "reason": "the run's model calls are spent (CAD_REPAIR_LLM_AUTHOR_CALLS_MAX)"
+    },
+    {
+     "outcome": "skipped",
+     "reason": "the run's model calls are spent (CAD_REPAIR_LLM_AUTHOR_CALLS_MAX)"
+    },
+    {
+     "outcome": "skipped",
+     "reason": "the run's model calls are spent (CAD_REPAIR_LLM_AUTHOR_CALLS_MAX)"
+    },
+    {
+     "outcome": "skipped",
+     "reason": "the run's model calls are spent (CAD_REPAIR_LLM_AUTHOR_CALLS_MAX)"
+    },
+    {
+     "outcome": "skipped",
+     "reason": "the run's model calls are spent (CAD_REPAIR_LLM_AUTHOR_CALLS_MAX)"
+    }
+   ],
+   "author_verdicts": [],
+   "repair_total_s": 38.86779455499982,
+   "t_dispatch_s": 26.3,
+   "t_total_s": 2449.1
+  },
+  {
+   "file": "occt/trj6_b1-ec-214.stp",
+   "sha256": "fbdff3af7bad4467f0ed8d862b0832f739b7908887290c6b5d33f2025e21a235",
+   "job_id": "a46a86a4-f0aa-4f4f-aad8-acc748434450",
+   "status": "cancelled",
+   "error": null,
+   "wedged": true,
+   "outcome_code": "cancelled",
+   "failure_category": null,
+   "failed_gate": "",
+   "failure_detail": "",
+   "meshed": false,
+   "executor_success": false,
+   "delivered_by": null,
+   "built_from_repaired_geometry": false,
+   "repair_status": "repairable",
+   "repair_route": "conservative_repair",
+   "repair_outcome": "refused",
+   "repair_attempted": false,
+   "repair_reason": "the repair was refused: nothing was kept (8 operation(s) attempted, stopped because time_budget), so there is nothing to promote - re-exporting the upload would change its topology without repairing it",
+   "stopped_because": "time_budget",
+   "planner": "regions-model-v1",
+   "operations_attempted": 8,
+   "operations_kept": 0,
+   "kept_ops": [],
+   "packages": [
+    {
+     "region_index": 0,
+     "status": "reverted",
+     "reason": "no operation was kept, so nothing was repaired: the claim to have cleared edge:12b575377d6efdab, edge:6a495bdc63c62b31, edge:6c1dd3732481b14c, edge:ce79acdbe41a6cc4 cannot hold over geometry the package did not change",
+     "review_reason": null,
+     "ops": [
+      [
+       null,
+       "rolled_back"
+      ],
+      [
+       null,
+       "rolled_back"
+      ],
+      [
+       null,
+       "rolled_back"
+      ],
+      [
+       null,
+       "rolled_back"
+      ]
+     ]
+    },
+    {
+     "region_index": 0,
+     "status": "reverted",
+     "reason": "no operation was kept, so nothing was repaired: the claim to have cleared wire:23a846dad56e1661, wire:902aa64e394e6f11, wire:dc372013f9af9b24, wire:fa8efbcb35603b44 cannot hold over geometry the package did not change",
+     "review_reason": null,
+     "ops": [
+      [
+       null,
+       "rolled_back"
+      ],
+      [
+       null,
+       "rolled_back"
+      ],
+      [
+       null,
+       "rolled_back"
+      ],
+      [
+       null,
+       "rolled_back"
+      ]
+     ]
+    }
+   ],
+   "author_calls": [
+    {
+     "outcome": "package",
+     "reason": "",
+     "observation_bytes": 6808
+    },
+    {
+     "outcome": "package",
+     "reason": "",
+     "observation_bytes": 7764
+    }
+   ],
+   "author_verdicts": [],
+   "repair_total_s": 227.6671147979996,
+   "t_dispatch_s": 321.3,
+   "t_total_s": 2738.7
+  },
+  {
+   "file": "occt/trj7_k1-id-214.stp",
+   "sha256": "ae819be983c52f86771522df8dc0bd63a0ff4683c3cb4e14d2ab17b37df0a133",
+   "job_id": "f0686246-e9bf-49a8-a19c-52ffd2c1452a",
+   "status": "succeeded",
+   "error": null,
+   "wedged": false,
+   "outcome_code": "success",
+   "failure_category": null,
+   "failed_gate": "",
+   "failure_detail": "",
+   "meshed": true,
+   "executor_success": true,
+   "delivered_by": "gmsh",
+   "built_from_repaired_geometry": false,
+   "repair_status": "repairable",
+   "repair_route": "conservative_repair",
+   "repair_outcome": "refused",
+   "repair_attempted": false,
+   "repair_reason": "the repair was refused: nothing was kept (4 operation(s) attempted, stopped because regions_exhausted), so there is nothing to promote - re-exporting the upload would change its topology without repairing it",
+   "stopped_because": "regions_exhausted",
+   "planner": "regions-model-v1",
+   "operations_attempted": 4,
+   "operations_kept": 0,
+   "kept_ops": [],
+   "packages": [
+    {
+     "region_index": 1,
+     "status": "reverted",
+     "reason": "no operation was kept, so nothing was repaired: the claim to have cleared edge:722ecc55520760d8#0, edge:722ecc55520760d8#1 cannot hold over geometry the package did not change",
+     "review_reason": null,
+     "ops": [
+      [
+       null,
+       "rolled_back"
+      ],
+      [
+       null,
+       "rolled_back"
+      ]
+     ]
+    },
+    {
+     "region_index": 2,
+     "status": "reverted",
+     "reason": "no operation was kept, so nothing was repaired: the claim to have cleared edge:155deb275ca2b4a2#0, edge:155deb275ca2b4a2#1 cannot hold over geometry the package did not change",
+     "review_reason": null,
+     "ops": [
+      [
+       null,
+       "rolled_back"
+      ],
+      [
+       null,
+       "rolled_back"
+      ]
+     ]
+    }
+   ],
+   "author_calls": [
+    {
+     "outcome": "pass",
+     "reason": "",
+     "observation_bytes": 972
+    },
+    {
+     "outcome": "package",
+     "reason": "",
+     "observation_bytes": 1186
+    },
+    {
+     "outcome": "pass",
+     "reason": "",
+     "observation_bytes": 1766
+    },
+    {
+     "outcome": "package",
+     "reason": "",
+     "observation_bytes": 1184
+    },
+    {
+     "outcome": "pass",
+     "reason": "",
+     "observation_bytes": 1764
+    }
+   ],
+   "author_verdicts": [],
+   "repair_total_s": 19.46074183700057,
+   "t_dispatch_s": 21.5,
+   "t_total_s": 383.7
+  }
+ ],
+ "model_proposals": {
+  "packages_proposed": 34,
+  "op_steps": {
+   "fix_small_edges": 63,
+   "rebuild_face": 6,
+   "fragment_bodies": 6,
+   "heal_self_intersections": 5,
+   "fix_small_faces": 3,
+   "split_closed_faces": 2,
+   "fix_shape_global": 2
+  },
+  "op_sets": {
+   "fix_small_edges+rebuild_face": 1,
+   "rebuild_face": 3,
+   "fix_small_edges": 18,
+   "fragment_bodies": 4,
+   "fix_small_faces+heal_self_intersections": 1,
+   "fix_small_edges+fragment_bodies": 1,
+   "heal_self_intersections": 1,
+   "split_closed_faces": 2,
+   "fix_small_faces": 1,
+   "fix_shape_global": 2
+  }
+ }
+}
