@@ -532,6 +532,24 @@ async def test_a_change_of_analysis_after_the_stage_opens_the_stage_again(monkey
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("script,open_step,buttons", [
+    ([("say", "FEA"), ("stage", FEA_DECL)], A, True),
+    ([("say", "water flowing through this elbow"), ("stage", INTERNAL_DECL)], F, True),
+    ([("say", "FEA"), ("stage", FEA_DECL), ("say", "Static stress")], PL, False),
+])
+async def test_a_reload_mid_intake_serves_the_conversation_and_its_open_step(monkeypatch, script, open_step, buttons):
+    # the page restores an unfinished conversation from the history: its messages, the open step's
+    # buttons, and the plan card when a plan stands (ui/js/main.js openSession, one drawing path)
+    from meshpipeline.api.v1 import chat as chatmod
+    world = await _run(monkeypatch, script)
+    history = await chatmod.get_chat_history(SID, owner_id="alice", organization_id="")
+    assert flow.steps(history["messages"])[-1] == open_step
+    assert bool(history["choices"]) is buttons
+    assert (history["brief"] or {}).get("proceed_ask") == (ap.PROCEED_ASK if open_step == PL else None)
+    assert history["job_id"] is None
+
+
+@pytest.mark.asyncio
 async def test_a_spec_pasted_early_is_kept_word_for_word_on_the_plan(monkeypatch):
     spec = "FEA static stress. Spec: 2 mm elements near the 4 bolt holes, 5 kN on the tab"
     world = await _run(monkeypatch, [("say", spec), ("stage", FEA_DECL)])

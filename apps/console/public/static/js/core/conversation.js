@@ -14,6 +14,12 @@ export function readable(m) {
     && !m._synthetic && String(m.content ?? "").trim() !== "";
 }
 
+/** What a page reopened on an unfinished conversation draws, in order: {role, text} for each message a person
+ *  reads - the same messages, in the same order, as a run's page draws before its box. Pure. */
+export function intakeOrder(messages) {
+  return (messages || []).filter(readable).map((m) => ({ role: m.role, text: String(m.content) }));
+}
+
 /** What a page opened on run `jobId` draws, in order: {role, text} for a message, {run} for an earlier run of the
  *  same conversation (drawn finished, where it started), {run, current: true} for this run. Drawing stops at the
  *  message the NEXT run started after: that run, and the words that started it, are its own page. Pure. */

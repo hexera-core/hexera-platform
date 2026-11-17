@@ -39,6 +39,8 @@ let deps = {
   choices() {},
   // resolves once the notes' reading has landed (or after a minute): a yes given before Finalize notes waits on it
   notesRead() { return Promise.resolve(); },
+  // the upload opened a session: the page's address names it, so a reload reopens the conversation
+  sessionStarted() {},
 };
 export function configureComposer(d) { deps = { ...deps, ...d }; }
 
@@ -133,6 +135,7 @@ async function upload(file, many) {
   try {
     const d = many ? await uploadAssembly(many) : await uploadGeometry(file, { onProgress: progress });
     setState.sessionId(d.session_id);
+    deps.sessionStarted(d.session_id);
     lbl.textContent = d.step_filename; lbl.className = "ready";
     // The geometry a session was opened on is FINAL: the intake conversation, the admission
     // verdict and the approved contract are all bound to it, so swapping the file underneath
@@ -475,6 +478,21 @@ async function sendText(txt, { again = false } = {}) {
     }
     if (_stageOpen) holdForDrawing(); else enableInput();
   }
+}
+
+/** AN UNFINISHED CONVERSATION, REOPENED (a reload mid-intake): the session is this page's again, the upload is
+ *  done, the open step's buttons and the plan card are drawn as the history serves them, and the box is open on
+ *  that step. The geometry check is watched again, so a stage still waiting on Proceed opens where it was. */
+export function resumeSession(sessionId, history, { watch = true } = {}) {
+  setState.sessionId(sessionId);
+  const lbl = $("file-label"), btn = $("upload-btn");
+  if (lbl && history && history.geometry_filename) { lbl.textContent = history.geometry_filename; lbl.className = "ready"; }
+  if (btn) btn.remove();
+  const inp = $("step-file-input"); if (inp) inp.disabled = true;
+  deps.choices((history && history.choices) || [], sendText);
+  if (history && history.brief) deps.brief(history.brief);
+  enableInput();
+  if (watch) watchGeometryCheck(sessionId);
 }
 
 /** Say something in the chat for the user, as if typed (a note that chooses the engine). */

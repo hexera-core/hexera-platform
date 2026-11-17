@@ -99,6 +99,9 @@ async def get_chat_history(session_id: uuid.UUID, owner_id: str = Depends(owner_
         "engine_choice": choice_payload(getattr(session, "intake_gate", None)),
         # the buttons under the last reply when it is an application question, so a reload draws them
         "choices": _last_choices(session.messages),
+        # THE PLAN CARD and the file, so a reload in the middle of the questionnaire draws what the page showed
+        "brief": await _brief(session, owner_id) if session.job_id is None else None,
+        "geometry_filename": str(getattr(getattr(session, "geometry_source", None), "original_filename", "") or ""),
         # Awaiting confirmation only when intake is complete AND no job has
         # been dispatched yet (request_txt is cleared on dispatch, but be explicit).
         "awaiting_confirmation": bool(session.request_txt) and session.job_id is None,

@@ -27,8 +27,8 @@ import { configure as configureStream, lastSeq, replay, start as startStream, te
   from "./realtime/stream.js";
 import { confirmCancel } from "./shell/cancel.js";
 import { configureComposer, disableInput, enableInput, holdForRun, mountComposer,
-  offerNewRun, say, setPlaceholder, showRunFile } from "./shell/composer.js";
-import { runOrder } from "./core/conversation.js";
+  offerNewRun, resumeSession, say, setPlaceholder, showRunFile } from "./shell/composer.js";
+import { intakeOrder, runOrder } from "./core/conversation.js";
 import { refreshHealth } from "./shell/settings.js";
 import { configureDispute } from "./viewer/dispute.js";
 import { offerReview, openParked } from "./review/review.js";
@@ -245,7 +245,14 @@ const briefParts = {
   finalize: () => finalizePartMatches(getState.sessionId()),
 };
 
+/* THE CONVERSATION IN THE ADDRESS: an upload's session is named in the URL (?session=<id>) until a run takes the
+   address over, so a reload in the middle of the questionnaire reopens it where it stands (openSession) */
+function rememberSession(id) {
+  try { history.replaceState(null, "", location.pathname + "?session=" + encodeURIComponent(id)); } catch { /* ignore */ }
+}
+
 configureComposer({
+  sessionStarted: (id) => rememberSession(id),
   notice: Notice,
   chat: (role, text) => Stage.chat(role, text),
   brief: (b) => Stage.brief(b, addBriefNote, briefParts, proceedPlan),
@@ -327,8 +334,26 @@ function bootLive() {
   // id over without a redirect through a query string it would then have to clean up.
   const deepLinkJob = params.get("job") || globalThis.__HEXERA_BOOT_JOB__ || null;
   if (params.get("user")) useIdentity(params.get("user"));
+  const deepLinkSession = params.get("session") || null;
+  if (!deepLinkJob && deepLinkSession) { openSession(deepLinkSession); return; }
   if (!deepLinkJob) return;
   openRun(deepLinkJob);
+}
+
+/* AN UNFINISHED CONVERSATION, REOPENED - a reload in the middle of the questionnaire. It draws the stored
+   conversation in the one order core/conversation.js says, then hands the composer the open step (its buttons,
+   the plan card) and the check to watch again. A conversation that already started a run opens as that run. */
+async function openSession(sessionId) {
+  Stage.clearEmpty();
+  const history = await getChatHistory(sessionId);
+  if (!history) {
+    Stage.chat("assistant", "I could not open that conversation. The link may be wrong, or it may belong to another "
+      + "account.");
+    return;
+  }
+  if (history.job_id) { openRun(history.job_id); return; }
+  for (const item of intakeOrder(history.messages)) Stage.chat(item.role, item.text);
+  resumeSession(sessionId, history);
 }
 
 /* A RUN OPENED BY LINK - a reload, or the run re-opened from the sidebar. It draws what the page showed live, in
