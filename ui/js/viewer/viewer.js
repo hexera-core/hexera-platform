@@ -1234,13 +1234,26 @@ function initViewer(job,surf,uiCfg){
         +` ${(+reduced.delivered_faces).toLocaleString()} faces, nothing approximated)`
       :` · drawn merged at ${(reduced.resolution_m*1000).toLocaleString(undefined,{maximumFractionDigits:2})} mm`
         +` (${reduced.drawn_triangles.toLocaleString()} of ${reduced.delivered_faces.toLocaleString()} faces on screen)`;
+  /* IS THIS THE MESH WE BUILT, OR AN INPUT SKIN SHOWN IN ITS PLACE? `kind` is the decisive fact
+     and `is_mesh` only settles the one case `kind` cannot. A polyMesh boundary is ALWAYS a
+     delivered mesh - the input-skin path produces `stl` or `skin` and never `polymesh` - while
+     `stl` genuinely serves two things: a tetrahedral engine's DELIVERED surface (gmsh, vmtk) and
+     the API's fallback input skin. render/viewer_pack says in its own comment that it cannot tell
+     those apart and does not set `is_mesh`; application/viewer_payload stamps it on afterwards.
+     So a payload that arrives without that one optional key is not evidence of anything, and
+     reading it alone made this line tell a reader "the mesh itself could not be rendered" directly
+     above their rendered mesh and its patch list - measured on the 283,410,955-cell customer cold
+     plate on 2026-11-17, with 524,190 of its 17,070,364 boundary faces on screen at the time.
+     The same test is written twice more in this codebase, in api/v1/simulation.get_surface_vtk and
+     in vtkExport below, which is why it is one name here and not three expressions. */
+  const isDeliveredMesh=surf.kind==='polymesh'||(surf.kind==='stl'&&surf.is_mesh===true);
   const statusEl=document.getElementById('v-status-'+job);
-  statusEl.textContent=thermal&&surf.is_mesh
+  statusEl.textContent=thermal&&isDeliveredMesh
     // a thermal model says what it is in its own words: its parts, its cells, its power
     ?'your delivered thermal mesh · '+(thermal.summary||'')
     // so does an FEA mesh: its elements, its level and its named faces
-    :surf.fea&&surf.is_mesh?'your delivered FEA mesh · '+(surf.fea.summary||'')
-    :(surf.is_mesh?'your delivered mesh · '
+    :surf.fea&&isDeliveredMesh?'your delivered FEA mesh · '+(surf.fea.summary||'')
+    :(isDeliveredMesh?'your delivered mesh · '
                 :'input surface - the mesh itself could not be rendered · ')
     +(surf.patches||[]).map(facesOf).join(' · ')+drawnNote;
   statusEl.title=statusEl.textContent;   // one line on screen; the whole of it on hover
@@ -1366,8 +1379,9 @@ function initViewer(job,surf,uiCfg){
      built by the API from the stored payload. Fetched with the API headers (a plain link would
      carry none) and handed to the browser as a download; the button says what it is doing. */
   (function vtkExport(){
-    // a polyMesh, or the triangle surface of a tetrahedral engine's DELIVERED mesh (VMTK, Gmsh)
-    if(surf.kind!=='polymesh'&&!(surf.kind==='stl'&&surf.is_mesh===true))return;
+    // a polyMesh, or the triangle surface of a tetrahedral engine's DELIVERED mesh (VMTK, Gmsh).
+    // Same question as the status line above, so the same answer: see `isDeliveredMesh`.
+    if(!isDeliveredMesh)return;
     const bar=document.querySelector('#viewer-'+job+' .v-dl');if(!bar)return;
     const a=document.createElement('a');a.className='v-dlbtn';a.href='#';a.id='v-vtk-'+job;
     /* WHAT THE FILE WILL ACTUALLY CONTAIN. `vtk_export` writes a quality SCALAR only for a
