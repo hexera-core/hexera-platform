@@ -988,6 +988,16 @@ def user_words(plan: Mapping) -> list[str]:
     out: list[str] = []
     by: dict[tuple[float, float], list[str]] = {}
     for pid, v in sizes.items():
+        if v.get("scale"):
+            # PLAN-fea-35: "finer" / "coarser" on a whole part, with no number
+            got_m = next((float(z["size_m"]) for z in zs if z.get("user") == pid and z.get("kind") == "part"),
+                         0.5 * (float(v["min_m"]) + float(v["max_m"])))
+            finer = float(v["scale"]) < 1.0
+            out.append(f"You asked for {'finer' if finer else 'coarser'} elements on {v.get('name') or pid}: its own "
+                       f"size is {'halved' if finer else 'doubled'}, from {float(v.get('rule_m') or 0) * 1e3:.3g} mm to "
+                       f"{got_m * 1e3:.3g} mm; " + ("what was already finer there keeps its size." if finer else
+                                                   "walls, rounds and hot spots keep the sizes their accuracy needs."))
+            continue
         by.setdefault((float(v["min_m"]), float(v["max_m"])), []).append(pid)
     for (lo, hi), ids in sorted(by.items()):
         own = [z for z in zs if z.get("user") in ids]

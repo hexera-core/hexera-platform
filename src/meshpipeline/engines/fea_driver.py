@@ -2601,6 +2601,9 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     sizes = PS.sizes_of(part_sizes)
     if part_sizes.get("status") != "none":
         _cite(job_id, PS.decisions(part_sizes))
+    # PLAN-fea-35: a whole part asked "finer" or "coarser" with no number is sized once the plan's own sizes are known
+    scaled = {k: v for k, v in sizes.items() if "scale" in v}
+    sizes = {k: v for k, v in sizes.items() if "scale" not in v}
     if asked.get("status") != "none":
         # PLAN-fea-33: a size the notes ask for the WHOLE mesh, held like the sizes per part (on every part the
         # user did not size themselves)
@@ -2608,6 +2611,14 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         from meshpipeline.engines import mesh_requirements as MR
         sizes = FR.whole_sizes(sizes, MR.requirements_of(asked), FR.part_ids(P.zones(record)),
                                base_m=P.base_size(diag_m))
+    if scaled:
+        sizes = {**sizes, **PS.resolve_scales(scaled, P.zones(record), base_m=P.base_size(diag_m), whole=sizes)}
+        _cite(job_id, [{"stage": "fea_plan", "decided": "parts asked finer or coarser", "value": len(scaled),
+                        "rule": "PLAN-fea-35", "inputs": {k: {"scale": v["scale"], "min_m": v["min_m"],
+                                                              "max_m": v["max_m"]} for k, v in sizes.items()
+                                                          if k in scaled},
+                        "words": "Each part asked finer or coarser with no number: its own size halved or doubled; "
+                                 "what the rules make finer in it keeps its size."}])
     # A COUNT OR SIZES THE USER ASKED FOR NEVER FAIL THE RUN: when no pass builds a valid mesh of the plan their
     # choices made, the rules' own plan is meshed instead, and said (PLAN-fea-29)
     by_choice_failed = ""
