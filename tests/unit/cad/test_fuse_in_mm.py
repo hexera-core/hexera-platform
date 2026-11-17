@@ -69,14 +69,17 @@ def test_the_touching_pairs_are_found_alike_in_either_unit():
 
 
 def test_the_stage_fuses_in_millimetres(tmp_path, monkeypatch):
+    # each fuse runs in a child process (PLAN-fea-35, cad/assembly_join): the steps it is given say its unit
+    from meshpipeline.cad import bounded_steps as BS
+
     seen = []
-    real = A.fuse
+    real = BS.run
 
-    def spy(parts, **kw):
-        seen.append(kw.get("mm_per_unit"))
-        return real(parts, **kw)
+    def spy(module, payload, steps, budgets, **kw):
+        seen.extend(st.get("mm_per_unit") for st in steps if st.get("op") == "fuse")
+        return real(module, payload, steps, budgets, **kw)
 
-    monkeypatch.setattr(A, "fuse", spy)
+    monkeypatch.setattr(BS, "run", spy)
     from OCP.BRep import BRep_Builder
     from OCP.TopoDS import TopoDS_Compound
     comp, bld = TopoDS_Compound(), BRep_Builder()
