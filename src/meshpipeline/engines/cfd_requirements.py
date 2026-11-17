@@ -20,6 +20,8 @@
               missed limit is "delivered with notes", never a failed run.
     CFDREQ-7  NOTHING SAID = IDENTICAL: no notes, or notes that ask nothing, change no byte of any plan,
               dictionary or mesh.
+    CFDREQ-8  THE FLOW CONDITIONS the user confirmed (fluid, speed, wall treatment) size the first layer as a y+
+              in the notes would; the notes' own layer values win (with_conditions).
 """
 from __future__ import annotations
 
@@ -31,6 +33,7 @@ import re
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
+from meshpipeline.contracts import flow_conditions as _FC
 from meshpipeline.contracts.event_stream import StaleExecutionPublish
 from meshpipeline.engines import mesh_requirements as MR
 
@@ -49,8 +52,8 @@ CONSUMER = "mesh_requirements"
 PLAN_FILE = "cfd_requirements_plan.json"
 #: the CFD engines (engines/registry names)
 ENGINES = ("snappy", "cfmesh", "snappy_multiregion", "gmsh", "vmtk", "snapgrid", "netgen")
-#: kinematic viscosity at 20 °C, m^2/s, of the fluids a note may name
-NU = {"air": 1.516e-5, "water": 1.004e-6}
+#: kinematic viscosity at 20 °C, m^2/s, of the fluids a note may name (one table with the flow conditions')
+NU = _FC.NU
 DEFINITIONS = ("Non-orthogonality: on each internal face, the angle between the face normal and the line joining "
                "the two cell centres (a cell's worst face). Skewness: the OpenFOAM measure, the distance from the "
                "face centre to where that line crosses the face, over the face's size. Aspect ratio: OpenFOAM's "
@@ -131,6 +134,8 @@ async def read_for_attempt(workspace, state, *, job_id: str = "", publish=None, 
     except Exception as exc:  # noqa: BLE001 - the notes never fail a run
         logger.warning("cfd requirements: not read (%s) - job_id=%s", type(exc).__name__, job_id)
         sec = MR.section("failed", note=MR.UNREAD_WORDS)
+    # CFDREQ-8: the flow conditions the user confirmed size the first layer, as a y+ in their notes would
+    sec = with_conditions(sec, state)
     MR.write(ws, sec)
     (ws / PLAN_FILE).unlink(missing_ok=True)          # a carried plan never speaks for this attempt
     if sec.get("status") == "none":
@@ -226,6 +231,61 @@ def y_plus_height(y_plus: float, physics: Mapping | None, *, length_m: float | N
         h = float(y_plus) * length / (re_n * math.sqrt(cf / 2.0))
     return h, [], {"reynolds": float(f"{re_n:.4g}"), "cf": float(f"{cf:.4g}"), "length_m": length,
                    "length_from": said_L, "first_m": float(f"{h:.4g}")}
+
+
+# #
+# CFDREQ-8: the flow conditions the user confirmed (the intake's conditions step)
+# #
+
+#: where a row the conditions set comes from, as the user reads it ("(from your flow conditions)")
+CONDITIONS_FROM = "flow conditions"
+
+
+def with_conditions(sec: dict, state) -> dict:
+    """CFDREQ-8: THE CONDITIONS STEP'S ANSWER REACHES THE MESH. The plan's conditions sentence (contracts/flow_conditions,
+    in request_txt) gives the y+ of the wall treatment and the flow's speed and fluid; they go into the set exactly as
+    the same words typed in the notes would - the first layer is then sized by every engine that sizes one, and told
+    "not applied on this mesher" by every other. What the user's own notes (or settings) set wins: the conditions only
+    fill what they left. No such sentence (a plan in the model's own words, no conditions step): `sec` unchanged."""
+    import copy
+
+    from meshpipeline.contracts import flow_conditions as FC
+
+    s = state or {}
+    c = FC.read(str(s.get("request_txt") or ""), s.get("intake_patches") or [])
+    if c is None:
+        return sec
+    before = MR.words(sec)
+    used = sec.get("status") == "used"
+    req = copy.deepcopy(dict(sec.get("requirements") or MR.empty())) if used else MR.empty()
+    lay = req.setdefault("layers", {})
+    ph = req.setdefault("physics", {})
+    treatment = "a resolved wall" if c["wall"] == "resolved" else "wall functions, y+ 30-300"
+    lead = "From your flow conditions:"
+    if lay.get("count") == 0:
+        line = f"{lead} no boundary layers are built, as asked, so the wall treatment sizes none."
+    elif lay.get("first_mm") is not None:
+        line = f"{lead} the first layer is the height you gave, not the one the wall treatment's y+ would give."
+    elif lay.get("y_plus") is not None:
+        line = f"{lead} the y+ you gave ({MR._g(lay['y_plus'])}) is used, not the wall treatment's."
+    else:
+        lay["y_plus"] = float(c["y_plus"])
+        if ph.get("velocity_ms") is None and c["velocity_ms"] is not None:
+            ph["velocity_ms"] = float(c["velocity_ms"])
+        if ph.get("fluid") is None and c["fluid"] in FC.NU:
+            ph["fluid"] = c["fluid"]
+        asked = f"y+ of about {MR._g(c['y_plus'])} at the walls ({treatment}), for {c['fluid_words']} at {c['speed_words']}"
+        req.setdefault("rows", []).append({"id": "c1", "field": "layers:y_plus", "asked": asked,
+                                           "quote": f"Fluid: {c['fluid_words']} at {c['speed_words']}; "
+                                                    f"{FC.WALL_WORDS[c['wall']]}",
+                                           "from": CONDITIONS_FROM})
+        line = f"{lead} {asked}" + (f" - the first layer keeps our sizing, because {c['why']}." if c["why"] else ".")
+    out = dict(sec) if used else MR.section("used", note=str(sec.get("note") or ""), source=str(sec.get("source") or ""))
+    out["status"] = "used"
+    out["requirements"] = req
+    out["lines"] = [line, *before]
+    out["conditions"] = {k: c[k] for k in ("fluid", "velocity_ms", "wall", "y_plus", "why")}
+    return out
 
 
 # #
@@ -412,7 +472,7 @@ class Ask:
                                         length_from=length_from)
         if h is None:
             self.not_here("layers:y_plus", f"{' and '.join(missing)} {'is' if len(missing) == 1 else 'are'} not "
-                                           "in your notes, so the first layer height cannot be worked out from it; "
+                                           "known, so the first layer height cannot be worked out from it; "
                                            "the layers keep our sizing")
             return None
         self.done("layers:y_plus", f"first layer {_mm(h)} high (worked out at Re {MR._g(how['reynolds'])}, with "
