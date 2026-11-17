@@ -227,3 +227,19 @@ def test_the_budget_grows_with_the_faces_and_is_capped():
     assert AJ.budget_s(0) == AJ.FUSE_FLOOR_S
     assert AJ.budget_s(100) < AJ.budget_s(1000) <= AJ.FUSE_CAP_S
     assert AJ.budget_s(10**7) == AJ.FUSE_CAP_S
+
+
+def test_a_steps_time_is_its_own_not_the_childs_start(tmp_path):
+    """The decision record says how long each fuse took: a quick step is timed from its own start, never from
+    the child's start (Python and OpenCASCADE loading, a second or two) or the steps before it."""
+    parts = [fx._box(10 * k, 0, 0, 10, 10, 10) for k in range(4)]
+    brep = tmp_path / "parts.brep"
+    from OCP.BRepTools import BRepTools
+
+    assert BRepTools.Write_s(A.compound(parts), str(brep))
+    steps = [{"op": "touch", "a": k, "b": k + 1, "pad": 1e-4} for k in range(3)]
+    t0 = time.time()
+    got = BS.run(AJ.MODULE, {"brep": str(brep)}, steps, [60.0] * 3, workdir=tmp_path / "w")
+    wall = time.time() - t0
+    assert all(s.ok and s.value["touch"] for s in got)
+    assert sum(s.seconds for s in got) < wall / 2

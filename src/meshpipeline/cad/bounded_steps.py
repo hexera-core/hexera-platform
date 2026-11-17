@@ -107,7 +107,9 @@ def _one_child(module: str, spec: Path, work: Path, first: int, steps: list[dict
                     got = None     # half-written: read again on the next look
                 if got is not None:
                     s = out[current]
-                    s.seconds = round(time.monotonic() - (started or spawned), 2)
+                    # the step's own time, from the child's two files (a quick step can start and end between
+                    # two looks: timed from the parent's looks it counted the child's start and the steps before)
+                    s.seconds = round(_took(work, current, time.monotonic() - (started or spawned)), 2)
                     s.ok = not got.get("error")
                     s.value = got.get("value") if s.ok else got.get("error")
                     s.why = FINISHED if s.ok else ERROR
@@ -142,6 +144,14 @@ def _one_child(module: str, spec: Path, work: Path, first: int, steps: list[dict
             time.sleep(POLL_S)
     finally:
         _kill(proc)
+
+
+def _took(work: Path, k: int, fallback: float) -> float:
+    """Step k's time from its start file to its answer file (both the child's), else `fallback`."""
+    try:
+        return max(0.0, (work / f"{k}.json").stat().st_mtime - (work / f"{k}.start").stat().st_mtime)
+    except OSError:
+        return fallback
 
 
 def _kill(proc: subprocess.Popen) -> None:
