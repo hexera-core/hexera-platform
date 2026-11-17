@@ -1,0 +1,216 @@
+[32;1m**** ERR StepFile : Incorrect Syntax : Fails Count : 5 ****[0m
+[32;1m*** ERR StepReaderData : Unresolved Reference : Fails Count : 65 ***[0m
+[32;1m**** ERR StepFile : Incorrect Syntax : Fails Count : 5 ****[0m
+[32;1m*** ERR StepReaderData : Unresolved Reference : Fails Count : 65 ***[0m
+plan: 1 candidate rim(s) have no resolvable free wire (edge:1b2cd263d419c50f); refusing every fill this pass rather than pairing the rest without them
+plan: 1 candidate rim(s) have no resolvable free wire (edge:1b2cd263d419c50f); refusing every fill this pass rather than pairing the rest without them
+plan: 1 candidate rim(s) have no resolvable free wire (edge:1b2cd263d419c50f); refusing every fill this pass rather than pairing the rest without them
+plan: 1 candidate rim(s) have no resolvable free wire (edge:1b2cd263d419c50f); refusing every fill this pass rather than pairing the rest without them
+plan: 1 candidate rim(s) have no resolvable free wire (edge:1b2cd263d419c50f); refusing every fill this pass rather than pairing the rest without them
+plan: 1 candidate rim(s) have no resolvable free wire (edge:1b2cd263d419c50f); refusing every fill this pass rather than pairing the rest without them
+plan: 1 candidate rim(s) have no resolvable free wire (edge:1b2cd263d419c50f); refusing every fill this pass rather than pairing the rest without them
+[32;1m**** ERR StepFile : Incorrect Syntax : Fails Count : 5 ****[0m
+[32;1m*** ERR StepReaderData : Unresolved Reference : Fails Count : 65 ***[0m
+[32;1m
+*******************************************************************
+******        Statistics on Transfer (Write)                 ******[0m
+[32;1m
+*******************************************************************
+******        Transfer Mode = 0  I.E.  As Is       ******[0m
+[32;1m******        Transferring Shape, ShapeType = 0                      ******[0m
+[32;1m** WorkSession : Sending all data[0m
+[32;1m Step File Name : /var/folders/g6/mq56z4xj1h950wltbq5bscjc0000gn/T/repair_corpus_out/trj3_s1-db-214-repaired.step(13148 ents)  Write  Done[0m
+[32;1m
+*******************************************************************
+******        Statistics on Transfer (Write)                 ******[0m
+[32;1m
+*******************************************************************
+******        Transfer Mode = 0  I.E.  As Is       ******[0m
+[32;1m******        Transferring Shape, ShapeType = 0                      ******[0m
+[32;1m** WorkSession : Sending all data[0m
+[32;1m Step File Name : /var/folders/g6/mq56z4xj1h950wltbq5bscjc0000gn/T/repair_corpus_out/trj3_s1-md-214-repaired.step(9216 ents)  Write  Done[0m
+[32;1m
+*******************************************************************
+******        Statistics on Transfer (Write)                 ******[0m
+[32;1m
+*******************************************************************
+******        Transfer Mode = 0  I.E.  As Is       ******[0m
+[32;1m******        Transferring Shape, ShapeType = 0                      ******[0m
+[32;1m** WorkSession : Sending all data[0m
+[32;1m Step File Name : /var/folders/g6/mq56z4xj1h950wltbq5bscjc0000gn/T/repair_corpus_out/trj3_s1-tc-214-repaired.step(18745 ents)  Write  Done[0m
+allow_face_removal=False  autonomous=True  enabled=True  fill_nonplanar_holes=True  fill_planar_holes=True  fix_small_faces=True  fragment_bodies=False  heal_self_intersections=False  inspect_max_bytes=134217728  inspect_timeout_s=60.0  llm_planner=off  llm_planner_calls_max=2  llm_planner_min_confidence=0.5  llm_planner_timeout_s=20.0  max_area_change_ratio=0.02  max_deviation_ratio=0.001  max_hole_span_ratio=0.75  max_ops=200  max_tolerance_mm=0.1  max_volume_change_ratio=0.02  mesh_probe=live  mesh_probe_timeout_s=120.0  region_attempts=6  region_loop=live  review_enabled=False  review_llm_calls_max=4  review_llm_timeout_s=20.0  review_sample_size=3  sliver_precision_ratio=0.001  split_closed_faces=False  stall_limit=50  timeout_s=300.0
+80 file(s)
+
+repaired files are written to /var/folders/g6/mq56z4xj1h950wltbq5bscjc0000gn/T/repair_corpus_out
+nothing_to_repair            bm2_ec_exhaust-A.stp                                   before=[] located={} -> fixed={}
+nothing_to_repair            bm2_ec_leverrod-A.stp                                  before=[] located={} -> fixed={}
+refused                      bug25013_25013face.stp                                 before=['open_shell', 'small_edge'] located={'open_shell': 1, 'small_edge': 1} -> fixed={} [nothing was kept (6 operation(s) attempted, stopped because regions_exhausted), so there i]
+not_attempted:manual_cleanup bug27453_165-174_piattello.stp                         before=['small_edge', 'small_face'] located={'small_edge': 81, 'small_face': 50} -> fixed={}
+repair_failed                bug30790.step                                          before=['bad_orientation', 'invalid_brep', 'open_shell', 'self_intersection', 'small_face'] located={'open_shell': 251, 'small_face': 634, 'bad_orientation': 65, 'invalid_brep': 8, 'self_intersection': 8} -> fixed={} [Standard_Failure: NCollection_Array1::Value]
+not_attempted:manual_cleanup bug32239.STEP                                          before=['small_edge', 'small_face'] located={'small_edge': 28, 'small_face': 853} -> fixed={}
+refused                      bug32314_corrupted.stp                                 before=['invalid_brep', 'open_shell', 'small_face'] located={'open_shell': 3, 'invalid_brep': 1, 'small_face': 1} -> fixed={} [nothing was kept (5 operation(s) attempted, stopped because regions_exhausted), so there i]
+refused                      bug32596_abc_0_13.step                                 before=['small_edge'] located={'small_edge': 2} -> fixed={} [nothing was kept (1 operation(s) attempted, stopped because time_budget), so there is noth]
+not_attempted:manual_cleanup bug33100_window.step                                   before=['invalid_brep'] located={'invalid_brep': 4} -> fixed={}
+not_attempted:manual_cleanup bug33261.stp                                           before=['open_shell', 'small_edge', 'small_face'] located={'small_edge': 16, 'open_shell': 1, 'small_face': 1127} -> fixed={}
+not_attempted:manual_cleanup nist_ftc_08_asme1_ap242-2.stp                          before=['invalid_brep'] located={'invalid_brep': 274} -> fixed={}
+refused                      trj10_ch1-id-chs.stp                                   before=['small_edge'] located={'small_edge': 1} -> fixed={} [nothing was kept (3 operation(s) attempted, stopped because regions_exhausted), so there i]
+refused                      trj3_s1-ac-214.stp                                     before=['small_edge', 'small_face'] located={'small_edge': 24, 'small_face': 4} -> fixed={} [nothing was kept (64 operation(s) attempted, stopped because unmeshable), so there is noth]
+refused                      trj3_s1-al-214.stp                                     before=['invalid_brep', 'open_shell', 'small_edge', 'small_face'] located={'open_shell': 15, 'small_edge': 16, 'invalid_brep': 16, 'small_face': 9} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because time_budget), so there is noth]
+refused                      trj3_s1-ct-203.stp                                     before=['small_edge', 'small_face'] located={'small_edge': 48, 'small_face': 4} -> fixed={} [nothing was kept (58 operation(s) attempted, stopped because unmeshable), so there is noth]
+refused                      trj3_s1-ct-214.stp                                     before=['small_edge', 'small_face'] located={'small_edge': 48, 'small_face': 4} -> fixed={} [nothing was kept (58 operation(s) attempted, stopped because unmeshable), so there is noth]
+no_change                    trj3_s1-db-214.stp                                     before=['small_edge', 'small_face'] located={'small_edge': 48, 'small_face': 8} -> fixed={}
+refused                      trj3_s1-id-203.stp                                     before=['small_edge', 'small_face'] located={'small_edge': 14, 'small_face': 4} -> fixed={} [nothing was kept (46 operation(s) attempted, stopped because unmeshable), so there is noth]
+no_change                    trj3_s1-md-214.stp                                     before=['small_edge', 'small_face'] located={'small_edge': 24, 'small_face': 2} -> fixed={}
+refused                      trj3_s1-pe-203.stp                                     before=['small_edge', 'small_face'] located={'small_edge': 24, 'small_face': 2} -> fixed={} [nothing was kept (38 operation(s) attempted, stopped because unmeshable), so there is noth]
+repaired                     trj3_s1-tc-214.stp                                     before=['small_edge', 'small_face'] located={'small_edge': 28, 'small_face': 2} -> fixed={'small_edge': 28}
+refused                      trj3_s1-ug-214.stp                                     before=['small_edge', 'small_face'] located={'small_edge': 18, 'small_face': 2} -> fixed={} [nothing was kept (56 operation(s) attempted, stopped because unmeshable), so there is noth]
+refused                      trj4_s1-ai-214.stp                                     before=['small_edge', 'small_face'] located={'small_edge': 10, 'small_face': 4} -> fixed={} [nothing was kept (21 operation(s) attempted, stopped because unmeshable), so there is noth]
+refused                      trj4_s1-pe-214.stp                                     before=['small_edge', 'small_face'] located={'small_edge': 24, 'small_face': 2} -> fixed={} [nothing was kept (38 operation(s) attempted, stopped because unmeshable), so there is noth]
+refused                      trj4_s1-tu-214.stp                                     before=['small_edge', 'small_face'] located={'small_edge': 24, 'small_face': 2} -> fixed={} [nothing was kept (38 operation(s) attempted, stopped because unmeshable), so there is noth]
+refused                      trj4_s1-ug-214.stp                                     before=['small_edge', 'small_face'] located={'small_edge': 18, 'small_face': 2} -> fixed={} [nothing was kept (56 operation(s) attempted, stopped because unmeshable), so there is noth]
+refused                      trj5_s1-ac-214.stp                                     before=['small_edge', 'small_face'] located={'small_edge': 24, 'small_face': 4} -> fixed={} [nothing was kept (64 operation(s) attempted, stopped because unmeshable), so there is noth]
+refused                      trj5_s1-in-214.stp                                     before=['small_edge', 'small_face'] located={'small_edge': 28, 'small_face': 2} -> fixed={} [nothing was kept (68 operation(s) attempted, stopped because unmeshable), so there is noth]
+refused                      trj5_s1-ug-214.stp                                     before=['small_edge', 'small_face'] located={'small_edge': 18, 'small_face': 2} -> fixed={} [nothing was kept (56 operation(s) attempted, stopped because unmeshable), so there is noth]
+refused                      trj6_b1-ec-214.stp                                     before=['invalid_brep', 'self_intersection', 'small_edge', 'small_face'] located={'small_edge': 316, 'small_face': 13, 'invalid_brep': 4, 'self_intersection': 4} -> fixed={} [nothing was kept (1 operation(s) attempted, stopped because time_budget), so there is noth]
+not_attempted:manual_cleanup trj6_pm4-ec-203.stp                                    before=['small_edge', 'small_face'] located={'small_edge': 89, 'small_face': 141} -> fixed={}[32;1m
+*******************************************************************
+******        Statistics on Transfer (Write)                 ******[0m
+[32;1m
+*******************************************************************
+******        Transfer Mode = 0  I.E.  As Is       ******[0m
+[32;1m******        Transferring Shape, ShapeType = 2                      ******[0m
+[32;1m** WorkSession : Sending all data[0m
+[32;1m Step File Name : /var/folders/g6/mq56z4xj1h950wltbq5bscjc0000gn/T/repair_corpus_out/trj7_k1-id-214-repaired.step(4539 ents)  Write  Done[0m
+[32;1m
+*******************************************************************
+******        Statistics on Transfer (Write)                 ******[0m
+[32;1m
+*******************************************************************
+******        Transfer Mode = 0  I.E.  As Is       ******[0m
+[32;1m******        Transferring Shape, ShapeType = 0                      ******[0m
+[32;1m** WorkSession : Sending all data[0m
+[32;1m Step File Name : /var/folders/g6/mq56z4xj1h950wltbq5bscjc0000gn/T/repair_corpus_out/00505375_5897aba327753d0fe44f4744_step_006-repaired.step(35261 ents)  Write  Done[0m
+[32;1m
+*******************************************************************
+******        Statistics on Transfer (Write)                 ******[0m
+[32;1m
+*******************************************************************
+******        Transfer Mode = 0  I.E.  As Is       ******[0m
+[32;1m******        Transferring Shape, ShapeType = 2                      ******[0m
+[32;1m** WorkSession : Sending all data[0m
+[32;1m Step File Name : /var/folders/g6/mq56z4xj1h950wltbq5bscjc0000gn/T/repair_corpus_out/00506900_417ada9d4c34002e49e704fa_step_001-repaired.step(10759 ents)  Write  Done[0m
+
+refused                      trj7_b1-ec-214.stp                                     before=['invalid_brep', 'self_intersection', 'small_edge', 'small_face'] located={'small_edge': 31, 'small_face': 31, 'invalid_brep': 2, 'self_intersection': 2} -> fixed={} [the run left a tolerance of 7964.6630 mm, over the 0.9492292984805378 mm effective cap - t]
+repaired                     trj7_k1-id-214.stp                                     before=['open_shell', 'small_edge'] located={'open_shell': 1, 'small_edge': 4} -> fixed={'open_shell': 1}
+nothing_to_repair            00500350_cf6391333569f6a17439ce66_step_000.step        before=[] located={} -> fixed={}
+refused                      00500400_bce216c87d2d17025db6ab36_step_000.step        before=['small_edge'] located={'small_edge': 1} -> fixed={} [nothing was kept (3 operation(s) attempted, stopped because unmeshable), so there is nothi]
+nothing_to_repair            00500875_a97e4a09c926c436c043e3c3_step_028.step        before=[] located={} -> fixed={}
+refused                      00501275_58950467b204b50ff2cc07c9_step_013.step        before=['small_edge'] located={'small_edge': 1} -> fixed={} [nothing was kept (3 operation(s) attempted, stopped because unmeshable), so there is nothi]
+refused                      00501300_58950467b204b50ff2cc07c9_step_038.step        before=['small_face'] located={'small_face': 4} -> fixed={} [nothing was kept (4 operation(s) attempted, stopped because unmeshable), so there is nothi]
+not_attempted:manual_cleanup 00502200_5895d152ed2c0c0fe9ef029c_step_093.step        before=['invalid_brep', 'open_shell', 'small_edge', 'small_face'] located={'small_edge': 31262, 'open_shell': 3, 'small_face': 11855, 'invalid_brep': 1} -> fixed={}
+nothing_to_repair            00502300_1dcb8ad6a594419908db0fd3_step_002.step        before=[] located={} -> fixed={}
+refused                      00502475_5895e91efca3da0f6b68639a_step_003.step        before=['small_edge'] located={'small_edge': 32} -> fixed={} [nothing was kept (96 operation(s) attempted, stopped because unmeshable), so there is noth]
+nothing_to_repair            00502600_5895f9dd54620e0fdd79706b_step_000.step        before=[] located={} -> fixed={}
+nothing_to_repair            00502775_5896070a01b2bb0fc88ae0eb_step_071.step        before=[] located={} -> fixed={}
+not_attempted:manual_cleanup 00502800_c9fa412b334b0e215cb26434_step_000.step        before=['small_edge', 'small_face'] located={'small_edge': 27, 'small_face': 128} -> fixed={}
+nothing_to_repair            00502900_46dbba28aa960b1c0b680bda_step_007.step        before=[] located={} -> fixed={}
+not_attempted:manual_cleanup 00502950_796e5a4b1bfb1f59da2e443d_step_000.step        before=['small_face'] located={'small_face': 1300} -> fixed={}
+not_attempted:manual_cleanup 00503000_32f660ff2a08b13b584f0693_step_000.step        before=['open_shell', 'small_edge', 'small_face'] located={'open_shell': 34, 'small_edge': 800, 'small_face': 1456} -> fixed={}
+not_attempted:manual_cleanup 00503200_c8a4697bcc912578475337ea_step_000.step        before=['open_shell', 'small_edge', 'small_face'] located={'small_edge': 6858, 'open_shell': 5217, 'small_face': 11675} -> fixed={}
+not_attempted:manual_cleanup 00503325_58965842fca3da0f6b68cb76_step_006.step        before=['small_edge', 'small_face'] located={'small_edge': 91, 'small_face': 554} -> fixed={}
+nothing_to_repair            00503600_58969abbfca3da0f6b696760_step_000.step        before=[] located={} -> fixed={}
+nothing_to_repair            00503625_3ece9c6bb503a673c7105a4b_step_006.step        before=[] located={} -> fixed={}
+refused                      00504025_5896ef7054620e0fdd79f59d_step_085.step        before=['invalid_brep', 'self_intersection', 'small_face'] located={'invalid_brep': 1, 'small_face': 1, 'self_intersection': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because regions_exhausted), so there i]
+refused                      00504200_58971a35c1f05a10f76b8a78_step_009.step        before=['small_edge', 'small_face'] located={'small_edge': 4, 'small_face': 1} -> fixed={} [nothing was kept (13 operation(s) attempted, stopped because unmeshable), so there is noth]
+refused                      00504475_79b4cdbab23d7acd4e4b5fbc_step_000.step        before=['small_edge', 'small_face'] located={'small_edge': 7, 'small_face': 2} -> fixed={} [nothing was kept (23 operation(s) attempted, stopped because unmeshable), so there is noth]
+not_attempted:manual_cleanup 00504775_75dc3fef19fbaaff412bb388_step_006.step        before=['open_shell', 'small_edge', 'small_face'] located={'open_shell': 8, 'small_edge': 4, 'small_face': 467} -> fixed={}
+refused                      00504900_58977eb6e2af0f0fda4a3a4e_step_006.step        before=['small_edge', 'small_face'] located={'small_edge': 4, 'small_face': 7} -> fixed={} [the run left a tolerance of 0.1251 mm, over the 0.1 mm effective cap - the kernel agreed t]
+not_attempted:manual_cleanup 00505075_58978ae07e864b0f6501330a_step_000.step        before=['small_face'] located={'small_face': 48} -> fixed={}
+repaired                     00505375_5897aba327753d0fe44f4744_step_006.step        before=['invalid_brep', 'self_intersection', 'small_edge', 'small_face'] located={'small_edge': 10, 'small_face': 2, 'invalid_brep': 1, 'self_intersection': 1} -> fixed={'small_edge': 10, 'small_face': 2, 'invalid_brep': 1, 'self_intersection': 1}
+not_attempted:manual_cleanup 00505550_5897b8ef36235f0f71862899_step_000.step        before=['small_edge', 'small_face'] located={'small_edge': 36, 'small_face': 608} -> fixed={}
+refused                      00505625_5897c0de69a9d0103bc02adf_step_018.step        before=['small_face'] located={'small_face': 4} -> fixed={} [nothing was kept (4 operation(s) attempted, stopped because unmeshable), so there is nothi]
+not_attempted:manual_cleanup 00506275_541a2ce632275fed8964367a_step_000.step        before=['small_edge', 'small_face'] located={'small_edge': 96, 'small_face': 675} -> fixed={}
+nothing_to_repair            00506325_589844ae8460820fe9280f95_step_012.step        before=[] located={} -> fixed={}
+nothing_to_repair            00506550_b5806bb84542de8e2656bc88_step_114.step        before=[] located={} -> fixed={}
+nothing_to_repair            00506725_067fcf75ee0eae49a8b1f2e1_step_003.step        before=[] located={} -> fixed={}
+no_change                    00506900_417ada9d4c34002e49e704fa_step_001.step        before=['small_edge'] located={'small_edge': 15} -> fixed={}
+not_attempted:manual_cleanup 00506975_da054becdab299df20251eaf_step_000.step        before=['small_edge', 'small_face'] located={'small_edge': 5, 'small_face': 34} -> fixed={}
+not_attempted:manual_cleanup 00507025_765ba085f20aa7fcb2def3ae_step_000.step        before=['small_edge', 'small_face'] located={'small_edge': 1, 'small_face': 22} -> fixed={}
+refused                      00507075_e31d2a137ae442102bed9cd9_step_000.step        before=['open_shell'] located={'open_shell': 1} -> fixed={} [nothing was kept (1 operation(s) attempted, stopped because time_budget), so there is noth]
+refused                      00507200_15997739fe66ef86060150e6_step_001.step        before=['small_edge', 'small_face'] located={'small_edge': 4, 'small_face': 1} -> fixed={} [nothing was kept (13 operation(s) attempted, stopped because unmeshable), so there is noth]
+refused                      00507550_ed3bf58da6711cb579e24def_step_024.step        before=['small_edge', 'small_face'] located={'small_edge': 6, 'small_face': 3} -> fixed={} [the run left a tolerance of 11.9506 mm, over the 0.1 mm effective cap - the kernel agreed ]
+not_attempted:manual_cleanup 00507750_15086f55e7ef8d6b99de417a_step_000.step        before=['invalid_brep', 'small_edge', 'small_face'] located={'small_edge': 378, 'small_face': 1381, 'invalid_brep': 1} -> fixed={}
+nothing_to_repair            00508150_5898cfe0f3cd940f71b7b650_step_069.step        before=[] located={} -> fixed={}
+refused                      00508750_11d8d571a2f54aa924e0c995_step_000.step        before=['small_edge', 'small_face'] located={'small_edge': 2, 'small_face': 2} -> fixed={} [nothing was kept (8 operation(s) attempted, stopped because unmeshable), so there is nothi][32;1m
+*******************************************************************
+******        Statistics on Transfer (Write)                 ******[0m
+[32;1m
+*******************************************************************
+******        Transfer Mode = 0  I.E.  As Is       ******[0m
+[32;1m******        Transferring Shape, ShapeType = 0                      ******[0m
+[32;1m** WorkSession : Sending all data[0m
+[32;1m Step File Name : /var/folders/g6/mq56z4xj1h950wltbq5bscjc0000gn/T/repair_corpus_out/00509675_58998b763052da0f6bdf8e3f_step_018-repaired.step(25016 ents)  Write  Done[0m
+
+nothing_to_repair            00508775_58991615a878da0f8225af98_step_009.step        before=[] located={} -> fixed={}
+refused                      00509150_cb7c199fecd1c9d080129028_step_009.step        before=['small_edge'] located={'small_edge': 4} -> fixed={} [nothing was kept (12 operation(s) attempted, stopped because unmeshable), so there is noth]
+refused                      00509250_589954b73503790fce559ec7_step_032.step        before=['small_face'] located={'small_face': 5} -> fixed={} [nothing was kept (5 operation(s) attempted, stopped because unmeshable), so there is nothi]
+not_attempted:manual_cleanup 00509500_5899600b3052da0f6bdf752e_step_062.step        before=['invalid_brep', 'non_manifold_surface', 'open_shell', 'self_intersection', 'small_edge', 'small_face'] located={'small_edge': 89, 'open_shell': 4, 'invalid_brep': 8, 'small_face': 9, 'non_manifold_surface': 4, 'self_intersection': 6} -> fixed={}
+repaired                     00509675_58998b763052da0f6bdf8e3f_step_018.step        before=['small_edge', 'small_face'] located={'small_edge': 12, 'small_face': 4} -> fixed={'small_edge': 12}
+not_attempted:manual_cleanup 00509825_ad14112a53dcabe002ca167f_step_000.step        before=['small_edge', 'small_face'] located={'small_edge': 78, 'small_face': 225} -> fixed={}
+not_attempted:manual_cleanup 00509950_290c7c1160b8ce7723907233_step_000.step        before=['small_edge', 'small_face'] located={'small_edge': 51, 'small_face': 589} -> fixed={}
+
+== summary ==
+    35  refused
+    22  not_attempted
+    15  nothing_to_repair
+     4  repaired
+     3  no_change
+     1  repair_failed
+
+== defects actually repaired, by kind (credited by re-inspection) ==
+    50  small_edge
+     2  small_face
+     1  open_shell
+     1  invalid_brep
+     1  self_intersection
+
+== what triage advised ==
+    43  conservative_repair
+    22  manual_cleanup
+    15  mesh_as_is
+
+== why the loop stopped ==
+     5  unmeshable
+     2  regions_exhausted
+
+== operations, kept vs rolled back ==
+  fix_small_faces        kept=6    rolled_back=383  declined=0    failed=0
+  fix_small_edges        kept=38   rolled_back=294  declined=0    failed=0
+  fix_shape_global       kept=0    rolled_back=296  declined=0    failed=0
+  sew_faces              kept=1    rolled_back=7    declined=0    failed=0
+  fill_planar_hole       kept=0    rolled_back=1    declined=0    failed=0
+  fill_nonplanar_hole    kept=0    rolled_back=1    declined=0    failed=0
+
+== what the planner refused to attempt ==
+     3  no_operation_claims_it
+
+== operations never exercised on this corpus ==
+        fix_face_boundary
+        heal_self_intersections
+
+== heals corroborated by the triangle check ==
+  corroborated 0 / kept 0, unknown 0
+
+== meshing, before and after repair ==
+  meshed before 1 / 80, after 3  (newly meshed 2, newly broken 0)
+    25  still failing: edge_through_face
+     1  still failing: no_volume
+     4  still failing: open_loop
+    31  still failing: overlapping_facets
+     3  still failing: periodic_surface
+     2  still failing: probe_error
+    10  still failing: timeout
+     1  still failing: unreadable
+
+rows written to devtools/validation/evidence/2026-11-14-mesh-failure-location/rows-live-probe.json
+bundle sealed at devtools/validation/evidence/2026-11-14-mesh-failure-location/bundle-live-probe

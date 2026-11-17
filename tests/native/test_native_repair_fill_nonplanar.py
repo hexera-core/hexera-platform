@@ -168,6 +168,13 @@ def test_with_the_nonplanar_flag_off_the_run_is_todays_run(tmp_path, monkeypatch
     assert with_op.verdicts
     without = loop.run(shape, planner=RulesPlanner(ops=tuple(
         o for o in OPERATIONS if o.name != "fill_nonplanar_hole")), tolerance_mm=0.01)
-    assert [v.to_dict() for v in with_op.verdicts] == [v.to_dict() for v in without.verdicts]
+
+    def _timeless(verdicts):
+        # The verdicts carry wall-clock timings (apply_s/scan_s/measure_s) that can never match
+        # across two runs; the flag-off contract is about every OTHER field.
+        return [{k: v for k, v in verdict.to_dict().items()
+                 if k not in ("apply_s", "scan_s", "measure_s")} for verdict in verdicts]
+
+    assert _timeless(with_op.verdicts) == _timeless(without.verdicts)
     assert with_op.refusals == without.refusals
     assert with_op.stopped_because == without.stopped_because

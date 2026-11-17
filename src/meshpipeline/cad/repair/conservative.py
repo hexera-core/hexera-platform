@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 
 import meshpipeline.settings.cad_repair as rcfg
@@ -141,6 +142,11 @@ def _is_valid(shape) -> bool:
 
 
 #: OpenCASCADE's `write.step.unit` name for each unit the pipeline resolves.
+#: Seconds of CAD_REPAIR_TIMEOUT_S the repair keeps back from its drivers for the after-checks,
+#: the final measure and the STEP write (`repair_step_file`'s deadline, final review I2) - the
+#: margin the model author already kept on its own clock.
+DEADLINE_MARGIN_S = 5.0
+
 _STEP_UNIT_NAMES = {"mm": "MM", "cm": "CM", "m": "M", "in": "INCH"}
 
 
@@ -199,12 +205,22 @@ def _span(shape) -> float:
 
 
 def _loop_plane(wire):
-    """The plane a closed loop lies in, as (normal, centroid), or None when it is not planar."""
+    """The plane a closed loop lies in, as (normal, centroid), or None when it is not planar.
+
+    ON A COPY OF THE WIRE, because this is a question and `BRepBuilderAPI_MakeFace` answers it by
+    EDITING: it writes a pcurve on every edge it is handed and raises that edge's tolerance to
+    bound it. The free-loop edges are the caller's shape, so asking this on the originals moved
+    the loop's bounding box by more than one fingerprint quantum on `blade-holes.step` and renamed
+    the very defect the discriminator was pairing (`operations.copied_wire` has the measurement).
+    A discriminator may not change what it looks at.
+    """
     from OCP.BRepAdaptor import BRepAdaptor_Surface
     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
     from OCP.GeomAbs import GeomAbs_Plane
 
-    maker = BRepBuilderAPI_MakeFace(wire, True)
+    from meshpipeline.cad.repair.operations import copied_wire
+
+    maker = BRepBuilderAPI_MakeFace(copied_wire(wire), True)
     if not maker.IsDone():
         return None
     surface = BRepAdaptor_Surface(maker.Face())
@@ -844,6 +860,32 @@ def _sew(shape, *, tolerance_mm: float):
     return sewn
 
 
+def _disposition(regions_run) -> dict:
+    """The run's disposition ledger: what survived, whether we caused it, and what was relabelled.
+
+    THE `reclassified` KEY IS THE SPEC'S OWN MITIGATION FOR ANTI-GOAL 1 - "reclassification rate
+    reported per run" - so it has to be filled from somewhere. `disposition.ledger` invents no
+    reclassification (it is pure arithmetic over two scans); the packages are the only things that
+    reclassified anything, so the union is taken here.
+
+    COMMITTED PACKAGES ONLY. A reverted package's geometry and its claim were both thrown away,
+    so nothing it named was discharged. Each verdict's `reclassified` is already the intersection
+    of the predicate's claim with what the package's scoped scan still found, so this reports
+    relabelling that really discharged a survivor rather than everything an author asked for.
+
+    WHY IT IS NOT LEFT TO THE PER-PACKAGE KEY. `measurements["regions"]["packages"][i]
+    ["reclassified"]` carries the same facts, and a reader who has to assemble them cannot see
+    the one number the anti-goal is about: a run that keeps one genuine operation and relabels
+    every remaining warning delivers an artefact, reports `resolved` and summarises "Repaired
+    within the conservative caps", and the only place that is visible at a glance is here.
+    """
+    from meshpipeline.cad.repair.disposition import ledger
+
+    reclassified = {fingerprint for package in regions_run.packages if package.committed
+                    for fingerprint in package.reclassified}
+    return ledger(regions_run.defects_before, regions_run.defects_after, reclassified)
+
+
 def repair_step_file(source: Path, destination: Path, *,
                      profile: RepairProfile = RepairProfile.conservative,
                      directives: tuple[dict, ...] = ()) -> RepairReport:
@@ -861,10 +903,21 @@ def repair_step_file(source: Path, destination: Path, *,
     if profile is not RepairProfile.conservative:
         raise RepairUnavailable(
             f"only the conservative profile is implemented; {profile.value} needs an operator")
+    # THE RUN'S ONE ABSOLUTE DEADLINE (final review I2), taken at entry - BEFORE the STEP is read
+    # and measured - because the attempt node's `wait_for(CAD_REPAIR_TIMEOUT_S)` started its clock
+    # before this call, not after the read. Every driver, probe and model call below spends a
+    # slice of THIS, and `DEADLINE_MARGIN_S` is left for the after-checks and the STEP write, so
+    # the session no longer races the outer clock and loses the whole repair to it.
+    deadline = time.monotonic() + float(rcfg.CAD_REPAIR_TIMEOUT_S) - DEADLINE_MARGIN_S
     _occ()
 
     from meshpipeline.cad.repair.brep import _read_shape
-    from meshpipeline.cad.repair.caps import cumulative_refusal, measure, sanity_refusal
+    from meshpipeline.cad.repair.caps import (
+        cumulative_refusal,
+        measure,
+        sanity_refusal,
+        volume_accountability,
+    )
     from meshpipeline.cad.repair.loop import run as run_loop
 
     src, dest = Path(source), Path(destination)
@@ -880,9 +933,53 @@ def repair_step_file(source: Path, destination: Path, *,
     # PER-DEFECT REVIEW HOLDS THE JUDGEMENT DEFECTS for a person: nothing automatic aims at them
     # until an engineer's directive does.
     reserved = REVIEW_RESERVED_CODES if rcfg.CAD_REPAIR_REVIEW_ENABLED else frozenset()
-    planner = RepairPlanner(directives or (), reserved=reserved)
-    result = run_loop(before_shape, planner=planner, tolerance_mm=tolerance, reserved=reserved)
-    final = measure(result.shape)
+    regions_run = None
+    model_record = None
+    if rcfg.CAD_REPAIR_REGION_LOOP == "live":
+        # THE REGION-SCOPED DRIVER. Every after-check below is unchanged and still has the last
+        # word: the region run is translated into the one result shape every later stage reads
+        # (`as_repair_run`), so a package's operations answer to the same caps, the same
+        # accountability and the same refusals as an operation-at-a-time run's.
+        #
+        # DIRECTIVES ARE NOT PLAYED HERE YET, and each one is REPORTED rather than dropped. An
+        # engineer's answer to a held defect is `try_op`'s `answered_held` exemption, which a
+        # package deliberately cannot carry (session.try_package), so this driver has no way to
+        # play one - and an answer a person gave that simply vanished is worse than a refusal.
+        # The posture stays off by default until a package can carry that provenance (Plan 2).
+        from dataclasses import replace as _replace
+
+        from meshpipeline.cad.repair.region_loop import as_repair_run, run_regions
+        from meshpipeline.cad.repair.rules_author import LABEL, rules_author
+
+        # WHO AUTHORS THE PACKAGES (CAD_REPAIR_LLM_AUTHOR). Off is the rules author exactly as
+        # before; shadow and live are chosen by `model_author.select_author` (live needs a model
+        # router, or the rules drive), and the model's record travels in the report below.
+        if rcfg.CAD_REPAIR_LLM_AUTHOR in ("shadow", "live"):
+            from meshpipeline.cad.repair.model_author import select_author
+
+            # MODEL CALLS SPEND THE RUN'S OWN CLOCK - the attempt node bounds this whole function
+            # by CAD_REPAIR_TIMEOUT_S - so model work must finish by the run's deadline.
+            author, label = select_author(
+                before_shape, original=original, reserved=reserved, deadline_s=deadline)
+            model_record = getattr(author, "report", None)
+        else:
+            author, label = rules_author(before_shape, original=original,
+                                         reserved=reserved), LABEL
+        regions_run = run_regions(
+            before_shape, tolerance_mm=tolerance, reserved=reserved, author=author,
+            deadline_s=deadline)
+        final = measure(regions_run.shape)
+        result = as_repair_run(regions_run, original=original.to_dict(), final=final.to_dict(),
+                               planner_label=label)
+        if directives:
+            result = _replace(result, refusals=result.refusals + tuple(
+                {"refusal": "directive_unplayable", "reason": "region_loop_posture",
+                 "directive": dict(item)} for item in directives))
+    else:
+        planner = RepairPlanner(directives or (), reserved=reserved)
+        result = run_loop(before_shape, planner=planner, tolerance_mm=tolerance,
+                          reserved=reserved, deadline_s=deadline)
+        final = measure(result.shape)
 
     measurements = {
         "before": original.to_dict(), "after": final.to_dict(),
@@ -898,7 +995,32 @@ def repair_step_file(source: Path, destination: Path, *,
         "refusals": [dict(r) for r in result.refusals],
         "operations_attempted": len(result.verdicts),
         "operations_kept": sum(1 for v in result.verdicts if v.kept),
+        # WHERE THE TIME WENT, so a later change can be shown to have made the run faster.
+        # `measure_s` is the whole-shape `caps.measure` calls, a cost centre beside the scan.
+        # A region run adds its own scan counts to these (below) and OVERRIDES `measure_s` with
+        # its own total, because a package takes two of those calls that no operation verdict
+        # contains; the keys a reader already has keep their meaning either way.
+        "timings": {"total_s": result.total_s, "scan_count": result.scan_count,
+                    "measure_s": sum(v.measure_s for v in result.verdicts),
+                    **(regions_run.timings if regions_run is not None else {})},
+        "volume_accountability": volume_accountability(original, final),
     }
+
+    if regions_run is not None:
+        # THE REGION-LEVEL TRUTH, beside the operation-level record above rather than instead of
+        # it. The op log cannot distinguish an operation that shipped from one discarded with its
+        # package, and a region queued for a person is the one thing in a partial repair a
+        # customer must be told plainly (spec decision 7) - so both travel.
+        measurements["regions"] = regions_run.to_dict()
+        # DID THE REPAIR CAUSE WHAT SURVIVES? Inherent defects arrived with the upload (same
+        # fingerprint, same measurement); introduced ones did not. Only a region run holds both
+        # scans, so only it can say.
+        measurements["disposition"] = _disposition(regions_run)
+        if callable(model_record):
+            # THE MODEL AUTHOR'S RECORD (shadow or live only; absent when off): every call's
+            # observation size and hash, clipped reply, outcome and refusal reason, its accepted
+            # mesher verdicts and, in shadow, each proposal beside what the rules drove.
+            measurements["model_author"] = model_record()
 
     # THE AFTER-CHECKS STILL HAVE THE LAST WORD. The session already refused any individual
     # operation that left the caps, so reaching here with a refusal would mean a bug - but the

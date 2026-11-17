@@ -9,6 +9,7 @@ from meshpipeline.cad.repair.caps import (
     Measure,
     cumulative_refusal,
     sanity_refusal,
+    volume_accountability,
 )
 
 # The kernel is exercised in the native tier. What is unit-testable here is the whole of the
@@ -332,3 +333,41 @@ def test_volume_is_still_compared_when_the_solid_count_did_not_rise():
 
     assert "volume" in cumulative_refusal(before, after, declared_area_mm2=0.0,
                                           declared_volume_mm3=0.0)
+
+
+# THE UNCHECKED VOLUME - bounded absolutely, because a before/after delta against an open shell's
+# volume integral is meaningless.
+
+
+def test_a_closed_body_with_impossible_volume_is_refused():
+    original = _changed(solids=0, diagonal_mm=260.475, volume_mm3=53367.667)
+    current = _changed(solids=5, diagonal_mm=260.475, volume_mm3=9.9e9)
+    assert "volume" in cumulative_refusal(original, current, declared_area_mm2=0.0,
+                                          declared_volume_mm3=0.0)
+
+
+def test_a_closed_body_with_non_positive_volume_is_refused():
+    original = _changed(solids=0, diagonal_mm=260.475, volume_mm3=53367.667)
+    current = _changed(solids=5, diagonal_mm=260.475, volume_mm3=0.0)
+    assert "volume" in cumulative_refusal(original, current, declared_area_mm2=0.0,
+                                          declared_volume_mm3=0.0)
+
+
+def test_the_knee_shaped_closing_run_still_passes():
+    # the real measured numbers: a legitimate shells-to-solids repair must not be refused
+    original = _changed(solids=0, diagonal_mm=260.47491719601175, volume_mm3=53367.667278043045)
+    current = _changed(solids=5, diagonal_mm=260.47491719601175, volume_mm3=46913.42038292233)
+    assert cumulative_refusal(original, current, declared_area_mm2=0.0,
+                              declared_volume_mm3=0.0) == ""
+
+
+def test_accountability_says_volume_was_not_compared_and_why():
+    original = _changed(solids=0, volume_mm3=53367.667)
+    current = _changed(solids=5, volume_mm3=46913.420)
+    out = volume_accountability(original, current)
+    assert out["compared"] is False
+    assert "open shell" in out["reason"]
+
+
+def test_accountability_says_volume_was_compared_for_an_ordinary_run():
+    assert volume_accountability(_SOUND, _changed(volume_mm3=8100.0))["compared"] is True
