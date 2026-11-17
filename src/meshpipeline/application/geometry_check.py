@@ -814,6 +814,7 @@ def _scout(*, session_id: str, owner_id: str, source: dict, interpretation: dict
             if isinstance(facts.get("confidence"), dict):
                 facts["confidence"]["input_kind"] = 0.95
             declared_openings(facts, thermal)
+            settle_flow_kind(facts)
 
         # the same skin, stored for the stage the user turns the part in
         gp.mark(gp.PICTURES, triangles=gp.skin_triangles(skin))
@@ -1283,6 +1284,7 @@ def _scout_exact_rest(facts: dict, skin: Path, local_path: Path, work: Path, int
             read_fluid_volume(facts, local_path, work=work, kind="cad",
                               scale=occ_scale_transform(prepared).ScaleFactor(), started=early_fluid)
         read_whole_shape(facts, skin)
+    settle_flow_kind(facts)
     return facts, skin
 
 
@@ -1497,6 +1499,7 @@ def _scout_triangles(local_path: Path, work: Path, interp_ref, ref,
             # the extracted openings bound the fluid by construction; the skin's own passages
             # (several parts' skins together) say nothing about them
             facts = hold_openings_to_the_staging(facts, local_path, skin, scale)
+    settle_flow_kind(facts)
     return facts, skin
 
 
@@ -1860,7 +1863,7 @@ def _name_after_wait(*, session_id: str, owner_id: str, purpose_text: str, inter
                                    owner_id=owner_id)
         # WHICH WAY IS UP, by the pictures: asked only of a body the fluid flows around, once the
         # model has said what it is - the name is what lets it place a car it cannot place cold
-        if "error" not in vision and _proposal(facts, vision)["flow"] == "external":
+        if "error" not in vision and _proposal(facts, vision, words=purpose_text)["flow"] == "external":
             seen = _upright_by_pictures(stored, tmp, part=str(vision.get("part") or ""),
                                         purpose_text=purpose_text, session_id=session_id, owner_id=owner_id)
             # a question that failed is its own failure, never the naming's: under "error" it
@@ -1871,7 +1874,9 @@ def _name_after_wait(*, session_id: str, owner_id: str, purpose_text: str, inter
     # NOTE-5 ON THE FLOW ROUTE: a surface of several named parts (or a CAD file of several solids) keeps its parts
     # for the checklist before approval, as the FEA route's measurement does
     _keep_flow_parts(session_id, stored, facts, interpretation)
-    proposal = _proposal(facts, vision)
+    proposal = _proposal(facts, vision, words=purpose_text)
+    # THE FLOW KIND THE INTAKE READS (facts["flow_kind"]): now with the user's words and the pictures
+    stamp_flow_kind(facts, proposal["flow_kind"])
     # what the scout stored, minus the fields write_status writes itself: the status, the clock,
     # and the session id - which it also takes as its first argument
     result = {k: v for k, v in stored.items() if k not in _STAMPED_KEYS + _FAILURE_KEYS}
@@ -2005,7 +2010,10 @@ def merged_onto_full(named: dict, named_from: dict, full: dict) -> dict:
     vision = named.get("vision")
     out = {key: v for key, v in full.items() if key not in _STAMPED_KEYS + _FAILURE_KEYS + ("preview",)}
     out.update({key: named[key] for key in ("named", "vision", "purpose_text", "naming_seconds") if key in named})
-    out.update(facts=facts, proposal=_proposal(facts, vision))
+    proposal = _proposal(facts, vision, words=str(named.get("purpose_text") or ""))
+    if not _is_thermal(facts):
+        stamp_flow_kind(facts, proposal["flow_kind"])
+    out.update(facts=facts, proposal=proposal)
     out.pop("named_on_preview", None)
     return out
 
@@ -2921,45 +2929,24 @@ def _sanitized(vision, facts: dict, derived: bool) -> dict:
     return out or {"error": MALFORMED}
 
 
-def _inside_contradicts(facts: dict, kind: str, flow: str) -> str:
-    """Why a kind and flow go against what was measured - the openings and the part's inside-space
-    map (INS-1) - in plain words, else "". Fluid flowing through needs two openings at least, and a
-    wall around a way through (or a closed volume, for the fluid itself); fluid flowing around never
-    fits a part the map shows a passage through."""
-    inside: dict = facts["inside"] if isinstance(facts.get("inside"), dict) else {}
-    mapped = bool(inside) and inside.get("mapped") is not False
-    if flow == "internal":
-        if len([o for o in facts.get("openings") or [] if isinstance(o, dict)]) < 2:
-            return "the measuring step found fewer than two openings for the fluid to pass"
-        if mapped and not inside.get("has_inside"):
-            if kind == "body-surface":
-                return "the part's inside-space map shows no way through it"
-            if "enclosed_mm3" in inside and float(inside.get("enclosed_mm3") or 0.0) <= 0.0:
-                return "the part's inside-space map shows no volume for the fluid"
-    if flow == "external" and mapped and inside.get("has_inside"):
-        return "the part's inside-space map shows a passage through it"
-    return ""
+def settle_flow_kind(facts: dict) -> dict:
+    """THE FLOW KIND ON THE SCOUT'S FACTS (application/flow_kind, FLOW-1..5): the measuring step's own
+    reading is kept as `flow_scout`, the one authority's verdict - internal, external or undecided, with
+    its sureness and reasons - is `flow_kind`, and `flow` / `input_kind` follow it (an undecided part
+    is drawn as its best guess until the user says). Every later reader takes `flow_kind`."""
+    from meshpipeline.application.flow_kind import decide
+
+    return stamp_flow_kind(facts, decide(facts))
 
 
-def _model_kind_flow(facts: dict, vision: dict) -> tuple[tuple[str, str] | None, str]:
-    """The model's kind and flow, when they may replace the measured ones: they agree with each
-    other, the model is surer than the code by MODEL_KIND_MARGIN, and they contradict nothing
-    measured. Returns ((kind, flow) or None, a note for the user when a reading was set aside)."""
-    said_kind, said_flow = vision.get("input_kind"), vision.get("flow")
-    code_kind, code_flow = str(facts.get("input_kind") or ""), str(facts.get("flow") or "")
-    flow = str(said_flow or _FLOW_OF_KIND.get(str(said_kind), ""))
-    kind = str(said_kind or (code_kind if _FLOW_OF_KIND.get(code_kind) == flow else ""))
-    if not flow or _FLOW_OF_KIND.get(kind) != flow or (kind, flow) == (code_kind, code_flow):
-        return None, ""
-    code_conf = _unit_number((facts.get("confidence") or {}).get("input_kind")) or 0.0
-    if (vision.get("confidence") or 0.0) < code_conf + MODEL_KIND_MARGIN:
-        return None, ""
-    why = _inside_contradicts(facts, kind, flow)
-    if why:
-        words = "through it" if flow == "internal" else "around it"
-        return None, (f"The pictures suggested the fluid flows {words}, but {why}, "
-                      "so the measured reading stands.")
-    return (kind, flow), ""
+def stamp_flow_kind(facts: dict, record: dict) -> dict:
+    """The authority's verdict written onto the facts the check stores - what the intake reads
+    (`facts["flow_kind"]`) - with the measuring step's own reading kept the first time."""
+    facts.setdefault("flow_scout", facts.get("flow"))
+    facts.setdefault("input_kind_scout", facts.get("input_kind"))
+    facts["flow_kind"] = record
+    facts["flow"], facts["input_kind"] = record["flow"], record["input_kind"]
+    return record
 
 
 def _has_port_pair(openings) -> bool:
@@ -2969,16 +2956,10 @@ def _has_port_pair(openings) -> bool:
 
 def _apply_vision(proposal: dict, facts: dict, vision: dict, declared_kind: bool) -> None:
     """The model's answer laid over the measured proposal, each change only where it is allowed:
-    the kind and flow (_model_kind_flow), and each opening's role and name where the model is surer
-    than the code about that opening - and never so that a part the fluid flows through is left
-    without an inlet and an outlet."""
-    if not declared_kind:
-        kind_flow, note = _model_kind_flow(facts, vision)
-        if kind_flow is not None:
-            proposal["input_kind"], proposal["flow"] = kind_flow
-        if note:
-            proposal["notes"].append(note)
-    before = [dict(o) for o in proposal["openings"]]
+    each opening's role and name where the model is surer than the code about that opening - and
+    never so that a part the fluid flows through is left without an inlet and an outlet. The kind and
+    the flow are the flow-kind authority's (application/flow_kind, FLOW-3), already on the proposal."""
+    before =[dict(o) for o in proposal["openings"]]
     by_id = {o["id"]: o for o in proposal["openings"]}
     for named in vision.get("openings") or []:
         o = by_id.get(named["id"])
@@ -3001,19 +2982,24 @@ def _apply_vision(proposal: dict, facts: dict, vision: dict, declared_kind: bool
                                  "so the measured roles stand.")
 
 
-def _proposal(facts: dict, vision: dict | None) -> dict:
+def _proposal(facts: dict, vision: dict | None, words: str = "") -> dict:
     """What the user is shown: the code's positions and sizes, the model's names and roles where
-    it gave them for a sticker that exists and is surer of, and the kind and flow from the model
-    only where it is clearly surer and contradicts nothing measured. With no vision answer yet (the
-    scout alone) the names are the code's and nothing says otherwise. Nothing the model sent can
-    make this raise: an answer it cannot read leaves the code's own proposal."""
+    it gave them for a sticker that exists and is surer of, and the kind and flow from the one
+    flow-kind authority (application/flow_kind: the user's `words` first, then the measured shape,
+    the pictures only where clearly surer and contradicting nothing measured, else undecided with
+    the one question). With no vision answer yet (the scout alone) the names are the code's and
+    nothing says otherwise. Nothing the model sent can make this raise: an answer it cannot read
+    leaves the code's own proposal."""
+    from meshpipeline.application.flow_kind import decide
+
     if _is_thermal(facts):
         return _thermal_proposal(facts, vision)
     if vision is not None:
         vision = _sanitize_vision(vision, facts, derived=True)
+    flow_kind = decide(facts, words=words, vision=vision)
     proposal = {
         "part": (vision or {}).get("part") or str(facts.get("part_name") or ""),
-        "input_kind": facts["input_kind"], "flow": facts["flow"],
+        "input_kind": flow_kind["input_kind"], "flow": flow_kind["flow"], "flow_kind": flow_kind,
         "openings": [dict(o) for o in facts["openings"]],
         "seed_point_mm": facts.get("seed_point_mm"),
         "size_mm": facts["size_mm"],
@@ -3026,6 +3012,8 @@ def _proposal(facts: dict, vision: dict | None) -> dict:
         "named": vision is not None,
         "vision_available": bool(vision) and "error" not in (vision or {}),
     }
+    # the pictures' kind set aside for what was measured is said, as it always was
+    proposal["notes"].extend(r for r in flow_kind["reasons"] if r.startswith("The pictures suggested"))
     # THE PART'S INSIDE (INS-1) and the stage's question when "through it" cannot be meshed as
     # proposed (INS-3): asked only if the user says the fluid flows through it
     if isinstance(facts.get("inside"), dict):
@@ -3065,7 +3053,7 @@ def _proposal(facts: dict, vision: dict | None) -> dict:
         return _upright(proposal, facts, vision, vision.get("flow_axis"))
     except Exception as exc:  # noqa: BLE001 - the model's answer never fails the check: the rules stand
         logger.warning("geometry check: the naming answer was set aside (%s: %s)", type(exc).__name__, str(exc)[:200])
-        return _proposal(facts, {"error": MALFORMED})
+        return _proposal(facts, {"error": MALFORMED}, words=words)
 
 
 def _upright(proposal: dict, facts: dict, vision: dict | None, flow_axis) -> dict:
