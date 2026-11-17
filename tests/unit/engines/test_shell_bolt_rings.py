@@ -142,3 +142,39 @@ def test_bolt_holes_with_no_room_say_why(tmp_path):
     assert all(h["rings"] <= 1 for h in s["hole_list"])
     assert not any(n.startswith("Two rings") for n in mesh.notes)
     _check(applied)
+
+
+def _web(tmp_path, width: float, pitch: float, across: list[float]):
+    """A channel web's look-alike: a 2000 mm plate, 10 thick, four clusters of 17.4 mm bolt holes, each cluster three
+    columns `pitch` apart by three rows across the width."""
+    holes = [(cx + dx, y, 17.4) for cx in (250.0, 750.0, 1250.0, 1750.0) for dx in (-pitch, 0.0, pitch) for y in across]
+    return _plates(tmp_path, [(2000.0, width, 10.0, 0.0, holes)])
+
+
+def test_a_web_with_room_keeps_its_grid_and_two_rings_round_every_hole(tmp_path):
+    """SHMESH-51b: the grid and the rings together - holes 80 mm apart take two rings inside the web's grid."""
+    brep, rec = _web(tmp_path, 300.0, 80.0, [70.0, 150.0, 230.0])
+    mesh, applied = _mesh(brep, rec)
+    s = applied["quality"]["structure"]
+    assert not s.get("not_gridded"), s.get("not_gridded")
+    assert all(h["kind"].endswith("gridded face") for h in s["hole_list"]), s["hole_list"][:2]
+    assert s["bolt_rings"] == {2: 36}, s["bolt_rings"]
+    assert s["mapped_faces"] >= 100
+    _check(applied)
+
+
+def test_a_web_too_tight_for_two_rings_keeps_its_grid_with_one(tmp_path):
+    """SHMESH-51b, a real column's channel web (rows of three bolt holes 60 mm apart at 10 mm): two rings round each
+    left the web's grid with edges over the 15 mm line and the web was paved free between the holes (mapped faces on
+    the column 1,064 -> 145). A second ring never wins a face from its grid: the web keeps its straight rows and one
+    ring a hole, and each hole's line says so."""
+    brep, rec = _web(tmp_path, 250.0, 60.0, [65.0, 125.0, 185.0])
+    mesh, applied = _mesh(brep, rec)
+    s = applied["quality"]["structure"]
+    assert not s.get("not_gridded"), s.get("not_gridded")
+    assert all(h["kind"].endswith("gridded face") for h in s["hole_list"])
+    assert all(h.get("one_ring") == "one ring so its face keeps its grid" for h in s["hole_list"])
+    assert s["mapped_faces"] >= 100
+    assert any("where" in n and "grid" in n for n in mesh.notes if n.startswith("No bolt hole") or n.startswith("Two")), \
+        mesh.notes
+    _check(applied)

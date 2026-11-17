@@ -47,6 +47,10 @@ BOLT_RINGS = 2
 #: ... and a face whose two-ring holes leave a quality line of the user's unmet on its own elements is meshed again with
 #: one ring round them (a plate's mesh changed far from its two bolt holes and a triangle there passed the aspect line)
 BOLT_CHECK = True
+#: SHMESH-51b: a face's grid comes before a second ring: a face whose grid is refused (by its trial, or by the checks
+#: after meshing) while it holds two-ring holes is tried again with one ring round them, and only goes free when the
+#: grid fails with one ring too (a channel web's 50 bolt holes took two rings and the web lost its straight rows)
+BOLT_GRID_FIRST = True
 #: two holes are one bolt's when their axes are parallel within BOLT_AXIS_DEG, each centre lies on the other's axis
 #: within BOLT_AXIS_OFF of the smaller radius, their diameters are alike within BOLT_ALIKE, at most BOLT_REACH
 #: diameters apart along the axis
@@ -485,7 +489,7 @@ def _square_presets(gmsh, w: Washer, curves: list[int], preset: dict[int, int], 
 def plan_washers(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], hole_size, mm: float,
                  names: dict[int, tuple[str, str]] | None = None, before: list | None = None,
                  across: float | None = None, low_mm: float | None = None, high_mm: float | None = None,
-                 no_bolt: frozenset = frozenset()) -> tuple[list[Washer], dict[str, int], list[dict]]:
+                 no_bolt: dict | None = None) -> tuple[list[Washer], dict[str, int], list[dict]]:
     """SHMESH-39: the washers to make: every inner loop of a flat face that is one round hole (a circle no other face
     shares), at most WASHER_ACROSS of the face's element size across. `size_mm`: each surface's element size;
     `hole_size(r_mm, owner)`: the element length the plan puts round a hole of that radius. Returns (the washers,
@@ -579,8 +583,8 @@ def plan_washers(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], hole_s
                 gap_mm, share_mm, where = _room_of(gmsh, t, cl, centre, r, [x for jj, x in here.items() if jj != j],
                                                    mm)
                 got_b = (_count_bolt(r * mm, hole_size(r * mm, k), size_mm[t], low_mm, high_mm,
-                                     room_mm=(gap_mm, share_mm)) if k not in no_bolt
-                         else "two rings left a quality line unmet on its face")
+                                     room_mm=(gap_mm, share_mm)) if k not in (no_bolt or {})
+                         else (no_bolt or {})[k])
                 if isinstance(got_b, tuple) and got_b[0] >= len(cl):
                     cnt, rows, ratio, radii = got_b
                 else:
@@ -622,7 +626,28 @@ def plan_washers(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], hole_s
                 continue
             d = float(np.linalg.norm(o.centre - w.centre))
             limit = min(limit, d * w.r / (w.r + o.r) - 0.5 * WASHER_ROOM * w.out_mm / mm)
+        if w.radii and w.plain:
+            # (SHMESH-51: the one-ring plan it falls back to, room-checked as any washer is - kept for one_ring)
+            n_p, rows_p, ratio_p = w.plain
+            out_p = 2 * math.pi * ratio_p * w.r * mm / n_p
+            lim_p = gap - WASHER_ROOM * out_p / mm
+            for o in found:
+                if o is not w and o.face == w.face:
+                    lim_p = min(lim_p, float(np.linalg.norm(o.centre - w.centre)) * w.r / (w.r + o.r)
+                                - 0.5 * WASHER_ROOM * out_p / mm)
+            if lim_p < ratio_p * w.r:
+                if lim_p < WASHER_SHRUNK * w.r:
+                    w.plain = ()
+                else:
+                    R_p = lim_p
+                    w.plain = (n_p, max(1, min(rows_p, round(math.log(R_p / w.r) / (2 * math.pi / n_p)))),
+                               R_p / w.r, True)
         if limit < w.R and not (w.radii and limit >= w.R * (1 - 1e-6)):
+            if w.radii and one_ring(w, mm, "no room for two rings (narrowed by the holes beside it)"):
+                # (SHMESH-51: narrowed by its neighbours' rings - the one ring its size gives, room-checked)
+                w.info["washer"] = True
+                keep.append(w)
+                continue
             if limit < WASHER_SHRUNK * w.r:
                 no(w.info, "too close to an edge or another hole")
                 continue
@@ -637,6 +662,22 @@ def plan_washers(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], hole_s
         w.info["washer"] = True
         keep.append(w)
     return keep, skipped, lines
+
+
+def one_ring(w: Washer, mm: float, why: str) -> bool:
+    """SHMESH-51: a bolt hole's washer back to the one ring its size gives (its plan by size alone, room-checked), the
+    reason on its line; False when it has no such plan (it keeps its two rings)."""
+    if not w.radii or not w.plain:
+        return False
+    n_, rows_, ratio_, *shrunk = w.plain
+    w.n, w.rows, w.R, w.radii = n_, rows_, ratio_ * w.r, []
+    w.out_mm = 2 * math.pi * w.R * mm / w.n
+    w.shrunk = bool(shrunk and shrunk[0])
+    w.info.update(planned_round=n_, planned_rows=rows_, planned_width_mm=float(f"{(ratio_ - 1) * w.r * mm:.4g}"),
+                  one_ring=why)
+    if w.shrunk:
+        w.info["shrunk_width_mm"] = float(f"{(w.R - w.r) * mm:.4g}")
+    return True
 
 
 def _room_of(gmsh, t: int, hole: list[int], centre: np.ndarray, r: float, others: list[tuple[np.ndarray, float]],
