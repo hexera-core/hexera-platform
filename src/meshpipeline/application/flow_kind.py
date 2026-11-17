@@ -130,13 +130,13 @@ def _num(v, default: float = 0.0) -> float:
 #: FLOW-2's measured thresholds (general, never tuned to a file):
 #: A SHEET encloses under this share of its box - no material and no closed fluid: a skin or a patch.
 SHEET_SHARE = 0.005
-#: Two mouths face opposite ways on one line when their normals' dot is under -STRAIGHT and the line
-#: between them leaves each normal by under 1 - STRAIGHT (as a cosine).
-STRAIGHT = 0.95
+#: Two mouths face opposite ways on one line when their normals' dot is under -STRAIGHT and their
+#: centres lie off each other's axis by under OFF_LINE of the wider mouth.
+STRAIGHT, OFF_LINE = 0.95, 0.25
 #: How sure each measured situation is: its share right on the labelled development corpus (see
 #: docs/RULES.md FLOW-2), rounded down; under DECIDE_AT the kind is undecided.
 SURE = {"cavity": 0.85, "passage_wall": 0.9, "fluid_body": 0.8, "straight_passage": 0.7, "body": 0.8,
-        "body_with_ends": 0.7, "rotor": 0.75,
+        "body_with_ends": 0.7, "solids_with_ends": 0.65, "rotor": 0.75,
         "scene": 0.7, "closed_surfaces": 0.65, "lumen": 0.65}
 #: A straight solid's widest flat end SPANS its cross-section when it is this share of the cross-section's
 #: wider side or more: a passage's end is its whole section; a body on a support bulges far past it.
@@ -174,9 +174,11 @@ def _straight_pair(ports: list[dict]) -> bool:
         return False
     dot = sum(a * b for a, b in zip(n0, n1))
     d = [b - a for a, b in zip(c0, c1)]
-    length = math.sqrt(sum(v * v for v in d)) or 1.0
-    along = abs(sum(a * b for a, b in zip(d, n1))) / length
-    return dot < -STRAIGHT and along > STRAIGHT
+    along = sum(a * b for a, b in zip(d, n1))
+    lateral = math.sqrt(max(sum(v * v for v in d) - along * along, 0.0))
+    wide = max(_num(o.get("diameter_mm")) or 2.0 * math.sqrt(max(_num(o.get("area_mm2")), 0.0) / math.pi)
+               for o in ports)
+    return dot < -STRAIGHT and lateral <= OFF_LINE * max(wide, 1e-9)
 
 
 def geometry_reading(facts: dict) -> Reading:
@@ -210,7 +212,7 @@ def _geometry(facts: dict) -> Reading:
     overruled = str((reading.get("kind") or {}).get("body_kind") or "")
     solids = int(_num(facts.get("solids")))
 
-    if facts.get("openings_from") == "fluid_volume" or body == "assembly_cavity":
+    if scout == INTERNAL and (facts.get("openings_from") == "fluid_volume" or body == "assembly_cavity"):
         return Reading(INTERNAL, SURE["cavity"], f"the parts close off a space inside them at {n} openings", "cavity")
     if body == "rotor" or overruled == "rotor":
         return Reading(EXTERNAL, SURE["rotor"], "it is blades round a hub", "rotor")
@@ -241,8 +243,9 @@ def _geometry(facts: dict) -> Reading:
                                        "a bar in a cross-flow", "bar")
     if scout == INTERNAL and kind == "fluid-domain" and body == "single_solid":
         if solids > 1:
-            return Reading(UNDECIDED, 0.5, f"{solids} solids with flat ends: the fluid's own volume, or solid parts in "
-                                           "a flow", "solids_with_ends")
+            return Reading(INTERNAL, SURE["solids_with_ends"], f"{solids} closed solids whose flat ends read as the "
+                                                               "mouths of passages: the fluid's own volume",
+                           "solids_with_ends")
         if _straight_pair(ports):
             if _ends_span(ports, facts) >= SPANS:
                 return Reading(INTERNAL, SURE["straight_passage"], "a straight closed solid whose flat ends are its "
@@ -261,9 +264,9 @@ def _geometry(facts: dict) -> Reading:
                                                          "body in a flow", "body_with_ends")
     if scout == EXTERNAL and body == "single_solid":
         return Reading(EXTERNAL, SURE["body"], "a closed solid with no mouths of a passage: a body in a flow", "body")
-    if scout == EXTERNAL and body == "surface" and open_edges == 0:
-        return Reading(EXTERNAL, SURE["closed_surfaces"], "its surfaces close no passage and have no open ends",
-                       "closed_surfaces")
+    if scout == EXTERNAL and body == "surface" and (open_edges == 0 or (mapped and n == 0)):
+        return Reading(EXTERNAL, SURE["closed_surfaces"], "its surfaces have no openings a fluid could pass and no "
+                                                          "inside", "closed_surfaces")
     if scout in (INTERNAL, EXTERNAL):
         return Reading(scout, conf, "the measuring step's reading of its faces", "scout")
     return Reading(UNDECIDED, 0.0, "nothing measured says", "nothing")
