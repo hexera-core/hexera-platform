@@ -1,0 +1,206 @@
+{
+ "track": "mesh-failure-real (cut to 25 by owner decision 2026-11-16, frozen before ARM B)",
+ "source_manifest": "devtools/validation/corpora/mesh-failure-real.json",
+ "files": [
+  {
+   "name": "occt/bm2_ec_leverrod-A.stp",
+   "sha256": "798565ef85710dee5fc18511a2d58b9c893c7b9ffdf5b6d90c45da25d7bb6e60",
+   "family": "no_volume",
+   "solids": 1,
+   "gmsh_error": "FAIL: no volume elements",
+   "why": "MUST: smoke file - fails the local gmsh probe yet the product meshed it as-is (arm-A smoke + row succeeded)"
+  },
+  {
+   "name": "occt/bm2_ec_exhaust-A.stp",
+   "sha256": "008f9335a7c0ea8d2c2ddbe1de41e9e495247999d14c89335bbc0930215164a3",
+   "family": "plc_edge_through_face",
+   "solids": 6,
+   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point",
+   "why": "MUST: interpenetrating pair (6 solids)"
+  },
+  {
+   "name": "occt/trj10_ch1-id-chs.stp",
+   "sha256": "22ca078bbbe1b9ea3fa20e3468f46fd01616f932f1341e7ac1753ebfb1411fb5",
+   "family": "open_loop",
+   "solids": 1,
+   "gmsh_error": "FAIL: The 1D mesh seems not to be forming a closed loop",
+   "why": "MUST: open-loop, reader effect; arm-A completed (meshed as uploaded)"
+  },
+  {
+   "name": "occt/bug32596_abc_0_13.step",
+   "sha256": "0af8f4f012b3355dd0f2232b9f04df45cdd2ee13c5d36368176b0a50e5c5a5e6",
+   "family": "periodic",
+   "solids": 1,
+   "gmsh_error": "FAIL: Impossible to mesh periodic surface 6",
+   "why": "MUST: periodic / partial-cylinder"
+  },
+  {
+   "name": "abc/00500400_bce216c87d2d17025db6ab36_step_000.step",
+   "sha256": "8ef586d1ed8d2e2c46b756e4a8bd87e84d69ca65ecda331cb2967b7c7de421b7",
+   "family": "overlapping_facets",
+   "solids": 1,
+   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 1 surface 1",
+   "why": "MUST: located overlap, 8 faces, single solid; arm-A completed"
+  },
+  {
+   "name": "abc/00506550_b5806bb84542de8e2656bc88_step_114.step",
+   "sha256": "f217075eb16c7d598a2c46244c2c6647af2766216cd1f172a9de7721c0587486",
+   "family": "plc_edge_through_face",
+   "solids": 1,
+   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point",
+   "why": "MUST: single-solid PLC"
+  },
+  {
+   "name": "abc/00506275_541a2ce632275fed8964367a_step_000.step",
+   "sha256": "e162f3025af3818c8c11b249be8cc000ac536f2c25530ba052bb6deb03f0296b",
+   "family": "plc_edge_through_face",
+   "solids": 2,
+   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point",
+   "why": "MUST: the fragment_bodies end-to-end win (2 solids, touch-only)"
+  },
+  {
+   "name": "abc/00501275_58950467b204b50ff2cc07c9_step_013.step",
+   "sha256": "b366da2ddd274f1fbbd90d211f91f30995a9d61723e2dc06c29583d02033c61b",
+   "family": "overlapping_facets",
+   "solids": 1,
+   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 19 surface 19",
+   "why": "single solid; arm-A completed (reuse)"
+  },
+  {
+   "name": "occt/trj6_b1-ec-214.stp",
+   "sha256": "fbdff3af7bad4467f0ed8d862b0832f739b7908887290c6b5d33f2025e21a235",
+   "family": "overlapping_facets",
+   "solids": 1,
+   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 113 surface 114",
+   "why": "single solid; arm-A row exists (reuse)"
+  },
+  {
+   "name": "occt/trj4_s1-ai-214.stp",
+   "sha256": "a2a04ef2d86bfcb721665e02e811459b966968b86e4e74e4a2092514c5fa085d",
+   "family": "overlapping_facets",
+   "solids": 8,
+   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 3 surface 3",
+   "why": "multi-solid (8); arm-A row exists (reuse)"
+  },
+  {
+   "name": "occt/bug32314_corrupted.stp",
+   "sha256": "63d79ed926fa37797f7c55416e0f173e088da0fd43b3785b32fb08cf73944e79",
+   "family": "overlapping_facets",
+   "solids": 11,
+   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 8 surface 8",
+   "why": "multi-solid (11), 'corrupted'; arm-A row exists (reuse)"
+  },
+  {
+   "name": "occt/trj3_s1-ct-214.stp",
+   "sha256": "dc2db5e7868fabd3829bf9eb114f33701543b284e12336be57946a09e9dac8d5",
+   "family": "overlapping_facets",
+   "solids": 11,
+   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 67 surface 68",
+   "why": "multi-solid (11); arm-A row exists (reuse)"
+  },
+  {
+   "name": "abc/00502600_5895f9dd54620e0fdd79706b_step_000.step",
+   "sha256": "7f3f35a4c5c38926bbeda004d79071ae9ffec794869fb7ac0648e415d7badbce",
+   "family": "overlapping_facets",
+   "solids": 2,
+   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 5 surface 5",
+   "why": "multi-solid (2); arm-A job in flight at the cut (kept)"
+  },
+  {
+   "name": "abc/00500350_cf6391333569f6a17439ce66_step_000.step",
+   "sha256": "55a420985f54a0c7c1267a58947b0c2e66ce21f10264464a26301bc4c9fe3d22",
+   "family": "overlapping_facets",
+   "solids": 12,
+   "gmsh_error": "FAIL: Invalid boundary mesh (overlapping facets) on surface 3 surface 3",
+   "why": "multi-solid (12); arm-A job in flight at the cut (kept)"
+  },
+  {
+   "name": "abc/00500875_a97e4a09c926c436c043e3c3_step_028.step",
+   "sha256": "aca8b360bbb144ad48a13bb2a169a38ec0f59cfc4a264cd0056cd5ca9fdca820",
+   "family": "plc_edge_through_face",
+   "solids": 5,
+   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point",
+   "why": "multi-solid (5); arm-A completed (reuse)"
+  },
+  {
+   "name": "occt/trj5_s1-ac-214.stp",
+   "sha256": "5d81060d0e2d80110acff9a6af8f80d2cfd88881c94852616ba07af3cd8546fb",
+   "family": "plc_edge_through_face",
+   "solids": 11,
+   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point",
+   "why": "multi-solid (11); arm-A completed (reuse)"
+  },
+  {
+   "name": "occt/trj3_s1-tc-214.stp",
+   "sha256": "4f0996fa7641dd759af577b9bf0695849eeccc1a31f5f2be6096bc15e23ecf91",
+   "family": "plc_edge_through_face",
+   "solids": 11,
+   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point",
+   "why": "multi-solid (11); meshed in 2026-11-15 local evidence (kept fragment_bodies); arm-A row exists"
+  },
+  {
+   "name": "occt/bug27453_165-174_piattello.stp",
+   "sha256": "95a6b70bc114832ecaaf15b36269f991d9f1a57b9292c801f9918647324eda9f",
+   "family": "plc_edge_through_face",
+   "solids": 1,
+   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point",
+   "why": "single solid; arm-A row exists (reuse)"
+  },
+  {
+   "name": "abc/00504025_5896ef7054620e0fdd79f59d_step_085.step",
+   "sha256": "6e5f994f65410425d8edd7d10494721b31b4855f7c2df8d9dcacf4cfd63fffb7",
+   "family": "plc_edge_through_face",
+   "solids": 2,
+   "gmsh_error": "FAIL: PLC Error:  A segment and a facet intersect at point",
+   "why": "2 solids (second touch-only/pair case)"
+  },
+  {
+   "name": "occt/trj3_s1-id-203.stp",
+   "sha256": "094491e90330dce28ba29a74e9d9f544def008b5af9e3cd9bbc8d582732fdf8e",
+   "family": "open_loop",
+   "solids": 11,
+   "gmsh_error": "FAIL: The 1D mesh seems not to be forming a closed loop",
+   "why": "multi-solid (11) open loop; arm-A row exists (reuse)"
+  },
+  {
+   "name": "abc/00502800_c9fa412b334b0e215cb26434_step_000.step",
+   "sha256": "0a6e269cf694e8712f0ff99263cbfb4090ec9b0faafc2685e53cdba14de51ca1",
+   "family": "periodic",
+   "solids": 8,
+   "gmsh_error": "FAIL: Impossible to mesh periodic surface 380",
+   "why": "8 solids; the only beyond-baseline gain in 2026-11-15 evidence"
+  },
+  {
+   "name": "occt/bug30790.step",
+   "sha256": "74ee52b9efccd50d22d1c74dc312d8f8409adcde3c6902296946c5ec32c0ab59",
+   "family": "timeout_crash",
+   "solids": null,
+   "gmsh_error": "FAIL: timeout/crash rc=1",
+   "why": "22 MB: inspection timeout + builder OCCT crash, no repair_report; arm-A completed (reuse)"
+  },
+  {
+   "name": "occt/trj7_k1-id-214.stp",
+   "sha256": "ae819be983c52f86771522df8dc0bd63a0ff4683c3cb4e14d2ab17b37df0a133",
+   "family": "timeout_crash",
+   "solids": null,
+   "gmsh_error": "FAIL: timeout/crash rc=1",
+   "why": "probe crash rc=1; meshed in 2026-11-15 evidence via sew_faces; arm-A completed (reuse)"
+  },
+  {
+   "name": "occt/bug25013_25013face.stp",
+   "sha256": "9923afaff8a4c95e356438198b80f4897e91101c644db19638c01ffb279bf8ea",
+   "family": "other",
+   "solids": null,
+   "gmsh_error": "FAIL: timeout/crash rc=124",
+   "why": "open surface: blocked by the FEA check before any job (arm-A completed as blocked_before_job)"
+  },
+  {
+   "name": "occt/bug33100_window.step",
+   "sha256": "ad0a33b0c846e90f70f20e4abc466c8922a41e2beeb707953a6cd8275637a3e0",
+   "family": "other",
+   "solids": null,
+   "gmsh_error": "FAIL: timeout/crash rc=139",
+   "why": "probe crash rc=139; FEA driver could not measure the staged solid -> gate_failed; arm-A completed (reuse)"
+  }
+ ]
+}
