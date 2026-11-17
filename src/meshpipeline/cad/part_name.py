@@ -28,13 +28,67 @@ def is_generic(name: str) -> bool:
     return bool(_GENERIC.match(str(name or "").strip()))
 
 
+#: The most of a STEP file read for its assembly tree (the usage occurrences are near the end).
+TREE_BYTES = 64 * 1024 * 1024
+_ENTITY = re.compile(r"#(\d+)\s*=\s*(PRODUCT|PRODUCT_DEFINITION_FORMATION(?:_WITH_SPECIFIED_SOURCE)?|"
+                     r"PRODUCT_DEFINITION|NEXT_ASSEMBLY_USAGE_OCCURRENCE)\s*\((.*?)\)\s*;", re.IGNORECASE | re.S)
+_REFS = re.compile(r"#(\d+)")
+
+
+def _quoted(args: str) -> list[str]:
+    return [s.replace("''", "'") for s in re.findall(r"'((?:[^']|'')*)'", args)]
+
+
+def assembly_root_name(text: str) -> str | None:
+    """THE ASSEMBLY'S OWN NAME. A STEP assembly lists every part as a PRODUCT, often the parts before
+    the assembly that holds them, so the first PRODUCT named the whole upload after one part of it
+    ("Housing Mount ..." for a 10-part assembly). The root is the product no usage occurrence places
+    inside another. Its name when it has a real one; "" when the root is unnamed (the file's own name
+    is then the better one); None when the file is no assembly (no usage occurrence)."""
+    products: dict[str, str] = {}
+    formation_of: dict[str, str] = {}
+    definition_of: dict[str, str] = {}
+    relating: list[str] = []
+    related: set[str] = set()
+    for m in _ENTITY.finditer(text):
+        eid, kind, args = m.group(1), m.group(2).upper(), m.group(3)
+        refs = _REFS.findall(args)
+        if kind == "PRODUCT":
+            names = _quoted(args)
+            # the first string, as step_product_name reads a single part; the name field when that is a placeholder
+            products[eid] = next((n for n in names[:2] if n.strip() and not is_generic(_tidy(n))), "")
+        elif kind.startswith("PRODUCT_DEFINITION_FORMATION"):
+            if refs:
+                formation_of[eid] = refs[0]
+        elif kind == "PRODUCT_DEFINITION":
+            if refs:
+                definition_of[eid] = refs[0]
+        elif len(refs) >= 2:      # NEXT_ASSEMBLY_USAGE_OCCURRENCE(id, name, description, relating, related, ...)
+            relating.append(refs[0])
+            related.add(refs[1])
+    if not relating:
+        return None
+    for pd in dict.fromkeys(relating):
+        if pd in related:
+            continue
+        name = _tidy(products.get(formation_of.get(definition_of.get(pd, ""), ""), ""))
+        if name and not is_generic(name):
+            return name
+    return ""
+
+
 def step_product_name(path: Path | str) -> str:
-    """The first PRODUCT entity's name in a STEP file that is not a placeholder; "" if none."""
+    """The STEP file's own name for what it holds: an assembly's root product (assembly_root_name), else
+    the first PRODUCT entity's name that is not a placeholder; "" if none (or an unnamed assembly)."""
     try:
         with open(path, "rb") as fh:
-            head = fh.read(HEAD_BYTES).decode("latin-1", errors="replace")
+            whole = fh.read(TREE_BYTES).decode("latin-1", errors="replace")
     except OSError:
         return ""
+    root = assembly_root_name(whole)
+    if root is not None:
+        return root
+    head = whole[:HEAD_BYTES]
     for m in _PRODUCT.finditer(head):
         name = _tidy(m.group(1).replace("''", "'"))
         if name and not is_generic(name):

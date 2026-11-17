@@ -168,8 +168,9 @@ def test_the_model_cannot_call_a_part_with_a_way_through_a_body_in_a_flow():
 def test_the_model_must_be_clearly_surer_than_the_code():
     facts = _body(inside=None)            # nothing measured against it: only the margin decides
     vision = {"part": "fluid", "flow": "internal", "input_kind": "fluid-domain", "openings": []}
-    assert gc._proposal(facts, dict(vision, confidence=0.7))["flow"] == "external"     # 0.6 + 0.15 is 0.75
-    assert gc._proposal(facts, dict(vision, confidence=0.8))["flow"] == "internal"
+    # a closed solid with flat ends read as a body is held at 0.7 (FLOW-2): the pictures must be 0.15 surer
+    assert gc._proposal(facts, dict(vision, confidence=0.8))["flow"] == "external"     # 0.7 + 0.15 is 0.85
+    assert gc._proposal(facts, dict(vision, confidence=0.9))["flow"] == "internal"
 
 
 def test_a_kind_and_flow_that_disagree_with_each_other_change_nothing():

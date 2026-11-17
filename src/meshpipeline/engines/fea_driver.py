@@ -417,12 +417,15 @@ def mesh_as_of(state) -> str:
     return got if got in ("shell", "mixed") else "solid"
 
 
-async def read_requirements(ws: Path, state, *, job_id: str, run=None, publish=None) -> dict:
+async def read_requirements(ws: Path, state, *, job_id: str, run=None, publish=None,
+                            told: tuple[str, ...] = ()) -> dict:
     """NOTE-7..9: THE MESH REQUIREMENTS IN THE USER'S NOTES (engines/mesh_requirements), read once per run and
     checked: sizes for the whole mesh, the element kind, quality limits. The reading is cited, told to the user
     before any mesh is made (one short line each, and what was not applied), and kept in the workspace for the
     shell and mixed runs (their own processes). With no words nothing is asked of the model, nothing is cited,
-    said or written: the run is exactly the run it always was. Returns the reading's section."""
+    said or written: the run is exactly the run it always was. `told`: the fields this run says itself, with their
+    outcome (the element count the plan aims at, PLAN-fea-27), left out of the lines said here. Returns the reading's
+    section."""
     from meshpipeline.contracts import narration as _N
     from meshpipeline.engines import mesh_requirements as MR
     from meshpipeline.engines import meshing_standard as MS
@@ -439,9 +442,27 @@ async def read_requirements(ws: Path, state, *, job_id: str, run=None, publish=N
     entries = ([*MR.decisions(read, stage="fea_ai"), *MS.decisions(read, stage="fea_ai")]
                if read.get("status") != "none" else [])
     _cite(job_id, [*entries, *MS.stage_decisions(sec, stage_name="fea_ai")])
-    for i, line in enumerate(MR.live_words(sec)):
+    for i, line in enumerate(MR.live_words(sec, told_elsewhere=told)):
         await _N.asay(publish, line, op_id=f"fea:notes:{i}")
     return sec
+
+
+def tell_count(ws: Path, line: str) -> None:
+    """PLAN-fea-27's count line kept for the result ("From your notes: you asked for about 800k elements; planned
+    ..."): THE line on the user's count. The AI's own remark on the notes goes with it - it said the same count in its
+    words (a real run, 16 Nov) - as the shell's asked-against-delivered line replaces it (SHMESH-26). No line: nothing
+    changes."""
+    from meshpipeline.contracts.user_notes import drop_remark, record_remark
+    if not line:
+        return
+    drop_remark(ws, by="fea_ai")
+    record_remark(ws, line, by="fea_target")
+
+
+def staged_words(name: str | None, *, healed: bool) -> str:
+    """PLAN-fea-15 in the user's words: a part healed before it was measured is said. The staged file's name is ours
+    (geometry.brep), never the user's file: it stays the record's value, not a line on the page."""
+    return "The part was healed before it was measured." if healed else ""
 
 
 async def shell_pass(ws: Path, state, *, job_id: str, run=None, target: dict | None = None) -> dict | None:
@@ -1468,8 +1489,7 @@ def built_remark(ws: Path, record: dict | None = None) -> None:
     line = P.target_remark(plan, built=cells or None)
     if plan.get("by_choice_failed") == "count":
         line = BY_CHOICE_WORDS["count"]
-    if line:
-        record_remark(ws, line, by="fea_target")
+    tell_count(ws, line)
     if plan.get("user_sizes") or (plan.get("part_sizes") or {}).get("status") not in (None, "none"):
         said = P.user_words(plan)[:1] or PS.words(plan.get("part_sizes"))[:1]
         if plan.get("by_choice_failed") == "sizes":
@@ -2472,8 +2492,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     healed = any("healed" in str(n) for n in record.get("notes") or [])
     _cite(job_id, [{"stage": "fea_plan", "decided": "staged solid", "value": staged.name if staged else None,
                     "rule": "PLAN-fea-15", "inputs": {"healed": healed},
-                    "words": (f"The part was read from {staged.name if staged else 'the staged file'}"
-                              + (", healed before it was measured." if healed else "."))}])
+                    "words": staged_words(staged.name if staged else None, healed=healed)}])
     if int(record.get("bodies") or 1) > 1:
         # PLAN-fea-17: AN ASSEMBLY - its parts staged as the user said they are joined (bonded by
         # default), every face Part_k_Face_j, each part sized by its own rules
@@ -2538,7 +2557,10 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     # NOTE-7..9: the mesh requirements the notes ask for (a global size, edge lengths, quality limits, the element
     # kind), read once; the shell and mixed runs read them from the workspace, the solid plan takes the sizes below
     if asked is None:
-        asked = await read_requirements(ws, state, job_id=job_id, run=run, publish=publish)
+        # the solid plan says the user's count itself, with what was planned (PLAN-fea-27): not said twice
+        from meshpipeline.engines.mesh_requirements import COUNT_FIELDS
+        asked = await read_requirements(ws, state, job_id=job_id, run=run, publish=publish,
+                                        told=COUNT_FIELDS if target and mesh_as_of(state) == "solid" else ())
     # SHSTAGE-6: MESH AS: SHELL - the shell mesh and its solver files first, from the staged solid as read (the
     # assembly staging above never rewrites it). SHMESH-23: once the user's element count is read, so the shell's
     # sizes follow it as the solid's do.
@@ -2636,10 +2658,8 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                           "sizes": sizes or None, "by_choice_failed": by_choice_failed,
                           "target_missed": plan.get("target_missed"), "target_unread": plan.get("target_unread")}
                 first_plan = plan
-                if P.target_remark(plan):
-                    # PLAN-fea-27: what was done with the count the notes named, for the result's line
-                    from meshpipeline.contracts.user_notes import record_remark
-                    record_remark(ws, P.target_remark(plan), by="fea_target")
+                # PLAN-fea-27: what was done with the count the notes named, for the result's line (and the design's)
+                tell_count(ws, P.target_remark(plan))
                 # every later pass plans with the decision the first one kept (refinements left out
                 # when they would not fit stay out)
                 if plan.get("ai"):

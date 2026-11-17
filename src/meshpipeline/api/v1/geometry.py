@@ -387,6 +387,8 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
     # the check as reported, for the live line, before the stage's fields are added to it
     reported = {k: payload.get(k) for k in ("status", "written_at", "seconds", "naming_seconds", "check_mode",
                                             "source", "step", "retry", "reason", "timed_out", "preview")}
+    # the facts the proposal was made from, kept for the flow kind below once they leave the payload
+    facts_now: dict = payload["facts"] if isinstance(payload.get("facts"), dict) else {}
     if payload.get("status") in ("ready", "scouted") or payload.get("facts"):
         # the stage opens on a scouted check too, with the code's labels, and keeps them on a
         # naming that failed; the pictures are for the card, which only shows once the check
@@ -429,6 +431,26 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
     confirmed = await asyncio.to_thread(_read_json, check_object_key(str(session_id), "confirmed.json"))
     if confirmed is not None:
         payload["confirmed"] = confirmed
+    elif (payload.get("route") == fea_check.STAGE_FLOW and isinstance(payload.get("proposal"), dict)
+          and isinstance(facts_now.get("flow_kind"), dict)):
+        # THROUGH OR AROUND (FLOW-1, FLOW-4; agents/intake/flow): a flow the user stated in the chat is what the
+        # form shows - a reload keeps their answer - and, once the naming has landed, a part the flow-kind
+        # authority still leaves undecided, with no words of the user's deciding it, gets the one fixed
+        # question in the chat, once (the reply carries it, for the console to draw with its buttons)
+        from meshpipeline.agents.intake import flow as intake_flow
+        said = getattr(session, "messages", None) or []
+        stated = intake_flow.stated_flow_kind(facts_now, said)
+        if stated is not None:
+            payload["proposal"].update(intake_flow.stage_flow(stated), flow_kind=stated)
+        if (payload.get("status") == "ready" and payload.get("named")
+                and intake_flow.flow_kind_question_due(said, stated or facts_now["flow_kind"])):
+            from meshpipeline.agents.intake.message import ask_flow_kind
+            from meshpipeline.application.purpose_map import choices_for
+            from meshpipeline.persistence.repositories.session_repository import SessionRepository
+            asked = await ask_flow_kind(session_id, owner_id, facts=facts_now, session_repo=SessionRepository(),
+                                        db_factory=get_db, logger=logger)
+            if asked:
+                payload["ask"] = {"reply": asked, "choices": choices_for(asked)}
     # THE LIVE LINE the chat shows while the part is checked: the step running now, the steps
     # done with their times, a note when one runs long, and the way on when one fails - held to
     # this check's own limits (sized to its file)

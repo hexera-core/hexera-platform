@@ -107,18 +107,19 @@ def _details_words(details: dict[str, int]) -> str:
 
 
 def clean_with_details(state: Mapping, report: Mapping) -> str:
-    """THE SAME WORD AS THE STAGE. The inspection called the part clean and found only small CAD
-    details (warnings, never errors): the line says the part is clean - as the geometry check told
-    the user - and names the details, never "Found 42 defects" (the stud punch of the 2 Nov dry run:
-    "The geometry is clean" on the stage, "Found 42 defects; repair is off here" on the run, for 36
-    tiny edges and 6 sliver faces). '' when the inspection found more than details."""
+    """ONE CLEAN VERDICT, THE STAGE'S. The inspection found only small CAD details (warnings, never
+    errors): the line says the repair check found nothing to fix and names the details - never
+    "Found 42 defects" (the stud punch of the 2 Nov dry run), and never a "clean" of its own: the
+    Confirmed card carries the part's clean verdict, and a second one here contradicted it (16 Nov:
+    "Not clean - we'll still try" on the card, "Your part is clean" in the run box). '' when the
+    inspection found more than details."""
     if str(state.get("repair_status") or "") != "clean":
         return ""
     total = found_count(report)
     details = _small_details(report)
     if not total or sum(details.values()) != total:
         return ""
-    return (f"Your part is clean and needed no repair; it has {_details_words(details)}, "
+    return (f"The repair check found nothing to fix; the part has {_details_words(details)}, "
             f"which may need small cells there - {_ORIGINAL}")
 
 
@@ -203,7 +204,7 @@ def repair_check_words(state: Mapping, out: Mapping) -> str | None:
     if failure or status == "inconclusive":
         return f"The repair check could not finish; {_ORIGINAL}"
     if ((status == "clean" and not found) or route == "mesh_as_is") and not review:
-        return "Your part needed no repair"
+        return "The repair check found nothing to fix"      # what the check found; the clean verdict is the stage's
     details_only = clean_with_details(state, report)
     if details_only and not review:
         return details_only

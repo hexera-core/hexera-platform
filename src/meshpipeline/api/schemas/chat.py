@@ -46,3 +46,10 @@ class ChatResponse(BaseModel):
     # A YES THAT WAITS FOR THE NOTES TO BE READ (NOTE-5): the console shows the reading on the card and sends the
     # same yes again once it lands (a minute at most); that second yes starts the run.
     yes_after_reading: bool = False
+    # THE STAGE OPENS AGAIN: the user changed the analysis after the stage (FEA <-> CFD); the console watches
+    # the geometry check again and shows the part on the new route's stage (agents/intake/message)
+    restage: bool = False
+    # THE STAGE'S FORM, SET FROM THE CHAT: the flow the user said while the stage waits on Proceed (the flow-kind
+    # question's buttons, FLOW-1) - {"flow", "input_kind"} - which the console sets on the open stage's "The fluid
+    # flows" and "The file is" before Proceed (agents/intake/message)
+    stage_flow: dict[str, str] | None = None

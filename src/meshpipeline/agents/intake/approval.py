@@ -101,20 +101,19 @@ def classify(message: str, engine: str = "") -> str:
     return CORRECTION_INTENT
 
 
-#: The question under every summary, with the one plain answer that starts the run: the user types
-#: the answer (the console has no approve button), so the question names it. The console says it
-#: again under the card once the user's notes are finalized and the parts they name are shown.
-PROCEED_ASK = "Shall I proceed with mesh generation? Reply yes to start it, or tell me what to change."
-#: Said above the question when the user's last message was read as a change and changed nothing -
+#: THE PLAN STEP'S ONE LINE (agents/intake/flow PLAN): the plan card stands with the notes box and
+#: its Proceed button, and this is all the chat says. Every way back to the plan - an answer to a
+#: question about it, a hedge, a turn that settled nothing - says exactly this, so the step reads the
+#: same every time. A typed yes still starts the run; the button sends "Proceed". No "above" or
+#: "below": a plan redone in place is drawn above the line, a new one under it.
+PROCEED_ASK = "Here's the plan. Add any notes, then press Proceed."
+#: Said above the line when the user's last message was read as a change and changed nothing -
 #: a chatty yes ("ha, we're going in circles - yes, go ahead!") is not a bare yes, and without this
-#: the user saw the same summary again with no idea why.
+#: the user saw the same plan again with no idea why.
 NOTHING_CHANGED = "Nothing in the setup changed with your last message."
 
-CLARIFICATION = (
-    "I need a clear answer before spending anything: reply \"yes, proceed\" to run exactly the "
-    "configuration shown above, or tell me what to change and I will re-check it and show you a "
-    "new summary."
-)
+#: A hedge to the plan ("maybe?"): the plan's own line again - one step, one wording.
+CLARIFICATION = PROCEED_ASK
 
 
 def create(*, owner_id: str, session_id: str, selection_id: str, token_id: str,

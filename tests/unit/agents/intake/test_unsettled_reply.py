@@ -54,18 +54,19 @@ def test_the_suggested_phrase_is_one_the_intake_reads_as_handing_the_question_ba
     assert defers_to_default("use defaults")
 
 
-def test_the_sentence_asks_for_the_go_ahead_when_a_summary_awaits():
+def test_the_sentence_is_the_plans_own_line_when_a_plan_awaits():
+    # the turn returns to the plan step in its one fixed wording (agents/intake/flow PLAN)
     text = unsettled_reply(_state(selection=_confirmed(), approval=_live_approval()),
                            LoopExit.no_progress)
-    assert "go ahead" in text and "what to change" in text
+    assert text == ap.PROCEED_ASK
     assert "engine" not in text
-    assert ap.classify("go ahead") == ap.APPROVE_INTENT, "the suggested words would not approve"
+    assert ap.classify("Proceed") == ap.APPROVE_INTENT, "the plan's button would not approve"
 
 
 def test_an_expired_summary_is_not_a_question_anyone_is_waiting_on():
     stale = {"id": "a1", "status": ap.AWAITING, "expires_at": time.time() - 1}
     text = unsettled_reply(_state(selection=_confirmed(), approval=stale), LoopExit.no_progress)
-    assert "go ahead" not in text
+    assert text != ap.PROCEED_ASK and "Proceed" not in text
 
 
 def test_an_expired_proposal_is_read_as_no_selection():
