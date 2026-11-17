@@ -1512,6 +1512,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         grid_faces_made: set[int] = set()   # SHMESH-48f: the faces cut into a grid
         boxed: list = []                    # washers in a gridded face's free boxes: their own ring
         box_wish: dict[int, int] = {}       # SHMESH-48q: the counts free boxes' sides ask for (their two-to-one row)
+        box_wish_long: set[int] = set()     # SHMESH-51c: the sides of two-ring bolt boxes
         rings: list = []                    # washers in a free face: their own ring mesh (ST.ring_mesh)
         block_preset: dict[int, int] = {}
         block_holes: set[int] = set()
@@ -1557,7 +1558,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                     gmsh, washers + squares, tag_of, {t: float(rows[k]["size_mm"]) for t, k in tag_of.items()}, hole_size, mm,
                     cuts=cut_curves, low_mm=(sizing or {}).get("low_mm"), high_mm=(sizing or {}).get("high_mm"),
                     cells_out=grid_cells, no_cut=no_cut, cut_out=cut_of, made_out=grid_faces_made, join_out=join_of,
-                    why_where=skipped_where, wish_out=box_wish)
+                    why_where=skipped_where, wish_out=box_wish, wish_long=box_wish_long)
                 if ST.BOLT_GRID_FIRST:
                     # SHMESH-51b: a face refused a grid while it holds two-ring bolt holes is tried again with one
                     # ring round them; where it still is refused its holes keep their two rings in its free mesh
@@ -1576,7 +1577,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                             cuts=cut_curves, low_mm=(sizing or {}).get("low_mm"),
                             high_mm=(sizing or {}).get("high_mm"), cells_out=grid_cells, no_cut=no_cut,
                             cut_out=cut_of, made_out=grid_faces_made, join_out=join_of, why_where=where_b,
-                            wish_out=box_wish)
+                            wish_out=box_wish, wish_long=box_wish_long)
                         gridded, boxed = gridded + g2, boxed + b2
                         block_preset.update(p2)
                         block_holes = block_holes | h2
@@ -1662,7 +1663,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                 preset={**strip_counts, **block_preset},
                 low_mm=(sizing or {}).get("low_mm"), high_mm=(sizing or {}).get("high_mm"),
                 fine_at=short_edges["fine_at"] if short_edges else None,
-                growth=growth, wish=box_wish)
+                growth=growth, wish=box_wish, wish_long=box_wish_long)
             # SHMESH-48c: a grid line's piece that bounds free cells only (between neighbouring washers' free boxes,
             # a column of them in rows of bolt holes) is counted by no mapped face, and gmsh's own count there left a
             # triangle in each box. Each such piece takes the count nearest its length over the size, one more where
@@ -1687,6 +1688,13 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
             for c_piece in sorted(open_):
                 for f_ in (int(x) for x in gmsh.model.getAdjacencies(1, c_piece)[0] if int(x) in tag_of):
                     bound.setdefault(f_, [abs(int(x)) for _d, x in gmsh.model.getBoundary([(2, f_)], oriented=False)])
+            # SHMESH-51c: a two-ring bolt box's side that no mapped face counts (it lies between two boxes' free cells,
+            # so no cell has it as its one open side) takes its band's count at once (gmsh's own count, 6 a side of
+            # 56 mm, left no band and paved the boxes with triangles)
+            for c_w in sorted(open_ & box_wish_long):
+                known[c_w] = box_wish[c_w]
+                open_.discard(c_w)
+                gmsh.model.mesh.setTransfiniteCurve(c_w, box_wish[c_w] + 1)
             settled = True
             while settled:
                 settled = False

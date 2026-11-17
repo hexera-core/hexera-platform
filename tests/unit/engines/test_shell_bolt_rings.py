@@ -163,18 +163,32 @@ def test_a_web_with_room_keeps_its_grid_and_two_rings_round_every_hole(tmp_path)
     _check(applied)
 
 
-def test_a_web_too_tight_for_two_rings_keeps_its_grid_with_one(tmp_path):
-    """SHMESH-51b, a real column's channel web (rows of three bolt holes 60 mm apart at 10 mm): two rings round each
-    left the web's grid with edges over the 15 mm line and the web was paved free between the holes (mapped faces on
-    the column 1,064 -> 145). A second ring never wins a face from its grid: the web keeps its straight rows and one
-    ring a hole, and each hole's line says so."""
+def test_rows_of_bolt_holes_60_mm_apart_keep_the_grid_and_two_rings(tmp_path):
+    """SHMESH-51c, a real column's channel web (rows of three bolt holes about 60 mm apart at 10 mm, edges 5 to 15 mm):
+    two rings round each hole left the web's grid with 4 mm strips between the holes' boxes and box sides counted 6,
+    no two-to-one band - the web was paved free (2277d1ec) or kept its grid with one ring (5ad1646e). Planned together,
+    each box leaves a whole cell to its neighbour and its sides take the band's count up to the user's longest edge:
+    the grid AND two rings round every hole, nothing under the shortest edge."""
     brep, rec = _web(tmp_path, 250.0, 60.0, [65.0, 125.0, 185.0])
     mesh, applied = _mesh(brep, rec)
     s = applied["quality"]["structure"]
     assert not s.get("not_gridded"), s.get("not_gridded")
+    assert all(h["kind"] == "free box in a gridded face" and h.get("box_band") == "made" for h in s["hole_list"])
+    assert s["bolt_rings"] == {2: 36}, s["bolt_rings"]
+    assert s["mapped_faces"] >= 100 and len(mesh.trias) == 0
+    rows = {r["field"]: r for r in applied["requirements"]["rows"]}
+    assert int(rows["min_edge"].get("outside") or 0) == 0
+    _check(applied)
+
+
+def test_a_web_too_tight_for_two_rings_in_its_grid_keeps_the_grid_with_one(tmp_path):
+    """SHMESH-51b: holes 50 mm apart have room for two rings in a free face but not inside the grid's boxes; the web
+    keeps its grid (as with one ring before) and one ring a hole, and each hole's line says why."""
+    brep, rec = _web(tmp_path, 250.0, 50.0, [75.0, 125.0, 175.0])
+    mesh, applied = _mesh(brep, rec)
+    s = applied["quality"]["structure"]
     assert all(h["kind"].endswith("gridded face") for h in s["hole_list"])
     assert all(h.get("one_ring") == "one ring so its face keeps its grid" for h in s["hole_list"])
-    assert s["mapped_faces"] >= 100
-    assert any("where" in n and "grid" in n for n in mesh.notes if n.startswith("No bolt hole") or n.startswith("Two")), \
-        mesh.notes
+    assert s["mapped_faces"] >= 40
+    assert any("a second would break the plate's straight grid" in n for n in mesh.notes), mesh.notes
     _check(applied)

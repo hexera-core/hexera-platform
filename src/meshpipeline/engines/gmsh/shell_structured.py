@@ -51,6 +51,8 @@ BOLT_CHECK = True
 #: after meshing) while it holds two-ring holes is tried again with one ring round them, and only goes free when the
 #: grid fails with one ring too (a channel web's 50 bolt holes took two rings and the web lost its straight rows)
 BOLT_GRID_FIRST = True
+#: SHMESH-51c: a two-ring bolt hole's free box asks for its band's counts up to the user's longest edge
+BOLT_BAND_LONG = True
 #: two holes are one bolt's when their axes are parallel within BOLT_AXIS_DEG, each centre lies on the other's axis
 #: within BOLT_AXIS_OFF of the smaller radius, their diameters are alike within BOLT_ALIKE, at most BOLT_REACH
 #: diameters apart along the axis
@@ -1036,8 +1038,8 @@ def _spread(total: int, lengths: list[float]) -> list[int] | None:
 
 def map_faces(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], mm: float, *, skip: set[int],
               preset: dict[int, int], low_mm: float | None = None, fine_at: dict[int, float] | None = None,
-              growth: float = 1.3, arc_mm=None, high_mm: float | None = None, wish: dict[int, int] | None = None
-              ) -> tuple[dict[int, list[int]], dict[int, int]]:
+              growth: float = 1.3, arc_mm=None, high_mm: float | None = None, wish: dict[int, int] | None = None,
+              wish_long: set[int] | None = None) -> tuple[dict[int, list[int]], dict[int, int]]:
     """SHMESH-40: every four-cornered face (_four_sided) not in `skip` is meshed as a mapped grid. Opposite sides that
     are one curve each take one count, and so does every curve they share with other mapped faces (a pipe's pieces,
     a run of cells: one class of curves, one count). A class's count is its curves' mean length over the finest size
@@ -1135,7 +1137,7 @@ def map_faces(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], mm: float
                     # SHMESH-48q: a free box's side asks for n/4 + 2 (its own two-to-one row) where nothing holds the
                     # class, its longest curve no coarser and its shortest no finer than the class's own count allows
                     k_ = wished[0]
-                    if (longest / k_ <= MAP_LONGEST * h + 1e-12
+                    if ((longest / k_ <= MAP_LONGEST * h + 1e-12 or any(c in (wish_long or ()) for c in cs))
                             and (high_mm is None or longest * mm / k_ <= 0.98 * high_mm)
                             and (low_mm is None or min(length[c] for c in cs) * mm / k_ >= low_mm)):
                         n = k_
@@ -1537,7 +1539,7 @@ def _remove_loose(gmsh, curves: set[int]) -> None:
 
 
 def _mark_box(gmsh, w: Washer, corners: list[np.ndarray], cells: list[int], h: float, mm: float,
-              high_mm: float | None, wish: dict[int, int], loops_of=None) -> None:
+              high_mm: float | None, wish: dict[int, int], loops_of=None, wish_long: set[int] | None = None) -> None:
     """SHMESH-48q: note a free box's cell (between its ring and its box) and its corners on the washer, and ask each
     box side that is one curve for n/4 + 2 segments (`wish`: the grid's counts take it where nothing else holds the
     curve) when they come out BAND_SEG face sizes long and under the user's longest edge. `loops_of(s)`: the cells'
@@ -1556,8 +1558,11 @@ def _mark_box(gmsh, w: Washer, corners: list[np.ndarray], cells: list[int], h: f
     w.box_corners = [np.asarray(c, dtype=float) for c in corners]
     k = w.n // 4 + 2
     seg_hi = BAND_SEG[1] * h
+    long_ok = bool(BOLT_BAND_LONG and w.radii and high_mm is not None and wish_long is not None)
     if high_mm is not None:
-        seg_hi = min(seg_hi, 0.98 * float(high_mm) / mm)
+        # (SHMESH-51c: a two-ring bolt hole's box sides up to the user's longest edge: its ring's outer elements are that
+        # long already, and at our own 1.4 sizes a row of such boxes 60 mm apart got 6 segments a side, no band)
+        seg_hi = 0.98 * float(high_mm) / mm if long_ok else min(seg_hi, 0.98 * float(high_mm) / mm)
     tol = 1e-6 * max(h, 1e-300)
     for i in range(4):
         a, b = w.box_corners[i], w.box_corners[(i + 1) % 4]
@@ -1568,6 +1573,8 @@ def _mark_box(gmsh, w: Washer, corners: list[np.ndarray], cells: list[int], h: f
             seg = float(gmsh.model.occ.getMass(1, c)) / k
             if BAND_WISH and gmsh.model.getType(1, c) == "Line" and BAND_SEG[0] * h <= seg <= seg_hi:
                 wish[c] = k
+                if long_ok and wish_long is not None:
+                    wish_long.add(c)
             break
 
 
@@ -1836,7 +1843,19 @@ def _face_plan(gmsh, t: int, ws: list[Washer], h_mm: float, mm: float, hole_size
             # paving from 8 long elements out to a box of short ones left triangles round it)
             seg = min(BAND_SEG[1] * h_mm, 0.98 * high_mm if high_mm is not None else math.inf) / mm
             b_band = (1 - 1e-6) * (w.n // 4 + 2) * seg / 2
-            if b_band >= w.R + max(BOX_GAP * h, float(low_mm or 0.0) / mm):
+            gap_b = max(BOX_GAP * h, float(low_mm or 0.0) / mm)
+            if BOLT_BAND_LONG and low_mm is not None:
+                # SHMESH-51c: a neighbouring hole's box side by side leaves a whole cell between them, no thinner than
+                # the user's shortest edge (EDGE_MARGIN over it): boxes 56 mm wide at a 60 mm pitch left 4 mm strips
+                # (half the web's elements under its 5 mm line)
+                for ow in ws:
+                    if ow is w:
+                        continue
+                    ou, ov = uv(ow.centre)
+                    for d_along, d_across in ((abs(ou - cu), abs(ov - cv)), (abs(ov - cv), abs(ou - cu))):
+                        if d_across < 2 * b_band and d_along > 1e-9:
+                            b_band = min(b_band, 0.5 * (d_along - EDGE_MARGIN * float(low_mm) / mm))
+            if b_band >= w.R + gap_b:
                 b = min(b, b_band)
         boxes.append([cu - b, cu + b, cv - b, cv + b])
     # SHMESH-48b: boxes of neighbouring holes that overlap (rows of bolt holes closer than a box) share one
@@ -2232,7 +2251,7 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                 cells_out: set[int] | None = None, no_cut: frozenset = frozenset(),
                 cut_out: dict[int, set[int]] | None = None, made_out: set[int] | None = None,
                 why_where: dict[str, list[int]] | None = None, join_out: dict[int, set[int]] | None = None,
-                wish_out: dict[int, int] | None = None
+                wish_out: dict[int, int] | None = None, wish_long: set[int] | None = None
                 ) -> tuple[list[Washer], list[Washer], dict[int, int], set[int], dict[str, int]]:
     """SHMESH-41: each flat face whose inner loops are all washer holes is cut into a grid: round each hole a box
     along the face's own frame (its longest straight edge) - an O-grid's (_boxed) or a free box - every box side drawn
@@ -2761,7 +2780,7 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                         raise ValueError("a washer's ring did not close round its hole")
                     boxed.append(w)
                     if FREE_BAND and wish_out is not None:
-                        _mark_box(gmsh, w, corners_of[j_w], new, h, mm, high_mm, wish_out, loops_of)
+                        _mark_box(gmsh, w, corners_of[j_w], new, h, mm, high_mm, wish_out, loops_of, wish_long)
             if cuts is not None:
                 from scipy.spatial import cKDTree
 
