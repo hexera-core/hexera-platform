@@ -270,6 +270,13 @@ def with_conditions(sec: dict, state) -> dict:
         line = f"{lead} the first layer is the height you gave, not the one the wall treatment's y+ would give."
     elif lay.get("y_plus") is not None:
         line = f"{lead} the y+ you gave ({MR._g(lay['y_plus'])}) is used, not the wall treatment's."
+        # ... at the fluid and speed of the conditions, where the notes give none: a y+ typed as the answer to the
+        # conditions question ("y+ of 1 at the wall") is read as a note too, and with no speed or fluid of its own it
+        # was never turned into a height - the layers kept our relative sizing, about y+ 50 (job 63b0fd25)
+        if ph.get("velocity_ms") is None and ph.get("reynolds") is None and c["velocity_ms"] is not None:
+            ph["velocity_ms"] = float(c["velocity_ms"])
+        if ph.get("fluid") is None and ph.get("nu_m2s") is None and c["fluid"] in FC.NU:
+            ph["fluid"] = c["fluid"]
     else:
         lay["y_plus"] = float(c["y_plus"])
         if ph.get("velocity_ms") is None and c["velocity_ms"] is not None:

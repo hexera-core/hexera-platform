@@ -100,6 +100,28 @@ def test_the_users_own_notes_win_over_the_conditions():
     assert MR.requirements_of(sec)["layers"]["y_plus"] is None
 
 
+def test_a_y_plus_typed_as_the_conditions_answer_is_sized_at_the_conditions_speed():
+    """Job 63b0fd25: "y+ of 1 at the wall" typed as the answer to the conditions question was read as a note too; the
+    note's y+ won, but with no speed or fluid of its own it was never turned into a height ("1 could not be applied")
+    and the layers kept our relative sizing. The conditions' water at 1 m/s fills what the note left."""
+    req, _d, _na = _read("y+ of 1 at the wall",
+                         layers=[{"what": "y_plus", "value": 1, "unit": "none", "quote": "y+ of 1 at the wall"}])
+    sec = CR.with_conditions(MR.section("used", requirements=req), {"request_txt": INT_RESOLVED})
+    got = MR.requirements_of(sec)
+    assert got["physics"]["velocity_ms"] == 1.0 and got["physics"]["fluid"] == "water"
+    assert [r["field"] for r in got["rows"]] == ["layers:y_plus"]          # one ask, the user's own
+    ask = CR.Ask(got, "snappy")
+    h = ask.first_layer(length_m=1.66, length_from="the bore")
+    assert h is not None and 1e-5 < h < 5e-5
+    assert ask.rows[ask.rid("layers:y_plus")]["status"] == "applied"
+    # a speed of the note's own is kept
+    req, _d, _na = _read("y+ of 1 at the wall, 3 m/s",
+                         layers=[{"what": "y_plus", "value": 1, "unit": "none", "quote": "y+ of 1 at the wall"}],
+                         physics=[{"what": "velocity", "value": 3, "unit": "m/s", "quote": "3 m/s"}])
+    got = MR.requirements_of(CR.with_conditions(MR.section("used", requirements=req), {"request_txt": INT_RESOLVED}))
+    assert got["physics"]["velocity_ms"] == 3.0 and got["physics"]["fluid"] == "water"
+
+
 def test_the_run_reads_the_conditions_with_no_notes(tmp_path):
     # before CFDREQ-8 a run with no notes wrote nothing here: the conditions step's answer reached no engine
     asyncio.run(CR.read_for_attempt(tmp_path, {"request_txt": INT_RESOLVED, "purpose": "internal_cfd"}))
