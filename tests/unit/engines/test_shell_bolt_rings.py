@@ -556,6 +556,67 @@ def test_lines_nearer_than_a_sliver_are_one_line_in_a_face_with_bolt_holes():
     assert ST._tiny([SimpleWasher({"bolt": "a row"})], 10.0) == 1.0 and ST._tiny([SimpleWasher({})], 10.0) == 0.0
 
 
+def test_boxes_out_of_step_across_a_joint_meet_at_a_corner(tmp_path):
+    """SHMESH-51r: the flange's bolt holes 44 mm either side of each web hole's column: their 56 mm boxes overlap the
+    web's by 12 mm across the joint. Either side landing on the other box's nodes left one box's chain past what its
+    4 segments cover (the real column's 12-hole plate: a 59.7 mm cell, [17.7, 42.0]); 47b9b675 sent 5 of the 15 holes
+    to one ring. Now a side first lands on the other box's own corner (the two lines meet at one point of the joint,
+    both chains whole): one pass, two rings round all 15, no triangle, nothing under the shortest edge."""
+    xs = [150.0 + 250.0 * k for k in range(5)]
+    brep, rec = _channel_both(tmp_path, 1300.0, 300.0, [(x, 57.2, 17.4) for x in xs],
+                              [(x + s, 50.0, 17.4) for x in xs for s in (-44.0, 44.0)])
+    mesh, applied = _mesh(brep, rec)
+    s = applied["quality"]["structure"]
+    assert s["bolt_rings"] == {2: 15}, s.get("bolt_rings")
+    assert applied["quality"]["passes"] == ["made"], applied["quality"]["passes"]
+    assert len(mesh.trias) == 0
+    rows = {r["field"]: r for r in applied["requirements"]["rows"]}
+    assert int(rows["min_edge"].get("outside") or 0) == 0
+    _check(applied)
+
+
+def test_a_cad_piece_of_a_hole_is_no_cell_edge_at_planning(tmp_path, monkeypatch):
+    """SHMESH-51q, three plates of the real column: a bolt hole's circle came with a CAD piece of 0.005 mm (0.17 mm on
+    another), the planning counted it as a cell edge under 4 mm and the plate was never gridded ("a cell would come out
+    too small ... a cell edge 0.005 mm") - so its ring never asked for the hole to be drawn again as one circle. Now a
+    piece of a hole's own circle is no planning reason: the plate is cut into its grid and the hole is drawn again."""
+    import math
+
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakeWire
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakePrism
+    from OCP.BRepTools import BRepTools
+    from OCP.GC import GC_MakeArcOfCircle
+    from OCP.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Pnt, gp_Vec
+
+    from meshpipeline.cad import midsurface as ms
+
+    def hole(x, y, d, cuts):
+        circ = gp_Circ(gp_Ax2(gp_Pnt(x, y, -1), gp_Dir(0, 0, 1), gp_Dir(1, 0, 0)), d / 2)
+        angs = [math.radians(a) for a in cuts] + [math.radians(cuts[0]) + 2 * math.pi]
+        mw = BRepBuilderAPI_MakeWire()
+        for a, b in zip(angs[:-1], angs[1:], strict=True):
+            mw.Add(BRepBuilderAPI_MakeEdge(GC_MakeArcOfCircle(circ, a, b, True).Value()).Edge())
+        return BRepPrimAPI_MakePrism(BRepBuilderAPI_MakeFace(mw.Wire()).Face(), gp_Vec(0, 0, 12)).Shape()
+
+    shape = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), 560.0, 200.0, 10.0).Shape()
+    for k in range(6):
+        shape = BRepAlgoAPI_Cut(shape, hole(80.0 + 80.0 * k, 100.0, 19.8,
+                                            [81.5, 81.53, 260.0] if k == 2 else [0.0, 180.0])).Shape()
+    rec, surf = ms.extract(shape, mm_per_unit=1.0)
+    brep = tmp_path / "split.brep"
+    BRepTools.Write_s(surf, str(brep))
+    mesh, applied = _mesh(brep, rec)
+    s = applied["quality"]["structure"]
+    assert not s.get("not_gridded"), s.get("not_gridded")
+    assert s["bolt_rings"] == {2: 6} and len(mesh.trias) == 0, (s.get("bolt_rings"), len(mesh.trias))
+    _check(applied)
+    # (the hole never drawn again: still no planning refusal for its piece - the face is judged on its mesh)
+    monkeypatch.setattr(ST, "RESEAT", False)
+    _m2, applied2 = _mesh(brep, rec)
+    assert not any("a cell edge" in str(k) for k in (applied2["quality"]["structure"].get("not_gridded") or {}))
+
+
 class SimpleWasher:
     def __init__(self, info: dict) -> None:
         self.info = info

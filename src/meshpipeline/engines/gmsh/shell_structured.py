@@ -767,6 +767,17 @@ def _on_hole(gmsh, w: Washer, curves: list[int]) -> bool:
                for c in curves)
 
 
+#: SHMESH-51q: a gridded face's planning does not count a CAD piece of a round hole's own circle as a cell edge
+HOLE_PIECES = True
+
+
+def _on_any_hole(gmsh, c: int, ws: list[Washer]) -> bool:
+    """SHMESH-51q: whether a curve is a piece of one of these washers' round hole circles."""
+    p = _samples(gmsh, c, 4)
+    return any(not w.corners and bool(np.all(np.abs(np.linalg.norm(p - w.centre, axis=1) - w.r) <= CIRCLE_TOL * w.r))
+               for w in ws)
+
+
 def _on_square(gmsh, w: Washer, curves: list[int]) -> bool:
     """SHMESH-48h: whether these curves (a loop) lie on a square washer's hole sides and go all round it."""
     if not curves or not w.corners:
@@ -1812,6 +1823,10 @@ BOX_BUMP = True
 BUMP_FROM = 5
 #: SHMESH-51n: a chain facing a two-ring bolt box's side takes its count from the box (each piece's class follows it)
 BOX_CHAIN = True
+#: SHMESH-51r: a side landing inside the other plate's two-ring box column lands on that box's own corner first, where
+#: that makes both chains whole (two boxes a few mm out of step across a joint: either landing on the other's nodes
+#: left one of them 60 mm wide, [17.7, 42.0], where its 4 segments cover 58.8)
+BOX_CORNER_MEET = True
 #: SHMESH-51e: a two-ring box no bigger than keeps its band's corner kites under the user's longest edge
 BOX_KITE = True
 #: SHMESH-51i: a line held back from a box ends in a T on a node of the box's side (whole segments either side, so
@@ -2357,7 +2372,9 @@ def _joint_nodes(gmsh, members: list[int], plan: dict[int, dict], frame_of: dict
         gap = abs(near - vj)
         if gap <= SNAP * h:
             return None
-        if any((y - near) * (vj - y) > 0 and min(abs(y - near), abs(y - vj)) > eps
+        # (a value within SNAP sizes of the box's side or of the joint is drawn as one with it: 12 alike boxes a
+        # hair out of line are one row)
+        if any((y - near) * (vj - y) > 0 and min(abs(y - near), abs(y - vj)) > SNAP * h
                for y, k in plan[f]["vals"]["v"] if k not in (str(4 * j + 2), str(4 * j + 3))):
             return None
         a0, a1 = sorted((side_at[(fi, 4 * j)], side_at[(fi, 4 * j + 1)]))
@@ -2427,62 +2444,82 @@ def _joint_nodes(gmsh, members: list[int], plan: dict[int, dict], frame_of: dict
         moves: dict[float, float] = {}
         whole: dict[float, int] = {}            # (a place moved whole in this face: a line it only carries)
         slant: dict[float, int] = {}            # (... its last piece slanted in this face: its box's side)
-        for f_l in adj:
-            f_b = adj[1] if f_l == adj[0] else adj[0]
-            boxes_b = [(j, g) for j, g in cols.get(f_b, []) if plan[f_b]["ws"][j].boxed2 and plan[f_b]["plans"][j] is None]
-            own_l = {s_: (j_l, g_l) for j_l, g_l in cols.get(f_l, []) for s_ in g_l[:2]}
-            for j_b, (b0, b1, _near_b, _gap_b) in boxes_b:
-                k_b = plan[f_b]["ws"][j_b].n // 4 + 2
-                seg_b = (b1 - b0) / k_b
-                nodes = [b0 + i * seg_b for i in range(1, k_b)]
-                for s in [x for x in pts if b0 + eps < x < b1 - eps and x not in moves]:
-                    if min(abs(s - x) for x in nodes) <= eps:
-                        continue
-                    keys = [int(k) for at, _e, sides in out if abs(at - s) <= eps for k in sides]
-                    if any(k // big == fi_of[f_b] for k in keys):
-                        continue        # (a side of the box's own face stands there too)
-                    mine = [k for k in keys if k // big == fi_of[f_l]]
-                    l_side = next((g[1] for x, g in own_l.items() if abs(x - s) <= eps), None)
-                    if mine and l_side is None:
-                        # (a side of a box of L's further from the joint: its last piece runs from the line across
-                        # nearest the joint)
-                        j_l = (mine[0] % big) // 4
-                        bx_l = plan[f_l]["boxes"][j_l]
-                        v_l = float(vj[f_l])        # type: ignore[arg-type]
-                        near_l = bx_l[2] if abs(bx_l[2] - v_l) <= abs(bx_l[3] - v_l) else bx_l[3]
-                        ys_l = [y for y, _k in plan[f_l]["vals"]["v"] if (y - near_l) * (v_l - y) > 0
-                                and abs(y - v_l) > eps] + [near_l]
-                        y_n = ys_l[int(np.argmin([abs(y - v_l) for y in ys_l]))]
-                        if abs(y_n - v_l) <= SNAP * h:
+        # (first each side that can land on the other box's own corner - the two lines then meet at one point of
+        # the joint and both chains are whole: two boxes a few mm out of step across a joint -, then on its nodes)
+        for phase in ("corner", "node"):
+            for f_l in adj:
+                f_b = adj[1] if f_l == adj[0] else adj[0]
+                boxes_b = [(j, g) for j, g in cols.get(f_b, []) if plan[f_b]["ws"][j].boxed2
+                           and plan[f_b]["plans"][j] is None]
+                own_l = {s_: (j_l, g_l) for j_l, g_l in cols.get(f_l, []) for s_ in g_l[:2]}
+                for j_b, (b0, b1, _near_b, _gap_b) in boxes_b:
+                    k_b = plan[f_b]["ws"][j_b].n // 4 + 2
+                    seg_b = (b1 - b0) / k_b
+                    nodes = [b0 + i * seg_b for i in range(1, k_b)]
+                    if phase == "corner":
+                        if not BOX_CORNER_MEET:
                             continue
-                        a_l = sorted(side_at.get((fi_of[f_l], 4 * j_l + q), s) for q in (0, 1))
-                        l_side = (a_l[0], a_l[1], y_n, abs(y_n - v_l))
-                    if l_side is not None:
-                        # its box's side, from the line across it nearest the joint (its box's corner, where its box
-                        # stands beside the joint) to the joint: that last piece slants, towards its box
-                        l0, l1, _near_l, gap_l = l_side
-                        inward = 1.0 if 0.5 * (l0 + l1) > s else -1.0
+                        cands = [x for x in (b0, b1) if x not in moves]
                     else:
-                        # a line L only carries (no box side of its own there): moved whole, when it meets no other
-                        # shared edge of L's
-                        gap_l, inward = 0.0, 0.0
-                    # (towards L's box first, then the other way; the nearest first)
-                    n_ok = fits(moves)
-                    for _back, _d, to in sorted(((x - s) * inward < 0, abs(x - s), x) for x in nodes):
-                        others = [moves.get(x, x) for x in pts if abs(x - s) > eps] + ends
-                        if any(abs(x - to) < floor - eps or (x - s) * (x - to) < 0 for x in others):
+                        cands = nodes
+                    for s in [x for x in pts if b0 + eps < x < b1 - eps and x not in moves]:
+                        if min(abs(s - x) for x in nodes) <= eps:
                             continue
-                        if l_side is not None:
-                            if not _slant_fits(abs(to - s), gap_l, seg_b, mm, high_mm, aims, edge=False):
+                        keys = [int(k) for at, _e, sides in out if abs(at - s) <= eps for k in sides]
+                        if any(k // big == fi_of[f_b] for k in keys):
+                            continue        # (a side of the box's own face stands there too)
+                        mine = [k for k in keys if k // big == fi_of[f_l]]
+                        l_side = next((g[1] for x, g in own_l.items() if abs(x - s) <= eps), None)
+                        if mine and l_side is None:
+                            # (a side of a box of L's further from the joint: its last piece runs from the line
+                            # across nearest the joint)
+                            j_l = (mine[0] % big) // 4
+                            bx_l = plan[f_l]["boxes"][j_l]
+                            v_l = float(vj[f_l])        # type: ignore[arg-type]
+                            near_l = bx_l[2] if abs(bx_l[2] - v_l) <= abs(bx_l[3] - v_l) else bx_l[3]
+                            ys_l = [y for y, _k in plan[f_l]["vals"]["v"] if (y - near_l) * (v_l - y) > 0
+                                    and abs(y - v_l) > eps] + [near_l]
+                            y_n = ys_l[int(np.argmin([abs(y - v_l) for y in ys_l]))]
+                            if abs(y_n - v_l) <= SNAP * h:
                                 continue
-                        elif not _free_run(gmsh, plan[f_l]["outer"], c, axis, (s, to), eps):
-                            break
-                        moves[s] = to
-                        if any(a_ > b_ for a_, b_ in zip(fits(moves), n_ok, strict=True)):
-                            del moves[s]        # (it would cost another two-ring box beside the joint its count)
-                            continue
-                        (whole if l_side is None else slant)[s] = f_l
-                        break
+                            a_l = sorted(side_at.get((fi_of[f_l], 4 * j_l + q), s) for q in (0, 1))
+                            l_side = (a_l[0], a_l[1], y_n, abs(y_n - v_l))
+                        if l_side is not None:
+                            # its box's side, from the line across it nearest the joint (its box's corner, where its
+                            # box stands beside the joint) to the joint: that last piece slants, towards its box
+                            l0, l1, _near_l, gap_l = l_side
+                            inward = 1.0 if 0.5 * (l0 + l1) > s else -1.0
+                        else:
+                            # a line L only carries (no box side of its own there): moved whole, when it meets no
+                            # other shared edge of L's
+                            gap_l, inward = 0.0, 0.0
+                        # (the move that leaves this joint's boxes the fewest segments short, no box worse off;
+                        # towards L's box first, then the nearest)
+                        n_ok = fits(moves)
+                        best = None
+                        for back, d_, to in sorted(((x - s) * inward < 0, abs(x - s), x) for x in cands):
+                            others = [moves.get(x, x) for x in pts if abs(x - s) > eps] + ends
+                            if any((abs(x - to) < floor - eps and not (phase == "corner" and abs(x - to) <= eps))
+                                   or (x - s) * (x - to) < 0 for x in others):
+                                continue
+                            if d_ > seg_b + eps:
+                                continue
+                            if l_side is not None:
+                                if not _slant_fits(d_, gap_l, seg_b, mm, high_mm, aims, edge=False):
+                                    continue
+                            elif not _free_run(gmsh, plan[f_l]["outer"], c, axis, (s, to), eps):
+                                continue
+                            moves[s] = to
+                            got_f = fits(moves)
+                            del moves[s]
+                            if any(a_ > b_ for a_, b_ in zip(got_f, n_ok, strict=True)):
+                                continue        # (it would cost another two-ring box beside the joint its count)
+                            key_ = (sum(got_f), back, d_)
+                            if (phase == "node" or sum(got_f) < sum(n_ok)) and (best is None or key_ < best[0]):
+                                best = (key_, to)
+                        if best is not None:
+                            moves[s] = best[1]
+                            (whole if l_side is None else slant)[s] = f_l
         if not moves:
             continue
 
@@ -2844,7 +2881,8 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                 cells_out: set[int] | None = None, no_cut: frozenset = frozenset(),
                 cut_out: dict[int, set[int]] | None = None, made_out: set[int] | None = None,
                 why_where: dict[str, list[int]] | None = None, join_out: dict[int, set[int]] | None = None,
-                wish_out: dict[int, int] | None = None, wish_long: set[int] | None = None, quad_aims: tuple = ()
+                wish_out: dict[int, int] | None = None, wish_long: set[int] | None = None, quad_aims: tuple = (),
+                own_bolt: frozenset = frozenset()
                 ) -> tuple[list[Washer], list[Washer], dict[int, int], set[int], dict[str, int]]:
     """SHMESH-41: each flat face whose inner loops are all washer holes is cut into a grid: round each hole a box
     along the face's own frame (its longest straight edge) - an O-grid's (_boxed) or a free box - every box side drawn
@@ -3013,7 +3051,8 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
             bends: dict[tuple[int, float, float], tuple[float, float]] = {}
             # SHMESH-51e: the two-ring bolt holes' free boxes own their sides: no other line ends on them
             # (and, in a face that holds two-ring bolt holes, its bolt holes taken back to one ring: their boxes too)
-            two_here = any(w.boxed2 for w in ws)
+            # (SHMESH-51o2: or a face whose bolt holes the run tries with one ring, as its two rings left triangles)
+            two_here = any(w.boxed2 for w in ws) or tag_of.get(t) in own_bolt
             owned = [j for j, (w, p) in enumerate(zip(ws, plans, strict=True))
                      if BOX_OWNS_SIDES and STOP_AT_BOXES and FREE_BAND and p is None and not w.corners
                      and (w.boxed2 or (two_here and w.info.get("bolt"))) and j not in fp["in_grid"]]
@@ -3248,8 +3287,14 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                 cut_curves = {c for got in cmap[1:] for d, c in got if d == 1}
                 # SHMESH-48j: which of the three causes fired, with its numbers, goes in the reason
                 causes: list[str] = []
-                shortest = min(((float(gmsh.model.occ.getMass(1, abs(c))), abs(int(c))) for s in cells
-                                for _d, c in gmsh.model.getBoundary([(2, s)], oriented=False)), default=(math.inf, 0))
+                edges_t = {abs(int(c)) for s in cells for _d, c in gmsh.model.getBoundary([(2, s)], oriented=False)}
+                if HOLE_PIECES:
+                    # SHMESH-51q: a CAD piece of a hole's own circle (0.005 mm on a real column's 19.8 mm hole) is no
+                    # cell edge to refuse the grid for: its ring asks for the hole drawn again as one circle
+                    # (SHMESH-45b/45k), which never came while the face was refused here
+                    edges_t -= {c for c in edges_t if _on_any_hole(gmsh, c, ws)}
+                shortest = min(((float(gmsh.model.occ.getMass(1, c)), c) for c in sorted(edges_t)),
+                               default=(math.inf, 0))
                 small = shortest[0] < CELL_MIN * h
                 cut_piece = short_piece(shortest[1]) if small and TRIM_SHORT else None
                 # (48t: only a straight edge along the frame - a piece of a line or of the outline there - is left for

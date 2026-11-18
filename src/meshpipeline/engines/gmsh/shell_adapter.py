@@ -241,6 +241,11 @@ BOLT_TRIA_GUARD = True
 #: let go (the mesh before it stands) once the run passes GUARD_TIME of it
 GUARD_START = 0.4
 GUARD_TIME = 0.65
+#: SHMESH-51o2: in that trial the faces' bolt holes, now one ring each, still own their boxes (no line ends on them, each
+#: side one curve at its band's count): taken back to one ring by SHMESH-51b's way alone, the other holes' lines ended
+#: on their boxes and cut each side 31.7 + 13.7 mm, the box cells were paved (8 triangles a box) and the real column's
+#: trial came out with 108 triangles where a6cdf476's one ring had 71
+GUARD_OWN = True
 
 
 def _tria_faces(mesh, applied: dict, owners: list[str], everywhere: bool = False) -> list[int]:
@@ -1195,7 +1200,9 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
                                            no_cut=frozenset(no_cut), check_maps=unmapped < UNMAP_ROUNDS,
                                            judge_faces=True, compare=compare, grids_kept=frozenset(kept),
                                            one_ring_at=tuple(one_ring_at), hole_rounds=hole_rounds,
-                                           gridded_ever=gridded_ever, redraw_now=redraw if EARLY_REDRAW and not redraw_pass and not resplined
+                                           gridded_ever=gridded_ever, own_bolt=frozenset(k for f_ in guard_faces for k in f_)
+                                           if GUARD_OWN else frozenset(),
+                                           redraw_now=redraw if EARLY_REDRAW and not redraw_pass and not resplined
                                            else None)
                 passes.append(["made", round(time.monotonic() - t_pass, 1)])
             except _Redraw:
@@ -1522,7 +1529,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                hole_before: tuple = (), no_cut: frozenset = frozenset(), judge_faces: bool = False,
                check_maps: bool = False, compare: dict | None = None, grids_kept: frozenset = frozenset(),
                redraw_now=None, one_ring_at: tuple = (), hole_rounds: int | dict = 0,
-               gridded_ever: set | None = None) -> tuple[ShellMesh, dict]:
+               gridded_ever: set | None = None, own_bolt: frozenset = frozenset()) -> tuple[ShellMesh, dict]:
     """One mesh. `unmap` (SHMESH-40): gmsh surfaces left free (their grid came out past the solver's limits once);
     `check_maps`: raise _Unmap when a mapped face's grid comes out past them. `own_spots` (SHMESH-31): (sewn face, box low corner, box high corner - mm) round elements a mesh
     under the user's sizes left past the solver's own limits: inside each box the face's own rules' size, where
@@ -1719,7 +1726,8 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                     gmsh, washers + squares, tag_of, {t: float(rows[k]["size_mm"]) for t, k in tag_of.items()}, hole_size, mm,
                     cuts=cut_curves, low_mm=(sizing or {}).get("low_mm"), high_mm=(sizing or {}).get("high_mm"),
                     cells_out=grid_cells, no_cut=no_cut, cut_out=cut_of, made_out=grid_faces_made, join_out=join_of,
-                    why_where=skipped_where, wish_out=box_wish, wish_long=box_wish_long, quad_aims=tuple(lim.aims or ()))
+                    why_where=skipped_where, wish_out=box_wish, wish_long=box_wish_long, quad_aims=tuple(lim.aims or ()),
+                    own_bolt=own_bolt)
                 if ST.BOLT_GRID_FIRST:
                     # SHMESH-51b: a face refused a grid while it holds two-ring bolt holes is tried again with one
                     # ring round them; where it still is refused its holes keep their two rings in its free mesh
@@ -1739,7 +1747,8 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                             cuts=cut_curves, low_mm=(sizing or {}).get("low_mm"),
                             high_mm=(sizing or {}).get("high_mm"), cells_out=grid_cells, no_cut=no_cut,
                             cut_out=cut_of, made_out=grid_faces_made, join_out=join_of, why_where=where_b,
-                            wish_out=box_wish, wish_long=box_wish_long, quad_aims=tuple(lim.aims or ()))
+                            wish_out=box_wish, wish_long=box_wish_long, quad_aims=tuple(lim.aims or ()),
+                            own_bolt=own_bolt)
                         gridded, boxed = gridded + g2, boxed + b2
                         block_preset.update(p2)
                         block_holes = block_holes | h2
