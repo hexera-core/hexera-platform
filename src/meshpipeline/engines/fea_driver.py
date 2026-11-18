@@ -973,11 +973,14 @@ def make_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | None
     # registry's appliers (the measurement record carries the set into every plan of the run)
     from meshpipeline.engines import control_appliers as CA
     growth = L.growth(levers)
+    if sizes:
+        zone_list = P.user_sized(zone_list, sizes)
+    # AFTER the sizes: a count the notes ask (elements through the walls) is the more exact ask, and it wins over a
+    # size range - the saved meshing standard's "shortest edge over 0.5 x the global size" held a 1 mm wall's
+    # elements at 5 mm, so the 5 through it the notes asked became 0.2 (job 4b1ee697)
     knobs: dict = {"zones": zone_list, "growth": growth, "gentle": growth < P.GROWTH}
     controls = CA.apply("fea_solid", record.get(CA.RECORD_KEY), knobs)
     zone_list, growth = knobs["zones"], float(knobs["growth"])
-    if sizes:
-        zone_list = P.user_sized(zone_list, sizes)
     if s != 1.0 or u != 1.0:
         zone_list = P.scaled(zone_list, s, u)
     base_m = P.base_size(diag_m, s, u)

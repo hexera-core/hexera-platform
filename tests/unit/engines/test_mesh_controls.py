@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from meshpipeline.contracts import mesh_controls as MC
 from meshpipeline.engines import cfd_requirements as CR
 from meshpipeline.engines import control_appliers as CA
@@ -62,6 +64,53 @@ def test_fea_solid_applies_growth_and_elements_through_the_wall():
     assert row["applied"] is True and row["met"] is None and "3 elements through each of 1 wall" in row["delivered"]
     # before NOTE-13 the solid's report said "not applied - on a solid, sizes grow by our own fixed rate"
     assert CA.report_row("fea_solid", "growth", got)["delivered"].startswith("applied as a setting")
+
+
+def test_the_count_through_the_walls_wins_over_a_size_range():
+    """Job 4b1ee697: the saved meshing standard's 5-15 mm range (shortest edge 0.5 x the 10 mm global) held a 1 mm
+    wall's elements at 5 mm, so the 5 through it the notes asked became 0.2 - the count is applied after the range."""
+    from meshpipeline.engines import fea_plan as P
+    req, _d, _na = _read("5 elements through the thickness",
+                         controls=[_ctl("wall_elements", "5 elements through the thickness", 5)])
+    wall = {"id": "W1", "kind": "wall", "faces": ["Face_1"], "size_m": 0.0005, "thickness_m": 0.001,
+            "why": "a 1 mm wall under Face_1: 2 elements through it"}
+    notch = {"id": "H1", "kind": "notch", "faces": ["Face_2"], "size_m": 0.0002, "thickness_m": 0.001,
+             "radius_m": 0.0005, "spot": "H1"}
+    zones = P.user_sized([wall, notch], {"Part_1": {"min_m": 0.005, "max_m": 0.015, "whole": True}})
+    assert zones[0]["size_m"] == pytest.approx(0.005) and zones[0]["crossed"] == "PLAN-fea-3"   # the range alone
+    knobs = {"zones": zones, "growth": 1.3, "gentle": False}
+    got = CA.apply("fea_solid", req, knobs)
+    w, h = knobs["zones"]
+    assert w["size_m"] == pytest.approx(0.001 / 5) and w["wall_elements"] == 5 and "crossed" not in w
+    assert w["count_wins"] == 5
+    # the notch beside it: 5 through its wall too, and no longer marked short of its accuracy by the range
+    assert h["size_m"] == pytest.approx(0.0002) and h["wall_elements"] == 5 and not h.get("below_accuracy")
+    assert got["wall_elements"]["status"] == "applied"
+    assert "finer than the shortest element asked (5 mm): the count wins there" in got["wall_elements"]["built"]
+    words = " ".join(P.user_words({"user_sizes": {"Part_1": {"min_m": 0.005, "max_m": 0.015, "whole": True}},
+                                   "zones": knobs["zones"]}))
+    assert "to give the 5 elements through them your notes ask for" in words
+    assert "fewer than 2 elements through" not in words and "cannot be built valid" not in words, words
+
+
+def test_a_real_part_takes_the_count_through_its_walls_over_a_size_range(tmp_path):
+    """The plan seam itself (fea_driver.make_plan, through choose_plan): a 4 mm plate under a 6-8 mm range and
+    "3 elements through the thickness" is planned at 3 through its wall, not at the range's 6 mm."""
+    pytest.importorskip("OCP.BRepPrimAPI")
+    pytest.importorskip("gmsh")
+    from tests import fea_fixtures as fx
+    from tests.unit.engines.test_fea_driver import _stage
+
+    from meshpipeline.engines import fea_driver as FD
+    ws = _stage(fx.plate_with_hole(), tmp_path / "plate")
+    record, surface, diag = FD.measure_staged(ws)
+    req, _d, _na = _read("3 elements through the thickness",
+                         controls=[_ctl("wall_elements", "3 elements through the thickness", 3)])
+    record[CA.RECORD_KEY] = req
+    plan = FD.choose_plan(record, surface, diag, sizes={"Part_1": {"min_m": 0.006, "max_m": 0.008}})
+    walls = [z for z in plan["zones"] if z["kind"] == "wall"]
+    assert walls and all(z["size_m"] == pytest.approx(z["thickness_m"] / 3, rel=1e-3) for z in walls)
+    assert plan["controls"]["wall_elements"]["status"] == "applied"
 
 
 def test_a_gentler_grading_the_ladder_needed_is_kept_and_said():

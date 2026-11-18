@@ -245,7 +245,9 @@ def brief(record: Mapping, state: Mapping, zone_list: list[dict], *, diag_m: flo
             "qualifies (it is meshed coarser and kept - the mesh never removes geometry); a region "
             "they care about is a zone to refine; an element count they named is target_elements (a range: target_min and target_max); supports, "
             "loads, load histories and joints between parts are theirs to set in their solver on the "
-            "named faces (joints may be suggested). Say in notes_remark what you did with them.")
+            "named faces (joints may be suggested). A number of elements through the walls they name is set by "
+            "the rules from their notes, after you - leave it to them and never say it is not applied. Say in "
+            "notes_remark what you did with them.")
     # AN ASSEMBLY (PLAN-fea-17, engines/fea_driver.prepare_assembly): its parts and where they meet,
     # for the joint suggestion (AI-fea-7) - the user's own answer on the stage is shown too
     asm = record.get("assembly_plan") or {}

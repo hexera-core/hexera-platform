@@ -93,15 +93,35 @@ def fea_growth(target: dict, value) -> tuple[str, str]:
     return "applied", f"sizes grow by at most {g:g} from one element to the next"
 
 
+def _fea_marks_again(z: dict) -> None:
+    """A zone a size range held coarser (fea_plan.user_sized) and the count then made finer: the marks the range left
+    on it (fewer through the wall than the rule, below the hot spot's accuracy) are worked out again for its new
+    size, so the words and the mesh check read what is planned now."""
+    rule = z.get("rule_size_m")
+    if rule is None:
+        return
+    from meshpipeline.engines import fea_plan as P
+    for k in ("crossed", "below_accuracy"):
+        z.pop(k, None)
+    if float(z["size_m"]) <= float(rule) and z.get("kind") in ("hole", "fillet", "notch"):
+        # as fine as its rule's size again: the count per quarter-turn the range lowered is the rule's own again
+        z.pop("per_quarter", None)
+    P._accuracy({**z, "size_m": float(rule)}, z, float(z["size_m"]))
+
+
 def fea_wall_elements(target: dict, value) -> tuple[str, str]:
     """FEA solid: N elements through every wall (PLAN-fea-3's 2; a hot spot's wall keeps its own 3 when that is more).
-    Each wall zone is sized thickness / N."""
+    Each wall zone is sized thickness / N - also where a size range the user set (their notes or their saved
+    meshing standard: fea_plan.user_sized, applied before this) would hold it coarser: the count is the more exact
+    ask and wins there, and the words say how many walls that made finer than the shortest size asked."""
     n = int(value)
     walls = 0
+    under_min: list[float] = []
     for z in target.get("zones") or []:
         t = z.get("thickness_m")
         if not t:
             continue
+        before = float(z["size_m"])
         if z.get("kind") in ("wall", "wall_spot"):
             z["size_m"] = float(t) / n
             z["wall_elements"] = n
@@ -110,9 +130,23 @@ def fea_wall_elements(target: dict, value) -> tuple[str, str]:
         elif n > float(z.get("wall_elements") or 0):
             z["size_m"] = min(float(z["size_m"]), float(t) / n)
             z["wall_elements"] = n
+        else:
+            continue
+        if float(z["size_m"]) < before:
+            z.pop("valid_held", None)    # finer for the count now, not held at the coarsest valid size
+        _fea_marks_again(z)
+        lo = z.get("user_min_m")
+        if lo is not None and float(z["size_m"]) < float(lo) * (1 - 1e-6):
+            under_min.append(float(lo))
+            z["count_wins"] = n          # fea_plan.user_words says why it is finer than the range
     if not walls:
         return "applied", "no wall of this part is thin enough to set the element size; its own size gives more"
-    return "applied", f"{n} elements through each of {walls} wall{'s' if walls != 1 else ''}"
+    built = f"{n} elements through each of {walls} wall{'s' if walls != 1 else ''}"
+    if under_min:
+        k = len(under_min)
+        built += (f" - in {k} place{'s' if k != 1 else ''} that is finer than the shortest element asked "
+                  f"({max(under_min) * 1e3:.3g} mm): the count wins there")
+    return "applied", built
 
 
 def snappy_cells_across(target: dict, value) -> tuple[str, str]:
