@@ -116,6 +116,40 @@ def test_a_real_part_takes_the_count_through_its_walls_over_a_size_range(tmp_pat
     assert any("to give the 3 elements through them your notes ask for" in w for w in plan["words"])
 
 
+def test_the_stages_plans_are_not_reused_when_the_notes_set_a_control(monkeypatch):
+    """Job 5656805e (no standard, no sizes): the stage's plan - made before the notes - was reused, so make_plan's
+    seam never ran and "5 elements through the thickness" was meshed at the rules' 2."""
+    from meshpipeline.engines import fea_driver as FD
+    from meshpipeline.engines import fea_plan_options as PO
+    monkeypatch.setattr(PO, "kept_plan", lambda kept, key, pick: {"from": "stage"} if kept else None)
+    monkeypatch.setattr(FD, "_restate", lambda record, plan: plan)
+    monkeypatch.setattr(FD, "choose_plan", lambda *a, **k: {"from": "run"})
+    state = {"fea_plan_choice": PO.FULL}
+    kw = {"levers": [], "ceiling_s": None, "ai": None, "kept": {"key": "k"}, "key": "k"}
+    assert FD.size_choice(state, {}, None, 0.02, **kw)[0] == {"from": "stage"}       # nothing asked: reused
+    req, _d, _na = _read("5 elements through the thickness",
+                         controls=[_ctl("wall_elements", "5 elements through the thickness", 5)])
+    assert FD.size_choice(state, {CA.RECORD_KEY: req}, None, 0.02, **kw)[0] == {"from": "run"}
+
+
+def test_a_count_through_the_walls_is_met_when_the_mesh_measures_it():
+    """Hinge e0f6a98b: 3 asked, 3.0 measured through the limiting wall, yet "0 met; 1 applied as a setting"."""
+    from meshpipeline.engines import fea_requirements as FR
+    req, _d, _na = _read("3 elements through the thickness",
+                         controls=[_ctl("wall_elements", "3 elements through the thickness", 3)])
+    applied = {"wall_elements": {"id": req["controls"]["wall_elements"]["id"], "status": "applied",
+                                 "built": "3 elements through each of 4 walls"}}
+    base = {"applied": True, "met": None, "delivered": "applied as a setting - 3 elements through each of 4 walls"}
+    assert CA.report_row("fea_solid", "wall_elements", applied) == base
+    got = FR._through_row(req, dict(base), 3.0)
+    assert got["met"] is True and got["delivered"] == "3 elements through the thinnest wall"
+    got = FR._through_row(req, dict(base), 2.61)
+    assert got["met"] is False and got["delivered"] == "2.61 elements through the thinnest wall, not 3"
+    rep = MR.finish_report([{"id": "r1", "field": "control:wall_elements", "asked": "3 elements through the thickness "
+                             "of every wall", **FR._through_row(req, dict(base), 3.0)}], 10, "")
+    assert MR.summary(rep, kind="solid") == "Of the 1 thing you asked for: 1 met."
+
+
 def test_a_gentler_grading_the_ladder_needed_is_kept_and_said():
     knobs = {"zones": [], "growth": 1.2, "gentle": True}
     status, built = CA.fea_growth(knobs, 1.5)

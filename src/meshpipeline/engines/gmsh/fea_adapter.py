@@ -2193,7 +2193,9 @@ def _mesh(workspace) -> int:
             from meshpipeline.engines import fea_requirements, shell_run
             wanted = shell_run.requirements_in(ws)
             if wanted and solid is not None:
-                asked_report = fea_requirements.report(solid, wanted, order=order, applied=plan.get("controls"))
+                asked_report = fea_requirements.report(
+                    solid, wanted, order=order, applied=plan.get("controls"),
+                    through_wall=(rules.get("through_wall") or {}).get("min") if rules else None)
                 if mmg.get("targets"):
                     from meshpipeline.engines import fea_mmg as _mmg_told
                     asked_report = _mmg_told.tell(asked_report, mmg)

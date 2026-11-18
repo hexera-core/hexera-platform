@@ -100,12 +100,27 @@ def _measures(mesh) -> dict[str, np.ndarray]:
     return {k: np.concatenate(v) if v else np.zeros(0) for k, v in parts.items()}
 
 
+def _through_row(req: Mapping, got: dict, measured: float) -> dict:
+    """NOTE-13: elements through the walls, asked against delivered - the fewest measured through any planned wall
+    (engines/fea_checks, read to within its 10%) against the count asked: met or not met, never "applied as a
+    setting" when the mesh says which (hinge e0f6a98b measured 3.0 for 3 asked and was told "0 met")."""
+    from meshpipeline.engines.fea_checks import TOLERANCE
+    n = ((req.get("controls") or {}).get("wall_elements") or {}).get("value")
+    if not n or got.get("applied") is False:
+        return got
+    met = measured >= float(n) * TOLERANCE
+    said = f"{MR._g(round(measured, 2))} elements through the thinnest wall"
+    return {"applied": True, "met": met, "measured": float(f"{measured:.4g}"),
+            "delivered": said if met else f"{said}, not {int(n)}"}
+
+
 def report(mesh, req: Mapping | None, *, mm_per_unit: float = 1000.0, order: int = 2,
-           applied: Mapping | None = None) -> dict | None:
+           applied: Mapping | None = None, through_wall: float | None = None) -> dict | None:
     """PLAN-fea-34: for every requirement read from the notes, what was asked and what the built solid mesh
     delivers (the shape of engines/shell_requirements.report). None with no requirement. `mm_per_unit`: the
     mesh's coordinates in millimetres each (the solid is meshed in metres). `applied`: what the plan's seam did with
-    each control (the plan's "controls", NOTE-13), when the caller has the plan."""
+    each control (the plan's "controls", NOTE-13), when the caller has the plan. `through_wall`: the fewest
+    elements measured through a wall of the plan (engines/fea_checks), which the count through the walls is held to."""
     if not req or not req.get("rows"):
         return None
     m = _measures(mesh)
@@ -146,6 +161,8 @@ def report(mesh, req: Mapping | None, *, mm_per_unit: float = 1000.0, order: int
             # NOTE-13: a control's row from the registry (the growth rate is one since the plan's seam applies it)
             from meshpipeline.engines import control_appliers as CA
             got = CA.report_row("fea_solid", field.split(":", 1)[-1], applied)
+            if field == "control:wall_elements" and through_wall is not None:
+                got = _through_row(req, got, float(through_wall))
         elif field == "thickness":
             got = {"applied": False, "met": None, "delivered": "not applied - a solid keeps the thickness of your CAD"}
         elif field in ("free_mesh", "no_washers", "structured"):

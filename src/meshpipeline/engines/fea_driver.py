@@ -711,7 +711,11 @@ def size_choice(state, record: dict, surface, diag_m: float, *, levers, ceiling_
                       "inputs": {"picked": True, "set_aside": pick, "by": "sizes" if sizes else "count"},
                       "words": f"The {asked} you asked for sets the mesh, so the size picked on the stage is not used."}
     unchanged, applied = _ai_changes_nothing(record, ai, diag_m)
-    reuse = kept if (unchanged and not levers) else None
+    # NOTE-13: the stage made its plans before the notes were written, so a control the notes set (elements through
+    # the walls, a growth rate) is in neither - they are planned again here, where make_plan applies it (job
+    # 5656805e reused the stage's plan and meshed 2 through the walls for "5 elements through the thickness")
+    from meshpipeline.engines import control_appliers as CA
+    reuse = kept if (unchanged and not levers and not CA.asked(record.get(CA.RECORD_KEY))) else None
 
     def plan_of(which: str) -> dict:
         got = PO.kept_plan(reuse, key, which)
