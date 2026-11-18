@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from meshpipeline.contracts.mesh_units import completed_mesh_unit
-from meshpipeline.sandbox.review_session import ResolvedArtifact
+from meshpipeline.sandbox.review_session import FRAME_WHOLE, ResolvedArtifact, ResolvedCut
 
 logger = logging.getLogger(__name__)
 
@@ -70,10 +70,42 @@ class ResolvedRenderInputs:
 
     surface: ResolvedArtifact
     volume: ResolvedArtifact | None = None
+    # THE FRAMES THAT CAME HOME INSTEAD OF THE INTERIOR, by region name, already confined and
+    # measured by review_session. Empty for every job whose volume arrived: see
+    # render_adapter.build_backend for why the two are never offered together.
+    cuts: Mapping[str, tuple[ResolvedCut, ...]] = field(default_factory=dict)
 
     @property
     def has_volume(self) -> bool:
         return self.volume is not None
+
+    @property
+    def has_cuts(self) -> bool:
+        return bool(self.cuts)
+
+    def cut_frames(self, region_id: str) -> tuple[ResolvedCut, ...]:
+        return tuple(self.cuts.get(region_id) or ())
+
+    def cut_frame(self, region_id: str, scope: str = "") -> ResolvedCut | None:
+        """One frame of one region: the one named, or THE PLANE THE REGION NAMES.
+
+        WITH NO SCOPE NAMED THE ANSWER IS THE WHOLE PLANE, not a magnified corner of it, and
+        that is a correction to what this returned before. `inspect_region("through_the_plate")`
+        asks about that cut; its zoom covers 8.05 x 6.04 mm of a plane 177.5 x 133.1 mm across,
+        which is 0.27% of it. Both come back as one picture of one region, so a caller that
+        named the plane and was handed a hundredth of a percent of it cannot see the
+        substitution - and that region's own published question, "where the coolant reaches and
+        where the metal is", is a question about the plane.
+
+        The zoom is the frame an inspection is JUDGED on, and the reviewer is told that in its
+        opening message, told it again on every frame it is handed, and asks for it by name.
+        Costing it one extra call is the price of never answering the wrong question silently.
+        """
+        frames = self.cut_frames(region_id)
+        if scope:
+            return next((c for c in frames if c.scope == scope), None)
+        return next((c for c in frames if c.scope == FRAME_WHOLE),
+                    frames[0] if frames else None)
 
 
 @dataclass(frozen=True)

@@ -9,7 +9,6 @@
 # "constant/fluid/cellToRegion is larger than the 8388608 byte scan cap - refusing", the solid
 # region came back unreadable and the run reported "solid: no cells". Any mesh past about a million
 # cells hit it, on every engine.
-import pytest
 
 from meshpipeline.sandbox import foam_case_guard as G
 

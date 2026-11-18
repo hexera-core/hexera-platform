@@ -43,9 +43,38 @@ _INT_METRICS: Final[tuple[str, ...]] = (
     # `layers.fit_complaint` now refuses exactly that dict. At 60.0% of a cell the same part came
     # back with 2,936 faces in error out of 102,536,327 cells.
     #
-    # The graded levels and the cell size at the wall still travel beside it, because a layer count
-    # alone does not say how the wall was resolved.
-    "near_wall_layers", "near_wall_levels",
+    # THE COUNT ITSELF IS A FRACTION AND IS IN `_FLOAT_METRICS` BELOW, NOT HERE. It was here, and
+    # that is the defect this split exists for: on the real plate (job 0ff6f9e5, 2026-11-16) the
+    # engine measured 2.25 layers of the 3 asked for, and `_as_int(2.25)` published 2. The user had
+    # already been quoted 3, which was the REQUEST. 2 is neither the request nor the achievement, so
+    # the one change whose whole purpose was to stop publishing an intention as a measurement would
+    # have shipped a THIRD number, and one the mesh does not have.
+    #
+    # WHAT DOES BELONG HERE IS THE ASK, as a whole number of layers, because the achievement alone
+    # is not a reading: 2.25 with nothing beside it cannot be seen to have fallen short of
+    # anything, which is how 3 came to be quoted as an achievement in the first place.
+    "near_wall_layers_asked",
+    # THE FOURTH OF THIS ENGINE'S FOUR LAYER FLOORS TAKES TWO NUMBERS.
+    # `layers.ILLEGAL_PER_MILLION_CEILING` is 200.0 faces in error per million cells ADDED, so
+    # neither figure can be read alone: the plate left 8,916 over 37,247,044, which is 239 per
+    # million and over the ceiling. The count by itself is a number with nothing to compare to.
+    "layer_faces_in_error", "layer_cells_added",
+    # HOW MANY REPAIR ITERATIONS THE MOVER RAN - 10 on the plate, and every one of them took
+    # coverage DOWN, 97.2267% at extrusion to 88.5826% at the end. The final coverage says a floor
+    # was missed; the iteration count beside it says the REPAIR is what missed it, which is a
+    # different defect and a different fix. The ten-point curve itself stays in the manifest: a
+    # series is not a figure, and this panel has one value to a row.
+    "layer_iterations",
+    # HOW MANY FLOORS THIS ENGINE JUDGES A LAYER PASS BY - `layers.LAYER_FLOORS`, which is four.
+    # THE DENOMINATOR, and the panel had none: a run that fell under three of them showed three
+    # sentences, and "three of four" was arithmetic the reader had to do from a number that was
+    # nowhere on the page. It travels rather than being written into the viewer because a
+    # constant with a second reader on the far side of an HTTP boundary is a constant that can
+    # disagree, which is the mistake this engine has already paid for once.
+    "layer_floors_total",
+    # The graded levels and the cell size at the wall still travel beside the count, because a
+    # layer count alone does not say how the wall was resolved.
+    "near_wall_levels",
     # and the conformality itself, which is the number that says the interface is real: the same
     # face count on each side of it
     "interface_faces_fluid", "interface_faces_solid",
@@ -57,6 +86,107 @@ _FLOAT_METRICS: Final[tuple[str, ...]] = (
     "min_cell_m", "max_cell_m", "cell_size_ratio", "max_aspect_ratio",
     # the cell AT the wall, which is the near-wall resolution a reader asking about layers wants
     "near_wall_cell_m",
+    # THE LAYER COUNT THE MESH ACTUALLY HAS, to the precision it was measured at. A stack that
+    # covers part of a patch and was thinned over the rest does not come back a whole number -
+    # `snappyHexMesh` reports a mean per patch, and on the plate that mean is 2.25. Rounding it is
+    # not caution, it is a third figure: the ask was 3, the mesh has 2.25, and `_as_int` published
+    # 2 to the one panel a customer reads.
+    "near_wall_layers",
+    # HOW WELL IT GREW, against `layers.COVERAGE_FLOOR_PCT` 92.0 and `THICKNESS_FLOOR_PCT` 75.0.
+    # The plate came back at 88.5826% and 71.9%, under both. These two, the pair of counts above
+    # and the ask are every number this engine draws its own four floors on, so a reader can check
+    # all four from the payload without opening the manifest.
+    #
+    # `layer_coverage_pct` IS THE ONE OF THESE WITH MORE THAN ONE PRODUCER, and it was grepped
+    # before it was read: cfmesh_conjugate, cfmesh, snappy, snappy_multiregion and vmtk all write
+    # it, all meaning the share of wall faces that ended up layered, and `engines/verdict_limits`
+    # declares the single cross-engine Limit on it ("Wall covered by prism layers (percent)",
+    # >= 80.0). So this row widens the panel for five engines and not one, deliberately: it is one
+    # quantity under one name. The other ten keys in this group and the four above have exactly one
+    # producer each, `cfmesh_conjugate`. What is NOT picked up is cfMesh and snappy own layer
+    # counts, which travel under different names (`layers_requested`, `layers_in_meshdict`,
+    # `layers_stated`, `layers_mean`) and are mostly ASKS - the field this change exists to stop
+    # publishing as a result. Carrying those needs its own measurement, not this edit.
+    "layer_coverage_pct", "layer_thickness_pct",
+    # and the stack as a LENGTH, beside `near_wall_cell_m`: 1.09e-05 m on the plate. A percentage
+    # of an ask says nothing about what it resolves.
+    "layer_thickness_m",
+)
+
+#: Declared yes/no answers. A GROUP OF THEIR OWN BECAUSE A BOOL IS NOT A SMALL NUMBER: `_as_int`
+#: and `_as_float` both refuse one deliberately (a True arriving as a count would read as 1), so a
+#: flag put through either of them disappears - and the one flag here is the one that says whether
+#: the number beside it was measured at all.
+_FLAG_METRICS: Final[tuple[str, ...]] = (
+    # WHETHER `near_wall_layers` IS A MEASUREMENT OR AN INTENTION. `finalize._near_wall` publishes
+    # the plan's ask under that name when no pass measured anything - on every mesh this engine has
+    # delivered with `layers: 0` that is the honest answer, and on a run whose layer log could not
+    # be read it is the only answer there is. 3 asked and 3 grown are the same number and only one
+    # of them is evidence, so the payload has to be able to tell them apart. ABSENT when the engine
+    # says nothing about layers at all, which reads as neither.
+    "near_wall_layers_measured",
+)
+#: Declared NAMES, carried as text, stripped, and dropped when empty - an empty name is not an
+#: answer to "which surface".
+_TEXT_METRICS: Final[tuple[str, ...]] = (
+    # WHICH SURFACE THE LAYERS ARE ON. On a conjugate mesh that is the coupling itself,
+    # `fluid_to_solid`, and it is the one patch the mesh exists for; a layer figure with no patch
+    # beside it could be about any of the nine boundaries.
+    "layer_patch",
+)
+#: Declared FINDINGS: a list of lines, each a sentence a reader can act on. EMPTY SURVIVES, and
+#: that is the whole reason this group is not filtered on truthiness. `[]` is "this was judged and
+#: it met every floor"; an ABSENT key is "nobody judged it". Collapsing the two is the failure this
+#: file exists to stop - a run that fell three floors short would then read exactly like a run
+#: nobody ever looked at.
+#:
+#: THE RULE BINDS THE PRODUCER TOO, AND FOR A DAY IT DID NOT. A reader is only entitled to read
+#: `[]` as a clean pass if nothing publishes `[]` without judging, and
+#: `cfmesh_conjugate/finalize._layers_published` did: a run whose layer log could not be read came
+#: through as `{"layer_iterations": 0, "layer_short": []}`, because the only figure an unreadable
+#: log leaves behind is an iteration count of 0 and the guard there asked whether ANY figure
+#: survived. It is closed from that side (2026-11-17) - this file's own contract is unchanged,
+#: which is why there is nothing to filter here.
+#:
+#: WHERE THAT GUARD ACTUALLY IS, CORRECTED 2026-11-18. This pointed at a helper called
+#: `_floors_had_a_reading`, which had no caller anywhere in src/, ui/, apps/ or tests/ and has now
+#: been removed. The guard is `len(unjudged) >= len(layers.LAYER_FLOORS)` inside
+#: `finalize._layers_published` itself, which returns the two tally keys and nothing else. The
+#: contract above was correct then and is correct now; only the pointer to the mechanism was
+#: wrong, which is worse than no pointer - a reader who follows it looks for the guard where it
+#: is not and does not find the one that runs.
+_LINE_METRICS: Final[tuple[str, ...]] = (
+    # WHERE THE LAYER PASS FELL UNDER THIS ENGINE'S OWN FLOORS, in `layers.shortfalls`' own words,
+    # computed once inside `conjugate.build` against the pass's own `cells_added` - a number no
+    # other artifact holds, so a second reader could not get the same answer. Three lines on the
+    # real plate. The figures above let a reader derive the misses; these say them.
+    "layer_short",
+    # ...AND WHICH OF THOSE FLOORS HAD NOTHING TO BE JUDGED ON, by name
+    # (`layers.floors_unjudged`). NAMES AND NOT SENTENCES, which is the one member of this group
+    # that is not a finding - it is here because it needs exactly this group's three states and
+    # none of the others': `[]` is "all four floors had a figure", a non-empty list is which ones
+    # did not, and an ABSENT key is a run that published nothing about layers at all.
+    #
+    # WITHOUT IT `layer_short` CARRIED TWO OPPOSITE MEANINGS. MEASURED, SYNTHETIC, 2026-11-17: a
+    # layer log holding only the Extruding and Added lines published `layer_coverage_pct` 99.9 and
+    # `layer_short` `[]`, which this file's own rule defines as "judged and met every floor" -
+    # while `near_wall_layers_measured` on the SAME payload said the count had not been measured.
+    # One floor had been evaluated and the panel reported four. The all-four-absent case is closed
+    # on the producer side by the `len(unjudged) >= len(layers.LAYER_FLOORS)` return in
+    # `finalize._layers_published` (until 2026-11-18 this pointed at a helper called
+    # `_floors_had_a_reading`, which had no caller and has been removed - `finalize`'s own note
+    # above that function carries what it recorded); this key closes the partial case, which that
+    # return by design lets through.
+    #
+    # AND WHAT THIS KEY ASSERTS, NARROWED 2026-11-18: which floors had no FIGURE to be drawn on,
+    # inferred by `layers.floors_unjudged` from the measured figures. It is NOT a record of which
+    # floors `shortfalls` reached. The two part only when `shortfalls` is called with no
+    # `n_layers` AND the layer table row asks for 0, which `conjugate.build` cannot do (it builds
+    # a layer report only under `layers > 0` and passes `n_layers=layers`); MEASURED, SYNTHETIC,
+    # 2026-11-18, the tally is exact on every shape the producer can emit, and `finalize`'s own
+    # comment carries the table and why the obvious roster patch moves the error rather than
+    # closing it.
+    "layer_floors_unjudged",
 )
 
 # Part kinds. Closed: the viewer groups by these, so a new kind is a deliberate
@@ -139,6 +269,30 @@ def _as_int(v: Any) -> int | None:
     return i if i >= 0 else None
 
 
+def _as_flag(v: Any) -> bool | None:
+    """A declared yes/no. A `bool` AND NOTHING ELSE: a 1 or a "true" arriving here is a reader
+    guessing at what an engine meant, and this group's one member decides whether the figure beside
+    it is evidence or an intention."""
+    return v if isinstance(v, bool) else None
+
+
+def _as_text(v: Any) -> str | None:
+    """A declared name. Stripped; blank is not a name and is dropped like an absent key."""
+    if not isinstance(v, str):
+        return None
+    s = v.strip()
+    return s or None
+
+
+def _as_lines(v: Any) -> list[str] | None:
+    """A declared list of findings, EMPTY INCLUDED - `[]` is a judgement that found nothing and
+    `None` is no judgement. A list or a tuple only: a bare string here would be published as a list
+    of its characters."""
+    if not isinstance(v, (list, tuple)):
+        return None
+    return [t for t in (str(x).strip() for x in v) if t]
+
+
 def _as_float(v: Any) -> float | None:
     if isinstance(v, bool) or v is None:
         return None
@@ -163,6 +317,23 @@ def quality(manifest: dict | None) -> dict[str, Any]:
         fv = _as_float(q.get(k))
         if fv is not None:
             out[k] = fv
+    # EVERY GROUP IS TESTED AGAINST None AND NEVER FOR TRUTH. `0`, `0.0`, `False` and `[]` are all
+    # readings - no faces in error, a flag that says the count was not measured, a judgement that
+    # found no shortfall - and a truthiness filter here would delete exactly the four answers a
+    # reader most needs, leaving the key absent, which this file's own rule says means "nobody
+    # looked".
+    for k in _FLAG_METRICS:
+        bv = _as_flag(q.get(k))
+        if bv is not None:
+            out[k] = bv
+    for k in _TEXT_METRICS:
+        sv = _as_text(q.get(k))
+        if sv is not None:
+            out[k] = sv
+    for k in _LINE_METRICS:
+        lv = _as_lines(q.get(k))
+        if lv is not None:
+            out[k] = lv
     named = _region_rows(q)
     if named:                      # a multi-region engine lists its regions; the count is theirs
         out["regions"] = len(named)

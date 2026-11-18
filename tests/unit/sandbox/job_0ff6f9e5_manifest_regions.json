@@ -1,0 +1,87 @@
+{
+ "inspection_regions": [
+  {
+   "clip_box": [
+    -0.06157654,
+    0.1159235,
+    0.02011018,
+    0.06194618,
+    -0.008590401,
+    0.0924096
+   ],
+   "kind": "slice",
+   "label": "Square across the coolant's path",
+   "name": "across_the_flow",
+   "normal": [
+    1.0,
+    0.0,
+    0.0
+   ],
+   "origin": [
+    0.02735098004,
+    0.04102818,
+    0.0419095995
+   ],
+   "why": "the cells across each passage, and the metal between them"
+  },
+  {
+   "clip_box": [
+    -0.06157654,
+    0.1159235,
+    0.02011018,
+    0.06194618,
+    -0.008590401,
+    0.0924096
+   ],
+   "kind": "slice",
+   "label": "Through the part at mid-thickness",
+   "name": "through_the_plate",
+   "normal": [
+    0.0,
+    1.0,
+    0.0
+   ],
+   "origin": [
+    0.02717348,
+    0.041070016,
+    0.0419095995
+   ],
+   "why": "where the coolant reaches and where the metal is"
+  },
+  {
+   "clip_box": [
+    -0.06157654,
+    0.1159235,
+    0.02011018,
+    0.06194618,
+    -0.008590401,
+    0.0924096
+   ],
+   "kind": "slice",
+   "label": "Along the coolant's path",
+   "name": "along_the_flow",
+   "normal": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "origin": [
+    0.02717348,
+    0.04102818,
+    0.042010599501
+   ],
+   "why": "the cells through the passage's height, with metal above and below"
+  }
+ ],
+ "mesh_paths": {
+  "surface": "/srv/workspaces/0ff6f9e5-4f85-49ce-9ca3-a63345199d59/generation_1/attempt_1/mesh.msh",
+  "volume": "VTK/fluid/cr_ws_vgcm8hv7_0/internal.vtu"
+ },
+ "mesh_units": "m",
+ "quality": {
+  "background_cell_m": 0.0004025248,
+  "cells": 283410955,
+  "faces": 873630123,
+  "near_wall_cell_m": 2.51578e-05
+ }
+}

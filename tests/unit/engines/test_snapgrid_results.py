@@ -176,6 +176,11 @@ def test_the_manifest_carries_the_thermal_slices_for_the_review(stb, tmp_path):
 
     case, _r, _rep = stb
     planes = R.slice_planes(json.loads((case / R.SIDECAR_NAME).read_text()))
+    # The manifest only publishes a volume that is really there (manifest._published_volume), and
+    # the slices are promised through it, so the fixture has to write one.
+    vtu = tmp_path / "VTK" / "case_0" / "internal.vtu"
+    vtu.parent.mkdir(parents=True, exist_ok=True)
+    vtu.write_text('<?xml version="1.0"?><VTKFile type="UnstructuredGrid"></VTKFile>')
     m = write_manifest(tmp_path, patch_types={}, patch_entities={}, bbox=(0, 0, 0, 1, 1, 1),
                        quality={"cells": 1}, body_bbox=((0, 0, 0), (1, 1, 1)), mesh_units="m",
                        mesh_mode="snapgrid", inspection_regions=planes,

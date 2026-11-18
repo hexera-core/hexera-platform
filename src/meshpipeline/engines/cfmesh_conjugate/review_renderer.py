@@ -44,6 +44,12 @@ class CfmeshConjugateReviewRenderer:
             required=bool(region_rule and region_rule.required),
             purpose=(region_rule.purpose if region_rule else "reveal internal structure"),
             volume_available=inputs.has_volume,
+            # THE INTERIOR OF THIS ENGINE'S MESH DOES NOT FIT IN A WORKER. The coolant's cells
+            # are 10.4 GB on the Corintis plate and `sandbox/backend.py::_load_volume` reads the
+            # file whole into a worker capped at 16 GiB, so the volume is cut where it was built
+            # and the frames travel instead. Without this the regions were advertised only when
+            # a volume had come home, which for this engine at production size is never.
+            cuts=inputs.cuts,
         )
         return BackendRenderSession(
             backend, inputs=inputs, regions=regions,

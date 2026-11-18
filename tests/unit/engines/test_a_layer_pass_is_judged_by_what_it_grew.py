@@ -246,8 +246,35 @@ def test_only_the_interface_is_named_and_the_ports_are_left_to_slide():
     assert "port_a" not in text and "port_b" not in text
 
 
-def test_the_smoothing_is_left_at_the_values_the_staircase_needs():
-    assert (L.SMOOTH_SURFACE_NORMALS, L.SMOOTH_THICKNESS, L.SMOOTH_NORMALS) == (1, 10, 3)
+def test_the_normals_are_not_smoothed_because_the_interface_is_a_staircase():
+    """Both normal smoothers are OFF, and the thickness smoother is not.
+
+    The conjugate interface is a staircase of axis-aligned faces. Smoothing its normals aims the
+    extrusion diagonally across the steps instead of along a face, which is why this module's own
+    rule is NEVER SMOOTH THE NORMALS ON A STAIRCASE. This used to pin (1, 10, 3), the values the
+    hand-built 65-minute run happened to use, under a name that claimed they were what a staircase
+    needs - they are the opposite.
+
+    Measured, same part and same chain, V1 (1, 10, 3) against V2 (0, 10, 0): faces in error 2,936
+    to 2,724, interpolation weights under 0.02 405 to 298, max non-orthogonality 76.6676 to
+    76.0512, max aspect ratio 322.161 to 241.68, coverage 95.553% to 95.7253%, and the pass 7%
+    quicker. Better on every measure.
+
+    nSmoothThickness stays at 10: it smooths how THICK the stack is, not which way it points, so
+    the staircase argument does not reach it and the measurement left it alone.
+    """
+    assert (L.SMOOTH_SURFACE_NORMALS, L.SMOOTH_NORMALS) == (0, 0), (
+        "a normal smoother is back on; on a staircase that aims the extrusion across the steps")
+    assert L.SMOOTH_THICKNESS == 10
+
+
+def test_the_rendered_dict_carries_the_zeros_not_just_the_constants():
+    """The constants are only worth anything if they reach the dict snappyHexMesh reads."""
+    text = L.render_layers_dict(interface_patch=INTERFACE, interface_cell_m=BL8_CELL_M,
+                                **_geom())
+    assert "nSmoothSurfaceNormals       0;" in text
+    assert "nSmoothNormals              0;" in text
+    assert "nSmoothThickness           10;" in text
 
 
 def test_the_decomposition_is_scotch_with_no_coefficients():
@@ -483,9 +510,118 @@ def test_a_pass_that_kept_no_layers_at_all_is_still_refused():
     assert "0.0 layers in the mesh against 3" in said
 
 
+def test_a_pass_that_kept_no_layers_at_all_misses_the_layers_floor_in_the_record_too():
+    """THE DEFECT, 2026-11-17. `shortfalls` guarded this floor on `0.0 < mesh_layers`, so the
+    largest miss it can have - a pass that grew NOTHING - fell through the one test that exists to
+    catch it, and the record came back one sentence short of the truth.
+
+    MEASURED, SYNTHETIC. The log below is GOOD_LOG's table with the layer count, the thickness and
+    the coverage taken to zero and 90,000 illegal faces left behind. All FOUR floors are missed;
+    before this change the list had THREE sentences and the silent one was the layer count itself.
+
+    `complain` does refuse such a run inside the mesher (the test above holds that, and it is why
+    this was never a defect in a DELIVERED mesh) - but the report can reach `finalize` across a
+    container boundary with `complain` never consulted, and a record that is three-quarters right
+    is the thing this engine has already been caught publishing once.
+    """
+    zero = (GOOD_LOG.replace("3        2.84     1.43e-05  94.6", "3        0        0         0")
+            .replace("(95.553%)", "(0.0001%)").replace("2888 illegal", "900000 illegal"))
+    got = L.read_layer_log(zero)
+    assert got["patches"][INTERFACE]["mesh_layers"] == 0.0, "the premise: a zero in the table"
+    short = L.shortfalls(got, interface_patch=INTERFACE, n_layers=3, cells=102_536_327)
+    assert any("kept 0.00 layers of the 3" in s for s in short), (
+        "a pass that grew no layers at all is not reported as missing this engine's layers "
+        f"floor, which is the floor it missed by the whole of it: {short!r}")
+    assert len(short) == len(L.LAYER_FLOORS), (
+        f"four floors were missed and the record names {len(short)}: {short!r}")
+
+
+def test_a_missing_layer_table_is_still_not_a_zero_layer_reading():
+    """The other side of the same guard, and why the presence test is `is not None` rather than
+    `> 0.0` being deleted. A log with no layer table has no reading of the count at all, so this
+    floor must stay silent - `floors_unjudged` is what says so, by name."""
+    no_table = GOOD_LOG[:GOOD_LOG.index("patch          faces")]
+    got = L.read_layer_log(no_table)
+    assert not got["patches"], "the premise: the parser found no layer table"
+    short = L.shortfalls(got, interface_patch=INTERFACE, n_layers=3, cells=102_536_327)
+    assert not any("layers of the 3" in s for s in short), (
+        f"a floor with no figure behind it was judged anyway: {short!r}")
+    assert "layers kept" in L.floors_unjudged(L.measured(got, interface_patch=INTERFACE)), (
+        "and the floor nobody could judge is not named as unjudged")
+
+
+def test_the_layers_floor_is_met_by_exact_equality_and_that_is_the_rule_not_an_accident():
+    """CHECKED, NOT ASSUMED. The real plate kept 2.25 of 3 and `LAYERS_FLOOR_FRACTION * 3` is
+    2.25, so this floor is decided at the boundary - and `2.25 < 2.25` is False, which is why the
+    delivered record says THREE floors missed and not four.
+
+    STRICTLY LESS THAN IS RIGHT. The floor is "at least 75% of the ask": 75% exactly meets it, and
+    a `<=` here would report a shortfall against a bar the pass reached. Nor is the equality a
+    float tail that could fall either way on another host - 0.75 is 3/4 and 2.25 is 9/4, both
+    exactly representable in binary, so the product is exact and this comparison is the rule.
+    REAL PLATE (job 0ff6f9e5) figures; neither SURFACE nor VOLUME - a reading of its layer log.
+    """
+    assert L.LAYERS_FLOOR_FRACTION * 3 == 2.25, "the boundary this case sits on is not exact"
+    at = GOOD_LOG.replace("3        2.84", "3        2.25")
+    short = L.shortfalls(L.read_layer_log(at), interface_patch=INTERFACE, n_layers=3,
+                         cells=102_536_327)
+    assert not any("layers of the 3" in s for s in short), (
+        f"75% of the ask exactly is reported as falling under a 75% floor: {short!r}")
+    # and a hair under it IS a shortfall, so the boundary is where it is claimed to be
+    under = GOOD_LOG.replace("3        2.84", "3        2.24")
+    short = L.shortfalls(L.read_layer_log(under), interface_patch=INTERFACE, n_layers=3,
+                         cells=102_536_327)
+    assert any("kept 2.24 layers of the 3" in s for s in short), (
+        f"and one hundredth of a layer under the floor is not reported: {short!r}")
+
+
 def test_the_measured_run_has_nothing_to_report():
     assert L.shortfalls(L.read_layer_log(GOOD_LOG), interface_patch=INTERFACE, n_layers=3,
                         cells=102_536_327) == []
+
+
+# ------------------------------------------- which of the four floors had a figure at all
+
+def test_a_log_that_yielded_every_figure_leaves_no_floor_unjudged():
+    """`()` is the reading that lets an empty shortfall list mean what `render/mesh_facts` says it
+    means. Without it `[]` is two opposite answers wearing the same clothes."""
+    got = L.measured(L.read_layer_log(GOOD_LOG), interface_patch=INTERFACE)
+    assert L.floors_unjudged(got) == (), (
+        f"a complete log is reported as having floors nobody judged: {L.floors_unjudged(got)!r}")
+
+
+def test_a_log_holding_only_the_extrusion_lines_names_the_three_floors_it_could_not_judge():
+    """THE PARTIAL READ, which is the case `finalize._layers_published`' all-four-unjudged return
+    by design lets through. SYNTHETIC - the plate's first extrusion line and its cell count, with
+    the layer table and the illegal-face line cut off, which is what a stage killed mid-write
+    leaves behind."""
+    truncated = ("Extruding 16122330 out of 16582198 faces (99.9%). Removed extrusion at 0 faces.\n"
+                 "Added 49746594 out of 49746594 cells (100%).\n")
+    got = L.measured(L.read_layer_log(truncated), interface_patch=INTERFACE)
+    assert got["layer_coverage_pct"] == pytest.approx(99.9), "the premise: coverage WAS read"
+    assert L.floors_unjudged(got) == ("thickness", "layers kept", "faces in error"), (
+        "a log that left three of this engine's four layer floors with nothing to judge them on "
+        f"does not say which three: {L.floors_unjudged(got)!r}")
+
+
+def test_a_log_nothing_could_be_read_from_leaves_every_floor_unjudged():
+    """All four, which is how `finalize._layers_published` tells "nobody judged it" from "it met
+    every floor" and publishes nothing at all."""
+    got = L.measured(L.read_layer_log(""), interface_patch=INTERFACE)
+    assert len(L.floors_unjudged(got)) == len(L.LAYER_FLOORS)
+
+
+def test_the_roster_has_one_entry_for_each_floor_shortfalls_evaluates():
+    """A FIFTH FLOOR WITH NO ENTRY HERE WOULD BE INVISIBLE, and a stale entry would be a floor
+    claimed on every run that nothing judges. The count is the contract between the two."""
+    assert len(L.LAYER_FLOORS) == 4, L.LAYER_FLOORS
+    assert [n for n, _ in L.LAYER_FLOORS] == ["coverage", "thickness", "layers kept",
+                                              "faces in error"]
+    # every key named here is a key `measured` actually produces, under that spelling
+    produced = set(L.measured(L.read_layer_log(GOOD_LOG), interface_patch=INTERFACE))
+    for name, keys in L.LAYER_FLOORS:
+        for k in keys:
+            assert k in produced, f"the {name} floor is drawn on {k!r}, which `measured` never produces"
 
 
 def test_layers_on_the_wrong_patch_are_not_layers_on_the_interface():

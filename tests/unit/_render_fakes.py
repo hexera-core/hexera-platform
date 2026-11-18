@@ -23,6 +23,48 @@ PNG_CROP = _png(b"CROP")         # zoom_to_region's magnified region
 PNG_SLICE = _png(b"SLICE")       # inspect_region's section
 
 
+def write_cut_png(path, width: int = 1280, height: int = 960, cells_px: int = 4):
+    """A REAL PNG of the stated size, with a GRID OF CELLS drawn in it.
+
+    Real, not the sentinels above, for two reasons that both bite. The prepared-cut reader takes
+    the frame's pixel size from its own IHDR rather than from the manifest, so a stub with no
+    header has no size and is refused; and `review_session._measure_png` COUNTS THE CELLS that
+    are actually drawn, so a frame that will not decode measures nothing and is refused too - a
+    test passing on an unreadable file would be passing for the wrong reason.
+
+    A GRID, NOT A FILLED RECTANGLE, and that is not cosmetic. This drew one flat dark rectangle,
+    which is 25% of the frame inked with not a single cell in it - and that is exactly what two
+    of the three frames this engine really produces look like (a port bore and three plenum
+    rectangles, 0.41% and 0.59% inked, no passage in either). A fixture that draws one is a
+    fixture for the case that must be REFUSED, so using it to stand for a good frame makes a
+    test that cannot tell the two apart.
+
+    `cells_px` is how many pixels across each drawn cell is, so a caller can make a frame that
+    resolves cells (4, the floor), one that cannot (1), one whose drawn structure is far bigger
+    than the cell the window claims (32 - a picture of channels, not of cells), or a flat
+    rectangle with no cells at all (0).
+    """
+    from PIL import Image, ImageDraw
+
+    im = Image.new("RGB", (int(width), int(height)), (255, 255, 255))
+    d = ImageDraw.Draw(im)
+    box = [width // 4, height // 4, width * 3 // 4, height * 3 // 4]
+    if cells_px <= 0:
+        d.rectangle(box, fill=(20, 20, 20))
+    else:
+        # A light fill with dark edges ruled across it, which is what `show_edges=True` over a
+        # coloured mesh produces: the reader counts the lighter interiors that have a darker
+        # pixel on BOTH sides, so the fill and the lines both have to be there.
+        d.rectangle(box, fill=(176, 196, 222))
+        for x in range(box[0], box[2] + 1, int(cells_px)):
+            d.line([x, box[1], x, box[3]], fill=(0, 0, 0), width=1)
+        for y in range(box[1], box[3] + 1, int(cells_px)):
+            d.line([box[0], y, box[2], y], fill=(0, 0, 0), width=1)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    im.save(path, format="PNG")
+    return path
+
+
 class FakeBackend:
 
     def __init__(self, *, patches=None, shot=True, save_dir=None, empty_cut=False):

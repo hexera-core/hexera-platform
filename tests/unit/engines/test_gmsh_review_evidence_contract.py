@@ -96,6 +96,12 @@ def _write(tmp_path, mesh_mode):
     from meshpipeline.engines.manifest import write_manifest
     ws = tmp_path / mesh_mode
     ws.mkdir()
+    # THE VOLUME HAS TO BE ON DISK. `manifest._published_volume` now requires a real file, the
+    # same rule `_published_surface` has always applied, because a path to a volume that
+    # return_scope left behind was still being published and cuts were still being promised
+    # through it. This fixture named mesh.inp and never wrote it, so without this the test below
+    # measures the guard instead of whether these engines keep their region promises.
+    (ws / "mesh.inp").write_text("*Heading\n")
     return write_manifest(
         ws,
         patch_types={"inlet": "inlet", "outlet": "outlet", "wall": "wall"},

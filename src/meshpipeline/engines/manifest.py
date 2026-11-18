@@ -167,9 +167,29 @@ def _published_volume(ws: Path, volume_path: str | None) -> str | None:
     if not volume_path:
         return None
     p = Path(volume_path)
-    if (p if p.is_absolute() else ws / p).is_dir():
+    full = p if p.is_absolute() else ws / p
+    if full.is_dir():
         logger.warning("manifest: volume %r is a directory, not a volume file - none published",
                        p.name)
+        return None
+    # AND A PATH TO A FILE THAT IS NOT THERE IS NOT A VOLUME EITHER, which this guard asserted and
+    # did not check. `_published_surface` below has had the same rule as a real test since it was
+    # written - "if not p.is_file(): return None" - and this one only ever rejected a directory,
+    # so the one case that actually happens went straight through.
+    #
+    # MEASURED, job 0ff6f9e5, 2026-11-16. `engines/return_scope` left the fluid interior behind to
+    # get the archive under its ceiling and UNLINKED it, and its own record says so:
+    # left_out VTK/fluid/cr_ws_vgcm8hv7_0/internal.vtu, 10,366,611,525 bytes. The report still
+    # carried the path it had been written at, this guard still published it because it was not a
+    # directory, and the manifest therefore promised a volume that had been deleted and three cuts
+    # through it. The review then refused with "3 region(s) not offered - no volume artifact": the
+    # engine looked as though it had produced evidence right up to the point of being asked for it.
+    #
+    # Absence is a real, stated state; a stand-in path is not.
+    if not full.is_file():
+        logger.warning("manifest: volume %r is not a file in %s - none published (it was most "
+                       "likely left behind to get the archive home; see return_scope.json)",
+                       p.name, ws)
         return None
     return volume_path
 
@@ -195,6 +215,54 @@ def _published_surface(ws: Path, name: str = "mesh.msh") -> str | None:
         logger.warning("manifest: no %s in %s - no surface published", name, ws)
         return None
     return str(p)
+
+
+def _published_cuts(ws: Path, regions: list | None) -> tuple[list[dict], int]:
+    """The inspection regions, with every cut frame whose PICTURE is actually on disk kept and
+    every one whose picture is not dropped. Returns (regions, how many pictures survived).
+
+    THE SAME RULE AS THE SURFACE AND THE VOLUME, applied to the frames: a frame that names an
+    image file that is not there is a dangling name, and the reader gets EVIDENCE_MISSING while
+    being told the wrong thing about which of the two happened.
+
+    WHY THE PICTURES EXIST AT ALL. The cuts used to be a promise to the home side to slice the
+    volume itself, and the volume is the fluid interior - 10,366,611,525 bytes on the Corintis
+    plate. Sending that home to be cut there is not available: the mesh VM has 512 GiB and the
+    worker that would open it is capped at 16 GiB, and `sandbox/backend._load_volume` reads the
+    file whole. Measured 2026-11-17 on this plate's own VTK tree, a pyvista read runs at
+    250,591,972 bytes a second and holds 0.973 GB of RSS per 1.24 GB of file, so that interior is
+    about 41 s and 8 GB in a process with 16 to spend. The cut is therefore made where the mesh
+    already is and only the picture travels, which is kilobytes.
+
+    A frame keeps its window and its um/px whether or not the picture survived, because those are
+    what a claim about a cut is checked against and they are true of the cut either way.
+    """
+    out: list[dict] = []
+    kept = 0
+    for r in regions or []:
+        if not isinstance(r, dict):
+            continue
+        row = dict(r)
+        frames = []
+        for f in row.get("frames") or []:
+            if not isinstance(f, dict):
+                continue
+            fr = dict(f)
+            img = fr.get("image")
+            if img:
+                p = Path(img)
+                if (p if p.is_absolute() else ws / p).is_file():
+                    kept += 1
+                else:
+                    logger.warning("manifest: cut %r frame %r names %s, which is not there - "
+                                   "the frame is published without a picture",
+                                   row.get("name"), fr.get("scope"), img)
+                    fr.pop("image", None)
+            frames.append(fr)
+        if frames:
+            row["frames"] = frames
+        out.append(row)
+    return out, kept
 
 
 def _validation_block(types: set, owner: bool, fc: dict, roles: dict) -> dict:
@@ -333,6 +401,15 @@ def write_manifest(workspace, *, patch_types: dict, patch_entities: dict,
         {"quality": quality, "patch_face_counts": fc, "patch_types": roles,
          "flow_topology": flow_topology or ""}))
     _gating = [r for r in _qc_rows if r["gating"] and r["passed"] is not None]
+    # WHAT THE CUTS ARE, before the manifest dict is built, because whether any of them has a
+    # picture decides whether they are promised at all.
+    _regions_in = ([dict(r) for r in inspection_regions] if inspection_regions
+                   else _inspection_regions(body_bbox) if body_bbox else [])
+    _regions_cut, _cut_images = _published_cuts(ws, _regions_in)
+    _regions_published = (_regions_cut
+                          if _engine_serves_region_slices(mesh_mode)
+                          and (volume_path or _cut_images)
+                          else [])
     manifest = {
         "schema_version": _schema, "mesh_mode": mesh_mode, "mesh_written": owner,
         "engine_params": dict(engine_params or {}),
@@ -350,12 +427,18 @@ def write_manifest(workspace, *, patch_types: dict, patch_entities: dict,
         "patch_face_counts": fc, "quality": quality,
         "mesh_paths": {"surface": _published_surface(ws), "volume": volume_path},
         # the engine's own slices when it names them (a thermal model's: across the board and
-        # through the hottest parts), else the generic ones through the body. Every slice is a
-        # cut through the VOLUME: with none published there is nothing to cut, so none is promised.
-        "inspection_regions": (([dict(r) for r in inspection_regions] if inspection_regions
-                                else _inspection_regions(body_bbox) if body_bbox else [])
-                               if volume_path and _engine_serves_region_slices(mesh_mode)
-                               else []),
+        # through the hottest parts), else the generic ones through the body.
+        #
+        # A CUT IS PROMISED ON WHAT IT CAN BE MADE FROM, which is now either of two things. It used
+        # to be the volume alone - "with none published there is nothing to cut" - and that was
+        # right while cutting was something the home side did. An engine that cuts on the mesh VM
+        # and sends the PICTURES home can keep its promise with no volume at all, and on the
+        # biggest meshes that is the only way it can: the Corintis plate's interior is 10.4 GB
+        # against a 16 GiB worker, so the volume is exactly what cannot come home.
+        #
+        # The order matters. `_published_cuts` drops frames whose picture is missing, so a run
+        # that rendered nothing and published no volume still promises nothing.
+        "inspection_regions": _regions_published,
         "validation": _validation_block(types, owner, fc, roles),
     }
     (ws / "mesh_manifest.json").write_text(json.dumps(manifest, indent=2, default=str))

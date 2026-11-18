@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from meshpipeline.agents.reviewer.scene_text import (
+    cut_frame_line,
     go_to_coordinates_text,
     move_camera_text,
     navigation_context,
@@ -144,6 +145,16 @@ class ReviewerRenderRuntime:
         caps = await self.capabilities()
         return [t.label for t in caps.targets if t.kind is TargetKind.REGION]
 
+    @_renderer_call("reading the prepared cuts")
+    async def prepared_cuts(self) -> tuple:
+        """The frames this session will serve instead of cutting a volume it does not have.
+
+        Empty for every job whose interior came home, which is every engine but the conjugate
+        one at production size. The reviewer is told about these in its opening message and is
+        handed one per inspect_region call, so it can never mistake a fixed frame for the volume.
+        """
+        return await self._lane.run(self._session.prepared_cuts)
+
     async def has_geometry(self) -> bool:
         return (await self.scene()).has_geometry
 
@@ -171,6 +182,9 @@ class ReviewerRenderRuntime:
             inspection_targets=tuple((await self.capabilities()).targets),
             patch_names=[t.label for t in (await self.capabilities()).targets
                          if t.kind is TargetKind.PATCH],
+            # THE SIXTH OPENING FACT, and it is a fact about the EVIDENCE rather than the scene:
+            # whether this review can cut the interior itself or is being handed frames of it.
+            prepared_cuts=await self.prepared_cuts(),
         )
 
  # tool execution
@@ -260,6 +274,7 @@ class ReviewerRenderRuntime:
 
     async def _t_inspect_region(self, args: dict) -> Any:
         region_name = str(args.get("region_name", ""))
+        scope = str(args.get("scope", "") or "").strip()
         known = await self.region_names()
         if region_name not in known:
             # THE ONE APPROVED CORRECTION. Announcing a slice at an undeclared region would be a
@@ -271,8 +286,24 @@ class ReviewerRenderRuntime:
                 "Call inspect_region with one of those names, or judge the interior from the "
                 "mesh metrics instead."
             )
-        ev = await self._exec(RenderCommand(kind=CommandKind.INSPECT_TARGET,
-                                      target_id=f"region:{region_name}"))
+        # THE FRAMES THIS REGION HAS, if its cut was taken where the mesh was built rather than
+        # here. Screened before the command for the same reason an unknown region is: a frame
+        # name this mesh does not have must come back as a correction the reviewer can act on,
+        # not as a refusal it has to guess at.
+        prepared = [c for c in await self.prepared_cuts() if c.region_id == region_name]
+        if scope and not prepared:
+            return (
+                f"Region '{region_name}' is cut live from this mesh's own volume, so it has no "
+                f"prepared frames to choose between. Call inspect_region('{region_name}') "
+                "without a scope.")
+        if scope and scope not in {c.scope for c in prepared}:
+            return (
+                f"Region '{region_name}' has no '{scope}' frame. Its frames are: "
+                f"{', '.join(repr(c.scope) for c in prepared)}. Call inspect_region with one of "
+                "those, or without a scope for the one your inspection is judged on.")
+        ev = await self._exec(RenderCommand(
+            kind=CommandKind.INSPECT_TARGET,
+            target_id=f"region:{region_name}" + (f"#{scope}" if scope and prepared else "")))
         if not ev.image_ref:
             # THE ONE TOOL HERE THAT DID NOT NAME THE WAY OUT, and the only one whose text made
             # a claim about what the picture SHOWS. "This cut exposes the interior cells" was
@@ -290,6 +321,45 @@ class ReviewerRenderRuntime:
                 "on file - and if the interior cannot be seen at all, say so in your findings "
                 "rather than passing the axis on the outside views."
             )
+        if prepared:
+            # A PREPARED FRAME IS DESCRIBED AS ONE, and the text below is the whole difference
+            # between this change and shipping three pictures of nothing. The sentence that used
+            # to be said here - "what is drawn IS the interior" - is true of a live cut and
+            # misleading about a fixed frame: it invites a cell count from a picture where a
+            # channel may be under a pixel wide. What the frame covers, how fine it is, and
+            # whether a cell is countable in it are all said, every time, from the session's own
+            # resolved numbers.
+            # The SESSION'S answer to which frame it served (its artifact key ends in the scope),
+            # never the scope that was asked for: with no scope named the session picks, and the
+            # numbers below have to be the served frame's or they describe a different picture.
+            shown = next((c for c in prepared
+                          if c.scope == ev.artifact_key.rsplit(".", 1)[-1]), None)
+            facts = f"{cut_frame_line(shown)} " if shown is not None else ""
+            # WHERE TO GO NEXT, NAMED, and built from what the session measured rather than from
+            # what the plan intended. A frame that cannot discharge the region has to say so AND
+            # say whether anything else can, or the reviewer spends its remaining rounds asking
+            # for a picture that was never going to arrive - which is what cost job 53bbce4b its
+            # verdict on the patch side.
+            elsewhere = [c for c in prepared
+                         if c.counts_cells and (shown is None or c.scope != shown.scope)]
+            nxt = ("" if ev.covers_target else (
+                f" The frame an inspection of this region can be judged on is "
+                f"'{elsewhere[0].scope}' - call "
+                f"inspect_region('{region_name}', scope='{elsewhere[0].scope}')."
+                if elsewhere else
+                " NO frame of this region has been measured to contain the cells it was cut to "
+                "show, so this region's interior CANNOT be judged from pictures at all. Say that "
+                "in your findings and do not state a cell count, a layer count or a channel "
+                "width for it."))
+            return await self._parts(ev, (
+                f"Prepared cut at region '{region_name}' - {facts}"
+                "This is a PICTURE OF ONE PLANE, taken where the mesh was built because this "
+                "mesh's interior was too large to bring here. It is NOT the volume: the camera "
+                "cannot be moved in it, and anything outside the window above is not in it. "
+                + ("This frame is the one your inspection of this region is judged on."
+                   if ev.covers_target
+                   else "This frame does NOT count as an inspection of the region.")
+                + nxt))
         return await self._parts(ev, (
             f"Internal slice through the VOLUME mesh at region '{region_name}'. "
             "The cut was taken only because it passed through cells, so what is drawn IS the "

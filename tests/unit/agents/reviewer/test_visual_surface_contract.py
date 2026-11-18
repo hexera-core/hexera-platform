@@ -64,9 +64,15 @@ async def test_initial_context_supplies_patch_names(monkeypatch, tmp_path):
     assert isinstance(c, OpeningContext)
     # `patch_views` joins the opening facts: renderer-derived camera framing, computed from
     # the geometry the renderer loaded. The manifest supplies no framing at all.
+    # `prepared_cuts` joins them as a fact about the EVIDENCE rather than the scene: whether this
+    # review can cut the interior itself, or is being handed one fixed frame per plane because
+    # the interior was too large to bring here. It has to be an opening fact, because a reviewer
+    # that learns it from a refusal has already spent a round and may already have described the
+    # part from a frame it could not re-aim.
     assert {f.name for f in dataclasses.fields(OpeningContext)} == {
         "nav_context", "patch_colour_legend", "initial_screenshot_b64",
-        "has_geometry", "patch_names", "inspection_targets", "patch_views"}
+        "has_geometry", "patch_names", "inspection_targets", "patch_views", "prepared_cuts"}
+    assert c.prepared_cuts == (), "a job whose volume came home has no prepared frames"
     assert c.patch_names == PATCHES, "the opening facts cannot supply the coverage floor"
 
 

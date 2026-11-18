@@ -92,6 +92,16 @@ checks = {
       {'cells': 6582471}).max_archive_bytes > 900_000_000,
   'the tail goes parallel': 'RECONSTRUCT_REGIONS' in dir(
       __import__('meshpipeline.engines.cfmesh_conjugate.conjugate', fromlist=['x'])),
+  # THE SIDE THAT DRAWS A FRAME AND THE SIDE THAT JUDGES IT SHARE ONE DETECTOR, and slices.py
+  # imports it UNCONDITIONALLY (the neighbouring render_inputs import is in a try/except, so it
+  # would not have caught this). An image built before that module existed breaks slices.py
+  # outright on the VM, and the failure lands only after a mesh has already been built and paid
+  # for. This image has shipped a stale wheel before - that is why these checks exist at all -
+  # so the module is looked for here rather than assumed from the package layout.
+  'the detector ships with the mesher': (
+      __import__('meshpipeline.sandbox.picture_structure', fromlist=['ink_structure']).ink_structure
+      is __import__('meshpipeline.engines.cfmesh_conjugate.slices',
+                    fromlist=['ink_structure']).ink_structure),
 }
 for k, v in checks.items():
     print(('  OK   ' if v else '  MISSING ') + k)

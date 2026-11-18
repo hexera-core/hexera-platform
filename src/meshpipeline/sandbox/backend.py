@@ -231,6 +231,12 @@ class MeshRenderBackend:
         # Already confined, existence-checked and format-checked by the resolver. There is no
         # join here any more: `self._workspace / <untrusted manifest value>` silently discarded
         # the workspace whenever the manifest value was absolute.
+        #
+        # AND SIZE-CHECKED, by render_adapter.VOLUME_READ_CEILING_BYTES, which is why there is no
+        # second check here. `pv.read` below reads the file WHOLE into this process and the worker
+        # is capped at 16 GiB, so a 10.4 GB interior does not degrade the review, it OOM-kills the
+        # worker and loses the mesh delivery. The guard is at the point where `has_volume` is
+        # decided, so an unopenable volume never gets its regions advertised in the first place.
         vp = self._volume_artifact.path
         try:
             got = pv.read(str(vp))

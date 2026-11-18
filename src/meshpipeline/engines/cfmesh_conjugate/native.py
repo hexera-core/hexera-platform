@@ -252,7 +252,7 @@ def _run_conjugate_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
     _fatal = bool(report.fluid.fatal) or bool(report.solid.fatal)
     body["review"] = _review_aids(ws, bashrc=bashrc, refused=_no_mesh or _fatal,
                                   cells=int(report.fluid.cells + report.solid.cells),
-                                  budget_left_s=_left())
+                                  budget_left_s=_left(), plan=plan)
     _write_report(ws, body)
     # THE BOUNDARY INDEX, for the same reason and with the same rule: built where the mesh is,
     # and never able to fail the run.
@@ -595,8 +595,927 @@ def _drop_unread_volume(ws: Path, out: dict) -> None:
         logger.info("conjugate: %s", out["volume_dropped"])
 
 
+#: Where the pictures of the cuts are written, beside the mesh.
+CUT_DIRNAME = "review_cuts"
+
+#: WHAT READING THE EXPORTED INTERIOR COSTS A BYTE, so a cut that cannot be afforded out of what
+#: is left of the run is not started rather than killed with the VM.
+#:
+#: MEASURED ON A .vtu, because the shape of the file matters and a first measurement on the wrong
+#: shape was out by 3.3x. The .vtp row is a real boundary of job 0ff6f9e5; the .vtu row is a
+#: 5,000,211-cell grid of 93,924,028 B, read SIX times, three of them with the page cache dropped
+#: between reads (2026-11-17, Ubuntu 24.04, 15 GiB box):
+#:
+#:     a real .vtp of 16,582,198 faces   1,238,969,100 B   4.944 s   250,591,972 B/s   0.97 GB RSS
+#:     the same .vtu, warm                 93,924,028 B    1.265 s    74,222,168 B/s   0.87 GB RSS
+#:     the same .vtu, cold, slowest        93,924,028 B    1.440 s    65,217,992 B/s   0.87 GB RSS
+#:
+#: THE SLOWEST OF THE SIX IS THE ONE CHARGED, rounded down. This gate decides whether to START a
+#: pass that cannot be abandoned, so reading fast is the direction that gets a pass killed with
+#: the machine. The previous 76,000,000 was the fastest row of one warm read.
+#:
+#: AND A CLAIM THAT IT IS 1.8x OPTIMISTIC DOES NOT REPRODUCE HERE. An adversary measured
+#: 43,017,027 B/s on a .vtu and called the gate 1.8x unsafe. Six reads of a .vtu on this box, warm
+#: and cold, land between 65,217,992 and 74,222,168 B/s - a 1.14x band that does not reach it.
+#: Neither measurement is on a mesh VM, so the honest statement is that the rate is machine-bound
+#: and the slowest number anyone has measured is the one charged.
+#:
+#: CHARGING PER BYTE OVER-PRICES A REAL FILE, which is the safe direction. The .vtu measured above
+#: is a uniform grid and compresses extremely well - 18.8 bytes a cell, against the plate's own
+#: 113.5 (10,366,611,525 bytes over 91,323,244 fluid cells) - so a real file carries far more of
+#: its content per byte read.
+#:
+#: AND THE READ IS STILL NOT MEASURED ON THE ARTIFACT ITSELF. The plate's internal.vtu was pruned
+#: off the workspace by return_scope before anyone read it. Extrapolated per cell from the rows
+#: above, 0.28 s and 0.15 GB of RSS per million cells puts that file at roughly 26 s and 14 GB;
+#: extrapolated per byte it is 159 s and far more. Both fit the mesh VM's 512 GiB and NEITHER fits
+#: the 16 GiB worker, which is the whole reason the pictures travel and the interior does not.
+#:
+#: WHAT THE PEAK RSS SAYS ABOUT THE HOME SIDE'S CEILING, measured in the same six reads: peak RSS
+#: is 9.48x to 9.50x the file's bytes for this .vtu shape, against 0.85x for the 1.24 GB .vtp. The
+#: shape that travels is the .vtu one, so `sandbox/render_adapter.VOLUME_READ_CEILING_BYTES` of
+#: 4 GiB is about 38 GB of RSS in a 16 GiB worker. That constant is not this file's to change.
+VOLUME_READ_BYTES_PER_S = 65_000_000
+
+#: WHAT A CUT COSTS, CHARGED PER PLANNED RENDER RATHER THAN PER MILLION CELLS - because the
+#: drawing is not per cell and there is a great deal more of it than one per-Mcell rate can carry.
+#:
+#: THE RATE THAT WAS HERE PRICED THE WRONG WORK. `CUT_SECONDS_PER_MCELL = 0.22` was fitted on
+#: "slice it, then draw it twice" and that is not what the code does: `_place_by_what_is_drawn`
+#: takes up to POSITION_TRIES slices and POSITION_TRIES x (WINDOW_TRIES + 1) = 20 zoom renders
+#: per cut, measuring every one of them, before the whole-part frame is drawn at all.
+#:
+#: MEASURED 2026-11-17 on this box, through this file's own `_slice_at`, `_render_frame` and
+#: `_measure_frame`, on a SYNTHETIC 171^3 = 5,000,211-cell unstructured grid (the real plate's
+#: 10.4 GB interior was pruned off its workspace, so no interior of the part exists to time).
+#: Worst of three runs each:
+#:
+#:     slice one plane                 0.3753 s      = 0.0750 s per Mcell
+#:     clip a window out of the slice  0.0438 s
+#:     draw a zoom frame               0.1997 s
+#:     measure a drawn frame back      0.0250 s
+#:     draw the WHOLE cut              0.7747 s      (it draws every cell of the plane)
+#:
+#:     slice + 2 draws, the behaviour the old comment described   1.350 s   0.2699 s/Mcell
+#:     5 slices + 20 placement renders + 1 whole, what the code can take   8.047 s
+#:     priced at CUT_SECONDS_PER_MCELL 0.22                       1.100 s
+#:
+#: So the old rate under-priced its own stated behaviour by 1.23x and the behaviour the code
+#: actually has by 7.3x. A figure of 3.89 s per cut was reported for this; it does not reproduce
+#: here in either direction - the minimal path is 1.35 s and the worst case 8.05 s.
+#:
+#: THE GATE DECIDES WHETHER TO START A PASS IT CANNOT ABANDON, so it charges the WORST case and
+#: the slowest of the measured runs, rounded up. A pass killed with the machine leaves no picture
+#: and costs the rest of the run.
+CUT_SLICE_SECONDS_PER_MCELL = 0.08
+#: One placement render: clip the window, draw it, measure the PNG back. Measured 0.2685 s.
+CUT_ZOOM_RENDER_SECONDS = 0.28
+#: The whole-part frame: it draws every cell of the plane rather than a window of it, which is why
+#: it is three times a zoom. Measured 0.7997 s with its measure.
+CUT_WHOLE_RENDER_SECONDS = 0.80
+
+
+def cuts_priced_seconds(*, volume_bytes: int, cells: int, cuts: int) -> float:
+    """The WORST this pass can cost: read the interior, then every render it may plan.
+
+    Named and called rather than inlined so the gate and a test read the same arithmetic. The
+    per-cut figure is POSITION_TRIES slices, POSITION_TRIES x (WINDOW_TRIES + 1) placement
+    renders and one whole-part frame; the constants above carry the measurement.
+
+    IT OVER-CHARGES ON PURPOSE, twice. Most cuts stop at the first placement that holds the array
+    - on job 0ff6f9e5's own sweep the plan's place held nothing and the first searched position
+    did, so the search cost two slices of a possible five - and the caller passes BOTH regions'
+    cells while only the coolant's volume is ever read. Both are the safe direction for a gate
+    deciding whether to begin something that cannot be stopped.
+    """
+    mcell = max(0, int(cells)) / 1e6
+    per_cut = (POSITION_TRIES * CUT_SLICE_SECONDS_PER_MCELL * mcell
+               + POSITION_TRIES * (WINDOW_TRIES + 1) * CUT_ZOOM_RENDER_SECONDS
+               + CUT_WHOLE_RENDER_SECONDS)
+    return max(0, int(volume_bytes)) / VOLUME_READ_BYTES_PER_S + max(1, int(cuts)) * per_cut
+
+#: The cut the other two are AIMED FROM, and why it is this one.
+#:
+#: `through_the_plate` is normal to the part's thinnest axis, which is the axis a cold plate's
+#: channels are prismatic along, so this plane crosses every passage wherever in the fine zone it
+#: is placed. The other two are normal to in-plane axes, and exactly one of those axes is the one
+#: the passages repeat along - a plane normal to THAT one runs along the passages and can never
+#: show the array, at any window and any origin. Nothing in the plan says which of the two it is:
+#: on job 0ff6f9e5 the fine zone is 60.2 x 12.0 x 52.1 mm, the passages repeat along x and run
+#: along z, and neither span, nor the stretch factor, nor the feature thickness picks x out.
+#:
+#: So it is MEASURED instead: this cut is drawn first, `slices.ink_structure` reads the repeat
+#: direction out of the picture, and the other two are re-placed from it. The cost of guessing
+#: instead was `across_the_flow` placed along the passages on every run of this part.
+AIM_FROM_CUT = "through_the_plate"
+
+#: WHAT ONE BYTE OF A .vtu COSTS IN PEAK RSS when it is read, which is what decides whether the
+#: interior can go home at all. MEASURED six times, 2026-11-17, on a 93,924,028 B .vtu of
+#: 5,000,211 cells through `sandbox/backend`'s own pyvista: peak RSS 0.869 to 0.871 GB, so 9.48x
+#: to 9.50x the file. The same read of a 1,238,969,100 B .vtp is 0.85x - a .vtp is already close
+#: to its in-memory form and a compressed .vtu is not, and internal.vtu is the .vtu shape.
+VOLUME_READ_RSS_RATIO = 9.5
+
+#: ABOVE THIS THE INTERIOR DOES NOT GO HOME, because nothing at home could open it.
+#:
+#: The worker that reads it is capped at 16 GiB and `sandbox/backend._load_volume` reads the file
+#: whole. At the ratio above, 1.2 GB of .vtu is about 11.4 GiB of peak RSS, which is inside the
+#: roughly 12 GiB of headroom a 16 GiB worker has. 2 GB would be 19 GiB and an OOM kill of the
+#: Celery worker, which costs the whole job and not just the picture.
+#:
+#: THE HOME SIDE HAS ITS OWN COPY OF THIS DECISION and it is four times larger:
+#: `sandbox/render_adapter.VOLUME_READ_CEILING_BYTES` is 4 GiB, reasoned from a 1:1 read, which
+#: at the measured ratio is about 38 GiB of RSS. That constant is not this file's to change and
+#: the number above is the one this side acts on; they should be the same number.
+VOLUME_KEEP_CEILING_BYTES = 1_200_000_000
+
+
+def _expected_pitch_m(cuts: list[dict]) -> float:
+    """The part's own feature pitch, from the window the cuts were already sized with.
+
+    THIS IS THE BOUND ON THE YARDSTICK and it costs nothing to ask for: the number is already in
+    every zoom frame, as `feature_m`, because the window was computed from it.
+
+    `feature_m` is `plan.fine_cell_pinned_m` - the part's finest meshed cell - and
+    `slices.CELL_PIXELS` records the identity that makes it the pitch: on job 0ff6f9e5
+    `fine_surfaces[0].thickness_m` is 0.0001006312 m and `fine_cell_pinned_m` is 2.51578e-05 m,
+    and the first divided by the second is 4.0 EXACTLY, "because the planner pins the cell AT the
+    thickness over its four-cell floor". CELL_PIXELS is that same 4. So `feature_m * CELL_PIXELS`
+    is the plan's feature pitch, and on the real plate it is 100.631 um against a passage period
+    measured off that run's y-normal zoom at 100.631 um - the same number to six figures.
+
+    ONE SOURCE, DELIBERATELY. `plan.fine_surfaces[0].thickness_m` is the other expression of the
+    same quantity and taking it as well would give one number two readers that can disagree,
+    which is a defect this engine has already paid for once (5% in a criterion against 19.89% in
+    a gate). The cut is the source because the cut is what gets measured.
+
+    AND IT IS A BOUND, NOT A SUBSTITUTE: `period_matches` is a ratio test at PERIOD_MATCH = 2.5,
+    so a drawn pitch within a factor of two and a half of this stands. 4x and 8x do not. 0.0 for a
+    cut set with no zoom frame, which is a plan that carries no fine cell - and then there is
+    honestly no yardstick and the caller says so.
+    """
+    from meshpipeline.engines.cfmesh_conjugate.slices import CELL_PIXELS
+
+    for cut in cuts or ():
+        for frame in cut.get("frames") or ():
+            if frame.get("scope") != "zoom":
+                continue
+            feature = float(frame.get("feature_m") or 0.0)
+            pixels = int(frame.get("feature_pixels") or CELL_PIXELS)
+            if feature > 0.0 and pixels > 0:
+                return feature * pixels
+    return 0.0
+
+
+def _render_cuts(ws: Path, cuts: list[dict], *, volume: str | None, cells: int = 0,
+                 budget_left_s: float | None = None, replan=None, ceiling: int = 0) -> dict:
+    """Draw each cut on THIS machine, where the mesh already is, and leave the pictures behind.
+
+    WHY THE PICTURES TRAVEL AND THE INTERIOR DOES NOT. `mesh_paths.volume` is the fluid interior,
+    and the review has always been meant to cut it at home. On this plate that file is
+    10,366,611,525 bytes and the worker that would open it is capped at 16 GiB, with
+    `sandbox/backend._load_volume` reading it whole: a correct archive ceiling would deliver a
+    10.4 GB file into a 16 GiB process and turn an honest "evidence missing" into an OOM kill of
+    the Celery worker. The mesh VM has 512 GiB and the mesh is already on its disk, so the cut is
+    made here and six PNGs go home instead of ten gigabytes.
+
+    TWO FRAMES A CUT, AND THE ZOOM IS THE POINT. A cut has only ever been drawn once, fitted to
+    the whole part. Measured against job 0ff6f9e5's own review bbox - 177.69 x 41.83 x 101.21 mm
+    into 1280x960 - that is 105.42 um/px across the flow and 138.82 um/px on the other two, while
+    the passages are 98.2422 um wide: the channel was UNDER ONE PIXEL on all three cuts. The
+    reviewer was being handed three pictures of nothing and asked how many cells were across a
+    channel, and `slices.review_slices` says in its own text that this is what the cuts are for.
+    `slices.CELL_PIXELS` carries the measurement that fixes the zoom window.
+
+    EVERY FRAME IS PUBLISHED WITH THE WINDOW IT WAS DRAWN IN and the um/px that came out of it,
+    because a claim about a cut that cannot be checked against the scale of the picture it was
+    made from is a guess with a picture next to it. A cut whose window is not stated is not
+    evidence.
+
+    ...AND WITH WHAT ITS OWN PIXELS WERE MEASURED TO HOLD, which is the only thing here that is
+    not arithmetic about the plan. See `slices.CELL_PIXELS` and `slices.ink_structure`: the window
+    is `plan_cell / 4` and the reader divides by the same plan cell, so a zoom frame declares
+    itself countable whatever is drawn in it. Two of this plate's three zoom frames held a plenum
+    rectangle and a port bore and were handed back as countable evidence of a channel count.
+
+    AIMED FROM A PICTURE, NOT FROM THE PLAN. `AIM_FROM_CUT` is drawn first, the axis the passages
+    repeat along is read out of it, and `replan(repeat_axis=...)` rebuilds the set so the other
+    two planes cross the array instead of running along it. `replan` is optional: without it the
+    planned set is drawn as given and whatever it holds is measured and said.
+
+    ...BUT THE PICTURE IT IS AIMED FROM IS HELD TO THE PART'S OWN PITCH, which is what stops the
+    yardstick certifying itself. `_expected_pitch_m` reads that pitch out of the cut set the
+    caller already sized, and it goes into the AIMING cut as `expect_period_m` so that cut's
+    placements are measured against it exactly as every later cut is measured against the
+    yardstick.
+
+    WITHOUT IT THE AIMING ZOOM WAS THE ONLY FRAME IN A RUN HELD TO NO PERIOD AT ALL, and three
+    things had to combine for that: `_measure_frame` applies `period_matches` only when
+    `expect_period_m` is already non-zero; `_rematch` skips the frame the yardstick came from;
+    and `_place_by_what_is_drawn` stops at the FIRST placement that looks periodic. This plate
+    demonstrably carries arrays at 1x, 2x, 4x and 8x the passage pitch - round 3's own cuts.json
+    records `across_the_flow`'s zoom at 128.0 px and 6.28945 um/px, which is 805.05 um, with 39
+    repeats and an autocorrelation peak of 0.582, and is a bank of coarse fins - so whichever of
+    those a search reached first became the yardstick for the whole run, and PERIOD_MATCH's factor
+    of 2.5 then matched every other cut to it with 2.5x of slack.
+
+    MEASURED ON THE SHIPPED CODE, 2026-11-17, on a synthetic array drawn at exactly 8x the pitch
+    its own cut set was sized for: `repeat_period_m` came back 201.262 um against a 25.1578 um
+    cell, a ratio of 8.000 to the 100.631 um pitch, with the aiming zoom reporting
+    `shows_structure: true` and `part_period_m: None` - held to nothing.
+
+    AND WHEN NO PLACEMENT MATCHES there is no measured yardstick. Rather than fall through to
+    `expect_period_m` 0.0, where `period_matches` returns True for everything and any resolved
+    array stands, the part's own pitch is carried as the yardstick for the remaining cuts, and
+    `out["yardstick_m"]` and `out["yardstick_source"]` say which of the two is in use.
+
+    NON-FATAL, like every other aid here: a mesh is never lost over a picture of it.
+
+    THE INTERIOR IS DROPPED ONCE THE PICTURES EXIST (see `_drop_cut_volume`), and not one moment
+    earlier: it is dead weight from the instant the cuts are drawn, and the only artifact the
+    review can reach a verdict from until then.
+    """
+    out: dict = {"dir": CUT_DIRNAME, "rendered": 0, "usable": 0, "why": ""}
+    if not cuts:
+        out["why"] = "the engine named no cuts to draw"
+        return out
+    src = None
+    if volume:
+        p = Path(volume)
+        p = p if p.is_absolute() else ws / p
+        if p.is_file():
+            src = p
+    if src is None:
+        # SAID AS WHAT IT IS. With no interior there is nothing to cut, and a cut promised from
+        # nothing is the defect this whole aid exists to stop.
+        out["why"] = ("no volume export is on disk, so there is nothing to cut: the frames are "
+                      "published with their windows and no pictures")
+        logger.warning("conjugate: %s", out["why"])
+        return out
+
+    size = src.stat().st_size
+    priced = cuts_priced_seconds(volume_bytes=size, cells=cells, cuts=len(cuts))
+    out["priced_seconds"] = round(priced, 1)
+    out["priced_renders"] = len(cuts) * (POSITION_TRIES * (WINDOW_TRIES + 1) + 1)
+    out["volume_bytes_read"] = int(size)
+    if budget_left_s is not None and priced > float(budget_left_s):
+        out["why"] = (
+            f"the cuts are priced at about {priced:.0f} s against {float(budget_left_s):.0f} s "
+            "left of the run's budget, so they were not started: a pass killed with the machine "
+            "leaves no picture and costs the rest of the run")
+        logger.warning("conjugate: %s", out["why"])
+        return out
+
+    t0 = time.monotonic()
+    try:
+        # THE HOME SIDE'S OWN RENDER SETTINGS, imported rather than restated. `sandbox/backend`
+        # pins VTK to Mesa's software rasteriser with no X server, and those four environment
+        # lines have to run BEFORE pyvista is first imported or they do nothing. Copying them onto
+        # this side of the VM boundary is how the two drift, and a cut drawn under a different
+        # backend is a cut whose published scale is no longer the scale the reviewer's frames are
+        # in.
+        #
+        # TAKEN THROUGH backend's OWN pyvista rather than imported beside it, because the order is
+        # the whole point and an import sorter will not preserve it: `import pyvista` sorts into
+        # the third-party block and would end up ABOVE this first-party line, setting the backend
+        # after VTK had already chosen one. Reaching through backend makes the dependency the
+        # thing that enforces it.
+        from meshpipeline.engines.cfmesh_conjugate.slices import FRAME_H, FRAME_W
+        from meshpipeline.sandbox.backend import pv
+
+        mesh = pv.read(str(src))
+        out["read_seconds"] = round(time.monotonic() - t0, 1)
+        out["cells_read"] = int(mesh.n_cells)
+        # THE BOX THE CUTS ARE PLACED IN, taken from the volume ITSELF. The boundary index would
+        # be the other source and it is NOT READABLE HERE: `_boundary_indexes` runs about sixteen
+        # lines after this call, so constant/*/polyMesh/boundaryIndex/meta.json does not exist yet
+        # and reading it would give an empty box on every run and a correct one on none.
+        out["bbox_source"] = "the exported volume's own bounds"
+        out["bbox"] = [float(v) for v in mesh.bounds]
+        root = ws / CUT_DIRNAME
+        root.mkdir(parents=True, exist_ok=True)
+        done: set[int] = set()
+        expected = _expected_pitch_m(cuts)
+        if expected > 0.0:
+            out["expected_pitch_m"] = expected
+        if replan is not None:
+            done = _aim_from_a_drawn_cut(mesh, cuts, root=root, ws=ws, pv=pv,
+                                         width_px=FRAME_W, height_px=FRAME_H, out=out,
+                                         replan=replan, expect_period_m=expected)
+        # WHICH YARDSTICK THE REST OF THE RUN IS HELD TO, decided here and said. The measured
+        # period wins when a frame produced one; the part's own pitch stands in when none did,
+        # because the alternative is 0.0 and `period_matches` returns True for everything at 0.0 -
+        # so a run whose aim failed used to hold every later cut to no period at all, which is the
+        # state that let an 805.05 um bank of fins answer a question about a 100.631 um passage.
+        measured_period = float(out.get("repeat_period_m") or 0.0)
+        yardstick = measured_period or expected
+        out["yardstick_m"] = yardstick
+        out["yardstick_source"] = (
+            "measured off the aiming cut's own zoom frame" if measured_period
+            else "the part's own feature pitch, from the window the cuts were sized with "
+                 "(feature_m x CELL_PIXELS); no drawn frame produced a period" if expected
+            else "none: no frame produced a period and the cuts carry no feature size, so a "
+                 "resolved array of any pitch stands")
+        for cut in cuts:
+            if id(cut) in done:
+                continue
+            _draw_one_cut(mesh, cut, root=root, ws=ws, pv=pv,
+                          width_px=FRAME_W, height_px=FRAME_H, out=out,
+                          expect_period_m=yardstick)
+    except Exception as exc:              # noqa: BLE001
+        logger.warning("conjugate: the review cuts could not be drawn (non-fatal)", exc_info=True)
+        out["why"] = f"the cuts could not be drawn: {exc}"
+    out["seconds"] = round(time.monotonic() - t0, 1)
+    # ONLY A PICTURE THAT CAN ANSWER THE QUESTION BUYS THE INTERIOR'S DELETION. This was
+    # `out["rendered"]`, which counts whole frames as well as zooms and now counts every drawn
+    # frame whatever its pixels hold - so a run whose three zoom frames were all refused and
+    # whose three whole frames drew would still have deleted the 10.4 GB interior, leaving a
+    # review with no artifact it could reach a verdict from at all.
+    if out.get("usable"):
+        _drop_cut_volume(src, out, ceiling=ceiling)
+    elif out["rendered"]:
+        out["volume_kept"] = (
+            f"{out['rendered']} frame(s) drew and none of them holds the periodic structure its "
+            "cut exists to show, so the fluid interior is kept: it is then the only artifact a "
+            "review could reach a verdict from, and a picture that cannot answer the question "
+            "does not buy its deletion")
+        logger.warning("conjugate: %s", out["volume_kept"])
+    return out
+
+
+def _aim_from_a_drawn_cut(mesh, cuts: list[dict], *, root: Path, ws: Path, pv, width_px: int,
+                          height_px: int, out: dict, replan,
+                          expect_period_m: float = 0.0) -> set[int]:
+    """Draw AIM_FROM_CUT, read the repeat direction out of the picture, and re-place the rest.
+
+    See AIM_FROM_CUT for why the axis cannot be taken from the plan. Returns the ids of the cuts
+    that are already drawn, so the caller does not draw them twice: the aiming cut is normal to
+    the thin axis and the repeat axis never changes that, so its own pictures stand.
+
+    A FAILURE HERE CHANGES NOTHING. If the aiming cut shows no array, the planned set stands and
+    every frame is still measured and marked. The one thing that must not happen is the opposite:
+    a set re-aimed from a frame that held no structure would be aimed from noise.
+
+    `expect_period_m` IS WHAT BOUNDS THE YARDSTICK: the part's own feature pitch
+    (`_expected_pitch_m`), handed to this cut so its placements are held to a period exactly as
+    every later cut is held to the period this one produces. See `_render_cuts` for the three
+    things that together left this one frame held to no period at all, and for the 805.05 um array
+    on this plate that would otherwise become the yardstick if a search reached it first.
+    """
+    aim = next((c for c in cuts if c.get("name") == AIM_FROM_CUT), None)
+    if aim is None:
+        return set()
+    _draw_one_cut(mesh, aim, root=root, ws=ws, pv=pv, width_px=width_px, height_px=height_px,
+                  out=out, expect_period_m=max(0.0, float(expect_period_m or 0.0)))
+    found = next((f.get("content") for f in aim.get("frames") or []
+                  if f.get("scope") == "zoom" and isinstance(f.get("content"), dict)), None)
+    axis = (found or {}).get("repeat_world_axis")
+    if not (found and found.get("shows_structure") and axis is not None):
+        out["aim"] = (f"{AIM_FROM_CUT} showed no repeating array, so the other cuts keep the "
+                      "placement the plan gave them")
+        return {id(aim)}
+    rebuilt = replan(int(axis))
+    # THE AIMING CUT MUST COME BACK UNCHANGED or its drawn frames are of a different plane. It is
+    # normal to the thin axis and `repeat_axis` only decides which of the two IN-PLANE axes the
+    # flow runs along, so this holds; it is checked rather than assumed because the cost of being
+    # wrong is a picture published against the wrong plane's window.
+    same = next((c for c in rebuilt or ()
+                 if c.get("name") == AIM_FROM_CUT
+                 and c.get("normal_axis") == aim.get("normal_axis")), None)
+    if not rebuilt or same is None:
+        return {id(aim)}
+    cuts[:] = [aim if c.get("name") == AIM_FROM_CUT else c for c in rebuilt]
+    out["repeat_world_axis"] = int(axis)
+    out["repeat_period_m"] = found.get("period_m")
+    # THE AIMING CUT'S OTHER FRAMES WERE MEASURED BEFORE THERE WAS A YARDSTICK, so they are
+    # measured again against it now - off the PNG already on disk, with nothing re-drawn. Without
+    # this the context frame of the one cut that found the array is the only frame in the run that
+    # can say "shows_structure" of a moire of it: measured 11 repeats at 1,664 um on a frame whose
+    # scale is 138.67 um/px, against passages of 100.63 um.
+    _rematch(aim, root=root, expect_period_m=float(found.get("period_m") or 0.0))
+    out["aim"] = (
+        f"the passages were measured to repeat along {'xyz'[int(axis)]} every "
+        f"{float(found.get('period_m') or 0.0) * 1e6:.2f} um in {AIM_FROM_CUT}'s own zoom frame, "
+        "so the other cuts were re-placed to cross them rather than run along them")
+    logger.info("conjugate: %s", out["aim"])
+    return {id(aim)}
+
+
+def _rematch(cut: dict, *, root: Path, expect_period_m: float) -> None:
+    """Re-read the frames of `cut` that were drawn before the part's period was known.
+
+    THE ZOOM IS SKIPPED BECAUSE THE YARDSTICK CAME FROM IT, and that is only safe because the
+    aiming zoom is now held to a period of its own while it is being placed: `_render_cuts` passes
+    the PLAN's feature pitch into the aiming cut as `expect_period_m`, so a placement that drew
+    the 402.525 um or 805.050 um array was refused before it could become the yardstick. Without
+    that this function left exactly one frame in the run - the one the yardstick came from - held
+    to no period at all, and `_measure_frame` applies `period_matches` only when
+    `expect_period_m` is non-zero.
+    """
+    ah, av = cut.get("plane_axes") or (0, 1)
+    for frame in cut.get("frames") or []:
+        if frame.get("scope") == "zoom":
+            continue                      # the yardstick came from this one; see the docstring
+        name = frame.get("image")
+        mpp = float(frame.get("metres_per_pixel") or 0.0)
+        if not name or mpp <= 0.0:
+            continue
+        path = root / Path(str(name)).name
+        if not path.is_file():
+            continue
+        try:
+            _measure_frame(path, frame, ah=ah, av=av, mpp=mpp,
+                           expect_period_m=expect_period_m)
+        except Exception:                 # noqa: BLE001
+            logger.warning("conjugate: %s could not be measured again (non-fatal)", path.name,
+                           exc_info=True)
+
+
+def _drop_cut_volume(src: Path, out: dict, *, ceiling: int = 0) -> None:
+    """Give back the fluid interior, once the pictures of it exist AND it is too big to be read.
+
+    IT IS DEAD WEIGHT THE MOMENT THE CUTS ARE DRAWN, at this plate's size. The interior is
+    10,366,611,525 bytes on job 0ff6f9e5 and the only thing at home that would open it is a worker
+    capped at 16 GiB reading the file whole - so it cannot be cut there, and the six PNGs that
+    replace it are 43,228 bytes. Carrying it home buys a read nothing can afford and costs the
+    archive ten gigabytes.
+
+    AND IT IS WHAT STOPS THE PRUNE MAKING THINGS WORSE. `return_scope` works out what giving up
+    every optional file would achieve and declines when even that cannot fit, which is right - but
+    on this job the pre-prune estimate is 14,761,120,873 bytes and giving up the interior still
+    leaves 11,406,088,609, so it DECLINES, keeps the file, and the archive grows from 11.4 GB to
+    14.76 GB. With the interior gone there is nothing optional left to decline about.
+
+    A SMALL INTERIOR IS NOT DEAD WEIGHT AND IS KEPT. A volume the home side can open is a
+    RE-AIMABLE view of the mesh, which is better evidence than any fixed frame: the reviewer picks
+    where to look instead of being handed six places. `VOLUME_KEEP_CEILING_BYTES` is where that
+    stops being affordable.
+
+    ONLY AFTER A PICTURE THAT CAN ANSWER THE QUESTION EXISTS, and that order is the whole safety
+    of this. The caller reaches here on `out["usable"] > 0` - zoom frames whose OWN PIXELS were
+    measured to hold the periodic structure the cut exists to show - and not on `rendered`.
+    `rendered` counts whole frames as well as zooms, and every drawn frame is now published
+    whatever its pixels hold, so a run where all three zoom frames were refused and all three
+    whole frames drew would have had `rendered == 6` and deleted the interior. That leaves a
+    review with nothing at all: six pictures that cannot be counted in, and no interior to re-cut.
+    A run whose cuts failed or was never started keeps the interior exactly as it found it, for
+    the same reason. Non-fatal: a file that will not unlink costs disk, never the mesh.
+
+    THE TENSION IN KEEPING IT IS REAL AND IS NOT A REASON TO DELETE IT. Above
+    VOLUME_KEEP_CEILING_BYTES the home side cannot open the interior either, and `return_scope`
+    will decline to prune it and grow the archive. So keeping a 10.4 GB interior that no frame
+    could replace buys a re-cut somewhere the file CAN be read - a mesh VM, which is where it
+    already is - and not a review at home. That is more than deleting it leaves, which is nothing.
+    """
+    cap = int(ceiling or VOLUME_KEEP_CEILING_BYTES)
+    try:
+        if not src.is_file():
+            return
+        freed = src.stat().st_size
+        if freed <= cap:
+            out["volume_kept"] = (
+                f"the fluid interior ({freed / 2**30:.2f} GiB) is inside the "
+                f"{cap / 2**30:.2f} GiB a 16 GiB worker can read, so it travels home as well as "
+                "the pictures: a volume the reviewer can re-aim beats six fixed frames")
+            return
+        src.unlink()
+    except OSError:
+        logger.warning("conjugate: could not drop %s after the cuts were drawn", src,
+                       exc_info=True)
+        return
+    out["volume_dropped_bytes"] = int(freed)
+    out["volume_dropped"] = (
+        f"the fluid interior ({freed / 2**30:.2f} GiB) was cut, drawn, and then dropped: the "
+        f"{out.get('rendered', 0)} pictures of it are the evidence that travels, and reading the "
+        f"file at home would take about {freed * VOLUME_READ_RSS_RATIO / 2**30:.0f} GiB of RSS in "
+        "a worker capped at 16")
+    logger.info("conjugate: %s", out["volume_dropped"])
+
+
+def _window_box(centre, ah: int, av: int, win_h: float, win_v: float) -> list[float]:
+    box = [-1e9, 1e9, -1e9, 1e9, -1e9, 1e9]
+    box[2 * ah], box[2 * ah + 1] = centre[0] - win_h / 2, centre[0] + win_h / 2
+    box[2 * av], box[2 * av + 1] = centre[1] - win_v / 2, centre[1] + win_v / 2
+    return box
+
+
+#: HOW MANY PLACES A CUT MAY BE TRIED IN before it is reported as showing nothing, as (planes
+#: along the normal, windows inside each plane).
+#:
+#: WHY A SEARCH AT ALL. The plan's own fine zone is a BOX and the features are not spread through
+#: it. MEASURED on job 0ff6f9e5, sweeping the y-normal cut across its fine zone (21.51 to 33.55 mm)
+#: and measuring every frame drawn:
+#:
+#:     y = 22.111 mm   79 repeats, 16.0 px, spread 0.00, 18.7% ink    the channel array
+#:     y = 22.713 mm   79 repeats, 16.0 px, spread 0.00, 18.7% ink    the channel array
+#:     y = 23.917 mm    0 repeats,                        0.4% ink    nothing
+#:     y = 25.121 mm   60 repeats,  8.0 px, spread 1.63,  0.6% ink    scattered traces
+#:     y = 27.528 mm   23 repeats,  8.0 px, spread 4.30,  0.7% ink    scattered traces
+#:
+#: The middle of the fine zone is empty and the channels are in the bottom tenth of it. So the
+#: zone says WHERE TO LOOK and the pictures say WHICH of those places has the thing in it. On
+#: this plate the plan's own place holds nothing and the first searched position - a tenth of the
+#: way up the band, y = 22.713 mm - holds the array, so the whole search cost two planes. It
+#: stops at the first frame that shows one, so a part whose plan already points at its features
+#: costs one.
+#:
+#: AND THE SEARCH NEVER LEAVES THE ZONE (`cut["search_m"]`). A plane free to wander the whole
+#: block until something looked periodic would find the array in another part of the part and
+#: report it under this cut's name.
+POSITION_TRIES = 5
+WINDOW_TRIES = 3
+
+
+def _slice_at(mesh, axis: int, origin, cut: dict):
+    """The cut plane at this origin, or None when it crosses nothing."""
+    normal = [0.0, 0.0, 0.0]
+    normal[axis] = 1.0
+    try:
+        sl = mesh.slice(normal=tuple(normal), origin=tuple(origin))
+    except Exception as exc:              # noqa: BLE001
+        cut["cut_why"] = f"this plane could not be cut: {exc}"
+        return None
+    return sl if sl.n_points else None
+
+
+def _candidate_origins(cut: dict, axis: int, origin: list[float]) -> list[list[float]]:
+    """Where the plane may sit: the planned place first, then across the search band.
+
+    The planned place is tried FIRST and always, so a part whose plan already points at its
+    features costs exactly one slice and the search never runs.
+    """
+    out = [list(origin)]
+    band = cut.get("search_m")
+    if not (isinstance(band, (list, tuple)) and len(band) == 2):
+        return out
+    lo, hi = float(band[0]), float(band[1])
+    if not (hi > lo):
+        return out
+    for frac in (0.1, 0.3, 0.5, 0.7, 0.9):
+        at = lo + frac * (hi - lo)
+        if all(abs(at - o[axis]) > 0.02 * (hi - lo) for o in out):
+            o = list(origin)
+            o[axis] = at
+            out.append(o)
+        if len(out) >= POSITION_TRIES:
+            break
+    return out
+
+
+def _candidate_centres(sl, ah: int, av: int, win_h: float, win_v: float, planned):
+    """Where to point the window: the plan's own place first, then the densest patches.
+
+    THE FINE ZONE BEFORE DENSITY, which is the opposite of how this was first built. On this part
+    the densest cells are port-rim slivers of 7.787 um against the channels' pinned 25.1578 um,
+    and aiming at raw density is why `through_the_plate`'s zoom came back as one circular port
+    bore and was published as a channel count.
+    """
+    import numpy as np
+
+    out = [[float(planned[0]), float(planned[1])]]
+    pts = np.asarray(sl.points)
+    if pts.shape[0] < 2 or win_h <= 0.0 or win_v <= 0.0:
+        return out
+    h, v = pts[:, ah], pts[:, av]
+    sh, sv = float(h.max() - h.min()), float(v.max() - v.min())
+    nh = max(1, min(2048, int(sh / win_h) + 1))
+    nv = max(1, min(2048, int(sv / win_v) + 1))
+    hist, he, ve = np.histogram2d(h, v, bins=[nh, nv])
+    for flat in np.argsort(hist, axis=None)[::-1][:WINDOW_TRIES]:
+        i, j = np.unravel_index(int(flat), hist.shape)
+        if hist[i, j] <= 0:
+            break
+        out.append([float((he[i] + he[i + 1]) / 2.0), float((ve[j] + ve[j + 1]) / 2.0)])
+    return out[:WINDOW_TRIES + 1]
+
+
+def _measure_frame(path: Path, frame: dict, *, ah: int, av: int, mpp: float,
+                   expect_period_m: float = 0.0) -> dict:
+    """Read the drawn PNG back and record what its own pixels hold. See slices.ink_structure.
+
+    THE FIGURE IS PUBLISHED BESIDE THE WINDOW because the window alone cannot say anything about
+    the content: the window is `plan_cell / 4` and the reader divides by the same plan cell, so
+    every zoom frame is countable by construction. This is the only number on a frame that came
+    out of the picture rather than out of the plan.
+
+    `expect_period_m` is the part's OWN passage period, measured earlier off another frame of the
+    same mesh (see slices.PERIOD_MATCH). A regular array at four or eight times that figure is a
+    different feature of the same part, and a frame of it would answer "how many cells across a
+    passage" about the wrong passage.
+    """
+    from PIL import Image
+
+    from meshpipeline.engines.cfmesh_conjugate.slices import (
+        SCAN_AXES,
+        ink_structure,
+        period_matches,
+    )
+
+    with Image.open(path) as im:
+        content = ink_structure(_as_gray(im))
+    if content.get("period_px"):
+        content["period_m"] = float(content["period_px"]) * float(mpp)
+        content["period_um"] = round(content["period_m"] * 1e6, 3)
+        # WHICH WORLD AXIS the repeats run along, which is what re-aims the other cuts.
+        content["repeat_world_axis"] = ah if content.get("scan") == SCAN_AXES[0] else av
+    if expect_period_m and content.get("shows_structure"):
+        content["part_period_m"] = float(expect_period_m)
+        if not period_matches(content.get("period_m") or 0.0, expect_period_m):
+            content["shows_structure"] = False
+            content["why"] = (
+                f"this array repeats every {float(content.get('period_m') or 0.0) * 1e6:.2f} um "
+                f"and this part's passages were measured at {expect_period_m * 1e6:.2f} um, so "
+                "it is a different feature of the same part")
+    content["measured"] = "the drawn PNG's own pixels"
+    frame["content"] = content
+    return content
+
+
+def _as_gray(im):
+    import numpy as np
+
+    return np.asarray(im.convert("L"))
+
+
+def _render_frame(pv, sub, path: Path, *, axis: int, ah: int, av: int, origin, centre,
+                  mpp: float, width_px: int, height_px: int) -> None:
+    """One screenshot of one window of one plane, at exactly the published metres per pixel."""
+    plotter = pv.Plotter(off_screen=True, window_size=[width_px, height_px])
+    plotter.set_background("white")
+    # EDGES ON, ONE PIXEL WIDE, AND NO LIGHTING. The question is how many CELLS are across a
+    # passage, and a flat-shaded cut answers where the coolant is and not that.
+    #
+    # `lighting=False` is what the home side's own `inspect_region` already passes, and it is
+    # worth about 30% of contrast: with it on, Mesa shades the fill from grey 193 down to 149 and
+    # the pixels a cell edge blends into from 87 to 67, while the black of a fully covered edge
+    # pixel stays at 0. Measured on one slice drawn both ways, the median contrast across a scan
+    # row is 53 against 41 at the aligned camera phase and 142 against 109 half a pixel off.
+    #
+    # AND THE EDGE STAYS ONE PIXEL, against the instruction to widen it, because widening it is
+    # worse at every phase. RE-MEASURED 2026-11-17 through this function's own body, sweeping the
+    # camera centre over 16 sixteenths of a pixel on a uniform 25.1578 um grid slab (SYNTHETIC -
+    # the real plate's interior was pruned off its workspace, so this is a measurement of the
+    # RENDERER and not of the part):
+    #
+    #                             line_width 1                    line_width 2, black pixels
+    #     4 px/cell  aligned      480 of 960 rows flat, med 53    75.00%
+    #     4 px/cell  other 15     0 of 960 rows flat, med 68-147  56.25% at every one
+    #     8 px/cell  aligned      240 of 960 rows flat, med 106   43.75%
+    #     8 px/cell  other 15     0 of 960 rows flat, med 118-193 32.81% at every one
+    #
+    # TWO EARLIER STATEMENTS OF THIS ARE BOTH WRONG and neither is wrong in a way that changes
+    # the decision. This comment said a 2-pixel edge renders "phases 0 to 4 of 16 as SOLID BLACK
+    # at 4 pixels per cell" and "seven pixels in eight black at 8 per cell": 0 of 16 phases are
+    # solid black at either scale, the worst is 75.00%, and the 8 px/cell worst is 43.75% - half
+    # of seven-in-eight. A correction offered against it, "75.00% at the aligned phase and 43.75%
+    # at the other fifteen", mixes the two scales: 75.00% and 43.75% are the ALIGNED phases of 4
+    # and 8 px/cell, and the fifteen others are 56.25% and 32.81%. Either way more than half the
+    # frame is edge at line_width 2 where a 1-pixel edge leaves an interior at every phase, so
+    # the conclusion stands unchanged.
+    #
+    # WHAT IT WAS MEANT TO CURE DOES NOT HAPPEN. The report was that 3 of 16 sub-pixel camera
+    # phases render a 4-cell channel as one uniform bar with no interior boundary. Swept over the
+    # WHOLE FRAME rather than one scan row, the weaker of the frame's two directions never falls
+    # below 53 grey levels at any of the 16 phases and 0 of 16 render as one bar. What IS true is
+    # narrower: at the ONE aligned phase, and only there, half the scan rows at 4 px per cell and
+    # a quarter of them at 8 carry no variation at all, because a cell edge blends across the
+    # whole row - and 0 rows do at the other fifteen phases, measured, which is also a correction
+    # to a claim that seven of the sixteen carry 240 flat rows. A reader that samples ONE row at
+    # the aligned phase sees a flat bar; the frame it sampled has 53 grey levels of contrast at
+    # the cell's own 4-pixel period. `ink_structure` sums a whole profile and never samples a
+    # row, which is why it does not care.
+    plotter.add_mesh(sub, show_edges=True, line_width=1, color="lightsteelblue",
+                     edge_color="black", lighting=False)
+    cam = plotter.camera
+    cam.parallel_projection = True
+    pos = list(origin)
+    # Far enough back that the whole cut is in front of the camera whatever the part's size;
+    # parallel projection makes the distance itself irrelevant to the scale.
+    pos[axis] = origin[axis] + max(1e-3, 10.0 * mpp * max(width_px, height_px))
+    focal = list(origin)
+    focal[ah], focal[av] = centre[0], centre[1]
+    pos[ah], pos[av] = centre[0], centre[1]
+    cam.position = tuple(pos)
+    cam.focal_point = tuple(focal)
+    up = [0.0, 0.0, 0.0]
+    up[av] = 1.0
+    cam.up = tuple(up)
+    # THE SCALE, SET RATHER THAN FITTED. parallel_scale is the half-height of the view in metres,
+    # so this makes the published um/px exactly true of the picture. Verified on the real plate by
+    # drawing a 100-pixel calibration segment into the frame and measuring it back out: it came
+    # back 100 px at both windows tested.
+    cam.parallel_scale = mpp * height_px / 2.0
+    plotter.screenshot(str(path))
+    plotter.close()
+
+
+def _place_by_what_is_drawn(mesh, cut: dict, *, frame: dict, axis: int, ah: int, av: int,
+                            root: Path, pv, width_px: int, height_px: int,
+                            expect_period_m: float = 0.0):
+    """Move the plane and the window until the PICTURE holds the array, or report that none does.
+
+    This is the whole point of the round. A window is `plan_cell / CELL_PIXELS` and the reader
+    divides by the same plan cell, so every zoom frame is countable by arithmetic whatever is in
+    it - and on job 0ff6f9e5 two of the three held a plenum rectangle and a port bore and were
+    introduced to the reviewer as frames cells can be counted in. Nothing but the pixels can tell
+    those apart from the real thing, so the pixels are what chooses where the cut goes.
+
+    THE ORDER IS PLAN FIRST. The planned plane and the planned window are tried before anything
+    else, so a part whose fine zone already points at its features costs one slice and one
+    screenshot and this function never searches. See POSITION_TRIES for the sweep that shows why
+    the fallback exists: the middle of this plate's fine zone is empty and the channels are in the
+    bottom tenth of it.
+
+    Returns (slice, origin) for the place that was kept, and fills the frame's `content`,
+    `centre_m`, `centre_source` and the cut's `origin`/`origin_source`. When nothing shows the
+    array it keeps the attempt with the most repeats, so the published frame is the best picture
+    there was and is marked as not holding what the cut was for.
+    """
+    mpp = float(frame.get("metres_per_pixel") or 0.0)
+    win_h, win_v = mpp * width_px, mpp * height_px
+    planned = [float(v) for v in (frame.get("centre_m")
+                                  or (cut["origin"][ah], cut["origin"][av]))]
+    planned_centre_source = str(frame.get("centre_source") or "")
+    path = root / f"{cut.get('name', 'cut')}_zoom.png"
+    tries = 0
+    best = None                       # (score, origin, centre, slice, content, source)
+    for origin in _candidate_origins(cut, axis, [float(v) for v in cut["origin"]]):
+        sl = _slice_at(mesh, axis, origin, cut)
+        if sl is None:
+            continue
+        for n, centre in enumerate(_candidate_centres(sl, ah, av, win_h, win_v, planned)):
+            sub = sl.clip_box(_window_box(centre, ah, av, win_h, win_v), invert=False)
+            if sub.n_points == 0:
+                continue
+            tries += 1
+            try:
+                _render_frame(pv, sub, path, axis=axis, ah=ah, av=av, origin=origin,
+                              centre=centre, mpp=mpp, width_px=width_px, height_px=height_px)
+                content = _measure_frame(path, frame, ah=ah, av=av, mpp=mpp,
+                                         expect_period_m=expect_period_m)
+            except Exception:             # noqa: BLE001
+                logger.warning("conjugate: a placement of %s could not be drawn (non-fatal)",
+                               cut.get("name"), exc_info=True)
+                continue
+            source = (planned_centre_source if n == 0 else
+                      f"the densest window-sized patch of this plane (rank {n})")
+            score = (int(content.get("repeats") or 0), float(content.get("ink_fraction") or 0.0))
+            if content.get("shows_structure"):
+                best = (score, origin, centre, sl, content, source)
+                break
+            if best is None or score > best[0]:
+                best = (score, origin, centre, sl, content, source)
+        if best is not None and best[4].get("shows_structure"):
+            break
+    if best is None:
+        return None, [float(v) for v in cut["origin"]]
+    _, origin, centre, sl, content, source = best
+    cut["origin"] = [float(v) for v in origin]
+    cut["origin_source"] = (
+        f"{tries} place(s) inside the search band were drawn and measured; this one "
+        + ("holds the array" if content.get("shows_structure") else "held the most of anything"))
+    frame["centre_m"] = [float(centre[0]), float(centre[1])]
+    frame["centre_source"] = source
+    frame["content"] = content
+    return sl, [float(v) for v in origin]
+
+
+def _draw_one_cut(mesh, cut: dict, *, root: Path, ws: Path, pv, width_px: int, height_px: int,
+                  out: dict, expect_period_m: float = 0.0) -> None:
+    """One cut, drawn once per published frame, with the frame's own window on the camera.
+
+    `expect_period_m` is the part's own passage period as another frame of this mesh measured it;
+    see slices.PERIOD_MATCH for the two coarser arrays on this plate that it keeps out.
+    """
+    normal = [float(v) for v in cut.get("normal") or (1.0, 0.0, 0.0)]
+    origin = [float(v) for v in cut.get("origin") or (0.0, 0.0, 0.0)]
+    axis = max(range(3), key=lambda k: abs(normal[k]))
+    ah, av = cut.get("plane_axes") or [k for k in range(3) if k != axis]
+    sl = None
+    zoom_frame = next((f for f in cut.get("frames") or []
+                       if f.get("scope") == "zoom"
+                       and float(f.get("metres_per_pixel") or 0.0) > 0.0), None)
+    if zoom_frame is not None:
+        # THE ZOOM IS WHAT PLACES THE CUT, because it is the frame that has to hold the array and
+        # the only one anything can be counted in. The plane and window it was found at are then
+        # what the whole-part frame is drawn through too, so the two frames are of the same place.
+        sl, origin = _place_by_what_is_drawn(mesh, cut, frame=zoom_frame, axis=axis, ah=ah, av=av,
+                                             root=root, pv=pv, width_px=width_px,
+                                             height_px=height_px,
+                                             expect_period_m=expect_period_m)
+    if sl is None:
+        sl = _slice_at(mesh, axis, origin, cut)
+    if sl is None:
+        # A PLANE THAT MISSED. Said against the cut rather than left as an empty picture, because
+        # an empty frame and a frame of fine metal look identical to a reader.
+        cut.setdefault("cut_why", "this plane cut no cells")
+        return
+    for frame in cut.get("frames") or []:
+        zoom = frame.get("scope") == "zoom"
+        mpp = float(frame.get("metres_per_pixel") or 0.0)
+        if mpp <= 0.0:
+            continue
+        centre = [float(v) for v in (frame.get("centre_m") or (origin[ah], origin[av]))]
+        name = f"{cut.get('name', 'cut')}_{frame.get('scope', 'frame')}.png"
+        path = root / name
+        try:
+            sub = sl
+            if zoom:
+                sub = sl.clip_box(_window_box(centre, ah, av, mpp * width_px, mpp * height_px),
+                                  invert=False)
+                if sub.n_points == 0:
+                    frame["frame_why"] = "nothing of the cut falls inside this window"
+                    continue
+            _render_frame(pv, sub, path, axis=axis, ah=ah, av=av, origin=origin, centre=centre,
+                          mpp=mpp, width_px=width_px, height_px=height_px)
+        except Exception as exc:          # noqa: BLE001
+            frame["frame_why"] = f"this frame could not be drawn: {exc}"
+            logger.warning("conjugate: cut frame %s failed (non-fatal)", name, exc_info=True)
+            continue
+        if not path.is_file():
+            continue
+        try:
+            content = _measure_frame(path, frame, ah=ah, av=av, mpp=mpp,
+                                     expect_period_m=expect_period_m)
+        except Exception as exc:          # noqa: BLE001
+            # UNMEASURED IS NOT EVIDENCE EITHER. A frame nobody read the pixels of is in exactly
+            # the position every frame was in before this existed, and that is what published a
+            # port bore as a channel count.
+            content = {"shows_structure": False, "why": f"this frame could not be measured: {exc}"}
+            frame["content"] = content
+            logger.warning("conjugate: cut frame %s could not be measured (non-fatal)", name,
+                           exc_info=True)
+        # EVERY DRAWN FRAME IS PUBLISHED UNDER `image`, AND THE FIGURE THAT REFUSED IT TRAVELS
+        # WITH IT. The previous round withheld a refused zoom's pixels - it wrote the path to
+        # `image_context` instead - so that the home side's coverage floor could not be
+        # discharged by a picture of a port bore. That was the right worry and the wrong lever,
+        # for four measured reasons:
+        #
+        #   1. WITHHOLDING DESTROYS THE REASON. `sandbox/review_session._resolve_cut` takes the
+        #      path from `_PATH_KEYS = ("image", "path")` and returns None when neither is there
+        #      - "names no file - not offered" - BEFORE it reads the `content` block. So the
+        #      reviewer was told the region has no zoom frame and never learned that one WAS
+        #      drawn, measured, and found to be a port bore or an 805.05 um bank of coarse fins.
+        #      `_draw_one_cut`'s own comment twelve lines up says why that is the worst outcome:
+        #      "an empty frame and a frame of fine metal look identical to a reader".
+        #   2. NOTHING READ EITHER KEY. `image_context` had exactly one reader in src/ - the
+        #      `_rematch` fallback in this file, now gone with it - and `frame_why` had none at
+        #      all. `engines/manifest._published_cuts` checks `image` for existence and passes
+        #      every other key through, so a dangling `image_context` travelled unchecked while
+        #      a dangling `image` was dropped and logged.
+        #   3. THE HOME SIDE ALREADY REFUSES IT, on its own measurement of its own copy of the
+        #      PNG, with no content block needed: `review_session.ResolvedCut.shows_cells` reads
+        #      `cells_on_best_row` against COUNTABLE_CELLS_ON_A_ROW. Measured on job 0ff6f9e5's
+        #      two no-passage frames, that reading is 1 and 0 against a floor of 4.
+        #   4. AND IT ALREADY HANDLES A PRODUCER VETO CORRECTLY. `_resolve_cut` carries
+        #      `claimed_structure` and `claimed_why` off this `content` block, and
+        #      `review_session` logs "the side that drew it refused the frame ... a claim from the
+        #      producer may veto and may not grant" and does not satisfy the region from it. So
+        #      publishing the picture WITH `shows_structure: false` is strictly stronger than
+        #      hiding it: the region is still not discharged, and the reviewer gets the picture
+        #      and the figure that refused it.
+        frame["image"] = path.relative_to(ws).as_posix()
+        frame["image_bytes"] = int(path.stat().st_size)
+        out["rendered"] = int(out.get("rendered", 0)) + 1
+        if not zoom:
+            continue
+        if content.get("shows_structure"):
+            # THE ONLY FRAMES THAT CAN ANSWER WHAT THE CUT EXISTS FOR, counted separately from
+            # `rendered`. See _drop_cut_volume: `rendered` counts whole frames too and every
+            # frame is now published whatever its pixels hold, so it cannot be the guard on
+            # throwing the interior away.
+            out["usable"] = int(out.get("usable", 0)) + 1
+        else:
+            frame["frame_why"] = (
+                "this frame is published with the measurement that refuses it as evidence: "
+                + str(content.get("why") or "its pixels hold no repeating structure")
+                + ". The picture is here so a reader can see WHAT was drawn instead")
+            logger.warning("conjugate: %s is not evidence - %s", name, frame["frame_why"])
+
+
+def _fine_zone(plan) -> tuple[list | None, list | None]:
+    """The band of the block the part's fine geometry is in, from the plan's own zones.
+
+    `stretch_zones[0]` first and `fine_zones[0]` after it. The stretch zone is the box the cells
+    were stretched in because the geometry is PRISMATIC through it, which is the same box the
+    channels occupy - on job 0ff6f9e5 it is y = 21.51 to 33.55 mm and the plan carries no fine
+    zone at all (`fine_zones: []`, because the refinement is carried by a fine SURFACE,
+    `fluid_fine.stl`, which has bounds but is not read here: this runs before any geometry is
+    opened and a 22 MB STL read to place a camera is a cost for nothing).
+
+    (None, None) when the plan has neither, which is a legal plan: the cuts then fall back to the
+    middle of the block, exactly as they did, and whatever they catch is measured and said.
+    """
+    for attr in ("stretch_zones", "fine_zones"):
+        for zone in (getattr(plan, attr, None) or ()):
+            lo, hi = (zone.get("lo"), zone.get("hi")) if isinstance(zone, dict) else (None, None)
+            if lo is not None and hi is not None and len(lo) == 3 and len(hi) == 3:
+                return list(lo), list(hi)
+    return None, None
+
+
 def _review_aids(ws: Path, *, bashrc: str, refused: bool = False, cells: int = 0,
-                 budget_left_s: float | None = None) -> dict:
+                 budget_left_s: float | None = None, plan=None) -> dict:
     """The per-region volume and the two-region surface, for the reviewer, and what they are.
 
     WHAT THEY ARE IS RECORDED HERE because finalize runs on the other side of the container
@@ -733,6 +1652,51 @@ def _review_aids(ws: Path, *, bashrc: str, refused: bool = False, cells: int = 0
              "was written" if not out["volume"] else
              "the VTK export was written but held no boundary to convert"))
         logger.error("conjugate: no review surface - %s", out["why"])
+    # THE CUTS, DRAWN HERE because this is where the mesh and the 512 GiB are. See _render_cuts
+    # for why the pictures travel home and the interior does not.
+    #
+    # THE BOX THEY ARE PLACED IN comes from the PLAN, not from the boundary index: this function
+    # runs about sixteen lines before `_boundary_indexes` writes that index, so anything reading
+    # constant/*/polyMesh/boundaryIndex/meta.json here reads a file that does not exist yet.
+    # `_render_cuts` then records the exported volume's own bounds beside them, so a reader can
+    # see both the box the cuts were placed from and the box they were drawn against.
+    try:
+        from meshpipeline.engines.cfmesh_conjugate.slices import review_slices
+
+        lo = getattr(plan, "block_lo", None) if plan is not None else None
+        hi = getattr(plan, "block_hi", None) if plan is not None else None
+        if lo and hi:
+            out["cuts_bbox_source"] = "the plan's own block (conjugate_plan.block_lo/block_hi)"
+            # ...AND THE PLANES COME FROM THE FINE ZONE INSIDE IT. The block is the whole domain
+            # and the channels are one band of it: on job 0ff6f9e5 the block's middle puts
+            # `through_the_plate` at y = 41.070 mm while every passage lies between 21.51 and
+            # 33.55 mm, so that plane could not cross one at any window. The zone is the plan's
+            # own statement of where the fine geometry is (`stretch_zones[0]`, the band the cells
+            # were stretched in), which is the same band `fine_surfaces[0].file` covers.
+            fine_lo, fine_hi = _fine_zone(plan)
+            out["cuts_placed_from"] = ("the plan's fine zone (conjugate_plan.stretch_zones[0])"
+                                       if fine_lo else "the plan's block (it names no fine zone)")
+
+            def _slices(repeat_axis: int | None = None):
+                return review_slices(lo, hi,
+                                     inlet=getattr(plan, "inlet", "") or "",
+                                     outlet=getattr(plan, "outlet", "") or "",
+                                     cell_m=float(getattr(plan, "fine_cell_pinned_m", 0.0) or 0.0),
+                                     fine_lo=fine_lo, fine_hi=fine_hi, repeat_axis=repeat_axis)
+
+            cuts = _slices()
+            left = (None if budget_left_s is None
+                    else max(0.0, float(budget_left_s) - (time.monotonic() - started)))
+            out["cuts_render"] = _render_cuts(ws, cuts, volume=out.get("volume"),
+                                              cells=int(cells), budget_left_s=left,
+                                              replan=_slices)
+            out["cuts"] = cuts
+        else:
+            out["cuts"] = []
+            out["cuts_render"] = {"rendered": 0,
+                                  "why": "the plan carries no block, so no cut can be placed"}
+    except Exception:                     # noqa: BLE001
+        logger.warning("conjugate: the review cuts failed (non-fatal)", exc_info=True)
     return out
 
 
@@ -791,6 +1755,30 @@ def _as_dict(report, plan: PL.ConjugatePlan) -> dict:
         "port_patches_dropped": list(report.port_patches_dropped or ()),
         "seconds": dict(report.seconds),
         "peak_rss_bytes": int(report.peak_rss_bytes or 0),
+        # WHAT THE LAYER PASS GREW, which is a DIFFERENT NUMBER from what was asked for and the
+        # one this dict never carried. `conjugate.build` reads the layer log the moment the stage
+        # exits, refuses a pass that grew nothing (`layers.complain`) and lists where it did worse
+        # than the run the thresholds came from (`layers.shortfalls`) - and then put all of it in
+        # `ConjugateReport.layers`, which this function dropped. So the gate ran and nothing it
+        # measured ever crossed the container boundary.
+        #
+        # MEASURED ON THE REAL PLATE, job 0ff6f9e5 (2026-11-16), whose plan asked for 3 layers on
+        # 8 ranks and whose snappyHexMesh.log is preserved. Re-read through `layers.read_layer_log`:
+        # extrusion started at 97.2267% and the ten repair iterations took it DOWN every time to
+        # 88.5826%, at 71.9% of the asked thickness and 2.25 layers of 3, with 8,916 faces in error
+        # over 37,247,044 cells added - 239 per million. Against this module's own floors that is
+        # THREE shortfalls (COVERAGE_FLOOR_PCT 92.0, THICKNESS_FLOOR_PCT 75.0,
+        # ILLEGAL_PER_MILLION_CEILING 200.0), every one of which `shortfalls` produced and logged.
+        # The delivered `conjugate_report.json` has no `layers` key at all and the delivered
+        # `mesh_manifest.json` published `near_wall_layers: 3`. The run's Python log is not among
+        # the preserved files either, so the only trace of the judgement was a warning on a VM that
+        # has since been deleted.
+        #
+        # `layers.shortfalls` IS WHERE THE READING IS TAKEN, once, and this carries what it said
+        # rather than re-deriving it on the far side. `cells` there is the pass's own `cells_added`,
+        # which is not any number the manifest holds, so a second reader could not get the same
+        # answer - and this repo has already paid for one quantity with two readers that disagreed.
+        "layers": dict(getattr(report, "layers", None) or {}),
         "plan": {"background_cell_m": plan.background_cell_m, "levels": plan.levels,
                  "cells_across": plan.cells_across, "volume_tol": plan.volume_tol,
                  "narrowest_m": plan.narrowest_m,

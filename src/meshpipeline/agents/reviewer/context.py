@@ -6,6 +6,7 @@ import logging
 from pathlib import Path
 
 import meshpipeline.settings.policy as polcfg
+from meshpipeline.agents.reviewer.scene_text import prepared_cuts_block
 from meshpipeline.engines.quality_criteria import (
     compose_review_rubric,
     render_review_rubric,
@@ -194,6 +195,11 @@ def build_review_prompt(
     patch_colour_legend: str,
     renderable_patches: list[str] | None = None,
     patch_views: tuple = (),
+    # The regions the SESSION offers, and the prepared frames it will serve. None for
+    # `inspectable_regions` means "not known", which keeps every caller that does not pass one on
+    # the manifest-driven text it has always produced.
+    inspectable_regions: list[str] | None = None,
+    prepared_cuts: tuple = (),
     mesh_units: str,
     request: str,
     review_brief: str,
@@ -392,14 +398,56 @@ def build_review_prompt(
             f"(a few body-lengths). The DOMAIN is far larger (many body-lengths) - do NOT inspect the body "
             f"at domain scale, or it shrinks to a speck. Zoom in until cells are clearly resolved."
         )
+    # WHAT THE REVIEWER IS TOLD IT CAN LOOK INSIDE WITH, and this block used to say the one thing
+    # the session could not do. It listed every region the manifest names and told the reviewer
+    # to "cut the VOLUME mesh" - off the manifest, which only CLAIMS a volume. On job 0ff6f9e5
+    # the claim was there and the 10.4 GB file was not, so the regions were advertised while
+    # INSPECT_TARGET was not even an offered operation: the reviewer's own call came back as a
+    # renderer fault. The block now follows what the SESSION offers, and says which of the three
+    # states this job is in.
     _regions = manifest.get("inspection_regions", []) or []
     region_block = ""
-    if _regions:
-        _rnames = ", ".join(r.get("name", "") for r in _regions)
+    # WHICH REGIONS TO NAME: the session's, and the manifest's only while the session has not
+    # said. None is "not known" (a caller that passes nothing), which must not read as "nothing
+    # is inspectable" - a live volume is the overwhelmingly common case and the old text is
+    # correct for it.
+    _live = ([r.get("name", "") for r in _regions] if inspectable_regions is None
+             else list(inspectable_regions))
+    if prepared_cuts:
+        region_block = prepared_cuts_block(prepared_cuts)
+    elif _live:
         region_block = (
             "\n\nINTERNAL SLICES (call inspect_region(region_name) to cut the VOLUME mesh and see "
             "INTERIOR cells - near-wall refinement / boundary layers and internal sizing - which the "
-            f"surface views CANNOT show):\n  {_rnames}"
+            f"surface views CANNOT show):\n  {', '.join(_live)}"
+        )
+    elif _regions:
+        # DECLARED AND UNSHOWABLE. Naming them anyway is what cost job 53bbce4b its verdict on
+        # the patch side: three rounds spent asking for something that was never going to come.
+        #
+        # AND THE TWO REASONS ARE DIFFERENT, so they are said differently. "No cut came home" and
+        # "a cut came home that nothing can be counted in" lead a reader to different repairs,
+        # and the second is the one this mesh's size makes likely: at the whole part's scale a
+        # 100 um channel is under one pixel wide in a 1280x960 frame.
+        from meshpipeline.sandbox.review_session import manifest_cut_claims
+        _claimed = manifest_cut_claims(manifest)
+        # THREE THINGS CAN FAIL NOW and the sentence must not name only one of them. A frame is
+        # refused when its window is too coarse for a cell, when the side that drew it found no
+        # passage array in it (the cut landed somewhere else), or when this side counted no
+        # cells in the drawn pixels. On job 0ff6f9e5 all six frames fail, for two of those three
+        # reasons, so "not one of them resolves a single cell" would be wrong about four of them.
+        _why = ("the interior was not published with this mesh and no cut of it was prepared"
+                if not _claimed else
+                f"{sum(_claimed.values())} cut frame(s) were prepared and not one of them was "
+                "measured to contain the cells it was cut to show, so nothing in them could be "
+                "counted")
+        region_block = (
+            "\n\nINTERNAL SLICES: this mesh declares "
+            f"{len(_regions)} internal cut(s) ({', '.join(r.get('name', '') for r in _regions)}) "
+            f"and NONE of them can be shown to you - {_why}. Do not call inspect_region. You can "
+            "judge the boundaries and the measured numbers; the interior's cell sizing you CANNOT "
+            "see, so say that in your findings rather than passing or failing it on the outside "
+            "views."
         )
     # USER DISPUTE / CHANGE REQUEST (dispute runs): the user reported issues on a
     # previously delivered mesh - at specific flagged spots, as a free-text change

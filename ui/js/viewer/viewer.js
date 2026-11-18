@@ -1081,17 +1081,32 @@ function initViewer(job,surf,uiCfg){
     // Drawn as its own group: on a two-scale part these two numbers and their ratio ARE the
     // mesh's story, and buried among the quality rows they read as incidental.
     const SPAN=[['min_cell_m','Smallest cell'],['max_cell_m','Largest cell']];
+    /* AND THE TEN LAYER KEYS THE BACKEND STARTED PUBLISHING ON 2026-11-17. Every one of them was
+       unknown here, so all ten fell through to the "Other" group under their raw key names, where
+       `layer_short` - a LIST - went through String() and drew the real plate's three shortfall
+       sentences as one comma-joined line, an empty list drew a labelled row with no value at all,
+       and `near_wall_layers_measured` sat yards away from the "Boundary layers" row it is the
+       only qualifier of. A reader of that panel could not see that the run had fallen under three
+       of this engine's own four floors, with every figure needed to see it in the payload.
+       They are FOLDED because the block below draws each of them by hand. */
     const FOLDED=['avg_non_ortho','skew_faces','skew_fraction','cell_size_ratio',
                   'internal_faces','small_determinant_cells','concave_cells',
                   'low_quality_tet_faces',
                   'near_wall_layers','near_wall_levels','near_wall_cell_m',
+                  'near_wall_layers_asked','near_wall_layers_measured',
+                  'layer_coverage_pct','layer_thickness_pct','layer_thickness_m',
+                  'layer_faces_in_error','layer_cells_added','layer_iterations',
+                  'layer_patch','layer_short',
+                  'layer_floors_unjudged','layer_floors_total',
                   'interface_faces_fluid','interface_faces_solid'];
     const KNOWN=[...SIZE,...TYPES,...QUALITY,...SPAN].map(r=>r[0])
                  .concat(FOLDED,['units','engine']);
     const isNum=v=>typeof v==='number'&&isFinite(v);
     // integers read as counts; a measured value to two decimals, and a very small one in
-    // exponent form rather than a run of zeroes
-    const show=v=>!isNum(v) ? esc(String(v))
+    // exponent form rather than a run of zeroes. A DECLARED YES/NO is said in words: String(true)
+    // is "true", which reads as a value rather than as an answer.
+    const show=v=>typeof v==='boolean' ? (v?'yes':'no')
+      : !isNum(v) ? esc(String(v))
       : Number.isInteger(v) ? v.toLocaleString()
       : (Math.abs(v)>0&&Math.abs(v)<0.001) ? v.toExponential(2)
       : v.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
@@ -1159,30 +1174,82 @@ function initViewer(job,surf,uiCfg){
         `the delivered mesh spans ${Math.log2(q.cell_size_ratio).toFixed(1)} octree levels`));
 
     /* AT THE WALL - the third of the six readings the customer asked for by name, "number of
-       boundary layers in the fluid". The answer on a microchannel conjugate mesh is none, and the
-       reason this used to give was MEASURED FALSE: it said an extruded layer would leave every
-       interface face without its partner. generateBoundaryLayers with optimiseLayer 0 kept all
-       14,477 interface faces identical on both sides to 4e-18 m, at 99.97% coverage. Layers do
-       not break conformality, and telling a customer they do is telling them something untrue
-       about their own mesh.
-       What actually rules them out is that a prism stack does not FIT: in a 98 um passage at an
-       affordable cell size the stack takes the quality to the bar (non-orthogonality 13.82 ->
-       64.95 against checkMesh's 65). Across a channel that narrow, across-the-channel IS
-       near-wall, which is why the cells-across row below is the real answer to their question.
-       A bare "0" reads as a failure, so the reason and what stands in its place are on the row.
-       Measured and written to the manifest since the engine was built; it never reached a reader
-       because the metric filter in render/mesh_facts dropped it. */
+       boundary layers in the fluid".
+       TWO SENTENCES THAT USED TO BE PRINTED HERE ARE DELETED, because both were measured false
+       and a customer was being told them about their own mesh. The first said an extruded layer
+       would leave every interface face without its partner: generateBoundaryLayers with
+       optimiseLayer 0 kept all 14,477 interface faces identical on both sides to 4e-18 m at
+       99.97% coverage, so layers do not break conformality. The second - the one still on the
+       row until 2026-11-17 - said "a prism stack does not fit across a passage this narrow
+       without taking the cell quality to its limit". What that reading measured was a stack 109%
+       of its own background cell, which is a dictionary defect and not a property of the part;
+       `layers.fit_complaint` refuses exactly that dict now, and at 60% of a cell the same part
+       came back with 2.84 of 3 layers over 95.553% of a 16,619,777-face interface. This engine
+       GROWS layers. The row says what the payload measured and nothing else.
+       A BARE COUNT IS STILL NOT A READING, which is why `near_wall_layers_asked` and
+       `near_wall_layers_measured` are folded onto this row rather than left to stand alone: 3
+       asked and 3 grown are the same number and only one of them is evidence, and that flag is
+       the only thing in the payload that says which one a reader is looking at. */
     const wall=[];
-    if(has('near_wall_layers'))wall.push(row('near_wall_layers','Boundary layers','',
-      q.near_wall_layers===0
-        ? 'none: a prism stack does not fit across a passage this narrow without taking the cell '
-          +'quality to its limit, so the near-wall resolution is the cells across the channel'
-        : ''));
+    if(has('near_wall_layers')){
+      const asked=has('near_wall_layers_asked')?q.near_wall_layers_asked:null;
+      const meas=has('near_wall_layers_measured')?q.near_wall_layers_measured:null;
+      // the ask is part of the reading; without it 2.25 cannot be seen to have fallen short
+      const askedSaid=isNum(asked)?`, against ${show(asked)} asked for`:'';
+      wall.push(row('near_wall_layers','Boundary layers','',
+        meas===false
+          // THE ONE CASE WHERE THE FIGURE IS AN INTENTION. finalize._near_wall puts the plan's
+          // ask under this key when nothing measured what grew, so saying so is the whole point
+          // of the flag reaching the panel at all.
+          ? (asked===0
+              ? 'none were asked for, so none were grown: the near-wall resolution is the graded '
+                +'cell at the wall below'
+              : 'not measured - this is what the mesher was asked to grow, '
+                +'not what the delivered mesh has')
+          : meas===true
+            ? (q.near_wall_layers===0
+                ? `the pass grew none${askedSaid}`
+                : `measured in the delivered mesh${askedSaid}${
+                    has('layer_patch')?`, on ${esc(String(q.layer_patch))}`:''}`)
+            : isNum(asked)?`${show(asked)} asked for`:''));
+    }
+    /* HOW WELL THE STACK GREW. Four figures, and not one of them is a bar: this panel states
+       what was measured and leaves every floor to `layer_short` below, which carries
+       `layers.shortfalls`' own sentences with its own numbers already in them. Restating 92.0,
+       75.0, 0.75 and 200.0 here would give one quantity a second reader on the far side of an
+       HTTP boundary, which is the mistake this engine has already paid for once. */
+    if(has('layer_coverage_pct'))wall.push(row('layer_coverage_pct','Layer coverage','%',
+      has('layer_patch')?`of ${esc(String(q.layer_patch))}`:'of the layered surface'));
+    if(has('layer_thickness_pct'))wall.push(row('layer_thickness_pct','Layer thickness','%',
+      has('layer_thickness_m')?`of the thickness asked for, ${len(q.layer_thickness_m)} grown`
+                              :'of the thickness asked for'));
+    else if(has('layer_thickness_m'))wall.push(
+      `<div class="mx-c mx-row mx-q" data-key="layer_thickness_m"><div class="mx-k">Layer thickness</div>`
+      +`<div class="mx-v">${len(q.layer_thickness_m)}</div></div>`);
+    /* THE FACES IN ERROR TAKE TWO NUMBERS. The cells the pass ADDED is what the count is measured
+       against - 8,916 over 37,247,044 on the real plate - and the count alone is a number with
+       nothing to compare it to. The per-million figure is that division and nothing more; the
+       ceiling it is judged against is in the shortfall sentence, not here. */
+    if(has('layer_faces_in_error'))wall.push(row('layer_faces_in_error','Faces in error','',
+      isNum(q.layer_cells_added)&&q.layer_cells_added>0
+        ? `${(q.layer_faces_in_error*1e6/q.layer_cells_added).toLocaleString(undefined,{maximumFractionDigits:0})}`
+          +` per million of the ${show(q.layer_cells_added)} cells the pass added`
+        : (q.layer_faces_in_error===0?'None':'')));
+    else if(has('layer_cells_added'))wall.push(row('layer_cells_added','Cells the layers added',''));
+    /* HOW MANY REPAIR ITERATIONS THE MOVER RAN. On the real plate every one of the ten took
+       coverage DOWN, 97.2267% at extrusion to 88.5826% at the end - so the coverage above says a
+       floor was missed and this says the REPAIR is what missed it, which is a different defect.
+       The ten-point curve itself stays in the manifest: a series is not a figure, and this panel
+       has one value to a row. */
+    if(has('layer_iterations'))wall.push(row('layer_iterations','Layer repair passes','',
+      q.layer_iterations===0?'the pass reported no extrusion at all':''));
     if(has('near_wall_cell_m'))wall.push(
       `<div class="mx-c mx-row mx-q" data-key="near_wall_cell_m"><div class="mx-k">Cell at the wall</div>`
       +`<div class="mx-v">${len(q.near_wall_cell_m)}</div>`
       +(has('near_wall_levels')
-        ? `<div class="mx-sub">graded refinement instead: ${show(q.near_wall_levels)} level`
+        // NOT "graded refinement INSTEAD". It was instead of layers while this engine grew none;
+        // on a mesh with a measured stack on its interface the two are both there.
+        ? `<div class="mx-sub">graded refinement: ${show(q.near_wall_levels)} level`
           +`${q.near_wall_levels===1?'':'s'} from the background cell</div>`
         : '')+`</div>`);
     else if(has('near_wall_levels'))wall.push(row('near_wall_levels','Levels to the wall',''));
@@ -1193,11 +1260,90 @@ function initViewer(job,surf,uiCfg){
         isNum(b)?(a===b?'the same on both sides':`${show(b)} on the metal side`):''));
     }
 
-    // anything the backend declared that this build has no name for still reaches the user
-    const other=Object.keys(q).filter(k=>!KNOWN.includes(k)).map(k=>row(k,k.replace(/_/g,' '),''));
+    /* WHERE THE LAYER PASS FELL UNDER THIS ENGINE'S OWN FLOORS - its own sentences, one to a
+       line. These arrive as a LIST and they are the reason this group exists separately: put
+       through the generic row above, `String(array)` drew the real plate's three findings as one
+       comma-joined line in the "Other" group, and an EMPTY list drew a labelled row with no
+       value, which reads as a figure that failed to load rather than as a verdict.
+       EMPTY IS A JUDGEMENT AND SAYS SO. `render/mesh_facts` defines the three states a reader
+       must be able to tell apart: `[]` is "judged, no shortfall", a non-empty list is the
+       shortfall, and an ABSENT key is "nobody judged it" - which draws nothing at all here,
+       because a reassuring line on an unjudged run is the one outcome that is not acceptable.
+       Each line is a sentence rather than a value, so it takes the label column (which wraps)
+       and no value column. */
+    /* AND HOW MANY OF THE FLOORS THAT VERDICT IS ABOUT, which is the fourth state this group
+       used to collapse into the second. An empty `layer_short` was drawn as "no shortfall
+       against this engine's layer floors" whether four floors had been judged or one:
+       MEASURED, SYNTHETIC, 2026-11-17, a layer log holding only the Extruding and Added lines
+       published layer_coverage_pct 99.9 with layer_short [] and near_wall_layers_measured FALSE,
+       so this panel said "not measured - this is what the mesher was asked to grow" on the
+       Boundary layers row and "no shortfall against this engine's layer floors" six rows below
+       it, about the same pass, with three of the four floors never evaluated.
+       `layer_floors_unjudged` names the ones that had no figure and `layer_floors_total` is how
+       many there are - the DENOMINATOR, which this panel never had, so "three of four" was
+       arithmetic a reader did from a number that was nowhere on the page. */
+    const shortLines=Array.isArray(q.layer_short)?q.layer_short.filter(s=>typeof s==='string'&&s.trim()):null;
+    const unjudged=Array.isArray(q.layer_floors_unjudged)
+      ?q.layer_floors_unjudged.filter(s=>typeof s==='string'&&s.trim()):null;
+    const nOut=unjudged?unjudged.length:0;
+    const nAll=isNum(q.layer_floors_total)?q.layer_floors_total:null;
+    const nIn=nAll===null?null:nAll-nOut;
+    /* A PASS RAN AND NOT ONE OF ITS FLOORS COULD BE JUDGED - the state this panel used to draw
+       exactly like a mesh that never grew a layer. `finalize._layers_published` publishes the two
+       tally keys and no verdict at all for it, so it arrives here as every floor unjudged with no
+       `layer_short`; a run with NO LAYER PASS publishes neither key, so nAll is null there and
+       this stays false. Neither ever read as a pass - what a reader could not do was tell the two
+       apart, and they call for different actions. */
+    const noneJudged=shortLines===null&&nAll!==null&&nAll>0&&!!unjudged&&nOut>=nAll;
+    // the tally first, so the sentences under it are read against it rather than as the whole
+    const tally=shortLines===null||nAll===null?[]
+      /* JUDGED, NOT KEYED, and that was the defect. The count is how many floors
+         `layers.shortfalls` actually evaluated, which is not how many had a figure: MEASURED,
+         SYNTHETIC, 2026-11-17 - a zero-layer pass (90,000 faces in error over 0 cells added) had
+         a reading under all four keys and was judged by THREE, because the faces-in-error floor
+         is a ratio and had nothing to divide by. This line read "4 of the 4" over a verdict on
+         three, on a panel that printed "Faces in error 90,000" with no per-million figure beside
+         it for the very same reason. */
+      :[`<div class="mx-c mx-row" data-key="layer_floors_total"><div class="mx-k">`
+        +`${nIn} of the ${nAll} floors this engine judges a layer pass by were judged on what `
+        +`this pass measured</div></div>`]
+       .concat(nOut?[`<div class="mx-c mx-row" data-key="layer_floors_unjudged"><div class="mx-k">`
+         +`${nOut} had nothing to judge ${nOut===1?'it':'them'} on, so `
+         +`${nOut===1?'it was':'they were'} not judged at all: `
+         +`${esc(unjudged.join(', '))}</div></div>`]:[]);
+    const shortRows=noneJudged
+      ? [`<div class="mx-c mx-row" data-key="layer_floors_unjudged"><div class="mx-k">`
+         +`a layer pass ran and its log left nothing to judge it on, so none of the ${nAll} `
+         +`floors this engine judges a layer pass by was judged: ${esc(unjudged.join(', '))}`
+         +`</div></div>`]
+      : shortLines===null?[]
+      : tally.concat(shortLines.length
+        ? shortLines.map(s=>`<div class="mx-c mx-row" data-key="layer_short"><div class="mx-k">${esc(s)}</div></div>`)
+        // NOTHING FELL SHORT - of what was judged. "no shortfall against this engine's layer
+        // floors" is only true when every floor was judged, so a partial read says what it
+        // actually met instead of reassuring a reader about floors nobody looked at.
+        : [`<div class="mx-c mx-row" data-key="layer_short"><div class="mx-k">`
+           +(nOut
+             ? `the ${nIn===null?'':nIn+' '}floor${nIn===1?'':'s'} that could be judged `
+               +`${nIn===1?'was':'were'} met`
+             : `no shortfall against this engine's${nAll===null?'':' '+nAll} layer floors`)
+           +`</div></div>`]);
+
+    /* anything the backend declared that this build has no name for still reaches the user - and
+       a LIST or a yes/no reaches them as one. `String(['a','b'])` is "a,b" and `String([])` is
+       the empty string, so the generic row drew a multi-line finding as one line and an empty
+       declared list as a label with nothing beside it. */
+    const other=Object.keys(q).filter(k=>!KNOWN.includes(k)).map(k=>{
+      const v=q[k],label=k.replace(/_/g,' ');
+      if(!Array.isArray(v))return row(k,label,'');
+      const lines=v.filter(s=>s!==null&&s!==undefined).map(s=>esc(String(s)));
+      return `<div class="mx-c mx-row mx-q" data-key="${esc(k)}"><div class="mx-k">${esc(label)}</div>`
+        +`<div class="mx-v">${lines.length?show(lines.length):'none'}</div>`
+        +(lines.length?`<div class="mx-sub">${lines.join('<br>')}</div>`:'')+`</div>`;});
     const sizes=SIZE.filter(([k])=>has(k)),types=TYPES.filter(([k])=>has(k));
     const group=(title,body)=>body?`<div class="mx-group"><div class="mx-gh">${title}</div>${body}</div>`:'';
-    if(!sizes.length&&!types.length&&!quality.length&&!span.length&&!wall.length&&!other.length)return;
+    if(!sizes.length&&!types.length&&!quality.length&&!span.length&&!wall.length
+       &&!shortRows.length&&!other.length)return;
     host.innerHTML=`<div class="mx"><div class="mx-h"><span>Delivered mesh</span>`
       +(q.engine?`<span class="eng">${esc(q.engine)}</span>`:'')
       +(q.units?`<span class="eng">${esc(q.units)}</span>`:'')
@@ -1207,6 +1353,22 @@ function initViewer(job,surf,uiCfg){
       +group('Cell types',types.map(type).join(''))
       +group('Quality',quality.join(''))
       +group('At the wall',wall.join(''))
+      // the heading is the verdict: three sentences about missed floors must not sit under a
+      // title that reads the same as a clean pass, an empty list must not read as a miss, and a
+      // PARTLY judged pass must read as neither of those two - it is the one state where the
+      // rows below are not a verdict on this engine's floors at all, only on the ones that had
+      // a figure, and the title is the first thing a reader takes from the group
+      +group(noneJudged
+               // NOT A VERDICT, AND NOT SILENCE EITHER: the run that never grew a layer has
+               // no such group on its panel at all, and a reader has to be able to tell the
+               // two apart.
+               ?'Nothing the layer pass left could be judged against this engine’s own floors'
+               :shortLines&&shortLines.length
+                 ?'Where the layer pass fell short of this engine’s own floors'
+                 :shortLines&&nOut
+                   ?'Only part of the layer pass could be judged against this engine’s own floors'
+                   :'The layer pass against this engine’s own floors',
+             shortRows.join(''))
       +group('Other',other.join(''))
       +`</div>`;
   })();

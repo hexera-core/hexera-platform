@@ -639,9 +639,19 @@ class EngineSpec:
         # So the waiver is the engine's to refuse. An engine that declares
         # `review_requires_the_interior` never waives, and an absent volume becomes stated
         # missing evidence instead of a question nobody asked.
+        #
+        # AND A CUT ALREADY TAKEN IS AN INTERIOR THAT CAN BE SHOWN. The waiver's premise is that
+        # a region is a cut through a volume, so no volume means nothing to look at. That premise
+        # is false once the cut has been taken where the mesh was built and the frames came home
+        # instead of the 10.4 GB of cells: the region IS inspectable, so waiving the obligation
+        # would stop anything downstream from asking to see inside a mesh whose inside is right
+        # there. The CLAIM is read here, never the file - this method runs in the API process and
+        # must not touch a workspace - and the session is the authority on what resolved.
         if (not self.review_requires_the_interior
                 and not ((manifest or {}).get("mesh_paths") or {}).get("volume")):
-            obs = tuple(o for o in obs if o.kind is not TargetKind.REGION)
+            from meshpipeline.sandbox.review_session import manifest_cut_claims
+            if not manifest_cut_claims(manifest):
+                obs = tuple(o for o in obs if o.kind is not TargetKind.REGION)
         return obs
 
     @property

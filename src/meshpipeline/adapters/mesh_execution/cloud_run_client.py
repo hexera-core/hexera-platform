@@ -104,7 +104,65 @@ def _tar_dir(path: Path) -> bytes:
         else:
             for f in payload:
                 tf.add(str(f), arcname=f.relative_to(root).as_posix())
+        _add_return_ceiling(tf)
     return buf.getvalue()
+
+
+def _add_return_ceiling(tf) -> None:
+    """Tell the mesher what ceiling THIS side will extract its archive under.
+
+    THE READER HAS BEEN THERE SINCE 2026-11-16 AND NOTHING EVER WROTE THE FILE.
+    `engines/return_scope.carried_ceiling` reads it and says why it has to be carried: the ceiling
+    is `result_extraction_limits`, which is CELL_HARD_LIMIT cells at a rate, and CELL_HARD_LIMIT
+    is `optional_env("CELL_HARD_LIMIT", "8000000")` read from THIS side's settings. The mesh VM is
+    never passed it, so on the VM the whole calculation runs off the 8,000,000 default while the
+    side that will do the extracting runs off whatever the operator set.
+
+    MEASURED, job 0ff6f9e5, 2026-11-16, a 283,410,955-cell plate: the VM worked the ceiling out as
+    3,200,000,000 and gave up the 10,366,611,525-byte fluid interior to get under it; the 11.4 GB
+    archive then went home and was accepted anyway, because the real extractor's bound was
+    56,682,191,000. The interior was destroyed to fit a number that was never the real one.
+
+    WHAT IS CARRIED IS THE CELL BUDGET, NOT A FINISHED CEILING, and that is the point. The final
+    number depends on how many cells the mesh HAS, which only the mesher knows when it is done -
+    so carrying one number computed here, before the mesh exists, would hand the VM the 800 MB
+    floor and nothing else. Carrying `cell_hard_limit` lets the VM run the SAME function with the
+    one input it was missing, so there is no second copy of the formula to drift.
+
+    AT ARCHIVE TIME, NOT IN THE WORKSPACE, and that is a boundary decision. The submission's
+    identity is `application/native_submission.workspace_digest`, taken before this executor runs
+    and over the files the payload declares; writing a file into the workspace here would put
+    bytes in the tar that the digest never saw, and re-declaring the payload would change the
+    identity of a submission whose case content did not change. The ceiling is this side's
+    CONFIGURATION, not the case, so it rides beside the case and not in it.
+
+    NON-FATAL. A submission is never lost over this: without the file the mesher computes its own
+    ceiling exactly as it does today, which is the behaviour this is improving on.
+    """
+    try:
+        # `return_scope` is imported in here and not beside the module's own imports because it
+        # reaches back into this module for `result_extraction_limits`
+        import meshpipeline.settings.policy as polcfg
+        from meshpipeline.engines.return_scope import CEILING_FILE
+        from meshpipeline.sandbox.safe_extract import default_limits
+
+        body = json.dumps({
+            "cell_hard_limit": int(polcfg.CELL_HARD_LIMIT),
+            "max_archive_bytes": int(max(default_limits().max_archive_bytes,
+                                         int(polcfg.CELL_HARD_LIMIT) * RESULT_BYTES_PER_CELL)),
+            "why": ("the ceiling the SUBMITTING side will extract this archive under; "
+                    "cell_hard_limit is the one input result_extraction_limits needs that the "
+                    "mesher is never passed"),
+        }).encode()
+    except Exception:                     # noqa: BLE001
+        logger.warning("could not work out the return ceiling to carry; the mesher will compute "
+                       "its own", exc_info=True)
+        return
+    info = tarfile.TarInfo(CEILING_FILE)
+    info.size = len(body)
+    info.mtime = int(time.time())
+    info.mode = 0o644
+    tf.addfile(info, io.BytesIO(body))
 
 
 #: Upload transport for the submission archive. Without an explicit chunk size the storage SDK
@@ -453,19 +511,27 @@ def _region_cells(result: dict | None) -> int:
     return total
 
 
-def result_extraction_limits(result: dict | None = None):
+def result_extraction_limits(result: dict | None = None, *, cell_hard_limit: int | None = None):
     """The extraction limits for a RETURNED mesh workspace: the generic limits, with the archive
     ceiling sized from the cell budget - CELL_HARD_LIMIT cells at RESULT_BYTES_PER_CELL (800 MB
     at the default 8 M) - and, when the remote's result document says how many cells the mesh
     has, from that count too (the archive, the expanded total and the largest file each at their
     RESULT_*_PER_MEASURED_CELL). Never below the generic limits; entries, depth, ratio and member
-    types are unchanged."""
+    types are unchanged.
+
+    `cell_hard_limit` overrides this process's own budget, and exists for ONE caller: the mesh VM,
+    which runs `engines/return_scope` against the budget the submitting side carried in beside the
+    case (`_add_return_ceiling`). Without it that side computes this whole thing off the 8,000,000
+    default while the process that will really do the extracting uses the configured number, and
+    the two disagree by whatever the operator set - measured at 17.7x on job 0ff6f9e5, which cost
+    that run its fluid interior. Omitted everywhere else, which is this process's own budget."""
     from dataclasses import replace
 
     import meshpipeline.settings.policy as polcfg
     from meshpipeline.sandbox.safe_extract import default_limits
     base = default_limits()
-    by_budget = int(polcfg.CELL_HARD_LIMIT) * RESULT_BYTES_PER_CELL
+    hard = int(cell_hard_limit or 0) or int(polcfg.CELL_HARD_LIMIT)
+    by_budget = hard * RESULT_BYTES_PER_CELL
     q = (result or {}).get("quality") if isinstance(result, dict) else None
     try:
         cells = max(0, int((q or {}).get("cells") or 0)) if isinstance(q, dict) else 0
@@ -473,7 +539,7 @@ def result_extraction_limits(result: dict | None = None):
         cells = 0
     cells = cells or _reported_cells(result) or _region_cells(result)
     # the count is the remote's word: bounded, so no document can lift the limits without end
-    cells = min(cells, 2 * int(polcfg.CELL_HARD_LIMIT))
+    cells = min(cells, 2 * hard)
     archive = max(base.max_archive_bytes, by_budget, cells * RESULT_ARCHIVE_BYTES_PER_MEASURED_CELL)
     raw = max(base.max_total_uncompressed_bytes, cells * RESULT_RAW_BYTES_PER_MEASURED_CELL)
     largest = max(base.max_file_bytes, cells * RESULT_FILE_BYTES_PER_MEASURED_CELL)

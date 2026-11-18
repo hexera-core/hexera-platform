@@ -182,18 +182,39 @@ REVIEWER_TOOLS = [
         "function": {
             "name": "inspect_region",
             "description": (
-                "Slice the VOLUME mesh at a named inspection region and return the cut as an image, so "
-                "you can see INTERIOR cells - near-wall refinement / boundary layers and internal sizing "
-                "- which the surface views cannot show. The available region names are listed in the "
-                "INTERNAL SLICES section of your first message. Use this to confirm internal structure is "
-                "actually present; cross-check exact counts/sizes against the mesh script."
+                "See the inside of the mesh at a named inspection region, as an image, so you can judge "
+                "INTERIOR cells - near-wall refinement / boundary layers and internal sizing - which the "
+                "surface views cannot show. The available region names are listed in your first message. "
+                "TWO KINDS OF MESH ANSWER THIS, and your first message says which one this is. Under "
+                "INTERNAL SLICES the volume is here and this slices it live. Under INTERNAL CUTS the "
+                "interior was too large to bring here, so the cut was taken where the mesh was built and "
+                "you are handed ONE PICTURE OF ONE PLANE at a fixed window: the camera does not move in "
+                "it and anything outside its window is not in it. Every frame is returned with the window "
+                "it covers and how many pixels across a cell is in it - judge only what that frame can "
+                "actually resolve, and say which frame a finding came from."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "region_name": {
                         "type": "string",
-                        "description": "An inspection region name from the INTERNAL SLICES list (e.g. 'slice_y_centre', 'nearwall_z').",
+                        "description": "An inspection region name from your first message (e.g. 'across_the_flow', 'nearwall_z').",
+                    },
+                    "scope": {
+                        "type": "string",
+                        "enum": ["whole", "zoom"],
+                        "description": (
+                            "Which frame of a PREPARED cut to be shown (INTERNAL CUTS only). Omit it and "
+                            "you get 'whole', the ENTIRE cut plane - that is the region's own question, "
+                            "and a channel is under a pixel wide in it, so it cannot be counted in and "
+                            "does NOT discharge the region. 'zoom' is a few millimetres of that same "
+                            "plane, drawn fine enough for cells, and is the only frame an inspection can "
+                            "be judged on - ask for it by name. Each frame is returned with what was "
+                            "MEASURED in the picture, including how many cells were actually resolved in "
+                            "it; a frame measured to contain no cells cannot support a cell count no "
+                            "matter how fine its stated scale is. A live-sliced mesh has no frames and "
+                            "refuses this."
+                        ),
                     },
                 },
                 "required": ["region_name"],

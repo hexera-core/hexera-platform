@@ -22,6 +22,11 @@ class OpeningContext:
     # kind as the legend: computed from the geometry the renderer loaded, never from the
     # manifest, so nothing upstream of the review chooses where the reviewer looks.
     patch_views: tuple = ()
+    # The PREPARED CUT FRAMES this session will serve (tuple[ResolvedCut, ...]), empty when the
+    # interior came home and is cut live. An opening fact because the reviewer has to know BEFORE
+    # it spends a round whether it can re-aim a cut or is being handed one fixed picture per
+    # plane - and, when no frame resolves a cell, that the interior cannot be judged at all.
+    prepared_cuts: tuple = ()
 
 
 @runtime_checkable

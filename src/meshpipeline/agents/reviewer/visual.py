@@ -37,6 +37,7 @@ from meshpipeline.contracts.review_evidence import (
     RenderContext,
     ReviewEvidenceFailure,
     ReviewRenderError,
+    TargetKind,
 )
 from meshpipeline.engines.assurance import derive_assurance_plan
 
@@ -314,6 +315,11 @@ async def node_reviewer(state: PipelineState) -> dict:
                 renderable_patches=await _viewer_entities(runtime),
                 patch_colour_legend=opening.patch_colour_legend,
                 patch_views=opening.patch_views,
+                # WHAT CAN ACTUALLY BE CUT, from the session rather than the manifest. The
+                # manifest only CLAIMS an interior: on job 0ff6f9e5 it named a volume that had
+                # been pruned on the way home, and the prompt told the reviewer to slice it.
+                inspectable_regions=_inspectable_regions(opening),
+                prepared_cuts=opening.prepared_cuts,
                 mesh_units=inputs.mesh_units,
                 request=inputs.request,
                 review_brief=inputs.review_brief,
@@ -380,6 +386,22 @@ def _reviewer_return(**fields) -> dict:
             "truth, approved intent, triage, artifact readiness and final_result belong to other "
             "owners.")
     return dict(fields)
+
+
+def _inspectable_regions(opening) -> list[str] | None:
+    """The regions the SESSION offers to cut, or None when it reported no inventory at all.
+
+    Taken from the opening facts rather than a second call on the runtime: `inspection_targets`
+    is already part of the visual surface, so every implementation of that protocol answers this
+    one. An EMPTY inventory means the surface said nothing, which must not collapse into
+    "nothing is inspectable" - the second rewrites the prompt, and the prompt is what tells the
+    reviewer whether it can look inside this mesh at all.
+    """
+    targets = tuple(getattr(opening, "inspection_targets", ()) or ())
+    if not targets:
+        return None
+    # TargetKind is a str enum, so this matches a typed target and a plainly-stringed one alike.
+    return [str(t.label) for t in targets if getattr(t, "kind", None) == TargetKind.REGION]
 
 
 async def _viewer_entities(runtime) -> list[str] | None:

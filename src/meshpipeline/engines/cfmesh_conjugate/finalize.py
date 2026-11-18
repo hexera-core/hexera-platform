@@ -326,9 +326,19 @@ def quality_of(ws: Path, report: dict) -> dict:
         {"region": str(r.get("name")), **dict(x)}
         for r in rows for x in (r.get("poor_sets") or ())]
     # NEAR-WALL RESOLUTION, reported on every run because it is asked for on every run. The layer
-    # count comes from the plan - zero on every mesh delivered so far, and whatever was asked for
-    # on a run that grew them. See NEAR_WALL_LAYERS.
-    q.update(_near_wall(plan))
+    # count is the MEASURED one when a pass measured one and the plan's ask otherwise, with the
+    # ask always beside it. See `_near_wall` and NEAR_WALL_LAYERS.
+    #
+    # THE LAYER PASS IS JUDGED ON THIS PATH TOO, which is the defect this closes. Every delivered
+    # conjugate mesh comes through `native._run_conjugate_local`, which calls `conjugate.build`,
+    # which reads the layer log and lists its shortfalls - and then `native._as_dict` dropped the
+    # whole report, so the judgement reached no artifact, no manifest and no reviewer. On job
+    # 0ff6f9e5 three floors were missed (88.5826% coverage against 92.0, 71.9% thickness against
+    # 75.0, 239 faces in error per million against 200) and the delivered manifest published
+    # `near_wall_layers: 3` with nothing else about layers in it at all.
+    _grown = _layers_published(report.get("layers") or {})
+    q.update(_grown)
+    q.update(_near_wall(plan, _grown))
     # WHETHER THE INTERIOR CAN BE CUT AT ALL. The engine declares a REGION inspection target, so
     # the review context tells the reviewer to call inspect_region - and the slices are published
     # only when a per-region volume was exported. Without one the reviewer is sent to a tool that
@@ -417,9 +427,67 @@ def _pieces_short(q: dict) -> list[str]:
 NEAR_WALL_LAYERS = 0
 
 
-def _near_wall(plan: dict) -> dict:
-    """The near-wall resolution: how fine the cell at the coolant's wall is, and over how many
-    graded levels it got there. Read off the plan, which is where the sizing was decided."""
+def _near_wall(plan: dict, grown: dict | None = None) -> dict:
+    """The near-wall resolution: how fine the cell at the coolant's wall is, over how many graded
+    levels it got there, and HOW MANY LAYERS THE PASS ACTUALLY GREW.
+
+    THE LAYER COUNT IS THE MEASURED ONE, NOT THE ASK, and that is the whole point of `grown`.
+    This function read `plan["layers"]` and published it as `near_wall_layers`, which is the
+    number the mesher was TOLD to grow. On the real plate, job 0ff6f9e5, that published 3 into the
+    customer's own report while the delivered mesh carried 2.25 - the figure is in that run's own
+    snappyHexMesh.log, `fluid_to_solid 16582198 3 2.25 1.09e-05 71.9`, and nothing read it. A
+    report that publishes only the ask is publishing an intention, which is `layers.measured`'s
+    own words for it.
+
+    `grown` is `layers.measured()` as `conjugate.build` took it, carried across the container
+    boundary in `conjugate_report.json["layers"]`. The ask travels beside it as
+    `near_wall_layers_asked` and is never dropped: a reader comparing 2.25 against 3 is reading
+    the shortfall, and a reader given only 2.25 cannot see that anything was short.
+
+    THE MEASURED COUNT IS A FRACTION AND THE ONE USER-FACING READER NOW CARRIES IT AS ONE. It did
+    not: `render/mesh_facts.quality` listed `near_wall_layers` in `_INT_METRICS`, so the viewer
+    payload got `int(2.25)` = 2 - a THIRD number, neither the 3 that was asked for nor the 2.25
+    that grew, in the one panel a customer reads. Worse, none of the eleven layer figures beside it
+    were in that reader at all, so the payload was `{near_wall_layers: 2, near_wall_levels: 4,
+    near_wall_cell_m: 2.51578e-05}` and the ask had vanished from it: no reader could see that
+    anything had fallen short. Since 2026-11-17 that key is in `_FLOAT_METRICS`, with
+    `near_wall_layers_asked`, `near_wall_layers_measured`, the four figures this engine draws its
+    own floors on and `layer_short` beside it.
+
+    NOTHING DOWNSTREAM WANTS AN INTEGER, and that was grepped rather than assumed: the only
+    consumers of this field outside this engine are the two `viewer.js` copies, whose `show()`
+    prints an integer as a count and a non-integer to two decimals.
+
+    BOTH OF THOSE COPIES ARE SERVED, and this comment said one of them was not. It read
+    "`apps/console/public/static/js/viewer/viewer.js` is a second copy nothing serves", which is
+    false, and the chain was traced end to end on 2026-11-17 rather than assumed either way:
+
+        ui/js/viewer/viewer.js
+            docker-compose.yml:185 mounts ./ui at /srv/ui:ro, settings/inventory STATIC_DIR
+            defaults to ./ui, and the api serves it at /ui. tests/ui/conftest points STATIC_DIR
+            here too, so this is the copy every browser test drives.
+        apps/console/public/static/js/viewer/viewer.js
+            Dockerfile:682 COPYs apps/console/public/ into the console image;
+            apps/console/src/app/(dashboard)/runs/[jobId]/page.tsx renders Workbench;
+            workbench.tsx:85 loads /static/js/main.js; main.js:34 imports ./viewer/viewer.js;
+            apps/console/next.config.ts declares no rewrites. Next serves public/ at the root, so
+            /static/js/viewer/viewer.js IS that file and the console run page runs it.
+
+    The two are hand-maintained mirrors with no build step between them (nothing in the Dockerfile,
+    package.json or any script copies one onto the other), and they had drifted far: 3,554 lines
+    against 1,836. The console's copy still printed "none: a prism stack does not fit across a
+    passage this narrow" and "graded refinement instead" - the claim this engine's own delivered
+    mesh refutes, with 2.25 layers in it - to every reader of the console's run page. The layer
+    block is now the same in both, and `tests/unit/render/test_the_layer_count_reaches_the_reader`
+    holds them identical over it so the next divergence fails a test instead of shipping.
+
+    `near_wall_layers_in_mesh` IS GONE, 2026-11-17. It existed for one reason, stated here: to
+    carry the exact 2.25 "under a key nothing coerces", because `near_wall_layers` was being cast
+    to 2 by `mesh_facts._as_int`. That cast was removed in the same change - the key is in
+    `_FLOAT_METRICS` now - so the duplicate was guarding a coercion that no longer happens, and
+    nothing in src/, ui/ or apps/ ever read it. `layers_in_mesh` stays, because `_near_wall` reads
+    it to get this figure at all and `_said` prints it.
+    """
     bg = float(plan.get("background_cell_m") or 0.0)
     levels = int(plan.get("levels") or 0)
     # THE FINE SURFACES ARE WHERE THE WALL ACTUALLY IS on a two-scale part: the thin passages get
@@ -427,12 +495,209 @@ def _near_wall(plan: dict) -> dict:
     # resolution at the only wall that was hard to resolve. The deepest wins.
     for surf in plan.get("fine_surfaces") or ():
         levels = max(levels, int((surf or {}).get("levels") or 0))
-    # FROM THE PLAN, NOT FROM THE CONSTANT. The plan carries what was asked for; a mesh that grew
-    # layers must not be reported as having none.
-    out: dict = {"near_wall_layers": int(plan.get("layers") or NEAR_WALL_LAYERS),
-                 "near_wall_levels": levels}
+    asked = int(plan.get("layers") or NEAR_WALL_LAYERS)
+    out: dict = {"near_wall_layers_asked": asked, "near_wall_levels": levels}
+    in_mesh = (grown or {}).get("layers_in_mesh")
+    if in_mesh is None:
+        # NO LAYER PASS MEASURED ONE. The ask stands in, exactly as it did - on every mesh this
+        # engine has delivered with `layers: 0` that is the honest answer, and on a run whose log
+        # could not be read it is the only answer there is. `near_wall_layers_measured` says
+        # which of the two a reader is looking at, because 3 asked and 3 grown are the same
+        # number and only one of them is evidence.
+        out["near_wall_layers"] = asked
+        out["near_wall_layers_measured"] = False
+    else:
+        out["near_wall_layers"] = float(in_mesh)
+        out["near_wall_layers_measured"] = True
     if bg > 0.0 and levels >= 0:
         out["near_wall_cell_m"] = bg / 2 ** levels
+    return out
+
+
+#: THE MEASURED LAYER FIGURES THAT TRAVEL INTO THE MANIFEST, keyed as `layers.measured` names
+#: them so the two sides cannot drift. Published only when the pass measured them: an absent
+#: figure is a figure nobody took, and a 0.0 reads as a measurement of nothing grown.
+_LAYER_FIGURES = ("layer_coverage_pct", "layer_thickness_pct", "layer_thickness_m",
+                  "layer_faces_in_error", "layer_cells_added", "layer_iterations",
+                  "layer_seconds", "layer_patch", "layers_asked", "layers_in_mesh")
+
+
+#: THERE IS NO `_floors_had_a_reading` HELPER AND THIS NOTE IS WHY, 2026-11-18. It existed, it
+#: was `len(layers.floors_unjudged(grown)) < len(layers.LAYER_FLOORS)`, and it had NO CALLER
+#: anywhere in src/, ui/, apps/ or tests/ - while two comment blocks in `render/mesh_facts` named
+#: it as the whole of how the two empty cases are told apart. A function with no caller that is
+#: described elsewhere as load-bearing is worse than no function: the next reader goes looking for
+#: the guard where the comment points and does not find the one that runs.
+#:
+#: IT WAS REMOVED RATHER THAN WIRED, and the reason is that the caller it would have had cannot
+#: use it. `_layers_published` needs the unjudged roster ITSELF - it publishes the names - so it
+#: already holds `layers.floors_unjudged(grown)`; calling a helper that recomputes the same
+#: tuple only to compare its length would read that roster twice to answer a question the roster
+#: in hand already answers. The guard is the two lines in `_layers_published` below, and it is
+#: the only guard there has ever been in the shipped path.
+#:
+#: WHAT THE HELPER'S OWN DOCSTRING RECORDED IS KEPT, because it is the measurement that put the
+#: guard there and losing it would cost the next round the same day. MEASURED, SYNTHETIC,
+#: 2026-11-17: `layers.read_layer_log("")` - what `conjugate.build` hands over when the layer log
+#: is missing or unparseable - returns every figure as `None` except `iterations`, which is
+#: `len(extruding)` and so comes back `0`. `0` is neither `None` nor `""`, so it survives
+#: `layers.measured`' filter, so the `if not out: return {}` that used to stand here never fired
+#: on the one case it was for: the payload got `{"layer_iterations": 0, "layer_short": []}`, and
+#: the declared `layer_short` criterion (`op="empty"`, `review_types.Criterion.evaluate` returns
+#: `not v`) read that empty list as a PASS. A run whose judgement never happened reported as a
+#: clean one.
+
+
+def _layers_published(raw: dict) -> dict:
+    """What the layer pass grew and where it fell short, for the manifest's quality block.
+
+    `raw` is `conjugate_report.json["layers"]`, which is `layers.read_layer_log`'s own dict with
+    the shortfalls `conjugate.build` already computed added to it. {} when NO LAYER PASS RAN, and
+    as of 2026-11-17 that is the only thing {} means.
+
+    THREE ANSWERS, NOT TWO. A pass that ran and left no floor anything to be judged on returned {}
+    as well, so AN UNREADABLE LAYER LOG and NO LAYER PASS AT ALL published byte-identical
+    payloads. MEASURED, SYNTHETIC, 2026-11-17: `_layers_published(layers.read_layer_log(""))` and
+    `_layers_published({})` were both {}, and with `_near_wall` over each the two payloads were
+    equal key for key - `near_wall_layers` 3, `near_wall_layers_measured` False,
+    `near_wall_layers_asked` 3, `near_wall_levels` 3, `near_wall_cell_m` 2.5e-05 - so the panel
+    drew the same rows for both. NEITHER READS AS A CLEAN PASS, so this was a completeness gap and
+    never a false claim; what a reader could not do was tell "we grew layers and cannot tell you
+    how they came out" from "we grew none", and those call for different actions - the first is a
+    log to go back for, the second is a plan that asked for none. The two are distinct at the
+    source (`conjugate.build` leaves `layer_report` {} unless `layers > 0`, and `read_layer_log`
+    always returns its ten keys), so the distinction was thrown away HERE and nowhere else.
+
+    WHAT THE UNREADABLE CASE PUBLISHES IS THE ABSENCE ITSELF: `layer_floors_unjudged` naming all
+    four floors, `layer_floors_total` beside it, and not one figure or verdict more. Not
+    `layer_short`, whose empty list is the one value a reader is entitled to read as a clean pass,
+    and not `layer_iterations`, which is 0 on every unreadable log and says only that nothing was
+    counted.
+
+    THE SHORTFALL IS CARRIED, NOT RE-DERIVED. `layers.shortfalls` is evaluated once, inside
+    `conjugate.build`, against the pass's own `cells_added` - a number no other artifact holds, so
+    a second reader here could not get the same answer. That is exactly the "one quantity, two
+    readers that disagreed" this engine has already paid for once (5% in a criterion against
+    19.89% in a gate). The FIGURES go through `layers.measured`, which is the one spelling of
+    their names, for the same reason.
+
+    `layer_short` is a LIST so the declared criterion can be `op="empty"` and tell "the pass met
+    every floor" from "nobody judged it": an absent key reads as unmeasured and never as a pass,
+    where False would read as a pass on a run that grew nothing. WHICH ONLY WORKS IF THE ABSENT
+    CASE IS ACTUALLY ABSENT, and until 2026-11-17 it was not: an unreadable log published that
+    empty list beside a lone `layer_iterations: 0`.
+
+    THE GUARD THAT KEEPS THE ABSENT CASE ABSENT IS THE `len(unjudged) >= len(LAYER_FLOORS)` TEST
+    BELOW, and nowhere else. It is named here because two comment blocks in `render/mesh_facts`
+    named a `_floors_had_a_reading` helper instead, which had no caller and is now gone (the note
+    above `_layers_published` carries its measurement). The `if not out: return {}` that stood
+    here before 2026-11-17 is gone too: it asked whether any FIGURE at all survived, which the
+    iteration count always does, so it never fired on the one case it was there for.
+    """
+    from meshpipeline.engines.cfmesh_conjugate import layers as LY
+    from meshpipeline.engines.cfmesh_conjugate.conjugate import FLUID_TO_SOLID
+
+    # THE REPORT IS UNTRUSTED: it is JSON written on the far side of a container boundary, and a
+    # non-dict here would take the whole manifest down over a figure about layers. The mesh is
+    # the deliverable and is never lost over a reading beside it.
+    if not isinstance(raw, dict) or not raw:
+        return {}
+    grown = LY.measured(raw, interface_patch=FLUID_TO_SOLID)
+    # NO FIGURE AND NO VERDICT WHEN NOTHING WAS JUDGED - BUT NOT SILENCE, which is the answer a
+    # run with no layer pass at all gives and a run whose log could not be read must not. Not the
+    # iteration count, which is 0 on every unreadable log and says only that nothing was counted,
+    # and above all not `layer_short`, whose empty list is the one value a reader is entitled to
+    # read as a clean pass. The two tally keys are the whole of what such a pass can honestly
+    # publish: a pass ran, and none of this engine's floors could be judged on what it left.
+    unjudged = LY.floors_unjudged(grown)
+    if len(unjudged) >= len(LY.LAYER_FLOORS):
+        return {"layer_floors_unjudged": list(unjudged),
+                "layer_floors_total": len(LY.LAYER_FLOORS)}
+    out: dict = {k: grown[k] for k in _LAYER_FIGURES if grown.get(k) is not None}
+    out["layer_short"] = [str(s) for s in (raw.get("shortfalls") or ())]
+    # AND HOW MANY OF THE FOUR FLOORS THAT EMPTY LIST IS ACTUALLY ABOUT. An `[]` beside nothing
+    # else says "judged, and it met every floor", and on a PARTLY readable log that is a claim
+    # about three floors nobody evaluated. MEASURED, SYNTHETIC, 2026-11-17: a log holding only the
+    # Extruding and Added lines published `layer_coverage_pct` 99.9, `layer_short` `[]` AND
+    # `near_wall_layers_measured` False, so the one panel a customer reads said both "not
+    # measured - this is what the mesher was asked to grow" and "no shortfall against this
+    # engine's layer floors" about the same pass.
+    #
+    # BOTH KEYS, AND BOTH ALWAYS. The names say WHICH floors had nothing (`()` when all four did,
+    # which is a reading and not an absence, so it goes through `mesh_facts._LINE_METRICS` beside
+    # `layer_short`), and the total says how many there are - because a panel holding three names
+    # and no denominator leaves "three of how many" to the reader, which is how "three of four"
+    # came to be arithmetic a customer had to do for themselves. The total is published rather
+    # than written into the viewer for the same reason every threshold here is: a constant with a
+    # second reader on the far side of an HTTP boundary is a constant that can disagree.
+    #
+    # WHAT THIS TALLY IS, EXACTLY, NARROWED 2026-11-18. It is "which floors had no FIGURE to be
+    # drawn on", INFERRED here from `grown`; it is not a record of which floors `shortfalls`
+    # reached, and the two can part. `shortfalls` guards the layers-kept floor on
+    # `asked and mesh_layers is not None`, where `asked` is `n_layers or row["target_layers"]`;
+    # `floors_unjudged` sees only the figures, and `n_layers` travels in no artifact. MEASURED,
+    # SYNTHETIC, 2026-11-18, on a log whose table row reads `fluid_to_solid 16582198 0 0 0 0`
+    # with 0 cells added and 90,000 illegal faces:
+    #
+    #     shortfalls called with   floors it evaluated   this tally claims judged   error
+    #     n_layers 0               2 (coverage, thick)   3                          +1
+    #     n_layers 3               3 (+ layers kept)     3                          0
+    #
+    # THE +1 ROW IS NOT A SHAPE THE PRODUCER CAN EMIT, and that was measured too, not assumed:
+    # `conjugate.build` builds a `layer_report` at all only under `if layers > 0` and passes
+    # `n_layers=layers` into `shortfalls`, so `asked` is positive on every report that reaches
+    # here, and a plan asking for no layers leaves `raw` {} - `_layers_published({})` is {} and
+    # returns above. So the reachable row is the second one and the tally is exact on it.
+    #
+    # AND THERE ARE TWO PATCHES HERE, NOT ONE, AND THEY ARE NAMED AND MEASURED SEPARATELY. This
+    # block said "AND THE OBVIOUS PATCH MAKES IT WORSE" and then argued about one of them without
+    # saying which it meant - a conclusion with no mechanism beside it, in the file whose whole
+    # subject is that a comment must name the mechanism that runs. Both are patches to the
+    # layers-kept entry of `layers.LAYER_FLOORS`, both add `layers_asked` to it, and they differ
+    # only in HOW it is required. RE-MEASURED, SYNTHETIC, 2026-11-18, on the log this block is
+    # written on - table row `fluid_to_solid 16582198 0 0 0 0`, `Added 0 out of 0 cells (0%)`,
+    # `Finished meshing with 90000 illegal faces` - through the production `read_layer_log`,
+    # `measured` and `floors_unjudged`, with each roster rebuilt beside the live one:
+    #
+    #     patch to ("layers kept", ...)        unjudged                        tally says judged
+    #     none (what ships)                    ('faces in error',)             3
+    #     B: keys + ("layers_asked",)          ('faces in error',)             3
+    #     A: B, and layers_asked also in       ('layers kept',                 2
+    #        _FLOORS_NEED_A_POSITIVE_READING    'faces in error')
+    #
+    # PATCH B - ADD THE ASKED COUNT TO THE KEY TUPLE - MOVES NOTHING AT ALL, and it is the patch
+    # the structure of that table invites: "faces in error" already carries TWO keys for exactly
+    # this reason, a figure plus the number it is divided by, so the next reader's first move is
+    # to give "layers kept" its second key the same way. It is inert because `measured()` keeps
+    # `layers_asked` when `target_layers` is 0 - `0` is not `None` and not `""` - and `_judged_on`
+    # accepts ANY non-None value for a key outside `_FLOORS_NEED_A_POSITIVE_READING`. So the
+    # count is ZERO BUT PRESENT, the entry stays judged, and the unjudged roster is byte-identical
+    # to the one that ships. A patch that looks like the fix and changes no output is worse than
+    # none, because it closes the question.
+    #
+    # PATCH A - REQUIRE A POSITIVE ASKED COUNT - IS THE ONE THAT MAKES IT WORSE, and it is the one
+    # the old sentence was about. It closes the first row of the table above (+1 -> 0) and OPENS
+    # the second (0 -> -1): `shortfalls` takes its own `asked` from `n_layers or
+    # row["target_layers"]`, so on the shape production emits (n_layers 3, target_layers 0 in the
+    # log) it JUDGES the layers-kept floor and says the pass kept 0.00 of 3, while this tally
+    # would name that same floor unjudged. MEASURED on the same log: `shortfalls` evaluates 2
+    # floors at n_layers 0 and 3 at n_layers 3, against the 3 this tally claims either way. An
+    # under-claim on the only shape production emits is worse than an over-claim on one it cannot.
+    #
+    # SO NEITHER WAS APPLIED, and the reason is now two reasons: one patch is inert and the other
+    # trades a reachable error for an unreachable one. The asymmetry can only be closed where it
+    # is created - by `shortfalls` reporting which floors IT evaluated instead of a second reader
+    # inferring it from the figures - and that is `layers.py` and `conjugate.py`, not this file.
+    out["layer_floors_unjudged"] = list(unjudged)
+    out["layer_floors_total"] = len(LY.LAYER_FLOORS)
+    # THE WHOLE CURVE, because on the real plate it is the reading that says what happened.
+    # Job 0ff6f9e5 extruded 97.2267% at iteration 0 and the ten repair iterations took it DOWN
+    # every single time - 90.2273, 89.6661, 89.2765, 89.1136, 88.9878, 88.8744, 88.7604, 88.6609,
+    # 88.5826. The final figure alone says the pass missed a floor; the curve says the repair is
+    # what missed it, which is a different defect and a different fix.
+    curve = raw.get("coverage_by_iteration")
+    if isinstance(curve, (list, tuple)) and curve:
+        out["layer_coverage_by_iteration"] = [float(c) for c in curve]
     return out
 
 
@@ -515,8 +780,16 @@ def finalize(workspace_dir, intake_patches: list, engine: str, domain: str = "",
         flow_topology=flow_topology,
         engine_params={**(engine_params or {}),
                        "_regions": [{"name": r["name"], "type": r["type"]} for r in q["regions"]]},
-        inspection_regions=review_slices(lo, hi, inlet=_port(q, "inlet"),
-                                         outlet=_port(q, "outlet")),
+        # THE CUTS THE MESHER ACTUALLY DREW, when it drew any. They carry the window each frame
+        # was rendered in, the um/px that came out of it and the picture itself, and the mesher is
+        # the only side that can know those: it is the side with the interior. Recomputing them
+        # here would publish a promise beside pictures that were made to a different scale.
+        #
+        # The fallback is the geometry alone, which is what this published before the cuts were
+        # drawn on the VM at all, so an older report still publishes exactly what it used to.
+        inspection_regions=(review.get("cuts")
+                            or review_slices(lo, hi, inlet=_port(q, "inlet"),
+                                             outlet=_port(q, "outlet"))),
     )
     out = _said(q)
     # SUCCESS IS "A MESH CAME OUT", NOT "THE MESH IS GOOD", and the difference cost this engine its
@@ -609,6 +882,26 @@ def _said(q: dict) -> str:
         bits.append(f"coolant={q['coolant_volume_m3'] * 1e9:.5g} mm3 "
                     f"({q['coolant_error_pct']:.2f}% from the CAD)")
     bits.append(f"interface={q['interface_faces_fluid']:,} faces both sides")
+    # THE LAYERS AS GROWN, in the line a reader of the build log sees. Job 0ff6f9e5 grew 2.25 of
+    # the 3 it asked for over 88.5826% of the interface and this line said nothing about layers at
+    # all, so the only figure anyone had was the manifest's `near_wall_layers: 3`.
+    if q.get("layers_in_mesh") is not None:
+        bits.append(f"layers={q['layers_in_mesh']:.2f} of {q.get('layers_asked')} asked "
+                    f"over {float(q.get('layer_coverage_pct') or 0.0):.4f}% of the interface "
+                    f"at {float(q.get('layer_thickness_pct') or 0.0):.1f}% of the thickness")
+    # AND WHERE IT FELL SHORT OF THIS ENGINE'S OWN FLOORS, in full rather than as a count. The
+    # shortfall is NOT a refusal (layers.shortfalls says why: the pass has already moved the only
+    # copy of the coolant mesh and rewritten it in place, so refusing throws away a finished mesh
+    # nothing else had anything against) - so this line and the declared `layer_short` criterion
+    # are the whole of how it is said, and a quiet pass is the one outcome that is not acceptable.
+    for _line in q.get("layer_short") or ():
+        bits.append(f"LAYER SHORTFALL: {_line}")
+    # AND WHICH OF THE FOUR FLOORS THE LOG LEFT NOTHING TO JUDGE. Without this the line above is
+    # read as the whole verdict, and on a partly readable log it is a verdict on one floor.
+    if q.get("layer_floors_unjudged"):
+        bits.append("LAYER FLOORS NOT JUDGED (" + str(len(q["layer_floors_unjudged"])) + " of "
+                    + str(q.get("layer_floors_total")) + "): "
+                    + ", ".join(q["layer_floors_unjudged"]))
     if q["fatal"]:
         bits.append(f"fatal={q['fatal'][:6]}")
     if q["empty_patches"]:

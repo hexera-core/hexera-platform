@@ -137,6 +137,64 @@ CRITERIA_ROWS: tuple[Criterion, ...] = (
         evidence_url=_OF_MESH_VALIDITY,
     ),
     Criterion(
+        key="layer_short",
+        label="The prism layers grew as well as this engine's measured run", op="empty",
+        threshold=None, gating=False,
+        rationale=(
+            "REPORTED, NOT GATED, AND THE CHOICE IS DELIBERATE. The bars are "
+            "`cfmesh_conjugate/layers`' own - COVERAGE_FLOOR_PCT 92.0, THICKNESS_FLOOR_PCT 75.0, "
+            "LAYERS_FLOOR_FRACTION 0.75, ILLEGAL_PER_MILLION_CEILING 200.0 - and this row is the "
+            "one place a miss is said where a reader and the reviewer both see it. It is not "
+            "gating for the reason `layers.shortfalls` states: the layer pass MOVES the only copy "
+            "of the coolant mesh and rewrites it in place, so refusing on a coverage miss throws "
+            "away a finished mesh that nothing else has anything against, and the mesh is the "
+            "deliverable. `layers.complain` keeps the refusals that mean NOTHING GREW, and those "
+            "stop the run inside the mesher. "
+            "WHAT WAS SHIPPED QUIETLY WITHOUT IT. Job 0ff6f9e5 (2026-11-16) grew layers through "
+            "the product on all 16,582,198 faces of the conjugate interface and finished at "
+            "88.5826% coverage, 71.9% of the asked thickness, 2.25 layers of 3 and 8,916 faces in "
+            "error over 37,247,044 cells added - three of these four floors missed, and worse "
+            "than the 90.7146% run the thresholds were written to refuse. The judgement ran "
+            "inside `conjugate.build` and `native._as_dict` dropped it, so the delivered manifest "
+            "published `near_wall_layers: 3` and said nothing about layers otherwise. Absent when "
+            "no layer pass was judged, which never reads as a pass. "
+            "AND IT IS A VERDICT ON THE FLOORS THAT HAD A FIGURE, not always on all four: a "
+            "partly readable log leaves this row empty - a pass - on floors nobody evaluated, so "
+            "`layer_floors_unjudged` below says how many of the four this row is actually about."),
+        evidence_url=_OF_MESH_VALIDITY,
+    ),
+    Criterion(
+        key="layer_floors_unjudged",
+        label="Every layer floor this engine judges by had a figure to judge it on",
+        op="empty", threshold=None, gating=False,
+        rationale=(
+            "THE DENOMINATOR UNDER THE ROW ABOVE, and without it that row read a verdict on one "
+            "floor as a verdict on four. `layers.shortfalls` evaluates four floors - "
+            "COVERAGE_FLOOR_PCT, THICKNESS_FLOOR_PCT, LAYERS_FLOOR_FRACTION and "
+            "ILLEGAL_PER_MILLION_CEILING - and guards each on its own input, which for three of "
+            "them is the presence of a figure and for the faces-in-error one is a POSITIVE count "
+            "of cells added, because that test is a ratio. So a log it could read only part of "
+            "comes back with the same empty shortfall list as a "
+            "pass that cleared all four. MEASURED, SYNTHETIC, 2026-11-17: a layer log holding "
+            "only the Extruding and Added lines published layer_coverage_pct 99.9 with "
+            "layer_short empty, so one judged floor was reported as four - on the same payload "
+            "whose near_wall_layers_measured said the layer count had not been measured at all. "
+            "This row carries `layers.floors_unjudged`' own names for the floors that had "
+            "nothing: empty means all four were evaluated, a non-empty list names the ones that "
+            "were not, and ALL FOUR NAMED means a pass ran whose log left no floor anything to be "
+            "judged on. The row is ABSENT only when NO LAYER PASS RAN - a different answer from "
+            "an unreadable log, and until 2026-11-17 the two published the same empty payload. "
+            "Neither ever reads as a pass. A SECOND MEASUREMENT, SYNTHETIC, 2026-11-17: a "
+            "zero-layer pass (90,000 faces in error over 0 cells added) had a figure under every "
+            "one of the four keys and was judged by three, because the faces-in-error floor had "
+            "nothing to divide its count by - so this row counts the floors that were EVALUATED "
+            "and not the keys that were present. NOT GATING, for the same reason the row above "
+            "is not: the pass has "
+            "already moved the only copy of the coolant mesh and rewritten it in place, and an "
+            "unreadable log is a defect in the record rather than in the mesh."),
+        evidence_url=_OF_MESH_VALIDITY,
+    ),
+    Criterion(
         key="resolution_short",
         label="Every passage has the cells across it the fidelity asks for", op="empty",
         threshold=None, gating=False,

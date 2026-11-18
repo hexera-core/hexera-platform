@@ -146,18 +146,35 @@ MIN_TET_QUALITY = 1e-30
 MAX_GLOBAL_CELLS = 2_000_000_000
 MAX_LOCAL_CELLS = 400_000_000
 
-#: The smoothing the measured run used, and it is load-bearing at these values.
+#: The smoothing, and it is load-bearing at these values.
 #:
-#: ZEROING THE TWO NORMAL SMOOTHERS IS BETTER AND IS NOT THE DEFAULT YET. Variant V2, same part,
-#: same chain, `nSmoothSurfaceNormals 0` and `nSmoothNormals 0` with `nSmoothThickness` left at 10:
-#: faces in error 2,936 to 2,724, interpolation weights under 0.02 405 to 298, max non-orthogonality
-#: 76.6676 to 76.0512, max aspect ratio 322.161 to 241.68, coverage 95.553% to 95.7253%, layer pass
-#: 2,522 s to 2,353 s. Better on every measure and 7% quicker. It is not the default because no run
-#: of the PRODUCT has grown a layer at all, so the first one should reproduce the result the
-#: 65-minute chain is measured against rather than a variant.
-SMOOTH_SURFACE_NORMALS = 1
+#: NEVER SMOOTH THE NORMALS ON A STAIRCASE, now the default rather than a note. The conjugate
+#: interface is a staircase of axis-aligned faces, so smoothing its normals aims the extrusion
+#: diagonally across steps instead of along a face. Variant V2, same part, same chain,
+#: `nSmoothSurfaceNormals 0` and `nSmoothNormals 0` with `nSmoothThickness` left at 10, against the
+#: V1 values this used to carry:
+#:
+#:     faces in error                 2,936 -> 2,724
+#:     interpolation weights < 0.02     405 ->   298
+#:     max non-orthogonality        76.6676 -> 76.0512
+#:     max aspect ratio             322.161 -> 241.68
+#:     coverage                     95.553% -> 95.7253%
+#:     layer pass                   2,522 s -> 2,353 s
+#:
+#: Better on every measure and 7% quicker. It was held back for one stated reason - "no run of the
+#: PRODUCT has grown a layer at all, so the first one should reproduce the result the 65-minute
+#: chain is measured against rather than a variant" - AND THAT REASON IS NOW SPENT. Job 0ff6f9e5
+#: (2026-11-16) grew layers through the product on all 16,582,198 faces of the conjugate interface.
+#:
+#: What that run got with V1 is why this is not merely tidier. It finished at 88.5826% coverage and
+#: 71.9% of the asked thickness, 2.25 layers of 3 - UNDER this module's own COVERAGE_FLOOR_PCT of
+#: 92.0 and THICKNESS_FLOOR_PCT of 75.0, and worse than the 90.7146% of the run these thresholds
+#: were written to refuse. Its extrusion started at 97.2267% and the ten repair iterations took it
+#: DOWN every single time, which is thinning doing the only repair it has. V2 is the one measured
+#: change that moves all four of those numbers the right way at once.
+SMOOTH_SURFACE_NORMALS = 0
 SMOOTH_THICKNESS = 10
-SMOOTH_NORMALS = 3
+SMOOTH_NORMALS = 0
 
 #: HOW MUCH OF THE INTERFACE HAS TO END UP LAYERED. The measured run finished at 95.553% after ten
 #: outer iterations; the DEFECTIVE delivered run finished at 90.7146%, so a floor under that would
@@ -173,6 +190,85 @@ LAYERS_FLOOR_FRACTION = 0.75
 #: is 2,888 illegal faces over 102,536,327 cells, which is 28.2 per million; the delivered run's
 #: iteration 0 held 82,548 over a smaller mesh.
 ILLEGAL_PER_MILLION_CEILING = 200.0
+
+#: THE FOUR FLOORS THIS MODULE JUDGES A LAYER PASS BY, each with the figure(s) `measured()` must
+#: have read for that floor to have been drawn on anything at all - NAME FIRST, so a reader can be
+#: told WHICH of the four nobody judged.
+#:
+#: THIS ROSTER EXISTS BECAUSE `shortfalls` RETURNS AN EMPTY LIST FOR TWO OPPOSITE REASONS. Each of
+#: its four tests is guarded on its own input being present, so a log that yielded one figure and a
+#: log that yielded all four both come back `[]` when nothing fell short - and
+#: `render/mesh_facts._LINE_METRICS` defines `[]` as "this was judged and it met every floor".
+#: MEASURED, SYNTHETIC, 2026-11-17: a log holding only the Extruding and Added lines published
+#: `layer_coverage_pct` 99.9 with `layer_short` `[]`, so ONE judged floor was reported as four, on
+#: the same panel that said the layer count had not been measured at all. `floors_unjudged` is how
+#: the three that were never evaluated get named instead of implied.
+#:
+#: NO THRESHOLD IS RESTATED HERE and none can be: these are the INPUTS. Whether a floor was MET is
+#: `shortfalls`' own business, computed once, against the pass's own `cells_added`.
+LAYER_FLOORS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("coverage", ("layer_coverage_pct",)),                 # COVERAGE_FLOOR_PCT
+    ("thickness", ("layer_thickness_pct",)),               # THICKNESS_FLOOR_PCT
+    ("layers kept", ("layers_in_mesh",)),                  # LAYERS_FLOOR_FRACTION
+    # BOTH NUMBERS, because `shortfalls` skips this one on `int(cells) > 0` and a face count with
+    # nothing to divide it by was never judged either - which is why `layer_cells_added` is in
+    # `_FLOORS_NEED_A_POSITIVE_READING` below rather than merely required to be present.
+    ("faces in error", ("layer_faces_in_error", "layer_cells_added")),
+)
+
+#: THE ONE READING A FLOOR NEEDS MORE THAN THE PRESENCE OF, and that was the defect. `shortfalls`
+#: guards the faces-in-error floor on `int(cells) > 0`, so a pass whose `cells_added` is 0 never
+#: reaches that comparison at all - while the presence test here was `is not None`, which 0
+#: satisfies. MEASURED, SYNTHETIC, 2026-11-17: a zero-layer log (table row
+#: `fluid_to_solid 16582198 3 0 0 0`, `Added 0 out of 0 cells (0%)`, 90,000 illegal faces) came
+#: back from `floors_unjudged` as `()` beside THREE shortfall sentences, so the panel's own tally
+#: read "4 of the 4 floors this engine judges a layer pass by had a figure in the layer log" over
+#: a verdict on three. The face count was there; the number to divide it by was not.
+#:
+#: A LIST OF ONE, AND NOT A RULE ABOUT ZEROES. Every other figure these floors are drawn on is
+#: judged AT zero and must stay judged there: 0.0000% coverage, 0.0% thickness and 0.00 layers
+#: kept are the largest misses those three floors can have, and they are exactly the misses that
+#: same zero-layer pass does report. Only this one is a DENOMINATOR.
+_FLOORS_NEED_A_POSITIVE_READING: frozenset[str] = frozenset({"layer_cells_added"})
+
+
+def _judged_on(got: dict, key: str) -> bool:
+    """Whether `got[key]` is the reading `shortfalls` needed to have evaluated a floor on it.
+
+    A NUMBER, WHERE A NUMBER IS DIVIDED BY, and a bool is not one here: `measured()`'s dict is
+    built from JSON written on the far side of a container boundary, and `True` would otherwise
+    pass `float(v) > 0.0` as a cell count of one.
+    """
+    v = got.get(key)
+    if v is None:
+        return False
+    if key in _FLOORS_NEED_A_POSITIVE_READING:
+        return isinstance(v, (int, float)) and not isinstance(v, bool) and float(v) > 0.0
+    return True
+
+
+def floors_unjudged(grown: dict) -> tuple[str, ...]:
+    """The names of the floors in `LAYER_FLOORS` `shortfalls` did not evaluate on this pass.
+
+    `grown` is `measured()`'s own dict, which is the one spelling of these figures. `()` means all
+    four WERE judged; a tuple as long as `LAYER_FLOORS` means nothing about this pass was judged
+    at all - which is NOT the same answer as "it met every floor", and is the whole reason this
+    function exists.
+
+    EVALUATED, NOT KEYED, and the difference is a whole floor. A floor is counted as judged here
+    when `shortfalls`' own guard for it would have fired: the presence of its figure for three of
+    them, and a POSITIVE `layer_cells_added` for the faces-in-error one, whose test is a ratio
+    (see `_FLOORS_NEED_A_POSITIVE_READING`, which carries the measurement). Asking only whether a
+    key was present reported a zero-layer pass as judged by four floors when three had been.
+
+    `layer_iterations` and `layer_seconds` are deliberately not floors. Ten repair iterations is a
+    reading of what the pass did; zero of them is the absence of a pass, and the pass's seconds are
+    a cost. Neither is a figure any floor is drawn on, so neither can make a judgement exist.
+    """
+    got = dict(grown or {})
+    return tuple(name for name, keys in LAYER_FLOORS
+                 if not all(_judged_on(got, k) for k in keys))
+
 
 _EXTRUDING = re.compile(r"Extruding\s+(\d+)\s+out of\s+(\d+)\s+faces\s+\(([\d.]+)%\)")
 _ADDED = re.compile(r"Added\s+(\d+)\s+out of\s+(\d+)\s+cells\s+\(([\d.]+)%\)")
@@ -673,10 +769,30 @@ def shortfalls(report: dict, *, interface_patch: str, n_layers: int = 0,
                    f"asked for against {THICKNESS_FLOOR_PCT:g}%; thinning is the mover's only "
                    f"repair and it manufactures hairline cells, and the measured run achieved 94.6%")
     asked = int(n_layers or row.get("target_layers") or 0)
-    mesh_layers = float(row.get("mesh_layers") or 0.0)
-    if asked and 0.0 < mesh_layers < LAYERS_FLOOR_FRACTION * asked:
-        out.append(f"{interface_patch} kept {mesh_layers:.2f} layers of the {asked} asked for, "
-                   f"under {LAYERS_FLOOR_FRACTION * 100:.0f}%; the measured run kept 2.84 of 3")
+    # PRESENCE IS `is not None`, NOT `> 0.0`, and that was the defect. This read
+    # `float(row.get("mesh_layers") or 0.0)` and then guarded on `0.0 < mesh_layers`, so a pass
+    # that grew NOTHING - the largest miss this floor can have - fell through the one test that
+    # exists to catch it. MEASURED, SYNTHETIC, 2026-11-17: a layer table row reading
+    # `fluid_to_solid 16582198 3 0 0 0` with 90,000 illegal faces missed all FOUR floors and came
+    # back with THREE sentences; the one it was silent about was the layer count itself.
+    # `complain` does stop such a run inside the mesher, which is why this was only ever a defect
+    # in the RECORD - and the record is what a customer reads.
+    #
+    # A MISSING ROW IS STILL MISSING. `row` is `{}` when the log had no layer table, so
+    # `mesh_layers` is None there and this floor is skipped for the honest reason - which is the
+    # same reading `floors_unjudged` reports under "layers kept".
+    mesh_layers = row.get("mesh_layers")
+    # STRICTLY LESS THAN, AT THE BOUNDARY, ON PURPOSE. The floor is "at least 75% of the ask", so
+    # exactly 75% MEETS it and is not a shortfall. That is not a rounding accident: the real plate
+    # kept 2.25 of 3 and `LAYERS_FLOOR_FRACTION * 3` is 2.25 EXACTLY - 0.75 is 3/4 and 2.25 is 9/4,
+    # both exact in binary - so this comparison decides that case on the rule and not on a float
+    # tail. The plate's other three floors are missed by real margins (88.5826 vs 92.0, 71.9 vs
+    # 75.0, 239 vs 200) and this one is met on the nose, which is why the delivered record says
+    # three and not four.
+    if asked and mesh_layers is not None and float(mesh_layers) < LAYERS_FLOOR_FRACTION * asked:
+        out.append(f"{interface_patch} kept {float(mesh_layers):.2f} layers of the {asked} asked "
+                   f"for, under {LAYERS_FLOOR_FRACTION * 100:.0f}%; the measured run kept 2.84 "
+                   f"of 3")
     bad = got.get("illegal_faces")
     if bad is not None and int(cells) > 0:
         per_m = float(bad) * 1e6 / float(cells)
@@ -716,6 +832,7 @@ __all__ = ["LAYER_CASE", "LAYER_STAGE", "LayerError", "MAX_GLOBAL_CELLS", "MAX_L
            "FIRST_LAYER_FRACTION", "MIN_THICKNESS_FRACTION", "MAX_STACK_FRACTION",
            "SMOOTH_SURFACE_NORMALS", "SMOOTH_THICKNESS", "SMOOTH_NORMALS", "COVERAGE_FLOOR_PCT",
            "THICKNESS_FLOOR_PCT", "LAYERS_FLOOR_FRACTION", "ILLEGAL_PER_MILLION_CEILING",
+           "LAYER_FLOORS", "floors_unjudged",
            "LAYER_PEAK_MARGIN", "max_layers", "interface_cell_m", "geometry_for", "stack_thickness_m", "cells_multiplier", "coolant_multiplier", "WHOLE_MESH_PER_LAYER",
            "COOLANT_PER_LAYER",
            "seconds_estimate", "fit_complaint", "render_mesh_quality_dict", "render_layers_dict",
