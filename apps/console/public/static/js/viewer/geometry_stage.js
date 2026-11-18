@@ -418,7 +418,19 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
     scene.refresh();
   }
 
-  return { release, settle: () => settleIntake(box), update, isNaming: () => naming };
+  /** THE FLOW THE USER SAID IN THE CHAT (the flow-kind question's buttons): "The fluid flows" and "The file is"
+   *  take it, as if the user had picked them, so Proceed confirms what they answered. */
+  function preset(said) {
+    const pick = (cls, v) => {
+      const el = form.querySelector(cls);
+      if (!el || !v || el.value === v || ![...el.options].some((o) => o.value === v)) return;
+      el.value = v; el.dispatchEvent(new Event("change", { bubbles: true }));
+    };
+    pick(".gc-kind", (said || {}).input_kind);
+    pick(".gc-flow", (said || {}).flow);
+  }
+
+  return { release, settle: () => settleIntake(box), update, preset, isNaming: () => naming };
 }
 
 /** The names of a thermal model's placed parts beside their colours, in the stage's corner. */

@@ -42,7 +42,9 @@ NOTE-7  the reading: one strict-schema call, every entry checked - the quote is 
         replaced ("3 layers instead of 8") is no request, the shortest edge is not over the longest. What fails is
         dropped and told in plain words.
 NOTE-8  what fits no field is "not applied" and told; never silently dropped. A clause that asks nothing (no
-        quantity, no mesh term, nothing named: "the rest looks good") is not a requirement and is not told.
+        quantity, no mesh term, nothing named: "the rest looks good"), or only asks for restraint about the mesh's
+        size as a whole with nothing to measure it by ("try not to overdo it with the number of cells"), is not a
+        requirement and is not told.
 NOTE-9  no words: no model call and an empty set; no answer and none saved: an empty set, and said.
 NOTE-10 the flow fields of the same reading (a count, layers, a size at the walls, sizes in a place, three more flow
         measures, the flow's numbers for a y+), checked the same way; every flow engine applies them
@@ -555,21 +557,46 @@ _MESH_TERMS = re.compile(r"\b(?:mesh\w*|cells?|elements?|nodes?|sizes?|sized|lay
                          r"quality|skew\w*|orthogonal\w*|aspect|jacobian|warp\w*|quads?|trias?|triangles?|tets?|hex\w*|"
                          r"gaps?|thickness|edges?|growth|count|budget)\b", re.I)
 _NUMBER_WORDS = tuple(w for w in _WORDS if w != "no")
+#: ...and A CALL FOR RESTRAINT about the mesh's size as a whole, with nothing to measure it by (NOTE-8's floor, a real
+#: FEA run, 16 Nov: "try not to overdo it with the number of cells", beside "Aim for 800k", was told back as "Not
+#: applied: ... no mesh setting of ours matches it yet"). Such a clause is made of the vocabulary above, the mesh's
+#: size as a whole (_AMOUNT_WORDS) and words of moderation (_RESTRAINT_WORDS), with at least one of those. A clause
+#: that names a number, a part, a place, a feature or any other mesh term ("sizes", "layers", "finer") or a plain
+#: direction ("fewer", "more", "low") still asks something - this is a vocabulary, not a list of phrases.
+_AMOUNT_WORDS = frozenset("cell cells element elements node nodes count counts number numbers amount total mesh meshes "
+                          "budget".split())
+_RESTRAINT_WORDS = frozenset("""
+    not too overly overdo overdoes overdoing overdid overdone overboard crazy mad wild nuts insane silly excessive
+    excessively extreme extremely huge enormous massive giant reasonable reasonably sensible sensibly sane moderate
+    moderately modest manageable lot lots much many try trying tried careful mindful avoid light lean bloated
+    """.split())
+
+
+def _restraint(words: list[str]) -> bool:
+    """Whether a clause's words only ask for restraint about the mesh's size as a whole (_RESTRAINT_WORDS)."""
+    return (any(w in _RESTRAINT_WORDS for w in words)
+            and all(w in _FILLER_WORDS or w in _RESTRAINT_WORDS or w in _AMOUNT_WORDS for w in words))
 
 
 def asks_nothing(text: str) -> bool:
     """Whether a clause of the user's words asks nothing of the mesh: no quantity (a digit or a number written as a
-    word), no mesh term, and every word of it from the vocabulary a yes or a verdict is made of (_FILLER_WORDS) -
-    "the rest looks good", "yes that's right", "looks good". A whole quote asks nothing when each of its clauses does."""
+    word), and either no mesh term with every word of it from the vocabulary a yes or a verdict is made of
+    (_FILLER_WORDS) - "the rest looks good", "yes that's right", "looks good" - or only a call for restraint about the
+    mesh's size as a whole (_restraint) - "try not to overdo it with the number of cells". A whole quote asks nothing
+    when each of its clauses does."""
     t = _norm(text).replace("’", "'")
     clauses = [c for c in re.split(r"[,.;:!?()]+|\s+-\s+|\b(?:and|but)\b", t) if c.strip()]
     if not clauses:
         return False
     for c in clauses:
-        if re.search(r"\d", c) or _MESH_TERMS.search(c) or any(re.search(rf"\b{w}\b", c) for w in _NUMBER_WORDS):
+        if re.search(r"\d", c) or any(re.search(rf"\b{w}\b", c) for w in _NUMBER_WORDS):
             return False
         words = re.findall(r"[a-z][a-z']*", c)
-        if not words or any(w not in _FILLER_WORDS for w in words):
+        if not words:
+            return False
+        if not _MESH_TERMS.search(c) and all(w in _FILLER_WORDS for w in words):
+            continue
+        if not _restraint(words):
             return False
     return True
 
@@ -1369,7 +1396,7 @@ def _check(arguments: str, notes: str, route: str = "") -> tuple[dict, list[str]
             not_applied.append(quote)
     # NOTE-8's floor: words about the mesh that the reading listed NOWHERE are told too, as the user wrote them
     for piece in _left_over(notes, covered):
-        if piece not in not_applied and not (rescued and kind_in_words(piece)):
+        if piece not in not_applied and not (rescued and kind_in_words(piece)) and not asks_nothing(piece):
             not_applied.append(piece)
     return out, dropped, not_applied[:20]
 
@@ -1655,11 +1682,27 @@ MAX_LIVE = 14
 _LIVE = (("=", " is "), ("<", " under "), (">", " over "), ("{", "("), ("}", ")"), ("`", "'"), ("_", " "))
 
 
-def live_words(sec: Mapping | None) -> list[str]:
+#: the fields of an element or cell count (NOTE-10): a route that tells the count itself, with its outcome, leaves them
+#: out of the lines said before meshing (live_words)
+COUNT_FIELDS = ("cells:",)
+
+
+def _lines_of(sec: Mapping | None, fields: tuple[str, ...]) -> set[str]:
+    """The "From your ..." lines words() says for the rows of these fields."""
+    rows = ((sec or {}).get("requirements") or {}).get("rows") or [] if isinstance(sec, Mapping) else []
+    return {f"From your {r.get('from') or 'notes'}: {r.get('asked')}." for r in rows
+            if isinstance(r, Mapping) and str(r.get("field") or "").startswith(fields)}
+
+
+def live_words(sec: Mapping | None, *, told_elsewhere: tuple[str, ...] = ()) -> list[str]:
     """words(), fit for the live commentary (contracts/narration's guard takes no "=", "<", ">" or snake_case: a
-    quote of the user's own line is said with those spelled out). At most MAX_LIVE lines."""
+    quote of the user's own line is said with those spelled out). At most MAX_LIVE lines. `told_elsewhere`: fields
+    the route says itself, with their outcome (the FEA plan's element count, PLAN-fea-27) - one line per fact."""
+    gone = _lines_of(sec, told_elsewhere) if told_elsewhere else set()
     out = []
     for w in words(sec):
+        if w in gone:
+            continue
         for a, b in _LIVE:
             w = w.replace(a, b)
         out.append(" ".join(w.split()))

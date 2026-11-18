@@ -45,6 +45,13 @@ DESIGN_STAGES: tuple[str, ...] = (
 #: The most decision rows one receipt carries (the receipt itself is capped at 12).
 MAX_DECISIONS = 9
 
+#: THE RULES WHOSE OUTCOME THE NOTES LINES SAY. What the user's notes asked for - the reading itself (NOTE-n) and the
+#: element count they named (PLAN-fea-27) - is said once: by the notes rows (the steps' remarks: what was asked, what
+#: was planned, whether it was reached) and the lines said before meshing. The why record keeps these entries for the
+#: operator; on the row their words said the count three more times, a field's description and the model's own
+#: reading (a real FEA run, 16 Nov).
+SAID_BY_THE_NOTES: tuple[str, ...] = ("NOTE-", "PLAN-fea-27")
+
 #: The runs whose current builder attempt has said its design already (in this process), so the
 #: attempt's catch-all at its end does not say a second, different version of it. Bounded.
 _SAID: OrderedDict[str, bool] = OrderedDict()
@@ -102,7 +109,7 @@ def _decision_rows(job_id: str) -> list[dict]:
 
     latest: dict[tuple[str, str], dict] = {}
     for e in cited_for(job_id):
-        if str(e.get("stage") or "") in DESIGN_STAGES:
+        if str(e.get("stage") or "") in DESIGN_STAGES and not str(e.get("rule") or "").startswith(SAID_BY_THE_NOTES):
             # the latest word on each decision: a later pass re-plans, and its plan is the one meshed
             latest.pop((str(e.get("stage")), str(e.get("decided"))), None)
             latest[(str(e.get("stage")), str(e.get("decided")))] = e
@@ -179,4 +186,4 @@ async def apublish(publish: Any, *, job_id: str, workspace: Any, planned: tuple 
     return True
 
 
-__all__ = ["DESIGN_STAGES", "MAX_DECISIONS", "TITLE", "apublish", "begin", "design_rows"]
+__all__ = ["DESIGN_STAGES", "MAX_DECISIONS", "SAID_BY_THE_NOTES", "TITLE", "apublish", "begin", "design_rows"]

@@ -4,7 +4,11 @@
 # cad/repair/conservative.py measuring its own result against these; nothing here inspects a file.
 from __future__ import annotations
 
+import logging
+
 from meshpipeline.settings.env import bool_env, optional_env
+
+logger = logging.getLogger(__name__)
 
 #: OFF unless a deployment turns it on, and the ONE switch that separates looking from changing.
 #: Inspection runs on every mesh-intended job regardless (pipeline/repair_inspect.py); this says
@@ -76,6 +80,36 @@ CAD_REPAIR_FILL_NONPLANAR_HOLES: bool = bool_env("CAD_REPAIR_FILL_NONPLANAR_HOLE
 #: it on.
 CAD_REPAIR_HEAL_SELF_INTERSECTIONS: bool = bool_env("CAD_REPAIR_HEAL_SELF_INTERSECTIONS", "false")
 
+#: Split a CLOSED face - a full cylinder, sphere or torus carrying a single seam - in two
+#: (`operations.SplitClosedFaces`), the standard answer when gmsh refuses a periodic surface. It
+#: adds faces and moves no surface or volume, but it still rewrites the topology of the customer's
+#: file, so it is off by default and a deployment opts in. Off keeps the operation out of the
+#: catalogue and out of the rules baseline's MESH_OPS entirely.
+CAD_REPAIR_SPLIT_CLOSED_FACES: bool = bool_env("CAD_REPAIR_SPLIT_CLOSED_FACES", "false")
+
+#: Make two TOUCHING bodies share their interface (`operations.FragmentBodies`: a general fuse over
+#: the pair), the standard answer when gmsh's volume stage finds an edge through a face because
+#: two bodies of an assembly meet without a conformal interface. It splits faces and moves no
+#: volume, but it rewrites how the customer's bodies are joined, so it is off by default and a
+#: deployment opts in. Interpenetrating bodies are always declined. Off keeps the operation out of
+#: the catalogue and out of the rules baseline's MESH_OPS entirely.
+CAD_REPAIR_FRAGMENT_BODIES: bool = bool_env("CAD_REPAIR_FRAGMENT_BODIES", "false")
+
+#: Re-trim ONE FACE from its own boundary (`operations.RebuildFace`: the face's underlying surface
+#: and wires through BRepBuilderAPI_MakeFace, finished by ShapeFix_Face, spliced back into its
+#: owning body), the standard answer when gmsh's 2D stage reports overlapping facets because a
+#: face's trimming or parameterisation defeats the surface mesher. Off keeps the operation out of
+#: the catalogue, and the rules baseline's MESH_OPS maps an overlap to `fix_shape_global` exactly
+#: as before; on, `rebuild_face` is preferred and `fix_shape_global` is its fallback.
+#:
+#: THE GATE: NOT TO BE SET LIVE ON CUSTOMER JOBS UNTIL THE SEMANTIC PACKAGE REVIEWER
+#: (CAD_REPAIR_PACKAGE_REVIEW=live) IS LIVE. A re-trim can move a feature - a face rebuilt on the
+#: same surface but a different trim is a different face - and the reviewer is what replaces the
+#: numeric deviation gate for such an operation (the op records its sampled deviation as evidence,
+#: never as a gate). Code does not enforce the coupling; deployment posture owns it, and
+#: `_warn_unreviewed_rebuild` says it out loud when the two disagree.
+CAD_REPAIR_REBUILD_FACE: bool = bool_env("CAD_REPAIR_REBUILD_FACE", "false")
+
 #: Sweep away SLIVER FACES - the sub-tolerance strips and spots a Boolean that just missed leaves
 #: behind. Separate from CAD_REPAIR_ALLOW_FACE_REMOVAL on purpose: that knob waives the
 #: face-removal check for EVERY operation in a run, while this one consents to a single bounded
@@ -85,6 +119,36 @@ CAD_REPAIR_HEAL_SELF_INTERSECTIONS: bool = bool_env("CAD_REPAIR_HEAL_SELF_INTERS
 #: carried - a 0.002 mm strip nobody could machine, but geometry - so it is off by default and a
 #: deployment opts in.
 CAD_REPAIR_FIX_SMALL_FACES: bool = bool_env("CAD_REPAIR_FIX_SMALL_FACES", "false")
+
+#: THE SEARCH RADIUS the sliver sweep (`operations.FixSmallFaces`) hands
+#: `ShapeFix_FixSmallFace`, as a fraction of the part's diagonal. The fixer finds a spot or a
+#: strip by comparing its WIDTH against this precision, and a sliver is sliver-sized relative to
+#: the PART (the localiser's criterion is an area fraction), so a fixed millimetre figure finds
+#: every strip on a bracket and none on a vehicle.
+#:
+#: WHY THIS IS NOT CAD_REPAIR_MAX_DEVIATION_RATIO, which it used to be derived from. The old
+#: reasoning was that merging a strip moves the boundary by about the strip's width, so the
+#: deviation ceiling was the honest precision. MEASURED, THAT IS WRONG BY THREE ORDERS OF
+#: MAGNITUDE. Running the fixer on two corpus parts at several precisions and measuring the result
+#: with `caps.measure`: on a 2152 mm part at 0.005 of the diagonal the sweep removed all 6 flagged
+#: slivers while the surface area moved 7.3e-06 of the part, the volume 1.6e-07, the diagonal not
+#: at all, and the maximum tolerance stayed at 1e-07; on a 420 mm part, 13 of 21 slivers for
+#: 3.2e-05 area and 1.3e-06 volume, again with no diagonal or tolerance movement. A PRECISION IS
+#: THE RADIUS SEARCHED, NOT THE DISTANCE MOVED: removing a strip merges it into neighbours that
+#: were already there, and the geometry that comes back sits far inside every cap. Tying the two
+#: together only meant the sweep could never find what it exists to remove.
+#:
+#: THE CAPS REMAIN THE JUDGE OF ACTUAL MOVEMENT, which is why widening this is safe to try. The
+#: operation does not get to decide its own result is acceptable: the same measurement showed
+#: 0.02 of the diagonal removing 25 of 30 faces, inflating tolerance to 5.34 mm and leaving an
+#: INVALID shape - caught by CAD_REPAIR_MAX_TOLERANCE_MM and the validity check, and rolled back.
+#: Raising this ratio widens what the sweep may LOOK AT; it widens nothing it may keep.
+#:
+#: 0.001 is today's behaviour on the parts this was measured on and changes nothing until a
+#: deployment raises it deliberately. It is settable by environment variable precisely so the
+#: value can be chosen by sweeping the corpus rather than argued.
+CAD_REPAIR_SLIVER_PRECISION_RATIO: float = float(
+    optional_env("CAD_REPAIR_SLIVER_PRECISION_RATIO", "0.001"))
 
 #: The largest hole that may be patched, as a fraction of the part's diagonal measured across the
 #: hole's own bounding box. Past this it is not a hole, it is a missing wall - and a flat lid over
@@ -119,6 +183,23 @@ CAD_REPAIR_TIMEOUT_S: float = float(optional_env("CAD_REPAIR_TIMEOUT_S", "120"))
 #: costs. Six is a budget, not a derived number: it is not tied to how many operations
 #: `operations.OPERATIONS` holds, which grows, and is sized to leave room for retries.
 CAD_REPAIR_MAX_OPS: int = int(optional_env("CAD_REPAIR_MAX_OPS", "6"))
+
+#: PACKAGES ONE REGION MAY BE OFFERED IN ONE RUN by the region-scoped driver, each a fresh claim
+#: stated before execution and judged on its own.
+#:
+#: WHY MORE THAN ONE. The operation-at-a-time loop's whole advantage was that its `RunHistory`
+#: PERSISTS across iterations: it tries the narrowest operation, records the pair as ineffective
+#: and then proposes the next one, which is often the one that works. A region offered exactly one
+#: package got one guess and no second chance, and the attempts cannot be packed into one longer
+#: plan instead: a package's predicate is stated BEFORE it runs, so a plan of k speculative
+#: attempts must claim all k, and one failure reverts the operations that succeeded.
+#:
+#: THREE, because the baseline's own stall limit is 2 - two consecutive misses and it gives up -
+#: so three packages is one more chance than the loop this driver is measured against, not a
+#: licence to grind. The run's CAD_REPAIR_MAX_OPS and CAD_REPAIR_TIMEOUT_S remain the outer bounds
+#: and are unchanged by this: this one bounds how many CLAIMS a region may state, and a package
+#: that kept nothing still charges nothing against the run's operation allowance.
+CAD_REPAIR_REGION_ATTEMPTS: int = int(optional_env("CAD_REPAIR_REGION_ATTEMPTS", "3"))
 
 #: Consecutive operations that were not kept before the loop gives up. A planner that has proposed
 #: two things in a row that did not work has run out of ideas the rules can express, and further
@@ -188,6 +269,172 @@ CAD_REPAIR_LLM_PLANNER_CALLS_MAX: int = int(optional_env("CAD_REPAIR_LLM_PLANNER
 CAD_REPAIR_LLM_PLANNER_TIMEOUT_S: float = float(
     optional_env("CAD_REPAIR_LLM_PLANNER_TIMEOUT_S", "20.0"))
 
+def _region_loop_posture() -> str:
+    """The region-loop posture, FAILING CLOSED: anything but exactly live reads as off."""
+    raw = optional_env("CAD_REPAIR_REGION_LOOP", "off").strip().lower()
+    return raw if raw == "live" else "off"
+
+
+#: Which DRIVER repairs a part: the operation-at-a-time loop, or the region-scoped one. "off" is
+#: byte-for-byte the prior behaviour. "live" decomposes the part into regions and gives each one a
+#: target package - a locus, a plan, and a claim stated before execution that a region-scoped
+#: re-inspection then checks - so a region that cannot be repaired within its own budget is queued
+#: for a person while the regions that committed still ship.
+#:
+#: A POSTURE RATHER THAN A BOOLEAN, for the reason CAD_REPAIR_LLM_PLANNER is one: an unknown value
+#: reads as "off", so a typo in a deployment changes the driver of a customer's geometry to
+#: nothing at all. The operation-at-a-time loop is retained whatever this says - it is the
+#: benchmark baseline an improvement is attributed against, and the corpus runner reaches it.
+CAD_REPAIR_REGION_LOOP: str = _region_loop_posture()
+
 #: The confidence below which the model's plan is not acted on and the rule planner's choice stands.
 CAD_REPAIR_LLM_PLANNER_MIN_CONFIDENCE: float = float(
     optional_env("CAD_REPAIR_LLM_PLANNER_MIN_CONFIDENCE", "0.5"))
+
+
+def _mesh_probe_posture() -> str:
+    """The mesh-probe posture, FAILING CLOSED: only the exact string `live` turns it on.
+
+    STRICTER THAN `_region_loop_posture`, which forgives case and surrounding space: this one
+    puts a gmsh run on every scan of a customer's part, so `Live ` or `LIVE` is read as the typo
+    it probably is and the probe stays off.
+    """
+    raw = optional_env("CAD_REPAIR_MESH_PROBE", "off")
+    if raw not in ("live", "off"):
+        # Still read as off - but said out loud, so a deployment that meant `live` finds out.
+        logger.warning("CAD_REPAIR_MESH_PROBE=%r is neither 'live' nor 'off'; reading it as off",
+                       raw)
+    return "live" if raw == "live" else "off"
+
+
+#: Whether a repair scan also asks gmsh WHY the part will not mesh. "off" is byte-for-byte the
+#: prior behaviour: the probe is never called. "live" appends the probe's defects
+#: (cad/repair/mesh_probe.py) after the kernel scan's on every scan the session makes - the first,
+#: each operation's re-inspection, and a package's scoped proof - so an operation can be aimed at
+#: a mesh failure and judged by the same progress rule as any other defect. A posture, so a typo
+#: reads as off.
+CAD_REPAIR_MESH_PROBE: str = _mesh_probe_posture()
+
+#: Seconds one mesh probe may take. The session hands it the lesser of this and HALF of what is
+#: left before the run's deadline (session `_with_mesh`), and skips the probe outright when nothing
+#: is left; the run's final whole-shape probe gets whatever remains. Defaults BELOW
+#: CAD_REPAIR_TIMEOUT_S (final review I2): at the old 120 one probe that timed out could spend the
+#: whole run, and the after-checks and STEP write then ran past the attempt node's clock.
+CAD_REPAIR_MESH_PROBE_TIMEOUT_S: float = float(
+    optional_env("CAD_REPAIR_MESH_PROBE_TIMEOUT_S", "60.0"))
+
+
+#: Seconds beyond one probe timeout before the region loop authors nothing: the authoring
+#: reserve's extra 10 s (region_loop.final_reserve_s = probe timeout + 10) plus the 5 s the run
+#: deadline is set back from CAD_REPAIR_TIMEOUT_S (conservative.DEADLINE_MARGIN_S). Mirrored
+#: here rather than imported, because settings must not depend upward on cad.repair.
+_AUTHORING_RESERVE_EXTRA_S = 15.0
+
+
+def _warn_no_authoring_time(posture: str, probe_timeout_s: float, run_timeout_s: float) -> None:
+    """Say out loud when the live probe's reserve consumes the whole run: the region loop stops
+    authoring while one probe timeout plus the final-probe slack is still left, so with
+    CAD_REPAIR_MESH_PROBE_TIMEOUT_S + 15 >= CAD_REPAIR_TIMEOUT_S it authors nothing, silently."""
+    if posture == "live" and probe_timeout_s + _AUTHORING_RESERVE_EXTRA_S >= run_timeout_s:
+        logger.warning("CAD_REPAIR_MESH_PROBE_TIMEOUT_S=%s plus the %ss final-probe reserve is not "
+                       "below CAD_REPAIR_TIMEOUT_S=%s: the repair will author nothing",
+                       probe_timeout_s, _AUTHORING_RESERVE_EXTRA_S, run_timeout_s)
+
+
+_warn_no_authoring_time(CAD_REPAIR_MESH_PROBE, CAD_REPAIR_MESH_PROBE_TIMEOUT_S,
+                        CAD_REPAIR_TIMEOUT_S)
+
+
+def _llm_author_posture() -> str:
+    """The model-author posture, FAILING CLOSED: only the exact strings `shadow` and `live` turn it
+    on, and anything else but `off` is read as off OUT LOUD - the mesh probe's rule, because this
+    one puts a model in the author's seat for a customer's geometry."""
+    raw = optional_env("CAD_REPAIR_LLM_AUTHOR", "off")
+    if raw not in ("live", "shadow", "off"):
+        logger.warning("CAD_REPAIR_LLM_AUTHOR=%r is not 'live', 'shadow' or 'off'; reading it "
+                       "as off", raw)
+    return raw if raw in ("live", "shadow") else "off"
+
+
+#: Who authors the region loop's target packages (cad/repair/model_author.py). "off" is
+#: byte-for-byte the prior behaviour: the deterministic rules author, no model call. "shadow"
+#: keeps the rules author driving and asks the model beside it, recording its proposal (validated
+#: or refused, with the reason) and executing nothing of it. "live" lets the model author the
+#: packages - each still a claim the session proves under the same caps - and only when a model
+#: router is configured; without one the rules author drives. Read only by the region-scoped
+#: driver (CAD_REPAIR_REGION_LOOP=live).
+CAD_REPAIR_LLM_AUTHOR: str = _llm_author_posture()
+
+#: Seconds one model-author call may take before it counts as no proposal for that attempt.
+CAD_REPAIR_LLM_AUTHOR_TIMEOUT_S: float = float(
+    optional_env("CAD_REPAIR_LLM_AUTHOR_TIMEOUT_S", "20.0"))
+
+#: The most model-author calls one repair run may make, shadow or live - a hard ceiling on spend
+#: and on the run time model calls can take, beside the per-region CAD_REPAIR_REGION_ATTEMPTS.
+CAD_REPAIR_LLM_AUTHOR_CALLS_MAX: int = int(optional_env("CAD_REPAIR_LLM_AUTHOR_CALLS_MAX", "6"))
+
+
+def _package_review_posture() -> str:
+    """The package-review posture, FAILING CLOSED: only the exact string `live` turns it on, and
+    anything else but `off` is read as off OUT LOUD - the model author's rule, because this one
+    puts a model between a customer's repaired geometry and its commit."""
+    raw = optional_env("CAD_REPAIR_PACKAGE_REVIEW", "off")
+    if raw not in ("live", "off"):
+        logger.warning("CAD_REPAIR_PACKAGE_REVIEW=%r is neither 'live' nor 'off'; reading it "
+                       "as off", raw)
+    return "live" if raw == "live" else "off"
+
+
+#: Whether a separate model reviews every package that passed its predicate BEFORE the commit
+#: becomes durable (cad/repair/package_review.py) - the owner's semantic review, in place of any
+#: numeric "barely moved" gate. "off" is byte-for-byte the prior behaviour: no call, no new key on
+#: a verdict. "live" hands the reviewer the package's MEASURED evidence (ops kept and rolled back,
+#: declared vs measured area/volume, counts, deviation, mesh verdicts, defects cleared/revealed/
+#: remaining) with the author's intent labelled a claim; a reject - or any no-answer, including
+#: no router and no time left - undoes the package exactly as a failed predicate does. Needs
+#: nothing else on; without the mesh probe the evidence simply lacks mesh and deviation fields.
+CAD_REPAIR_PACKAGE_REVIEW: str = _package_review_posture()
+
+
+def _warn_unreviewed_baseline(review: str, region_loop: str) -> None:
+    """Say out loud when review is live but the driver it lives in is not: the review sits in
+    `RepairSession.try_package`, which only the region-scoped driver calls, so with
+    CAD_REPAIR_REGION_LOOP off the operation-at-a-time baseline commits every repair unreviewed."""
+    if review == "live" and region_loop != "live":
+        logger.warning("CAD_REPAIR_PACKAGE_REVIEW=live but CAD_REPAIR_REGION_LOOP=%r: the "
+                       "operation-at-a-time driver commits repairs WITHOUT the package review",
+                       region_loop)
+
+
+_warn_unreviewed_baseline(CAD_REPAIR_PACKAGE_REVIEW, CAD_REPAIR_REGION_LOOP)
+
+
+def _warn_inert_author(author: str, region_loop: str) -> None:
+    """Say out loud when a model author is asked for but the driver it lives in is not: the author
+    is read only by the region-scoped driver, so with CAD_REPAIR_REGION_LOOP off a shadow or live
+    CAD_REPAIR_LLM_AUTHOR is silently inert (the `_warn_unreviewed_baseline` rule)."""
+    if author != "off" and region_loop != "live":
+        logger.warning("CAD_REPAIR_LLM_AUTHOR=%s but CAD_REPAIR_REGION_LOOP=%r: the model author "
+                       "is never asked - only the region-scoped driver reads it", author,
+                       region_loop)
+
+
+_warn_inert_author(CAD_REPAIR_LLM_AUTHOR, CAD_REPAIR_REGION_LOOP)
+
+
+def _warn_unreviewed_rebuild(rebuild_face: bool, review: str) -> None:
+    """Say out loud when `rebuild_face` is admitted but the package reviewer is not live: the
+    reviewer is the gate this operation ships behind (see CAD_REPAIR_REBUILD_FACE), and without it
+    a re-trim that moved a feature is judged by nothing semantic. A warning, not a refusal - the
+    coupling is the deployment posture's to own, and benchmarks run the op unreviewed on purpose."""
+    if rebuild_face and review != "live":
+        logger.warning("CAD_REPAIR_REBUILD_FACE is on but CAD_REPAIR_PACKAGE_REVIEW=%r: rebuild_face "
+                       "must not run on customer jobs until the package reviewer is live", review)
+
+
+_warn_unreviewed_rebuild(CAD_REPAIR_REBUILD_FACE, CAD_REPAIR_PACKAGE_REVIEW)
+
+#: Seconds one package-review call may take; cut further to what is left of the run's time. A
+#: call that does not answer in time is a reject.
+CAD_REPAIR_PACKAGE_REVIEW_TIMEOUT_S: float = float(
+    optional_env("CAD_REPAIR_PACKAGE_REVIEW_TIMEOUT_S", "20.0"))

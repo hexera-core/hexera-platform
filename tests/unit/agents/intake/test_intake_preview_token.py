@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import meshpipeline.agents.intake.admission_token as at
 import meshpipeline.agents.intake.agent as intake
+import meshpipeline.agents.intake.approval as ap
 import meshpipeline.agents.intake.engine_selection as es
 from meshpipeline.contracts import user_notes as un
 
@@ -154,7 +155,7 @@ def test_submit_with_a_matching_seeded_token_is_authorized_and_shows_canonical_s
     assert out.get("request_txt")                        # authorized + persisted
     reply = out["messages"][-1]["content"]
     # app-rendered: the application asks, and the structured brief states what will be built
-    assert "confirm the requirements" in reply and "Shall I proceed" in reply
+    assert reply.endswith(ap.PROCEED_ASK)
     assert [n["text"] for n in out["user_notes"]] == [_MSGS[0]["content"]]
 
 

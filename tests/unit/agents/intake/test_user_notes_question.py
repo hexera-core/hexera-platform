@@ -72,12 +72,12 @@ def _submit_turn(messages, extra=None):
         return asyncio.run(intake.node_intake(state)), seen["users"]
 
 
-def test_the_first_submission_is_held_once_for_the_question():
+def test_the_first_submission_goes_straight_to_the_plan_with_its_notes_box():
+    # THE NOTES ARE THE PLAN CARD'S BOX (agents/intake/flow PLAN): never a chat question first - the
+    # question asked FEA users about "cells" and "a layer count"
     out, _ = _submit_turn([{"role": "user", "content": "mesh this duct for CFD"}])
-    assert out["messages"][-1]["content"] == un.QUESTION
-    # nothing approved, nothing submitted: the question holds the summary back one turn only
-    assert not (out["intake_gate"] or {}).get("approval")
-    assert not out.get("request_txt")
+    assert out["messages"][-1]["content"] == ap.PROCEED_ASK
+    assert out["intake_gate"]["approval"]["status"] == ap.AWAITING and out.get("request_txt")
 
 
 def test_the_answer_is_kept_verbatim_and_goes_straight_to_the_summary():
@@ -89,7 +89,8 @@ def test_the_answer_is_kept_verbatim_and_goes_straight_to_the_summary():
     assert snap["status"] == ap.AWAITING
     assert [n["text"] for n in snap["payload"]["user_notes"]] == [SPEC]
     assert [n["text"] for n in out["user_notes"]] == [SPEC]
-    assert NOTES_KEPT in out["messages"][-1]["content"]
+    # a conversation stored with the old question still reads; the plan says its one line
+    assert out["messages"][-1]["content"] == ap.PROCEED_ASK and NOTES_KEPT not in out["messages"][-1]["content"]
     # the request summary stays the model's own; the words ride beside it
     assert out["request_txt"].startswith("A complete requirements summary")
     # the answer closed the question, in code, before the model ran
@@ -117,17 +118,18 @@ def test_details_the_user_volunteered_skip_the_question_and_are_kept_whole():
                           extra={"user_note_quotes": ["10 prism layers"]})
     assert out["intake_gate"]["approval"]["status"] == ap.AWAITING
     assert [n["text"] for n in out["user_notes"]] == [said]
-    assert NOTES_KEPT in out["messages"][-1]["content"]
+    # the card lists the note itself; the chat says the plan's one line
+    assert out["messages"][-1]["content"] == ap.PROCEED_ASK
 
 
-def test_a_quote_the_user_never_wrote_is_not_a_note_and_the_question_is_asked():
+def test_a_quote_the_user_never_wrote_is_not_a_note_and_the_plan_is_shown():
     out, _ = _submit_turn([{"role": "user", "content": "mesh this duct for CFD"}],
                           extra={"user_note_quotes": ["use 20 layers"]})
-    assert out["messages"][-1]["content"] == un.QUESTION and "user_notes" not in out
+    assert out["messages"][-1]["content"] == ap.PROCEED_ASK and out["user_notes"] == []
 
 
-def test_the_prompt_tells_the_model_the_application_asks_and_it_never_does():
+def test_the_prompt_tells_the_model_the_box_asks_and_it_never_does():
     block = intake._block_user_notes()
-    assert un.QUESTION in block and "never ask it yourself" in block.lower()
+    assert un.QUESTION not in block and "never ask for notes" in block.lower() and "box" in block
     assert "user_note_quotes" in block
     assert turn.NOTES_NUDGE in turn.SYNTHETIC_NUDGES

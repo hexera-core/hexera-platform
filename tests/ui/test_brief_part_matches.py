@@ -108,7 +108,8 @@ def test_finalize_notes_reads_then_shows_the_rows_and_asks_to_proceed(live):
     assert out["before"] == {"btn": ["Finalize notes"], "rows": 0}, "nothing is read until the user finalizes"
     assert out["fin"] == 1 and out["wait"] == "Reading your notes…"
     assert out["rows"] == 2 and out["btn"] == 0
-    assert out["lines"][-1] == "Shall I proceed with mesh generation?", "the approval question under the rows"
+    # the plan's Proceed is the card's own button (agents/intake/flow PLAN): nothing is said again
+    assert out["lines"] == [], "the plan step is never asked twice"
 
 
 MODEL = """
@@ -299,4 +300,4 @@ def test_a_flow_card_finalizes_its_notes_and_shows_how_they_were_read(live):
     assert out["fin"] == 1 and out["wait"] == "Reading your notes…"
     assert out["btn"] == 0 and out["rows"] == 0
     assert out["lines"] == ["From your notes: 5 boundary layers on the wall.", "From your notes: at most 2 million cells."]
-    assert out["said"] == "Shall I proceed with mesh generation?", "the approval question follows, as on FEA"
+    assert out.get("said") is None, "the plan step is never asked twice, as on FEA"

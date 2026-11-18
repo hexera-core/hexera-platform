@@ -451,6 +451,22 @@ For both settings:
 A blank line, a trailing `;` or surrounding whitespace is tolerated. Anything else is refused at
 startup, naming the setting and what was wrong, never echoing the value.
 
+## Repair operations held behind the package reviewer
+
+`CAD_REPAIR_REBUILD_FACE` (default `false`) admits `rebuild_face`: when gmsh's surface stage
+reports overlapping facets on a face, the operation re-trims that face from its own boundary on
+the same underlying surface (`BRepBuilderAPI_MakeFace` + `ShapeFix_Face`) and re-stitches it into
+its owning body. With the flag on, the rules baseline prefers it for `mesh_overlapping_facets`
+and falls back to `fix_shape_global` on the region's next attempt; with it off, the mapping is
+unchanged.
+
+**This flag must not be set live on customer jobs until the semantic package reviewer
+(`CAD_REPAIR_PACKAGE_REVIEW=live`) is live.** A re-trim can move a feature, and the reviewer is
+what replaces the numeric deviation gate for an operation like that: the sampled deviation the
+operation records (`deviation_mm`) is evidence handed to the reviewer, never a refusal. The code
+does not enforce the coupling - the deployment posture owns it - but startup logs a warning when
+`CAD_REPAIR_REBUILD_FACE` is on while `CAD_REPAIR_PACKAGE_REVIEW` is not `live`.
+
 ## Filesystem paths
 
 Path defaults are **relative** and resolved by runtime against the process working directory.
@@ -480,7 +496,7 @@ API: it logs that the directory is missing and leaves `/ui` and `/static` unmoun
 
 <!-- Regenerate: python -m meshpipeline.settings.inventory --reference -->
 
-Every supported setting (282 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
+Every supported setting (296 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
 
 | Setting | Exposure | Read by | Secret |
 |---|---|---|---|
@@ -557,7 +573,11 @@ Every supported setting (282 entries). `template` settings are the ones `.env.ex
 | `CAD_REPAIR_FILL_NONPLANAR_HOLES` | internal | app |  |
 | `CAD_REPAIR_FILL_PLANAR_HOLES` | internal | app |  |
 | `CAD_REPAIR_FIX_SMALL_FACES` | internal | app |  |
+| `CAD_REPAIR_FRAGMENT_BODIES` | internal | app |  |
 | `CAD_REPAIR_HEAL_SELF_INTERSECTIONS` | internal | app |  |
+| `CAD_REPAIR_LLM_AUTHOR` | internal | app |  |
+| `CAD_REPAIR_LLM_AUTHOR_CALLS_MAX` | internal | app |  |
+| `CAD_REPAIR_LLM_AUTHOR_TIMEOUT_S` | internal | app |  |
 | `CAD_REPAIR_LLM_PLANNER` | internal | app |  |
 | `CAD_REPAIR_LLM_PLANNER_CALLS_MAX` | internal | app |  |
 | `CAD_REPAIR_LLM_PLANNER_MIN_CONFIDENCE` | internal | app |  |
@@ -568,10 +588,19 @@ Every supported setting (282 entries). `template` settings are the ones `.env.ex
 | `CAD_REPAIR_MAX_OPS` | internal | app |  |
 | `CAD_REPAIR_MAX_TOLERANCE_MM` | internal | app |  |
 | `CAD_REPAIR_MAX_VOLUME_CHANGE_RATIO` | internal | app |  |
+| `CAD_REPAIR_MESH_PROBE` | internal | app |  |
+| `CAD_REPAIR_MESH_PROBE_TIMEOUT_S` | internal | app |  |
+| `CAD_REPAIR_PACKAGE_REVIEW` | internal | app |  |
+| `CAD_REPAIR_PACKAGE_REVIEW_TIMEOUT_S` | internal | app |  |
+| `CAD_REPAIR_REBUILD_FACE` | internal | app |  |
+| `CAD_REPAIR_REGION_ATTEMPTS` | internal | app |  |
+| `CAD_REPAIR_REGION_LOOP` | internal | app |  |
 | `CAD_REPAIR_REVIEW_ENABLED` | template | app |  |
 | `CAD_REPAIR_REVIEW_LLM_CALLS_MAX` | internal | app |  |
 | `CAD_REPAIR_REVIEW_LLM_TIMEOUT_S` | internal | app |  |
 | `CAD_REPAIR_REVIEW_SAMPLE_SIZE` | internal | app |  |
+| `CAD_REPAIR_SLIVER_PRECISION_RATIO` | internal | app |  |
+| `CAD_REPAIR_SPLIT_CLOSED_FACES` | internal | app |  |
 | `CAD_REPAIR_STALL_LIMIT` | internal | app |  |
 | `CAD_REPAIR_TIMEOUT_S` | internal | app |  |
 | `CELERY_WORKER_CONCURRENCY` | template | compose |  |
@@ -669,6 +698,7 @@ Every supported setting (282 entries). `template` settings are the ones `.env.ex
 | `AI_DECISION_CACHE` | internal | app |  |
 | `MESH_CFMESH_THREADS` | internal | app |  |
 | `MESH_DETERMINISTIC` | internal | app |  |
+| `MESH_GMSH_THREADS` | internal | app |  |
 | `MESH_SNAPPY_RANKS` | internal | app |  |
 | `MESH_THREADS` | internal | app |  |
 | `SENTRY_DSN` | template | app | yes |

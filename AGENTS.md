@@ -105,6 +105,8 @@ Redeploying is cheap and encouraged; leaving resources standing is what costs. S
 - `make destroy-env SLUG=<slug>` when the branch merges or is abandoned. Read what it reports as
   surviving — it deletes only what carries your `deployment-id` label.
 - One environment per developer, not one per branch. Redeploy the same slug from a new branch.
+- An environment with no deploy for 14 days is destroyed by the Sunday sweep
+  (`sweep-personal-envs.yml`); redeploying resets the clock.
 
 ## Verification
 

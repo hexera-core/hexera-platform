@@ -62,7 +62,8 @@ def test_schema_says_engine_is_direct_user_input():
 def test_intake_prompt_is_engine_first():
     src = (Path(__file__).parent.parent.parent.parent / "src" / "meshpipeline" / "agents" / "intake" / "agent.py").read_text()
     assert "ENGINE FIRST" in src
-    assert "FIRST substantive question" in src   # engine question opens the intake
+    assert "APPLICATION CHOOSES IT" in src       # no engine named: chosen for the user, nobody asked
+    assert "Never ask the user which engine" in src
     assert "AUTHORITATIVE" in src                # a named engine is never second-guessed
     assert "never silently applied" in src       # fallback = propose + confirm
     assert "intake_guidance" in src or "_native_qs" in src  # engine-native follow-ups

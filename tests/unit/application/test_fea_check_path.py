@@ -38,6 +38,20 @@ def test_the_view_says_the_bodies_and_the_clean_check_in_plain_words():
     assert fea_check.fea_view({"solids": 1})["clean"] is None
 
 
+def test_the_declared_clean_check_says_what_the_stage_said():
+    # the Confirmed card read "Not clean - we'll still try" for a part the stage never checked, and for a
+    # part the stage called clean the declaration could still say clean where the stage had flagged faces
+    clean = {"solids": 1, "validity": {"clean": True, "kind": "brep", "summary": "The geometry is clean."}}
+    assert fea_check.declared_clean(clean) == "The geometry is clean."
+    unchecked = {"solids": 1, "validity": {"kind": "unchecked", "summary": "The geometry was not checked."}}
+    assert fea_check.fea_view(unchecked)["clean_short"] == "Not checked"
+    assert fea_check.declared_clean(unchecked).startswith("Not checked")
+    dirty = {"solids": 1, "validity": {"clean": False, "kind": "brep",
+                                       "summary": "The geometry is not clean: 2 faces overlap"}}
+    short = fea_check.fea_view(dirty)["clean_short"]
+    assert fea_check.declared_clean(dirty).startswith(short)
+
+
 def test_several_bodies_are_an_assembly_with_one_question():
     # measured: the parts, where they touch, and the question with bonded the default
     facts = {"solids": 2, "fea_measure": {"measured": True, "assembly": {

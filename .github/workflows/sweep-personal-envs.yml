@@ -1,0 +1,112 @@
+# Responsibility: Destroy, every Sunday, the personal environments in hexera-dev nobody has deployed for a while.
+# Owns: the schedule, and the order of find, re-check and destroy.
+# Boundaries: find-idle-envs.sh decides what is idle and destroy-env.sh does every deletion; this only wires them.
+
+name: Sweep idle personal environments
+
+# WHY THIS EXISTS. `make destroy-env` is the documented end of a branch, and it is the step that gets
+# skipped: an environment outlives its branch, keeps its buckets, its database and its fleet, and
+# nobody remembers whose it was. Idle means no deploy.yml run named the slug for IDLE_DAYS (default
+# 14, or the PERSONAL_ENV_IDLE_DAYS repository variable). Slugs in PERSONAL_ENV_KEEP are never swept.
+#
+# WHAT IT CANNOT DELETE. The deploy identity creates runtime service accounts and secrets but holds no
+# permission to delete either (by design - see create-workload-identity.sh), so destroy-env.sh reports
+# the six identities and the object-store secret as FAILED. Neither bills; a redeploy of the slug
+# adopts them.
+on:
+  schedule:
+    - cron: "0 10 * * 0"   # Sundays 10:00 UTC - 02:00 PST / 03:00 PDT
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "dry_run - list what is idle and delete nothing"
+        type: boolean
+        default: true
+      idle_days:
+        description: "idle_days - override the idle threshold for this run (blank = PERSONAL_ENV_IDLE_DAYS or 14)"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sweep-personal-envs
+  cancel-in-progress: false
+
+env:
+  IDLE_DAYS: ${{ inputs.idle_days || vars.PERSONAL_ENV_IDLE_DAYS || '14' }}
+  KEEP_SLUGS: ${{ vars.PERSONAL_ENV_KEEP }}
+  GH_REPO: ${{ github.repository }}
+
+jobs:
+  find:
+    name: Find idle environments
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    outputs:
+      idle: ${{ steps.find.outputs.idle }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The same federated identity deploy.yml's shared-dev target pins.
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093  # v3.0.0
+        with:
+          workload_identity_provider: projects/224734058693/locations/global/workloadIdentityPools/github-actions/providers/github
+          service_account: github-deployer@hexera-dev.iam.gserviceaccount.com
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db  # v3.0.1
+      - id: find
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash deploy/gcp/scripts/find-idle-envs.sh
+
+  destroy:
+    name: Destroy ${{ matrix.slug }}
+    needs: [find]
+    if: needs.find.outputs.idle != '[]' && !(github.event_name == 'workflow_dispatch' && inputs.dry_run)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        slug: ${{ fromJSON(needs.find.outputs.idle) }}
+    # SAME GROUP AS deploy.yml's per-slug deploys, so a teardown and a deploy of one slug never
+    # overlap. The cost: GitHub keeps one pending run per group, so a teardown queued behind a running
+    # deploy displaces a deploy pending there too, and that deploy has to be re-dispatched. That is
+    # the lesser failure; without the group a deploy can land mid-teardown and lose its database.
+    concurrency:
+      group: deploy-env-${{ matrix.slug }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # RE-CHECKED HERE, not trusted from `find`: a deploy may have been dispatched since.
+      - id: recheck
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SLUGS: ${{ matrix.slug }}
+        run: bash deploy/gcp/scripts/find-idle-envs.sh
+      - if: contains(fromJSON(steps.recheck.outputs.idle), matrix.slug)
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093  # v3.0.0
+        with:
+          workload_identity_provider: projects/224734058693/locations/global/workloadIdentityPools/github-actions/providers/github
+          service_account: github-deployer@hexera-dev.iam.gserviceaccount.com
+      - if: contains(fromJSON(steps.recheck.outputs.idle), matrix.slug)
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db  # v3.0.1
+      - name: destroy-env.sh
+        if: contains(fromJSON(steps.recheck.outputs.idle), matrix.slug)
+        env:
+          SLUG: ${{ matrix.slug }}
+          ASSUME_YES: "1"
+        run: bash deploy/gcp/scripts/destroy-env.sh

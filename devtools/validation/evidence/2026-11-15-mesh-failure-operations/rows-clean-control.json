@@ -1,0 +1,1962 @@
+[
+  {
+    "file": "ahmed_variant__ahmed_variant_001.step",
+    "size_bytes": 37183,
+    "valid_before": true,
+    "counts_before": {
+      "solids": 1,
+      "shells": 1,
+      "faces": 11,
+      "edges": 46,
+      "vertices": 92
+    },
+    "defects_before": [],
+    "located_before": {},
+    "regions_before": {},
+    "status": "clean",
+    "route": "mesh_as_is",
+    "confidence": 0.9,
+    "targets": [],
+    "abstain_reason": "",
+    "outcome": "nothing_to_repair",
+    "seconds": 1.27,
+    "meshes_before": true,
+    "mesh_kind_before": "",
+    "meshes_after": null,
+    "mesh_kind_after": ""
+  },
+  {
+    "file": "ahmed_variant__ahmed_variant_002.step",
+    "size_bytes": 37213,
+    "valid_before": true,
+    "counts_before": {
+      "solids": 1,
+      "shells": 1,
+      "faces": 11,
+      "edges": 46,
+      "vertices": 92
+    },
+    "defects_before": [],
+    "located_before": {},
+    "regions_before": {},
+    "status": "clean",
+    "route": "mesh_as_is",
+    "confidence": 0.9,
+    "targets": [],
+    "abstain_reason": "",
+    "outcome": "nothing_to_repair",
+    "seconds": 0.01,
+    "meshes_before": true,
+    "mesh_kind_before": "",
+    "meshes_after": null,
+    "mesh_kind_after": ""
+  },
+  {
+    "file": "annular__annular_001.step",
+    "size_bytes": 16755,
+    "valid_before": true,
+    "counts_before": {
+      "solids": 2,
+      "shells": 2,
+      "faces": 7,
+      "edges": 18,
+      "vertices": 36
+    },
+    "defects_before": [],
+    "located_before": {},
+    "regions_before": {},
+    "status": "clean",
+    "route": "mesh_as_is",
+    "confidence": 0.9,
+    "targets": [],
+    "abstain_reason": "",
+    "outcome": "nothing_to_repair",
+    "seconds": 0.01,
+    "meshes_before": true,
+    "mesh_kind_before": "",
+    "meshes_after": null,
+    "mesh_kind_after": ""
+  },
+  {
+    "file": "annular__annular_002.step",
+    "size_bytes": 16796,
+    "valid_before": true,
+    "counts_before": {
+      "solids": 2,
+      "shells": 2,
+      "faces": 7,
+      "edges": 18,
+      "vertices": 36
+    },
+    "defects_before": [],
+    "located_before": {},
+    "regions_before": {},
+    "status": "clean",
+    "route": "mesh_as_is",
+    "confidence": 0.9,
+    "targets": [],
+    "abstain_reason": "",
+    "outcome": "nothing_to_repair",
+    "seconds": 0.01,
+    "meshes_before": true,
+    "mesh_kind_before": "",
+    "meshes_after": null,
+    "mesh_kind_after": ""
+  },
+  {
+    "file": "bend_elbow__bend_elbow_001.step",
+    "size_bytes": 33825,
+    "valid_before": true,
+    "counts_before": {
+      "solids": 1,
+      "shells": 1,
+      "faces": 12,
+      "edges": 48,
+      "vertices": 96
+    },
+    "defects_before": [],
+    "located_before": {},
+    "regions_before": {},
+    "status": "clean",
+    "route": "mesh_as_is",
+    "confidence": 0.9,
+    "targets": [],
+    "abstain_reason": "",
+    "outcome": "nothing_to_repair",
+    "seconds": 0.02,
+    "meshes_before": true,
+    "mesh_kind_before": "",
+    "meshes_after": null,
+    "mesh_kind_after": ""
+  },
+  {
+    "file": "bend_elbow__bend_elbow_002.step",
+    "size_bytes": 62694,
+    "valid_before": true,
+    "counts_before": {
+      "solids": 1,
+      "shells": 1,
+      "faces": 18,
+      "edges": 96,
+      "vertices": 192
+    },
+    "defects_before": [],
+    "located_before": {},
+    "regions_before": {},
+    "status": "clean",
+    "route": "mesh_as_is",
+    "confidence": 0.9,
+    "targets": [],
+    "abstain_reason": "",
+    "outcome": "nothing_to_repair",
+    "seconds": 0.01,
+    "meshes_before": true,
+    "mesh_kind_before": "",
+    "meshes_after": null,
+    "mesh_kind_after": ""
+  },
+  {
+    "file": "blade_row_passage__blade_row_passage_001.step",
+    "size_bytes": 1195958,
+    "valid_before": true,
+    "counts_before": {
+      "solids": 1,
+      "shells": 1,
+      "faces": 14,
+      "edges": 84,
+      "vertices": 174
+    },
+    "defects_before": [],
+    "located_before": {},
+    "regions_before": {},
+    "status": "clean",
+    "route": "mesh_as_is",
+    "confidence": 0.9,
+    "targets": [],
+    "abstain_reason": "",
+    "outcome": "nothing_to_repair",
+    "seconds": 0.19,
+    "meshes_before": true,
+    "mesh_kind_before": "",
+    "meshes_after": null,
+    "mesh_kind_after": ""
+  },
+  {
+    "file": "blade_row_passage__blade_row_passage_002.step",
+    "size_bytes": 698558,
+    "valid_before": true,
+    "counts_before": {
+      "solids": 1,
+      "shells": 1,
+      "faces": 10,
+      "edges": 60,
+      "vertices": 126
+    },
+    "defects_before": [],
+    "located_before": {},
+    "regions_before": {},
+    "status": "clean",
+    "route": "mesh_as_is",
+    "confidence": 0.9,
+    "targets": [],
+    "abstain_reason": "",
+    "outcome": "nothing_to_repair",
+    "seconds": 0.13,
+    "meshes_before": true,
+    "mesh_kind_before": "",
+    "meshes_after": null,
+    "mesh_kind_after": ""
+  },
+  {
+    "file": "blade_row_rotor__blade_row_rotor_001.step",
+    "size_bytes": 1236092,
+    "valid_before": true,
+    "counts_before": {
+      "solids": 1,
+      "shells": 1,
+      "faces": 27,
+      "edges": 108,
+      "vertices": 220
+    },
+    "defects_before": [],
+    "located_before": {},
+    "regions_before": {},
+    "status": "clean",
+    "route": "mesh_as_is",
+    "confidence": 0.9,
+    "targets": [],
+    "abstain_reason": "",
+    "outcome": "nothing_to_repair",
+    "seconds": 0.28,
+    "meshes_before": false,
+    "mesh_kind_before": "overlapping_facets",
+    "meshes_after": null,
+    "mesh_kind_after": ""
+  },
+  {
+    "file": "blade_row_rotor__blade_row_rotor_002.step",
+    "size_bytes": 786670,
+    "valid_before": true,
+    "counts_before": {
+      "solids": 1,
+      "shells": 1,
+      "faces": 18,
+      "edges": 72,
+      "vertices": 148
+    },
+    "defects_before": [],
+    "located_before": {},
+    "regions_before": {},
+    "status": "clean",
+    "route": "mesh_as_is",
+    "confidence": 0.9,
+    "targets": [],
+    "abstain_reason": "",
+    "outcome": "nothing_to_repair",
+    "seconds": 0.21,
+    "meshes_before": false,
+    "mesh_kind_before": "overlapping_facets",
+    "meshes_after": null,
+    "mesh_kind_after": ""
+  },
+  {
+    "file": "bluff_body__bluff_body_001.step",
+    "size_bytes": 5705,
+    "valid_before": true,
+    "counts_before": {
+      "solids": 1,
+      "shells": 1,
+      "faces": 3,
+      "edges": 6,
+      "vertices": 12
+    },
+    "defects_before": [],
+    "located_before": {},
+    "regions_before": {},
+    "status": "clean",
+    "route": "mesh_as_is",
+    "confidence": 0.9,
+    "targets": [],
+    "abstain_reason": "",
+    "outcome": "nothing_to_repair",
+    "seconds": 0.01,
+    "meshes_before": true,
+    "mesh_kind_before": "",
+    "meshes_after": null,
+    "mesh_kind_after": ""
+  },
+  {
+    "file": "bluff_body__bluff_body_002.step",
+    "size_bytes": 5760,
+    "valid_before": true,
+    "counts_before": {
+      "solids": 1,
+      "shells": 1,
+      "faces": 3,
+      "edges": 6,
+      "vertices": 12
+    },
+    "defects_before": [],
+    "located_before": {},
+    "regions_before": {},
+    "status": "clean",
+    "route": "mesh_as_is",
+    "confidence": 0.9,
+    "targets": [],
+    "abstain_reason": "",
+    "outcome": "nothing_to_repair",
+    "seconds": 0.0,
+    "meshes_before": true,
+    "mesh_kind_before": "",
+    "meshes_after": null,
+    "mesh_kind_after": ""
+  },
+  {
+    "file": "cyclone_separator__cyclone_separator_001.step",
+    "size_bytes": 45052,
+    "valid_before": true,
+    "counts_before": {
+      "solids": 1,
+      "shells": 1,
+      "faces": 17,
+      "edges": 70,
+      "vertices": 140
+    },
+    "defects_before": [],
+    "located_before": {},
+    "regions_before": {},
+    "status": "clean",
+    "route": "mesh_as_is",
+    "confidence": 0.9,
+    "targets": [],
+    "abstain_reason": "",
+    "outcome": "nothing_to_repair",
+    "seconds": 0.01,
+    "meshes_before": true,
+    "mesh_kind_before": "",
+    "meshes_after": null,
+    "mesh_kind_after": ""
+  },
+  {
+    "file": "cyclone_separator__cyclone_separator_002.step",
+    "size_bytes": 45180,
+    "valid_before": true,
+    "counts_before": {
+      "solids": 1,
+      "shells": 1,
+      "faces": 17,
+      "edges": 70,
+      "vertices": 140
+    },
+    "defects_before": [],
+    "located_before": {},
+    "regions_before": {},
+    "status": "clean",
+    "route": "mesh_as_is",
+    "confidence": 0.9,
+    "targets": [],
+    "abstain_reason": "",
+    "outcome": "nothing_to_repair",
+    "seconds": 0.01,
+    "meshes_before": true,
+    "mesh_kind_before": "",
+    "meshes_after": null,
+    "mesh_kind_after": ""
+  },
+  {
+    "file": "diffuser_plenum__diffuser_plenum_001.step",
+    "size_bytes": 417723,
+    "valid_before": true,
+    "counts_before": {
+      "solids": 1,
+      "shells": 1,
+      "faces": 67,
+      "edges": 316,
+      "vertices": 632
+    },
+    "defects_before": [
+      "small_edge",
+      "small_face"
+    ],
+    "located_before": {
+      "small_edge": 16,
+      "small_face": 1
+    },
+    "regions_before": {
+      "unknown": 17
+    },
+    "status": "clean",
+    "route": "conservative_repair",
+    "confidence": 0.7,
+    "targets": [
+      {
+        "entity": "face:15",
+        "code": "small_face",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:25",
+        "code": "small_edge",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:32",
+        "code": "small_edge",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:38",
+        "code": "small_edge",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:43",
+        "code": "small_edge",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:78",
+        "code": "small_edge",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:79",
+        "code": "small_edge",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:86",
+        "code": "small_edge",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:88",
+        "code": "small_edge",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:105",
+        "code": "small_edge",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:110",
+        "code": "small_edge",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:130",
+        "code": "small_edge",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:145",
+        "code": "small_edge",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:149",
+        "code": "small_edge",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:154",
+        "code": "small_edge",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:158",
+        "code": "small_edge",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:166",
+        "code": "small_edge",
+        "region": "unknown"
+      }
+    ],
+    "abstain_reason": "",
+    "outcome": "refused",
+    "error": "nothing was kept (49 operation(s) attempted, stopped because regions_exhausted), so there is nothing to promote - re-exporting the upload would change its topology without repairing it",
+    "mesh_located_remaining": [],
+    "timings": {
+      "total_s": 85.76096937502734,
+      "scan_count": 82,
+      "measure_s": 6.30039104889147,
+      "verification_scans": 1,
+      "scoped_scans": 81,
+      "scan_s": 77.47109270317014,
+      "apply_s": 0.9012251229723915
+    },
+    "operations": [
+      {
+        "op": "fix_small_faces",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 0 reverted (no operation was kept, so nothing was repaired: the claim to have cleared face:c3f424d18f338c69 cannot hold over geometry the package did not change)",
+        "basis": "",
+        "defect_code": "small_face",
+        "targets": [
+          "face:c3f424d18f338c69"
+        ]
+      },
+      {
+        "op": "fix_small_edges",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 1 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:653d47dd0cd8ef65 cannot hold over geometry the package did not change)",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:653d47dd0cd8ef65"
+        ]
+      },
+      {
+        "op": "fix_small_faces",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 1 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:653d47dd0cd8ef65 cannot hold over geometry the package did not change)",
+        "basis": "",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:653d47dd0cd8ef65"
+        ]
+      },
+      {
+        "op": "fix_shape_global",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 1 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:653d47dd0cd8ef65 cannot hold over geometry the package did not change)",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:653d47dd0cd8ef65"
+        ]
+      },
+      {
+        "op": "fix_small_edges",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 1 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:c976f699e6492339 cannot hold over geometry the package did not change)",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:c976f699e6492339"
+        ]
+      },
+      {
+        "op": "fix_small_faces",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 1 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:c976f699e6492339 cannot hold over geometry the package did not change)",
+        "basis": "",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:c976f699e6492339"
+        ]
+      },
+      {
+        "op": "fix_shape_global",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 1 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:c976f699e6492339 cannot hold over geometry the package did not change)",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:c976f699e6492339"
+        ]
+      },
+      {
+        "op": "fix_small_edges",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 2 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:466edb0ac1b6a534 cannot hold over geometry the package did not change)",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:466edb0ac1b6a534"
+        ]
+      },
+      {
+        "op": "fix_small_faces",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 2 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:466edb0ac1b6a534 cannot hold over geometry the package did not change)",
+        "basis": "",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:466edb0ac1b6a534"
+        ]
+      },
+      {
+        "op": "fix_shape_global",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 2 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:466edb0ac1b6a534 cannot hold over geometry the package did not change)",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:466edb0ac1b6a534"
+        ]
+      },
+      {
+        "op": "fix_small_edges",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 2 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:9e4b0ffae562bda4 cannot hold over geometry the package did not change)",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:9e4b0ffae562bda4"
+        ]
+      },
+      {
+        "op": "fix_small_faces",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 2 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:9e4b0ffae562bda4 cannot hold over geometry the package did not change)",
+        "basis": "",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:9e4b0ffae562bda4"
+        ]
+      },
+      {
+        "op": "fix_shape_global",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 2 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:9e4b0ffae562bda4 cannot hold over geometry the package did not change)",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:9e4b0ffae562bda4"
+        ]
+      },
+      {
+        "op": "fix_small_edges",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 3 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:944a5342944da978 cannot hold over geometry the package did not change)",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:944a5342944da978"
+        ]
+      },
+      {
+        "op": "fix_small_faces",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 3 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:944a5342944da978 cannot hold over geometry the package did not change)",
+        "basis": "",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:944a5342944da978"
+        ]
+      },
+      {
+        "op": "fix_shape_global",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 3 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:944a5342944da978 cannot hold over geometry the package did not change)",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:944a5342944da978"
+        ]
+      },
+      {
+        "op": "fix_small_edges",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 3 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:75c4ccd5bd36f66a cannot hold over geometry the package did not change)",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:75c4ccd5bd36f66a"
+        ]
+      },
+      {
+        "op": "fix_small_faces",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 3 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:75c4ccd5bd36f66a cannot hold over geometry the package did not change)",
+        "basis": "",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:75c4ccd5bd36f66a"
+        ]
+      },
+      {
+        "op": "fix_shape_global",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 3 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:75c4ccd5bd36f66a cannot hold over geometry the package did not change)",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:75c4ccd5bd36f66a"
+        ]
+      },
+      {
+        "op": "fix_small_edges",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 4 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:62ffc240abd4fc63 cannot hold over geometry the package did not change)",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:62ffc240abd4fc63"
+        ]
+      },
+      {
+        "op": "fix_small_faces",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 4 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:62ffc240abd4fc63 cannot hold over geometry the package did not change)",
+        "basis": "",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:62ffc240abd4fc63"
+        ]
+      },
+      {
+        "op": "fix_shape_global",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 4 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:62ffc240abd4fc63 cannot hold over geometry the package did not change)",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:62ffc240abd4fc63"
+        ]
+      },
+      {
+        "op": "fix_small_edges",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 4 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:287de68174208f3a cannot hold over geometry the package did not change)",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:287de68174208f3a"
+        ]
+      },
+      {
+        "op": "fix_small_faces",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 4 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:287de68174208f3a cannot hold over geometry the package did not change)",
+        "basis": "",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:287de68174208f3a"
+        ]
+      },
+      {
+        "op": "fix_shape_global",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 4 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:287de68174208f3a cannot hold over geometry the package did not change)",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:287de68174208f3a"
+        ]
+      },
+      {
+        "op": "fix_small_edges",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 5 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:ab84557971d44960 cannot hold over geometry the package did not change)",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:ab84557971d44960"
+        ]
+      },
+      {
+        "op": "fix_small_faces",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 5 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:ab84557971d44960 cannot hold over geometry the package did not change)",
+        "basis": "",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:ab84557971d44960"
+        ]
+      },
+      {
+        "op": "fix_shape_global",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 5 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:ab84557971d44960 cannot hold over geometry the package did not change)",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:ab84557971d44960"
+        ]
+      },
+      {
+        "op": "fix_small_edges",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 5 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:3459a77a0a61114f cannot hold over geometry the package did not change)",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:3459a77a0a61114f"
+        ]
+      },
+      {
+        "op": "fix_small_faces",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 5 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:3459a77a0a61114f cannot hold over geometry the package did not change)",
+        "basis": "",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:3459a77a0a61114f"
+        ]
+      },
+      {
+        "op": "fix_shape_global",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 5 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:3459a77a0a61114f cannot hold over geometry the package did not change)",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:3459a77a0a61114f"
+        ]
+      },
+      {
+        "op": "fix_small_edges",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 6 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:66bbc7900d586543 cannot hold over geometry the package did not change)",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:66bbc7900d586543"
+        ]
+      },
+      {
+        "op": "fix_small_faces",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 6 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:66bbc7900d586543 cannot hold over geometry the package did not change)",
+        "basis": "",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:66bbc7900d586543"
+        ]
+      },
+      {
+        "op": "fix_shape_global",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 6 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:66bbc7900d586543 cannot hold over geometry the package did not change)",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:66bbc7900d586543"
+        ]
+      },
+      {
+        "op": "fix_small_edges",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 6 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:ad09e801e32c6c08 cannot hold over geometry the package did not change)",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:ad09e801e32c6c08"
+        ]
+      },
+      {
+        "op": "fix_small_faces",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 6 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:ad09e801e32c6c08 cannot hold over geometry the package did not change)",
+        "basis": "",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:ad09e801e32c6c08"
+        ]
+      },
+      {
+        "op": "fix_shape_global",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 6 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:ad09e801e32c6c08 cannot hold over geometry the package did not change)",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:ad09e801e32c6c08"
+        ]
+      },
+      {
+        "op": "fix_small_edges",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 7 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:025c960f5521072b cannot hold over geometry the package did not change)",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:025c960f5521072b"
+        ]
+      },
+      {
+        "op": "fix_small_faces",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 7 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:025c960f5521072b cannot hold over geometry the package did not change)",
+        "basis": "",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:025c960f5521072b"
+        ]
+      },
+      {
+        "op": "fix_shape_global",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 7 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:025c960f5521072b cannot hold over geometry the package did not change)",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:025c960f5521072b"
+        ]
+      },
+      {
+        "op": "fix_small_edges",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 7 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:9238595229848c19 cannot hold over geometry the package did not change)",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:9238595229848c19"
+        ]
+      },
+      {
+        "op": "fix_small_faces",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 7 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:9238595229848c19 cannot hold over geometry the package did not change)",
+        "basis": "",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:9238595229848c19"
+        ]
+      },
+      {
+        "op": "fix_shape_global",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 7 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:9238595229848c19 cannot hold over geometry the package did not change)",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:9238595229848c19"
+        ]
+      },
+      {
+        "op": "fix_small_edges",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 8 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:3eed32038e87662a cannot hold over geometry the package did not change)",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:3eed32038e87662a"
+        ]
+      },
+      {
+        "op": "fix_small_faces",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 8 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:3eed32038e87662a cannot hold over geometry the package did not change)",
+        "basis": "",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:3eed32038e87662a"
+        ]
+      },
+      {
+        "op": "fix_shape_global",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 8 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:3eed32038e87662a cannot hold over geometry the package did not change)",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:3eed32038e87662a"
+        ]
+      },
+      {
+        "op": "fix_small_edges",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 8 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:0aedd038a5c9ac41 cannot hold over geometry the package did not change)",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:0aedd038a5c9ac41"
+        ]
+      },
+      {
+        "op": "fix_small_faces",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 8 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:0aedd038a5c9ac41 cannot hold over geometry the package did not change)",
+        "basis": "",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:0aedd038a5c9ac41"
+        ]
+      },
+      {
+        "op": "fix_shape_global",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 8 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:0aedd038a5c9ac41 cannot hold over geometry the package did not change)",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:0aedd038a5c9ac41"
+        ]
+      }
+    ],
+    "result_discarded": false,
+    "seconds": 85.94,
+    "meshes_before": true,
+    "mesh_kind_before": "",
+    "meshes_after": null,
+    "mesh_kind_after": ""
+  },
+  {
+    "file": "diffuser_plenum__diffuser_plenum_002.step",
+    "size_bytes": 632921,
+    "valid_before": true,
+    "counts_before": {
+      "solids": 1,
+      "shells": 1,
+      "faces": 22,
+      "edges": 112,
+      "vertices": 328
+    },
+    "defects_before": [],
+    "located_before": {},
+    "regions_before": {},
+    "status": "clean",
+    "route": "mesh_as_is",
+    "confidence": 0.9,
+    "targets": [],
+    "abstain_reason": "",
+    "outcome": "nothing_to_repair",
+    "seconds": 0.2,
+    "meshes_before": true,
+    "mesh_kind_before": "",
+    "meshes_after": null,
+    "mesh_kind_after": ""
+  },
+  {
+    "file": "exhaust_manifold__exhaust_manifold_001.step",
+    "size_bytes": 314199,
+    "valid_before": true,
+    "counts_before": {
+      "solids": 1,
+      "shells": 1,
+      "faces": 32,
+      "edges": 152,
+      "vertices": 364
+    },
+    "defects_before": [],
+    "located_before": {},
+    "regions_before": {},
+    "status": "clean",
+    "route": "mesh_as_is",
+    "confidence": 0.9,
+    "targets": [],
+    "abstain_reason": "",
+    "outcome": "nothing_to_repair",
+    "seconds": 0.07,
+    "meshes_before": true,
+    "mesh_kind_before": "",
+    "meshes_after": null,
+    "mesh_kind_after": ""
+  },
+  {
+    "file": "exhaust_manifold__exhaust_manifold_002.step",
+    "size_bytes": 428644,
+    "valid_before": true,
+    "counts_before": {
+      "solids": 1,
+      "shells": 1,
+      "faces": 41,
+      "edges": 198,
+      "vertices": 476
+    },
+    "defects_before": [],
+    "located_before": {},
+    "regions_before": {},
+    "status": "clean",
+    "route": "mesh_as_is",
+    "confidence": 0.9,
+    "targets": [],
+    "abstain_reason": "",
+    "outcome": "nothing_to_repair",
+    "seconds": 0.12,
+    "meshes_before": true,
+    "mesh_kind_before": "",
+    "meshes_after": null,
+    "mesh_kind_after": ""
+  },
+  {
+    "file": "freeform_nacelle__freeform_nacelle_001.step",
+    "size_bytes": 143537,
+    "valid_before": true,
+    "counts_before": {
+      "solids": 1,
+      "shells": 1,
+      "faces": 6,
+      "edges": 24,
+      "vertices": 128
+    },
+    "defects_before": [],
+    "located_before": {},
+    "regions_before": {},
+    "status": "clean",
+    "route": "mesh_as_is",
+    "confidence": 0.9,
+    "targets": [],
+    "abstain_reason": "",
+    "outcome": "nothing_to_repair",
+    "seconds": 0.19,
+    "meshes_before": true,
+    "mesh_kind_before": "",
+    "meshes_after": null,
+    "mesh_kind_after": ""
+  },
+  {
+    "file": "freeform_nacelle__freeform_nacelle_002.step",
+    "size_bytes": 143165,
+    "valid_before": true,
+    "counts_before": {
+      "solids": 1,
+      "shells": 1,
+      "faces": 6,
+      "edges": 24,
+      "vertices": 128
+    },
+    "defects_before": [],
+    "located_before": {},
+    "regions_before": {},
+    "status": "clean",
+    "route": "mesh_as_is",
+    "confidence": 0.9,
+    "targets": [],
+    "abstain_reason": "",
+    "outcome": "nothing_to_repair",
+    "seconds": 0.1,
+    "meshes_before": true,
+    "mesh_kind_before": "",
+    "meshes_after": null,
+    "mesh_kind_after": ""
+  },
+  {
+    "file": "manifold__manifold_001.step",
+    "size_bytes": 169869,
+    "valid_before": true,
+    "counts_before": {
+      "solids": 1,
+      "shells": 1,
+      "faces": 11,
+      "edges": 52,
+      "vertices": 104
+    },
+    "defects_before": [],
+    "located_before": {},
+    "regions_before": {},
+    "status": "clean",
+    "route": "mesh_as_is",
+    "confidence": 0.9,
+    "targets": [],
+    "abstain_reason": "",
+    "outcome": "nothing_to_repair",
+    "seconds": 0.02,
+    "meshes_before": true,
+    "mesh_kind_before": "",
+    "meshes_after": null,
+    "mesh_kind_after": ""
+  },
+  {
+    "file": "manifold__manifold_002.step",
+    "size_bytes": 417010,
+    "valid_before": true,
+    "counts_before": {
+      "solids": 1,
+      "shells": 1,
+      "faces": 20,
+      "edges": 112,
+      "vertices": 224
+    },
+    "defects_before": [],
+    "located_before": {},
+    "regions_before": {},
+    "status": "clean",
+    "route": "mesh_as_is",
+    "confidence": 0.9,
+    "targets": [],
+    "abstain_reason": "",
+    "outcome": "nothing_to_repair",
+    "seconds": 0.04,
+    "meshes_before": true,
+    "mesh_kind_before": "",
+    "meshes_after": null,
+    "mesh_kind_after": ""
+  },
+  {
+    "file": "mini_housing__mini_housing_001.step",
+    "size_bytes": 81844,
+    "valid_before": true,
+    "counts_before": {
+      "solids": 1,
+      "shells": 1,
+      "faces": 14,
+      "edges": 60,
+      "vertices": 120
+    },
+    "defects_before": [
+      "small_edge"
+    ],
+    "located_before": {
+      "small_edge": 4
+    },
+    "regions_before": {
+      "unknown": 4
+    },
+    "status": "clean",
+    "route": "conservative_repair",
+    "confidence": 0.7,
+    "targets": [
+      {
+        "entity": "edge:8",
+        "code": "small_edge",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:9",
+        "code": "small_edge",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:30",
+        "code": "small_edge",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:32",
+        "code": "small_edge",
+        "region": "unknown"
+      }
+    ],
+    "abstain_reason": "",
+    "outcome": "refused",
+    "error": "nothing was kept (12 operation(s) attempted, stopped because regions_exhausted), so there is nothing to promote - re-exporting the upload would change its topology without repairing it",
+    "mesh_located_remaining": [],
+    "timings": {
+      "total_s": 14.546220832969993,
+      "scan_count": 21,
+      "measure_s": 0.32634729018900543,
+      "verification_scans": 1,
+      "scoped_scans": 20,
+      "scan_s": 13.559577040141448,
+      "apply_s": 0.07044600194785744
+    },
+    "operations": [
+      {
+        "op": "fix_small_edges",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 0 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:18a8889b3be80524 cannot hold over geometry the package did not change)",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:18a8889b3be80524"
+        ]
+      },
+      {
+        "op": "fix_small_faces",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 0 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:18a8889b3be80524 cannot hold over geometry the package did not change)",
+        "basis": "",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:18a8889b3be80524"
+        ]
+      },
+      {
+        "op": "fix_shape_global",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 0 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:18a8889b3be80524 cannot hold over geometry the package did not change)",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:18a8889b3be80524"
+        ]
+      },
+      {
+        "op": "fix_small_edges",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 1 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:fc4c1c6eaa0563e3 cannot hold over geometry the package did not change)",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:fc4c1c6eaa0563e3"
+        ]
+      },
+      {
+        "op": "fix_small_faces",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 1 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:fc4c1c6eaa0563e3 cannot hold over geometry the package did not change)",
+        "basis": "",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:fc4c1c6eaa0563e3"
+        ]
+      },
+      {
+        "op": "fix_shape_global",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 1 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:fc4c1c6eaa0563e3 cannot hold over geometry the package did not change)",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:fc4c1c6eaa0563e3"
+        ]
+      },
+      {
+        "op": "fix_small_edges",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 2 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:90f64fc7a1db66be cannot hold over geometry the package did not change)",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:90f64fc7a1db66be"
+        ]
+      },
+      {
+        "op": "fix_small_faces",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 2 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:90f64fc7a1db66be cannot hold over geometry the package did not change)",
+        "basis": "",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:90f64fc7a1db66be"
+        ]
+      },
+      {
+        "op": "fix_shape_global",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 2 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:90f64fc7a1db66be cannot hold over geometry the package did not change)",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:90f64fc7a1db66be"
+        ]
+      },
+      {
+        "op": "fix_small_edges",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 3 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:d147986bb07f762f cannot hold over geometry the package did not change)",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:d147986bb07f762f"
+        ]
+      },
+      {
+        "op": "fix_small_faces",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 3 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:d147986bb07f762f cannot hold over geometry the package did not change)",
+        "basis": "",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:d147986bb07f762f"
+        ]
+      },
+      {
+        "op": "fix_shape_global",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 3 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:d147986bb07f762f cannot hold over geometry the package did not change)",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:d147986bb07f762f"
+        ]
+      }
+    ],
+    "result_discarded": false,
+    "seconds": 14.59,
+    "meshes_before": true,
+    "mesh_kind_before": "",
+    "meshes_after": null,
+    "mesh_kind_after": ""
+  },
+  {
+    "file": "mini_housing__mini_housing_002.step",
+    "size_bytes": 54574,
+    "valid_before": true,
+    "counts_before": {
+      "solids": 1,
+      "shells": 1,
+      "faces": 8,
+      "edges": 40,
+      "vertices": 80
+    },
+    "defects_before": [
+      "small_edge"
+    ],
+    "located_before": {
+      "small_edge": 4
+    },
+    "regions_before": {
+      "unknown": 4
+    },
+    "status": "clean",
+    "route": "conservative_repair",
+    "confidence": 0.7,
+    "targets": [
+      {
+        "entity": "edge:6",
+        "code": "small_edge",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:7",
+        "code": "small_edge",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:21",
+        "code": "small_edge",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:22",
+        "code": "small_edge",
+        "region": "unknown"
+      }
+    ],
+    "abstain_reason": "",
+    "outcome": "refused",
+    "error": "nothing was kept (12 operation(s) attempted, stopped because regions_exhausted), so there is nothing to promote - re-exporting the upload would change its topology without repairing it",
+    "mesh_located_remaining": [],
+    "timings": {
+      "total_s": 21.297080625081435,
+      "scan_count": 21,
+      "measure_s": 0.2491206278791651,
+      "verification_scans": 1,
+      "scoped_scans": 20,
+      "scan_s": 20.285209165303968,
+      "apply_s": 0.07738345919642597
+    },
+    "operations": [
+      {
+        "op": "fix_small_edges",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 0 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:5a3f944a76de220e cannot hold over geometry the package did not change)",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:5a3f944a76de220e"
+        ]
+      },
+      {
+        "op": "fix_small_faces",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 0 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:5a3f944a76de220e cannot hold over geometry the package did not change)",
+        "basis": "",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:5a3f944a76de220e"
+        ]
+      },
+      {
+        "op": "fix_shape_global",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 0 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:5a3f944a76de220e cannot hold over geometry the package did not change)",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:5a3f944a76de220e"
+        ]
+      },
+      {
+        "op": "fix_small_edges",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 1 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:70a3ca70ea69852e cannot hold over geometry the package did not change)",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:70a3ca70ea69852e"
+        ]
+      },
+      {
+        "op": "fix_small_faces",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 1 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:70a3ca70ea69852e cannot hold over geometry the package did not change)",
+        "basis": "",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:70a3ca70ea69852e"
+        ]
+      },
+      {
+        "op": "fix_shape_global",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 1 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:70a3ca70ea69852e cannot hold over geometry the package did not change)",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:70a3ca70ea69852e"
+        ]
+      },
+      {
+        "op": "fix_small_edges",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 2 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:dd139b86725f509b cannot hold over geometry the package did not change)",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:dd139b86725f509b"
+        ]
+      },
+      {
+        "op": "fix_small_faces",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 2 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:dd139b86725f509b cannot hold over geometry the package did not change)",
+        "basis": "",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:dd139b86725f509b"
+        ]
+      },
+      {
+        "op": "fix_shape_global",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 2 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:dd139b86725f509b cannot hold over geometry the package did not change)",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:dd139b86725f509b"
+        ]
+      },
+      {
+        "op": "fix_small_edges",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 3 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:1afbee9c7215ec74 cannot hold over geometry the package did not change)",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:1afbee9c7215ec74"
+        ]
+      },
+      {
+        "op": "fix_small_faces",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 3 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:1afbee9c7215ec74 cannot hold over geometry the package did not change)",
+        "basis": "",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:1afbee9c7215ec74"
+        ]
+      },
+      {
+        "op": "fix_shape_global",
+        "status": "rolled_back",
+        "reason": "discarded_with_package: region 3 reverted (no operation was kept, so nothing was repaired: the claim to have cleared edge:1afbee9c7215ec74 cannot hold over geometry the package did not change)",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:1afbee9c7215ec74"
+        ]
+      }
+    ],
+    "result_discarded": false,
+    "seconds": 21.33,
+    "meshes_before": true,
+    "mesh_kind_before": "",
+    "meshes_after": null,
+    "mesh_kind_after": ""
+  },
+  {
+    "file": "rotor_like__rotor_like_001.step",
+    "size_bytes": 67347,
+    "valid_before": true,
+    "counts_before": {
+      "solids": 1,
+      "shells": 1,
+      "faces": 18,
+      "edges": 84,
+      "vertices": 168
+    },
+    "defects_before": [],
+    "located_before": {},
+    "regions_before": {},
+    "status": "clean",
+    "route": "mesh_as_is",
+    "confidence": 0.9,
+    "targets": [],
+    "abstain_reason": "",
+    "outcome": "nothing_to_repair",
+    "seconds": 0.01,
+    "meshes_before": true,
+    "mesh_kind_before": "",
+    "meshes_after": null,
+    "mesh_kind_after": ""
+  },
+  {
+    "file": "rotor_like__rotor_like_002.step",
+    "size_bytes": 283215,
+    "valid_before": true,
+    "counts_before": {
+      "solids": 1,
+      "shells": 1,
+      "faces": 45,
+      "edges": 228,
+      "vertices": 456
+    },
+    "defects_before": [],
+    "located_before": {},
+    "regions_before": {},
+    "status": "clean",
+    "route": "mesh_as_is",
+    "confidence": 0.9,
+    "targets": [],
+    "abstain_reason": "",
+    "outcome": "nothing_to_repair",
+    "seconds": 0.04,
+    "meshes_before": true,
+    "mesh_kind_before": "",
+    "meshes_after": null,
+    "mesh_kind_after": ""
+  },
+  {
+    "file": "s_duct__s_duct_001.step",
+    "size_bytes": 229744,
+    "valid_before": true,
+    "counts_before": {
+      "solids": 1,
+      "shells": 1,
+      "faces": 30,
+      "edges": 152,
+      "vertices": 376
+    },
+    "defects_before": [],
+    "located_before": {},
+    "regions_before": {},
+    "status": "clean",
+    "route": "mesh_as_is",
+    "confidence": 0.9,
+    "targets": [],
+    "abstain_reason": "",
+    "outcome": "nothing_to_repair",
+    "seconds": 0.09,
+    "meshes_before": true,
+    "mesh_kind_before": "",
+    "meshes_after": null,
+    "mesh_kind_after": ""
+  },
+  {
+    "file": "s_duct__s_duct_001_fluid.step",
+    "size_bytes": 116540,
+    "valid_before": true,
+    "counts_before": {
+      "solids": 1,
+      "shells": 1,
+      "faces": 16,
+      "edges": 76,
+      "vertices": 188
+    },
+    "defects_before": [],
+    "located_before": {},
+    "regions_before": {},
+    "status": "clean",
+    "route": "mesh_as_is",
+    "confidence": 0.9,
+    "targets": [],
+    "abstain_reason": "",
+    "outcome": "nothing_to_repair",
+    "seconds": 0.05,
+    "meshes_before": true,
+    "mesh_kind_before": "",
+    "meshes_after": null,
+    "mesh_kind_after": ""
+  },
+  {
+    "file": "shell_tube_bundle__shell_tube_bundle_001.step",
+    "size_bytes": 291885,
+    "valid_before": true,
+    "counts_before": {
+      "solids": 1,
+      "shells": 1,
+      "faces": 77,
+      "edges": 422,
+      "vertices": 844
+    },
+    "defects_before": [],
+    "located_before": {},
+    "regions_before": {},
+    "status": "clean",
+    "route": "mesh_as_is",
+    "confidence": 0.9,
+    "targets": [],
+    "abstain_reason": "",
+    "outcome": "nothing_to_repair",
+    "seconds": 0.05,
+    "meshes_before": false,
+    "mesh_kind_before": "overlapping_facets",
+    "meshes_after": null,
+    "mesh_kind_after": ""
+  },
+  {
+    "file": "shell_tube_bundle__shell_tube_bundle_002.step",
+    "size_bytes": 462441,
+    "valid_before": true,
+    "counts_before": {
+      "solids": 1,
+      "shells": 1,
+      "faces": 124,
+      "edges": 680,
+      "vertices": 1360
+    },
+    "defects_before": [],
+    "located_before": {},
+    "regions_before": {},
+    "status": "clean",
+    "route": "mesh_as_is",
+    "confidence": 0.9,
+    "targets": [],
+    "abstain_reason": "",
+    "outcome": "nothing_to_repair",
+    "seconds": 0.1,
+    "meshes_before": false,
+    "mesh_kind_before": "edge_through_face",
+    "meshes_after": null,
+    "mesh_kind_after": ""
+  },
+  {
+    "file": "static_mixer__static_mixer_001.step",
+    "size_bytes": 712598,
+    "valid_before": true,
+    "counts_before": {
+      "solids": 1,
+      "shells": 1,
+      "faces": 33,
+      "edges": 294,
+      "vertices": 700
+    },
+    "defects_before": [],
+    "located_before": {},
+    "regions_before": {},
+    "status": "clean",
+    "route": "mesh_as_is",
+    "confidence": 0.9,
+    "targets": [],
+    "abstain_reason": "",
+    "outcome": "nothing_to_repair",
+    "seconds": 0.12,
+    "meshes_before": false,
+    "mesh_kind_before": "overlapping_facets",
+    "meshes_after": null,
+    "mesh_kind_after": ""
+  },
+  {
+    "file": "static_mixer__static_mixer_002.step",
+    "size_bytes": 869229,
+    "valid_before": true,
+    "counts_before": {
+      "solids": 1,
+      "shells": 1,
+      "faces": 41,
+      "edges": 370,
+      "vertices": 880
+    },
+    "defects_before": [],
+    "located_before": {},
+    "regions_before": {},
+    "status": "clean",
+    "route": "mesh_as_is",
+    "confidence": 0.9,
+    "targets": [],
+    "abstain_reason": "",
+    "outcome": "nothing_to_repair",
+    "seconds": 0.15,
+    "meshes_before": false,
+    "mesh_kind_before": "overlapping_facets",
+    "meshes_after": null,
+    "mesh_kind_after": ""
+  },
+  {
+    "file": "straight_reducer__straight_reducer_001.step",
+    "size_bytes": 27560,
+    "valid_before": true,
+    "counts_before": {
+      "solids": 1,
+      "shells": 1,
+      "faces": 12,
+      "edges": 40,
+      "vertices": 80
+    },
+    "defects_before": [],
+    "located_before": {},
+    "regions_before": {},
+    "status": "clean",
+    "route": "mesh_as_is",
+    "confidence": 0.9,
+    "targets": [],
+    "abstain_reason": "",
+    "outcome": "nothing_to_repair",
+    "seconds": 0.01,
+    "meshes_before": true,
+    "mesh_kind_before": "",
+    "meshes_after": null,
+    "mesh_kind_after": ""
+  },
+  {
+    "file": "straight_reducer__straight_reducer_002.step",
+    "size_bytes": 27419,
+    "valid_before": true,
+    "counts_before": {
+      "solids": 1,
+      "shells": 1,
+      "faces": 12,
+      "edges": 40,
+      "vertices": 80
+    },
+    "defects_before": [],
+    "located_before": {},
+    "regions_before": {},
+    "status": "clean",
+    "route": "mesh_as_is",
+    "confidence": 0.9,
+    "targets": [],
+    "abstain_reason": "",
+    "outcome": "nothing_to_repair",
+    "seconds": 0.01,
+    "meshes_before": true,
+    "mesh_kind_before": "",
+    "meshes_after": null,
+    "mesh_kind_after": ""
+  },
+  {
+    "file": "tee_wye__tee_wye_001.step",
+    "size_bytes": 173563,
+    "valid_before": true,
+    "counts_before": {
+      "solids": 1,
+      "shells": 1,
+      "faces": 13,
+      "edges": 72,
+      "vertices": 144
+    },
+    "defects_before": [],
+    "located_before": {},
+    "regions_before": {},
+    "status": "clean",
+    "route": "mesh_as_is",
+    "confidence": 0.9,
+    "targets": [],
+    "abstain_reason": "",
+    "outcome": "nothing_to_repair",
+    "seconds": 0.06,
+    "meshes_before": true,
+    "mesh_kind_before": "",
+    "meshes_after": null,
+    "mesh_kind_after": ""
+  },
+  {
+    "file": "tee_wye__tee_wye_002.step",
+    "size_bytes": 113725,
+    "valid_before": true,
+    "counts_before": {
+      "solids": 1,
+      "shells": 1,
+      "faces": 7,
+      "edges": 32,
+      "vertices": 64
+    },
+    "defects_before": [],
+    "located_before": {},
+    "regions_before": {},
+    "status": "clean",
+    "route": "mesh_as_is",
+    "confidence": 0.9,
+    "targets": [],
+    "abstain_reason": "",
+    "outcome": "nothing_to_repair",
+    "seconds": 0.02,
+    "meshes_before": true,
+    "mesh_kind_before": "",
+    "meshes_after": null,
+    "mesh_kind_after": ""
+  },
+  {
+    "file": "transition__transition_001.step",
+    "size_bytes": 71982,
+    "valid_before": true,
+    "counts_before": {
+      "solids": 1,
+      "shells": 1,
+      "faces": 20,
+      "edges": 92,
+      "vertices": 184
+    },
+    "defects_before": [],
+    "located_before": {},
+    "regions_before": {},
+    "status": "clean",
+    "route": "mesh_as_is",
+    "confidence": 0.9,
+    "targets": [],
+    "abstain_reason": "",
+    "outcome": "nothing_to_repair",
+    "seconds": 0.03,
+    "meshes_before": true,
+    "mesh_kind_before": "",
+    "meshes_after": null,
+    "mesh_kind_after": ""
+  },
+  {
+    "file": "venturi_orifice__venturi_orifice_001.step",
+    "size_bytes": 29936,
+    "valid_before": true,
+    "counts_before": {
+      "solids": 1,
+      "shells": 1,
+      "faces": 12,
+      "edges": 44,
+      "vertices": 88
+    },
+    "defects_before": [],
+    "located_before": {},
+    "regions_before": {},
+    "status": "clean",
+    "route": "mesh_as_is",
+    "confidence": 0.9,
+    "targets": [],
+    "abstain_reason": "",
+    "outcome": "nothing_to_repair",
+    "seconds": 0.01,
+    "meshes_before": true,
+    "mesh_kind_before": "",
+    "meshes_after": null,
+    "mesh_kind_after": ""
+  },
+  {
+    "file": "volute_scroll__volute_scroll_001.step",
+    "size_bytes": 373867,
+    "valid_before": true,
+    "counts_before": {
+      "solids": 1,
+      "shells": 1,
+      "faces": 30,
+      "edges": 138,
+      "vertices": 353
+    },
+    "defects_before": [],
+    "located_before": {},
+    "regions_before": {},
+    "status": "clean",
+    "route": "mesh_as_is",
+    "confidence": 0.9,
+    "targets": [],
+    "abstain_reason": "",
+    "outcome": "nothing_to_repair",
+    "seconds": 0.08,
+    "meshes_before": true,
+    "mesh_kind_before": "",
+    "meshes_after": null,
+    "mesh_kind_after": ""
+  },
+  {
+    "file": "wing__wing_001.step",
+    "size_bytes": 85545,
+    "valid_before": true,
+    "counts_before": {
+      "solids": 1,
+      "shells": 1,
+      "faces": 4,
+      "edges": 12,
+      "vertices": 24
+    },
+    "defects_before": [],
+    "located_before": {},
+    "regions_before": {},
+    "status": "clean",
+    "route": "mesh_as_is",
+    "confidence": 0.9,
+    "targets": [],
+    "abstain_reason": "",
+    "outcome": "nothing_to_repair",
+    "seconds": 0.03,
+    "meshes_before": true,
+    "mesh_kind_before": "",
+    "meshes_after": null,
+    "mesh_kind_after": ""
+  }
+]

@@ -98,7 +98,12 @@ export function feaConfirmedCard(r) {
     lines.push(`- ${bits.join(" · ")}`);
   }
   const clean = (r.match(/Clean check: ([^.]*)/) || [])[1] || "";
-  if (clean) lines.push(/^the geometry is clean/i.test(clean) ? "- ✓ Geometry clean" : "- ⚠ Not clean - we'll still try");
+  // THE STAGE'S OWN VERDICT, never a guess: clean, not checked (a check that did not run is no "not clean"),
+  // a surface (its open edges are what make it one), else not clean - the server leads with the stage's line
+  if (clean) lines.push(/^the geometry is clean/i.test(clean) ? "- ✓ Geometry clean"
+    : /^(not checked|the clean check did not run|the geometry was not checked)/i.test(clean) ? "- Not checked"
+    : /^the file is a surface/i.test(clean) ? "- A surface, meshed as a shell"
+    : "- ⚠ Not clean - we'll still try");
   lines.push("- Every face kept as a named group: set loads and supports in your solver");
   return `**✓ Confirmed${name ? `: ${name}` : ""}**\n${lines.join("\n")}`;
 }
@@ -219,7 +224,7 @@ export function rowHtml(o, p) {
   const at = (o.centroid_mm || []).map((v) => shown(v, p)).join(", ");
   return `<tr data-id="${id}"${o.added ? ' data-added="1"' : ""}><td class="gc-n" title="opening ${id}"><span class="gc-badge">${id}</span></td>
       <td><input class="gc-name" value="${attr(o.name || "")}" maxlength="40" aria-label="name of opening ${id}"></td>
-      <td>${sel("gc-role", ROLES, o.role)}</td>
+      <td>${sel("gc-role", ROLES, o.role)}${o.role_reason && o.role_reason.guess ? `<span class="gc-guess" title="${attr(o.role_reason.reason || "")}">a guess - check it</span>` : ""}</td>
       <td class="gc-dim">${size}</td><td class="gc-dim gc-pos">(${esc(at)}) ${sym(p)}</td>
       <td class="gc-conf" title="how sure the check is">${o.added ? "you" : Math.round((o.confidence || 0) * 100) + "%"}</td>
       <td class="gc-del"><button class="gc-x" type="button" title="remove this opening" aria-label="remove opening ${id}">×</button></td></tr>`;

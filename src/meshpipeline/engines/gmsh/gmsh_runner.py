@@ -490,7 +490,8 @@ def _note_fea_threads(ws: Path) -> None:
         from meshpipeline.engines.gmsh.fea_adapter import mesh_threads
         n = mesh_threads((json.loads((ws / "fea_plan.json").read_text()) or {}).get("mesh") or {})
         det.note_setting("fea_gmsh_threads", {"general": n, "1D": 1, "2D": 1, "3D": n},
-                         "the job's cores; curve and surface meshing on one thread (repeatable)")
+                         "the job's cores; curve and surface meshing on one thread; the HXT fill on the job's "
+                         "cores, which may differ slightly run to run unless on one (MESH-25)")
     except Exception:  # noqa: BLE001 - the stamp is a record, never the run's
         logger.debug("fea threads not noted")
 

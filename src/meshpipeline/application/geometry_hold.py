@@ -14,16 +14,13 @@ logger = logging.getLogger(__name__)
 #: The first words of the holding line the chat gives while the part is being drawn. The intake
 #: prompt names it so nothing in it is ever read as declared.
 DRAWING_MARK = "GEOMETRY CHECK (drawing your part):"
-HOLD_REPLY = (
-    f"{DRAWING_MARK} thanks - I'm drawing your part now. It will appear beside this chat "
-    "with a numbered sticker on every opening I found. Check the names, fix anything "
-    "wrong, and press Proceed. Then I'll ask only what is still missing."
-)
-#: What the conversation says to a message sent while the part is still being drawn.
-WAIT_REPLY = (
-    f"{DRAWING_MARK} still drawing your part - it will appear beside this chat in a moment. "
-    "Check the openings there and press Proceed; I'll carry on from that."
-)
+#: THE STAGE STEP'S ONE LINE (agents/intake/flow STAGE), the same on every route that has a part panel:
+#: the panel shows what the route needs (the unit; the openings of an internal flow; an FEA part's
+#: size and clean check) and its Proceed confirms it. The words are purpose_map.FEA_HOLD's.
+HOLD_REPLY = f"{DRAWING_MARK} checking your part - confirm it on the right and press Proceed."
+#: What the conversation says to a message sent while the part is still being drawn: the same step,
+#: in the same words.
+WAIT_REPLY = HOLD_REPLY
 #: THE SAME TWO LINES FOR A WHOLE THERMAL MODEL (an ECXML upload, contracts/intake_formats
 #: check_mode "thermal"). Nothing on its panel is an opening to check: the file names every part,
 #: its power and the room air, so the line says what the file is and what to press. The model's
@@ -77,11 +74,8 @@ def should_hold(stored: dict | None, requested: dict | None, confirmed: dict | N
     return hold_decision(stored, requested, confirmed) == "queue"
 
 
-#: What a message sent while an FEA part is still being checked is answered with.
-FEA_WAIT_REPLY = (
-    f"{DRAWING_MARK} still checking your part - it will appear beside this chat in a moment. "
-    "Check its size and unit there and press Proceed; I'll carry on from that."
-)
+#: What a message sent while an FEA part is still being checked is answered with: the stage step's line.
+FEA_WAIT_REPLY = HOLD_REPLY
 
 
 def _route(reading) -> str:
@@ -396,6 +390,32 @@ async def record_unit(db, session, owner_id: str, organization_id: str, unit: st
     return asdict(GeometryInterpretationRef.from_domain(recorded))
 
 
+def stage_can_reopen(session_id: str) -> bool:
+    """Whether the part can be shown on a stage again: the check is on and has read the part."""
+    import meshpipeline.settings.geometry_check as gcfg
+
+    if not gcfg.GEOMETRY_CHECK_ENABLED:
+        return False
+    try:
+        from meshpipeline.application.geometry_check import read_check
+        return str((read_check(session_id) or {}).get("status") or "") in ("scouted", "ready")
+    except Exception:  # noqa: BLE001 - a check we cannot read is not shown again
+        return False
+
+
+def reopen_stage(session_id: str) -> None:
+    """The part's confirmation and its naming request withdrawn, so the stage asks again (the analysis
+    changed after the stage). The scout's own reading of the part stands."""
+    from meshpipeline.application.geometry_check import check_object_key, clear_naming_request
+    from meshpipeline.contracts.object_storage import ObjectNotFound, get_object_store
+
+    try:
+        get_object_store().delete_object(object_key=check_object_key(session_id, "confirmed.json"))
+    except ObjectNotFound:
+        pass
+    clear_naming_request(session_id)
+
+
 def queue_naming(session_id: str, owner_id: str, purpose_text: str, interpretation: dict | None) -> bool:
     """Hand the words and the unit to the naming step and leave the marker that says so. False
     when nothing is configured to run it, so the caller lets the intake carry on."""
@@ -420,7 +440,7 @@ def withdraw_naming(session_id: str) -> None:
     logger.warning("geometry naming request withdrawn after a failed turn - session_id=%s", session_id)
 
 
-__all__ = ["CONTINUE_TEXT", "DRAWING_MARK", "HOLD_REPLY", "THERMAL_HOLD_REPLY", "THERMAL_OPENING_REPLY",
+__all__ = ["CONTINUE_TEXT", "DRAWING_MARK", "HOLD_REPLY", "reopen_stage", "stage_can_reopen", "THERMAL_HOLD_REPLY", "THERMAL_OPENING_REPLY",
            "THERMAL_WAIT_REPLY", "WAIT_GRACE_S", "WAIT_REPLY", "ensure_fixed_unit", "hold_applies",
            "hold_decision", "hold_reply", "interpretation_payload", "measured_size_mm", "purpose_from",
            "queue_naming", "record_unit", "should_hold", "stored_thermal", "unit_fixing_format",

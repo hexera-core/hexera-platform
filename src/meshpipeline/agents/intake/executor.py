@@ -56,7 +56,9 @@ REFUSAL_GUIDANCE = (
 )
 
 
-#: Said under the summary when the user's own notes were captured with it: they are kept as typed.
+#: Said under the summary when the user's own notes were captured with it, before the plan step had
+#: one line (agents/intake/flow PLAN). Kept so a conversation stored then still reads; never said now -
+#: the plan card lists the notes themselves.
 NOTES_KEPT = ("Your notes are kept word for word, and every step that builds the mesh reads them "
               "as guidance.")
 
@@ -1064,7 +1066,8 @@ class IntakeToolExecutor:
                 tool="preview_selected_admission", accepted=True,
                 advanced=st.authorization_signature() != _before,
                 content=json.dumps({"verdict": "supported", "preview_token": st.pending["token"],
-                                    "canonical_summary": at.CONFIRM_REQUIREMENTS_ASK}))
+                                    "next": "call submit_requirements with this preview_token; the "
+                                            "application shows the user the plan"}))
         # incomplete / malformed (or impossible inside a comparison turn): READ-ONLY - no
         # authorizing token, standing state untouched.
         return IntakeToolResult(
@@ -1151,10 +1154,10 @@ class IntakeToolExecutor:
         # never a click on a button the application offered (its words are ours, not a note)
         notes, unmatched = un.capture(st.conversation, args.get("user_note_quotes") or (),
                                        consumer="intake", offered=_offered_choices)
-        if not notes and not un.asked(st.conversation):
-            # ASKED ONCE, before the first summary, and only when the user has said nothing
-            # specific yet. It holds nothing: the next answer - details or a plain no - goes
-            # straight on to the summary.
+        if st.thermal and not notes and not un.asked(st.conversation):
+            # THE NOTES ARE THE PLAN CARD'S BOX on every route (agents/intake/flow PLAN): never a chat
+            # question, which asked an FEA user about "cells" and "a layer count". A whole thermal
+            # model (ECXML) keeps its own flow as it was: its one optional question, asked once.
             st.notes_prompt = un.QUESTION
             logger.info("Intake: submission held one turn for the notes question - job_id=%s",
                         self._job_id)
@@ -1190,13 +1193,15 @@ class IntakeToolExecutor:
                      and prior.get("intent_fingerprint") == at.fingerprint(intent_canon)
                      and _same_submission(prior.get("payload"), payload))
         # ...and when it did change, the summary says WHAT, so the user sees their correction taken
+        # (a plan for ANOTHER analysis - the user went from CFD to FEA or back - is a new plan, not a change)
+        same_case = (prior.get("payload") or {}).get("purpose") == payload.get("purpose")
         changed = (ap.changed_line(ap.changes_between(prior.get("payload"), payload),
                                    since_run=prior.get("status") == ap.DISPATCHED)
-                   if prior.get("payload") and not unchanged else "")
-        st.submit_summary = (at.CONFIRM_REQUIREMENTS_ASK + "\n\n"
-                             + (f"{changed}\n\n" if changed else "")
-                             + (f"{NOTES_KEPT}\n\n" if notes else "")
-                             + (f"{ap.NOTHING_CHANGED} " if unchanged else "") + ap.PROCEED_ASK)
+                   if prior.get("payload") and not unchanged and same_case else "")
+        # THE PLAN STEP'S ONE LINE (agents/intake/flow PLAN): the card shows the plan, the notes and
+        # Proceed; the chat says one line - and, on a plan redone, what changed (or that nothing did)
+        st.submit_summary = ((f"{changed}\n\n" if changed else "")
+                             + (f"{ap.NOTHING_CHANGED}\n\n" if unchanged else "") + ap.PROCEED_ASK)
         st.approval = ap.create(
             owner_id=st.owner_id, session_id=st.session_id,
             selection_id=str((st.selection or {}).get("id") or ""),

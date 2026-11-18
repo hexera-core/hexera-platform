@@ -1,0 +1,48 @@
+{
+  "cad_repair": {
+    "allow_face_removal": false,
+    "autonomous": true,
+    "enabled": true,
+    "fill_nonplanar_holes": true,
+    "fill_planar_holes": true,
+    "fix_small_faces": true,
+    "heal_self_intersections": false,
+    "inspect_max_bytes": 134217728,
+    "inspect_timeout_s": 60.0,
+    "llm_planner": "off",
+    "llm_planner_calls_max": 2,
+    "llm_planner_min_confidence": 0.5,
+    "llm_planner_timeout_s": 20.0,
+    "max_area_change_ratio": 0.02,
+    "max_deviation_ratio": 0.001,
+    "max_hole_span_ratio": 0.75,
+    "max_ops": 200,
+    "max_tolerance_mm": 0.1,
+    "max_volume_change_ratio": 0.02,
+    "region_attempts": 6,
+    "region_loop": "live",
+    "review_enabled": false,
+    "review_llm_calls_max": 4,
+    "review_llm_timeout_s": 20.0,
+    "review_sample_size": 3,
+    "sliver_precision_ratio": 0.001,
+    "stall_limit": 50,
+    "timeout_s": 300.0
+  },
+  "directories": [
+    "/tmp/nist/parts"
+  ],
+  "limit": 0,
+  "operations_catalogue": [
+    "fix_small_edges",
+    "fix_face_boundary",
+    "fix_small_faces",
+    "sew_faces",
+    "fill_planar_hole",
+    "fill_nonplanar_hole",
+    "heal_self_intersections",
+    "fix_shape_global"
+  ],
+  "planner": "off",
+  "reply_cache": ""
+}
