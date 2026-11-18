@@ -2661,7 +2661,29 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     # SHSTAGE-6: MESH AS: SHELL - the shell mesh and its solver files first, from the staged solid as read (the
     # assembly staging above never rewrites it). SHMESH-23: once the user's element count is read, so the shell's
     # sizes follow it as the solid's do.
+    read_early = None
+    if mesh_as_of(state) == "shell":
+        from meshpipeline.engines import mesh_requirements as MR
+        from meshpipeline.engines import shell_places as SP
+        if SP.wanted(MR.requirements_of(asked)):
+            # SHMESH-52: a size the notes ask in ONE named place reaches the shell: which parts and areas the words
+            # mean (AI-fea-9's reading, NOTE-4/6) is read before the shell, once - the solid plan below reuses it.
+            # Nothing asked in one place: nothing is read here and the run is the run it always was
+            read_early = await PS.decide(ws, record, surface, state or {}, job_id=job_id, run=run,
+                                         wait_s=ai_wait_s(run))
+            if read_early.get("status") != "none":
+                _cite(job_id, PS.decisions(read_early))
+            SP.write(ws, SP.from_reading(read_early))
     shelled = await shell_pass(ws, state, job_id=job_id, run=run, target=target)
+    if shelled and shelled.get("places"):
+        from meshpipeline.engines import shell_places as SP
+        _cite(job_id, [{"stage": SHELL_GATE, "decided": "sizes in named places", "rule": SP.RULE,
+                        "value": sum(1 for p in shelled["places"].get("places") or [] if p.get("faces")),
+                        "inputs": {"places": [{k: p.get(k) for k in ("id", "name", "ask", "min_mm", "max_mm",
+                                                                      "faces", "set_mm", "why")}
+                                              for p in shelled["places"].get("places") or []]},
+                        "words": "Each size your notes ask in one named place is set on the shell faces of that "
+                                 "part or area; what is not on the shell is said."}])
     if mesh_as_of(state) == "shell" and shelled and shelled.get("made"):
         # SHSTAGE-7: THE SHELL IS THE RESULT - no solid tet mesh beside it (one element through a 1 mm wall is poor
         # and reads as the shell extruded); a shell that could not be made falls through to the solid, said
@@ -2694,9 +2716,10 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
             return outcome.produced_deliverable, (outcome.terminal_value or BUILD_FAILED), outcome
     # AI-fea-9 / PLAN-fea-29: the element sizes the user asked for, part by part, tied to the parts by the vision
     # model from the parts' facts and pictures, checked by the rules; nothing applied when it cannot be read
-    part_sizes = await PS.decide(ws, record, surface, state or {}, job_id=job_id, run=run, wait_s=ai_wait_s(run))
+    part_sizes = (read_early if read_early is not None else
+                  await PS.decide(ws, record, surface, state or {}, job_id=job_id, run=run, wait_s=ai_wait_s(run)))
     sizes = PS.sizes_of(part_sizes)
-    if part_sizes.get("status") != "none":
+    if read_early is None and part_sizes.get("status") != "none":
         _cite(job_id, PS.decisions(part_sizes))
     # PLAN-fea-36: a whole part asked "finer" or "coarser" with no number is sized once the plan's own sizes are known
     scaled = {k: v for k, v in sizes.items() if "scale" in v}
