@@ -187,12 +187,31 @@ def takes_driver(attempt: BuilderAttempt, state) -> bool:
         return False
 
 
+async def _read_flow_requirements(attempt: BuilderAttempt, state, *, job_id: str, publish) -> None:
+    """The flow route's reading of the notes (engines/cfd_requirements.read_for_attempt), for every CFD engine.
+    Never fails an attempt (but a fenced worker's stale publish)."""
+    from meshpipeline.engines import cfd_requirements as CR
+    try:
+        ws = getattr(attempt, "workspace", None)
+        if ws is None or attempt.engine not in CR.ENGINES or not CR.flow_run(ws, state):
+            return
+        await CR.read_for_attempt(ws, state, job_id=job_id, publish=publish)
+    except StaleExecutionPublish:
+        raise
+    except Exception:  # noqa: BLE001 - the notes never stop a mesh
+        logger.warning("Builder: the flow notes were not read - job_id=%s", job_id, exc_info=True)
+
+
 async def run_attempt(attempt: BuilderAttempt, state, *, job_id: str,
                       publish: ExecutionEventPublisher,
                       timeout_s: int, driver_timeout_s: int | None = None) -> TurnOutcome:
     from meshpipeline.application import execution_fence as fence
 
     try:
+        # NOTE-10 / CFDREQ-1: THE USER'S MESH REQUIREMENTS on a flow mesh, read once for this attempt and kept in its
+        # workspace - every CFD engine reads them through engines/cfd_requirements.requirements_for. No notes: no
+        # model is asked and nothing is written (the attempt is exactly what it always was)
+        await _read_flow_requirements(attempt, state, job_id=job_id, publish=publish)
         # the engine's deterministic driver FOR THIS RUN (gmsh: the FEA driver for a 3D structural
         # solid, and the model-led loop for everything else)
         driver = _driver_for(get_spec(attempt.engine), state)

@@ -25,10 +25,87 @@ export function displayText(text) {
       return "Confirmed on the thermal model panel: " + r.slice(THERMAL_LEAD.length).trim()
         .replace(/, input_kind [a-z-]+/g, "").replace(/ \(mesh_fidelity [a-z]+\)/g, "");
     if (r.startsWith(FEA_LEAD))
-      return "Confirmed on the stage: " + r.replace(/, input_kind solid-body:/, ":");
-    return "Confirmed on the picture: " + r;
+      return feaConfirmedCard(r) || "Confirmed on the stage: " + r.replace(/, input_kind solid-body:/, ":");
+    return flowConfirmedCard(r);
   }
   return t;
+}
+
+/** A FLOW PART CONFIRMED ON THE PICTURE, as a person reads it: a title and a few short lines (its size, how
+ *  the fluid goes, the ground or the openings), never the declaration the intake reads (application/
+ *  geometry_confirmation.confirmation_message) with its input_kind and far-field margins. */
+export function flowConfirmedCard(r) {
+  const head = r.match(/^the file is (.+?), input_kind [a-z-]+; the fluid flows (around|through) it\./);
+  let name = "";
+  if (head) { const m = head[1].match(/\(([^()]*)\)$/); if (m) name = m[1].trim(); }
+  const lines = [];
+  const size = r.match(/Part size: (\d+) x (\d+) x (\d+) mm/);
+  const unit = (r.match(/The file is in ([a-z]+)/) || [])[1];
+  if (size) lines.push(`- ${size[1]} × ${size[2]} × ${size[3]} mm${unit && unit !== "millimetres" ? ` (file in ${unit})` : ""}`);
+  const around = head ? head[2] === "around" : /No openings: the fluid flows around/.test(r);
+  if (around) {
+    const axis = (r.match(/The fluid travels along ([+-][xyz])/) || [])[1];
+    lines.push(`- Flow around it${axis ? `, along ${axis}` : ""}`);
+    if (/The part stands on the ground/.test(r)) lines.push("- On the ground");
+    else if (/free in the flow/.test(r)) lines.push("- Free in the air, no ground");
+  } else {
+    lines.push("- Flow through it");
+    const ports = (r.match(/Openings: (.*?)\.(?: [A-Z]|$)/) || [])[1];
+    if (ports) {
+      const by = { inlet: [], outlet: [] };
+      ports.split("; ").forEach((row) => {
+        const m = row.match(/^(.+?) \((inlet|outlet)\)/);
+        if (m) by[m[2]].push(m[1]);
+      });
+      const bits = [];
+      if (by.inlet.length) bits.push(`In: ${by.inlet.join(", ")}`);
+      if (by.outlet.length) bits.push(`Out: ${by.outlet.join(", ")}`);
+      if (bits.length) lines.push(`- ${bits.join(" · ")}`);
+    } else if (/No openings were confirmed/.test(r)) {
+      lines.push("- No openings marked yet");
+    }
+    const regions = (r.match(/Its (\d+) regions/) || [])[1];
+    if (regions) lines.push(`- ${regions} regions, each its own`);
+  }
+  const renamed = (r.match(/so (opening \d+ is called [^;]+(?:, opening \d+ is called [^;]+)*);/) || [])[1];
+  if (renamed) lines.push(`- Renamed to keep names apart: ${renamed}`);
+  return `**✓ Confirmed${name ? `: ${name}` : ""}**${lines.length ? "\n" + lines.join("\n") : ""}`;
+}
+
+/** AN FEA PART CONFIRMED ON THE STAGE, as a person reads it: a title and a few short lines (what it is meshed
+ *  as, its size, its parts and joins, the clean check), never the paragraph the intake reads. The words come
+ *  from the declaration itself (application/geometry_confirmation.fea_confirmation_message); "" when its size
+ *  cannot be found, so the caller shows the declaration whole. */
+export function feaConfirmedCard(r) {
+  const size = r.match(/Part size: (\d+) x (\d+) x (\d+) mm/);
+  if (!size) return "";
+  const afterLead = r.slice(FEA_LEAD.length);
+  const cut = afterLead.indexOf(", input_kind");
+  const nameRaw = (cut > 0 ? afterLead.slice(0, cut) : "").trim();
+  const name = nameRaw.startsWith("(") && nameRaw.endsWith(")") ? nameRaw.slice(1, -1).trim() : "";
+  const as = /Meshed as: shell where thin/.test(r) ? "shell where thin, solid where thick"
+    : /Meshed as: a shell/.test(r) ? "shell (mid-surface, plate elements)" : "solid";
+  const unit = (r.match(/The file is in ([a-z]+)/) || [])[1];
+  const lines = [`- **FEA** · ${as} mesh`,
+    `- ${size[1]} × ${size[2]} × ${size[3]} mm${unit && unit !== "millimetres" ? ` (file in ${unit})` : ""}`];
+  const bodies = Number((r.match(/(\d+) bodies\./) || [])[1]) || 0;
+  const conn = (r.match(/Parts connected: (bonded|contact)/) || [])[1];
+  const joints = (r.match(/Where the parts meet: (\d+) joints?/) || [])[1];
+  if (bodies > 1 || conn) {
+    const bits = [`${bodies || "Several"} parts`];
+    if (conn) bits.push(conn);
+    if (joints) bits.push(`${joints} joint${joints === "1" ? "" : "s"}`);
+    lines.push(`- ${bits.join(" · ")}`);
+  }
+  const clean = (r.match(/Clean check: ([^.]*)/) || [])[1] || "";
+  // THE STAGE'S OWN VERDICT, never a guess: clean, not checked (a check that did not run is no "not clean"),
+  // a surface (its open edges are what make it one), else not clean - the server leads with the stage's line
+  if (clean) lines.push(/^the geometry is clean/i.test(clean) ? "- ✓ Geometry clean"
+    : /^(not checked|the clean check did not run|the geometry was not checked)/i.test(clean) ? "- Not checked"
+    : /^the file is a surface/i.test(clean) ? "- A surface, meshed as a shell"
+    : "- ⚠ Not clean - we'll still try");
+  lines.push("- Every face kept as a named group: set loads and supports in your solver");
+  return `**✓ Confirmed${name ? `: ${name}` : ""}**\n${lines.join("\n")}`;
 }
 
 /** A reason the check gives in lower case ("the file declares ...") as a sentence on the stage. */
@@ -129,7 +206,12 @@ function sel(cls, opts, cur, disabled) {
 /** The unit box: the dropdown, the two readings to pick from while the size makes the unit
  *  doubtful, and the hint. `bindUnit` keeps it live; the FEA stage shows the same box. */
 export function unitBoxHtml(p) {
-  return `${sel("gc-sel gc-unit", UNITS, unitOf(p), p.unit_fixed)}${pickHtml(p)}<span class="gc-unit-hint">${esc(unitHint(p))}</span>`;
+  // WHILE THE UNIT IS OPEN the box shows no unit at all: a box that showed millimetres took the user's
+  // pick of millimetres for no pick (the select fires no change), and Proceed then did nothing
+  // (Camaro STL, 2026-11-12)
+  const box = unitChoiceNeeded(p) ? sel("gc-sel gc-unit", [["", "pick the unit…"], ...UNITS], "", p.unit_fixed)
+    : sel("gc-sel gc-unit", UNITS, unitOf(p), p.unit_fixed);
+  return `${box}${pickHtml(p)}<span class="gc-unit-hint">${esc(unitHint(p))}</span>`;
 }
 
 /** One row of the openings table. An opening the user added off any measured face has no size
@@ -142,7 +224,7 @@ export function rowHtml(o, p) {
   const at = (o.centroid_mm || []).map((v) => shown(v, p)).join(", ");
   return `<tr data-id="${id}"${o.added ? ' data-added="1"' : ""}><td class="gc-n" title="opening ${id}"><span class="gc-badge">${id}</span></td>
       <td><input class="gc-name" value="${attr(o.name || "")}" maxlength="40" aria-label="name of opening ${id}"></td>
-      <td>${sel("gc-role", ROLES, o.role)}</td>
+      <td>${sel("gc-role", ROLES, o.role)}${o.role_reason && o.role_reason.guess ? `<span class="gc-guess" title="${attr(o.role_reason.reason || "")}">a guess - check it</span>` : ""}</td>
       <td class="gc-dim">${size}</td><td class="gc-dim gc-pos">(${esc(at)}) ${sym(p)}</td>
       <td class="gc-conf" title="how sure the check is">${o.added ? "you" : Math.round((o.confidence || 0) * 100) + "%"}</td>
       <td class="gc-del"><button class="gc-x" type="button" title="remove this opening" aria-label="remove opening ${id}">×</button></td></tr>`;
@@ -230,9 +312,27 @@ export function applyFlow(root) {
 /** Keep the unit the user chooses in step everywhere a size is shown, and say what the part
  *  then is. Call once after the form is in the document; `p.unit` follows the box. */
 function showUnit(root, p) {
+  // the box shows "pick the unit…" exactly while the unit is open, and the unit once it is not
+  const unitSel = root.querySelector(".gc-unit");
+  if (unitSel && !unitSel.disabled) {
+    const blank = unitSel.querySelector('option[value=""]');
+    if (unitChoiceNeeded(p) && !blank) {
+      unitSel.insertAdjacentHTML("afterbegin", `<option value="">pick the unit…</option>`);
+      unitSel.value = "";
+    } else if (!unitChoiceNeeded(p) && blank) {
+      blank.remove(); unitSel.value = unitOf(p);
+    }
+  }
   root.querySelectorAll(".gc-u").forEach((el) => { el.textContent = unitOf(p); });
   root.querySelectorAll(".gc-dia").forEach((el) => { el.placeholder = `${unitOf(p)} across`; });
-  const hint = root.querySelector(".gc-unit-hint"); if (hint) hint.textContent = unitHint(p);
+  const hint = root.querySelector(".gc-unit-hint");
+  if (hint) {
+    hint.textContent = unitHint(p);
+    // a unit the file states (or the user settled) needs no line under the box where the panel hides it (the FEA
+    // panel): only a guessed or doubtful unit keeps its hint
+    const sure = !unitChoiceNeeded(p) && (p.unit_fixed || ["file_declared", "user_confirmed", "chosen"].includes(p.unit_basis));
+    hint.dataset.sure = sure ? "1" : "";
+  }
   const pick = root.querySelector(".gc-unit-pick");
   if (pick) {
     const html = pickHtml(p), box = document.createElement("span"); box.innerHTML = html;
@@ -244,7 +344,8 @@ function bindPick(root, p, pick) {
   (pick || root.querySelector(".gc-unit-pick"))?.querySelectorAll(".gc-pick").forEach((b) => {
     b.onclick = () => {
       p.unit = b.dataset.unit; p.unit_basis = "chosen"; p.unit_touched = true;
-      const unitSel = root.querySelector(".gc-unit"); if (unitSel) unitSel.value = p.unit;
+      const unitSel = root.querySelector(".gc-unit");
+      if (unitSel) { unitSel.querySelector('option[value=""]')?.remove(); unitSel.value = p.unit; }
       showUnit(root, p);
     };
   });
@@ -252,7 +353,10 @@ function bindPick(root, p, pick) {
 export function bindUnit(root, p) {
   const unitSel = root.querySelector(".gc-unit");
   if (!unitSel) return;
-  unitSel.addEventListener("change", () => { p.unit = unitSel.value; p.unit_basis = "chosen"; p.unit_touched = true; showUnit(root, p); });
+  unitSel.addEventListener("change", () => {
+    if (!SCALE[unitSel.value]) return;
+    p.unit = unitSel.value; p.unit_basis = "chosen"; p.unit_touched = true; showUnit(root, p);
+  });
   bindPick(root, p);
   showUnit(root, p);
 }
@@ -261,7 +365,8 @@ export function bindUnit(root, p) {
 export function followUnit(root, p, unit, basis) {
   if (!unit || !SCALE[unit] || p.unit_fixed || p.unit_touched || unit === p.unit) return;
   p.unit = unit; p.unit_basis = basis || "user_confirmed";
-  const unitSel = root.querySelector(".gc-unit"); if (unitSel) unitSel.value = unit;
+  const unitSel = root.querySelector(".gc-unit");
+  if (unitSel) { unitSel.querySelector('option[value=""]')?.remove(); unitSel.value = unit; }
   showUnit(root, p);
 }
 

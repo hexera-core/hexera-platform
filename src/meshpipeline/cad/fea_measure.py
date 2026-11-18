@@ -42,10 +42,11 @@ logger = logging.getLogger(__name__)
 #: 2 (21 Oct): a wall is read inside one body, past the model's floor, never across a taper,
 #: and only where a face's rays agree (cad/fea_features.wall_reach); 1 read the first
 #: surface any ray met.
-VERSION = 4
+VERSION = 5
 #: 3 (21 Oct): the record lists the CAD's cusps (cad_cusps, PLAN-fea-10).
 #: 4 (6 Nov): the record keeps the parts and the areas inside them for the parts checklist (NOTE-5/6); a
 #: measurement stored before it has none, and reusing it left the card with no Finalize notes.
+#: 5 (4 Nov, #408): ...and its run-outs, a face collapsing to a point (cad_cusps, kind "run_out").
 #: Where the record lives in the geometry check's facts.
 FACT_KEY = "fea_measure"
 #: The CAD surface is tessellated for the measurement at a chord of this fraction of the part's
@@ -207,6 +208,12 @@ def cad_micro(shape, mm: float, *, diag_mm: float) -> list[dict]:
 #: boss just touching a straight face; a nut's chamfer cone meeting its flats). The face - and the
 #: material beside it - runs to nothing there, so no element there can be well shaped at any size.
 CUSP_DEG = 5.0
+#: A RUN-OUT is a cusp too: a face whose boundary collapses to a point - a degenerated (zero-length)
+#: edge - where a fillet or blend narrows to nothing against a bore or a pin (the punch's links, 4
+#: Nov: an N-sided blend patch ending at 15 degrees, its elements jumping from 0.3 mm to 1 mm). A
+#: sphere's, cone's or revolved face's collapsed edge is its POLE, where the surface is smooth and
+#: nothing runs out: those surfaces are left out.
+POLE_SURFACES = ("Sphere", "Cone", "SurfaceOfRevolution")
 
 
 def cad_cusps(shape, mm: float) -> list[dict]:
@@ -261,11 +268,75 @@ def cad_cusps(shape, mm: float) -> list[dict]:
                 if ang < CUSP_DEG:
                     out.append({"at_mm": _pt(np.array([p.X(), p.Y(), p.Z()]) * mm), "angle_deg": _r(ang),
                                 "faces": [f"Face_{k}" for k in sorted(legs[a][1] | legs[b][1]) if k > 0]})
+    out += _run_outs(shape, mm, fmap)
     # one entry per place (a vertex can host more than one pair)
     unique: dict[tuple, dict] = {}
     for c in out:
         unique.setdefault(tuple(round(x, 4) for x in c["at_mm"]), c)
     return list(unique.values())
+
+
+def _run_outs(shape, mm: float, fmap) -> list[dict]:
+    """Every RUN-OUT of the solid (PLAN-fea-10): a vertex where a face's degenerated edge collapses
+    its boundary to a point, on a face that is not a pole surface (POLE_SURFACES), with two real
+    edges of the face leaving it. Same entries as cad_cusps, with "kind": "run_out"."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
+    from OCP.gp import gp_Pnt, gp_Vec
+    from OCP.TopAbs import TopAbs_EDGE
+    from OCP.TopExp import TopExp, TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    def leaving(e, v):
+        c = BRepAdaptor_Curve(e)
+        u = BRep_Tool.Parameter_s(v, e)
+        q, d = gp_Pnt(), gp_Vec()
+        c.D1(u, q, d)
+        if d.Magnitude() <= 0:
+            return None
+        first = abs(u - c.FirstParameter()) <= abs(u - c.LastParameter())
+        return np.array([d.X(), d.Y(), d.Z()]) / d.Magnitude() * (1.0 if first else -1.0)
+
+    out: list[dict] = []
+    for i in range(1, fmap.Extent() + 1):
+        face = TopoDS.Face_s(fmap.FindKey(i))
+        edges = []
+        ex = TopExp_Explorer(face, TopAbs_EDGE)
+        while ex.More():
+            edges.append(TopoDS.Edge_s(ex.Current()))
+            ex.Next()
+        degenerate = [e for e in edges if BRep_Tool.Degenerated_s(e)]
+        if not degenerate:
+            continue
+        try:
+            kind = str(BRepAdaptor_Surface(face).GetType()).rsplit(".", 1)[-1].replace("GeomAbs_", "")
+        except Exception as exc:  # noqa: BLE001 - a face we cannot read is no evidence of a run-out
+            logger.debug("fea measure: a face's surface could not be read for the run-out check (%s)", exc)
+            continue
+        if kind in POLE_SURFACES:
+            continue
+        for d in degenerate:
+            v = TopExp.FirstVertex_s(d)
+            real: list = []
+            for e in edges:
+                if BRep_Tool.Degenerated_s(e) or any(e.IsSame(r) for r in real):
+                    continue
+                if TopExp.FirstVertex_s(e).IsSame(v) or TopExp.LastVertex_s(e).IsSame(v):
+                    real.append(e)
+            if len(real) < 2:
+                continue                 # a seam through a pole, not a face narrowing to a point
+            try:
+                t = [leaving(e, v) for e in real[:2]]
+            except Exception as exc:  # noqa: BLE001 - an edge we cannot read is no evidence
+                logger.debug("fea measure: a run-out's edges could not be read (%s)", exc)
+                continue
+            if t[0] is None or t[1] is None:
+                continue
+            p = BRep_Tool.Pnt_s(v)
+            ang = math.degrees(math.acos(max(-1.0, min(1.0, float(np.dot(t[0], t[1]))))))
+            out.append({"at_mm": _pt(np.array([p.X(), p.Y(), p.Z()]) * mm), "angle_deg": _r(ang),
+                        "faces": [f"Face_{i}"], "kind": "run_out"})
+    return out
 
 
 def _brep_surface(shape, mm: float):
@@ -323,7 +394,8 @@ def _brep_surface(shape, mm: float):
     # body, and never thinner than the model itself is sure of (cad/fea_features.wall_reach)
     tol = np.array([BRep_Tool.Tolerance_s(f) for f in faces], dtype=float) * mm
     surface = ff.Surface(xyz=xyz, tris=tris[keep], label=label[keep], names=names,
-                         body=_face_bodies(shape, fmap), tol_mm=tol, defl_mm=defl, tapers=_brep_tapers(shape, fmap))
+                         body=_face_bodies(shape, fmap), tol_mm=tol, defl_mm=defl, tapers=_brep_tapers(shape, fmap),
+                         adjacency=_brep_adjacency(shape, fmap))
     return surface, faces, kinds
 
 
@@ -371,6 +443,28 @@ def _brep_tapers(shape, fmap) -> list[tuple[int, int]]:
                 out.add((ks[0], ks[1]))
     except Exception:  # noqa: BLE001 - the triangles' own tapers stand
         return sorted(out)
+    return sorted(out)
+
+
+def _brep_adjacency(shape, fmap) -> list[tuple[int, int]] | None:
+    """The face pairs (0-based, fmap order, a < b) that share a CAD edge; None when it cannot be read (the
+    triangles' own edges are read then)."""
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
+    from OCP.TopExp import TopExp
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+
+    out: set[tuple[int, int]] = set()
+    try:
+        e2f = TopTools_IndexedDataMapOfShapeListOfShape()
+        TopExp.MapShapesAndAncestors_s(shape, TopAbs_EDGE, TopAbs_FACE, e2f)
+        for i in range(1, e2f.Extent() + 1):
+            ks = sorted({fmap.FindIndex(f) - 1 for f in e2f.FindFromIndex(i)})
+            ks = [k for k in ks if k >= 0]
+            for x in range(len(ks)):
+                for y in range(x + 1, len(ks)):
+                    out.add((ks[x], ks[y]))
+    except Exception:  # noqa: BLE001 - the triangles' own edges stand
+        return None
     return sorted(out)
 
 
@@ -694,6 +788,10 @@ def _record(s: ff.Surface, arcs: list[ff.Arc], *, bodies: int, basis: str, kinds
     # the part keeps at most MAX_THIN_SPOTS_PART thin spots, the thinnest
     kept = sorted(((sp["thickness"], k, i) for k, t in thin.items() for i, sp in enumerate(t["spots"])))
     kept_set = {(k, i) for _t, k, i in kept[:ff.MAX_THIN_SPOTS_PART]}
+    # PLAN-fea-12: RAISED OR SUNK DETAIL (ff.RELIEF_SHARE) - lettering, a logo, a shallow texture: its faces are
+    # flagged, its hot spots are none of the part's, and its walls are not the part's thinnest
+    relief = ff.relief_groups(s, pairs)
+    in_relief = {k for g in relief for k in g["labels"]}
     # a face that is one round (a cylinder, a torus, a fitted fillet): its radius and which way
     # it bends, so a plan can give a convex round enough elements to keep its shape
     round_of = {next(iter(a.labels)): a for a in arcs if len(a.labels) == 1}
@@ -708,6 +806,8 @@ def _record(s: ff.Surface, arcs: list[ff.Arc], *, bodies: int, basis: str, kinds
         area = float(s.areas[idx].sum())
         row = {"kind": (kinds[k] if kinds else "region"), "area_mm2": _r(area),
                "centroid_mm": _pt(np.average(s.centroids[idx], axis=0, weights=np.maximum(s.areas[idx], 1e-300)))}
+        if k in in_relief:
+            row["relief"] = True
         if k in round_of and round_of[k].radius < floor_mm:
             # PLAN-fea-12: a round under the measure's own floor is a micro detail, never a zone (below)
             sub_floor.append({"kind": "round", "size_mm": _r(round_of[k].radius), "faces": [name]})
@@ -739,6 +839,22 @@ def _record(s: ff.Surface, arcs: list[ff.Arc], *, bodies: int, basis: str, kinds
         vals = [face_wall(k) for k in labels if k in per]
         return _r(min(vals)) if vals else None
 
+    body_tri: np.ndarray | None = None
+
+    def body_of(labels, axis) -> tuple[float, float]:
+        # the extents of the body the face belongs to, along and across: the CAD's own solid, or for a triangle
+        # file the welded triangles' connected piece
+        nonlocal body_tri
+        if body_tri is None:
+            fb = getattr(s, "body", None)
+            body_tri = (np.asarray(fb)[s.label] if fb is not None and len(fb) == len(s.names)
+                        else ff.components(len(s.tris), pairs.tri_a, pairs.tri_b))
+        mine = np.isin(s.label, sorted(labels))
+        if not mine.any():
+            return 0.0, 0.0
+        verts = np.unique(s.tris[np.isin(body_tri, np.unique(body_tri[mine]))])
+        return ff.body_extent(s.xyz[verts], axis)
+
     spots: list[dict] = []
     bores: list[dict] = []
     merged = ff.merge_coaxial(arcs)
@@ -747,6 +863,8 @@ def _record(s: ff.Surface, arcs: list[ff.Arc], *, bodies: int, basis: str, kinds
         if kind is None:
             continue
         t, shape = kind
+        if arc.labels and arc.labels <= in_relief:
+            continue               # PLAN-fea-12: a round of a raised or sunk detail is its shape only
         if arc.radius < floor_mm:
             # PLAN-fea-12, UNDER THE MEASURE'S OWN FLOOR (27 Oct): a round whose radius is less than the floor the
             # wall readings themselves stop at (FLOOR_FRACTION of the part) is no feature the plan can hold - a
@@ -762,6 +880,14 @@ def _record(s: ff.Surface, arcs: list[ff.Arc], *, bodies: int, basis: str, kinds
                           "length_mm": _r(arc.length), "outer_radius_mm": _r(outer.radius),
                           "outer_faces": [s.names[k] for k in sorted(outer.labels)]})
             continue
+        if t == ff.HOLE:
+            along, across = body_of(arc.labels, arc.axis)
+            if ff.is_channel(arc, along, across):
+                # PLAN-fea-4: A CHANNEL ALONG A LONG BODY IS PART OF ITS SECTION, NOT A HOLE (ff.CHANNEL_*)
+                bores.append({"faces": [s.names[k] for k in sorted(arc.labels)], "radius_mm": _r(arc.radius),
+                              "length_mm": _r(arc.length), "channel": True, "body_length_mm": _r(along),
+                              "body_across_mm": _r(across)})
+                continue
         spot = {"type": t, "shape": SHAPE_WORDS[shape], "radius_mm": _r(arc.radius),
                 "span_deg": _r(arc.span_deg), "faces": [s.names[k] for k in sorted(arc.labels)],
                 "axis": _pt(arc.axis), "basis": arc.basis, "capped": False}
@@ -775,6 +901,8 @@ def _record(s: ff.Surface, arcs: list[ff.Arc], *, bodies: int, basis: str, kinds
         spot["local_thickness_mm"] = wall(arc.labels)
         spots.append(spot)
     for c in ff.sharp_corners(s, pairs):
+        if in_relief & set(c["labels"]):
+            continue               # PLAN-fea-12: a corner of a raised or sunk detail, or where it meets its face
         local = wall(c["labels"])
         spots.append({"type": ff.SHARP_CORNER, "shape": SHAPE_WORDS[ff.SHARP_CORNER],
                       "angle_deg": _r(c["angle_deg"]), "length_mm": _r(c["length_mm"]),
@@ -797,6 +925,14 @@ def _record(s: ff.Surface, arcs: list[ff.Arc], *, bodies: int, basis: str, kinds
     for i, h in enumerate(spots, start=1):
         h["id"] = f"H{i}"
     m = thick["min"]
+    if m is not None and m[1] in in_relief:
+        # PLAN-fea-12: the thinnest wall is the part's own, never a stroke of its lettering
+        own = [(face_wall(k), k) for k in per if k not in in_relief]
+        if own:
+            v, k = min(own)
+            m = (v, k, s.centroids[s.label == k][0])
+        else:
+            m = None
     thickness = {"method": "ray along the inward normal from points spread over every face",
                  "rays": int(thick["rays"])}
     if m is not None:
@@ -804,15 +940,25 @@ def _record(s: ff.Surface, arcs: list[ff.Arc], *, bodies: int, basis: str, kinds
     if basis == "triangles":
         notes.append("A triangle file has no CAD faces: its smooth regions (Region_k) are measured, "
                      "and its radii are fitted to the triangles.")
-    if bores:
-        notes.append(f"{len(bores)} bore(s) - the inside of a tube, sleeve or ring, sharing its axis with the "
-                     "outside - are the part's own wall, sized by the wall rule, not stress-raising holes.")
+    n_channels = sum(1 for b in bores if b.get("channel"))
+    if len(bores) > n_channels:
+        notes.append(f"{len(bores) - n_channels} bore(s) - the inside of a tube, sleeve or ring, sharing its axis "
+                     "with the outside - are the part's own wall, sized by the wall rule, not stress-raising holes.")
+    if n_channels:
+        notes.append(f"{n_channels} channel(s) running the whole length of a long part are part of its section, "
+                     "sized by the wall rule, not stress-raising holes.")
     out = {"version": VERSION, "basis": basis, "unit": "mm", "bodies": int(bodies), "diag_mm": _r(s.diag),
            "face_names": "Face_k" if basis == "cad" else "Region_k", "faces": faces,
            "thickness": thickness, "hot_spots": spots, "counts": counts, "complete": complete,
            "notes": notes, "seconds": round(time.time() - started, 2)}
     if bores:
         out["bores"] = bores
+    if relief:
+        out["relief"] = [{"faces": [s.names[k] for k in sorted(g["labels"])], "parent": s.names[g["parent"]],
+                          "height_mm": _r(g["height"]), "raised": bool(g["raised"])} for g in relief]
+        notes.append(f"{len(relief)} raised or sunk detail(s) - lettering, a logo or a shallow texture, at most "
+                     f"{_r(max(g['height'] for g in relief))} mm high or deep - keep their shape; their walls and "
+                     "corners are not sized as the part's own.")
     if touching:
         out["contact_count"] = len(touching)
         out["contacts"] = [{"faces": [s.names[k] for k in c["labels"]], "length_mm": _r(c["length_mm"]),

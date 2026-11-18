@@ -202,6 +202,10 @@ class Fused:
     solid_parts: list[list[int]] = field(default_factory=list)
     error: str = ""
     seconds: float = 0.0
+    #: PLAN-fea-35 (cad/assembly_join): the touching pairs no fuse joined, each {"parts": [p, q], "pair": that
+    #: pair's own Fused when its fuse finished, else None}, and the join's decision record (None: one plain fuse)
+    unfused: list[dict] = field(default_factory=list)
+    join: dict | None = None
 
 
 def _scaled(shape, k: float):
@@ -395,22 +399,41 @@ def joined_interfaces(parts: list, fused: Fused, volumes: list[float], *, diag: 
     from meshpipeline.cad import fea_joins as J
 
     tol = FUZZY_SHARE * diag
-    if fused.error:
+    if fused.error and fused.join is None:
         fuse_itf = pairwise_interfaces(parts, volumes, fuzzy=tol, scale=scale)
     else:
-        fuse_itf = interfaces_of(fused, volumes, scale=scale)
+        fuse_itf = interfaces_of(fused, volumes, scale=scale) if fused.shape is not None else []
+    # PLAN-fea-35: THE TOUCHING PAIRS NO FUSE JOINED - where each meets, from its own pair fuse when that finished
+    lost = {tuple(sorted(int(x) for x in u["parts"])) for u in fused.unfused}
+    for u in fused.unfused:
+        if u.get("pair") is not None:
+            for itf in interfaces_of(u["pair"], volumes, scale=scale):
+                fuse_itf.append({**itf, "unfused": True})
     # NOTHING OPENCASCADE THROWS HERE FAILS THE STAGING: a pair it cannot measure is that pair unmeasured
     # (the fuse's answer stands there, said); a measurement that fails outright leaves the fuse's answer whole
+    measured_ok = True
     try:
         measured = J.measure(parts, tol=tol, mm_per_unit=mm_per_unit,
                              budget_s=J.BUDGET_S if budget_s is None else float(budget_s))
-        findings = J.check(fuse_itf, parts, measured, tol=tol, mm_per_unit=mm_per_unit)
     except Exception as exc:  # noqa: BLE001 - said as a note; the fuse's answer stands
         logger.warning("fea assembly: the parts' surfaces could not be measured (%s: %s)", type(exc).__name__, exc)
         measured = J.Measured(tol=tol, complete=False)
         measured.unmeasured[(-1, -1)] = f"{type(exc).__name__}: {exc}"[:200]
-        findings = []
+        measured_ok = False
     kinds = (J.TOUCHING, J.GAP, J.OVERLAP) if gap_joins else (J.TOUCHING, J.OVERLAP)
+    if lost:
+        # ... else from their surfaces (PLAN-fea-18's measurement), any kind: they are tied there
+        had = {_pair_of(i) for i in fuse_itf}
+        for itf in J.interfaces(measured, parts, volumes, scale=scale, kinds=kinds):
+            if _pair_of(itf) in lost and _pair_of(itf) not in had:
+                fuse_itf.append({**itf, "unfused": True})
+    for k, itf in enumerate(fuse_itf, start=1):
+        itf["id"] = f"Interface_{k}"
+    try:
+        findings = J.check(fuse_itf, parts, measured, tol=tol, mm_per_unit=mm_per_unit) if measured_ok else []
+    except Exception as exc:  # noqa: BLE001 - said as a note; the fuse's answer stands
+        logger.warning("fea assembly: the joints could not be checked (%s: %s)", type(exc).__name__, exc)
+        findings = []
     # a touch the fuse missed is an omission, not a wrong answer: the fuse stands, the touch is added
     wrong = [f for f in findings if f["kind"] != "missed"]
     if wrong:
@@ -444,7 +467,17 @@ def joined_interfaces(parts: list, fused: Fused, volumes: list[float], *, diag: 
             "complete": measured.complete, "seconds": measured.seconds,
             "unmeasured": [{"parts": ([part_id(i + 1), part_id(j + 1)] if i >= 0 else []), "why": why}
                            for (i, j), why in sorted(measured.unmeasured.items())]}
+    if lost:
+        # PLAN-fea-35: the touching pairs no fuse joined, and those of them nothing found a joint for
+        found_pairs = {_pair_of(i) for i in interfaces}
+        info["unfused"] = [[part_id(p), part_id(q)] for p, q in sorted(lost)]
+        info["unjoined"] = [[part_id(p), part_id(q)] for p, q in sorted(lost) if (p, q) not in found_pairs]
     return interfaces, info
+
+
+def _pair_of(itf: dict) -> tuple[int, ...]:
+    """An interface's two parts as sorted part numbers."""
+    return tuple(sorted(part_no_of(x) for x in itf.get("parts") or []))
 
 
 def joins_record(info: dict, interfaces: list[dict]) -> dict | None:
@@ -452,7 +485,7 @@ def joins_record(info: dict, interfaces: list[dict]) -> dict | None:
     to say (the fuse stood, no gap was joined, no skin found, the measurement finished), so an
     assembly the new measurement changes nothing on is recorded exactly as before."""
     if info["trusted"] and not info["gaps"] and not info["skins"] and info["complete"] and not info["findings"] \
-            and not info.get("unmeasured"):
+            and not info.get("unmeasured") and not info.get("unfused"):
         return None
     gap_faces = sorted({f for i in interfaces if i.get("kind") == "gap" or i.get("line")
                         for v in (i.get("faces") or {}).values() for f in v}, key=_face_sort)
@@ -460,6 +493,7 @@ def joins_record(info: dict, interfaces: list[dict]) -> dict | None:
             "skins": info["skins"], "skin_faces": sorted({f for v in info["skins"].values() for f in v}, key=_face_sort),
             "gaps": info["gaps"], "gap_faces": gap_faces, "added": info.get("added") or [],
             "unmeasured": info.get("unmeasured") or [],
+            **({"unfused": info["unfused"], "unjoined": info.get("unjoined") or []} if info.get("unfused") else {}),
             "complete": info["complete"],
             "seconds": info["seconds"]}
 
@@ -506,6 +540,12 @@ def joins_notes(info: dict, interfaces: list[dict], *, unit: str = "mm", scale_t
     if not info["complete"] and all(u.get("parts") for u in info.get("unmeasured") or []):
         notes.append("The parts' surfaces were not all measured in the time set for it: where they meet is as the "
                      "fuse found it.")
+    unjoined = info.get("unjoined") or []
+    if unjoined:
+        # PLAN-fea-35: a pair no fuse joined, whose joint nothing else found either - said, never dropped quietly
+        words = "; ".join(f"{a} and {b}" for a, b in unjoined[:6]) + (" and more" if len(unjoined) > 6 else "")
+        notes.append(f"Where {words} meet could not be found in the time set for it (they could not be joined in the "
+                     "CAD, and their surfaces show no joint): they are not connected in the mesh there.")
     return notes
 
 
@@ -532,13 +572,18 @@ def record(shape, *, mm_per_unit: float, names: list[str] | None = None) -> dict
                           # PLAN-fea-20 reads which of two parts is the smaller (a share can round to 0)
                           "volume_mm3": _r(v * mm ** 3)})
     notes: list[str] = []
-    fused = fuse(parts, fuzzy=FUZZY_SHARE * diag, mm_per_unit=mm)
+    # PLAN-fea-35: only what touches is fused, group by group, each fuse time-boxed (cad/assembly_join)
+    from meshpipeline.cad import assembly_join as AJ
+
+    fused = AJ.join(parts, fuzzy=FUZZY_SHARE * diag, mm_per_unit=mm)
     rec: dict[str, Any] = {"version": VERSION, "parts": out_parts, "interfaces": [], "free_parts": [], "fused": not fused.error,
            "notes": notes}
-    if fused.error:
-        # THE PARTS PAIR BY PAIR: what touches is still found; a bonded mesh then ties them
-        notes.append(f"{fused.error} all at once: where they touch was found pair by pair, and a bonded mesh "
-                     "ties the parts there instead of sharing nodes.")
+    if fused.join is not None:
+        rec["join"] = fused.join
+    if fused.error or fused.unfused:
+        # THE PARTS NO FUSE JOINED: what touches is still found; a bonded mesh then ties them there
+        notes.extend(AJ.words(fused.join, lambda p: readable_body_name(names[p - 1])
+                              if names and 0 < p <= len(names) else ""))
     # PLAN-fea-18: the fuse's answer, checked on the parts' surfaces, and the small-gap joins
     interfaces, info = joined_interfaces(parts, fused, [v for v, _c in vols], diag=diag, mm_per_unit=mm, scale=mm,
                                          budget_s=RECORD_MEASURE_S)
@@ -647,13 +692,34 @@ def stage(shape, connection: str, out_dir: Path | str, *, names: list[str] | Non
     mesh_parts = [o.solid for o in opened]
     skins = skin_record(opened)
     notes.extend(skin_notes(skins))
-    fused = fuse(mesh_parts, fuzzy=FUZZY_SHARE * diag, mm_per_unit=mm_per_unit)
-    fused.face_origins = [[(p, opened[p - 1].origin[j - 1]) for p, j in o] for o in fused.face_origins]
+    # PLAN-fea-35: ONLY WHAT TOUCHES IS FUSED, group by group, each fuse time-boxed (cad/assembly_join)
+    from meshpipeline.cad import assembly_join as AJ
+
+    fused = AJ.join(mesh_parts, fuzzy=FUZZY_SHARE * diag, mm_per_unit=mm_per_unit)
+
+    def as_cad(origins: list) -> list:
+        return [[(p, opened[p - 1].origin[j - 1]) for p, j in o] for o in origins]
+
+    fused.face_origins = as_cad(fused.face_origins)
+    for u in fused.unfused:
+        if u.get("pair") is not None:
+            u["pair"].face_origins = as_cad(u["pair"].face_origins)
     mode = PAIR_BONDED if connection == BONDED else PAIR_CONTACT
+    nothing_fused = not any(len(o) > 1 for o in fused.solid_parts) and \
+        not any(len({p for p, _j in o}) > 1 for o in fused.face_origins)
+
+    def name_of(p: int) -> str:
+        return readable_body_name(names[p - 1]) if names and 0 < p <= len(names) else ""
+
     if fused.error and connection == BONDED:
         mode = PAIR_TIE
-        notes.append(f"{fused.error}, so the parts are meshed apart and tied where they touch (bonded, "
-                     "but their nodes are not shared there).")
+        notes.extend(AJ.words(fused.join, name_of) if fused.join else
+                     [f"{fused.error}, so the parts are meshed apart and tied where they touch (bonded, "
+                      "but their nodes are not shared there)."])
+    elif fused.unfused and nothing_fused and connection == BONDED:
+        # NO FUSE FINISHED: every part meshed on its own, tied where it meets another (the tie route)
+        mode = PAIR_TIE
+        notes.extend(AJ.words(fused.join, name_of))
     elif tie and connection == BONDED:
         # the mesher could not build the fused parts as one (the driver's way on, PLAN-fea-17)
         mode = PAIR_TIE
@@ -663,7 +729,10 @@ def stage(shape, connection: str, out_dir: Path | str, *, names: list[str] | Non
     # small-gap switch sets their default)
     found, info = joined_interfaces(parts, fused, vols, diag=diag, mm_per_unit=mm_per_unit, scale=1.0,
                                     gap_joins=True)
-    choices = P.choose(found, connection=connection, gap_joins=gap_joins, volume_of=volume_of, overrides=pairs)
+    # the pairs' words say each gap in millimetres: `found` is in the model's own unit here (metres
+    # in the mesher: the punch's 0.5 mm gaps read "across 0.0005 mm", 4 Nov)
+    in_mm = [{**i, "gap_mm": float(i["gap_mm"]) * mm_per_unit} if i.get("gap_mm") is not None else i for i in found]
+    choices = P.choose(in_mm, connection=connection, gap_joins=gap_joins, volume_of=volume_of, overrides=pairs)
     choice = {str(c["id"]): c for c in choices}
     off = [i for i in found if choice.get(str(i["id"]), {}).get("type") == P.OFF]
     interfaces = [i for i in found if i not in off]
@@ -671,7 +740,9 @@ def stage(shape, connection: str, out_dir: Path | str, *, names: list[str] | Non
             "added": [i["id"] for i in interfaces if i.get("added")]}
     # a touch the fuse missed (PLAN-fea-18, "added") or a line meet is tied in a fused mesh, never shared:
     # like a gap
-    tied_apart = {str(i["id"]) for i in found if i.get("kind") == "gap" or i.get("added") or i.get("line")}
+    # and so is a touching pair no fuse joined (PLAN-fea-35, "unfused")
+    tied_apart = {str(i["id"]) for i in found
+                  if i.get("kind") == "gap" or i.get("added") or i.get("line") or i.get("unfused")}
     if not info["trusted"] and mode == PAIR_BONDED:
         # THE FUSE IS WRONG HERE (PLAN-fea-18): its one piece cannot be meshed as the parts are, so each
         # part is meshed on its own and tied where its surfaces meet the others
@@ -714,6 +785,9 @@ def stage(shape, connection: str, out_dir: Path | str, *, names: list[str] | Non
                      "unconnected there.")
     if len(off) > 8:
         notes.append(f"{len(off) - 8} more pair(s) are not joined (Off).")
+    if mode == PAIR_BONDED and fused.unfused:
+        # PLAN-fea-35: the rest is one shared mesh; these pairs are tied where they meet
+        notes.extend(AJ.words(fused.join, name_of))
     if mode == PAIR_BONDED:
         staged = fused.shape
         face_names = [[face_name(p, j) for p, j in o] for o in fused.face_origins]
@@ -768,7 +842,8 @@ def stage(shape, connection: str, out_dir: Path | str, *, names: list[str] | Non
             # A SMALL-GAP JOINT (or a touch the fuse missed) in a fused mesh: the two sides are not one
             # surface, so they are tied (or paired, when that pair is set to contact)
             pairs_out.append({"id": itf["id"], "kind": PAIR_TIE if bonded else PAIR_CONTACT, "parts": [p, q],
-                              "overlap": False, "faces": {str(p): itf["faces"].get(part_id(p)) or [],
+                              "overlap": bool(itf.get("unfused")) and itf["kind"] == "overlap",
+                              "faces": {str(p): itf["faces"].get(part_id(p)) or [],
                                                           str(q): itf["faces"].get(part_id(q)) or []},
                               **gap, **extra})
             continue
@@ -797,6 +872,13 @@ def stage(shape, connection: str, out_dir: Path | str, *, names: list[str] | Non
                      f"in the mesh {'it is a separate piece' if one else 'each is a separate piece'}, held only by "
                      "the supports you set in your solver.")
     over = [i for i in interfaces if i["kind"] == "overlap"]
+    if mode == PAIR_BONDED and any(i.get("unfused") for i in over):
+        # PLAN-fea-35: an overlap no fuse joined is tied like any meshed apart (its shared piece counted twice)
+        lost_over = [i for i in over if i.get("unfused")]
+        over = [i for i in over if not i.get("unfused")]
+        notes.append(f"{len(lost_over)} pair(s) of parts that pass into each other could not be joined in the CAD: "
+                     "tied, each keeps its own elements there, so the shared piece is counted in both parts (its "
+                     "stiffness and mass twice) - fix the CAD if that piece matters.")
     if over and mode == PAIR_BONDED:
         # PLAN-fea-20, said pair by pair: the smaller body keeps its full shape, the larger gives way
         said_pairs = []
@@ -857,6 +939,8 @@ def stage(shape, connection: str, out_dir: Path | str, *, names: list[str] | Non
                "surfaces": surfaces, "volumes": volumes, "pairs": pairs_out, "interfaces": interfaces,
                "unpaired": [{"inner": a, "outer": b} for a, b in unpaired],
                "notes": notes, "fuse_seconds": fused.seconds,
+               # PLAN-fea-35: how the parts were joined - the groups, each fuse's limit and time, what was tied
+               "join": fused.join,
                # PLAN-fea-23: the unit the general fuse ran in (millimetres, whatever the staging's)
                "fuse_unit": {"rule": FUSE_IN_MM, "unit": "mm", "scaled_by": float(mm_per_unit)},
                "tie_first": ({"overlap_pieces": n_pieces, "overlap_pairs": n_over, "at": TIE_FIRST_PIECES}
@@ -1041,10 +1125,11 @@ def rename_record(rec: dict, names: list[str]) -> dict:
     out["hot_spots"] = [{**h, "faces": [nm(f) for f in h.get("faces") or []]} for h in rec.get("hot_spots") or []]
     if isinstance(rec.get("thickness"), dict) and rec["thickness"].get("face"):
         out["thickness"] = {**rec["thickness"], "face": nm(rec["thickness"]["face"])}
-    for key in ("cusps", "micro", "fold_back", "suspects", "coincident", "bores", "contacts"):
+    for key in ("cusps", "micro", "fold_back", "suspects", "coincident", "bores", "relief", "contacts"):
         if rec.get(key):
             out[key] = [{**c, "faces": [nm(f) for f in c.get("faces") or []],
-                         **({"outer_faces": [nm(f) for f in c["outer_faces"]]} if c.get("outer_faces") else {})}
+                         **({"outer_faces": [nm(f) for f in c["outer_faces"]]} if c.get("outer_faces") else {}),
+                         **({"parent": nm(c["parent"])} if c.get("parent") else {})}
                         for c in rec[key]]
     out["face_names"] = "Part_k_Face_j"
     return out
@@ -1155,26 +1240,32 @@ def read_body_names_here(path: Path | str) -> list[tuple[str, np.ndarray, float]
         return ""
 
     out: list[tuple[str, np.ndarray, float]] = []
+    stem = " ".join(p.stem.split())
 
-    def walk(label, loc, inherited: str, depth: int) -> None:
+    def walk(label, loc, inherited: str, depth: int, instance: str = "", above: tuple[str, ...] = ()) -> None:
         if depth > 32:
             return
         if XCAFDoc_ShapeTool.IsAssembly_s(label):
             comps = TDF_LabelSequence()
             XCAFDoc_ShapeTool.GetComponents_s(label, comps)
+            mine = (*above, " ".join(named(label).split()))
             for i in range(1, comps.Length() + 1):
                 comp = comps.Value(i)
                 ref = TDF_Label()
                 if not XCAFDoc_ShapeTool.GetReferredShape_s(comp, ref):
                     continue
-                own = readable_body_name(named(ref)) or readable_body_name(named(comp))
-                walk(ref, loc.Multiplied(XCAFDoc_ShapeTool.GetLocation_s(comp)), own or inherited, depth + 1)
+                inst = _instance_name(named(ref), named(comp))
+                own = inst or readable_body_name(named(ref)) or readable_body_name(named(comp))
+                walk(ref, loc.Multiplied(XCAFDoc_ShapeTool.GetLocation_s(comp)), own or inherited, depth + 1,
+                     inst, mine)
             return
         shape = XCAFDoc_ShapeTool.GetShape_s(label)
         if shape.IsNull():
             return
         placed = shape.Moved(loc)
-        name = readable_body_name(named(label)) or inherited
+        name = instance or readable_body_name(named(label)) or inherited
+        # SHWRITE-1: the document's name repeated at the head of every part's name is not the part's name
+        name = readable_body_name(strip_document_prefix(name, [*above, stem])) if name else name
         for s in solids(placed):
             v, c = _props(s, True)
             out.append((name, c, v))
@@ -1184,6 +1275,34 @@ def read_body_names_here(path: Path | str) -> list[tuple[str, np.ndarray, float]
     for i in range(1, roots.Length() + 1):
         walk(roots.Value(i), TopLoc_Location(), "", 0)
     return out
+
+
+#: what may sit between a document prefix and the part's own name
+_PREFIX_GLUE = " .-_:/\\|>"
+#: an instance suffix a CAD system adds to the product's name: ".57" (CATIA), "-3" (SolidWorks), ":2" (Inventor)
+_INSTANCE_SUFFIX = re.compile(r"^\s*[.:\-_ ]?\s*<?\d+>?\s*$")
+
+
+def _instance_name(product: str, instance: str) -> str:
+    """SHWRITE-1: the instance's own name when it is the product's name with an instance suffix ("PEDESTAL FOOTPAD
+    GUSSET.57" placing "PEDESTAL FOOTPAD GUSSET"), so eight gussets of one product keep the eight names the CAD tree
+    shows; "" otherwise (the product's name stands, as before)."""
+    prod, inst = " ".join(product.split()), " ".join(instance.split())
+    if not readable_body_name(prod) or len(inst) <= len(prod) or not inst.lower().startswith(prod.lower()):
+        return ""
+    return readable_body_name(inst) if _INSTANCE_SUFFIX.match(inst[len(prod):]) else ""
+
+
+def strip_document_prefix(name: str, prefixes: list[str]) -> str:
+    """SHWRITE-1: `name` without a leading copy of one of `prefixes` (the assemblies above it, the file's own name) -
+    "PEDESTAL ASSY PEDESTAL BASE PLATE.1" under PEDESTAL ASSY is "PEDESTAL BASE PLATE.1" - when what is left holds a
+    letter; the longest prefix first. Any other name is returned as it is."""
+    for pre in sorted({" ".join(x.split()) for x in prefixes if x and x.strip()}, key=len, reverse=True):
+        if len(name) > len(pre) and name.lower().startswith(pre.lower()) and name[len(pre)] in _PREFIX_GLUE:
+            rest = name[len(pre):].lstrip(_PREFIX_GLUE)
+            if re.search(r"[A-Za-z]", rest):
+                return rest
+    return name
 
 
 #: A named body matches a solid when its centroid lies within this share of the assembly's size and

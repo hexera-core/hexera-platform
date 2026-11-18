@@ -160,6 +160,14 @@ export async function getJob(jobId, { throwOnError = true } = {}) {
   return r.json();
 }
 
+/** The intake conversation a run came out of: {session_id, messages, job_id}. Returns null when
+ *  the session cannot be read - a missing transcript must not cost the run's own replay. */
+export async function getChatHistory(sessionId) {
+  const r = await apiFetch(`/api/v1/chat/history/${sessionId}`, { headers: headers() });
+  if (!r.ok) return null;
+  return r.json();
+}
+
 /** A NEW download link for one deliverable, minted now: {download_url, expires_in_seconds,
  *  size_bytes}. Asked at click time, so the link's whole life - which scales with the file's
  *  size - lies ahead of the download. Throws with `status` set when the API refuses. */
@@ -243,6 +251,14 @@ export async function retryGeometryCheck(sessionId, step) {
  *  when the check stored none, which the stage treats as "show the card instead". */
 export async function getGeometrySkin(sessionId) {
   const r = await apiFetch(`/api/v1/geometry/${sessionId}/check/skin`, { headers: headers() });
+  if (!r.ok) throw await readError(r);
+  return r.json();
+}
+
+/** SHSTAGE-4: an FEA part's mid-surface, drawn over the part on the stage (triangles in mm, each with
+ *  its wall, and the open edges). Fetched once the stage's "Mesh as" view says it is ready. */
+export async function getShellSurface(sessionId) {
+  const r = await apiFetch(`/api/v1/geometry/${sessionId}/check/shell-surface`, { headers: headers() });
   if (!r.ok) throw await readError(r);
   return r.json();
 }

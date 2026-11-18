@@ -281,7 +281,7 @@ present in a runtime image.
 |---|---|---|
 | `env/` | host-tool detection, `.venv`, local dirs, `.env`, images (`setup.sh`); read-only preflight of the hybrid dev config (`doctor.sh`) | `make setup` · `make dev-doctor` |
 | `quality/` | the repository gates CI enforces: one dependency source of truth, and the mypy ratchet with its `mypy_baseline.txt` | `make dependencies` · `make typecheck` (both inside `make check`) |
-| `release/` | Gate C: prove a commit is releasable (`validate.sh`), push what was proven (`publish.sh`), deploy a commit that is already published from its record instead of rebuilding it (`reuse.sh`, run by the deploy workflow), and the release-record schema both share (`record.py`, also read by the deploy scripts) | `make release-validate` · `make release-publish` |
+| `release/` | Release validation: prove a commit is releasable (`validate.sh`), push what was proven (`publish.sh`), deploy a commit that is already published from its record instead of rebuilding it (`reuse.sh`, run by the deploy workflow), and the release-record schema both share (`record.py`, also read by the deploy scripts) | `make release-validate` · `make release-publish` |
 
 All three are wired into `make` and CI. A script no gate runs does not belong here.
 

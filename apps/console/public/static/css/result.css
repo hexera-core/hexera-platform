@@ -30,7 +30,7 @@
 #lb{display:none;position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:999;align-items:center;justify-content:center;cursor:zoom-out}
 #lb.open{display:flex}#lb img{max-width:92vw;max-height:92vh;border-radius:10px;box-shadow:0 20px 60px rgba(0,0,0,.5)}
 
-.dragover #stage{outline:2px dashed var(--steel);outline-offset:-12px}
+.dragover #stage{outline:2px dashed var(--stone);outline-offset:-12px}
 table{border-collapse:collapse;width:100%;margin:6px 0;font-size:12px}
 th,td{border:1px solid #e2e4ea;padding:4px 8px;text-align:left}
 code{font-family:var(--mono);background:#f1f5f9;padding:1px 4px;border-radius:3px;font-size:.92em}

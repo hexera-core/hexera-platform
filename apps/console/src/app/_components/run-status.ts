@@ -5,6 +5,9 @@ const MARKS: Record<string, string> = {
   succeeded: "status status--ok",
   failed: "status status--fail",
   running: "status status--run",
+  pending: "status status--wait",
+  queued: "status status--wait",
+  pending_review: "status status--wait",
 };
 
 /** The class a status word wears. Meaning is carried by the WORD as well as the mark; the class
@@ -19,25 +22,26 @@ export function statusClass(status: string, reviewOutcome?: string | null): stri
   return MARKS[status] ?? "status";
 }
 
-/** Everyday words for the API's job states. A state not listed shows as the API names it, with
- *  underscores as spaces, so a new JobStatus member still reads as words. */
+/** Everyday words for the API's job states, sentence case. A state not listed shows as the API
+ *  names it, with underscores as spaces, so a new JobStatus member still reads as words. */
 const LABELS: Record<string, string> = {
-  succeeded: "mesh ready",
-  failed: "failed",
-  running: "running",
-  pending: "waiting to start",
-  queued: "waiting to start",
-  pending_review: "waiting for your review",
-  cancelled: "cancelled",
+  succeeded: "Ready",
+  failed: "Failed",
+  running: "Running",
+  pending: "Queued",
+  queued: "Queued",
+  pending_review: "Needs your review",
+  cancelled: "Cancelled",
 };
 
 /** The word a run's status column shows. A run the review left points open on says it was
  *  delivered with concerns, so a list never reads it as a plain pass. */
 export function statusLabel(status: string, reviewOutcome?: string | null): string {
   if (status === "succeeded" && reviewOutcome === "delivered_with_concerns") {
-    return "delivered with concerns";
+    return "Ready, with concerns";
   }
-  return LABELS[status] ?? status.replace(/_/g, " ");
+  const words = status.replace(/_/g, " ");
+  return LABELS[status] ?? words.charAt(0).toUpperCase() + words.slice(1);
 }
 
 /** How long a finished run took, in whole units.

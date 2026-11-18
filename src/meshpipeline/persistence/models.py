@@ -947,6 +947,30 @@ class Organization(Base):
     )
 
 
+class OrganizationMeshingStandard(Base):
+    # THE TEAM'S MESHING STANDARD (0020; engines/meshing_standard, STD-1..3): the mesh requirements an
+    # organisation applies to every run, written as an engineer writes the notes. ONE ROW PER ORGANISATION, its
+    # own table rather than columns on `organizations`: the standard is free text one member types for all of
+    # them, read only by the settings page and at approval, and every reader of the organisations row (billing,
+    # the principal's tenant lookup) has no business loading it. No row means no standard.
+
+    __tablename__ = "organization_meshing_standards"
+
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True)
+    #: the words as typed (at most engines/meshing_standard.MAX_CHARS)
+    text:       Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    #: THE READING KEPT AT SAVE TIME: {"key", "arguments", "read_at"} - the model's answer and the key of the
+    #: question it answered - or NULL when the model gave none (each run then reads the words itself)
+    reading:    Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    #: SHSTAGE-8 (0021): the settings page's switch, a shell's elements for every run - "quads" | "triangles"
+    shell_elements: Mapped[str] = mapped_column(String(16), nullable=False, server_default="quads")
+    #: who saved it last (their owner id, the lowercased email; cleared with the organisation on erasure)
+    updated_by: Mapped[str] = mapped_column(String(320), nullable=False, server_default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(),
+                                                 nullable=False)
+
+
 class StripeEvent(Base):
     # ONE HANDLED WEBHOOK. Stripe delivers at least once and retries every non-2xx, so a repeat is
     # routine traffic rather than a fault. Every handler behind this table writes something - a

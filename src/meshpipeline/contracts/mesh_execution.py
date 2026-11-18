@@ -53,6 +53,12 @@ RUN_UNCOLLECTED_TAG = "[CLOUD_RUN_RESULT_UNCOLLECTED]"
 #: (application/platform_contract has the API <-> worker half, 25 Oct).
 MESH_EXCHANGE_VERSION = 1
 MESH_CONTRACT_ENV = "HEXERA_MESH_CONTRACT"
+#: The gzip level of both exchange archives (the payload and the returned workspace). Not the
+#: tarfile default of 9: on a 3.5 M-cell car's ASCII polyMesh + volume VTK (1.08 GB), level 9 took
+#: 417 s on one core for 332 MB and level 6 took 82 s for 333 MB; the small files the returned
+#: archive carries once the big ones left on their own (engines/bucket_files) took 14.1 s at 9 and
+#: 3.7 s at 6 for the same 20.7 MB. Any level reads back the same, so this is not a shape change.
+EXCHANGE_GZIP_LEVEL = 6
 #: The result-document key, and the log tag, of a run the mesh job refused for that reason.
 PLATFORM_UPDATING_KEY = "platform_updating"
 PLATFORM_UPDATING_TAG = "[PLATFORM_UPDATING]"

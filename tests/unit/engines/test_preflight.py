@@ -359,6 +359,33 @@ def test_a_mesh_on_disk_outranks_a_stale_refusal(quiet_executor, monkeypatch, tm
     assert out["executor_failure_cause"] == "engine_crashed"
 
 
+def test_a_deck_kept_in_the_bucket_outranks_a_stale_refusal_too(quiet_executor, monkeypatch, tmp_path):
+    """RUN-7: a big FEA deck stays in the exchange bucket and only the record of it comes home. That record is
+    the mesh this run left, as much as a deck on the worker's disk is."""
+    from meshpipeline.engines import bucket_files as BF
+
+    ex = quiet_executor
+    calls = []
+
+    class _Finalize:
+        name = "gmsh"
+
+        def finalize(self, *a, **k):
+            calls.append(1)
+            return {"success": False, "output": "[GMSH] incomplete"}
+    monkeypatch.setattr(ex, "get_engine", lambda n="": _Finalize())
+    PreflightRefusal(gate="domain_extent", cause="domain_extent", builder_text="x",
+                     facts={}).write(tmp_path)
+    assert not ex._mesh_on_disk("gmsh", tmp_path)
+    BF.write_record(tmp_path, [BF.Kept(rel="mesh.inp", bucket="ex", key="o.kept/run/mesh.inp.gz", bytes=9,
+                                       gz_bytes=5, gz_md5="0" * 32, mode=0o644, crc32=1)])
+    assert ex._mesh_on_disk("gmsh", tmp_path) and not (tmp_path / "mesh.inp").exists()
+    out = asyncio.run(ex.node_executor({"openfoam_workspace": str(tmp_path), "job_id": "t",
+                                        "engine": "gmsh", "intake_patches": []}))
+    assert calls == [1]
+    assert out["executor_failed_gate"] == "finalize"
+
+
 def test_the_run_mesh_name_check_leaves_its_refusal_for_the_executor(tmp_path):
     """#86's pre-run name check refuses back to the builder; the same refusal is recorded, so a
     loop that ends there is reported as the contract mismatch (with the spelling to use) and is

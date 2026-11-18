@@ -26,11 +26,14 @@ if TYPE_CHECKING:
 
 def _mesh_on_disk(engine: str, workspace) -> bool:
     """Whether the engine's declared deliverable marker exists - asked of the spec, never a path
-    guessed here. An engine that cannot be resolved counts as having no mesh."""
+    guessed here. A big deck kept in the bucket is this run's deck all the same (engines/bucket_files,
+    RUN-7: the same rule as engines/manifest and the delivery). An engine that cannot be resolved
+    counts as having no mesh."""
     try:
+        from meshpipeline.engines.bucket_files import present
         from meshpipeline.engines.registry import get_spec
         d = get_spec(engine).deliverable
-        return d is not None and (Path(workspace) / d.marker).exists()
+        return d is not None and ((Path(workspace) / d.marker).exists() or present(workspace, d.marker))
     except Exception:  # noqa: BLE001
         return False
 
@@ -455,8 +458,10 @@ async def node_executor(state: PipelineState) -> dict:
             if not ok and _rp.is_note_gate(key):
                 _noted.append((key, _fb))
 
-        _gates_ok, _gate_key, _gate_feedback = run_gates(
-            _spec.gates, _ctx, on_result=_report_gate)
+        # off the event loop: a gate may measure the mesh for a minute (engines/cad_fidelity),
+        # and the worker's drain and cancellation checks must keep running meanwhile
+        _gates_ok, _gate_key, _gate_feedback = await asyncio.to_thread(
+            lambda: run_gates(_spec.gates, _ctx, on_result=_report_gate))
         for _key, _ok in _gate_results:
             if not _ok and _rp.is_note_gate(_key):
                 # A NOTE, NOT A FAILED CHECK (LAD-cfd-3/4): never shown as a failed check - the
@@ -506,6 +511,22 @@ async def node_executor(state: PipelineState) -> dict:
                     _q = json.loads((Path(workspace) / "quality.json").read_text())
                 except Exception:  # noqa: BLE001 - a line not said, never a run failed
                     _q = None
+            # WHAT WAS BUILT, counted once from the same record, for every route: an engine that
+            # never said its final count (the FEA driver) gets it said here; one that did is said again
+            # with the measured number, which is the one delivered
+            try:
+                _cells = int(float((_q or {}).get("cells") or 0)) if isinstance(_q, dict) else 0
+            except (TypeError, ValueError):
+                _cells = 0
+            _meshed = getattr(_pub, "ameshed", None)
+            if _cells > 0 and _meshed is not None:
+                from meshpipeline.contracts.event_stream import EventStreamError as _ESE
+                try:
+                    await _meshed(_cells, op_id=f"meshed:{_manifest_stamp(workspace)}")
+                except _ESE:
+                    raise
+                except Exception:  # noqa: BLE001 - a count not said, never a run failed
+                    logger.debug("executor: built count not said", exc_info=True)
             _line = _N.quality_line(_q, past_limits=_fea_past_limits(_q))
             if _line:
                 await _N.asay(_pub, _line, op_id=f"quality:{_manifest_stamp(workspace)}")
@@ -529,8 +550,10 @@ async def node_executor(state: PipelineState) -> dict:
                         evaluate_domain_extents,
                     )
                     try:
+                        from meshpipeline.engines.ground_plane import floor_of as _floor_of
                         _v = evaluate_domain_extents(_typed_req, _typed_ruler, mesh_manifest,
-                                                     flow_axis=state.get("flow_axis"))
+                                                     flow_axis=state.get("flow_axis"),
+                                                     floor=_floor_of(state.get("up_axis")))
                     except Exception:  # noqa: BLE001
                         logger.exception("Executor: typed extent evaluation crashed - "
                                          "job_id=%s", job_id)

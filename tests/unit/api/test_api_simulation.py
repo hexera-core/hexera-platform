@@ -67,6 +67,24 @@ async def test_malformed_job_id_returns_422():
     assert resp.status_code == 422
 
 
+async def test_a_job_names_the_session_it_came_from():
+    # The session's own job link is rewritten by later runs, so the durable direction is
+    # job -> session through the dispatch payload - how a run page finds the intake it replays.
+    mock_job = _make_mock_job()
+    mock_job.dispatch_payload = {"session_id": "8f14e45f-ceea-467a-9b1e-2c1d0e4a1b22"}
+    resp = await _get(mock_job)
+    assert resp.status_code == 200
+    assert resp.json()["session_id"] == "8f14e45f-ceea-467a-9b1e-2c1d0e4a1b22"
+
+
+async def test_a_job_without_a_dispatch_payload_names_no_session():
+    mock_job = _make_mock_job()
+    mock_job.dispatch_payload = None
+    resp = await _get(mock_job)
+    assert resp.status_code == 200
+    assert resp.json()["session_id"] is None
+
+
 async def _get(mock_job):
     with patch.object(sim_module, "get_db", _mock_get_db):
         with patch.object(sim_module.svc, "get_job", new=AsyncMock(return_value=mock_job)):
@@ -214,3 +232,32 @@ def test_every_customer_visible_artifact_has_a_name_a_person_would_recognise():
                if label == t.replace("_", " ").capitalize()}
     assert not unnamed, f"these fell through to the enum's own spelling: {unnamed}"
     assert labelled["repaired_cad"] == "Repaired geometry (.step)", labelled["repaired_cad"]
+
+
+def test_a_flow_mesh_s_solver_files_are_named_and_listed_bundle_first_then_in_menu_order():
+    from types import SimpleNamespace as NS
+
+    from meshpipeline.persistence.models import ArtifactType
+
+    assert sim_module._artifact_label(ArtifactType.mesh, "snappy", "export_openfoam_case") == "OpenFOAM case (.zip)"
+    assert sim_module._artifact_label(ArtifactType.mesh, "snappy", "export_fluent").startswith("Ansys Fluent mesh (.msh) - not yet tested")
+    assert sim_module._artifact_label(ArtifactType.mesh, "snappy", "export_ensight").startswith("EnSight case (.case) - not yet tested")
+    rows = [NS(artifact_type=ArtifactType.repair_report, logical_key="repair_report"),
+            NS(artifact_type=ArtifactType.mesh, logical_key="export_ensight"),
+            NS(artifact_type=ArtifactType.mesh_bundle, logical_key="mesh_bundle"),
+            NS(artifact_type=ArtifactType.mesh, logical_key="export_fluent"),
+            NS(artifact_type=ArtifactType.mesh, logical_key="export_openfoam_case")]
+    assert [r.logical_key for r in sorted(rows, key=sim_module._menu_rank)] == [
+        "mesh_bundle", "export_openfoam_case", "export_fluent", "export_ensight", "repair_report"]
+
+
+def test_a_flow_mesh_offers_no_surface_preview_and_an_fea_mesh_keeps_its_file():
+    from types import SimpleNamespace as NS
+
+    from meshpipeline.persistence.models import ArtifactType
+
+    preview = NS(artifact_type=ArtifactType.mesh, logical_key="mesh")
+    for engine in ("snappy", "cfmesh", "netgen", "vmtk", "snapgrid", "snappy_multiregion"):
+        assert sim_module._surface_preview_hidden(preview, engine), engine
+    assert not sim_module._surface_preview_hidden(preview, "gmsh")
+    assert not sim_module._surface_preview_hidden(NS(artifact_type=ArtifactType.mesh, logical_key="export_fluent"), "snappy")

@@ -728,7 +728,7 @@ def _fluid_union(shape, solids: list, declared_ports: list):
         return shape, solids, []
 
 
-def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection: float = 0.2,
+def _tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection: float = 0.2,
                         linear_deflection: float | None = None,
                         opening_faces: list[int] | None = None,
                         declared_ports: list | None = None,
@@ -1683,3 +1683,12 @@ def _triangles_of(shape) -> list:
                 out.append(tuple(pts))
         explorer.Next()
     return out
+
+
+def tessellate_internal(geom_path, out_dir, **kwargs) -> dict:
+    """The fluid of a CAD solid, staged for internal flow (_tessellate_internal) - and, ON THE CFD
+    WRAP RUNG (LAD-cfd-5), wrapped before any engine reads it (cad/surface_wrap.wrap_staged_if_asked).
+    On every other run the record is exactly the staging's."""
+    from meshpipeline.cad.surface_wrap import wrap_staged_if_asked
+    record = _tessellate_internal(geom_path, out_dir, **kwargs)
+    return wrap_staged_if_asked(record, Path(out_dir))

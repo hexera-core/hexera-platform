@@ -34,7 +34,11 @@ def test_the_offer_is_made_when_the_run_ends_and_withdrawn_when_one_starts():
     assert "Start a new simulation" not in main, (
         "the composer still tells the user to start over instead of continuing")
     attach = main.split("function attachJob(", 1)[1].split("\n}", 1)[0]
-    assert "clearNewRunOffer()" in attach
+    # a run starting closes the composer, and that withdraws the offer (shell/composer.js holdForRun)
+    assert "holdForRun()" in attach
+    composer = (UI / "js" / "shell" / "composer.js").read_text()
+    hold = composer.split("export function holdForRun()", 1)[1].split("\n}", 1)[0]
+    assert "clearNewRunOffer()" in hold
 
 
 def test_the_offer_never_appears_without_a_session_to_continue():
@@ -66,8 +70,13 @@ def test_only_the_conversation_a_run_came_from_is_offered_to_run_it_again():
     attach = main.split("function attachJob(", 1)[1].split("\n}", 1)[0]
     assert 'origin = getState.sessionId() } = {})' in attach, (
         "a run the chat started no longer defaults to the page's own conversation")
-    assert "beginRun(id, { sessionId: origin })" in attach
-    assert "beginRun(deepLinkJob);" in main
+    assert "openBox(id, { sessionId: origin })" in attach
+    # one place opens a run's box and begins the run (main.js openBox), with the conversation it is given
+    box = main.split("function openBox(", 1)[1].split("\n}", 1)[0]
+    assert "beginRun(id, { sessionId });" in box
+    # ... and a run opened by link (a reload, the sidebar) gives none
+    shown = main.split("async function showRun(", 1)[1].split("\n}", 1)[0]
+    assert "openBox(runId);" in shown
     state = (UI / "js" / "core" / "state.js").read_text()
     begin = state.split("export function beginRun(", 1)[1].split("\n}", 1)[0]
     assert "state.runSessionId = sessionId || null;" in begin

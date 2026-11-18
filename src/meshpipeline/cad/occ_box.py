@@ -155,10 +155,23 @@ def surface_box(shape) -> Box | None:
             # every node is moved, not the corners of the untransformed range)
             tri.MinMax(box, loc.Transformation(), True)
         else:
-            BRepBndLib.AddOptimal_s(face, box, False, False)
+            own = Bnd_Box()
+            BRepBndLib.AddOptimal_s(face, own, False, False)
+            # A FACE ON AN UNBOUNDED SURFACE (an IGES plane with no trimming wire OpenCascade could
+            # use): its "whole parameter range" is infinite, and its box - Precision::Infinite,
+            # 2e100 - made the DLR-F6 IGES read 2e103 mm long, so every far field and blockMesh
+            # built from that length overflowed (lab, 2 Nov: blockMesh died parsing the cell
+            # counts on every attempt). It holds no triangles, so it is no part of the surface
+            # any engine meshes: it is left out of the size
+            if not own.IsVoid() and all(abs(float(v)) < UNBOUNDED for v in own.Get()):
+                box.Add(own)
     if box.IsVoid():
         return None
     return tuple(float(v) for v in box.Get())  # type: ignore[return-value]
+
+
+#: A coordinate this large is OpenCascade's Precision::Infinite (2e100) or near it, never a part.
+UNBOUNDED = 1e50
 
 
 def diagonal(box: Box) -> float:

@@ -125,6 +125,12 @@ class MessageOutcome:
     #: set when this conversation has already run once and that run is over: the intake turn
     #: that follows is the start of another run on the same geometry
     previous_run: PreviousRun | None = None
+    #: THE STAGE OPENS AGAIN: the user changed the analysis after the stage (FEA <-> CFD), so the part is
+    #: checked again on the new route's stage - the console watches the check again
+    restage: bool = False
+    #: THE STAGE'S FORM, SET FROM THE CHAT: a flow the user stated while the stage waits on Proceed (the
+    #: flow-kind question's buttons, FLOW-1) - {"flow", "input_kind"} for "The fluid flows" and "The file is"
+    stage_flow: dict | None = None
 
     @property
     def answered(self) -> bool:
@@ -299,6 +305,10 @@ async def _settle(inbound: InboundMessage, db, *, gate: dict, locked, messages: 
                                         gate=gate)
     if changed is not None:
         return changed
+    rerouted = await _settle_route_change(inbound, db, locked=locked, messages=messages, revision=revision,
+                                          session_repo=session_repo, logger=logger, gate=gate)
+    if rerouted is not None:
+        return rerouted
     approval = gate.get("approval")
     if ap.is_live(approval):
         # the summary's own engine, named in the answer, is part of the yes, not a change
@@ -397,7 +407,23 @@ async def _settle(inbound: InboundMessage, db, *, gate: dict, locked, messages: 
     # Camaro STL, 2026-10-23). A unit the user names unasked is still recorded.
     fea_unit_on_stage = (fea_words(messages) and not uc.already_asked(gate)
                          and uc.stated_unit(inbound.content) is None)
-    unit = None if fea_unit_on_stage else await _settle_unit(
+    # THE UNIT LEFT TO US BEFORE THE PART IS MEASURED goes to the stage too. "Not sure - use your
+    # best guess" to the unit question of a part the check has not measured yet had no answer: the
+    # proposal needs the size, the size needs the check, and the check (the naming) waited for
+    # the unit - so the question came back every turn and the run never started (an Ahmed body
+    # STL, real path 2026-10-28). The stage shows the part's length with a unit proposed from it,
+    # and its Proceed records the unit. Measured already, the deferral takes the proposal below.
+    unit_to_stage = (not fea_unit_on_stage and uc.needs_confirmation(locked)
+                     and _unit_left_unmeasured(inbound, gate))
+    # A FLOW PART'S UNIT IS SETTLED ON ITS STAGE TOO (Areen, 2026-11-13): the chat asked "I'll take
+    # inches - say ok, or name the unit" while the stage stood beside it with its own unit box, and
+    # the two fought. While a geometry check will show the part, the stage's unit box and Proceed
+    # settle it; the chat asks only when there is no stage (the check off, failed or finished).
+    flow_unit_on_stage = (not fea_unit_on_stage and not unit_to_stage and uc.needs_confirmation(locked)
+                          and not uc.already_asked(gate) and uc.stated_unit(inbound.content) is None
+                          and _stage_settles_unit(str(inbound.session_id)))
+    on_stage = fea_unit_on_stage or unit_to_stage or flow_unit_on_stage
+    unit = None if on_stage else await _settle_unit(
         inbound, db, gate=gate, locked=locked, revision=revision, session_repo=session_repo,
         logger=logger)
     if unit is not None:
@@ -409,7 +435,7 @@ async def _settle(inbound: InboundMessage, db, *, gate: dict, locked, messages: 
             if hold is not None:
                 return hold
         return unit
-    if uc.needs_confirmation(locked) and not fea_unit_on_stage:
+    if uc.needs_confirmation(locked) and not on_stage:
         # THE NAMING WAITS FOR THE UNIT. The user's words go to the model only once the file's
         # scale is known: the naming re-reads every measurement in that unit, and the stage
         # confirms nothing without it. Until then the intake answers as it always did.
@@ -419,12 +445,41 @@ async def _settle(inbound: InboundMessage, db, *, gate: dict, locked, messages: 
                                        session_repo=session_repo, logger=logger)
     if asked is not None:
         return asked
+    asked = await _settle_cfd_conditions(inbound, db, messages=messages, revision=revision,
+                                         session_repo=session_repo, logger=logger)
+    if asked is not None:
+        return asked
+    stated = await _settle_stated_flow(inbound, db, messages=messages, revision=revision,
+                                       session_repo=session_repo, logger=logger)
+    if stated is not None:
+        return stated
     hold = await _settle_geometry_hold(inbound, db, locked=locked, messages=messages,
-                                       revision=revision, session_repo=session_repo, logger=logger)
+                                       revision=revision, session_repo=session_repo, logger=logger,
+                                       note=uc.ON_STAGE if unit_to_stage else "")
     if hold is not None:
+        if unit_to_stage:
+            logger.info("intake message: the user left the unit to us before the part was measured - "
+                        "the stage proposes it - session=%s", inbound.session_id)
         return hold
     return MessageOutcome(status=MessageStatus.proceed,
                           transition=GateTransition(revision=revision))
+
+
+def _stage_settles_unit(session_id: str) -> bool:
+    """Whether a geometry stage will settle the unit (application/geometry_hold.stage_settles_unit)."""
+    from meshpipeline.application import geometry_hold as gh
+
+    return gh.stage_settles_unit(session_id)
+
+
+def _unit_left_unmeasured(inbound: InboundMessage, gate: dict) -> bool:
+    """Whether this reply leaves the open unit question to us while the part has not been
+    measured yet - the case only the stage can settle (see `_settle`)."""
+    if not uc.already_asked(gate) or not uc.leaves_unit_to_us(inbound.content):
+        return False
+    from meshpipeline.application import geometry_hold as gh
+
+    return gh.measured_size_mm(str(inbound.session_id)) is None
 
 
 #: said while a yes waits for the notes to be read (the run starts the moment they are)
@@ -462,7 +517,9 @@ def analysis_question_due(messages: list) -> bool:
     if not fea_declared(messages):
         return False
     if any(isinstance(m, dict) and m.get("role") == "assistant"
-           and str(m.get("content") or "").strip() == pm.ANALYSIS_QUESTION for m in messages):
+           and (str(m.get("content") or "").strip() == pm.ANALYSIS_QUESTION
+                or str(m.get("content") or "").strip().endswith("\n\n" + pm.ANALYSIS_QUESTION))
+           for m in messages):
         return False
     buttons = {c["send"] for q in pm.QUESTIONS.values() for c in pm.choices_for(q)}
     said = [str(m.get("content") or "") for m in messages
@@ -488,8 +545,121 @@ async def _settle_fea_analysis(inbound: InboundMessage, db, *, messages: list, r
                           transition=GateTransition(revision=revision))
 
 
+async def _settle_route_change(inbound: InboundMessage, db, *, locked, messages: list, revision: str,
+                               session_repo, logger, gate: dict) -> MessageOutcome | None:
+    """FEA <-> CFD AFTER THE STAGE. The stage owns the part's configuration, so a user who names the
+    other analysis once the part was confirmed ("actually it is CFD, air flowing through it", "now a
+    static stress analysis of it") gets the part checked again on the new route's stage - the old
+    confirmation and any plan made on it withdrawn - and is never asked about openings or a far field in
+    the chat. None when the message names no other analysis, or no check can show the part again."""
+    from meshpipeline.agents.intake import flow
+    from meshpipeline.application import geometry_hold as gh
+    from meshpipeline.application import purpose_map as pm
+    from meshpipeline.application.geometry_confirmation import _is_declaration, fea_declared, thermal_declared
+
+    if not flow.latest_declaration(messages) or thermal_declared(messages):
+        return None
+    named = pm.named_analysis(inbound.content)
+    was = pm.ROUTE_FEA if fea_declared(messages) else pm.ROUTE_FLOW
+    if named.route not in (pm.ROUTE_FEA, pm.ROUTE_FLOW) or named.route == was:
+        return None
+    if not gh.stage_can_reopen(str(inbound.session_id)):
+        return None
+    kept = [m for m in messages if not _is_declaration(m)]
+    interpretation = await gh.interpretation_payload(db, locked, inbound.owner_id, inbound.organization_id)
+    gh.reopen_stage(str(inbound.session_id))
+    if not gh.queue_naming(str(inbound.session_id), inbound.owner_id, gh.purpose_from(kept), interpretation):
+        return None
+    await session_repo.set_messages(db, inbound.session_id, [m for m in (getattr(locked, "messages", None) or [])
+                                                             if not _is_declaration(m)])
+    await session_repo.set_intake_patches(db, inbound.session_id, [])
+    if ap.is_live(gate.get("approval")):
+        gate = {**gate, "approval": ap.invalidate(gate.get("approval"), "the analysis changed after the stage")}
+        await session_repo.set_intake_gate(db, inbound.session_id, gate)
+    reply = gh.hold_reply(False, "", pm.reading_for(kept))
+    await session_repo.append_message(db, inbound.session_id, "assistant", reply)
+    logger.info("intake message: the analysis changed after the stage (%s -> %s) - the stage opens again - "
+                "session=%s", was, named.route, inbound.session_id)
+    return MessageOutcome(status=MessageStatus.geometry_hold, reply=reply, queued_naming=True, restage=True,
+                          transition=GateTransition(revision=revision))
+
+
+async def _settle_cfd_conditions(inbound: InboundMessage, db, *, messages: list, revision: str,
+                                 session_repo, logger) -> MessageOutcome | None:
+    """THE CFD ROUTE'S ONE QUESTION (agents/intake/flow FLOW_QUESTION), asked by the application in
+    fixed words once a flow part is confirmed on the stage: what flows and how fast, with the wall
+    treatment, as one proposal with its buttons. Skipped when the user already named a fluid and its
+    speed; asked once."""
+    from meshpipeline.agents.intake import flow
+
+    if not flow.conditions_due(messages):
+        return None
+    reply = flow.conditions_question(messages)
+    await session_repo.append_message(db, inbound.session_id, "assistant", reply)
+    logger.info("intake message: a flow part - the conditions asked - session=%s", inbound.session_id)
+    return MessageOutcome(status=MessageStatus.purpose_question, reply=reply,
+                          transition=GateTransition(revision=revision))
+
+
+async def _settle_stated_flow(inbound: InboundMessage, db, *, messages: list, revision: str,
+                              session_repo, logger) -> MessageOutcome | None:
+    """THROUGH OR AROUND, SAID WHILE THE STAGE WAITS ON PROCEED (FLOW-1, FLOW-4): the answer to the
+    flow-kind question (its two buttons), or a flow the user states in their own words, decides the flow
+    kind again over the facts the naming wrote (application/flow_kind.answer), and the stage's form takes
+    it - "The fluid flows" and "The file is" - before Proceed. The stage line follows: the panel is where
+    the part is confirmed. Nothing here before the naming has landed (the naming reads these words
+    itself), or once the part is confirmed."""
+    from meshpipeline.agents.intake import flow
+    from meshpipeline.application import flow_kind as fk
+    from meshpipeline.application import geometry_hold as gh
+    from meshpipeline.application import purpose_map as pm
+
+    said = [{"role": "user", "content": inbound.content}]
+    if fk.words_reading(inbound.content).tier != "said":
+        return None
+    reading = pm.reading_for(messages)
+    if flow.latest_declaration(messages) or reading.route not in (pm.ROUTE_FLOW, pm.ROUTE_ELECTRONICS):
+        return None
+    facts = flow.geometry_flow_facts(str(inbound.session_id))
+    record = flow.stated_flow_kind(facts, said) if facts else None
+    if record is None:
+        return None
+    reply = gh.hold_reply(False, "", reading)
+    await session_repo.append_message(db, inbound.session_id, "assistant", reply)
+    logger.info("intake message: the user said the flow goes %s it (%s) - the stage's form takes it - session=%s",
+                "through" if record.get("flow") == "internal" else "around", record.get("rule"), inbound.session_id)
+    return MessageOutcome(status=MessageStatus.geometry_hold, reply=reply, stage_flow=flow.stage_flow(record),
+                          transition=GateTransition(revision=revision))
+
+
+async def ask_flow_kind(session_id: uuid.UUID, owner_id: str, *, facts: dict, session_repo, db_factory,
+                        logger) -> str:
+    """THE FLOW-KIND QUESTION, ASKED ONCE THE NAMING HAS LANDED (FLOW-4; the stage's read of the check calls
+    it, api/v1/geometry.get_check): when the record the naming wrote - with the user's first words and the
+    pictures, and any flow the user stated since - is still "undecided" and no words of the user's decided
+    it, the application's one fixed question, with its two buttons, joins the conversation once, under the
+    session's row lock. Returns the question when this call asked it, else "". The answer is read by
+    `_settle_stated_flow`."""
+    from meshpipeline.agents.intake import flow
+
+    if not isinstance((facts or {}).get("flow_kind"), dict):
+        return ""
+    async with db_factory() as db:
+        locked = await session_repo.get_for_update(db, session_id)
+        if locked is None or locked.owner_id != owner_id or getattr(locked, "job_id", None):
+            return ""
+        messages = list(getattr(locked, "messages", None) or [])
+        if not flow.flow_kind_question_due(messages, flow.geometry_flow_kind(facts, messages)):
+            return ""
+        await session_repo.append_message(db, session_id, "assistant", flow.FLOW_KIND_QUESTION)
+        await db.commit()
+    logger.info("intake: the flow kind is undecided after the naming - the one question asked - session=%s",
+                session_id)
+    return flow.FLOW_KIND_QUESTION
+
+
 async def _settle_geometry_hold(inbound: InboundMessage, db, *, locked, messages: list,
-                                revision: str, session_repo, logger) -> MessageOutcome | None:
+                                revision: str, session_repo, logger, note: str = "") -> MessageOutcome | None:
     """THE GEOMETRY CHECK'S TURN, taken here because it must be decided under the same row lock
     as every other turn: two answers sent at once must not both find 'nobody asked the model
     yet' and queue two namings with two holding lines. The first answer that reaches the intake
@@ -530,6 +700,13 @@ async def _settle_geometry_hold(inbound: InboundMessage, db, *, locked, messages
 
         reading = pm.reading_for(messages)
         question = pm.question_for(reading, messages)
+        from meshpipeline.agents.intake import flow
+        if question and flow.asks_something(inbound.content):
+            # A QUESTION BEFORE THE PURPOSE is answered first, briefly, by the intake - which closes its
+            # answer with this same purpose question (agents/intake/flow.return_line)
+            return None
+        # (THROUGH OR AROUND is never asked here, before the naming: the naming decides it again with these
+        # words and the pictures, and the question follows only what is still undecided then - ask_flow_kind)
         if question:
             await session_repo.append_message(db, inbound.session_id, "assistant", question)
             logger.info("intake message: the purpose is unclear (%s) - asked once - session=%s",
@@ -541,6 +718,8 @@ async def _settle_geometry_hold(inbound: InboundMessage, db, *, locked, messages
     if not gh.queue_naming(session_id, inbound.owner_id, gh.purpose_from(messages), interpretation):
         return None
     reply = gh.hold_reply(thermal, headline, reading)
+    if note:
+        reply = f"{reply} {note}"
     try:
         await session_repo.append_message(db, inbound.session_id, "assistant", reply)
     except Exception:
@@ -698,11 +877,10 @@ async def _settle_unit(inbound: InboundMessage, db, *, gate: dict, locked, revis
         # size makes that absurd), which the stage then shows beside the part's length for the user
         # to change. Asked again instead, it was the same question every turn and the geometry
         # check waited on it for good.
-        from meshpipeline.agents.intake import turn as _turn
         from meshpipeline.application import geometry_hold as gh
 
         # only a PURE deferral: "you pick, but not metres" rules a unit out, and is asked again
-        pure = _turn.defers_to_default(inbound.content) and not uc.mentions_unit(inbound.content)
+        pure = uc.leaves_unit_to_us(inbound.content)
         size = gh.measured_size_mm(str(inbound.session_id)) if pure else None
         if size:
             _words = gh.purpose_from(getattr(locked, "messages", None))
@@ -863,5 +1041,5 @@ def _reply_of(result: dict) -> str:
 
 
 __all__ = ["STILL_RUNNING_REPLY", "GateChange", "GateTransition", "InboundMessage", "NoteStatus",
-           "add_console_note",
+           "add_console_note", "ask_flow_kind",
            "MessageOutcome", "MessageStatus", "PreviousRun", "accept", "persist_turn"]

@@ -100,12 +100,8 @@ def _param_spec():
     from meshpipeline.engines.base import ParamSpec
     return ParamSpec(
         key=NARROW_GAPS_PARAM, values=(FULL_RULE, WITHIN_LIMIT), default="", required=False,
-        ask=("NEVER ask this on your own. Set it ONLY when the measured engine recommendation says "
-             "the narrow gaps need more cells than one job may build and the user, offered the "
-             "choices it lists, picks fewer cells across the narrowest spots: then "
-             f"'{WITHIN_LIMIT}' (the run puts as many across them as the cell limit allows, 13 "
-             f"everywhere else). '{FULL_RULE}' keeps 13 cells across every gap. Leave it out "
-             "otherwise."))
+        ask=("NEVER ask this and never offer it as a choice: the cell count is the user's to state "
+             "in their own words, never ours to ask. Leave it out."))
 
 
 #: The optional engine param the user's choice travels in (declared by snappy and cfMesh).
@@ -241,25 +237,19 @@ class GapPlan:
         return int(max(self.budget_in, min(self.budget_in + refined * CEILING_SLACK, room)))
 
     def options(self) -> list[str]:
-        """The user's choices when the limit cannot hold the rule, in plain words with numbers."""
+        """What the user can do when the limit cannot hold the rule, in plain words with numbers. No
+        choice of ours to pick from (Areen, 14 Nov): a cell count they write in the notes is used as
+        stated, on a bigger machine when it needs one (engines/cfd_requirements CFDREQ-3)."""
         if self.status not in (OVER_LIMIT, ACCEPTED_FEWER, LIMITED):
             return []
-        out = []
         where = (f", for example at ({', '.join(f'{v * 1000:.0f}' for v in self.where_m)}) mm"
                  if self.where_m else "")
-        if self.affordable is not None and self.affordable_cost is not None:
-            out.append(
-                f"Accept about {self.affordable:.0f} cells across the {self.spots} narrowest spot"
-                f"{'s' if self.spots != 1 else ''} (down to {_mm(self.narrowest_m or 0.0)} "
-                f"across{where}) and {self.rule:.0f} everywhere else - about "
-                f"{_cells(self.base_cells + self.affordable_cost * BUDGET_HEADROOM)} cells, "
-                "inside the limit.")
-        out.append(f"Keep {self.rule:.0f} cells across every gap - about "
-                   f"{_cells(self.needed * BUDGET_HEADROOM)} cells, which needs the "
-                   f"{_cells(self.limit)}-cell limit of one job raised.")
-        out.append("Mesh a smaller piece of the geometry - the part you need, cut away from the "
-                   f"narrowest spots{where}.")
-        return out
+        from meshpipeline.contracts.mesh_machine import normal_cells
+        need = self.needed * BUDGET_HEADROOM
+        return [f"For {self.rule:.0f} cells across every gap, ask for about {_cells(need)} cells in "
+                "your notes" + (" - it is meshed on a bigger machine." if need > normal_cells() else "."),
+                "Mesh a smaller piece of the geometry - the part you need, cut away from the "
+                f"narrowest spots{where}."]
 
     def words(self, cell_m: float | None = None, *, auto: bool = False) -> str:
         """What the run says about its narrow spots (`cell_m`: the cell they are measured
@@ -325,9 +315,9 @@ class GapPlan:
                 "layer_cells": int(self.after_cells), "ceiling": self.ceiling(),
                 "resolution_short": self.resolution_short,
                 # THE BIG-MACHINE HOOK (PLAN-cfd-3, engines/resolution_policy): the cells the rule
-                # needs are over one job's limit, so this mesh belongs on a bigger machine. Nothing
-                # routes on it yet - the runner is not built - and until it is the run is meshed
-                # as the limit holds and says so (the statuses above)
+                # needs are over the run's limit. Nothing is asked and nothing routes on it: the
+                # run is meshed as the limit holds and says so (the statuses above); the bigger
+                # machine is the user's, by a count in their notes (RUN-9)
                 "route_big": self.route_big,
                 "route_rule": "PLAN-cfd-3"}
 
@@ -480,7 +470,10 @@ class GapEstimate:
         return GAP_CELLS_ACROSS * (self.limit / (BUDGET_HEADROOM * self.cells)) ** (1.0 / 3.0)
 
     def sentence(self) -> str:
-        """What the user is told before approving, in plain words."""
+        """What the measurement says, in plain words - background for the intake, which answers a
+        question with it. It offers NO CHOICE (Areen, 14 Nov: the cell count is the user's to state,
+        never ours to ask): with no count stated the run stays within the standard machine, and a
+        count the user states is used as stated, on a bigger machine when it needs one."""
         where = (f"the narrowest gap is about {_mm(self.narrowest_m)} across"
                  if self.narrowest_m else "the part has narrow gaps")
         if not self.over_limit:
@@ -490,29 +483,10 @@ class GapEstimate:
                     "one job.")
         return (f"Cell sizing: {where}. {GAP_CELLS_ACROSS:.0f} cells across every gap needs at "
                 f"least about {_cells(self.cells * BUDGET_HEADROOM)} cells, more than the "
-                f"{_cells(self.limit)} one job may build. You can pick one: (1) accept "
-                f"fewer cells across the narrowest spots - about {max(self.affordable, 1):.0f} or "
-                "more, as many as the limit holds, with the spots named in the result; (2) have "
-                "the cell limit raised; (3) mesh a smaller piece of the geometry. With no pick, "
-                "the narrowest spots get as many cells across as the limit holds, and the mesh "
-                f"is still checked for {GAP_FLOOR_CELLS:.0f} across its narrowest wall.")
-
-    def guidance(self, takers: tuple[str, ...] | None = None) -> str:
-        """What the intake model is told to do with the user's pick. `takers` are the engines (by
-        label) that declare the narrow_gaps choice; None = not said. An engine without it would
-        refuse the parameter, so the model is told to send it only with one of them."""
-        if not self.over_limit:
-            return ""
-        if takers is not None and not takers:
-            return ("None of the engines listed takes this choice: leave "
-                    f"{NARROW_GAPS_PARAM} out whatever the user picks.")
-        only = (f" This choice is only for {' and '.join(takers)}: with any other engine leave "
-                f"{NARROW_GAPS_PARAM} out (it does not take it)." if takers else "")
-        return (f"If the user picks (1), submit engine_params {NARROW_GAPS_PARAM}="
-                f"'{WITHIN_LIMIT}'. Otherwise leave {NARROW_GAPS_PARAM} out: the run then checks "
-                "the limit again before meshing and, if it still cannot hold the rule, refines the "
-                "narrowest spots as far as the limit holds and holds the mesh to the full floor."
-                + only)
+                f"{_cells(self.limit)} our standard machine carries. With no cell count from the "
+                f"user the mesh stays within {_cells(self.limit)} and the narrowest spots get as "
+                f"many cells across as that holds (about {max(self.affordable, 1):.0f}); a count "
+                "the user states is used as stated, on a bigger machine when it needs one.")
 
 
 def estimate_from_traits(traits, *, limit: int | None = None) -> GapEstimate | None:

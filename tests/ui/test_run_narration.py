@@ -1,4 +1,4 @@
-# Responsibility: Verify a run's narration in a real browser: the commentary lines Hexera says as it decides stay in view, the machine and the mesher's stages read in plain words with their counts and their own work icon, a heartbeat adds its note without losing the count, and the mesher's own label never reaches the page once the run narrates.
+# Responsibility: Verify a run's narration in a real browser: the decisions Hexera says as it designs stay in view on the design row, the machine and the mesher's stages read in plain words with their counts on the live line of the row running, a heartbeat adds its note without losing the count, and the mesher's own label never reaches the page once the run narrates.
 # Boundaries: the console's own modules in the page, fed through the one event dispatch; no network.
 from __future__ import annotations
 
@@ -13,11 +13,11 @@ SETUP = """
   Stage.mount();
   let cur = null;
   const ev = (e) => { cur = dispatch(e, Stage, cur); };
-  const line = () => { const g = document.querySelector('#run-progress .gp'); return {
-    now: g.querySelector('.gp-now').textContent, note: g.querySelector('.gp-note')?.textContent || '',
-    said: [...g.querySelectorAll('.gp-say')].map(p => p.textContent),
-    icon: (g.querySelector('.gp-mark svg')?.getAttribute('class') || ''), live: g.dataset.live === '1',
-    text: g.textContent }; };
+  const line = () => { const l = [...document.querySelectorAll('.proc .rr-live')].find(e => !e.hidden);
+    return { now: l ? l.querySelector('.rr-now').textContent : '', note: l?.querySelector('.rr-note')?.textContent || '',
+    row: l ? l.closest('.tl-node').dataset.row : '', live: !!l,
+    said: [...document.querySelectorAll('[data-row=design] .rr-dec li')].map(p => p.textContent),
+    text: document.querySelector('.proc').textContent }; };
 """
 
 
@@ -41,15 +41,15 @@ def test_the_run_says_what_it_decided_and_what_it_is_doing(live):
       return {planning, machine, filling, beat, done: line()};
     })()""", timeout=60)
     assert out["planning"]["said"] == ["The 26 fillets and 3 holes carry the stress, so they get the finest cells."]
-    assert out["planning"]["icon"].startswith("wi wi-plan")
+    assert out["planning"]["row"] == "design"
     assert out["machine"]["now"] == "Meshing on a large machine (256 GB)…"
     f = out["filling"]
-    assert f["now"] == "Filling the volume · 1.2M of about 1.9M cells…" and "wi-fill" in f["icon"]
+    assert f["now"] == "Filling the volume · 1.2M of about 1.9M cells…" and f["row"] == "build"
     assert "snappy" not in f["text"].lower()
     b = out["beat"]
     assert b["now"] == f["now"] and b["note"].startswith("Still filling the volume · 34 min")
     d = out["done"]
-    assert not d["live"] and d["icon"] == "" and d["said"] == out["planning"]["said"]
+    assert not d["live"] and d["said"] == out["planning"]["said"]
     assert_clean(live, "a narrated run")
 
 
@@ -76,6 +76,6 @@ def test_work_before_the_mesh_is_what_the_running_step_says(live):
       ev({type:'meshing', stage:'builder', engine:'gmsh', budget_s:3600});
       return {measuring, planning, meshing: line()};
     })()""", timeout=60)
-    assert out["measuring"]["now"] == "Measuring your part…" and "wi-measure" in out["measuring"]["icon"]
+    assert out["measuring"]["now"] == "Measuring your part…" and out["measuring"]["row"] == "design"
     assert out["planning"]["now"] == "Planning the mesh · Pass 2 of up to 6…"
-    assert out["meshing"]["now"] != out["planning"]["now"]
+    assert out["meshing"]["now"] != out["planning"]["now"] and out["meshing"]["row"] == "build"

@@ -155,7 +155,7 @@ def test_the_castellation_budget_is_never_cut_under_a_quarter_of_the_plan():
     assert castellation_budget(2_000_000, 40_000_000, margin=1.5) == 500_000
 
 
-# NEVER BELOW THE CASE'S OWN BACKGROUND MESH (release Gate C, 26 Oct)
+# NEVER BELOW THE CASE'S OWN BACKGROUND MESH (release validation, 26 Oct)
 
 _GATE_C_LOG = """Refined mesh : cells:131112  faces:400000  points:140000  unbalance:0.02
 Ideal layer addition : cells:135816  unbalance:0.01
@@ -179,7 +179,7 @@ def test_the_background_mesh_is_read_from_the_cases_blockmesh(tmp_path):
 
 
 def test_a_plan_under_its_own_background_is_measured_against_the_background(tmp_path):
-    """The native snappy pass of release Gate C: a 40,000-cell plan on a 138,240-cell blockMesh. No
+    """The native snappy pass of release validation: a 40,000-cell plan on a 138,240-cell blockMesh. No
     castellation budget can shrink the background, so measured against 40,000 the brake read 3.3x and
     stopped a sound mesh - but only on 8 oversubscribed ranks, slow enough for the watch to look."""
     ws = _case(tmp_path, plan=40_000)

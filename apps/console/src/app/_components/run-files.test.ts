@@ -31,7 +31,7 @@ test("the run is read from the path, never from /runs/new", () => {
   assert.equal(runIdFrom("/runs/8f14e45f-ceea"), "8f14e45f-ceea");
   assert.equal(runIdFrom("/runs/new"), null);
   assert.equal(runIdFrom("/runs"), null);
-  assert.equal(runIdFrom("/usage"), null);
+  assert.equal(runIdFrom("/settings/billing"), null);
 });
 
 test("an empty panel says why", () => {

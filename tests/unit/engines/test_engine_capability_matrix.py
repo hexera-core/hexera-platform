@@ -42,6 +42,7 @@ EXPECTED: dict[tuple[str, str], set[str]] = {
     ("gmsh", "external"): {"cad", "surface"},
     ("gmsh", "internal"): {"cad", "surface"},
     ("vmtk", "internal"): {"cad", "surface"},
+    ("netgen", "internal"): {"cad", "surface"},
     ("snappy_multiregion", "multi-region"): {"cad", "surface"},
     ("snapgrid", "multi-region"): {"cad"},
 }
@@ -267,7 +268,7 @@ def test_the_start_of_run_choice_reads_the_declarations(monkeypatch, tmp_path, f
 # surface internal flow (the shared staging, cad/internal_surface): only the declarations changed
 
 
-_SURFACE_TAKERS = ("snappy", "cfmesh", "vmtk", "gmsh")
+_SURFACE_TAKERS = ("snappy", "cfmesh", "vmtk", "gmsh", "netgen")
 
 
 @pytest.fixture
@@ -279,7 +280,7 @@ def internal_from_surface():
 
 def test_internal_from_surface_is_read_from_the_engines_declaration(internal_from_surface):
     # no per-engine special case: every engine that declares it is offered for an STL
-    assert cap.engines_for("internal", "surface") == ["cfmesh", "snappy", "vmtk", "gmsh"]
+    assert cap.engines_for("internal", "surface") == ["cfmesh", "snappy", "vmtk", "netgen", "gmsh"]
     for name in _SURFACE_TAKERS:
         assert get_spec(name).forms_for("internal") == ("cad", "surface")
         assert "internal flow" in cap.takes_line(get_spec(name))
@@ -323,7 +324,8 @@ def test_the_aorta_stl_is_offered_every_internal_engine_once_they_take_surfaces(
     from meshpipeline.pipeline import engine_fallback as lad
     st = _state("snappy", "internal", "surface", input_kind="fluid-domain")
     assert not get_spec("snappy").admit(lad._declared_evidence(st, "snappy"))
-    assert [r.engine for r in lad.ladder(st)] == ["snappy", "cfmesh", "vmtk", "gmsh"]
+    # Netgen last: its tetrahedra are not the hex-dominant mesh snappy was approved for
+    assert [r.engine for r in lad.ladder(st)] == ["snappy", "cfmesh", "vmtk", "gmsh", "netgen"]
 
 
 def test_a_future_engine_is_offered_from_its_spec_alone():

@@ -13,7 +13,7 @@ import { orient } from "./view_controls.js";
 import { parseColour, themeRgb } from "./toolbar.js";
 
 const AMBIENT = 0.24, DIFFUSE = 0.74, SPECULAR = 0.06;
-const BODY_FALLBACK = [0.49, 0.51, 0.54];
+const BODY_FALLBACK = [0.53, 0.52, 0.49];
 // a row with more tagged parts in view than this gets one tag per cluster of them, not one each
 const MANY = 8, CLUSTER_PX = 64;
 // an area drawn smaller than this (css pixels across) gets a ring, so it can be found
@@ -50,7 +50,7 @@ export async function mountPartsView(host, payload, opts = {}) {
 
   // the card's own background behind the model, so it sits on the card as the picture did
   const card = host.closest(".req-card") || host;
-  const bg = parseColour(getComputedStyle(card).backgroundColor) || themeRgb("--viewer-canvas", [0.08, 0.08, 0.08]);
+  const bg = parseColour(getComputedStyle(card).backgroundColor) || themeRgb("--viewer-canvas", [0.02, 0.02, 0.02]);
   const BODY = themeRgb("--part-body", BODY_FALLBACK);
   const canvas = mountCanvas(host, { background: bg, ignore: ".pv-tags" });
   const { ren, rw, apiRW, cam } = canvas;

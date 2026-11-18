@@ -84,6 +84,10 @@ def viewer_face_names(workspace) -> dict[int, str] | None:
     other side is inside the mesh); None for a single part."""
     q = _read(Path(workspace) / "quality.json")
     tags = ((q.get("fea") or {}).get("assembly") or {}).get("face_tags") or {}
+    if not tags and (q.get("fea") or {}).get("shell"):
+        # a delivered shell: its parts by the CAD's names, each holding its mid-faces (engines/shell_delivery
+        # part_tags); one delivered before its parts were named, its mid-faces (Mid_k) as shell.msh groups them
+        tags = (q.get("fea") or {}).get("part_tags") or (q.get("fea") or {}).get("face_tags") or {}
     if not tags:
         return None
     out: dict[int, str] = {}
@@ -162,6 +166,12 @@ def _ready(ws: Path, line: dict) -> dict:
     return {**line, "file_ready": ready, **({} if ready else {"file_note": FILE_MISSING})}
 
 
+def _asked_words(q) -> list[str]:
+    """PLAN-fea-34: each requirement of the user's notes, asked against delivered ([] with none)."""
+    from meshpipeline.engines.mesh_requirements import report_words
+    return report_words(q.get("requirements"))
+
+
 def results(workspace) -> dict | None:
     """The block, or None for a workspace that holds no FEA plan."""
     from meshpipeline.contracts.decision_record import limit_met
@@ -173,6 +183,10 @@ def results(workspace) -> dict | None:
     q = _read(ws / "quality.json")
     if not plan or not (q.get("fea") or {}).get("plan"):
         return None
+    if (q.get("fea") or {}).get("shell"):
+        # SHSTAGE-7: the delivered shell's own block (its count, quality, the user's count, one plain line)
+        from meshpipeline.engines.shell_delivery import results as shell_results
+        return shell_results(ws, q, plan)
     fea = q.get("fea") or {}
     rules = fea.get("rules") or {}
     cells = int(q.get("cells") or 0)
@@ -292,7 +306,7 @@ def results(workspace) -> dict | None:
         "elements": cells,
         "through_wall": through,
         "plan_words": (list(plan.get("words") or []) + ([net["words"]] if net and net.get("words") else [])
-                       + [w for w in [tiny_words(tiny), faces_said] if w]),
+                       + [w for w in [tiny_words(tiny), faces_said] if w] + _asked_words(q)),
         "hot_spots": spots,
         "faces": faces,
         "download": {"words": "The full download holds:",

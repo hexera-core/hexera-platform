@@ -442,6 +442,34 @@ def apply(gmsh, merges: dict) -> None:
           f"curves meshed through: {merges.get('chains')}", file=sys.stderr)
 
 
+def restricted(gmsh, merges: dict | None, surfaces) -> dict:
+    """The merges on `surfaces` only (LAD-fea-11: a kept part's, saved with its mesh for the pass that reads it
+    back): each merged face, its record row, and each chain whose curves all bound those faces."""
+    if not active(merges):
+        return {}
+    own = {int(s) for s in surfaces}
+    curves = {abs(int(c)) for s in own for _d, c in gmsh.model.getBoundary([(2, s)], oriented=False)}
+    m = merges or {}
+    chains = [[int(c) for c in ch] for ch in m.get("chains") or [] if {int(c) for c in ch} <= curves]
+    in_chain = {c for ch in chains for c in ch}
+    out = {"faces": {int(s): int(n) for s, n in (m.get("faces") or {}).items() if int(s) in own},
+           "chains": chains, "alone": [int(s) for s in m.get("alone") or [] if int(s) in own],
+           "rows": [r for r in m.get("rows") or [] if int(r["face"]) in own],
+           "short": [r for r in m.get("short") or [] if int(r["curve"]) in in_chain]}
+    return out if active(out) else {}
+
+
+def united(a: dict | None, b: dict | None) -> dict:
+    """Two passes' merges as one, for what is done to the finished mesh (curving, fold-in, the record): this
+    pass's own and the kept parts' (LAD-fea-11). A face key read back from json is an int again."""
+    if not active(b) or b is None:
+        return dict(a or {})
+    a = a or {}
+    return {"faces": {**{int(k): int(v) for k, v in (b.get("faces") or {}).items()},
+                      **{int(k): int(v) for k, v in (a.get("faces") or {}).items()}},
+            **{k: list(a.get(k) or []) + list(b.get(k) or []) for k in ("chains", "alone", "rows", "short")}}
+
+
 def members(merges: dict) -> list[tuple[int, int]]:
     """The CAD entities whose mesh a compound made (their nodes to settle back onto the CAD)."""
     faces = {int(s) for s in merges.get("faces") or {}} | {int(n) for n in (merges.get("faces") or {}).values()}

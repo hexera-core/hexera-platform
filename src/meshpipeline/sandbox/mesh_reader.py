@@ -102,7 +102,9 @@ def extract_patch_meshes(entity_tags_by_name: dict[str, list[int]],
                 face_blocks.append(np.hstack([pre, idx]))
 
         if face_blocks:
-            faces_flat = np.vstack(face_blocks).flatten()
+            # blocks differ in width when a surface mixes triangles and quads (shell meshes,
+            # quad-dominant surfaces): flatten each block, then join - never stack rows
+            faces_flat = np.concatenate([b.ravel() for b in face_blocks])
             meshes[name] = pv.PolyData(coords, faces_flat).clean()
 
     return meshes

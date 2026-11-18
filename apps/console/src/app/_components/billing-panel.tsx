@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 
 import {
   type ExtraCreditsOffer,
@@ -83,11 +83,14 @@ export function PlanPicker({
   plans,
   currentPlan,
   billingEnabled,
+  children,
 }: {
   plans: Plan[];
   /** the tier this organisation pays for, or "" - a subscriber switches in place, never checks out */
   currentPlan: string;
   billingEnabled: boolean;
+  /** an extra card drawn at the end of the plan grid (the one-off credits offer) */
+  children?: ReactNode;
 }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -137,9 +140,7 @@ export function PlanPicker({
           return (
             <div className={`card billing-plan-card${current ? " card--accent" : ""}`} key={plan.name}>
               <p className="label">{planLabel(plan.name)}</p>
-              <p style={{ fontSize: "1.4rem", fontFamily: "var(--mono)", color: "var(--text-bright)" }}>
-                {plan.included_credits.toLocaleString()} credits / month
-              </p>
+              <p className="stat-big">{plan.included_credits.toLocaleString()} credits / month</p>
               <p className="page__sub">{planTerms(plan)}</p>
               {current ? (
                 <span className="status status--ok">Current plan</span>
@@ -172,6 +173,7 @@ export function PlanPicker({
             </div>
           );
         })}
+        {children}
       </div>
     </>
   );
@@ -207,19 +209,16 @@ export function ExtraCreditsPicker({ offer }: { offer: ExtraCreditsOffer | null 
   }
 
   return (
-    <aside className="card card--accent" style={{ display: "grid", gap: ".75rem" }}>
-      <div>
-        <p className="label">One-off credits</p>
-        <p style={{ fontSize: "1.55rem", fontFamily: "var(--mono)", color: "var(--text-bright)" }}>
-          {extraCreditsLabel(activeOffer)}
-        </p>
-        <p className="page__sub">Buy extra capacity once. No subscription changes.</p>
-      </div>
+    <div className="card billing-plan-card card--accent">
+      <p className="label">One-off credits</p>
+      <p className="stat-big">{extraCreditsLabel(activeOffer)}</p>
+      <p className="page__sub">Buy extra capacity once. No subscription changes.</p>
       <div className="billing-actions">
         <label className="label" htmlFor="extra-credit-packs">
           Packs
         </label>
         <input
+          className="billing-pack-input"
           id="extra-credit-packs"
           min={1}
           max={100}
@@ -227,7 +226,6 @@ export function ExtraCreditsPicker({ offer }: { offer: ExtraCreditsOffer | null 
             const next = Number(event.currentTarget.value);
             setQuantity(Number.isFinite(next) ? Math.min(Math.max(Math.trunc(next), 1), 100) : 1);
           }}
-          style={{ width: "5rem" }}
           type="number"
           value={quantity}
         />
@@ -240,6 +238,6 @@ export function ExtraCreditsPicker({ offer }: { offer: ExtraCreditsOffer | null 
           {error}
         </div>
       ) : null}
-    </aside>
+    </div>
   );
 }

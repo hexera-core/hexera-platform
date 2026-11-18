@@ -158,6 +158,13 @@ def mesh_ecxml(src, case, plan: G.GridPlan | None = None, *, binary: bool | None
     # meshes every layer, however flat its cells
     placement = place(model, layers=LayerRule.from_plan(plan) if thin_layers else False)
     t["placed"] = time.perf_counter()
+    if getattr(plan, "background_size", 0.0) and plan.background_size > 0:
+        # CFDREQ-2: the user's background cell, as cells along the domain's longest side (the budget may still
+        # coarsen it, as it does ours, and the report says what was built)
+        _dom = B.geometry_of(placement, plan).domain
+        _longest = max(_dom.hi[i] - _dom.lo[i] for i in range(3))
+        plan = G._replace(plan, background_cells=max(2, int(round(_longest / plan.background_size))),
+                          background_size=0.0)
     asked = plan
     plan, memory = _plan_for_memory(plan, memory_bytes)
     try:

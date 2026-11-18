@@ -171,6 +171,9 @@ def test_the_served_routes_are_exactly_the_supported_set():
         # signature rather than by any credential of ours, which is why it is listed apart.
         ("POST", "/api/v1/webhooks/stripe"),
         ("GET", "/api/v1/organization"),         # the caller's own organisation and its members
+        # THE TEAM'S MESHING STANDARD (the console's Meshing settings), the caller's own organisation's
+        ("GET", "/api/v1/organization/meshing-standard"),
+        ("PUT", "/api/v1/organization/meshing-standard"),   # console session only; read once on save
         ("GET", "/api/v1/simulation"),           # the tenant's run list, keyset paged
         ("GET", "/api/v1/simulation/{job_id}"),
         # a NEW download link for one deliverable, minted at click time; its life scales with size
@@ -201,6 +204,7 @@ def test_the_served_routes_are_exactly_the_supported_set():
         ("GET", "/api/v1/geometry/{session_id}/check/parts/{name}.png"),  # the checklist card's pictures
         ("GET", "/api/v1/geometry/{session_id}/check/parts/model"),  # the checklist's model, turned in 3D
         ("POST", "/api/v1/geometry/{session_id}/check/parts/finalize"),  # Finalize notes: read the parts they name
+        ("GET", "/api/v1/geometry/{session_id}/check/shell-surface"),  # SHSTAGE-4: the mid-surface over the part
         ("POST", "/api/v1/geometry/{session_id}/check/retry"),    # run the scout or the naming again
         ("POST", "/api/v1/ws/ticket"),
         # THE DATA-SUBJECT ROUTES (docs/compliance/dsar-runbook.md). Console session only - an API

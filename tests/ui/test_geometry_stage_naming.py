@@ -94,8 +94,9 @@ def test_the_stage_opens_greyed_out_while_naming_then_takes_the_models_labels_an
     }})()""")
     assert naming["fellBack"] is False and naming["naming"] is False and naming["pins"] == 2, naming
     assert naming["edges"] == 12 and naming["smooth"] is True and naming["bare"] is True, naming
-    # before the user has answered, the banner says the stage is waiting on the chat
-    assert naming["bannerHidden"] is False and "Answer the question" in naming["banner"], naming
+    # before the naming is asked, the banner says the names are the measuring step's (the chat is closed
+    # while the stage is up, so it never sends the user there)
+    assert naming["bannerHidden"] is False and "fix them here and proceed" in naming["banner"], naming
     assert naming["greyed"] is False and naming["allOn"] is True and naming["names"] == ["inlet", "outlet"], naming
     # the axes overlay: three lines with their letters, and from the opening view Z runs up the screen
     ax = naming["axes"]

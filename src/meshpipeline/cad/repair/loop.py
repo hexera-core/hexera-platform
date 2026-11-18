@@ -11,6 +11,7 @@ import time
 from dataclasses import dataclass, field, replace
 
 import meshpipeline.settings.cad_repair as rcfg
+from meshpipeline.cad.repair import mesh_probe
 from meshpipeline.cad.repair.contracts import DefectSeverity
 
 # The ONE list of sources whose directive may answer a held defect, shared with RepairPlanner so
@@ -36,6 +37,8 @@ TIME_BUDGET = "time_budget"
 STALLED = "stalled"
 #: The defect scan hit its own budget, so the list is partial and no absence can be claimed.
 SCAN_INCOMPLETE = "scan_incomplete"
+#: Every error left is a `mesh_*` one: the geometry checks pass but gmsh will not mesh the part.
+UNMESHABLE = "unmeshable"
 
 _ERRORS = (DefectSeverity.error, DefectSeverity.fatal)
 
@@ -74,6 +77,10 @@ class RepairRun:
     planner_label: str = ""
     original: dict = field(default_factory=dict)
     final: dict = field(default_factory=dict)
+    #: Seconds on the run's clock from before the first scan to the end, and how many scans the
+    #: shape took (the first plus every re-inspection). Defaulted so older constructions work.
+    total_s: float = 0.0
+    scan_count: int = 0
 
     @property
     def resolved(self) -> bool:
@@ -85,7 +92,8 @@ class RepairRun:
                 "operations": [v.to_dict() for v in self.verdicts],
                 "refusals": [dict(r) for r in self.refusals],
                 "defects_remaining": [d.to_dict() for d in self.defects],
-                "original": dict(self.original), "final": dict(self.final)}
+                "original": dict(self.original), "final": dict(self.final),
+                "total_s": self.total_s, "scan_count": self.scan_count}
 
 
 def _judged(session: RepairSession) -> tuple:
@@ -102,6 +110,20 @@ def _judged(session: RepairSession) -> tuple:
 def _errors_remain(session: RepairSession) -> bool:
     """Is any defect left that the kernel calls an error or worse?"""
     return any(d.severity in _ERRORS for d in _judged(session))
+
+
+def only_mesh_errors(defects) -> bool:
+    """Is every error-severity defect a mesh code, and is at least one of them EVIDENCE?
+
+    Evidence is a mesh code other than the two "no answer" ones (`mesh_timeout`,
+    `mesh_probe_error`): those also come from a skipped, unwritable or dead probe, so a list holding
+    only them says the mesher was not heard from, not that it refused. Only a live probe emits any
+    of these codes, so with the flag off this is always False.
+    """
+    errors = [d for d in defects if d.severity in _ERRORS]
+    return (bool(errors)
+            and all(d.code in mesh_probe.MESH_CODES for d in errors)
+            and any(d.code not in mesh_probe.NO_ANSWER_CODES for d in errors))
 
 
 def _abandoned(session: RepairSession) -> bool:
@@ -148,6 +170,8 @@ def _terminal(session: RepairSession, fallback: str) -> str:
         return SCAN_INCOMPLETE
     if not _errors_remain(session) and not _abandoned(session):
         return RESOLVED
+    if only_mesh_errors(_judged(session)):
+        return UNMESHABLE
     return fallback
 
 
@@ -159,11 +183,15 @@ def _unreached(chosen) -> list[dict]:
 
 def run(shape, *, planner=None, budget: LoopBudget | None = None, tolerance_mm: float,
         session: RepairSession | None = None, clock=time.monotonic,
-        reserved: frozenset = frozenset()) -> RepairRun:
+        reserved: frozenset = frozenset(), deadline_s: float | None = None) -> RepairRun:
     """Repair `shape` by trying one operation at a time, and report everything that happened.
 
     `session` and `clock` are injectable so the driver's budget arithmetic can be tested without
     a kernel and without waiting.
+
+    `deadline_s` is the run's one absolute deadline on `clock` (`conservative.repair_step_file`
+    takes it at entry, before the read); given, the loop has the lesser of it and its budget's
+    `timeout_s`. None, for a direct caller, is the old behaviour (region_loop.run_regions says why).
 
     WHY THE PLANNER DECIDES WHETHER THERE IS WORK, rather than a blanket severity test on the
     defect list. A warning-only run must still reach operations such as `fix_small_edges`; a sound
@@ -179,12 +207,17 @@ def run(shape, *, planner=None, budget: LoopBudget | None = None, tolerance_mm: 
     started = clock()
 
     def remaining() -> float:
-        return limits.timeout_s - (clock() - started)
+        left = limits.timeout_s - (clock() - started)
+        return left if deadline_s is None else min(left, deadline_s - clock())
 
     # `reserved` reaches the SESSION as well as the planner: the planner will not aim at a held
     # entity, and the session will not let a whole-shape sweep remove one it never aimed at.
     work = session if session is not None else RepairSession(
-        shape, remaining_s=remaining, reserved=reserved)
+        shape, remaining_s=remaining, reserved=reserved, clock=clock)
+    # A SESSION THE LOOP BUILDS TIMES ITS STEPS ON THE LOOP'S CLOCK, so one fake clock drives every
+    # number the run reports. An injected session keeps the clock it was given: the loop does not
+    # reach into it, and a test that scripted the loop's clock tick by tick is not shifted by
+    # extra reads.
     if work.remaining_s is None:
         work.remaining_s = remaining
     history = RunHistory()
@@ -201,7 +234,8 @@ def run(shape, *, planner=None, budget: LoopBudget | None = None, tolerance_mm: 
         return RepairRun(shape=work.shape, verdicts=(), refusals=tuple(history.refusals),
                          defects=work.defects(), stopped_because=SCAN_INCOMPLETE,
                          complete_scan=False, planner_label=getattr(chosen, "label", ""),
-                         original=original, final=original)
+                         original=original, final=original,
+                         total_s=clock() - started, scan_count=work.scan_count)
 
     entered_with_errors = _errors_remain(work)
     consecutive_misses = 0
@@ -209,7 +243,7 @@ def run(shape, *, planner=None, budget: LoopBudget | None = None, tolerance_mm: 
         if len(work.log) >= limits.max_ops:
             stopped = _terminal(work, OP_BUDGET)
             break
-        if clock() - started >= limits.timeout_s:
+        if remaining() <= 0.0:
             # THE WHOLE LOOP, not one operation. Applied per operation, a six-operation run could
             # spend six times a job's allowance before admission has judged the original at all.
             stopped = _terminal(work, TIME_BUDGET)
@@ -283,8 +317,10 @@ def run(shape, *, planner=None, budget: LoopBudget | None = None, tolerance_mm: 
     logger.info("repair loop: stopped=%s attempts=%d kept=%d planner=%s",
                 stopped, len(work.log), sum(1 for v in work.log if v.kept),
                 getattr(chosen, "label", ""))
+    final = work.current().to_dict()
     return RepairRun(shape=work.shape, verdicts=tuple(work.log),
                      refusals=tuple(history.refusals), defects=work.defects(),
                      stopped_because=stopped, complete_scan=work.complete_scan,
                      planner_label=getattr(chosen, "label", ""),
-                     original=original, final=work.current().to_dict())
+                     original=original, final=final,
+                     total_s=clock() - started, scan_count=work.scan_count)

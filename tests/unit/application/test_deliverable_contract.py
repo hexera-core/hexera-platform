@@ -22,7 +22,8 @@ def test_the_marker_collision_is_real_so_guessing_could_not_have_worked():
             by_marker.setdefault(spec.deliverable.marker, []).append(name)
     shared = {m: e for m, e in by_marker.items() if len(e) > 1}
     # the two multi-region engines both deliver a case marked by its regionProperties
-    assert shared == {"constant/polyMesh/owner": ["cfmesh", "snappy"],
+    # (Netgen delivers an OpenFOAM polyMesh too, so it shares the cfMesh/snappy marker)
+    assert shared == {"constant/polyMesh/owner": ["cfmesh", "netgen", "snappy"],
                       "constant/regionProperties": ["snapgrid", "snappy_multiregion"]}, shared
 
 

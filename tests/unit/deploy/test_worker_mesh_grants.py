@@ -21,7 +21,7 @@ def _grant_block() -> str:
 
 def _vm_block() -> str:
     start = FLEET.index("# 2c) THE BIG-MACHINE ROUTE (RUN-4).")
-    return FLEET[start:FLEET.index("# 3) the metadata the instance reads.", start)]
+    return FLEET[start:FLEET.index("# 2d) WHAT THE WORKER'S OWN BOOT NEEDS", start)]
 
 
 def test_the_fleet_identity_is_granted_the_mesh_job_and_the_exchange_bucket():

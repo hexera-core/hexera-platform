@@ -12,7 +12,7 @@
  */
 import { ASSEMBLY_UPLOAD_MAX_BYTES, confirmGeometryCheck, getGeometryCheck, retryGeometryCheck, sendMessage, uploadAssembly, uploadGeometry }
   from "../api/endpoints.js";
-import { acceptAttribute, isOfferable, loadIntakeFormats, refusalCopy, supportedCopy }
+import { acceptAttribute, isOfferable, loadIntakeFormats, refusalCopy, shortSupportedCopy, supportedCopy }
   from "./intake_formats.js";
 import { get as getState, set as setState } from "../core/state.js";
 
@@ -34,14 +34,13 @@ let deps = {
   geometryCard() {},
   // the check's live line in the conversation (render/check_progress.js), fed by the poll
   checkProgress() {},
-  // the open engine question's choice (every engine that can take the file, with its fit), and
-  // the function that sends the user's pick
-  engineChoice() {},
   // the buttons under an application question (what the mesh is for, an FEA part's analysis
   // type), and the function that sends the picked answer
   choices() {},
   // resolves once the notes' reading has landed (or after a minute): a yes given before Finalize notes waits on it
   notesRead() { return Promise.resolve(); },
+  // the upload opened a session: the page's address names it, so a reload reopens the conversation
+  sessionStarted() {},
 };
 export function configureComposer(d) { deps = { ...deps, ...d }; }
 
@@ -59,6 +58,15 @@ export function disableInput() {
 }
 
 export function setPlaceholder(text) { $("chat-input").placeholder = text; }
+
+/** A RUN IS GOING: the box is closed until it ends, and says why. It used to keep "Type your reply…" on a box that
+ *  took nothing, or - after a reload - "Upload a geometry file to begin…" beside a run that plainly had one. */
+export const RUN_GOING = "Generating the mesh…";
+export function holdForRun() {
+  clearNewRunOffer();
+  disableInput();
+  setPlaceholder(RUN_GOING);
+}
 
 /** THE FILE A RUN MESHES, named by the server. The label was only ever filled by this page's own
  *  upload, so a reload - or a run opened from a link - read "No geometry file selected" beside a
@@ -127,6 +135,7 @@ async function upload(file, many) {
   try {
     const d = many ? await uploadAssembly(many) : await uploadGeometry(file, { onProgress: progress });
     setState.sessionId(d.session_id);
+    deps.sessionStarted(d.session_id);
     lbl.textContent = d.step_filename; lbl.className = "ready";
     // The geometry a session was opened on is FINAL: the intake conversation, the admission
     // verdict and the approved contract are all bound to it, so swapping the file underneath
@@ -173,16 +182,19 @@ let _holdTimer = null, _held = false;
 let _checkState = null;
 // what the stage waits on: the openings of a part, or the detail level of a thermal model
 let _checkMode = "";
-function stageWait() {
-  if (_checkMode === "thermal") return "Check the thermal model beside this chat and press Mesh this model…";
-  if (_checkMode === "fea") return "Check your part and its unit beside this chat and press Proceed…";
-  return "Check the openings beside this chat and press Proceed…";
-}
+/* WHILE THE STAGE IS UP, EVERY SETTING IS MADE ON IT (Areen, 2026-11-13): the box is closed and points
+   at the panel for as long as the stage waits on Proceed - no clock lets it go, so the chat and the
+   stage never ask the same thing at once */
+const STAGE_HINT = "Finish on the panel →";
+function stageWait() { return STAGE_HINT; }
+let _stageOpen = false;
+// the open stage, so a flow the user says in the chat (the flow-kind question's buttons) reaches its form
+let _stage = null;
 let _holdMs = 0;
 function holdInput(placeholder, ms) {
   _held = true; disableInput(); setPlaceholder(placeholder);
   _holdMs = ms;
-  clearTimeout(_holdTimer); _holdTimer = setTimeout(releaseHold, ms);
+  clearTimeout(_holdTimer); _holdTimer = ms ? setTimeout(releaseHold, ms) : null;
 }
 /* a hold whose check is still at work (its worker beating) is not let go on the clock: each live
    poll starts its wait again, so a big file is not released into the chat mid-drawing */
@@ -192,7 +204,7 @@ function keepHolding() {
 }
 export function holdForDrawing() {
   if (_checkState === "done" || _checkState === "over") return enableInput();
-  if (_checkState === "ready") return holdInput(stageWait(), STAGE_WAIT_MS);
+  if (_stageOpen || _checkState === "ready") return holdInput(stageWait(), _stageOpen ? 0 : STAGE_WAIT_MS);
   holdInput("Drawing your part… it appears beside this chat", DRAWING_WAIT_MS);
 }
 export function releaseHold() {
@@ -202,7 +214,12 @@ export function releaseHold() {
 }
 export function isHeld() { return _held; }
 /* support hook for the ui tier: what the poll has seen and whether the box is held */
-export function holdState() { return { held: _held, check: _checkState }; }
+export function holdState() { return { held: _held, check: _checkState, stage: _stageOpen }; }
+/** The stage opened (true) or went (false): while it is up the box stays closed, pointing at it. */
+export function noteStageOpen(open) {
+  _stageOpen = !!open;
+  if (_stageOpen) holdInput(stageWait(), 0);
+}
 export function noteCheckState(s) { _checkState = s; }
 
 /** The stage told what the check now says - and a stage that cannot redraw a line never ends the
@@ -212,7 +229,8 @@ function safeUpdate(stage, d) {
   try { stage.update(d); } catch (e) { console.warn("geometry stage: update failed", e); }
 }
 
-async function watchGeometryCheck(sessionId) {
+/** Exported for the ui tier only (it drives the watch over a stood-in network); the upload starts it. */
+export async function watchGeometryCheck(sessionId) {
   // THE STAGE OPENS AS SOON AS THE PART IS MEASURED, with the measuring step's own labels under
   // a banner that says what is happening, and takes the model's labels when they arrive. The
   // user is already turning the part while the model thinks - and can proceed without it.
@@ -226,7 +244,17 @@ async function watchGeometryCheck(sessionId) {
   const retryFn = async (step) => { const d = await retryGeometryCheck(sessionId, step); told = ""; return d; };
   // THE LIVE LINE'S OWN "Try again": the step the check last reported, run again, and the line
   // follows the fresh check at once rather than at the next poll
-  let retryAs = null, misses = 0, readySeen = false;
+  let retryAs = null, misses = 0, readySeen = false, confirmedSeen = false, fullDone = false;
+  // SHSTAGE-2: THE SHELL CHECK runs on its own and lands after the check: the stage is told each time its view moves
+  // (and the choice settled at Proceed), and only then
+  const shellSigOf = (d) => JSON.stringify((d && d.fea && d.fea.shell) || null) + "|"
+    + ((d && d.confirmed && d.confirmed.fea_mesh_as) || "");
+  let shellSig = "";
+  const followShell = (d) => {
+    if (!d || !stage) return;
+    const sig = shellSigOf(d);
+    if (sig !== shellSig) { shellSig = sig; safeUpdate(stage, d); }
+  };
   const rowRetry = async () => {
     deps.notice.clear?.();
     let d;
@@ -241,16 +269,16 @@ async function watchGeometryCheck(sessionId) {
   // is said once the server holds the answers, before the declaration that carries them all.
   const confirmFn = async (body, edits) => {
     const reply = await confirmGeometryCheck(sessionId, body);
-    if (edits) deps.chat("assistant", edits);
+    // the confirmation's short card says what stands; a second line listing the edits only repeated it
+    void edits;
     deps.chat("assistant", reply.message);
-    // THE INTAKE PICKS UP: the confirm ran one chat turn in the user's name, and its reply
-    // is the next question - or the dispatch, when nothing was left to ask.
-    _checkState = "done";
+    // THE INTAKE PICKS UP: the confirm ran one chat turn for the user, and its reply is the next
+    // question - or the dispatch, when nothing was left to ask. The turn's own words are the
+    // application's ("continued_with"), never the user's: the Confirmed card above already says it.
+    _checkState = "done"; _stageOpen = false;
     releaseHold();
     if (reply.next) {
-      if (reply.continued_with) deps.chat("user", reply.continued_with);
-      if (reply.next.reply) deps.chat("assistant", reply.next.reply);
-      deps.engineChoice(reply.next.engine_choice || null, sendText);
+      if (reply.next.reply && !startsRun(reply.next)) deps.chat("assistant", reply.next.reply);
       deps.choices(reply.next.choices || [], sendText);
       deps.brief(reply.next.brief);
       if (reply.next.done && reply.next.job_id) { disableInput(); deps.onJobStarted(reply.next.job_id); }
@@ -264,6 +292,13 @@ async function watchGeometryCheck(sessionId) {
     const status = d && d.status;
     if (d) _checkMode = d.check_mode || (d.route === "fea" ? "fea" : "");
     if (d && d.progress && d.progress.live) { n = 0; keepHolding(); }   // at work: not idle
+    if (confirmedSeen) {
+      // AFTER PROCEED THE WATCH IS QUIET: no live line, only the mid-surface the stage still waits on
+      followShell(d);
+      if (!stage.awaitsShell()) return;
+      await new Promise((r) => setTimeout(r, CHECK_POLL_MS));
+      continue;
+    }
     if (d) {
       misses = 0; retryAs = d.retry || null;
       deps.checkProgress(d.progress || null, { retry: rowRetry });
@@ -273,20 +308,27 @@ async function watchGeometryCheck(sessionId) {
     if (d && d.confirmed) {
       // answered, on the stage or the card, whatever the naming did afterwards
       // the part stays on the stage, settled, beside the rest of the intake (viewer/intake_view.js)
-      _checkState = "done"; releaseHold(); if (stage) (stage.settle || stage.release)(); return;
+      _checkState = "done"; _stageOpen = false; releaseHold(); if (stage) (stage.settle || stage.release)();
+      // THE SHELL CHECK TAKES MINUTES and the user may answer in seconds: an FEA stage whose settled choice is a
+      // shell is told the check as it lands, until its mid-surface is drawn (or the run starts)
+      if (stage && stage.awaitsShell) { safeUpdate(stage, d); shellSig = shellSigOf(d); confirmedSeen = stage.awaitsShell(); }
+      if (!confirmedSeen) return;
+      await new Promise((r) => setTimeout(r, CHECK_POLL_MS));
+      continue;
     }
     if (stage && d && d.skin && (d.thermal || d.route) && kindOf(d) !== stageKind) {
       try { stage.release(); } catch (e) { console.warn("geometry stage: release failed", e); }
       stageKind = kindOf(d);
-      stage = await deps.geometryCheck(sessionId, d, confirmFn, retryFn);
+      stage = _stage = await deps.geometryCheck(sessionId, d, confirmFn, retryFn);
       if (stage === null) stageFailed = true;
+      noteStageOpen(!!stage);
     }
     if (status === "off" || status === "unsupported" || (status === "failed" && !stage && !d.retry)) {
       if (status === "failed" && d.reason) {
         deps.notice.show("The geometry check could not read this file; the questions will "
           + "cover it instead.", "warn");
       }
-      _checkState = "over";
+      _checkState = "over"; _stageOpen = false;
       releaseHold();                               // nothing to wait for any more
       return;
     }
@@ -305,14 +347,14 @@ async function watchGeometryCheck(sessionId) {
             retryFn(d.retry).catch((e) => deps.notice.show("Could not run the geometry check again: " + e.message, "error"));
           } });
       }
-      _checkState = "over";
+      _checkState = "over"; _stageOpen = false;
       releaseHold();
       if (stageFailed) deps.geometryCard(d);     // the card keeps the part; Proceed follows the unit
     } else if (status === "failed" && stage) {
       // the naming gave up after the stage opened: the code's labels stand, the user proceeds -
       // or runs the naming again from the stage, so the watch goes on
       safeUpdate(stage, d); _checkState = "ready";
-      if (isHeld()) holdInput(stageWait(), STAGE_WAIT_MS);
+      noteStageOpen(true);
       if (!d.retry) return;
     } else if (status === "scouted") {
       // THE STAGE OPENS ONCE THE PURPOSE IS KNOWN (`route`: what the user said the mesh is for):
@@ -320,11 +362,11 @@ async function watchGeometryCheck(sessionId) {
       // file says it all by itself, so it opens at once.
       if (d.skin && !stage && !stageFailed && (d.thermal || d.route)) {
         stageKind = kindOf(d);
-        stage = await deps.geometryCheck(sessionId, d, confirmFn, retryFn);   // null when the stage cannot draw
+        stage = _stage = await deps.geometryCheck(sessionId, d, confirmFn, retryFn);   // null when the stage cannot draw
         if (stage === null) stageFailed = true;                               // the card stands in
-        // the part is on the stage (a preview while a big file is still measured): the box says
-        // where to go on, not that the part is still being drawn
-        else if (isHeld()) holdInput(stageWait(), STAGE_WAIT_MS);
+        // the part is on the stage (a preview while a big file is still measured): the box points
+        // at the panel, whatever the chat said last
+        else noteStageOpen(true);
       }
       if (stage) safeUpdate(stage, d);       // the banner: waiting on the chat, the unit, or the naming
       else if (stageFailed) deps.geometryCard(d);   // the card's Proceed follows the unit, in place
@@ -333,14 +375,27 @@ async function watchGeometryCheck(sessionId) {
       // until that reading lands, and the stage is handed the check once more when it does - not
       // on every poll, which would re-draw the form under the user
       const waitingFull = !!d.named_on_preview;
-      if (!readySeen || !waitingFull) {
+      if (fullDone) {
+        // THE SHELL CHECK LANDS AFTER THE CHECK IS READY (it starts with the FEA naming): the stage is told
+        // only when the shell view moves, never the whole check on every poll
+        followShell(d);
+      } else if (!readySeen || !waitingFull) {
         _checkState = "ready";
-        if (isHeld()) holdInput(stageWait(), STAGE_WAIT_MS);
         if (stage) safeUpdate(stage, d);
-        else if (!readySeen) { stageKind = kindOf(d); stage = await deps.geometryCheck(sessionId, d, confirmFn, retryFn); }
+        else if (!readySeen) { stageKind = kindOf(d); stage = _stage = await deps.geometryCheck(sessionId, d, confirmFn, retryFn); }
+        if (stage) noteStageOpen(true);
+        else if (isHeld()) holdInput(stageWait(), STAGE_WAIT_MS);
       }
+      // THROUGH OR AROUND, still undecided once the part is named (FLOW-4): the server asked its one question,
+      // drawn here with its two buttons beside the stage; a press sets the stage's form (sendText)
+      if (d.ask && d.ask.reply) { deps.chat("assistant", d.ask.reply); deps.choices(d.ask.choices || [], sendText); }
       readySeen = true;
-      if (!waitingFull) return;
+      if (!waitingFull) {
+        if (!fullDone) { fullDone = true; shellSig = shellSigOf(d); }
+        // the check is done, but an FEA stage still waits on its shell check (dev, 7 Nov: ready on the worker in
+        // 10 s, the panel still "measuring the walls…" 18 minutes later - the watch had stopped here)
+        if (!(stage && stage.awaitsShell && stage.awaitsShell())) return;
+      }
     }
     await new Promise((r) => setTimeout(r, CHECK_POLL_MS));
   }
@@ -385,6 +440,10 @@ export function clearNewRunOffer() {
   if (_offerEl) { _offerEl.remove(); _offerEl = null; }
 }
 
+/* A REPLY THAT STARTS A RUN is answered by the run's box, drawn next. Its words ("accepted and queued … Job ID: …")
+   are not kept in the conversation, so a reload could never draw them again: live and reloaded read the same. */
+function startsRun(d) { return !!(d && d.done && d.job_id); }
+
 async function send() {
   const inp = $("chat-input");
   await sendText(inp.value.trim());
@@ -400,10 +459,11 @@ async function sendText(txt, { again = false } = {}) {
   disableInput();
   try {
     const d = await sendMessage(sessionId, txt);
-    deps.chat("assistant", d.reply);
-    deps.engineChoice(d.engine_choice || null, sendText);
+    if (!startsRun(d)) deps.chat("assistant", d.reply);
     deps.choices(d.choices || [], sendText);
     deps.brief(d.brief);
+    // THE FLOW THE USER SAID (the flow-kind question's buttons): the open stage's form takes it before Proceed
+    if (d.stage_flow && _stage && _stage.preset) _stage.preset(d.stage_flow);
     if (d.yes_after_reading && !again) {
       // A YES BEFORE THE NOTES WERE FINALIZED: the card shows the reading and the parts it finds, and the same
       // yes is sent again once it lands (a minute at most) - the run then starts, never asked twice
@@ -411,16 +471,39 @@ async function sendText(txt, { again = false } = {}) {
       if (getState.sessionId() === sessionId) return sendText(txt, { again: true });
       return;
     }
+    if (d.restage) {
+      // THE STAGE OPENS AGAIN (the analysis changed after it): the part is checked on the new route's stage
+      _checkState = null; _stageOpen = false; holdForDrawing(); watchGeometryCheck(sessionId);
+      return;
+    }
     if (d.done && d.job_id) deps.onJobStarted(d.job_id);
-    else if (String(d.reply || "").startsWith(DRAWING_PREFIX)) holdForDrawing();
+    else if (_stageOpen || String(d.reply || "").startsWith(DRAWING_PREFIX)) holdForDrawing();
     else enableInput();
   } catch (e) {
     if (e.status !== 401) {
       deps.chat("assistant", "Could not send that: " + e.message + ". Try again.");
     }
-    enableInput();
+    if (_stageOpen) holdForDrawing(); else enableInput();
   }
 }
+
+/** AN UNFINISHED CONVERSATION, REOPENED (a reload mid-intake): the session is this page's again, the upload is
+ *  done, the open step's buttons and the plan card are drawn as the history serves them, and the box is open on
+ *  that step. The geometry check is watched again, so a stage still waiting on Proceed opens where it was. */
+export function resumeSession(sessionId, history, { watch = true } = {}) {
+  setState.sessionId(sessionId);
+  const lbl = $("file-label"), btn = $("upload-btn");
+  if (lbl && history && history.geometry_filename) { lbl.textContent = history.geometry_filename; lbl.className = "ready"; }
+  if (btn) btn.remove();
+  const inp = $("step-file-input"); if (inp) inp.disabled = true;
+  deps.choices((history && history.choices) || [], sendText);
+  if (history && history.brief) deps.brief(history.brief);
+  enableInput();
+  if (watch) watchGeometryCheck(sessionId);
+}
+
+/** Say something in the chat for the user, as if typed (a note that chooses the engine). */
+export function say(text) { return sendText(String(text || "").trim()); }
 
 export function mountComposer() {
   // Fill the picker's advisory accept list from the backend, so what the browser OFFERS and what
@@ -431,7 +514,7 @@ export function mountComposer() {
     if (input) input.setAttribute("accept", acceptAttribute(intake));
     // The same response drives the empty state's format line, so the picker's accept list and
     // the sentence a user reads can never name different formats.
-    if (intake) deps.supportedCopy(supportedCopy(intake));
+    if (intake) deps.supportedCopy(supportedCopy(intake), shortSupportedCopy(intake));
   });
   // several files picked together are one assembly (each part its own file)
   $("step-file-input").multiple = true;

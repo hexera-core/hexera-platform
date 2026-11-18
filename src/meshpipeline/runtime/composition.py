@@ -60,8 +60,9 @@ def _enqueue_geometry_scout(**kwargs) -> None:
 
 def _enqueue_geometry_naming(**kwargs) -> None:
     from meshpipeline.adapters.pipeline_execution.celery import name_geometry
-    from meshpipeline.application.geometry_check import naming_limits_for
-    soft, hard = naming_limits_for(str(kwargs.get("session_id") or ""))
+    from meshpipeline.application.geometry_check import naming_task_limits
+    # the naming's own limits, plus the FEA sizing that runs after the stage is shown (PLAN-fea-22)
+    soft, hard = naming_task_limits(str(kwargs.get("session_id") or ""))
     name_geometry.apply_async(kwargs=kwargs, task_id=f"geometry-naming-{kwargs.get('session_id', '')}",
                               soft_time_limit=soft, time_limit=hard)
 
@@ -71,6 +72,14 @@ def _enqueue_part_words(**kwargs) -> None:
     # one task per session and reading: the same notes queued twice run once
     read_part_words.apply_async(kwargs=kwargs,
                                 task_id=f"part-words-{kwargs.get('session_id', '')}-{kwargs.get('key', '')}")
+
+
+def _enqueue_shell_check(**kwargs) -> None:
+    from meshpipeline.adapters.pipeline_execution.celery import shell_check_geometry
+    from meshpipeline.application.shell_check import SHELL_CHECK_LIMIT_S
+    # SHSTAGE-2: the extraction's own limit (a child process) plus room to store what it wrote
+    shell_check_geometry.apply_async(kwargs=kwargs, task_id=f"geometry-shell-{kwargs.get('session_id', '')}",
+                                     soft_time_limit=SHELL_CHECK_LIMIT_S + 120, time_limit=SHELL_CHECK_LIMIT_S + 180)
 
 
 def _route_model(step: str) -> str:
@@ -144,6 +153,7 @@ def install_adapters() -> None:
     geometry_check.set_scout_enqueuer(_enqueue_geometry_scout)
     geometry_check.set_naming_enqueuer(_enqueue_geometry_naming)
     geometry_check.set_part_words_enqueuer(_enqueue_part_words)
+    geometry_check.set_shell_check_enqueuer(_enqueue_shell_check)
     # where a waiting check stands in its queue, for the console's line ("queued behind 2 other checks")
     from meshpipeline.adapters.pipeline_execution.geometry_running import queue_state as _geometry_queue_state
     geometry_check.set_queue_reader(_geometry_queue_state)

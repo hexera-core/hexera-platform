@@ -193,6 +193,11 @@ def write_manifest(workspace, *, patch_types: dict, patch_entities: dict,
     # at manifest time and show as not-evaluated; the build judge already gated them.
     from meshpipeline.engines.quality_criteria import evaluate as _qc_evaluate
     from meshpipeline.engines.quality_criteria import measurements_from_manifest
+    # CFDREQ-6: on a flow mesh, the user's requirements from their notes, asked against delivered (the result's rows
+    # and the verdict's read them). No reading in the workspace: the quality record is exactly what it was
+    if not (isinstance(quality.get("fea"), dict) and quality["fea"].get("plan")):
+        from meshpipeline.engines.cfd_requirements import attach as _asked
+        quality = _asked(ws, quality, mesh_mode)
     # The engine's WHOLE quality dict feeds the criteria (each engine's rows pick their own keys;
     # absent keys read as not-evaluated) + wall_faces, which is manifest-derived rather than
     # engine-reported. The mapping lives in quality_criteria so the pre-review quality gate judges

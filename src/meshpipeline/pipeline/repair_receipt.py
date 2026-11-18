@@ -36,6 +36,14 @@ _DEFECT_WORDS: dict[str, str] = {
     "tolerance_outlier": "a tolerance far above the rest of the part",
     "duplicate_surface_data": "a surface stored twice",
     "engine_staging_failure": "geometry the mesh machine could not take",
+    "mesh_overlapping_facets": "surfaces that overlap where the mesher needs them apart",
+    "mesh_edge_through_face": "an edge that passes through a face",
+    "mesh_open_loop": "a boundary loop that does not close",
+    "mesh_periodic_surface": "a curved surface the mesher cannot wrap",
+    "mesh_no_volume": "a closed surface with no solid inside it to fill",
+    "mesh_timeout": "a part the mesher could not be checked on in time",
+    "mesh_probe_error": "a part the mesher check could not complete",
+    "mesh_other": "a place the mesher refused for a reason it did not give",
 }
 
 #: WHY AN ATTEMPT WAS UNDONE, by the prefix the session records. The recorded reason is a code or
@@ -76,7 +84,15 @@ _STOPPED: dict[str, str] = {
     "time_budget": "the repair reached its time limit",
     "stalled": "several attempts in a row changed nothing",
     "scan_incomplete": "the defect scan did not finish, so nothing can be called absent",
+    "unmeshable": "the geometry checks pass but the part still cannot be meshed",
+    # The region-scoped driver's two endings (cad/repair/region_loop.py). A customer reading this
+    # row has to be told plainly that part of their file was repaired and part was handed on.
+    "escalated": "part of the file was repaired and a region was passed to an engineer",
+    "regions_exhausted": "every region was tried once and what is left was not repaired",
 }
+
+#: How many places one verdict row names before it says "and N more".
+_VERDICT_NAMED_MAX = 5
 
 #: The measured lengths an inspection records against a located defect, worst-first by usefulness.
 _SPAN_KEYS = ("boundary_length", "length")
@@ -371,6 +387,73 @@ def _shape_rows(record: Mapping, *, undone: bool = False) -> list[dict]:
     return rows
 
 
+def _mm(value: float) -> str:
+    """Millimetres in plain digits at any size: 125 reads "125", never "1.2e+02"."""
+    if value < 0.01:
+        return "under 0.01"
+    return f"{value:.0f}" if value >= 100 else f"{value:.1f}" if value >= 10 else f"{value:.2g}"
+
+
+def _deviation_rows(record: Mapping) -> list[dict]:
+    """How far the repaired surface sits from the original, as sampled, when it was measured.
+
+    THE NUMBER IS A SAMPLED LOWER BOUND, so the row says "at least" and how many points stand
+    behind it. It counts NEW surface (a patch over an opening is new surface whose distance is the
+    gap's half-width - the size of the repair, not damage), and it never sees geometry that was
+    removed. It is a measurement shown, not a limit: nothing here says it passed or failed.
+
+    The largest value over the packages that kept their repair, with the point and face counts of
+    the package that produced it. SILENT WHEN ABSENT: the measurement exists only under the
+    mesh-probe posture and is absent when it failed or had nothing to sample, and a row claiming
+    "0 mm" for an unmeasured part would be the guess this receipt never makes.
+    """
+    measured = record.get("measurements")
+    regions = measured.get("regions") if isinstance(measured, Mapping) else None
+    packages = regions.get("packages") if isinstance(regions, Mapping) else None
+    found = [(n, p) for p in (packages or ())
+             if isinstance(p, Mapping) and p.get("status") == "committed"
+             and (n := _num(p.get("deviation_mm"))) is not None and n >= 0]
+    if not found:
+        return []
+    worst, package = max(found, key=lambda pair: pair[0])
+    points, faces = _num(package.get("deviation_samples")), _num(package.get("deviation_faces"))
+    sampled = (f"sampled: {int(points)} points on {int(faces)} faces; "
+               if points is not None and faces is not None else "")
+    return [_row("Sampled distance from the original surface", f"at least {_mm(worst)} mm",
+                 sampled + "new surface filling an opening counts toward this, and geometry "
+                 "that was removed is not measured")]
+
+
+def _verdict_rows(record: Mapping) -> list[dict]:
+    """The model author's "mesher's problem" verdicts, one row each. SILENT WHEN ABSENT: only a
+    live or shadow model author records any, and the flag off never does.
+
+    A VERDICT DISCHARGES NOTHING and the rows say so by what they leave out: they claim no fix.
+    The repair judged the geometry sound at those places and the mesher still could not take it;
+    "Everything found was fixed" beside them is still "No". Only the places are named - the
+    model's own reasoning is free text and stays in the run report.
+    """
+    measured = record.get("measurements")
+    author = measured.get("model_author") if isinstance(measured, Mapping) else None
+    found = author.get("verdicts") if isinstance(author, Mapping) else None
+    rows = []
+    for verdict in found or ():
+        if not isinstance(verdict, Mapping):
+            continue
+        named = [str(f) for f in (verdict.get("mesher_problem") or ()) if f]
+        if not named:
+            continue
+        shown = ", ".join(named[:_VERDICT_NAMED_MAX])
+        if len(named) > _VERDICT_NAMED_MAX:
+            shown += f" and {len(named) - _VERDICT_NAMED_MAX} more"
+        # ONLY THE NAMES ARE GUARDED: a tripped leak guard drops the places, never the
+        # explanation that the repair judged the geometry sound and the mesher is what failed.
+        places = _safe(shown)
+        why = "the mesher could not handle it" + (f" at: {places}" if places else "")
+        rows.append(_row("The repair judged this geometry sound", "Left for the mesher", why))
+    return rows
+
+
 def _volume_was_compared(before: Mapping, after: Mapping) -> bool:
     """Whether `cad/repair/caps.cumulative_refusal` actually judged the volume, by its own rule:
     both sides must have an inside, and a body must not have closed during the run."""
@@ -410,13 +493,15 @@ def repair_receipt_rows(state: Mapping, out: Mapping) -> list[dict]:
     if view.get("undone"):
         # The restatement row is worth sending only beside something measured: on its own it says
         # no more than the lane's line already did, under a heading claiming a record.
-        measured = (_undone_rows(view) + _refusal_rows(view) + _shape_rows(view, undone=True))
+        measured = (_undone_rows(view) + _refusal_rows(view) + _shape_rows(view, undone=True)
+                    + _verdict_rows(view))
         rows = measured + _undone_whole_rows(view) if measured else []
     elif not view.get("attempted") and not (view.get("refusals") or ()):
         return []
     else:
         rows = (_kept_rows(view) + _undone_rows(view) + _refusal_rows(view)
-                + _shape_rows(view) + _outcome_row(view))
+                + _shape_rows(view) + _deviation_rows(view) + _verdict_rows(view)
+                + _outcome_row(view))
     return [r for r in rows if r["label"]]
 
 

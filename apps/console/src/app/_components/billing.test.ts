@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  chargingNote,
   checkoutBanner,
   checkoutFailureMessage,
   creditCheckoutFailureMessage,
@@ -14,6 +15,7 @@ import {
   planTerms,
   portalFailureMessage,
   subscriptionSummary,
+  type Catalogue,
   type Subscription,
 } from "./billing";
 
@@ -118,4 +120,44 @@ test("a configured credit pack is labelled by the credits it grants", () => {
   assert.equal(extraCreditsUnavailable({ credits_per_pack: 2500, purchasable: false }), true);
   assert.equal(extraCreditsUnavailable({ credits_per_pack: 2500, purchasable: true }), false);
   assert.match(creditCheckoutFailureMessage(400), /Extra credits/);
+});
+
+function catalogue(plans: Catalogue["plans"]): Catalogue {
+  return { plans, billing_enabled: true, extra_credits: null };
+}
+
+const TIER = {
+  name: "starter", max_jobs_per_owner: 50, max_concurrent_jobs: 3,
+  rate_limit_per_minute: 240, included_credits: 1000, purchasable: true,
+};
+
+test("the charging note promises overage billing only on a metered plan", () => {
+  // The same line planTerms refuses to draw: no metered price, no "billed at month end" claim.
+  assert.match(
+    chargingNote(sub(), catalogue([{ ...TIER, overage_billed: true }])),
+    /billed at the end of the month/,
+  );
+  assert.doesNotMatch(
+    chargingNote(sub(), catalogue([{ ...TIER, overage_billed: false }])),
+    /billed|invoiced/i,
+  );
+});
+
+test("the charging note names the invoiced path for a non-purchasable tier", () => {
+  assert.match(
+    chargingNote(sub({ plan: "enterprise" }), catalogue([{ ...TIER, name: "enterprise", purchasable: false }])),
+    /agreed with us and invoiced/,
+  );
+});
+
+test("the charging note keeps only the charge rule when no plan applies", () => {
+  for (const note of [
+    chargingNote(null, catalogue([TIER])),
+    chargingNote(sub({ status: "canceled" }), catalogue([{ ...TIER, overage_billed: true }])),
+    chargingNote(sub(), null),
+    chargingNote(sub({ plan: "unlisted" }), catalogue([TIER])),
+  ]) {
+    assert.match(note, /Credits are charged only for completed runs\./);
+    assert.doesNotMatch(note, /billed at the end of the month|invoiced/);
+  }
 });

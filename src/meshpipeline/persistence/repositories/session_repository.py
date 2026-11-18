@@ -197,6 +197,13 @@ class SessionRepository:
         s = await self.get_internal(db, session_id)
         if s:
             s.job_id = job_id
+            # WHERE THE RUN STARTED in the conversation: the last message so far carries the run's id, so the
+            # console draws the run's box right after it on a reload, as it did live (ui/js/core/conversation.js).
+            # The model never sees the mark - its messages are rebuilt from role and words alone.
+            msgs = list(s.messages or [])
+            if msgs and isinstance(msgs[-1], dict):
+                msgs[-1] = {**msgs[-1], "job_id": str(job_id)}
+                s.messages = msgs
 
     async def release_job(self, db: AsyncSession, session_id: uuid.UUID) -> None:
         """Let the conversation move on from a run that has ended.

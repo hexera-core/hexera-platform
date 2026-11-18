@@ -4,7 +4,7 @@
 """THE LADDER (docs/RULES.md LAD-fea-n). One attempt runs at most MAX_PASSES passes. After a pass,
 the FIRST trigger that holds pulls its lever, if that lever was not pulled already:
 
-  LAD-fea-2  no mesh came back (the fill failed)     -> the other 3D algorithm (Delaunay -> HXT)
+  LAD-fea-2  no mesh came back (the fill failed)     -> Delaunay fills first (every pass fills with HXT first, MESH-25)
   LAD-fea-1  an invalid mesh (a degenerate or inverted -> gentler growth (1.3 -> 1.2) and three
              element)                                     optimisation passes instead of one
   LAD-fea-4  more elements than the limit after meshing -> the finest zones coarser, aimed at 85% of
@@ -83,7 +83,8 @@ def mesh_settings(levers: list[dict]) -> dict:
     stuck |= {int(s) for lv in levers for s in lv.get("no_switch") or []}
     remesh = sorted(_remeshed(levers) - stuck)
     no_switch = SURFACE_STALL in names or any(lv.get("no_switch") for lv in levers)
-    return {"algorithm3d": "hxt" if "LAD-fea-2" in names else "delaunay",
+    # MESH-25: HXT first (every pass meshes again with Delaunay should HXT fail); LAD-fea-2 puts Delaunay first
+    return {"algorithm3d": "delaunay" if "LAD-fea-2" in names else "hxt",
             "optimise_passes": OPTIMISE_PASSES if "LAD-fea-1" in names else 1,
             **({"remesh_surfaces": remesh} if remesh else {}),
             # LAD-fea-8: the surface stage keeps gmsh's own first mesh of every face (no switch to MeshAdapt)
@@ -244,7 +245,8 @@ def lever_options(facts: Mapping, levers: list[dict], plan: Mapping) -> list[dic
     other = (f" The surface(s) it went wrong on ({_listed(fresh)}) are meshed with gmsh's MeshAdapt "
              "(LAD-fea-6).") if fresh else ""
     hxt = {"lever": "LAD-fea-2", "inputs": {"rc": facts["rc"], "surfaces": fresh}, "surfaces": fresh,
-           "words": "No mesh came back from the fill, so the next pass uses gmsh's other 3D algorithm (HXT)." + other}
+           "words": ("No mesh came back from the fill, so the next pass fills with gmsh's Delaunay algorithm first "
+                     "(HXT after it)." + other)}
     gentle = {"lever": "LAD-fea-1", "inputs": {"min_sicn": facts["min_sicn"], "surfaces": fresh}, "surfaces": fresh,
               "words": (f"A degenerate or inverted element (worst {facts['min_sicn']}), so the next pass grows "
                         f"sizes more gently ({GENTLE_GROWTH}) and optimises {OPTIMISE_PASSES} times." + other)}
@@ -255,7 +257,7 @@ def lever_options(facts: Mapping, levers: list[dict], plan: Mapping) -> list[dic
             order = [hxt, gentle]
         else:
             hxt = {**hxt, "words": (f"A degenerate or inverted element (worst {facts['min_sicn']}), so the next pass "
-                                    "uses gmsh's other 3D algorithm (HXT)." + other)}
+                                    "fills with gmsh's Delaunay algorithm first (HXT after it)." + other)}
             order = [gentle, hxt]
         rest = [o for o in order if o["lever"] not in pulled]
         # LAD-fea-8, RIDING ALONG: the faces gmsh switched to MeshAdapt by itself in this failed pass keep gmsh's
@@ -327,6 +329,16 @@ def rung_words(parts: list[int] | None, rung: int, crossing: Mapping | None = No
             "rung (LAD-fea-9). Its surface follows the CAD within its envelope; the faces keep their names.")
 
 
+def refined_better(new: Mapping, old: Mapping) -> bool:
+    """LAD-fea-13: the refinement pass after the rung beats the rung's own pass: valid, within the limit, and fewer
+    zones short of their rule - or as many, with the worst wall holding more elements through it."""
+    if not new.get("valid") or new.get("over"):
+        return False
+    a = (len(set(new.get("short") or [])), -float(new.get("through_wall_min") or 0.0))
+    b = (len(set(old.get("short") or [])), -float(old.get("through_wall_min") or 0.0))
+    return a < b
+
+
 def _rank(f: Mapping) -> tuple:
     # PLAN-fea-31: a pass whose count was off what the user asked (and so was re-aimed) after any that is not
     return (not f["valid"], bool(f.get("off_count")), bool(f["short"]), f["over"], -float(f["min_sicn"] or 0.0),
@@ -338,7 +350,8 @@ _DECIDING = ("a valid mesh", "the count asked for", "every rule met", "within th
 
 def best_pass(passes: list[dict]) -> tuple[int | None, str]:
     """(the pass delivered, what decided it) - None when no pass built a valid mesh."""
-    valid = [f for f in passes if f["valid"]]
+    # LAD-fea-13: a refinement pass after the rung that came out no better than the rung's own is never delivered
+    valid = [f for f in passes if f["valid"] and f.get("deliverable", True)]
     if not valid:
         return None, "no valid mesh"
     ranked = sorted(valid, key=_rank)
@@ -350,4 +363,4 @@ def best_pass(passes: list[dict]) -> tuple[int | None, str]:
 
 
 __all__ = ["AI_LEVERS", "MAX_PASSES", "SURFACE_STALL", "stalled_surface", "surface_stall_lever", "best_pass", "coarse_factor", "failed_surfaces", "growth", "mesh_settings",
-           "by_choice", "lever_options", "next_lever", "pass_facts", "rung_words", "tightened"]
+           "by_choice", "lever_options", "refined_better", "next_lever", "pass_facts", "rung_words", "tightened"]

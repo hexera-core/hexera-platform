@@ -70,7 +70,7 @@ holds.
 | D5 | Standard VMs, never Spot, until resume-on-preemption exists | A preemption costs a user their run and stalls up to 4h before the reaper reports it. See §9. |
 | D6 | Fixed MIG size at launch; autoscaling deferred | Queue-depth autoscaling needs a custom metric exporter. A settable target size already satisfies "tune the numbers easily". |
 | D7 | Beat replaced by Cloud Scheduler → Cloud Run Jobs | Removes a long-lived container that only waits; makes each sweep independently observable and retryable. |
-| D8 | One Artifact Registry, in `hexera-prod`, read-only to `hexera-dev` | One place a digest exists means no copy step can silently substitute different bytes for the ones Gate C validated. |
+| D8 | One Artifact Registry, in `hexera-prod`, read-only to `hexera-dev` | One place a digest exists means no copy step can silently substitute different bytes for the ones release validation passed. |
 | D9 | Object store: spike S3-interop first, default to a native GCS adapter | `MinioStore` uses the `minio` client, not boto3. Interop is plausible but unproven at multipart, presigning and `bucket_exists`. |
 | D10 | Deploy order is API-then-MIG | Only the API entrypoint migrates. Rolling workers first runs them against an un-upgraded schema. |
 
@@ -135,12 +135,12 @@ moving objects and rewriting `storage_key` values.
 
 ## 6. Release gating and promotion
 
-Gates A–D already exist and are digest-based. Promotion extends them rather than replacing them.
+Gates A, B, release validation and D already exist and are digest-based. Promotion extends them rather than replacing them.
 
 ```
 Gate A  check-fast          seconds, no services
 Gate B  check               ruff + mypy ratchet + deps + hermetic suite + UI
-Gate C  release-validate    build images ONCE from this commit, validate THOSE artifacts
+        release-validate    build images ONCE from this commit, validate THOSE artifacts
         release-publish     push the exact validated images; record immutable digests
 Gate D  mesh-preflight      read-only: may this image be promoted here?
         ↓

@@ -1,12 +1,15 @@
 # Responsibility: Verify an FEA part's stage shows EVERY hot spot its measurement found: a part with
-# hundreds of them (Areen's F1 car had 208) has a mark on the part for each - small marks without
-# numbers past the tag limit - and a line for each in the panel, grouped by type with a count; a
-# group's "Show all N" opens the rest of it, and clicking a mark opens and lights its line. A part
-# with a few hot spots keeps its numbered tags.
+# hundreds of them (Areen's F1 car had 208) has a mark on the part for each and a line for each in the
+# panel, in one "Hot spots" section that is always shown, grouped by type (each type its own line with
+# its count and range, opening on a click); clicking a mark opens the folds its line sits in and lights
+# it. THE MARKS ARE QUIET: small flat marks of a fixed size on screen, shown only while their lines show
+# in the panel (or a line is pointed at), merged into one mark with a count where they would overlap -
+# which splits as the user zooms in - and what a mark is shows beside it only when pointed at or chosen.
 # Boundaries: the skin is built through the worker's own code from a tube made here; the FEA view is
 # the server's shape, built here. Only the network is stood in for.
 from __future__ import annotations
 
+import json
 import math
 
 import pytest
@@ -54,12 +57,14 @@ def _state(live, sid: str) -> dict:
       const root = document.getElementById('gstage-{sid}');
       const marks = [...root.querySelectorAll('.fea-spot')];
       const rows = [...root.querySelectorAll('.fea-spot-row')];
-      return {{marks: marks.length, small: marks.filter((m) => m.classList.contains('mark')).length,
-               rows: rows.length, shown: rows.filter((r) => !r.hidden).length,
+      const sec = root.querySelector('.fea-sec-spots');
+      return {{marks: marks.length, rows: rows.length, shown: rows.filter((r) => !r.closest('[hidden]')).length,
                groups: [...root.querySelectorAll('.fea-spot-group')].map((g) =>
                  [g.dataset.type, Number(g.querySelector('.fea-spot-n').textContent)]),
-               opens: [...root.querySelectorAll('.fea-spot-open')].map((b) => b.textContent),
+               open: [...root.querySelectorAll('.fea-spot-group.open')].map((g) => g.dataset.type),
                sums: [...root.querySelectorAll('.fea-spot-sum')].map((b) => b.textContent),
+               head: [...sec.querySelectorAll('.fea-sec-title > span')].map((e) => e.textContent),
+               secOpen: !sec.closest('[hidden]'), wall: root.querySelector('.fea-wall').textContent,
                unsent: !!root.querySelector('.fea-spot-unsent')}}; }})()""")
 
 
@@ -68,35 +73,109 @@ def test_every_hot_spot_of_a_busy_part_has_a_mark_and_a_line(live):
     spots = _spots(KINDS)
     _open(live, sid, _skin(_tube(R_OUT, R_IN)), _fea_check(spots))
     s = _state(live, sid)
-    assert s["marks"] == 208 and s["small"] == 208          # every one marked, small past the tag limit
+    assert s["marks"] == 208                                  # every one marked
     assert s["rows"] == 208 and not s["unsent"]               # and every one listed
     assert s["groups"] == [["sharp_corner", 174], ["notch", 1], ["fillet", 29], ["hole", 4]]
-    assert s["opens"] == ["Show all 174", "Show all 29"]
-    # A LONG GROUP IS FOLDED to its one-line summary (1 Nov: a landing gear listed 570 identical corners):
-    # the 174 corners and 29 fillets show no lines until opened; the short groups show theirs
-    assert s["shown"] == 0 + 1 + 0 + 4
-    assert s["sums"] == ["90°, refinement capped", "radius 2 mm"]
-    # a mark past its group's first lines: clicking it opens and lights its line
+    # ONE SECTION, ALWAYS SHOWN: its header says how many and that they are refined automatically; each type
+    # is its own line with its range, and only those folds are closed - no line of the 208 shows until opened
+    assert s["head"] == ["Hot spots", "208", "refined automatically"] and s["secOpen"] and s["shown"] == 0
+    assert s["sums"] == ["90°, capped", "radius 2 mm", "radius 2 mm", "radius 2 mm"]
+    assert s["wall"].startswith("10 mm")                       # the thinnest wall is a key fact, outside the fold
+    # a mark clicked on the part opens the folds its line sits in, and lights it
     hidden = live.evaluate(f"""(() => {{
       const root = document.getElementById('gstage-{sid}');
       root.querySelector('.fea-spot[data-spot="H200"]').click();
       const row = root.querySelector('.fea-spot-row[data-spot="H200"]');
-      return [row.hidden, row.classList.contains('sel'),
+      return [!!row.closest('[hidden]'), row.classList.contains('sel'),
               root.querySelector('.fea-spot[data-spot="H200"]').classList.contains('sel')]; }})()""")
     assert hidden == [False, True, True]
-    # "Show all" opens its own group whole, and no other
-    live.evaluate(f"""document.querySelector('#gstage-{sid} .fea-spot-group[data-type="sharp_corner"] .fea-spot-open').click()""")
     s = _state(live, sid)
-    assert s["shown"] == 174 + 1 + 1 + 4 and s["opens"] == ["Show all 29"]
+    assert s["secOpen"] and s["open"] == ["fillet"] and s["shown"] == 29
+    # a type's line opens that type whole, and no other; a second click closes it
+    grp = f"""document.querySelector('#gstage-{sid} .fea-spot-group[data-type="sharp_corner"] .fea-grp-btn').click()"""
+    live.evaluate(grp)
+    s = _state(live, sid)
+    assert s["shown"] == 174 + 29 and s["open"] == ["sharp_corner", "fillet"]
+    live.evaluate(grp)
+    assert _state(live, sid)["shown"] == 29
     assert_clean(live, "an FEA stage with 208 hot spots")
 
 
-def test_a_part_with_a_few_hot_spots_keeps_its_numbered_tags(live):
+def test_a_part_with_a_few_hot_spots_says_what_a_mark_is_only_when_pointed_at(live):
     sid = "feafew"
     spots = _spots((("hole", "hole", 3), ("fillet", "fillet", 2)))
     _open(live, sid, _skin(_tube(R_OUT, R_IN)), _fea_check(spots))
     s = _state(live, sid)
-    assert s["marks"] == 5 and s["small"] == 0 and s["rows"] == 5 and s["opens"] == []
-    tags = live.evaluate(f"[...document.querySelectorAll('#gstage-{sid} .fea-spot')].map((m) => m.textContent)")
+    assert s["marks"] == 5 and s["rows"] == 5 and s["shown"] == 0
+    tags = live.evaluate(f"[...document.querySelectorAll('#gstage-{sid} .fea-spot')].map((m) => m.dataset.spot)")
     assert tags == ["H1", "H2", "H3", "H4", "H5"]
+    # each line in a few words: its tag, its kind and size
+    live.evaluate(f"""document.querySelector('#gstage-{sid} .fea-spot-group[data-type="hole"] .fea-grp-btn').click()""")
+    line = live.evaluate(f"""document.querySelector('#gstage-{sid} .fea-spot-row[data-spot="H1"]').textContent""")
+    assert " ".join(line.split()) == "H1hole · r 2 mm"
+    assert _state(live, sid)["shown"] == 3
+    # NO WORDS ON THE PART until a line is pointed at: then its mark says its tag and what it is
+    words = f"""(() => {{ const m = document.querySelector('#gstage-{sid} .fea-spot[data-spot="H4"]'), l = m.querySelector('.vm-l');
+      return [m.style.display !== 'none', getComputedStyle(l).display !== 'none', l.textContent]; }})()"""
+    live.evaluate(f"window._vdbg['gstage:{sid}'].marks()")
+    assert live.evaluate(words)[:2] == [False, False]                    # a fillet: its type is closed
+    live.evaluate(f"""document.querySelector('#gstage-{sid} .fea-spot-row[data-spot="H4"]').dispatchEvent(new MouseEvent('mouseenter'))""")
+    live.evaluate(f"window._vdbg['gstage:{sid}'].marks()")
+    assert live.evaluate(words) == [True, True, "H4fillet"]
+    live.evaluate(f"""document.querySelector('#gstage-{sid} .fea-spot-row[data-spot="H4"]').dispatchEvent(new MouseEvent('mouseleave'))""")
+    live.evaluate(f"window._vdbg['gstage:{sid}'].marks()")
+    assert live.evaluate(words)[:2] == [False, False]
     assert_clean(live, "an FEA stage with 5 hot spots")
+
+
+def _marks(live, sid: str) -> dict:
+    return live.evaluate(f"window._vdbg['gstage:{sid}'].marks()")
+
+
+def test_marks_follow_the_panel_and_merge_where_they_would_overlap(live):
+    sid = "feamarks"
+    _open(live, sid, _skin(_tube(R_OUT, R_IN)), _fea_check(_spots(KINDS)))
+    root = f"document.getElementById('gstage-{sid}')"
+    # EVERY TYPE CLOSED: the part is clean - hot spots are refined automatically, nothing to answer
+    m = _marks(live, sid)
+    assert m["marks"] == 208 and m["single"] == 0 and m["merged"] == [], m
+    # pointing at a type's line shows that type's marks for as long as the pointer stays
+    btn = f"""{root}.querySelector('.fea-spot-group[data-type="fillet"] .fea-grp-btn')"""
+    live.evaluate(f"{btn}.dispatchEvent(new MouseEvent('mouseover', {{bubbles: true}}))")
+    m = _marks(live, sid)
+    assert m["single"] + sum(m["merged"]) == 29, m
+    live.evaluate(f"{btn}.dispatchEvent(new MouseEvent('mouseout', {{bubbles: true}}))")
+    assert _marks(live, sid)["single"] == 0
+    # OPENED, the 174 corners are shown; where they would overlap they are one mark with a count
+    live.evaluate(f"""{root}.querySelector('.fea-spot-group[data-type="sharp_corner"] .fea-grp-btn').click()""")
+    before = _marks(live, sid)
+    assert before["single"] + sum(before["merged"]) == 174 and before["merged"], before
+    chips = live.evaluate(f"[...{root}.querySelectorAll('.vm-group')].filter((c) => c.style.display !== 'none').map((c) => Number(c.textContent))")
+    assert sorted(chips) == sorted(before["merged"]), chips
+    # a merged mark clicked zooms in on its marks: they come apart. How far apart one zoom takes
+    # them depends on the panel's size in pixels, so what is asserted is that the clicked mark is
+    # gone - no mark drawn after the zoom still holds every one of its members - while each of its
+    # members is still drawn, alone or in a smaller merged mark.
+    members = live.evaluate(f"""(() => {{
+      const c = [...{root}.querySelectorAll('.vm-group')].find((c) => c.style.display !== 'none');
+      window.__clicked = c._members.slice();
+      const ids = c._members.map((m) => m.id); c.click(); return ids; }})()""")
+    after = _marks(live, sid)
+    still_one = live.evaluate(f"""[...{root}.querySelectorAll('.vm-group')]
+      .filter((c) => c.style.display !== 'none')
+      .some((c) => {json.dumps(members)}.every((id) => (c._members || []).some((m) => m.id === id)))""")
+    assert len(members) > 1 and not still_one, (members, before, after)
+    undrawn = live.evaluate(f"""window.__clicked.filter((m) => m.el.style.display === 'none'
+      && ![...{root}.querySelectorAll('.vm-group')]
+        .some((c) => c.style.display !== 'none' && (c._members || []).includes(m))).map((m) => m.id)""")
+    assert undrawn == [], (undrawn, members, after)
+    # the chosen mark stands on its own, never merged, in the crimson - and keeps its size on screen at any zoom
+    h = f"window._vdbg['gstage:{sid}']"
+    live.evaluate(f"""{h}.iso(); {root}.querySelector('.fea-spot-row[data-spot="H104"]').click()""")
+    chosen = f"""(() => {{ {h}.marks(); const m = {root}.querySelector('.fea-spot[data-spot="H104"]'), r = m.getBoundingClientRect();
+      return [m.style.display !== 'none', m.classList.contains('sel'), getComputedStyle(m, '::before').backgroundColor,
+              Math.round(r.width), Math.round(r.height)]; }})()"""
+    assert live.evaluate(chosen) == [True, True, "rgb(210, 19, 25)", 16, 16]
+    live.evaluate(f"{h}.cam().zoom(2.5); {h}.render()")
+    assert live.evaluate(chosen) == [True, True, "rgb(210, 19, 25)", 16, 16]
+    assert_clean(live, "an FEA stage's marks")

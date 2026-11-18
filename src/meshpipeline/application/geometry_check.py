@@ -17,6 +17,7 @@ import math
 import re
 import tempfile
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -556,12 +557,13 @@ class _Preview:
         """Store the skin and the provisional check. Never raises: a preview that cannot be made
         leaves the scout exactly as it was without one."""
         try:
-            from meshpipeline.cad.part_name import part_name
+            from meshpipeline.cad.part_name import file_stem_name, part_name
 
             facts = preview_facts(skin, seed)
             facts.update(canonical.facts())
             facts["notes"].extend(n for n in canonical.notes if n not in facts["notes"])
             facts["part_name"] = part_name(fetched, ref.original_filename)
+            facts["file_name"] = file_stem_name(ref.original_filename)
             skin_key = check_object_key(self.session_id, "skin.json")
             _store_json(skin_key, _placed_skin_payload(fetched) if placed else skin_payload(skin))
             self.skin_key = skin_key
@@ -791,9 +793,11 @@ def _scout(*, session_id: str, owner_id: str, source: dict, interpretation: dict
         _publish_validity(session_id, ref, facts["validity"])
         # THE PART'S NAME FROM THE FILE (cad/part_name): a STEP's own product name, else the upload's
         # file name - what every stage shows when no model names the part (an FEA part never asks one)
-        from meshpipeline.cad.part_name import part_name
+        from meshpipeline.cad.part_name import file_stem_name, part_name
 
         facts["part_name"] = part_name(fetched, ref.original_filename)
+        # the upload's own file name, for a stage that names a whole assembly (application/fea_check)
+        facts["file_name"] = file_stem_name(ref.original_filename)
         if facts["validity"].get("clean") is not True and facts["validity"].get("kind") != "unchecked":
             facts["notes"].append(facts["validity"]["summary"])
         # a thermal model's physics (ECXML: materials, powers, fans, vents...), kept whole beside
@@ -810,6 +814,7 @@ def _scout(*, session_id: str, owner_id: str, source: dict, interpretation: dict
             if isinstance(facts.get("confidence"), dict):
                 facts["confidence"]["input_kind"] = 0.95
             declared_openings(facts, thermal)
+            settle_flow_kind(facts)
 
         # the same skin, stored for the stage the user turns the part in
         gp.mark(gp.PICTURES, triangles=gp.skin_triangles(skin))
@@ -918,8 +923,15 @@ def stickered(facts: dict) -> list[dict]:
     """The openings the pictures carry stickers for: the scout's, when it reads the fluid as flowing
     through the part. A part it reads as a body in a flow still keeps the openings it would have if
     the fluid flowed through it - so a user who says so has openings to confirm - but they are not
-    drawn: the pictures (and the model naming them) see the body as before."""
-    return list(facts.get("openings") or []) if facts.get("flow") != "external" else []
+    drawn: the pictures (and the model naming them) see the body as before. A face the check proposes
+    as NOT an opening (a bolt hole's mouth, a step in the bore, a flat end that is no mouth) wears no
+    sticker either: a sticker says "this is an opening", and the pictures carry the stage's own ids
+    (rule FLOW-8, part_understanding.RULE_STICKERS)."""
+    fk = facts.get("flow_kind")
+    undecided = isinstance(fk, dict) and fk.get("kind") == "undecided"     # FLOW-4: the pictures may help
+    if facts.get("flow") == "external" and not undecided:
+        return []
+    return [o for o in facts.get("openings") or [] if isinstance(o, dict) and o.get("role") != "not_an_opening"]
 
 
 def _scout_thermal(session_id: str, ref, fetched: Path, canonical, sidecar: dict) -> dict:
@@ -1279,6 +1291,7 @@ def _scout_exact_rest(facts: dict, skin: Path, local_path: Path, work: Path, int
             read_fluid_volume(facts, local_path, work=work, kind="cad",
                               scale=occ_scale_transform(prepared).ScaleFactor(), started=early_fluid)
         read_whole_shape(facts, skin)
+    settle_flow_kind(facts)
     return facts, skin
 
 
@@ -1493,6 +1506,7 @@ def _scout_triangles(local_path: Path, work: Path, interp_ref, ref,
             # the extracted openings bound the fluid by construction; the skin's own passages
             # (several parts' skins together) say nothing about them
             facts = hold_openings_to_the_staging(facts, local_path, skin, scale)
+    settle_flow_kind(facts)
     return facts, skin
 
 
@@ -1802,18 +1816,43 @@ def _name_after_wait(*, session_id: str, owner_id: str, purpose_text: str, inter
         return landed
     if _is_fea(purpose_text):
         # AN FEA PART has no openings, no flow and no far field to name: the stage shows the part,
-        # its size and unit, its bodies and the clean check, all measured. No model is asked.
+        # its size and unit, its bodies and the clean check, all measured. No model names anything.
         # What the FEA plan sizes from is measured here, in the unit just settled: the walls and
         # the stress hot spots (FEA build step 3)
         from meshpipeline.cad.fea_measure import FACT_KEY
 
         facts[FACT_KEY] = fea_measurements(stored, facts, interpretation, early=early, owner_id=owner_id)
+        # PLAN-fea-22: A CAD PART'S MESH IS SIZED once the stage is shown (the size choice lands on it after)
+        from meshpipeline.application.fea_check import PLAN_FACT_KEY
+        sizing = ""
+        if (facts[FACT_KEY].get("measured") and facts[FACT_KEY].get("basis") == "cad"
+                and not fea_blocker(facts)):
+            sizing = uuid.uuid4().hex
+            facts[PLAN_FACT_KEY] = {"sizing": True, "token": sizing}
+        # SHSTAGE-1: SHELL OR SOLID, when the user's words say it: the word table, the model only for a
+        # paraphrase (checked against the allowed values); the stage opens on it and never overrides it
+        from meshpipeline.application import mesh_as
+
+        facts[MESH_AS_KEY] = mesh_as.as_record(mesh_as.read_mesh_as_sync(purpose_text, session_id=session_id,
+                                                                          owner_id=owner_id))
+        # SHSTAGE-2: THE SHELL CHECK, ONLY WHEN THE USER'S WORDS ASKED FOR A SHELL (plain FEA is a solid, and costs
+        # the worker nothing): its status says "measuring" before the stage opens, and the stage never waits on it.
+        # A shell asked for later is started by the stage's read (application/shell_check.start_if_asked)
+        try:
+            from meshpipeline.application import shell_check
+
+            if shell_check.wants_shell(facts):
+                shell_check.start(session_id, owner_id, facts=facts, interpretation=interpretation)
+        except Exception as exc:  # noqa: BLE001 - no shell check: the run still makes a said shell
+            logger.warning("geometry naming: the shell check was not started (%s)", type(exc).__name__)
         proposal = _proposal(facts, {})
         result = {k: v for k, v in stored.items() if k not in _STAMPED_KEYS + _FAILURE_KEYS}
         result.update(named=True, facts=facts, vision={}, proposal=proposal,
                       purpose_text=purpose_text[:2000], naming_seconds=round(time.time() - started, 1))
         landed = _land_named(session_id, result, stored)
         logger.info("geometry naming %s - session=%s (an FEA part: nothing to name)", landed["status"], session_id)
+        if sizing and landed.get("status") == STATUS_READY:
+            size_fea_plan(session_id, stored, interpretation, token=sizing, started=started)
         return landed
 
     with tempfile.TemporaryDirectory(prefix=f"geometry_naming_{session_id[:8]}_") as tmp:
@@ -1831,7 +1870,7 @@ def _name_after_wait(*, session_id: str, owner_id: str, purpose_text: str, inter
                                    owner_id=owner_id)
         # WHICH WAY IS UP, by the pictures: asked only of a body the fluid flows around, once the
         # model has said what it is - the name is what lets it place a car it cannot place cold
-        if "error" not in vision and _proposal(facts, vision)["flow"] == "external":
+        if "error" not in vision and _proposal(facts, vision, words=purpose_text)["flow"] == "external":
             seen = _upright_by_pictures(stored, tmp, part=str(vision.get("part") or ""),
                                         purpose_text=purpose_text, session_id=session_id, owner_id=owner_id)
             # a question that failed is its own failure, never the naming's: under "error" it
@@ -1842,7 +1881,12 @@ def _name_after_wait(*, session_id: str, owner_id: str, purpose_text: str, inter
     # NOTE-5 ON THE FLOW ROUTE: a surface of several named parts (or a CAD file of several solids) keeps its parts
     # for the checklist before approval, as the FEA route's measurement does
     _keep_flow_parts(session_id, stored, facts, interpretation)
-    proposal = _proposal(facts, vision)
+    proposal = _proposal(facts, vision, words=purpose_text)
+    # THE FLOW KIND THE INTAKE READS (facts["flow_kind"]): now with the user's words and the pictures - and
+    # what the part is (facts["understanding"]), the same the stage shows
+    stamp_flow_kind(facts, proposal["flow_kind"])
+    if proposal.get("understanding"):
+        facts["understanding"] = proposal["understanding"]
     # what the scout stored, minus the fields write_status writes itself: the status, the clock,
     # and the session id - which it also takes as its first argument
     result = {k: v for k, v in stored.items() if k not in _STAMPED_KEYS + _FAILURE_KEYS}
@@ -1854,6 +1898,84 @@ def _name_after_wait(*, session_id: str, owner_id: str, purpose_text: str, inter
     logger.info("geometry naming %s - session=%s in %.1fs (model %s)", landed["status"], session_id,
                 result["naming_seconds"], "answered" if "error" not in vision else "unavailable")
     return landed
+
+
+def fea_blocker(facts: dict) -> bool:
+    """Whether the FEA stage stops this part (a surface, not a closed solid): nothing to size then."""
+    from meshpipeline.application.fea_check import blocker
+    return bool(blocker(facts)[0])
+
+
+#: PLAN-fea-22: THE SIZING'S OWN TIME. It runs after the stage is shown (the naming has landed), for up to
+#: fea_plan_options.BUDGET_S whatever the naming itself took - the naming task is given that much more
+#: (naming_task_limits) - and stores what it made; a run started before it is done sizes the part itself and takes
+#: the recommended mesh (engines/fea_driver.size_choice). This is what the task keeps back for storing the result.
+SIZING_MARGIN_S = 120.0
+
+
+def naming_task_limits(session_id: str) -> tuple[int, int]:
+    """The naming TASK's (soft, hard) limits: the naming's own (naming_limits_for), plus the FEA sizing's budget and
+    its margin, which run after the stage is shown (the check's own time box still holds the naming to its limits:
+    once the stage is ready, nothing waits on the sizing)."""
+    from meshpipeline.engines.fea_plan_options import BUDGET_S
+    soft, hard = naming_limits_for(session_id)
+    extra = int(BUDGET_S + SIZING_MARGIN_S)
+    return soft + extra, hard + extra
+
+
+def size_fea_plan(session_id: str, stored: dict, interpretation: dict | None, *, token: str,
+                  started: float) -> dict:
+    """PLAN-fea-22: the size choice for the FEA part just shown (engines/fea_plan_options), planned as the run
+    plans it in a child stopped within the naming's own time, and stored on the check - unless the check moved on
+    meanwhile (a new naming, a new unit: its marker's token is no longer this one). Never raises; returns what it
+    stored (the options, or why they were not sized)."""
+    from meshpipeline.application.fea_check import PLAN_FACT_KEY
+    from meshpipeline.engines import fea_plan_options as PO
+
+    budget = PO.BUDGET_S
+    got: dict = {"sized": False, "why": "The mesh could not be sized before it runs"}
+    if budget > 0:
+        try:
+            from meshpipeline.cad.ingest import canonicalise
+            from meshpipeline.contracts.geometry_source import GeometryInterpretationRef, GeometrySourceRef
+            from meshpipeline.contracts.intake_formats import GeometryKind
+
+            ref = GeometrySourceRef.from_payload(stored["source"])
+            interp_ref = GeometryInterpretationRef.from_payload(interpretation) if interpretation else None
+            with tempfile.TemporaryDirectory(prefix="fea_plan_") as tmp:
+                work = Path(tmp)
+                canonical = canonicalise(_fetch(ref, work), work, stem="geometry", ecxml_form="placed")
+                if canonical.kind is GeometryKind.cad:
+                    prepared, _note = _prepared_coordinates(canonical.path, interp_ref, ref)
+                    kept = work / PO.PLANS_FILE
+                    options = PO.bounded(canonical.path, to_metres=float(prepared.to_metres), budget_s=budget,
+                                         plans_out=kept)
+                    got = {"sized": True, **options} if options else \
+                        {"sized": False, "why": "The mesh could not be sized in time before it runs"}
+                    if options and kept.exists():
+                        # PLANNED ONCE: the plans kept for the run (it reuses them when made for its staged solid)
+                        from meshpipeline.contracts.object_storage import get_object_store
+                        get_object_store().upload_file(local_path=kept,
+                                                       object_key=check_object_key(session_id, PO.PLANS_FILE))
+        except Exception as exc:  # noqa: BLE001 - the run sizes it; the stage says so
+            logger.warning("geometry check: the FEA mesh was not sized (%s: %s)", type(exc).__name__, str(exc)[:200])
+            got = {"sized": False, "why": "The mesh could not be sized before it runs"}
+    try:
+        current = read_check(session_id)
+        facts = dict((current or {}).get("facts") or {})
+        mark = facts.get(PLAN_FACT_KEY)
+        if not current or current.get("status") != STATUS_READY or not isinstance(mark, dict) \
+                or mark.get("token") != token:
+            logger.info("geometry check: the FEA size choice is stale (the check moved on) - session=%s", session_id)
+            return got
+        facts[PLAN_FACT_KEY] = got
+        write_status(session_id, STATUS_READY, **{**{k: v for k, v in current.items() if k not in _STAMPED_KEYS},
+                                                  "facts": facts})
+    except Exception:  # noqa: BLE001 - the stage then keeps saying it is sizing; the run sizes it
+        logger.exception("geometry check: the FEA size choice could not be stored - session=%s", session_id)
+    logger.info("geometry check: FEA size choice %s - session=%s", "sized" if got.get("sized") else "not sized",
+                session_id)
+    return got
 
 
 def _land_named(session_id: str, result: dict, named_from: dict) -> dict:
@@ -1898,7 +2020,12 @@ def merged_onto_full(named: dict, named_from: dict, full: dict) -> dict:
     vision = named.get("vision")
     out = {key: v for key, v in full.items() if key not in _STAMPED_KEYS + _FAILURE_KEYS + ("preview",)}
     out.update({key: named[key] for key in ("named", "vision", "purpose_text", "naming_seconds") if key in named})
-    out.update(facts=facts, proposal=_proposal(facts, vision))
+    proposal = _proposal(facts, vision, words=str(named.get("purpose_text") or ""))
+    if not _is_thermal(facts):
+        stamp_flow_kind(facts, proposal["flow_kind"])
+        if proposal.get("understanding"):
+            facts["understanding"] = proposal["understanding"]
+    out.update(facts=facts, proposal=proposal)
     out.pop("named_on_preview", None)
     return out
 
@@ -1906,6 +2033,9 @@ def merged_onto_full(named: dict, named_from: dict, full: dict) -> dict:
 #: An upload larger than this is not measured for FEA in the naming step (the record says so; the
 #: plan then sizes from the part's size alone). Version 1's parts are single parts, far smaller.
 FEA_MEASURE_MAX_MB = 80.0
+#: SHSTAGE-1: where an FEA part's facts keep what the user's words said about meshing it as a shell or a
+#: solid (application/mesh_as.as_record).
+MESH_AS_KEY = "mesh_as_words"
 
 
 class _TooBig(ValueError):
@@ -1941,6 +2071,10 @@ def fea_measurements(stored: dict, facts: dict, interpretation: dict | None, ear
         ref = GeometrySourceRef.from_payload(stored["source"])
         key = reuse.fea_key(ref.sha256, interpretation, scale, validity)
         known = reuse.known_fea(owner_id, ref.sha256, key) if owner_id else None
+        if known is not None and _lacks_surface_reading(known, facts):
+            # SURF-1: a measurement kept from before surface files were read holds no reading of a file with no
+            # solid - reused, the stage would stop the file as it did then. It is measured again, once
+            known = None
         if known is not None:
             if early is not None:
                 early.stop()
@@ -1987,6 +2121,16 @@ def fea_measurements(stored: dict, facts: dict, interpretation: dict | None, ear
     return record
 
 
+def _lacks_surface_reading(record: dict, facts: dict) -> bool:
+    """Whether a kept CAD measurement of a file the scout found no solid in was made before SURF-1: it holds no
+    surface reading (application/surface_check.KEY)."""
+    from meshpipeline.application import surface_check
+
+    solids = facts.get("solids")
+    no_solid = isinstance(solids, (int, float)) and not isinstance(solids, bool) and int(solids) == 0
+    return no_solid and record.get("basis") == "cad" and surface_check.KEY not in record
+
+
 def _too_big(fetched: Path) -> None:
     size_mb = fetched.stat().st_size / 1e6
     if size_mb > FEA_MEASURE_MAX_MB:
@@ -2006,7 +2150,19 @@ def _fea_measure_cad(path: Path, interp_ref, ref):
     mm_per_unit = 1000.0 * float(occ_scale_transform(prepared).ScaleFactor())
     shape = read_cad(path)
     record, surface = measure_cad_surface(shape, mm_per_unit=mm_per_unit)
-    if int(record.get("bodies") or 0) > 1:
+    sheet = False
+    from meshpipeline.cad.surface_model import has_solid
+    if not has_solid(shape):
+        # SURF-1: A FILE WITH NO SOLID is read as a surface once, here, with the measurement (so a reused
+        # measurement carries the reading): a sheet to mesh as a shell, a closed skin with a gap, or faces that close
+        from meshpipeline.application import surface_check
+
+        reading = surface_check.measure(shape, mm_per_unit=mm_per_unit)
+        if reading is not None:
+            record[surface_check.KEY] = reading
+            # (its sheets are no assembly of solids: nothing touches, nothing is bonded)
+            sheet = reading.get("kind") in (surface_check.SURFACE, surface_check.GAP)
+    if int(record.get("bodies") or 0) > 1 and not sheet:
         # AN ASSEMBLY: its parts, where they touch or pass into each other, and every
         # face named Part_k_Face_j - the names the delivered files use
         from meshpipeline.cad.fea_assembly import global_face_names, measure_assembly
@@ -2785,45 +2941,24 @@ def _sanitized(vision, facts: dict, derived: bool) -> dict:
     return out or {"error": MALFORMED}
 
 
-def _inside_contradicts(facts: dict, kind: str, flow: str) -> str:
-    """Why a kind and flow go against what was measured - the openings and the part's inside-space
-    map (INS-1) - in plain words, else "". Fluid flowing through needs two openings at least, and a
-    wall around a way through (or a closed volume, for the fluid itself); fluid flowing around never
-    fits a part the map shows a passage through."""
-    inside: dict = facts["inside"] if isinstance(facts.get("inside"), dict) else {}
-    mapped = bool(inside) and inside.get("mapped") is not False
-    if flow == "internal":
-        if len([o for o in facts.get("openings") or [] if isinstance(o, dict)]) < 2:
-            return "the measuring step found fewer than two openings for the fluid to pass"
-        if mapped and not inside.get("has_inside"):
-            if kind == "body-surface":
-                return "the part's inside-space map shows no way through it"
-            if "enclosed_mm3" in inside and float(inside.get("enclosed_mm3") or 0.0) <= 0.0:
-                return "the part's inside-space map shows no volume for the fluid"
-    if flow == "external" and mapped and inside.get("has_inside"):
-        return "the part's inside-space map shows a passage through it"
-    return ""
+def settle_flow_kind(facts: dict) -> dict:
+    """THE FLOW KIND ON THE SCOUT'S FACTS (application/flow_kind, FLOW-1..5): the measuring step's own
+    reading is kept as `flow_scout`, the one authority's verdict - internal, external or undecided, with
+    its sureness and reasons - is `flow_kind`, and `flow` / `input_kind` follow it (an undecided part
+    is drawn as its best guess until the user says). Every later reader takes `flow_kind`."""
+    from meshpipeline.application.flow_kind import decide
+
+    return stamp_flow_kind(facts, decide(facts))
 
 
-def _model_kind_flow(facts: dict, vision: dict) -> tuple[tuple[str, str] | None, str]:
-    """The model's kind and flow, when they may replace the measured ones: they agree with each
-    other, the model is surer than the code by MODEL_KIND_MARGIN, and they contradict nothing
-    measured. Returns ((kind, flow) or None, a note for the user when a reading was set aside)."""
-    said_kind, said_flow = vision.get("input_kind"), vision.get("flow")
-    code_kind, code_flow = str(facts.get("input_kind") or ""), str(facts.get("flow") or "")
-    flow = str(said_flow or _FLOW_OF_KIND.get(str(said_kind), ""))
-    kind = str(said_kind or (code_kind if _FLOW_OF_KIND.get(code_kind) == flow else ""))
-    if not flow or _FLOW_OF_KIND.get(kind) != flow or (kind, flow) == (code_kind, code_flow):
-        return None, ""
-    code_conf = _unit_number((facts.get("confidence") or {}).get("input_kind")) or 0.0
-    if (vision.get("confidence") or 0.0) < code_conf + MODEL_KIND_MARGIN:
-        return None, ""
-    why = _inside_contradicts(facts, kind, flow)
-    if why:
-        words = "through it" if flow == "internal" else "around it"
-        return None, (f"The pictures suggested the fluid flows {words}, but {why}, "
-                      "so the measured reading stands.")
-    return (kind, flow), ""
+def stamp_flow_kind(facts: dict, record: dict) -> dict:
+    """The authority's verdict written onto the facts the check stores - what the intake reads
+    (`facts["flow_kind"]`) - with the measuring step's own reading kept the first time."""
+    facts.setdefault("flow_scout", facts.get("flow"))
+    facts.setdefault("input_kind_scout", facts.get("input_kind"))
+    facts["flow_kind"] = record
+    facts["flow"], facts["input_kind"] = record["flow"], record["input_kind"]
+    return record
 
 
 def _has_port_pair(openings) -> bool:
@@ -2833,51 +2968,61 @@ def _has_port_pair(openings) -> bool:
 
 def _apply_vision(proposal: dict, facts: dict, vision: dict, declared_kind: bool) -> None:
     """The model's answer laid over the measured proposal, each change only where it is allowed:
-    the kind and flow (_model_kind_flow), and each opening's role and name where the model is surer
-    than the code about that opening - and never so that a part the fluid flows through is left
-    without an inlet and an outlet."""
-    if not declared_kind:
-        kind_flow, note = _model_kind_flow(facts, vision)
-        if kind_flow is not None:
-            proposal["input_kind"], proposal["flow"] = kind_flow
-        if note:
-            proposal["notes"].append(note)
-    before = [dict(o) for o in proposal["openings"]]
+    each opening's role and name where the model is surer than the code about that opening - and
+    never so that a part the fluid flows through is left without an inlet and an outlet. The kind and
+    the flow are the flow-kind authority's (application/flow_kind, FLOW-3), already on the proposal."""
+    before =[dict(o) for o in proposal["openings"]]
     by_id = {o["id"]: o for o in proposal["openings"]}
     for named in vision.get("openings") or []:
         o = by_id.get(named["id"])
         if o is None or o.get("declared_by"):
             continue
         role, conf = named.get("role"), named.get("confidence")
-        code_conf = _unit_number(o.get("confidence"))
+        # how sure the code is of this ROLE: the assignment's own sureness (application/part_understanding),
+        # else the opening's
+        reason = o.get("role_reason") if isinstance(o.get("role_reason"), dict) else {}
+        code_conf = _unit_number(reason.get("confidence")) if reason else _unit_number(o.get("confidence"))
         code_conf = 0.5 if code_conf is None else code_conf
         if role is not None and role != o.get("role"):
             if conf is None or conf <= code_conf:
                 continue          # the code was as sure: its role, and the name that goes with it, stand
             o["role"], o["confidence"] = role, round(conf, 2)
+            if reason:
+                # the pictures' role is still the user's to confirm: it stays marked a guess
+                o["role_reason"] = {"confidence": round(conf, 2), "guess": True,
+                                    "reason": f"the pictures show it as the {role}; check it"}
         elif conf is not None:
             o["confidence"] = round(max(conf, code_conf), 2)
         if named.get("name"):
             o["name"] = named["name"]
     if proposal["flow"] == "internal" and not _has_port_pair(proposal["openings"]) and _has_port_pair(before):
-        proposal["openings"] = before
+        # the measured role comes back where the pictures changed it; a name the pictures gave an
+        # opening whose role they agreed with stays
+        was = {o["id"]: o for o in before}
+        proposal["openings"] = [was[o["id"]] if o.get("role") != was.get(o["id"], o).get("role") else o
+                                for o in proposal["openings"]]
         proposal["notes"].append("The pictures' roles for the openings would leave no inlet and outlet, "
                                  "so the measured roles stand.")
 
 
-def _proposal(facts: dict, vision: dict | None) -> dict:
+def _proposal(facts: dict, vision: dict | None, words: str = "") -> dict:
     """What the user is shown: the code's positions and sizes, the model's names and roles where
-    it gave them for a sticker that exists and is surer of, and the kind and flow from the model
-    only where it is clearly surer and contradicts nothing measured. With no vision answer yet (the
-    scout alone) the names are the code's and nothing says otherwise. Nothing the model sent can
-    make this raise: an answer it cannot read leaves the code's own proposal."""
+    it gave them for a sticker that exists and is surer of, and the kind and flow from the one
+    flow-kind authority (application/flow_kind: the user's `words` first, then the measured shape,
+    the pictures only where clearly surer and contradicting nothing measured, else undecided with
+    the one question). With no vision answer yet (the scout alone) the names are the code's and
+    nothing says otherwise. Nothing the model sent can make this raise: an answer it cannot read
+    leaves the code's own proposal."""
+    from meshpipeline.application.flow_kind import decide
+
     if _is_thermal(facts):
         return _thermal_proposal(facts, vision)
     if vision is not None:
         vision = _sanitize_vision(vision, facts, derived=True)
+    flow_kind = decide(facts, words=words, vision=vision)
     proposal = {
         "part": (vision or {}).get("part") or str(facts.get("part_name") or ""),
-        "input_kind": facts["input_kind"], "flow": facts["flow"],
+        "input_kind": flow_kind["input_kind"], "flow": flow_kind["flow"], "flow_kind": flow_kind,
         "openings": [dict(o) for o in facts["openings"]],
         "seed_point_mm": facts.get("seed_point_mm"),
         "size_mm": facts["size_mm"],
@@ -2890,6 +3035,18 @@ def _proposal(facts: dict, vision: dict | None) -> dict:
         "named": vision is not None,
         "vision_available": bool(vision) and "error" not in (vision or {}),
     }
+    # the pictures' kind set aside for what was measured is said, as it always was
+    proposal["notes"].extend(r for r in flow_kind["reasons"] if r.startswith("The pictures suggested"))
+    # FIRST WHAT THE PART IS, THEN WHICH OPENING IS WHICH (application/part_understanding): the user's words,
+    # the measured openings and (named) the pictures' name make one understanding; every opening's role
+    # follows from it, with a sureness, a reason and whether it is a guess for the user to confirm or flip
+    if facts.get("input_kind") != "solid-assembly":
+        from meshpipeline.application.part_understanding import assign, understand
+
+        proposal["understanding"] = understand(facts, proposal["openings"], flow=flow_kind["flow"], words=words,
+                                               vision=vision)
+        if flow_kind["flow"] == "internal":
+            proposal["openings"] = assign(proposal["openings"], proposal["understanding"], facts)
     # THE PART'S INSIDE (INS-1) and the stage's question when "through it" cannot be meshed as
     # proposed (INS-3): asked only if the user says the fluid flows through it
     if isinstance(facts.get("inside"), dict):
@@ -2929,7 +3086,7 @@ def _proposal(facts: dict, vision: dict | None) -> dict:
         return _upright(proposal, facts, vision, vision.get("flow_axis"))
     except Exception as exc:  # noqa: BLE001 - the model's answer never fails the check: the rules stand
         logger.warning("geometry check: the naming answer was set aside (%s: %s)", type(exc).__name__, str(exc)[:200])
-        return _proposal(facts, {"error": MALFORMED})
+        return _proposal(facts, {"error": MALFORMED}, words=words)
 
 
 def _upright(proposal: dict, facts: dict, vision: dict | None, flow_axis) -> dict:

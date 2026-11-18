@@ -87,11 +87,14 @@ def test_the_split_goes_with_the_viewer(live):
 
 
 def test_the_run_box_says_its_time_limit_in_plain_words(live):
+    # the run box (four rows, #423) has no mesh bar: the line #417 put under the bar is the live note of the
+    # row that is creating the mesh
     sub = live.evaluate("""(async () => {
       const { Stage } = await import('/static/js/render/stage.js');
       Stage.mount(); Stage.ensureProc();
       Stage.startMesh('gmsh', 3600, null);
-      return document.querySelector('.meshbar .mb-sub').textContent;
+      const n = document.querySelector('.rr-live:not([hidden]) .rr-note');
+      return n ? n.textContent : null;
     })()""")
-    assert sub == "no similar runs yet · Time limit 60 min", sub
+    assert sub == "No similar runs yet · Time limit 60 min", sub
     assert "stops by itself" not in sub

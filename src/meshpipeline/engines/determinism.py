@@ -16,8 +16,12 @@ A mesher's result may depend on more than its input and its plan:
   * the wall clock - a pass skipped "because too little time is left" depends on how loaded the
     machine was during the passes before it.
 
-This module fixes the first three by default (MESH_DETERMINISTIC). The fourth is gone from the mesh
-path (D3, contracts/work_limits): planned work decides, and a clock is only a GUARD. A guard that
+This module fixes the first three by default (MESH_DETERMINISTIC). One gmsh step is the exception, by the
+founder's decision (13 Nov: speed wins over the same mesh twice): an FEA solid's volume is filled by HXT on
+every core the job has (MESH-25), so that fill may differ slightly from one run to the next - still valid, still
+held to every limit. MESH_GMSH_THREADS=1 fills it on one thread, the same mesh to the byte: OUR tests and sweep
+tools ("the same file twice"), never production. Every other gmsh step stays on one thread. The fourth is gone
+from the mesh path (D3, contracts/work_limits): planned work decides, and a clock is only a GUARD. A guard that
 trips is recorded by `note_guard_trip` - in the stamp's `guard_trips`, and in GUARD_TRIPS_FILE in
 the attempt's workspace, which the executor reads - and the attempt ends as an infrastructure
 failure. `note_time_limit` is left for the clocks that still decide (the CAD repair steps, TIME-6),
@@ -64,8 +68,12 @@ MESH_SNAPPY_RANKS: str = optional_env("MESH_SNAPPY_RANKS", "")
 
 #: The decomposition snappy's ranks are cut by (decomposeParDict `method`).
 SNAPPY_DECOMPOSITION = "scotch"
-#: gmsh: one thread and a fixed seed (engines/gmsh/driver pins them; recorded here).
+#: gmsh: one thread and a fixed seed (engines/gmsh/driver pins them; recorded here) - but for MESH_GMSH_THREADS.
 GMSH_THREADS = 1
+#: MESH-25: the threads of an FEA solid's gmsh run (the HXT fill, the optimiser, the curving; the plan may name its
+#: own). Blank = every core the job has (its CPU quota, `job_cpus`): production, where the fill may differ slightly
+#: run to run. "1" = one thread, the same mesh to the byte - for our tests and sweep tools, never production.
+MESH_GMSH_THREADS: str = optional_env("MESH_GMSH_THREADS", "")
 GMSH_RANDOM_SEED = 1
 #: The hash seed native Python children run with (vmtk's pype, the snap-grid CLI).
 PYTHON_HASH_SEED = "0"
@@ -99,6 +107,7 @@ def _int_or_none(raw: str, name: str) -> int | None:
 
 
 _CFMESH_THREADS = _int_or_none(MESH_CFMESH_THREADS, "MESH_CFMESH_THREADS")
+_GMSH_THREADS = _int_or_none(MESH_GMSH_THREADS, "MESH_GMSH_THREADS")
 _SNAPPY_RANKS = _int_or_none(MESH_SNAPPY_RANKS, "MESH_SNAPPY_RANKS")
 
 
@@ -108,6 +117,13 @@ def threads_for(engine: str) -> int:
     if engine == "cfmesh" and _CFMESH_THREADS:
         return _CFMESH_THREADS
     return MESH_THREADS
+
+
+def gmsh_threads() -> int:
+    """An FEA solid's gmsh threads (engines/gmsh/fea_adapter.mesh_threads, MESH-25): MESH_GMSH_THREADS when set
+    (1 = repeatable, for our tests), else every core the job has - never the host's (Cloud Run's os.cpu_count() is
+    the host's)."""
+    return _GMSH_THREADS or job_cpus()
 
 
 def native_environment(engine: str) -> dict[str, str]:
@@ -397,7 +413,24 @@ def tool_versions(engine: str, *, foam_version: str = "") -> dict[str, Any]:
         out["gmsh"] = _version("gmsh")
     if engine == "vmtk":
         out["vtk"] = _version("vtk")
+    if engine == "netgen":
+        out["netgen"] = _netgen_version()
     return {k: v for k, v in out.items() if v}
+
+
+def _netgen_version() -> str | None:
+    """Netgen's version, read from its own interpreter (engines/netgen/runner.py): it is not in ours."""
+    try:
+        import subprocess
+
+        from meshpipeline.engines.netgen.runner import available, netgen_python
+        if not available():
+            return None
+        p = subprocess.run([netgen_python(), "-c", "from netgen import config; print(config.version)"],
+                           capture_output=True, text=True, timeout=60)
+        return p.stdout.strip() or None
+    except Exception:  # noqa: BLE001 - a version is context, never a requirement
+        return None
 
 
 def _meshpipeline_version() -> str | None:
@@ -519,12 +552,12 @@ def comparable(a: dict, b: dict) -> list[str]:
 
 
 __all__ = [
-    "GMSH_RANDOM_SEED", "GMSH_THREADS", "GUARD_TRIPS_FILE", "MESH_CFMESH_THREADS",
+    "GMSH_RANDOM_SEED", "GMSH_THREADS", "GUARD_TRIPS_FILE", "MESH_CFMESH_THREADS", "MESH_GMSH_THREADS",
     "MESH_DETERMINISTIC", "MESH_SNAPPY_RANKS", "MESH_THREADS", "SNAPPY_DECOMPOSITION", "STAMP_FILE",
     "clear_guard_trips", "comparable", "drain_process_guard_trips", "drain_process_notes", "drop_attempt_start", "guard_trips", "mark_attempt_start",
     "native_environment",
     "note_guard_trip", "note_setting", "note_time_limit", "restore_attempt_start",
     "write_guard_trips",
-    "pin_process_environment", "read_stamp", "recording", "snappy_ranks", "stamp", "threads_for",
+    "gmsh_threads", "pin_process_environment", "read_stamp", "recording", "snappy_ranks", "stamp", "threads_for",
     "tool_versions", "workspace_hashes", "write_stamp",
 ]

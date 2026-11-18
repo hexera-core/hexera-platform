@@ -3,8 +3,8 @@
 // where names and roles are confirmed, stickers added or removed. A whole thermal model (an ECXML
 // upload) gets its own mode instead: the parts in the colours of the panel's list, picked from
 // either side, the case seen through, the file's air box as faint lines - and no stickers.
-// Owns: its vtk.js scene (the skin, its edges, the lights, the sticker balls and the pins that
-// follow them), the naming state of the panel, the measuring ruler, and the takeover of the
+// Owns: its vtk.js scene (the skin, its edges, the lights), which marks are shown on it (the marks
+// themselves are drawn by scene/marks.js), the naming state of the panel, the measuring ruler, and the takeover of the
 // workbench while the check is open.
 // Boundaries: it decides nothing about the geometry - positions, sizes and proposals arrive from
 // the check, the holes an added opening snaps to among them - and it starts no run; confirming
@@ -19,17 +19,19 @@
  * conversation for the rest of the intake (the notes' parts are drawn on it), and the conversation
  * carries on where it was. The stage goes when the run starts (viewer/intake_view.js).
  */
-import { getGeometrySkin } from "../api/endpoints.js";
+import { getGeometrySkin, getShellSurface } from "../api/endpoints.js";
 import { esc } from "../core/format.js";
 import { applyFlow, bindAxis, bindUnit, changedAnswers, editsLine, extentAlong, followSuggestion, followUnit, formHtml,
   markConfirmed, noteDrawn, readExternal, readForm, rowHtml, servedProposal, shown, tableHead, unitChoiceHint,
   unitChoiceNeeded, unitOf } from "../render/geometry_form.js";
-import { bindFeaPanel, bindMeasure, feaPanelHtml, followAssembly, followClean, followMeasure, interfaceMarks, lightSpotRow } from "../render/fea_form.js";
+import { bindFeaPanel, bindMeasure, effectiveMeshAs, feaPanelHtml, followAssembly, followClean, followMeasure, followMeshAs, followPlan, interfaceMarks,
+  lightSpotRow, shellLegendHtml, shellMarks, showsShell, wallColour } from "../render/fea_form.js";
 import { bindThermalPanel, partDetails, thermalPanelHtml, watts } from "../render/thermal_form.js";
 import { circleThrough, clickIndex, firstHit, snapAt } from "./open_ends.js";
 import { b64f32, b64u32, loadVtk } from "./scene/vtk_load.js";
 import { mountCanvas } from "./scene/canvas.js";
 import { makeOverlay } from "./scene/overlay.js";
+import { makeMarks } from "./scene/marks.js";
 // the intake keeps ONE viewer: the stage takes the workbench through it and stays, settled, once answered
 import { endIntake, holdIntake, intakeBox, settleIntake, takeOver } from "./intake_view.js";
 import { UP_AXES, VIEW_PRESETS, isUpAxis, orient, presetView, saveUp, savedUp, shield, upVector } from "./view_controls.js";
@@ -42,32 +44,46 @@ import { bindSeg, bindToolbar, optRow, savePng, segHtml, snapshotPng, themeRgb, 
 export { b64f32, b64u32, loadVtk } from "./scene/vtk_load.js";
 
 /* the console's own palette: the theme's viewer canvas behind a matte mid-tone grey part (the
-   theme's --part-body: soft on the eyes, so the orange selection and the steel edges stand out),
-   darker hairlines on the sharp corners; stickers in the yellow of the pictures, the selected one
-   in the product's orange, which nothing else on the stage wears. The two theme colours are read
-   when a stage opens; the values here are only the fallback. */
-const BACKGROUND_FALLBACK = [0.035, 0.055, 0.075], BODY_FALLBACK = [0.49, 0.51, 0.54];
+   theme's --part-body: soft on the eyes, so the crimson selection and the dark edges stand out),
+   darker hairlines on the sharp corners. The marks on the part are not drawn in 3D at all: they are
+   small flat marks of a fixed size on screen (scene/marks.js, styled in theme.css), in the page's
+   stone ink, the chosen one in the product's crimson. The two theme colours are read when a stage
+   opens; the values here are only the fallback. */
+const BACKGROUND_FALLBACK = [0.02, 0.02, 0.02], BODY_FALLBACK = [0.53, 0.52, 0.49];
 const background = () => themeRgb("--viewer-canvas", BACKGROUND_FALLBACK);
 const body = () => themeRgb("--part-body", BODY_FALLBACK);
 const AMBIENT = 0.22, DIFFUSE = 0.76, SPECULAR = 0.06;
-const EDGE = [0.30, 0.34, 0.40];
-const STICKER = [1.0, 0.83, 0.0], SEL = [1.0, 0.31, 0.0];
-// an FEA part's hot spots: a quiet steel blue, apart from the stickers' yellow
-const SPOT = [0.42, 0.62, 0.86];
-// an assembly's interfaces: a muted green where parts touch, a muted red where they pass into each other
-const TOUCH = [0.40, 0.72, 0.52], OVERLAP = [0.86, 0.45, 0.40];
+const EDGE = [0.31, 0.31, 0.29];
+const SEL = [0.886, 0.173, 0.173];
+// SHSTAGE-4: where the plates do not meet, along the mid-surface's open edges (a muted red)
+const SHELL_OPEN = [0.85, 0.33, 0.29];
 
-function spherePd(cx, cy, cz, r) {
-  const la = 12, lo = 16, pts = [], polys = [];
-  for (let i = 0; i <= la; i++) { const th = Math.PI * i / la;
-    for (let j = 0; j <= lo; j++) { const ph = 2 * Math.PI * j / lo;
-      pts.push(cx + r * Math.sin(th) * Math.cos(ph), cy + r * Math.cos(th), cz + r * Math.sin(th) * Math.sin(ph)); } }
-  const W = lo + 1;
-  for (let i = 0; i < la; i++) for (let j = 0; j < lo; j++) { const a = i * W + j; polys.push(4, a, a + 1, a + W + 1, a + W); }
+/** One flat dot of a fixed size on screen at a point: a ruler's end, a rim point being traced. A
+ *  dot, never a ball sized to the part, so it stays the same size at any zoom. */
+function dotActor(pt, color, px = 6) {
   const pd = vtk.Common.DataModel.vtkPolyData.newInstance();
-  pd.getPoints().setData(Float32Array.from(pts), 3);
-  pd.getPolys().setData(Uint32Array.from(polys));
-  return pd;
+  pd.getPoints().setData(Float32Array.from(pt), 3);
+  pd.getVerts().setData(Uint32Array.from([1, 0]));
+  const mp = vtk.Rendering.Core.vtkMapper.newInstance(); mp.setInputData(pd);
+  const ac = vtk.Rendering.Core.vtkActor.newInstance(); ac.setMapper(mp); ac.setPickable(false);
+  const pp = ac.getProperty(); pp.setColor(color[0], color[1], color[2]); pp.setPointSize(px); pp.setLighting(false);
+  return ac;
+}
+
+/** The words a mark says when it is pointed at or chosen: "hole", "parts touch", "plates do not meet". */
+function markWords(h) {
+  if (h.type === "sharp_corner") return h.angle_deg != null ? `${Math.round(Number(h.angle_deg))}° inside corner` : "inside corner";
+  return String(h.shape || h.type || "").replace(/_/g, " ");
+}
+/** A mark's kind, for its look: a hot spot, a join (where parts touch, or across a small gap), or a
+ *  problem the user should see (parts that pass into each other, plates that do not meet), or a
+ *  region that stays solid. */
+function markKind(type) {
+  const t = String(type || "");
+  if (t === "interface_overlap" || t === "shell_open") return "k-problem";
+  if (t.startsWith("interface_")) return "k-join";
+  if (t === "shell_solid") return "k-solid";
+  return "k-spot";
 }
 
 /* THE STAGE'S TOOLBAR - the mesh viewer's own pattern (viewer/toolbar.js): one bar floating at the
@@ -226,10 +242,10 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
     }
   }
   function stateBanner() {
-    if (unitNeeded) return ["The file does not say its unit: check the size beside the unit box below and pick the unit that makes it right, or answer in the chat. The names are the measuring step's own - fix them and proceed.", ""];
+    if (unitNeeded) return ["The file does not say its unit: check the size and pick the unit below. The names are the measuring step's own - fix them and proceed.", ""];
     if (naming) return ["Naming the openings… turn the part meanwhile, or fix the names and proceed now.", "busy"];
     if (stalled) return ["The naming is taking longer than usual. These names are the measuring step's own: fix them and proceed, or wait.", "warn"];
-    return ["These names are the measuring step's own. Answer the question in the chat and I'll name the openings - or fix them here and proceed.", ""];
+    return ["These names are the measuring step's own: fix them here and proceed.", ""];
   }
   function showState() {
     const key = ["scouted", naming, stalled, unitNeeded].join("|");
@@ -280,7 +296,7 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
       // ("117 mm" for a wind turbine blade) Proceed never takes either reading in silence
       if (unitChoiceNeeded(p)) {
         hint.textContent = unitChoiceHint(p);
-        const pick = form.querySelector(".gc-pick"); if (pick) pick.focus();
+        const pick = form.querySelector(".gc-unit") || form.querySelector(".gc-pick"); if (pick) pick.focus();
         return;
       }
       const body = readForm(form, p);
@@ -402,14 +418,26 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
     scene.refresh();
   }
 
-  return { release, settle: () => settleIntake(box), update, isNaming: () => naming };
+  /** THE FLOW THE USER SAID IN THE CHAT (the flow-kind question's buttons): "The fluid flows" and "The file is"
+   *  take it, as if the user had picked them, so Proceed confirms what they answered. */
+  function preset(said) {
+    const pick = (cls, v) => {
+      const el = form.querySelector(cls);
+      if (!el || !v || el.value === v || ![...el.options].some((o) => o.value === v)) return;
+      el.value = v; el.dispatchEvent(new Event("change", { bubbles: true }));
+    };
+    pick(".gc-kind", (said || {}).input_kind);
+    pick(".gc-flow", (said || {}).flow);
+  }
+
+  return { release, settle: () => settleIntake(box), update, preset, isNaming: () => naming };
 }
 
 /** The names of a thermal model's placed parts beside their colours, in the stage's corner. */
 function partsLegend(patches) {
   const el = document.createElement("div"); el.className = "gc-legend";
   el.style.cssText = "position:absolute;left:8px;bottom:8px;max-height:45%;overflow:auto;padding:6px 8px;"
-    + "border-radius:6px;background:rgba(255,255,255,0.88);color:#2a2f36;font-size:11px;line-height:1.5;z-index:2";
+    + "border-radius:6px;background:rgba(255,255,255,0.88);color:#161615;font-size:11px;line-height:1.5;z-index:2";
   const named = patches.filter((pt) => pt.name), rows = named.slice(0, 40);
   el.innerHTML = rows.map((pt) => {
     const c = (Array.isArray(pt.color) ? pt.color : body()).map((v) => Math.round(v * 255)).join(",");
@@ -423,7 +451,8 @@ function initScene(sessionId, box, surf, p) {
   const sceneBg = background();
   // the boot, the DPR, the resize policy, the mouse and the three-light rig all live in one
   // module now; this file keeps only what is about a PART
-  const canvas = mountCanvas(host, { background: sceneBg });
+  // a press on a mark is a click on it, not the user taking the camera
+  const canvas = mountCanvas(host, { background: sceneBg, ignore: ".vt,.v-ov,.vm,.vm-group" });
   const { ren, rw, apiRW, cam } = canvas;
   const setRenderScale = canvas.setRenderScale;
   const overlay = makeOverlay(canvas);
@@ -505,66 +534,82 @@ function initScene(sessionId, box, surf, p) {
   const tb = bindStageTools(box, sessionId, { ren, rw, apiRW, cam, sceneBg, upAxis: () => upAxis, fit, iso,
     measure: (on) => { if (on !== measuring) setMeasure(on); } });
 
-  /* THE STICKERS - a ball on every opening, at the position the check measured, and an HTML pin
-     with its number that follows it every frame. The pin is the thing to click: it is never
-     hidden by the part, only dimmed when its mouth faces away from the camera. */
-  const pins = [];
-  let sel = null;
+  /* THE MARKS - small flat marks of a fixed size on screen (scene/marks.js), never balls sized to the
+     part; marks that would overlap at this zoom are one mark with their count, which splits as the
+     user zooms in. ONLY WHAT THE STEP IS ABOUT IS SHOWN: the openings of a flow part always (naming
+     them is the step); an FEA part's marks only while their lines show in the panel - the joins and
+     small gaps in their always-open section, the hot spots once their type is opened (they are
+     refined automatically: nothing to answer), what is not in the shell once its fold is opened - and
+     any line pointed at or chosen. Pointing at a type's line shows that type's marks for as long. */
   const panel = box.querySelector(".gc-panel");
   const form = panel.querySelector(".gc-form");
+  let rowsShown = null;                 // the ids of the tagged lines the panel shows now, read lazily
+  function shownRows() {
+    if (!rowsShown) {
+      rowsShown = new Set();
+      panel.querySelectorAll(".fea-spot-row").forEach((r) => { if (!r.closest("[hidden]")) rowsShown.add(r.dataset.spot); });
+    }
+    return rowsShown;
+  }
+  const marks = makeMarks(canvas, overlay, {
+    diag, shown: (key) => key.startsWith("o:") || (panel.isConnected && shownRows().has(key.slice(2))) });
+  // a fold opened or closed, a list drawn again, the panel gone after Proceed: the marks follow
+  const watch = new MutationObserver(() => { rowsShown = null; marks.bump(); });
+  watch.observe(panel, { subtree: true, childList: true, attributes: true, attributeFilter: ["hidden"] });
+  panel.addEventListener("mouseover", (e) => {
+    const b = e.target && e.target.closest && e.target.closest(".fea-fold-btn");
+    const w = b && panel.contains(b) && b.closest("[data-fold]");
+    if (!w) return;
+    const ids = [w, ...w.querySelectorAll(".fea-spot-row")].filter((r) => r.matches(".fea-spot-row")).map((r) => "s:" + r.dataset.spot);
+    if (ids.length) marks.hover(ids);
+  });
+  panel.addEventListener("mouseout", (e) => {
+    const b = e.target && e.target.closest && e.target.closest(".fea-fold-btn");
+    if (b && !(e.relatedTarget && b.contains(e.relatedTarget))) marks.hover(null);
+  });
+
+  /* THE STICKERS - a numbered mark on every opening, at the position the check measured. It is the
+     thing to click: never hidden by the part, only dimmed when its mouth faces away from the camera,
+     and gone entirely on an external case. */
+  const pins = [];
+  let sel = null;
   function centreOf(o) {
     return o.centroid_m && o.centroid_m.length === 3 ? o.centroid_m : (o.centroid_mm || [0, 0, 0]).map((v) => v / 1000);
   }
   function addPin(o) {
     const c = centreOf(o), n = o.normal || [0, 0, 1];
-    const mp = vtk.Rendering.Core.vtkMapper.newInstance();
-    mp.setInputData(spherePd(c[0], c[1], c[2], 0.012 * diag));
-    const ac = vtk.Rendering.Core.vtkActor.newInstance(); ac.setMapper(mp); ac.setPickable(false);
-    const pp = ac.getProperty(); pp.setColor(STICKER[0], STICKER[1], STICKER[2]);
-    pp.setAmbient(0.55); pp.setDiffuse(0.6); pp.setSpecular(0.2);
-    ren.addActor(ac);
-    const el = document.createElement("div"); el.className = "v-pin gc-pin"; el.textContent = String(o.id);
+    const el = document.createElement("div"); el.className = "gc-pin vm-chip"; el.textContent = String(o.id);
     el.title = "opening " + o.id + " - click to select";
     el.onclick = (ev) => { ev.stopPropagation(); select(o.id); };
-    host.appendChild(el);
-    const pn = { id: o.id, o: { id: o.id, c, n }, actor: ac, el };
-    // the pin follows its point from the panel's one overlay loop; it is never occluded by the
-    // part, only dimmed when its mouth faces away, and it is gone entirely on an external case
-    pn.off = overlay.anchor(el, () => pn.o.c, {
-      hidden: () => (form.querySelector(".gc-flow") || {}).value === "external",
-      normal: () => pn.o.n });
+    const pn = { id: o.id, o: { id: o.id, c, n }, el };
+    marks.add({ id: "o:" + o.id, el, at: () => pn.o.c, normal: () => pn.o.n,
+      hidden: () => (form.querySelector(".gc-flow") || {}).value === "external" });
     pins.push(pn);
   }
   function removePin(id) {
     const k = pins.findIndex((pn) => pn.id === id); if (k < 0) return;
-    ren.removeActor(pins[k].actor); pins[k].off(); pins[k].el.remove(); pins.splice(k, 1);
+    marks.remove("o:" + id); pins.splice(k, 1);
     if (sel === id) sel = null;
     rw.render();
   }
   function rows() { return [...form.querySelectorAll(".gc-table tbody tr")]; }
   function select(id) {
     sel = sel === id ? null : id;
-    pins.forEach((pn) => { const on = pn.id === sel;
-      const pp = pn.actor.getProperty();
-      pp.setColor(on ? SEL[0] : STICKER[0], on ? SEL[1] : STICKER[1], on ? SEL[2] : STICKER[2]);
-      pn.el.classList.toggle("sel", on); });
+    pins.forEach((pn) => pn.el.classList.toggle("sel", pn.id === sel));
+    marks.select(sel == null ? null : "o:" + sel);
     rows().forEach((tr) => { const on = Number(tr.dataset.id) === sel; tr.classList.toggle("sel", on);
       if (on) { tr.scrollIntoView({ block: "nearest" }); const inp = tr.querySelector(".gc-name"); if (inp && !inp.disabled) inp.focus({ preventScroll: true }); } });
     rw.render();
   }
-  /* AN FEA PART'S HOT SPOTS (the server's fea.measure, FEA build step 3): a small ball on every
-     hole, fillet, notch and sharp inside corner the mesh will be refined at, and a tag with its
-     number that follows it every frame. Shown only - version 1 refines them all automatically, so
-     a tag lights its line in the panel and nothing more. */
+  /* AN FEA PART'S MARKS (the server's fea.measure, FEA build step 3, with the assembly's joins and the
+     shell's regions in the same shape): a mark on every hole, fillet, notch and sharp inside corner
+     the mesh will be refined at, every place two parts meet, every region not in the shell. Shown
+     only - a mark lights its line in the panel and nothing more. Its tag and what it is show beside
+     it when it is pointed at or chosen. */
   let spots = [];
-  /* EVERY hot spot gets its mark: past SPOT_TAGS of them a numbered tag on each would bury the part,
-     so each is a small mark without a number (its number shows when it is pointed at or chosen) */
-  const SPOT_TAGS = 40;
-  let spotMarks = false;
   function setSpots(list) {
-    spots.forEach((s) => { ren.removeActor(s.actor); s.off(); s.el.remove(); });
+    spots.forEach((s) => marks.remove("s:" + s.id));
     spots = [];
-    spotMarks = (list || []).length > SPOT_TAGS;
     (list || []).forEach(addSpot);
     bindMeasure(panel, lightSpot);
     rw.render();
@@ -572,28 +617,74 @@ function initScene(sessionId, box, surf, p) {
   function addSpot(h) {
     if (!h.at_mm || h.at_mm.length !== 3) return;
     const c = h.at_mm.map((v) => v / 1000);
-    const mp = vtk.Rendering.Core.vtkMapper.newInstance();
-    mp.setInputData(spherePd(c[0], c[1], c[2], 0.008 * diag));
-    const ac = vtk.Rendering.Core.vtkActor.newInstance(); ac.setMapper(mp); ac.setPickable(false);
-    const col = h.type === "interface_overlap" ? OVERLAP : h.type === "interface_touching" ? TOUCH : SPOT;
-    const pp = ac.getProperty(); pp.setColor(col[0], col[1], col[2]);
-    pp.setAmbient(0.55); pp.setDiffuse(0.6); pp.setSpecular(0.2);
-    ren.addActor(ac);
+    const type = String(h.type || "");
     const el = document.createElement("div");
-    el.className = "v-pin fea-spot" + (String(h.type || "").startsWith("interface_") ? " fea-itf" : "") + (spotMarks ? " mark" : "");
-    el.textContent = String(h.id); el.dataset.spot = String(h.id);
-    el.title = `${h.id}: ${h.shape || h.type}${h.capped ? " (refinement capped)" : ""}`;
+    el.className = "fea-spot " + markKind(type) + (type.startsWith("interface_") ? " fea-itf" : "")
+      + (type.startsWith("shell_") ? " fea-shell-pin " + type : "");
+    el.dataset.spot = String(h.id);
+    el.setAttribute("aria-label", `${h.id}: ${markWords(h)}`);
+    const words = markWords(h) + (h.capped ? ", refinement capped" : "");
+    el.innerHTML = `<span class="vm-l">${esc(String(h.id))}<i>${esc(words)}</i></span>`;
     el.onclick = (ev) => { ev.stopPropagation(); lightSpot(h.id); };
-    host.appendChild(el);
-    const sp = { id: h.id, c, el, actor: ac };
-    sp.off = overlay.anchor(el, () => sp.c);
-    spots.push(sp);
+    marks.add({ id: "s:" + h.id, el, at: c });
+    spots.push({ id: h.id, c, el });
   }
-  function lightSpot(id) {
+  /** A tagged line pointed at (`how` "hover": its mark shows while the pointer stays, null ends it)
+   *  or chosen, on the part or in the panel (its mark and its line light up). */
+  function lightSpot(id, how) {
+    if (how === "hover") { marks.hover(id == null ? null : "s:" + id); return; }
     spots.forEach((s) => s.el.classList.toggle("sel", s.id === id));
+    marks.select(id == null ? null : "s:" + id);
     lightSpotRow(panel, id);
   }
   if (p.hot_spots) setSpots(p.hot_spots);
+
+  /* SHSTAGE-4: THE MID-SURFACE over the part (cad/shell_preview overlay.json), each triangle coloured by
+     the wall it stands for on the muted ramp the panel's legend shows, and the open edges as red marks.
+     Shown while the effective choice is Shell: the part turns see-through so the surface inside reads. */
+  let shellActors = [], shellOn = false;
+  function clearShell() { shellActors.forEach((a) => ren.removeActor(a)); shellActors = []; }
+  function setShell(ov, k) {
+    clearShell();
+    if (!ov || !ov.xyz) { rw.render(); return; }
+    const s = (Number(k) || 1) / 1000;
+    const xyz = b64f32(ov.xyz), tri = b64u32(ov.tri), wall = b64f32(ov.wall);
+    const pts = new Float32Array(xyz.length); for (let i = 0; i < xyz.length; i++) pts[i] = xyz[i] * s;
+    const nt = tri.length / 3, polys = new Uint32Array(nt * 4), cols = new Uint8Array(nt * 3);
+    for (let t = 0; t < nt; t++) {
+      polys[t * 4] = 3; polys[t * 4 + 1] = tri[t * 3]; polys[t * 4 + 2] = tri[t * 3 + 1]; polys[t * 4 + 3] = tri[t * 3 + 2];
+      const c = wallColour(wall[t], ov.t_min, ov.t_max);
+      cols[t * 3] = Math.round(c[0] * 255); cols[t * 3 + 1] = Math.round(c[1] * 255); cols[t * 3 + 2] = Math.round(c[2] * 255);
+    }
+    const pd = vtk.Common.DataModel.vtkPolyData.newInstance();
+    pd.getPoints().setData(pts, 3); pd.getPolys().setData(polys);
+    pd.getCellData().setScalars(vtk.Common.Core.vtkDataArray.newInstance({ name: "wall", values: cols, numberOfComponents: 3 }));
+    const mp = vtk.Rendering.Core.vtkMapper.newInstance(); mp.setInputData(pd);
+    mp.setScalarModeToUseCellData(); mp.setColorModeToDirectScalars();
+    const ac = vtk.Rendering.Core.vtkActor.newInstance(); ac.setMapper(mp); ac.setPickable(false);
+    const pr = ac.getProperty(); pr.setAmbient(0.35); pr.setDiffuse(0.7); pr.setSpecular(0.05);
+    ren.addActor(ac); shellActors.push(ac);
+    const open = (ov.open_at_mm || []).filter((q) => q && q.length === 3);
+    if (open.length) {
+      const opd = vtk.Common.DataModel.vtkPolyData.newInstance();
+      opd.getPoints().setData(Float32Array.from(open.flat().map((v) => v * s)), 3);
+      const verts = new Uint32Array(open.length * 2); open.forEach((_q, i) => { verts[i * 2] = 1; verts[i * 2 + 1] = i; });
+      opd.getVerts().setData(verts);
+      const omp = vtk.Rendering.Core.vtkMapper.newInstance(); omp.setInputData(opd);
+      const oac = vtk.Rendering.Core.vtkActor.newInstance(); oac.setMapper(omp); oac.setPickable(false);
+      // flat dots of a fixed size on screen, like every other mark (never shaded balls)
+      const op = oac.getProperty(); op.setColor(...SHELL_OPEN); op.setPointSize(4); op.setLighting(false);
+      ren.addActor(oac); shellActors.push(oac);
+    }
+    showShell(shellOn);
+  }
+  function showShell(on) {
+    shellOn = !!on;
+    const drawn = shellOn && shellActors.length > 0;
+    shellActors.forEach((a) => a.setVisibility(drawn));
+    skins.forEach((sk) => sk.actor.getProperty().setOpacity(drawn ? 0.22 : 1));
+    rw.render();
+  }
 
   /* LOOK INTO A MOUTH - the close-up the pictures had, now a camera move: from outside, straight
      down the opening's normal, framed on it */
@@ -699,9 +790,7 @@ function initScene(sessionId, box, surf, p) {
   function traceAt(hit, viewer) {
     if (!hit) return null;
     trace.push(hit.point);
-    const dot = vtk.Rendering.Core.vtkActor.newInstance(), mp = vtk.Rendering.Core.vtkMapper.newInstance();
-    mp.setInputData(spherePd(hit.point[0], hit.point[1], hit.point[2], 0.006 * diag));
-    dot.setMapper(mp); dot.setPickable(false); dot.getProperty().setColor(SEL[0], SEL[1], SEL[2]);
+    const dot = dotActor(hit.point, SEL, 7);
     ren.addActor(dot); traceDots.push(dot); rw.render();
     if (trace.length < 3) {
       hint(trace.length === 1 ? TRACE_HINT : "click 1 more point around its edge (Esc cancels)");
@@ -786,7 +875,7 @@ function initScene(sessionId, box, surf, p) {
   host.addEventListener("pointerdown", (e) => { downXY = [e.clientX, e.clientY]; }, true);
   host.addEventListener("pointerup", (e) => {
     if (!(addMode || measuring) || !downXY) return;
-    if (e.target && e.target.closest && e.target.closest(".gc-pin,.vt,.v-ov")) return;
+    if (e.target && e.target.closest && e.target.closest(".vm,.vm-group,.vt,.v-ov")) return;
     if (Math.hypot(e.clientX - downXY[0], e.clientY - downXY[1]) > 6) return;
     if (measuring) measureAt(e.clientX, e.clientY);
     else addAt(rayAt(e.clientX, e.clientY));
@@ -867,10 +956,7 @@ function initScene(sessionId, box, surf, p) {
     if (measurePts.length >= 2) clearMeasure();               // a third click starts again
     measurePts.push(pt);
     showMeasured();
-    const dotPd = spherePd(pt[0], pt[1], pt[2], 0.004 * diag);
-    const mp = vtk.Rendering.Core.vtkMapper.newInstance(); mp.setInputData(dotPd);
-    const ac = vtk.Rendering.Core.vtkActor.newInstance(); ac.setMapper(mp); ac.setPickable(false);
-    ac.getProperty().setColor(SEL[0], SEL[1], SEL[2]); ac.getProperty().setLighting(false);
+    const ac = dotActor(pt, SEL, 6);
     ren.addActor(ac); measureActors.push(ac);
     if (measurePts.length === 2) {
       const pd = vtk.Common.DataModel.vtkPolyData.newInstance();
@@ -942,7 +1028,7 @@ function initScene(sessionId, box, surf, p) {
     clearDecor();
     const flowSel = form.querySelector(".gc-flow");
     const external = !!flowSel && flowSel.value === "external";
-    pins.forEach((pn) => { pn.actor.setVisibility(!external); if (external) pn.el.style.display = "none"; });
+    marks.bump();                       // an external case hides the stickers (their `hidden`)
     if (!external) { rw.render(); return; }
     const ex = readExternal(form, p);
     const axis = ex.flow_axis && ex.flow_axis !== "unknown" ? ex.flow_axis : "+x";
@@ -970,10 +1056,10 @@ function initScene(sessionId, box, surf, p) {
     const P = [[lo[0], lo[1], lo[2]], [hi[0], lo[1], lo[2]], [hi[0], hi[1], lo[2]], [lo[0], hi[1], lo[2]],
                [lo[0], lo[1], hi[2]], [hi[0], lo[1], hi[2]], [hi[0], hi[1], hi[2]], [lo[0], hi[1], hi[2]]];
     const E = [[0, 1], [1, 2], [2, 3], [3, 0], [4, 5], [5, 6], [6, 7], [7, 4], [0, 4], [1, 5], [2, 6], [3, 7]];
-    lineActor(P.flat(), E.flatMap(([a, b]) => [2, a, b]), [0.45, 0.6, 0.8], 1);
+    lineActor(P.flat(), E.flatMap(([a, b]) => [2, a, b]), [0.686, 0.682, 0.635], 1);
     if (ex.grounded) {
       const g = lo[vert], Q = P.filter((q) => q[vert] === g);
-      lineActor(Q.flat(), [2, 0, 2, 2, 1, 3], [0.45, 0.6, 0.8], 1);
+      lineActor(Q.flat(), [2, 0, 2, 2, 1, 3], [0.686, 0.682, 0.635], 1);
     }
     rw.render();
   }
@@ -1007,8 +1093,8 @@ function initScene(sessionId, box, surf, p) {
     });
   }
 
-  // the stickers and the hot-spot tags place themselves, as anchors; what is left is the work
-  // that is not a single point - the axes gizmo and the two-ended measure line
+  // the marks place themselves (scene/marks.js); what is left is the work that is not a single
+  // point - the axes gizmo and the two-ended measure line
   overlay.each((aspect, rect) => { drawAxes(); placeMeasureLabel(aspect, rect); });
 
   setRenderScale(); iso();
@@ -1016,12 +1102,16 @@ function initScene(sessionId, box, surf, p) {
   /* support/debug hook - the browser tier drives the stage through it, without pixel picking */
   window._vdbg = window._vdbg || {};
   window._vdbg["gstage:" + sessionId] = {
-    pins: () => pins.length, spots: () => spots.map((s) => s.id), selected: () => sel, select, look, diag, add, addAt, rayAt, remove, iso,
+    pins: () => pins.length, spots: () => spots.map((s) => s.id), selected: () => sel,
+    shell: () => ({ actors: shellActors.length, shown: shellOn && shellActors.length > 0 }), select, look, diag, add, addAt, rayAt, remove, iso,
     tracing: () => (trace ? trace.length : null), adding: () => addMode,
     measuring: () => measuring, measured: () => measuredNow(), measureAt, screenOf,
     openings: () => (p.openings || []).map((o) => Number(o.id)),
     external: () => ({ arrow: decor.length >= 1, box: decor.length >= 2, actors: decor.length }),
-    visible: () => pins.filter((pn) => pn.el.style.display !== "none").length,
+    visible: () => { marks.layout(); return pins.filter((pn) => pn.el.style.display !== "none").length; },
+    // what the marks draw now: {marks, single (drawn on their own), merged: [count of each merged mark]}
+    marks: () => { marks.layout(); return marks.state(); },
+    lightSpot,
     camera: () => cam.getPosition(), cam: () => cam, edges: () => edgeCount, axes: () => { drawAxes(); return axesNow; },
     smooth: () => skins.some((s) => !!s.pd.getPointData().getNormals()),
     upAxis: () => upAxis, setUp: (a) => { if (upSel) { upSel.value = a; upSel.onchange(); } },
@@ -1030,8 +1120,8 @@ function initScene(sessionId, box, surf, p) {
     background: () => ren.getBackground().slice(),
   };
   return {
-    stop: () => { overlay.stop(); canvas.ro.disconnect(); clearDecor(); clearMeasure(); document.removeEventListener("keydown", onKey); delete window._vdbg["gstage:" + sessionId]; },
-    rebind, refresh: refreshExternal, setSpots,
+    stop: () => { watch.disconnect(); marks.stop(); overlay.stop(); canvas.ro.disconnect(); clearDecor(); clearMeasure(); document.removeEventListener("keydown", onKey); delete window._vdbg["gstage:" + sessionId]; },
+    rebind, refresh: refreshExternal, setSpots, setShell, showShell,
   };
 }
 
@@ -1050,8 +1140,8 @@ async function openFeaStage(sessionId, d, confirm, opts) {
   const f = d.fea || {};
   // the scene draws stickers from the proposal's openings: an FEA part has none, but it has the
   // hot spots its measurement found (shown, never edited)
-  const p = { ...(d.proposal || {}), openings: [],
-    hot_spots: [...((f.measure && f.measure.hot_spots) || []), ...interfaceMarks(f.assembly)] };
+  const marks = () => [...((f.measure && f.measure.hot_spots) || []), ...interfaceMarks(f.assembly), ...shellMarks(f.shell)];
+  const p = { ...(d.proposal || {}), openings: [], hot_spots: marks() };
   const id = "gstage-" + sessionId;
   document.getElementById(id)?.remove();
   const box = document.createElement("div"); box.className = "viewer gc-stage fea-stage"; box.id = id;
@@ -1059,6 +1149,7 @@ async function openFeaStage(sessionId, d, confirm, opts) {
     <div class="v-canvas gc-canvas" id="gs-canvas-${sessionId}">
       <div class="v-loading" id="gs-load-${sessionId}"><div>Loading the part…</div></div>
       ${stageToolsHtml(sessionId, savedUp("session", sessionId) || (isUpAxis(p.up_axis) ? p.up_axis : "+z"), { measure: true })}
+      <div class="iv-shell-note" role="status" hidden></div>
     </div>`;
   let scene = null, closed = false;
   // THE INTAKE'S ONE VIEWER: answered, the panel goes and the part stays until the run starts
@@ -1067,9 +1158,34 @@ async function openFeaStage(sessionId, d, confirm, opts) {
   holdIntake(box, stopAll);
   const release = () => { if (intakeBox() === box) endIntake(); else stopAll(); };
   const panel = box.querySelector(".fea-panel");
+  /* SHSTAGE-4: the mid-surface is fetched once the shell check is ready, and shown only when the user's words
+     asked for a shell (the server's view says "shell"; a plain solid has no view and draws nothing). THE CHECK
+     TAKES MINUTES and the user may have pressed Proceed long before: the part stays in this one viewer until
+     the run starts, so the surface is drawn there whenever it lands - by the choice SETTLED at Proceed (the
+     confirmation's fea_mesh_as). With the panel gone, its legend (or a line saying the surface is still being
+     made) sits on the part. */
+  let overlay = null, fetching = false, missed = false, settledAs = "";
+  const effective = () => (closed && settledAs ? settledAs : effectiveMeshAs(f.shell));
+  const note = box.querySelector(".iv-shell-note");
+  function drawNote() {
+    const s = f.shell || {}, on = closed && showsShell(effective());
+    const html = !on ? "" : overlay && scene ? shellLegendHtml(s)
+      : s.state === "measuring" ? "Making the mid-surface…" : "";
+    if (note.innerHTML !== html) note.innerHTML = html;
+    note.hidden = !html;
+  }
+  const meshAsChanged = () => { if (scene) scene.showShell(showsShell(effective())); drawNote(); };
+  async function loadOverlay() {
+    const s = f.shell;
+    if (overlay || fetching || !s || s.state !== "ready" || !s.overlay) return;
+    fetching = true;
+    try { overlay = await getShellSurface(sessionId); } catch (e) { missed = true; console.warn("mid-surface not drawn:", e && e.message); }
+    fetching = false;
+    if (overlay && scene && box.isConnected) { scene.setShell(overlay, s.scale); meshAsChanged(); }
+  }
   bindFeaPanel(panel, f, p, {
     confirm: (body, edits) => confirm(body, edits),
-    done: () => { closed = true; settleIntake(box); },
+    done: () => { closed = true; settleIntake(box); drawNote(); },
   });
   try {
     await loadVtk();
@@ -1077,6 +1193,7 @@ async function openFeaStage(sessionId, d, confirm, opts) {
     if (!box.isConnected) return null;   // the run started while the part loaded: nothing left to draw
     scene = initScene(sessionId, box, surf, p);
     document.getElementById("gs-load-" + sessionId)?.remove();
+    loadOverlay();
   } catch (e) {
     console.warn("FEA stage unavailable, showing the card instead:", e && e.message);
     release();
@@ -1100,15 +1217,33 @@ async function openFeaStage(sessionId, d, confirm, opts) {
       // each line followed on its own: one that cannot be drawn never keeps the others stale (26 Oct: the
       // clean check was redrawn and the parts' joints were not)
       const follow = (fn) => { try { return !!fn(); } catch (e) { console.warn("FEA stage: not redrawn", e); return false; } };
+      // ANSWERED (here, on the card or in the chat): what was settled at Proceed is what the run meshes
+      const was = settledAs;
+      if (d2 && d2.confirmed) { closed = true; settledAs = String(d2.confirmed.fea_mesh_as || "") || settledAs; }
       if (d2 && d2.fea) { Object.assign(f, d2.fea); follow(() => followClean(panel, f)); }
       const movedA = !!a && follow(() => followAssembly(panel, a));
-      const moved = (!!m && follow(() => followMeasure(panel, m, p, null))) || movedA;
+      // PLAN-fea-22: the size choice, once the check has sized the mesh
+      if (d2 && d2.fea && d2.fea.plan) follow(() => followPlan(panel, d2.fea.plan));
+      // SHSTAGE-2: the shell check lands minutes after the stage opened (or a shell is asked for later) - the
+      // shell row and its marks follow
+      const movedS = !!(d2 && d2.fea && d2.fea.shell) && follow(() => followMeshAs(panel, d2.fea.shell, meshAsChanged));
+      const moved = (!!m && follow(() => followMeasure(panel, m, p, null))) || movedA || movedS;
       if (moved) {
-        p.hot_spots = [...(((m || f.measure) || {}).hot_spots || []), ...interfaceMarks(a || f.assembly)];
+        p.hot_spots = marks();
         if (scene) scene.setSpots(p.hot_spots);
       }
+      if (movedS) { loadOverlay(); meshAsChanged(); } else if (settledAs !== was) meshAsChanged();
     },
     isNaming: () => false,
+    /** Whether the watch should go on once the check itself is done: a shell asked for, its check still at work (or
+     *  its surface still to fetch) and the viewer still on the page - while the panel is open, for the shell row to
+     *  follow it; after Proceed, only when the settled choice draws the mid-surface. */
+    awaitsShell: () => {
+      const s = f.shell;
+      if (!box.isConnected || !s || !showsShell(effectiveMeshAs(s))) return false;
+      const pending = s.state === "measuring" || (s.state === "ready" && !!s.overlay && !overlay && !missed);
+      return pending && (!closed || showsShell(effective()));
+    },
   };
 }
 
@@ -1122,7 +1257,7 @@ async function openFeaStage(sessionId, d, confirm, opts) {
  * through, and the air box the file sets is drawn as faint lines. The one answer is the detail
  * level, sent with "Mesh this model".
  * ====================================================================================== */
-const AIRBOX = [0.43, 0.55, 0.69], OUTLINE = [1.0, 0.31, 0.0];
+const AIRBOX = [0.686, 0.682, 0.635], OUTLINE = [0.886, 0.173, 0.173];
 const FADED = 0.12, XRAY = 0.18;
 
 async function openThermalStage(sessionId, d, confirm, opts) {

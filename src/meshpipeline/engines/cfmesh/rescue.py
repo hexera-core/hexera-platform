@@ -188,16 +188,19 @@ def remesh_work(cells: float | None, *, ceiling_s: float) -> PlannedWork:
                        rate=work.rate, floor_s=work.floor_s, ceiling_s=work.ceiling_s)
 
 
-def near_edge(q: dict | None) -> str:
-    """Why this mesh is at its validity edge, in words ('' when it is not)."""
+def near_edge(q: dict | None, limit: float | None = None) -> str:
+    """Why this mesh is at its validity edge, in words ('' when it is not). `limit`: a non-orthogonality the user
+    asked for under ours (CFDREQ-5, engines/cfd_requirements.non_ortho_limit) - the engine's own levers are tried
+    for it too; None: ours alone."""
     q = q or {}
     fatal = list(q.get("fatal") or [])
     if fatal:
         return "checkMesh found " + ", ".join(str(f) for f in fatal)
     no = _num(q.get("max_non_ortho"))
-    if no is not None and no > NEAR_EDGE_NON_ORTHO:
+    edge = NEAR_EDGE_NON_ORTHO if limit is None else min(NEAR_EDGE_NON_ORTHO, float(limit))
+    if no is not None and no > edge:
         return (f"its worst cell is {no:.1f} degrees out of square (over "
-                f"{NEAR_EDGE_NON_ORTHO:.0f})")
+                f"{edge:.0f}{'' if limit is None or edge == NEAR_EDGE_NON_ORTHO else ', the limit you asked for'})")
     return ""
 
 
@@ -265,7 +268,7 @@ def rescue(workspace, q: dict, *, bashrc: str, deadline: float, mesher_seconds: 
            check_seconds: float = 60.0,
            measure: Callable[..., dict] | None = None,
            runner: Callable[..., Any] | None = None, env: dict | None = None,
-           is_2d: bool = False) -> dict:
+           is_2d: bool = False, limit: float | None = None) -> dict:
     """The quality record of the mesh left in `workspace` after the rescue: `q` itself when the
     mesh is not near its edge (or it is past a rescue's cell limit), else the best measured
     candidate's record, with `rescue` saying what was tried and kept. Each step runs its PLANNED
@@ -275,7 +278,7 @@ def rescue(workspace, q: dict, *, bashrc: str, deadline: float, mesher_seconds: 
     is replayed (TIME-3). `mesher_seconds` is the first cartesianMesh's wall time, kept in the
     record only; `check_seconds` the first checkMesh's - the room a step leaves for the
     measurement after it. Neither decides a step."""
-    why = near_edge(q)
+    why = near_edge(q, limit)
     if not why:
         return q
     ws = Path(workspace)
@@ -411,7 +414,7 @@ def rescue(workspace, q: dict, *, bashrc: str, deadline: float, mesher_seconds: 
         # 2. a protective re-mesh, when the best is still near the edge (its cell limit decides,
         #    never the time left)
         protective = protective_meshdict(asked_dict) if asked_dict else None
-        if near_edge(best_q) and protective is not None and not record.get("guard_tripped"):
+        if near_edge(best_q, limit) and protective is not None and not record.get("guard_tripped"):
             if cells > REMESH_MAX_CELLS:
                 record["tried"].append({"step": REMESHED, "skipped": (
                     f"{int(cells):,} cells is over the {REMESH_MAX_CELLS:,} a second run may "
@@ -431,7 +434,7 @@ def rescue(workspace, q: dict, *, bashrc: str, deadline: float, mesher_seconds: 
                 elif rc == 0 and (ws / _POLYMESH / "owner").exists():
                     remesh_q = _measure("re-meshed")
                     remesh_dir = scratch / "remeshed_raw"
-                    if remesh_q and near_edge(remesh_q):
+                    if remesh_q and near_edge(remesh_q, limit):
                         # keep the raw re-mesh aside, optimise it too, and let all three compete
                         (ws / _POLYMESH).rename(remesh_dir)
                         record["tried"].append({**step, **_brief(remesh_q)})

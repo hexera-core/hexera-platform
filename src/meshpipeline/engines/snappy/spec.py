@@ -316,6 +316,10 @@ SPEC = EngineSpec(
                 # satisfied - geom.stl: missing". The manifest has to describe what THIS engine
                 # produces, not what its neighbour does.
                 M("constant/triSurface", kind="dir"),
+                # the Fluent mesh and the EnSight case written beside it (engines/cfd_exports.py), when
+                # they were - Everything carries every solver file, as an FEA mesh's does
+                M("export_fluent.zip", required=False),
+                M("export_ensight.zip", required=False),
             ),
         ),
         downstream=DownstreamTarget(

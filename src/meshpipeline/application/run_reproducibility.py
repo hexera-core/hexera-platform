@@ -82,6 +82,13 @@ def build(job_id: str, state: Mapping[str, Any]) -> dict[str, Any]:
                                  "sha256": _digest([n.get("text") for n in notes
                                                     if isinstance(n, Mapping)]),
                                  "remarks": read_remarks(ws)}
+        # THE TEAM'S MESHING STANDARD the run was given (engines/meshing_standard): a digest of the exact
+        # words, and whether the reading kept at save time came with it
+        std = state.get("meshing_standard")
+        if isinstance(std, Mapping) and str(std.get("text") or "").strip():
+            rec["meshing_standard"] = {"sha256": _digest(str(std.get("text") or "")),
+                                       "reading_kept": bool(std.get("reading")),
+                                       "updated_at": std.get("updated_at")}
         rec["mesh"] = det.read_stamp(ws) if ws else None
         # the clocks that still decide (TIME-6: the CAD repair steps), and every guard clock that
         # tripped outside a native run (TIME-3..5) - beside the case or in this process

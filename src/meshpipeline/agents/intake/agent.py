@@ -14,12 +14,13 @@ from typing import TYPE_CHECKING, Any
 import meshpipeline.settings.policy as polcfg
 from meshpipeline.agents.intake import approval as ap
 from meshpipeline.agents.intake import engine_selection as es
-from meshpipeline.agents.intake import measured_choice, refusal, turn
+from meshpipeline.agents.intake import flow, measured_choice, refusal, turn
 from meshpipeline.agents.intake import settings as icfg
 from meshpipeline.agents.intake import vocabulary as _vocab
 from meshpipeline.agents.intake.executor import (
     IntakeExecutionState,
     IntakeToolExecutor,
+    fea_path,
 )
 from meshpipeline.agents.intake.loop_policy import IntakeLoopPolicy
 from meshpipeline.agents.intake.validation import (
@@ -238,6 +239,14 @@ INTAKE_TOOLS: list[dict] = [
                                 "description": "The declared use case."},
                     "input_kind": {"type": "string", "enum": _INPUT_KIND_CHOICES,
                                    "description": "What the geometry represents."},
+                    "input_kind_user_words": {
+                        "type": "string",
+                        "description": (
+                            "Only when input_kind differs from the one the user confirmed on the geometry "
+                            "stage BECAUSE THE USER CORRECTED IT in the chat after the stage: their words "
+                            "saying so, copied exactly from that message. Leave it out otherwise; never "
+                            "invent or paraphrase it."),
+                    },
                     "dimensionality": {"type": "string", "enum": _DIMENSIONALITY_VALUES,
                                        "description": "2D or 3D, if the user declared it."},
                     "patches": {
@@ -755,19 +764,15 @@ def _block_engine_first() -> str:
         "     that answer is AUTHORITATIVE: ACCEPT it (engine_source=user_direct) and do NOT ask "
         "     them to choose or confirm it again - never re-derive or second-guess it from the "
         "     geometry, and never silently change it.\n"
-        "  3. If the user has NOT named an engine, it is settled by ONE question, asked ONCE, and "
-        "     that question carries your proposal. It is your FIRST substantive question as soon as "
-        "     you know what the mesh is for (the purpose) - BEFORE any engine-specific parameter. "
-        "     You do not write it: call propose_engine_selection with the engine you would use for "
-        "     THIS case and a `reason` - one short plain line on why it suits this part (e.g. 'it "
-        "     fits the mesh to the nozzle's curved walls and grows thin layers along them'). The "
-        "     application asks the user 'I'd mesh this with X: <reason>. OK, or do you use a "
-        "     different mesher?' and the turn ends there. Their 'ok' (or 'your call') confirms it "
-        "     (engine_source=suggested_confirmed); naming another engine replaces it. When a "
-        "     MEASURED ENGINE RECOMMENDATION block follows, the application measured the upload "
-        "     and ranked the engines on lab evidence: propose ITS recommended engine - the question "
-        "     then carries that evidence and lists the alternatives with their fit, and the user "
-        "     picks. Without one, pick from "
+        "  3. If the user has NOT named an engine, the APPLICATION CHOOSES IT - nobody is asked. As "
+        "     soon as you know what the mesh is for (the purpose), BEFORE any engine-specific "
+        "     parameter, call propose_engine_selection with the engine you would use for THIS case "
+        "     and a short `reason`; the application selects the best engine for the part (its "
+        "     measured choice wins over yours) and tells you which. Never ask the user which engine, "
+        "     never offer a list of engines, and never mention lab evidence (pass rates, runs, "
+        "     percentages) - the plan card names the engine (engine_source=suggested_confirmed). "
+        "     Only the user's own words change it ('use cfMesh'). When a MEASURED ENGINE "
+        "     RECOMMENDATION block follows, propose ITS recommended engine. Without one, pick from "
         "     this catalog, judged against the purpose, the geometry check and what the user said. "
         "     Each engine's 'Takes' line is a hard limit: propose only one that takes the uploaded "
         "     file (a CAD solid, or a surface mesh such as an STL) for this flow - the application "
@@ -777,11 +782,10 @@ def _block_engine_first() -> str:
         + catalog_menu() + "\n"
         "  4. Ask only ONE substantive question per turn; if a prerequisite (e.g. the purpose) is "
         "     needed to explain a compatibility conflict, ask the minimum necessary question.\n"
-        "  5. Proposing ONE engine to a user who named none (rule 3) is the only time you name an "
-        "     engine unprompted. Do NOT list, compare or rank engines unless the user explicitly "
-        "     asks for a recommendation.\n"
-        "  6. THE ENGINE IS NEVER AN ASSUMPTION. Never go on with an engine the user has not "
-        "     confirmed, and never write one into your reply as 'assumed', 'unconfirmed', 'not "
+        "  5. Never name an engine unprompted. Do NOT list, compare or rank engines unless the user "
+        "     explicitly asks for a recommendation.\n"
+        "  6. THE ENGINE IS NEVER AN ASSUMPTION. Never go on with an engine the application has not "
+        "     selected, and never write one into your reply as 'assumed', 'unconfirmed', 'not "
         "     stated' or 'carried forward' - if it is not settled, settle it (rule 3).\n"
         "  7. ONCE SETTLED, LEAVE IT ALONE. After the user named or confirmed the engine, do not "
         "     mention it again - no 'for the X setup', no 'using X', no recap - unless the user "
@@ -843,9 +847,9 @@ def _block_geometry_check() -> str:
         "patch at all. For a body the fluid flows AROUND, the message states the flow axis, the "
         "reference length in mm and the far-field margins in reference lengths: the user "
         "confirmed them on the picture, so they are user-stated - carry them into flow_axis, "
-        "reference_length_m (mm / 1000) and requested_extents exactly as written. Ask only what "
-        "the message does not contain - typically the purpose, the fluid and its speed, and the "
-        "engine when it is not settled.\n"
+        "reference_length_m (mm / 1000) and requested_extents exactly as written. The application "
+        "itself asks the one thing the stage leaves - what flows and how fast, with the wall treatment - "
+        "in fixed words with buttons, and submits the plan: never ask it, or anything else, yourself.\n"
         "The message also says which unit the file is in and how long the part is; its sizes are "
         "already converted to millimetres for that unit. A LATER CHANGE OF UNIT IS THE "
         "APPLICATION'S, NOT YOURS: when the user says the file is in a different unit, the "
@@ -874,7 +878,8 @@ def _block_geometry_check() -> str:
         "message saying they confirmed the geometry check is your cue to continue with the next "
         "question, not to summarise.\n"
         "A part that STANDS ON THE GROUND: the ground is produced by the domain - the floor of "
-        "the far-field box, laid under the part at its lowest z. Declare it as ONE patch named "
+        "the far-field box, laid under the part along the up axis the user confirmed on the "
+        "picture (the declaration says which way is up; +z when it does not). Declare it as ONE patch named "
         "exactly `ground` with type wall, beside the body's own wall and the farfield (e.g. car "
         "wall, ground wall, farfield). It is never a region of the geometry, so never ask the "
         "user to name, split or supply it in their file, and never count it against the parts "
@@ -904,7 +909,8 @@ def _block_thermal_model() -> str:
         "Never ask about, offer or compare engines unless the user brings it up.\n"
         "- In this same turn, call preview_selected_admission and then submit_requirements "
         "(engine_source suggested_confirmed). The application then asks its one optional notes "
-        "question (THE USER'S OWN NOTES below) once, shows the user the job sheet and asks for "
+        "question once (when submit_requirements comes back 'Not submitted yet' for it, end the turn; "
+        "after their answer, preview and submit again), shows the user the job sheet and asks for "
         "approval: those are the only questions.\n"
         "- Never ask about the unit, which way the air flows, openings, vents or fans, the fluid "
         "(it is air, from the file), the purpose, the up direction, a reference length or the "
@@ -963,7 +969,9 @@ def _block_fea_path() -> str:
         "direction or a far field. When it says the part is an assembly of several parts and how "
         "they are connected (bonded or contact), that is settled on the stage too: it is still one "
         "structural solid case - never a thermal or multi-region fluid model - and never ask again "
-        "how the parts are joined.\n"
+        "how the parts are joined. When it says 'Meshed as: a shell' or 'Meshed as: a solid', that "
+        "was settled on the stage too (SHSTAGE-5): never ask shell or solid, and keep dimensionality 3D "
+        "(the shell is the part's own mid-surface, made by the application).\n"
         f"- The ONLY required question is '{pm.ANALYSIS_QUESTION}' - static stress, vibration "
         "(modal) or buckling. The application asks it with buttons; never ask it yourself when the "
         "user already said it ('modal analysis', 'will it buckle'). "
@@ -1007,9 +1015,10 @@ def _block_propose_first() -> str:
         "confirms; an 'ok' confirms the proposal exactly as you stated it, and you then carry those "
         "values as user-given. The courtesy follow-ups that usually share one answer - prism layers, "
         "patch names, refinement zones - go into ONE question with ONE proposal, not four turns. "
-        "Two things are handled apart: the ENGINE is proposed ONCE, through "
-        "propose_engine_selection - the application asks it (ENGINE FIRST rule 3), you never ask "
-        "or assume it in your own words - and the file's UNIT is asked, never guessed.\n"
+        "Two things are handled apart: the ENGINE is settled ONCE, through "
+        "propose_engine_selection - the application chooses it (ENGINE FIRST rule 3), you never ask "
+        "or assume it in your own words - and the file's UNIT is settled by the application (on "
+        "the geometry stage, or its own question), never asked or guessed by you.\n"
         "HOW A REPLY IS READ: 'ok', 'yes', 'fine', 'sure', 'sensible default', 'you decide', "
         "'whatever is standard' and 'I do not know' all ACCEPT the proposal exactly as you stated "
         "it - take those values and move on. Any other reply is still the user's ONE answer to "
@@ -1029,7 +1038,7 @@ def _block_propose_first() -> str:
         "listed, unless the geometry says otherwise), say which in one plain line, record it in "
         "request_txt as assumed, and continue. Never reply that a value is required and cannot be defaulted: "
         "required means it must be in the submission, not that the user must type it. The two "
-        "exceptions stand - the ENGINE is proposed and confirmed, never defaulted, and the UNIT is "
+        "exceptions stand - the ENGINE is settled by the application, never defaulted by you, and the UNIT is "
         "asked, never guessed."
     )
 
@@ -1068,17 +1077,14 @@ def _block_user_notes() -> str:
     # run only through request_txt - a summary that can squash a number or drop a condition, and
     # nobody ever asked for them. The application now asks once and keeps the words as typed
     # (contracts/user_notes, NOTE-1/NOTE-2).
-    from meshpipeline.contracts import user_notes as un
     return (
-        "\n\nTHE USER'S OWN NOTES - ASKED ONCE BY THE APPLICATION, KEPT WORD FOR WORD:\n"
-        f"Before the first summary the application asks one optional question: '{un.QUESTION}' "
-        "You never ask it yourself, in any wording, and never ask it again. When your "
-        "submit_requirements comes back 'Not submitted yet' for it, end the turn - the application "
-        "asks. Their answer (or their 'no') is your cue to re-run preview_selected_admission and "
-        "call submit_requirements in the same turn; it never holds the submission.\n"
+        "\n\nTHE USER'S OWN NOTES - THE PLAN CARD'S BOX, KEPT WORD FOR WORD:\n"
+        "The plan card the application shows after your submission has a notes box: the user types "
+        "any requirement for the mesh there, or nothing. Never ask for notes, a spec or 'anything "
+        "specific' yourself, in any wording - the box is the one way it is asked.\n"
         "- The application keeps the user's words as typed. When the user said something specific "
-        "about the simulation in any message (before or after the question), pass a short exact quote from "
-        "it in user_note_quotes; their answer to the question is kept without one.\n"
+        "about the simulation in any chat message, pass a short exact quote from it in "
+        "user_note_quotes.\n"
         "- Where a note fits a value the submission already declares - the mesh detail "
         "(mesh_fidelity), an engine parameter the engine declares (engine_params), a named "
         "boundary (patches), far-field margins - set it there too, through the same validated "
@@ -1129,7 +1135,7 @@ INTAKE_PROMPT_BLOCKS: tuple = (
      _block_propose_first),
     ("ask_plainly", "one clear thing per reply in plain words, a short numbered list when values are confirmed together; nothing settled is restated; no 'assumption' bookkeeping in chat",
      _block_ask_plainly),
-    ("user_notes", "the application asks once for anything specific and keeps the user's words verbatim; the model quotes requirement messages, maps a note onto declared fields only, never asks it itself",
+    ("user_notes", "the notes are the plan card's box, kept verbatim; the model quotes requirement messages, maps a note onto declared fields only, never asks for notes itself",
      _block_user_notes),
     ("plain_text", "replies are plain text: no LaTeX or math markup; Unicode for superscripts, symbols and units; backticks only for patch and file names",
      _block_plain_text),
@@ -1315,8 +1321,13 @@ async def node_intake(state: PipelineState) -> dict:
             _ctx.selection, session_id=_ctx.session_id, owner_id=_ctx.owner_id,
             revision=_ctx.revision, latest_user_message=_ctx.latest_user_msg,
             user_msg_count=_ctx.user_msg_count)
+        if _picked is None:
+            # "use cfMesh" over the engine the application chose: the user's words win
+            _picked = es.switch_by_words(
+                _ctx.selection, session_id=_ctx.session_id, owner_id=_ctx.owner_id,
+                revision=_ctx.revision, latest_user_message=_ctx.latest_user_msg)
         if _picked is not None:
-            logger.info("Intake: engine selection CONFIRMED - the user picked %s from the list "
+            logger.info("Intake: engine selection CONFIRMED - the user picked %s "
                         "- job_id=%s", _picked["engine"], job_id)
             _ctx = dataclasses.replace(_ctx, selection=_picked)
     # A JobPublisher only exists once a job does - and Intake runs BEFORE one. Rather than mint a
@@ -1361,12 +1372,27 @@ async def node_intake(state: PipelineState) -> dict:
         return await llm_router.call_intake_model(
             messages=messages, job_id=job_id, user_id=user_id, name="Intake", tools=tools)
 
+    # THE QUESTIONNAIRE'S ORDER IS THE APPLICATION'S (agents/intake/flow). On a route it owns (an FEA
+    # part, a flow through or around a part) the plan is submitted by the application itself, through
+    # the executor's own tools, once it is due; a user's question is answered by the model in words
+    # only (no tool that changes anything), and the plan or the open step's own words follow it.
+    _said = list(state.get("messages", []) or [])
+    _plan_open = not state.get("previous_run") and not _exec_state.thermal and not _exec_state.answer_only
+    _mode = (flow.turn_mode(_said, approval_live=ap.is_live(_ctx.approval),
+                            plan_was_shown=bool(state.get("request_txt")))
+             if _plan_open else flow.MODE_FREE)
+    _script = flow.ScriptedPlanTurn(
+        exec_state=_exec_state, messages=_said, model=_intake_provider, mode=_mode,
+        intake_patches=list(state.get("intake_patches") or []))
+    if _mode != flow.MODE_FREE:
+        logger.info("Intake: the questionnaire owns this turn (%s) - job_id=%s", _mode, job_id)
+
     # THE CANONICAL INTAKE LOOP
     # One loop, shared with Builder and Reviewer. It owns rounds, tool-call accounting, malformed
     # representation, the round limit and the run record; everything about REQUIREMENTS and
     # AUTHORIZATION belongs to the Intake policy and executor.
     _loop_result = await run_agent_loop(
-        driver=_policy, provider_call=_intake_provider, messages=llm_messages, tools=INTAKE_TOOLS,
+        driver=_policy, provider_call=_script, messages=llm_messages, tools=INTAKE_TOOLS,
         job_id=str(job_id), user_id=_ctx.owner_id,
         append_tool_result=lambda m, cid, c: m.append(
             {"role": "tool", "tool_call_id": cid, "content": c}),
@@ -1384,11 +1410,20 @@ async def node_intake(state: PipelineState) -> dict:
         return turn.provider_failure_patch(_loop_result.failure_marker,
                                            _sanitize_run_record(_loop_result.record))
 
+    # THE PLAN AFTER THE ANSWER (agents/intake/flow): the model answered what the user asked - or read a
+    # change to a plan that stood and did not submit it - and the plan is due: the application submits it
+    _answered_then_planned = ""
+    if (_mode in (flow.MODE_ANSWER_THEN_PLAN, flow.MODE_READ_THEN_PLAN) and not _exec_state.submit_args
+            and not ap.is_live(_exec_state.approval) and _loop_result.exit is not _LoopExit.terminal_action):
+        _answer = str(_loop_result.payload or "").strip() if _mode == flow.MODE_ANSWER_THEN_PLAN else ""
+        if await _script.run_plan(_executor) and _exec_state.submit_summary:
+            _answered_then_planned = (f"{_answer}\n\n" if _answer else "") + _exec_state.submit_summary
+
     # A terminal action carries the APPLICATION's own rendered text; a completed turn carries the
     # model's conversational reply. Round exhaustion carries neither - it says nothing at all,
     # and a turn that says nothing is given one honest sentence below, after the refusal rewrite
     # has had its chance (a refusal is never silent, so the two cannot collide).
-    assistant_text = str(_loop_result.payload or "")
+    assistant_text = _answered_then_planned or str(_loop_result.payload or "")
 
     # An admission refusal the model did not repair ends with the model's OWN reply - it had the
     # finding as a tool result and wrote with it in hand. That reply is checked before it goes
@@ -1401,6 +1436,7 @@ async def node_intake(state: PipelineState) -> dict:
         assistant_text = _settled.text
         logger.info("Intake: refusal delivered %s - job_id=%s", _settled.source, job_id)
     _in_tokens, _out_tokens = _policy.input_tokens, _policy.output_tokens
+    _said_nothing = not assistant_text.strip()
     if not assistant_text.strip():
         # The loop ran out of rounds (or time, or progress) without a reply, or the model
         # returned empty content. A blank assistant message is not a turn: the user saw an empty
@@ -1414,6 +1450,26 @@ async def node_intake(state: PipelineState) -> dict:
             logger.warning("Intake: reply held to the facts - %d sentence(s) replaced: %s - job_id=%s",
                            len(_held.dropped), " | ".join(d[:80] for d in _held.dropped[:4]), job_id)
             assistant_text = _held.text
+    if (_loop_result.exit is not _LoopExit.terminal_action and not _exec_state.submit_args
+            and (_mode != flow.MODE_FREE or ap.is_live(_exec_state.approval))):
+        # BACK TO THE SAME STEP (agents/intake/flow): an answer to an off-script message closes with
+        # the open step's own line - the plan's, or the FEA analysis question with its buttons
+        _appr = _exec_state.approval
+        _live = ap.is_live(_appr) or (
+            _appr is not None and not _turn_moved_the_summary(_exec_state)
+            and ap.revivable(_appr, user_msg_count=_ctx.user_msg_count))
+        _back = flow.return_line(_said, approval_live=_live, silent=_said_nothing)
+        if _back:
+            # a turn that said nothing is the step's own line alone, never "I could not settle this"
+            assistant_text = _back if _said_nothing else flow.closed_with(assistant_text, _back)
+    if _exec_state.submit_args and fea_path(_exec_state):
+        # A "COMING SOON" ANALYSIS is said with the plan it is meshed by (as for static stress): the
+        # plan's line is the application's, and a note the model wrote beside it would be lost
+        from meshpipeline.application import purpose_map as _pm
+        _note = _pm.coming_soon_note(flow.analysis_said(_said))
+        if _note and _note not in assistant_text and not any(
+                _note in str(m.get("content") or "") for m in _said if isinstance(m, dict)):
+            assistant_text = f"{_note}\n\n{assistant_text}"
     _had_usage = bool(_in_tokens or _out_tokens)
     _record = turn.TurnRecord(
         finish_reason=_policy.finish_reason or "unknown",

@@ -25,7 +25,7 @@ import { b64f32, b64u32, loadVtk } from "../viewer/geometry_stage.js";
 import { mountCanvas } from "../viewer/scene/canvas.js";
 import { makeOverlay } from "../viewer/scene/overlay.js";
 
-const BACKGROUND = [0.035, 0.055, 0.075], BODY = [0.74, 0.78, 0.84], SEL = "#ff4f00";
+const BACKGROUND = [0.02, 0.02, 0.02], BODY = [0.77, 0.76, 0.72], SEL = "#e22c2c";
 
 /* ---------- words ---------- */
 

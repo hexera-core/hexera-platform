@@ -1,6 +1,6 @@
 # Responsibility: Map an engine name to the callable that runs it in-process.
 # Boundaries: dispatch only; every runner it names owns its own native lifecycle.
-# Collaborates with: the six engine runners and adapters/mesh_execution/local.py.
+# Collaborates with: the seven engine runners and adapters/mesh_execution/local.py.
 from __future__ import annotations
 
 from typing import Any
@@ -14,6 +14,7 @@ _OPENFOAM_ENGINES = frozenset({"cfmesh", "snappy", "snappy_multiregion"})
 def engine_runners() -> dict:
     from meshpipeline.engines.cfmesh.native import _run_cartesian_mesh_local
     from meshpipeline.engines.gmsh.gmsh_runner import _run_gmsh_local
+    from meshpipeline.engines.netgen.runner import _run_netgen_local
     from meshpipeline.engines.snapgrid.runner import _run_snapgrid_local
     from meshpipeline.engines.snappy.snappy_runner import _run_snappy_local
     from meshpipeline.engines.snappy_multiregion.multiregion_runner import _run_snappy_multiregion_local
@@ -25,6 +26,7 @@ def engine_runners() -> dict:
         "snapgrid":           _run_snapgrid_local,
         "gmsh":               _run_gmsh_local,
         "vmtk":               _run_vmtk_local,
+        "netgen":             _run_netgen_local,
     }
 
 
@@ -86,8 +88,18 @@ def run_engine_local(workspace: Any, *, engine: str, timeout: int) -> dict:
     from meshpipeline.engines.bucket_files import clear
     from meshpipeline.engines.cfmesh.foam_exec import _DEFAULT_BASHRC  # identical across the clones
     clear(workspace)
+    import time
+    started = time.monotonic()
     out = _run_stamped(runners[engine], workspace, engine=engine, bashrc=_DEFAULT_BASHRC,
                        timeout=int(timeout))
+    # A FLOW MESH FOR EVERY SOLVER (engines/cfd_exports.py): the OpenFOAM case as one zip, a Fluent mesh
+    # and an EnSight case, written here where OpenFOAM's converters are - the user picks at download.
+    # Inside what is left of the run's wall; a run that built nothing only loses a previous pass's files.
+    from meshpipeline.engines.cfd_exports import after_run as cfd_exports
+    exports = cfd_exports(workspace, engine=engine, result=out, bashrc=_DEFAULT_BASHRC,
+                          left_s=float(timeout) - (time.monotonic() - started))
+    if exports and isinstance(out, dict):
+        out["cfd_exports"] = exports
     # WHAT RIDES HOME (engines/return_scope.py): the workspace is archived and extracted under a
     # size ceiling after this; scratch and, when it would not fit, the optional volume export stay
     # behind - a built mesh is never lost on the way back for a file the delivery can do without

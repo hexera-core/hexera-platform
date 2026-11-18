@@ -117,7 +117,7 @@ export function ApiKeysPanel({ keys }: { keys: Key[] }) {
                 </td>
                 <td>
                   {key.revoked_at ? (
-                    <span className="status status--fail">revoked</span>
+                    <span className="status status--fail">Revoked</span>
                   ) : (
                     <button
                       className="btn"

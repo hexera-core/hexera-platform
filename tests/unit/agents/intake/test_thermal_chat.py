@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 import meshpipeline.agents.intake.agent as intake
+import meshpipeline.agents.intake.approval as ap
 import meshpipeline.agents.intake.engine_selection as es
 import meshpipeline.agents.intake.message as msg
 from meshpipeline.agents.intake import turn
@@ -320,7 +321,7 @@ def test_after_mesh_this_model_the_chat_goes_straight_to_the_approval(view):
     assert sel["engine"] == "snapgrid" and sel["state"] == es.CONFIRMED and sel["via"] == es.VIA_THE_FILE
     assert "SELECTED" in model.tools[0]["content"]
     reply = out["messages"][-1]["content"]
-    assert reply.startswith("Please confirm the requirements above"), reply
+    assert reply.endswith(ap.PROCEED_ASK), reply
     assert "I'd mesh this with" not in reply and forbidden_words(reply) == []
     assert out["intake_gate"]["approval"]["status"] == "awaiting_confirmation"
 

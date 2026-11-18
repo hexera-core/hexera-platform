@@ -237,22 +237,13 @@ def sentences(text: str) -> list[str]:
     return [s.strip() for s in re.split(r"(?<=[.!?])\s+|\n+", str(text or "")) if s.strip()]
 
 
-def request_beyond_notes(state: Mapping) -> str:
-    """The request's words that the notes do not already say: a sentence the user wrote in both places (the
-    first answer and the notes box) is read once, so it becomes one row, never two."""
-    from meshpipeline.contracts.user_notes import render
-    s = state or {}
-    said = squash(render(s.get("user_notes") or []))
-    kept = [x for x in sentences(str(s.get("request_txt") or "")) if not (squash(x) and squash(x) in said)]
-    return " ".join(kept).strip()
-
-
 def notes_text(state: Mapping) -> str:
-    """The user's own words this step reads: the notes (word for word) and the request's words beyond them."""
-    from meshpipeline.contracts.user_notes import render
-    s = state or {}
-    parts = [render(s.get("user_notes") or []), request_beyond_notes(s)]
-    return "\n\n".join(p for p in parts if p)
+    """THE USER'S OWN WORDS, and only those: what they typed in the notes box and their own chat messages as kept
+    (contracts/user_notes.own_notes), word for word. Never the intake's summary of the request (request_txt, a
+    model's rewrite): read beside the notes, its sentences were quoted back to the user as theirs - on the card's
+    checklist (NOTE-5) and as "not applied" lines."""
+    from meshpipeline.contracts.user_notes import own_notes, render
+    return render(own_notes((state or {}).get("user_notes") or []))
 
 
 def wanted(state: Mapping) -> bool:
@@ -262,10 +253,10 @@ def wanted(state: Mapping) -> bool:
 
 def messages_for(state: Mapping, table: list[dict], pictures: list[Path], *, consumer: str,
                  purpose: str = "") -> list[dict]:
-    from meshpipeline.contracts.user_notes import prompt_block
+    from meshpipeline.contracts.user_notes import own_notes, prompt_block
     s = state or {}
-    text = {"user_request": request_beyond_notes(s)[:4000], "mesh_for": purpose,
-            "user_notes": prompt_block(s.get("user_notes") or [], consumer=consumer),
+    text = {"mesh_for": purpose,
+            "user_notes": prompt_block(own_notes(s.get("user_notes") or []), consumer=consumer),
             "parts": table,
             "pictures": [p.stem for p in pictures]}
     content: list[dict] = [{"type": "text", "text": json.dumps(text, sort_keys=True, separators=(",", ":"))}]

@@ -13,8 +13,8 @@
  * loads this module, and this module is the only thing index.html loads.
  */
 import { apiFetch, setNotifier, useIdentity } from "./api/client.js";
-import { addNote, finalizePartMatches, getJob, getPartMatches, getPartModel, getPartPicture, pickPartMatch }
-  from "./api/endpoints.js";
+import { addNote, finalizePartMatches, getChatHistory, getJob, getPartMatches, getPartModel,
+  getPartPicture, pickPartMatch } from "./api/endpoints.js";
 import { dispatch, resultSurface } from "./core/events.js";
 import { beginRun, get as getState, isTerminalStatus, set as setState, waitingCopy }
   from "./core/state.js";
@@ -26,8 +26,9 @@ import { Stage, closeLightbox, openLightbox, setCancelHandler, setMeshPartialHan
 import { configure as configureStream, lastSeq, replay, start as startStream, terminalResult }
   from "./realtime/stream.js";
 import { confirmCancel } from "./shell/cancel.js";
-import { clearNewRunOffer, configureComposer, disableInput, enableInput, mountComposer,
-  offerNewRun, setPlaceholder, showRunFile } from "./shell/composer.js";
+import { configureComposer, disableInput, enableInput, holdForRun, mountComposer,
+  offerNewRun, resumeSession, say, setPlaceholder, showRunFile } from "./shell/composer.js";
+import { intakeOrder, runOrder } from "./core/conversation.js";
 import { refreshHealth } from "./shell/settings.js";
 import { configureDispute } from "./viewer/dispute.js";
 import { offerReview, openParked } from "./review/review.js";
@@ -190,14 +191,11 @@ setResultHandler((data, anchor) => {
    conversation the run belongs to: the page's own session for a run the chat started, the
    disputed run's conversation for a re-review. */
 function attachJob(id, { replayHistory = false, message = "", origin = getState.sessionId() } = {}) {
-  clearNewRunOffer();      // a run is starting; the "run again" offer belonged to the last one
-  Stage.mount();
   // THE INTAKE'S VIEWER GOES as the mesher starts: the run's own view takes over from here
   endIntake();
-  // the message goes on the NEW stage: said before the mount, it was wiped the instant it was
-  // drawn, so "re-review started" never reached the user
   if (message) Stage.chat("assistant", message);
-  beginRun(id, { sessionId: origin });
+  // THE CONVERSATION STAYS: the box joins it, under the message that started the run
+  openBox(id, { sessionId: origin });
   // WHERE THE RUN LIVES IN THE URL. The console routes runs at /runs/<id>; ui/index.html has no
   // routes and keeps the query string it has always used. Neither global set means the second
   // branch, which is today's behaviour byte for byte.
@@ -206,15 +204,29 @@ function attachJob(id, { replayHistory = false, message = "", origin = getState.
     history.replaceState(null, "",
       routed ? "/runs/" + id : location.pathname + "?job=" + id);
   } catch { /* ignore */ }
-  Stage.ensureProc();
   Stage.showCancel();
+  holdForRun();
   startStream(replayHistory ? 0 : undefined);
+}
+
+/* THE PLAN'S PROCEED, at the card's foot: the same answer a typed yes gives, said in the chat */
+const proceedPlan = () => say("Proceed");
+
+/* WHERE A RUN'S BOX GOES - one definition, for a run started here, a run reloaded and an earlier run of the same
+   conversation: at the end of what the conversation shows at that moment. A reload draws the stored conversation
+   first, in the order core/conversation.js says, so the box lands where it did live. */
+function openBox(id, { sessionId = null } = {}) {
+  Stage.newRun();
+  beginRun(id, { sessionId });
+  Stage.ensureProc();
 }
 
 /* THE NOTES BOX under the plan: the user's own text, kept as typed; the card redraws with it */
 async function addBriefNote(text) {
   const d = await addNote(getState.sessionId(), text);
-  Stage.brief(d.brief, addBriefNote, briefParts);
+  Stage.brief(d.brief, addBriefNote, briefParts, proceedPlan);
+  // "use cfMesh" in a note chooses the engine as it does in the chat: said there for the user
+  if (d.say) say(d.say);
 }
 
 /* THE PARTS CHECKLIST under the notes: which parts the notes mean, and the user's fix for one phrase */
@@ -233,10 +245,17 @@ const briefParts = {
   finalize: () => finalizePartMatches(getState.sessionId()),
 };
 
+/* THE CONVERSATION IN THE ADDRESS: an upload's session is named in the URL (?session=<id>) until a run takes the
+   address over, so a reload in the middle of the questionnaire reopens it where it stands (openSession) */
+function rememberSession(id) {
+  try { history.replaceState(null, "", location.pathname + "?session=" + encodeURIComponent(id)); } catch { /* ignore */ }
+}
+
 configureComposer({
+  sessionStarted: (id) => rememberSession(id),
   notice: Notice,
   chat: (role, text) => Stage.chat(role, text),
-  brief: (b) => Stage.brief(b, addBriefNote, briefParts),
+  brief: (b) => Stage.brief(b, addBriefNote, briefParts, proceedPlan),
   // a yes before Finalize notes: wait (a minute at most) for the reading the server started
   notesRead: async () => {
     const t0 = Date.now();
@@ -247,10 +266,9 @@ configureComposer({
       await new Promise((r) => setTimeout(r, 2000));
     }
   },
-  engineChoice: (c, pick) => Stage.engineChoice(c, pick),
   // the buttons under an application question: what the mesh is for, an FEA part's analysis type
   choices: (list, pick) => Stage.choices(list, pick),
-  supportedCopy: (t) => Stage.setSupportedCopy(t),
+  supportedCopy: (t, short) => Stage.setSupportedCopy(t, short),
   onJobStarted: (id) => attachJob(id),
   // THE GEOMETRY CHECK TAKES THE STAGE, the way a delivered mesh does: the part in 3D with its
   // stickers, the form beside it. When the stage cannot open, the same form arrives as a card.
@@ -316,40 +334,87 @@ function bootLive() {
   // id over without a redirect through a query string it would then have to clean up.
   const deepLinkJob = params.get("job") || globalThis.__HEXERA_BOOT_JOB__ || null;
   if (params.get("user")) useIdentity(params.get("user"));
+  const deepLinkSession = params.get("session") || null;
+  if (!deepLinkJob && deepLinkSession) { openSession(deepLinkSession); return; }
   if (!deepLinkJob) return;
+  openRun(deepLinkJob);
+}
 
-  (async () => {
-    Stage.clearEmpty();
-    let job = null;
-    try {
-      job = await getJob(deepLinkJob, { throwOnError: false });
-    } catch { /* already reported by the HTTP boundary */ }
-    if (!job) {
-      Stage.chat("assistant", "I could not open that run. The link may be wrong, or the run may belong to another "
-        + "account.");
-      return;
-    }
-    beginRun(deepLinkJob);
-    setState.jobStatus(job.status);
-    Stage.ensureProc();
-    // WHAT A RELOAD USED TO LOSE, read back from the server rather than this page's memory: the
-    // file the run meshes, and how long it has been running - or ran, once it has ended.
-    showRunFile(job.geometry_filename);
-    Stage.clock(job.created_at, isTerminalStatus(job.status) ? job.ended_at : null);
-    Stage.waiting(waitingCopy(job));
-    if (isTerminalStatus(job.status)) {
-      // REPLAY THE WHOLE RUN FIRST. A finished job still has its event log, and the point of
-      // keeping one is that a user can see HOW they got their mesh, not just that they got it.
-      if (!(await replay(deepLinkJob))) Stage.chat("assistant", STEPS_MISSING);
-      Stage.final(terminalResult(job, getState.outcomeMessage()));
-      return;
-    }
-    // LIVE. since=0 makes the server replay the entire log, then go live - a reload used to
-    // cost the user the history of their run; now it costs them nothing.
-    startStream(0);
-    Stage.showCancel();
-    disableInput();
-  })();
+/* AN UNFINISHED CONVERSATION, REOPENED - a reload in the middle of the questionnaire. It draws the stored
+   conversation in the one order core/conversation.js says, then hands the composer the open step (its buttons,
+   the plan card) and the check to watch again. A conversation that already started a run opens as that run. */
+async function openSession(sessionId) {
+  Stage.clearEmpty();
+  const history = await getChatHistory(sessionId);
+  if (!history) {
+    Stage.chat("assistant", "I could not open that conversation. The link may be wrong, or it may belong to another "
+      + "account.");
+    return;
+  }
+  if (history.job_id) { openRun(history.job_id); return; }
+  for (const item of intakeOrder(history.messages)) Stage.chat(item.role, item.text);
+  resumeSession(sessionId, history);
+}
+
+/* A RUN OPENED BY LINK - a reload, or the run re-opened from the sidebar. It draws what the page showed live, in
+   the same order: the conversation the run came from, up to the message that started it (an earlier run of the
+   same conversation drawn finished, where it started), then this run's box, then - once it has ended - its result
+   and what was said after it. */
+async function openRun(runId) {
+  Stage.clearEmpty();
+  let job = null;
+  try {
+    job = await getJob(runId, { throwOnError: false });
+  } catch { /* already reported by the HTTP boundary */ }
+  if (!job) {
+    Stage.chat("assistant", "I could not open that run. The link may be wrong, or the run may belong to another "
+      + "account.");
+    return;
+  }
+  // THE QUESTIONS THE RUN ANSWERED. Intake ran against the session BEFORE the job existed, so the job's own event
+  // log cannot replay it - it is served beside the job and read back here. A run that began without intake (or
+  // whose session cannot be read) draws its box alone.
+  const history = job.session_id ? await getChatHistory(job.session_id) : null;
+  for (const item of runOrder(history?.messages, runId)) {
+    if (item.current) await showRun(runId, job);
+    else if (item.run) await showPastRun(item.run);
+    else Stage.chat(item.role, item.text);
+  }
+}
+
+/* THIS RUN, read back from the server rather than this page's memory: the file it meshes, how long it has been
+   running - or ran, once it has ended - and its steps. */
+async function showRun(runId, job) {
+  openBox(runId);
+  setState.jobStatus(job.status);
+  showRunFile(job.geometry_filename);
+  Stage.clock(job.created_at, isTerminalStatus(job.status) ? job.ended_at : null);
+  Stage.waiting(waitingCopy(job));
+  if (isTerminalStatus(job.status)) {
+    // REPLAY THE WHOLE RUN FIRST. A finished job still has its event log, and the point of
+    // keeping one is that a user can see HOW they got their mesh, not just that they got it.
+    if (!(await replay(runId))) Stage.chat("assistant", STEPS_MISSING);
+    Stage.final(terminalResult(job, getState.outcomeMessage()));
+    return;
+  }
+  // LIVE. since=0 makes the server replay the entire log, then go live - a reload used to
+  // cost the user the history of their run; now it costs them nothing.
+  startStream(0);
+  Stage.showCancel();
+  holdForRun();
+}
+
+/* AN EARLIER RUN OF THE SAME CONVERSATION, where it started: its box replayed and its ending, as they were drawn
+   live before the next run began. One that cannot be read, or has not ended, is left out. */
+async function showPastRun(runId) {
+  let job = null;
+  try { job = await getJob(runId, { throwOnError: false }); } catch { /* left out */ }
+  if (!job || !isTerminalStatus(job.status)) return;
+  openBox(runId);
+  setState.jobStatus(job.status);
+  Stage.clock(job.created_at, job.ended_at);
+  if (!(await replay(runId))) Stage.chat("assistant", STEPS_MISSING);
+  Stage.final(terminalResult(job, getState.outcomeMessage()));
 }
 
 bootLive();

@@ -83,7 +83,7 @@ documentation.
 ## 4. Admin-1 — the service, behind IAP
 
 **Image and release.** A fourth release component `admin` beside `mesh`, `app` and `console`: a
-Dockerfile target, built and smoked once by Gate C, published by digest, promoted as `ADMIN_IMAGE`.
+Dockerfile target, built and smoked once by release validation, published by digest, promoted as `ADMIN_IMAGE`.
 The console's path exactly.
 
 **Service.** `deploy/gcp/scripts/create-admin-service.sh`, modelled on `create-console-service.sh`

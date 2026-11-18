@@ -42,7 +42,7 @@ export function flagDispute(job, flags) {
       ? `The reviewer will re-inspect the delivered mesh at your ${flags.length} flagged spot${flags.length > 1 ? "s" : ""},`
       : "No spots flagged - describe the change you want below (flagging exact spots is recommended when the issue is localized). The reviewer will evaluate your request against the delivered mesh,"}
     then the pipeline will <b>rebuild the mesh</b> and re-review it against your concerns plus all original criteria.</div>
-    <div style="margin-top:8px;color:#6a6e77">This is a full mesh run - typically 1-2 hours of compute.</div>
+    <div style="margin-top:8px;color:var(--text-faint)">This is a full mesh run - typically 1-2 hours of compute.</div>
     <textarea id="v-comment" placeholder="${hasFlags ? "Anything else the reviewer should know? (optional)" : "What should change? e.g. “I want finer resolution in the wake region” (required)"}"></textarea>
     <div class="row2"><button class="v-btn" id="v-cancel">Cancel</button>
     <button class="v-btn primary" id="v-go"${hasFlags ? "" : " disabled"}>Start re-review & rebuild</button></div></div>`);

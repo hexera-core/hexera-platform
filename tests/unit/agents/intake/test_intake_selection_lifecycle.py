@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import meshpipeline.agents.intake.admission_token as at
 import meshpipeline.agents.intake.agent as intake
+import meshpipeline.agents.intake.approval as ap
 import meshpipeline.agents.intake.engine_selection as es
 from meshpipeline.contracts import user_notes as un
 
@@ -100,15 +101,16 @@ def test_only_a_confirmed_selection_authorizes_admission():
 
 # the explicit selection flow, end to end
 
-def test_an_engine_the_model_proposes_on_its_own_is_only_proposed_with_the_canonical_statement():
-    state = _state("Which engine would you suggest for this?")
+def test_an_engine_the_model_proposes_on_its_own_is_selected_with_no_question():
+    # the engine is chosen, not asked (Areen, 2026-11-13): no "I'd mesh this with ... OK?" turn
+    state = _state("Internal flow through this pipe - which engine would you suggest for this?")
     out = _run(state, [_resp([_tc("propose_engine_selection", json.dumps({"engine": "gmsh"}))]),
-                       _resp(content="never reached - the app asks for confirmation")])
+                       _resp(content="What is the flow speed?")])
     reply = out["messages"][-1]["content"]
-    # the application's one engine question, with the name a user reads; `gmsh` is the internal key
-    assert reply == "I'd mesh this with Gmsh. OK, or do you use a different mesher?"
+    assert reply == "What is the flow speed?"
     gate = out["intake_gate"]
-    assert gate["selection"]["state"] == es.PROPOSED and gate["selection"]["engine"] == "gmsh"
+    assert gate["selection"]["state"] == es.CONFIRMED and gate["selection"]["engine"] == "gmsh"
+    assert gate["selection"]["via"] == es.VIA_AUTO
     assert gate["admission"] is None
     assert not out.get("request_txt") and out.get("dispatch_confirmed") is False
 
@@ -171,7 +173,7 @@ def test_requirements_still_need_canonical_approval_after_a_confirmed_selection(
 
     reply = out["messages"][-1]["content"]
     assert out.get("request_txt"), "the submission was authorized"
-    assert "confirm the requirements" in reply and "Shall I proceed" in reply   # app-rendered
+    assert reply.endswith(ap.PROCEED_ASK)   # app-rendered
     assert out.get("dispatch_confirmed") is False, "approval is a separate user turn"
 
 

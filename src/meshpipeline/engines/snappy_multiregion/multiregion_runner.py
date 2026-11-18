@@ -755,6 +755,16 @@ def configure_mesh(workspace, *, strategy: dict, wall_patch: str = "",
     first_rel = float(strategy.get("first_layer_rel", 0.35))
     quality = strategy.get("quality", "balanced")
     max_cells = int(strategy.get("max_cells", 6_000_000))
+    # CFDREQ-1: THE USER'S REQUIREMENTS from their notes (engines/cfd_requirements) - the one seam. None: every line
+    # below writes exactly the case it always has
+    from meshpipeline.engines import cfd_requirements as CR
+    _ask = CR.Ask.of(ws, "snappy_multiregion")
+    if _ask is not None:
+        max_cells = _ask.budget(max_cells)
+        if _ask.n_layers is not None:
+            n_layers = int(_ask.n_layers)
+            _ask.done("layers:count", "no boundary layers" if n_layers == 0 else
+                      f"{n_layers} layers on every fluid side of a solid")
 
     # resolve region -> solid STLs from the staged assembly. COVERAGE IS A SCHEMA RULE:
     # every assembly solid must be assigned exactly once, no unknown indices, nothing
@@ -834,6 +844,11 @@ def configure_mesh(workspace, *, strategy: dict, wall_patch: str = "",
     allmaxs = [max(s["bbox_max"][i] for s in solids) for i in range(3)]
     diag = sum((allmaxs[i] - allmins[i]) ** 2 for i in range(3)) ** 0.5
     base_cell = max(diag / _thermal.BACKGROUND_DIVISIONS, 1e-6)
+    if _ask is not None:
+        _ask.length_m, _ask.length_from = diag, "the assembly's size"
+        base_cell, surface_level, _ask_levels = CR.multiregion_sizes(
+            _ask, base_cell, surface_level, extent=[allmaxs[i] - allmins[i] for i in range(3)], regions=list(rmap))
+        region_refinement = {**region_refinement, **_ask_levels}
 
     # A THERMAL MODEL'S THINNEST LAYERS SET HOW FINE ITS MESH MUST BE (thermal_fidelity.plan).
     # Each region is raised to the surface level that puts two cells across its thinnest layer
@@ -882,6 +897,9 @@ def configure_mesh(workspace, *, strategy: dict, wall_patch: str = "",
         _lo, _hi = region_refinement.get(_name) or surface_level
         region_refinement[_name] = [_t["level"], max(int(_hi), _t["level"])]
         thin_regions[_name] = _row
+    if _ask is not None:
+        surface_level, region_refinement = CR.multiregion_cap(_ask, base_cell, surface_level, region_refinement,
+                                                              thin_regions)
 
     _write_case_skeleton(ws)
     # BACKGROUND CONTAINMENT: when one fluid region's bbox spans the whole assembly (an
@@ -917,11 +935,15 @@ def configure_mesh(workspace, *, strategy: dict, wall_patch: str = "",
         (ws / EXTERIOR_PATCHES).write_text(json.dumps(
             thermal_exterior_patches(json.loads(thermal.read_text()))))
     (ws / "system" / "topoSetDict.zoned").write_text(render_zoned_set_dict(rmap))
-    (ws / "system" / "snappyHexMeshDict").write_text(
-        render_snappy_multiregion_dict(rmap, allmins, allmaxs, surface_level=surface_level,
-                               interface_refinement=interface_refinement, n_layers=n_layers,
-                               first_layer_rel=first_rel, quality=quality, max_cells=max_cells,
-                               region_points=region_points, region_refinement=region_refinement))
+    _shm = render_snappy_multiregion_dict(rmap, allmins, allmaxs, surface_level=surface_level,
+                                          interface_refinement=interface_refinement, n_layers=n_layers,
+                                          first_layer_rel=first_rel, quality=quality, max_cells=max_cells,
+                                          region_points=region_points, region_refinement=region_refinement)
+    if _ask is not None:
+        _shm = CR.snappy_dict(_ask, _shm, wall_cell_m=base_cell / 2 ** int(surface_level[1]))
+        _ask.write(ws)
+        CR.say_sync(ws, _ask.lines())
+    (ws / "system" / "snappyHexMeshDict").write_text(_shm)
     # feature extraction dict for every region surface. MUST carry the FoamFile header
     # like every other rendered dict - the first live assembly run failed at
     # surfaceFeatureExtract "line 1" because this render alone omitted it.
