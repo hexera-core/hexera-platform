@@ -21,6 +21,13 @@ CELL_HARD_LIMIT: int = int(optional_env("CELL_HARD_LIMIT", "8000000"))
 # mesh quickly; the plan is coarsened to fit it exactly as it is coarsened to fit a machine.
 FEA_ELEMENT_LIMIT: int = int(optional_env("FEA_ELEMENT_LIMIT", "0"))
 
+# THE SMALLEST ELEMENT an FEA plan may ask for, in millimetres. 0 = off, and off is what production
+# runs: the rules then decide every size and only validity stops them (PLAN-fea-30). A demo or lab
+# environment sets a floor so a micron-scale sliver is reported rather than resolved; every zone the
+# floor holds keeps the size its rule asked for and is named short on the delivery
+# (engines/fea_plan.size_floored).
+FEA_MIN_SIZE_MM: float = float(optional_env("FEA_MIN_SIZE_MM", "0"))
+
 # deployment identity + request auth
 ENV: str = optional_env("ENV", "dev").lower()
 MESH_API_KEY: str = optional_env("MESH_API_KEY", "")

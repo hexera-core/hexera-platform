@@ -263,6 +263,41 @@ def zones(record: Mapping, *, tighten: Mapping[str, float] | None = None) -> lis
             z["tightened"] = float(k)
         z["size_m"] = _r(z["size_m"])
         z["reach_m"] = _r(z["reach_m"])
+    return size_floored(out)
+
+
+def min_size_m() -> float:
+    """THE SMALLEST ELEMENT THIS DEPLOYMENT ALLOWS, in metres; 0.0 = off, and off in production
+    (FEA_MIN_SIZE_MM). Off, the rules decide every size and only validity stops them
+    (PLAN-fea-30)."""
+    from meshpipeline.settings import policy as polcfg
+    return max(0.0, float(getattr(polcfg, "FEA_MIN_SIZE_MM", 0.0) or 0.0)) * _MM
+
+
+def size_floored(zone_list: list[dict]) -> list[dict]:
+    """Every zone held at the deployment's minimum element size, when it sets one.
+
+    UNLIKE `floored` THIS IGNORES THE VALIDITY MINIMUM, and that is the whole point of it. A wall of
+    a few microns has a validity minimum of a few microns, so a floor that respected it would not
+    move - which is the honest rules behaviour (PLAN-fea-30: only validity stops a size) and exactly
+    what a demo or lab environment needs to be able to waive, because resolving a micron sliver buys
+    an hour of meshing and no accuracy anyone asked for.
+
+    NOTHING IS HIDDEN. Each held zone keeps the size its rule asked for in `rule_size_m` and is
+    marked `short`, so the delivery names it the way it names any shortfall ("Mesh zones short of
+    the FEA plan's rules") and the mesh is never claimed to resolve what it did not.
+    """
+    floor = min_size_m()
+    if not floor:
+        return zone_list
+    out = []
+    for z in zone_list:
+        size = float(z["size_m"])
+        if size < floor:
+            out.append({**z, "rule_size_m": size, "size_m": _r(floor), "short": True,
+                        "held_by_deployment": True})
+        else:
+            out.append(z)
     return out
 
 

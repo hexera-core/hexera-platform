@@ -550,6 +550,8 @@ INVENTORY: list[Group] = [
                     "to a count to cap FEA plans at that count instead, for a demo or lab "
                     "environment that wants a small mesh quickly - the plan is coarsened to fit "
                     "it the same way it is coarsened to fit a machine, and says so"),
+        EnvVar("FEA_MIN_SIZE_MM", "0", kind="float",
+               help="0 = off (the default, and the only setting production uses): the FEA rules decide every element size and only validity stops them. Set it to a size in millimetres to hold every zone at that size at least, for a demo or lab environment where a micron-scale sliver should be reported rather than resolved; each held zone keeps the size its rule asked for and is named short on the delivery"),
         EnvVar("LAYER_CAVEAT_FLOOR_PCT_EXTERNAL", "40", kind="int",
                help="areal prism-layer coverage floor for caveated delivery of external-aero "
                     "snappy meshes; below it a layers-only review FAIL stays a failure"),
