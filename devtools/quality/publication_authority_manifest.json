@@ -4506,6 +4506,19 @@
   "roots": []
  },
  {
+  "context": "engines/control_appliers.py::shell_place_sizes::plan#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/control_appliers.py",
+  "qualname": "shell_place_sizes",
+  "semantic": "plan",
+  "method": "plan",
+  "ordinal": 1,
+  "receiver": "SP",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "engines/domain_extent_gate.py::parse_requested_extents::search#1|NotAPublisher|not-a-publisher|",
   "path": "engines/domain_extent_gate.py",
   "qualname": "parse_requested_extents",
