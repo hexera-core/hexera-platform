@@ -1461,6 +1461,27 @@ def _port_levels(*, base_cell: float, default_level: int, smin: int,
 _off_grid = off_grid_point
 
 
+#: CFDREQ-9: the share of the pass's cell budget a bridged layer stack may add on top of the plan's own layers
+LAYER_BRIDGE_ROOM = 0.5
+
+
+def _layer_bridge_room(wall_stl: Path, layer_cell: float, max_cells: int) -> dict | None:
+    """CFDREQ-9: what a first layer far thinner than the wall cells may spend on more layers - the wall's faces at
+    `layer_cell` (its area over the cell's) and half the pass's budget as room. None (the plan's count kept) when the
+    wall cannot be read."""
+    try:
+        import numpy as np
+        tri = np.asarray(read_stl_triangles(wall_stl), dtype=float)
+        if tri.ndim != 3 or len(tri) == 0 or layer_cell <= 0:
+            return None
+        area = 0.5 * float(np.linalg.norm(np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]), axis=1).sum())
+        return {"faces": area / (layer_cell * layer_cell), "room": LAYER_BRIDGE_ROOM * float(max_cells)}
+    except Exception:  # noqa: BLE001 - no bridge is the plan's own layer count, never a lost pass
+        logger.warning("render_internal_case: the wall's area was not read - the plan's layer count stands",
+                       exc_info=True)
+        return None
+
+
 def render_internal_case(workspace, *, names: dict, features: dict, interior_point,
                          bbox_min, bbox_max, base_cell: float, surface_level: int,
                          feature_level: int, n_layers: int, last_layer_rel: float = 0.3,
@@ -1652,7 +1673,11 @@ mergeTolerance 1e-6; debug 0;
 """)
     if _ask is not None:
         from meshpipeline.engines import cfd_requirements as CR
-        _shm = CR.snappy_dict(_ask, _shm, wall_cell_m=wall_cell_actual)
+        # the cells the layers grow into: the near-wall band's, one level finer than the wall's, where there is one
+        _layer_cell = base_actual / (2 ** near_level)
+        _shm = CR.snappy_dict(_ask, _shm, wall_cell_m=_layer_cell,
+                              bridge=_layer_bridge_room(ws / "constant" / "triSurface" / f"{wall}.stl",
+                                                        _layer_cell, max_cells))
         _ask.write(ws)
     (ws / "system" / "snappyHexMeshDict").write_text(_shm)
     return {"divisions": div, "surface_level": [smin, smax], "feature_level": flevel,

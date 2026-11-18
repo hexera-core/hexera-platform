@@ -1385,10 +1385,13 @@ def _num(text: str, key: str) -> float | None:
 
 
 @guarded(lambda ask, text, **_k: text)
-def snappy_dict(ask: Ask | None, text: str, *, wall_cell_m: float | None = None) -> str:
+def snappy_dict(ask: Ask | None, text: str, *, wall_cell_m: float | None = None,
+                bridge: Mapping | None = None) -> str:
     """The snappyHexMeshDict text with the user's growth, layer sizes and quality limits applied (CFDREQ-2, 4, 5).
     The count of layers, the sizes and the budget are the plan's (the drivers set them before the dict is
-    written). Unchanged with nothing asked."""
+    written). Unchanged with nothing asked. `bridge`: {"faces": wall faces, "room": cells the layers may add} on a
+    case whose first layer may be far thinner than its wall cells (layer_bridge, CFDREQ-9); None leaves the count
+    the plan's."""
     if ask is None:
         return text
     out = text
@@ -1398,7 +1401,7 @@ def snappy_dict(ask: Ask | None, text: str, *, wall_cell_m: float | None = None)
         ask.done("growth", f"{n} cells between refinement levels, so sizes grow about {MR._g(2 ** (1 / n))} from one "
                            "cell to the next", cells_between_levels=n)
     if "addLayersControls" in out and (ask.first_m or ask.total_m or ask.layer_growth or ask.y_plus):
-        out = _snappy_layers(ask, out, wall_cell_m)
+        out = _snappy_layers(ask, out, wall_cell_m, bridge)
     for lim in ask.limits:
         key = SNAPPY_QUALITY.get(lim["measure"])
         if key is None:
@@ -1444,9 +1447,48 @@ def snappy_dict(ask: Ask | None, text: str, *, wall_cell_m: float | None = None)
     return out
 
 
-def _snappy_layers(ask: Ask, text: str, wall_cell_m: float | None) -> str:
+#: CFDREQ-9: a first layer more than this many times thinner than the wall cells it grows into is not kept by
+#: snappyHexMesh with the plan's few layers (measured: a 0.011 mm first layer under 2 mm wall cells kept layers on
+#: 1.8% of a wing; a 0.022 mm one under 4.4 mm cells on 0% of a pipe reducer, job f4019933; 0.027 mm under 1.25 mm
+#: cells, 46 times, kept 81.6% of a rotor, job 9c638f7a)
+THIN_LAYER_RATIO = 50.0
+#: CFDREQ-9: the most layers a stack bridged that way gets; past it the first layer is the thinnest it still fills
+MAX_BRIDGE_LAYERS = 25
+
+
+def layer_bridge(first_m: float, wall_cell_m: float, *, n_plan: int, growth: float, last_rel: float,
+                 max_layers: int = MAX_BRIDGE_LAYERS, faces: float | None = None,
+                 room: float | None = None) -> tuple[int, float, float]:
+    """CFDREQ-9: (layer count, first layer height, stack thickness) for a first layer far thinner than the wall
+    cells. The stack keeps the thickness our own plan gives the wall - `n_plan` layers growing by `growth` up to a
+    last layer `last_rel` times the wall cell (snappy's relative finalLayerThickness) - and the asked first layer
+    starts it: as many layers as the growth needs to fill it, so the last layer meets the cells beside it the way
+    our own stack does. Never fewer than the plan's. Past `max_layers`, or past the cells `room` lets the layers add
+    on `faces` wall faces, the count stops there and the first layer is the thinnest that count still fills the
+    stack with (never thinner than asked)."""
+    g, n0 = max(float(growth), 1.0), max(1, int(n_plan))
+    total = float(last_rel) * float(wall_cell_m) * sum(g ** -k for k in range(n0))
+    first = float(first_m)
+    if g <= 1.0001:
+        need = total / first
+    else:
+        need = math.log(1.0 + total * (g - 1.0) / first) / math.log(g)
+    n = max(n0, int(round(need)))
+    cap = int(max_layers)
+    if faces and room is not None and faces > 0:
+        cap = min(cap, n0 + int(max(0.0, float(room)) // float(faces)))
+    cap = max(n0, cap)
+    if n <= cap:
+        return n, first, total
+    n = cap
+    fill = total / n if g <= 1.0001 else total * (g - 1.0) / (g ** n - 1.0)
+    return n, max(first, fill), total
+
+
+def _snappy_layers(ask: Ask, text: str, wall_cell_m: float | None, bridge: Mapping | None = None) -> str:
     """The layer thicknesses in absolute sizes when the user gave one (first height, stack, or a y+ turned into a
-    first height); the growth alone keeps our relative sizes."""
+    first height); the growth alone keeps our relative sizes. With `bridge` (CFDREQ-9), a first layer far thinner
+    than the wall cells gets the layers that fill our own stack from it (layer_bridge), said on its row."""
     m = re.search(r"addLayersControls\s*\{", text)
     if not m:
         return text
@@ -1460,6 +1502,16 @@ def _snappy_layers(ask: Ask, text: str, wall_cell_m: float | None) -> str:
             ask.done("layers:growth", f"each layer {MR._g(g)} times the one under it")
         return out
     n = int(_num(out, "nSurfaceLayers") or 3)
+    bridged = None
+    if (bridge is not None and first is not None and total is None and ask.n_layers is None and n > 0
+            and wall_cell_m and wall_cell_m / first > THIN_LAYER_RATIO):
+        last_rel = _num(out, "finalLayerThickness") or 0.3
+        n_new, first_new, stack = layer_bridge(first, float(wall_cell_m), n_plan=n, growth=g, last_rel=last_rel,
+                                               faces=bridge.get("faces"), room=bridge.get("room"))
+        if n_new > n:
+            out = re.sub(r"\bnSurfaceLayers\s+[1-9][0-9]*\s*;", f"nSurfaceLayers {n_new};", out)
+            bridged = (n, n_new, first, first_new, stack)
+            n, first = n_new, first_new
     spec = []
     if first is not None and total is not None and ask.layer_growth is None:
         spec = [f"firstLayerThickness {first:.6g};", f"thickness {total:.6g};"]
@@ -1496,7 +1548,8 @@ def _snappy_layers(ask: Ask, text: str, wall_cell_m: float | None) -> str:
             new = max(1e-30, min(ours, 1e-3 * pyramid))
             if new < ours:
                 out = _sub(out, "minVol", f"{new:.3g}", inside="meshQualityControls", count=1)
-        if first is not None and wall_cell_m / first > 50:
+        out = _layer_determinant(ask, out, thinnest, float(wall_cell_m))
+        if bridged is None and first is not None and wall_cell_m / first > THIN_LAYER_RATIO:
             # a stack far thinner than the cells it grows into is hard for the mesher to keep (measured: a 0.011 mm
             # first layer under 2 mm wall cells kept layers on 1.8% of a wing): said where it is set and where the
             # layers are reported, with what keeps more of them
@@ -1505,7 +1558,68 @@ def _snappy_layers(ask: Ask, text: str, wall_cell_m: float | None) -> str:
             ask.rows.get(ask.rid("layers:first_height") or ask.rid("layers:y_plus") or "", {}).update(note=thin)
             if not ask.layer_note:
                 ask.layer_note = thin
+    if bridged is not None:
+        _say_bridge(ask, bridged, g, float(wall_cell_m or 0.0))
     return out
+
+
+#: CFDREQ-9: the cell determinant snappyHexMesh checks is about this times (thickness / width)^2 for a flat cell, so a
+#: layer cell is "bad" by its flatness alone - a 0.022 mm layer under 4.4 mm cells reads 0.0007, under our 0.001 bar
+#: (job f4019933: every wall face's layers taken back for it, 633,244 faces)
+FLAT_CELL_DETERMINANT = 27.0
+#: the lowest the layer stage's determinant bar goes for a thin first layer (cells still have positive volume)
+LAYER_DETERMINANT_FLOOR = 1e-6
+
+
+def _layer_determinant(ask: Ask, text: str, thinnest: float, wall_cell_m: float) -> str:
+    """CFDREQ-9: the layer stage's determinant bar (meshQualityControls/relaxed minDeterminant) set under what the
+    thinnest layer cell reads - for a cell as flat as the asked first layer the check only measures flatness, which
+    is what a thin layer is. Faces up to twice the wall cell wide and half of that as margin; never above ours, never
+    with a determinant limit of the user's (theirs holds), and unchanged when the layers clear our bar already."""
+    if ask.limit("determinant") is not None or thinnest <= 0 or wall_cell_m <= 0:
+        return text
+    ours = _num(text, "minDeterminant")
+    m = re.search(r"relaxed\s*\{[^}]*\}", text)
+    if ours is None or m is None:
+        return text
+    reads = FLAT_CELL_DETERMINANT * (thinnest / (2.0 * wall_cell_m)) ** 2
+    if reads >= 2.0 * ours:
+        return text
+    want = max(LAYER_DETERMINANT_FLOOR, min(ours, 0.5 * reads))
+    block = m.group(0)
+    if re.search(r"\bminDeterminant\s+", block):
+        block = _sub(block, "minDeterminant", f"{want:.3g}")
+    else:
+        block = re.sub(r"relaxed\s*\{", f"relaxed {{ minDeterminant {want:.3g};", block, count=1)
+    return text[:m.start()] + block + text[m.end():]
+
+
+def _say_bridge(ask: Ask, bridged: tuple, g: float, wall_cell_m: float) -> None:
+    """CFDREQ-9 in the rows' words: how many layers the stack got and why, and - when the count could not fill it
+    from the height asked - the first layer built and the y+ it gives."""
+    n0, n, asked, built, stack = bridged
+    how = (f"{n} layers (not our usual {n0}), each {MR._g(g)} times the one under it, so the stack fills the "
+           f"{_mm(stack)} our plan gives the wall: a first layer {int(wall_cell_m / asked):,} times thinner than the "
+           f"{_mm(wall_cell_m)} wall cells is not kept with only {n0}")
+    field = "layers:y_plus" if ask.first_m is None and ask.y_plus is not None else "layers:first_height"
+    rid = ask.rid(field)
+    if built <= asked * (1 + 1e-6):
+        row = ask.rows.get(rid or "")
+        if row is not None:
+            row["built"] = f"{row['built']}; {how}"
+            row["layers"] = n
+        ask.layer_note = ask.layer_note or how
+        return
+    yp = ask.y_plus
+    if field == "layers:y_plus" and yp is not None:
+        got = f"y+ about {MR._g(float(yp) * built / asked)}, not {MR._g(float(yp))}"
+    else:
+        got = f"not the {_mm(asked)} asked"
+    ask.nearest(field, f"first layer {_mm(built)} high ({got}): {n} layers are the most this mesh takes "
+                       f"(each {MR._g(g)} times the one under it), and from a thinner first layer they would not "
+                       f"fill the {_mm(stack)} stack our plan gives the wall, which is how layers that thin are kept",
+                first_m=float(f"{built:.4g}"), asked_m=float(f"{asked:.4g}"), layers=n)
+    ask.layer_note = ask.layer_note or f"{n} layers from a first layer {_mm(built)} high"
 
 
 # #
