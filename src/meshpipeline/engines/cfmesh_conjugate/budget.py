@@ -317,7 +317,7 @@ def refuse_for_return(cells: int, *, cap_bytes: int) -> str:
     return (f"this mesh cannot be sent home: about {int(cells):,} cells is roughly {want:.1f} GiB "
             f"of archive against a {cap:.1f} GiB ceiling. The mesh would build; it is the journey "
             "back that does not fit. That ceiling is CELL_HARD_LIMIT's worth of mesh "
-            "(adapters/mesh_execution/cloud_run_client.result_extraction_limits sizes it from the "
+            "(sandbox/result_limits.result_extraction_limits sizes it from the "
             "budget, and will not believe a cell count past twice it), so the budget is what "
             "moves it - not the generic archive ceiling, which is only a floor under this.")
 

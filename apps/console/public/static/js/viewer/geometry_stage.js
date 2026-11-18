@@ -96,12 +96,35 @@ function leadHtml(p) {
     sticker, then proceed: the questions that follow skip everything confirmed here.</p>`;
 }
 
+/** THE STAGE'S BOX: the panel on one side, the part's canvas on the other with the up-axis
+ *  picker, Fit, and the axes that turn with the part. Written once because every way in draws the
+ *  same box and only the panel's contents differ. */
+function stageBox(sessionId, p, panelHtml) {
+  const id = "gstage-" + sessionId;
+  document.getElementById(id)?.remove();
+  const box = document.createElement("div"); box.className = "viewer gc-stage"; box.id = id;
+  box.innerHTML = `<div class="v-bar gc-panel">${panelHtml}</div>
+    <div class="v-canvas gc-canvas" id="gs-canvas-${sessionId}">
+      <div class="v-loading" id="gs-load-${sessionId}"><div>Loading the part…</div></div>
+      <div class="v-tools">${upSelectHtml("gs-up-" + sessionId, savedUp("session", sessionId) || (isUpAxis(p.up_axis) ? p.up_axis : "+z"))}<button class="v-btn v-tool" id="gs-fit-${sessionId}" type="button" title="Frame the whole part">Fit</button></div>
+      <svg class="gc-axes" viewBox="0 0 84 84" aria-hidden="true">
+        ${["x", "y", "z"].map((k) => `<line class="ax ax-${k}" x1="42" y1="42" x2="42" y2="42"/><text class="ax-l ax-${k}" x="42" y="42">${k.toUpperCase()}</text>`).join("")}
+      </svg>
+    </div>`;
+  return box;
+}
+
+/* WHAT STANDS WHERE THE FORM WILL BE, while the chat has not yet said what the mesh is for. */
+const WAITING_NOTE = `<div class="gc-note">Say in the chat what this mesh is for and the rest of
+  the check opens here, with the one form to confirm it on.</div>`;
+
 /** Open the check as a stage. `d` is the check the API served (its `proposal` is what is shown;
  *  `named: false` opens the stage with the measuring step's labels under a banner that says what
  *  is happening, and `update` brings the model's when they arrive), `confirm(body)` records the
  *  answer, `opts.retry(step)` runs a step of the check again and resolves to the check as it then
  *  stands. `opts.fallback()` is called instead when the stage cannot be drawn - no skin, no
- *  WebGL - so the user still gets the card. */
+ *  WebGL - so the user still gets the card, EXCEPT while `route` is "": which form the card would
+ *  carry is exactly what is not settled then, and the caller tries again once it is. */
 export async function openGeometryStage(sessionId, d, confirm, opts) {
   opts = opts || {};
   // A WHOLE THERMAL MODEL (an ECXML upload) is shown as the file's own model, not as a part with
@@ -113,27 +136,48 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
   const p = d.proposal || {};
   // what the check proposed, kept apart from the form the user edits: Proceed says back what changed
   let served = servedProposal(null, p);
-  const id = "gstage-" + sessionId;
-  document.getElementById(id)?.remove();
-  const box = document.createElement("div"); box.className = "viewer gc-stage"; box.id = id;
-  box.innerHTML = `<div class="v-bar gc-panel">
+  /* THE PART OPENS ON ITS OWN AND THE FORM IS WHAT WAITS. `route` is the empty string the server
+     sends until the user's first answer settles what the mesh is for (application/
+     fea_check.stage_route), and WHICH form a part is answered on depends on it - an FEA part must
+     never be shown the flow form and its stickers. The console used to wait for the route before
+     it opened anything at all, so a customer uploaded their CAD and then saw chat text and a
+     progress line for one whole turn, at the moment of highest doubt about whether their file had
+     been read. So the stage opens as soon as there is a skin, with a note where its form will be,
+     and `growForm` builds the form in place the moment the route lands: ONE stage and ONE scene for
+     the session. A payload with no `route` key at all is an already-routed flow check, as every
+     caller of this function has always passed.
+
+     AT `ready` THE ROUTE IS AS SETTLED AS IT WILL EVER GET, so there is nothing left to wait for
+     and the form is built at once. The route can stay "" for good: purpose_map.question_for
+     returns "" once the one purpose question has been ASKED, not only once it is settled
+     (purpose_map.py:716), and intake/message.py:543 queues the naming on that - so a customer who
+     answers "not sure" has their part named and the check reach `ready` while stage_route still
+     answers "" (fea_check.py:39). The composer's watch ENDS on that poll (`if (!waitingFull)
+     return;`), so whatever is on screen then is final, and a waiting note that says "say in the
+     chat what this mesh is for" is a dead end: nothing is left to grow the form.
+     MEASURED in Chrome against clean HEAD, the composer driven from a real upload, status ready
+     with route "": HEAD showed the form - 2 opening rows and a working Proceed - on a stage that
+     drew, and the same form as a CARD where it could not. Without this, the tree showed the
+     waiting note with 0 rows and 0 Proceed on the drawing, and NOTHING AT ALL where it could not
+     draw (0 cards: the fallback below is gated on this same formKind).
+     An FEA part never reaches this line - openFeaStage is taken on `d.fea` above - so the gate's
+     real purpose, never a flow form on an FEA part, is kept for the whole scouted phase, which is
+     the only phase in which the route can still land. `flow` is also the server's own default for
+     anything that is not FEA (fea_check.stage_route). */
+  let formKind = d.route === "" && d.status !== "ready" ? "" : "flow";
+  const box = stageBox(sessionId, p, `
       <div class="v-row v-titlerow"><b class="v-title">Geometry check</b><span class="v-meta">what Hexera sees</span></div>
       <div class="gc-banner" hidden><span class="gc-spin" aria-hidden="true"></span><span class="gc-banner-text"></span><span class="gc-banner-act"></span></div>
-      <div class="gc-lead">${leadHtml(p)}</div>
-      <div class="gc-form">${formHtml(p)}</div>
-    </div>
-    <div class="v-canvas gc-canvas" id="gs-canvas-${sessionId}">
-      <div class="v-loading" id="gs-load-${sessionId}"><div>Loading the part…</div></div>
-      <div class="v-tools">${upSelectHtml("gs-up-" + sessionId, savedUp("session", sessionId) || (isUpAxis(p.up_axis) ? p.up_axis : "+z"))}<button class="v-btn v-tool" id="gs-fit-${sessionId}" type="button" title="Frame the whole part">Fit</button></div>
-      <svg class="gc-axes" viewBox="0 0 84 84" aria-hidden="true">
-        ${["x", "y", "z"].map((k) => `<line class="ax ax-${k}" x1="42" y1="42" x2="42" y2="42"/><text class="ax-l ax-${k}" x="42" y="42">${k.toUpperCase()}</text>`).join("")}
-      </svg>
-    </div>`;
+      <div class="gc-lead">${formKind ? leadHtml(p) : waitingLeadHtml(p)}</div>
+      <div class="gc-form">${formKind ? formHtml(p) : WAITING_NOTE}</div>`);
+  if (!formKind) box.classList.add("gc-waiting");
   const release = takeOver(box, opts.anchorEl);
   const panel = box.querySelector(".gc-panel");
   const form = panel.querySelector(".gc-form");
-  applyFlow(form); bindUnit(panel, p); bindAxis(form, p); noteDrawn(form);
+  if (formKind) { applyFlow(form); bindUnit(panel, p); bindAxis(form, p); noteDrawn(form); }
   const banner = panel.querySelector(".gc-banner");
+  // the FEA panel's own follower, set by `growForm` if the route lands as "fea" (feaPanel)
+  let feaFollow = null;
   /* THE FORM IS NEVER LOCKED. The user can fix the measuring step's labels and proceed at any
      point; the banner says what is happening around them - whether the file said its unit (a
      triangle file carries none; the unit box beside the sizes is where to say, or the chat),
@@ -183,7 +227,8 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
     clearTimeout(stallTimer);
     stallTimer = setTimeout(() => { if (!naming) return; naming = false; stalled = true; showState(); }, STALL_MS);
   }
-  if (d.named === false) { naming = !!d.naming_requested; noteAsked(d); showState(); }
+  // the banner's words are about the openings' names, so it waits for the form that holds them
+  if (formKind && d.named === false) { naming = !!d.naming_requested; noteAsked(d); showState(); }
 
   let scene = null;
   try {
@@ -195,12 +240,20 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
     // the stage is a better way to answer the same form, never the only way
     console.warn("geometry stage unavailable, showing the card instead:", e && e.message);
     release();
-    if (opts.fallback) opts.fallback();
+    // NO CARD WHILE THE ROUTE CAN STILL LAND. The card is a form too, and WHICH form is exactly
+    // what is not known yet - a flow card on an FEA part is the wrongness the route gate exists
+    // to prevent - so the composer tries the stage once more when the route lands, and once more
+    // at `ready`, which is what gives the card its pictures. It is the SAME formKind the form
+    // above is built from, so a check that has reached `ready` with no route gets its card here:
+    // it is the last poll of the watch, and suppressing the card there gave the customer nothing
+    // at all (measured 0 cards against HEAD's 1, with its 2 rows and a pressable Proceed).
+    if (formKind && opts.fallback) opts.fallback();
     return null;
   }
 
   function bindProceed() {
     const btn = form.querySelector(".gc-proceed"), hint = form.querySelector(".gc-hint");
+    if (!btn) return;          // the waiting note stands where the form will be: nothing to press
     btn.onclick = async () => {
       // an opening placed off any measured face has no size until the user types one; the
       // confirm never receives a mouth of no size
@@ -233,12 +286,88 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
   }
   bindProceed();
 
+  // the drawing the server stored is re-fetched when the full reading has replaced it (skinFollower)
+  const followSkin = skinFollower(sessionId, d, () => scene);
+
+  /* THE FORM IS BUILT WHERE THE WAITING NOTE STANDS, the moment the route lands. The stage and its
+     scene are not touched: the part the user is already turning stays on the page, and so does
+     anything they have typed. A stage REBUILT on every route change lost a typed opening name and
+     role outright, because `route` is a pure function of ALL the user's messages (purpose_map.
+     reading_for joins every user text) - so "and I want the stress in the bracket too", typed while
+     a slow naming was still running, re-read every message, flipped the route and took the form
+     away mid-answer. update() is documented not to move the form for precisely that reason.
+
+     WHICH form is what the route decides, and that is the gate's real purpose kept: an FEA part
+     gets the FEA panel, never the flow form and its stickers. A thermal model is not a case here -
+     its own file decides it (fea_check.stage_route reads check_mode off the stored record, which
+     the scout writes before any skin exists), so a thermal check's route is "thermal" on the first
+     poll that could open a stage at all, and it opened on the thermal stage. */
+  function growForm(d2) {
+    const want = d2.fea ? "fea" : String(d2.route || "");
+    if (want !== "fea" && want !== "flow") return;        // still unsettled; thermal never lands here
+    formKind = want;
+    box.classList.remove("gc-waiting");
+    /* THE FORM IS BUILT FROM THE PAYLOAD THAT CARRIED THE ROUTE, not from the one before it. `p`
+       was last assigned by update() on the previous UNROUTED poll, and the FEA panel's own
+       follower moves the unit, the bodies and the clean check but NOT the size - so a panel built
+       from `p` showed a stale size under its own question, "Is this your part and are the units
+       right?", and readFeaForm sends p.size_mm and p.scale_to_m on Proceed (render/fea_form.js
+       :268). MEASURED in Chrome: a stage opened on a preview proposal of 1000x500x500, then one
+       update carrying route fea AND a proposal of 2000x900x900, read "1000 x 500 x 500 mm" and
+       CONFIRMED size_mm [1000, 500, 500] - beside a bodies line of 3, which the follower does
+       move. The flow branch below has always done this; it is the same line, where both branches
+       reach it. */
+    Object.assign(p, d2.proposal || {});
+    if (formKind === "fea") {
+      clearTimeout(stallTimer);              // an FEA part has no openings, so no naming to wait on
+      showBanner("");
+      feaFollow = feaPanel(box, panel, d2.fea || {}, p,
+        { confirm, done: () => { scene.stop(); release(); }, scene: () => scene });
+      scene.rebind();       // the panel's own Measure button; it holds no rows, so still no stickers
+      /* THE MARKS GO ON THE PART, AND THE PANEL'S ROWS ARE BOUND TO THEM. feaPanel sets
+         `p.hot_spots` from the measurement it was handed and initScene draws them from it - but on
+         THIS way in the scene was built before the panel existed, and rebind() touches neither the
+         marks nor the rows. The panel's own follower will not do it either when the payload that
+         carried the route ALSO carried the measurement: followMeasure compares the `data-state`
+         feaPanelHtml has just written from that same payload (render/fea_form.js:125, :207), so it
+         reports no change. And that is the ORDINARY ordering, not a rare one - the naming asks no
+         model for an FEA part (application/geometry_check.py:1768), so it is fast and its
+         measurement lands on the poll the route does. MEASURED in Chrome: route and measurement
+         together gave spots [] and 0 marks against 2 hot-spot rows in the panel, and pointing at a
+         row lit nothing; openFeaStage, which builds the panel BEFORE the scene, gave [h1, h2].
+         This is that same setSpots - the one the follower calls and the one initScene calls -
+         reached from the one way in that could not get to it. */
+      scene.setSpots(p.hot_spots || []);
+      return;
+    }
+    // read fresh: this form was built from THIS payload, not from the one the stage opened on, so
+    // whether the quick drawing is still standing is what the payload in hand says
+    previewShown = d2.preview === "running";
+    panel.querySelector(".gc-lead").innerHTML = leadHtml(p);
+    form.innerHTML = formHtml(p);
+    applyFlow(form); bindUnit(panel, p); bindAxis(form, p); noteDrawn(form); bindProceed(); scene.rebind();
+    shown = "";
+  }
+
   /** The check moved on. Scouted: only the banner and Proceed follow it. Ready: the form is
    *  re-drawn from the model's proposal and the banner goes. Failed: the naming gave up, or
    *  never answered - the measuring step's labels stand, and the naming can be run again from
-   *  here. Positions and sizes are the code's and do not move; the stickers stay where they are. */
+   *  here. Positions and sizes are the code's and do not move; the stickers stay where they are.
+   *  The drawing itself is the one thing that can change under it (followSkin) - and the form
+   *  itself arrives once (growForm), when the route settles which form it is. */
   function update(d2) {
     if (!d2) return;
+    followSkin(d2);
+    if (!formKind) growForm(d2);
+    if (!formKind) {
+      // nothing to answer yet: the part's own lead line is all there is to follow
+      if (d2.proposal) {
+        Object.assign(p, d2.proposal);
+        panel.querySelector(".gc-lead").innerHTML = waitingLeadHtml(p);
+      }
+      return;
+    }
+    if (formKind === "fea") { feaFollow(d2); return; }
     unitNeeded = !!d2.unit_needed;
     const q = d2.proposal || {};
     if (d2.proposal) served = servedProposal(served, d2.proposal);
@@ -338,7 +467,65 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
     scene.refresh();
   }
 
-  return { release: () => { clearTimeout(stallTimer); scene.stop(); release(); }, update, isNaming: () => naming };
+  /* `hasForm` is how the chat tells a stage with something to answer on from the part shown before
+     the route landed: a check that fails under the latter is, to the chat, a check with no stage,
+     so the box is released rather than told to go and press a Proceed that is not there. */
+  return { release: () => { clearTimeout(stallTimer); scene.stop(); release(); }, update,
+           hasForm: () => !!formKind, isNaming: () => naming };
+}
+
+/** THE DRAWING CHANGES UNDER THE STAGE, ONCE. A big STEP - the normal semiconductor case - always
+ *  opens the stage on the PREVIEW, the welded lump stored within seconds of the upload so that
+ *  something is on screen; the full reading then replaces the stored skin with the file's own named
+ *  solids. The stage fetched the skin exactly once and `update` never re-fetched, so the fix on the
+ *  server alone would have changed nothing a user sees.
+ *
+ *  THE SIGNAL IS THE POLL'S OWN, no new endpoint and nothing to subscribe to, and it is READ OFF
+ *  EVERY RECORD rather than latched when the stage is built. `preview` says the stored skin is
+ *  still the quick drawing - "running" while the scout is measuring it, "kept" when the full
+ *  reading gave up and the preview IS the answer (geometry_check.kept_preview) - and
+ *  `named_on_preview` says the naming landed on it first and the full reading is still to come. A
+ *  record with none of those is one whose stored skin is the full reading's own.
+ *
+ *  THE BUILD-TIME LATCH WAS THE WHOLE DEFECT, both ways round. It read `d.preview === "running"`
+ *  once, at build, and geometry_check._land_named POPS `preview` from a record it names on the
+ *  preview - so a stage first built in that state (status ready, named_on_preview true, no preview
+ *  key, which is exactly what the measured first customer assembly was in: session fb5e5589, the
+ *  naming landing at 1,022.2 s against a scout that needed 1,303.9 s) was disarmed for good and
+ *  never took the named solids: measured 1 patch, ["skin"], 1 fetch. And since the only disarm test
+ *  was `=== "running"`, `preview: "kept"` FIRED it instead - a whole skin re-download and scene
+ *  rebuild to draw exactly what was already on screen, on the 15.9 MB-class assemblies this path
+ *  exists for, throwing the user's clicks away.
+ *
+ *  `preview_reason` IS THE KEY THAT SURVIVES A KEPT PREVIEW, and reading the absence of the other
+ *  two as the full reading only moved the same defect one poll later. `preview: "kept"` is popped
+ *  exactly as `running` is: _land_named pops `preview` off the result it writes and write_status
+ *  stores that result on its own, merging no old record back (geometry_check.py:148, :1827) - so
+ *  the READY record written over a kept preview has no `preview` key and no `named_on_preview`,
+ *  while the stored skin is still the preview's welded lump, because the full reading never
+ *  finished and never will: kept_preview is what the scout giving up stores. `preview_reason` does
+ *  survive that write, and only a kept-preview lineage ever carries it - merged_onto_full takes its
+ *  keys from the FULL reading (geometry_check.py:1859), which has none. MEASURED on the real
+ *  kept_preview -> store_status -> _land_named chain against a fake store: the ready record's keys
+ *  are facts, named, naming_seconds, pictures, preview_reason, proposal, purpose_text, session_id,
+ *  skin, skin_key, status, vision, written_at, with preview None and named_on_preview None. In
+ *  Chrome, running then kept then that record, the fetch count went 1 -> 1 -> 2 and the scene was
+ *  rebuilt - click index discarded, actors, edges and legend replaced - to draw the identical lump.
+ *
+ *  Returns a function to hand each poll; it fetches at most once and never throws into the caller -
+ *  a fetch that fails leaves the preview's drawing, which is the part, correctly drawn, in one piece. */
+function skinFollower(sessionId, d, scene) {
+  const isFull = (r) => !!r && (r.status === "scouted" || r.status === "ready")
+    && !r.preview && !r.named_on_preview && !r.preview_reason;
+  // what is on screen: the full reading's own solids already, or the quick drawing
+  let drawn = isFull(d);
+  return (d2) => {
+    if (drawn || !isFull(d2)) return;
+    drawn = true;                                       // at most one re-fetch in a session
+    getGeometrySkin(sessionId)
+      .then((surf) => { const s = scene(); if (s && s.setSkin) s.setSkin(surf); })
+      .catch((e) => console.warn("the fuller drawing of the part could not be fetched:", e && e.message));
+  };
 }
 
 /** The names of a thermal model's placed parts beside their colours, in the stage's corner. */
@@ -379,44 +566,52 @@ function initScene(sessionId, box, surf, p) {
   }
 
   /* THE SKIN - shared vertices, smooth normals broken at sharp corners, from the worker; the
-     older soup form still draws, flat */
+     older soup form still draws, flat. Built through a function because the drawing is replaced
+     once in a session: see `setSkin` below. */
   const skins = [];
-  (surf.patches || []).forEach((pt) => {
-    let pts, polys, normals = null;
-    if (pt.polys_b64) { pts = b64f32(pt.points_b64); polys = b64u32(pt.polys_b64);
-      if (pt.normals_b64) normals = b64f32(pt.normals_b64); }
-    else { pts = b64f32(pt.positions_b64); const n = pts.length / 9;
-      polys = new Uint32Array(n * 4);
-      for (let t = 0; t < n; t++) { polys[t * 4] = 3; polys[t * 4 + 1] = t * 3; polys[t * 4 + 2] = t * 3 + 1; polys[t * 4 + 3] = t * 3 + 2; } }
-    const pd = vtk.Common.DataModel.vtkPolyData.newInstance();
-    pd.getPoints().setData(pts, 3); pd.getPolys().setData(polys);
-    if (normals && normals.length === pts.length) {
-      pd.getPointData().setNormals(vtk.Common.Core.vtkDataArray.newInstance({ name: "Normals", values: normals, numberOfComponents: 3 }));
+  let edgeCount = 0, edgeActor = null, legendEl = null, drawnNames = [];
+  function buildSkin(s) {
+    (s.patches || []).forEach((pt) => {
+      let pts, polys, normals = null;
+      if (pt.polys_b64) { pts = b64f32(pt.points_b64); polys = b64u32(pt.polys_b64);
+        if (pt.normals_b64) normals = b64f32(pt.normals_b64); }
+      else { pts = b64f32(pt.positions_b64); const n = pts.length / 9;
+        polys = new Uint32Array(n * 4);
+        for (let t = 0; t < n; t++) { polys[t * 4] = 3; polys[t * 4 + 1] = t * 3; polys[t * 4 + 2] = t * 3 + 1; polys[t * 4 + 3] = t * 3 + 2; } }
+      const pd = vtk.Common.DataModel.vtkPolyData.newInstance();
+      pd.getPoints().setData(pts, 3); pd.getPolys().setData(polys);
+      if (normals && normals.length === pts.length) {
+        pd.getPointData().setNormals(vtk.Common.Core.vtkDataArray.newInstance({ name: "Normals", values: normals, numberOfComponents: 3 }));
+      }
+      const mapper = vtk.Rendering.Core.vtkMapper.newInstance(); mapper.setInputData(pd);
+      const actor = vtk.Rendering.Core.vtkActor.newInstance(); actor.setMapper(mapper); actor.setPickable(true);
+      const pr = actor.getProperty();
+      // a thermal model's placed parts each carry a colour of their own; any other skin is one body
+      const col = Array.isArray(pt.color) && pt.color.length === 3 ? pt.color : BODY;
+      pr.setColor(col[0], col[1], col[2]); pr.setEdgeVisibility(false);
+      pr.setInterpolationToPhong();
+      pr.setAmbient(0.32); pr.setDiffuse(0.76); pr.setSpecular(0.12); pr.setSpecularPower(20);
+      ren.addActor(actor);
+      skins.push({ actor, pd, pts, polys });
+    });
+    drawnNames = (s.patches || []).map((pt) => String(pt.name || ""));
+    /* THE PARTS - the file's own solids, each under its own name and colour: the legend names
+       each one. A thermal model's placed parts have always been drawn this way; a STEP assembly
+       is drawn this way too, from the same payload (cad/solid_parts). */
+    if (s.parts) { legendEl = partsLegend(s.patches || []); host.appendChild(legendEl); }
+    /* THE SHARP EDGES - dark hairlines where faces meet at an angle, and along open rims */
+    edgeCount = 0;
+    if (s.edges && s.edges.lines_b64) {
+      const pd = vtk.Common.DataModel.vtkPolyData.newInstance();
+      pd.getPoints().setData(b64f32(s.edges.points_b64), 3);
+      const lines = b64u32(s.edges.lines_b64); pd.getLines().setData(lines); edgeCount = lines.length / 3;
+      const mp = vtk.Rendering.Core.vtkMapper.newInstance(); mp.setInputData(pd);
+      const ac = vtk.Rendering.Core.vtkActor.newInstance(); ac.setMapper(mp); ac.setPickable(false);
+      const pp = ac.getProperty(); pp.setColor(...EDGE); pp.setLineWidth(1); pp.setLighting(false); pp.setOpacity(0.9);
+      ren.addActor(ac); edgeActor = ac;
     }
-    const mapper = vtk.Rendering.Core.vtkMapper.newInstance(); mapper.setInputData(pd);
-    const actor = vtk.Rendering.Core.vtkActor.newInstance(); actor.setMapper(mapper); actor.setPickable(true);
-    const pr = actor.getProperty();
-    // a thermal model's placed parts each carry a colour of their own; any other skin is one body
-    const col = Array.isArray(pt.color) && pt.color.length === 3 ? pt.color : BODY;
-    pr.setColor(col[0], col[1], col[2]); pr.setEdgeVisibility(false);
-    pr.setInterpolationToPhong();
-    pr.setAmbient(0.32); pr.setDiffuse(0.76); pr.setSpecular(0.12); pr.setSpecularPower(20);
-    ren.addActor(actor);
-    skins.push({ actor, pd, pts, polys });
-  });
-  /* THE PARTS - a thermal model drawn as its placed parts: the legend names each colour */
-  if (surf.parts) host.appendChild(partsLegend(surf.patches || []));
-  /* THE SHARP EDGES - dark hairlines where faces meet at an angle, and along open rims */
-  let edgeCount = 0;
-  if (surf.edges && surf.edges.lines_b64) {
-    const pd = vtk.Common.DataModel.vtkPolyData.newInstance();
-    pd.getPoints().setData(b64f32(surf.edges.points_b64), 3);
-    const lines = b64u32(surf.edges.lines_b64); pd.getLines().setData(lines); edgeCount = lines.length / 3;
-    const mp = vtk.Rendering.Core.vtkMapper.newInstance(); mp.setInputData(pd);
-    const ac = vtk.Rendering.Core.vtkActor.newInstance(); ac.setMapper(mp); ac.setPickable(false);
-    const pp = ac.getProperty(); pp.setColor(...EDGE); pp.setLineWidth(1); pp.setLighting(false); pp.setOpacity(0.9);
-    ren.addActor(ac);
   }
+  buildSkin(surf);
   const cam = ren.getActiveCamera();
   cam.azimuth(45); cam.elevation(25);
   ren.resetCamera(); rw.render();
@@ -464,7 +659,10 @@ function initScene(sessionId, box, surf, p) {
   const pins = [];
   let sel = null;
   const panel = box.querySelector(".gc-panel");
-  const form = panel.querySelector(".gc-form");
+  /* READ AGAIN, NOT HELD FOR GOOD (see `rebind`): the whole panel is rewritten when the route lands
+     as "fea" and the FEA panel is built in place, so a reference taken at the stage's first draw
+     would go on answering about a detached node. */
+  let form = panel.querySelector(".gc-form");
   function centreOf(o) {
     return o.centroid_m && o.centroid_m.length === 3 ? o.centroid_m : (o.centroid_mm || [0, 0, 0]).map((v) => v / 1000);
   }
@@ -836,8 +1034,11 @@ function initScene(sessionId, box, surf, p) {
     if (ok) { measureLabel.style.left = (nd[0] * rect.width) + "px"; measureLabel.style.top = ((1 - nd[1]) * rect.height) + "px"; }
   }
 
-  /* the form is re-drawn when the model's labels arrive, so its controls are re-bound then */
+  /* the form is re-drawn when the model's labels arrive, and BUILT where a waiting note stood once
+     the route lands, so its controls are re-bound then - and the section itself is read again,
+     because the FEA panel replaces the whole panel rather than the form's contents */
   function rebind() {
+    form = panel.querySelector(".gc-form") || form;
     rows().forEach((tr) => {
       const n = tr.querySelector(".gc-n"); if (n) { n.title = "click to look into this opening"; n.onclick = () => look(Number(tr.dataset.id)); }
       const x = tr.querySelector(".gc-x"); if (x) x.onclick = () => remove(Number(tr.dataset.id));
@@ -967,9 +1168,33 @@ function initScene(sessionId, box, surf, p) {
 
   setRenderScale(); iso();
 
-  /* support/debug hook - the browser tier drives the stage through it, without pixel picking */
+  /** THE SAME PART, DRAWN BETTER. A big STEP opens the stage on the quick preview, whose skin is
+   *  one welded lump; the full reading replaces the stored skin with the file's own named solids
+   *  (geometry_check._parts_skin), and the stage fetched the skin exactly ONCE - so a six-solid
+   *  cold plate stayed one grey shape for the whole session, which is the first thing a
+   *  semiconductor customer checks. This swaps the drawing in place.
+   *
+   *  The camera, the stickers and the form do not move: it is the same part at the same
+   *  tessellation (measured on a three-box STEP: 36 triangles both ways), so the bounds the view
+   *  was framed on and the sticker radius taken from them still hold. Only the click index is
+   *  thrown away, because it is built from the triangles. */
+  function setSkin(s) {
+    if (!s || !(s.patches || []).length) return;
+    skins.splice(0).forEach((k) => ren.removeActor(k.actor));
+    if (edgeActor) { ren.removeActor(edgeActor); edgeActor = null; }
+    if (legendEl) { legendEl.remove(); legendEl = null; }
+    clicks = null;
+    buildSkin(s);
+    rw.render();
+  }
+
+  /* support/debug hook - the browser tier drives the stage through it, without pixel picking.
+     CLEARED BY IDENTITY: `stop()` removes this key only while it is still this scene's own hook, so
+     a scene stopped after another has taken the key cannot delete the live one's. One session now
+     opens one stage (composer.mountStage) and one scene, so nothing is expected to share the key -
+     but an unconditional delete would be a defect waiting for the next thing that does. */
   window._vdbg = window._vdbg || {};
-  window._vdbg["gstage:" + sessionId] = {
+  const hook = {
     pins: () => pins.length, spots: () => spots.map((s) => s.id), selected: () => sel, select, look, diag, add, addAt, rayAt, remove, iso,
     tracing: () => (trace ? trace.length : null), adding: () => addMode,
     measuring: () => measuring, measured: () => measuredNow(), measureAt, screenOf,
@@ -980,11 +1205,35 @@ function initScene(sessionId, box, surf, p) {
     smooth: () => skins.some((s) => !!s.pd.getPointData().getNormals()),
     upAxis: () => upAxis, setUp: (a) => { if (upSel) { upSel.value = a; upSel.onchange(); } },
     render: () => rw.render(),
+    // what the part is drawn as now: one body, or the file's own named solids
+    patches: () => skins.length, partNames: () => drawnNames.slice(),
   };
+  window._vdbg["gstage:" + sessionId] = hook;
   return {
-    stop: () => { alive = false; ro.disconnect(); clearDecor(); clearMeasure(); document.removeEventListener("keydown", onKey); delete window._vdbg["gstage:" + sessionId]; },
-    rebind, refresh: refreshExternal, setSpots,
+    stop: () => {
+      alive = false; ro.disconnect(); clearDecor(); clearMeasure();
+      document.removeEventListener("keydown", onKey);
+      if (window._vdbg["gstage:" + sessionId] === hook) delete window._vdbg["gstage:" + sessionId];
+      /* THE RENDER WINDOW IS TORN DOWN WITH THE SCENE: stop() used to leave vtk.js's whole object
+         graph alive behind a removed box. It does NOT hand the browser's context back - MEASURED in
+         Chrome, after both deletes, on the released stage's own canvas: isContextLost() false,
+         getParameter(VERSION) still "WebGL 2.0", createProgram() still succeeds. Only
+         WEBGL_lose_context can release one and nothing in this console does that anywhere, so what
+         holds the count down is that a session opens ONE scene (see the test that counts them, and
+         composer.mountStage). Wrapped because a vtk.js build that cannot free it must not stop a
+         stage from being released. */
+      try { apiRW.delete(); } catch { /* already gone */ }
+      try { grw.delete(); } catch { /* already gone */ }
+    },
+    rebind, refresh: refreshExternal, setSpots, setSkin,
   };
+}
+
+/** The part's name and its size - measured, and true before anything has been asked about it. */
+function waitingLeadHtml(p) {
+  const size = (p.size_mm || []).map((v) => shown(v, p)).join(" x ");
+  return `<div class="gc-part"><b>${esc(p.part || p.part_name || "your part")}</b>${size ? `<span class="gc-size">${esc(size)} <span class="gc-u">${unitOf(p)}</span></span>` : ""}</div>
+    <p>This is your file as Hexera read it. Turn it and check it is the right part.</p>`;
 }
 
 /* ======================================================================================
@@ -998,28 +1247,51 @@ function initScene(sessionId, box, surf, p) {
  * is measured, its thinnest wall and its hot spots (holes, fillets, notches, sharp inside corners)
  * are listed and tagged on the part - shown only, as version 1 refines them all automatically.
  * ====================================================================================== */
-async function openFeaStage(sessionId, d, confirm, opts) {
-  const f = d.fea || {};
+/** THE FEA PANEL, written into the stage's panel and bound, and the update() that follows the
+ *  check on it. ONE DEFINITION, because there are two ways onto it: a part whose route was already
+ *  "fea" when the stage opened, and a part whose stage opened before the route was known and grew
+ *  this panel when "fea" landed. `scene()` gives the live scene rather than the scene - on the
+ *  first way in the panel is bound BEFORE the skin has loaded, so that there is a Proceed to press
+ *  while a big file is still coming down, and there is no scene yet. `done()` runs once the server
+ *  holds the answer. */
+function feaPanel(box, panel, f, p, { confirm, done, scene }) {
   // the scene draws stickers from the proposal's openings: an FEA part has none, but it has the
   // hot spots its measurement found (shown, never edited)
-  const p = { ...(d.proposal || {}), openings: [],
-    hot_spots: [...((f.measure && f.measure.hot_spots) || []), ...interfaceMarks(f.assembly)] };
-  const id = "gstage-" + sessionId;
-  document.getElementById(id)?.remove();
-  const box = document.createElement("div"); box.className = "viewer gc-stage fea-stage"; box.id = id;
-  box.innerHTML = `<div class="v-bar gc-panel fea-panel">${feaPanelHtml(f, p)}</div>
-    <div class="v-canvas gc-canvas" id="gs-canvas-${sessionId}">
-      <div class="v-loading" id="gs-load-${sessionId}"><div>Loading the part…</div></div>
-      <div class="v-tools">${upSelectHtml("gs-up-" + sessionId, savedUp("session", sessionId) || (isUpAxis(p.up_axis) ? p.up_axis : "+z"))}<button class="v-btn v-tool" id="gs-fit-${sessionId}" type="button" title="Frame the whole part">Fit</button></div>
-      <svg class="gc-axes" viewBox="0 0 84 84" aria-hidden="true">
-        ${["x", "y", "z"].map((k) => `<line class="ax ax-${k}" x1="42" y1="42" x2="42" y2="42"/><text class="ax-l ax-${k}" x="42" y="42">${k.toUpperCase()}</text>`).join("")}
-      </svg>
-    </div>`;
+  p.openings = [];
+  p.hot_spots = [...((f.measure && f.measure.hot_spots) || []), ...interfaceMarks(f.assembly)];
+  box.classList.add("fea-stage");
+  panel.classList.add("fea-panel");
+  panel.innerHTML = feaPanelHtml(f, p);
+  bindFeaPanel(panel, f, p, { confirm, done });
+  // a unit settled in the chat reaches an untouched box; nothing else moves
+  return (d2) => {
+    const q = (d2 && d2.proposal) || {};
+    followUnit(panel, p, q.unit, q.unit_basis);
+    // THE MEASUREMENT CAN LAND AFTER THE STAGE OPENED (the check was still naming): its lines and
+    // tags are drawn then
+    const m = d2 && d2.fea && d2.fea.measure;
+    const a = d2 && d2.fea && d2.fea.assembly;
+    // the bodies, the clean check and whether it can go on, when the full reading lands after a
+    // preview opened the stage: Proceed reads the same view (`f`), so a stop found late is shown
+    // with its way on rather than met as a refusal
+    if (d2 && d2.fea) { Object.assign(f, d2.fea); followClean(panel, f); }
+    const moved = (m && followMeasure(panel, m, p, null)) | (a && followAssembly(panel, a));
+    if (moved) {
+      p.hot_spots = [...(((m || f.measure) || {}).hot_spots || []), ...interfaceMarks(a || f.assembly)];
+      const s = scene();
+      if (s) s.setSpots(p.hot_spots);
+    }
+  };
+}
+
+async function openFeaStage(sessionId, d, confirm, opts) {
+  const p = { ...(d.proposal || {}) };
+  const box = stageBox(sessionId, p, "");
   const release = takeOver(box, opts.anchorEl);
-  const panel = box.querySelector(".fea-panel");
+  const panel = box.querySelector(".gc-panel");
   let scene = null, closed = false;
-  bindFeaPanel(panel, f, p, {
-    confirm: (body, edits) => confirm(body, edits),
+  const follow = feaPanel(box, panel, d.fea || {}, p, {
+    confirm, scene: () => scene,
     done: () => { closed = true; if (scene) scene.stop(); release(); },
   });
   try {
@@ -1035,26 +1307,12 @@ async function openFeaStage(sessionId, d, confirm, opts) {
     if (opts.fallback) opts.fallback();
     return null;
   }
+  // an FEA ASSEMBLY is drawn as its solids too, and opens on the preview like any other big file
+  const followSkin = skinFollower(sessionId, d, () => scene);
   return {
     release: () => { if (scene) scene.stop(); release(); },
-    // a unit settled in the chat reaches an untouched box; nothing else moves
-    update: (d2) => {
-      const q = (d2 && d2.proposal) || {};
-      followUnit(panel, p, q.unit, q.unit_basis);
-      // THE MEASUREMENT CAN LAND AFTER THE STAGE OPENED (the check was still naming): its lines and
-      // tags are drawn then
-      const m = d2 && d2.fea && d2.fea.measure;
-      const a = d2 && d2.fea && d2.fea.assembly;
-      // the bodies, the clean check and whether it can go on, when the full reading lands after a
-      // preview opened the stage: Proceed reads the same view (`f`), so a stop found late is shown
-      // with its way on rather than met as a refusal
-      if (d2 && d2.fea) { Object.assign(f, d2.fea); followClean(panel, f); }
-      const moved = (m && followMeasure(panel, m, p, null)) | (a && followAssembly(panel, a));
-      if (moved) {
-        p.hot_spots = [...(((m || f.measure) || {}).hot_spots || []), ...interfaceMarks(a || f.assembly)];
-        if (scene) scene.setSpots(p.hot_spots);
-      }
-    },
+    update: (d2) => { if (!d2) return; followSkin(d2); follow(d2); },
+    hasForm: () => true,
     isNaming: () => false,
   };
 }
@@ -1120,6 +1378,7 @@ async function openThermalStage(sessionId, d, confirm, opts) {
     release: () => { if (scene) scene.stop(); release(); },
     // the file's model does not move while the page waits: nothing to follow
     update: () => {},
+    hasForm: () => true,
     isNaming: () => false,
   };
 }
@@ -1388,9 +1647,11 @@ function initThermalScene(sessionId, box, surf, t, panel) {
 
   setRenderScale(); iso(); paint();
 
-  /* support/debug hook - the browser tier drives the stage through it, without pixel picking */
+  /* support/debug hook - the browser tier drives the stage through it, without pixel picking.
+     Held by identity, as the flow stage's is: a stage replaced by another on the same session must
+     not have the live one's hook deleted out from under it when it is stopped. */
   window._vdbg = window._vdbg || {};
-  window._vdbg["gstage:" + sessionId] = {
+  const hook = {
     thermal: true, parts: () => [...parts.keys()], selected: () => selected, lit: () => (lit ? [...lit] : []),
     select: (r) => { select(r); panel.select(r); },
     opacity: (r) => (parts.get(r) ? parts.get(r).actor.getProperty().getOpacity() : null),
@@ -1406,9 +1667,16 @@ function initThermalScene(sessionId, box, surf, t, panel) {
     probes: () => probes.length, pins: () => 0, outline: () => !!outline,
     iso, frame, cam: () => cam, render: () => rw.render(),
   };
+  window._vdbg["gstage:" + sessionId] = hook;
   return {
     select, hover, frame, probe,
-    stop: () => { alive = false; ro.disconnect(); delete window._vdbg["gstage:" + sessionId]; },
+    stop: () => {
+      alive = false; ro.disconnect();
+      if (window._vdbg["gstage:" + sessionId] === hook) delete window._vdbg["gstage:" + sessionId];
+      // the same object graph, held the same way: a thermal model's scene is a vtk render window too
+      try { apiRW.delete(); } catch { /* already gone */ }
+      try { grw.delete(); } catch { /* already gone */ }
+    },
   };
 }
 

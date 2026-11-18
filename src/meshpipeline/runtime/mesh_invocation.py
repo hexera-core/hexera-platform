@@ -50,3 +50,18 @@ def from_environment(env: dict[str, str] | None = None) -> MeshJobInvocation:
         timeout_seconds=timeout,
         contract=(src.get(MESH_CONTRACT_ENV) or "").strip(),
     )
+
+
+def carried_cell_budget(env: dict[str, str] | None = None) -> int | None:
+    """The submitting side's cell budget as it reached this process, or None.
+
+    HERE RATHER THAN IN THE CONTRACT because this is a per-run container argument, which is what
+    this module is for and why the settings authority lists it among the approved loaders. The
+    submitting side writes it as one more container override beside the timeout (Cloud Run) or one
+    more `-e` and instance-metadata key (GCE); the mesher reads it to price the archive it is about
+    to send home, instead of computing a ceiling the caller does not use. The parse, and the name
+    of the variable, stay in `contracts.mesh_execution` with the rest of that seam.
+    """
+    from meshpipeline.contracts.mesh_execution import RETURN_BUDGET_ENV, parse_cell_budget
+    src = os.environ if env is None else env
+    return parse_cell_budget(src.get(RETURN_BUDGET_ENV))

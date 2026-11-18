@@ -198,6 +198,7 @@ docker run --rm --name mesh \
   -e ENGINE="$(get instance/attributes/engine)" \
   -e TIMEOUT="$(get instance/attributes/timeout)" \
   -e HEXERA_MESH_CONTRACT="$(get instance/attributes/mesh-contract)" \
+  -e HEXERA_RETURN_CELL_BUDGET="$(get instance/attributes/return-cell-budget)" \
   -e TMPDIR=/work -v /mnt/stateful_partition/work:/work \
   "$IMG" python -m meshpipeline.runtime.mesh_runner
 TOKEN=$(get instance/service-accounts/default/token | sed -E 's/.*"access_token":"([^"]+)".*/\1/')
@@ -331,11 +332,23 @@ def instance_body(*, name: str, zone: str, machine: str, image: str, account: st
     from `machine` (cpus_of, the same table a decision's own `cpus` comes from), so a caller that
     knows only the machine type still prices the return on the box it is about to start.
     """
-    from meshpipeline.contracts.mesh_execution import MESH_EXCHANGE_VERSION
+    from meshpipeline.contracts.mesh_execution import (
+        MESH_EXCHANGE_VERSION,
+        submitting_cell_budget,
+    )
     cores = cpus if cpus else cpus_of(machine)
     meta = {"mesh-image": image, "input-uri": input_uri, "output-uri": output_uri, "engine": engine,
             "timeout": str(int(timeout)), "mesh-contract": str(MESH_EXCHANGE_VERSION),
             "startup-script": STARTUP_SCRIPT}
+    # THIS SIDE'S CELL BUDGET, which is the one input `engines/return_scope` is missing when it
+    # prices the archive it is about to send home (contracts/mesh_execution.RETURN_BUDGET_ENV -
+    # job 0ff6f9e5's 283 M-cell plate priced its ceiling 17.7x too small and destroyed a 10.4 GB
+    # fluid interior to fit it). This is the route that plate ran on. Absent when it cannot be
+    # read: `get` then yields nothing, the container sees an empty value, and the mesher computes
+    # its own ceiling exactly as before.
+    _budget = submitting_cell_budget()
+    if _budget is not None:
+        meta["return-cell-budget"] = str(_budget)
     body: dict = {
         "name": name,
         "machineType": f"zones/{zone}/machineTypes/{machine}",

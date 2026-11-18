@@ -5,7 +5,7 @@
 """WHAT RIDES HOME WITH THE MESH.
 
 The mesher's workspace goes back to the caller as one gzip archive, and the caller extracts it
-through the bounded extractor, under `cloud_run_client.result_extraction_limits`: the generic
+through the bounded extractor, under `sandbox/result_limits.result_extraction_limits`: the generic
 512 MiB of sandbox/safe_extract is a FLOOR under that, and the bound is the cell budget's worth
 (800 MB at the default 8 M) or the measured mesh's, whichever is larger. See archive_ceiling. Twelve
 dev-side runs of the verify-5fix sweep built their mesh and then lost it on the way back - 550 MB
@@ -60,36 +60,40 @@ logger = logging.getLogger(__name__)
 
 #: The record of what was left out, beside the mesh.
 RETURN_SCOPE_FILE = "return_scope.json"
-#: The ceiling the CALLER will extract under, carried in the workspace that was submitted.
-#:
-#: WHY IT HAS TO BE CARRIED AND CANNOT BE COMPUTED HERE. `archive_ceiling` works the number out
-#: from `result_extraction_limits`, which is `CELL_HARD_LIMIT` cells at RESULT_BYTES_PER_CELL and
-#: the measured count at RESULT_ARCHIVE_BYTES_PER_MEASURED_CELL, clamped to twice CELL_HARD_LIMIT.
-#: CELL_HARD_LIMIT is `optional_env("CELL_HARD_LIMIT", "8000000")` (settings/policy), and the mesh
-#: VM IS NEVER PASSED IT. So on the VM the whole calculation runs off the 8,000,000 default while
-#: the side that will actually do the extracting runs off the real one, and the two disagree by
-#: whatever the operator set.
-#:
-#: MEASURED, job 0ff6f9e5, 2026-11-16, on a 283,410,955-cell plate:
-#:
-#:     max(536870912, 8e6 x 100, min(283410955, 16e6) x 200) = 3,200,000,000   on the VM
-#:     283410955 x 200                                       = 56,682,191,000  at home
-#:
-#: 17.7 times larger. The VM gave up the 10,366,611,525-byte fluid interior to get under a ceiling
-#: that was never the real one, `return_scope.json` recorded "fits": false because the prune did
-#: not even work, and the 11.4 GB archive was then sent and accepted anyway. The interior was
-#: deleted for nothing, and with it the only artifact the conjugate review can reach a verdict
-#: from.
-#:
-#: NOT FIXED BY CHANGING CELL_HARD_LIMIT, which is a cell budget and a gating bar on seven
-#: engines; raising it to make an archive fit would quietly admit meshes the budget refuses.
-#:
-#: THE WRITER IS THE OTHER HALF OF THIS AND IS NOT IN THIS FILE. Both routes that submit a
-#: workspace to a mesher - adapters/mesh_execution/cloud_run_client and .../gce_vm - have to drop
-#: this file in beside the plan before the workspace is sent, holding the number
-#: `result_extraction_limits` gives on the HOME side. Until they do, this reader finds nothing and
-#: the behaviour is exactly what it is today, which is why it fails safe rather than silently.
-CEILING_FILE = "return_ceiling.json"
+# WHERE THE CEILING COMES FROM (carried_ceiling, below). It is the submitting side's cell budget,
+# carried to this process as a per-run container override - contracts/mesh_execution.
+# RETURN_BUDGET_ENV, which owns both halves of that seam and carries the measurement.
+#
+# WHY IT HAS TO BE CARRIED AND CANNOT BE COMPUTED HERE. `archive_ceiling` works the number out
+# from `result_extraction_limits`, which is `CELL_HARD_LIMIT` cells at RESULT_BYTES_PER_CELL and
+# the measured count at RESULT_ARCHIVE_BYTES_PER_MEASURED_CELL, clamped to twice CELL_HARD_LIMIT.
+# CELL_HARD_LIMIT is `optional_env("CELL_HARD_LIMIT", "8000000")` (settings/policy), and the mesh
+# VM IS NEVER PASSED IT. So on the VM the whole calculation runs off the 8,000,000 default while
+# the side that will actually do the extracting runs off the real one, and the two disagree by
+# whatever the operator set.
+#
+# MEASURED, job 0ff6f9e5, 2026-11-16, on a 283,410,955-cell plate:
+#
+#     max(536870912, 8e6 x 100, min(283410955, 16e6) x 200) = 3,200,000,000   on the VM
+#     283410955 x 200                                       = 56,682,191,000  at home
+#
+# 17.7 times larger. The VM gave up the 10,366,611,525-byte fluid interior to get under a ceiling
+# that was never the real one, `return_scope.json` recorded "fits": false because the prune did
+# not even work, and the 11.4 GB archive was then sent and accepted anyway. The interior was
+# deleted for nothing, and with it the only artifact the conjugate review can reach a verdict
+# from.
+#
+# NOT FIXED BY CHANGING CELL_HARD_LIMIT, which is a cell budget and a gating bar on seven
+# engines; raising it to make an archive fit would quietly admit meshes the budget refuses.
+#
+# IT WAS A FILE IN THE SUBMITTED WORKSPACE AND IS NOT ANY MORE. `return_ceiling.json` was added to
+# the submission tar at archive time, which put a member in the upload that the submission's own
+# payload declaration did not cover - and that declaration is what scopes BOTH the tar and the
+# claim's payload digest, by construction (contracts/mesh_execution.submission_payload_files). The
+# budget is the submitting side's CONFIGURATION rather than part of the case, so it now rides on
+# the channel that side's other per-run configuration already rides on, and the archive is the
+# case plus the facts again.
+
 #: Directories no caller reads: an engine's own scratch (engines/cfmesh/rescue.py).
 SCRATCH_DIRS = ("_rescue",)
 #: Files the delivery can do without, in the order they are given up: the volume exports.
@@ -212,7 +216,7 @@ def archive_ceiling(result: dict | None = None, *, cell_hard_limit: int | None =
     """The ceiling the CALLER will extract this archive under, which is the only one that matters.
 
     NOT `default_limits()`, which is what this read until it was measured. The caller extracts a
-    returned mesh with `cloud_run_client.result_extraction_limits` - "a returned mesh workspace may
+    returned mesh with `sandbox/result_limits.result_extraction_limits` - "a returned mesh workspace may
     be as large as a mesh the cell budget allows" - which is CELL_HARD_LIMIT cells at
     RESULT_BYTES_PER_CELL (800 MB at the default 8 M), and more again when the result document says
     how many cells the mesh HAS (RESULT_ARCHIVE_BYTES_PER_MEASURED_CELL, 200 a cell). The generic
@@ -233,60 +237,52 @@ def archive_ceiling(result: dict | None = None, *, cell_hard_limit: int | None =
     `result` is the engine's own result dict when the caller has one, so the MEASURED cell count
     counts: the mesher knows exactly how many cells it just wrote.
 
-    `cell_hard_limit` is the SUBMITTING side's cell budget when the workspace carried one in
-    (CEILING_FILE). It is the only input to that calculation the mesh VM is never given, and
-    passing it here keeps the formula in one place instead of copying it across the boundary.
+    `cell_hard_limit` is the SUBMITTING side's cell budget when this run was told it
+    (contracts/mesh_execution.RETURN_BUDGET_ENV). It is the only input to that calculation the
+    mesh VM is never given, and passing it here keeps the formula in one place instead of copying
+    it across the boundary.
+
+    THE FORMULA IS NOT THE TRANSPORT'S. This read it out of
+    `adapters/mesh_execution/cloud_run_client`, which is an engine reaching into a concrete
+    adapter to ask what the caller's rules are - the thing
+    tests/unit/hygiene/test_architecture_boundaries forbids. The rule now lives beside the limits
+    it is built from (sandbox/result_limits), which both this side and the transport read.
     """
-    from meshpipeline.adapters.mesh_execution.cloud_run_client import result_extraction_limits
+    from meshpipeline.sandbox.result_limits import result_extraction_limits
     return int(result_extraction_limits(result, cell_hard_limit=cell_hard_limit)
                .max_archive_bytes)
 
 
-def _positive_int(value) -> int | None:
-    try:
-        n = int(value)
-    except (TypeError, ValueError):
-        return None
-    return n if n > 0 else None
+def carried_ceiling(result: dict | None = None) -> int | None:
+    """The extraction ceiling worked out from the budget the submitting side carried in, or None.
 
+    See WHERE THE CEILING COMES FROM, above the constants, for why computing it here from this
+    process's own settings gets the wrong number on the mesh VM - and what that cost job 0ff6f9e5.
 
-def carried_ceiling(workspace, *, result: dict | None = None) -> int | None:
-    """The extraction ceiling the submitting side carried in, or None.
+    WHAT IS CARRIED IS THE BUDGET AND NOT A FINISHED CEILING, and that is the point. The real
+    ceiling is CELL_HARD_LIMIT cells at a rate, OR the mesh's own measured cell count at another
+    rate, whichever is larger - and the second term is only knowable HERE, after the mesh is
+    built. A finished number computed at submission time is the FLOOR of the real one and nothing
+    more: on job 0ff6f9e5 it would have been 800,000,000 against a true 56,682,191,000. So this
+    side finishes the sum by calling the submitting side's own function with the one input it was
+    missing, and there is no second copy of the formula to go stale.
 
-    See CEILING_FILE for why computing it here gets the wrong number on the mesh VM. Returns None
-    for anything that is not a positive integer, so a truncated or hand-edited file falls back to
-    the computed ceiling rather than pruning against nonsense: a ceiling read as 0 would give up
-    every optional file in the workspace, which is the exact damage this exists to stop.
-
-    `cell_hard_limit` IS THE BETTER THING TO CARRY and it is read first. The real ceiling is
-    CELL_HARD_LIMIT cells at a rate, OR the mesh's own measured cell count at another rate,
-    whichever is larger - and the second term is only knowable here, after the mesh is built. A
-    finished number computed at submission time is the FLOOR of the real one and nothing more: on
-    job 0ff6f9e5 it would have been 800,000,000 against a true 56,682,191,000. So when the budget
-    is carried, this side finishes the sum by calling the submitting side's own function with it,
-    and there is no second copy of the formula to go stale. `max_archive_bytes` stays as a floor
-    under that, and as the whole answer for a file that carries only it.
+    None for anything that is not a positive whole number (contracts/mesh_execution reads it that
+    way), so a truncated or hand-set value falls back to the computed ceiling rather than pruning
+    against nonsense: a ceiling read as 0 would give up every optional file in the workspace,
+    which is the exact damage this exists to stop.
     """
-    p = Path(workspace) / CEILING_FILE
+    from meshpipeline.contracts.mesh_execution import RETURN_BUDGET_ENV
+    from meshpipeline.runtime.mesh_invocation import carried_cell_budget
+    budget = carried_cell_budget()
+    if budget is None:
+        return None
     try:
-        raw = json.loads(p.read_text())
-    except (OSError, ValueError):
+        return archive_ceiling(result, cell_hard_limit=budget)
+    except Exception:                     # noqa: BLE001
+        logger.warning("return scope: %s carries a cell budget this side could not price; "
+                       "computing a ceiling instead", RETURN_BUDGET_ENV, exc_info=True)
         return None
-    if not isinstance(raw, dict):
-        return _positive_int(raw)
-    floor = _positive_int(raw.get("max_archive_bytes")) or 0
-    budget = _positive_int(raw.get("cell_hard_limit"))
-    if budget is not None:
-        try:
-            return max(floor, archive_ceiling(result, cell_hard_limit=budget))
-        except Exception:                 # noqa: BLE001
-            logger.warning("return scope: %s carries a cell budget this side could not price; "
-                           "falling back to the ceiling it states", CEILING_FILE, exc_info=True)
-    if not floor:
-        logger.warning("return scope: %s carries %r, which is not a usable ceiling - computing "
-                       "one instead", CEILING_FILE, raw.get("max_archive_bytes"))
-        return None
-    return floor
 
 
 def scope_return(workspace, *, ceiling: int | None = None,
@@ -305,7 +301,7 @@ def scope_return(workspace, *, ceiling: int | None = None,
             removed.append(name + "/")
     # THE CALLER'S NUMBER FIRST, then the one the submitting side carried, then a computed one.
     # An explicit `ceiling=` is a test or a caller that knows better and stays the authority.
-    carried = None if ceiling is not None else carried_ceiling(ws, result=result)
+    carried = None if ceiling is not None else carried_ceiling(result)
     cap = int(ceiling if ceiling is not None else (carried if carried is not None
                                                    else archive_ceiling(result)))
     bar = HEADROOM * cap
@@ -370,10 +366,12 @@ def scope_return(workspace, *, ceiling: int | None = None,
     if carried is not None:
         # WHERE THE CEILING CAME FROM, so a reader never has to guess whether this run pruned
         # against the real number or against the VM's 8,000,000-cell default.
-        record["ceiling_source"] = CEILING_FILE
+        from meshpipeline.contracts.mesh_execution import RETURN_BUDGET_ENV
+        record["ceiling_source"] = RETURN_BUDGET_ENV
     elif ceiling is None:
+        from meshpipeline.contracts.mesh_execution import RETURN_BUDGET_ENV
         record["ceiling_source"] = (
-            f"computed on the mesher's side (no {CEILING_FILE} was carried)")
+            f"computed on the mesher's side (no {RETURN_BUDGET_ENV} was carried)")
     if declined:
         record["prune_declined"] = declined
     if left_out:
@@ -394,7 +392,7 @@ def scope_return(workspace, *, ceiling: int | None = None,
     return record
 
 
-__all__ = ["CEILING_FILE", "FAST_LEVEL", "FAST_TRUST", "HEADROOM", "MEASURE_LEVEL", "OPTIONAL_GLOBS",
+__all__ = ["FAST_LEVEL", "FAST_TRUST", "HEADROOM", "MEASURE_LEVEL", "OPTIONAL_GLOBS",
            "RETURN_SCOPE_FILE", "SCRATCH_DIRS", "archive_ceiling", "carried_ceiling", "compressed_size",
            "cut_bytes", "estimate_archive_bytes", "frame_bytes", "raw_bytes", "scope_return"]
 

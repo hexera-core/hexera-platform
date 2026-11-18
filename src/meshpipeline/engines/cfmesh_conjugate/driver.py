@@ -614,7 +614,11 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     # be given too - and `result_extraction_limits` bounds what it will believe at twice
     # CELL_HARD_LIMIT, which is why a 100M-cell mesh is still refused on an 8M budget. That bound
     # is the real lever and the refusal names it.
-    from meshpipeline.adapters.mesh_execution.cloud_run_client import result_extraction_limits
+    #
+    # Read from sandbox/result_limits and NOT from the Cloud Run transport module, where it used
+    # to be: the ceiling is the submitting side's policy, not something an engine fetches from the
+    # pipe (tests/unit/hygiene/test_architecture_boundaries).
+    from meshpipeline.sandbox.result_limits import result_extraction_limits
 
     # PRICED ON WHAT COMES HOME, which is the LAYERED mesh when layers were asked for. The
     # estimate above is the unlayered one, and on the measured part the layer pass adds 21% to the

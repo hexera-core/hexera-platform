@@ -23,6 +23,14 @@ import { prettyText } from "../core/engineering_text.js";
 
 const SUCCESS = /^Mesh generation completed successfully\.?$/;
 const FAILURE = /^Mesh generation did not complete successfully\.?$/;
+/* A RUN CAN FAIL AND STILL HAND OVER THE MESH. Job 0ff6f9e5 meshed 283,410,955 cells, passed
+ * every gate, and was written down as failed when a 32-bit column refused the 10.6 GB bundle;
+ * the same workspace was delivered afterwards without re-running anything. The row stays failed
+ * because the run really did fail, so neither line above is true of it: "completed successfully"
+ * is not, and "did not complete successfully" is read by a user who is downloading the mesh and
+ * watching the viewer draw it. The backend says both halves in one sentence instead, and that
+ * sentence is written so it is still true if it is ever shown raw. */
+const DELIVERED = /^Mesh generation completed; the run did not\.?$/;
 const BULLET = /^[-*•]\s+(.*)$/;
 const FACT = /^([A-Z][A-Za-z]*(?: [A-Za-z]+){0,3}): (\S.*)$/;
 const IMPORTANT = /^IMPORTANT\s*[-–:]\s*/;
@@ -48,6 +56,7 @@ export function parseOutcome(text) {
     const bullet = t.match(BULLET);
     if (SUCCESS.test(t)) { out.kind = out.kind || "done"; list = null; item = null; continue; }
     if (FAILURE.test(t)) { out.kind = out.kind || "failed"; list = null; item = null; continue; }
+    if (DELIVERED.test(t)) { out.kind = out.kind || "delivered"; list = null; item = null; continue; }
     // A ROW'S OWN DETAIL: anything indented deeper than the row it follows
     if (item && indent >= 4) { item.more.push(bullet ? bullet[1] : t); continue; }
     if (bullet) {
@@ -111,7 +120,14 @@ function detailsHtml(parts, label = "Details") {
   return body ? `<details class="oc-more"><summary>${esc(label)}</summary>${body}</details>` : "";
 }
 
-const HEADLINE = { done: "Your mesh is ready.", failed: "No mesh this time." };
+const HEADLINE = {
+  done: "Your mesh is ready.",
+  failed: "No mesh this time.",
+  // Both halves, in that order, because the mesh is the thing the user came for and the failure
+  // is the thing they will otherwise be confused by. "No mesh this time." over a drawn mesh is
+  // the one reading this kind exists to stop.
+  delivered: "Your mesh is ready, after a failure on our side.",
+};
 
 /** The closing message as HTML. `opts.concerns` marks a delivered mesh with points to weigh. */
 export function outcomeHtml(text, opts = {}) {
@@ -123,8 +139,14 @@ export function outcomeHtml(text, opts = {}) {
     : HEADLINE[o.kind] || "";
   if (head) html += `<p class="oc-head">${esc(head)}</p>`;
   // A FAILED RUN'S PARAGRAPHS ARE ITS POINT - what went wrong and the way forward - so they are
-  // never cut short; a delivered mesh's are the standing wording around the facts, cut to a sentence
-  const whole = o.kind === "failed";
+  // never cut short; a delivered mesh's are the standing wording around the facts, cut to a sentence.
+  // A DELIVERED MESH ON A FAILED RUN SIDES WITH THE FAILED RUN, because its paragraphs are a failed
+  // run's paragraphs: the recorded cause of the failure, then what to do instead of re-running. The
+  // cause is the one line that is carried over verbatim from the record and it can run several
+  // sentences, so cutting it would put the actual failure behind a toggle on the single message
+  // where the user can see a working mesh and has to be told why the run is still marked failed.
+  // Nothing here is standing wording around facts; the facts are the two lines at the end.
+  const whole = o.kind === "failed" || o.kind === "delivered";
   for (const b of o.blocks) {
     if (b.type === "para") {
       const short = whole ? b.text : lead(b.text);

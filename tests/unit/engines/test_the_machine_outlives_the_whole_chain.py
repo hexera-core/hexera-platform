@@ -470,6 +470,18 @@ LATER_STARTUP_LINES = (
     "chmod 1777 /mnt/stateful_partition/work",
 )
 
+#: ...AND WHAT THE RETURN-BUDGET CHANGE ADDED, named the same way rather than normalised away.
+#: The VM is now told the SUBMITTING side's cell budget - one `-e` on the docker run and the
+#: instance metadata key it reads from (contracts/mesh_execution.RETURN_BUDGET_ENV). It is on THIS
+#: route that it mattered: job 0ff6f9e5's 283,410,955-cell plate ran here, priced its return
+#: ceiling at 3,200,000,000 against a real 56,682,191,000 because nothing had told it the budget,
+#: and gave up a 10,366,611,525-byte fluid interior to fit a number that never existed. The two
+#: rows that compare the WHOLE body subtract exactly this and nothing else, and assert it is
+#: there - so a body that moves again fails here until whoever moved it says so.
+RETURN_BUDGET_STARTUP_LINE = (
+    '  -e HEXERA_RETURN_CELL_BUDGET="$(get instance/attributes/return-cell-budget)" \\')
+RETURN_BUDGET_META_KEY = "return-cell-budget"
+
 #: WHERE THE SELF-DELETE BEGINS. Everything from this line to the end of the script is the box
 #: removing itself, and this branch REWROTE it rather than adding to it: the pinned body issues a
 #: bare `curl -sf ... >/dev/null`, and a refused delete therefore said nothing anywhere but
@@ -494,6 +506,13 @@ def _without_later_startup_changes(body: dict, *, added: bool = True) -> dict:
     import copy
 
     out = copy.deepcopy(body)
+    if added:
+        keys = [i["key"] for i in out["metadata"]["items"]]
+        assert RETURN_BUDGET_META_KEY in keys, (
+            "the VM is no longer told the submitting side's cell budget, so its return prices "
+            "itself off the 8,000,000-cell default again")
+        out["metadata"]["items"] = [i for i in out["metadata"]["items"]
+                                    if i["key"] != RETURN_BUDGET_META_KEY]
     for item in out["metadata"]["items"]:
         if item["key"] != "startup-script":
             continue
@@ -508,6 +527,10 @@ def _without_later_startup_changes(body: dict, *, added: bool = True) -> dict:
             end = lines.index(LATER_STARTUP_LINES[-1])
             assert 0 <= start < end, (start, end)
             lines = lines[:start] + lines[end + 1:]
+            assert RETURN_BUDGET_STARTUP_LINE in lines, (
+                "the container is no longer handed the carried budget - the metadata key would "
+                "then be written and never read")
+            lines = [ln for ln in lines if ln != RETURN_BUDGET_STARTUP_LINE]
         item["value"] = "\n".join(lines)
     return out
 

@@ -51,10 +51,6 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-
-from meshpipeline.engines.cfmesh_conjugate import native as N
-from meshpipeline.engines.cfmesh_conjugate.slices import CELL_PIXELS, review_slices
-
 from test_the_mesher_draws_its_own_cuts import (  # noqa: F401
     CELL_M,
     STRIPE_CELLS,
@@ -67,6 +63,9 @@ from test_the_mesher_draws_its_own_cuts import (  # noqa: F401
     _save,
     _striped,
 )
+
+from meshpipeline.engines.cfmesh_conjugate import native as N
+from meshpipeline.engines.cfmesh_conjugate.slices import CELL_PIXELS, review_slices
 
 pv = pytest.importorskip("pyvista")
 

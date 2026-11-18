@@ -213,7 +213,23 @@ async function poll() {
 }
 
 /** The shape the result card is built from - derived here so the live poller and the deep
- *  link cannot disagree about what a finished job looks like. Pure. */
+ *  link cannot disagree about what a finished job looks like. Pure.
+ *
+ *  `outcomeText` IS THE FALLBACK, not the source. A finished run has two copies of its
+ *  closing words and they are not the same thing:
+ *
+ *    job.final_message   re-rendered from the terminal RECORD on every read
+ *                        (api/v1/simulation.py), so it is what is true about the run NOW
+ *    the `closing` event what we SAID at the moment the run ended, kept in the log
+ *
+ *  They diverge the moment anything lands after the ending. Job 0ff6f9e5 failed on a 32-bit
+ *  column, was re-delivered from its own workspace, and its record now says the mesh is
+ *  stored - while its closing event still reads "No mesh this time" and "No downloadable
+ *  mesh deliverable is available", one pane away from three download buttons and a drawn
+ *  283,410,955-cell mesh.
+ *
+ *  The event is NOT rewritten to match. It is a transcript, and a transcript that edits
+ *  itself is worth nothing. The result CARD is not a transcript, so it reads the record. */
 export function terminalResult(job, outcomeText) {
   return {
     pass: job.status === "succeeded",
@@ -225,13 +241,18 @@ export function terminalResult(job, outcomeText) {
     // there, however late the page heard about it - or however long after it reloaded
     createdAt: job.created_at || "",
     endedAt: job.ended_at || "",
-    text: outcomeText,
+    text: job.final_message || outcomeText,
     // `id` lets a Download click ask for a fresh link (render/download.js); `url` is the link
     // signed when this job was read, kept for a middle-click and as the fallback
     files: (job.artifacts || []).map((a) => ({
       id: a.id, type: a.artifact_type, label: a.label, size: a.size_bytes, url: a.download_url,
     })),
     meshAvailable: !!job.mesh_available,
+    // THE EXECUTOR'S OWN PROOF OF VALIDITY, read off the terminal record: every gate it runs
+    // passed, and none failed. A reviewer verdict is ONE proof that a mesh is valid; it is not
+    // the only one, and a run whose review never returned a judgement still has this.
+    executorValidated: !!(job.final_result && job.final_result.executor_success
+                          && !job.final_result.failed_gate),
     verdict: job.reviewer_verdict || "",
     findings: job.reviewer_findings || [],
     reasoning: job.reviewer_reasoning || "",

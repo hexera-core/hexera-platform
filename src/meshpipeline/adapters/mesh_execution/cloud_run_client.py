@@ -25,10 +25,24 @@ from meshpipeline.contracts.mesh_execution import (
     PLATFORM_UPDATING_TAG,
     RC_INFRASTRUCTURE,
     RC_TIMED_OUT,
+    RETURN_BUDGET_ENV,
     RUN_NOT_STARTED_TAG,
     RUN_UNCOLLECTED_TAG,
     SubmissionIndeterminate,
     abandonment_reason,
+    submitting_cell_budget,
+)
+from meshpipeline.sandbox.result_limits import (  # noqa: F401 - re-exported, see below
+    FEA_RESULT_ARCHIVE_BYTES_PER_ELEMENT,
+    FEA_RESULT_FILE_BYTES_PER_ELEMENT,
+    FEA_RESULT_MARGIN,
+    FEA_RESULT_MAX_BYTES,
+    FEA_RESULT_RAW_BYTES_PER_ELEMENT,
+    RESULT_ARCHIVE_BYTES_PER_MEASURED_CELL,
+    RESULT_BYTES_PER_CELL,
+    RESULT_FILE_BYTES_PER_MEASURED_CELL,
+    RESULT_RAW_BYTES_PER_MEASURED_CELL,
+    result_extraction_limits,
 )
 from meshpipeline.settings.env import ConfigurationError
 
@@ -104,65 +118,35 @@ def _tar_dir(path: Path) -> bytes:
         else:
             for f in payload:
                 tf.add(str(f), arcname=f.relative_to(root).as_posix())
-        _add_return_ceiling(tf)
     return buf.getvalue()
 
 
-def _add_return_ceiling(tf) -> None:
-    """Tell the mesher what ceiling THIS side will extract its archive under.
+def return_budget_overrides() -> list[dict]:
+    """The container override that tells the mesher THIS side's cell budget, or [].
 
-    THE READER HAS BEEN THERE SINCE 2026-11-16 AND NOTHING EVER WROTE THE FILE.
-    `engines/return_scope.carried_ceiling` reads it and says why it has to be carried: the ceiling
-    is `result_extraction_limits`, which is CELL_HARD_LIMIT cells at a rate, and CELL_HARD_LIMIT
-    is `optional_env("CELL_HARD_LIMIT", "8000000")` read from THIS side's settings. The mesh VM is
-    never passed it, so on the VM the whole calculation runs off the 8,000,000 default while the
-    side that will do the extracting runs off whatever the operator set.
+    WHY THE MESHER HAS TO BE TOLD, and what it cost not to, is written out once in
+    `contracts/mesh_execution.RETURN_BUDGET_ENV` - in short, `engines/return_scope` prices the
+    archive it is about to send against `result_extraction_limits`, that number is CELL_HARD_LIMIT
+    cells at a rate, and CELL_HARD_LIMIT is read from the SUBMITTING side's settings. Job
+    0ff6f9e5's VM therefore priced a 283 M-cell plate at 3,200,000,000 against a real
+    56,682,191,000 and destroyed its 10.4 GB fluid interior to fit a ceiling that never existed.
 
-    MEASURED, job 0ff6f9e5, 2026-11-16, a 283,410,955-cell plate: the VM worked the ceiling out as
-    3,200,000,000 and gave up the 10,366,611,525-byte fluid interior to get under it; the 11.4 GB
-    archive then went home and was accepted anyway, because the real extractor's bound was
-    56,682,191,000. The interior was destroyed to fit a number that was never the real one.
+    IT RIDES HERE AND NOT IN THE ARCHIVE. It was first written into the submission tar as
+    `return_ceiling.json`. The tar is the case plus the facts the workspace declares - the same
+    enumerator scopes it and the claim's payload digest, so what is uploaded and what identifies
+    the submission are one set by construction (`contracts.mesh_execution.submission_payload_files`,
+    tests/unit/platform/test_submission_payload_scope). A synthesised member put bytes in the
+    upload that the identity never saw. This is this side's CONFIGURATION rather than the case, so
+    it goes where this side's other per-run configuration already goes.
 
-    WHAT IS CARRIED IS THE CELL BUDGET, NOT A FINISHED CEILING, and that is the point. The final
-    number depends on how many cells the mesh HAS, which only the mesher knows when it is done -
-    so carrying one number computed here, before the mesh exists, would hand the VM the 800 MB
-    floor and nothing else. Carrying `cell_hard_limit` lets the VM run the SAME function with the
-    one input it was missing, so there is no second copy of the formula to drift.
+    BOTH ROUTES CARRY IT: the Cloud Run job through `containerOverrides`, a GCE VM through its
+    instance metadata and the same `-e` (adapters/mesh_execution/gce_vm).
 
-    AT ARCHIVE TIME, NOT IN THE WORKSPACE, and that is a boundary decision. The submission's
-    identity is `application/native_submission.workspace_digest`, taken before this executor runs
-    and over the files the payload declares; writing a file into the workspace here would put
-    bytes in the tar that the digest never saw, and re-declaring the payload would change the
-    identity of a submission whose case content did not change. The ceiling is this side's
-    CONFIGURATION, not the case, so it rides beside the case and not in it.
-
-    NON-FATAL. A submission is never lost over this: without the file the mesher computes its own
-    ceiling exactly as it does today, which is the behaviour this is improving on.
+    NON-FATAL. A budget this cannot work out is simply not carried, and the mesher computes its
+    own ceiling exactly as it did before - never a submission lost over a setting.
     """
-    try:
-        # `return_scope` is imported in here and not beside the module's own imports because it
-        # reaches back into this module for `result_extraction_limits`
-        import meshpipeline.settings.policy as polcfg
-        from meshpipeline.engines.return_scope import CEILING_FILE
-        from meshpipeline.sandbox.safe_extract import default_limits
-
-        body = json.dumps({
-            "cell_hard_limit": int(polcfg.CELL_HARD_LIMIT),
-            "max_archive_bytes": int(max(default_limits().max_archive_bytes,
-                                         int(polcfg.CELL_HARD_LIMIT) * RESULT_BYTES_PER_CELL)),
-            "why": ("the ceiling the SUBMITTING side will extract this archive under; "
-                    "cell_hard_limit is the one input result_extraction_limits needs that the "
-                    "mesher is never passed"),
-        }).encode()
-    except Exception:                     # noqa: BLE001
-        logger.warning("could not work out the return ceiling to carry; the mesher will compute "
-                       "its own", exc_info=True)
-        return
-    info = tarfile.TarInfo(CEILING_FILE)
-    info.size = len(body)
-    info.mtime = int(time.time())
-    info.mode = 0o644
-    tf.addfile(info, io.BytesIO(body))
+    budget = submitting_cell_budget()
+    return [] if budget is None else [{"name": RETURN_BUDGET_ENV, "value": str(budget)}]
 
 
 #: Upload transport for the submission archive. Without an explicit chunk size the storage SDK
@@ -341,6 +325,9 @@ def _trigger_job(*, input_uri: str, output_uri: str, engine: str,
         # the exchange contract this worker speaks: a mesh job on another answers "platform
         # updating" instead of misreading the workspace (contracts/mesh_execution)
         {"name": MESH_CONTRACT_ENV, "value": str(MESH_EXCHANGE_VERSION)},
+        # ...and this side's cell budget, which is the one input the mesher needs to price the
+        # archive it sends home against the ceiling this side will open it under
+        *return_budget_overrides(),
     ]}]}}
     try:
         resp = _rq.post(f"https://run.googleapis.com/v2/{name}:run",
@@ -423,147 +410,12 @@ def _timed_out(engine: str, deadline_s: float, operation) -> dict:
                          "time; the mesh is too big or too slow for the budget.")}
 
 
-#: Compressed bytes a returned workspace carries per mesh cell, with margin. Measured: a 7 M-cell
-#: snappy passage came back as 557 MB (80 B a cell, job 3cd77f85), and VMTK's Fluent aorta as
-#: 560 MB (lab, 2026-10-04) - both past the generic 512 MiB extraction ceiling, so meshes the cell
-#: budget allows were built, paid for and lost on the way back.
-RESULT_BYTES_PER_CELL = 100
-#: ...and per cell the RESULT DOCUMENT says the mesh has, measured on what came back: compressed,
-#: the whole workspace; raw, all of it and its largest single file. A 6.7 M-cell cfMesh polyMesh is
-#: 1,236 MB raw (its faces file 699 MB) and 218 MB gzipped (cf_lab tw011_v3); the volume export
-#: beside it is most of the rest - the verify-7fix layered lumens came back at 566-696 MB. Each
-#: with room: these bound a mesh the run has already built and paid for, not a guess.
-RESULT_ARCHIVE_BYTES_PER_MEASURED_CELL = 200
-RESULT_RAW_BYTES_PER_MEASURED_CELL = 800
-#: AN FEA MESH comes home as a quadratic deck AND its Nastran and Ansys files AND gmsh's own mesh
-#: (mesh once, export many): about 1 KB raw an element (SC8UU on dev-areen, 1.5 M elements: .inp
-#: 290 MB, .bdf 405 MB, .cdb about 500 MB). Past the flow-mesh allowance above, a valid mesh of a
-#: few million elements was built and then refused on the way back. When the mesher measured what
-#: it sent (dispatch.returned_bytes) that measurement sizes the limits, with margin; else these.
-FEA_RESULT_ARCHIVE_BYTES_PER_ELEMENT = 700
-FEA_RESULT_RAW_BYTES_PER_ELEMENT = 1600
-FEA_RESULT_FILE_BYTES_PER_ELEMENT = 600
-#: The margin on a measured size, and the ceiling no result document can lift the limits past.
-FEA_RESULT_MARGIN = 1.15
-FEA_RESULT_MAX_BYTES = 48 * 1024 ** 3
-RESULT_FILE_BYTES_PER_MEASURED_CELL = 400
-
-
-def _reported_cells(result: dict | None) -> int:
-    """The cell count a mesh runner puts at the TOP of its result, or 0.
-
-    WHERE THE NUMBER ACTUALLY IS. A live conjugate run on Cloud Run reported
-
-        mesh complete: {"rc": 0, ..., "cells": 6582471, "reproducibility": {...},
-                        "return_scope": {"ceiling_bytes": 800000000,
-                                         "archive_bytes_est": 689484779,
-                                         "left_out": [{"file": "VTK/solid/.../internal.vtu",
-                                                       "bytes": 330346080}]}}
-
-    6,582,471 is the two regions added up (2,520,586 and 4,061,885) and the runner had already
-    put it there. 800,000,000 is CELL_HARD_LIMIT x RESULT_BYTES_PER_CELL - the floor - so the
-    count was never read, and the volume export the reviewer slices was dropped to get under it.
-    At 6,582,471 cells the ceiling is 1,316,494,200 bytes and the whole workspace, export
-    included, is about 791 MB.
-
-    I LOOKED IN TWO PLACES THE RESULT DOES NOT HAVE. `quality.cells` is a single-region engine's
-    shape, and `regions[*].cells` is the conjugate RUNNER's shape - but by the time dispatch hands
-    the result to return_scope it has been flattened, and the live run above is what says so.
-    """
-    if not isinstance(result, dict):
-        return 0
-    try:
-        return max(0, int(result.get("cells") or 0))
-    except (TypeError, ValueError):
-        return 0
-
-
-def _region_cells(result: dict | None) -> int:
-    """The cell count of a result that reports its mesh REGION BY REGION, or 0.
-
-    A conjugate result has no `quality` block at all: the cfmesh_conjugate runner returns
-    {"ok", "problems", "notes", "regions": {"fluid": {"cells": ...}, "solid": {"cells": ...}}},
-    because a two-region mesh has no single set of quality numbers. This reads that shape, and
-    `_reported_cells` reads the shape the result has by the time it reaches return_scope - which
-    is the one that was actually failing. So the archive ceiling fell back to its floor on exactly
-    the engine that produces the biggest workspaces, and a live run said so:
-
-        return scope: The mesh was too large to send back whole within the transfer limit
-        (763 MiB), so the volume export the reviewer slices was left out (330 MB)
-
-    763 MiB is CELL_HARD_LIMIT x RESULT_BYTES_PER_CELL with the count unread. That mesh had
-    6,707,503 cells across its two regions, which at RESULT_ARCHIVE_BYTES_PER_MEASURED_CELL is
-    1,279 MiB - and the 330 MB export is what a conclusive review is built from, so the figure
-    mattered. Same bound as the `quality` path: the count is the remote's word, and the caller
-    clamps it to twice CELL_HARD_LIMIT.
-    """
-    regions = (result or {}).get("regions") if isinstance(result, dict) else None
-    if not isinstance(regions, dict):
-        return 0
-    total = 0
-    for one in regions.values():
-        if not isinstance(one, dict):
-            continue
-        try:
-            total += max(0, int(one.get("cells") or 0))
-        except (TypeError, ValueError):
-            continue
-    return total
-
-
-def result_extraction_limits(result: dict | None = None, *, cell_hard_limit: int | None = None):
-    """The extraction limits for a RETURNED mesh workspace: the generic limits, with the archive
-    ceiling sized from the cell budget - CELL_HARD_LIMIT cells at RESULT_BYTES_PER_CELL (800 MB
-    at the default 8 M) - and, when the remote's result document says how many cells the mesh
-    has, from that count too (the archive, the expanded total and the largest file each at their
-    RESULT_*_PER_MEASURED_CELL). Never below the generic limits; entries, depth, ratio and member
-    types are unchanged.
-
-    `cell_hard_limit` overrides this process's own budget, and exists for ONE caller: the mesh VM,
-    which runs `engines/return_scope` against the budget the submitting side carried in beside the
-    case (`_add_return_ceiling`). Without it that side computes this whole thing off the 8,000,000
-    default while the process that will really do the extracting uses the configured number, and
-    the two disagree by whatever the operator set - measured at 17.7x on job 0ff6f9e5, which cost
-    that run its fluid interior. Omitted everywhere else, which is this process's own budget."""
-    from dataclasses import replace
-
-    import meshpipeline.settings.policy as polcfg
-    from meshpipeline.sandbox.safe_extract import default_limits
-    base = default_limits()
-    hard = int(cell_hard_limit or 0) or int(polcfg.CELL_HARD_LIMIT)
-    by_budget = hard * RESULT_BYTES_PER_CELL
-    q = (result or {}).get("quality") if isinstance(result, dict) else None
-    try:
-        cells = max(0, int((q or {}).get("cells") or 0)) if isinstance(q, dict) else 0
-    except (TypeError, ValueError):
-        cells = 0
-    cells = cells or _reported_cells(result) or _region_cells(result)
-    # the count is the remote's word: bounded, so no document can lift the limits without end
-    cells = min(cells, 2 * hard)
-    archive = max(base.max_archive_bytes, by_budget, cells * RESULT_ARCHIVE_BYTES_PER_MEASURED_CELL)
-    raw = max(base.max_total_uncompressed_bytes, cells * RESULT_RAW_BYTES_PER_MEASURED_CELL)
-    largest = max(base.max_file_bytes, cells * RESULT_FILE_BYTES_PER_MEASURED_CELL)
-    measured = (result or {}).get("returned_bytes") if isinstance(result, dict) else None
-    fea = (isinstance(measured, dict) and bool(measured.get("fea"))) or (
-        isinstance(q, dict) and (str(q.get("quality_bar") or "") == "fea" or isinstance(q.get("fea"), dict)))
-    if fea:
-        # AN FEA MESH IS NEVER LOST TO SIZE (Areen: only a broken mesh fails): its own allowance, and
-        # the mesher's measurement of what it sent when there is one - bounded, so no document can
-        # lift the limits without end
-        archive = max(archive, cells * FEA_RESULT_ARCHIVE_BYTES_PER_ELEMENT)
-        raw = max(raw, cells * FEA_RESULT_RAW_BYTES_PER_ELEMENT)
-        largest = max(largest, cells * FEA_RESULT_FILE_BYTES_PER_ELEMENT)
-        if isinstance(measured, dict):
-            try:
-                m_raw, m_big = int(measured.get("raw") or 0), int(measured.get("largest") or 0)
-            except (TypeError, ValueError):
-                m_raw = m_big = 0
-            raw = max(raw, int(m_raw * FEA_RESULT_MARGIN))
-            archive = max(archive, int(m_raw * FEA_RESULT_MARGIN))      # gzip never grows text much
-            largest = max(largest, int(m_big * FEA_RESULT_MARGIN))
-        archive, raw, largest = (min(v, FEA_RESULT_MAX_BYTES) for v in (archive, raw, largest))
-    return replace(base, max_archive_bytes=archive, max_total_uncompressed_bytes=raw,
-                   max_file_bytes=largest)
+# THE RETURN POLICY LIVES IN sandbox/result_limits NOW, imported at the top of this module and
+# re-exported under the names it has always had here. It is the ceiling the SUBMITTING side opens
+# a returned workspace under, and `engines/return_scope` and `engines/cfmesh_conjugate/driver`
+# have to price against the same number - an engine importing this concrete adapter to get it is
+# the layering violation tests/unit/hygiene/test_architecture_boundaries names. See that module's
+# own text for the measurement that put it there.
 
 
 #: one spelling, owned by the contract the executor's account reads it through

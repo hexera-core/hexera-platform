@@ -50,14 +50,13 @@ import json
 from pathlib import Path
 
 import pytest
+from test_conjugate_row import REPORT, case  # noqa: F401
 
 from meshpipeline.engines.cfmesh_conjugate import finalize as F
 from meshpipeline.engines.cfmesh_conjugate import layers as LY
 from meshpipeline.engines.cfmesh_conjugate import native as N
 from meshpipeline.engines.cfmesh_conjugate.conjugate import FLUID_TO_SOLID
 from meshpipeline.engines.quality_criteria import evaluate
-
-from test_conjugate_row import REPORT, case  # noqa: F401
 
 #: THE REAL PLATE'S OWN LAYER TABLE, transcribed from job 0ff6f9e5's `snappyHexMesh.log`. The
 #: whole log is 37,649 bytes of ten repair iterations; these are the lines `read_layer_log`'s own

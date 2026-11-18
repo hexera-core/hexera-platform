@@ -277,7 +277,16 @@ def review_slices(lo, hi, *, inlet: str = "", outlet: str = "", cell_m: float | 
                        "and nothing has been drawn yet")
     along = next((k for k in range(3) if k not in (flow, thin)), thin)
 
-    zw, zh, zmpp = zoom_window(cell_m or 0.0, width_px=width_px, height_px=height_px)
+    # COERCED ONCE, HERE, and every number the zoom frame publishes comes from this one value.
+    # `cell_m` is Optional because a plan need not carry a fine cell, and the three things the
+    # frame states about itself - the window it was drawn in, the um/px that came out, and the
+    # `feature_m` it was sized from - have to be the SAME length or the frame declares a scale it
+    # was not drawn at, which is the one failure this file exists to prevent. Taking the
+    # conversion out of the three call sites is also what makes the absence provable rather than
+    # assumed: `zoom_window` returns a zero scale for anything that is not a positive length, so
+    # a missing cell leaves `zmpp` at 0.0 and the gate below publishes no zoom at all.
+    cell = float(cell_m or 0.0)
+    zw, zh, zmpp = zoom_window(cell, width_px=width_px, height_px=height_px)
 
     def _cut(name: str, axis: int, label: str, why: str) -> dict:
         origin = list(mid)
@@ -299,20 +308,23 @@ def review_slices(lo, hi, *, inlet: str = "", outlet: str = "", cell_m: float | 
             "metres_per_pixel": whole_mpp,
             "um_per_pixel": round(whole_mpp * 1e6, 4),
         }]
+        # `zmpp` is above zero only when `cell` is a positive length - see `zoom_window`, which
+        # returns a zero scale for everything else - so inside this branch `cell` is the real
+        # planned cell and not the 0.0 a missing one collapses to.
         if zmpp > 0.0:
             frames.append({
                 "scope": "zoom",
                 # SAID AS WHAT IT IS. `cell_m` is the PLANNED cell; this mesh's own cells span
                 # 7.787 um to 678.88 um, a factor of 87, so "the mesh's 25.16 um cell" would be a
                 # claim about the mesh that the mesh does not support.
-                "why_frame": (f"sized so a cell of the PLANNED size ({cell_m * 1e6:.4f} um) is "
+                "why_frame": (f"sized so a cell of the PLANNED size ({cell * 1e6:.4f} um) is "
                               f"{CELL_PIXELS} pixels across, which is what counting cells needs"),
                 "window_m": [zw, zh],
                 "centre_m": [mid[ah], mid[av]],
                 "centre_source": placed_from,
                 "metres_per_pixel": zmpp,
                 "um_per_pixel": round(zmpp * 1e6, 4),
-                "feature_m": float(cell_m),
+                "feature_m": cell,
                 "feature_pixels": CELL_PIXELS,
             })
         return {"name": name, "kind": "slice", "normal": normal, "origin": origin,

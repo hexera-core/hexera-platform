@@ -3956,6 +3956,21 @@
   "roots": []
  },
  {
+  "context": "engines/cfmesh_conjugate/native.py::_render_frame::screenshot#1|NotAPublisher|not-a-publisher|engines/cfmesh_conjugate/native.py::result of pv.Plotter(off_screen=True, window_size=[width_px, height_px])",
+  "path": "engines/cfmesh_conjugate/native.py",
+  "qualname": "_render_frame",
+  "semantic": "screenshot",
+  "method": "screenshot",
+  "ordinal": 1,
+  "receiver": "plotter",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": [
+   "engines/cfmesh_conjugate/native.py::result of pv.Plotter(off_screen=True, window_size=[width_px, height_px])"
+  ]
+ },
+ {
   "context": "engines/cfmesh_conjugate/native.py::_review_aids::error#1|NotAPublisher|not-a-publisher|",
   "path": "engines/cfmesh_conjugate/native.py",
   "qualname": "_review_aids",
@@ -5881,6 +5896,32 @@
   "method": "search",
   "ordinal": 2,
   "receiver": "_LIB_DIRECTIVE",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "sandbox/render_adapter.py::build_backend::error#1|NotAPublisher|not-a-publisher|",
+  "path": "sandbox/render_adapter.py",
+  "qualname": "build_backend",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "sandbox/review_session.py::ArtifactResolver.resolve_cuts::error#1|NotAPublisher|not-a-publisher|",
+  "path": "sandbox/review_session.py",
+  "qualname": "ArtifactResolver.resolve_cuts",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
   "gated_required": false,

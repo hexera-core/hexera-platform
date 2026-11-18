@@ -58,6 +58,93 @@ RUN_UNCOLLECTED_TAG = "[CLOUD_RUN_RESULT_UNCOLLECTED]"
 #: (application/platform_contract has the API <-> worker half, 25 Oct).
 MESH_EXCHANGE_VERSION = 1
 MESH_CONTRACT_ENV = "HEXERA_MESH_CONTRACT"
+
+#: THE SUBMITTING SIDE'S CELL BUDGET, carried to the mesher as one more per-run container
+#: override, beside INPUT_URI / OUTPUT_URI / ENGINE / TIMEOUT / MESH_CONTRACT_ENV.
+#:
+#: WHY ANYTHING IS CARRIED AT ALL. `engines/return_scope` decides, on the MESHER's side, what to
+#: leave out of the workspace so the archive fits the ceiling the CALLER will extract it under.
+#: That ceiling is `sandbox/result_limits.result_extraction_limits`, which is CELL_HARD_LIMIT
+#: cells at a rate - and CELL_HARD_LIMIT is `optional_env("CELL_HARD_LIMIT", "8000000")` read from
+#: the SUBMITTING side's settings, which the mesh VM is never passed. So the VM ran the whole
+#: calculation off the 8,000,000 default while the side that would really do the extracting ran
+#: off whatever the operator had set.
+#:
+#: MEASURED, job 0ff6f9e5, 2026-11-16, on a 283,410,955-cell plate:
+#:
+#:     max(536870912, 8e6 x 100, min(283410955, 16e6) x 200) = 3,200,000,000   on the VM
+#:     283410955 x 200                                       = 56,682,191,000  at home
+#:
+#: 17.7 times larger. The VM gave up the 10,366,611,525-byte fluid interior to get under a ceiling
+#: that was never the real one, its own record says "fits": false because the prune did not even
+#: work, and the 11.4 GB archive was then sent and accepted anyway. The interior was deleted for
+#: nothing, and with it the only artifact the conjugate review can reach a verdict from.
+#:
+#: WHAT IS CARRIED IS THE BUDGET, NOT A FINISHED CEILING. The real number also depends on how many
+#: cells the mesh HAS, which only the mesher knows once it is done; a ceiling computed here, before
+#: the mesh exists, is the 800 MB floor and nothing more. Given the budget the mesher runs the SAME
+#: function with the one input it was missing, so there is no second copy of the formula to drift.
+#:
+#: WHY ON THE INVOCATION CHANNEL AND NOT IN THE WORKSPACE. It was first carried as a file written
+#: into the submission tar at archive time. That tar is the case plus the declared facts and
+#: nothing else: `submission_payload_files` enumerates it, and
+#: `application/native_submission.workspace_digest` hashes exactly what that enumerator returns,
+#: so the uploaded bytes and the submission's identity are one set BY CONSTRUCTION
+#: (tests/unit/platform/test_submission_payload_scope). A synthesised member broke that in both
+#: directions - bytes in the archive the identity never saw, and an identity that would have had
+#: to change whenever an operator changed a setting the case knows nothing about. This is the
+#: submitting side's CONFIGURATION, so it rides where this side's other configuration already
+#: rides: one more container override, like TIMEOUT.
+#:
+#: NON-FATAL EITHER WAY. Without it the mesher computes its own ceiling exactly as it did before,
+#: which is the behaviour this improves on - so a dispatcher that cannot work the number out sends
+#: the run anyway rather than losing it.
+RETURN_BUDGET_ENV = "HEXERA_RETURN_CELL_BUDGET"  # noqa: S105 - an env var name, not a credential
+
+
+def submitting_cell_budget() -> int | None:
+    """This process's own cell budget, as the value to carry to a mesher - or None when it cannot
+    be read, in which case nothing is carried and the mesher computes its own ceiling as before.
+
+    The two routes that dispatch a mesh (adapters/mesh_execution/cloud_run_client and .../gce_vm)
+    both carry it, one through `containerOverrides` and one through instance metadata, and both
+    take the number from here so there is one spelling of what "the budget" is. The settings
+    import is inside the function: `contracts/` keeps its module-level imports neutral, and the
+    two adapters that call this must not have to import each other to agree on a number.
+    """
+    try:
+        import meshpipeline.settings.policy as polcfg
+        budget = int(polcfg.CELL_HARD_LIMIT)
+    except Exception:                     # noqa: BLE001 - a setting we cannot read is not carried
+        logger.warning("could not read the cell budget to carry to the mesher; it will compute "
+                       "its own return ceiling", exc_info=True)
+        return None
+    return budget if budget > 0 else None
+
+
+def parse_cell_budget(raw: object) -> int | None:
+    """One carried cell budget, parsed. `None` when nothing usable was carried.
+
+    FAIL CLOSED, and that is the whole of the error handling: anything that is not a positive
+    whole number reads as "nothing was carried", and the mesher computes its own ceiling as
+    before. A budget read as 0 would price the ceiling at its floor and give up every optional
+    file in the workspace, which is the exact damage this exists to stop.
+
+    THE READ ITSELF IS NOT HERE, and that is deliberate. This value arrives as a per-run
+    container argument, so the module that may reach for it is the one that owns per-run
+    container arguments - `runtime.mesh_invocation`, which is named in the settings authority's
+    approved loaders for exactly that reason. A contract that read `os.environ` would be a
+    production module taking a developer setting straight from the environment, which
+    `tests/unit/settings/test_product_mode_authority` refuses by design. So the parse lives here
+    beside the variable's name and the read lives there; see `mesh_invocation.carried_cell_budget`.
+    """
+    try:
+        n = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+    return n if n > 0 else None
+
+
 #: The result-document key, and the log tag, of a run the mesh job refused for that reason.
 PLATFORM_UPDATING_KEY = "platform_updating"
 PLATFORM_UPDATING_TAG = "[PLATFORM_UPDATING]"

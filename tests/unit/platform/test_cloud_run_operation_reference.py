@@ -8,7 +8,10 @@ import pytest
 import requests
 
 from meshpipeline.adapters.mesh_execution import cloud_run_client as crc
-from meshpipeline.contracts.mesh_execution import MESH_EXCHANGE_VERSION
+from meshpipeline.contracts.mesh_execution import (
+    MESH_EXCHANGE_VERSION,
+    RETURN_BUDGET_ENV,
+)
 
 VALID = "projects/mesh-prod/locations/europe-west4/operations/abc-123_x~y.z"
 
@@ -55,7 +58,9 @@ def _trigger():
                             engine="cfmesh", timeout=420)
 
 
-def test_one_post_reaches_the_run_endpoint_with_the_existing_overrides(posted):
+def test_one_post_reaches_the_run_endpoint_with_the_existing_overrides(posted, monkeypatch):
+    import meshpipeline.settings.policy as polcfg
+    monkeypatch.setattr(polcfg, "CELL_HARD_LIMIT", 400_000_000)
     calls = posted(_Response(body={"name": VALID}))
     _trigger()
     assert len(calls) == 1
@@ -66,7 +71,14 @@ def test_one_post_reaches_the_run_endpoint_with_the_existing_overrides(posted):
         "INPUT_URI": "gs://b/in", "OUTPUT_URI": "gs://b/out",
         "ENGINE": "cfmesh", "TIMEOUT": "420",
         # the exchange contract the worker speaks (contracts/mesh_execution)
-        "HEXERA_MESH_CONTRACT": str(MESH_EXCHANGE_VERSION)}
+        "HEXERA_MESH_CONTRACT": str(MESH_EXCHANGE_VERSION),
+        # ...and THIS side's cell budget, which `engines/return_scope` on the mesher needs to
+        # price the archive it sends home against the ceiling this side will open it under. It is
+        # declared HERE, in the exact set, because this test is what the per-run invocation
+        # channel's contents ARE: the number rides beside TIMEOUT and never inside the submitted
+        # archive, which is the case plus the facts and nothing else
+        # (contracts/mesh_execution.RETURN_BUDGET_ENV has the measurement and the reason).
+        RETURN_BUDGET_ENV: "400000000"}
     assert calls[0]["timeout"] == 60
 
 

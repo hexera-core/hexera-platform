@@ -226,7 +226,7 @@ def run_engine_local(workspace: Any, *, engine: str, timeout: int) -> dict:
             out["return_scope"] = scope
         if isinstance(out, dict):
             # WHAT IS SENT HOME, MEASURED: the worker sizes the bounded extraction of an FEA mesh by
-            # these bytes (adapters/mesh_execution/cloud_run_client.result_extraction_limits), so a
+            # these bytes (sandbox/result_limits.result_extraction_limits), so a
             # valid FEA mesh is never lost on the way back for being bigger than a flow mesh's
             # per-cell guess. A stat walk over every file of the plate's workspace, inside the watch
             # for the same reason the measure above is.

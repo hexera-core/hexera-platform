@@ -480,7 +480,7 @@ API: it logs that the directory is missing and leaves `/ui` and `/static` unmoun
 
 <!-- Regenerate: python -m meshpipeline.settings.inventory --reference -->
 
-Every supported setting (279 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
+Every supported setting (281 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
 
 | Setting | Exposure | Read by | Secret |
 |---|---|---|---|
@@ -663,6 +663,8 @@ Every supported setting (279 entries). `template` settings are the ones `.env.ex
 | `FEA_AI` | internal | app |  |
 | `VMTK_BIN` | template | app |  |
 | `AI_DECISION_CACHE` | internal | app |  |
+| `CONJUGATE_FINE_CELL_M` | internal | app |  |
+| `CONJUGATE_LAYERS` | internal | app |  |
 | `CONJUGATE_RANKS` | internal | app |  |
 | `MESH_CFMESH_THREADS` | internal | app |  |
 | `MESH_DETERMINISTIC` | internal | app |  |

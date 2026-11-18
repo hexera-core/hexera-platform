@@ -164,6 +164,17 @@ def _emitted_manifest_paths(tmp_path) -> set[str]:
         "body { type wall; nFaces 100; startFace 0; }\n"
         "inlet { type patch; nFaces 10; startFace 100; }\n"
         "outlet { type patch; nFaces 10; startFace 110; }\n")
+    # THE ARTIFACTS THE MANIFEST IS ASKED TO PUBLISH HAVE TO BE THERE, or it publishes neither
+    # them nor what depends on them, and this walk then measures a SMALLER manifest than the
+    # writer can emit. `mesh_paths.volume` is the gate: a path to a file that is not on disk is a
+    # stated absence now (`_published_volume` - job 0ff6f9e5 promised a volume `return_scope` had
+    # already unlinked, and three cuts through it), and with no volume and no cut pictures
+    # `inspection_regions` is published EMPTY - so its five registered child keys came out
+    # "registered but never emitted" against a registry that is right and a fixture that was not
+    # writing the file it named.
+    (ws / "VTK").mkdir(parents=True, exist_ok=True)
+    (ws / "VTK" / "vol.vtk").write_text("# vtk DataFile Version 3.0\n")
+    (ws / "mesh.msh").write_text("$MeshFormat\n2.2 0 8\n$EndMeshFormat\n")
     manifest = write_manifest(
         ws,
         patch_types={"body": "wall", "inlet": "inlet", "outlet": "outlet"},

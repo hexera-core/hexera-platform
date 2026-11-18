@@ -81,43 +81,70 @@ def test_a_prune_that_can_reach_the_ceiling_still_happens(tmp_path):
     assert "prune_declined" not in rec
 
 
-def test_the_ceiling_the_submitting_side_carried_is_the_one_used(tmp_path):
-    """The mesh VM has no CELL_HARD_LIMIT, so it must be told the ceiling rather than derive one."""
-    ws = _ws(tmp_path)
-    vtu = ws / "VTK" / "case_0" / "internal.vtu"
-    before = RS.estimate_archive_bytes(ws)
-    (ws / RS.CEILING_FILE).write_text(json.dumps({"max_archive_bytes": 50 * before}))
-
-    rec = RS.scope_return(ws)
-
-    assert vtu.exists(), "pruned against a computed ceiling while the real one was in the workspace"
-    assert rec is None or rec["left_out"] == []
-    assert RS.carried_ceiling(ws) == 50 * before
+#: This process standing in for a mesh VM: the 8,000,000-cell default, because CELL_HARD_LIMIT is
+#: read from the SUBMITTING side's settings and the VM is never passed it.
+VM_DEFAULT_BUDGET = 8_000_000
+#: ...and what the operator really set, which is the number the side that extracts will use.
+HOME_BUDGET = 400_000_000
 
 
-def test_a_carried_ceiling_is_recorded_so_a_reader_knows_which_one_was_used(tmp_path):
+def _as_a_mesh_vm(monkeypatch, *, carried: str | None) -> None:
+    """Run the body as the mesh VM runs it: this process's own budget is the bare default, and
+    `carried` is what the submitting side told it (None: nothing was carried)."""
+    import meshpipeline.settings.policy as polcfg
+    from meshpipeline.contracts.mesh_execution import RETURN_BUDGET_ENV
+
+    monkeypatch.setattr(polcfg, "CELL_HARD_LIMIT", VM_DEFAULT_BUDGET)
+    if carried is None:
+        monkeypatch.delenv(RETURN_BUDGET_ENV, raising=False)
+    else:
+        monkeypatch.setenv(RETURN_BUDGET_ENV, carried)
+
+
+def test_the_budget_the_submitting_side_carried_is_the_one_priced_against(tmp_path, monkeypatch):
+    """The mesh VM has no CELL_HARD_LIMIT of its own, so it must be TOLD the budget rather than
+    derive a ceiling from a default that is 50x too small."""
+    from meshpipeline.contracts.mesh_execution import RETURN_BUDGET_ENV
     ws = _ws(tmp_path)
     (ws / "_rescue").mkdir()                       # so a record is written at all
-    (ws / RS.CEILING_FILE).write_text(json.dumps({"max_archive_bytes": 9_000_000_000}))
+    _as_a_mesh_vm(monkeypatch, carried=str(HOME_BUDGET))
+
     rec = RS.scope_return(ws)
-    assert rec["ceiling_bytes"] == 9_000_000_000
-    assert rec["ceiling_source"] == RS.CEILING_FILE
+
+    assert rec["ceiling_bytes"] == RS.archive_ceiling(None, cell_hard_limit=HOME_BUDGET)
+    assert rec["ceiling_bytes"] > RS.archive_ceiling(None), (
+        "the carried budget changed nothing - this is the 17.7x that destroyed an interior")
+    # WHERE THE CEILING CAME FROM, so a reader never has to guess which number this run pruned
+    # against.
+    assert rec["ceiling_source"] == RETURN_BUDGET_ENV
 
 
-def test_a_ceiling_file_that_is_nonsense_is_ignored_rather_than_obeyed(tmp_path):
-    """A ceiling read as 0 would give up every optional file in the workspace, which is the exact
-    damage this exists to stop."""
+def test_nothing_carried_leaves_the_prune_on_this_side_s_own_number(tmp_path, monkeypatch):
     ws = _ws(tmp_path)
-    for junk in ('{"max_archive_bytes": 0}', '{"max_archive_bytes": "lots"}', "not json at all"):
-        (ws / RS.CEILING_FILE).write_text(junk)
-        assert RS.carried_ceiling(ws) is None, junk
-    (ws / RS.CEILING_FILE).unlink()
-    assert RS.carried_ceiling(ws) is None
+    (ws / "_rescue").mkdir()
+    _as_a_mesh_vm(monkeypatch, carried=None)
+
+    rec = RS.scope_return(ws)
+
+    assert rec["ceiling_bytes"] == RS.archive_ceiling(None)
+    assert "no " in rec["ceiling_source"] and "was carried" in rec["ceiling_source"]
 
 
-def test_an_explicit_ceiling_still_beats_the_carried_one(tmp_path):
+def test_a_carried_budget_that_is_nonsense_is_ignored_rather_than_obeyed(tmp_path, monkeypatch):
+    """A budget read as 0 prices the ceiling at its floor and gives up every optional file in the
+    workspace, which is the exact damage this exists to stop."""
+    ws = _ws(tmp_path)
+    for junk in ("0", "-1", "lots", "", "8e6"):
+        _as_a_mesh_vm(monkeypatch, carried=junk)
+        assert RS.carried_ceiling() is None, junk
+    _as_a_mesh_vm(monkeypatch, carried=None)
+    assert RS.carried_ceiling() is None
+    assert ws.is_dir()
+
+
+def test_an_explicit_ceiling_still_beats_the_carried_one(tmp_path, monkeypatch):
     """A caller that passes one knows better: tests and the dispatch route that measured it."""
     ws = _ws(tmp_path)
-    (ws / RS.CEILING_FILE).write_text(json.dumps({"max_archive_bytes": 10**12}))
+    _as_a_mesh_vm(monkeypatch, carried=str(HOME_BUDGET))
     rec = RS.scope_return(ws, ceiling=1000)
     assert rec and rec["ceiling_bytes"] == 1000
