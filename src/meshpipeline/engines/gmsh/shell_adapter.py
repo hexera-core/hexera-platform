@@ -2146,6 +2146,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
             quads.append(ring)
             q_face += [w.owner] * len(ring)
         box_done: set[int] = set()
+        band_nodes: set[int] = set()        # SHMESH-51k: every node of a band made (its ring's, its box's, its own)
         if ST.FREE_BAND and structure != "free":
             # SHMESH-48q: a free box's cell is our own two-to-one row of quads where its counts and shapes suit (gmsh's
             # paving stays where they do not)
@@ -2159,6 +2160,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                     continue
                 w.info["box_band"] = "made"
                 box_done.add(w.box)
+                band_nodes.update(int(x) for x in np.unique(quads_x))
                 xyz = np.vstack([xyz, pts_x])
                 quads.append(quads_x)
                 q_face += [w.owner] * len(quads_x)
@@ -2247,6 +2249,17 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                     node_edge[v] = -1
                     on_line[v] = False
                     vertex_edges.pop(int(v), None)
+        if BAND_PINNED and band_nodes:
+            # SHMESH-51k: a band's nodes stay where the band put them (as a ring's do): it was checked there against
+            # the solver's limits, the quad lines and the user's longest edge, and the relaxing and mending after it
+            # moved its box's side nodes (cut lines, free to move in the face's plane) - on the real column a corner
+            # kite of a 56 mm box made at 14.4 mm came out 16.02 mm, over the 15 mm line, and its hole was sent to one
+            # ring for it
+            at_b = np.fromiter(sorted(band_nodes), dtype=np.int64)
+            movable[at_b] = False
+            on_line[at_b] = False
+            node_kind[at_b] = shell_quality.AT_VERTEX
+            node_edge[at_b] = -1
         if log is not None:
             log.extend(gmsh.logger.get())
     finally:
@@ -2740,6 +2753,8 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
 
 
 #: SHMESH-51: a refused face's bolt rings are kept in the faces refused as -k-1 (a quality line unmet), or as
+#: SHMESH-51k: a band's nodes are not moved after it is made (relaxing, mending): it was checked where it was made
+BAND_PINNED = True
 #: SHMESH-51j: a two-ring bolt hole whose band was not made keeps its box too (one ring inside, its cell paved) - off:
 #: on the lab's webY8 the paved box cell came out past the solver's limits and SHMESH-51b lost the web's grid
 KEEP_BOX_BAND = False

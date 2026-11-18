@@ -390,3 +390,40 @@ def test_one_ring_in_a_two_ring_box_is_one_row_out_to_the_two_rings_outer_circle
     # (SHMESH-51b takes the whole face: a kept hole goes back to its plan by size too)
     assert ST.one_ring(w, 1.0, "one ring so its face keeps its grid") and not w.kept and not w.boxed2
     assert w.n == 8 and abs(w.R - 1.55 * 8.7) < 1e-9
+
+
+def test_a_bands_nodes_stay_where_the_band_put_them(tmp_path, monkeypatch):
+    """SHMESH-51k: a two-ring box's band is checked where it is made (solver's limits, quad lines, the user's longest
+    edge: a 56 mm box at 4 segments a side has 14.4 mm kite edges and 14.7 mm ring chords at 5 to 15 mm). Its box's
+    side nodes lie on cut lines, free to move in the face's plane, and the relaxing after it moved them: on the real
+    column a kite came out 16.02 mm and its hole was sent to one ring. Now no node of a made band is movable."""
+    from meshpipeline.engines import shell_quality as SQ
+
+    holes = [(100.0 + 100.0 * k, 100.0, 17.4) for k in range(9)]
+    brep, rec = _plates(tmp_path, [(1000.0, 200.0, 10.0, 0.0, holes)])
+    seen: list = []
+    real = SQ.relax_past
+
+    def spy(xyz, quads, trias, movable, **kw):
+        seen.append((np.array(xyz), np.array(quads), np.array(movable)))
+        return real(xyz, quads, trias, movable, **kw)
+
+    from meshpipeline.engines.gmsh import shell_adapter as SA
+
+    monkeypatch.setattr(SQ, "relax_past", spy)
+    monkeypatch.setattr(SA, "MESH_DEADLINE_S", 0)       # (meshed here, not in a forked child: the spy sees it)
+    mesh, applied = _mesh(brep, rec)
+    s = applied["quality"]["structure"]
+    assert s["bolt_rings"] == {2: len(holes)}, s.get("bolt_rings")
+    assert seen
+    xyz, Q, movable = seen[-1]
+    cen = xyz[Q].mean(axis=1)
+    band = np.zeros(len(Q), dtype=bool)
+    for x, y, _d in holes:
+        rel = cen[:, :2] - (x, y)
+        band |= (np.abs(rel).max(axis=1) <= 28.0) & (np.linalg.norm(rel, axis=1) > 19.5)
+    assert band.sum() >= 12 * len(holes)            # (each band: 8 side quads and 4 corner kites)
+    assert not movable[np.unique(Q[band])].any()
+    ed = np.linalg.norm(mesh.xyz[mesh.quads] - mesh.xyz[np.roll(mesh.quads, -1, axis=1)], axis=2)
+    assert float(ed.max()) <= 15.0
+    _check(applied)
