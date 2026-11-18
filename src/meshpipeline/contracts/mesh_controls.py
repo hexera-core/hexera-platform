@@ -108,6 +108,22 @@ CONTROLS: dict[str, Control] = {c.key: c for c in (
                    "fea_solid": NotHere("a solid mesh has no refinement levels"),
                    "shell": NotHere("a shell mesh has no refinement levels")},
             verify="setting", rule=RULE, asked="refinement level {value} at the walls"),
+    # SHMESH-52: a size (a number, "finer", "coarser") in ONE named place - the reader's own `local` field (NOTE-10);
+    # the solid and every flow engine already decide each such row in their own code, the shell through this lane
+    Control(key="place_size", kind="length", unit="length", sane=(1e-4, 1e5), field="local",
+            prompt="(read as local: a size, finer or coarser in ONE named place)",
+            examples=("5 mm elements on the base plate", "finer on the bracket", "3 mm elements around the flange"),
+            routes=("fea", "flow"), stage="mesh", where=("part", "face", "hole", "fillet", "flange", "wall", "bend"),
+            lanes={"fea_solid": Legacy("engines/fea_part_sizes and engines/fea_plan.user_sized (PLAN-fea-29, 32, 36)"),
+                   "shell": "meshpipeline.engines.control_appliers.shell_place_sizes",
+                   "snappy": Legacy("engines/cfd_requirements.snappy_levels, snappy_wake, snappy_port_levels"),
+                   "cfmesh": Legacy("engines/cfd_requirements.cfmesh_local"),
+                   "snappy_multiregion": Legacy("engines/cfd_requirements.multiregion_sizes"),
+                   "gmsh_flow": Legacy("engines/cfd_requirements.gmsh_sizes (tells it has no such setting)"),
+                   "vmtk": Legacy("engines/cfd_requirements.vmtk_spec (tells it has no such setting)"),
+                   "snapgrid": Legacy("engines/cfd_requirements.snapgrid_plan (tells it has no such setting)"),
+                   "netgen": Legacy("engines/cfd_requirements.netgen_inputs (tells it has no such setting)")},
+            verify="meshpipeline.engines.shell_places.told", rule="SHMESH-52", asked="a size in one named place"),
 )}
 
 

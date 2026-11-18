@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib
 import logging
+import math
 from collections.abc import Callable, Mapping
 
 from meshpipeline.contracts import mesh_controls as MC
@@ -18,13 +19,15 @@ RECORD_KEY = "user_controls"
 
 def asked(req: Mapping | None) -> dict[str, dict]:
     """Every control the set asks for: key -> {"id", "value", "choice"} - the reader's `controls`, and an existing
-    field the registry names (sizes.growth)."""
+    field the registry names (sizes.growth; a list of the set's own, `local`: its entries are the value)."""
     r = req or {}
     out = {k: dict(v) for k, v in (r.get("controls") or {}).items() if k in MC.CONTROLS}
     rows = {str(x.get("field")): x for x in r.get("rows") or []}
     for c in MC.CONTROLS.values():
         if c.field and c.key not in out:
             value = (r.get("sizes") or {}).get(c.field)
+            if value is None and isinstance(r.get(c.field), list) and r.get(c.field):
+                value = [dict(e) for e in r[c.field]]
             if value is not None:
                 out[c.key] = {"id": (rows.get(c.field) or {}).get("id"), "value": value, "choice": ""}
     return out
@@ -136,5 +139,21 @@ def snappy_surface_level(target: dict, value) -> tuple[str, str]:
     return "applied", f"level {lv} at the walls: the background cell is {2 ** lv} times the wall cell"
 
 
+def shell_place_sizes(target: dict, value) -> tuple[str, str]:
+    """Shell (SHMESH-52): a size in one named place - the `local` asks (`value`) - on the sewn faces the parts reading
+    ties them to (engines/shell_places.plan). `target`: the shell plan seam's {"rows", "owners", "record", "places",
+    "areas_mm2", "curved", "planned_max"}; the rows are sized in place and what was done is left in
+    target["applied"] (the report's rows read it)."""
+    from meshpipeline.engines import shell_places as SP
+
+    got = SP.plan(target["rows"], target["owners"], target["record"], target.get("places"), list(value or []),
+                  areas_mm2=target["areas_mm2"], curved=target.get("curved"),
+                  planned_max=float(target.get("planned_max") or math.inf))
+    target["applied"] = got
+    if not got or not got.get("applied"):
+        return "not_applied", "no place your notes name could be found on the shell"
+    return ("nearest" if got.get("held") else "applied"), SP.summary_words(got)
+
+
 __all__ = ["RECORD_KEY", "RULE", "apply", "asked", "fea_growth", "fea_wall_elements", "report_row",
-           "snappy_cells_across", "snappy_surface_level"]
+           "shell_place_sizes", "snappy_cells_across", "snappy_surface_level"]
