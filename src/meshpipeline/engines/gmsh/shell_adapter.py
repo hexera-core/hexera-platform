@@ -246,10 +246,16 @@ GUARD_TIME = 0.65
 #: on their boxes and cut each side 31.7 + 13.7 mm, the box cells were paved (8 triangles a box) and the real column's
 #: trial came out with 108 triangles where a6cdf476's one ring had 71
 GUARD_OWN = True
-#: SHMESH-51o3: face by face - a face takes one ring only where its own triangles are fewer with it (a 12-hole plate
-#: whose bands were all made went to one ring with the long plate beside it, whose two rings left 48 triangles)
+#: SHMESH-51o4: the first trial is the face with the most triangles of its own, alone (a 12-hole plate whose bands were
+#: all made went to one ring with the long plate beside it, whose two rings left the triangles)
 GUARD_PER_FACE = True
 GUARD_MAPPED = 0.99
+#: SHMESH-51o4: a trial starts with the holes drawn again so far still drawn (a hole's circle is the CAD's whatever its
+#: rings) instead of from the CAD: each restart had found them again, two passes
+GUARD_CARRY = True
+#: ... and the other bodies' grids left out and back kept so (off: on a lab part it changed the trial's own result -
+#: bodies of a column are joined, a face's rings change the counts through its joints)
+GUARD_CARRY_GRIDS = False
 #: SHMESH-48x3: a grid refused for its share under the user's shortest edge comes back when it has no triangle, its
 #: free mesh has triangles and the shortest-edge line is no worse with it (the user's choice, 18 Nov)
 GRID_ZERO_TRIA = True
@@ -286,6 +292,34 @@ def _grid_back(g_c: dict, free_: dict) -> tuple[bool, str]:
                       f"{g_c['elements']} elements under your shortest edge (the free mesh: {free_['short']} of "
                       f"{free_['elements']})")
     return False, ""
+
+
+def _first_trial(mesh, owners: list[str], faces: list[int]) -> list[int]:
+    """SHMESH-51o4: the faces of the guard's first trial - those of the mid-face with the most triangles of its own
+    among these (all of them when none has a triangle of its own)."""
+    own_t = Counter(str(m) for m in mesh.mid[len(mesh.quads):])
+    top = max(sorted({str(owners[k]) for k in faces}), key=lambda m_: (own_t.get(m_, 0), m_))
+    return [k for k in faces if str(owners[k]) == top] if own_t.get(top, 0) else list(faces)
+
+
+def _guard_carry(sn: dict, faces: list[int], keys: set[int], body_of) -> tuple[set, dict, dict, set, set]:
+    """SHMESH-51o4: what a one-ring trial of the guard starts from (no_cut, refused, compare, kept, unmap): the
+    run's state when the mesh before it was made, less what touches the bodies of the faces it changes. With
+    GUARD_CARRY the other bodies' grids left out, grids back and their figures are kept (each restart had found them
+    again: 8 to 9 passes, about 130 s on a real column); without, only the bolt-ring keys, as SHMESH-51b starts again."""
+    hit = {body_of(int(f)) for f in faces}
+
+    def away(k: int) -> bool:
+        f_ = _face_of_key(int(k))
+        b_ = body_of(f_)
+        return GUARD_CARRY_GRIDS and b_ is not None and None not in hit and b_ not in hit
+
+    no_cut = {f for f in set(sn["no_cut"]) if f < 0 or away(f)} | set(keys)
+    refused = {k: v for k, v in dict(sn["refused"]).items() if k < 0 or away(k)}
+    compare = {k: dict(v) for k, v in dict(sn.get("compare") or {}).items() if away(k) and k in no_cut}
+    kept = {k for k in set(sn.get("kept") or ()) if away(k)}
+    unmap = _keys_kept(set(sn["unmap"]), set(faces), body_of) if GATHER else set()
+    return no_cut, refused, compare, kept, unmap
 
 
 def _not_worse(applied: dict, past_n: int, other: dict, other_n: int) -> bool:
@@ -1162,9 +1196,7 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
         guard_best: tuple | None = None
         guard_faces: list[list[int]] = []
         guard_log: list[dict] = []
-        guard_stage: str | None = None      # (SHMESH-51o3: "trial", then "part" - one ring on the faces it helps)
-        guard_snap: dict | None = None      # (... the run's state when the mesh before the trial was made)
-        guard_faces_part: list[list[int]] = []
+        guard_snap: dict | None = None      # (SHMESH-51o4: the run's state when the mesh before a trial was made)
         regrid_log: list[dict] = []         # (SHMESH-48x3: grids back with no triangle, and their short elements)
 
         def redraw(wanted: list, seam_wanted: list, w_owner: list, s_owner: list) -> bool:
@@ -1451,88 +1483,62 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
                                   "could not recover) were re-made as B-splines (the same surface) and meshed "
                                   "(SHMESH-11).")
             if guard_best is not None:
-                # SHMESH-51o: the mesh with one ring on those faces against the one before it. SHMESH-51o3: face by
-                # face - a face takes one ring only where its own triangles are fewer with it; where only some are,
-                # the run starts again from the mesh before the trial with one ring on those alone, and that mesh is
-                # kept when it has no more triangles in all than the one-ring trial and is no worse on the limits
+                # SHMESH-51o: the mesh with one ring on the trial's faces against the one before it - fewer triangles,
+                # no worse on the limits and the grids, wins; else the run goes on from the one before (its state)
                 b_mesh, b_applied, b_n = guard_best
                 guard_best = None
-                if guard_stage == "trial":
-                    q_a, q_b = len(b_mesh.quads), len(mesh.quads)
-                    t_a = Counter(str(m) for m in b_mesh.mid[q_a:])
-                    t_b = Counter(str(m) for m in mesh.mid[q_b:])
-                    mids = sorted({str(owners[k]) for k in guard_faces[-1]})
-                    winners = [m_ for m_ in mids if t_b.get(m_, 0) < t_a.get(m_, 0)] if GUARD_PER_FACE else mids
-                    won = len(mesh.trias) < len(b_mesh.trias) and _not_worse(applied, past_n, b_applied, b_n)
-                    guard_log.append({"one_ring_faces": guard_faces[-1], "triangles_two": int(len(b_mesh.trias)),
-                                      "triangles_one": int(len(mesh.trias)),
-                                      "per_face": {m_: [int(t_a.get(m_, 0)), int(t_b.get(m_, 0))] for m_ in mids},
-                                      "kept": "one ring" if won else "two rings"})
-                    # (the face one ring helps most first, alone: another face's triangles may have been its doing -
-                    # a plate's joint cut by its neighbour's two-ring boxes)
-                    top = max(winners, key=lambda m_: (t_a.get(m_, 0) - t_b.get(m_, 0), t_a.get(m_, 0), m_),
-                              default=None)
-                    part = [k for k in guard_faces[-1] if str(owners[k]) == top]
-                    if GUARD_PER_FACE and part and len(part) < len(guard_faces[-1]) and guard_snap is not None and (
-                            MESH_DEADLINE_S <= 0 or time.monotonic() - started < GUARD_TIME * MESH_DEADLINE_S):
-                        # (one ring only on the faces it helps: from the mesh before the trial)
-                        guard_best = (mesh, applied, past_n) if won else (b_mesh, b_applied, b_n)
-                        guard_stage = "part"
-                        guard_log[-1]["kept"] = "tried face by face"
-                        passes[-1][0] = "one ring better on some faces only: one ring there (start again)"
-                        sn = guard_snap
-                        keys_g = {-(k + BOLT_GRID_KEY) - 1 for k in part}
-                        no_cut = {f for f in set(sn["no_cut"]) | keys_g if f < 0}
-                        refused = {k: v for k, v in dict(sn["refused"]).items() if k < 0}
-                        refused.update({k: {"kind": "bolt rings", "why": "its two rings left more triangles on it "
-                                            "than one ring", "then": "one ring on this face"} for k in keys_g})
-                        unmap = _keys_kept(set(sn["unmap"]), set(part), body_of) if GATHER else set()
-                        unmapped, compare, kept, before_guard = 0, {}, set(), None
-                        brep, reseated, redrawn, redraw_pass, asked, seated_now = (unseated, 0, [], redraw_off, [],
-                                                                                   [])
-                        guard_faces_part.append(part)
-                        continue
-                    if not won:
-                        mesh, applied, past_n = b_mesh, b_applied, b_n
-                else:
-                    # (SHMESH-51o3: one ring on the faces it helps, against the better of the two before it)
-                    won = len(mesh.trias) <= len(b_mesh.trias) and _not_worse(applied, past_n, b_applied, b_n)
-                    guard_log.append({"one_ring_faces": guard_faces_part[-1], "triangles_before": int(len(b_mesh.trias)),
-                                      "triangles": int(len(mesh.trias)), "kept": "face by face" if won else "before"})
-                    if not won:
-                        mesh, applied, past_n = b_mesh, b_applied, b_n
-                guard_stage = None
+                q_a, q_b = len(b_mesh.quads), len(mesh.quads)
+                t_a = Counter(str(m) for m in b_mesh.mid[q_a:])
+                t_b = Counter(str(m) for m in mesh.mid[q_b:])
+                mids = sorted({str(owners[k]) for k in guard_faces[-1]})
+                won = len(mesh.trias) < len(b_mesh.trias) and _not_worse(applied, past_n, b_applied, b_n)
+                guard_log.append({"one_ring_faces": guard_faces[-1], "triangles_two": int(len(b_mesh.trias)),
+                                  "triangles_one": int(len(mesh.trias)),
+                                  "per_face": {m_: [int(t_a.get(m_, 0)), int(t_b.get(m_, 0))] for m_ in mids},
+                                  "kept": "one ring" if won else "two rings"})
+                if not won:
+                    mesh, applied, past_n = b_mesh, b_applied, b_n
+                    sn = guard_snap or {}
+                    no_cut, refused, unmap = set(sn["no_cut"]), dict(sn["refused"]), set(sn["unmap"])
+                    compare, kept = {k_: dict(v_) for k_, v_ in sn["compare"].items()}, set(sn["kept"])
+                    brep, reseated, redrawn, redraw_pass, asked, seated_now = sn["seat"]
                 applied["quality"]["passes"] = [str(x[0]) for x in passes]
                 applied["quality"]["passes_s"] = [x[1] for x in passes]
                 applied["quality"]["structure"]["bolt_guard"] = list(guard_log)
-                if guard_log[-1]["kept"] in ("one ring", "face by face"):
-                    n_one = len(guard_log[-1]["one_ring_faces"])
-                    mesh.notes.append(f"One ring round the bolt holes of {n_one} face(s): with two rings the mesh "
-                                      f"had more triangles there (SHMESH-51o).")
+                if won:
+                    mesh.notes.append(f"One ring round the bolt holes of {len(guard_faces[-1])} face(s): with two "
+                                      f"rings the mesh had {guard_log[-1]['triangles_two']} triangle(s), with one "
+                                      f"{guard_log[-1]['triangles_one']} (SHMESH-51o).")
             if (BOLT_TRIA_GUARD and ST.BOLTS and not resplined and len(guard_faces) < 2
                     and (MESH_DEADLINE_S <= 0 or time.monotonic() - started < GUARD_START * MESH_DEADLINE_S)):
-                # SHMESH-51o: two rings never cost triangles one ring a hole would not have - first the faces with
-                # two-ring holes and triangles of their own, then (triangles left anywhere) every face with them
+                # SHMESH-51o: two rings never cost triangles one ring a hole would not have. SHMESH-51o4: first the
+                # face with the most triangles of its own among those with two-ring holes, alone (another face's
+                # triangles may be its doing: a 12-hole plate's bands were made and its 12 triangles went when the
+                # long plate beside it took one ring); then, while time allows and triangles are left anywhere, one
+                # ring round every bolt hole - the mesh never ends with more triangles than that one, when it is tried
                 faces_g: list[int] = []
                 for every in ((False, True) if not guard_faces else (True,)):
                     faces_g = [k for k in _tria_faces(mesh, applied, owners, everywhere=every)
                                if -(k + BOLT_GRID_KEY) - 1 not in no_cut]
                     if faces_g:
                         break
+                if faces_g and GUARD_PER_FACE and not guard_faces:
+                    faces_g = _first_trial(mesh, owners, faces_g)
                 if faces_g:
                     guard_best = (mesh, applied, past_n)
-                    guard_stage = "trial"
-                    guard_snap = {"no_cut": set(no_cut), "refused": dict(refused), "unmap": set(unmap)}
+                    guard_snap = {"no_cut": set(no_cut), "refused": dict(refused), "unmap": set(unmap),
+                                  "compare": {k_: dict(v_) for k_, v_ in compare.items()}, "kept": set(kept),
+                                  "seat": (brep, reseated, list(redrawn), redraw_pass, list(asked), list(seated_now))}
                     guard_faces.append(faces_g)
                     passes[-1][0] = "two rings left triangles: one ring on their faces (start again)"
                     keys_g = {-(k + BOLT_GRID_KEY) - 1 for k in faces_g}
-                    no_cut = {f for f in no_cut | keys_g if f < 0}
-                    refused = {k: v for k, v in refused.items() if k < 0}
+                    no_cut, refused, compare, kept, unmap = _guard_carry(guard_snap, faces_g, keys_g, body_of)
                     refused.update({k: {"kind": "bolt rings", "why": "its two rings left triangles",
                                         "then": "one ring tried, the mesh with fewer triangles kept"} for k in keys_g})
-                    unmap = _keys_kept(unmap, set(faces_g), body_of) if GATHER else set()
-                    unmapped, compare, kept, before_guard = 0, {}, set(), None
-                    brep, reseated, redrawn, redraw_pass, asked, seated_now = unseated, 0, [], redraw_off, [], []
+                    unmapped, before_guard = 0, None
+                    if not GUARD_CARRY:
+                        brep, reseated, redrawn, redraw_pass, asked, seated_now = (unseated, 0, [], redraw_off, [],
+                                                                                   [])
                     continue
             return mesh, applied, past_n
 

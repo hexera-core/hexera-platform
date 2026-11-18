@@ -650,6 +650,26 @@ def test_the_one_ring_trial_is_judged_face_by_face_and_keeps_the_grids():
     assert SA.GUARD_PER_FACE
 
 
+def test_the_first_one_ring_trial_is_the_face_with_the_most_triangles_alone():
+    """SHMESH-51o4, the real column: the guard's faces were the long plate (18 triangles of its own with two rings),
+    the 12-hole plate (12) and another plate (10). One ring on all three, then face by face, cost two restarts (642 s
+    of a 900 s limit) and ended on the long plate alone (the 12-hole plate's triangles were the long plate's doing).
+    Now the first trial is the face with the most triangles of its own, alone; then, while time allows, every face."""
+    from types import SimpleNamespace
+
+    from meshpipeline.engines.gmsh import shell_adapter as SA
+
+    owners = ["Mid_A", "Mid_B", "Mid_C", "Mid_C", "Mid_D"]
+    mid = ["Mid_A"] * 3 + ["Mid_A"] * 12 + ["Mid_B"] * 10 + ["Mid_C"] * 18
+    mesh = SimpleNamespace(quads=np.zeros((3, 4)), trias=np.zeros((40, 3)), mid=mid)
+    assert SA._first_trial(mesh, owners, [0, 1, 2, 3]) == [2, 3]          # (Mid_C: both its sewn faces)
+    assert SA._first_trial(mesh, owners, [0, 1]) == [0]                   # (Mid_A 12 against Mid_B 10)
+    none = SimpleNamespace(quads=np.zeros((3, 4)), trias=np.zeros((0, 3)), mid=["Mid_A"] * 3)
+    assert SA._first_trial(none, owners, [0, 4]) == [0, 4]                # (no face has its own: all of them)
+    # (a trial starts from the holes drawn again so far, a restart of SHMESH-51b from the CAD's)
+    assert SA.GUARD_CARRY and not SA.GUARD_CARRY_GRIDS
+
+
 class SimpleWasher:
     def __init__(self, info: dict) -> None:
         self.info = info
