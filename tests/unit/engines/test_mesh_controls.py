@@ -86,7 +86,8 @@ def test_the_count_through_the_walls_wins_over_a_size_range():
     # the notch beside it: 5 through its wall too, and no longer marked short of its accuracy by the range
     assert h["size_m"] == pytest.approx(0.0002) and h["wall_elements"] == 5 and not h.get("below_accuracy")
     assert got["wall_elements"]["status"] == "applied"
-    assert "finer than the shortest element asked (5 mm): the count wins there" in got["wall_elements"]["built"]
+    assert got["wall_elements"]["built"] == ("5 elements through each of 1 wall - all of them finer than the shortest "
+                                             "element asked (5 mm): the count wins there")
     words = " ".join(P.user_words({"user_sizes": {"Part_1": {"min_m": 0.005, "max_m": 0.015, "whole": True}},
                                    "zones": knobs["zones"]}))
     assert "to give the 5 elements through them your notes ask for" in words
@@ -111,6 +112,8 @@ def test_a_real_part_takes_the_count_through_its_walls_over_a_size_range(tmp_pat
     walls = [z for z in plan["zones"] if z["kind"] == "wall"]
     assert walls and all(z["size_m"] == pytest.approx(z["thickness_m"] / 3, rel=1e-3) for z in walls)
     assert plan["controls"]["wall_elements"]["status"] == "applied"
+    assert any(w.startswith("Walls: 3 elements through every wall, as your notes ask.") for w in plan["words"])
+    assert any("to give the 3 elements through them your notes ask for" in w for w in plan["words"])
 
 
 def test_a_gentler_grading_the_ladder_needed_is_kept_and_said():

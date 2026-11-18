@@ -116,7 +116,7 @@ def fea_wall_elements(target: dict, value) -> tuple[str, str]:
     ask and wins there, and the words say how many walls that made finer than the shortest size asked."""
     n = int(value)
     walls = 0
-    under_min: list[float] = []
+    under_min: list[float] = []          # the shortest size asked, on each wall the count made finer than it
     for z in target.get("zones") or []:
         t = z.get("thickness_m")
         if not t:
@@ -137,14 +137,15 @@ def fea_wall_elements(target: dict, value) -> tuple[str, str]:
         _fea_marks_again(z)
         lo = z.get("user_min_m")
         if lo is not None and float(z["size_m"]) < float(lo) * (1 - 1e-6):
-            under_min.append(float(lo))
             z["count_wins"] = n          # fea_plan.user_words says why it is finer than the range
+            if z.get("kind") in ("wall", "wall_spot"):
+                under_min.append(float(lo))
     if not walls:
         return "applied", "no wall of this part is thin enough to set the element size; its own size gives more"
     built = f"{n} elements through each of {walls} wall{'s' if walls != 1 else ''}"
     if under_min:
         k = len(under_min)
-        built += (f" - in {k} place{'s' if k != 1 else ''} that is finer than the shortest element asked "
+        built += (f" - {'all' if k == walls else k} of them finer than the shortest element asked "
                   f"({max(under_min) * 1e3:.3g} mm): the count wins there")
     return "applied", built
 

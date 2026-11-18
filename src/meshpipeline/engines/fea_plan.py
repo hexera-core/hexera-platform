@@ -756,7 +756,11 @@ def words(record: Mapping, plan: Mapping) -> list[str]:
     walls = [z for z in zs if z["kind"] == "wall" and z["size_m"] < plan["base_size_m"]]
     if walls:
         thin = min(walls, key=lambda z: z["thickness_m"])
-        out.append(f"Walls: at least {WALL_ELEMENTS} elements through every wall. {len(walls)} face(s) sit on "
+        # NOTE-13: a count the notes asked (engines/control_appliers.fea_wall_elements) is said as theirs
+        counted = int(thin.get("wall_elements") or 0) if "as your notes ask" in str(thin.get("why") or "") else 0
+        lead = (f"Walls: {counted} elements through every wall, as your notes ask." if counted
+                else f"Walls: at least {WALL_ELEMENTS} elements through every wall.")
+        out.append(f"{lead} {len(walls)} face(s) sit on "
                    f"walls thin enough to need it; the thinnest, {thin['thickness_m'] * 1e3:.3g} mm under "
                    f"{thin['faces'][0]}, gets {thin['size_m'] * 1e3:.3g} mm elements.")
     spots_thin = [z for z in zs if z["kind"] == "wall_spot" and z["size_m"] < plan["base_size_m"]]
