@@ -15,6 +15,12 @@ from meshpipeline.settings.env import (
 # policy: it is the Cloud Run feasibility limit (8 vCPU / 32 GiB / ~50 min), not a per-engine knob.
 CELL_HARD_LIMIT: int = int(optional_env("CELL_HARD_LIMIT", "8000000"))
 
+# AN FEA PLAN'S ELEMENT LIMIT, when this deployment sets one. 0 = off, and off is what production
+# runs: the limit is then what the largest machine allowed holds (PLAN-fea-8/13, engines/fea_driver
+# .element_limit), never less for time. A demo or lab environment sets a count here to get a small
+# mesh quickly; the plan is coarsened to fit it exactly as it is coarsened to fit a machine.
+FEA_ELEMENT_LIMIT: int = int(optional_env("FEA_ELEMENT_LIMIT", "0"))
+
 # deployment identity + request auth
 ENV: str = optional_env("ENV", "dev").lower()
 MESH_API_KEY: str = optional_env("MESH_API_KEY", "")

@@ -722,8 +722,18 @@ def element_limit(record: dict, ceiling_s: float | None = None) -> tuple[int, st
     """PLAN-fea-8's limit for this part, and why: what the LARGEST machine allowed holds (RUN-1, Areen
     24 Oct: a bigger machine replaces shrinking a mesh to fit - the plan is sized by the accuracy rules,
     and only a plan past the largest machine is coarsened, the last resort). NEVER LESS FOR TIME
-    (PLAN-fea-13): `ceiling_s` is kept for the callers' signature and decides nothing."""
+    (PLAN-fea-13): `ceiling_s` is kept for the callers' signature and decides nothing.
+
+    A DEPLOYMENT MAY CAP IT (FEA_ELEMENT_LIMIT, 0 = off and off in production): a demo or lab
+    environment that wants a small mesh quickly sets a count, and the plan is coarsened to fit that
+    count exactly as it is coarsened to fit a machine. It is configuration, not a time rule, so
+    PLAN-fea-13 still holds - nothing here shrinks a mesh because a run is slow."""
     from meshpipeline.contracts import mesh_machine as MM
+    from meshpipeline.settings import policy as polcfg
+    configured = max(0, int(getattr(polcfg, "FEA_ELEMENT_LIMIT", 0) or 0))
+    if configured:
+        return configured, ("the element limit this deployment is configured with "
+                            f"(FEA_ELEMENT_LIMIT={configured:,})")
     limit = memory_elements(MM.ceiling_gib())
     return limit, (f"what the largest machine allowed holds ({MM.CEILING.name}, {MM.CEILING.memory_gib:g} GiB; "
                    f"{BYTES_PER_ELEMENT:g} bytes an element, with {MEMORY_MARGIN:g} times to spare)")

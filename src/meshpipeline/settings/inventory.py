@@ -544,6 +544,12 @@ INVENTORY: list[Group] = [
         EnvVar("MESH_SCRIPT_SCAN_ENABLED", "true", kind="bool"),
         EnvVar("RUN_PYTHON_REQUIRE_SANDBOX", "true", kind="bool", help="refuse to run generated Python outside the seccomp/Landlock jail"),
         EnvVar("CELL_HARD_LIMIT", "8000000", kind="int", help="compute-feasibility cap on mesh size: the only cell-count gate"),
+        EnvVar("FEA_ELEMENT_LIMIT", "0", kind="int",
+               help="0 = off (the default, and the only setting production uses): an FEA plan's "
+                    "element limit is what the largest machine allowed holds (PLAN-fea-8). Set it "
+                    "to a count to cap FEA plans at that count instead, for a demo or lab "
+                    "environment that wants a small mesh quickly - the plan is coarsened to fit "
+                    "it the same way it is coarsened to fit a machine, and says so"),
         EnvVar("LAYER_CAVEAT_FLOOR_PCT_EXTERNAL", "40", kind="int",
                help="areal prism-layer coverage floor for caveated delivery of external-aero "
                     "snappy meshes; below it a layers-only review FAIL stays a failure"),
