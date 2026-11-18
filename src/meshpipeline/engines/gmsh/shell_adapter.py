@@ -246,6 +246,13 @@ GUARD_TIME = 0.65
 #: on their boxes and cut each side 31.7 + 13.7 mm, the box cells were paved (8 triangles a box) and the real column's
 #: trial came out with 108 triangles where a6cdf476's one ring had 71
 GUARD_OWN = True
+#: SHMESH-51o3: face by face - a face takes one ring only where its own triangles are fewer with it (a 12-hole plate
+#: whose bands were all made went to one ring with the long plate beside it, whose two rings left 48 triangles)
+GUARD_PER_FACE = True
+GUARD_MAPPED = 0.99
+#: SHMESH-48x3: a grid refused for its share under the user's shortest edge comes back when it has no triangle, its
+#: free mesh has triangles and the shortest-edge line is no worse with it (the user's choice, 18 Nov)
+GRID_ZERO_TRIA = True
 
 
 def _tria_faces(mesh, applied: dict, owners: list[str], everywhere: bool = False) -> list[int]:
@@ -260,13 +267,38 @@ def _tria_faces(mesh, applied: dict, owners: list[str], everywhere: bool = False
     return sorted(k for k, o in enumerate(owners) if str(o) in two and (everywhere or str(o) in with_t))
 
 
+def _grid_back(g_c: dict, free_: dict) -> tuple[bool, str]:
+    """SHMESH-48x: whether a grid refused for its short edges or triangles comes back against its free mesh (each
+    {elements, triangles, short}), and (SHMESH-48x3) the words when it comes back only for having no triangle."""
+    # (SHMESH-48x2: short edges refuse a grid only over GRID_SHORT AND over GRID_SHORT_RATIO x the free mesh's share -
+    # a channel's web at 3.37% against its free mesh's 2.66% keeps its straight rows)
+    g_share = g_c["short"] / max(g_c["elements"], 1)
+    f_share = free_["short"] / max(free_["elements"], 1)
+    short_ok = g_share <= ST.GRID_SHORT or g_share <= ST.GRID_SHORT_RATIO * f_share
+    tri_ok = g_c["triangles"] <= max(ST.GRID_TRIAS, ST.GRID_TRIA_SHARE * g_c["elements"], 2 * free_["triangles"])
+    if short_ok and tri_ok:
+        return True, ""
+    # SHMESH-48x3: a grid with no triangle comes back when its free mesh has triangles and the user's shortest-edge
+    # line is no worse with it (a target, met only with no element under it: the free mesh has some too, or the grid
+    # none) - the user's choice, 18 Nov
+    if GRID_ZERO_TRIA and g_c["triangles"] == 0 and free_["triangles"] > 0 and (g_c["short"] == 0 or free_["short"] > 0):
+        return True, (f"no triangle in the grid against {free_['triangles']} in its free mesh; {g_c['short']} of its "
+                      f"{g_c['elements']} elements under your shortest edge (the free mesh: {free_['short']} of "
+                      f"{free_['elements']})")
+    return False, ""
+
+
 def _not_worse(applied: dict, past_n: int, other: dict, other_n: int) -> bool:
     """SHMESH-51o: a mesh no worse than another on the solver's limits (valid, past Nastran's, past the solver's own)
-    and on the user's lines (outside their outer limits, lines met)."""
+    and on the user's lines (outside their outer limits, lines met), and (SHMESH-51o3) with its grids: no fewer mapped
+    faces than GUARD_MAPPED of the other's (a one-ring trial that took 4 triangles off a channel's flange lost the web's
+    grid, 448 mapped faces to 119, 2 elements under the shortest edge to 500)."""
     if _past(applied) > _past(other) or past_n > other_n:
         return False
     a, b = _standing(applied, past_n), _standing(other, other_n)
-    return a[2] <= b[2] and a[3] <= b[3]
+    m_a = int(((applied.get("quality") or {}).get("structure") or {}).get("mapped_faces") or 0)
+    m_b = int(((other.get("quality") or {}).get("structure") or {}).get("mapped_faces") or 0)
+    return a[2] <= b[2] and a[3] <= b[3] and m_a >= GUARD_MAPPED * m_b
 
 
 def _generate(gmsh, tag_of: dict[int, int]) -> None:
@@ -1130,6 +1162,10 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
         guard_best: tuple | None = None
         guard_faces: list[list[int]] = []
         guard_log: list[dict] = []
+        guard_stage: str | None = None      # (SHMESH-51o3: "trial", then "part" - one ring on the faces it helps)
+        guard_snap: dict | None = None      # (... the run's state when the mesh before the trial was made)
+        guard_faces_part: list[list[int]] = []
+        regrid_log: list[dict] = []         # (SHMESH-48x3: grids back with no triangle, and their short elements)
 
         def redraw(wanted: list, seam_wanted: list, w_owner: list, s_owner: list) -> bool:
             """SHMESH-45k/49c: one more pass for both: the holes whose ring needed them drawn again as one circle, and
@@ -1262,6 +1298,9 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
                 continue
             except _Regrid as rg:
                 passes.append(["grids back (no better free)", round(time.monotonic() - t_pass, 1)])
+                # (SHMESH-48x3: a grid back with no triangle against its free mesh's: told with its short elements)
+                regrid_log.extend({"face": _owner_of_key(k, owners), "why": str(v["why_back"])}
+                                  for k, v in sorted(rg.why.items()) if "why_back" in v)
                 no_cut -= rg.faces
                 kept |= rg.faces
                 if before_guard is not None:
@@ -1394,6 +1433,8 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
             for k_c, v_c in compare.items():
                 if k_c in refused and "free_figures" in v_c:
                     refused[k_c]["free_figures"] = v_c["free_figures"]
+            if regrid_log:
+                applied["quality"]["structure"]["grids_back"] = list(regrid_log)
             applied["quality"]["structure"]["refused"] = [
                 {"face": _owner_of_key(k, owners), **v} for k, v in sorted(refused.items())]
             # SHMESH-49g: each round plate meshed in rings and strips, with its triangles in the mesh delivered
@@ -1410,22 +1451,64 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
                                   "could not recover) were re-made as B-splines (the same surface) and meshed "
                                   "(SHMESH-11).")
             if guard_best is not None:
-                # SHMESH-51o: the mesh with one ring on those faces against the one before it - fewer triangles and
-                # no worse on the solver's limits and the user's lines wins
+                # SHMESH-51o: the mesh with one ring on those faces against the one before it. SHMESH-51o3: face by
+                # face - a face takes one ring only where its own triangles are fewer with it; where only some are,
+                # the run starts again from the mesh before the trial with one ring on those alone, and that mesh is
+                # kept when it has no more triangles in all than the one-ring trial and is no worse on the limits
                 b_mesh, b_applied, b_n = guard_best
                 guard_best = None
-                won = len(mesh.trias) < len(b_mesh.trias) and _not_worse(applied, past_n, b_applied, b_n)
-                guard_log.append({"one_ring_faces": guard_faces[-1], "triangles_two": int(len(b_mesh.trias)),
-                                  "triangles_one": int(len(mesh.trias)), "kept": "one ring" if won else "two rings"})
-                if not won:
-                    mesh, applied, past_n = b_mesh, b_applied, b_n
-                    applied["quality"]["passes"] = [str(x[0]) for x in passes]
-                    applied["quality"]["passes_s"] = [x[1] for x in passes]
+                if guard_stage == "trial":
+                    q_a, q_b = len(b_mesh.quads), len(mesh.quads)
+                    t_a = Counter(str(m) for m in b_mesh.mid[q_a:])
+                    t_b = Counter(str(m) for m in mesh.mid[q_b:])
+                    mids = sorted({str(owners[k]) for k in guard_faces[-1]})
+                    winners = [m_ for m_ in mids if t_b.get(m_, 0) < t_a.get(m_, 0)] if GUARD_PER_FACE else mids
+                    won = len(mesh.trias) < len(b_mesh.trias) and _not_worse(applied, past_n, b_applied, b_n)
+                    guard_log.append({"one_ring_faces": guard_faces[-1], "triangles_two": int(len(b_mesh.trias)),
+                                      "triangles_one": int(len(mesh.trias)),
+                                      "per_face": {m_: [int(t_a.get(m_, 0)), int(t_b.get(m_, 0))] for m_ in mids},
+                                      "kept": "one ring" if won else "two rings"})
+                    # (the face one ring helps most first, alone: another face's triangles may have been its doing -
+                    # a plate's joint cut by its neighbour's two-ring boxes)
+                    top = max(winners, key=lambda m_: (t_a.get(m_, 0) - t_b.get(m_, 0), t_a.get(m_, 0), m_),
+                              default=None)
+                    part = [k for k in guard_faces[-1] if str(owners[k]) == top]
+                    if GUARD_PER_FACE and part and len(part) < len(guard_faces[-1]) and guard_snap is not None and (
+                            MESH_DEADLINE_S <= 0 or time.monotonic() - started < GUARD_TIME * MESH_DEADLINE_S):
+                        # (one ring only on the faces it helps: from the mesh before the trial)
+                        guard_best = (mesh, applied, past_n) if won else (b_mesh, b_applied, b_n)
+                        guard_stage = "part"
+                        guard_log[-1]["kept"] = "tried face by face"
+                        passes[-1][0] = "one ring better on some faces only: one ring there (start again)"
+                        sn = guard_snap
+                        keys_g = {-(k + BOLT_GRID_KEY) - 1 for k in part}
+                        no_cut = {f for f in set(sn["no_cut"]) | keys_g if f < 0}
+                        refused = {k: v for k, v in dict(sn["refused"]).items() if k < 0}
+                        refused.update({k: {"kind": "bolt rings", "why": "its two rings left more triangles on it "
+                                            "than one ring", "then": "one ring on this face"} for k in keys_g})
+                        unmap = _keys_kept(set(sn["unmap"]), set(part), body_of) if GATHER else set()
+                        unmapped, compare, kept, before_guard = 0, {}, set(), None
+                        brep, reseated, redrawn, redraw_pass, asked, seated_now = (unseated, 0, [], redraw_off, [],
+                                                                                   [])
+                        guard_faces_part.append(part)
+                        continue
+                    if not won:
+                        mesh, applied, past_n = b_mesh, b_applied, b_n
+                else:
+                    # (SHMESH-51o3: one ring on the faces it helps, against the better of the two before it)
+                    won = len(mesh.trias) <= len(b_mesh.trias) and _not_worse(applied, past_n, b_applied, b_n)
+                    guard_log.append({"one_ring_faces": guard_faces_part[-1], "triangles_before": int(len(b_mesh.trias)),
+                                      "triangles": int(len(mesh.trias)), "kept": "face by face" if won else "before"})
+                    if not won:
+                        mesh, applied, past_n = b_mesh, b_applied, b_n
+                guard_stage = None
+                applied["quality"]["passes"] = [str(x[0]) for x in passes]
+                applied["quality"]["passes_s"] = [x[1] for x in passes]
                 applied["quality"]["structure"]["bolt_guard"] = list(guard_log)
-                if won:
-                    mesh.notes.append(f"One ring round the bolt holes of {len(guard_faces[-1])} face(s): with two "
-                                      f"rings the mesh had {guard_log[-1]['triangles_two']} triangle(s), with one "
-                                      f"{guard_log[-1]['triangles_one']} (SHMESH-51o).")
+                if guard_log[-1]["kept"] in ("one ring", "face by face"):
+                    n_one = len(guard_log[-1]["one_ring_faces"])
+                    mesh.notes.append(f"One ring round the bolt holes of {n_one} face(s): with two rings the mesh "
+                                      f"had more triangles there (SHMESH-51o).")
             if (BOLT_TRIA_GUARD and ST.BOLTS and not resplined and len(guard_faces) < 2
                     and (MESH_DEADLINE_S <= 0 or time.monotonic() - started < GUARD_START * MESH_DEADLINE_S)):
                 # SHMESH-51o: two rings never cost triangles one ring a hole would not have - first the faces with
@@ -1438,6 +1521,8 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
                         break
                 if faces_g:
                     guard_best = (mesh, applied, past_n)
+                    guard_stage = "trial"
+                    guard_snap = {"no_cut": set(no_cut), "refused": dict(refused), "unmap": set(unmap)}
                     guard_faces.append(faces_g)
                     passes[-1][0] = "two rings left triangles: one ring on their faces (start again)"
                     keys_g = {-(k + BOLT_GRID_KEY) - 1 for k in faces_g}
@@ -2548,15 +2633,11 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
             g_c["free_figures"] = free_
             if not free_["elements"]:
                 continue
-            # (SHMESH-48x2: short edges refuse a grid only over GRID_SHORT AND over GRID_SHORT_RATIO x the free mesh's
-            # share - a channel's web at 3.37% against its free mesh's 2.66% keeps its straight rows)
-            g_share = g_c["short"] / max(g_c["elements"], 1)
-            f_share = free_["short"] / max(free_["elements"], 1)
-            short_ok = g_share <= ST.GRID_SHORT or g_share <= ST.GRID_SHORT_RATIO * f_share
-            tri_ok = g_c["triangles"] <= max(ST.GRID_TRIAS, ST.GRID_TRIA_SHARE * g_c["elements"],
-                                             2 * free_["triangles"])
-            if short_ok and tri_ok:
+            ok_, why_ = _grid_back(g_c, free_)
+            if ok_:
                 back[k_c] = {"grid_figures": dict(g_c), "free_figures": free_}
+                if why_:
+                    back[k_c]["why_back"] = why_
         if back:
             drawn_ = [np.asarray(c, dtype=float) for c, _e in hole_before]
             raise _Regrid(set(back), back, [([float(x) for x in w.centre], int(w.owner)) for w in washers_planned

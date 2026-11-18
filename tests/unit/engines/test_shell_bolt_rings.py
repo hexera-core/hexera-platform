@@ -617,6 +617,39 @@ def test_a_cad_piece_of_a_hole_is_no_cell_edge_at_planning(tmp_path, monkeypatch
     assert not any("a cell edge" in str(k) for k in (applied2["quality"]["structure"].get("not_gridded") or {}))
 
 
+def test_a_grid_with_no_triangle_comes_back_against_a_free_mesh_with_triangles():
+    """SHMESH-48x3 (the user's choice, 18 Nov): a grid refused for its share of elements under the user's shortest edge
+    (a real column's plate: 2,974 elements, 0 triangles, 10.5% short) came back only when that share was within 1.5
+    times its free mesh's, whatever triangles the free mesh had. Now a grid with no triangle comes back when its free
+    mesh has triangles and the shortest-edge line is no worse with it (the free mesh has elements under it too, or the
+    grid none); the words say how many are under it. A grid with triangles, or a free mesh with none, is judged as
+    before."""
+    from meshpipeline.engines.gmsh import shell_adapter as SA
+
+    grid = {"elements": 2974, "triangles": 0, "short": 314}
+    ok, why = SA._grid_back(grid, {"elements": 3100, "triangles": 40, "short": 120})
+    assert ok and "314 of its 2974 elements under your shortest edge" in why
+    assert SA._grid_back(grid, {"elements": 3100, "triangles": 0, "short": 120}) == (False, "")
+    assert SA._grid_back({**grid, "triangles": 30}, {"elements": 3100, "triangles": 40, "short": 120})[0] is False
+    assert SA._grid_back(grid, {"elements": 3100, "triangles": 40, "short": 0})[0] is False   # (the line met free)
+    assert SA._grid_back({"elements": 1000, "triangles": 0, "short": 20}, {"elements": 1000, "triangles": 0,
+                                                                          "short": 20}) == (True, "")
+
+
+def test_the_one_ring_trial_is_judged_face_by_face_and_keeps_the_grids():
+    """SHMESH-51o3: the one-ring trial may not lose grids (no fewer than GUARD_MAPPED of the mapped faces): on a lab
+    channel one ring took 4 triangles off a flange and lost the web's grid (448 mapped faces to 119, 2 elements under
+    the shortest edge to 500)."""
+    from meshpipeline.engines.gmsh import shell_adapter as SA
+
+    def rec(mapped: int) -> dict:
+        return {"quality": {"valid": True, "nastran_past": {}, "structure": {"mapped_faces": mapped}},
+                "requirements": {"rows": []}}
+
+    assert SA._not_worse(rec(448), 0, rec(448), 0) and not SA._not_worse(rec(119), 0, rec(448), 0)
+    assert SA.GUARD_PER_FACE
+
+
 class SimpleWasher:
     def __init__(self, info: dict) -> None:
         self.info = info
