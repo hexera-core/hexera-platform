@@ -2046,7 +2046,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                     go_ = [w for w in bad_holes if _round_left(hole_rounds, int(w.owner))
                            and why_cut.get(int(w.owner), {}).get("why", "").startswith("its free cells")]
                 else:
-                    go_ = bad_holes if hole_rounds < ST.BOLT_HOLE_ROUNDS and bad_holes and all(why_cut.get(kg, {}).get("why", "").startswith("its free cells") for kg in hurt) else []  # noqa: E501
+                    go_ = bad_holes if isinstance(hole_rounds, int) and hole_rounds < ST.BOLT_HOLE_ROUNDS and bad_holes and all(why_cut.get(kg, {}).get("why", "").startswith("its free cells") for kg in hurt) else []  # noqa: E501
                 if go_:
                     pending = _NoCut(set(), {}, holes=[[float(x) for x in w.centre] + (
                         [1.0] if ST.KEEP_BOX and KEEP_BOX_BAND else []) for w in go_],
@@ -2513,7 +2513,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                                          outside_pct=row_.get("outside_pct"), worst=row_.get("worst"))
                         break
         # SHMESH-51b: a gridded face holding two-ring bolt holes keeps its grid and gives up the second ring first
-        if hurt_p and ST.BOLT_BAND_LONG and (GATHER or hole_rounds < ST.BOLT_HOLE_ROUNDS):
+        if hurt_p and ST.BOLT_BAND_LONG and (GATHER or (isinstance(hole_rounds, int) and hole_rounds < ST.BOLT_HOLE_ROUNDS)):
             # SHMESH-51d: on a gridded face refused while some of its two-ring bolt holes' bands were not made (their box
             # cells paved), those holes alone take one ring and the face is meshed again; its other holes keep two
             # (SHMESH-51f: each face while it has rounds of its own left)

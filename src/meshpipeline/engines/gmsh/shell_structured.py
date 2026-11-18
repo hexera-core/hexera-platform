@@ -2796,7 +2796,7 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                                 sgn = 1.0 if far > end else -1.0
                                 # the lines across it between this end and its far end, nearest first
                                 cands = sorted((y for y in lines[axes[j_]] if (y - end) * sgn > eps and (far - y) * sgn > eps),
-                                               key=lambda y, end=end: abs(y - end))
+                                               key=lambda y, end=end: abs(y - end))  # type: ignore[misc]
                                 to = far
                                 bend = None
                                 for y in cands:
