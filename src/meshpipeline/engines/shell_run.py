@@ -216,7 +216,7 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, source: 
             if isinstance(applied, dict) and isinstance(applied.get("target"), dict):
                 rec["target"] = applied["target"]
             if isinstance(applied, dict) and requirements:
-                for key in ("requirements", "sizing", "count_set_aside"):
+                for key in ("requirements", "sizing", "count_set_aside", "places"):
                     if applied.get(key):
                         rec[key] = applied[key]
             if not rec["made"]:
@@ -250,6 +250,17 @@ def requirements_in(workspace: Path | str) -> dict | None:
     return MR.requirements_of(MR.read(workspace))
 
 
+def with_places(workspace: Path | str, requirements: dict | None) -> dict | None:
+    """SHMESH-52: the requirements with the parts reading the FEA driver left for a size asked in one named place
+    (engines/shell_places.FILE) - only when the requirements ask one; otherwise the requirements as they are."""
+    from meshpipeline.engines import shell_places as SP
+
+    if requirements is None or not SP.wanted(requirements):
+        return requirements
+    places = SP.read(workspace)
+    return {**requirements, "places": places} if places is not None else requirements
+
+
 def main(argv: list[str] | None = None) -> int:
     """python -m meshpipeline.engines.shell_run <workspace> <staged step> <mm per unit | staged> [<count JSON>]
     ("staged": read as the FEA driver reads the staged solid, engines/fea_driver.staged_mm_per_unit; the count is
@@ -279,7 +290,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         mm = float(args[2])
     run(args[0], args[1], mm_per_unit=mm, source=Path(args[1]).name, target=target,
-        requirements=requirements_in(args[0]))
+        requirements=with_places(args[0], requirements_in(args[0])))
     return 0
 
 
@@ -287,5 +298,5 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 
-__all__ = ["FILES", "MSH", "RECORD", "main", "name_parts", "parts_of", "read", "requirements_in", "run", "words",
-           "write_msh"]
+__all__ = ["FILES", "MSH", "RECORD", "main", "name_parts", "parts_of", "read", "requirements_in", "run", "with_places",
+           "words", "write_msh"]

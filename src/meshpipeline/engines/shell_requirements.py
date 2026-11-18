@@ -313,11 +313,13 @@ def _limit_row(lim: Mapping, mesh, q: Mapping, t: Mapping) -> dict:
     return MR.limit_row(lim, np.concatenate(vals) if vals else np.zeros(0), mesh.n_elements)
 
 
-def report(mesh, req: Mapping | None, sizing: Mapping | None = None) -> dict | None:
+def report(mesh, req: Mapping | None, sizing: Mapping | None = None, *, places: Mapping | None = None) -> dict | None:
     """SHMESH-26: for every requirement read from the notes, what was asked and what the built mesh delivers:
     {"rows": [{"id", "field", "asked", "delivered", "met": True | False | None, "applied", "outside", "outside_pct",
     "beyond", "worst"}], "met", "missed", "definitions"}. None with no requirement. `met` None: applied as a
-    setting, or not applied, with nothing to measure it against - never told as met."""
+    setting, or not applied, with nothing to measure it against - never told as met. `places`: what the mesher did
+    with each size asked in one named place (SHMESH-52, engines/shell_places.plan) - each such row measured on the
+    elements there; without it, the row says it was not applied."""
     if not req or not req.get("rows"):
         return None
     q = SQ.quad_measures(mesh.xyz, mesh.quads, extra=True) if len(mesh.quads) else {}
@@ -327,8 +329,14 @@ def report(mesh, req: Mapping | None, sizing: Mapping | None = None) -> dict | N
     rows = []
     for row in req["rows"]:
         field = str(row["field"])
-        flow = MR.elements_row(field, req, n, "shell") if field in MR.FLOW_FIELDS else None
-        if flow is not None:
+        placed = None
+        if field == "local" and places is not None:
+            from meshpipeline.engines import shell_places as SP
+            placed = SP.row(row["id"], places, mesh)
+        flow = MR.elements_row(field, req, n, "shell") if field in MR.FLOW_FIELDS and placed is None else None
+        if placed is not None:
+            got = placed
+        elif flow is not None:
             got = flow
         elif field.startswith("control:"):
             # NOTE-13: a control's row from the registry (what the shell does with it, or why not)

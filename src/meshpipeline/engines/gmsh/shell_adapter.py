@@ -1396,6 +1396,13 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                                   for f in facts])
     if sizing is not None:
         planned = sizing["planned"]
+    # SHMESH-52: A SIZE IN ONE NAMED PLACE (a part, an area inside one) on the faces the parts reading ties it to,
+    # through the registry's shell lane (NOTE-13). Nothing asked in one place: nothing here runs
+    places = None
+    if requirements and requirements.get("places"):
+        places = _place_sizes(rows, owners, record, requirements, facts, mm)
+    if places is not None and places.get("applied"):
+        planned = places["planned"]
     # SHMESH-27 (the user's sizes only): a face narrower than their size is sized to its own width
     bent = [f["bend"] is not None and 0 < f["bend"] < plan_rules.PANEL_WALLS * r["wall_mm"]
             for f, r in zip(facts, rows, strict=True)]
@@ -1431,7 +1438,11 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         # narrow neighbour's size over the whole of a wide face (one 2.5 mm strip: 800,000 elements)
         gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
         gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
-        gmsh.option.setNumber("Mesh.MeshSizeMin", plan_rules.FLOOR_WALLS * min(walls) * min(sz, 1.0) / mm)
+        size_floor = plan_rules.FLOOR_WALLS * min(walls) * min(sz, 1.0)
+        if places is not None and places.get("finest_mm"):
+            # SHMESH-52: a place asked finer than half its wall is meshed at what was asked (said in its row)
+            size_floor = min(size_floor, 0.5 * float(places["finest_mm"]))
+        gmsh.option.setNumber("Mesh.MeshSizeMin", size_floor / mm)
         gmsh.option.setNumber("Mesh.MeshSizeMax", max(r["size_mm"] for r in rows) / mm)
         gmsh.option.setNumber("Mesh.Smoothing", 5)
         gmsh.option.setNumber("Mesh.LcIntegrationPrecision", LC_PRECISION)
@@ -1753,6 +1764,10 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                 # SHMESH-24: nor under the user's shortest edge
                 low = float(sizing["low_mm"])
                 floors = {t: max(v, low / mm) for t, v in floors.items()}
+            if places is not None and places.get("applied"):
+                # SHMESH-52: nor over half the size a place was asked for (finer than half its wall: as asked)
+                floors = {t: min(v, 0.5 * float(rows[tag_of[t]]["size_mm"]) / mm) if "place" in rows[tag_of[t]]
+                          else v for t, v in floors.items()}
             evened = _even_faces(gmsh, tag_of, fixed, floors)
         if PLANE_ALGORITHM is not None and structure != "free":
             # SHMESH-42: flat faces meshed free by the quad-aligned algorithm (rows along their edges)
@@ -2385,7 +2400,13 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                 sizing["chord"] = {"rule": "SHMESH-34", **chord, "share": float(f"{chord['max_mm'] / g:.3g}")}
                 mesh.notes.append(f"On curved faces element centres lie within {chord['max_mm']:.3g} mm of your "
                                   f"CAD ({100 * chord['max_mm'] / g:.2g}% of the element size) (SHMESH-34).")
-        asked = SR.report(mesh, requirements, sizing)
+        if places is not None:
+            out["places"] = places
+            sized_places = [p for p in places.get("places") or [] if p.get("faces")]
+            if sized_places:
+                mesh.notes.append(f"Sized {len(sized_places)} place(s) your notes name, each to the size asked there "
+                                  "(SHMESH-52).")
+        asked = SR.report(mesh, requirements, sizing, places=places)
         if asked is not None:
             out["requirements"] = asked
         # SHMESH-31: where elements past the solver's own limits are (taken off by _mesh_shell)
@@ -2669,6 +2690,28 @@ def _count_plan(rows: list[dict], planned: float, target: dict | None, correctio
         r["rule"] = f"{r['rule']}+SHMESH-23"
     out.update(scale=round(sz, 4), planned=int(round(planned / sz ** 2)), under_floor=under, held=held)
     return out, sz
+
+
+def _place_sizes(rows: list[dict], owners: list[str], record: dict, requirements: dict, facts: list[dict],
+                 mm: float) -> dict | None:
+    """SHMESH-52: the plan's rows sized in place for each size the notes ask in one named place - the registry's shell
+    lane (contracts/mesh_controls `place_size`, NOTE-13's one loop) on the parts reading the shell run was handed
+    (requirements["places"], engines/shell_places). What was done, or None; the rows are as they were when nothing
+    could be placed (or our own step failed)."""
+    import copy
+
+    from meshpipeline.engines import control_appliers as CA
+
+    kept = copy.deepcopy(rows)
+    target: dict[str, Any] = {
+        "rows": rows, "owners": owners, "record": record, "places": requirements.get("places"),
+        "areas_mm2": [f["area"] * mm * mm for f in facts], "planned_max": PLANNED_MAX,
+        "curved": [(f["bend"], min(f["width"], f["box_width"]) if f["box_width"] > 0 else f["width"]) for f in facts]}
+    CA.apply("shell", requirements, target)
+    got: dict | None = target.get("applied")
+    if not (got or {}).get("applied"):
+        rows[:] = kept
+    return got
 
 
 def _projector(facts: list[dict], on_face: np.ndarray, mm: float):

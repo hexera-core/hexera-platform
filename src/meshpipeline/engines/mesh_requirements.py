@@ -1736,10 +1736,10 @@ def elements_row(field: str, req: Mapping, n: int, kind: str) -> dict | None:
         met = (n <= asked) if what == "ceiling" else (n >= asked) if what == "floor" else None
         return {"applied": True, "measured": int(n), "met": met, "delivered": f"the mesh has {n:,} elements"}
     if field == "local" and kind == "shell":
-        # SHMESH-26: no step of the shell route reads a size in one named place (the part sizes are the solid plan's,
-        # made after the shell is delivered): never told as applied
+        # SHMESH-26: a shell handed no parts reading (a mixed mesh's shell, a surface file) does not size one named
+        # place - never told as applied. The shell route's own row is engines/shell_places.row (SHMESH-52)
         return {"applied": False, "met": None,
-                "delivered": "not applied - a size in one named place is not applied on a shell mesh yet; the whole "
+                "delivered": "not applied - a size in one named place is not applied on this shell yet; the whole "
                              "shell takes the sizes asked for the whole mesh"}
     if field == "local":
         return {"applied": True, "met": None,
