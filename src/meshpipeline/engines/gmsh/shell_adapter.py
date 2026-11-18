@@ -232,6 +232,36 @@ BOX_BLAME_REACH = 3.0
 #: SHMESH-51h: with GATHER, how many rounds of one ring a face may have (each round sends every hole a fault is put on
 #: at once; the rounds go on while they send holes - the fixed 3 had thrown away a web's 41 made bands for 5 holes)
 HOLE_ROUNDS_MAX = 8
+#: SHMESH-51o: a mesh whose faces with two rings round bolt holes carry triangles is made again with one ring round
+#: those faces' bolt holes (SHMESH-51b's way); the one with fewer triangles is kept, unless it is worse on the solver's
+#: limits or the user's lines. Then, when two rings still stand and triangles are left anywhere, the same with one
+#: ring round every bolt hole: the mesh never has more triangles than one ring a hole would give
+BOLT_TRIA_GUARD = True
+#: ... a trial starts only while the run has used under GUARD_START of the shell mesh's time (MESH_DEADLINE_S), and is
+#: let go (the mesh before it stands) once the run passes GUARD_TIME of it
+GUARD_START = 0.4
+GUARD_TIME = 0.65
+
+
+def _tria_faces(mesh, applied: dict, owners: list[str], everywhere: bool = False) -> list[int]:
+    """SHMESH-51o: the sewn faces of the mid-faces that hold two-ring bolt holes - those with triangles of their own
+    (`everywhere`: all of them, when the mesh has triangles anywhere)."""
+    lines = ((applied.get("quality") or {}).get("structure") or {}).get("hole_list") or []
+    two = {str(h.get("face")) for h in lines if h.get("bolt") and int(h.get("rings") or 0) >= ST.BOLT_RINGS}
+    if not two or not len(mesh.trias):
+        return []
+    q = len(mesh.quads)
+    with_t = {str(m) for m in mesh.mid[q:]}
+    return sorted(k for k, o in enumerate(owners) if str(o) in two and (everywhere or str(o) in with_t))
+
+
+def _not_worse(applied: dict, past_n: int, other: dict, other_n: int) -> bool:
+    """SHMESH-51o: a mesh no worse than another on the solver's limits (valid, past Nastran's, past the solver's own)
+    and on the user's lines (outside their outer limits, lines met)."""
+    if _past(applied) > _past(other) or past_n > other_n:
+        return False
+    a, b = _standing(applied, past_n), _standing(other, other_n)
+    return a[2] <= b[2] and a[3] <= b[3]
 
 
 def _generate(gmsh, tag_of: dict[int, int]) -> None:
@@ -1090,6 +1120,11 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
         asked: list[tuple[str, Any, int]] = []
         seated_now: list[tuple[str, Any, int]] = []
         n_seat = 0
+        # SHMESH-51o: the mesh made before one ring was tried on faces whose two rings left triangles, those faces per
+        # trial, and what each trial came to
+        guard_best: tuple | None = None
+        guard_faces: list[list[int]] = []
+        guard_log: list[dict] = []
 
         def redraw(wanted: list, seam_wanted: list, w_owner: list, s_owner: list) -> bool:
             """SHMESH-45k/49c: one more pass for both: the holes whose ring needed them drawn again as one circle, and
@@ -1147,6 +1182,12 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
 
         while True:
             t_pass = time.monotonic()
+            if guard_best is not None and MESH_DEADLINE_S > 0 and t_pass - started > GUARD_TIME * MESH_DEADLINE_S:
+                # (SHMESH-51o: a trial of one ring that runs long is let go: the mesh before it stands)
+                guard_log.append({"one_ring_faces": guard_faces[-1], "kept": "two rings", "why": "out of time"})
+                mesh, applied, past_n = guard_best
+                applied["quality"]["structure"]["bolt_guard"] = list(guard_log)
+                return mesh, applied, past_n
             try:
                 mesh, applied = _mesh_once(Path(brep), record, owners, float(mm_per_unit), log, target=target,
                                            hole_before=tuple((tuple(c), e) for c, e in redrawn),
@@ -1256,6 +1297,13 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
                 unmapped += 1
                 continue
             except _Periodic as p:
+                if guard_best is not None:
+                    # (SHMESH-51o: a trial of one ring that gmsh stops on is let go: the mesh before it stands)
+                    guard_log.append({"one_ring_faces": guard_faces[-1], "kept": "two rings",
+                                      "why": "gmsh stopped on a face"})
+                    mesh, applied, past_n = guard_best
+                    applied["quality"]["structure"]["bolt_guard"] = list(guard_log)
+                    return mesh, applied, past_n
                 if resplined >= RESPLINE_MAX:
                     raise ValueError(f"gmsh could not mesh {resplined + 1} periodic faces") from p
                 loops += p.loop
@@ -1273,6 +1321,14 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
                 brep = nxt
                 resplined += made
                 continue
+            except Exception as exc:  # noqa: BLE001 - only while one ring is tried: the mesh before it stands
+                if guard_best is None:
+                    raise
+                guard_log.append({"one_ring_faces": guard_faces[-1], "kept": "two rings",
+                                  "why": f"the trial failed ({type(exc).__name__})"})
+                mesh, applied, past_n = guard_best
+                applied["quality"]["structure"]["bolt_guard"] = list(guard_log)
+                return mesh, applied, past_n
             wanted = applied.pop("_redraw_wanted", [])
             seam_wanted = applied.pop("_seam_wanted", [])
             w_owner = applied.pop("_redraw_owners", [])
@@ -1346,6 +1402,46 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
                 mesh.notes.append(f"{resplined} face(s) gmsh could not mesh (a periodic surface, or a boundary it "
                                   "could not recover) were re-made as B-splines (the same surface) and meshed "
                                   "(SHMESH-11).")
+            if guard_best is not None:
+                # SHMESH-51o: the mesh with one ring on those faces against the one before it - fewer triangles and
+                # no worse on the solver's limits and the user's lines wins
+                b_mesh, b_applied, b_n = guard_best
+                guard_best = None
+                won = len(mesh.trias) < len(b_mesh.trias) and _not_worse(applied, past_n, b_applied, b_n)
+                guard_log.append({"one_ring_faces": guard_faces[-1], "triangles_two": int(len(b_mesh.trias)),
+                                  "triangles_one": int(len(mesh.trias)), "kept": "one ring" if won else "two rings"})
+                if not won:
+                    mesh, applied, past_n = b_mesh, b_applied, b_n
+                    applied["quality"]["passes"] = [str(x[0]) for x in passes]
+                    applied["quality"]["passes_s"] = [x[1] for x in passes]
+                applied["quality"]["structure"]["bolt_guard"] = list(guard_log)
+                if won:
+                    mesh.notes.append(f"One ring round the bolt holes of {len(guard_faces[-1])} face(s): with two "
+                                      f"rings the mesh had {guard_log[-1]['triangles_two']} triangle(s), with one "
+                                      f"{guard_log[-1]['triangles_one']} (SHMESH-51o).")
+            if (BOLT_TRIA_GUARD and ST.BOLTS and not resplined and len(guard_faces) < 2
+                    and (MESH_DEADLINE_S <= 0 or time.monotonic() - started < GUARD_START * MESH_DEADLINE_S)):
+                # SHMESH-51o: two rings never cost triangles one ring a hole would not have - first the faces with
+                # two-ring holes and triangles of their own, then (triangles left anywhere) every face with them
+                faces_g: list[int] = []
+                for every in ((False, True) if not guard_faces else (True,)):
+                    faces_g = [k for k in _tria_faces(mesh, applied, owners, everywhere=every)
+                               if -(k + BOLT_GRID_KEY) - 1 not in no_cut]
+                    if faces_g:
+                        break
+                if faces_g:
+                    guard_best = (mesh, applied, past_n)
+                    guard_faces.append(faces_g)
+                    passes[-1][0] = "two rings left triangles: one ring on their faces (start again)"
+                    keys_g = {-(k + BOLT_GRID_KEY) - 1 for k in faces_g}
+                    no_cut = {f for f in no_cut | keys_g if f < 0}
+                    refused = {k: v for k, v in refused.items() if k < 0}
+                    refused.update({k: {"kind": "bolt rings", "why": "its two rings left triangles",
+                                        "then": "one ring tried, the mesh with fewer triangles kept"} for k in keys_g})
+                    unmap = _keys_kept(unmap, set(faces_g), body_of) if GATHER else set()
+                    unmapped, compare, kept, before_guard = 0, {}, set(), None
+                    brep, reseated, redrawn, redraw_pass, asked, seated_now = unseated, 0, [], redraw_off, [], []
+                    continue
             return mesh, applied, past_n
 
 

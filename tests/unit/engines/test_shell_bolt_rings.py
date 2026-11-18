@@ -436,3 +436,127 @@ def test_a_band_moved_past_the_longest_edge_goes_back_to_where_it_was_made(tmp_p
     ed = np.linalg.norm(xyz[Q] - xyz[np.roll(Q, -1, axis=1)], axis=2)
     assert float(ed[band].max()) <= 15.0, float(ed[band].max())
     assert s["bolt_rings"] == {2: len(holes)}, s.get("bolt_rings")
+
+
+def _channel_both(tmp_path, length: float, web: float, web_holes: list[tuple[float, float, float]],
+                  flange_holes: list[tuple[float, float, float]]):
+    """A channel as _channel (10 mm plates, flanges 100 tall along both long edges of the web), with holes through
+    its web (x, y from the first flange's mid-plane, d) and through its first flange (x, z up from the web's
+    mid-plane, d)."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCylinder
+    from OCP.BRepTools import BRepTools
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
+    from OCP.ShapeUpgrade import ShapeUpgrade_UnifySameDomain
+
+    from meshpipeline.cad import midsurface as ms
+
+    def unify(s):
+        u = ShapeUpgrade_UnifySameDomain(s, True, True, True)
+        u.Build()
+        return u.Shape()
+
+    w_ = web - 10.0
+    shape = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), length, w_, 10.0).Shape()
+    for y0 in (-10.0, w_):
+        shape = unify(BRepAlgoAPI_Fuse(shape, BRepPrimAPI_MakeBox(gp_Pnt(0, y0, 0), length, 10.0, 100.0).Shape()).Shape())
+    for x, y, d in web_holes:
+        cyl = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(x, y - 5.0, -1), gp_Dir(0, 0, 1)), d / 2, 12.0).Shape()
+        shape = unify(BRepAlgoAPI_Cut(shape, cyl).Shape())
+    for x, z, d in flange_holes:
+        cyl = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(x, -11.0, z + 5.0), gp_Dir(0, 1, 0)), d / 2, 12.0).Shape()
+        shape = unify(BRepAlgoAPI_Cut(shape, cyl).Shape())
+    rec, surf = ms.extract(shape, mm_per_unit=1.0)
+    brep = tmp_path / "midsurface.brep"
+    BRepTools.Write_s(surf, str(brep))
+    return brep, rec
+
+
+def test_a_joint_cut_inside_a_bolt_box_column_lands_on_its_nodes(tmp_path):
+    """SHMESH-51m/51n, the real column's long plate: a web's row of bolt holes 57.2 mm from its joint with a flange
+    (a 29.2 mm cell between each 56 mm two-ring box and the joint), the flange's own bolt holes 38.1 mm either side of
+    each web hole's column. The flange's box sides cut the joint inside the web's box column (pieces of about 13 + 31
+    + 13 mm), which 4 segments under 15 mm cannot cover: the web's box side was given 6 and its band refused ("sides
+    [4, 4, 6, 4]: a quad past the solver's own limits"), and the flange's cells beside the joint were left with
+    opposite sides of 4 and 6 - 6b492f51: one ring round all 15 holes after 8 passes. Now each box side that would land
+    inside the other face's box column lands on a node of that box's side (its last piece slanted): one pass, two
+    rings round every hole, no triangle, nothing outside the user's edges."""
+    xs = [150.0 + 250.0 * k for k in range(5)]
+    brep, rec = _channel_both(tmp_path, 1300.0, 300.0, [(x, 57.2, 17.4) for x in xs],
+                              [(x + s, 50.0, 17.4) for x in xs for s in (-38.1, 38.1)])
+    mesh, applied = _mesh(brep, rec)
+    s = applied["quality"]["structure"]
+    assert s["bolt_rings"] == {2: 15}, s.get("bolt_rings")
+    assert applied["quality"]["passes"] == ["made"], applied["quality"]["passes"]
+    assert all(h.get("box_band") == "made" for h in s["hole_list"] if h.get("bolt"))
+    assert len(mesh.trias) == 0
+    rows = {r["field"]: r for r in applied["requirements"]["rows"]}
+    assert int(rows["min_edge"].get("outside") or 0) == 0 and int(rows["max_edge"].get("outside") or 0) == 0
+    _check(applied)
+
+
+def test_a_strip_between_a_bolt_box_and_a_joint_takes_the_boxs_count(tmp_path):
+    """SHMESH-51m/51n, the real column's 12-hole plate: a flange's row of bolt holes 45.1 mm up from its joint with
+    the web (a 56.0 x 17.1 mm strip between each two-ring box and the joint), the web's own bolt holes 38.1 mm either
+    side of each column. The strip's joint side was a chain the box's 4 could not cover, so the box's side took 6
+    (the strip mapped [6, 2, 6, 2]) and its band was refused - 6b492f51: one ring round 14 of the 15 holes, 12
+    triangles. Now the chain lands on the box's nodes and its pieces take their count from the box: one pass, every
+    band made, no triangle."""
+    xs = [150.0 + 250.0 * k for k in range(5)]
+    brep, rec = _channel_both(tmp_path, 1300.0, 300.0, [(x + s, 57.2, 17.4) for x in xs for s in (-38.1, 38.1)],
+                              [(x, 45.1, 17.4) for x in xs])
+    mesh, applied = _mesh(brep, rec)
+    s = applied["quality"]["structure"]
+    assert s["bolt_rings"] == {2: 15}, s.get("bolt_rings")
+    assert applied["quality"]["passes"] == ["made"], applied["quality"]["passes"]
+    assert all(h.get("box_band") == "made" for h in s["hole_list"] if h.get("bolt"))
+    assert len(mesh.trias) == 0
+    _check(applied)
+
+
+def test_two_rings_never_cost_triangles_one_ring_would_not_have():
+    """SHMESH-51o: the faces tried with one ring are those whose mid-face holds two-ring bolt holes and triangles of
+    its own (then every such face, when triangles are left anywhere); none without triangles. The mesh with one
+    ring is kept only when it is no worse on the solver's limits and the user's lines."""
+    from types import SimpleNamespace
+
+    from meshpipeline.engines.gmsh import shell_adapter as SA
+
+    applied = {"quality": {"structure": {"hole_list": [
+        {"face": "Mid_1", "bolt": "one of 4 alike holes in a row", "rings": 2},
+        {"face": "Mid_2", "bolt": "one of 4 alike holes in a row", "rings": 1},
+        {"face": "Mid_3", "rings": 2}]}}}
+    owners = ["Mid_1", "Mid_2", "Mid_3", "Mid_1", "Mid_4"]
+    tri = SimpleNamespace(quads=np.zeros((2, 4)), trias=np.zeros((2, 3)), mid=["Mid_1", "Mid_2", "Mid_1", "Mid_4"])
+    assert SA._tria_faces(tri, applied, owners) == [0, 3]
+    off = SimpleNamespace(quads=np.zeros((2, 4)), trias=np.zeros((1, 3)), mid=["Mid_1", "Mid_2", "Mid_4"])
+    assert SA._tria_faces(off, applied, owners) == [] and SA._tria_faces(off, applied, owners, True) == [0, 3]
+    none = SimpleNamespace(quads=np.zeros((2, 4)), trias=np.zeros((0, 3)), mid=["Mid_1", "Mid_2"])
+    assert SA._tria_faces(none, applied, owners, True) == []
+
+    def rec(past: int, beyond: int, met: int) -> dict:
+        return {"quality": {"valid": True, "nastran_past": {"skew": past}},
+                "requirements": {"rows": [{"field": "limit:max_edge", "id": "e", "beyond": beyond, "met": met > 0}]}}
+
+    assert SA._not_worse(rec(0, 0, 1), 0, rec(0, 2, 0), 0)
+    assert not SA._not_worse(rec(0, 2, 0), 0, rec(0, 0, 1), 0)
+    assert not SA._not_worse(rec(1, 0, 1), 0, rec(0, 0, 1), 0)
+
+
+def test_lines_nearer_than_a_sliver_are_one_line_in_a_face_with_bolt_holes():
+    """SHMESH-51p: a box side whose limits stop 0.005 mm short of a straight edge stood apart from it and left a
+    0.005 mm cell edge (a face of a real column was refused its grid for it). With `tiny` (faces with bolt holes) the
+    side is drawn on to the edge; without it (every other face) it stays where it was, as before."""
+    vals = [(0.0, "edge"), (0.005, "0"), (56.0, "1")]
+    lim = {"0": (0.005, 3.0), "1": (53.0, 59.0)}
+    apart = ST._cluster(vals, 7.5, lim, 4.4)
+    assert [round(at, 3) for at, _e, _s in apart] == [0.0, 0.005, 56.0]
+    one = ST._cluster(vals, 7.5, lim, 4.4, tiny=1.0)
+    assert [(round(at, 3), e, sides) for at, e, sides in one] == [(0.0, True, [0]), (56.0, False, [1])]
+    assert ST._tiny([SimpleWasher({"bolt": "a row"})], 10.0) == 1.0 and ST._tiny([SimpleWasher({})], 10.0) == 0.0
+
+
+class SimpleWasher:
+    def __init__(self, info: dict) -> None:
+        self.info = info
+

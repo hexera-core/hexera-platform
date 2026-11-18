@@ -15,6 +15,7 @@ from tests.unit.engines.test_mesh_requirements import CRITERIA, criteria_answer
 
 from meshpipeline.engines import mesh_requirements as MR
 from meshpipeline.engines import shell_structure as SS
+from meshpipeline.engines.gmsh import shell_adapter as SA
 from meshpipeline.engines.gmsh import shell_structured as ST
 from meshpipeline.engines.shell_mesh import ShellMesh
 
@@ -373,6 +374,9 @@ def test_a_ring_that_cannot_be_built_keeps_gmshs_mesh_there(web, monkeypatch):
 
     monkeypatch.setattr(ST, "ring_mesh", flaky)
     monkeypatch.setattr(ST, "BLOCKS", False)          # every washer then takes its own ring
+    # (SHMESH-51o would mesh the plate again with one ring round its bolt holes - the paving left where the ring failed
+    # has triangles - and that mesh, every ring built, would win: the washer guard alone is tested here)
+    monkeypatch.setattr(SA, "BOLT_TRIA_GUARD", False)
     mesh, applied = _mesh(brep, rec, _criteria())
     q = applied["quality"]
     assert q["valid"] and mesh.n_elements > 0
@@ -470,6 +474,7 @@ def test_every_hole_has_its_line_in_the_record(web, monkeypatch):
         return real(gmsh, w, index, xyz, mm)
 
     monkeypatch.setattr(ST, "ring_mesh", flaky)
+    monkeypatch.setattr(SA, "BOLT_TRIA_GUARD", False)     # (as above: the one-ring trial would build every ring)
     monkeypatch.setattr(ST, "BLOCKS", False)
     _mesh_, applied = _mesh(brep, rec, _criteria())
     lines = applied["quality"]["structure"]["hole_list"]
