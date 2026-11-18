@@ -2147,6 +2147,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
             q_face += [w.owner] * len(ring)
         box_done: set[int] = set()
         band_nodes: set[int] = set()        # SHMESH-51k: every node of a band made (its ring's, its box's, its own)
+        band_quads: list = []               # SHMESH-51l: the bands' quads, and their nodes where the band put them
         if ST.FREE_BAND and structure != "free":
             # SHMESH-48q: a free box's cell is our own two-to-one row of quads where its counts and shapes suit (gmsh's
             # paving stays where they do not)
@@ -2162,6 +2163,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                 box_done.add(w.box)
                 band_nodes.update(int(x) for x in np.unique(quads_x))
                 xyz = np.vstack([xyz, pts_x])
+                band_quads.append(np.asarray(quads_x, dtype=np.int64))
                 quads.append(quads_x)
                 q_face += [w.owner] * len(quads_x)
         band_done: set[int] = set()
@@ -2249,6 +2251,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                     node_edge[v] = -1
                     on_line[v] = False
                     vertex_edges.pop(int(v), None)
+        band_made = ((np.vstack(band_quads), np.array(xyz)) if BAND_GUARD and band_quads else None)
         if BAND_PINNED and band_nodes:
             # SHMESH-51k: a band's nodes stay where the band put them (as a ring's do): it was checked there against
             # the solver's limits, the quad lines and the user's longest edge, and the relaxing and mending after it
@@ -2401,6 +2404,25 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                 xyz, again = shell_quality.relax_past(xyz, Q, T, movable, rounds=RELAX_ROUNDS, weights=(64, 1),
                                                       project=project, limits=lim)
                 relaxed += again
+    if BAND_GUARD and band_made is not None:
+        # SHMESH-51l: a band was checked where it was made; a node of it the relaxing or mending moved goes back there
+        # wherever a quad of the band now comes out past the solver's limits or over the user's longest edge (on the
+        # real column a corner kite made at 14.4 mm came out 16.02 mm: its box's side node had moved 1.6 mm outward)
+        bq_, at_made = band_made
+        high_g = (sizing or {}).get("high_mm")
+        for _ in range(BAND_GUARD_ROUNDS):
+            m_ = shell_quality.quad_measures(xyz, bq_, extra=True)
+            bad_ = shell_quality._quad_past(m_)
+            if high_g is not None:
+                bad_ = bad_ | (np.asarray(m_["max_edge"]) > float(high_g))
+            if not bad_.any():
+                break
+            nodes_ = np.unique(bq_[bad_])
+            nodes_ = nodes_[np.linalg.norm(xyz[nodes_] - at_made[nodes_], axis=1) > 0.0]
+            if not len(nodes_):
+                break
+            xyz = np.array(xyz)
+            xyz[nodes_] = at_made[nodes_]
     # keep only the nodes the elements use, renumbered in order
     used = np.unique(np.concatenate([Q.ravel(), T.ravel()]))
     remap = np.full(len(xyz), -1, dtype=np.int64)
@@ -2753,8 +2775,14 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
 
 
 #: SHMESH-51: a refused face's bolt rings are kept in the faces refused as -k-1 (a quality line unmet), or as
-#: SHMESH-51k: a band's nodes are not moved after it is made (relaxing, mending): it was checked where it was made
-BAND_PINNED = True
+#: SHMESH-51k: a band's nodes are not moved after it is made (relaxing, mending): it was checked where it was made -
+#: off since SHMESH-51l: held fast, its box's side nodes could not even out the cells beside it, and on the real column
+#: a 12-hole plate's next passes went otherwise and 6 of its 12 bands came out past the solver's limits
+BAND_PINNED = False
+#: SHMESH-51l: a band's nodes move with the relaxing and mending as before, and go back to where the band put them
+#: wherever a quad of the band would come out past the solver's limits or over the user's longest edge
+BAND_GUARD = True
+BAND_GUARD_ROUNDS = 8
 #: SHMESH-51j: a two-ring bolt hole whose band was not made keeps its box too (one ring inside, its cell paved) - off:
 #: on the lab's webY8 the paved box cell came out past the solver's limits and SHMESH-51b lost the web's grid
 KEEP_BOX_BAND = False
