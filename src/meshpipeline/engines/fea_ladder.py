@@ -195,6 +195,19 @@ def pass_facts(n: int, rc, q: Mapping, plan: Mapping, log: str = "", killed: boo
             "out_of_memory": bool(killed and not built)}
 
 
+def limit_configured() -> bool:
+    """True when this deployment FIXED THE ELEMENT BUDGET by configuration (FEA_ELEMENT_LIMIT,
+    0 = off and off in production; engines/fea_driver.element_limit).
+
+    It is read here for the same reason `coarsened` is: an operator who has fixed the budget has
+    already said how fine this mesh may be, and tightening the zones that fell short of their rule
+    spends that budget on the one thing they capped. A demo or lab environment sets it; a customer's
+    run never does, so the ladder there behaves exactly as it always has.
+    """
+    from meshpipeline.settings import policy as polcfg
+    return max(0, int(getattr(polcfg, "FEA_ELEMENT_LIMIT", 0) or 0)) > 0
+
+
 def by_choice(plan: Mapping) -> bool:
     """A plan whose sizes are the user's choice: scaled to their element count, or sized per part as they asked."""
     t = plan.get("target") or {}
@@ -267,10 +280,12 @@ def lever_options(facts: Mapping, levers: list[dict], plan: Mapping) -> list[dic
                  "words": (f"{facts['cells']:,} elements, over the {facts['limit']:,} limit, so the next pass makes the "
                            f"finest zones {1 / factor:.3g} times coarser - never past what keeps elements valid.")}]
     if facts["short"]:
-        if "LAD-fea-3" in pulled or plan.get("coarsened") or by_choice(plan):
+        if ("LAD-fea-3" in pulled or plan.get("coarsened") or by_choice(plan)
+                or limit_configured()):
             # a plan coarsened to fit is short where it says, by choice: tightening those zones only
             # puts it over the limit again (PLAN-fea-8); so is a plan sized to the user's count or to the sizes
-            # they asked for (PLAN-fea-27/29): finer would only break what they asked
+            # they asked for (PLAN-fea-27/29): finer would only break what they asked; and so is a plan
+            # under an element budget this deployment fixed by configuration (limit_configured)
             return []
         zones = sorted(facts["short"])
         return [{"lever": "LAD-fea-3", "zones": zones, "inputs": {"short": zones},
