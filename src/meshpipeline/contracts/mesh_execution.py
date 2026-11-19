@@ -321,6 +321,8 @@ def hold_job_machines(job_id: Any, *, every_s: float = VM_HOLD_RENEW_S) -> Itera
         yield
     finally:
         stop.set()
+        # a renewal in flight finishes before the run goes on to release the hold, or it would write it back
+        keeper.join(timeout=60)
 
 
 def release_job_machines(job_id: Any) -> None:
