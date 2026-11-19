@@ -18,6 +18,7 @@
 #                    cad/repair/localize.py (the kernel helpers), and the loop driver (Task 11).
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import time
@@ -49,6 +50,21 @@ RESULT_BYTES_MAX = 6000
 TARGETS_MAX = 4
 #: Cameras one `look` reports, one per shown defect.
 CAMERAS_MAX = 6
+#: Rendered views ONE `look` may attach. Two, because a view is orientation, not evidence: one
+#: picture answers "which way am I facing", a second answers "and from the other side", and a
+#: third costs more context than it tells.
+IMAGES_PER_LOOK_MAX = 2
+#: Rendered views ONE REGION may ever produce, across every `look` of its investigation. The
+#: per-call cap alone would let a model spend the whole context on pictures by looking ten times.
+IMAGES_PER_REGION_MAX = 6
+#: The pixel size of a view. Square, and small enough that a vision route reads it as one tile.
+VIEW_SIZE = (512, 512)
+#: The share of a tool call's budget the renderer may have. Tessellating and drawing is the
+#: slowest thing `look` can do, and `look` must answer in text even when it draws nothing.
+VIEW_BUDGET_SHARE = 0.5
+#: How a handler hands rendered bytes to `run_tool`. A private key in the data dict, popped
+#: before anything serialises or clips it, so the bytes never become part of the text result.
+_VIEWS_KEY = "_view_bytes"
 #: Points a thickness estimate samples on the face it was asked about.
 THICKNESS_SAMPLES = 9
 ERROR_MAX = observe.REASON_MAX
@@ -78,6 +94,10 @@ class ToolResult:
     data: dict
     seconds: float
     error: str = ""
+    #: Rendered views, as PNG bytes, for the transport to attach to the tool-result turn BESIDE
+    #: the text - never inside it. `envelope` does not serialise these, deliberately: see its
+    #: docstring for why a picture must not compete with the measurements for the byte ceiling.
+    views: tuple[bytes, ...] = ()
 
 
 @dataclass(slots=True)
@@ -104,12 +124,20 @@ class Workspace:
     #: scratch clone; the real session is not reachable through it, so `edit` can reach a clone
     #: and nothing else. `edit` refuses - it never raises - when this is None.
     editor: Editor | None = None
+    #: Rendered views this REGION has already spent. One workspace is one region's investigation,
+    #: so this is where the per-region image budget lives; `_look` is its only writer.
+    views_used: int = 0
 
 
 LOOK = ToolSpec(
-    "look", {}, True,
+    "look", {"view": bool}, True,
     "Look at the region: its defects, its faces, the attempts already made on it, the part's "
-    "caps, and a review camera (centroid, normal, extent) per shown defect.")
+    "caps, and a review camera (centroid, normal, extent) per shown defect. Send "
+    '{"view": true} to also be SHOWN the region: up to '
+    f"{IMAGES_PER_LOOK_MAX} rendered images from the first of those cameras, attached to this "
+    f"result ({IMAGES_PER_REGION_MAX} per region in all). An image is a picture of the geometry "
+    "and nothing else - it orients you; the numbers are still the evidence. The answer carries "
+    "the same text whether or not a view could be drawn, and says why when none was.")
 MEASURE = ToolSpec(
     "measure", {"what": _WHATS, "targets": list}, True,
     "Measure the region. 'distance' is the minimum distance between two entities; 'thickness' is "
@@ -226,6 +254,126 @@ def _cameras(shape, defects) -> list[dict]:
     from meshpipeline.cad.repair.spotlight import camera_for
 
     return [camera_for(shape, defect) for defect in defects]
+
+
+def render_region(shape, cameras: list[dict], *, size: tuple[int, int] = VIEW_SIZE,
+                  budget_s: float) -> list[bytes]:
+    """One PNG per camera, in order. NEVER RAISES: any failure at all gives `[]`.
+
+    The tessellation and the off-screen draw both happen in `localize._bounded`'s FORKED CHILD,
+    never here. Three reasons, all of them load-bearding: `BRepMesh` holds the GIL, so a slow
+    part would block the loop past its budget with no way to interrupt it; vtk initialises a GL
+    context and leaks it, which a long-lived worker cannot afford once per `look`; and a kernel
+    crash on a pathological shape kills the child rather than the worker, in which case the pipe
+    closes empty and the answer is the same silence as a timeout. gmsh is not involved and no
+    mesher runs: `BRepMesh` is OpenCascade's own display tessellation.
+    """
+    if not cameras:
+        return []
+    from meshpipeline.cad.repair import localize
+
+    try:
+        drawn = localize._bounded(_render_kernel, shape, [dict(c) for c in cameras],
+                                  (int(size[0]), int(size[1])), budget_s=float(budget_s))
+    except Exception as exc:  # noqa: BLE001 - a view is optional; a failure here is silence
+        logger.info("investigator view: no render (%s: %s)", type(exc).__name__, exc)
+        return []
+    if not drawn:
+        return []
+    return [blob for blob in drawn if isinstance(blob, bytes) and blob]
+
+
+def _render_kernel(shape, cameras: list[dict], size: tuple[int, int]) -> list[bytes]:
+    """Tessellate once, then draw one PNG per camera. RUNS IN THE FORKED CHILD ONLY.
+
+    Returns PNG bytes, which is what crosses `_bounded`'s pipe: a vtk or OCP object could not.
+    """
+    import io
+
+    import numpy as np
+    from OCP.BRep import BRep_Tool
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopLoc import TopLoc_Location
+    from OCP.TopoDS import TopoDS
+    from PIL import Image
+
+    from meshpipeline.cad.occ_box import diagonal, incremental_mesh, loose_box
+    from meshpipeline.cad.repair.localize import _indexed
+
+    diag = float(diagonal(loose_box(shape)))
+    # OpenCascade's own display tessellation - NOT a mesher. No gmsh, no fTetWild, no VM.
+    incremental_mesh(shape, max(diag * _VIEW_CHORD_SHARE, 1e-9), _VIEW_ANGLE_RAD,
+                     relative=False, parallel=False)
+    found = _indexed(shape, TopAbs_FACE)
+    blocks: list = []
+    tris: list = []
+    base = 0
+    for i in range(1, found.Extent() + 1):
+        loc = TopLoc_Location()
+        tri = BRep_Tool.Triangulation_s(TopoDS.Face_s(found.FindKey(i)), loc)
+        if tri is None or tri.NbTriangles() == 0:
+            continue
+        trsf = loc.Transformation()
+        nodes = [tri.Node(k).Transformed(trsf) for k in range(1, tri.NbNodes() + 1)]
+        blocks.append(np.array([(p.X(), p.Y(), p.Z()) for p in nodes], dtype=float))
+        t = np.array([tri.Triangle(k).Get() for k in range(1, tri.NbTriangles() + 1)],
+                     dtype=np.int64) - 1 + base
+        tris.append(t)
+        base += len(nodes)
+    if not tris:
+        return []
+    xyz = np.vstack(blocks)
+    faces = np.vstack(tris)
+
+    import pyvista as pv
+
+    cells = np.hstack([np.full((len(faces), 1), 3, dtype=np.int64), faces]).ravel()
+    surface = pv.PolyData(xyz, cells)
+    width, height = int(size[0]), int(size[1])
+    out: list[bytes] = []
+    for camera in cameras:
+        centroid = [float(v) for v in camera.get("centroid_mm") or (0.0, 0.0, 0.0)]
+        normal = [float(v) for v in camera.get("normal") or (0.0, 0.0, 1.0)]
+        extent = float(camera.get("extent_mm") or 0.0)
+        plotter = pv.Plotter(off_screen=True, window_size=[width, height])
+        try:
+            plotter.background_color = pv.Color("white")
+            plotter.add_mesh(surface, color="#b0bec5", show_edges=True,
+                             edge_color="#37474f", line_width=1)
+            away = max(extent, diag * _VIEW_MIN_EXTENT_SHARE, 1e-6) * _VIEW_STANDOFF
+            plotter.camera.position = tuple(c + n * away
+                                            for c, n in zip(centroid, normal, strict=True))
+            plotter.camera.focal_point = tuple(centroid)
+            plotter.camera.up = _view_up(normal)
+            plotter.reset_camera_clipping_range()
+            image = plotter.screenshot(None, return_img=True)
+        finally:
+            plotter.close()
+        if image is None:
+            continue
+        buffer = io.BytesIO()
+        Image.fromarray(np.asarray(image)).save(buffer, format="PNG")
+        out.append(buffer.getvalue())
+    return out
+
+
+#: The view's tessellation and camera. A hundredth of the part diagonal is fine enough that a
+#: 512 px picture shows curvature, coarse enough that it is a display mesh and not a study.
+_VIEW_CHORD_SHARE = 0.01
+_VIEW_ANGLE_RAD = 0.5
+#: How far back from the defect the camera stands, in multiples of the defect's extent, and the
+#: floor under that extent so a hairline defect does not put the camera inside the material.
+_VIEW_STANDOFF = 3.0
+_VIEW_MIN_EXTENT_SHARE = 0.08
+
+
+def _view_up(normal: list[float]) -> tuple[float, float, float]:
+    """A world axis that is not the view direction, so the camera is never degenerate."""
+    axes = ((0.0, 0.0, 1.0), (0.0, 1.0, 0.0), (1.0, 0.0, 0.0))
+    for axis in axes:
+        if abs(sum(a * n for a, n in zip(axis, normal, strict=True))) < 0.9:
+            return axis
+    return axes[0]
 
 
 def _indexed_kind(kind: str):
@@ -436,7 +584,50 @@ def _look(ws: Workspace, args: dict, *, budget_s: float) -> dict:
                                          original=ws.original, face_reader=ws.face_reader)
     shown = {d.get("fingerprint") for d in observation.get("defects", ())}
     pictured = [d for d in ws.defects if str(d.fingerprint) in shown][:CAMERAS_MAX]
-    return {"observation": observation, "cameras": list(_cameras(ws.shape, pictured))}
+    cameras = list(_cameras(ws.shape, pictured))
+    data: dict = {"observation": observation, "cameras": cameras}
+    if not args.get("view"):
+        # NOT ASKED: not one byte different from the `look` that existed before views did, and no
+        # rendering work attempted. The posture is not even read.
+        return data
+    views, reason = _views(ws, cameras, budget_s=budget_s)
+    # THE HASH, NEVER THE BYTES. This is what the transcript keeps, so a replay can say which
+    # picture the model was shown without the transcript carrying a megabyte of it.
+    data["views"] = [{"camera": i, "sha256": hashlib.sha256(blob).hexdigest(),
+                      "bytes": len(blob), "size": list(VIEW_SIZE)}
+                     for i, blob in enumerate(views)]
+    if reason:
+        data["views_reason"] = reason
+    data[_VIEWS_KEY] = tuple(views)
+    return data
+
+
+def _views(ws: Workspace, cameras: list[dict], *, budget_s: float) -> tuple[list[bytes], str]:
+    """The views for one `look`, and the reason there are none. NEVER RAISES.
+
+    FAIL-CLOSED, and the posture is read with `getattr` because this module must behave
+    identically whether or not the setting exists: anything but the exact word "live" is off.
+    """
+    posture = str(getattr(rcfg, "CAD_REPAIR_INVESTIGATOR_IMAGES", "off") or "off")
+    if posture != "live":
+        return [], ("rendered views are off (CAD_REPAIR_INVESTIGATOR_IMAGES is not 'live'); "
+                    "the cameras above are the orientation available")
+    left = IMAGES_PER_REGION_MAX - int(ws.views_used)
+    allowed = min(IMAGES_PER_LOOK_MAX, max(left, 0), len(cameras))
+    if allowed <= 0:
+        return [], (f"this region has already been shown its {IMAGES_PER_REGION_MAX} views; "
+                    "no more will be drawn for it")
+    try:
+        drawn = list(render_region(ws.shape, cameras[:allowed], size=VIEW_SIZE,
+                                   budget_s=float(budget_s) * VIEW_BUDGET_SHARE))[:allowed]
+    except Exception as exc:  # noqa: BLE001 - `look` must answer in text whatever vtk did
+        logger.info("investigator view: render refused (%s: %s)", type(exc).__name__, exc)
+        drawn = []
+    if not drawn:
+        return [], ("no view could be drawn in the time allowed; the measurements above are the "
+                    "whole answer")
+    ws.views_used += len(drawn)
+    return drawn, ""
 
 
 def _measure(ws: Workspace, args: dict, *, budget_s: float) -> dict:
@@ -865,12 +1056,17 @@ def run_tool(ws: Workspace, name: str, args: object, *, budget_s: float) -> Tool
         return refused(bad or f"{spec.name} takes an object of arguments")
     try:
         data = _HANDLERS[spec.name](ws, dict(args), budget_s=float(budget_s))
+        # The image bytes leave by their own door. They are never passed to `observe._strict`,
+        # never serialised, and never counted against `RESULT_BYTES_MAX`: the transport attaches
+        # them to the tool-result turn as a separate content part.
+        views = tuple(data.pop(_VIEWS_KEY, ()) or ())
     except _Refused as exc:
         return refused(str(exc))
     except Exception as exc:  # noqa: BLE001 - a tool that failed is an answer, never a raise
         logger.info("investigator tool %s failed: %s: %s", spec.name, type(exc).__name__, exc)
         return refused(f"{type(exc).__name__}: {exc}")
-    return ToolResult(spec.name, True, observe._strict(data), time.monotonic() - started)
+    return ToolResult(spec.name, True, observe._strict(data), time.monotonic() - started,
+                      views=views)
 
 
 # --- the envelope -----------------------------------------------------------------------------
@@ -918,6 +1114,15 @@ def envelope(call: int, result: ToolResult) -> str:
     quoted by `json.dumps` here, so a defect message that reads like an instruction arrives as
     one JSON string and can add no key of its own. `tool_result_turn` does not sanitise, which is
     why this does.
+
+    A RENDERED VIEW IS NOT IN HERE, and that is the whole of the trade. `RESULT_BYTES_MAX` is a
+    budget for EVIDENCE: `_shrink` pays for an overrun by dropping measured items, so an image
+    serialised into `data` - even base64, even one of them - would evict defects, faces and
+    attempts to make room for a picture. The numbers are what the investigator reasons from; the
+    picture only tells it which way it is facing. So `ToolResult.views` travels beside this text
+    as its own content part on the tool turn, the text carries each image's sha256, size and byte
+    count instead, and the measurements keep the whole ceiling to themselves. A view therefore
+    costs context, which the per-call and per-region caps bound - it costs no evidence.
     """
     payload = {"tool_result": {"call": int(call), "tool": str(result.tool),
                                "ok": bool(result.ok),
