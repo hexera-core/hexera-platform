@@ -88,7 +88,8 @@ def _route_model(step: str) -> str:
         from meshpipeline.agents.builder.settings import BUILDER_ROUTE as route
     elif step == "planner":
         from meshpipeline.engines.snappy.settings import PLANNER_ROUTE as route
-    elif step == "intake":
+    elif step in ("intake", "repair_review"):
+        # the repair review rides the intake route (adapters/model_inference/router.py)
         from meshpipeline.agents.intake.settings import INTAKE_ROUTE as route
     elif step == "reviewer":
         from meshpipeline.agents.reviewer.settings import VISUAL_REVIEWER_ROUTE as route
