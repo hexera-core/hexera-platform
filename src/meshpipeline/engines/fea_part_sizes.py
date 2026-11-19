@@ -95,6 +95,19 @@ def words(ps: Mapping | None) -> list[str]:
     return PW.words(ps)
 
 
+def told(ps: Mapping | None, req: Mapping | None = None) -> list[str]:
+    """What the reading has to tell the user: its words when it tied a phrase to a part, set one aside or was
+    unsure of one (or could not be read), or when the notes ask a size in one named place (`req`'s local rows, whose
+    row points to these lines) - [] when it read the notes and found no part named in them. Its own words then only
+    explain why there was nothing for it, beside the rules' line on the asks they applied ("I found only an
+    instruction for 5 elements through the thickness, ..." next to "1 met", fea0162 round 3)."""
+    local = any(str(r.get("field") or "") == "local" for r in (req or {}).get("rows") or [] if isinstance(r, Mapping))
+    if (ps and ps.get("status") == "used" and not local
+            and not (ps.get("entries") or ps.get("dropped") or ps.get("unsure"))):
+        return []
+    return words(ps)
+
+
 def decisions(ps: Mapping | None) -> list[dict]:
     """The why-record entries: the shared reading (NOTE-4) and, when sizes came of it, this route's use (AI-fea-9)."""
     out = PW.decisions(ps, stage="fea_ai")
@@ -108,4 +121,4 @@ def decisions(ps: Mapping | None) -> list[dict]:
 
 
 __all__ = ["CONSUMER", "RULE", "SCALES", "decide", "decisions", "part_table", "per_part", "resolve_scales", "section",
-           "sizes_of", "words"]
+           "sizes_of", "told", "words"]

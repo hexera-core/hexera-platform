@@ -210,6 +210,24 @@ def _zone_row(z: Mapping, spots: Mapping[str, Mapping]) -> dict:
     return row
 
 
+#: NOTE-13: where the run hands the AI step the asks the rules apply themselves (with_rules_asks)
+RULES_ASKS_KEY = "fea_notes_by_rules"
+
+
+def rules_asks(req: Mapping | None) -> list[str]:
+    """The asks of the notes' reading (engines/mesh_requirements) the rules apply and report themselves: every row
+    but an element count (the AI reads that, AI-fea-4) and a size in one named place (the parts reader's, AI-fea-9)."""
+    return [str(r.get("asked") or "") for r in (req or {}).get("rows") or []
+            if isinstance(r, Mapping) and r.get("asked") and not str(r.get("field") or "").startswith("cells:")
+            and str(r.get("field") or "") != "local"]
+
+
+def with_rules_asks(state: Mapping, req: Mapping | None) -> Mapping:
+    """The run's state with the asks the rules handle (rules_asks), for the AI's brief; `state` itself when none."""
+    asks = rules_asks(req)
+    return {**state, RULES_ASKS_KEY: asks} if asks else state
+
+
 def brief(record: Mapping, state: Mapping, zone_list: list[dict], *, diag_m: float, limit: int) -> dict:
     """Everything the model is shown, as plain data with a fixed order (the decision cache keys the
     round by it: the same part and the same words give the same message)."""
@@ -245,9 +263,16 @@ def brief(record: Mapping, state: Mapping, zone_list: list[dict], *, diag_m: flo
             "qualifies (it is meshed coarser and kept - the mesh never removes geometry); a region "
             "they care about is a zone to refine; an element count they named is target_elements (a range: target_min and target_max); supports, "
             "loads, load histories and joints between parts are theirs to set in their solver on the "
-            "named faces (joints may be suggested). A number of elements through the walls they name is set by "
-            "the rules from their notes, after you - leave it to them and never say it is not applied. Say in "
-            "notes_remark what you did with them.")
+            "named faces (joints may be suggested). Say in notes_remark what you did with them.")
+        done = [str(a) for a in s.get(RULES_ASKS_KEY) or [] if str(a).strip()]
+        if done:
+            # NOTE-13: the asks the rules apply and report themselves (sizes, quality limits, controls), so the
+            # remark never calls one "guidance" or says it found nothing to do beside a line that says it was met
+            out["notes_applied_by_rules"] = done[:30]
+            out["user_notes_fea"] += (
+                " The asks in notes_applied_by_rules are applied by the rules and reported to the user with what "
+                "was built - not yours: leave them out of notes_remark, and leave notes_remark empty when nothing "
+                "else in the notes was yours to act on.")
     # AN ASSEMBLY (PLAN-fea-17, engines/fea_driver.prepare_assembly): its parts and where they meet,
     # for the joint suggestion (AI-fea-7) - the user's own answer on the stage is shown too
     asm = record.get("assembly_plan") or {}

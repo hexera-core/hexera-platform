@@ -118,9 +118,12 @@ def _key_numbers(payload: Mapping) -> list[tuple[str, str]]:
             out.append(("Worst scaled Jacobian", f"{_num(sj.get('measured'))} (needs {_limit(sj.get('op'), sj.get('limit'))})"))
         tw = _m(fea.get("through_wall"))
         if tw:
-            out.append(("Walls", "every wall at least 2 elements thick" if tw.get("ok")
-                        else f"{len(_l(tw.get('short')))} wall(s) thinner than 2 elements" if tw.get("short")
-                        else "not measured"))
+            # the count planned through every wall: the one the notes asked, else our 2 (engines/fea_results)
+            need = int(tw.get("needed") or 2)
+            out.append(("Walls", f"every wall at least {need} elements thick" if tw.get("ok")
+                        else f"{len(_l(tw.get('short')))} wall(s) thinner than {need} elements" if tw.get("short")
+                        else f"thinnest wall {_num(tw.get('min'))} elements thick, {need} planned"
+                        if tw.get("min") is not None else "not measured"))
     else:
         if sq.get("max_non_ortho") is not None:
             out.append(("Worst non-orthogonality", f"{_num(sq.get('max_non_ortho'))}°"))

@@ -150,6 +150,60 @@ def test_a_count_through_the_walls_is_met_when_the_mesh_measures_it():
     assert MR.summary(rep, kind="solid") == "Of the 1 thing you asked for: 1 met."
 
 
+def test_the_fea_ai_is_told_which_asks_the_rules_apply_and_the_parts_reader_says_nothing_of_none():
+    """fea0162, round 3: "Applied your note as guidance for through-thickness resolution." and "I found only an
+    instruction for 5 elements through the thickness, ..." beside "Of the 1 thing you asked for: 1 met."."""
+    from meshpipeline.engines import fea_ai as FA
+    from meshpipeline.engines import fea_part_sizes as PS
+    req, _d, _na = _read("5 elements through the thickness, about 500k elements",
+                         controls=[_ctl("wall_elements", "5 elements through the thickness", 5)],
+                         counts=[{"what": "target", "value": 500000, "quote": "about 500k elements"}])
+    notes = {"user_notes": [{"text": "5 elements through the thickness, about 500k elements"}]}
+    record = {"faces": {}, "hot_spots": [], "thickness": {"min_mm": 1.0}}
+    # the AI still reads the count itself (AI-fea-4): only what the rules apply is listed
+    assert FA.rules_asks(req) == ["5 elements through the thickness of every wall"]
+    told = FA.brief(record, FA.with_rules_asks(notes, req), [], diag_m=0.02, limit=1_000_000)
+    assert told["notes_applied_by_rules"] == ["5 elements through the thickness of every wall"]
+    assert "leave notes_remark empty when nothing else in the notes was yours to act on" in told["user_notes_fea"]
+    # nothing the rules apply: the brief (and the decision cache's key) is the one it always was
+    assert FA.with_rules_asks(notes, None) is notes
+    assert "notes_applied_by_rules" not in FA.brief(record, notes, [], diag_m=0.02, limit=1_000_000)
+    # the parts reader found no part named: its explanation is not a line of the result
+    nothing = {"status": "used", "entries": [], "dropped": [], "unsure": [],
+               "words": ["I found only an instruction for 5 elements through the thickness, which is an element count "
+                         "rather than a part-specific element size or refinement request."]}
+    assert PS.told(nothing, req) == [] and PS.words(nothing) == nothing["words"]
+    assert PS.told({**nothing, "dropped": ["the bracket: no such part"]}, req)
+    local = {**req, "rows": [*req["rows"], {"id": "r9", "field": "local", "asked": "finer on the bracket"}]}
+    assert PS.told(nothing, local) == nothing["words"]          # its row points at these lines
+    assert PS.told({"status": "failed", "note": "not read"}, req) == ["not read"]
+
+
+def test_the_report_holds_the_walls_to_the_count_asked():
+    """fea0162, round 3: "Elements through the thinnest wall (2 planned; ...)", limit 1.8, and "every wall at least 2
+    elements thick" while the notes asked 5."""
+    from meshpipeline.engines import verdict_limits as VL
+    from meshpipeline.render import mesh_report as RPT
+    q = {"element_order": 2, "fea": {"plan": True, "through_wall_min": 5.0, "through_wall_asked": 5}}
+    row = next(r for r in VL.fea_limits(q) if r["key"] == "through_wall_min")
+    assert row["label"] == "Elements through the thinnest wall (5 planned, as your notes ask; read to within 10%)"
+    assert row["limit"] == 4.5
+    q["fea"].pop("through_wall_asked")
+    row = next(r for r in VL.fea_limits(q) if r["key"] == "through_wall_min")
+    assert row["label"] == "Elements through the thinnest wall (2 planned; read to within 10%)" and row["limit"] == 1.8
+    assert VL.through_wall_planned({"through_wall_asked": 3}) == (3, 2.7, ", as your notes ask")
+    keys = dict(RPT._key_numbers({"surface": {"fea": {"through_wall": {"ok": True, "min": 5.0, "needed": 5}}}}))
+    assert keys["Walls"] == "every wall at least 5 elements thick"
+    keys = dict(RPT._key_numbers({"surface": {"fea": {"through_wall": {"ok": False, "min": 4.2, "needed": 5}}}}))
+    assert keys["Walls"] == "thinnest wall 4.2 elements thick, 5 planned"
+    # the plan's control carries the count asked, which the adapter hands the report
+    knobs = {"zones": [], "growth": 1.3, "gentle": False}
+    req, _d, _na = _read("5 elements through the thickness",
+                         controls=[_ctl("wall_elements", "5 elements through the thickness", 5)])
+    assert CA.asked_count({"controls": CA.apply("fea_solid", req, knobs)}) == 5
+    assert CA.asked_count({}) is None
+
+
 def test_a_gentler_grading_the_ladder_needed_is_kept_and_said():
     knobs = {"zones": [], "growth": 1.2, "gentle": True}
     status, built = CA.fea_growth(knobs, 1.5)

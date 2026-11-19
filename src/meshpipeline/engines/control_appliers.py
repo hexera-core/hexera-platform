@@ -55,8 +55,19 @@ def apply(lane: str, req: Mapping | None, target: dict) -> dict[str, dict]:
         except Exception:  # noqa: BLE001 - a control never fails a mesh
             logger.warning("mesh controls: %s on %s failed - the plan's own value stands", key, lane, exc_info=True)
             status, built = "not_applied", "it could not be applied here (an error of ours); our own setting is used"
-        out[key] = {"id": entry.get("id"), "status": status, "built": built}
+        out[key] = {"id": entry.get("id"), "status": status, "built": built,
+                    **({"value": entry["value"]} if isinstance(entry.get("value"), (int, float)) else {})}
     return out
+
+
+def asked_count(plan: Mapping | None, key: str = "wall_elements") -> int | None:
+    """The count the notes asked for a control the plan applied (its "controls", from `apply`), else None: what the
+    report holds the mesh to in place of our rule's number (elements through the walls: PLAN-fea-3's 2)."""
+    got = ((plan or {}).get("controls") or {}).get(key) or {}
+    v = got.get("value")
+    if got.get("status") not in ("applied", "nearest") or not isinstance(v, (int, float)) or isinstance(v, bool):
+        return None
+    return int(v)
 
 
 def report_row(lane: str, key: str, applied: Mapping | None = None) -> dict:
@@ -190,5 +201,5 @@ def shell_place_sizes(target: dict, value) -> tuple[str, str]:
     return ("nearest" if got.get("held") else "applied"), SP.summary_words(got)
 
 
-__all__ = ["RECORD_KEY", "RULE", "apply", "asked", "fea_growth", "fea_wall_elements", "report_row",
+__all__ = ["RECORD_KEY", "RULE", "apply", "asked", "asked_count", "fea_growth", "fea_wall_elements", "report_row",
            "shell_place_sizes", "snappy_cells_across", "snappy_surface_level"]

@@ -458,15 +458,14 @@ def mesh_as_of(state) -> str:
 
 
 async def read_requirements(ws: Path, state, *, job_id: str, run=None, publish=None,
-                            told: tuple[str, ...] = ()) -> dict:
+                            told: tuple[str, ...] = (), say: bool = True) -> dict:
     """NOTE-7..9: THE MESH REQUIREMENTS IN THE USER'S NOTES (engines/mesh_requirements), read once per run and
     checked: sizes for the whole mesh, the element kind, quality limits. The reading is cited, told to the user
     before any mesh is made (one short line each, and what was not applied), and kept in the workspace for the
     shell and mixed runs (their own processes). With no words nothing is asked of the model, nothing is cited,
     said or written: the run is exactly the run it always was. `told`: the fields this run says itself, with their
-    outcome (the element count the plan aims at, PLAN-fea-27), left out of the lines said here. Returns the reading's
-    section."""
-    from meshpipeline.contracts import narration as _N
+    outcome (the element count the plan aims at, PLAN-fea-27), left out of the lines said here. `say` False: read and
+    kept, said later (say_requirements). Returns the reading's section."""
     from meshpipeline.engines import mesh_requirements as MR
     from meshpipeline.engines import meshing_standard as MS
 
@@ -482,9 +481,21 @@ async def read_requirements(ws: Path, state, *, job_id: str, run=None, publish=N
     entries = ([*MR.decisions(read, stage="fea_ai"), *MS.decisions(read, stage="fea_ai")]
                if read.get("status") != "none" else [])
     _cite(job_id, [*entries, *MS.stage_decisions(sec, stage_name="fea_ai")])
+    if say:
+        await say_requirements(sec, publish, told=told)
+    return sec
+
+
+async def say_requirements(sec: dict, publish, *, told: tuple[str, ...] = ()) -> None:
+    """NOTE-7..9: the reading's lines, said once before any mesh is made (read_requirements says them itself unless
+    the run says them later, once it knows which fields it tells on its own)."""
+    from meshpipeline.contracts import narration as _N
+    from meshpipeline.engines import mesh_requirements as MR
+
+    if sec.get("status") == "none":
+        return
     for i, line in enumerate(MR.live_words(sec, told_elsewhere=told)):
         await _N.asay(publish, line, op_id=f"fea:notes:{i}")
-    return sec
 
 
 def tell_count(ws: Path, line: str) -> None:
@@ -1518,6 +1529,12 @@ def reaim_factor(plan: dict, facts: dict) -> float | None:
     return (cells / est) ** REAIM_DAMP
 
 
+def _requirements_of(plan: dict) -> dict | None:
+    """The notes' requirement set the plan carries (NOTE-7), or None."""
+    from meshpipeline.engines import mesh_requirements as MR
+    return MR.requirements_of(plan.get("requirements"))
+
+
 def _restate(record: dict, plan: dict) -> dict:
     """The plan's words and decisions again, now that it says what was coarsened."""
     plan["words"] = P.words(record, plan)
@@ -1528,7 +1545,7 @@ def _restate(record: dict, plan: dict) -> dict:
     plan["decisions"] = P.decisions(record, plan)
     plan = _with_ai(plan)
     # AI-fea-9: how the sizes in the notes were tied to the parts, and what was not applied
-    plan["words"] = [*plan["words"], *PS.words(plan.get("part_sizes"))]
+    plan["words"] = [*plan["words"], *PS.told(plan.get("part_sizes"), _requirements_of(plan))]
     if plan.get("requirements"):
         # NOTE-7, 8: what was read from the notes for the whole mesh, and what was not applied
         from meshpipeline.engines import mesh_requirements as MR
@@ -1569,7 +1586,7 @@ def built_remark(ws: Path, record: dict | None = None) -> None:
         line = BY_CHOICE_WORDS["count"]
     tell_count(ws, line)
     if plan.get("user_sizes") or (plan.get("part_sizes") or {}).get("status") not in (None, "none"):
-        said = P.user_words(plan)[:1] or PS.words(plan.get("part_sizes"))[:1]
+        said = P.user_words(plan)[:1] or PS.told(plan.get("part_sizes"), _requirements_of(plan))[:1]
         if plan.get("by_choice_failed") == "sizes":
             said = [BY_CHOICE_WORDS["sizes"]]
         if said:
@@ -2650,21 +2667,27 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     # words, asked once and checked; the rules make them exact. No answer: the rules' own plan. (The
     # limit it is shown is the fixed one, never the clock's, so the same part asks the same question
     # and the decision cache answers it the same way.)
-    ai = await FA.decide(record, state or {}, P.zones(record), diag_m=diag_m,
-                         limit=element_limit(record)[0], job_id=job_id, run=run, wait_s=ai_wait_s(run))
+    # NOTE-7..9: the mesh requirements the notes ask for (a global size, edge lengths, quality limits, the element
+    # kind, the controls), read once BEFORE the AI step, so the AI is told which asks the rules apply and report
+    # themselves (fea_ai.rules_asks) - it called "5 elements through the thickness" guidance the rules then met (job
+    # fea0162, round 3); the shell and mixed runs read them from the workspace, the solid plan takes the sizes below
+    say_later = asked is None
+    if asked is None:
+        asked = await read_requirements(ws, state, job_id=job_id, run=run, publish=publish, say=False)
+    from meshpipeline.engines import mesh_requirements as _MR
+    ai = await FA.decide(record, FA.with_rules_asks(state or {}, _MR.requirements_of(asked)), P.zones(record),
+                         diag_m=diag_m, limit=element_limit(record)[0], job_id=job_id, run=run,
+                         wait_s=ai_wait_s(run))
     # what the AI did with the user's notes, kept for the result's "From your notes" line
     if (ai.get("decision") or {}).get("notes_remark"):
         from meshpipeline.contracts.user_notes import record_remark
         record_remark(ws, ai["decision"]["notes_remark"], by="fea_ai")
     # PLAN-fea-27: an element count the user named, as the AI read it from their notes (AI-fea-4)
     target = element_target(state, ai)
-    # NOTE-7..9: the mesh requirements the notes ask for (a global size, edge lengths, quality limits, the element
-    # kind), read once; the shell and mixed runs read them from the workspace, the solid plan takes the sizes below
-    if asked is None:
+    if say_later:
         # the solid plan says the user's count itself, with what was planned (PLAN-fea-27): not said twice
-        from meshpipeline.engines.mesh_requirements import COUNT_FIELDS
-        asked = await read_requirements(ws, state, job_id=job_id, run=run, publish=publish,
-                                        told=COUNT_FIELDS if target and mesh_as_of(state) == "solid" else ())
+        await say_requirements(asked, publish,
+                               told=_MR.COUNT_FIELDS if target and mesh_as_of(state) == "solid" else ())
     # SHSTAGE-6: MESH AS: SHELL - the shell mesh and its solver files first, from the staged solid as read (the
     # assembly staging above never rewrites it). SHMESH-23: once the user's element count is read, so the shell's
     # sizes follow it as the solid's do.
