@@ -631,6 +631,29 @@ def _corpus_manifest(*, track: str, corpus_name: str, provenance: str, redistrib
         timeout_seconds=timeout_seconds, random_seed=random_seed)
 
 
+def write_bundle_sample(directory: Path, entries, *, seed: int):
+    """Record WHICH files an arm ran, beside its sealed bundle, as `sample.json`.
+
+    The gym refuses to compare two arms unless both state the same sample, by sha256 of these
+    bytes - the one guard that stops a 300-file run being scored against a different 300 files
+    and the difference being read as a gain. Without this nothing writes it, so every real
+    bundle was unscoreable.
+
+    Name and sha256 only: a sample is a statement about WHICH parts ran, never their geometry,
+    and no path is recorded, so the file is safe to keep and to publish beside results.
+    Returns the path written, or None when the run drew no sample (the whole track ran).
+    """
+    if not entries:
+        return None
+    body = {"seed": int(seed),
+            "files": [{"name": e["name"], "sha256": e["sha256"]}
+                      for e in sorted(entries, key=lambda e: e["sha256"])]}
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / "sample.json"
+    path.write_text(json.dumps(body, indent=2, sort_keys=True), encoding="utf-8")
+    return path
+
+
 def seal_corpus_bundle(writer, rows: list[dict], *, roots: list[Path], files: list[Path],
                        settings: dict, track: str = "unspecified", corpus_name: str = "",
                        provenance: str = "", redistribution: str = "internal",
@@ -1845,6 +1868,9 @@ def main() -> int:
             provenance=args.provenance, redistribution=args.redistribution,
             planner_mode=args.planner)
         print(f"bundle sealed at {sealed}")
+        written = write_bundle_sample(Path(sealed).parent, sample_entries, seed=args.seed)
+        if written is not None:
+            print(f"sample recorded at {written}")
     return 0
 
 
