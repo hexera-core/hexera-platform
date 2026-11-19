@@ -159,3 +159,101 @@ Integrated as CAD repair is (spec, "How it fits the repository"):
 
 No kill switch yet: nothing in this slice can change geometry, and CRS's `CAD_REPAIR_ENABLED`
 arrived with the code it guards.
+
+## 2026-11-19 - the clamp bug in T2, and the first cross-part run
+
+**The two T2 misses on nist_ftc_09 were a bug, not the method.** hole20 and hole25 sit 23 mm from
+the clamped (trimmed) face; their twins hole0/hole13 at the loaded end change compliance 17x less
+(-0.04% vs -0.69%), which is the bending moment, so T3 was right. Their local region reached past the
+clamp face, and the piece treated that face as FREE. `local.py` now drives any trimmed face inside a
+region with the global field (zero at the clamp, the prescribed displacement at the load). Also:
+`--k` did not move the region for small features (the `zone + 4h` floor dominates); `--grow` scales
+the whole padding. k = 6 and k = 3 gave identical regions and identical answers, which is that bug.
+
+**Corpus.** 30 downloaded parts and 7 synthetic families (58 STEP files with known features),
+licences in `hexera-work/corpus/manifest.json` (public domain, CC-BY/CC-BY-SA, LGPL, Apache, or
+generated). Excluded as unclear for company use: ABC/DeepCAD, unlicensed repos, GPL-origin test
+files. Copied to the bench at `~/bench/corpus2/corpus`.
+
+**First FEA set** (`run_set.sh fea_set1.txt`, scored with `score.py`; a row counts as a measurement
+when |T3| clears 3x its own part's noise floor; budget 0.1% on compliance):
+
+| part | noise | removals | measured | T2 rank | T2 linear | sign | T2/T3 | T1 rank | max abs T3 |
+|---|---|---|---|---|---|---|---|---|---|
+| NIST D2MI 904 (B-spline surfaces) | 0.007% | 7 | 4 | 1.00 | 1.00 | 1.00 | 1.02 | 0.20 | 1.48% |
+| NIST D2MI 906 (same part, analytic) | 0.014% | 9 | 3 | n/a | 1.00 | 1.00 | 0.96 | n/a | 1.48% |
+| holeplate_graded (r 1-10) | 0.006% | 10 | 10 | 0.98 | 1.00 | 1.00 | 0.94 | 0.88 | 1.13% |
+| lbracket_b (pre-fix local) | 0.020% | 4 | 4 | 0.60 | 1.00 | 1.00 | 0.84 | 1.00 | 4.50% |
+| lbracket_c | 0.029% | 2 | 2 | n/a | n/a | 1.00 | 0.49 | n/a | 0.22% |
+| tee_dn50_4b | 0.012% | 5 | 0 | | | | | | 0.013% |
+| KP08 housing | **0.268%** | 4 | 0 | | | | | | 0.27% |
+| SHF08 | **1.224%** | 2 | 0 | | | | | | 0.05% |
+| KFL08 housing | original did not mesh (gmsh high-order optimiser abort) | | | | | | | | |
+| KiCad heat sink 125x35x50 | original did not mesh (same abort; ~1.1M tets a variant) | | | | | | | | |
+
+Pooled, 43 removals, 23 measured: **T2 vs T3 rank 0.99, linear 0.99, sign 23/23, median ratio
+0.94**; **T1 rank 0.98** (22 holes). At the 0.1% budget T2 alone accepts 24 removals correctly, makes
+**one false accept** (holeplate hole6: T3 -0.112%, T2 -0.086%) and no false reject. The truly
+acceptable removals each save a median 3.1% of cells, at most 17.8%.
+
+Read with care: 23 measured rows is small; KP08 and SHF08 have noise floors (0.27%, 1.2%) that
+swallow every feature, so the invented load case suits them badly (probably small, curved trimmed
+ends); the 904/906 pair is the same part stored two ways and agrees with itself (1.480% vs 1.481%),
+which is the recogniser holding across surface representations.
+
+Fixed for the reruns: `harness._job` retries a mesh once without high-order optimisation when gmsh
+aborts with "Failed to reach critical value ... ScaledJac".
+
+## 2026-11-19 - CFD bench (summary of CFD-NOTES.md)
+
+Laminar simpleFoam in the product's mesh image, BCs on exact faces, the same one-at-a-time method,
+99 converged solves. The CFD result is different in kind from the FEA one:
+
+- single small features saved ~no cells and rarely cleared the noise floor (drag 0.18-0.26%, dp
+  0.29-1.43%); on nist_ftc_09 71% of the cells are at the finest level because of the plate's
+  thickness, so removals cannot save anything;
+- WHOLE PACKAGES did: the manifold's thread grooves were 48% of its mesh (199,065 -> 103,344 cells) for
+  dp -0.90%; on the heat sink the single-feature changes summed to ~0.7% of the package's drag change
+  (+1.26%), so per-feature verdicts did not certify the package;
+- the flow-relevant features are few and specific (the tee's bore-junction round: split +0.72 pp on
+  46k and 154k meshes) and most candidates of an internal part are DRY (16 of 19 on the tee) and need
+  no solve at all;
+- k-omega SST did not converge; no SST result is claimed.
+
+Consequences for the design: T0 for CFD is a dry-feature filter plus a cell-cost gate before any
+solve; verdicts must be on PACKAGES, which is what `package.py` now measures for FEA.
+
+## 2026-11-19 - FEA packages: the savings are in packages, and the sum of errors is a safe ledger
+
+`package.py`, on the eight parts whose original solved: `accepted` = every feature whose own removal
+moved compliance by at most 0.1%, `all` = every removed-and-solved feature; each removed in ONE
+defeaturing call (OCCT took every union), solved once, against the harness's reference solve.
+
+| part | package | members | true dC | sum of members | ratio | cells saved | sum of members' cells |
+|---|---|---|---|---|---|---|---|
+| nist_ftc_09 | accepted | 24 | -0.284% | -0.716% | 0.40 | **54.3%** | 92.1% |
+| nist_ftc_09 | all | 38 | -4.596% | -5.224% | 0.88 | 80.2% | 117.8% |
+| D2MI 904 | accepted | 6 | -0.034% | -0.134% | 0.25 | 3.2% | 12.2% |
+| D2MI 904 | all | 7 | -1.519% | -1.614% | 0.94 | 5.2% | 15.5% |
+| D2MI 906 | accepted | 8 | +0.033% | -0.066% | -0.51 | **22.3%** | 30.8% |
+| D2MI 906 | all | 9 | -1.452% | -1.547% | 0.94 | 25.6% | 34.8% |
+| holeplate_graded | all | 10 | -5.398% | -5.448% | 0.99 | 92.6% | 125.8% |
+| lbracket_c | all | 2 | -0.449% | -0.427% | 1.05 | 11.4% | 12.0% |
+| tee_dn50_4b | accepted = all | 5 | -0.011% | -0.049% | 0.23 | **23.4%** | 25.9% |
+| KP08 housing | accepted | 2 | +0.081% | +0.063% | 1.28 | **26.3%** | 27.3% |
+| KP08 housing | all | 4 | +0.367% | +0.506% | 0.72 | 49.8% | 54.6% |
+| SHF08 | accepted = all | 2 | +0.049% | +0.066% | 0.73 | 14.3% | 14.8% |
+
+- **The savings are in packages.** One harmless feature saves a median 3%; the package of all of a
+  part's harmless features saves 14-54% here, at a true compliance change of at most 0.08% except
+  nist_ftc_09 (-0.28% for 54% fewer cells - over a 0.1% budget, inside a 0.5% one).
+- **For FEA the SUM of members' errors is a conservative ledger.** Where the package effect is well
+  above noise (`all`), the true change is 0.88-0.99x the sum (0.72-1.05x everywhere). Where it is
+  small (`accepted`), the sum overstates it 2.5-4x - the members' individual T3 values each carry a
+  little remeshing bias, and 24 small biases add while the package pays one. The only package above
+  its sum is KP08 accepted (1.28x, 0.081% vs 0.063%), inside that part's 0.27% noise floor. So a
+  ledger that sums member errors would have kept every package inside the budget it claimed.
+- **Cells saved are sub-additive** (the sum overstates by 4-60%): features share the refinement zones
+  around them. A cost estimate must be made for the package, not summed.
+- Contrast CFD (entry above): there the members did NOT add up to the heat-sink package. The design
+  therefore keeps a final package-level check, and for CFD it is mandatory.
