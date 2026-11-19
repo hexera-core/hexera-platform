@@ -114,8 +114,26 @@ def _through_row(req: Mapping, got: dict, measured: float) -> dict:
             "delivered": said if met else f"{said}, not {int(n)}"}
 
 
+def _placed(row: Mapping, req: Mapping, places: Mapping) -> bool:
+    """Whether the parts reader (cad/part_words, the plan's "part_sizes") tied this size-in-a-place row's words to a
+    part or an area: an entry whose quote is the row's own (either holds the other) with parts it names."""
+    def squash(t: str) -> str:
+        return "".join(ch for ch in str(t or "").lower() if ch.isalnum())
+
+    if places.get("status") != "used":
+        return False
+    quote = next((str(e.get("quote") or "") for e in req.get("local") or [] if e.get("id") == row["id"]), "")
+    q = squash(quote or str(row.get("quote") or ""))
+    for e in places.get("entries") or []:
+        eq = squash(str(e.get("quote") or ""))
+        if q and eq and (q in eq or eq in q) and (e.get("parts") or e.get("rest_parts")):
+            return True
+    return False
+
+
 def report(mesh, req: Mapping | None, *, mm_per_unit: float = 1000.0, order: int = 2,
-           applied: Mapping | None = None, through_wall: float | None = None) -> dict | None:
+           applied: Mapping | None = None, through_wall: float | None = None,
+           places: Mapping | None = None) -> dict | None:
     """PLAN-fea-34: for every requirement read from the notes, what was asked and what the built solid mesh
     delivers (the shape of engines/shell_requirements.report). None with no requirement. `mm_per_unit`: the
     mesh's coordinates in millimetres each (the solid is meshed in metres). `applied`: what the plan's seam did with
@@ -132,6 +150,14 @@ def report(mesh, req: Mapping | None, *, mm_per_unit: float = 1000.0, order: int
     for row in req["rows"]:
         field = str(row["field"])
         flow = MR.elements_row(field, req, n, "solid") if field in MR.FLOW_FIELDS else None
+        if field == "local" and places is not None and not _placed(row, req, places):
+            # NOTE-6: a size in one named place the parts reader tied to no part or area of this one: nothing was set
+            # there, so never "applied as a setting" ("make the mesh finer at the fillets", fea0254, round 4: J)
+            where = next((str(e.get("where") or "") for e in req.get("local") or [] if e.get("id") == row["id"]), "")
+            flow = {"applied": False, "met": None,
+                    "delivered": (f"not applied - no such place was found on the part{f' ({where})' if where else ''}"
+                                  if places.get("status") == "used" else
+                                  "not applied - the notes about parts were not read this run, so no place was sized")}
         if flow is not None:
             got = flow
         elif field.startswith("limit:"):

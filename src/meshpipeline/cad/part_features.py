@@ -4,7 +4,7 @@
 """AREAS INSIDE A PART (NOTE-6).
 
 Each face belongs to at most one feature, taken in this order: holes (alike ones grouped), bores, notches, fillets
-(alike ones grouped), bosses and shafts (convex cylinders, alike ones grouped), thin walls (ribs, flanges: faces whose
+(alike ones grouped; the stress fillets, then the rounded edges the plan keeps the shape of), bosses and shafts (convex cylinders, alike ones grouped), thin walls (ribs, flanges: faces whose
 wall is under half the part's typical wall), and the largest flat faces. Feature_k rows carry "feature": True, the
 part they are in, a plain name ("4 holes, 8.5 mm across"), how many, their box and their faces."""
 from __future__ import annotations
@@ -87,6 +87,25 @@ def features(record: Mapping, surface) -> tuple[list[dict], dict[str, list[str]]
             n = len(group)
             take("fillets", f"{n} fillets, radius {_mm(r)}" if n > 1 else f"a fillet, radius {_mm(r)}", n,
                  [f for fs in group for f in fs])
+    # ROUNDED EDGES the plan keeps the shape of (engines/fea_plan's PLAN-fea-7 rounds) that are no stress fillet: a
+    # user's "the fillets" means them too (fea0254's 17 rounds were listed nowhere, the reader said "No fillet feature
+    # is listed" and nothing was refined). A blend is a torus, a hollow cylinder that is no hole or bore, or a convex
+    # one no larger than its part's typical wall (larger ones are bosses or shafts, below).
+    part_walls: dict[str, list[float]] = {}
+    for name, row in faces.items():
+        w = float(row.get("thickness_wall_mm") or row.get("thickness_median_mm") or 0.0)
+        if w > 0:
+            part_walls.setdefault(_part_of(name), []).append(w)
+    typical = {p: sorted(ws)[len(ws) // 2] for p, ws in part_walls.items()}
+    blends = by_part([(float(row["radius_mm"]), [name]) for name, row in faces.items()
+                      if row.get("radius_mm") and name not in taken and float(row["radius_mm"]) > 0
+                      and (row.get("kind") == "torus" or (row.get("kind") == "cylinder" and (
+                          row.get("concave") or float(row["radius_mm"]) <= typical.get(_part_of(name), 0.0))))])
+    for _p, seen in blends.items():
+        for r, group in _groups(seen):
+            n = len(group)
+            take("fillets", f"{n} rounded edges (fillets), radius {_mm(r)}" if n > 1
+                 else f"a rounded edge (fillet), radius {_mm(r)}", n, [f for fs in group for f in fs])
     bosses = by_part([(float(row["radius_mm"]), [name]) for name, row in faces.items()
                       if row.get("kind") == "cylinder" and row.get("radius_mm") and not row.get("concave")
                       and name not in taken])

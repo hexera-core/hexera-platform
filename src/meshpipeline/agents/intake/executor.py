@@ -1152,8 +1152,9 @@ class IntakeToolExecutor:
         # THE USER'S OWN WORDS (contracts/user_notes, NOTE-1): their answer to the notes question
         # and every message the model quoted as saying something specific, kept whole and verbatim -
         # never a click on a button the application offered (its words are ours, not a note)
+        from meshpipeline.agents.intake.flow import route_question
         notes, unmatched = un.capture(st.conversation, args.get("user_note_quotes") or (),
-                                       consumer="intake", offered=_offered_choices)
+                                       consumer="intake", offered=_offered_choices, route_question=route_question)
         if st.thermal and not notes and not un.asked(st.conversation):
             # THE NOTES ARE THE PLAN CARD'S BOX on every route (agents/intake/flow PLAN): never a chat
             # question, which asked an FEA user about "cells" and "a layer count". A whole thermal

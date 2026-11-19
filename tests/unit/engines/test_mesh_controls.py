@@ -334,6 +334,63 @@ def test_the_notes_labels_are_never_told_back_as_the_users_words():
     assert req["controls"]["wall_elements"]["value"] == 4
 
 
+def test_the_parts_reader_is_shown_the_rounded_edges_as_fillets():
+    """J: fea0254's 17 rounds were listed nowhere ("No fillet feature is listed") so "finer at the fillets" sized
+    nothing - and was still told "applied as a setting"."""
+    from types import SimpleNamespace
+
+    from meshpipeline.cad import part_features as PF
+    surface = SimpleNamespace(names=[], label=[], tris=[], xyz=[])
+    faces = {f"Face_{i}": {"kind": "plane", "thickness_wall_mm": 4.0, "area_mm2": 10.0} for i in range(1, 6)}
+    faces.update({"Face_6": {"kind": "cylinder", "radius_mm": 1.5, "concave": True, "thickness_wall_mm": 4.0},
+                  "Face_7": {"kind": "cylinder", "radius_mm": 1.5, "concave": True, "thickness_wall_mm": 4.0},
+                  "Face_8": {"kind": "torus", "radius_mm": 0.8},
+                  "Face_9": {"kind": "cylinder", "radius_mm": 2.0, "concave": False, "thickness_wall_mm": 4.0},
+                  "Face_10": {"kind": "cylinder", "radius_mm": 12.0, "concave": False, "thickness_wall_mm": 4.0}})
+    rows, faces_of = PF.features({"faces": faces, "hot_spots": []}, surface)
+    by_name = {r["name"]: faces_of[r["id"]] for r in rows}
+    assert by_name["2 rounded edges (fillets), radius 1.5 mm"] == ["Face_6", "Face_7"]
+    assert by_name["a rounded edge (fillet), radius 0.8 mm"] == ["Face_8"]
+    assert by_name["a rounded edge (fillet), radius 2 mm"] == ["Face_9"]
+    assert by_name["a boss or shaft, 24 mm across"] == ["Face_10"]          # larger than the wall: a boss
+    assert all(r["kind"] == "fillets" for r in rows if "rounded edge" in r["name"])
+
+
+def test_a_place_the_parts_reader_tied_to_nothing_is_not_applied():
+    """J: a place ask with no zone placed is "not applied - no such place found", never "applied as a setting"."""
+    from meshpipeline.engines import fea_requirements as FR
+    req, _d, _na = _read("make the mesh finer at the fillets",
+                         local=[{"where": "the fillets", "what": "finer", "value": 0, "unit": "none",
+                                 "quote": "make the mesh finer at the fillets"}])
+    row = next(r for r in req["rows"] if r["field"] == "local")
+    tied = {"status": "used", "entries": [{"quote": "make the mesh finer at the fillets", "parts": ["Feature_3"]}]}
+    assert FR._placed(row, req, tied) is True
+    assert FR._placed(row, req, {"status": "used", "entries": []}) is False
+    assert FR._placed(row, req, {"status": "used", "entries": [{"quote": "make the mesh finer at the fillets",
+                                                                "parts": []}]}) is False
+
+
+def test_a_route_answer_is_no_note_and_a_switch_does_not_turn_layers_off():
+    """L1: "FEA shell mesh", the answer to "What are you meshing this for?", was kept as a note; the engine switch's
+    summary said "wall layers: on -> none" for VMTK's own switch going with VMTK."""
+    from meshpipeline.agents.intake import approval as AP
+    from meshpipeline.agents.intake import flow as F
+    from meshpipeline.contracts import user_notes as UN
+    msgs = [{"role": "assistant", "content": "Geometry received. What are you meshing this for?"},
+            {"role": "user", "content": "FEA shell mesh"},
+            {"role": "assistant", "content": "Here's the plan. Add any notes, then press Proceed."},
+            {"role": "user", "content": "use 3 mm elements on the flanges"}]
+    notes, _un = UN.capture(msgs, ["FEA shell mesh", "use 3 mm elements on the flanges"], consumer="intake",
+                            route_question=F.route_question)
+    assert [n["text"] for n in notes] == ["use 3 mm elements on the flanges"]
+    before = {"mesh_engine": "vmtk", "engine_params": {"wall_layers": "on"}}
+    after = {"mesh_engine": "snappy", "engine_params": {}}
+    assert AP.changes_between(before, after) == ["engine: vmtk -> snappy"]
+    # on the same engine a setting turned off is still said
+    assert AP.changes_between(before, {"mesh_engine": "vmtk", "engine_params": {"wall_layers": "off"}}) == [
+        "wall layers: on -> off"]
+
+
 def test_a_gentler_grading_the_ladder_needed_is_kept_and_said():
     knobs = {"zones": [], "growth": 1.2, "gentle": True}
     status, built = CA.fea_growth(knobs, 1.5)

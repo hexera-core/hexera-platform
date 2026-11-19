@@ -686,6 +686,16 @@ def cfd_submission(messages, case: dict, *, engine: str, engine_params: dict) ->
     return out
 
 
+def route_question(text: Any) -> bool:
+    """Whether the application's message is one of the route's own questions - what the mesh is for, CFD or FEA,
+    the analysis, through or around: an answer to it chooses the route and is no note (contracts/user_notes.capture)."""
+    from meshpipeline.application import purpose_map as pm
+
+    t = str(text or "")
+    return any(q and q in t for q in ("What are you meshing this for?", pm.DOMAIN_QUESTION, pm.ANALYSIS_QUESTION,
+                                      FLOW_KIND_QUESTION))
+
+
 def with_conditions_sentence(messages, args: dict) -> dict:
     """CFDREQ-8: A SUMMARY REDONE IN THE MODEL'S OWN WORDS KEEPS THE CONDITIONS. The application's plan carries the
     conditions as one fixed sentence the run reads back (contracts/flow_conditions); a note at the plan card ("use
