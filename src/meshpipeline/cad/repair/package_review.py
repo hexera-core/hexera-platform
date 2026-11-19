@@ -93,6 +93,118 @@ def posture() -> str:
     return value if value == "live" else "off"
 
 
+# THE MEASURED OBJECTION - what a REJECT returns to the author, and the only thing it returns.
+#
+# The reviewer stays SEALED from the author. The author's attempt log says "rejected by review"
+# (session.REVIEW_REJECTED_REASON) and, under the live posture, WHICH MEASURED FIELD was objected
+# to and WHAT THE SESSION MEASURED there. The reviewer's sentence goes to the report and to the
+# reviewer's own next evidence; it never crosses to the author, because an author handed the
+# grader's reasoning learns to word its way past the grader (controller ruling, P3 Task 4).
+
+#: The ONE field name for "the reviewer named nothing this module recognises". Every unknown name,
+#: extra key or malformed objection collapses to it - a name the reviewer cannot write into.
+OBJECTION_UNSPECIFIED = "unspecified"
+
+#: THE CLOSED SET OF FIELDS A REJECTION MAY OBJECT TO - each a MEASURED key of `evidence_of`'s
+#: output: declared vs measured area and volume, the face and solid counts, the deviation fields
+#: and why they are or are not there, the mesh test's failure kinds before and after, and the
+#: defect codes cleared, revealed and remaining.
+#:
+#: IT CONTAINS NO FREE-TEXT FIELD, on purpose. `ops` (each operation's reason), `author_claim` and
+#: `review_rejects` (earlier reviewers' prose) are evidence keys and are deliberately absent: the
+#: objection is the one thing that crosses to the author, so the only strings it can name are ones
+#: this tuple already spells out.
+OBJECTION_FIELDS = (
+    "area_mm2",
+    "volume_mm3",
+    "faces",
+    "solids",
+    "deviation_mm",
+    "deviation_samples",
+    "deviation_faces",
+    "deviation_faces_skipped",
+    "deviation_status",
+    "mesh_before",
+    "mesh_after",
+    "defects_cleared",
+    "defects_revealed",
+    "defects_remaining",
+)
+
+#: Bounds on the measured value an objection carries, so one oversized evidence field cannot
+#: become the author's whole next observation.
+OBJECTION_ITEMS_MAX = 24
+OBJECTION_TEXT_MAX = 60
+
+
+#: APPENDED to REVIEW_SYSTEM under the live posture only, so with the posture off the reviewer is
+#: sent exactly the bytes it is sent today. It asks for a FIELD NAME, never an explanation: the
+#: author is shown the field and the session's own measurement of it, so a number or a sentence
+#: written here would be discarded anyway.
+OBJECTION_RULE = (
+    " if you reject, ALSO name the one measured field your objection rests on, as "
+    '{"objection": {"field": "<field>"}} beside verdict and reason, where <field> is exactly one '
+    "of: " + ", ".join(OBJECTION_FIELDS) + ". name the field only - no value and no explanation; "
+    "the repair's author is shown the field name and the measurement we took for it, never your "
+    "words. omit the key if no single field carries your objection.")
+
+
+def objection_posture() -> str:
+    """The measured-objection posture as the settings hold it now; anything but live is off.
+
+    READ DEFENSIVELY (`getattr`) AND FAIL CLOSED: with no such setting present at all - which is
+    the state until the flag is plumbed - this is "off", and every path below behaves exactly as
+    it did before the objection existed.
+    """
+    value = str(getattr(rcfg, "CAD_REPAIR_REVIEW_OBJECTION", "off") or "off")
+    return value if value == "live" else "off"
+
+
+def _measured(value: object) -> object:
+    """One evidence value as an objection may carry it: JSON scalars, and bounded lists and dicts
+    of them; anything else UNMEASURED. It never parses or reformats - the value stays the
+    session's own measurement - it only bounds it. PURE."""
+    if isinstance(value, bool):
+        return UNMEASURED
+    if isinstance(value, int):
+        return int(value)
+    if isinstance(value, float):
+        return _number(value)
+    if isinstance(value, str):
+        return value[:OBJECTION_TEXT_MAX]
+    if isinstance(value, (list, tuple)):
+        return [_measured(v) for v in list(value)[:OBJECTION_ITEMS_MAX]]
+    if isinstance(value, dict):
+        return {str(k)[:OBJECTION_TEXT_MAX]: _measured(v)
+                for k, v in list(value.items())[:OBJECTION_ITEMS_MAX]}
+    return UNMEASURED
+
+
+def _objection_of(reply: dict, evidence: dict) -> dict:
+    """The measured objection a rejection returns: `{"field": f, "measured": m}`. PURE.
+
+    FROM THE REPLY THIS TAKES ONE THING: a field NAME, which must be a member of
+    `OBJECTION_FIELDS` - a closed tuple of this module's own string literals. A non-string, an
+    unknown name, an extra key, a missing or malformed `objection`: all collapse to
+    `OBJECTION_UNSPECIFIED`. So the only strings that can leave here are ones this module wrote.
+
+    `measured` is read from the SESSION'S `evidence` under that field, NEVER from the reply: a
+    reviewer citing a number the session did not measure hands the author the session's number,
+    not its own. A field the evidence does not carry reads UNMEASURED, never 0.
+    """
+    field = OBJECTION_UNSPECIFIED
+    raw = reply.get("objection")
+    if isinstance(raw, dict) and set(raw) == {"field"}:
+        named = raw["field"]
+        if isinstance(named, str) and named in OBJECTION_FIELDS:
+            # NAMED, NOT COPIED: our own tuple's member, so not even an equal string object from
+            # the reply is what travels on.
+            field = OBJECTION_FIELDS[OBJECTION_FIELDS.index(named)]
+    if field == OBJECTION_UNSPECIFIED or field not in evidence:
+        return {"field": field, "measured": UNMEASURED}
+    return {"field": field, "measured": _measured(evidence[field])}
+
+
 def _configured() -> bool:
     """Is a model router configured? No router -> no review -> reject."""
     from meshpipeline.contracts import model_inference
@@ -281,9 +393,17 @@ def _ask_sync(system: str, user: str, *, job_id: str, timeout_s: float) -> dict 
     return reply if isinstance(reply, dict) else None
 
 
-def _verdict_of(reply: dict) -> tuple[str, str]:
-    """The strict form: EXACTLY {verdict, reason}, verdict accept or reject, reason non-empty."""
-    if set(reply) != {"verdict", "reason"}:
+def _verdict_of(reply: dict, *, objection: bool = False) -> tuple[str, str]:
+    """The strict form: EXACTLY {verdict, reason}, verdict accept or reject, reason non-empty.
+
+    With `objection` - the live posture only - an `objection` key is ALSO allowed, and only that
+    one extra key. With the posture off the schema is untouched, so a reply carrying an objection
+    is the malformed reject it is today.
+    """
+    allowed = [{"verdict", "reason"}]
+    if objection:
+        allowed.append({"verdict", "reason", "objection"})
+    if set(reply) not in allowed:
         return REJECT, "malformed reply: not exactly {verdict, reason}"
     reason = reply["reason"]
     if not isinstance(reason, str) or not reason.strip():
@@ -298,7 +418,24 @@ def _verdict_of(reply: dict) -> tuple[str, str]:
 def review_package(evidence: dict, *, timeout_s: float, deadline_s: float | None = None,
                    job_id: str = "",
                    clock: Callable[[], float] = time.monotonic) -> tuple[str, str]:
-    """("accept" | "reject", reason) for one package. EVERY NO-ANSWER IS A NAMED REJECT.
+    """("accept" | "reject", reason) for one package - `review_package_objection` without the
+    objection. The pre-objection signature, so every existing caller is unchanged."""
+    verdict, reason, _ = review_package_objection(
+        evidence, timeout_s=timeout_s, deadline_s=deadline_s, job_id=job_id, clock=clock)
+    return verdict, reason
+
+
+def review_package_objection(
+        evidence: dict, *, timeout_s: float, deadline_s: float | None = None,
+        job_id: str = "",
+        clock: Callable[[], float] = time.monotonic) -> tuple[str, str, dict | None]:
+    """("accept" | "reject", reason, objection) for one package. EVERY NO-ANSWER IS A NAMED REJECT.
+
+    `objection` is the MEASURED objection (`_objection_of`), and is not None only for a REJECT
+    under the live `CAD_REPAIR_REVIEW_OBJECTION` posture - the session hands it to the author and
+    keeps `reason` for the report and the reviewer's own next evidence. An ACCEPT has nothing to
+    object to (None). A no-answer reject named no field, so it carries the UNSPECIFIED objection
+    rather than inventing one: the author is still owed the fact that review refused it.
 
     `deadline_s` is an ABSOLUTE `clock()` reading the review must finish by (the model_author
     clock pattern): the call's timeout is the lesser of `timeout_s` and the time left, and with
@@ -306,21 +443,33 @@ def review_package(evidence: dict, *, timeout_s: float, deadline_s: float | None
     hung call, a reply with no JSON object, a malformed reply and an unknown verdict are rejects
     too, each with its reason.
     """
+    live = objection_posture() == "live"
+    unnamed = {"field": OBJECTION_UNSPECIFIED, "measured": UNMEASURED} if live else None
+
+    def rejected(reason: str) -> tuple[str, str, dict | None]:
+        return REJECT, reason, unnamed
+
     if not _configured():
-        return REJECT, NOT_CONFIGURED
+        return rejected(NOT_CONFIGURED)
     timeout = float(timeout_s)
     if deadline_s is not None:
         left = float(deadline_s) - clock()
         if not left > 0.0:   # NaN-safe
-            return REJECT, NO_TIME
+            return rejected(NO_TIME)
         timeout = min(timeout, left)
     if not timeout > 0.0:
-        return REJECT, NO_TIME
+        return rejected(NO_TIME)
     try:
         user = json.dumps(evidence, sort_keys=True, allow_nan=False, default=str)
     except ValueError:
-        return REJECT, "the evidence is not JSON-safe (a non-finite measurement)"
-    reply = _ask_sync(REVIEW_SYSTEM, user, job_id=job_id, timeout_s=timeout)
+        return rejected("the evidence is not JSON-safe (a non-finite measurement)")
+    # The objection rule is APPENDED, never folded in: with the posture off the reviewer is sent
+    # the same bytes it is sent today.
+    system = REVIEW_SYSTEM + (OBJECTION_RULE if live else "")
+    reply = _ask_sync(system, user, job_id=job_id, timeout_s=timeout)
     if reply is None:
-        return REJECT, NO_REPLY
-    return _verdict_of(reply)
+        return rejected(NO_REPLY)
+    verdict, reason = _verdict_of(reply, objection=live)
+    if verdict == ACCEPT or not live:
+        return verdict, reason, None
+    return verdict, reason, _objection_of(reply, evidence)
