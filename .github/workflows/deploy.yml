@@ -1649,6 +1649,10 @@ jobs:
       # Tier 2b runs fTetWild on a customer's part, so it needs `live` and not merely a v3 run:
       # a shadow run records the ladder's questions, it does not start the tolerant mesher.
       CAD_REPAIR_TOLERANT_PROBE: ${{ needs.target.outputs.crs_v3 == 'live' && 'live' || '' }}
+      # THE POSTURE CARRIED THROUGH rather than mapped: the investigator reads
+      # shadow/live/off, so a shadow slug gets a shadow investigation - recorded, executing
+      # nothing - and a live slug a live one. Empty on shared dev and prod like the rest.
+      CAD_REPAIR_INVESTIGATOR: ${{ needs.target.outputs.crs_v3 != '' && needs.target.outputs.crs_v3 || '' }}
     steps:
       # A SHALLOW CHECKOUT IS ENOUGH HERE, unlike release's. Nothing in this job reads history:
       # lib.sh derives the image tag from `rev-parse --short=12 HEAD` plus a `diff --quiet HEAD`

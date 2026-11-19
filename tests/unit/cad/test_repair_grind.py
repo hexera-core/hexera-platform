@@ -28,7 +28,8 @@ _SPEC.loader.exec_module(harvest)
 
 #: The modules allowed to call the predictor. Task 2's goal verdict records it; Task 8 adds the
 #: first reader (investigator_budget.py) and extends this set deliberately.
-CONSUMERS = {"cad/repair/goal.py"}
+CONSUMERS = {"cad/repair/goal.py", "cad/repair/investigator_budget.py",
+             "cad/repair/investigator.py"}
 
 #: The stage a legacy manifest row's family was refused in (the harvest's figures: 99% of each).
 _LEGACY_STAGE = {"overlapping_facets": "3d", "edge_through_face": "3d", "no_volume": "3d",

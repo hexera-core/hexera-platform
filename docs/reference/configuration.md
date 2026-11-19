@@ -489,6 +489,50 @@ is a changed part, and the reviewer is what replaces a numeric gate for an opera
 Startup logs a warning when `CAD_REPAIR_CLOSE_WIRE_GAPS` is on while `CAD_REPAIR_PACKAGE_REVIEW` is
 not `live`.
 
+## The repair investigator's budget
+
+`CAD_REPAIR_INVESTIGATOR` (default `off`) decides who authors a failing region's target package.
+`off` is byte-for-byte the prior behaviour: the investigator modules are never imported and the
+single-shot model author (`CAD_REPAIR_LLM_AUTHOR`) is selected exactly as before. `shadow` runs an
+investigation beside the driving author, records what it proposed, and executes nothing of it -
+and only when the whole investigation fits in the time left, grace included, so a shadow run can
+never cost the live repair anything. `live` lets the investigation author the package, which is
+still a claim the session proves under the same caps and still goes to the package reviewer. Only
+the exact strings `shadow` and `live` turn it on; anything else reads as `off` and says so in the
+log. The posture does nothing without `CAD_REPAIR_REGION_LOOP=live` - only the region-scoped driver
+reads the author seam - and startup warns when it is asked for without it.
+
+**What an investigation may spend is a per-part compute tier, not a fixed number of attempts.**
+The part's tier comes from the kind of mesh failure gmsh reported, the stage it was refused in and
+the face count (`cad/repair/grind.py`), and the tier picks one of three budgets - tool calls, model
+calls and wall seconds. A part nobody could measure is `unknown`, and `unknown`, like any
+unrecognised tier, gets the **smallest** budget: the fail-closed direction is less spend, never
+more. The budgets themselves are not settings. They are policy constants moved only by the corpus
+gym, because a budget is a number measured offline rather than a deployment knob.
+
+Three settings bound the spend a deployment does own:
+
+- `CAD_REPAIR_INVESTIGATOR_CALL_TIMEOUT_S` (default `20.0`) is the longest one investigator model
+  call may take. It is cut further to what is left of the region's wall and of the run, so a
+  generous value cannot outlive the run.
+- `CAD_REPAIR_INVESTIGATOR_MODEL_CALLS_MAX` (default `48`) is a **run-wide** ceiling across every
+  region, shadow or live, above the per-region budgets that bound one region each.
+- `CAD_REPAIR_INVESTIGATOR_REGION_SHARE` (default `0.5`) is the fraction of the time left above the
+  run's final reserve that one region's investigation may take, so the first failing region can
+  never leave the next one with nothing.
+
+An investigation has no clock of its own: it is bounded by the run's one absolute deadline less the
+walk's final-verification reserve. It is also forced to conclude while the time its own proof and
+review still need is in hand - one scoped mesh probe when `CAD_REPAIR_MESH_PROBE=live`, plus
+`CAD_REPAIR_PACKAGE_REVIEW_TIMEOUT_S` when the reviewer is live - because a package nobody has time
+to prove is not a repair.
+
+`CAD_REPAIR_INVESTIGATOR_IMAGES` (default `off`) decides whether the investigator's `look` tool may
+carry a rendered image as well as its text observation. It stays `off` everywhere: nothing has ever
+sent an image on the repair-review route, and whether that route accepts one is unverified. Unlike
+the postures above, it is deliberately **not** plumbed through the deploy path, so no environment
+can turn it on until a measured router check says it works.
+
 ## Filesystem paths
 
 Path defaults are **relative** and resolved by runtime against the process working directory.
@@ -518,7 +562,7 @@ API: it logs that the directory is missing and leaves `/ui` and `/static` unmoun
 
 <!-- Regenerate: python -m meshpipeline.settings.inventory --reference -->
 
-Every supported setting (299 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
+Every supported setting (304 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
 
 | Setting | Exposure | Read by | Secret |
 |---|---|---|---|
@@ -598,6 +642,11 @@ Every supported setting (299 entries). `template` settings are the ones `.env.ex
 | `CAD_REPAIR_FIX_SMALL_FACES` | internal | app |  |
 | `CAD_REPAIR_FRAGMENT_BODIES` | internal | app |  |
 | `CAD_REPAIR_HEAL_SELF_INTERSECTIONS` | internal | app |  |
+| `CAD_REPAIR_INVESTIGATOR` | internal | app |  |
+| `CAD_REPAIR_INVESTIGATOR_CALL_TIMEOUT_S` | internal | app |  |
+| `CAD_REPAIR_INVESTIGATOR_IMAGES` | internal | app |  |
+| `CAD_REPAIR_INVESTIGATOR_MODEL_CALLS_MAX` | internal | app |  |
+| `CAD_REPAIR_INVESTIGATOR_REGION_SHARE` | internal | app |  |
 | `CAD_REPAIR_LLM_AUTHOR` | internal | app |  |
 | `CAD_REPAIR_LLM_AUTHOR_CALLS_MAX` | internal | app |  |
 | `CAD_REPAIR_LLM_AUTHOR_TIMEOUT_S` | internal | app |  |

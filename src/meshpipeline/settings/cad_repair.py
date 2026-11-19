@@ -523,3 +523,75 @@ _warn_unreviewed_closure(CAD_REPAIR_CLOSE_WIRE_GAPS, CAD_REPAIR_PACKAGE_REVIEW)
 #: call that does not answer in time is a reject.
 CAD_REPAIR_PACKAGE_REVIEW_TIMEOUT_S: float = float(
     optional_env("CAD_REPAIR_PACKAGE_REVIEW_TIMEOUT_S", "20.0"))
+
+def _investigator_posture() -> str:
+    """The investigator's posture, FAILING CLOSED: only the exact strings `shadow` and `live` turn
+    it on, and anything else but `off` is read as off OUT LOUD - `_llm_author_posture`'s rule,
+    because this one puts a model in a TOOL LOOP over a customer's geometry, with its own compute
+    budget, where the plain model author got one bounded call."""
+    raw = optional_env("CAD_REPAIR_INVESTIGATOR", "off")
+    if raw not in ("live", "shadow", "off"):
+        logger.warning("CAD_REPAIR_INVESTIGATOR=%r is not 'live', 'shadow' or 'off'; reading it "
+                       "as off", raw)
+    return raw if raw in ("live", "shadow") else "off"
+
+
+#: Whether the region loop's author is the bounded INVESTIGATOR (cad/repair/investigator.py) rather
+#: than the single-shot model author. "off" is byte-for-byte the prior behaviour: the investigator
+#: modules are never imported and `select_author` is called exactly as now. "shadow" runs an
+#: investigation beside the driving author and records it, executing nothing of it, and only when
+#: the whole investigation fits in the time left. "live" lets the investigation author the region's
+#: target package - still a claim the session proves under the same caps, and still reviewed.
+#: Read only by the region-scoped driver (CAD_REPAIR_REGION_LOOP=live).
+CAD_REPAIR_INVESTIGATOR: str = _investigator_posture()
+
+#: Seconds ONE investigator model call may take. Cut further to what is left of the region's wall
+#: and of the run (cad/repair/investigator_budget.InvestigationClock.left), so a generous value
+#: here cannot outlive the run.
+CAD_REPAIR_INVESTIGATOR_CALL_TIMEOUT_S: float = float(
+    optional_env("CAD_REPAIR_INVESTIGATOR_CALL_TIMEOUT_S", "20.0"))
+
+#: The most investigator model calls one repair RUN may make, across every region, shadow or live -
+#: a hard ceiling on spend above the per-region budgets, which bound one region each. A capability
+#: refusal that falls back to the JSON transport is not charged against it.
+CAD_REPAIR_INVESTIGATOR_MODEL_CALLS_MAX: int = int(
+    optional_env("CAD_REPAIR_INVESTIGATOR_MODEL_CALLS_MAX", "48"))
+
+#: The fraction of the time left above the final reserve that ONE region's investigation may take.
+#: At the 0.5 default the first region can never leave the second with nothing, and the budget's
+#: own wall still caps it.
+CAD_REPAIR_INVESTIGATOR_REGION_SHARE: float = float(
+    optional_env("CAD_REPAIR_INVESTIGATOR_REGION_SHARE", "0.5"))
+
+
+def _investigator_images_posture() -> str:
+    """The `look` tool's image posture, FAILING CLOSED: only the exact string `live` turns it on.
+
+    Parsed here so the inventory lists it once, and NOT plumbed through the deploy path: nothing
+    has ever sent an image on the repair-review route, so it stays off everywhere until Task 14's
+    measured router check passes.
+    """
+    raw = optional_env("CAD_REPAIR_INVESTIGATOR_IMAGES", "off")
+    if raw not in ("live", "off"):
+        logger.warning("CAD_REPAIR_INVESTIGATOR_IMAGES=%r is neither 'live' nor 'off'; reading it "
+                       "as off", raw)
+    return "live" if raw == "live" else "off"
+
+
+#: Whether the investigator's `look` tool may carry a RENDERED IMAGE as well as its text
+#: observation. "off" is text-first: an observation plus the review camera's numbers. "live" is
+#: Task 14's and needs a measured check that the repair-review route accepts images at all.
+CAD_REPAIR_INVESTIGATOR_IMAGES: str = _investigator_images_posture()
+
+
+def _warn_inert_investigator(investigator: str, region_loop: str) -> None:
+    """Say out loud when an investigator is asked for but the driver it lives in is not: the author
+    seam is read only by the region-scoped driver, so with CAD_REPAIR_REGION_LOOP off a shadow or
+    live CAD_REPAIR_INVESTIGATOR is silently inert (the `_warn_inert_author` rule)."""
+    if investigator != "off" and region_loop != "live":
+        logger.warning("CAD_REPAIR_INVESTIGATOR=%s but CAD_REPAIR_REGION_LOOP=%r: the "
+                       "investigator is never asked - only the region-scoped driver reads it",
+                       investigator, region_loop)
+
+
+_warn_inert_investigator(CAD_REPAIR_INVESTIGATOR, CAD_REPAIR_REGION_LOOP)
