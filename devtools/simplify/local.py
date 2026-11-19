@@ -190,7 +190,7 @@ def _one(args) -> tuple[str, dict]:
     h = h_global / refine
     out = Path(harness_dir) / "local" / fid
     try:
-        shape = H.read_step(step)
+        shape = H.prepare(step)[0]
         feats, faces, _ = H.recognise(shape, diag)
         f = next((x for x in feats if x.id == fid), None)
         if f is None or f.faces != feat["faces"]:

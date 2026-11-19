@@ -276,8 +276,16 @@ class LoadCase:
     axis: int          # longest bbox axis
     lo: float
     hi: float
-    band: float        # every node within this of an end is fixed (low end) or loaded (high end)
+    band: float        # the part is trimmed this far in from each end; the cut faces carry the BCs
     bend_dir: int      # the axis the load pushes along (second-longest)
+
+    @property
+    def lo_cut(self) -> float:
+        return self.lo + self.band
+
+    @property
+    def hi_cut(self) -> float:
+        return self.hi - self.band
 
 
 def load_case(bbox) -> LoadCase:
@@ -286,9 +294,35 @@ def load_case(bbox) -> LoadCase:
     order = np.argsort(-ext)
     k = int(order[0])
     lo, hi = (x0, y0, z0)[k], (x1, y1, z1)[k]
-    # 3% of the length, by NODES rather than by faces: measured on nist_ctc_01/03, a part whose ends
-    # are curved has no face lying wholly within a thin end band, and the run had no load case at all
     return LoadCase(k, lo, hi, 0.03 * ext[k], int(order[1]))
+
+
+def prepare(step: str):
+    """Read the part and TRIM 3% off each end of its longest axis, so the boundary conditions sit on
+    two exact planar cut faces that every mesh of every variant shares.
+
+    Measured on nist_ftc_09, two load cases that did not: faces wholly inside an end band (none exist
+    on a part with curved ends - nist_ctc_01/03 had no load case at all), then every NODE inside the
+    band (the band's edge cuts through elements, so how much material is clamped depends on the mesh:
+    five meshes at one size spread compliance by 1.07%, and coarser came out softer, which FE cannot
+    do on its own)."""
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCP.gp import gp_Pnt
+    shape = read_step(step)
+    bb = _bbox_of([shape])
+    diag = math.dist(bb[:3], bb[3:])
+    lc = load_case(bb)
+    lo, hi = list(bb[:3]), list(bb[3:])
+    lo = [v - 0.01 * diag for v in lo]
+    hi = [v + 0.01 * diag for v in hi]
+    lo[lc.axis], hi[lc.axis] = lc.lo_cut, lc.hi_cut
+    box = BRepPrimAPI_MakeBox(gp_Pnt(*lo), gp_Pnt(*hi)).Shape()
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
+    c = BRepAlgoAPI_Common(shape, box)
+    c.Build()
+    if not c.IsDone():
+        raise SystemExit(f"cannot trim the ends of {step}")
+    return c.Shape(), diag, lc
 
 
 def near_bc(f: Feature, lc: LoadCase, margin: float) -> bool:
@@ -390,18 +424,25 @@ def mesh_and_solve(brep: str, work: str, lc: dict, h_max: float, exclude: dict, 
     wd = Path(work)
     wd.mkdir(parents=True, exist_ok=True)
 
-    m = mesh_brep(brep, h_max, lambda b: None, threads)
+    tol = 1e-5 * (lc.hi - lc.lo)
+
+    def pick(b):
+        if b[lc.axis + 3] - b[lc.axis] > tol:
+            return None
+        if abs(b[lc.axis] - lc.lo_cut) <= tol:
+            return "NFIX"
+        if abs(b[lc.axis] - lc.hi_cut) <= tol:
+            return "NLOAD"
+        return None
+
+    m = mesh_brep(brep, h_max, pick, threads)
     if isinstance(m, str):
         return Solved(False, m)
-    a = m.xyz[:, lc.axis]
-    m.sets["NFIX"] = m.tags[a <= lc.lo + lc.band].tolist()
-    m.sets["NLOAD"] = m.tags[a >= lc.hi - lc.band].tolist()
     if not m.sets.get("NFIX") or not m.sets.get("NLOAD"):
         return Solved(False, f"no end faces (fixed {len(m.sets.get('NFIX', []))}, loaded {len(m.sets.get('NLOAD', []))})")
-    # DISPLACEMENT CONTROL: the loaded slab moves rigidly by delta along bend_dir, the fixed slab not
-    # at all; both are continuum conditions, independent of the mesh. Measured on nist_ftc_09: a
-    # force spread equally over the slab's NODES depends on how the mesher filled the slab, and put
-    # the same-part noise floor at 0.29% on compliance - above most features' true effect.
+    # DISPLACEMENT CONTROL on the two trimmed end faces (prepare()): the high one moves by delta
+    # along bend_dir, the low one not at all - the same continuum problem for every mesh. A force
+    # spread equally over nodes instead depends on how the mesher filled the end.
     delta = 1e-3 * (lc.hi - lc.lo)
     d = lc.bend_dir + 1
     ok, solve_s = run_ccx(m, wd, "*BOUNDARY\nNFIX,1,3,0\n*STEP\n*STATIC\n*BOUNDARY\n"
@@ -563,10 +604,7 @@ def main(argv=None) -> int:
     out = Path(a.out)
     (out / "geom").mkdir(parents=True, exist_ok=True)
 
-    shape = read_step(a.step)
-    bb = _bbox_of([shape])
-    diag = math.dist(bb[:3], bb[3:])
-    lc = load_case(bb)
+    shape, diag, lc = prepare(a.step)
     h = diag / a.size
     feats, faces, _ = recognise(shape, diag)
     v0 = volume(shape)
