@@ -39,6 +39,7 @@ V3_MODULES = [
     "cad/repair/tournament.py",
     "cad/repair/investigator_budget.py",
     "cad/repair/review_tier.py",
+    "cad/repair/replay.py",
 ]
 
 #: The doorways to the big machines. A v3 module that imports any of these - at module level or

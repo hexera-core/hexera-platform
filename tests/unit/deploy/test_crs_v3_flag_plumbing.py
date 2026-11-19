@@ -35,6 +35,11 @@ FLAGS: dict[str, tuple[str, str]] = {
     # customer deviation threshold. It never applies to the vertex-moving ops, which is asserted
     # in the repair tests rather than here, because that rule lives in the tier, not the deploy.
     "CAD_REPAIR_AUTO_ACCEPT": ("cad-repair-auto-accept", ON),
+    # THE PER-PART ATTEMPT ALLOWANCE (Task 22): on wherever the region-scoped driver is, because
+    # it is a budget for that driver and inert without it, and because every outer bound - the
+    # run's operation allowance, its deadline, the per-package budget and the two-rejections
+    # escalation - is untouched by it.
+    "CAD_REPAIR_BUDGET_ATTEMPTS": ("cad-repair-budget-attempts", ON),
 }
 
 VERTEX_MOVING = ("CAD_REPAIR_REBUILD_FACE", "CAD_REPAIR_CLOSE_WIRE_GAPS")

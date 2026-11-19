@@ -15,12 +15,13 @@
 from __future__ import annotations
 
 import logging
+import math
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 
 import meshpipeline.settings.cad_repair as rcfg
-from meshpipeline.cad.repair import oracle
+from meshpipeline.cad.repair import grind, oracle
 from meshpipeline.cad.repair.contracts import DefectSeverity
 from meshpipeline.cad.repair.localize import analyzer_only
 
@@ -114,13 +115,28 @@ class RegionRun:
     #: owed must not depend on which driver ran, and a benchmark row that reports refusals on one
     #: arm and silence on the other is not a comparison.
     refusals: tuple[dict, ...] = ()
+    #: WHAT THE PART'S EXPECTED COST BOUGHT EACH REGION: `{"tier", "attempts", "rule"}`, or `{}`
+    #: when `CAD_REPAIR_BUDGET_ATTEMPTS` is off or a caller stated `attempts` itself. Empty is
+    #: absent from `to_dict`, so a flag-off report is byte-for-byte what it is today.
+    attempt_budget: dict = field(default_factory=dict)
+    #: ONE RECORD PER COMMITTED PACKAGE, in commit order - what `replay.replay_packages` re-applies
+    #: (`replay_record`). Empty, and absent from `to_dict`, unless an AGENT drove the run: a
+    #: rules-only run is byte-identically replayable from its bytes and needs no package log,
+    #: which is the contract the native determinism tests pin.
+    packages_replay: tuple[dict, ...] = ()
 
     @property
     def resolved(self) -> bool:
         return self.stopped_because == RESOLVED
 
     def to_dict(self) -> dict:
-        return {"stopped_because": self.stopped_because, "resolved": self.resolved,
+        extra: dict = {}
+        if self.attempt_budget:
+            extra["attempt_budget"] = dict(self.attempt_budget)
+        if self.packages_replay:
+            extra["packages_replay"] = [dict(r) for r in self.packages_replay]
+        return {**extra,
+                "stopped_because": self.stopped_because, "resolved": self.resolved,
                 "refusals": [dict(r) for r in self.refusals],
                 "complete_scan": bool(self.complete_scan),
                 "escalated": [int(i) for i in self.escalated],
@@ -354,6 +370,110 @@ def final_reserve_s() -> float:
                                   timeout_s=float(rcfg.CAD_REPAIR_MESH_PROBE_TIMEOUT_S))
 
 
+#: The rule `attempt_budget` names when the allowance came from the part's cost tier. A reader
+#: downstream routes on it, so it is a constant rather than a literal spelled at the call site.
+BUDGET_RULE_TIER = "grind_tier"
+#: The rule it names when a caller stated `attempts` itself: the explicit argument wins over the
+#: tier, and the record says which one was in force rather than leaving the reader to guess.
+BUDGET_RULE_EXPLICIT = "explicit"
+
+
+def budget_attempts_live() -> bool:
+    """Is the per-part attempt allowance in force? READ AT CALL TIME off the settings module, like
+    every other posture here, so a test that patches the attribute is obeyed, and FAILING CLOSED:
+    anything but the exact string `live` is off."""
+    return str(getattr(rcfg, "CAD_REPAIR_BUDGET_ATTEMPTS", "off") or "off") == "live"
+
+
+def agent_posture_live() -> bool:
+    """Is an AGENT driving this run - the investigator or the tournament, in any non-off posture?
+
+    WHAT IT GATES: `packages_replay`. Byte-identical replay is retired for agent-driven runs only
+    (spec pillar 4); a rules-only run is still reproduced from its own bytes, so recording a
+    package log for one would add a key to a report whose contract says it has none.
+
+    READ BY `getattr` because both settings belong to other tasks' modules: with both postures
+    absent this is `False`, which is the committed behaviour.
+    """
+    investigator = str(getattr(rcfg, "CAD_REPAIR_INVESTIGATOR", "off") or "off")
+    tournament = str(getattr(rcfg, "CAD_REPAIR_TOURNAMENT", "off") or "off")
+    return investigator in ("shadow", "live") or tournament == "live"
+
+
+def _count(value: object) -> int | None:
+    """A face or solid count as `grind` wants it, or None when there is not one.
+
+    GUARDED WITH `math.isfinite` RATHER THAN A BARE `>= 0`: a `float("inf")` or a `NaN` arriving
+    from a measurement that went wrong would sail through a comparison - `NaN >= 0` is False and
+    `inf > HEAVY_FACES` is True - and either answer would be a number nobody measured. None is
+    what `grind` reads as UNKNOWN, which is the cheapest budget.
+    """
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, float):
+        return int(value) if math.isfinite(value) and value >= 0 else None
+    return None
+
+
+def attempt_budget(defects, *, solids: object, faces: object,
+                   attempts: int | None = None) -> dict:
+    """How many packages one region of THIS part may be offered, and on what grounds.
+
+    `{}` - and no report key at all - when the posture is off, which is the whole of the flag-off
+    guarantee: the caller then falls back to `CAD_REPAIR_REGION_ATTEMPTS` exactly as it always did.
+
+    AN EXPLICIT `attempts` STILL WINS, and is recorded as such. A caller that states a bound is
+    not asking for a policy, and the corpus runner and the tests both state one.
+
+    THE TIER COMES FROM THE RUN'S FIRST WHOLE-SHAPE SCAN and the UPLOAD's own counts, so the
+    allowance is fixed once, before anything has moved: deciding it per attempt would let a
+    package that changed the face count change the budget it is being judged under.
+
+    NEVER RAISES, for `grind`'s own reason: an allowance must not break the repair it bounds. A
+    predictor that somehow throws gets the cheapest tier's attempts.
+    """
+    if not budget_attempts_live():
+        return {}
+    if attempts is not None:
+        return {"tier": "", "attempts": max(1, int(attempts)), "rule": BUDGET_RULE_EXPLICIT}
+    try:
+        tier = grind.tier_of(defects or (), solids=_count(solids), faces=_count(faces))
+    except Exception:  # noqa: BLE001 - an allowance must never break the repair it bounds
+        tier = grind.UNKNOWN
+    return {"tier": str(tier), "attempts": max(1, grind.attempts_for(tier)),
+            "rule": BUDGET_RULE_TIER}
+
+
+def replay_record(package: TargetPackage, verdict: PackageVerdict, *,
+                  tolerance_mm: float) -> dict:
+    """What one COMMITTED package has to say about itself for an agent-driven run to be replayed.
+
+    REPLAY MEANS RE-APPLYING THE RECORDED PACKAGES, not reproducing the bytes (spec pillar 4): an
+    agent's proposal is not a function of the part, so the only reproducible thing about an agent
+    run is what it decided. These are exactly the inputs `session.try_package` needs plus the
+    verdict that stands in for the review, and nothing else - no model prose, no evidence blob.
+
+    THE REGION TRAVELS AS ITS SORTED FINGERPRINTS, not as its index. An index is a position in one
+    decomposition; a re-run decomposes the part itself, so the index may name a different region
+    and a replay that trusted it would apply a package to the wrong geometry. Sorted, so two
+    records of the same region are equal as written.
+    """
+    return {
+        "region_fingerprints": sorted(package.region.fingerprints),
+        "plan": [dict(item) for item in package.plan],
+        "predicate": {"cleared": sorted(package.predicate.cleared),
+                      "reclassified": sorted(package.predicate.reclassified),
+                      "unchanged": sorted(package.predicate.unchanged),
+                      "max_area_delta_mm2": float(package.predicate.max_area_delta_mm2),
+                      "max_volume_delta_mm3": float(package.predicate.max_volume_delta_mm3)},
+        "tolerance_mm": float(tolerance_mm),
+        "review_tier": verdict.review_tier,
+        "reviewed": verdict.reviewed,
+    }
+
+
 def _observe_shape(author: Author, shape) -> None:
     """Tell the author the session's CURRENT shape before it is asked (final review M1).
 
@@ -377,6 +497,11 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
     `attempts` BOUNDS THE PACKAGES ONE REGION MAY BE OFFERED, defaulting to the deployment's
     CAD_REPAIR_REGION_ATTEMPTS. The run's `max_ops` and `timeout_s` are still the outer bounds and
     are checked before every attempt, not merely before every region.
+
+    WITH `CAD_REPAIR_BUDGET_ATTEMPTS` LIVE the bound instead comes from what the PART is expected
+    to cost a mesher (`attempt_budget`, keyed by `grind.tier_of` over the run's first whole-shape
+    scan), and the run records which tier bought how many attempts. An explicit `attempts` still
+    wins, and with the posture off nothing about this run differs by a byte.
 
     `deadline_s` IS THE RUN'S ONE ABSOLUTE DEADLINE, a `clock()` reading
     (`conservative.repair_step_file` takes it at entry, before the STEP is read, less a margin), so
@@ -435,6 +560,12 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
     # knows. Read as a delta because a caller may inject a session that has already scanned.
     scoped_at_start = work.scoped_scan_count
 
+    # WHETHER THIS RUN KEEPS A PACKAGE LOG AT ALL, decided ONCE at entry rather than per package,
+    # so a posture that changed mid-run cannot produce a half-written record.
+    record_replay = (str(getattr(rcfg, "CAD_REPAIR_REGION_LOOP", "off") or "off") == "live"
+                     and agent_posture_live())
+    replays: list[dict] = []
+
     # THE FIRST SCAN, and its completeness read AFTER it: `complete_scan` starts out True, so
     # asking before any scan has run reports a truncated walk as exhaustive.
     before = work.defects()
@@ -452,6 +583,13 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
 
     # WHAT THE PART AS A WHOLE LOOKS LIKE, SAID ONCE, BEFORE IT IS CUT INTO REGIONS. The only
     # thing an author needs that a region cannot carry: the paired-rim guard (see `_observe_part`).
+    # WHAT THIS PART IS WORTH SPENDING, FIXED HERE: after the one scan that can say what the part's
+    # trouble is and before any region has been authored for. `{}` with the posture off, and then
+    # `per_region` above - the deployment's flat `CAD_REPAIR_REGION_ATTEMPTS` - stands untouched.
+    budget_record = attempt_budget(before, solids=work.original.solids,
+                                   faces=work.original.faces, attempts=attempts)
+    if budget_record:
+        per_region = int(budget_record["attempts"])
     _observe_part(author, before)
     regions = decompose(before, diagonal_mm=work.original.diagonal_mm)
     # THE ORDER THE BUDGET IS SPENT IN, which is not the order the regions were found in. The
@@ -562,7 +700,8 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
                 stopped, out_of_budget = OP_BUDGET, True
                 break
 
-            verdict = work.try_package(_with_tolerance(package, tolerance_mm))
+            offered = _with_tolerance(package, tolerance_mm)
+            verdict = work.try_package(offered)
             packages.append(verdict)
             tried.append(verdict)
             if any(v.kept for v in verdict.verdicts):
@@ -575,6 +714,11 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
                 charged += len(verdict.verdicts)
             if verdict.committed:
                 committed = True
+                if record_replay:
+                    # THE PACKAGE AS IT WAS OFFERED, with the run's tolerance already filled in,
+                    # and only on a COMMIT: a reverted or escalated package left nothing behind,
+                    # so replaying it would reproduce a decision the run itself threw away.
+                    replays.append(replay_record(offered, verdict, tolerance_mm=tolerance_mm))
                 discharged |= set(package.predicate.cleared) | set(verdict.reclassified)
                 if not any(v.kept for v in verdict.verdicts):
                     # A PACKAGE THAT COMMITTED WITHOUT KEEPING ANYTHING ENDS THE REGION'S
@@ -633,7 +777,8 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
                          work.scoped_scan_count - scoped_at_start),
         defects_before=before, defects_after=after,
         # READ AT THE END, once the author has been asked everything it is going to be asked.
-        refusals=_refusals_of(author))
+        refusals=_refusals_of(author),
+        attempt_budget=budget_record, packages_replay=tuple(replays))
 
 
 def _timings(started: float, clock: Callable[[], float], session: RepairSession,

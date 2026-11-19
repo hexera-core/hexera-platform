@@ -159,3 +159,38 @@ def tier_of(defects: Iterable[object], *, solids: int | None, faces: int | None)
     except Exception:  # noqa: BLE001 - fall through with what was read
         pass
     return predict(kind, stage, solids=solids, faces=faces).tier
+
+
+#: PACKAGES ONE REGION MAY BE OFFERED IN ONE RUN, by the expected cost of the part it sits in.
+#:
+#: WHY A TABLE AND NOT A SETTING. `CAD_REPAIR_REGION_ATTEMPTS` is one number for every part a
+#: deployment ever sees, and it has to be set for the worst of them: three is one more chance than
+#: the baseline's stall limit, which is generous for a part gmsh refused in the surface stage and
+#: miserly for one it never answered for at all. A budget is a policy decision measured offline
+#: (the gym, Tasks 13 and 25), not a deployment knob, so nothing reads these from the environment
+#: - exactly the rule `investigator_budget.BUDGETS` already states for the investigation's spend.
+#:
+#: THE NUMBERS. CHEAP keeps the committed 3, so the cheapest tier is byte-for-byte the behaviour
+#: that shipped. STANDARD doubles it: the overlap and edge-through-face families are 8,247 of the
+#: corpus's 9,956 failures (`CITED`), they are the ones a region-scoped author actually revises on,
+#: and a package's claim is stated before it runs so the attempts cannot be packed into one longer
+#: plan. HEAVY is 10 rather than unbounded: a part that never answered is where a grind would be
+#: most tempting and least informative, and the run's `CAD_REPAIR_MAX_OPS`, its deadline, the
+#: per-package `PackageBudget` and the two-rejections escalation are all still outside this.
+ATTEMPTS: dict[str, int] = {CHEAP: 3, STANDARD: 6, HEAVY: 10}
+
+
+def attempts_for(tier: object) -> int:
+    """How many packages a region of this tier may be offered. FAILS CLOSED, the rule
+    `investigator_budget.budget_for` states: `UNKNOWN`, an unrecognised name, a non-string and
+    `None` all get the SMALLEST budget, never a guessed larger one.
+
+    `tier_of` returns `UNKNOWN` rather than a guess when the face count is missing, so the common
+    cause of an unrecognised tier is a part nobody has measured - which is the last part that
+    should be handed a long grind.
+    """
+    if isinstance(tier, str):
+        found = ATTEMPTS.get(tier)
+        if found is not None:
+            return int(found)
+    return int(ATTEMPTS[CHEAP])
