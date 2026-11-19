@@ -1629,6 +1629,11 @@ def _snappy_layers(ask: Ask, text: str, wall_cell_m: float | None, bridge: Mappi
 #: multi-region mesher (this module's snappy_dict), cfMesh (maxFirstLayerThickness), Netgen (its first layer). VMTK
 #: sizes its stack from the vessel radius; gmsh flow and the snap grid build no prism layers.
 FIRST_LAYER_ENGINES = frozenset({"snappy", "snappy_multiregion", "cfmesh", "netgen"})
+#: CFDREQ-10: the asks of an absolute layer height, and the engines that set one in the order they deliver it over the
+#: whole wall, measured (snappyHexMesh 100% coverage at y+ 1 on s_duct_004, cfMesh 78%; the order only ranks engines
+#: of the job's own ladder, never adds one)
+LAYER_HEIGHT_FIELDS = frozenset({"layers:first_height", "layers:y_plus", "layers:total_thickness"})
+LAYER_HEIGHT_DELIVERS = ("snappy", "snappy_multiregion", "cfmesh", "netgen")
 #: what each such ask is called in the line that says why the engine was chosen
 _ASK_NAMES = {"layers:first_height": "the first layer height", "layers:y_plus": "the first layer for the y+",
               "layers:total_thickness": "the layer stack's thickness"}
@@ -1659,7 +1664,14 @@ def engine_that_can(sec: Mapping | None, engine: str, ladder, *, conditions_y_pl
     missing = [f for f in fields if _cannot(engine, f)]
     if not missing:
         return engine, ""
-    for other in ladder or ():
+    # an absolute first layer (or a y+ made one) goes to the engine that DELIVERS it over the whole wall first, then
+    # the ladder's order: on s_duct_004, y+ 1 on cfMesh had layers on 78% of the wall (the rest none, not met), on
+    # snappyHexMesh on 100% (m483 round 9, 2e against 2c)
+    order = list(ladder or ())
+    if any(f in LAYER_HEIGHT_FIELDS for f in missing):
+        order.sort(key=lambda e: LAYER_HEIGHT_DELIVERS.index(e) if e in LAYER_HEIGHT_DELIVERS
+                   else len(LAYER_HEIGHT_DELIVERS))
+    for other in order:
         if other != engine and not any(_cannot(str(other), f) for f in missing):
             from meshpipeline.engines.registry import engine_label
             try:

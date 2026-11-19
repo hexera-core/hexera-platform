@@ -533,3 +533,41 @@ def test_the_driver_reads_no_parts_before_a_shell_with_no_size_asked_in_one_plac
     ws = _stage(sf.t_joint(), tmp_path / "ws")
     assert _drive(ws, monkeypatch, _global(8), "8 mm elements") == []
     assert not (ws / SP.FILE).exists() and shell_run.read(ws)["made"] is True
+
+
+def test_the_vertical_leg_of_a_bent_bracket_is_its_upright_plate_on_the_shell(tmp_path):
+    """A leg, flange, web or base plate that is a plate of its own is a place on a shell: the parts reader is told how
+    each wall or large flat face lies in its pictures (z up) - the bent L's upright leg and its level base - so "the vertical
+    leg" is tied to the upright face and sized on that leg's mid-face alone, met there, never the whole part."""
+    from meshpipeline.cad import part_features as PF
+    from meshpipeline.engines import fea_driver as FD
+    ws = _stage(sf.l_angle(), tmp_path / "src")
+    record, surface, _diag = FD.measure_staged(ws)
+    rows, faces_of = PF.features(record, surface)
+    # (its plates are thin walls beside its 100 mm ends: one area per way they lie)
+    lie = {r["id"]: r.get("lie") for r in rows if r.get("lie")}
+    upright = [k for k, v in lie.items() if v == "upright"]
+    assert upright and any(str(v).startswith("level") for v in lie.values()), rows
+    assert all("upright" in r["name"] for r in rows if r["id"] in upright)
+    req = _req(("the vertical leg", "size", 3, "3 mm elements on the vertical leg"))
+    reading = PW.section("used", entries=[_size("3 mm elements on the vertical leg", upright[:1], 3)],
+                         table=[{"id": "Part_1", "name": ""}, *rows])
+    reading["features"] = {k: list(v) for k, v in faces_of.items()}
+    rec = _run(_copy(ws, tmp_path / "ws"), req, reading)
+    p = rec["places"]["places"][0]
+    shell = json.loads((tmp_path / "ws" / "shell.json").read_text())
+    assert len(p["mids"]) == 1 and len(shell["mids"]) >= 2 and not p.get("piece")
+    row = next(r for r in rec["requirements"]["rows"] if r["field"] == "local")
+    assert row["met"] is True and 0.8 * 3 <= row["measured"] <= 1.25 * 3, row
+
+
+def test_a_piece_told_as_the_nearest_still_has_its_row_in_the_report():
+    """Round 4 G on a shell: the L plate (one flat face) asked "1.5 mm on the vertical leg" was told "applied to the
+    whole part, the nearest there is" in the tally, but its 'You asked' row was dropped from the report (met None)."""
+    from meshpipeline.engines import shell_delivery as SD
+    row = {"id": "r1", "field": "local", "asked": "elements of 1.5 mm at the vertical leg", "applied": True,
+           "met": None, "nearest": True, "measured": 1.35,
+           "delivered": "applied to the whole part, the nearest there is - Part_1: elements are about 1.35 mm"}
+    got = SD.asked_rows({"requirements": {"rows": [row]}})
+    assert [r["label"] for r in got] == ["You asked: elements of 1.5 mm at the vertical leg"]
+    assert got[0]["said"].startswith("Elements of 1.5 mm at the vertical leg: applied to the whole part, the nearest")

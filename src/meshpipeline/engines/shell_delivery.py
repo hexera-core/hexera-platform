@@ -145,8 +145,19 @@ def asked_rows(quality: Mapping) -> list[dict]:
     """SHMESH-26: THE USER'S OWN REQUIREMENTS (read from their notes) as rows of the same list
     (engines/mesh_requirements.asked_rows): measured as the elements outside what was asked, never a blocker."""
     from meshpipeline.engines.mesh_requirements import asked_rows as rows
+    from meshpipeline.engines.mesh_requirements import line
 
-    return rows(quality, source="your notes (engines/shell_requirements.py)")
+    out = rows(quality, source="your notes (engines/shell_requirements.py)")
+    # EVERY ASK READ HAS ITS ROW (round 4 G): one applied with no measure to judge it by - the nearest there is (a
+    # size asked on a piece of a part that is no face of its own, SHMESH-52) - is listed too, with its own words,
+    # never dropped from the report (the L plate's "1.5 mm on the vertical leg" had no row at all, m483 round 9)
+    rep = _map(quality.get("requirements"))
+    for r in rep.get("rows") or []:
+        if isinstance(r, Mapping) and r.get("met") is None and r.get("nearest") and r.get("applied") is not False:
+            out.append({"key": f"asked_{r.get('id')}", "label": f"You asked: {r.get('asked')}", "op": "==",
+                        "limit": 0, "measured": 0, "said": line(r),
+                        "source": "your notes (engines/shell_places.py, the nearest there is)"})
+    return out
 
 
 def user_line(row: Mapping) -> str:

@@ -200,6 +200,10 @@ part it is in (in_part); in the pictures each area has its own colour and an F n
 the part grey. Words about such an area ("1 mm at the mounting holes", "fine on the fillets", "coarser on the big
 flat face") take the area's id; words about a whole part take the part's id; "elsewhere" or "everything else" means
 the rest of the parts (everything_else true), never the areas.
+A large flat face says how it lies in the pictures (z is up there): "upright", or "level" at the top or bottom of
+its part. A leg, flange, web, base plate or top face the words name is the area that is that piece when one is
+listed ("the vertical leg" of a bent bracket: its upright flat face; "the base plate" or "the top face": the level
+one at the bottom or top), not the whole part.
 - piece: true when the words mean only a piece of a part that no row of the table is ("the vertical leg" of a plate
   that is one flat face, "the left end", "one side"): give that part's id, and piece true - the whole part is then
   the nearest there is, and the user is told so. False when the words mean whole parts or a listed area.
