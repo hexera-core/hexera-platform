@@ -977,13 +977,24 @@ def repair_step_file(source: Path, destination: Path, *,
         # WHO AUTHORS THE PACKAGES (CAD_REPAIR_LLM_AUTHOR). Off is the rules author exactly as
         # before; shadow and live are chosen by `model_author.select_author` (live needs a model
         # router, or the rules drive), and the model's record travels in the report below.
-        if rcfg.CAD_REPAIR_LLM_AUTHOR in ("shadow", "live"):
+        # THE INVESTIGATOR POSTURE IS A SECOND WAY TO THE SAME SEAM (CAD_REPAIR_INVESTIGATOR), so
+        # it is read HERE as well: a deployment that asked for the bounded tool loop with the
+        # one-shot author off must still reach `select_author`, which consults the investigator
+        # first. READ BY `getattr` because the setting belongs to the investigator's own task;
+        # with BOTH postures off this condition is exactly the one it was, and no investigator
+        # module is imported.
+        if (rcfg.CAD_REPAIR_LLM_AUTHOR in ("shadow", "live")
+                or str(getattr(rcfg, "CAD_REPAIR_INVESTIGATOR", "off")) in ("shadow", "live")):
             from meshpipeline.cad.repair.model_author import select_author
 
             # MODEL CALLS SPEND THE RUN'S OWN CLOCK - the attempt node bounds this whole function
             # by CAD_REPAIR_TIMEOUT_S - so model work must finish by the run's deadline.
+            # `tolerance_mm` is the run's own tolerance: the investigator's edits run on a scratch
+            # session, and `try_op` takes one, so an investigation must explore under exactly the
+            # tolerance the real session would apply.
             author, label = select_author(
-                before_shape, original=original, reserved=reserved, deadline_s=driver_deadline)
+                before_shape, original=original, reserved=reserved, deadline_s=driver_deadline,
+                tolerance_mm=tolerance)
             model_record = getattr(author, "report", None)
         else:
             author, label = rules_author(before_shape, original=original,
@@ -1044,6 +1055,15 @@ def repair_step_file(source: Path, destination: Path, *,
             # observation size and hash, clipped reply, outcome and refusal reason, its accepted
             # mesher verdicts and, in shadow, each proposal beside what the rules drove.
             measurements["model_author"] = model_record()
+        investigations = getattr(author, "investigations", None)
+        if investigations is not None:
+            # THE INVESTIGATIONS, BESIDE THE MODEL AUTHOR'S RECORD rather than inside it: one
+            # entry per region, with the tier and budget it was given, what it spent, every turn
+            # (tool, clipped args, result hash and bytes), the kept edits and HOW IT ENDED -
+            # concluded, budget_spent, runaway, no_router or skipped. An honest "could not" is a
+            # first-class outcome, so it travels in the report exactly like a conclusion.
+            # ABSENT when no investigator authored, because the posture was off.
+            measurements["investigations"] = [dict(item) for item in investigations]
 
     # THE GOAL'S FINISHING VERDICT, when a goal was declared. ABSENT ENTIRELY when it was not: an
     # unset goal adds no key, starts no probe and leaves the report what it is today.
