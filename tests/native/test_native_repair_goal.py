@@ -106,19 +106,33 @@ def test_meshing_goal_names_tier_three_without_probing(tmp_path):
         "profile": "meshing", "final_verdict": "tier3_product_mesher"}
 
 
-def test_the_attempt_node_passes_no_goal():
-    """The product caller keeps today's behaviour until the task that gives it a goal.
+def test_the_attempt_node_passes_only_a_goal_it_computed():
+    """The product caller's goal is READ FROM THE RUN, never written into the call site.
 
-    AN AST CHECK ON THE CALL, not a mock: a `goal=` kwarg appearing at this call site is exactly
-    how a goal would reach every customer repair without anyone deciding it should.
+    THIS TEST USED TO SAY `no goal`, and that was right until the standalone repair job existed.
+    It now pins the thing that actually matters: the one `goal=` kwarg at this call site must be a
+    NAME the node computed (`pipeline/repair_goal.from_state`, which consults the posture), never
+    a constant or a `RepairGoal.<member>` attribute. A literal there is exactly how a goal would
+    reach every customer repair without anyone deciding it should, and it is the only form of that
+    mistake an AST check can catch before a deploy.
+
+    That the computed value is `None` with the posture off, and the declared goal only when it is
+    exactly live, is proved behaviourally in
+    tests/unit/pipeline/test_repair_goal_dispatch.py::test_goal_reaches_repair_step_file_only_when_live.
     """
     import meshpipeline.pipeline.repair_attempt as node
 
     tree = ast.parse(Path(node.__file__).read_text())
     calls = [c for c in ast.walk(tree)
              if isinstance(c, ast.Call)
+             and ast.unparse(c.func).endswith("to_thread")
              and any(isinstance(a, ast.Name) and a.id == "repair_step_file" for a in c.args)]
     assert calls, "the to_thread(repair_step_file, ...) call site was not found"
-    for call in calls:
-        assert not [k for k in call.keywords if k.arg == "goal"], (
-            "pipeline/repair_attempt.py passes a goal to repair_step_file")
+    passed = [k for call in calls for k in call.keywords if k.arg == "goal"]
+    assert len(passed) == len(calls), (
+        "the goal must be passed explicitly at every repair_step_file call site - an implicit "
+        "default is a second rule nobody reads")
+    for keyword in passed:
+        assert isinstance(keyword.value, ast.Name), (
+            "pipeline/repair_attempt.py hard-codes a goal at the kernel call site "
+            f"({ast.unparse(keyword.value)}) - it must pass the one it computed from the run")

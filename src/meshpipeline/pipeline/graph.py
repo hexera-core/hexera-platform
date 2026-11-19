@@ -13,6 +13,7 @@ import meshpipeline.agents.builder.settings as bcfg
 from meshpipeline.agents.builder.agent import node_builder
 from meshpipeline.agents.intake.agent import node_intake
 from meshpipeline.agents.reviewer.visual import node_reviewer
+from meshpipeline.cad.repair.contracts import RepairGoal
 from meshpipeline.contracts.failure_cause import retry_can_help
 from meshpipeline.contracts.pipeline_state import PipelineState
 from meshpipeline.pipeline import cfd_wrap as _wrap
@@ -24,6 +25,7 @@ from meshpipeline.pipeline.enums import Verdict
 from meshpipeline.pipeline.executor import node_executor
 from meshpipeline.pipeline.geometry_admission import node_geometry_admission
 from meshpipeline.pipeline.repair_attempt import node_repair_attempt
+from meshpipeline.pipeline.repair_deliver import node_repair_deliver
 from meshpipeline.pipeline.repair_inspect import node_repair_inspect
 
 logger = logging.getLogger(__name__)
@@ -238,6 +240,28 @@ def route_after_engine_select(state: PipelineState) -> Literal["node_repair_insp
     # it (the decision). The dispute bypass above is untouched: a re-review of a mesh already
     # delivered has nothing to inspect on the way in.
     return "node_repair_inspect"
+
+
+def route_after_repair_attempt(
+    state: PipelineState,
+) -> Literal["node_repair_deliver", "node_geometry_admission"]:
+    """A STANDALONE repair job ends with the repair; every other run goes on to be meshed.
+
+    Spec amendment 1: three entry points, ONE loop, and only the finishing verdict differs. A
+    standalone job's verdict is kernel-clean plus a fast meshability score plus the semantic
+    review - the product mesher is not involved - so the admission gate, the builder and the
+    executor are not on its path at all. `meshing`, `benchmark` and an unset goal keep today's one
+    unconditional edge, and so does every deployment with the posture off
+    (`pipeline/repair_goal.from_state` consults it).
+    """
+    from meshpipeline.pipeline.repair_goal import from_state
+
+    asked = from_state(state)
+    if asked is not None and asked.goal is RepairGoal.standalone:
+        logger.info("route_after_repair_attempt: standalone repair job → deliver the repair, no "
+                    "mesher - job_id=%s", state.get("job_id"))
+        return "node_repair_deliver"
+    return "node_geometry_admission"
 
 
 def route_after_geometry_admission(
@@ -606,6 +630,7 @@ def build_graph(checkpointer):
     b.add_node("node_engine_select",   _fenced("node_engine_select", node_engine_select))
     b.add_node("node_repair_inspect",   _fenced("node_repair_inspect", node_repair_inspect))
     b.add_node("node_repair_attempt",   _fenced("node_repair_attempt", node_repair_attempt))
+    b.add_node("node_repair_deliver",   _fenced("node_repair_deliver", node_repair_deliver))
     b.add_node("node_geometry_admission", _fenced("node_geometry_admission", node_geometry_admission))
     b.add_node("node_builder",         _fenced("node_builder", node_builder))
     b.add_node("node_executor",        _fenced("node_executor", node_executor))
@@ -634,7 +659,19 @@ def build_graph(checkpointer):
     # ending a run, so both have a single unconditional edge and the admission gate still decides -
     # on whichever geometry the attempt left in place.
     b.add_edge("node_repair_inspect", "node_repair_attempt")
-    b.add_edge("node_repair_attempt", "node_geometry_admission")
+    # ...UNLESS THE JOB IS THE REPAIR. A standalone repair job's deliverable is the repaired CAD
+    # and the goal's own finishing verdict, so it ends here and never reaches a mesher (spec
+    # amendment 1). Every other run - meshing, benchmark, no goal at all, or any deployment with
+    # `cad-repair-standalone-jobs` off - takes the one unconditional edge it always took.
+    b.add_conditional_edges(
+        "node_repair_attempt",
+        route_after_repair_attempt,
+        {"node_repair_deliver": "node_repair_deliver",
+         "node_geometry_admission": "node_geometry_admission"},
+    )
+    # THE STANDALONE JOB'S END. The node states the ending; the orchestrator's terminal path
+    # delivers the bytes and the report it named, because that is where this worker's fence is.
+    b.add_edge("node_repair_deliver", END)
     b.add_conditional_edges(
         "node_geometry_admission",
         route_after_geometry_admission,

@@ -114,6 +114,16 @@ class PipelineState(TypedDict):
     # DIRECTIVES A PARKED RUN'S RE-RUN PLAYS FIRST (cad/repair/directives.py): the kept operations
     # replayed, then the engineer's decisions. Empty on every run that did not resume from a park.
     repair_directives: list[dict]
+    # WHAT THIS RUN IS FINISHING FOR, as the job was dispatched asking for it (pipeline/
+    # repair_goal.py): {"goal": "standalone"|"meshing", "auto_accept_deviation_mm": float|None}.
+    # Empty on every run that declared none - which is byte-for-byte today's run - and inert
+    # unless CAD_REPAIR_STANDALONE_JOBS is exactly `live`.
+    repair_goal: dict
+    # A STANDALONE REPAIR JOB'S ENDING (pipeline/repair_deliver.py): the outcome word, the goal's
+    # finishing verdict, and the repaired file the orchestrator's terminal path hands back. Must be
+    # declared, or the graph drops it between that node and the delivery it names. Empty on a
+    # meshing run.
+    repair_delivery: dict
     # WHAT BECAME OF EACH ENGINEER DIRECTIVE THIS RUN PLAYED ([{item_id, source, outcome, reason}],
     # only those with an item): the terminal path writes them back onto their items. Must be
     # declared, or the graph drops it between the node and the terminal path.

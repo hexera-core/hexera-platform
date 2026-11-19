@@ -4,6 +4,7 @@
 # Collaborates with: persistence/repair_job_state.py, which owns which movements are legal.
 from __future__ import annotations
 
+import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -19,6 +20,8 @@ from meshpipeline.persistence.repair_job_state import (
     legal_sources,
 )
 from meshpipeline.persistence.session import get_db
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -364,3 +367,85 @@ async def decide_job(job_id: str, body: DecideIn) -> dict:
 
     return {"job": _job_row(job), "applied": outcome.value,
             "decisions": [_decision_row(d) for d in decisions]}
+
+
+def jobs_repo():
+    # The SIMULATION job repository, resolved per call for the same reason `repo` is: a route is
+    # transport, and the architecture suite keeps persistence out of its import graph.
+    from meshpipeline.persistence.repositories.job_repository import JobRepository
+    return JobRepository()
+
+
+class StandaloneIn(BaseModel):
+    """A re-dispatch of an existing job as a REPAIR job rather than a meshing job."""
+
+    #: `standalone` (clean CAD back, no mesher) or `meshing` (today's run). Validated against
+    #: `pipeline/repair_goal.REQUESTABLE`, which is also what refuses the benchmark profile.
+    goal: str = Field(default="standalone", max_length=32)
+    #: The deviation under which a small, fully accounted, non-vertex-moving package may be
+    #: accepted without a model reviewer. UNTRUSTED: bounded in `pipeline/repair_goal`, and no
+    #: value of it ever buys a vertex-moving operation (cad/repair/review_tier.VERTEX_MOVING_OPS).
+    auto_accept_deviation_mm: float | None = None
+    #: The operator's own name, recorded as the CLAIM it is (see the credential note above).
+    actor: str = Field(default="", max_length=256)
+
+
+# WHY THIS SURFACE AND NOT A PRODUCT ENDPOINT. Every caller of `application.pipeline_run.dispatch`
+# today is internal - the intake agent's approval (agents/intake/approval.py), the owner-scoped
+# review re-run (api/v1/repair_review.py) and a dispute (application/dispute_operation.py). No
+# product upload or submit endpoint builds a dispatch payload, so there is no designed customer
+# field to hang a goal on, and inventing one would ship a public entry point the product has not
+# designed. This is the operator's way to run the standalone job on a job that already exists.
+@router.post("/jobs/{job_id}/standalone", dependencies=[Depends(admin_dep)])
+async def run_standalone(job_id: str, body: StandaloneIn) -> dict:
+    from meshpipeline.pipeline.repair_goal import GoalRequestError, parse, posture
+
+    if posture() != "live":
+        # FAIL CLOSED, AND SAY SO. The row is `cad-repair-standalone-jobs`; with it off the goal
+        # would travel into the state and be ignored by every reader, which is a job that looks
+        # accepted and runs as an ordinary mesh.
+        raise HTTPException(status_code=409,
+                            detail="standalone repair jobs are not enabled in this deployment "
+                                   "(CAD_REPAIR_STANDALONE_JOBS)")
+    try:
+        asked = parse({"goal": body.goal.strip(),
+                       "auto_accept_deviation_mm": body.auto_accept_deviation_mm})
+    except GoalRequestError as exc:
+        # 422, not 400: the body parsed and its VALUES are the problem - and a threshold over the
+        # bound is a refusal with a reason, never a silently clamped number.
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    from meshpipeline.persistence.models import JobStatus
+
+    jid = _parse(job_id)
+    async with get_db() as db:
+        payload = await jobs_repo().get_dispatch_payload(db, jid)
+        if not payload:
+            raise HTTPException(status_code=409,
+                                detail="this job carries no dispatch payload, so there is nothing "
+                                       "to re-run as a repair job")
+        # THE GOAL IS THE ONLY THING THAT CHANGES. Everything else - the approved geometry, its
+        # interpretation, the patch contract and the intent fingerprint - is the payload's own and
+        # is re-validated by `pipeline_run.dispatch`, so this cannot smuggle a different part in.
+        payload = {**dict(payload), "repair_goal": asked.to_state()}
+        # THE STATUS CAS FIRST, as the review re-run does: dispatching a job that is not pending
+        # lets the worker race it into an illegal transition.
+        if await jobs_repo().transition(db, jid, JobStatus.pending) is not TransitionResult.applied:
+            raise HTTPException(status_code=409,
+                                detail="this job cannot be re-run from its current state - "
+                                       "re-read it")
+        # WRITTEN IN THE SAME TRANSACTION as the CAS, so a crash before the dispatch leaves a
+        # pending job carrying the goal rather than the payload it had before.
+        await jobs_repo().set_dispatch_payload(db, jid, payload)
+        await db.commit()
+
+    from meshpipeline.application import pipeline_run
+
+    async with get_db() as db:
+        await pipeline_run.dispatch(db, str(jid), payload)
+
+    logger.info("admin_repair: job %s re-dispatched as a %s repair job by %r", jid,
+                asked.goal.value, body.actor)
+    return {"job_id": str(jid), "status": JobStatus.pending.value,
+            "goal": asked.goal.value, "auto_accept_deviation_mm": asked.auto_accept_mm,
+            "actor": body.actor}
