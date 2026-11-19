@@ -135,6 +135,7 @@ while true; do
   if [ -n "$RUN" ] && [ "${RUN%%|*}" != "$LAST" ]; then
     LAST=${RUN%%|*}
     run_one "$RUN"
+    HELD_AT=$(date +%s)
     continue
   fi
   held || break
