@@ -7,7 +7,8 @@
 
 For the part and for each candidate feature removed alone (OpenCASCADE BRepAlgoAPI_Defeaturing):
 mesh with gmsh (10-node tets, curvature-sized, so small features cost cells), solve linear static
-in CalculiX, and write one JSON row: cells, mesh and solve seconds, and the change of every quantity
+(fast_solve.py, CalculiX's own discretisation; or CalculiX itself with
+--solver ccx), and write one JSON row: cells, mesh and solve seconds, and the change of every quantity
 of interest against the original. A second mesh of the original at a slightly different size gives
 the NOISE FLOOR: two meshes of the same part disagree by that much already, so an error below it is
 not a measurement of the feature.
@@ -508,8 +509,27 @@ def run_ccx(m: Meshed, wd: Path, step_cards: str, threads: int = 1) -> tuple[boo
     return ok, time.time() - t1
 
 
+#: which solver mesh_and_solve uses: "fast" (fast_solve.py, CalculiX's discretisation, 3-15x faster, no
+#: deck or .frd round trip) or "ccx". Measured (DEVLOG 2026-11-19, fast_solve): the two agree to 1e-7 on
+#: compliance and energy, 2000x inside the bench's best noise floor. "fast" falls back to ccx when its
+#: dependencies are missing; result.json records which ran.
+SOLVER = os.environ.get("BENCH_SOLVER", "fast")
+#: solver threads per worker process; main() sets it from --jobs so jobs x threads fills the machine
+JOB_THREADS = 1
+
+
+def _fast_solver():
+    """fast_solve, or None when it (numba, mkl) is not installed."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    try:
+        import fast_solve
+    except ImportError:
+        return None
+    return fast_solve
+
+
 def mesh_and_solve(brep: str, work: str, lc: dict, h_max: float, exclude: dict, threads: int = 1,
-                   keep_field: bool = False, ho_optimize: int = 1) -> Solved:
+                   keep_field: bool = False, ho_optimize: int = 1, solver: str | None = None) -> Solved:
     lc = LoadCase(**lc)
     wd = Path(work)
     wd.mkdir(parents=True, exist_ok=True)
@@ -525,7 +545,8 @@ def mesh_and_solve(brep: str, work: str, lc: dict, h_max: float, exclude: dict, 
             return "NLOAD"
         return None
 
-    m = mesh_brep(brep, h_max, pick, threads, ho_optimize)
+    # gmsh on ONE thread whatever the solver gets: a mesh must not depend on how many jobs ran beside it
+    m = mesh_brep(brep, h_max, pick, 1, ho_optimize)
     if isinstance(m, str):
         return Solved(False, m)
     if not m.sets.get("NFIX") or not m.sets.get("NLOAD"):
@@ -535,21 +556,35 @@ def mesh_and_solve(brep: str, work: str, lc: dict, h_max: float, exclude: dict, 
     # spread equally over nodes instead depends on how the mesher filled the end.
     delta = 1e-3 * (lc.hi - lc.lo)
     d = lc.bend_dir + 1
-    ok, solve_s = run_ccx(m, wd, "*BOUNDARY\nNFIX,1,3,0\n*STEP\n*STATIC\n*BOUNDARY\n"
-                          f"NLOAD,{d},{d},{delta:.9g}\n"
-                          "*NODE PRINT, NSET=NLOAD, TOTALS=ONLY\nRF\n"
-                          "*NODE FILE\nU\n*EL FILE\nS\n*EL PRINT, ELSET=EALL, TOTALS=ONLY\nELSE\n*END STEP\n", threads)
-    if not ok:
-        return Solved(False, "ccx failed", len(m.tags), len(m.conn), m.seconds, solve_s)
-    fld = read_field(wd / "job.frd", m)
+    F = _fast_solver() if (solver or SOLVER) == "fast" else None
+    if F is not None:
+        t1 = time.time()
+        # the whole machine -> fast_solve's own default (MPI ranks = physical cores, not hyperthreads)
+        whole = threads >= (os.cpu_count() or 1)
+        r = F.solve_meshed(m, [("NFIX", 1, 3, 0.0), ("NLOAD", d, d, delta)], E_MPA, NU,
+                           threads=None if whole else threads)
+        solve_s = time.time() - t1
+        fld, rf, energy, used = Field(r.u, r.s), r.total_force(m.sets["NLOAD"]).tolist(), r.energy, f"fast:{r.method}"
+    else:
+        # ONE thread. Measured (DEVLOG 2026-11-19, fast_solve): ccx 2.21 at 16 threads gave a wrong answer
+        # in 2 of 11 runs of the same deck (reaction 11,622 N for 5,503.68; energy 70,509 for 768.86).
+        ok, solve_s = run_ccx(m, wd, "*BOUNDARY\nNFIX,1,3,0\n*STEP\n*STATIC\n*BOUNDARY\n"
+                              f"NLOAD,{d},{d},{delta:.9g}\n"
+                              "*NODE PRINT, NSET=NLOAD, TOTALS=ONLY\nRF\n"
+                              "*NODE FILE\nU\n*EL FILE\nS\n*EL PRINT, ELSET=EALL, TOTALS=ONLY\nELSE\n*END STEP\n", 1)
+        if not ok:
+            return Solved(False, "ccx failed", len(m.tags), len(m.conn), m.seconds, solve_s)
+        fld = read_field(wd / "job.frd", m)
+        rf = read_total_force(wd / "job.dat")
+        energy, used = read_energy(wd / "job.dat"), "ccx"
+        (wd / "job.frd").unlink(missing_ok=True)
     if keep_field:
         np.savez_compressed(wd / "field.npz", tags=m.tags, xyz=m.xyz, u=fld.u, s=fld.s)
-    rf = read_total_force(wd / "job.dat")
     if rf is None or rf[lc.bend_dir] == 0:
-        return Solved(False, "no reaction force in job.dat", len(m.tags), len(m.conn), m.seconds, solve_s)
+        return Solved(False, "no reaction force", len(m.tags), len(m.conn), m.seconds, solve_s)
     q = qois(fld, m, lc, delta, rf[lc.bend_dir], exclude)
-    q["strain_energy"] = read_energy(wd / "job.dat")
-    (wd / "job.frd").unlink(missing_ok=True)
+    q["strain_energy"] = energy
+    q["solver"] = used
     return Solved(True, "", len(m.tags), len(m.conn), m.seconds, solve_s, q)
 
 
@@ -656,6 +691,7 @@ def _job(args):
     element type, not the feature."""
     name, brep, work, lc, h, excl, keep, *rest = args
     modes = tuple(rest[0]) if rest else (1,)
+    threads = rest[1] if len(rest) > 1 else JOB_THREADS
     wd = Path(work)
     wd.mkdir(parents=True, exist_ok=True)
     spec = wd / "spec.json"
@@ -665,7 +701,7 @@ def _job(args):
     # One retry without it; the run records which it took, because the two meshes differ.
     for ho in modes:
         spec.write_text(json.dumps({"brep": brep, "work": work, "lc": lc, "h": h, "exclude": excl, "keep": keep,
-                                    "ho_optimize": ho}))
+                                    "ho_optimize": ho, "threads": threads, "solver": SOLVER}))
         res.unlink(missing_ok=True)
         try:
             p = subprocess.run([sys.executable, "-I", __file__, "--one", str(spec)], capture_output=True, text=True,
@@ -682,11 +718,25 @@ def _job(args):
     return name, asdict(Solved(False, f"worker died: {tail[0][:200]}"))
 
 
+def _set_solver(solver: str, jobs: int) -> None:
+    """Pick the solver for this run and split the machine between its parallel jobs."""
+    global SOLVER, JOB_THREADS
+    if solver == "fast" and _fast_solver() is None:
+        print("fast_solve unavailable (numba/mkl not installed): using ccx", file=sys.stderr)
+        solver = "ccx"
+    if solver == "ccx" and not shutil.which("ccx"):
+        raise SystemExit("ccx (CalculiX) not on PATH")
+    SOLVER = solver
+    os.environ["BENCH_SOLVER"] = solver   # the worker processes read it at import
+    JOB_THREADS = max(1, (os.cpu_count() or 1) // max(1, jobs))
+
+
 def _one(spec_path: str) -> int:
     sp = json.loads(Path(spec_path).read_text())
     try:
         r = mesh_and_solve(sp["brep"], sp["work"], sp["lc"], sp["h"], sp["exclude"], keep_field=sp["keep"],
-                           ho_optimize=sp.get("ho_optimize", 1))
+                           ho_optimize=sp.get("ho_optimize", 1), threads=sp.get("threads", 1),
+                           solver=sp.get("solver"))
     except Exception as exc:   # one bad feature must not end the run
         r = Solved(False, f"{type(exc).__name__}: {exc}")
     (Path(sp["work"]) / "solved.json").write_text(json.dumps(asdict(r), default=float))
@@ -707,9 +757,9 @@ def main(argv=None) -> int:
                     help="size by the diagonal only (the bench's behaviour before PLAN-fea-3 was applied)")
     ap.add_argument("--keep-fields", action="store_true",
                     help="save each run's nodal U and S (work/<name>/field.npz) for local.py")
+    ap.add_argument("--solver", choices=("fast", "ccx"), default=SOLVER)
     a = ap.parse_args(argv)
-    if not shutil.which("ccx"):
-        raise SystemExit("ccx (CalculiX) not on PATH")
+    _set_solver(a.solver, a.jobs)
     out = Path(a.out)
     (out / "geom").mkdir(parents=True, exist_ok=True)
 
@@ -760,7 +810,7 @@ def main(argv=None) -> int:
     results: dict[str, dict] = {}
     t0 = time.time()
     # the original first, alone: its high-order mode is the part's mode (see _job)
-    name, res = _job(base[0] + ((1, 0),))
+    name, res = _job(base[0] + ((1, 0), os.cpu_count() or 1))   # alone, so on every core
     results[name] = res
     mode = (res.get("ho_optimize", 1),)
     print(f"[{time.time() - t0:7.1f}s] original: {'ok' if res['ok'] else res['why']} elements={res['elements']} "
@@ -791,7 +841,7 @@ def main(argv=None) -> int:
     if noise.get("ok") and ref.get("ok"):
         noise["error"] = _rel(noise["qoi"], ref["qoi"], "none")
     summary = {"part": a.step, "diag": diag, "h": h, "t_wall": t_wall, "wall_rule": not a.no_wall_rule,
-               "load_case": asdict(lc), "volume": v0, "ho_optimize": mode[0],
+               "load_case": asdict(lc), "volume": v0, "ho_optimize": mode[0], "solver": SOLVER,
                "n_features": len(feats), "original": ref, "noise": noise, "features": rows,
                "wall_s": time.time() - t0}
     (out / "result.json").write_text(json.dumps(summary, indent=1, default=float))

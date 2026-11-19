@@ -348,3 +348,145 @@ budget get a driver of their own.
 `package_local.py` (merged regions from one coarse solve) was accurate where it worked (hole plate:
 -5.31% vs a true -5.40%) but is not a speed-up: dense features merge into one region the size of the
 part, meshed finer than the global solve. Per-feature regions from one driver are the fast path.
+
+## 2026-11-19 - fast_solve: CalculiX's answer on the same mesh, 3-16x faster, and past its memory wall
+
+`devtools/simplify/fast_solve.py` solves the bench's problem (C3D10, isotropic, prescribed
+displacements only) with CalculiX's own discretisation: its shape functions, its 4-point Gauss rule,
+its Gauss-to-node extrapolation (with its 5-decimal weights) and plain nodal averaging, RF as the
+element internal force, ELSE as the Gauss sum of sigma:eps/2. Dirichlet conditions by elimination.
+Assembly in numba (parallel, element colouring, Morton node order, 3x3 blocks). Two solvers, `auto`
+picking by size (direct up to 1M dofs):
+
+- `pardiso`: MKL PARDISO, SPD, all cores, through `pardiso_64` (ctypes). The 32-bit interface that
+  pypardiso wraps fails with error -2 once the factor passes 2^31 entries.
+- `pmg`: PETSc CG to ||r|| <= 1e-10 ||b||, one MPI rank per physical core. The preconditioner is a
+  two-level p-multigrid: Chebyshev(1) with point-block Jacobi on P2, then a Galerkin projection onto
+  the corner-node P1 space and one GAMG V-cycle there (aggressive first coarsening). The matrix is
+  assembled straight into /dev/shm and each rank maps its own rows.
+
+API: `solve_meshed(m, [("NFIX", 1, 3, 0.0), ("NLOAD", d, d, delta)])` on a `harness.Meshed`, with no
+deck (per-node values go in as `(tags, k, k, values)`, as local.py's cut faces need). Also
+`solve(xyz, conn_rows, rows, comps, vals)` and `solve_deck("job.inp")`. All three return u, nodal s,
+per-node reaction f and energy. Checked: `solve_meshed` and `solve_deck` give bit-identical results.
+`bench_solvers.py` runs each solver in a fresh process and compares it with ccx.
+
+Measured on dev-raymond-cfd (n2-standard-16: 8 cores, 16 threads, 62 GB), CalculiX 2.21 SPOOLES at 16
+threads. Wall time is the whole process, interpreter start (about 0.6 s) included. Memory is the peak
+summed PSS of the process tree. fast_solve's time is split into assemble / setup / solve:
+
+| deck | tets | CalculiX | fast_solve, in memory | split (s) | iterations |
+|---|---|---|---|---|---|
+| nist_ftc_09, size 30 | 62,808 | 17.7 s, 2.6 GB | pardiso **5.6 s**, 2.8 GB (from the deck: 5.9 s) | 0.6 / 3.8 / 0.4 | direct |
+| nist_ftc_09, size 290 | 460,581 | 312 s, 29.6 GB | pmg **20.1 s**, 8.2 GB (from the deck: 22.9 s) | 2.9 / 6.2 / 9.3 | 41 |
+| | | | pardiso 50.2 s, 22.7 GB | 2.6 / 41.8 / 2.9 | direct |
+| nist_ctc_04, size 30 | 2,090,620 | **killed by the OOM killer at 64.5 GB, after 20 min** | pmg **96 s**, 29.7 GB (from the deck: 108 s) | 12.0 / 22.2 / 55.1 | 59 |
+
+How closely the two agree, as relative differences. The .dat prints 7 digits and the .frd prints 6, so
+the run adds `*NODE PRINT, NSET=NALL / U` to get u from the .dat:
+
+| deck | max \|u\| | reaction = compliance | strain energy | max nodal von Mises |
+|---|---|---|---|---|
+| 62,808 tets | 3.1e-9 | 6.4e-8 | 3.1e-8 | 6.3e-7 |
+| 460,581 tets | 3.6e-9 | 3.1e-8 | 6.3e-8 | 1.6e-7 |
+| five local pieces, 1.5k-22k tets | <= 1.4e-7 | per-node cut RF <= 4.2e-7 of the largest | <= 2.5e-7 | <= 1.3e-6 |
+
+The von Mises figures needed CalculiX's own extrapolation weights, 1.92705 and -0.30902 (the exact
+values are 1.9270510 and -0.3090170). With the exact weights the max differed by 7e-6 to 9e-6.
+With CalculiX's, the whole field agrees to within 2.3e-6 once rounded to the .frd's 6 digits. CalculiX
+cannot run the 2.1M deck on this VM, so there it is checked against itself: rtol 1e-10 against 1e-12
+moves max |u| by 3e-10, the u field by 9e-9 and max von Mises by 5e-9.
+
+Local pieces, the same five decks (1.5k / 4.8k / 7.2k / 9.4k / 21.7k tets). CalculiX takes 0.4 / 1.0 /
+1.7 / 2.0 / 5.6 s. fast_solve in a fresh process takes 1.1 / 1.4 / 1.6 / 1.7 / 2.8 s. Inside an
+already-running Python process it takes 0.5 / 0.8 / 1.0 / 1.1 / 2.0 s. The CalculiX times leave out
+writing the deck and parsing the .frd in Python. So the crossover is around 5k tets: below it,
+CalculiX's start-up is cheaper than loading numba's cache.
+
+Notes from the measurements:
+
+- **CalculiX at 16 threads gave a wrong answer in 2 of 11 runs of the same 64k deck.** In one, the
+  reaction was 11,622 N instead of 5,503.68 and the energy 70,509 instead of 768.86, with lateral
+  reactions of 25 and 319 N. In the other, the reaction was right but the energy was 28,517. The
+  other nine runs, and the 1-thread run, were right. local.py's driver solve uses 16 threads, so a
+  single 16-thread ccx run per mesh is not a reliable reference.
+- **PARDISO cannot do the 2.1M deck either.** Its ordering predicts a factor of 24e9 entries
+  (192 GB). SPOOLES's peak at 460k tets (29.6 GB) points the same way. A direct solver stops near
+  half a million tets on a 64 GB machine, which is why the iterative path exists.
+- **Alternatives that lost:**
+  - pyamg smoothed aggregation (BSR, rigid-body modes, CG): 300 iterations on the 64k deck without
+    converging (3.6e-8), in 214 s.
+  - CHOLMOD (scikit-sparse 0.5.1): its factorisation took 3x as long as PARDISO's.
+  - Plain GAMG on P2: 44 iterations at 460k tets, but 96 s of setup.
+  - BoomerAMG (nodal): 978 iterations at 64k tets.
+- **The 64k nist_ftc_09 mesh has slivers.** Its worst corner tet has a volume quality of 1e-5, against
+  0.08 for the 460k mesh of the same part. On it, every iterative method needed 300-635 iterations,
+  even with an exact coarse solve (211). That is the second reason small systems are factorised.
+- **The P1 coarse operator's own GAMG hierarchy densifies.** At 2.1M tets it spent 45 s in Galerkin
+  products until the first level was coarsened aggressively (11 s). The fine smoother at Chebyshev
+  degree 1 does as well per iteration as degree 3.
+- **numba compiles on the first call after an edit** (about 20 s); every later process loads the
+  cache.
+
+Dependencies (bench venv): numpy 2.5.5, numba 0.68.1, mkl 2026.2.1, psutil. For `pmg`, also petsc
+3.24.6, petsc4py 3.24.6 and mpi4py 4.1.1 from PyPI, built against Ubuntu's Open MPI (apt
+`libopenmpi-dev openmpi-bin`). Build the petsc wheel with `setuptools<75` as a build constraint, and
+petsc4py without build isolation, with `CFLAGS=-I$PETSC_DIR/include`. Expect about 15 minutes.
+
+## 2026-11-19 - fast_solve adopted by the bench; the 16-thread CalculiX fault reproduced
+
+**Reproduced independently** on a different deck (lbracket_c original, 78k tets, dev-raymond-bench):
+ccx 2.21, the same deck, once at 1 thread and ten times at 16. The 1-thread energy was 33.74006;
+one 16-thread run read 33.74089 (+2.5e-5, the size of the bench's best noise floor), the others
+33.74006. So a 16-thread ccx run is not a measurement. Every remaining ccx call on the bench is one
+thread (every caller of `harness.run_ccx` passes 1), and the product verifier uses one
+thread too.
+
+**Adopted.** `harness.mesh_and_solve` solves with `fast_solve.solve_meshed` (`--solver ccx` or
+`BENCH_SOLVER=ccx` restores CalculiX; a missing numba/mkl falls back to it, and result.json records
+which ran). gmsh always meshes on one thread, so a mesh does not depend on how many jobs ran beside
+it. The original is now solved alone on every core before the variants start; the variants get
+cores / jobs threads each. `local._solve_piece` uses fast_solve above 5,000 tets and ccx (1 thread)
+below, where ccx's start-up is cheaper than loading numba's cache.
+
+Checked against the ccx (1 thread) ground truth of the same four parts (results3), harness rerun
+with fast_solve: every mesh came out identical (same element count, gmsh on one thread both times),
+and every row agreed:
+
+| part | tets | original compliance, rel. diff | worst \|dC\| difference over its rows | harness wall time |
+|---|---|---|---|---|
+| lbracket_c | 78,370 | 4.3e-9 | 1.2e-9 | 259 s -> 66 s |
+| lbracket_b | 37,006 | 2.4e-7 | 5.7e-7 | 63 s -> 33 s |
+| SHF08 | 35,650 | 7.2e-8 | 1.7e-7 | 101 s -> 25 s |
+| KP08 housing | 65,658 | 1.2e-7 | 4.6e-7 | 158 s -> 52 s |
+
+The fast runs shared the machine with a PETSc build, so their times are upper bounds. The
+original's solve alone went from 110 s to 19 s on lbracket_c.
+
+### The small parts at the wall-rule size (fast3: lbracket_b, lbracket_c, SHF08, KP08 housing)
+
+Rerun end to end with fast_solve: harness, per-feature local check (k 3, refine 2), packages, and
+the one-solve driver (`--driver-brep geom/package_all.brep`).
+
+- **With PLAN-fea-3 in force, removing these features saves almost nothing.** Cells saved by the
+  whole package (`all`): lbracket_c 2.6%, lbracket_b 0.3%, SHF08 **-2.1%** (the simplified part meshed
+  into MORE cells), KP08 12.1%. Before the wall rule the same packages read 11-92%. The wall rule, not
+  the features, now sets the element size on these parts; a feature only pays for itself when it
+  forces elements smaller than wall/2. This is the attribution step's job (estimate (a), the size the
+  feature forces against the size the part needs anyway) and it should rank these features as
+  costing nothing, so they are never proposed.
+- **KP08's package broke the sum bound once**: the accepted pair changed compliance by +0.138%
+  against a member sum of +0.119% (ratio 1.16), the whole package 0.99. Every pre-wall-rule package
+  had ratio <= 1. So the sum of members is not a guaranteed bound, and the package-level check before
+  promotion (loop step 6) is load-bearing, not a formality.
+- **Two of the four parts cannot be judged at a 0.1% budget**: their noise floor (the original
+  meshed at h and at 0.93 h) is 0.275% (SHF08) and 0.063% (KP08; 3x is 0.19%). A removal smaller than
+  that has no ground truth at this resolution. `score.py` now counts such rows apart ("no truth")
+  instead of as false accepts. On the remaining rows: T2 vs T3 spearman 0.93, pearson 1.00, sign
+  8/8, median ratio 0.96 (per-feature drivers) and 0.94 (one driver). No false accepts, but also no
+  truly acceptable row: every resolvable removal here costs more than 0.1%. The decision evidence has
+  to come from the larger parts.
+- Times with fast_solve, per part: per-feature local 35-71 s, packages 10-20 s, one-driver local
+  43-76 s (driver solve 4-10 s). On parts this small the one-driver path is no faster than reusing the
+  harness's per-feature fields, which already exist; its saving is the per-feature global solves the
+  product would otherwise have to run.

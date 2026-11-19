@@ -35,6 +35,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import subprocess
 import sys
 import time
@@ -141,6 +142,15 @@ def _solve_piece(brep: Path, work: Path, h: float, region, tol: float, drive, lc
     for n, (ux, uy, uz) in zip(cut_nodes, u):
         cards += [f"{n},1,1,{ux:.9g}", f"{n},2,2,{uy:.9g}", f"{n},3,3,{uz:.9g}"]
     m.sets["NCUT"] = cut_nodes
+    F = H._fast_solver() if H.SOLVER == "fast" and len(m.conn) > FAST_ABOVE_TETS else None
+    if F is not None:
+        t1 = time.time()
+        bnd = [(np.asarray(cut_nodes), k + 1, k + 1, u[:, k]) for k in range(3)]
+        r = F.solve_meshed(m, bnd, H.E_MPA, H.NU, threads=1)
+        solve_s = time.time() - t1
+        per_plane = {k: r.total_force(m.sets[k]).tolist() for k in cut_sets}
+        return {"ok": True, "elements": len(m.conn), "solve_s": solve_s, "energy": r.energy, "xyz": m.xyz,
+                "vm": r.vm, "planes": per_plane, "solver": f"fast:{r.method}"}
     cards += ["*NODE PRINT, NSET=NCUT", "RF", "*EL PRINT, ELSET=EALL, TOTALS=ONLY", "ELSE",
               "*NODE FILE", "U", "*EL FILE", "S", "*END STEP", ""]
     ok, solve_s = H.run_ccx(m, work, "\n".join(cards))
@@ -151,7 +161,13 @@ def _solve_piece(brep: Path, work: Path, h: float, region, tol: float, drive, lc
     per_plane = {k: np.sum([rf[n] for n in m.sets[k] if n in rf], axis=0).tolist() for k in cut_sets}
     (work / "job.frd").unlink(missing_ok=True)
     return {"ok": True, "elements": len(m.conn), "solve_s": solve_s, "energy": H.read_energy(work / "job.dat"),
-            "xyz": m.xyz, "vm": fld.vm, "planes": per_plane}
+            "xyz": m.xyz, "vm": fld.vm, "planes": per_plane, "solver": "ccx"}
+
+
+#: a local piece above this many tets goes to fast_solve, below it to ccx (one thread). Measured (DEVLOG
+#: 2026-11-19, fast_solve): ccx 0.4 / 1.0 / 1.7 s at 1.5k / 4.8k / 7.2k tets, fast_solve in a fresh
+#: process 1.1 / 1.4 / 1.6 s - numba's cache load costs more than ccx's whole solve on a small piece.
+FAST_ABOVE_TETS = 5000
 
 
 def _peak(piece, region, h, zone, pad):
@@ -290,11 +306,13 @@ def main(argv=None) -> int:
                     "(e.g. the harness's geom/package_all.brep) instead of each feature's own global solve")
     ap.add_argument("--driver-size", type=float, default=0.0, help="the driver solve's size: diagonal / N "
                     "(default: the harness's own size)")
-    ap.add_argument("--threads", type=int, default=16, help="solver threads for the driver solve")
+    ap.add_argument("--threads", type=int, default=os.cpu_count() or 1, help="solver threads for the driver solve")
+    ap.add_argument("--solver", choices=("fast", "ccx"), default=H.SOLVER)
     ap.add_argument("--grow", type=float, default=1.0,
                     help="scale the whole region padding (k alone does not move it for small features: "
                          "the zone + 4h floor dominates)")
     a = ap.parse_args(argv)
+    H._set_solver(a.solver, a.jobs)
     hd = Path(a.harness)
     r = json.loads((hd / "result.json").read_text())
     driver, w_driver = None, None

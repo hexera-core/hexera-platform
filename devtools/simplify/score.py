@@ -125,14 +125,23 @@ def main(argv=None) -> int:
     print(f"  T1 vs |T3| (holes): spearman {_fmt(ag['t1_spearman'])} (n={ag['n_t1']})")
     b = a.budget
     judged = [r for r in pooled if r["t2"] is not None]
+    # A row whose |T3| is inside 3x its part's noise floor has no ground truth at this budget: two
+    # meshes of the SAME part already disagree by that much (measured: SHF08 at the wall-rule size,
+    # noise 0.275% against a 0.1% budget). Such rows are counted apart, not as false accepts.
+    unresolved = [r for r in judged if abs(r["t3"]) <= r["floor"] and r["floor"] > b]
+    judged = [r for r in judged if r not in unresolved]
     fa = [r for r in judged if abs(r["t2"]) <= b < abs(r["t3"])]
     fr = [r for r in judged if abs(r["t3"]) <= b < abs(r["t2"])]
     ok = [r for r in judged if abs(r["t3"]) <= b]
     print(f"\ndecision at budget |dC| <= {b:.2%} (T2 alone, n={len(judged)}): truly acceptable {len(ok)}, "
-          f"FALSE ACCEPTS {len(fa)}, false rejects {len(fr)}")
+          f"FALSE ACCEPTS {len(fa)}, false rejects {len(fr)}; {len(unresolved)} more where the part's noise "
+          f"floor exceeds the budget (no ground truth)")
     for r in sorted(fa, key=lambda r: -abs(r["t3"]))[:12]:
         print(f"  false accept: {r['part'][:30]:30} {r['id']:9} {r['kind']:5} T3 {_fmt(r['t3'], True)} "
               f"T2 {_fmt(r['t2'], True)} cut {_fmt(r['cut'])} T1 {_sci(r['t1'])}")
+    for r in unresolved:
+        print(f"  no truth:     {r['part'][:30]:30} {r['id']:9} {r['kind']:5} T3 {_fmt(r['t3'], True)} "
+              f"T2 {_fmt(r['t2'], True)} (3x noise {_fmt(r['floor'], True)})")
     saved = [r["cells"] for r in ok if r["cells"] is not None]
     if saved:
         print(f"  cells saved by the truly acceptable removals, each alone: median {statistics.median(saved):+.1%}, "
