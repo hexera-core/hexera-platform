@@ -60,7 +60,10 @@ than the budget allows is not kept either.
 5. **Verify**, cheapest tier first, each tier allowed to reject but only the last allowed to
    certify (next section).
 6. **Keep or revert** per package, charging the error it spent to the run's **error ledger**.
-   Errors from independent features roughly add, so the ledger is a budget, not a per-feature test.
+   For FEA, member errors summed bounded the package's true error on every part measured, so the
+   ledger is a budget, not a per-feature test. Before the simplified part is promoted, the whole
+   package is verified once more as one geometry (T2 on each changed region from one global solve,
+   or T3 when the regions overlap); for CFD that package verdict is the only one that counts.
 7. **Re-plan**: the ledger and every verdict go back to the model, unlike today's repair pre-pass
    (`cad/repair/plan.py:RunHistory` notes it is not read by the model).
 
@@ -91,6 +94,24 @@ feature did not change the field at the cut. T2 therefore measures that directly
 force on the cut boundary with the feature vs without. If they differ by more than a threshold the
 region is grown and re-solved; if it cannot be grown inside budget, T2 abstains and the feature
 goes to T3.
+
+### What the bench has measured so far (docs/simplification/DEVLOG.md)
+
+- The ground truth needs boundary conditions on exact faces: a node-band clamp put a 1.07% mesh
+  noise floor under compliance, trimmed planar end faces 0.04%.
+- T2 against T3 over seven parts and 43 FEA removals: rank 0.99, linear 0.99, sign 23 of 23, median
+  ratio 0.94, after one bug was fixed (a clamp face inside the region must keep its clamp). T1 ranks
+  holes at 0.98. At a 0.1% compliance budget T2 alone made one false accept, 0.112% read as 0.086%.
+- **The savings are in packages**: one harmless feature saves a median 3% of cells; all of a part's
+  harmless features together save 14-54%, at a true change of at most 0.08% (0.28% for 54% on one
+  part).
+- **FEA errors add, conservatively**: the package's true change was within the sum of its members'
+  on every part but one, and that one was inside its noise floor. **CFD errors do not**: on a heat
+  sink the members summed to about 0.7% of the package's drag change.
+
+So the loop below verifies features one at a time to choose them, then verifies the PACKAGE before
+anything is kept. For FEA the package check confirms a ledger that has so far been conservative; for
+CFD it is the only verdict that counts.
 
 ## Physics rules worth writing down now
 
