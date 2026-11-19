@@ -294,6 +294,44 @@ def _walk_order(regions: tuple[Region, ...], defects) -> tuple[Region, ...]:
                         key=lambda r: (worst.get(r.index, len(_SEVERITY_RANK)), r.index)))
 
 
+#: A REGION THE FOCUS DID NOT NAME. The mesher handback (pipeline/repair_handback.py) hands repair
+#: the faces the FEA ladder actually failed on, so a run under a focus must not spend the part's
+#: clock on loci nobody complained about. Such a region is REPORTED and left standing - not
+#: silently skipped - because a partial repair a customer is owed an account of is the whole
+#: reason this loop reports refusals at all.
+NOT_IN_FOCUS = "not_in_focus"
+
+
+def focus_filter(walk: tuple[Region, ...],
+                 focus_faces: tuple[int, ...] = ()) -> tuple[tuple[Region, ...], tuple[dict, ...]]:
+    """`(walked, refused)` for a walk under `focus_faces` (1-based kernel face indices).
+
+    An EMPTY focus is byte-for-byte the walk it was given and no refusal, which is what every
+    caller but the handback passes.
+
+    A region is IN FOCUS when it holds one of those faces (`Region.face_indices`, the kernel face
+    indices of its member defects). Edges and vertices contribute only to a region's box, so a
+    region whose defects are all edges is out of focus however close it sits - which is correct:
+    the mesher named faces, and those are what it could not mesh.
+
+    FILTERS, NEVER RE-ORDERS. `_walk_order`'s severity ranking is the budget's order and remains
+    so; a focus only removes.
+
+    A FOCUS NAMING NOTHING ON THE PART RUNS NOTHING. The alternative - falling back to the whole
+    walk - would turn "the mesher named faces we cannot locate" into an unscoped repair, which is
+    the one outcome the handback exists to avoid.
+    """
+    focus = frozenset(int(k) for k in focus_faces or ())
+    if not focus:
+        return tuple(walk), ()
+    kept = tuple(r for r in walk if r.face_indices & focus)
+    refused = tuple({"refusal": NOT_IN_FOCUS, "region": int(r.index),
+                     "reason": "none of the faces this run was scoped to is in this region",
+                     "focus_faces": sorted(focus)}
+                    for r in walk if not (r.face_indices & focus))
+    return kept, refused
+
+
 def _refusals_of(author: Author) -> tuple[dict, ...]:
     """What the author refused to aim at, if it reports such a thing.
 
@@ -491,7 +529,8 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
                 session: RepairSession | None = None, attempts: int | None = None,
                 clock: Callable[[], float] = time.monotonic,
                 deadline_s: float | None = None,
-                auto_accept_mm: float | None = None) -> RegionRun:
+                auto_accept_mm: float | None = None,
+                focus_faces: tuple[int, ...] = ()) -> RegionRun:
     """Repair `shape` one region at a time, and report what each region's package did.
 
     `attempts` BOUNDS THE PACKAGES ONE REGION MAY BE OFFERED, defaulting to the deployment's
@@ -508,6 +547,10 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
     every slice of time - the probes', the author's, the walk's - is a slice of what the attempt
     node's clock actually has left. None, for a direct caller, is the old behaviour: the budget's
     `timeout_s` from when this function started. Given, the walk has the lesser of the two.
+
+    `focus_faces` SCOPES THE WALK to the regions holding those 1-based kernel face indices; every
+    other region is reported `NOT_IN_FOCUS` and left standing, unrun. `()` - what every caller but
+    the mesher handback passes - is byte-for-byte the walk and the refusal list it was before.
 
     `session` and `clock` are injectable so the walk and the budget arithmetic can be tested
     without a kernel and without waiting. `reserved` reaches a session this function CONSTRUCTS;
@@ -579,6 +622,8 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
             timings=_timings(started, clock, work, (), verification_scans,
                              work.scoped_scan_count - scoped_at_start),
             defects_before=before, defects_after=before,
+            # NO FOCUS REFUSAL HERE: the scan never completed, so the part was never decomposed
+            # and there are no regions a focus could have excluded.
             refusals=_refusals_of(author))
 
     # WHAT THE PART AS A WHOLE LOOKS LIKE, SAID ONCE, BEFORE IT IS CUT INTO REGIONS. The only
@@ -595,7 +640,9 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
     # THE ORDER THE BUDGET IS SPENT IN, which is not the order the regions were found in. The
     # REPORT keeps `decompose`'s spatial order (it is the record of the decomposition, and a
     # region carries its own index, so nothing is lost); the WALK goes worst-first.
-    walk = _walk_order(regions, work.defects())
+    # SCOPED TO THE FACES SOMETHING ELSE ALREADY NAMED, when a caller named any. `()` - every
+    # caller but the mesher handback - is the walk `_walk_order` just produced, unchanged.
+    walk, not_in_focus = focus_filter(_walk_order(regions, work.defects()), focus_faces)
     packages: list[PackageVerdict] = []
     escalated: list[int] = []
     committed = False
@@ -776,8 +823,10 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
         timings=_timings(started, clock, work, tuple(packages), verification_scans,
                          work.scoped_scan_count - scoped_at_start),
         defects_before=before, defects_after=after,
-        # READ AT THE END, once the author has been asked everything it is going to be asked.
-        refusals=_refusals_of(author),
+        # READ AT THE END, once the author has been asked everything it is going to be asked,
+        # plus the regions a focus kept the author from being asked about at all - which a
+        # customer owed an account of a partial repair has to be told, not have inferred.
+        refusals=_refusals_of(author) + not_in_focus,
         attempt_budget=budget_record, packages_replay=tuple(replays))
 
 

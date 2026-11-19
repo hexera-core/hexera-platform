@@ -890,12 +890,20 @@ def _disposition(regions_run) -> dict:
 def repair_step_file(source: Path, destination: Path, *,
                      profile: RepairProfile = RepairProfile.conservative,
                      directives: tuple[dict, ...] = (),
-                     goal: RepairGoal | None = None) -> RepairReport:
+                     goal: RepairGoal | None = None,
+                     focus_faces: tuple[int, ...] = ()) -> RepairReport:
     """Repair `source` into `destination`, or refuse. The input is never modified.
 
     Raises RepairUnavailable when repair is switched off or the kernel is missing, and
     RepairRefused when the result exceeded its caps - the two are not the same answer and must not
     be reported as one.
+
+    `focus_faces` SCOPES THE WALK TO THE FACES SOMETHING ELSE ALREADY NAMED (1-based kernel face
+    indices, `Face_<k>`): the mesher handback hands repair the faces the FEA ladder actually
+    failed on (`pipeline/repair_handback.py`), and a run under a focus leaves every other region
+    standing and REPORTED (`region_loop.NOT_IN_FOCUS`) rather than spending the part's clock on
+    loci nobody complained about. An EMPTY tuple - what every other caller passes - is
+    byte-for-byte today's behaviour.
 
     `goal` DECLARES WHAT THIS RUN IS FINISHING FOR (`cad/repair/goal.py`). Unset - what the
     attempt node passes - is byte-for-byte today's behaviour: the driver gets the same deadline
@@ -911,6 +919,15 @@ def repair_step_file(source: Path, destination: Path, *,
     if profile is not RepairProfile.conservative:
         raise RepairUnavailable(
             f"only the conservative profile is implemented; {profile.value} needs an operator")
+    if focus_faces and rcfg.CAD_REPAIR_REGION_LOOP != "live":
+        # A FOCUS IS THE REGION DRIVER'S TO HONOUR, and that is decided BEFORE the file is read.
+        # The operation-at-a-time driver walks the whole shape and has no region to scope to, so
+        # accepting a focus here would run an UNSCOPED repair for a caller that asked for a scoped
+        # one - the one failure the mesher handback exists to avoid, and the sort that reads as
+        # success in a report. Refused instead, as OUR limitation and never a verdict on the file.
+        raise RepairUnavailable(
+            "a focused repair needs the region driver (CAD_REPAIR_REGION_LOOP=live); the "
+            "operation-at-a-time driver cannot scope a walk to named faces")
     # THE RUN'S ONE ABSOLUTE DEADLINE (final review I2), taken at entry - BEFORE the STEP is read
     # and measured - because the attempt node's `wait_for(CAD_REPAIR_TIMEOUT_S)` started its clock
     # before this call, not after the read. Every driver, probe and model call below spends a
@@ -1007,7 +1024,7 @@ def repair_step_file(source: Path, destination: Path, *,
                                          reserved=reserved), LABEL
         regions_run = run_regions(
             before_shape, tolerance_mm=tolerance, reserved=reserved, author=author,
-            deadline_s=driver_deadline)
+            deadline_s=driver_deadline, focus_faces=focus_faces)
         final = measure(regions_run.shape)
         result = as_repair_run(regions_run, original=original.to_dict(), final=final.to_dict(),
                                planner_label=label)
