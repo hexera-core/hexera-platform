@@ -1311,6 +1311,16 @@ def map_faces(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], mm: float
                         if BOX_HOLDS and wish_long and any(c in wish_long for c in cs):
                             fixed_roots.add(r)      # (SHMESH-51e: a two-ring bolt box's side holds its class)
                             box_roots.add(r)
+            if BOX_KEEPS_COUNT and wish and wish_long:
+                # SHMESH-51o15: a two-ring bolt box's side whose class takes another count (a curve of the class too
+                # long for the box's count under the user's longest edge, or a count held elsewhere) keeps its own:
+                # the mapped cells on that side go free and the side is held alone (below)
+                mine = [c for c in cs if c in wish_long and c in wish and wish[c] != n and c not in preset
+                        and c not in forced]
+                near = {t_ for t_ in faces_of[r] for c in mine if any(c in sd for sd in cand[t_][0])}
+                if near:
+                    bad |= near
+                    continue
             for c in cs:
                 counts[c] = n
         # SHMESH-51e: a two-ring bolt box's side that is no class's (a cell beside it has a chain opposite) holds its
@@ -1896,6 +1906,11 @@ BOX_HOLDS = True
 MAP_ROUNDS = 96
 #: SHMESH-51e: a box side two segments more where the chain beside it needs them (else that cell is free)
 BOX_BUMP = True
+#: SHMESH-51o15: a two-ring bolt box's side never takes its class's other count: the cell beside it goes free instead
+#: (the real column's 12-hole plate: four end boxes' sides took 6 from a class holding a 59.7 mm curve that 4 segments
+#: put past the user's longest edge, their bands came out with corners of 3 degrees and were refused, and the four holes
+#: fell to one ring - 12 of 12 two rings to 8)
+BOX_KEEPS_COUNT = True
 #: SHMESH-51n: ... only for a side of BUMP_FROM segments or more: 8 round a hole (4 a side), a side of 6 left a band
 #: corner of 2 to 3 degrees and the band was refused every time (lab and the real column)
 BUMP_FROM = 5
