@@ -2133,10 +2133,18 @@ def transition_cell(gmsh, t: int, index: np.ndarray, xyz: np.ndarray, mm: float,
                                                    (m_["max_angle_quad"] - 90.0) / 45.0,
                                                    1.0 - np.abs(m_["min_jacobian"])])))
 
-        for step_ in (0.1, 0.05, 0.025):
+        def scores() -> np.ndarray:
+            m_ = SQ.quad_measures(X, Qa)
+            return np.maximum.reduce([m_["taper"] / 0.5, (90.0 - m_["min_angle_quad"]) / 45.0,
+                                      (m_["max_angle_quad"] - 90.0) / 45.0, 1.0 - np.abs(m_["min_jacobian"])])
+
+        sc = scores()
+        # (only the new nodes of quads near a limit move; none when no quad is)
+        todo = sorted({int(v_) for qi in np.flatnonzero(sc >= 0.9) for v_ in Qa[qi] if int(v_) >= base})
+        for step_ in (0.1, 0.05, 0.025) if todo else ():
             for _ in range(TRANSITION_NUDGE):
                 moved = False
-                for v_ in range(base, len(X)):
+                for v_ in todo:
                     here = worst(of[v_])
                     p0 = X[v_].copy()
                     best = (here, p0)
