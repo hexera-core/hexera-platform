@@ -575,6 +575,17 @@ class IntakeToolExecutor:
         # (no upload, or a name that says nothing) claims nothing, and nothing is refused on it.
         return measured_choice.upload_form(self._staged_upload(), self.state.source_ref)
 
+    def _with_measured_locations(self, patches):
+        # near_mm from the confirmed openings (geometry_confirmation.confirmed_port_locations), never over one sent
+        if not isinstance(patches, list):
+            return patches
+        try:
+            from meshpipeline.application.geometry_confirmation import confirmed_port_locations, with_locations
+            return with_locations(patches, confirmed_port_locations(str(self.state.session_id or "")))
+        except Exception as exc:  # noqa: BLE001 - unread: the ports as sent, and the question as before
+            logger.debug("Intake: confirmed opening locations unavailable (%s)", exc)
+            return patches
+
     def _source_patches(self, engine: str) -> tuple[str, ...]:
         # THE FILE'S OWN PATCHES, for an engine that writes them under the file's names
         # (EngineSpec.patch_names_from_source): read from the confirmed geometry, so a rename or a
@@ -643,6 +654,11 @@ class IntakeToolExecutor:
         if isinstance(args, dict) and "patches" in args:
             _changes = _normalize_declared_patches(args)
             args = {**args, "patches": _changes.patches}
+            # THE OPENINGS' LOCATIONS the geometry check measured and the user confirmed, on every inlet / outlet
+            # the model sent without one - the same at the preview and the submission, so the token still binds.
+            # Two ports of one size were asked "the rough location of each opening" after an engine switch
+            # (bend_elbow_004, m483 round 7), though the stage had both
+            args = {**args, "patches": self._with_measured_locations(args["patches"])}
 
         before = st.authorization_signature()
         handler = getattr(self, f"_do_{tool}", None)

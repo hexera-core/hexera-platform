@@ -120,7 +120,10 @@ def submit_mesh(ctx: BuilderToolContext, args: dict | None = None) -> dict:
     # user_notes). Best effort: kept as written, never checked, never a reason to refuse a mesh.
     if ctx.user_notes and (args or {}).get("notes_remark"):
         from meshpipeline.contracts.user_notes import record_remark
-        record_remark(workspace, (args or {}).get("notes_remark"), by="builder")
+        from meshpipeline.engines.mesh_requirements import ai_remark_kept
+        # NOTE-13: not beside the rules' own rows for the same asks (a cause no row states, said twice)
+        if ai_remark_kept(workspace):
+            record_remark(workspace, (args or {}).get("notes_remark"), by="builder")
     return {"success": True, _pol.submit_ok_key: True}
 
 

@@ -7,6 +7,7 @@ import json
 import logging
 import math
 import re
+from collections.abc import Mapping
 from pathlib import Path
 
 from meshpipeline.cad.cad_tessellate import (  # noqa: F401
@@ -1465,17 +1466,72 @@ _off_grid = off_grid_point
 LAYER_BRIDGE_ROOM = 0.5
 
 
-def _layer_bridge_room(wall_stl: Path, layer_cell: float, max_cells: int) -> dict | None:
-    """CFDREQ-9: what a first layer far thinner than the wall cells may spend on more layers - the wall's faces at
-    `layer_cell` (its area over the cell's) and half the pass's budget as room. None (the plan's count kept) when the
-    wall cannot be read."""
+def _wetted_area(tri, cap_stls) -> float | None:
+    """CFDREQ-9: the area of the staged wall the FLUID touches (m2). A hollow part is staged for a carve: its whole
+    metal skin - bore, outer skin, end rings, flanges - is 'wall', and snappyHexMesh puts faces on the bore alone.
+    engines/passage.cavity_skin (the test cfMesh's bore staging already uses) keeps the pieces with the cavity on one
+    side. None when no piece is kept (a fluid domain's wall is the fluid's own boundary: all of it is wetted) or the
+    test cannot run."""
+    try:
+        import numpy as np
+        import pyvista as pv
+
+        from meshpipeline.engines.passage import _triangles, cavity_skin
+        caps = [pv.read(str(p)) for p in cap_stls if Path(p).exists()]
+        if not caps:
+            return None
+        pts = tri.reshape(-1, 3)
+        raw = np.arange(len(pts), dtype=np.int64).reshape(-1, 3)
+        p, f = _triangles(pv.PolyData(pts, np.hstack([np.full((len(raw), 1), 3, dtype=np.int64), raw]).ravel()))
+        kp, kf = cavity_skin(p, f, caps)
+        if kf is f or len(kf) == 0 or len(kf) >= len(f):
+            return None
+        t = np.asarray(kp, dtype=float)[np.asarray(kf, dtype=np.int64)]
+        return 0.5 * float(np.linalg.norm(np.cross(t[:, 1] - t[:, 0], t[:, 2] - t[:, 0]), axis=1).sum())
+    except Exception:  # noqa: BLE001 - the whole wall's area stands: fewer layers, never more
+        logger.warning("render_internal_case: the wetted wall was not read - its whole area is used", exc_info=True)
+        return None
+
+
+class _LayerBridge(Mapping):
+    """CFDREQ-9's {"faces", "room"}, the faces read only when a bridge is asked for (the wetted test casts rays)."""
+
+    def __init__(self, area_of, layer_cell: float, room: float):
+        self._area_of, self._cell, self._room, self._faces = area_of, float(layer_cell), float(room), None
+
+    def __getitem__(self, key):
+        if key == "room":
+            return self._room
+        if key == "faces":
+            if self._faces is None:
+                self._faces = self._area_of() / (self._cell * self._cell)
+            return self._faces
+        raise KeyError(key)
+
+    def __iter__(self):
+        return iter(("faces", "room"))
+
+    def __len__(self) -> int:
+        return 2
+
+
+def _layer_bridge_room(wall_stl: Path, layer_cell: float, max_cells: int,
+                       cap_stls: list[Path] | None = None) -> Mapping | None:
+    """CFDREQ-9: what a first layer far thinner than the wall cells may spend on more layers - the WETTED wall's
+    faces at `layer_cell` (its area over the cell's: the outer skin of a hollow part gets no cell, s_duct_004's whole
+    skin read 2.5 times the 101,205 faces snappy made and held a y+ 1 ask at 15 layers) and half the pass's budget as
+    room. None (the plan's count kept) when the wall cannot be read."""
     try:
         import numpy as np
         tri = np.asarray(read_stl_triangles(wall_stl), dtype=float)
         if tri.ndim != 3 or len(tri) == 0 or layer_cell <= 0:
             return None
-        area = 0.5 * float(np.linalg.norm(np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]), axis=1).sum())
-        return {"faces": area / (layer_cell * layer_cell), "room": LAYER_BRIDGE_ROOM * float(max_cells)}
+        whole = 0.5 * float(np.linalg.norm(np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]), axis=1).sum())
+
+        def area() -> float:
+            wet = _wetted_area(tri, cap_stls or [])
+            return min(whole, wet) if wet else whole
+        return _LayerBridge(area, layer_cell, LAYER_BRIDGE_ROOM * float(max_cells))
     except Exception:  # noqa: BLE001 - no bridge is the plan's own layer count, never a lost pass
         logger.warning("render_internal_case: the wall's area was not read - the plan's layer count stands",
                        exc_info=True)
@@ -1677,7 +1733,9 @@ mergeTolerance 1e-6; debug 0;
         _layer_cell = base_actual / (2 ** near_level)
         _shm = CR.snappy_dict(_ask, _shm, wall_cell_m=_layer_cell,
                               bridge=_layer_bridge_room(ws / "constant" / "triSurface" / f"{wall}.stl",
-                                                        _layer_cell, max_cells))
+                                                        _layer_cell, max_cells,
+                                                        [ws / "constant" / "triSurface" / f"{n}.stl"
+                                                         for k, n in names.items() if k != wall_key]))
         _ask.write(ws)
     (ws / "system" / "snappyHexMeshDict").write_text(_shm)
     return {"divisions": div, "surface_level": [smin, smax], "feature_level": flevel,

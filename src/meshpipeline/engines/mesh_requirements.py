@@ -1642,6 +1642,18 @@ def decided_block(sec: Mapping | None, *, skip: tuple[str, ...] = ()) -> str:
             + DECIDED_WORDS.format(key="decided_by_rules"))
 
 
+def ai_remark_kept(workspace) -> bool:
+    """NOTE-13: whether an AI step's own notes_remark joins the result's "From your notes" lines. Not when the rules
+    decided the notes' asks (a reading in use, with asks): every line the user wrote is then told by the rules' own
+    rows with what was built, and the remark could only say it again in other words - or give a cause no row states
+    (cfMesh beside "20 cells across the passage: 30 cells across the passage (cells of 8.613 mm at its walls)": "the
+    internal passage sizing caps governed the rendered mesh", where the octree's step did; m483 round 7, 4e)."""
+    try:
+        return not decided_asks(read(workspace))
+    except Exception:  # noqa: BLE001 - unread: the remark as before
+        return True
+
+
 #: NOTE-12: how a line that is no mesh setting starts
 NOT_MESH_LEAD = "Not a mesh setting"
 

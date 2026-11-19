@@ -646,7 +646,11 @@ async def plan_with_accounting(*, workspace, job_id: str, request_txt: str,
         m = re.search(r"\{.*\}", content, re.S)
         plan = json.loads(m.group(0)) if m else None
         if isinstance(plan, dict) and plan.get("notes_remark"):
-            _un.record_remark(workspace, plan.pop("notes_remark"), by="snappy_planner")
+            _said = plan.pop("notes_remark")
+            # NOTE-13: not beside the rules' own rows for the same asks (mesh_requirements.ai_remark_kept)
+            from meshpipeline.engines.mesh_requirements import ai_remark_kept
+            if ai_remark_kept(workspace):
+                _un.record_remark(workspace, _said, by="snappy_planner")
         # THE GUARD: what leaves the planner is only what the drivers can use - every value that
         # is not a usable number goes back to the rules default, every usable one is held to the
         # brief's own range. The raw answer is still what the training record keeps.
