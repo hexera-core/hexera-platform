@@ -662,3 +662,16 @@ def test_the_stage_map_matches_targets_for(mesh_ops_on, op, code, right, stage):
     author_accepts = stage == ma._STAGE_REQUIRED[op]
     assert author_accepts == session_accepts
     assert session_accepts == (stage == right)
+
+
+def test_a_count_without_a_solids_key_fails_open(ask, mesh_ops_on, monkeypatch):
+    # A missing key is "unavailable", not zero solids: nothing is refused.
+    import meshpipeline.cad.repair.conservative as cons
+
+    monkeypatch.setattr(cons, "_counts", lambda shape: {"faces": 3})
+    assert ma._current_solids(object()) is None
+    ask(_package_reply(plan=[{"op": "fragment_bodies", "fingerprint": "fp1"}],
+                       cleared=["fp1"], unchanged=[]))
+    author = ma.model_author(object(), original=ORIGINAL, face_reader=_faces)
+    defects = (_mesh_defect(1, DefectCode.mesh_edge_through_face, "3d"), _defect(2))
+    assert isinstance(author(REGION, defects, ()), TargetPackage)

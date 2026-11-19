@@ -219,7 +219,8 @@ def _current_solids(shape) -> int | None:
         return None
     try:
         from meshpipeline.cad.repair.conservative import _counts
-        return int(_counts(shape).get("solids", 0))
+        solids = _counts(shape).get("solids")  # a MISSING key is unavailable, never 0
+        return None if solids is None else int(solids)
     except Exception:  # noqa: BLE001 - total: an unknown count refuses nothing
         return None
 
