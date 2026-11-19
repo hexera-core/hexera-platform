@@ -95,6 +95,12 @@ INTAKE_FORMATS: tuple[IntakeFormat, ...] = (
         # ... and it is a whole thermal model, so the check shows it as one (thermal_view)
         check_mode=THERMAL_CHECK),
     IntakeFormat(
+        key="dxf", label="DXF drawing (its mesh entities)", suffixes=(".dxf",),
+        media_type="image/vnd.dxf",
+        # A DXF records its unit in $INSUNITS, but the surveying and mine-planning tools that
+        # export one routinely leave it at 0 ("unitless"), so the unit is asked, as for STL.
+        declares_units=False, staged_as="input.dxf"),
+    IntakeFormat(
         key="obj", label="Wavefront OBJ mesh", suffixes=(".obj",),
         media_type="model/obj", declares_units=False, staged_as="input.obj"),
     IntakeFormat(
