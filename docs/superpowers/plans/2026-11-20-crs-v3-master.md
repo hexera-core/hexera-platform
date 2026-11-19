@@ -1088,6 +1088,27 @@ If either check fails, stop. `look` stays text-first, and the phase's evidence i
 
 ---
 
+
+### Task 15b: Native tool calling in `model_inference`, and the investigator's native mode
+
+Owner-approved addition (2026-11-20). The investigator's JSON-in-text protocol exists only
+because `contracts/model_inference` is a messages-in/text-out wrapper and the decision cache is
+keyed over plain messages. This task gives the platform native tool calling and lets the
+investigator use it, keeping the JSON protocol as the fallback and the replay baseline.
+
+**Files:**
+- Modify: `src/meshpipeline/contracts/model_inference.py`, `src/meshpipeline/contracts/decision_cache.py`, `src/meshpipeline/runtime/composition.py` (router support), `src/meshpipeline/cad/repair/` (the investigator driver's transport seam only)
+- Test: `tests/unit/contracts/test_model_inference_tools.py`, additions to the investigator driver tests
+
+**Interfaces:**
+- Produces: `call_repair_review_model(messages, *, job_id, tools: Sequence[ToolSchema] | None = None) -> ModelReply` where `ModelReply` is either text or a typed `tool_calls` list; a `tool` message role for threading results back; `CachingModelRouter` keys extended over (messages, tool schemas, tool-call trace) so repeatable decisions and replay hold for tool conversations exactly as for text; routers without tool support raise a typed `ToolsUnsupported`, which callers treat as "use the JSON protocol".
+- The investigator driver gains a transport seam: native mode behind `CAD_REPAIR_INVESTIGATOR_NATIVE_TOOLS` (default off, fail-closed); the JSON protocol remains the default transport, the shadow baseline, and the replay format. Tool SEMANTICS (registry, validation, budgets, clone discipline) are transport-independent and shared.
+
+- [ ] **Step 1: Failing contract tests** — tools accepted and threaded; `ToolsUnsupported` on a router without tools; cache key covers schemas and trace (two conversations differing only in a tool result do not share a cache entry); replay of a recorded tool conversation makes zero model calls.
+- [ ] **Step 2: Implement the contract + cache + one real router path** (the configured provider in runtime composition); `_wire`-style callers are untouched (no tools passed = exactly today's behaviour, byte-identical).
+- [ ] **Step 3: The investigator's native transport** behind its flag; an equivalence test drives the same fake investigation through both transports and asserts identical tool sequences, identical conclude, identical transcript records (modulo the transport field).
+- [ ] **Step 4: Gates, one targeted commit.** Flag-off byte-identity: with the flag unset, no code path constructs tool schemas.
+
 ## Phase 3: Tournament repair (build order C)
 
 K candidate repair paths per region compete. Candidates come from both the rules and the model. Each runs on its own scratch clone (Task 10's `Scratch`) and is scored by the ladder (Task 9's `ladder.run_tier`), plus measured deviation and cleared/revealed accounting. Only the winner goes through the unchanged `session.try_package`, so caps, predicate and reviewer judge it as today. Losers cost nothing beyond their rehearsal time and leave no trace on the session.
@@ -1641,7 +1662,7 @@ The mechanism is Task 0's single `crs_v3` target output. This task flips its sha
   - Tournament, tiers and budget: `CAD_REPAIR_TOURNAMENT=live`, `CAD_REPAIR_AUTO_ACCEPT=live` (inert without a customer threshold), `CAD_REPAIR_BUDGET_ATTEMPTS=live`.
   - Memory: `CAD_REPAIR_MEMORY=live`. Production reads stay null by construction (Task 24).
   - Adapters: `CAD_REPAIR_MESH_HANDBACK=live`, `CAD_REPAIR_STANDALONE_JOBS=live`.
-  - Not in the set: `CAD_REPAIR_INVESTIGATOR_IMAGES` (only if Task 14's gate passed and its row exists), and `CAD_REPAIR_LLM_AUTHOR` (superseded by the investigator in `select_author`; left unstated).
+  - Not in the set: `CAD_REPAIR_INVESTIGATOR_NATIVE_TOOLS` (Task 15b; joins the set only once its equivalence evidence exists), `CAD_REPAIR_INVESTIGATOR_IMAGES` (only if Task 14's gate passed and its row exists), and `CAD_REPAIR_LLM_AUTHOR` (superseded by the investigator in `select_author`; left unstated).
 - On production, `crs_v3` is empty, so nothing is exported and every v3 flag reads its in-code default, `off`. Ungating production is a later, separate owner decision; this plan does not do it.
 
 - [ ] **Step 0: Read, don't write.**
