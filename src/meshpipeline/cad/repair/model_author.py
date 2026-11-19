@@ -188,7 +188,41 @@ def _strings(value: object) -> list[str] | None:
 
 
 class _Refused(ValueError):
-    """A reply that is not a bounded, catalogue-only claim; the message is the reason."""
+    """A reply that is not a bounded, catalogue-only claim; the message is the reason.
+
+    `code` and `defect` are set for a PRECONDITION refusal (a named reason the run's report counts,
+    in the shape `RunHistory.refuse` records); every other refusal carries the message alone."""
+
+    def __init__(self, message: str, *, code: str = "", defect: str = "") -> None:
+        super().__init__(message)
+        self.code = code
+        self.defect = defect
+
+
+#: What each stage-gated operation's `targets_for` requires of the defect's `measurements["stage"]`.
+#: KEPT IN LOCKSTEP with operations.py (SplitClosedFaces, RebuildFace: 2d; FragmentBodies: 3d), and
+#: THE LOCKSTEP TEST (test_the_stage_map_matches_targets_for) is what keeps that true: refusing here
+#: is only "the same outcome, cheaper" while this map is NOT STRICTER than `targets_for`; a stricter
+#: map silently loses a repair the session would have accepted. A looser map is safe (the session
+#: declines). DATA: `mesh_probe._face_defect` / `_unlocated` set `measurements["stage"]` on EVERY
+#: mesh defect (mesh_probe.py ~L346-347, value "2d"/"3d"/"import" or "" when unknown), so a missing
+#: or other stage is evidence `targets_for` itself declines - refused here to match it.
+_STAGE_REQUIRED = {"split_closed_faces": "2d", "rebuild_face": "2d", "fragment_bodies": "3d"}
+#: Operations that act on a part with more than one body (the CURRENT shape's solid count).
+_NEEDS_MULTIPLE_BODIES = frozenset({"fragment_bodies"})
+
+
+def _current_solids(shape) -> int | None:
+    """The shape's solid count, or None when it cannot be known (fail open). Kernel read, so it is
+    only called for an operation that needs it."""
+    if shape is None:
+        return None
+    try:
+        from meshpipeline.cad.repair.conservative import _counts
+        solids = _counts(shape).get("solids")  # a MISSING key is unavailable, never 0
+        return None if solids is None else int(solids)
+    except Exception:  # noqa: BLE001 - total: an unknown count refuses nothing
+        return None
 
 
 def _form(reply: object) -> tuple[str, object]:
@@ -216,7 +250,7 @@ class _Guards:
     the paired-rim half can touch the kernel and a pass or a verdict needs none of it."""
 
     def __init__(self, defects: tuple, *, reserved: frozenset, rims: frozenset,
-                 original: Measure) -> None:
+                 original: Measure, solids_of: Callable[[], int | None] = lambda: None) -> None:
         self.reserved = frozenset(reserved)
         self.held = held_fingerprints(defects, self.reserved)
         self.rims = rims
@@ -225,6 +259,7 @@ class _Guards:
         self.volume_cap = float(rcfg.CAD_REPAIR_MAX_VOLUME_CHANGE_RATIO) * original.volume_mm3
         # THE ACTIVE CATALOGUE, read per call so it follows the consent flags.
         self.ops = {op.name: op for op in op_catalogue()}
+        self.solids_of = solids_of
 
 
 #: Every key a package body may carry. Anything else is refused, so an attempt to smuggle a field
@@ -248,15 +283,34 @@ def _plan_item(item: object, ctx: _Context, guards: _Guards) -> tuple[dict, dict
     if name in FILL_OPS and guards.rims:
         raise _Refused(f"plan fills {fp} while the part has a paired rim (a missing passage "
                        "wall); filling is refused for the whole run")
+    op = guards.ops[name]
     on = sorted((d for d in ctx.mine if d.fingerprint == fp), key=lambda d: d.code.value)
     named = item.get("defect_code")
     if named is not None:
         on = [d for d in on if d.code.value == named]
         if not on:
             raise _Refused(f"plan names defect_code {named!r}, which {fp} does not carry")
-    defect = on[0]
+    # A fingerprint can carry several codes: aim at the ones THIS operation answers, and refuse
+    # only when that leaves nothing (never because another code sorts first).
+    answered = [d for d in on if d.code in op.answers]
+    if not answered:
+        raise _Refused(f"op_does_not_answer: {name} does not answer a "
+                       f"{on[0].code.value}", code="op_does_not_answer", defect=fp)
+    defect = answered[0]
     if defect.code in guards.reserved:
         raise _Refused(f"plan aims at a {defect.code.value}, a code held for review")
+    # OPERATION PRECONDITIONS, refused here so an invalid proposal costs no execution.
+    stage = _STAGE_REQUIRED.get(name)
+    if stage is not None and (getattr(defect, "measurements", None) or {}).get("stage") != stage:
+        raise _Refused(f"stage_precondition: {name} needs a {stage}-stage defect",
+                       code="stage_precondition", defect=fp)
+    if name in _NEEDS_MULTIPLE_BODIES:
+        # THE CURRENT SHAPE'S COUNT, not the upload's (a fill can create a solid mid-run). Unknown
+        # (no shape, or the count failed) FAILS OPEN: the session's own decline stands.
+        solids = guards.solids_of()
+        if solids is not None and solids <= 1:
+            raise _Refused(f"needs_multiple_bodies: {name} needs more than one solid in the part "
+                           f"(this one has {solids})", code="needs_multiple_bodies", defect=fp)
     target = EntityRef(entity_type=str(defect.entity_type), fingerprint=fp,
                        entity_index=int(defect.entity_index),
                        ambiguous=bool(getattr(defect, "ambiguous", False)))
@@ -459,10 +513,14 @@ def model_author(shape, *, original: Measure, reserved: frozenset = frozenset(),
                 record.update(outcome="verdict", reason="")
                 return None
             guards = _Guards(tuple(defects), reserved=held_codes, rims=_rims(tuple(defects)),
-                             original=original)
+                             original=original,
+                             solids_of=lambda: _current_solids(state["shape"]))
             package, proposal = _package(body, ctx, guards)
         except _Refused as exc:
             record.update(outcome="refused", reason=str(exc))
+            if exc.code:
+                _keep_refusals(refusals, [{"defect": exc.defect, "reason": exc.code,
+                                           "detail": str(exc)}])
             return None
         record.update(outcome="package", reason="", proposal=proposal)
         return package
