@@ -351,8 +351,9 @@ def test_the_parts_reader_is_shown_the_rounded_edges_as_fillets():
     by_name = {r["name"]: faces_of[r["id"]] for r in rows}
     assert by_name["2 rounded edges (fillets), radius 1.5 mm"] == ["Face_6", "Face_7"]
     assert by_name["a rounded edge (fillet), radius 0.8 mm"] == ["Face_8"]
-    assert by_name["a rounded edge (fillet), radius 2 mm"] == ["Face_9"]
-    assert by_name["a boss or shaft, 24 mm across"] == ["Face_10"]          # larger than the wall: a boss
+    # a convex cylinder stays a boss or shaft: the record cannot tell a rounded outer edge from a shaft
+    assert by_name["a boss or shaft, 4 mm across"] == ["Face_9"]
+    assert by_name["a boss or shaft, 24 mm across"] == ["Face_10"]
     assert all(r["kind"] == "fillets" for r in rows if "rounded edge" in r["name"])
 
 
