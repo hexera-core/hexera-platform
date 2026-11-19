@@ -15,6 +15,7 @@ from tests.unit.engines.test_mesh_requirements import CRITERIA, criteria_answer
 
 from meshpipeline.engines import mesh_requirements as MR
 from meshpipeline.engines import shell_structure as SS
+from meshpipeline.engines.gmsh import shell_adapter as SA
 from meshpipeline.engines.gmsh import shell_structured as ST
 from meshpipeline.engines.shell_mesh import ShellMesh
 
@@ -373,6 +374,9 @@ def test_a_ring_that_cannot_be_built_keeps_gmshs_mesh_there(web, monkeypatch):
 
     monkeypatch.setattr(ST, "ring_mesh", flaky)
     monkeypatch.setattr(ST, "BLOCKS", False)          # every washer then takes its own ring
+    # (SHMESH-51o would mesh the plate again with one ring round its bolt holes - the paving left where the ring failed
+    # has triangles - and that mesh, every ring built, would win: the washer guard alone is tested here)
+    monkeypatch.setattr(SA, "BOLT_TRIA_GUARD", False)
     mesh, applied = _mesh(brep, rec, _criteria())
     q = applied["quality"]
     assert q["valid"] and mesh.n_elements > 0
@@ -470,6 +474,7 @@ def test_every_hole_has_its_line_in_the_record(web, monkeypatch):
         return real(gmsh, w, index, xyz, mm)
 
     monkeypatch.setattr(ST, "ring_mesh", flaky)
+    monkeypatch.setattr(SA, "BOLT_TRIA_GUARD", False)     # (as above: the one-ring trial would build every ring)
     monkeypatch.setattr(ST, "BLOCKS", False)
     _mesh_, applied = _mesh(brep, rec, _criteria())
     lines = applied["quality"]["structure"]["hole_list"]
@@ -707,6 +712,9 @@ def test_holes_out_of_step_keep_their_grid(tmp_path, monkeypatch, limited):
     side moved 7.5 mm into its ring's room and the web was left free; now the chain is two lines, every ring keeps
     its room and the web is gridded with every line met."""
     monkeypatch.setattr(ST, "SNAP_LIMITS", limited)
+    # (the rule under test is the grid's; the four alike holes are bolt holes to SHMESH-51, whose two rings this web has
+    # no grid for - its free mesh with them is the better one there, and the guard keeps it)
+    monkeypatch.setattr(ST, "BOLTS", False)
     brep, rec = _plate_with_holes(tmp_path, [(97.3, 61.5, 17.4), (147.7, 140.0, 17.4), (152.7, 301.5, 17.4),
                                              (112.3, 220.0, 17.4)], size=(400.0, 363.0, 10.0))
     mesh, applied = _mesh(brep, rec, _criteria())
@@ -750,6 +758,9 @@ def test_a_channels_web_and_flanges_are_gridded_across_their_joints(tmp_path, mo
     BRepTools.Write_s(surf, str(brep))
     monkeypatch.setattr(ST, "JOIN", join)
     monkeypatch.setattr(ST, "JOIN_STRIPS", join)      # (this channel's faces meet through narrow strips)
+    # (the joints' rule is under test, with the strips joined - off in the product; there the web's two-ring bolt boxes
+    # of SHMESH-51 leave edges over the 15 mm line and the guard keeps the free mesh with its rings)
+    monkeypatch.setattr(ST, "BOLTS", False)
     mesh, applied = _mesh(brep, rec, _criteria())
     s = applied["quality"]["structure"]
     assert "guard" not in s, s.get("guard")
@@ -1034,3 +1045,39 @@ def test_a_trial_is_taken_out_leaving_the_same_model_and_next_tags():
     slow, fast = _trial_left(False), _trial_left(True)
     assert fast == slow
     assert len(slow[0][2]) == 6 + 1                     # the other faces and the face itself, nothing of the trial
+
+
+def test_a_free_cell_with_sides_of_4_and_6_takes_rows_with_a_three_to_one_step():
+    """SHMESH-51o17: a four-sided cell whose opposite sides carry 4 and 6 segments (the other two 2 each) - gmsh paves
+    it with triangles; its own rows have the coarse count and one three-to-one step along the fine side: all quads,
+    inside the solver's limits, every boundary node kept."""
+    import gmsh
+
+    from meshpipeline.engines import shell_quality as SQ
+
+    gmsh.initialize()
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        occ = gmsh.model.occ
+        t = occ.addRectangle(0, 0, 0, 56.0, 24.0)
+        occ.synchronize()
+        curves = sorted(abs(int(c)) for _d, c in gmsh.model.getBoundary([(2, t)], oriented=False))
+        for c in curves:
+            a, b = gmsh.model.getBoundingBox(1, c)[0:3], gmsh.model.getBoundingBox(1, c)[3:6]
+            along_x = abs(b[0] - a[0]) > abs(b[1] - a[1])
+            low = along_x and a[1] < 1.0
+            gmsh.model.mesh.setTransfiniteCurve(c, (5 if low else 7) if along_x else 3)
+        gmsh.model.mesh.generate(2)
+        tags, coords, _p = gmsh.model.mesh.getNodes()
+        index = np.zeros(int(tags.max()) + 1, dtype=np.int64)
+        index[np.asarray(tags, dtype=np.int64)] = np.arange(len(tags))
+        xyz = np.asarray(coords, dtype=float).reshape(-1, 3)
+        pts, quads = ST.transition_cell(gmsh, t, index, xyz, 1.0)
+        X = np.vstack([xyz, pts])
+        assert len(quads) == 4 * 1 + 3 + 4      # one row of 4 below, then 3 plain and one step of 4
+        m = SQ.quad_measures(X, quads)
+        assert (m["min_jacobian"] > 0).all() and not SQ._quad_past(m).any()
+        on_edge = {int(index[x]) for c in curves for x in gmsh.model.mesh.getNodes(1, c, includeBoundary=True)[0]}
+        assert on_edge <= {int(x) for x in np.unique(quads)}
+    finally:
+        gmsh.finalize()

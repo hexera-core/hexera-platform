@@ -256,13 +256,14 @@ def test_nothing_asked_is_the_surface_run_as_it_was(plain, source, tmp_path):
                             requirements=MR.requirements_of(MR.section("used", requirements=MR.empty())))
     for name in FILES:
         assert (tmp_path / name).read_bytes() == (ws / name).read_bytes(), name
-    def _untimed(r: dict) -> dict:
-        # wall-clock seconds are no part of the run (quality.passes_s, SHMESH-48l, rounds them to 0.1 s: 0.3 or 0.4 s
-        # on the same mesh made this test fail about one run in six, on main too)
-        out = {k: v for k, v in r.items() if k not in ("seconds", "extract_s", "mesh_s")}
-        out["quality"] = {k: v for k, v in (out.get("quality") or {}).items() if k != "passes_s"}
-        return out
-    assert _untimed(again) == _untimed(rec)
+    def timeless(r: dict) -> dict:
+        # seconds are not part of "as it was": the run's own, and each pass's (quality.passes_s, SHMESH-48l)
+        r = {k: v for k, v in r.items() if k not in ("seconds", "extract_s", "mesh_s")}
+        if isinstance(r.get("quality"), dict):
+            r["quality"] = {k: v for k, v in r["quality"].items() if k != "passes_s"}
+        return r
+
+    assert timeless(again) == timeless(rec)
 
 
 # ------------------------------------------------------------------------------------- through the driver
