@@ -223,7 +223,7 @@ class JobRequest:
                  "approved_intent_fingerprint", "intake_events",
                  "requested_extents", "reference_length_m", "requirements_strict",
                  "flow_axis", "repair_directives", "review_continuation", "user_notes",
-                 "meshing_standard")
+                 "meshing_standard", "repair_goal")
 
     def __init__(self, job_id, owner_id="dev-user", geometry_source=None,
                  geometry_interpretation=None, session_id="",
@@ -237,7 +237,7 @@ class JobRequest:
                  requested_extents=None, reference_length_m=None,
                  requirements_strict=True, flow_axis=None,
                  repair_directives=None, review_continuation=False, user_notes=None,
-                 meshing_standard=None):
+                 meshing_standard=None, repair_goal=None):
         self.job_id           = job_id
         self.owner_id         = owner_id
         # Replayed only once the claim has bound the tenant these records file under. They are
@@ -307,6 +307,12 @@ class JobRequest:
         # purchase as the parked run (it was not admitted again and is charged once, at its end).
         self.repair_directives = [dict(d) for d in (repair_directives or [])]
         self.review_continuation = bool(review_continuation)
+        # WHAT THIS RUN IS FINISHING FOR (pipeline/repair_goal.py). VALIDATED HERE, at the one
+        # place every entry - Celery, Cloud Run, retry, resume - passes through: the threshold
+        # inside it is a customer-supplied number that can widen what commits without a reviewer,
+        # so a request that does not validate must not reach the graph at all. {} is no goal
+        # declared, which is byte-for-byte the run this field did not exist for.
+        self.repair_goal = self._goal_request(repair_goal)
         # THE USER'S OWN NOTES, word for word (contracts/user_notes): read by every route's AI
         # steps and answered per requirement on the result. Empty for a run with none.
         from meshpipeline.contracts.user_notes import clean as _clean_notes
@@ -334,6 +340,20 @@ class JobRequest:
         # the COMPLETE approved-intent fingerprint (engine/purpose/input_kind/dimensionality/
         # patches/engine_params). Re-verified at graph admission against the run's own fields.
         self.approved_intent_fingerprint = str(approved_intent_fingerprint or "")
+
+    @staticmethod
+    def _goal_request(value) -> dict:
+        """The repair goal this run was dispatched with, in its canonical dict form, or {}.
+
+        REFUSES RATHER THAN NORMALISES. The field carries a customer's auto-accept deviation
+        threshold, and the one thing a bad value must never do is reach a session as a wider
+        licence than the caller was entitled to - so an unparseable request raises here, before
+        the graph, exactly as a half-written geometry snapshot does above.
+        """
+        if not value:
+            return {}
+        from meshpipeline.pipeline.repair_goal import parse
+        return parse(value).to_state()
 
 
 class _JobAdapter(logging.LoggerAdapter):
@@ -443,6 +463,7 @@ def run_pipeline(
     requirements_strict:     bool       = True,
     flow_axis:               str | None = None,
     repair_directives:       list | None = None,
+    repair_goal:             dict | None = None,
     review_continuation:     bool       = False,
     user_notes:              list | None = None,
     meshing_standard:        dict | None = None,
@@ -490,6 +511,7 @@ def run_pipeline(
         engine_params=engine_params or {},
         user_dispute=user_dispute or {},
         repair_directives=repair_directives or [],
+        repair_goal=repair_goal or {},
         review_continuation=review_continuation,
         user_notes=user_notes or [],
         meshing_standard=meshing_standard,
@@ -809,6 +831,10 @@ async def _run_async(req: JobRequest) -> dict:
         initial_state["fea_shell_thickness_mm"] = await asyncio.to_thread(confirmed_thickness, str(session_id or ""))
 
         initial_state["repair_directives"] = list(req.repair_directives)
+        # THE GOAL, EXACTLY AS `repair_directives` TRAVELS. Validated at the request; re-read by
+        # `pipeline/repair_goal.from_state`, which is also where the posture is consulted - so a
+        # state carrying a goal on a deployment that has not turned the row on is today's run.
+        initial_state["repair_goal"] = dict(req.repair_goal)
 
         if req.user_dispute:
             # DISPUTE RUN - the user flagged issues on a delivered mesh. The parent resolution, the
@@ -1170,6 +1196,24 @@ async def _run_async(req: JobRequest) -> dict:
                         delivery_attempt=int(final_state.get("retry_count", 0) or 0),
                         execution_generation=_generation,
                         fence_commit=_fence_report)
+                    # A STANDALONE REPAIR JOB'S DELIVERABLE IS THE REPAIRED FILE, and it never
+                    # promoted anything: the product mesher is not part of that goal's verdict
+                    # (spec amendment 1), so there is no `repair_lineage` below to carry it. The
+                    # ending named the bytes (pipeline/repair_deliver.py) and this is the only
+                    # place that holds the fence to hand them over.
+                    _standalone = dict(final_state.get("repair_delivery") or {})
+                    if _standalone.get("path"):
+                        from meshpipeline.application.repair_report_delivery import (
+                            deliver_repaired_cad as _deliver_cad,
+                        )
+                        await _deliver_cad(
+                            AsyncSessionLocal, job_id=job_id,
+                            local_path=_standalone["path"],
+                            suffix=str(_standalone.get("suffix") or ".step"),
+                            owner_id=owner_id,
+                            delivery_attempt=int(final_state.get("retry_count", 0) or 0),
+                            execution_generation=_generation,
+                            fence_commit=_fence_report)
                     # AND THE REPAIRED FILE ITSELF, when a repair was promoted: `geometry` names
                     # the repaired bytes from that moment on, and repair_lineage is the record
                     # that they ARE repaired rather than the upload. A customer whose CAD we fixed

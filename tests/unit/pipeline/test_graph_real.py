@@ -33,12 +33,14 @@ def test_build_graph_calls_all_required_nodes():
             self.nodes = set()
             self.edges = []
             self.cond_edges = []
+            self.cond_maps = {}
         def add_node(self, name, fn=None):
             self.nodes.add(name)
         def add_edge(self, src, dst):
             self.edges.append((src, dst))
         def add_conditional_edges(self, src, fn, mapping):
             self.cond_edges.append(src)
+            self.cond_maps[src] = dict(mapping)
         def compile(self, **k):
             return self
 
@@ -54,13 +56,20 @@ def test_build_graph_calls_all_required_nodes():
     assert expected_nodes.issubset(recorder.nodes), (
         f"Missing nodes: {expected_nodes - recorder.nodes}"
     )
-    # INSPECT, THEN FIX, THEN JUDGE. Neither repair node is a gate: each has ONE unconditional
-    # edge, so no run can reach the builder by way of them without the admission gate judging
-    # whichever geometry they left in place.
+    # INSPECT, THEN FIX, THEN JUDGE. Inspection is not a gate - one unconditional edge - and the
+    # attempt still cannot let a run reach the BUILDER without the admission gate judging whatever
+    # geometry it left in place. Its one branch is the standalone repair JOB, which is not a run
+    # that meshes at all: its only other target ends the graph. So the invariant this pinned is
+    # unchanged; what changed is that it is now expressed over the conditional's two targets.
     assert ("node_repair_inspect", "node_repair_attempt") in recorder.edges
-    assert ("node_repair_attempt", "node_geometry_admission") in recorder.edges
     assert "node_repair_inspect" not in recorder.cond_edges
-    assert "node_repair_attempt" not in recorder.cond_edges
+    assert "node_repair_attempt" in recorder.cond_edges
+    targets = recorder.cond_maps["node_repair_attempt"]
+    assert set(targets.values()) == {"node_geometry_admission", "node_repair_deliver"}
+    assert "node_repair_deliver" in recorder.nodes
+    # ...and the standalone target is terminal, so neither branch reaches a mesher unjudged
+    assert ("node_repair_deliver", _graph_mod.END) in recorder.edges
+    assert "node_repair_deliver" not in recorder.cond_edges
 
 
 

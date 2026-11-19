@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import meshpipeline.settings.cad_repair as rcfg
+from meshpipeline.cad.repair.contracts import RepairGoal
+from meshpipeline.pipeline import repair_goal as goal_request
 
 logger = logging.getLogger(__name__)
 
@@ -242,6 +244,24 @@ class _EmptyPlan:
     call_failures: tuple = ()
 
 
+def _accepts(func, name: str) -> bool:
+    """Does `func` take a keyword called `name`? A LANE SEAM, READ RATHER THAN ASSUMED.
+
+    The auto-accept threshold has to be handed to `cad/repair/conservative.repair_step_file`,
+    which is where the region driver is built and therefore the only place it can reach
+    `region_loop.run_regions`. That file is owned by another task in flight. Asking the callee
+    what it accepts means this side can land first, complete, with the hop closing by itself when
+    the parameter arrives - instead of a TypeError on every repair in between.
+
+    Never raises: an unreadable signature is answered "no", which is today's call.
+    """
+    import inspect
+    try:
+        return name in inspect.signature(func).parameters
+    except (TypeError, ValueError):  # a C function, or no signature to read
+        return False
+
+
 def _posture() -> str:
     """The LLM planner posture, read at call time; anything but shadow/live is off."""
     posture = str(getattr(rcfg, "CAD_REPAIR_LLM_PLANNER", "off") or "off")
@@ -364,12 +384,29 @@ async def _attempt(state: PipelineState) -> dict:
         elif plan is not None:
             directives = directives + tuple(plan.directives)
 
+    # WHAT THIS RUN IS FINISHING FOR, and the only threshold it may widen anything with
+    # (pipeline/repair_goal.py). `None` is EVERY RUN TODAY: no goal declared, or the
+    # `cad-repair-standalone-jobs` row not live - and `repair_step_file`'s `goal` default is None,
+    # so passing it explicitly below changes not one byte of such a run.
+    asked = goal_request.from_state(state)
+    goal = None if asked is None else asked.goal
+    threshold_mm = None if asked is None else asked.auto_accept_mm
+    standalone = goal is RepairGoal.standalone
+
     from meshpipeline.cad.repair.conservative import (
         RepairRefused,
         RepairUnavailable,
         repair_step_file,
         status_for,
     )
+    # THE THRESHOLD CROSSES ONE SEAM THIS MODULE DOES NOT OWN. `repair_step_file` is where the
+    # region driver is constructed, so it is the only place `auto_accept_mm` can be handed to
+    # `region_loop.run_regions` - and that file is another task's. The keyword is therefore passed
+    # only when the callee ACCEPTS it: the hop goes live the moment that parameter lands, and
+    # until then the run is the run it is today rather than one that crashed on a TypeError.
+    extra: dict = {}
+    if threshold_mm is not None and _accepts(repair_step_file, "auto_accept_mm"):
+        extra["auto_accept_mm"] = threshold_mm
     try:
         # OFF THE EVENT LOOP AND ON A CLOCK. ShapeFix on a real part is seconds of CPU with no
         # await points, and on a pathological one it can run past the job's remaining deadline -
@@ -377,7 +414,7 @@ async def _attempt(state: PipelineState) -> dict:
         # offers no interruption point) and the run proceeds on the original.
         repair_report = await asyncio.wait_for(
             asyncio.to_thread(repair_step_file, source, destination,
-                              directives=directives),
+                              directives=directives, goal=goal, **extra),
             timeout=rcfg.CAD_REPAIR_TIMEOUT_S)
     except TimeoutError:
         logger.warning("node_repair_attempt: the repair exceeded %.1fs - continuing on the "
@@ -441,61 +478,69 @@ async def _attempt(state: PipelineState) -> dict:
                 **await _triage_only(report, source),
                 **_not_reached(state, job_id, advice.route, directives)}
 
-    from meshpipeline.pipeline.repair_promote import PromotionRefused, promote
-    try:
-        # HASHING THE WRITTEN FILE CAN FAIL TOO - it may be unreadable, truncated, or gone. That
-        # is our problem, not the customer's, and like every other refusal here it leaves the run
-        # on the original rather than failing a mesh that was viable.
-        repaired = _derived_source(original, destination)
-        # OFF THE EVENT LOOP AND ON A CLOCK, like the repair itself: the staging proof is a
-        # tessellation, and run here synchronously it held the job's heartbeat and cancellation
-        # checks for as long as it took. The thread is abandoned on expiry, as the repair's is,
-        # and the run stays on the original.
+    # NO PROMOTION FOR A STANDALONE REPAIR JOB. Promotion exists to prove the repaired bytes
+    # STAGE FOR A MESHER (pipeline/repair_promote.py) and to make them the geometry this run
+    # meshes - and a standalone job meshes nothing: its verdict is the kernel plus a tier-2
+    # score, with the product mesher not involved (spec amendment 1). So the repaired file is
+    # handed back as itself, and the customer's upload is not replaced in a run that will
+    # never build from either of them.
+    update: dict = {}
+    if not standalone:
+        from meshpipeline.pipeline.repair_promote import PromotionRefused, promote
         try:
-            update = await asyncio.wait_for(
-                asyncio.to_thread(promote, state, repaired=repaired, engine=engine,
-                                  attempt=int(state.get("retry_count", 0) or 0)),
-                timeout=rcfg.CAD_REPAIR_TIMEOUT_S)
-        except TimeoutError:
-            # A PROOF THAT DID NOT FINISH IS NOT A REFUSAL. `PromotionRefused` means the geometry
-            # was judged and found unusable; a clock of OURS running out judged nothing, and
-            # reporting it as a refusal told a customer their sound repair "failed our checks" -
-            # the Formula car, where the proof's own engine staging was still drawing a report
-            # picture nobody meshes (engines/gmsh/gmsh_runner.STAGE_EXTRAS_TIMEOUT_S). The run
-            # still stays on the original, because bytes we never proved may not be promoted.
-            logger.warning("node_repair_attempt: the staging proof exceeded %.1fs - continuing on "
-                           "the original - job_id=%s", rcfg.CAD_REPAIR_TIMEOUT_S, job_id)
-            from meshpipeline.engines.determinism import note_time_limit
-            note_time_limit("cad_repair_promote", "the staging proof ran past its time limit: the "
-                            "original file is meshed",
-                            budget_s=float(rcfg.CAD_REPAIR_TIMEOUT_S))
+            # HASHING THE WRITTEN FILE CAN FAIL TOO - it may be unreadable, truncated, or gone. That
+            # is our problem, not the customer's, and like every other refusal here it leaves the run
+            # on the original rather than failing a mesh that was viable.
+            repaired = _derived_source(original, destination)
+            # OFF THE EVENT LOOP AND ON A CLOCK, like the repair itself: the staging proof is a
+            # tessellation, and run here synchronously it held the job's heartbeat and cancellation
+            # checks for as long as it took. The thread is abandoned on expiry, as the repair's is,
+            # and the run stays on the original.
+            try:
+                update = await asyncio.wait_for(
+                    asyncio.to_thread(promote, state, repaired=repaired, engine=engine,
+                                      attempt=int(state.get("retry_count", 0) or 0)),
+                    timeout=rcfg.CAD_REPAIR_TIMEOUT_S)
+            except TimeoutError:
+                # A PROOF THAT DID NOT FINISH IS NOT A REFUSAL. `PromotionRefused` means the geometry
+                # was judged and found unusable; a clock of OURS running out judged nothing, and
+                # reporting it as a refusal told a customer their sound repair "failed our checks" -
+                # the Formula car, where the proof's own engine staging was still drawing a report
+                # picture nobody meshes (engines/gmsh/gmsh_runner.STAGE_EXTRAS_TIMEOUT_S). The run
+                # still stays on the original, because bytes we never proved may not be promoted.
+                logger.warning("node_repair_attempt: the staging proof exceeded %.1fs - continuing on "
+                               "the original - job_id=%s", rcfg.CAD_REPAIR_TIMEOUT_S, job_id)
+                from meshpipeline.engines.determinism import note_time_limit
+                note_time_limit("cad_repair_promote", "the staging proof ran past its time limit: the "
+                                "original file is meshed",
+                                budget_s=float(rcfg.CAD_REPAIR_TIMEOUT_S))
+                _shadow_row(job_id, shadow_plan, "not_executed")
+                why = (f"the staging proof did not finish within "
+                       f"{rcfg.CAD_REPAIR_TIMEOUT_S:.0f}s, so the repair was not proved")
+                return {**_declined(why, outcome="not_proved", route=advice.route),
+                        **await _triage_only(report, source),
+                        **_not_promoted(state, job_id, advice.route, directives, repair_report, why)}
+        except PromotionRefused as exc:
+            # It repaired, but the result is not something the mesher can use - so the run stays on the
+            # original and the repair becomes evidence rather than geometry.
+            logger.info("node_repair_attempt: promotion refused (%s) - continuing on the original "
+                        "- job_id=%s", exc, job_id)
             _shadow_row(job_id, shadow_plan, "not_executed")
-            why = (f"the staging proof did not finish within "
-                   f"{rcfg.CAD_REPAIR_TIMEOUT_S:.0f}s, so the repair was not proved")
-            return {**_declined(why, outcome="not_proved", route=advice.route),
+            # THE RUN STAYS ON THE ORIGINAL, so only what a person decides is minted: the repair's
+            # survivors describe a file nobody will mesh.
+            return {**_declined(f"the repaired geometry was not promoted: {exc}", outcome="not_promoted",
+                                route=advice.route),
                     **await _triage_only(report, source),
-                    **_not_promoted(state, job_id, advice.route, directives, repair_report, why)}
-    except PromotionRefused as exc:
-        # It repaired, but the result is not something the mesher can use - so the run stays on the
-        # original and the repair becomes evidence rather than geometry.
-        logger.info("node_repair_attempt: promotion refused (%s) - continuing on the original "
-                    "- job_id=%s", exc, job_id)
-        _shadow_row(job_id, shadow_plan, "not_executed")
-        # THE RUN STAYS ON THE ORIGINAL, so only what a person decides is minted: the repair's
-        # survivors describe a file nobody will mesh.
-        return {**_declined(f"the repaired geometry was not promoted: {exc}", outcome="not_promoted",
-                            route=advice.route),
-                **await _triage_only(report, source),
-                **_not_promoted(state, job_id, advice.route, directives, repair_report, str(exc))}
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("node_repair_attempt: the repaired file could not be adopted (%s: %s) - "
-                       "continuing on the original - job_id=%s", type(exc).__name__, exc, job_id)
-        _shadow_row(job_id, shadow_plan, "not_executed")
-        return {**_declined(f"the repaired file could not be adopted: {type(exc).__name__}",
-                            outcome="not_promoted", route=advice.route),
-                **await _triage_only(report, source),
-                **_not_promoted(state, job_id, advice.route, directives, repair_report,
-                                type(exc).__name__)}
+                    **_not_promoted(state, job_id, advice.route, directives, repair_report, str(exc))}
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("node_repair_attempt: the repaired file could not be adopted (%s: %s) - "
+                           "continuing on the original - job_id=%s", type(exc).__name__, exc, job_id)
+            _shadow_row(job_id, shadow_plan, "not_executed")
+            return {**_declined(f"the repaired file could not be adopted: {type(exc).__name__}",
+                                outcome="not_promoted", route=advice.route),
+                    **await _triage_only(report, source),
+                    **_not_promoted(state, job_id, advice.route, directives, repair_report,
+                                    type(exc).__name__)}
 
     measured = {m.name: m.value for m in repair_report.measurements}
     attempted = [dict(op) for op in repair_report.operations]
@@ -531,6 +576,25 @@ async def _attempt(state: PipelineState) -> dict:
         measured={**measured, "operations": attempted,
                   "survivors": [dict(e) for e in repair_report.entities]},
         source=source, survivors_path=destination)
+
+    # WHAT THE GOAL ADDS TO THE RECORD, and only when one was declared - so a run with no goal
+    # produces the record it produced before this field existed, key for key.
+    goal_record: dict = {}
+    if goal is not None:
+        goal_record["goal"] = goal.value
+        # THE THRESHOLD AS ASKED, recorded whether or not the seam below carries it yet: a reader
+        # judging an auto-accepted package needs the number the customer declared, and a run whose
+        # threshold never reached the session must be distinguishable from one that declared none.
+        goal_record["auto_accept_mm"] = threshold_mm
+        if threshold_mm is not None and "auto_accept_mm" not in extra:
+            # THE SEAM, STATED. `repair_step_file` does not take the threshold yet, so the
+            # auto-accept tier stayed inert for this run - said plainly rather than implied by a
+            # tier that never fired.
+            goal_record["auto_accept_reached_session"] = False
+    if standalone:
+        # THE DELIVERABLE. Nothing promoted it (see above), so the ending node is the only thing
+        # that can name these bytes for the terminal path to hand back.
+        goal_record["repaired_path"] = str(destination)
 
     # `repair_status` IS NOT TOUCHED. It is the inspection's verdict on the file the customer
     # SENT, and `repair_report` beside it is that inspection - so overwriting it with the repair's
@@ -574,5 +638,6 @@ async def _attempt(state: PipelineState) -> dict:
             "measurements": _forwarded(measured),
             "defects_remaining": [dict(e) for e in repair_report.entities],
             "summary": repair_report.summary,
+            **goal_record,
         },
     }
