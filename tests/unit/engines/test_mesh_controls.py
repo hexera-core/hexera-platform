@@ -346,11 +346,15 @@ def test_the_parts_reader_is_shown_the_rounded_edges_as_fillets():
                   "Face_7": {"kind": "cylinder", "radius_mm": 1.5, "concave": True, "thickness_wall_mm": 4.0},
                   "Face_8": {"kind": "torus", "radius_mm": 0.8},
                   "Face_9": {"kind": "cylinder", "radius_mm": 2.0, "concave": False, "thickness_wall_mm": 4.0},
-                  "Face_10": {"kind": "cylinder", "radius_mm": 12.0, "concave": False, "thickness_wall_mm": 4.0}})
+                  "Face_10": {"kind": "cylinder", "radius_mm": 12.0, "concave": False, "thickness_wall_mm": 4.0},
+                  # fea0254's own rounds: B-spline faces of radius 0.141 mm (16 of them on the real record)
+                  "Face_11": {"kind": "bspline", "radius_mm": 0.141006},
+                  "Face_12": {"kind": "bspline", "radius_mm": 0.141006}})
     rows, faces_of = PF.features({"faces": faces, "hot_spots": []}, surface)
     by_name = {r["name"]: faces_of[r["id"]] for r in rows}
     assert by_name["2 rounded edges (fillets), radius 1.5 mm"] == ["Face_6", "Face_7"]
     assert by_name["a rounded edge (fillet), radius 0.8 mm"] == ["Face_8"]
+    assert by_name["2 rounded edges (fillets), radius 0.141 mm"] == ["Face_11", "Face_12"]
     # a convex cylinder stays a boss or shaft: the record cannot tell a rounded outer edge from a shaft
     assert by_name["a boss or shaft, 4 mm across"] == ["Face_9"]
     assert by_name["a boss or shaft, 24 mm across"] == ["Face_10"]

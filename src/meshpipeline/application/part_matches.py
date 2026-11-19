@@ -599,6 +599,23 @@ def pick(session: Any, phrase: int, parts: list[str]) -> dict | None:
     return rows_of(with_picks(sid, stored, seen["table"], notes), seen, sid)
 
 
+def notes_for_run(session_id: str, user_notes, request_txt) -> dict | None:
+    """NOTES-CFD-1: the CFD reader's reading of the notes made before approval (run_reading's "notes"), when it is
+    of the notes as they stand; None otherwise. No model call - what the card already read. Never raises."""
+    try:
+        from meshpipeline.application.geometry_check import read_check
+        stored = _read(session_id, MATCHES)
+        if stored is None or stored.get("status") != "done" or not isinstance(stored.get("notes"), Mapping):
+            return None
+        seen = parts_seen(read_check(session_id)) or NOTES_ONLY
+        if stored.get("key") != key_of(notes_of(user_notes, request_txt), seen["table"]):
+            return None
+        return dict(stored["notes"])
+    except Exception as exc:  # noqa: BLE001 - the run reads the notes itself
+        logger.warning("part matches: the notes reading was not handed to the run (%s)", type(exc).__name__)
+        return None
+
+
 def for_run(session_id: str, user_notes, request_txt) -> dict | None:
     """The reading the user saw before approving, with their picks, for the run's state (cad/part_words.from_stored
     takes it); None when there is none for the notes as they stand. Never raises."""

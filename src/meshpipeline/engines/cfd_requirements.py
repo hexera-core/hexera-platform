@@ -1560,6 +1560,18 @@ def _snappy_layers(ask: Ask, text: str, wall_cell_m: float | None, bridge: Mappi
             out = re.sub(r"\bnSurfaceLayers\s+[1-9][0-9]*\s*;", f"nSurfaceLayers {n_new};", out)
             bridged = (n, n_new, first, first_new, stack)
             n, first = n_new, first_new
+    thick = None
+    if (bridged is None and first is not None and total is None and ask.n_layers is None and n > 0
+            and wall_cell_m):
+        # CFDREQ-9, THE THICK SIDE: a first layer so thick that the plan's layers make a stack several wall cells
+        # deep, which snappyHexMesh cannot shrink the mesh for (a y+ 50 layer, 1.35 mm under 1.72 mm cells: 5 layers
+        # are 10 mm, and grew on 5.7% of the wall) - as few layers as fill the stack our own plan gives the wall
+        last_rel = _num(out, "finalLayerThickness") or 0.3
+        n_new, first_new, stack = layer_fit(first, float(wall_cell_m), n_plan=n, growth=g, last_rel=last_rel)
+        if n_new < n or first_new < first:
+            out = re.sub(r"\bnSurfaceLayers\s+[1-9][0-9]*\s*;", f"nSurfaceLayers {n_new};", out)
+            thick = (n, n_new, first, first_new, stack)
+            n, first = n_new, first_new
     spec = []
     if first is not None and total is not None and ask.layer_growth is None:
         spec = [f"firstLayerThickness {first:.6g};", f"thickness {total:.6g};"]
@@ -1608,7 +1620,104 @@ def _snappy_layers(ask: Ask, text: str, wall_cell_m: float | None, bridge: Mappi
                 ask.layer_note = thin
     if bridged is not None:
         _say_bridge(ask, bridged, g, float(wall_cell_m or 0.0))
+    if thick is not None:
+        _say_thick(ask, thick, g, float(wall_cell_m or 0.0))
     return out
+
+
+#: ENG-asks: the engines that set an absolute first layer (a height, or a y+ turned into one) - snappyHexMesh and the
+#: multi-region mesher (this module's snappy_dict), cfMesh (maxFirstLayerThickness), Netgen (its first layer). VMTK
+#: sizes its stack from the vessel radius; gmsh flow and the snap grid build no prism layers.
+FIRST_LAYER_ENGINES = frozenset({"snappy", "snappy_multiregion", "cfmesh", "netgen"})
+#: what each such ask is called in the line that says why the engine was chosen
+_ASK_NAMES = {"layers:first_height": "the first layer height", "layers:y_plus": "the first layer for the y+",
+              "layers:total_thickness": "the layer stack's thickness"}
+
+
+def _cannot(engine: str, field: str) -> bool:
+    """Whether `engine` has no setting for a requirement row's field (the registry's NotHere for a control, the
+    first-layer engines for a layer height or a y+)."""
+    if field in ("layers:first_height", "layers:y_plus"):
+        return engine not in FIRST_LAYER_ENGINES
+    if field == "layers:total_thickness":
+        return engine not in ("snappy", "snappy_multiregion", "netgen")
+    if field.startswith("control:"):
+        from meshpipeline.contracts import mesh_controls as MC
+        return isinstance(MC.lane_of(LANES.get(engine, engine), field.split(":", 1)[1]), MC.NotHere)
+    return False
+
+
+def engine_that_can(sec: Mapping | None, engine: str, ladder, *, conditions_y_plus: bool = False) -> tuple[str, str]:
+    """ENG-asks: (the engine to mesh with, the plain line that says why - "" when it is `engine`). When the notes'
+    reading (and a wall treatment the user chose, `conditions_y_plus`) asks something `engine` has no setting for and
+    another engine of the job's `ladder` can set all of those, that one - the first in the ladder's order. Nothing
+    asked, or nothing `engine` cannot set: `engine` itself, as always."""
+    req = MR.requirements_of(sec) or {}
+    fields = [str(r.get("field") or "") for r in req.get("rows") or [] if isinstance(r, Mapping)]
+    if conditions_y_plus and "layers:y_plus" not in fields and "layers:first_height" not in fields:
+        fields.append("layers:y_plus")
+    missing = [f for f in fields if _cannot(engine, f)]
+    if not missing:
+        return engine, ""
+    for other in ladder or ():
+        if other != engine and not any(_cannot(str(other), f) for f in missing):
+            from meshpipeline.engines.registry import engine_label
+            try:
+                name = engine_label(str(other))
+            except Exception:  # noqa: BLE001 - the engine's own name still says which
+                name = str(other)
+            what = _ASK_NAMES.get(missing[0]) or next(
+                (str(r.get("asked")) for r in req.get("rows") or [] if r.get("field") == missing[0]), "what")
+            return str(other), f"Meshed with {name}, because it can set {what} you asked for."
+    return engine, ""
+
+
+def _say_thick(ask: Ask, thick: tuple, g: float, wall_cell_m: float) -> None:
+    """CFDREQ-9 (the thick side) in the rows' words: how many layers the stack got and why, and - when even one layer
+    of the height asked is past the stack our plan gives the wall - the first layer built and the y+ it gives."""
+    n0, n, asked, built, stack = thick
+    deep = asked * (g ** n0 - 1.0) / (g - 1.0) if g > 1.0001 else asked * n0
+    field = "layers:y_plus" if ask.first_m is None and ask.y_plus is not None else "layers:first_height"
+    rid = ask.rid(field)
+    if built >= asked * (1 - 1e-6):
+        how = (f"{n} layer{'s' if n != 1 else ''} (not our usual {n0}): from a first layer that high our usual {n0} "
+               f"would make a stack {_mm(deep)} deep under {_mm(wall_cell_m)} wall cells, more than the mesher can grow; "
+               f"{n} fill{'s' if n == 1 else ''} the {_mm(stack)} our plan gives the wall")
+        row = ask.rows.get(rid or "")
+        if row is not None:
+            row["built"] = f"{row['built']}; {how}"
+            row["layers"] = n
+        ask.layer_note = ask.layer_note or how
+        return
+    yp = ask.y_plus
+    got = (f"y+ about {MR._g(float(yp) * built / asked)}, not {MR._g(float(yp))}"
+           if field == "layers:y_plus" and yp is not None else f"not the {_mm(asked)} asked")
+    ask.nearest(field, f"first layer {_mm(built)} high ({got}), one layer: a thicker one would not fit the {_mm(stack)} "
+                       f"stack our plan gives the {_mm(wall_cell_m)} wall cells, and the mesher could not grow it",
+                first_m=float(f"{built:.4g}"), asked_m=float(f"{asked:.4g}"), layers=n)
+    ask.layer_note = ask.layer_note or f"one layer {_mm(built)} high"
+
+
+def layer_fit(first_m: float, wall_cell_m: float, *, n_plan: int, growth: float,
+              last_rel: float) -> tuple[int, float, float]:
+    """CFDREQ-9, the thick side: (layer count, first layer height, stack thickness) for a first layer so thick that
+    the plan's count would stack it past the thickness our own plan gives the wall (`n_plan` layers up to a last one
+    `last_rel` of the wall cell): the most layers, from the height asked, that stay inside it (at least one); one
+    layer of that whole thickness when even one of the height asked is past it. The plan's count and the height
+    asked when they fit already."""
+    g, n0 = max(float(growth), 1.0), max(1, int(n_plan))
+    stack = float(last_rel) * float(wall_cell_m) * sum(g ** -k for k in range(n0))
+    first = float(first_m)
+
+    def height(k: int) -> float:
+        return first * k if g <= 1.0001 else first * (g ** k - 1.0) / (g - 1.0)
+
+    if height(n0) <= stack * (1 + 1e-9):
+        return n0, first, stack
+    if first > stack:
+        return 1, stack, stack
+    n = max(k for k in range(1, n0 + 1) if height(k) <= stack * (1 + 1e-9))
+    return n, first, stack
 
 
 #: CFDREQ-9: the cell determinant snappyHexMesh checks is about this times (thickness / width)^2 for a flat cell, so a

@@ -274,6 +274,28 @@ def test_the_walls_level_is_checked_on_the_dictionary(tmp_path):
                                                                 "not 4")
 
 
+def test_an_engine_that_can_set_the_ask_is_chosen_and_said():
+    """ENG-asks: a y+ 1 on an internal flow whose ladder starts with VMTK (which has no absolute first layer) goes to
+    snappyHexMesh, said in one line; no ask - the engine as it was; an ask VMTK can set keeps VMTK."""
+    req, _d, _na = _read("y+ of 1 at the wall",
+                         layers=[{"what": "y_plus", "value": 1, "unit": "none", "quote": "y+ of 1 at the wall"}])
+    sec = MR.section("used", requirements=req)
+    ladder = ["vmtk", "snappy", "cfmesh", "netgen"]
+    engine, why = CR.engine_that_can(sec, "vmtk", ladder)
+    assert engine == "snappy" and why.startswith("Meshed with ") and "because it can set the first layer for the " \
+                                                                         "y+ you asked for" in why
+    assert CR.engine_that_can(None, "vmtk", ladder) == ("vmtk", "")                  # no notes: unchanged
+    assert CR.engine_that_can(MR.section("none"), "vmtk", ladder) == ("vmtk", "")
+    # a resolved wall the user chose in the conditions is the same ask
+    assert CR.engine_that_can(None, "vmtk", ladder, conditions_y_plus=True)[0] == "snappy"
+    # a count of layers VMTK sets itself: VMTK stays
+    req, _d, _na = _read("8 prism layers", layers=[{"what": "count", "value": 8, "unit": "none",
+                                                    "quote": "8 prism layers"}])
+    assert CR.engine_that_can(MR.section("used", requirements=req), "vmtk", ladder) == ("vmtk", "")
+    # no engine of the ladder can: the engine as it was (its row says not applied, as before)
+    assert CR.engine_that_can(sec, "vmtk", ["vmtk", "gmsh"]) == ("vmtk", "")
+
+
 def test_the_run_reads_the_conditions_with_no_notes(tmp_path):
     # before CFDREQ-8 a run with no notes wrote nothing here: the conditions step's answer reached no engine
     asyncio.run(CR.read_for_attempt(tmp_path, {"request_txt": INT_RESOLVED, "purpose": "internal_cfd"}))

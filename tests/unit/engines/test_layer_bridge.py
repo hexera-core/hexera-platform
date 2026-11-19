@@ -51,6 +51,34 @@ def _first(mm: float = FIRST_MM, count: int | None = None):
     return CR.Ask(req, "snappy")
 
 
+@pytest.mark.parametrize(("first_mm", "cell_mm", "layers"), [
+    (1.348, 1.716, 1),        # the rotor (07fd516d): a y+ 50 first layer, 5 layers 10 mm deep, grew on 5.7% of the wall
+    (0.989, 2.352, 2),        # the diffuser plenum (c0b45ad1): 7.4 mm deep, 4.18%
+])
+def test_a_thick_first_layer_gets_the_layers_that_fit_our_own_stack(first_mm, cell_mm, layers):
+    """Round 6: a first layer the user TYPED inside the wall-function band is an ask - its layers must still grow.
+    The plan's 5 layers from it stacked several wall cells deep; as few as fill the stack our plan gives the wall."""
+    n, first, stack = CR.layer_fit(first_mm * 1e-3, cell_mm * 1e-3, n_plan=5, growth=1.2, last_rel=0.3)
+    assert n == layers and first == pytest.approx(first_mm * 1e-3)
+    assert first * (1.2 ** n - 1) / 0.2 <= stack * (1 + 1e-9)
+    ask = _first(first_mm)
+    text = CR.snappy_dict(ask, DICT, wall_cell_m=cell_mm * 1e-3)
+    assert _num(text, "nSurfaceLayers") == layers and _num(text, "firstLayerThickness") == pytest.approx(first_mm * 1e-3)
+    row = ask.rows[ask.rid("layers:first_height")]
+    assert row["status"] == "applied" and row["layers"] == layers
+    assert "(not our usual 5): from a first layer that high our usual 5 would make a stack" in row["built"]
+    # a first layer thicker than the whole stack: one layer of that stack, the nearest, said
+    n, first, stack = CR.layer_fit(3e-3, cell_mm * 1e-3, n_plan=5, growth=1.2, last_rel=0.3)
+    assert n == 1 and first == pytest.approx(stack)
+    ask = _first(3.0)
+    CR.snappy_dict(ask, DICT, wall_cell_m=cell_mm * 1e-3)
+    row = ask.rows[ask.rid("layers:first_height")]
+    assert row["status"] == "nearest" and "not the 3 mm asked), one layer" in row["built"]
+    # a first layer the plan's stack holds is left as it was
+    ask = _first(0.1)
+    assert _num(CR.snappy_dict(ask, DICT, wall_cell_m=0.002), "nSurfaceLayers") == 5
+
+
 def test_the_stack_from_a_thin_first_layer_fills_our_own_stack():
     n, first, stack = CR.layer_bridge(FIRST_MM * 1e-3, CELL_M, n_plan=5, growth=1.2, last_rel=0.3)
     # our relative stack: 5 layers up to a last layer 0.3 of the cell, 1.08 cells thick

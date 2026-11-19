@@ -89,11 +89,14 @@ def features(record: Mapping, surface) -> tuple[list[dict], dict[str, list[str]]
                  [f for fs in group for f in fs])
     # ROUNDED EDGES the plan keeps the shape of (engines/fea_plan's PLAN-fea-7 rounds) that are no stress fillet: a
     # user's "the fillets" means them too (fea0254's 17 rounds were listed nowhere, the reader said "No fillet feature
-    # is listed" and nothing was refined). A blend is a torus or a hollow cylinder that is no hole or bore; a convex
-    # cylinder stays a boss or shaft (below) - the record cannot tell a rounded outer edge from a shaft.
+    # is listed" and nothing was refined; on its own record they are 16 B-spline faces of radius 0.141 mm). A blend
+    # is a curved face with a radius that is no plane, cylinder or cone (a torus, a B-spline round: the plan's own
+    # PLAN-fea-7 rounds), or a hollow cylinder that is no hole or bore; a convex cylinder stays a boss or shaft
+    # (below) - the record cannot tell a rounded outer edge from a shaft.
     blends = by_part([(float(fr["radius_mm"]), [fn]) for fn, fr in faces.items()
                       if fr.get("radius_mm") and fn not in taken and float(fr["radius_mm"]) > 0
-                      and (fr.get("kind") == "torus" or (fr.get("kind") == "cylinder" and fr.get("concave")))])
+                      and (fr.get("kind") not in ("plane", "cylinder", "cone")
+                           or (fr.get("kind") == "cylinder" and fr.get("concave")))])
     for _p, seen in blends.items():
         for r, group in _groups(seen):
             n = len(group)
