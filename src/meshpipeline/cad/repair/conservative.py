@@ -983,8 +983,14 @@ def repair_step_file(source: Path, destination: Path, *,
         # first. READ BY `getattr` because the setting belongs to the investigator's own task;
         # with BOTH postures off this condition is exactly the one it was, and no investigator
         # module is imported.
+        # THE TOURNAMENT POSTURE IS A THIRD WAY TO THE SAME SEAM (CAD_REPAIR_TOURNAMENT), read
+        # here for the same reason: a deployment that asked for the tournament with the one-shot
+        # author and the investigator off must still reach `select_author`, which consults the
+        # tournament posture first. A tournament needs no router - the rules author alone makes a
+        # tournament of one - so this condition cannot be folded into the model ones.
         if (rcfg.CAD_REPAIR_LLM_AUTHOR in ("shadow", "live")
-                or str(getattr(rcfg, "CAD_REPAIR_INVESTIGATOR", "off")) in ("shadow", "live")):
+                or str(getattr(rcfg, "CAD_REPAIR_INVESTIGATOR", "off")) in ("shadow", "live")
+                or str(getattr(rcfg, "CAD_REPAIR_TOURNAMENT", "off")) in ("shadow", "live")):
             from meshpipeline.cad.repair.model_author import select_author
 
             # MODEL CALLS SPEND THE RUN'S OWN CLOCK - the attempt node bounds this whole function
@@ -1064,6 +1070,20 @@ def repair_step_file(source: Path, destination: Path, *,
             # first-class outcome, so it travels in the report exactly like a conclusion.
             # ABSENT when no investigator authored, because the posture was off.
             measurements["investigations"] = [dict(item) for item in investigations]
+        tournaments = getattr(author, "tournaments", None)
+        if tournaments is not None:
+            # THE TOURNAMENTS, BESIDE THE INVESTIGATIONS by the same rule: one round per author
+            # call, with the candidates it gathered, what each source said, what each rehearsal
+            # on its own clone scored, which one was OFFERED and HOW THE ROUND ENDED - offered,
+            # no_eligible_candidate, no_candidate, no_time or not_located. A round where nothing
+            # survived its clone offered nothing, and that is a first-class result, so it travels
+            # exactly like a win. ABSENT when no tournament authored, because the posture was off.
+            measurements["tournaments"] = [dict(item) for item in tournaments]
+            summary = getattr(author, "tournament_report", None)
+            if callable(summary):
+                # `offered` AND `committed` both: a win is a nomination, so the gap between them
+                # is the review tier having had the last word on the real session.
+                measurements["tournament"] = summary(regions_run.packages)
 
     # THE GOAL'S FINISHING VERDICT, when a goal was declared. ABSENT ENTIRELY when it was not: an
     # unset goal adds no key, starts no probe and leaves the report what it is today.
