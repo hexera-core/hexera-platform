@@ -189,7 +189,9 @@ def test_both_routes_send_the_mesh_contract(monkeypatch):
                             output_uri="b", engine="gmsh", timeout=60, disk_gb=200)
     meta = {i["key"]: i["value"] for i in body["metadata"]["items"]}
     assert meta["mesh-contract"] == str(MESH_EXCHANGE_VERSION)
-    assert 'HEXERA_MESH_CONTRACT="$(get instance/attributes/mesh-contract)"' in vm.STARTUP_SCRIPT
+    assert meta["mesh-run"].split("|")[5] == str(MESH_EXCHANGE_VERSION)
+    assert '-e HEXERA_MESH_CONTRACT="$CON"' in vm.STARTUP_SCRIPT
+    assert "read -r ID IN OUT ENG T CON SNAP RANKS IMG" in vm.STARTUP_SCRIPT
 
     sent = {}
 
