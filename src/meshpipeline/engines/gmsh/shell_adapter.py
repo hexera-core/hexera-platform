@@ -1921,11 +1921,14 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                     # SHMESH-51b: a face refused a grid while it holds two-ring bolt holes is tried again with one
                     # ring round them; where it still is refused its holes keep their two rings in its free mesh
                     refused_k = {k_ for ks_ in skipped_where.values() for k_ in ks_}
-                    # (SHMESH-51o11: and its square bolt holes' second rows too - left at two rows they kept the face
-                    # from its grid, and its round holes then took their two rings back in a free face: a real
-                    # column's plate went from 51b's one ring to two rings, 8 more triangles)
-                    back_b = [w for w in washers + squares if (w.boxed2 or (w.corners and w.rows == 2 and w.square_one))
-                              and int(w.owner) in refused_k and w.face in tag_of and w not in gridded and w not in boxed]
+                    # (SHMESH-51o11: and the square bolt holes' second rows of a face whose round ones it takes - left
+                    # at two rows they kept the face from its grid, and its round holes then took their two rings back
+                    # in a free face: a real column's plate went from 51b's one ring to two rings, 8 more triangles;
+                    # a face with square bolt holes only keeps their two rows)
+                    back_b = [w for w in washers if w.boxed2 and int(w.owner) in refused_k and w.face in tag_of
+                              and w not in gridded and w not in boxed]
+                    back_b += [w for w in squares if w.corners and w.rows == 2 and w.square_one
+                               and w.face in {o.face for o in back_b} and w not in gridded and w not in boxed]
                     saved = {id(w): (w.n, w.rows, w.R, list(w.radii), w.out_mm, w.shrunk, dict(w.info), w.kept,
                                      w.square_one) for w in back_b}
                     back_b = [w for w in back_b if ST.one_ring(w, mm, "one ring so its face keeps its grid")]
@@ -2349,7 +2352,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                         [1.0] if ST.KEEP_BOX and KEEP_BOX_BAND else []) for w in go_],
                                      hole_faces=[int(w.owner) for w in go_])
             if hurt and pending is None:
-                _grid_first(hurt, why_cut, {int(w.owner) for w in boxed + gridded + squares if w.boxed2 or (w.corners and w.rows == 2 and w.square_one)}, set(grid_faces_made),
+                _grid_first(hurt, why_cut, {int(w.owner) for w in boxed + gridded if w.boxed2}, set(grid_faces_made),
                             no_cut)
                 pending = _NoCut(hurt, why_cut)
             if pending is not None and not GATHER:
@@ -2903,7 +2906,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                 raise _NoCut(set(), {}, holes=[[float(x) for x in w.centre] + ([1.0] if id(w) in ring_b else [])
                                                for w in bad_b],
                              hole_faces=[int(w.owner) for w in bad_b], hole_why=[why_b[id(w)] for w in bad_b])
-        _grid_first(hurt_p, why_p, {int(w.owner) for w in boxed + gridded + squares if w.boxed2 or (w.corners and w.rows == 2 and w.square_one)}, set(grid_faces_made), no_cut)
+        _grid_first(hurt_p, why_p, {int(w.owner) for w in boxed + gridded if w.boxed2}, set(grid_faces_made), no_cut)
         if hurt_p:
             raise _NoCut(hurt_p, {k: why_p[k] for k in hurt_p})
     if judge_faces and ST.BOLT_CHECK and not seam_due and requirements and requirements.get("limits"):
