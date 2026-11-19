@@ -24,6 +24,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import random
 import statistics
 import sys
 import tempfile
@@ -58,6 +59,22 @@ def _load_benchmark_bundle():
 
 
 benchmark_bundle = _load_benchmark_bundle()
+
+
+def _load_sibling(name: str):
+    """Another devtools/validation script, loaded BY PATH for the same reason benchmark_bundle is:
+    this directory is not a package, so a bare import resolves when run as a script and not when
+    the tests load this file through spec_from_file_location. Called lazily - `corpus_harvest` and
+    `mesh_probe` are only needed by the manifest paths, and nothing here imports gmsh or OCP."""
+    if name in sys.modules:
+        return sys.modules[name]
+    path = Path(__file__).resolve().with_name(f"{name}.py")
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
 
 _SUFFIXES = {".step", ".stp"}
 
@@ -523,6 +540,10 @@ def corpus_summary(rows: list[dict], planner_mode: str = "off",
         out["planner"] = planner_summary(rows, planner_mode)
     if any("meshes_before" in r for r in rows):
         out["meshing"] = meshing_summary(rows)
+    # Only a goal-scored run has this block, so a run without --goal keeps today's summary exactly
+    # - which is also what --verify recomputes off the rows.
+    if any(r.get("goal_profile") for r in rows):
+        out["goal"] = goal_summary(rows)
     return out
 
 
@@ -740,6 +761,226 @@ def meshing_summary(rows: list[dict]) -> dict:
     }
 
 
+# THE GOAL PROFILE'S COLUMNS. With `--goal` the repair is told what it is finishing for, and the
+# finishing verdict it records (cad/repair/goal.py, measurements["goal"]) is flattened into the row
+# here. Flattened rather than nested because these columns are what a reviewer sorts a corpus by:
+# "which files end kernel-clean but still refuse tier 2" is a question about columns.
+#
+# WITHOUT --goal NOTHING CHANGES. No kwarg reaches repair_step_file, no key reaches the row, and
+# `goal` is absent from the summary, so a run's rows stay byte-identical to today's.
+GOAL_PROFILES = ("standalone", "benchmark")
+
+
+def goal_name(goal) -> str:
+    """The profile's wire name, whether the caller handed in a RepairGoal or the CLI's string."""
+    return str(getattr(goal, "value", goal) or "")
+
+
+def goal_row(verdict: dict | None, goal) -> dict:
+    """The row's goal columns, from one finishing verdict.
+
+    A verdict is absent for a file whose repair never ran (`nothing_to_repair`, `not_attempted:*`,
+    `unreadable`): that is `not_run`, NOT a tier-2 refusal, and `tier2_meshes` is None. The two
+    must stay apart - counting a file nobody meshed as a file that would not mesh is how a corpus
+    run invents a failure. A verdict goal.py could not produce carries its error type instead.
+    """
+    profile = goal_name(goal)
+    if not verdict:
+        return {"goal_profile": profile, "goal_verdict": "not_run", "tier2_meshes": None}
+    out: dict = {"goal_profile": str(verdict.get("profile") or profile)}
+    if verdict.get("error"):
+        out.update(goal_verdict="error", goal_error=str(verdict["error"]), tier2_meshes=None)
+        return out
+    mesh = dict(verdict.get("meshability") or {})
+    routing = verdict.get("routing")
+    out.update(
+        kernel_clean=verdict.get("kernel_clean"),
+        tier2_meshes=mesh.get("meshes"),
+        tier2_kind=str(mesh.get("kind") or ""),
+        tier2_score=verdict.get("score"),
+        grind_tier=str((verdict.get("grind") or {}).get("tier") or ""),
+    )
+    # ABSENT, NOT EMPTY, when tier 2b is off: the column's presence is what says the flag was live.
+    if routing:
+        out["tolerant_route"] = str(routing.get("verdict") or "")
+    # What the verdict COST, summed by the runner from the probe seconds each tier recorded: the
+    # price of asking, which is what decides whether the ladder is affordable per file.
+    out["goal_verdict_seconds"] = round(float(mesh.get("seconds") or 0.0)
+                                        + float((routing or {}).get("seconds") or 0.0), 2)
+    return out
+
+
+def goal_summary(rows: list[dict]) -> dict:
+    """Aggregate the goal columns over the rows that carry one. Pure.
+
+    `tier2_meshes`/`tier2_refuses`/`tier2_no_answer`/`not_run` partition the scored files, and
+    `score_mean` averages the files that got an answer - a timeout scores None and is left out of
+    the mean rather than counted as a zero.
+    """
+    scored = [r for r in rows if r.get("goal_profile")]
+    profiles = sorted({str(r["goal_profile"]) for r in scored})
+    not_run = [r for r in scored if r.get("goal_verdict") == "not_run"]
+    answered = [r for r in scored if r.get("goal_verdict") != "not_run"]
+    values = [r["tier2_score"] for r in answered if r.get("tier2_score") is not None]
+    grind: dict[str, int] = {}
+    for row in scored:
+        tier = str(row.get("grind_tier") or "")
+        if tier:
+            grind[tier] = grind.get(tier, 0) + 1
+    routing: dict[str, int] = {}
+    for row in scored:
+        if "tolerant_route" in row:
+            key = str(row["tolerant_route"] or "")
+            routing[key] = routing.get(key, 0) + 1
+    out = {
+        "files": len(scored),
+        "profile": ",".join(profiles),
+        "kernel_clean": sum(1 for r in scored if r.get("kernel_clean") is True),
+        "tier2_meshes": sum(1 for r in answered if r.get("tier2_meshes") is True),
+        "tier2_refuses": sum(1 for r in answered if r.get("tier2_meshes") is False),
+        "tier2_no_answer": sum(1 for r in answered if r.get("tier2_meshes") is None),
+        "not_run": len(not_run),
+        "score_mean": round(statistics.fmean(values), 4) if values else None,
+        "grind_by_tier": dict(sorted(grind.items())),
+    }
+    if routing:
+        out["tolerant_routing"] = dict(sorted(routing.items()))
+    return out
+
+
+# THE STRATIFIED SAMPLE. The committed manifest is 9,956 real failures, and a 300-file arm drawn
+# off the top of it would be whatever the harvest happened to download first. The strata are the
+# two things that decide what a repair has to do: the failure family and whether the part is one
+# solid or many. Pure and deterministic - a seed is the whole provenance of a sample, and the
+# entries carry manifest fields only (name, sha256, counts), never geometry.
+def stratum_of(entry: dict) -> tuple[str, str]:
+    """`(family, solids)` for one manifest entry. `solids` is single/multi/unknown; a row with no
+    solid count, or zero, is unknown rather than guessed."""
+    corpus_harvest = _load_sibling("corpus_harvest")
+    solids = entry.get("solids")
+    kind = "single" if solids == 1 else "multi" if solids else "unknown"
+    return corpus_harvest.legacy_family(str(entry.get("gmsh_error") or "")), kind
+
+
+def _quotas(sizes: dict[tuple[str, str], int], n: int) -> dict[tuple[str, str], int]:
+    """`n` places shared out by share, with a floor of one per stratum so a rare family cannot
+    round away, then trimmed largest-first (and topped up largest-first) to exactly `n`."""
+    total = sum(sizes.values())
+    quotas = {key: min(size, max(1, round(n * size / total))) for key, size in sizes.items()}
+    order = sorted(sizes, key=lambda k: (-sizes[k], k))
+    while sum(quotas.values()) > n:
+        movable = [k for k in order if quotas[k] > 1]
+        if not movable:  # every stratum is at its floor of one: the floors alone exceed n
+            break
+        for key in movable:
+            quotas[key] -= 1
+            if sum(quotas.values()) == n:
+                break
+    while sum(quotas.values()) < n:
+        movable = [k for k in order if quotas[k] < sizes[k]]
+        if not movable:  # every stratum is exhausted: the manifest holds fewer than n entries
+            break
+        for key in movable:
+            quotas[key] += 1
+            if sum(quotas.values()) == n:
+                break
+    return quotas
+
+
+def stratified_sample(manifest: dict, n: int, *, seed: int) -> list[dict]:
+    """`n` manifest entries, spread over the (family, solids) strata, sorted by sha256.
+
+    Deterministic in `seed` alone: the entries are sorted by sha256 before the draw, so a manifest
+    whose file order changed - a re-harvest appends - still yields the same sample.
+    """
+    strata: dict[tuple[str, str], list[dict]] = {}
+    for entry in manifest.get("files") or []:
+        strata.setdefault(stratum_of(entry), []).append(entry)
+    for entries in strata.values():
+        entries.sort(key=lambda e: str(e.get("sha256", "")))
+    quotas = _quotas({key: len(v) for key, v in strata.items()}, n)
+    drawn: list[dict] = []
+    for key in sorted(strata):
+        entries = strata[key]
+        take = quotas.get(key, 0)
+        drawn.extend(entries if take >= len(entries)
+                     else random.Random(seed).sample(entries, take))
+    return sorted(drawn, key=lambda e: str(e.get("sha256", "")))
+
+
+def shard_of(sample: list[dict], spec: str) -> list[dict]:
+    """`I/K` of a sample: the sorted entries sliced `[I-1::K]`, so the K shards of one sample
+    partition it exactly and each shard holds the same files whoever runs it."""
+    index, _, count = spec.partition("/")
+    i, k = int(index), int(count or 0)
+    if k < 1 or not 1 <= i <= k:
+        raise ValueError(f"--shard wants I/K with 1 <= I <= K, not {spec!r}")
+    return sorted(sample, key=lambda e: str(e.get("sha256", "")))[i - 1::k]
+
+
+def excluded_sha256s(paths: list[Path]) -> set[str]:
+    """Every sha256 named by these sample/manifest JSON files. A held-out sample is stated by hash
+    rather than by name, because a corpus file's name is whatever the root it was found under
+    calls it."""
+    out: set[str] = set()
+    for path in paths:
+        loaded = json.loads(Path(path).read_text(encoding="utf-8"))
+        entries = loaded.get("files") if isinstance(loaded, dict) else loaded
+        for entry in entries or []:
+            digest = entry.get("sha256") if isinstance(entry, dict) else entry
+            if digest:
+                out.add(str(digest))
+    return out
+
+
+def without_excluded(manifest: dict, excluded: set[str]) -> dict:
+    """The manifest minus those hashes. A new dict: the caller's manifest is left alone."""
+    return {**manifest, "files": [f for f in manifest.get("files") or []
+                                  if str(f.get("sha256", "")) not in excluded]}
+
+
+def repair_goal(name: str):
+    """The `RepairGoal` the repair is handed, or None for "" - which is today's behaviour.
+
+    Resolved by name off the contracts module, and only when a profile was asked for: a run
+    without --goal imports nothing new and passes no kwarg.
+    """
+    if not name:
+        return None
+    from meshpipeline.cad.repair import contracts
+
+    goal = getattr(contracts, "RepairGoal", None)
+    if goal is None:
+        raise ValueError("this build has no RepairGoal, so --goal has nothing to hand the repair")
+    return goal(name)
+
+
+def manifest_files(path: Path, roots: list[Path], *, sample: int = 0, seed: int = 0,
+                   shard: str = "", exclude: list[Path] | None = None
+                   ) -> tuple[list[Path], list[dict]]:
+    """The track manifest's files as they exist on this host: excluded, sampled, sharded, then
+    resolved by sha256 under `roots`. Returns (paths to run, the manifest entries selected).
+
+    A selected file that is under no root is PRINTED, never skipped silently - a sample is only a
+    sample if every entry was either run or named as missing.
+    """
+    probe = _load_sibling("mesh_probe")
+    manifest = probe.load_manifest(path)
+    if exclude:
+        manifest = without_excluded(manifest, excluded_sha256s(list(exclude)))
+    entries = stratified_sample(manifest, sample, seed=seed) if sample else list(
+        manifest.get("files") or [])
+    if shard:
+        entries = shard_of(entries, shard)
+    found, missing = probe.resolve_inputs({**manifest, "files": entries}, list(roots))
+    if missing:
+        print(f"{len(missing)} of {len(entries)} manifest file(s) are not under the given roots:",
+              file=sys.stderr)
+        for name in missing:
+            print(f"  missing {name}", file=sys.stderr)
+    return [found[e["name"]] for e in entries if e["name"] in found], entries
+
+
 def _probe_before(path: Path) -> tuple[bool, str] | None:
     """The file probe's verdict on the input as delivered, or None when it cannot be measured.
     Taken BEFORE repair only under --force-repair, which needs it to decide whether to run one."""
@@ -754,7 +995,7 @@ def _probe_before(path: Path) -> tuple[bool, str] | None:
 
 
 def _one(path: Path, scratch: Path, *, mode: str = "off", mesh_probe: bool = False,
-         force_repair: bool = False) -> dict:
+         force_repair: bool = False, goal=None) -> dict:
     # FORCE-REPAIR IS A BENCHMARK SWITCH, NOT A PRODUCT PATH. A file the before-probe says will not
     # mesh runs the repair session even where triage routed it away (a clean inspection goes to
     # mesh-as-is), so the in-session probe can locate what the inspector could not see.
@@ -762,7 +1003,7 @@ def _one(path: Path, scratch: Path, *, mode: str = "off", mesh_probe: bool = Fal
     taken = _probe_before(path) if (force_repair and mesh_probe) else None
     if taken is not None:
         forced = not taken[0]
-    row = _repair_row(path, scratch, mode=mode, force=forced)
+    row = _repair_row(path, scratch, mode=mode, force=forced, goal=goal)
     if taken is not None and row.get("outcome") != "unreadable":
         row["meshes_before"], row["mesh_kind_before"] = taken
     if mesh_probe and row.get("outcome") != "unreadable":
@@ -773,7 +1014,8 @@ def _one(path: Path, scratch: Path, *, mode: str = "off", mesh_probe: bool = Fal
     return row
 
 
-def _repair_row(path: Path, scratch: Path, *, mode: str = "off", force: bool = False) -> dict:
+def _repair_row(path: Path, scratch: Path, *, mode: str = "off", force: bool = False,
+                goal=None) -> dict:
     from meshpipeline.cad.repair.conservative import (
         RepairRefused,
         RepairUnavailable,
@@ -784,10 +1026,15 @@ def _repair_row(path: Path, scratch: Path, *, mode: str = "off", force: bool = F
 
     row: dict = {"file": path.name, "size_bytes": path.stat().st_size}
     started = time.monotonic()
+
+    def scored(verdict: dict | None = None) -> dict:
+        """The goal columns for this row, and nothing at all when no profile was asked for."""
+        return goal_row(verdict, goal) if goal is not None else {}
+
     try:
         before = _inspect(path)
     except Exception as exc:  # noqa: BLE001 - a file the kernel will not read is a real outcome
-        row.update(outcome="unreadable", error=f"{type(exc).__name__}: {exc}")
+        row.update(outcome="unreadable", error=f"{type(exc).__name__}: {exc}", **scored())
         return row
 
     status = status_from_defects(before["report"].defects)
@@ -817,11 +1064,12 @@ def _repair_row(path: Path, scratch: Path, *, mode: str = "off", force: bool = F
         row.update(forced_repair=True, triage_route=advice.route)
     elif status is RepairStatus.clean and not [e for e in before["entities"]
                                                if not e.get("analyzer_only")]:
-        row.update(outcome="nothing_to_repair", seconds=round(time.monotonic() - started, 2))
+        row.update(outcome="nothing_to_repair", seconds=round(time.monotonic() - started, 2),
+                   **scored())
         return row
     elif advice.route != ROUTE_CONSERVATIVE_REPAIR:
         row.update(outcome=f"not_attempted:{advice.route}",
-                   seconds=round(time.monotonic() - started, 2))
+                   seconds=round(time.monotonic() - started, 2), **scored())
         return row
 
     destination = scratch / f"{path.stem}-repaired.step"
@@ -831,10 +1079,14 @@ def _repair_row(path: Path, scratch: Path, *, mode: str = "off", force: bool = F
         row["plan"] = _plan_row(plan)
         if mode == "live" and plan.directives:  # shadow hands the kernel nothing
             extra["directives"] = tuple(plan.directives)
+    # NO PROFILE, NO KWARG: `goal=None` would be the same default, but passing nothing is what
+    # makes a run without --goal byte-identical to a run on a build that has no goal parameter.
+    if goal is not None:
+        extra["goal"] = goal
     try:
         repaired = repair_step_file(path, destination, **extra)
     except RepairUnavailable as exc:
-        row.update(outcome="unavailable", error=str(exc))
+        row.update(outcome="unavailable", error=str(exc), **scored())
         return row
     except RepairRefused as exc:
         # THE ATTEMPTS GO WITH THE REFUSAL (conservative.py puts them in its measurements), so a
@@ -846,10 +1098,13 @@ def _repair_row(path: Path, scratch: Path, *, mode: str = "off", force: bool = F
                    timings=dict(measured.get("timings") or {}),
                    operations=_operation_rows(measured.get("operations") or ()),
                    result_discarded=bool(measured.get("result_discarded")),
-                   seconds=round(time.monotonic() - started, 2))
+                   seconds=round(time.monotonic() - started, 2),
+                   # THE VERDICT SURVIVES THE REFUSAL: goal.py records it before the after-check
+                   # refuses, so a refused repair still says what it would have finished as.
+                   **scored(measured.get("goal")))
         return row
     except Exception as exc:  # noqa: BLE001
-        row.update(outcome="repair_failed", error=f"{type(exc).__name__}: {exc}")
+        row.update(outcome="repair_failed", error=f"{type(exc).__name__}: {exc}", **scored())
         return row
 
     measured = {m.name: m.value for m in repaired.measurements}
@@ -872,6 +1127,7 @@ def _repair_row(path: Path, scratch: Path, *, mode: str = "off", force: bool = F
         declared_area_mm2=float(measured.get("declared_area_mm2", 0.0) or 0.0),
         mesh_located_remaining=_mesh_located(measured),
         timings=dict(measured.get("timings") or {}),
+        **scored(measured.get("goal")),
     )
 
     after = _inspect(destination)
@@ -900,7 +1156,8 @@ def _repair_row(path: Path, scratch: Path, *, mode: str = "off", force: bool = F
 
 
 def run_files(files: list[Path], scratch: Path, *, mode: str = "off", loop: bool = False,
-              bundle=None, mesh_probe: bool = False, force_repair: bool = False) -> list[dict]:
+              bundle=None, mesh_probe: bool = False, force_repair: bool = False,
+              goal=None) -> list[dict]:
     """Run the repair loop over `files`, printing a line per file; returns the rows. When `bundle`
     is a BundleWriter every row is streamed into it AS IT IS PRODUCED, so a run that dies half way
     leaves its evidence-so-far on disk rather than in a list that was never written."""
@@ -914,11 +1171,11 @@ def run_files(files: list[Path], scratch: Path, *, mode: str = "off", loop: bool
             rules_dir.mkdir(parents=True, exist_ok=True)
             rules_row = _one(path, rules_dir)
             row = _one(path, scratch, mode="live", mesh_probe=mesh_probe,
-                       force_repair=force_repair)
+                       force_repair=force_repair, goal=goal)
             row["rules_only"] = rules_row
         else:
             row = _one(path, scratch, mode=mode, mesh_probe=mesh_probe,
-                       force_repair=force_repair)
+                       force_repair=force_repair, goal=goal)
         rows.append(row)
         if bundle is not None:
             bundle.write_row(row)
@@ -984,6 +1241,30 @@ def main() -> int:
                         help="with --mesh-probe: a file whose before-probe fails runs the repair "
                              "session even when triage routed it away (benchmark only)")
     parser.add_argument("--json", dest="json_out", default="", help="write the rows here")
+    # THE GOAL PROFILE. Absent means the repair is not told what it is finishing for, which is
+    # today's behaviour exactly: no kwarg, no row key, no summary block. `meshing` is not offered
+    # here - its verdict is the product mesher, which this tool does not run.
+    parser.add_argument("--goal", choices=GOAL_PROFILES, default="",
+                        help="tell the repair what it is finishing for, and score each file's "
+                             "finishing verdict (tier-2 meshability, grind, tier-2b routing)")
+    # SELECTING FROM THE TRACK MANIFEST instead of walking directories: the files are found by
+    # sha256 under --roots, so a corpus whose local names differ still runs the stated sample.
+    parser.add_argument("--manifest", default="",
+                        help="mesh-failure-real manifest: take the files from it, resolved by "
+                             "sha256 under --roots, instead of walking directories")
+    parser.add_argument("--roots", nargs="*", default=[],
+                        help="with --manifest: directories to resolve the manifest files under")
+    parser.add_argument("--sample", type=int, default=0,
+                        help="with --manifest: draw N files stratified by (failure family, "
+                             "single/multi solid)")
+    parser.add_argument("--seed", type=int, default=0,
+                        help="with --sample: the seed, which is the sample's whole provenance")
+    parser.add_argument("--shard", default="",
+                        help="with --sample: run only I/K of the sample (the sorted sample "
+                             "sliced [I-1::K], so the K shards partition it)")
+    parser.add_argument("--exclude", nargs="*", default=[],
+                        help="with --manifest: sample/manifest JSON files whose sha256s are "
+                             "dropped before sampling, to draw a held-out sample")
     # The publication bundle (public-benchmarks.md). The manifest flags are free text on purpose:
     # provenance is a story only the person running the corpus knows. The one closed set is the
     # redistribution status, closed by benchmark_bundle so a typo cannot launder a corpus.
@@ -1054,10 +1335,21 @@ def main() -> int:
                                   hardware_class=args.rebundle_hardware_class)
         print(f"bundle sealed at {sealed}")
         return 0
-    if not args.directories:
-        parser.error("directories are required unless --rebundle is given")
+    if not args.directories and not args.manifest:
+        parser.error("directories are required unless --rebundle or --manifest is given")
+    if args.manifest and not args.roots:
+        parser.error("--manifest needs --roots <dir>... to resolve the files under")
 
     files: list[Path] = []
+    sample_entries: list[dict] = []
+    if args.manifest:
+        try:
+            files, sample_entries = manifest_files(
+                Path(args.manifest), [Path(r) for r in args.roots], sample=args.sample,
+                seed=args.seed, shard=args.shard, exclude=[Path(p) for p in args.exclude])
+        except (OSError, ValueError) as exc:
+            print(f"--manifest is not usable: {exc}", file=sys.stderr)
+            return 2
     for directory in args.directories:
         for path in sorted(Path(directory).rglob("*")):
             if path.suffix.lower() in _SUFFIXES and path.is_file():
@@ -1066,6 +1358,12 @@ def main() -> int:
         files = files[: args.limit]
     if not files:
         print("no .step/.stp files found", file=sys.stderr)
+        return 2
+
+    try:
+        goal = repair_goal(args.goal)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
         return 2
 
     import meshpipeline.settings.cad_repair as rcfg
@@ -1088,6 +1386,14 @@ def main() -> int:
 
     if args.force_repair:
         settings["force_repair"] = True  # only when set: a run without it keeps its old digest
+    # ONLY WHEN SET, for the same reason: a run that states none of these keeps its old digest,
+    # and one that states them cannot be confused with a different sample of the same corpus.
+    if args.goal:
+        settings["goal"] = args.goal
+    if args.manifest:
+        settings.update(manifest=args.manifest, roots=list(args.roots),
+                        sample=args.sample, seed=args.seed, shard=args.shard,
+                        exclude=list(args.exclude), sample_size=len(sample_entries))
 
     # A real directory rather than a per-run temp one: the repaired files ARE the evidence, and
     # a reviewer wants to open them after the run rather than watch them be deleted.
@@ -1108,7 +1414,8 @@ def main() -> int:
     # settings and the recomputed summary (see public-benchmarks.md, First Implementation Slice).
     writer = benchmark_bundle.BundleWriter(Path(args.bundle)) if args.bundle else None
     rows = run_files(files, scratch, mode=args.planner, loop=args.loop, bundle=writer,
-                     mesh_probe=args.mesh_probe, force_repair=args.force_repair)
+                     mesh_probe=args.mesh_probe, force_repair=args.force_repair,
+                     goal=goal)
 
     # ONE AGGREGATE. Every section printed below reads this dict, and the bundle seal recomputes
     # the same function over the same rows, so the console and the evidence cannot disagree.
@@ -1191,6 +1498,19 @@ def main() -> int:
               f"(newly meshed {meshing['newly_meshed']}, newly broken {meshing['newly_broken']})")
         for kind, count in meshing["still_failing_by_kind"].items():
             print(f"  {count:>4}  still failing: {kind}")
+
+    if "goal" in summary:
+        scores = summary["goal"]
+        print(f"\n== the {scores['profile']} finishing verdict ==")
+        print(f"  kernel clean  {scores['kernel_clean']} / {scores['files']}")
+        print(f"  tier 2        meshes {scores['tier2_meshes']}, refuses "
+              f"{scores['tier2_refuses']}, no answer {scores['tier2_no_answer']}, "
+              f"not run {scores['not_run']}")
+        print(f"  score mean    {scores['score_mean']}")
+        for tier, count in scores["grind_by_tier"].items():
+            print(f"  {count:>4}  grind: {tier}")
+        for verdict, count in scores.get("tolerant_routing", {}).items():
+            print(f"  {count:>4}  tier 2b: {verdict}")
 
     if args.planner != "off":
         _print_planner(summary["planner"], cache)
