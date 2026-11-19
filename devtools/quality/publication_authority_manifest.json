@@ -3664,6 +3664,19 @@
   ]
  },
  {
+  "context": "cad/repair/investigator_tools.py::_planned::plan#1|NotAPublisher|not-a-publisher|",
+  "path": "cad/repair/investigator_tools.py",
+  "qualname": "_planned",
+  "semantic": "plan",
+  "method": "plan",
+  "ordinal": 1,
+  "receiver": "editing",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "cad/repair/mesh_probe.py::classify::search#1|NotAPublisher|not-a-publisher|",
   "path": "cad/repair/mesh_probe.py",
   "qualname": "classify",

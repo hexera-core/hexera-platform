@@ -765,6 +765,16 @@ def _scoped(defects, region: Region, *, diagonal_mm: float) -> list[str]:
                    if d.fingerprint and in_region(d, region, diagonal_mm=diagonal_mm)})
 
 
+def _planned(editing: "Editor", args: dict, region: object) -> tuple:
+    """Plan one edit on the clone.
+
+    A seam, not indirection: `publication_authority` resolves a receiver it can read an annotation
+    for, and a parameter is the only form it reads. Calling `editing.plan` on a local left the site
+    UNRESOLVED and refused the whole manifest scan.
+    """
+    return editing.plan(args, region)
+
+
 def _edit(ws: Workspace, args: dict, *, budget_s: float) -> dict:
     """Try one operation ON THE CLONE, or throw the clone away.
 
@@ -804,7 +814,7 @@ def _edit(ws: Workspace, args: dict, *, budget_s: float) -> dict:
 
     before = _scoped(scratch.defects(), region, diagonal_mm=diagonal)
     try:
-        item, recorded = editing.plan(args, region)
+        item, recorded = _planned(editing, args, region)
     except Refusal as exc:
         # THE AUTHOR'S OWN WORDS. It already names the key, the code or the bound it refused on.
         raise _Refused(str(exc)) from None
