@@ -2352,7 +2352,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                         [1.0] if ST.KEEP_BOX and KEEP_BOX_BAND else []) for w in go_],
                                      hole_faces=[int(w.owner) for w in go_])
             if hurt and pending is None:
-                _grid_first(hurt, why_cut, {int(w.owner) for w in boxed + gridded if w.boxed2}, set(grid_faces_made),
+                _grid_first(hurt, why_cut, _two_faces(washers, boxed + gridded), set(grid_faces_made),
                             no_cut)
                 pending = _NoCut(hurt, why_cut)
             if pending is not None and not GATHER:
@@ -2906,7 +2906,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                 raise _NoCut(set(), {}, holes=[[float(x) for x in w.centre] + ([1.0] if id(w) in ring_b else [])
                                                for w in bad_b],
                              hole_faces=[int(w.owner) for w in bad_b], hole_why=[why_b[id(w)] for w in bad_b])
-        _grid_first(hurt_p, why_p, {int(w.owner) for w in boxed + gridded if w.boxed2}, set(grid_faces_made), no_cut)
+        _grid_first(hurt_p, why_p, _two_faces(washers, boxed + gridded), set(grid_faces_made), no_cut)
         if hurt_p:
             raise _NoCut(hurt_p, {k: why_p[k] for k in hurt_p})
     if judge_faces and ST.BOLT_CHECK and not seam_due and requirements and requirements.get("limits"):
@@ -2951,6 +2951,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
     offset = element_offsets(mesh, mids)
     census = edge_census(mesh)
     quality = shell_quality.measure(mesh)
+    quality["per_face"] = shell_quality.per_face(mesh)
     quality["edges"] = {k: v for k, v in census.items() if k != "free_edges"}
     quality["turned"] = turned
     quality["varied_wall_elements"] = varied
@@ -3179,6 +3180,18 @@ BESIDE_ROUNDS = 2
 def _beside_ok(hole_rounds, k: int) -> bool:
     """SHMESH-51j: whether a fault beside a box of face k may still be put on its holes."""
     return not ST.KEEP_BOX or _rounds(hole_rounds, k) < BESIDE_ROUNDS
+
+
+#: SHMESH-51o12: SHMESH-51b's one ring takes every face refused its grid that holds two-ring bolt holes, wherever they
+#: sit (in its grid, in a free box, or round a ring left in a cell its grid let free): a real column's plate (six round
+#: and five square bolt holes) was refused its grid after meshing with its round holes' two rings in free cells, was
+#: no face 51b named, and kept two rings and 8 more triangles where on dddf4d64 it took one ring and kept its grid
+BOLT_FIRST_ANY = True
+
+
+def _two_faces(washers: list, placed: list) -> set[int]:
+    """SHMESH-51b/51o12: the sewn faces holding two-ring bolt holes (51b gives up their second rings first)."""
+    return {int(w.owner) for w in (washers if BOLT_FIRST_ANY else placed) if w.boxed2}
 
 
 def _grid_first(hurt: set[int], why: dict[int, dict], two: set[int], made: set[int], no_cut) -> None:
