@@ -891,7 +891,8 @@ def repair_step_file(source: Path, destination: Path, *,
                      profile: RepairProfile = RepairProfile.conservative,
                      directives: tuple[dict, ...] = (),
                      goal: RepairGoal | None = None,
-                     focus_faces: tuple[int, ...] = ()) -> RepairReport:
+                     focus_faces: tuple[int, ...] = (),
+                     auto_accept_mm: float | None = None) -> RepairReport:
     """Repair `source` into `destination`, or refuse. The input is never modified.
 
     Raises RepairUnavailable when repair is switched off or the kernel is missing, and
@@ -1022,9 +1023,15 @@ def repair_step_file(source: Path, destination: Path, *,
         else:
             author, label = rules_author(before_shape, original=original,
                                          reserved=reserved), LABEL
+        # THE CUSTOMER'S THRESHOLD, CARRIED VERBATIM. This is the only path from the request to
+        # the review tier: without it `auto_accept_mm` is never set, no change is ever small
+        # enough to auto-accept, and the whole tier is inert. `None` means no threshold was
+        # stated, which is not the same as a threshold of zero - the tier then spends the
+        # reviewer's seat on every package, exactly as it did before the tier existed.
         regions_run = run_regions(
             before_shape, tolerance_mm=tolerance, reserved=reserved, author=author,
-            deadline_s=driver_deadline, focus_faces=focus_faces)
+            deadline_s=driver_deadline, focus_faces=focus_faces,
+            auto_accept_mm=auto_accept_mm)
         final = measure(regions_run.shape)
         result = as_repair_run(regions_run, original=original.to_dict(), final=final.to_dict(),
                                planner_label=label)
