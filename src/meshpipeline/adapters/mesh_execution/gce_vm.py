@@ -439,8 +439,8 @@ def _wait_gone(name: str, limit_s: int = REPLACE_WAIT_S) -> bool:
     return True
 
 
-def _held_vm(name: str, holder: str, machine: str, *, meta: dict,
-             timeout: int) -> tuple[VmReference | None, bool]:
+def _held_vm(name: str, holder: str, machine: str, *, meta: dict, timeout: int,
+             disk_gb: int = 0) -> tuple[VmReference | None, bool]:
     """THE JOB'S VM, TAKEN AGAIN (RUN-4): (the VM held for this job on this machine, when it took the run;
     whether its name is free for a new one). The job's VM on ANOTHER machine - the run before a step up or
     back down - is released once its run is over: one VM per job. A VM still meshing is never deleted (a job
@@ -456,7 +456,10 @@ def _held_vm(name: str, holder: str, machine: str, *, meta: dict,
     up = str(vm.get("status") or "") in LIVE
     done, idle_s = _last_run(vm) if up else (True, None)
     since = hold_since(holder) if up and done else None
-    if reusable(vm, timeout=timeout, done=done, idle_s=idle_s, held_since=since) and _hand_over(vm, meta):
+    disk = int(((vm.get("disks") or [{}])[0]).get("diskSizeGb") or 0)
+    roomy = disk >= disk_gb or not vm.get("disks")              # a later pass may need a bigger workspace
+    if roomy and reusable(vm, timeout=timeout, done=done, idle_s=idle_s, held_since=since) \
+            and _hand_over(vm, meta):
         logger.warning("mesh for %s runs on the %s VM its job holds (%s, %s): no boot, no image pull",
                        meta.get("engine"), machine, name, RULE)
         return _ref(vm), False
@@ -530,7 +533,7 @@ def trigger_vm(*, input_uri: str, output_uri: str, engine: str, timeout: int, op
     # handed the run)
     renew_job_hold(holder, force=True)
     meta = run_metadata(image=image, input_uri=input_uri, output_uri=output_uri, engine=engine, timeout=timeout)
-    held, free = _held_vm(name, holder, machine, meta=meta, timeout=timeout)
+    held, free = _held_vm(name, holder, machine, meta=meta, timeout=timeout, disk_gb=disk_gb)
     if held is not None:
         return held
     if free:

@@ -641,3 +641,11 @@ def test_an_unreadable_hold_is_not_a_released_one(monkeypatch):
     monkeypatch.setattr(gcs_exchange, "storage_client", boom)
     monkeypatch.setattr(G.provcfg, "GCP_MESH_BUCKET", "b", raising=False)
     assert S._hold_age("job-1") == 0.0                                       # kept: judged again next time
+
+
+def test_a_held_vm_too_small_for_the_next_pass_workspace_is_replaced(gce):
+    name = G.instance_name("op-1", "n2-highmem-16", "job-1")
+    gce["vms"] = [{**_held(name), "disks": [{"diskSizeGb": str(G.MIN_DISK_GB)}]}]
+    G.trigger_vm(input_uri="gs://b/in", output_uri="gs://b/op-2/out", engine="cfmesh", timeout=1000,
+                 operation_key="op-2", decision={"machine": "n2-highmem-16", "workspace_gib": 400}, holder="job-1")
+    assert not gce["handed"] and gce["deleted"][0][0] == name and gce["posted"][0]["name"] == name
