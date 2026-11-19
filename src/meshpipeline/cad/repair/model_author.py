@@ -4,6 +4,12 @@
 # Owns: the model author's prompt, the reply schema and its validation, the per-region call
 #       budget, the shadow composite (rules drive, model recorded), driver selection by posture,
 #       and the record of every call (observation size, clipped reply, outcome, refusal reason).
+# Also owns, as THE WIRE AND THE VALIDATION A SECOND AUTHOR SHARES: `converse`/`converse_sync`
+#       (one bounded call carrying a whole conversation, through the worker-thread bridge),
+#       `RegionContext`, `PackageGuards`, `Refusal`, `plan_entry`, `validate_package`,
+#       `validate_verdict` and `rim_guard`. The private names (`_ask*`, `_Refused`, `_Context`,
+#       `_Guards`, `_plan_item`, `_package`, `_verdict`) stay as this author's own bindings of
+#       them, so the surface moved and the behaviour did not.
 # Boundaries: it decides WHAT TO PROPOSE and nothing else, exactly like rules_author. It applies
 #             nothing, measures nothing and judges nothing - the session executes the package and
 #             a separate measurement judges the claim. A model reply is DATA: it can never waive a
@@ -61,6 +67,9 @@ INTENT_MAX = 200
 #: call's `wait_for` is the real bound; this only catches a call that will not honour it. Also the
 #: margin a SHADOW call needs left on the run's clock beyond its own timeout.
 _GRACE_S = 5.0
+#: The trace label every call on this route carries unless the caller names its own (an
+#: investigator passes "RepairInvestigator", so its calls are attributable in the router's traces).
+TRACE_NAME = "RepairReview"
 
 AUTHOR_SYSTEM = (
     "you propose a bounded repair for ONE region of a CAD part that will not mesh, or say the "
@@ -114,41 +123,57 @@ def _parse_object(text: str) -> dict | None:
     return value if isinstance(value, dict) else None
 
 
-async def _ask(system: str, user: str, *, job_id: str, timeout_s: float) -> dict | None:
-    """ONE bounded model call; the reply's JSON object, or None for any failure at all.
+async def converse(messages: list[dict], *, job_id: str, timeout_s: float,
+                   name: str = TRACE_NAME) -> tuple[str, dict | None]:
+    """ONE bounded model call carrying a WHOLE conversation; its raw text and its JSON object.
 
     The same call `agents/repair_review/_wire.ask` makes, made through `contracts` directly
-    (cad -> contracts is allowed; cad -> agents is not). Looked up as `_ask` AT CALL TIME, so a
-    test fakes it where this module looks it up.
+    (cad -> contracts is allowed; cad -> agents is not). The route takes a full `Conversation`, so
+    a multi-turn author (an investigator's tool loop) is this same call with a longer list - which
+    is why the TEXT comes back too: a tool loop has to append the assistant turn it just got.
+
+    TOTAL: a raised call, a timeout and `ok=False` are all `("", None)`, never a raise. A reply
+    with no JSON object keeps its text and parses to None, so a caller can record what was said.
     """
     from meshpipeline.contracts.model_inference import call_repair_review_model
-    messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     try:
         result = await asyncio.wait_for(
-            call_repair_review_model(messages, job_id=job_id), timeout=timeout_s)
+            call_repair_review_model(list(messages), job_id=job_id, name=name), timeout=timeout_s)
     except Exception as exc:  # noqa: BLE001 - total: a failed call is no proposal, never a raise
         logger.warning("model author call failed: %s", type(exc).__name__)
-        return None
+        return "", None
     if not getattr(result, "ok", True):
-        return None
-    return _parse_object(getattr(result, "assistant_text", "") or "")
+        return "", None
+    text = getattr(result, "assistant_text", "") or ""
+    return text, _parse_object(text)
 
 
-def _ask_sync(system: str, user: str, *, job_id: str, timeout_s: float) -> dict | None:
-    """`_ask` from synchronous code: `asyncio.run` in a WORKER THREAD.
+async def _ask(system: str, user: str, *, job_id: str, timeout_s: float) -> dict | None:
+    """`converse` as the two-message call THIS author makes; the reply's JSON object, or None.
+
+    Looked up as `_ask` AT CALL TIME by `_ask_sync`, so a test fakes the author's model call where
+    this module looks it up.
+    """
+    _, reply = await converse([{"role": "system", "content": system},
+                               {"role": "user", "content": user}],
+                              job_id=job_id, timeout_s=timeout_s)
+    return reply
+
+
+def _bounded_in_thread(start: Callable, *, timeout_s: float, failure):
+    """Run `start()` - a coroutine factory - with `asyncio.run` in a WORKER THREAD.
 
     The region loop is synchronous and itself runs off the event loop (`asyncio.to_thread` in the
     attempt node), so the model call gets a loop of its own in a thread of its own - which also
     works if a caller ever invokes the loop from a thread that already runs one. Total: any
-    failure, and a thread that outlives its timeout, is None. A DAEMON thread, so one abandoned
-    past its timeout never holds the process open at exit.
+    failure, and a thread that outlives its timeout, is `failure`. A DAEMON thread, so one
+    abandoned past its timeout never holds the process open at exit.
     """
     box: dict = {}
 
     def run() -> None:
         try:
-            box["reply"] = asyncio.run(_ask(system, user, job_id=job_id,
-                                            timeout_s=timeout_s))
+            box["reply"] = asyncio.run(start())
         except BaseException as exc:  # noqa: BLE001 - total: reported below, never raised
             box["error"] = exc
 
@@ -157,11 +182,33 @@ def _ask_sync(system: str, user: str, *, job_id: str, timeout_s: float) -> dict 
     worker.join(timeout_s + _GRACE_S)
     if worker.is_alive():
         logger.warning("model author call outlived its %.1fs timeout; abandoned", timeout_s)
-        return None
+        return failure
     if "error" in box:
         logger.warning("model author call failed: %s", type(box["error"]).__name__)
-        return None
-    reply = box.get("reply")
+        return failure
+    return box.get("reply", failure)
+
+
+def converse_sync(messages: list[dict], *, job_id: str, timeout_s: float,
+                  name: str = TRACE_NAME) -> tuple[str, dict | None]:
+    """`converse` from synchronous code, through the worker-thread bridge. Total: `("", None)`."""
+    out = _bounded_in_thread(
+        lambda: converse(list(messages), job_id=job_id, timeout_s=timeout_s, name=name),
+        timeout_s=timeout_s, failure=("", None))
+    if not (isinstance(out, tuple) and len(out) == 2):
+        return "", None
+    text, reply = out
+    return (text if isinstance(text, str) else ""), (reply if isinstance(reply, dict) else None)
+
+
+def _ask_sync(system: str, user: str, *, job_id: str, timeout_s: float) -> dict | None:
+    """THIS author's two-message call from synchronous code. Total: None.
+
+    Bridged through `_ask` rather than through `converse_sync`, so `_ask` stays the ONE seam a test
+    fakes for the whole two-message path.
+    """
+    reply = _bounded_in_thread(lambda: _ask(system, user, job_id=job_id, timeout_s=timeout_s),
+                               timeout_s=timeout_s, failure=None)
     return reply if isinstance(reply, dict) else None
 
 
@@ -187,7 +234,7 @@ def _strings(value: object) -> list[str] | None:
     return list(dict.fromkeys(value))
 
 
-class _Refused(ValueError):
+class Refusal(ValueError):
     """A reply that is not a bounded, catalogue-only claim; the message is the reason.
 
     `code` and `defect` are set for a PRECONDITION refusal (a named reason the run's report counts,
@@ -197,6 +244,11 @@ class _Refused(ValueError):
         super().__init__(message)
         self.code = code
         self.defect = defect
+
+
+#: The private name this module was written with, kept so every existing caller and test reads the
+#: same surface. The public name is what a SECOND author (the investigator) consumes.
+_Refused = Refusal
 
 
 #: What each stage-gated operation's `targets_for` requires of the defect's `measurements["stage"]`.
@@ -237,14 +289,14 @@ def _current_solids(shape) -> int | None:
 def _form(reply: object) -> tuple[str, object]:
     """Which of the three forms this reply is - EXACTLY one, nothing beside it."""
     if not isinstance(reply, dict):
-        raise _Refused("reply is not a JSON object")
+        raise Refusal("reply is not a JSON object")
     forms = [k for k in ("package", "verdict", "pass") if k in reply]
     if len(forms) != 1 or len(reply) != 1:
-        raise _Refused("reply is not exactly one of package, verdict or pass")
+        raise Refusal("reply is not exactly one of package, verdict or pass")
     return forms[0], reply[forms[0]]
 
 
-class _Context:
+class RegionContext:
     """What every reply is judged against: the region and ITS OWN defects. Cheap - no kernel."""
 
     def __init__(self, region: Region, defects: tuple) -> None:
@@ -254,7 +306,7 @@ class _Context:
         self.mine_fps = frozenset(d.fingerprint for d in self.mine)
 
 
-class _Guards:
+class PackageGuards:
     """What a PACKAGE is judged against beyond its region. Built only for a package reply, since
     the paired-rim half can touch the kernel and a pass or a verdict needs none of it."""
 
@@ -277,20 +329,20 @@ _PACKAGE_KEYS = frozenset({"intent", "plan", "cleared", "unchanged", "max_area_d
                            "max_volume_delta_mm3"})
 
 
-def _plan_item(item: object, ctx: _Context, guards: _Guards) -> tuple[dict, dict]:
+def plan_entry(item: object, ctx: RegionContext, guards: PackageGuards) -> tuple[dict, dict]:
     """One plan entry as the session's plan item, and as recorded."""
     if not isinstance(item, dict) or set(item) - {"op", "fingerprint", "defect_code"}:
-        raise _Refused("a plan entry is not {op, fingerprint}")
+        raise Refusal("a plan entry is not {op, fingerprint}")
     name, fp = item.get("op"), item.get("fingerprint")
     if not isinstance(name, str) or name not in guards.ops:
-        raise _Refused(f"plan names {name!r}, which is not in the active catalogue")
+        raise Refusal(f"plan names {name!r}, which is not in the active catalogue")
     if not isinstance(fp, str) or fp not in ctx.mine_fps:
-        raise _Refused(f"plan aims at {fp!r}, which is not a defect fingerprint in region "
+        raise Refusal(f"plan aims at {fp!r}, which is not a defect fingerprint in region "
                        f"{ctx.region.index}")
     if fp in guards.held:
-        raise _Refused(f"plan aims at {fp}, which is held for review")
+        raise Refusal(f"plan aims at {fp}, which is held for review")
     if name in FILL_OPS and guards.rims:
-        raise _Refused(f"plan fills {fp} while the part has a paired rim (a missing passage "
+        raise Refusal(f"plan fills {fp} while the part has a paired rim (a missing passage "
                        "wall); filling is refused for the whole run")
     op = guards.ops[name]
     on = sorted((d for d in ctx.mine if d.fingerprint == fp), key=lambda d: d.code.value)
@@ -298,27 +350,27 @@ def _plan_item(item: object, ctx: _Context, guards: _Guards) -> tuple[dict, dict
     if named is not None:
         on = [d for d in on if d.code.value == named]
         if not on:
-            raise _Refused(f"plan names defect_code {named!r}, which {fp} does not carry")
+            raise Refusal(f"plan names defect_code {named!r}, which {fp} does not carry")
     # A fingerprint can carry several codes: aim at the ones THIS operation answers, and refuse
     # only when that leaves nothing (never because another code sorts first).
     answered = [d for d in on if d.code in op.answers]
     if not answered:
-        raise _Refused(f"op_does_not_answer: {name} does not answer a "
+        raise Refusal(f"op_does_not_answer: {name} does not answer a "
                        f"{on[0].code.value}", code="op_does_not_answer", defect=fp)
     defect = answered[0]
     if defect.code in guards.reserved:
-        raise _Refused(f"plan aims at a {defect.code.value}, a code held for review")
+        raise Refusal(f"plan aims at a {defect.code.value}, a code held for review")
     # OPERATION PRECONDITIONS, refused here so an invalid proposal costs no execution.
     stage = _stage_required(name, defect.code.value)
     if stage is not None and (getattr(defect, "measurements", None) or {}).get("stage") != stage:
-        raise _Refused(f"stage_precondition: {name} needs a {stage}-stage defect",
+        raise Refusal(f"stage_precondition: {name} needs a {stage}-stage defect",
                        code="stage_precondition", defect=fp)
     if name in _NEEDS_MULTIPLE_BODIES:
         # THE CURRENT SHAPE'S COUNT, not the upload's (a fill can create a solid mid-run). Unknown
         # (no shape, or the count failed) FAILS OPEN: the session's own decline stands.
         solids = guards.solids_of()
         if solids is not None and solids <= 1:
-            raise _Refused(f"needs_multiple_bodies: {name} needs more than one solid in the part "
+            raise Refusal(f"needs_multiple_bodies: {name} needs more than one solid in the part "
                            f"(this one has {solids})", code="needs_multiple_bodies", defect=fp)
     target = EntityRef(entity_type=str(defect.entity_type), fingerprint=fp,
                        entity_index=int(defect.entity_index),
@@ -329,50 +381,57 @@ def _plan_item(item: object, ctx: _Context, guards: _Guards) -> tuple[dict, dict
             {"op": name, "fingerprint": fp, "defect_code": defect.code.value})
 
 
-def _package(body: object, ctx: _Context, guards: _Guards) -> tuple[TargetPackage, dict]:
+def validate_package(body: object, ctx: RegionContext, guards: PackageGuards, *, label: str,
+                     model_calls: int = 1) -> tuple[TargetPackage, dict]:
+    """The package a reply claims, validated, and the same claim as recorded.
+
+    `label` goes in the rationale and `model_calls` in the budget, so a SECOND author reports
+    itself rather than this one (an investigator spends many calls on one package). Everything
+    else is the run's own policy, read per call.
+    """
     if not isinstance(body, dict):
-        raise _Refused("package is not an object")
+        raise Refusal("package is not an object")
     extra = sorted(str(k) for k in set(body) - _PACKAGE_KEYS)
     if extra:
-        raise _Refused(f"package carries keys outside the schema: {', '.join(extra)}")
+        raise Refusal(f"package carries keys outside the schema: {', '.join(extra)}")
     intent = body.get("intent")
     if not isinstance(intent, str) or not intent.strip():
-        raise _Refused("package states no intent")
+        raise Refusal("package states no intent")
     plan = body.get("plan")
     if not isinstance(plan, list) or not plan:
-        raise _Refused("package has an empty plan")
+        raise Refusal("package has an empty plan")
     if len(plan) > int(rcfg.CAD_REPAIR_MAX_OPS):
-        raise _Refused(f"plan has {len(plan)} operations, past the run's "
+        raise Refusal(f"plan has {len(plan)} operations, past the run's "
                        f"{int(rcfg.CAD_REPAIR_MAX_OPS)}")
-    items, recorded = zip(*(_plan_item(item, ctx, guards) for item in plan), strict=True)
+    items, recorded = zip(*(plan_entry(item, ctx, guards) for item in plan), strict=True)
     cleared = _strings(body.get("cleared"))
     if cleared is None:
-        raise _Refused("cleared is not a list of fingerprints")
+        raise Refusal("cleared is not a list of fingerprints")
     if set(cleared) - ctx.mine_fps:
-        raise _Refused("cleared names fingerprints that are not defects in region "
+        raise Refusal("cleared names fingerprints that are not defects in region "
                        f"{ctx.region.index}: {', '.join(sorted(set(cleared) - ctx.mine_fps))}")
     if set(cleared) & guards.held:
-        raise _Refused("cleared names a fingerprint held for review")
+        raise Refusal("cleared names a fingerprint held for review")
     unchanged = _strings(body.get("unchanged", []))
     if unchanged is None:
-        raise _Refused("unchanged is not a list of fingerprints")
+        raise Refusal("unchanged is not a list of fingerprints")
     # THE REGION'S FINGERPRINTS, the set `session._package_refusal` checks every predicate name
     # against: a name outside it is a package the session is certain to refuse, so it is refused
     # here, where it costs no attempt.
     outside = set(unchanged) - ctx.region.fingerprints
     if outside:
-        raise _Refused(f"unchanged names fingerprints outside region {ctx.region.index}: "
+        raise Refusal(f"unchanged names fingerprints outside region {ctx.region.index}: "
                        f"{', '.join(sorted(outside))}")
     if not cleared and not unchanged:
-        raise _Refused("cleared and unchanged are both empty: the claim names no entity")
+        raise Refusal("cleared and unchanged are both empty: the claim names no entity")
     bounds = {}
     for field, cap in (("max_area_delta_mm2", guards.area_cap),
                        ("max_volume_delta_mm3", guards.volume_cap)):
         value = _number(body.get(field))
         if value is None or value < 0.0:
-            raise _Refused(f"{field} is not a non-negative number")
+            raise Refusal(f"{field} is not a non-negative number")
         if value > cap:
-            raise _Refused(f"{field} {value:.6g} is past the run's cap {cap:.6g}")
+            raise Refusal(f"{field} {value:.6g} is past the run's cap {cap:.6g}")
         bounds[field] = value
     text = observe.clip_text(intent, INTENT_MAX)
     package = TargetPackage(
@@ -380,27 +439,60 @@ def _package(body: object, ctx: _Context, guards: _Guards) -> tuple[TargetPackag
         predicate=Predicate(cleared=frozenset(cleared), reclassified=frozenset(),
                             unchanged=frozenset(unchanged), **bounds),
         budget=PackageBudget(max_ops=len(items), timeout_s=float(rcfg.CAD_REPAIR_TIMEOUT_S),
-                             model_calls=1, deviation_mm=0.0),
-        rationale=f"{LABEL}: {text}")
+                             model_calls=int(model_calls), deviation_mm=0.0),
+        rationale=f"{label}: {text}")
     proposal = {"intent": text, "plan": list(recorded), "cleared": sorted(cleared),
                 "unchanged": sorted(unchanged), **bounds}
     return package, proposal
 
 
-def _verdict(body: object, ctx: _Context) -> dict:
+def validate_verdict(body: object, ctx: RegionContext, *, label: str) -> dict:
+    """The "the geometry is sound, the mesher is at fault" verdict a reply claims, validated.
+
+    `label` is the author that reached it, recorded as `author`."""
     if not isinstance(body, dict):
-        raise _Refused("verdict is not an object")
+        raise Refusal("verdict is not an object")
     named = _strings(body.get("mesher_problem"))
     if not named:
-        raise _Refused("verdict names no mesher_problem fingerprints")
+        raise Refusal("verdict names no mesher_problem fingerprints")
     if set(named) - ctx.mine_fps:
-        raise _Refused("verdict names fingerprints that are not defects in region "
+        raise Refusal("verdict names fingerprints that are not defects in region "
                        f"{ctx.region.index}")
     reason = body.get("reason")
     if not isinstance(reason, str) or not reason.strip():
-        raise _Refused("verdict gives no reason")
+        raise Refusal("verdict gives no reason")
     return {"region": int(ctx.region.index), "mesher_problem": sorted(named),
-            "reason": observe.clip_text(reason, INTENT_MAX), "author": LABEL}
+            "reason": observe.clip_text(reason, INTENT_MAX), "author": label}
+
+
+def rim_guard(shape, part_rims: frozenset, defects: tuple, refusals: list) -> frozenset:
+    """The paired rims filling is refused for, with every one recorded into `refusals`.
+
+    THE WHOLE PART'S RIMS, WIDENED BY THE REGION'S OWN, exactly as rules_author seeds its ledger
+    and then lets the planner recompute; recorded as refusals the report carries.
+    """
+    local = paired_rim_fingerprints(shape, defects) if shape is not None else frozenset()
+    history = RunHistory()
+    for rims in (frozenset(part_rims), local):
+        refuse_paired_rims(history, rims)
+    _keep_refusals(refusals, history.refusals)
+    return frozenset(part_rims) | frozenset(local)
+
+
+def _package(body: object, ctx: RegionContext,
+             guards: PackageGuards) -> tuple[TargetPackage, dict]:
+    """`validate_package` as THIS author makes it: its own label, one model call per package."""
+    return validate_package(body, ctx, guards, label=LABEL, model_calls=1)
+
+
+def _verdict(body: object, ctx: RegionContext) -> dict:
+    """`validate_verdict` as THIS author makes it: its own label."""
+    return validate_verdict(body, ctx, label=LABEL)
+
+
+_Context = RegionContext
+_Guards = PackageGuards
+_plan_item = plan_entry
 
 
 def model_author(shape, *, original: Measure, reserved: frozenset = frozenset(),
@@ -455,16 +547,6 @@ def model_author(shape, *, original: Measure, reserved: frozenset = frozenset(),
     def observe_shape(current) -> None:
         state["shape"] = current
 
-    def _rims(defects: tuple) -> frozenset:
-        # THE WHOLE PART'S RIMS, WIDENED BY THE REGION'S OWN, exactly as rules_author seeds its
-        # ledger and then lets the planner recompute; recorded as refusals the report carries.
-        local = paired_rim_fingerprints(shape, defects) if shape is not None else frozenset()
-        history = RunHistory()
-        for rims in (state["part_rims"], local):
-            refuse_paired_rims(history, rims)
-        _keep_refusals(refusals, history.refusals)
-        return frozenset(state["part_rims"]) | frozenset(local)
-
     def _skip_reason(timeout: float) -> str:
         if sum(asked.values()) >= max(0, int(rcfg.CAD_REPAIR_LLM_AUTHOR_CALLS_MAX)):
             return "the run's model calls are spent (CAD_REPAIR_LLM_AUTHOR_CALLS_MAX)"
@@ -510,10 +592,10 @@ def model_author(shape, *, original: Measure, reserved: frozenset = frozenset(),
             return None
         try:
             form, body = _form(reply)
-            ctx = _Context(region, tuple(defects))
+            ctx = RegionContext(region, tuple(defects))
             if form == "pass":
                 if body is not True:
-                    raise _Refused("pass is not true")
+                    raise Refusal("pass is not true")
                 record.update(outcome="pass", reason="")
                 return None
             if form == "verdict":
@@ -521,11 +603,12 @@ def model_author(shape, *, original: Measure, reserved: frozenset = frozenset(),
                 verdicts.append(verdict)
                 record.update(outcome="verdict", reason="")
                 return None
-            guards = _Guards(tuple(defects), reserved=held_codes, rims=_rims(tuple(defects)),
-                             original=original,
-                             solids_of=lambda: _current_solids(state["shape"]))
+            guards = PackageGuards(
+                tuple(defects), reserved=held_codes,
+                rims=rim_guard(shape, state["part_rims"], tuple(defects), refusals),
+                original=original, solids_of=lambda: _current_solids(state["shape"]))
             package, proposal = _package(body, ctx, guards)
-        except _Refused as exc:
+        except Refusal as exc:
             record.update(outcome="refused", reason=str(exc))
             if exc.code:
                 _keep_refusals(refusals, [{"defect": exc.defect, "reason": exc.code,
