@@ -370,3 +370,18 @@ def test_a_mesh_that_hangs_is_stopped_at_the_deadline_and_says_why(tmp_path, mon
     with pytest.raises(ValueError, match="SHMESH-21"):
         sa.mesh_shell(_cylinder_piece(tmp_path), _ring_record())
     assert time.monotonic() - started < 15.0
+
+
+def test_the_record_tells_each_mid_face_its_triangles_and_elements_past_a_limit():
+    """SHMESH-51o13: quality.per_face - per mid-face, its triangles and its elements past each limit, only where any
+    (a run's totals said 47 triangles and 47 quads past max_angle_quad, never on which plate)."""
+    from meshpipeline.engines.shell_mesh import ShellMesh
+
+    xyz = np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],         # a unit square
+                    [2, 0, 0], [3, 0, 0], [2.6, 0.2, 0], [2, 1, 0],     # a quad with a 153 degree corner
+                    [4, 0, 0], [5, 0, 0], [4, 1, 0]], dtype=float)      # a right triangle
+    mesh = ShellMesh(xyz=xyz, quads=np.array([[0, 1, 2, 3], [4, 5, 6, 7]]), trias=np.array([[8, 9, 10]]),
+                     wall=np.ones(3), mid=["Mid_1", "Mid_2", "Mid_2"], part=["Part_1"] * 3)
+    got = sq.per_face(mesh)
+    assert "Mid_1" not in got
+    assert got["Mid_2"]["trias"] == 1 and got["Mid_2"]["max_angle_quad"] == 1, got
