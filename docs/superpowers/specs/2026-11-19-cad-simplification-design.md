@@ -138,23 +138,52 @@ local ones. These are proposals, to be fixed with the product owner.
 | P0 | Infrastructure | `dev-raymond` deployed; a bench VM with gmsh, OCP and CalculiX; corpus (NIST public-domain parts plus synthetic parts with known features) | a corpus part meshed and solved on the bench |
 | P1 | Ground-truth harness, no AI | recognise, remove one feature at a time, mesh and solve both (T3), record cost saved and error spent per feature | a table per part; the harness is what every later phase is scored against |
 | P2 | Cheap verifiers | T1 estimator and T2 submodel, calibrated against P1 | T1/T2 rank features as T3 does; false-accept rate measured |
-| P3 | Agentic loop | packages, ledger, re-planning, behind a flag; reuse CRS session, caps and directives | corpus runs: cost saved at error spent, vs a rules-only baseline |
+| P3 | Product integration, CRS-shaped | the three rollout slices below: inspect, then attempt behind `CAD_SIMPLIFY_ENABLED`, then the model author; reuse CRS session, caps and packages | each slice proven on `dev-raymond`; corpus runs give cost saved at error spent, vs a rules-only baseline |
 | P4 | CFD | adjoint T1, local subdomain T2, OpenFOAM in the mesh image | the same table for a CFD corpus |
 
-## How it fits the repository
+## How it fits the repository: the same way CAD repair does
 
-- **Rules.** Every decision the loop makes needs a rule ID in `docs/RULES.md` with a version bump
-  (`tests/unit/hygiene/test_rulebook.py`). A new family, `SIMP`, reserved as `planned` until the
-  code that cites each rule lands.
-- **Switches.** `CAD_SIMPLIFY_ENABLED`, off by default, independent of `CAD_REPAIR_ENABLED`.
-- **Where it runs.** Recognition and editing are OCC work and run in a child process (OCP holds the
-  GIL; the semiconductor devlog records uvicorn killing workers that ran it in-process). Meshing and
-  solving run off-box: the mesh job for meshes, the bench VM for solves until a solve job exists.
-- **The original is immutable** and retrievable; the simplified part carries provenance (which
-  packages, which verdicts, error spent).
+Simplification is integrated exactly as the CAD Repair System (CRS) is. Each row names the CRS piece
+and its simplification twin. Where CRS has no such piece, simplification adds none in its first
+slice either.
+
+| Concern | CRS today | Simplification |
+|---|---|---|
+| Package | `cad/repair/`: `contracts.py` (`RepairMode` inspect/repair, `RepairProfile`, `RepairTarget`, `RepairReport`, `RepairResult`), `inspect.py:inspect_geometry`, `conservative.py:repair_step_file` (writes a NEW file, raises `RepairUnavailable` / `RepairRefused`), `session.py:RepairSession` (snapshot, `try_package`, rollback), `caps.py`, `package.py:TargetPackage`, `model_author.py`, `package_review.py` | `cad/simplify/`: `contracts.py` (`SimplifyMode` inspect/simplify, `SimplifyProfile`, `SimplifyReport`, `SimplifyResult`, `FeatureCandidate`), `inspect.py:inspect_features` (recognise + cost attribution, read-only), `simplify.py:simplify_step_file` (new file, `SimplifyUnavailable` / `SimplifyRefused`), `verify.py` (tiers T0-T2), and the CRS `RepairSession`, `TargetPackage` and caps machinery reused, not copied |
+| Settings | `settings/cad_repair.py`, kill switch `CAD_REPAIR_ENABLED=false` checked before any kernel call and again in the node; `Group("CAD repair")` in `settings/inventory.py`; `.env.example` and `docs/reference/configuration.md` regenerated from the inventory; `config_inventory.py --full` in `make check-fast` fails on an undeclared env read | `settings/cad_simplify.py`, kill switch `CAD_SIMPLIFY_ENABLED=false`, plus `CAD_SIMPLIFY_MAX_GLOBAL_ERROR` (0.01), `CAD_SIMPLIFY_MAX_LOCAL_ERROR` (0.05), `CAD_SIMPLIFY_TIMEOUT_S`, `CAD_SIMPLIFY_MAX_PACKAGES`, `CAD_SIMPLIFY_LLM_AUTHOR` off/shadow/live (the CRS tri-state); `Group("CAD simplification")`, same regeneration, same gate |
+| Graph | `route_after_engine_select` -> `node_repair_inspect` -> `node_repair_attempt` -> `node_geometry_admission`, unconditional edges, no routing function, pinned by `tests/unit/pipeline/test_graph_real.py` | `node_repair_attempt` -> `node_simplify_inspect` -> `node_simplify_attempt` -> `node_geometry_admission`. After repair, because only a valid solid is simplified; before admission, because admission judges whatever geometry is left in place. Same pin test |
+| State | `repair_status`, `repair_report`, `repair_attempt`, `repair_lineage`; `STATE_SCHEMA_VERSION` bumped per change (15 now) with a history comment; every field in `pipeline/data_contract.STATE_FIELDS` | `simplify_status`, `simplify_report`, `simplify_attempt`, `simplify_lineage`; version 16; same registry |
+| Promotion | `pipeline/repair_promote.promote`: derived id `<source_id>:repaired:<sha16>`, no `geometry_sources` row, unit kept, refused on identical bytes, a unit change, or a file that will not stage; the upload stays the source of record | the same function shape, id `<source_id>:simplified:<sha16>`; a repaired-then-simplified part carries both lineages |
+| Where it runs | the Celery `simulation_jobs` worker on the GCE fleet; OCC via `asyncio.to_thread` under `asyncio.wait_for`; one absolute deadline; only `mesh_probe` uses a fresh child interpreter | same worker, same deadline pattern. The verification solves (T2 local pieces, a few thousand C3D10 each) run in a fresh child interpreter as `mesh_probe` does, with CalculiX added to the worker image. Measured on the bench they are seconds; a T3 global solve is minutes and is not run in the product path |
+| Events | `"repair"` in `events.STAGES`; `pipeline/repair_words.py` lane line; `pipeline/repair_receipt.py` `RECEIPT` | `"simplify"` stage, `simplify_words.py`, `simplify_receipt.py` |
+| Artifacts | `artifact_keys.repair_report_key`, `repaired_cad_key`; `application/repair_report_delivery.py`; `final_result.with_repair_lineage`; `delivery_manifest.built_from_repaired_geometry` | `simplify_report_key`, `simplified_cad_key` (the simplified STEP is a download, optional so `ARTIFACT_POLICY_VERSION` does not move), `simplify_report_delivery.py`, `with_simplify_lineage`, `built_from_simplified_geometry` |
+| Console | `render/repair.js` panel, lane line in `render/stage.js`, `run-files.ts` (`repaired_cad`, `repair_report`) | the same three places, `simplified_cad` and `simplify_report` |
+| Rules | no family of its own; clocks only (TIME-6, `contracts/work_limits.TIME_REPAIR_CLOCK`, recorded by `engines/determinism.note_time_limit`) | the same: a `TIME_SIMPLIFY_CLOCK` noted the same way, no family in the first slice. Keep/revert verdicts are recorded in the simplify report, as CRS records its op verdicts. Whether they become rulebook decisions is an open question below |
+| Deploy | `cad_repair` dispatch input (13 of 25 used); provision env; `create-api-service.sh` `API_ENV_PAIRS`; `create-worker-fleet.sh` `cad-repair-*` metadata mapped to env by `worker/startup.sh`; `tests/unit/deploy/test_cad_repair_opt_out_deploys.py` | `cad_simplify` input (14 of 25), the same three plumbing points with `cad-simplify-*` metadata, and the twin opt-out test |
+| Model | `call_repair_review_model` in `contracts/model_inference.py` and `adapters/model_inference/router.py` (rides `INTAKE_ROUTE`), prompts inline in Python, the vendor SDK confined | `call_simplify_author_model`, the same route and confinement, prompts inline |
+| Capture | `TrainingLogger` events `repair_inspect`, `repair_attempt`, each declared in `data_contract.EVENT_TYPES`; never load-bearing | `simplify_inspect`, `simplify_attempt`, declared the same way. Every verdict is a training row, which is the learned-prior idea above |
+| Tests | `tests/unit/cad/test_repair_*.py`, `tests/unit/pipeline/test_repair_*`, settings and deploy tests, `tests/native/test_native_repair_*.py`, corpus tooling in `devtools/validation/repair_corpus.py` | `test_simplify_*` at the same tiers; `devtools/simplify/` is the corpus tooling twin |
+
+**The rollout copies CRS's order.** CRS shipped diagnostics first ("keep the first feature slice
+reviewable: diagnostics only, no geometry mutation"), then conservative mutation behind the kill
+switch, then the model-authored packages. Simplification does the same:
+
+1. `simplify_inspect` only: candidates and their attributed cost in the report and the receipt. No
+   mutation, no switch needed.
+2. `simplify_attempt` behind `CAD_SIMPLIFY_ENABLED`: rules-authored packages, T0 + T2 verification,
+   keep or revert, promotion.
+3. `CAD_SIMPLIFY_LLM_AUTHOR` shadow, then live.
+
+`devtools/simplify/` (the harness and `local.py`) stays the measurement bench throughout. It is how
+each slice's thresholds are chosen before the slice ships.
 
 ## Open questions for the product owner
 
 1. The default error budget, and whether the user states QoIs or we infer them from purpose.
 2. Whether the simplified CAD is a deliverable in its own right (a "simplified STEP" download).
 3. FEA modal in the first slice or after static.
+4. CRS has no rule family, and its verdicts live in its report. Mirroring that is the default. Should
+   simplification's keep/revert verdicts instead become rulebook decisions (a `SIMP` family), given
+   that they change what the user's simulation answers?
+5. CalculiX in the worker image (small local solves in the product path) or a separate solve job
+   beside the mesh job.

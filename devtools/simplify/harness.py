@@ -25,7 +25,7 @@ import shutil
 import subprocess
 import sys
 import time
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -276,7 +276,7 @@ class LoadCase:
     axis: int          # longest bbox axis
     lo: float
     hi: float
-    band: float        # a face lies in an end band when its whole bbox is within this of the end
+    band: float        # every node within this of an end is fixed (low end) or loaded (high end)
     bend_dir: int      # the axis the load pushes along (second-longest)
 
 
@@ -286,7 +286,9 @@ def load_case(bbox) -> LoadCase:
     order = np.argsort(-ext)
     k = int(order[0])
     lo, hi = (x0, y0, z0)[k], (x1, y1, z1)[k]
-    return LoadCase(k, lo, hi, 0.01 * ext[k], int(order[1]))
+    # 3% of the length, by NODES rather than by faces: measured on nist_ctc_01/03, a part whose ends
+    # are curved has no face lying wholly within a thin end band, and the run had no load case at all
+    return LoadCase(k, lo, hi, 0.03 * ext[k], int(order[1]))
 
 
 def near_bc(f: Feature, lc: LoadCase, margin: float) -> bool:
@@ -308,11 +310,20 @@ class Solved:
     qoi: dict = field(default_factory=dict)
 
 
-def mesh_and_solve(brep: str, work: str, lc: dict, h_max: float, exclude: dict, threads: int = 1) -> Solved:
+@dataclass
+class Meshed:
+    tags: np.ndarray          # node tags
+    xyz: np.ndarray           # (n, 3)
+    etags: np.ndarray
+    conn: np.ndarray          # (m, 10), CalculiX C3D10 order
+    sets: dict                # name -> sorted node tags on the surfaces picked for it
+    seconds: float
+
+
+def mesh_brep(brep: str, h_max: float, pick, threads: int = 1) -> Meshed | str:
+    """Mesh a BREP with 10-node tets; pick(bbox) -> set name or None names each surface's node set.
+    Returns the reason as a string when a set comes out empty or the mesh has no tetrahedra."""
     import gmsh
-    lc = LoadCase(**lc)
-    wd = Path(work)
-    wd.mkdir(parents=True, exist_ok=True)
     t0 = time.time()
     gmsh.initialize(readConfigFiles=False)
     try:
@@ -326,76 +337,110 @@ def mesh_and_solve(brep: str, work: str, lc: dict, h_max: float, exclude: dict, 
         gmsh.option.setNumber("Mesh.ElementOrder", 2)
         gmsh.option.setNumber("Mesh.HighOrderOptimize", 1)
         gmsh.option.setNumber("Mesh.Algorithm3D", 1)
-        surfs = [t for _, t in gmsh.model.getEntities(2)]
-        fixed, loaded = [], []
-        for t in surfs:
-            b = gmsh.model.getBoundingBox(2, t)
-            if b[lc.axis + 3] <= lc.lo + lc.band:
-                fixed.append(t)
-            elif b[lc.axis] >= lc.hi - lc.band:
-                loaded.append(t)
-        if not fixed or not loaded:
-            return Solved(False, f"no end faces (fixed {len(fixed)}, loaded {len(loaded)})")
+        picked: dict[str, list[int]] = {}
+        for _, t in gmsh.model.getEntities(2):
+            name = pick(gmsh.model.getBoundingBox(2, t))
+            if name:
+                picked.setdefault(name, []).append(t)
         gmsh.model.mesh.generate(3)
-        mesh_s = time.time() - t0
         tags, xyz, _ = gmsh.model.mesh.getNodes()
-        xyz = xyz.reshape(-1, 3)
-        idx = {int(t): i for i, t in enumerate(tags)}
         et, en = gmsh.model.mesh.getElementsByType(11)
-        conn = np.asarray(en, dtype=np.int64).reshape(-1, 10)[:, list(GMSH_TET10_TO_SOLVER)]
-
-        def nodes_on(ts):
-            s = set()
+        sets = {}
+        for name, ts in picked.items():
+            nodes: set[int] = set()
             for t in ts:
                 nt, _, _ = gmsh.model.mesh.getNodes(2, t, includeBoundary=True)
-                s.update(int(n) for n in nt)
-            return sorted(s)
-
-        nfix, nload = nodes_on(fixed), nodes_on(loaded)
+                nodes.update(int(n) for n in nt)
+            sets[name] = sorted(nodes)
     finally:
         gmsh.finalize()
-    if len(conn) == 0:
-        return Solved(False, "no tetrahedra")
+    if len(et) == 0:
+        return "no tetrahedra"
+    conn = np.asarray(en, dtype=np.int64).reshape(-1, 10)[:, list(GMSH_TET10_TO_SOLVER)]
+    return Meshed(np.asarray(tags, dtype=np.int64), np.asarray(xyz).reshape(-1, 3), np.asarray(et, dtype=np.int64),
+                  conn, sets, time.time() - t0)
 
-    # deck: total force 1000 N along bend_dir spread over the loaded nodes (linear: magnitude cancels)
-    f_node = 1000.0 / len(nload)
-    inp = wd / "job.inp"
-    with inp.open("w") as fh:
+
+def run_ccx(m: Meshed, wd: Path, step_cards: str, threads: int = 1) -> tuple[bool, float]:
+    """Write the deck (mesh, every node set, steel) plus step_cards (everything from *BOUNDARY on),
+    run CalculiX, and say whether it produced job.frd."""
+    with (wd / "job.inp").open("w") as fh:
         fh.write("*NODE, NSET=NALL\n")
-        for t, (x, y, z) in zip(tags, xyz):
+        for t, (x, y, z) in zip(m.tags, m.xyz):
             fh.write(f"{int(t)},{x:.9g},{y:.9g},{z:.9g}\n")
         fh.write("*ELEMENT, TYPE=C3D10, ELSET=EALL\n")
-        for e, c in zip(et, conn):
+        for e, c in zip(m.etags, m.conn):
             fh.write(f"{int(e)}," + ",".join(str(int(v)) for v in c) + "\n")
-        fh.write("*NSET, NSET=NFIX\n" + "\n".join(map(str, nfix)) + "\n")
-        fh.write("*NSET, NSET=NLOAD\n" + "\n".join(map(str, nload)) + "\n")
+        for name, nodes in m.sets.items():
+            fh.write(f"*NSET, NSET={name}\n" + "\n".join(map(str, nodes)) + "\n")
         fh.write(f"*MATERIAL, NAME=STEEL\n*ELASTIC\n{E_MPA},{NU}\n*SOLID SECTION, ELSET=EALL, MATERIAL=STEEL\n")
-        fh.write("*BOUNDARY\nNFIX,1,3,0\n*STEP\n*STATIC\n*CLOAD\n")
-        fh.write(f"NLOAD,{lc.bend_dir + 1},{f_node:.9g}\n")
-        fh.write("*NODE PRINT, NSET=NLOAD\nU\n*NODE PRINT, NSET=NFIX\nRF\n*NODE FILE\nU\n*EL FILE\nS\n*END STEP\n")
+        fh.write(step_cards)
     t1 = time.time()
     env = dict(os.environ, OMP_NUM_THREADS=str(threads), CCX_NPROC_EQUATION_SOLVER=str(threads))
     p = subprocess.run(["ccx", "-i", "job"], cwd=wd, env=env, capture_output=True, text=True, timeout=7200)
-    solve_s = time.time() - t1
-    if p.returncode != 0 or not (wd / "job.frd").exists():
+    ok = p.returncode == 0 and (wd / "job.frd").exists()
+    if not ok:
         (wd / "ccx.log").write_text(p.stdout[-20000:] + p.stderr[-5000:])
-        return Solved(False, "ccx failed", len(tags), len(conn), mesh_s, solve_s)
-    u, s_vm = read_frd(wd / "job.frd")
-    q = qois(u, s_vm, xyz, idx, nload, lc, f_node, exclude)
-    for big in ("job.frd",):
-        (wd / big).unlink(missing_ok=True)
-    return Solved(True, "", len(tags), len(conn), mesh_s, solve_s, q)
+    return ok, time.time() - t1
 
 
-def read_frd(path: Path) -> tuple[dict[int, np.ndarray], dict[int, float]]:
-    """Nodal displacement and nodal von Mises (CalculiX extrapolates stresses to nodes in .frd)."""
-    u: dict[int, np.ndarray] = {}
-    svm: dict[int, float] = {}
+def mesh_and_solve(brep: str, work: str, lc: dict, h_max: float, exclude: dict, threads: int = 1,
+                   keep_field: bool = False) -> Solved:
+    lc = LoadCase(**lc)
+    wd = Path(work)
+    wd.mkdir(parents=True, exist_ok=True)
+
+    m = mesh_brep(brep, h_max, lambda b: None, threads)
+    if isinstance(m, str):
+        return Solved(False, m)
+    a = m.xyz[:, lc.axis]
+    m.sets["NFIX"] = m.tags[a <= lc.lo + lc.band].tolist()
+    m.sets["NLOAD"] = m.tags[a >= lc.hi - lc.band].tolist()
+    if not m.sets.get("NFIX") or not m.sets.get("NLOAD"):
+        return Solved(False, f"no end faces (fixed {len(m.sets.get('NFIX', []))}, loaded {len(m.sets.get('NLOAD', []))})")
+    # DISPLACEMENT CONTROL: the loaded slab moves rigidly by delta along bend_dir, the fixed slab not
+    # at all; both are continuum conditions, independent of the mesh. Measured on nist_ftc_09: a
+    # force spread equally over the slab's NODES depends on how the mesher filled the slab, and put
+    # the same-part noise floor at 0.29% on compliance - above most features' true effect.
+    delta = 1e-3 * (lc.hi - lc.lo)
+    d = lc.bend_dir + 1
+    ok, solve_s = run_ccx(m, wd, "*BOUNDARY\nNFIX,1,3,0\n*STEP\n*STATIC\n*BOUNDARY\n"
+                          f"NLOAD,{d},{d},{delta:.9g}\n"
+                          "*NODE PRINT, NSET=NLOAD, TOTALS=ONLY\nRF\n"
+                          "*NODE FILE\nU\n*EL FILE\nS\n*EL PRINT, ELSET=EALL, TOTALS=ONLY\nELSE\n*END STEP\n", threads)
+    if not ok:
+        return Solved(False, "ccx failed", len(m.tags), len(m.conn), m.seconds, solve_s)
+    fld = read_field(wd / "job.frd", m)
+    if keep_field:
+        np.savez_compressed(wd / "field.npz", tags=m.tags, xyz=m.xyz, u=fld.u, s=fld.s)
+    rf = read_total_force(wd / "job.dat")
+    if rf is None or rf[lc.bend_dir] == 0:
+        return Solved(False, "no reaction force in job.dat", len(m.tags), len(m.conn), m.seconds, solve_s)
+    q = qois(fld, m, lc, delta, rf[lc.bend_dir], exclude)
+    q["strain_energy"] = read_energy(wd / "job.dat")
+    (wd / "job.frd").unlink(missing_ok=True)
+    return Solved(True, "", len(m.tags), len(m.conn), m.seconds, solve_s, q)
+
+
+@dataclass
+class Field:
+    u: np.ndarray    # (n, 3), row i is node m.tags[i]
+    s: np.ndarray    # (n, 6) sxx syy szz sxy syz szx, nodal (CalculiX extrapolates to nodes)
+
+    @property
+    def vm(self) -> np.ndarray:
+        sxx, syy, szz, sxy, syz, szx = self.s.T
+        return np.sqrt(0.5 * ((sxx - syy) ** 2 + (syy - szz) ** 2 + (szz - sxx) ** 2)
+                       + 3 * (sxy ** 2 + syz ** 2 + szx ** 2))
+
+
+def read_field(path: Path, m: Meshed) -> Field:
+    row = {int(t): i for i, t in enumerate(m.tags)}
+    u = np.zeros((len(m.tags), 3))
+    s = np.zeros((len(m.tags), 6))
     block = None
     with path.open() as fh:
         for ln in fh:
-            if ln.startswith("    1PSTEP"):
-                continue
             if ln.startswith(" -4"):
                 name = ln[5:13].strip()
                 block = name if name in ("DISP", "STRESS") else None
@@ -404,41 +449,65 @@ def read_frd(path: Path) -> tuple[dict[int, np.ndarray], dict[int, float]]:
                 block = None
                 continue
             if block and ln.startswith(" -1"):
-                n = int(ln[3:13])
+                i = row.get(int(ln[3:13]))
+                if i is None:
+                    continue
                 vals = [float(ln[13 + 12 * k:25 + 12 * k]) for k in range((len(ln.rstrip()) - 13) // 12)]
                 if block == "DISP":
-                    u[n] = np.array(vals[:3])
+                    u[i] = vals[:3]
                 else:
-                    sxx, syy, szz, sxy, syz, szx = vals[:6]
-                    svm[n] = math.sqrt(0.5 * ((sxx - syy) ** 2 + (syy - szz) ** 2 + (szz - sxx) ** 2)
-                                       + 3 * (sxy ** 2 + syz ** 2 + szx ** 2))
-    return u, svm
+                    s[i] = vals[:6]
+    return Field(u, s)
 
 
-def _in_box(p, b, pad) -> bool:
-    return all(b[k] - pad <= p[k] <= b[k + 3] + pad for k in range(3))
+def read_total_force(dat: Path) -> list[float] | None:
+    """The 'total force (fx,fy,fz)' CalculiX prints for *NODE PRINT ... TOTALS=ONLY / RF."""
+    lines = dat.read_text().splitlines() if dat.exists() else []
+    for i, ln in enumerate(lines):
+        if "total force" in ln:
+            for nxt in lines[i + 1:i + 4]:
+                if nxt.strip():
+                    return [float(v) for v in nxt.split()[-3:]]
+    return None
 
 
-def qois(u, svm, xyz, idx, nload, lc: LoadCase, f_node, exclude: dict) -> dict:
-    """Compliance (F.u), max |u|, mean tip deflection, and max von Mises away from the fixed/loaded
+def read_energy(dat: Path) -> float | None:
+    """The 'total internal energy' CalculiX prints for *EL PRINT ... TOTALS=ONLY / ELSE."""
+    lines = dat.read_text().splitlines() if dat.exists() else []
+    for i, ln in enumerate(lines):
+        if "total internal energy" in ln:
+            for nxt in lines[i + 1:i + 4]:
+                if nxt.strip():
+                    return float(nxt.split()[-1])
+    return None
+
+
+def qois(fld: Field, m: Meshed, lc: LoadCase, delta: float, reaction: float, exclude: dict) -> dict:
+    """Compliance (delta / reaction: the flexibility, deflection per unit load), the reaction itself,
+    max |u|, and max von Mises away from the fixed/loaded
     ends, once per named exclusion set (a removed feature's own zone), so a removed stress riser is
     not counted as an error at its own location and the original is read under the same exclusion."""
-    comp = sum(f_node * u[n][lc.bend_dir] for n in nload if n in u)
-    tip = float(np.mean([u[n][lc.bend_dir] for n in nload if n in u]))
-    umax = max(float(np.linalg.norm(v)) for v in u.values())
+    comp = delta / reaction
+    umax = float(np.linalg.norm(fld.u, axis=1).max())
     length = lc.hi - lc.lo
-    mid = [(xyz[idx[n]], s) for n, s in svm.items()
-           if lc.lo + 0.1 * length <= xyz[idx[n]][lc.axis] <= lc.hi - 0.1 * length]
-    far = {name: max((s for p, s in mid if not any(_in_box(p, b, pad) for b, pad in boxes)), default=0.0)
-           for name, boxes in exclude.items()}
-    return {"compliance": comp, "tip_deflection": tip, "max_disp": umax, "max_vm_far": far}
+    a = m.xyz[:, lc.axis]
+    mid = (a >= lc.lo + 0.1 * length) & (a <= lc.hi - 0.1 * length)
+    vm = fld.vm
+    far = {}
+    for name, boxes in exclude.items():
+        keep = mid.copy()
+        for b, pad in boxes:
+            inside = np.all((m.xyz >= np.array(b[:3]) - pad) & (m.xyz <= np.array(b[3:]) + pad), axis=1)
+            keep &= ~inside
+        far[name] = float(vm[keep].max()) if keep.any() else 0.0
+    return {"compliance": comp, "reaction": reaction, "max_disp": umax, "max_vm_far": far}
 
 
 # ------------------------------------------------------------------------------------------------
 # the run
 
 def _rel(q: dict, ref: dict, far_key: str) -> dict:
-    out = {k: (q[k] - ref[k]) / ref[k] for k in ("compliance", "tip_deflection", "max_disp") if ref[k]}
+    out = {k: (q[k] - ref[k]) / ref[k] for k in ("compliance", "reaction", "max_disp") if ref.get(k)}
     a, b = q["max_vm_far"].get(far_key), ref["max_vm_far"].get(far_key)
     if a is not None and b:
         out["max_vm_far"] = (a - b) / b
@@ -446,20 +515,48 @@ def _rel(q: dict, ref: dict, far_key: str) -> dict:
 
 
 def _job(args):
-    name, brep, work, lc, h, excl = args
+    """Run one mesh-and-solve in its OWN process. Measured on nist_ctc_02: a native abort inside
+    gmsh/OCCT took a whole ProcessPoolExecutor down (BrokenProcessPool) and lost the part; as a
+    subprocess, a crash costs one row."""
+    name, brep, work, lc, h, excl, keep = args
+    wd = Path(work)
+    wd.mkdir(parents=True, exist_ok=True)
+    spec = wd / "spec.json"
+    spec.write_text(json.dumps({"brep": brep, "work": work, "lc": lc, "h": h, "exclude": excl, "keep": keep}))
     try:
-        return name, asdict(mesh_and_solve(brep, work, lc, h, excl))
+        p = subprocess.run([sys.executable, "-I", __file__, "--one", str(spec)], capture_output=True, text=True,
+                           timeout=7200)
+    except subprocess.TimeoutExpired:
+        return name, asdict(Solved(False, "timed out"))
+    res = wd / "solved.json"
+    if p.returncode != 0 or not res.exists():
+        tail = (p.stderr or "").strip().splitlines()[-1:] or [f"exit {p.returncode}"]
+        return name, asdict(Solved(False, f"worker died: {tail[0][:200]}"))
+    return name, json.loads(res.read_text())
+
+
+def _one(spec_path: str) -> int:
+    sp = json.loads(Path(spec_path).read_text())
+    try:
+        r = mesh_and_solve(sp["brep"], sp["work"], sp["lc"], sp["h"], sp["exclude"], keep_field=sp["keep"])
     except Exception as exc:   # one bad feature must not end the run
-        return name, asdict(Solved(False, f"{type(exc).__name__}: {exc}"))
+        r = Solved(False, f"{type(exc).__name__}: {exc}")
+    (Path(sp["work"]) / "solved.json").write_text(json.dumps(asdict(r), default=float))
+    return 0
 
 
 def main(argv=None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["--one"]:
+        return _one(argv[1])
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("step")
     ap.add_argument("--out", required=True)
     ap.add_argument("--jobs", type=int, default=os.cpu_count() or 4)
     ap.add_argument("--size", type=float, default=30.0, help="background element size = diagonal / SIZE")
     ap.add_argument("--max-features", type=int, default=60)
+    ap.add_argument("--keep-fields", action="store_true",
+                    help="save each run's nodal U and S (work/<name>/field.npz) for local.py")
     a = ap.parse_args(argv)
     if not shutil.which("ccx"):
         raise SystemExit("ccx (CalculiX) not on PATH")
@@ -495,16 +592,19 @@ def main(argv=None) -> int:
         write_brep(simp, path)
         rows[f.id] = row
         excl_all[f.id] = [(f.bbox, pad)]
-        jobs.append((f.id, str(path), str(out / "work" / f.id), asdict(lc), h, {f.id: [(f.bbox, pad)]}))
+        jobs.append((f.id, str(path), str(out / "work" / f.id), asdict(lc), h, {f.id: [(f.bbox, pad)]},
+                     a.keep_fields))
 
     # the original reads its far stress under every feature's exclusion, so each row compares like
     # with like; "none" (nothing excluded) is what the noise run is compared on
     excl_all["none"] = []
-    base = [("original", str(out / "geom" / "original.brep"), str(out / "work" / "original"), asdict(lc), h, excl_all),
-            ("noise", str(out / "geom" / "original.brep"), str(out / "work" / "noise"), asdict(lc), h * 0.93, excl_all)]
+    base = [("original", str(out / "geom" / "original.brep"), str(out / "work" / "original"), asdict(lc), h, excl_all,
+             a.keep_fields),
+            ("noise", str(out / "geom" / "original.brep"), str(out / "work" / "noise"), asdict(lc), h * 0.93, excl_all,
+             False)]
     results: dict[str, dict] = {}
     t0 = time.time()
-    with ProcessPoolExecutor(max_workers=a.jobs) as ex:
+    with ThreadPoolExecutor(max_workers=a.jobs) as ex:
         futs = [ex.submit(_job, j) for j in base + jobs]
         for fut in as_completed(futs):
             name, res = fut.result()
