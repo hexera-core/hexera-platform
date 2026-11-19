@@ -747,13 +747,36 @@ def shadow_author(shape, *, original: Measure, reserved: frozenset = frozenset()
 
 
 def select_author(shape, *, original: Measure, reserved: frozenset = frozenset(),
-                  job_id: str = "", deadline_s: float | None = None) -> tuple[Author, str]:
+                  job_id: str = "", deadline_s: float | None = None,
+                  tolerance_mm: float = 0.0) -> tuple[Author, str]:
     """The region loop's author for the deployment's posture, and the label the run reports.
 
-    live + a configured router -> the model author; shadow -> the shadow composite (the rules
-    drive); anything else, including live with no router, -> the rules author exactly as it was
-    built before this module existed. `deadline_s` bounds the model's calls (see model_author).
+    THE INVESTIGATOR POSTURE IS CONSULTED FIRST (`CAD_REPAIR_INVESTIGATOR`), because a bounded
+    tool loop and a one-shot call are two postures of the same seam and a deployment that asked
+    for the loop must not get the one-shot author instead. Off - the default - falls through to
+    the body below untouched, so with the posture unset this function is byte-for-byte what it
+    was. `tolerance_mm` is the run's tolerance, which only the investigator needs (its edits run
+    on a scratch session, and `try_op` takes one).
+
+    Then: live + a configured router -> the model author; shadow -> the shadow composite (the
+    rules drive); anything else, including live with no router, -> the rules author exactly as it
+    was built before this module existed. `deadline_s` bounds the model's calls (see
+    model_author).
     """
+    from meshpipeline.cad.repair import investigator as inv
+
+    stance = inv.posture()
+    if stance == "live" and _configured():
+        return inv.investigator(shape, original=original, reserved=reserved, job_id=job_id,
+                                tolerance_mm=tolerance_mm, deadline_s=deadline_s), inv.LABEL
+    if stance == "shadow":
+        # SEAM (Task 12): the investigator's shadow composite - the rules drive, the loop is
+        # recorded beside them. Until it exists, a shadow posture falls through to the body below
+        # rather than inventing a composite here, so nothing of the run moves.
+        composite = getattr(inv, "shadow_investigator", None)
+        if callable(composite):
+            return composite(shape, original=original, reserved=reserved, job_id=job_id,
+                             tolerance_mm=tolerance_mm, deadline_s=deadline_s), RULES_LABEL
     mode = posture()
     if mode == "live" and _configured():
         return model_author(shape, original=original, reserved=reserved, job_id=job_id,
