@@ -1685,6 +1685,9 @@ def report(workspace, quality: Mapping, engine: str) -> dict | None:
             got = _layers_row(req, q, built)
             if p.get("note") and got.get("met") is False:
                 got["delivered"] += f"; {p['note']}"
+        elif field in ("layers:y_plus", "layers:first_height") and status == "applied" and (
+                fl := _first_layer_row(workspace, req, q, p)) is not None:
+            got = fl
         else:
             got = {"applied": True, "met": False if status == "nearest" else None,
                    "delivered": (f"not possible as asked - {built}" if status == "nearest" else built)
@@ -1715,6 +1718,43 @@ def _count_row(field: str, req: Mapping, n: int, p: Mapping) -> dict:
         said += f"; {p.get('built')}"
         met = False
     return {"applied": True, "measured": n, "met": bool(met), "delivered": said}
+
+
+#: CFDREQ-6: where each mesher writes the first layer height it was given (the dictionary in the case), and the key
+_FIRST_LAYER_IN = (("system/snappyHexMeshDict", "firstLayerThickness"), ("system/meshDict", "maxFirstLayerThickness"))
+
+
+def _first_layer_row(workspace, req: Mapping, q: Mapping, p: Mapping) -> dict | None:
+    """CFDREQ-6: a first layer height asked (or a y+ turned into one) against the built mesh - the height the
+    mesher's dictionary was given, and the layers it really grew (the wall's coverage, the layer count's 80%): met,
+    or not met with the numbers. None when either was not measured (the row stays "applied as a setting"). The
+    reducer of job 63b0fd25 was built at 0.0224 mm with 100% of its wall covered and read "0 met; 1 applied as a
+    setting"."""
+    planned = p.get("first_m")
+    if planned is None:
+        first_mm = (req.get("layers") or {}).get("first_mm")
+        planned = float(first_mm) * 1e-3 if first_mm is not None else None
+    cover = q.get("layer_coverage_pct")
+    if not planned or not isinstance(cover, (int, float)) or isinstance(cover, bool):
+        return None
+    written = None
+    for rel, key in _FIRST_LAYER_IN:
+        try:
+            written = _num((Path(workspace) / rel).read_text(errors="replace"), key)
+        except OSError:
+            continue
+        if written is not None:
+            break
+    if written is None:
+        return None
+    as_asked = abs(written - float(planned)) <= 0.01 * float(planned)
+    grown = float(cover) >= 80.0
+    said = (f"first layer {_mm(written)} high, as asked; layers on {MR._g(float(cover))}% of the wall" if as_asked
+            else f"first layer {_mm(written)} high, not {_mm(float(planned))}; layers on "
+                 f"{MR._g(float(cover))}% of the wall")
+    if as_asked and not grown:
+        said += " - the rest of the wall has none, so the first cell there is not this height"
+    return {"applied": True, "met": bool(as_asked and grown), "measured": float(f"{written:.4g}"), "delivered": said}
 
 
 def _layers_row(req: Mapping, q: Mapping, built: str) -> dict:

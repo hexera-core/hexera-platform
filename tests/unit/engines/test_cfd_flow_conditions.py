@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 
 from tests.unit.engines.test_cfd_requirements import _read, _snappy, re_num
@@ -120,6 +121,39 @@ def test_a_y_plus_typed_as_the_conditions_answer_is_sized_at_the_conditions_spee
                          physics=[{"what": "velocity", "value": 3, "unit": "m/s", "quote": "3 m/s"}])
     got = MR.requirements_of(CR.with_conditions(MR.section("used", requirements=req), {"request_txt": INT_RESOLVED}))
     assert got["physics"]["velocity_ms"] == 3.0 and got["physics"]["fluid"] == "water"
+
+
+def test_the_first_layer_is_checked_on_the_built_mesh(tmp_path):
+    """Job 63b0fd25 (round 3): the first layer written exactly as asked and 100% of the wall covered, yet "Of the 1
+    thing you asked for: 0 met; 1 applied as a setting"."""
+    req, _d, _na = _read("y+ of 1 at the wall",
+                         layers=[{"what": "y_plus", "value": 1, "unit": "none", "quote": "y+ of 1 at the wall"}])
+    got = MR.requirements_of(CR.with_conditions(MR.section("used", requirements=req), {"request_txt": INT_RESOLVED}))
+    rid = got["rows"][0]["id"]
+    ws = tmp_path / "case"
+    (ws / "system").mkdir(parents=True)
+    MR.write(ws, MR.section("used", requirements=got))
+    (ws / CR.PLAN_FILE).write_text(json.dumps({"engine": "snappy", "rows": {rid: {
+        "status": "applied", "built": "first layer 0.02243 mm high (...); 24 layers (not our usual 5)",
+        "first_m": 2.243e-05}}}))
+    shm = ws / "system" / "snappyHexMeshDict"
+    shm.write_text("addLayersControls { relativeSizes false; firstLayerThickness 2.24346e-05; }")
+    rep = CR.report(ws, {"cells": 900_000, "layer_coverage_pct": 100.0}, "snappy")
+    row = rep["rows"][0]
+    assert row["met"] is True and row["measured"] == 2.243e-05
+    assert row["delivered"] == "first layer 0.02243 mm high, as asked; layers on 100% of the wall"
+    assert CR.summary(rep) == "Of the 1 thing you asked for: 1 met."
+    # the layers did not grow: not met, with the numbers (job f4019933's 0%)
+    row = CR.report(ws, {"cells": 900_000, "layer_coverage_pct": 0.0}, "snappy")["rows"][0]
+    assert row["met"] is False and row["delivered"].startswith("first layer 0.02243 mm high, as asked; layers on 0% "
+                                                                "of the wall - the rest of the wall has none")
+    # a different height written: not met, both numbers said
+    shm.write_text("addLayersControls { relativeSizes false; firstLayerThickness 5e-05; }")
+    row = CR.report(ws, {"cells": 900_000, "layer_coverage_pct": 100.0}, "snappy")["rows"][0]
+    assert row["met"] is False and row["delivered"].startswith("first layer 0.05 mm high, not 0.02243 mm")
+    # nothing measured: the row stays a setting, as before
+    row = CR.report(ws, {"cells": 900_000}, "snappy")["rows"][0]
+    assert row["met"] is None
 
 
 def test_the_run_reads_the_conditions_with_no_notes(tmp_path):
