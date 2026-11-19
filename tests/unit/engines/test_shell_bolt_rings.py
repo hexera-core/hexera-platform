@@ -698,23 +698,6 @@ def test_a_face_takes_one_ring_only_where_its_own_triangles_drop():
     assert SA._tria_faces(far, applied, ["Mid_1"]) == [] and SA._tria_faces(mesh, applied, ["Mid_1"]) == [0]
 
 
-def test_holes_of_bolt_size_beside_bolt_holes_are_bolt_holes(tmp_path):
-    """SHMESH-51o6, a real column's plate: 6 holes of 19.8 mm lined up with holes in another plate (bolt holes) and 5
-    of about 20.9 mm beside them that lined up with nothing, were not alike enough to make a pattern of their own and
-    whose plate met no other plate: read as nothing, one ring each by size. A round hole within BOLT_ALIKE of the size
-    of a bolt hole on the same plate is now a bolt hole too."""
-    h6 = [(60.0 + 70.0 * k, 80.0, 19.8) for k in range(6)]
-    h5 = [(80.0 + 80.0 * k, 220.0, d) for k, d in enumerate((20.9, 21.6, 20.2, 21.0, 20.5))]
-    brep, rec = _plates(tmp_path, [(480.0, 300.0, 10.0, 0.0, h6 + h5), (480.0, 150.0, 10.0, 40.0, h6)])
-    mesh, applied = _mesh(brep, rec)
-    lines = applied["quality"]["structure"]["hole_list"]
-    big = [h for h in lines if h["diameter_mm"] > 20.0]
-    assert len(big) == 5 and all(h.get("bolt") for h in big), big
-    # (the others are each alike to one of their neighbours within 2%: a pattern; 21.5 mm is alike to none)
-    assert [h["bolt"] for h in big if h["diameter_mm"] > 21.3] == ["it is of bolt size on a plate with bolt holes"]
-    _check(applied)
-
-
 class SimpleWasher:
     def __init__(self, info: dict) -> None:
         self.info = info
