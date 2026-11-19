@@ -6,6 +6,8 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 REPO = Path(__file__).parents[3]
 LIB = REPO / "deploy" / "gcp" / "scripts" / "lib.sh"
 
@@ -62,3 +64,9 @@ def test_nothing_is_deleted_when_the_live_traffic_cannot_be_read(tmp_path):
 def test_the_rollback_window_is_configurable(tmp_path):
     revisions = [f"svc-{i:05d}" for i in range(4, 0, -1)]
     assert _prune(tmp_path, live="svc-00004", revisions=revisions, keep="1") == ["svc-00001", "svc-00002", "svc-00003"]
+
+
+@pytest.mark.parametrize("keep", ["three", "3.0", "-1"])
+def test_an_invalid_rollback_window_deletes_nothing(tmp_path, keep):
+    revisions = [f"svc-{i:05d}" for i in range(6, 0, -1)]
+    assert _prune(tmp_path, live="svc-00006", revisions=revisions, keep=keep) == []

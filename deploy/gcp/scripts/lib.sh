@@ -154,6 +154,12 @@ run_svc_exists() { gc run services describe "$1" --region "${GCP_REGION}" >/dev/
 prune_idle_revisions() {
   local svc="$1" keep="${REVISION_KEEP:-3}" live rev n=0
   local -a idle=()
+  case "${keep}" in
+    '' | *[!0-9]*)
+      warn "REVISION_KEEP=${keep} is not a whole number, so no revision was pruned"
+      return 0
+      ;;
+  esac
   live="$(gc run services describe "${svc}" --region "${GCP_REGION}" \
     --format='value(status.traffic[].revisionName)' 2>/dev/null || true)"
   if [ -z "${live}" ]; then
