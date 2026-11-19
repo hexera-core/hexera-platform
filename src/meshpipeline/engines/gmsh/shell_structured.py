@@ -69,6 +69,14 @@ PATTERN_ALIKE = 0.02
 #: up with a hole of about its size in another plate, or is within BOLT_ALIKE of a round bolt hole's size on its plate
 #: (its size: its inscribed circle); its square ring then takes two rows where they fit
 SQUARE_BOLTS = True
+#: SHMESH-51o8: every bolt hole's free box (one ring too, in any face) grows no further than keeps its band's corner
+#: kites and segments under the user's longest edge: one-ring boxes drawn on to near lines (44.5 to 50.1 mm) refused
+#: their bands ("an edge over the longest edge") and were paved, with triangles
+BOLT_BOX_KITE = True
+#: SHMESH-51o9: the bolt holes of a face gridded with others along its joints own their boxes too (no line ends on
+#: them): a joined plate's two-ring boxes carried their lines across the joint and cut a one-ring box's sides into
+#: 10.6 + 34.0 mm, its cell was paved (11 triangles a box)
+BOLT_OWN_JOINED = True
 PATTERN_TOL = 0.1
 #: a bolt hole's rings reach out at most BOLT_RING_MAX times its radius; their outer elements are no longer than the
 #: user's longest edge (with none given: BOLT_OUT face sizes, the longest a mapped segment may be); no ring's quad has
@@ -2319,8 +2327,8 @@ def _face_plan(gmsh, t: int, ws: list[Washer], h_mm: float, mm: float, hole_size
                     side = bx[hi_s] - bx[lo_s]
                     grow_ = min(grow_, max(0.0, 0.5 * (1.5 * h * p[0] / 4 - side)))
                     shrink_ = min(shrink_, max(0.0, 0.5 * (side - 0.6 * h * p[0] / 4)))
-                elif (w.boxed2 or (BOX_OWNS_SIDES and w.info.get("bolt") and two_face)) and FREE_BAND \
-                        and high_mm is not None and not w.corners:
+                elif (w.boxed2 or (BOX_OWNS_SIDES and w.info.get("bolt") and (two_face or BOLT_BOX_KITE))) \
+                        and FREE_BAND and high_mm is not None and not w.corners:
                     # (SHMESH-51: a bolt hole's free box grows no further than keeps its band's segments under the
                     # user's longest edge)
                     side = bx[hi_s] - bx[lo_s]
@@ -3124,7 +3132,8 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
             two_here = any(w.boxed2 for w in ws) or tag_of.get(t) in own_bolt
             owned = [j for j, (w, p) in enumerate(zip(ws, plans, strict=True))
                      if BOX_OWNS_SIDES and STOP_AT_BOXES and FREE_BAND and p is None and not w.corners
-                     and (w.boxed2 or (two_here and w.info.get("bolt"))) and j not in fp["in_grid"]]
+                     and (w.boxed2 or ((two_here or (BOLT_OWN_JOINED and jt is not None)) and w.info.get("bolt")))
+                     and j not in fp["in_grid"]]
             for j in owned:
                 ws[j].owns = True
 
