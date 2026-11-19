@@ -110,6 +110,23 @@ def features(record: Mapping, surface) -> tuple[list[dict], dict[str, list[str]]
             n = len(group)
             take("bosses", f"{n} bosses or shafts, {_mm(2 * r)} across" if n > 1
                  else f"a boss or shaft, {_mm(2 * r)} across", n, [f for fs in group for f in fs])
+    index = {n: k for k, n in enumerate(getattr(surface, "names", []) or [])}
+    label = np.asarray(getattr(surface, "label", []), dtype=np.int64)
+    tris = np.asarray(getattr(surface, "tris", []), dtype=np.int64).reshape(-1, 3)
+    xyz = np.asarray(getattr(surface, "xyz", []), dtype=float).reshape(-1, 3)
+    part_pts: dict[str, np.ndarray] = {}
+
+    def lie_of(names_: list[str]) -> str:
+        # how these faces lie in the reader's pictures (_lie), '' when the surface does not name them
+        labs_ = [index[f] for f in names_ if f in index]
+        if not labs_ or not len(tris):
+            return ""
+        p_ = _part_of(names_[0])
+        if p_ not in part_pts:
+            mine = [index[n] for n in index if _part_of(n) == p_]
+            part_pts[p_] = xyz[np.unique(tris[np.isin(label, mine)])]
+        return _lie(xyz[tris[np.isin(label, labs_)]], part_pts[p_])
+
     walls = {name: float(row.get("thickness_wall_mm") or row.get("thickness_median_mm") or 0.0)
              for name, row in faces.items()}
     per_part: dict[str, list[str]] = {}
@@ -122,8 +139,16 @@ def features(record: Mapping, surface) -> tuple[list[dict], dict[str, list[str]]
         typical = ws[len(ws) // 2]
         thin = [n for n in names if 0 < walls[n] < THIN_SHARE * typical and n not in taken]
         if thin:
-            t = min(walls[n] for n in thin)
-            take("thin wall", f"thin walls (ribs or flanges), {_mm(t)} thick", len(thin), thin)
+            # walls that lie apart (a bent bracket's upright leg and its level base) are areas apart, each said how it
+            # lies, so "the vertical leg" is the upright one (round 9); walls that all lie alike stay one area
+            by_lie: dict[str, list[str]] = {}
+            for wn in thin:
+                by_lie.setdefault(lie_of([wn]) if faces[wn].get("kind") == "plane" else "", []).append(wn)
+            groups = list(by_lie.items()) if len([k for k in by_lie if k]) > 1 else [("", thin)]
+            for lie, fs in groups:
+                t = min(walls[n] for n in fs)
+                take("thin wall", f"thin walls (ribs or flanges), {_mm(t)} thick" + (f", {lie}" if lie else ""),
+                     len(fs), fs)
         area = sum(float(faces[n].get("area_mm2") or 0.0) for n in names) or 1.0
         flats = sorted((n for n in names if faces[n].get("kind") == "plane" and n not in taken
                         and float(faces[n].get("area_mm2") or 0.0) >= FLAT_SHARE * area),
@@ -131,10 +156,6 @@ def features(record: Mapping, surface) -> tuple[list[dict], dict[str, list[str]]
         for flat in flats:
             take("flat face", f"a large flat face, {float(faces[flat].get('area_mm2') or 0):,.0f} mm²", 1, [flat])
     found = found[:MAX_FEATURES]
-    index = {n: k for k, n in enumerate(getattr(surface, "names", []) or [])}
-    label = np.asarray(getattr(surface, "label", []), dtype=np.int64)
-    tris = np.asarray(getattr(surface, "tris", []), dtype=np.int64).reshape(-1, 3)
-    xyz = np.asarray(getattr(surface, "xyz", []), dtype=float).reshape(-1, 3)
     rows: list[dict] = []
     faces_of: dict[str, list[str]] = {}
     for k, (kind, name, count, fs) in enumerate(found, start=1):
@@ -149,9 +170,48 @@ def features(record: Mapping, surface) -> tuple[list[dict], dict[str, list[str]]
                 ext = sorted((pts.max(axis=0) - pts.min(axis=0)).tolist(), reverse=True)
                 row["size_mm"] = [float(f"{e:.4g}") for e in ext]
                 row["diag_mm"] = float(f"{float(np.linalg.norm(ext)):.4g}")
+                if kind == "flat face":
+                    where = lie_of(fs)
+                    if where:
+                        row["name"] = f"{row['name']}, {where}"
+                        row["lie"] = where
+                elif kind == "thin wall" and name.endswith((", upright", ", level", "at the top", "at the bottom")):
+                    row["lie"] = name.rsplit(" thick, ", 1)[-1]
         rows.append(row)
         faces_of[fid] = list(fs)
     return rows, faces_of
+
+
+#: NOTE-6: a flat face this close to level (or upright) is said so: |n.z| over LEVEL_COS, under UPRIGHT_COS
+LEVEL_COS = 0.9
+UPRIGHT_COS = 0.1
+
+
+def _lie(face_tris: np.ndarray, part_pts: np.ndarray) -> str:
+    """How a flat face lies in the pictures the reader is shown (z up, render/part_pictures): "upright", or "level"
+    with "at the top" / "at the bottom" of its part - so "the vertical leg", "the base plate" or "the top face" can be
+    tied to the face that is that piece (a bent L bracket's legs are two plates, each its own mid-face on a shell).
+    '' for a face that is neither."""
+    if not len(face_tris) or not len(part_pts):
+        return ""
+    n = np.cross(face_tris[:, 1] - face_tris[:, 0], face_tris[:, 2] - face_tris[:, 0])
+    # a plane's normal, sign-free: the largest triangle's direction, the others summed along it
+    ref = n[int(np.argmax(np.linalg.norm(n, axis=1)))]
+    total = (n * np.sign(n @ ref)[:, None]).sum(axis=0)
+    size = float(np.linalg.norm(total))
+    if size <= 0:
+        return ""
+    nz = abs(float(total[2])) / size
+    if nz <= UPRIGHT_COS:
+        return "upright"
+    if nz < LEVEL_COS:
+        return ""
+    z = float(face_tris[:, :, 2].mean())
+    lo, hi = float(part_pts[:, 2].min()), float(part_pts[:, 2].max())
+    if hi - lo <= 0:
+        return "level"
+    share = (z - lo) / (hi - lo)
+    return "level, at the top" if share >= 0.75 else "level, at the bottom" if share <= 0.25 else "level"
 
 
 def labelled(surface, faces_of: Mapping[str, list[str]], *, parts: bool):

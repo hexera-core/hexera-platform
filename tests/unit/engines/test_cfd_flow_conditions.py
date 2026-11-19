@@ -294,6 +294,11 @@ def test_an_engine_that_can_set_the_ask_is_chosen_and_said():
     assert CR.engine_that_can(MR.section("used", requirements=req), "vmtk", ladder) == ("vmtk", "")
     # no engine of the ladder can: the engine as it was (its row says not applied, as before)
     assert CR.engine_that_can(sec, "vmtk", ["vmtk", "gmsh"]) == ("vmtk", "")
+    # the real internal ladder puts cfMesh before snappyHexMesh: a layer height goes to the engine that delivers it
+    # over the whole wall (s_duct_004 y+ 1: cfMesh 78% of the wall, snappy 100%; m483 round 9, 2e), never one the
+    # ladder lacks
+    assert CR.engine_that_can(sec, "vmtk", ["vmtk", "cfmesh", "snappy"])[0] == "snappy"
+    assert CR.engine_that_can(sec, "vmtk", ["vmtk", "cfmesh"])[0] == "cfmesh"
 
 
 def test_the_run_reads_the_conditions_with_no_notes(tmp_path):
