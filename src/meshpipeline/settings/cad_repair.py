@@ -110,6 +110,21 @@ CAD_REPAIR_FRAGMENT_BODIES: bool = bool_env("CAD_REPAIR_FRAGMENT_BODIES", "false
 #: `_warn_unreviewed_rebuild` says it out loud when the two disagree.
 CAD_REPAIR_REBUILD_FACE: bool = bool_env("CAD_REPAIR_REBUILD_FACE", "false")
 
+#: Close the gaps in ONE FACE's wires (`operations.CloseWireGaps`: ShapeFix_Wire's FixConnected at
+#: the run's tolerance, then FixGaps3d on the face and on the neighbours sharing what moved), the
+#: answer to gmsh's "the 1D mesh seems not to be forming a closed loop" on a face whose boundary
+#: really is open, and to a kernel wire gap the narrower face fixer did not clear. Off keeps the
+#: operation out of the catalogue, and the rules baseline's MESH_OPS maps an open loop to
+#: `fix_face_boundary` exactly as before; on, `close_wire_gaps` is preferred for a 2D-stage open
+#: loop and `fix_face_boundary` is its fallback.
+#:
+#: THE GATE: NOT TO BE SET LIVE ON CUSTOMER JOBS UNTIL THE SEMANTIC PACKAGE REVIEWER
+#: (CAD_REPAIR_PACKAGE_REVIEW=live) IS LIVE. It is the first operation licensed to MOVE VERTICES:
+#: bounded by the run's tolerance and measured (`max_vertex_move_mm`), but a moved vertex is a
+#: changed part, and the reviewer is what replaces a numeric gate for it. Code does not enforce
+#: the coupling; deployment posture owns it, and `_warn_unreviewed_closure` says it out loud.
+CAD_REPAIR_CLOSE_WIRE_GAPS: bool = bool_env("CAD_REPAIR_CLOSE_WIRE_GAPS", "false")
+
 #: Sweep away SLIVER FACES - the sub-tolerance strips and spots a Boolean that just missed leaves
 #: behind. Separate from CAD_REPAIR_ALLOW_FACE_REMOVAL on purpose: that knob waives the
 #: face-removal check for EVERY operation in a run, while this one consents to a single bounded
@@ -433,6 +448,19 @@ def _warn_unreviewed_rebuild(rebuild_face: bool, review: str) -> None:
 
 
 _warn_unreviewed_rebuild(CAD_REPAIR_REBUILD_FACE, CAD_REPAIR_PACKAGE_REVIEW)
+
+
+def _warn_unreviewed_closure(close_wire_gaps: bool, review: str) -> None:
+    """Say out loud when `close_wire_gaps` is admitted but the package reviewer is not live: the
+    reviewer is the gate this vertex-moving operation ships behind (see
+    CAD_REPAIR_CLOSE_WIRE_GAPS). A warning, not a refusal - `_warn_unreviewed_rebuild`'s rule."""
+    if close_wire_gaps and review != "live":
+        logger.warning("CAD_REPAIR_CLOSE_WIRE_GAPS is on but CAD_REPAIR_PACKAGE_REVIEW=%r: "
+                       "close_wire_gaps moves vertices and must not run on customer jobs until the "
+                       "package reviewer is live", review)
+
+
+_warn_unreviewed_closure(CAD_REPAIR_CLOSE_WIRE_GAPS, CAD_REPAIR_PACKAGE_REVIEW)
 
 #: Seconds one package-review call may take; cut further to what is left of the run's time. A
 #: call that does not answer in time is a reject.

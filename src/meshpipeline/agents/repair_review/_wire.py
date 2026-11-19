@@ -20,11 +20,15 @@ FRAGMENT = "fragment_bodies"
 #: The operation that re-trims a face gmsh reports overlapping facets on, present ONLY when
 #: CAD_REPAIR_REBUILD_FACE admits it - the same rule as SPLIT_CLOSED.
 REBUILD = "rebuild_face"
+#: The operation that closes a face's open wire by moving vertices, present ONLY when
+#: CAD_REPAIR_CLOSE_WIRE_GAPS admits it - the same rule as SPLIT_CLOSED.
+CLOSE_GAPS = "close_wire_gaps"
 
 
 def catalogue(*, split_closed_faces: bool | None = None,
               fragment_bodies: bool | None = None,
-              rebuild_face: bool | None = None) -> tuple[str, ...]:
+              rebuild_face: bool | None = None,
+              close_wire_gaps: bool | None = None) -> tuple[str, ...]:
     """The catalogue names for the given consent (the deployment's flags when not told). Pinned to
     `operations.catalogue` in every flag state by test_catalogue_pinned_to_operations.py."""
     import meshpipeline.settings.cad_repair as rcfg
@@ -35,11 +39,14 @@ def catalogue(*, split_closed_faces: bool | None = None,
         fragment_bodies = bool(rcfg.CAD_REPAIR_FRAGMENT_BODIES)
     if rebuild_face is None:
         rebuild_face = bool(rcfg.CAD_REPAIR_REBUILD_FACE)
+    if close_wire_gaps is None:
+        close_wire_gaps = bool(rcfg.CAD_REPAIR_CLOSE_WIRE_GAPS)
     return ("fix_small_edges", "fix_small_faces", "fix_face_boundary", "sew_faces",
             "fill_planar_hole", "fill_nonplanar_hole", "heal_self_intersections",
             "fix_shape_global", *((SPLIT_CLOSED,) if split_closed_faces else ()),
             *((FRAGMENT,) if fragment_bodies else ()),
-            *((REBUILD,) if rebuild_face else ()))
+            *((REBUILD,) if rebuild_face else ()),
+            *((CLOSE_GAPS,) if close_wire_gaps else ()))
 
 
 CATALOGUE: tuple[str, ...] = catalogue()
@@ -48,17 +55,24 @@ CATALOGUE: tuple[str, ...] = catalogue()
 #: Pinned to `operations.FILL_OPS` by tests/unit/agents/test_catalogue_pinned_to_operations.py.
 FILL_CATALOGUE: tuple[str, ...] = ("fill_planar_hole", "fill_nonplanar_hole")
 
-def catalogue_limits(*, rebuild_face: bool | None = None) -> str:
+def catalogue_limits(*, rebuild_face: bool | None = None,
+                     close_wire_gaps: bool | None = None) -> str:
     """What the catalogue can NOT do, in words, for the given consent (CAD_REPAIR_REBUILD_FACE
-    read when not told). Flag off is the prior text, byte for byte; on, it also says a face the
-    mesher reports overlapping facets on may be re-trimmed - the one admitted op that redraws a
-    face, so the limits must not claim otherwise."""
+    and CAD_REPAIR_CLOSE_WIRE_GAPS read when not told). Flags off is the prior text, byte for byte;
+    on, it also says a face the mesher reports overlapping facets on may be re-trimmed, and an
+    open wire's loose vertices may be moved together by at most the run's tolerance - the
+    admitted ops that redraw a face or move a vertex, so the limits must not claim otherwise."""
     import meshpipeline.settings.cad_repair as rcfg
 
     if rebuild_face is None:
         rebuild_face = bool(rcfg.CAD_REPAIR_REBUILD_FACE)
+    if close_wire_gaps is None:
+        close_wire_gaps = bool(rcfg.CAD_REPAIR_CLOSE_WIRE_GAPS)
     rebuild = (", re-trim one face from its own boundary on the same surface when the mesher "
                "reports overlapping facets on it" if rebuild_face else "")
+    if close_wire_gaps:
+        rebuild += (", close a face's open wire by moving its loose vertices together by at most "
+                    "the run's tolerance")
     return (
         "the repair catalogue can only merge small edges, sweep away a few measured sliver faces, "
         "fix a face boundary, sew faces, fill a planar hole, cap a small curved hole with a "

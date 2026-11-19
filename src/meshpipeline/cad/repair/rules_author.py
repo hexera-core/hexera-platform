@@ -68,9 +68,16 @@ LABEL = "regions-rules-v1"
 #: gmsh named is narrower than the whole-shape pass. `fix_shape_global` stays as its FALLBACK
 #: (`mesh_fallbacks`), so a file the whole-shape pass used to rescue is not lost to the narrower
 #: idea failing first.
+#:
+#: AN OPEN LOOP prefers `close_wire_gaps` only with CAD_REPAIR_CLOSE_WIRE_GAPS, and only for a
+#: 2D-stage failure (the operation's own `targets_for` refuses any other, so the chain passes it
+#: over and an unrecorded-stage loop gets today's choice). The face fixer the evidence showed
+#: cannot reach a valid face's open loop (devtools/validation/evidence/2026-11-15-open-loop-reach)
+#: stays as its FALLBACK, the pattern rebuild_face introduced.
 def mesh_ops(*, split_closed_faces: bool | None = None,
              fragment_bodies: bool | None = None,
-             rebuild_face: bool | None = None) -> dict[DefectCode, str]:
+             rebuild_face: bool | None = None,
+             close_wire_gaps: bool | None = None) -> dict[DefectCode, str]:
     """MESH_OPS for the given consent (the deployment's flags when not told). Flags off is today's
     mapping, byte for byte."""
     if split_closed_faces is None:
@@ -79,6 +86,8 @@ def mesh_ops(*, split_closed_faces: bool | None = None,
         fragment_bodies = bool(rcfg.CAD_REPAIR_FRAGMENT_BODIES)
     if rebuild_face is None:
         rebuild_face = bool(rcfg.CAD_REPAIR_REBUILD_FACE)
+    if close_wire_gaps is None:
+        close_wire_gaps = bool(rcfg.CAD_REPAIR_CLOSE_WIRE_GAPS)
     mapping = {
         DefectCode.mesh_open_loop: "fix_face_boundary",
         DefectCode.mesh_overlapping_facets: "fix_shape_global",
@@ -89,13 +98,16 @@ def mesh_ops(*, split_closed_faces: bool | None = None,
         mapping[DefectCode.mesh_edge_through_face] = "fragment_bodies"
     if rebuild_face:
         mapping[DefectCode.mesh_overlapping_facets] = "rebuild_face"
+    if close_wire_gaps:
+        mapping[DefectCode.mesh_open_loop] = "close_wire_gaps"
     return mapping
 
 
 MESH_OPS: dict[DefectCode, str] = mesh_ops()
 
 
-def mesh_fallbacks(*, rebuild_face: bool | None = None) -> dict[DefectCode, tuple[str, ...]]:
+def mesh_fallbacks(*, rebuild_face: bool | None = None,
+                   close_wire_gaps: bool | None = None) -> dict[DefectCode, tuple[str, ...]]:
     """The operations a mesh code falls back to, in order, once its MESH_OPS choice is spent.
 
     HOW A FALLBACK IS REACHED: through the region's own attempts, exactly as the rules planner
@@ -103,13 +115,19 @@ def mesh_fallbacks(*, rebuild_face: bool | None = None) -> dict[DefectCode, tupl
     ineffective `(fingerprint, rebuild_face)` pair (a decline into a declined aim), so on the
     region's NEXT attempt `_mesh_candidate` passes the spent choice over and proposes the next name
     here - `fix_shape_global`, today's mapping. It needs a second attempt for the region
-    (CAD_REPAIR_REGION_ATTEMPTS > 1). Empty with the flag off: no chain, today's single choice.
+    (CAD_REPAIR_REGION_ATTEMPTS > 1). Empty with the flags off: no chain, today's single choice.
+    `close_wire_gaps` falls back to `fix_face_boundary` the same way.
     """
     if rebuild_face is None:
         rebuild_face = bool(rcfg.CAD_REPAIR_REBUILD_FACE)
+    if close_wire_gaps is None:
+        close_wire_gaps = bool(rcfg.CAD_REPAIR_CLOSE_WIRE_GAPS)
+    chains: dict[DefectCode, tuple[str, ...]] = {}
     if rebuild_face:
-        return {DefectCode.mesh_overlapping_facets: ("fix_shape_global",)}
-    return {}
+        chains[DefectCode.mesh_overlapping_facets] = ("fix_shape_global",)
+    if close_wire_gaps:
+        chains[DefectCode.mesh_open_loop] = ("fix_face_boundary",)
+    return chains
 
 
 MESH_FALLBACKS: dict[DefectCode, tuple[str, ...]] = mesh_fallbacks()

@@ -2546,6 +2546,414 @@ class RebuildFace:
                       "faces_targeted": 1, "precision_mm": float(tolerance_mm)})
 
 
+@dataclass(frozen=True, slots=True)
+class WireClosure:
+    """What `_close_gaps` did to one owning body: everything `CloseWireGaps` judges and declares."""
+
+    #: The owning body with the face's wires closed and its neighbours re-stitched.
+    owner: object
+    #: The target face as it stands in `owner`.
+    face: object
+    #: Did any pass report a fix? False is the kernel saying there was nothing to close.
+    fixed: bool
+    #: Is a gap still measurable in the target's wires afterwards (`_wire_gap_mm` > 0)?
+    still_open: bool
+    #: The displacement, in mm, of every vertex of the body that moved - measured, not predicted.
+    moves: tuple[float, ...]
+    #: Every face of `owner` the closure rewrote: the target first, then each neighbour whose
+    #: wire carried a moved vertex.
+    touched: tuple
+    #: The largest vertex or edge tolerance on the touched faces afterwards, mm. Reported because
+    #: the merge raises it (measured: 0.025 on a 0.05 mm gap, kept after the curves were brought
+    #: in) - the session's CAD_REPAIR_MAX_TOLERANCE_MM cap judges it, the reviewer reads it.
+    max_tolerance_mm: float = 0.0
+
+
+def _wires_of(face) -> list:
+    from OCP.TopAbs import TopAbs_WIRE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    wires, explorer = [], TopExp_Explorer(face, TopAbs_WIRE)
+    while explorer.More():
+        wires.append(TopoDS.Wire_s(explorer.Current()))
+        explorer.Next()
+    return wires
+
+
+def _vertices_of(shape) -> list:
+    from OCP.TopAbs import TopAbs_VERTEX
+
+    from meshpipeline.cad.repair.localize import _indexed
+
+    found = _indexed(shape, TopAbs_VERTEX)
+    return [found.FindKey(i) for i in range(1, found.Extent() + 1)]
+
+
+def _joint_precision(wire) -> float:
+    """The precision below which a gap in `wire` is NOT a gap: its largest vertex tolerance.
+
+    WHY NOT `Precision::Confusion`. FixGaps3d closes every curve-end gap wider than the precision
+    it is handed, and a valid face carries such gaps by construction - its vertex tolerances cover
+    them. Measured on the open-loop corpus face (00508775 face 29, valid, tolerance <= 1.5e-4):
+    at 1e-7 FixGaps3d "fixed" a 1.3e-6 mm gap and returned True; at 1e-5 and above it returned
+    False. A gap the kernel's own tolerance already closes is not an open loop, and "fixing" it
+    would turn a not_closed into a kept no-op.
+    """
+    from OCP.BRep import BRep_Tool
+    from OCP.Precision import Precision
+    from OCP.TopoDS import TopoDS
+
+    tolerances = [BRep_Tool.Tolerance_s(TopoDS.Vertex_s(v)) for v in _vertices_of(wire)]
+    return max([float(Precision.Confusion_s()), *tolerances])
+
+
+def _edge_ends(wire) -> list[tuple[object, object | None]]:
+    """Every edge END of `wire` as `(vertex, the 3D curve's point at that end)` - two per edge, the
+    point None for an edge with no 3D curve (a degenerate one). Taken from each edge FORWARD, so
+    the first vertex is the curve's first parameter whatever the edge's use in the wire."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FORWARD
+    from OCP.TopExp import TopExp, TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    ends: list[tuple[object, object | None]] = []
+    explorer = TopExp_Explorer(wire, TopAbs_EDGE)
+    while explorer.More():
+        edge = TopoDS.Edge_s(explorer.Current().Oriented(TopAbs_FORWARD))
+        first, last = TopExp.FirstVertex_s(edge), TopExp.LastVertex_s(edge)
+        points: tuple = (None, None)
+        if not BRep_Tool.Degenerated_s(edge) and BRep_Tool.IsGeometric_s(edge):
+            curve = BRepAdaptor_Curve(edge)
+            points = (curve.Value(curve.FirstParameter()), curve.Value(curve.LastParameter()))
+        ends.extend(((first, points[0]), (last, points[1])))
+        explorer.Next()
+    return ends
+
+
+def _wire_gap_mm(face, *, precision: float | None = None) -> float:
+    """The widest gap, in mm, in any of `face`'s wires; 0.0 when every wire is closed.
+
+    Two kinds, both read from the edges' INCIDENCE, never from the order the wire stores them in
+    (measured: BRepPrimAPI_MakeBox stores each face's edges in reverse walking order, so "edge i's
+    end meets edge i+1's start" called every box face 36 mm open):
+      a DISCONNECTION - a LOOSE vertex, the end of only one edge (a closed wire uses every vertex
+        twice). Its gap is the distance to the nearest other loose vertex; a lone loose vertex
+        has nothing to close against and reads as infinite.
+      a CURVE GAP - at a vertex two or more edges share, the widest distance between their 3D
+        curve ends, counted only above `precision` (the wire's own `_joint_precision` when not
+        told): below it the vertex tolerance already closes the joint.
+
+    AFTER A CLOSURE THE CALLER PASSES THE PRECISION MEASURED BEFORE IT: merging two vertices raises
+    the merged vertex's tolerance to cover both old ends (measured: 1e-7 -> 0.025 on a 0.05 mm
+    gap), so the wire's own precision afterwards would call an unclosed curve gap closed.
+    """
+    from OCP.BRep import BRep_Tool
+    from OCP.TopoDS import TopoDS
+
+    widest = 0.0
+    for wire in _wires_of(face):
+        allowed = _joint_precision(wire) if precision is None else float(precision)
+        groups: list = []
+        for vertex, point in _edge_ends(wire):
+            for seen, points in groups:
+                if seen.IsSame(vertex):
+                    points.append(point)
+                    break
+            else:
+                groups.append((vertex, [point]))
+        loose = [BRep_Tool.Pnt_s(TopoDS.Vertex_s(v)) for v, points in groups if len(points) == 1]
+        if len(loose) == 1:
+            return float("inf")
+        for i, here in enumerate(loose):
+            nearest = min(here.Distance(there) for j, there in enumerate(loose) if j != i)
+            widest = max(widest, nearest)
+        for _, points in groups:
+            known = [p for p in points if p is not None]
+            for i, a in enumerate(known):
+                for b in known[i + 1:]:
+                    distance = a.Distance(b)
+                    if distance > allowed:
+                        widest = max(widest, distance)
+    return float(widest)
+
+
+def _close_gaps(owner, face, *, tolerance_mm: float) -> WireClosure:
+    """Close `face`'s wire gaps inside `owner` (which must be the caller's own COPY).
+
+    TWO PASSES, measured necessary on a synthetic open square sharing an edge with a neighbour:
+      1. FixConnected(tolerance_mm) on the face's wires: disconnected vertices within the run's
+         tolerance are merged into one - the step that MOVES VERTICES (to their midpoint). Its
+         history is applied to the whole owner, so every neighbour holding a merged vertex holds
+         the new one.
+      2. FixGaps3d at the target's `_joint_precision`, on the target AND every face carrying a moved
+         vertex: the curves are brought to the moved vertex. Left out, the neighbour kept a curve
+         ending 0.025 mm from its vertex and the owner was BRepCheck-invalid.
+    Then `ShapeFix_Edge` same-parameter and vertex-tolerance fixes on the touched faces' edges
+    (the curves changed under their pcurves). Nothing is removed and nothing reordered.
+
+    THE MOVES ARE MEASURED THROUGH THE HISTORY: each original vertex is followed through both
+    passes' contexts to what it became, and the distance between the two points is its move.
+    """
+    from OCP.BRep import BRep_Tool
+    from OCP.Precision import Precision
+    from OCP.ShapeBuild import ShapeBuild_ReShape
+    from OCP.ShapeFix import ShapeFix_Edge, ShapeFix_Wire
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_VERTEX
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    from meshpipeline.cad.repair.localize import _indexed
+
+    face = TopoDS.Face_s(face)
+    # ONE PRECISION FOR THE WHOLE CLOSURE, measured BEFORE it (see `_wire_gap_mm`): the merge
+    # raises the merged vertex's tolerance, and a precision read afterwards would excuse the gap.
+    precision = max(_joint_precision(wire) for wire in _wires_of(face))
+    merge = ShapeBuild_ReShape()
+    merged = False
+    for wire in _wires_of(face):
+        fixer = ShapeFix_Wire(wire, face, precision)
+        fixer.SetContext(merge)
+        fixer.SetMaxTolerance(tolerance_mm)
+        if fixer.FixConnected(tolerance_mm):
+            merged = True
+            merge.Replace(wire, fixer.Wire())
+    merged_owner = merge.Apply(owner) if merged else owner
+    target = TopoDS.Face_s(merge.Apply(face)) if merged else face
+
+    before = _vertices_of(owner)
+    # A MAP, not a scan: an assembly body carries thousands of vertices (00509950: 2885 faces).
+    known = _indexed(owner, TopAbs_VERTEX)
+    new_vertices = [v for v in _vertices_of(merged_owner) if not known.Contains(v)]
+    gaps = ShapeBuild_ReShape()
+    closed = False
+    rewritten: list = []
+    for candidate in _faces_of(merged_owner):
+        if not (candidate.IsSame(target)
+                or any(v.IsSame(n) for v in _vertices_of(candidate) for n in new_vertices)):
+            continue
+        rewritten.append(candidate)
+        for original in _wires_of(candidate):
+            # A shared edge the previous face's pass already rewrote is picked up here - but the
+            # replacement is recorded against the ORIGINAL wire, the one the faces still hold.
+            wire = TopoDS.Wire_s(gaps.Apply(original))
+            fixer = ShapeFix_Wire(wire, candidate, precision)
+            fixer.SetContext(gaps)
+            fixer.SetMaxTolerance(tolerance_mm)
+            if fixer.FixGaps3d():
+                closed = True
+                gaps.Replace(original, fixer.Wire())
+    result = gaps.Apply(merged_owner)
+    touched = [TopoDS.Face_s(gaps.Apply(f)) for f in rewritten]
+    target = TopoDS.Face_s(gaps.Apply(target))
+
+    finisher = ShapeFix_Edge()
+    for touched_face in touched:
+        explorer = TopExp_Explorer(touched_face, TopAbs_EDGE)
+        while explorer.More():
+            edge = TopoDS.Edge_s(explorer.Current())
+            finisher.FixSameParameter(edge)
+            finisher.FixVertexTolerance(edge, touched_face)
+            explorer.Next()
+
+    moves: list[float] = []
+    for vertex in before:
+        became = gaps.Apply(merge.Apply(vertex))
+        if became.IsNull():
+            continue
+        distance = BRep_Tool.Pnt_s(TopoDS.Vertex_s(vertex)).Distance(
+            BRep_Tool.Pnt_s(TopoDS.Vertex_s(became)))
+        if distance > Precision.Confusion_s():
+            moves.append(float(distance))
+    ordered = [target, *(f for f in touched if not f.IsSame(target))]
+    tolerances = [BRep_Tool.Tolerance_s(TopoDS.Vertex_s(v))
+                  for f in ordered for v in _vertices_of(f)]
+    for touched_face in ordered:
+        explorer = TopExp_Explorer(touched_face, TopAbs_EDGE)
+        while explorer.More():
+            tolerances.append(BRep_Tool.Tolerance_s(TopoDS.Edge_s(explorer.Current())))
+            explorer.Next()
+    return WireClosure(owner=result, face=target, fixed=merged or closed,
+                       still_open=_wire_gap_mm(target, precision=precision) > 0.0,
+                       moves=tuple(moves), touched=tuple(ordered),
+                       max_tolerance_mm=float(max(tolerances, default=0.0)))
+
+
+def _faces_of(shape) -> list:
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopoDS import TopoDS
+
+    from meshpipeline.cad.repair.localize import _indexed
+
+    found = _indexed(shape, TopAbs_FACE)
+    return [TopoDS.Face_s(found.FindKey(i)) for i in range(1, found.Extent() + 1)]
+
+
+def _recorded(old, new):
+    """A ShapeBuild_ReShape that records `old -> new` and nothing else: the face-level history
+    `mapping_from_context` reads, for an operation whose own fixers' histories are split across
+    passes."""
+    from OCP.ShapeBuild import ShapeBuild_ReShape
+
+    context = ShapeBuild_ReShape()
+    context.Replace(old, new)
+    return context
+
+
+class CloseWireGaps:
+    """Close the gaps in ONE face's wires - the first operation licensed to MOVE VERTICES.
+
+    THE GATE: NOT TO BE SET LIVE ON CUSTOMER JOBS UNTIL THE SEMANTIC PACKAGE REVIEWER
+    (CAD_REPAIR_PACKAGE_REVIEW=live) IS LIVE. Merging two disconnected vertices moves both; the
+    move is bounded by the run's tolerance and measured, but a moved vertex is a changed part, and
+    the reviewer is what replaces a numeric gate for an operation like that. Code does not enforce
+    the coupling (the deployment posture owns it); settings/cad_repair.py warns when
+    CAD_REPAIR_CLOSE_WIRE_GAPS is on while the reviewer is off. `deviation.py` already measures
+    every committed package; nothing more is needed there.
+
+    WHY IT EXISTS, AND WHY IT IS GATED. `mesh_open_loop` (gmsh: "The 1D mesh seems not to be
+    forming a closed loop") was measured on the real corpus (devtools/validation/evidence/
+    2026-11-15-open-loop-reach): every ShapeFix pass that moves no vertex returned False on the
+    targeted faces, so `fix_face_boundary` cannot reach them. The only pass that bit was gap
+    fixing that moves vertices - deliberately reviewer-gated territory, and this is its home.
+    Measured just as honestly: on 00508775 face 29 the face is closed at its own tolerance, and
+    this operation declines `not_closed` there too. It reaches a face whose loop is REALLY open.
+
+    WHAT IT ANSWERS: `mesh_open_loop` recorded in the 2D stage (the SplitClosedFaces rule - gmsh
+    closes a face's 1D loop while meshing surfaces) and the kernel's `wire_gap` on a face (no
+    stage: it is BRepCheck's code). For a wire gap the narrower `fix_face_boundary`, which moves
+    nothing, goes first (`scope`).
+
+    WHAT IT MAY TOUCH: the target face's wires and the OWNING BODY around them - every neighbour
+    holding a moved vertex is re-stitched with it (`_close_gaps`), and the body replaces its
+    original whole in a `_copied` part. Every other body is untouched.
+
+    WHAT IT DECLARES, ALL MEASURED: `vertices_moved` (count) and `max_vertex_move_mm` (the largest
+    actual displacement, followed through the kernel's history - not the gap it predicted),
+    `gap_mm` (the widest gap measured before), `max_tolerance_mm` (the largest tolerance left on
+    the touched faces - the merge raises it), and AREA_DELTA as the owner's area after minus
+    before; no volume declaration (the cumulative cap's residual judges it). `rebuilt` names the
+    closed face and every neighbour the closure rewrote; `added` is empty - no face is created.
+
+    WHY EACH DECLINE EXISTS, in the order checked:
+      closing_disabled  - CAD_REPAIR_CLOSE_WIRE_GAPS, the consent, is absent.
+      no face was named / one_face_only / not_resolved - nothing (or too much) to aim at.
+      no_owner          - the face belongs to no solid or shell: there is no body to re-stitch.
+      non_manifold      - more than one body owns the face: closing it in one would leave the other
+                          holding the unmoved vertices (SplitClosedFaces' reason).
+      gaps_exceed_tolerance - the widest gap measured BEFORE, or the largest move measured AFTER,
+                          is wider than the run's `tolerance_mm`: closing it would move the part
+                          further than the run licenses.
+      not_closed        - no gap is measurable to begin with (the fixer is then never run), the
+                          fixer reported nothing fixed, or a gap is still measurable after: a
+                          no-op is a decline, never a kept operation.
+      closed_invalid    - the closed face is not `BRepCheck`-valid.
+      owner_invalidated - the owner was valid (measured on the copy BEFORE the closure, which
+                          writes into shared edges) and is not after. An owner already invalid -
+                          the usual case, an open wire is invalid - is not blamed on the closure.
+    """
+
+    name = "close_wire_gaps"
+    answers = frozenset({DefectCode.mesh_open_loop, DefectCode.wire_gap})
+    #: One face and the neighbours sharing what moved: wider than the face fixer, which moves
+    #: nothing and so must meet a wire gap first; far narrower than the whole-shape pass.
+    scope = 3
+
+    def targets_for(self, defect) -> tuple[EntityRef, ...]:
+        import meshpipeline.settings.cad_repair as rcfg
+        from meshpipeline.cad.repair.mesh_probe import STAGE_2D
+
+        if not rcfg.CAD_REPAIR_CLOSE_WIRE_GAPS:
+            return ()
+        code = getattr(defect, "code", None)
+        if code not in self.answers:
+            return ()
+        if defect.entity_type != "face" or not getattr(defect, "fingerprint", ""):
+            return ()
+        # AN OPEN LOOP ONLY FROM THE 2D STAGE (ruling P2-R3, here so every path obeys it). A wire
+        # gap is a kernel code and carries no stage.
+        if (code is DefectCode.mesh_open_loop
+                and (getattr(defect, "measurements", None) or {}).get("stage") != STAGE_2D):
+            return ()
+        return (EntityRef(entity_type="face", fingerprint=defect.fingerprint,
+                          entity_index=int(defect.entity_index),
+                          ambiguous=bool(getattr(defect, "ambiguous", False))),)
+
+    def apply(self, shape, targets: tuple[EntityRef, ...], *,
+              tolerance_mm: float) -> OpOutcome:
+        import meshpipeline.settings.cad_repair as rcfg
+
+        def declined(reason: str, **measured) -> OpOutcome:
+            # NO DECLARATION ON A DECLINE, for SplitClosedFaces' reason: the shape is unchanged.
+            # What was measured on the way is still reported - as evidence, never as AREA_DELTA.
+            return OpOutcome(shape=shape, evidence={"declined": reason,
+                                                    "faces_targeted": len(targets), **measured})
+
+        if not rcfg.CAD_REPAIR_CLOSE_WIRE_GAPS:
+            return declined("closing_disabled (CAD_REPAIR_CLOSE_WIRE_GAPS)")
+        if not targets:
+            return declined("no face was named")
+        if len(targets) > 1:
+            return declined(f"one_face_only ({len(targets)} targets named)")
+        ref = targets[0]
+        face = sub_shape(shape, "face", ref.entity_index) if ref.entity_type == "face" else None
+        if face is None:
+            return declined("not_resolved (the target face is not in this shape)")
+        owners = _owners_of(shape, face)
+        if not owners:
+            return declined("no_owner (the face belongs to no solid or shell)")
+        if len(owners) > 1:
+            return declined(f"non_manifold ({len(owners)} bodies share the face)")
+
+        # EVERYTHING FROM HERE ON IS DONE TO A COPY, whose indices are the input's.
+        work = _copied(shape)
+        face = sub_shape(work, "face", ref.entity_index)
+        owner = _owners_of(work, face)[0]
+        gap = _wire_gap_mm(face)
+        tolerance = float(tolerance_mm)
+        if gap <= 0.0:
+            # NOTHING TO CLOSE, so the fixer is never run: at a fine precision ShapeFix "fixes"
+            # sub-tolerance noise on a closed wire (measured on a plain box face), and that would
+            # be a vertex-moving op kept for doing nothing.
+            return declined("not_closed (no gap is measurable in the face's wires)", gap_mm=0.0)
+        if gap > tolerance:
+            return declined(f"gaps_exceed_tolerance (the widest gap, {gap:.6g} mm, is wider than "
+                            f"the run's {tolerance:g} mm)", gap_mm=gap)
+        # THE OWNER'S VALIDITY BEFORE THE CLOSURE writes into the edges it shares (RebuildFace's
+        # reason: measured after, damage the fixer did would read "already invalid").
+        owner_was_valid = _is_valid(owner)
+        closure = _close_gaps(owner, face, tolerance_mm=tolerance)
+        moved = max(closure.moves, default=0.0)
+        measured = {"gap_mm": gap, "vertices_moved": len(closure.moves),
+                    "max_vertex_move_mm": float(moved),
+                    "max_tolerance_mm": float(closure.max_tolerance_mm)}
+        if not closure.fixed or closure.still_open:
+            return declined("not_closed (the fixer closed no gap)" if not closure.fixed else
+                            "not_closed (a gap is still measurable after the fix)", **measured)
+        if moved > tolerance:
+            return declined(f"gaps_exceed_tolerance (a vertex moved {moved:.6g} mm, more than "
+                            f"the run's {tolerance:g} mm)", **measured)
+        if not _is_valid(closure.face):
+            return declined("closed_invalid (the closed face is not BRepCheck-valid)", **measured)
+        if owner_was_valid and not _is_valid(closure.owner):
+            return declined("owner_invalidated (the owning body was valid and is not with the "
+                            "closed wires)", **measured)
+        spliced, _ = splice(work, [(owner, closure.owner)])
+
+        diagonal = _diagonal_of(work)
+        delta = _total_face_area(closure.owner) - _total_face_area(owner)
+        mapping = mapping_from_context(_recorded(face, closure.face), targets,
+                                       shape_before=work, diagonal_mm=diagonal)
+        names = (_face_name(f, diagonal_mm=diagonal) for f in closure.touched)
+        return OpOutcome(
+            shape=spliced, mapping=mapping,
+            rebuilt=tuple(dict.fromkeys(n for n in names if n)),
+            evidence={**measured, AREA_DELTA: round(float(delta), 6),
+                      "faces_touched": len(closure.touched), "faces_targeted": 1,
+                      "precision_mm": tolerance})
+
+
 class FixShapeGlobal:
     """Today's whole-shape `ShapeFix_Shape`, kept as the LAST RESORT.
 
@@ -2622,12 +3030,14 @@ class FixShapeGlobal:
 
 def catalogue(*, split_closed_faces: bool | None = None,
               fragment_bodies: bool | None = None,
-              rebuild_face: bool | None = None) -> tuple[RepairOp, ...]:
+              rebuild_face: bool | None = None,
+              close_wire_gaps: bool | None = None) -> tuple[RepairOp, ...]:
     """Every operation the loop may run, narrowest first.
 
-    `split_closed_faces`, `fragment_bodies` and `rebuild_face` ENTER ONLY WITH THEIR CONSENT
-    (CAD_REPAIR_SPLIT_CLOSED_FACES, CAD_REPAIR_FRAGMENT_BODIES, CAD_REPAIR_REBUILD_FACE, each read
-    when not told): flags off, the catalogue is today's, byte for byte. The ORDER here is
+    `split_closed_faces`, `fragment_bodies`, `rebuild_face` and `close_wire_gaps` ENTER ONLY WITH
+    THEIR CONSENT (CAD_REPAIR_SPLIT_CLOSED_FACES, CAD_REPAIR_FRAGMENT_BODIES,
+    CAD_REPAIR_REBUILD_FACE, CAD_REPAIR_CLOSE_WIRE_GAPS, each read when not told): flags off, the
+    catalogue is today's, byte for byte. The ORDER here is
     documentation - the planner sorts on `scope`, so adding one in the wrong place changes nothing
     but a reader's expectations.
     """
@@ -2639,11 +3049,14 @@ def catalogue(*, split_closed_faces: bool | None = None,
         fragment_bodies = bool(rcfg.CAD_REPAIR_FRAGMENT_BODIES)
     if rebuild_face is None:
         rebuild_face = bool(rcfg.CAD_REPAIR_REBUILD_FACE)
+    if close_wire_gaps is None:
+        close_wire_gaps = bool(rcfg.CAD_REPAIR_CLOSE_WIRE_GAPS)
     return (
         FixSmallEdges(),
         *((SplitClosedFaces(),) if split_closed_faces else ()),
         FixFaceBoundary(),
         *((RebuildFace(),) if rebuild_face else ()),
+        *((CloseWireGaps(),) if close_wire_gaps else ()),
         FixSmallFaces(),
         SewFaces(),
         FillPlanarHole(),
