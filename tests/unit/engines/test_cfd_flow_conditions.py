@@ -6,6 +6,7 @@ import asyncio
 import json
 import math
 
+import pytest
 from tests.unit.engines.test_cfd_requirements import _read, _snappy, re_num
 
 from meshpipeline.contracts import flow_conditions as FC
@@ -198,6 +199,79 @@ def test_the_cfd_mesh_report_lists_the_users_asks():
     assert "You asked: Y+ of about 1 at the walls (from your flow conditions)" in html
     assert "first layer 0.02243 mm high, as asked; layers on 100% of the wall" in html
     assert html.count('class="ok">Met<') == 1 and "Set as asked" in html and "Not applied" in html
+
+
+ACCEPTED_FUNCTIONS = ("Internal flow through the diffuser, confirmed by the user on the geometry stage. "
+                      + FC.sentence("water at 20 °C", "1 m/s", "functions", internal=True, wall_said=False)
+                      + f" {FC.ACCEPTED_LEAD} the fluid, its speed, the wall treatment.")
+
+
+@pytest.mark.parametrize(("job", "wall_cell_mm", "y50_first_mm"), [
+    ("07fd516d", 1.716, 1.348),       # no-notes external rotor: 5.7% of the wall had layers
+    ("8eec5b7b", 1.716, 1.348),       # the same file with a note the checks set aside: 5.59%
+    ("c0b45ad1", 2.352, 0.989),       # diffuser plenum: 4.18%
+])
+def test_proposed_wall_functions_only_accepted_keep_the_meshers_own_layers(job, wall_cell_mm, y50_first_mm):
+    """F: pressing OK on the proposed conditions made an absolute y+ 50 first layer about as thick as the wall cells;
+    snappyHexMesh grew it on 4-6% of the wall. Accepted, it is no ask: the mesher's own relative layers (5 layers, the
+    last 0.3 of the cell, growing 1.2) stay, as on main - a first layer 0.145 of the wall cell, which it grows on the
+    whole wall."""
+    c = FC.read(ACCEPTED_FUNCTIONS)
+    assert c["wall"] == "functions" and c["wall_said"] is False
+    assert FC.PROPOSED_WORDS in ACCEPTED_FUNCTIONS and "sized for y⁺ ≈ 50" not in ACCEPTED_FUNCTIONS
+    none = MR.section("none")
+    assert CR.with_conditions(none, {"request_txt": ACCEPTED_FUNCTIONS}) is none        # no Ask: main's own case
+    first = 0.3 * wall_cell_mm / 1.2 ** 4
+    assert first / wall_cell_mm == pytest.approx(0.1447, abs=1e-3) and first < y50_first_mm
+    # a y+ the user typed is still theirs, sized at the conditions' speed (CFDREQ-8), and made one the mesher keeps
+    req, _d, _na = _read("y+ of 1 at the wall",
+                         layers=[{"what": "y_plus", "value": 1, "unit": "none", "quote": "y+ of 1 at the wall"}])
+    got = MR.requirements_of(CR.with_conditions(MR.section("used", requirements=req),
+                                                {"request_txt": ACCEPTED_FUNCTIONS}))
+    assert got["layers"]["y_plus"] == 1.0 and got["physics"]["velocity_ms"] == 1.0
+    # a wall treatment the user chose is an ask, as before
+    assert FC.read(INT_RESOLVED)["wall_said"] is True
+    assert MR.requirements_of(CR.with_conditions(MR.section("none"), {"request_txt": INT_RESOLVED}))["layers"][
+        "y_plus"] == 1.0
+
+
+def test_an_attempt_whose_only_ask_was_set_aside_is_never_silent(tmp_path, monkeypatch):
+    """G: 5b/5c had no tally and no "could not be applied" line - the report returned None with no row."""
+    from meshpipeline.contracts import user_notes as UN
+    said: list = []
+    monkeypatch.setattr(UN, "record_remark", lambda ws, line, by="": said.append(line))
+    sec = MR.section("used", requirements=MR.empty(),
+                     dropped=['"refine the walls to level 2": this setting is for the whole mesh only: not applied'])
+    MR.write(tmp_path, sec)
+    out = CR.attach(tmp_path, {"cells": 1000}, "snappy")
+    row = out["requirements"]["rows"][0]
+    assert row["asked"] == "refine the walls to level 2" and row["applied"] is False
+    assert row["delivered"] == "not applied - this setting is for the whole mesh only"
+    assert said and said[-1].startswith("Of the 1 thing you asked for: 0 met")
+
+
+def test_the_walls_level_is_checked_on_the_dictionary(tmp_path):
+    """H: "wall refinement level 4 please" - built, or the nearest told with the levels, by the rules."""
+    req, _d, _na = _read("wall refinement level 4 please",
+                         controls=[{"key": "surface_level", "value": 4, "choice": "", "unit": "none", "where": "",
+                                    "strict": False, "quote": "wall refinement level 4 please"}])
+    rid = req["controls"]["surface_level"]["id"]
+    ws = tmp_path / "case"
+    (ws / "system").mkdir(parents=True)
+    MR.write(ws, MR.section("used", requirements=req))
+    (ws / CR.PLAN_FILE).write_text(json.dumps({"engine": "snappy", "rows": {rid: {
+        "status": "applied", "built": "level 4 at the walls: the background cell is 16 times the wall cell"}}}))
+    (ws / "system" / "blockMeshDict").write_text(
+        "vertices ((0 0 0)(1 0 0)(1 1 0)(0 1 0)(0 0 1)(1 0 1)(1 1 1)(0 1 1));\n"
+        "blocks (hex (0 1 2 3 4 5 6 7) (20 20 20) simpleGrading (1 1 1));")
+    shm = ws / "system" / "snappyHexMeshDict"
+    shm.write_text("refinementSurfaces { wall { level (4 4); patchInfo { type wall; } } }")
+    row = CR.report(ws, {"cells": 1000}, "snappy")["rows"][0]
+    assert row["met"] is True and row["delivered"] == "level 4 at the walls (cells of 3.125 mm at the walls)"
+    shm.write_text("refinementSurfaces { wall { level (3 3); patchInfo { type wall; } } }")
+    row = CR.report(ws, {"cells": 1000}, "snappy")["rows"][0]
+    assert row["met"] is False and row["delivered"].startswith("level 3 at the walls (cells of 6.25 mm at the walls), "
+                                                                "not 4")
 
 
 def test_the_run_reads_the_conditions_with_no_notes(tmp_path):

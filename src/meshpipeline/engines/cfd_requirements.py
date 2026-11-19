@@ -257,6 +257,16 @@ def with_conditions(sec: dict, state) -> dict:
     c = FC.read(str(s.get("request_txt") or ""), s.get("intake_patches") or [])
     if c is None:
         return sec
+    if not c.get("wall_said", True) and c["wall"] == "functions":
+        # THE PROPOSAL ONLY ACCEPTED IS NO ASK (round 4, F): pressing OK on the proposed wall functions made an
+        # absolute y+ 50 first layer about as thick as the wall cells, which snappyHexMesh grew on 4-6% of the wall
+        # (jobs 07fd516d, 8eec5b7b, c0b45ad1); the mesher's own relative layers grow on all of it. A y+, first layer or
+        # wall treatment the user gave themselves stays an ask (below, and CFDREQ-9 makes it one the mesher keeps).
+        # Their speed and fluid still reach a y+ of their own notes.
+        req0 = (sec.get("requirements") or {}) if sec.get("status") == "used" else {}
+        lay0, ph0 = req0.get("layers") or {}, req0.get("physics") or {}
+        if lay0.get("y_plus") is None or (ph0.get("velocity_ms") is not None and ph0.get("fluid") is not None):
+            return sec
     before = MR.words(sec)
     used = sec.get("status") == "used"
     req = copy.deepcopy(dict(sec.get("requirements") or MR.empty())) if used else MR.empty()
@@ -1685,9 +1695,13 @@ def _cells_words(s: str) -> str:
 
 def report(workspace, quality: Mapping, engine: str) -> dict | None:
     """CFDREQ-6: for every requirement read from the notes, what was asked and what the built flow mesh delivers
-    (the shape of engines/mesh_requirements.finish_report). None with no requirement."""
-    req = requirements_for(workspace)
-    if not req or not req.get("rows"):
+    (the shape of engines/mesh_requirements.finish_report). Every ask the reading holds gets a row, whatever its
+    outcome - one the checks set aside too ("not applied - <why>"), so an attempt whose only ask was set aside is
+    never silent (5b/5c of the round-4 matrix had no tally at all). None with no ask."""
+    sec = MR.read(workspace) if workspace else {}
+    req = requirements_for(workspace) or {}
+    aside = [str(d) for d in (sec.get("dropped") or [])] if sec.get("status") == "used" else []
+    if not req.get("rows") and not aside:
         return None
     plan = (_plan(workspace).get("rows") or {})
     q = dict(quality or {})
@@ -1700,7 +1714,7 @@ def report(workspace, quality: Mapping, engine: str) -> dict | None:
     n_meas = int(figs["n_cells"]) if figs else n
     limits = {lim["id"]: lim for lim in req.get("limits") or []}
     rows = []
-    for row in req["rows"]:
+    for row in req.get("rows") or []:
         field, p = str(row["field"]), plan.get(row["id"]) or {}
         status, built = p.get("status"), str(p.get("built") or "")
         if field.startswith("limit:"):
@@ -1719,6 +1733,9 @@ def report(workspace, quality: Mapping, engine: str) -> dict | None:
         elif field in ("layers:y_plus", "layers:first_height") and status == "applied" and (
                 fl := _first_layer_row(workspace, req, q, p)) is not None:
             got = fl
+        elif field == "control:surface_level" and status in ("applied", "nearest") and (
+                lv := _level_row(workspace, req)) is not None:
+            got = lv
         else:
             got = {"applied": True, "met": False if status == "nearest" else None,
                    "delivered": (f"not possible as asked - {built}" if status == "nearest" else built)
@@ -1730,6 +1747,12 @@ def report(workspace, quality: Mapping, engine: str) -> dict | None:
                            delivered=got["delivered"] + f"; the largest cell is {_mm(big)}")
         rows.append({"id": row["id"], "field": field, "asked": row["asked"], **got,
                      **({"from": row["from"]} if row.get("from") else {})})
+    for i, d in enumerate(aside, 1):
+        # an ask the checks set aside: '"<the user's words>": <why>: not applied' (engines/mesh_requirements.check)
+        asked, _sep, why = d.partition(": ")
+        why = why.removesuffix(": not applied").removesuffix(" not applied").strip() or "it could not be read"
+        rows.append({"id": f"x{i}", "field": "set_aside", "asked": asked.strip().strip('"'), "applied": False,
+                     "met": None, "delivered": f"not applied - {why}"})
     return MR.finish_report(rows, n_meas or n, DEFINITIONS)
 
 
@@ -1786,6 +1809,41 @@ def _first_layer_row(workspace, req: Mapping, q: Mapping, p: Mapping) -> dict | 
     if as_asked and not grown:
         said += " - the rest of the wall has none, so the first cell there is not this height"
     return {"applied": True, "met": bool(as_asked and grown), "measured": float(f"{written:.4g}"), "delivered": said}
+
+
+_WALL_LEVEL = re.compile(r"refinementSurfaces\s*\{\s*[\w.]+\s*\{\s*level\s*\(\s*(\d+)\s+(\d+)\s*\)")
+_BLOCKS = re.compile(r"hex\s*\([^)]*\)\s*\(\s*(\d+)\s+(\d+)\s+(\d+)\s*\)")
+
+
+def _level_row(workspace, req: Mapping) -> dict | None:
+    """NOTE-13 x CFDREQ-6: the wall's refinement level asked against the level snappyHexMesh's dictionary really
+    carries (its first refinement surface, the wall) and the cell that gives at the walls - met, or not met with
+    both levels and why. None when the dictionary cannot be read (the row stays a setting)."""
+    n = ((req.get("controls") or {}).get("surface_level") or {}).get("value")
+    try:
+        shm = (Path(workspace) / "system" / "snappyHexMeshDict").read_text(errors="replace")
+    except OSError:
+        return None
+    m = _WALL_LEVEL.search(shm)
+    if n is None or m is None:
+        return None
+    built = int(m.group(2))
+    cell = ""
+    try:
+        blk = (Path(workspace) / "system" / "blockMeshDict").read_text(errors="replace")
+        pts = [tuple(float(v) for v in t.split()) for t in re.findall(r"\(([-+\d.eE]+ [-+\d.eE]+ [-+\d.eE]+)\)", blk)]
+        blocks = _BLOCKS.search(blk)
+        div = [int(v) for v in blocks.groups()] if blocks else []
+        if len(pts) >= 7 and div:
+            base = max(abs(pts[6][i] - pts[0][i]) / max(div[i], 1) for i in range(3))
+            cell = f" (cells of {_mm(base / 2 ** built)} at the walls)"
+    except (OSError, ValueError, IndexError):
+        cell = ""
+    if built >= int(n):
+        return {"applied": True, "met": True, "measured": built, "delivered": f"level {built} at the walls{cell}"}
+    return {"applied": True, "met": False, "measured": built,
+            "delivered": f"level {built} at the walls{cell}, not {int(n)}: the level was counted again on the background "
+                         "cell the cell budget allows"}
 
 
 def _layers_row(req: Mapping, q: Mapping, built: str) -> dict:
@@ -1874,15 +1932,16 @@ def attach(workspace, quality: dict, engine: str) -> dict:
     except Exception:  # noqa: BLE001 - a report that cannot be made never stops a delivery
         logger.warning("cfd requirements: no report", exc_info=True)
         return quality
-    if rep is None:
-        return quality
-    out = {**quality, "requirements": rep}
+    # an attempt whose notes asked only things no setting matches still says so in its closing line (never silent)
+    out = {**quality, "requirements": rep} if rep is not None else quality
     try:
         from meshpipeline.contracts.user_notes import record_remark
         from meshpipeline.engines import meshing_standard as MS
         sec = MR.read(workspace)
-        # STD-2: the closing line says where the things asked came from ("From your settings: ...")
-        said = MS.remark(sec, summary(rep, not_applied=len(MR.not_applied_words(sec))))
+        # STD-2: the closing line says where the things asked came from ("From your settings: ..."); an ask the checks
+        # set aside is a row of the report already, so it is not counted twice among the other things not applied
+        others = max(0, len(MR.not_applied_words(sec)) - len(sec.get("dropped") or []))
+        said = MS.remark(sec, summary(rep, not_applied=others))
         if said:
             record_remark(Path(workspace), said, by=CONSUMER)
     except Exception:  # noqa: BLE001

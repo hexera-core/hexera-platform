@@ -3885,6 +3885,19 @@
   "roots": []
  },
  {
+  "context": "contracts/flow_conditions.py::accepted::search#1|NotAPublisher|not-a-publisher|",
+  "path": "contracts/flow_conditions.py",
+  "qualname": "accepted",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_ACCEPTED",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "contracts/flow_conditions.py::fluid_key::search#1|NotAPublisher|not-a-publisher|",
   "path": "contracts/flow_conditions.py",
   "qualname": "fluid_key",
@@ -4305,6 +4318,32 @@
   "method": "search",
   "ordinal": 2,
   "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/cfd_requirements.py::_level_row::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/cfd_requirements.py",
+  "qualname": "_level_row",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_WALL_LEVEL",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/cfd_requirements.py::_level_row::search#2|NotAPublisher|not-a-publisher|",
+  "path": "engines/cfd_requirements.py",
+  "qualname": "_level_row",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "_BLOCKS",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
   "gated_required": false,

@@ -2721,6 +2721,11 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         from meshpipeline.engines.shell_plan import count_words
 
         if await asyncio.to_thread(SD.deliver, ws, shelled, target=target):
+            # the solid AI's remark speaks of the SOLID plan, which is not made: never a line of a shell's result (a
+            # shell run with nothing typed was told "the requested shell element formulation is outside these
+            # solid-mesh controls", round 4, L1)
+            from meshpipeline.contracts.user_notes import drop_remark as _drop_ai
+            _drop_ai(ws, by="fea_ai")
             counted = count_words(shelled.get("target"))
             if counted:
                 from meshpipeline.contracts.user_notes import record_remark

@@ -662,10 +662,11 @@ def cfd_submission(messages, case: dict, *, engine: str, engine_params: dict) ->
                     f"{e['downstream']:g} downstream, {e['lateral']:g} to each side, {e['vertical']:g} above.")
     # CFDREQ-8: the conditions as ONE sentence the run reads back (contracts/flow_conditions) - the first layer is
     # sized from them, or the sentence says why it keeps the mesher's own sizing
-    said = _FC.sentence(got["fluid"], got["speed"], got["wall"], internal=not ext, patches=case["patches"])
+    said = _FC.sentence(got["fluid"], got["speed"], got["wall"], internal=not ext, patches=case["patches"],
+                        wall_said=bool(got["said_wall"]))
     request = (f"{'External' if ext else 'Internal'} flow {'around' if ext else 'through'} {what}{where}, confirmed "
                f"by the user on the geometry stage. {said}{ports}{far} "
-               + (f"Left to the application's proposal, which the user accepted: {', '.join(left)}. " if left else "")
+               + (f"{_FC.ACCEPTED_LEAD} {', '.join(left)}. " if left else "")
                + "The user's own words are kept as notes, word for word.")
     review = (f"The fluid region is meshed whole. Every boundary patch is present: {names}. Near-wall prism "
               f"layers cover the walls for {band}. Cell sizes grade smoothly from the walls into the "
@@ -701,8 +702,16 @@ def with_conditions_sentence(messages, args: dict) -> dict:
         return args
     got = flow_conditions(msgs)
     said = _FC.sentence(got["fluid"], got["speed"], got["wall"], internal=flow_kind_of(msgs) == "internal",
-                        patches=patches)
-    return {**args, "request_txt": f"{request.rstrip()} {said}".strip()}
+                        patches=patches, wall_said=bool(got["said_wall"]))
+    return {**args, "request_txt": f"{request.rstrip()} {said}{_left_to_proposal(got)}".strip()}
+
+
+def _left_to_proposal(got: dict) -> str:
+    """The plan's words for what the user left to the proposal (cfd_submission's own clause, which the run reads: an
+    accepted wall treatment is no ask of theirs - engines/cfd_requirements.with_conditions, CFDREQ-8)."""
+    left = [w for w, said in (("the fluid", got["said_fluid"]), ("its speed", got["said_speed"]),
+                              ("the wall treatment", got["said_wall"])) if not said]
+    return f" {_FC.ACCEPTED_LEAD} {', '.join(left)}." if left else ""
 
 
 def _engine_defaults(engine: str) -> dict:

@@ -127,23 +127,44 @@ def sizing_words(c: Mapping) -> str:
     return f"the first layer is sized for y⁺ ≈ {c['y_plus']:g}, inside 30–300, at that speed"
 
 
+#: what the plan says of a wall treatment the user only accepted (the proposal's wall functions): no ask of theirs, so
+#: the mesher's own relative layers - which it grows on the whole wall - stay (job 07fd516d: an absolute y+ 50 first
+#: layer 1.35 mm under 1.72 mm wall cells grew on 5.7% of the wall)
+PROPOSED_WORDS = "the layers keep the mesher's own sizing, which it grows on the whole wall"
+#: how the plan says what the user left to the proposal (agents/intake/flow), read back by `accepted`
+ACCEPTED_LEAD = "Left to the application's proposal, which the user accepted:"
+_ACCEPTED = re.compile(re.escape(ACCEPTED_LEAD) + r"([^.]*)\.")
+
+
 def sentence(fluid_words: str, speed_words: str, wall: str, *, internal: bool,
-             patches: Iterable[Mapping] | None = None) -> str:
-    """THE ONE SENTENCE the plan carries (read back by `read`)."""
+             patches: Iterable[Mapping] | None = None, wall_said: bool = True) -> str:
+    """THE ONE SENTENCE the plan carries (read back by `read`). `wall_said` False: the user only accepted the proposed
+    wall treatment, and the plan says the layers keep the mesher's own sizing."""
     c = conditions(fluid_words, speed_words, wall, patches)
+    how = PROPOSED_WORDS if (not wall_said and c["wall"] == "functions" and not c["why"]) else sizing_words(c)
     return (f"Fluid: {fluid_words} at {speed_words}{' at the inlet' if internal else ''}. Near the walls: "
-            f"{WALL_WORDS[c['wall']]}; {sizing_words(c)}.")
+            f"{WALL_WORDS[c['wall']]}; {how}.")
+
+
+def accepted(request_txt: str) -> set[str]:
+    """What the plan says the user left to the proposal ("the fluid", "its speed", "the wall treatment")."""
+    m = _ACCEPTED.search(str(request_txt or ""))
+    return {w.strip() for w in m.group(1).split(",") if w.strip()} if m else set()
 
 
 def read(request_txt: str, patches: Iterable[Mapping] | None = None) -> dict | None:
-    """The conditions the plan carries (`conditions`), or None when the summary has no such sentence (a plan the
-    model wrote in its own words, an FEA plan): nothing is then asked of the first layer."""
+    """The conditions the plan carries (`conditions`, with `wall_said`: whether the user chose the wall treatment
+    rather than accepting the proposal), or None when the summary has no such sentence (a plan the model wrote in its
+    own words, an FEA plan): nothing is then asked of the first layer."""
     m = _SENTENCE.search(str(request_txt or ""))
     if not m:
         return None
     wall = "resolved" if m.group("wall") == WALL_RESOLVED else "functions"
-    return conditions(m.group("fluid").strip(), " ".join(m.group("speed").split()), wall, patches)
+    out = conditions(m.group("fluid").strip(), " ".join(m.group("speed").split()), wall, patches)
+    out["wall_said"] = "the wall treatment" not in accepted(request_txt)
+    return out
 
 
-__all__ = ["FLOWS", "FLUIDS", "MASS_FLOWS", "NU", "RHO", "RULE", "SPEED", "SPEEDS", "WALL_FUNCTIONS", "WALL_RESOLVED",
-           "WALL_WORDS", "WALL_Y_PLUS", "conditions", "fluid_key", "read", "sentence", "sizing_words", "speed_ms"]
+__all__ = ["ACCEPTED_LEAD", "FLOWS", "FLUIDS", "MASS_FLOWS", "NU", "PROPOSED_WORDS", "RHO", "RULE", "SPEED", "SPEEDS",
+           "WALL_FUNCTIONS", "WALL_RESOLVED", "WALL_WORDS", "WALL_Y_PLUS", "accepted", "conditions", "fluid_key", "read",
+           "sentence", "sizing_words", "speed_ms"]
