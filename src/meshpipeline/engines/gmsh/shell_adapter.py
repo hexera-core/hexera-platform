@@ -1377,7 +1377,7 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
                 passes.append(["holes drawn again", round(time.monotonic() - t_pass, 1)])
                 continue
             except _NoCut as nc:
-                if nc.holes and not nc.faces and not resplined:
+                if nc.holes and all(f < 0 and -f - 1 >= BOLT_GRID_KEY for f in nc.faces) and not resplined:
                     # SHMESH-51c: bolt holes whose two-ring box failed in their grid take one ring - start again
                     passes.append(["one ring round some bolt holes so a grid stays (start again)",
                                    round(time.monotonic() - t_pass, 1)])
@@ -1388,8 +1388,8 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
                             hole_rounds[f_h] = hole_rounds.get(f_h, 0) + 1
                     else:
                         hole_rounds += 1
-                    no_cut = {f for f in no_cut if f < 0}
-                    refused = {k: v for k, v in refused.items() if k < 0}
+                    no_cut = {f for f in no_cut if f < 0} | set(nc.faces)
+                    refused = {k: v for k, v in {**refused, **nc.why}.items() if k < 0}
                     # (SHMESH-51f: the grid cells freed so far stay free, by their keys, with those this pass found - but
                     # for those whose freeing came from a face whose holes now take one ring)
                     unmap = _keys_kept(unmap | set(nc.unmap), nc.hole_faces, body_of) if GATHER else set()
@@ -2967,8 +2967,19 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                             bad_b.append(w)
                             why_b[id(w)] = f"{why_k}: in or beside its box"
             if bad_b:
-                raise _NoCut(set(), {}, holes=[[float(x) for x in w.centre] + ([1.0] if id(w) in ring_b else [])
-                                               for w in bad_b],
+                extra_k: set[int] = set()
+                why_x: dict[int, dict] = {}
+                if BATCH_BOLT_KEYS:
+                    # SHMESH-51o19: the other faces refused on this pass whose bolt holes SHMESH-51b would put to one
+                    # ring go with these holes, in the same start again (on the real column they came one start
+                    # again later, about 95 s each)
+                    rest = {k for k in hurt_p if k >= 0 and k not in {int(w.owner) for w in bad_b}}
+                    why_x = {k: dict(why_p[k]) for k in rest}
+                    _grid_first(rest, why_x, _two_faces(washers, boxed + gridded), set(grid_faces_made), no_cut,
+                                _one_for_grid(washers))
+                    extra_k = {k for k in rest if k < 0 and -k - 1 >= BOLT_GRID_KEY}
+                raise _NoCut(extra_k, {k: why_x[k] for k in extra_k},
+                             holes=[[float(x) for x in w.centre] + ([1.0] if id(w) in ring_b else []) for w in bad_b],
                              hole_faces=[int(w.owner) for w in bad_b], hole_why=[why_b[id(w)] for w in bad_b])
         _grid_first(hurt_p, why_p, _two_faces(washers, boxed + gridded), set(grid_faces_made), no_cut,
                     _one_for_grid(washers))
@@ -3266,6 +3277,10 @@ def _transition_cells(gmsh, tag_of: dict[int, int], faces: set[int], grids, ring
         if any(int(et) == 2 for et in types):
             out.append(t)
     return out
+
+
+#: SHMESH-51o19: one start again for a pass's bolt holes and its faces' SHMESH-51b one ring together
+BATCH_BOLT_KEYS = True
 
 
 def _two_faces(washers: list, placed: list) -> set[int]:
