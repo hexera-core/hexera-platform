@@ -505,8 +505,10 @@ def _arc_radius(gmsh, curve: int) -> float | None:
 
 #: SHMESH-51o16: a narrow strip one cell from a two-ring bolt box's side takes the box's count along it (the real
 #: column's 12-hole plate: four end boxes' 56 mm sides sat in a class held at 6 by such a strip's count, their bands
-#: came out with 3 degree corners and were refused, and the four holes fell to one ring)
-STRIP_TAKES_BOX = True
+#: came out with 3 degree corners and were refused, and the four holes fell to one ring). OFF: on the real column the
+#: strip holding 6 (47 x 4.2 mm) stood two and three cells out, so it never fired there, and on a 50-hole look-alike
+#: the strips it did change sent holes to one ring five rounds running (92 to 188 s, the same mesh)
+STRIP_TAKES_BOX = False
 
 
 def _box_facing(gmsh, wish: dict[int, int], long: set[int]) -> dict[int, int]:
