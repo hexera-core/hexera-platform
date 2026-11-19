@@ -49,6 +49,39 @@ deploy.
 `dev`, `prod`, `production`, `shared`, `main` and `staging` are refused. Shared dev is reached by
 leaving the slug **empty**; production only by a `v*` tag.
 
+### CRS v3 postures on your slug
+
+The CRS v3 repair postures reach a personal environment through one dispatch input, `crs_v3`
+(`off`, `shadow` or `live`, default `off`). The `target` job turns it into a single `crs_v3`
+output, and the provision job derives every posture from that one value:
+
+| Setting | `off` | `shadow` | `live` |
+| --- | --- | --- | --- |
+| `CAD_REPAIR_REGION_LOOP` | not stated | `live` | `live` |
+| `CAD_REPAIR_MESH_PROBE` | not stated | `live` | `live` |
+| `CAD_REPAIR_PACKAGE_REVIEW` | not stated | `live` | `live` |
+| `CAD_REPAIR_SPLIT_CLOSED_FACES` | not stated | not stated | `true` |
+| `CAD_REPAIR_FRAGMENT_BODIES` | not stated | not stated | `true` |
+| `CAD_REPAIR_REBUILD_FACE` | not stated | not stated | `true` |
+| `CAD_REPAIR_CLOSE_WIRE_GAPS` | not stated | not stated | `true` |
+
+- **The package reviewer is on in both `shadow` and `live`.** A v3 run is never unreviewed.
+- **`REBUILD_FACE` and `CLOSE_WIRE_GAPS` are reviewer-gated.** They move vertices, so they turn
+  on only at `live`, and `live` always sets `CAD_REPAIR_PACKAGE_REVIEW=live` beside them.
+- **Not stated means the shipped default, which is off.** The API names every one of these
+  droppable, so a redeploy left at `off` removes them from an API that had them. The workers
+  take them as instance-template metadata, so tick `fleet` for a change to reach them.
+- **It needs `cad_repair`.** The postures shape a repair loop that `cad_repair` turns on.
+- **Shared dev and production state it empty, whatever you choose.** Shared dev turns the set on
+  later, as committed config. Production stays empty.
+
+```bash
+gh workflow run deploy.yml --ref "$(git branch --show-current)" \
+  -f slug=<slug> -f fleet=true -f app=true -f cad_repair=true -f crs_v3=shadow
+# check one worker
+gcloud compute ssh <instance> --zone us-central1-a -- grep CAD_REPAIR_ /etc/hexera/worker.env
+```
+
 ## 3. What you share, and what that costs
 
 **Shared with shared dev and with every other personal environment:**

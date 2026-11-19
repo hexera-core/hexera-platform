@@ -85,6 +85,13 @@ for pair in "deployment-id:DEPLOYMENT_ID" \
             "cad-repair-stall-limit:CAD_REPAIR_STALL_LIMIT" \
             "cad-inspect-timeout-s:CAD_INSPECT_TIMEOUT_S" \
             "cad-repair-llm-planner:CAD_REPAIR_LLM_PLANNER" \
+            "cad-repair-region-loop:CAD_REPAIR_REGION_LOOP" \
+            "cad-repair-mesh-probe:CAD_REPAIR_MESH_PROBE" \
+            "cad-repair-package-review:CAD_REPAIR_PACKAGE_REVIEW" \
+            "cad-repair-split-closed-faces:CAD_REPAIR_SPLIT_CLOSED_FACES" \
+            "cad-repair-fragment-bodies:CAD_REPAIR_FRAGMENT_BODIES" \
+            "cad-repair-rebuild-face:CAD_REPAIR_REBUILD_FACE" \
+            "cad-repair-close-wire-gaps:CAD_REPAIR_CLOSE_WIRE_GAPS" \
             "verdict-by-limits:VERDICT_BY_LIMITS" \
             "mesh-progressive-snapshot-enabled:MESH_PROGRESSIVE_SNAPSHOT_ENABLED" \
             "mesh-snappy-ranks:MESH_SNAPPY_RANKS"; do

@@ -268,6 +268,22 @@ fi
 # The LLM planner posture, only when the workflow's llm_planner input chose shadow or live.
 [ -z "${CAD_REPAIR_LLM_PLANNER:-}" ] \
   || API_ENV_PAIRS+=("CAD_REPAIR_LLM_PLANNER=${CAD_REPAIR_LLM_PLANNER}")
+# The CRS v3 postures, only when the workflow's crs_v3 input chose shadow or live (personal
+# environments only - the target states it empty on shared dev and prod).
+[ -z "${CAD_REPAIR_REGION_LOOP:-}" ] \
+  || API_ENV_PAIRS+=("CAD_REPAIR_REGION_LOOP=${CAD_REPAIR_REGION_LOOP}")
+[ -z "${CAD_REPAIR_MESH_PROBE:-}" ] \
+  || API_ENV_PAIRS+=("CAD_REPAIR_MESH_PROBE=${CAD_REPAIR_MESH_PROBE}")
+[ -z "${CAD_REPAIR_PACKAGE_REVIEW:-}" ] \
+  || API_ENV_PAIRS+=("CAD_REPAIR_PACKAGE_REVIEW=${CAD_REPAIR_PACKAGE_REVIEW}")
+[ -z "${CAD_REPAIR_SPLIT_CLOSED_FACES:-}" ] \
+  || API_ENV_PAIRS+=("CAD_REPAIR_SPLIT_CLOSED_FACES=${CAD_REPAIR_SPLIT_CLOSED_FACES}")
+[ -z "${CAD_REPAIR_FRAGMENT_BODIES:-}" ] \
+  || API_ENV_PAIRS+=("CAD_REPAIR_FRAGMENT_BODIES=${CAD_REPAIR_FRAGMENT_BODIES}")
+[ -z "${CAD_REPAIR_REBUILD_FACE:-}" ] \
+  || API_ENV_PAIRS+=("CAD_REPAIR_REBUILD_FACE=${CAD_REPAIR_REBUILD_FACE}")
+[ -z "${CAD_REPAIR_CLOSE_WIRE_GAPS:-}" ] \
+  || API_ENV_PAIRS+=("CAD_REPAIR_CLOSE_WIRE_GAPS=${CAD_REPAIR_CLOSE_WIRE_GAPS}")
 # UNTICKED IS A STATED INTENT TOO. The live-setting check below refuses to drop a name this run
 # does not declare, so a revision that once had repair on could never be deployed with it off: the
 # rollout stopped and the old revision kept serving with repair enabled. An unset opt-in is named
@@ -282,6 +298,13 @@ OPT_IN_DROPPABLE=()
 [ -n "${CAD_REPAIR_MAX_OPS:-}" ] || OPT_IN_DROPPABLE+=(CAD_REPAIR_MAX_OPS)
 [ -n "${CAD_REPAIR_TIMEOUT_S:-}" ] || OPT_IN_DROPPABLE+=(CAD_REPAIR_TIMEOUT_S)
 [ -n "${CAD_REPAIR_LLM_PLANNER:-}" ] || OPT_IN_DROPPABLE+=(CAD_REPAIR_LLM_PLANNER)
+[ -n "${CAD_REPAIR_REGION_LOOP:-}" ] || OPT_IN_DROPPABLE+=(CAD_REPAIR_REGION_LOOP)
+[ -n "${CAD_REPAIR_MESH_PROBE:-}" ] || OPT_IN_DROPPABLE+=(CAD_REPAIR_MESH_PROBE)
+[ -n "${CAD_REPAIR_PACKAGE_REVIEW:-}" ] || OPT_IN_DROPPABLE+=(CAD_REPAIR_PACKAGE_REVIEW)
+[ -n "${CAD_REPAIR_SPLIT_CLOSED_FACES:-}" ] || OPT_IN_DROPPABLE+=(CAD_REPAIR_SPLIT_CLOSED_FACES)
+[ -n "${CAD_REPAIR_FRAGMENT_BODIES:-}" ] || OPT_IN_DROPPABLE+=(CAD_REPAIR_FRAGMENT_BODIES)
+[ -n "${CAD_REPAIR_REBUILD_FACE:-}" ] || OPT_IN_DROPPABLE+=(CAD_REPAIR_REBUILD_FACE)
+[ -n "${CAD_REPAIR_CLOSE_WIRE_GAPS:-}" ] || OPT_IN_DROPPABLE+=(CAD_REPAIR_CLOSE_WIRE_GAPS)
 # The database this deployment migrated. POSTGRES_* and not DATABASE_URL: a DSN carries the
 # password, and DATABASE_URL is declared secret precisely because it does.
 if [ -n "${MIGRATE_DB_HOST:-}" ]; then
