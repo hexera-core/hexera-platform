@@ -314,15 +314,11 @@ def hold_url(holder: str) -> str:
 def _read_hold(holder: str) -> tuple[float, float] | None:
     """(when the hold was last renewed, since when it has been unbroken), or None when there is none. A read
     that fails for any other reason RAISES: unreadable is not released."""
-    from google.api_core.exceptions import NotFound
-
-    from meshpipeline.adapters.mesh_execution.gcs_exchange import storage_client
-    blob = storage_client().bucket(provcfg.GCP_MESH_BUCKET).blob(hold_object(holder))
-    try:
-        text = blob.download_as_text()
-    except NotFound:
+    from meshpipeline.adapters.mesh_execution.gcs_exchange import download_exchange_bytes
+    raw = download_exchange_bytes(hold_object(holder), bucket=str(provcfg.GCP_MESH_BUCKET or ""))
+    if raw is None:
         return None
-    at, _, since = text.partition("|")
+    at, _, since = raw.decode("utf-8", "replace").partition("|")
     try:
         return float(at), float(since or at)
     except ValueError:

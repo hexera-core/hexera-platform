@@ -597,11 +597,11 @@ class _HoldBlob:
     def __init__(self, store, key):
         self.store, self.key = store, key
 
-    def download_as_text(self):
+    def download_as_bytes(self, timeout=None):
         from google.api_core.exceptions import NotFound
         if self.key not in self.store:
             raise NotFound(self.key)
-        return self.store[self.key]
+        return self.store[self.key].encode()
 
     def upload_from_string(self, text, content_type=None):
         self.store[self.key] = text
@@ -639,4 +639,5 @@ def test_an_unreadable_hold_is_not_a_released_one(monkeypatch):
         raise ConnectionError("gcs is down")
     from meshpipeline.adapters.mesh_execution import gcs_exchange
     monkeypatch.setattr(gcs_exchange, "storage_client", boom)
+    monkeypatch.setattr(G.provcfg, "GCP_MESH_BUCKET", "b", raising=False)
     assert S._hold_age("job-1") == 0.0                                       # kept: judged again next time
