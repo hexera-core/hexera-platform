@@ -4,6 +4,7 @@
 set -u
 LIST=$1; OUT=$2; CORPUS=${3:-$HOME/bench/corpus2/corpus}
 PY=/opt/bench/venv/bin/python
+T=${PART_TIMEOUT:-5400}   # seconds per stage; the heavy parts (ctc_04, the KiCad heat sink) need hours
 cd ~/bench
 # wait for any bench job already holding the cores
 while pgrep -f "bench/venv/bin/python .*(harness|local)[.]py" >/dev/null; do sleep 30; done
@@ -13,10 +14,10 @@ while read -r rel; do
   d="$OUT/$n"
   echo "=== $n $(date -u +%H:%M:%S)"
   if [ ! -f "$d/result.json" ]; then
-    timeout 5400 $PY -I code/harness.py "$CORPUS/$rel" --out "$d" --jobs 16 --keep-fields 2>&1 | grep -vE '^\*\*\*|^Warning' | grep -vE ': ok elements' | tail -3
+    timeout $T $PY -I code/harness.py "$CORPUS/$rel" --out "$d" --jobs 16 --keep-fields 2>&1 | grep -vE '^\*\*\*|^Warning' | grep -vE ': ok elements' | tail -3
   fi
   if [ -f "$d/result.json" ] && [ ! -f "$d/local_k3_r2.json" ]; then
-    timeout 5400 $PY -I code/local.py "$CORPUS/$rel" --harness "$d" --k 3 --refine 2 --jobs 16 2>&1 | grep -vE '^\*\*\*|^Warning|: ok$' | tail -3
+    timeout $T $PY -I code/local.py "$CORPUS/$rel" --harness "$d" --k 3 --refine 2 --jobs 16 2>&1 | grep -vE '^\*\*\*|^Warning|: ok$' | tail -3
   fi
 done < "$LIST"
 echo "=== done $(date -u +%H:%M:%S)"

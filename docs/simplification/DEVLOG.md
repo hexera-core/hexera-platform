@@ -257,3 +257,35 @@ defeaturing call (OCCT took every union), solved once, against the harness's ref
   around them. A cost estimate must be made for the package, not summed.
 - Contrast CFD (entry above): there the members did NOT add up to the heat-sink package. The design
   therefore keeps a final package-level check, and for CFD it is mandatory.
+
+## 2026-11-19 - full first set with the clamp fix; an acceptance margin
+
+Reruns: `KFL08` now solves in the straight-sided mode (one feature measurable, noise 0.23%); the
+KiCad heat sink and nist_ctc_04 ran past the 90-minute per-stage limit (each variant ~1.1M and ~2.1M
+tets, ~1 h per CalculiX solve on one core) and are re-queued with `PART_TIMEOUT=14400`.
+
+`score.py` over ten parts, 82 removals, 58 above 3x their part's noise floor:
+
+| | |
+|---|---|
+| T2 vs T3, compliance | rank **0.99**, linear **1.00**, sign **58/58**, median ratio **0.88** |
+| nist_ftc_09 alone, after the clamp fix | rank 0.99 (was 0.96), ratio 0.75 (was 0.61); hole20/hole25 no longer missed |
+| T1 vs abs T3 (holes) | rank **0.96**, n = 48 |
+| acceptable removals (abs T3 <= 0.1%), each alone | median 3.8% of cells saved, max 26.1% |
+
+The remaining under-read shows at the budget's edge: four false accepts at 0.1%, every one just over
+it (T3 0.111-0.133%, read as 0.086-0.097%). An acceptance MARGIN - accept only when abs T2 <= m x
+budget:
+
+| m | accepted | false accepts | false rejects (of 49 truly acceptable) |
+|---|---|---|---|
+| 1.00 | 50 | 4 | 3 |
+| 0.90 | 48 | 2 | 3 |
+| **0.80** | **45** | **0** | **4** |
+| 0.70 | 44 | 0 | 5 |
+| 0.60 | 40 | 0 | 9 |
+| 0.50 | 38 | 0 | 11 |
+
+m = 0.8 is the operating point on this data: no false accept, 45 of 49 harmless removals kept.
+**It was chosen on the same 82 removals it is scored on**, so it is a hypothesis until it holds on
+parts it has not seen (the heavy pair queued now is the first such test).
