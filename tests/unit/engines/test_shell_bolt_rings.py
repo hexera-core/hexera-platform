@@ -698,6 +698,80 @@ def test_a_face_takes_one_ring_only_where_its_own_triangles_drop():
     assert SA._tria_faces(far, applied, ["Mid_1"]) == [] and SA._tria_faces(mesh, applied, ["Mid_1"]) == [0]
 
 
+def _plates_sq(tmp_path, plates):
+    """Plates [(L, W, T, z, holes)] as one compound: a hole (x, y, d) is round, (x, y, a, b) an a x b rectangle."""
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCylinder
+    from OCP.BRepTools import BRepTools
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
+    from OCP.TopoDS import TopoDS_Compound
+
+    from meshpipeline.cad import midsurface as ms
+
+    comp = TopoDS_Compound()
+    bb = BRep_Builder()
+    bb.MakeCompound(comp)
+    shape = None
+    for L, W, T, z, holes in plates:
+        shape = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, z), L, W, T).Shape()
+        for h in holes:
+            if len(h) == 3:
+                tool = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(h[0], h[1], z - 1), gp_Dir(0, 0, 1)), h[2] / 2,
+                                                T + 2).Shape()
+            else:
+                tool = BRepPrimAPI_MakeBox(gp_Pnt(h[0] - h[2] / 2, h[1] - h[3] / 2, z - 1), h[2], h[3], T + 2).Shape()
+            shape = BRepAlgoAPI_Cut(shape, tool).Shape()
+        bb.Add(comp, shape)
+    rec, surf = ms.extract(comp if len(plates) > 1 else shape, mm_per_unit=1.0)
+    brep = tmp_path / "midsurface.brep"
+    BRepTools.Write_s(surf, str(brep))
+    return brep, rec
+
+
+def _squares(applied) -> list[dict]:
+    return [h for h in applied["quality"]["structure"]["hole_list"] if h.get("shape") == "square"]
+
+
+def test_a_square_hole_lined_up_with_one_in_another_plate_is_a_bolt_hole(tmp_path):
+    """SHMESH-51o7 (a): 18 mm square holes (a carriage bolt's) through two plates line up: read as bolt holes, their
+    square rings take a second row of near-square cells where it fits."""
+    hs = [(80.0 + 90.0 * k, 100.0, 18.0, 18.0) for k in range(4)]
+    brep, rec = _plates_sq(tmp_path, [(420.0, 200.0, 10.0, 0.0, hs), (420.0, 200.0, 10.0, 40.0, hs)])
+    _mesh_, applied = _mesh(brep, rec)
+    sq = _squares(applied)
+    assert len(sq) == 8 and all(h.get("bolt", "").startswith("it lines up with a hole in another plate") for h in sq)
+    assert all(h["planned_rows"] == 2 and h["rings"] == 2 for h in sq), [(h["planned_rows"], h.get("rings")) for h in sq]
+    _check(applied)
+
+
+def test_a_square_hole_of_bolt_size_beside_round_bolt_holes_is_a_bolt_hole(tmp_path):
+    """SHMESH-51o7 (b): a plate with a row of 19.8 mm round bolt holes and 18 mm square holes (inscribed circle within
+    15% of the round ones): the squares are read as bolt holes, in words that say so."""
+    rd = [(60.0 + 70.0 * k, 70.0, 19.8) for k in range(5)]
+    sq_ = [(90.0 + 90.0 * k, 200.0, 18.0, 18.0) for k in range(3)]
+    brep, rec = _plates_sq(tmp_path, [(420.0, 280.0, 10.0, 0.0, rd + sq_)])
+    _mesh_, applied = _mesh(brep, rec)
+    sq = _squares(applied)
+    assert len(sq) == 3 and all(h.get("bolt") == "it is a square hole of bolt size on a plate with bolt holes"
+                                for h in sq), [h.get("bolt") for h in sq]
+    _check(applied)
+
+
+def test_a_lone_square_hole_and_a_slot_stay_as_they_were(tmp_path):
+    """SHMESH-51o7: a square hole with no bolt hole beside it and nothing lined up stays as before (not a bolt hole,
+    one row); a 2.5 to 1 slot beside round bolt holes is no square the square plan takes, and is no bolt hole."""
+    brep, rec = _plates_sq(tmp_path, [(300.0, 200.0, 10.0, 0.0, [(150.0, 100.0, 18.0, 18.0)])])
+    _mesh_, applied = _mesh(brep, rec)
+    sq = _squares(applied)
+    assert len(sq) == 1 and not sq[0].get("bolt") and sq[0]["planned_rows"] == 1
+    rd = [(60.0 + 70.0 * k, 70.0, 19.8) for k in range(5)]
+    brep2, rec2 = _plates_sq(tmp_path, [(420.0, 280.0, 10.0, 0.0, rd + [(200.0, 200.0, 45.0, 18.0)])])
+    _mesh2, applied2 = _mesh(brep2, rec2)
+    slot = [h for h in applied2["quality"]["structure"]["hole_list"] if h["diameter_mm"] > 30.0]
+    assert len(slot) == 1 and not slot[0].get("bolt"), slot
+
+
 class SimpleWasher:
     def __init__(self, info: dict) -> None:
         self.info = info

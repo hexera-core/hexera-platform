@@ -3201,6 +3201,11 @@ def _bolt_rings(mesh: ShellMesh, hole_lines: list[dict]) -> list[dict]:
         got = [m for m in measured if float(np.linalg.norm(np.asarray(m["centre"], dtype=float) - at)) <= tol
                and abs(float(m["diameter_mm"]) - float(h["diameter_mm"])) <= 0.1 * float(h["diameter_mm"])]
         h["rings"] = max((int(m.get("rings") or 0) for m in got), default=0)
+        if h.get("shape") == "square":
+            # (SHMESH-51o7: a square bolt hole's rows of its square ring, as planned and drawn - the measure above
+            # finds round holes only)
+            h["rings"] = int(h.get("planned_rows") or 0) if h.get("washer") else 0
+            h["rings_from"] = "plan"
         if h["rings"] >= ST.BOLT_RINGS and h.get("one_ring"):
             # (the line says what was built: a hole planned with one ring that has two or more round it in the mesh - an
             # O-grid's rows to its box, a round plate's square - keeps no "one ring" reason)

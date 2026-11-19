@@ -65,6 +65,10 @@ BOLT_REACH = 10.0
 #: holes of one pattern: one plane, diameters alike within PATTERN_ALIKE; on a circle or in a row within PATTERN_TOL of
 #: their own radius
 PATTERN_ALIKE = 0.02
+#: SHMESH-51o7: a four-sided straight-edged hole the square plan takes (a carriage bolt's) is a bolt hole when it lines
+#: up with a hole of about its size in another plate, or is within BOLT_ALIKE of a round bolt hole's size on its plate
+#: (its size: its inscribed circle); its square ring then takes two rows where they fit
+SQUARE_BOLTS = True
 PATTERN_TOL = 0.1
 #: a bolt hole's rings reach out at most BOLT_RING_MAX times its radius; their outer elements are no longer than the
 #: user's longest edge (with none given: BOLT_OUT face sizes, the longest a mapped segment may be); no ring's quad has
@@ -112,6 +116,7 @@ class Washer:
     box_corners: list = field(default_factory=list)   # ... its four corners (model units, round the face's normal)
     owns: bool = False              # SHMESH-51e: its box's sides are its own (no line ends on them)
     kept: bool = False              # SHMESH-51j: one ring inside the two-ring box it keeps (its n, its outer circle)
+    square_one: float = 0.0         # SHMESH-51o7: a square bolt hole's ring with two rows: its one-row outer size (R)
 
     @property
     def boxed2(self) -> bool:
@@ -254,6 +259,29 @@ def _plane_key(n: np.ndarray, c: np.ndarray) -> tuple[np.ndarray, float]:
     return n, float(n @ c)
 
 
+def _square_of(gmsh, curves: list[int]) -> tuple[np.ndarray, float, np.ndarray] | None:
+    """SHMESH-51o7: (centre, inscribed radius, normal) of a four-sided straight-edged hole as the square plan takes
+    it (corners 70 to 110 degrees, no side more than twice another), else None."""
+    if len(curves) != 4 or any(gmsh.model.getType(1, c) != "Line" for c in curves):
+        return None
+    ends = [_samples(gmsh, c, 1) for c in curves]
+    P = np.array([min(((float(np.linalg.norm(x - y)), x) for x in ends[i] for y in ends[(i + 1) % 4]),
+                      key=lambda z: z[0])[1] for i in range(4)])
+    n = np.cross(P[1] - P[0], P[2] - P[1])
+    if float(np.linalg.norm(n)) <= 0:
+        return None
+    n = n / float(np.linalg.norm(n))
+    sides = [float(np.linalg.norm(P[(i + 1) % 4] - P[i])) for i in range(4)]
+    for i in range(4):
+        u1, u2 = P[i - 1] - P[i], P[(i + 1) % 4] - P[i]
+        ang = math.degrees(math.acos(max(-1.0, min(1.0, float(u1 @ u2) / float(np.linalg.norm(u1) * np.linalg.norm(u2))))))
+        if not (70.0 <= ang <= 110.0):
+            return None
+    if max(sides) > 2.0 * min(sides):
+        return None
+    return P.mean(axis=0), 0.5 * min(sides), n
+
+
 def bolt_holes(gmsh, tag_of: dict[int, int], bodies: dict[int, str] | None = None
                ) -> dict[tuple[int, int], tuple[str, str]]:
     """SHMESH-51: which round holes of the flat faces carry load, and why: {(surface, its loop's index): (kind, words)}
@@ -262,6 +290,7 @@ def bolt_holes(gmsh, tag_of: dict[int, int], bodies: dict[int, str] | None = Non
     row, or a group), "joined" (its plate meets another plate: an edge it shares with a third face, a flat face out of
     its plane, or another part's face). `bodies`: sewn face -> its part. Holes another face shares are not counted."""
     holes: list[dict] = []
+    squares: list[dict] = []        # (SHMESH-51o7: the four-sided holes the square plan takes)
     faces_of: dict[int, set[int]] = {}
     for t in sorted(tag_of):
         if gmsh.model.getType(2, t) != "Plane":
@@ -277,6 +306,9 @@ def bolt_holes(gmsh, tag_of: dict[int, int], bodies: dict[int, str] | None = Non
                 continue
             got = _circle_of(gmsh, cl)
             if got is None:
+                sq_ = _square_of(gmsh, cl) if SQUARE_BOLTS else None
+                if sq_ is not None:
+                    squares.append({"t": t, "j": j, "c": sq_[0], "r": sq_[1], "n": _plane_key(sq_[2], sq_[0])[0]})
                 continue
             centre, r, n, _first = got
             nk, off = _plane_key(n, centre)
@@ -349,6 +381,25 @@ def bolt_holes(gmsh, tag_of: dict[int, int], bodies: dict[int, str] | None = Non
                 break
         if joined:
             out[(a["t"], a["j"])] = ("joined", "its plate is joined to another plate")
+    # SHMESH-51o7: a square hole (a carriage bolt's) lines up with a hole - round or square - of about its size in
+    # another plate, or is of a round bolt hole's size on its own plate; else it stays as it was
+    for a in squares:
+        for b in holes + squares:
+            if b is a or b["t"] == a["t"] or abs(float(a["n"] @ b["n"])) < cos_ax:
+                continue
+            if abs(a["r"] - b["r"]) > BOLT_ALIKE * max(a["r"], b["r"]):
+                continue
+            v = b["c"] - a["c"]
+            along = float(v @ a["n"])
+            side = float(np.linalg.norm(v - along * a["n"]))
+            if side <= BOLT_AXIS_OFF * min(a["r"], b["r"]) and 1e-9 < abs(along) <= BOLT_REACH * 2 * max(a["r"], b["r"]):
+                out[(a["t"], a["j"])] = ("through", "it lines up with a hole in another plate (a bolt through both)")
+                break
+        if (a["t"], a["j"]) in out:
+            continue
+        if any((h["t"], h["j"]) in out and tag_of.get(h["t"]) == tag_of.get(a["t"])
+               and abs(a["r"] - h["r"]) <= BOLT_ALIKE * max(a["r"], h["r"]) for h in holes):
+            out[(a["t"], a["j"])] = ("square", "it is a square hole of bolt size on a plate with bolt holes")
     return out
 
 
@@ -595,6 +646,16 @@ def plan_washers(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], hole_s
                 if isinstance(sq, str):
                     no(info, f"not round: {sq}")
                     continue
+                bolt_sq = bolts.get((t, j)) if SQUARE_BOLTS else None
+                if bolt_sq is not None:
+                    # SHMESH-51o7: a square bolt hole - a second row of near-square cells round its square ring (each
+                    # row as wide as its one row, inside the user's edges), where it fits (room checked below)
+                    info["bolt"] = bolt_sq[1]
+                    if k in (no_bolt or {}):
+                        info["one_ring"] = (no_bolt or {})[k]
+                    else:
+                        sq.square_one = sq.R
+                        sq.R, sq.rows = sq.r + 2 * (sq.R - sq.r), 2
                 info.update(planned_round=sum(sq.side_counts), planned_rows=sq.rows,
                             planned_width_mm=float(f"{(sq.R / sq.r - 1) * sq.r * mm:.4g}"), shape="square")
                 sq.face, sq.owner, sq.hole, sq.info = t, k, cl, info
@@ -698,6 +759,9 @@ def plan_washers(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], hole_s
                     R_p = lim_p
                     w.plain = (n_p, max(1, min(rows_p, round(math.log(R_p / w.r) / (2 * math.pi / n_p)))),
                                R_p / w.r, True)
+        if w.corners and w.rows == 2 and w.square_one and limit < w.R:
+            # (SHMESH-51o7: no room for a square bolt hole's second row: its one row)
+            one_ring(w, mm, "no room for two rings")
         if limit < w.R and not ((w.radii or w.kept) and limit >= w.R * (1 - 1e-6)):
             if (w.radii or w.kept) and one_ring(w, mm, "no room for two rings (narrowed by the holes beside it)"):
                 # (SHMESH-51: narrowed by its neighbours' rings - the one ring its size gives, room-checked)
@@ -723,6 +787,11 @@ def plan_washers(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], hole_s
 def one_ring(w: Washer, mm: float, why: str) -> bool:
     """SHMESH-51: a bolt hole's washer back to the one ring its size gives (its plan by size alone, room-checked), the
     reason on its line; False when it has no such plan (it keeps its two rings)."""
+    if w.corners and w.rows == 2 and w.square_one:
+        # (SHMESH-51o7: a square bolt hole's ring back to its one row of near-square cells)
+        w.rows, w.R, w.square_one = 1, w.square_one, 0.0
+        w.info.update(planned_rows=1, planned_width_mm=float(f"{(w.R - w.r) * mm:.4g}"), one_ring=why)
+        return True
     if not (w.radii or w.kept) or not w.plain:
         return False
     n_, rows_, ratio_, *shrunk = w.plain
