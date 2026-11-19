@@ -590,7 +590,12 @@ def user_sized(zone_list: list[dict], sizes: Mapping[str, Mapping]) -> list[dict
     area_of = {str(f): k for k, v in areas.items() for f in v["faces"]}
     out = []
     for z in zone_list:
-        on = [area_of[str(f)] for f in z.get("faces") or [] if str(f) in area_of] if z.get("kind") != "part" else []
+        # a zone is the area's only when ALL its faces are the area's: a wall zone running over fifty faces, one of them
+        # a fillet asked finer, kept its own size off the fillet (the area's own zone, below, sizes the fillet itself) -
+        # held to the fillet's 0.028 mm it put fea0254 at 124 million elements (round 7)
+        zf = [str(f) for f in z.get("faces") or []]
+        on = ([area_of[zf[0]]] if zf and z.get("kind") != "part" and all(f in area_of for f in zf)
+              and len({area_of[f] for f in zf}) == 1 else [])
         key = on[0] if on else (str(z.get("part") or "") if z.get("kind") == "part"
                                 else (_part_key((z.get("faces") or [""])[0]) or "Part_1"))
         want = sizes.get(key)
@@ -603,6 +608,11 @@ def user_sized(zone_list: list[dict], sizes: Mapping[str, Mapping]) -> list[dict
         row = {**z, "user": key, "user_min_m": lo, "user_max_m": hi, "rule_size_m": size}
         if z.get("kind") == "part":
             new = mid
+        elif on and want.get("scale"):
+            # PLAN-fea-36 on an area ("finer at the fillets"): each zone on it its OWN size halved (a wall's through-
+            # thickness size halved, not set to the fillet's 0.028 mm over the wall's 1.6 mm reach: 124 million
+            # elements on fea0254); "coarser" keeps what the accuracy rules make finer there
+            new = size * float(want["scale"]) if float(want["scale"]) < 1.0 else size
         else:
             new = min(max(size, lo), mid)
             vc = valid_cap(z)
@@ -994,7 +1004,9 @@ def user_words(plan: Mapping) -> list[str]:
     for pid, v in sizes.items():
         if v.get("scale"):
             # PLAN-fea-36: "finer" / "coarser" on a whole part, with no number
-            got_m = next((float(z["size_m"]) for z in zs if z.get("user") == pid and z.get("kind") == "part"),
+            # (an area asked so, NOTE-6: its own zone's size)
+            got_m = next((float(z["size_m"]) for z in zs
+                          if z.get("user") == pid and z.get("kind") in ("part", "area")),
                          0.5 * (float(v["min_m"]) + float(v["max_m"])))
             finer = float(v["scale"]) < 1.0
             out.append(f"You asked for {'finer' if finer else 'coarser'} elements on {v.get('name') or pid}: its own "

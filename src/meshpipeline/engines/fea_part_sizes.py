@@ -47,7 +47,12 @@ def sizes_of(ps: Mapping | None) -> dict[str, dict]:
         if scale is None:
             continue
         for p in [*e.get("parts", []), *e.get("rest_parts", [])]:
-            if p not in features:            # an area inside a part takes a size, not a scale
+            if p in features:
+                # an area asked "finer" or "coarser" ("make the mesh finer at the fillets"): its own faces' size
+                # halved or doubled (resolve_scales), held on its faces as a sized area is (PLAN-fea-32, -36)
+                out.setdefault(p, {"scale": scale, "quote": e.get("quote") or "", "rest": False,
+                                   "faces": list((ps.get("features") or {})[p]), "name": names.get(p) or p})
+            else:
                 out.setdefault(p, {"scale": scale, "quote": e.get("quote") or "", "rest": p in e.get("rest_parts", [])})
     return out
 
@@ -78,16 +83,29 @@ def resolve_scales(sizes: Mapping[str, Mapping], zones, *, base_m: float,
         scale = v.get("scale")
         if scale is None:
             continue
-        own = [z for z in zs if _zone_key(z) == k]
-        part = next((float(z["size_m"]) for z in own if z.get("kind") == "part"), None)
-        given = (whole or {}).get(k)
-        base = (0.5 * (float(given["min_m"]) + float(given["max_m"])) if given and "min_m" in given
-                else float(part if part is not None else base_m))
+        faces = {str(f) for f in v.get("faces") or []}
+        if faces:
+            # an area (NOTE-6): its own size is the size the plan gives its faces - the finest zone on them (a round's,
+            # a hole's), else its part's - halved or doubled; nothing on it raised for "finer"
+            own = [z for z in zs if z.get("kind") != "part" and faces & {str(f) for f in z.get("faces") or []}]
+            in_part = _zone_key({"faces": sorted(faces)[:1]})
+            part = next((float(z["size_m"]) for z in zs if z.get("kind") == "part" and _zone_key(z) == in_part), None)
+            given = (whole or {}).get(in_part)
+            whole_m = (0.5 * (float(given["min_m"]) + float(given["max_m"])) if given and "min_m" in given
+                       else float(part if part is not None else base_m))
+            base = min([float(z["size_m"]) for z in own] or [whole_m])
+        else:
+            own = [z for z in zs if _zone_key(z) == k]
+            part = next((float(z["size_m"]) for z in own if z.get("kind") == "part"), None)
+            given = (whole or {}).get(k)
+            base = (0.5 * (float(given["min_m"]) + float(given["max_m"])) if given and "min_m" in given
+                    else float(part if part is not None else base_m))
         target = base * float(scale)
         finest = min([float(z["size_m"]) for z in own] + [target])
         low = min(finest, target)
         out[k] = {"min_m": float(f"{low:.6g}"), "max_m": float(f"{2.0 * target - low:.6g}"), "scale": float(scale),
-                  "rule_m": float(f"{base:.6g}"), "quote": v.get("quote") or "", "rest": bool(v.get("rest"))}
+                  "rule_m": float(f"{base:.6g}"), "quote": v.get("quote") or "", "rest": bool(v.get("rest")),
+                  **({"faces": sorted(faces), "name": v.get("name") or k} if faces else {})}
     return out
 
 

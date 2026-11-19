@@ -53,3 +53,32 @@ def test_the_plan_says_what_was_done():
     words = P.user_words({"user_sizes": sizes, "zones": P.user_sized(ZONES, sizes)})
     assert "You asked for coarser elements on Part_2: its own size is doubled, from 4 mm to 8 mm" in words[0]
     assert "You asked for finer elements on Part_3: its own size is halved, from 4 mm to 2 mm" in words[1]
+
+
+# an AREA asked finer or coarser with no number (NOTE-6): fea0254's "make the mesh finer at the fillets", round 7
+AREA_READING = {"status": "used", "features": {"Feature_2": ["Face_7", "Face_8"]},
+                "parts": [{"id": "Feature_2", "feature": True, "name": "2 rounded edges (fillets), radius 0.141 mm"}],
+                "entries": [{"ask": "refine", "parts": ["Feature_2"], "quote": "make the mesh finer at the fillets"}]}
+AREA_ZONES = [{"id": "P1", "kind": "part", "part": "Part_1", "size_m": 0.003},
+              {"id": "W7", "kind": "wall", "faces": ["Face_7"], "size_m": 0.0008, "thickness_m": 0.0016},
+              {"id": "R7", "kind": "round", "faces": ["Face_7"], "size_m": 0.0000554},
+              {"id": "R8", "kind": "round", "faces": ["Face_8"], "size_m": 0.0000554},
+              {"id": "W9", "kind": "wall", "faces": ["Face_8", "Face_9"], "size_m": 0.0009}]
+
+
+def test_an_area_asked_finer_halves_each_of_its_own_sizes_and_says_so():
+    """Before, "finer" on an area was dropped (an area took a size, never a scale): fea0254's fillets got no zone.
+    Now each zone wholly on the area has its own size halved - the round's, and the wall's through-thickness size
+    (not the round's 0.028 mm over the wall's 1.6 mm, 124 million elements) - the area gets a zone of its own, and a
+    zone only partly on it keeps its size."""
+    sizes = PS.sizes_of(AREA_READING)
+    assert sizes["Feature_2"]["scale"] == 0.5 and sizes["Feature_2"]["faces"] == ["Face_7", "Face_8"]
+    sizes = PS.resolve_scales(sizes, AREA_ZONES, base_m=0.003)
+    assert math.isclose(sizes["Feature_2"]["rule_m"], 0.0000554) and math.isclose(sizes["Feature_2"]["min_m"], 0.0000277)
+    zones = {z["id"]: z for z in P.user_sized(AREA_ZONES, sizes)}
+    assert math.isclose(zones["R7"]["size_m"], 0.0000277) and math.isclose(zones["W7"]["size_m"], 0.0004)
+    assert zones["W9"]["size_m"] == 0.0009 and "user" not in zones["W9"] and zones["P1"]["size_m"] == 0.003
+    assert zones["U2"]["kind"] == "area" and math.isclose(zones["U2"]["size_m"], 0.0000277)
+    words = P.user_words({"user_sizes": sizes, "zones": list(zones.values())})
+    assert words[0].startswith("You asked for finer elements on 2 rounded edges (fillets), radius 0.141 mm: its own "
+                               "size is halved, from 0.0554 mm to 0.0277 mm")
