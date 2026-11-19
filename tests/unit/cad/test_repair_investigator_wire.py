@@ -63,7 +63,7 @@ def test_converse_tools_hands_over_the_schemas_and_keeps_the_calls(tooled):
     sent = fake.calls[0]
     assert sent["name"] == "RepairInvestigator"
     assert sent["user_id"] == "u-1"
-    assert [s.name for s in sent["tools"]] == ["look", "measure", "probe"]
+    assert [s.name for s in sent["tools"]] == ["look", "measure", "probe", "edit"]
     assert sent["messages"] == CONVERSATION
 
 

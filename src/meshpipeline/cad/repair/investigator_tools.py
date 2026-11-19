@@ -1,12 +1,13 @@
-# Responsibility: The READ-ONLY half of the investigator's tool loop - look, measure, probe - and
-#                 the envelope their answers travel in.
+# Responsibility: The investigator's tool loop - look, measure, probe, and `edit` ON A SCRATCH
+#                 CLONE - and the envelope their answers travel in.
 # Owns: the tool declarations (one source of truth for the native schemas AND the JSON-protocol
 #       prose), strict argument checking, bounds-checked targets, the measurements themselves, and
 #       the byte ceiling every result is clipped to.
-# Boundaries: NOTHING HERE CHANGES A SHAPE. These tools look, measure and probe; editing on a
-#             scratch clone is Task 10's `edit`, which adds to `READ_ONLY`'s sibling rather than
-#             loosening anything here. A tool never receives the session - only a `Workspace` - so
-#             it cannot touch the session's shape, snapshots, log or holds. Every reply is DATA:
+# Boundaries: NOTHING HERE TOUCHES THE REAL SHAPE. `READ_ONLY` changes nothing at all, and
+#             `edit` - its SIBLING, never a member - changes only a `Scratch` clone whose session
+#             is marked `is_scratch` and so can never commit. A tool never receives the real
+#             session: only a `Workspace`, whose `editor` holds the clone, so there is no
+#             reference an edit could follow to the session's shape, snapshots, log or holds. Every reply is DATA:
 #             customer-derived strings (a gmsh message, a face name) are clipped and JSON-quoted
 #             here, because `tool_result_turn` does not sanitise and the model reads what we send.
 #             It never raises. gmsh and fTetWild stay in `ladder`'s children, never this process,
@@ -23,9 +24,17 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+import meshpipeline.settings.cad_repair as rcfg
 from meshpipeline.cad.repair import deviation, ladder, observe
 from meshpipeline.cad.repair.caps import Measure
+
+# THE AUTHOR'S VALIDATOR AND THE SESSION, imported for the EDIT half only. `plan_entry` is reused
+# rather than reimplemented so the investigator and the package author cannot disagree about what
+# is proposable, and `RepairSession.scratch` is the only constructor that makes an editable shape.
+# Neither import reaches `agents/` or `pipeline/`, and neither touches a kernel at import time.
+from meshpipeline.cad.repair.model_author import Refusal, plan_entry
 from meshpipeline.cad.repair.regions import Region
+from meshpipeline.cad.repair.session import KEPT, RepairSession
 from meshpipeline.contracts.model_inference import ToolSchema
 
 logger = logging.getLogger(__name__)
@@ -89,8 +98,12 @@ class Workspace:
     baseline_shape: object
     face_reader: observe.FaceReader | None = None
     #: The faces the kept edits touched, as operations name them. Empty until there are edits:
-    #: Task 10's `edit` tool keeps this in step with the scratch clone.
+    #: the `edit` tool keeps this in step with the scratch clone.
     edited_faces: tuple[str, ...] = ()
+    #: THE ONLY ROUTE TO A MUTATION, and None in the read-only posture. An `Editor` holds the
+    #: scratch clone; the real session is not reachable through it, so `edit` can reach a clone
+    #: and nothing else. `edit` refuses - it never raises - when this is None.
+    editor: Editor | None = None
 
 
 LOOK = ToolSpec(
@@ -112,12 +125,33 @@ PROBE = ToolSpec(
     "Tier 1 is always region-scoped; the others are about the whole part. A 'passed' of null "
     "means no answer (not asked, or out of time) - never that the part is good.")
 
-#: The tools that only look. Editing is Task 10's, on a scratch clone, and is NOT here.
+#: The tools that only look. EDITING IS NOT HERE AND MUST NEVER BE: this tuple is the guarantee
+#: that look, measure and probe cannot change a shape, and a mutating tool added to it would
+#: withdraw that guarantee from every reader without changing a line they read. `edit` is a
+#: SIBLING (`EDITING`), so the two sets stay nameable apart.
 READ_ONLY: tuple[ToolSpec, ...] = (LOOK, MEASURE, PROBE)
-_SPEC_BY_NAME = {spec.name: spec for spec in READ_ONLY}
+
+EDIT = ToolSpec(
+    "edit", {"op": str, "fingerprint": str, "defect_code": str, "reset": bool}, False,
+    "Try one repair operation ON A SCRATCH COPY of the part. 'op' is a catalogue operation and "
+    "'fingerprint' a defect of this region that it answers; 'defect_code' picks which code of "
+    "that fingerprint to aim at when it carries several. The copy is yours to spoil: nothing "
+    "here reaches the part, and a kept edit is a RECORD of what worked, not a repair that "
+    'shipped. Send {"reset": true} on its own to throw the copy away and start again from the '
+    "part as it is. The answer says whether the edit was kept or rolled back and why, what it "
+    "declared, which defects of the region cleared, remain or are new, and the copy's counts.")
+
+#: The tools that may change the SCRATCH clone - a sibling of `READ_ONLY`, never a member of it.
+EDITING: tuple[ToolSpec, ...] = (EDIT,)
+#: Every tool, in declaration order. This is what the transports render.
+ALL_TOOLS: tuple[ToolSpec, ...] = READ_ONLY + EDITING
+_SPEC_BY_NAME = {spec.name: spec for spec in ALL_TOOLS}
 #: Arguments without which a call cannot be served. Read by the schema AND by the checker, so the
 #: native transport and the JSON protocol cannot disagree about what is required.
-_REQUIRED: dict[str, tuple[str, ...]] = {"measure": ("what",), "probe": ("tier",)}
+#: `edit` HAS NO UNCONDITIONAL REQUIREMENT, deliberately: it takes either {op, fingerprint} or
+#: {reset}, which this map cannot express (it is an AND, not an alternative). The form check is
+#: the handler's, and it names the keys it wanted, so the refusal is no vaguer for it.
+_REQUIRED: dict[str, tuple[str, ...]] = {"measure": ("what",), "probe": ("tier",), "edit": ()}
 
 
 # --- the declaration, rendered twice from one source ------------------------------------------
@@ -127,6 +161,8 @@ def _property(accepts: type | tuple) -> dict:
         return {"type": "string", "enum": list(accepts)}
     if accepts is list:
         return {"type": "array", "items": {"type": "string"}, "maxItems": TARGETS_MAX}
+    if accepts is bool:
+        return {"type": "boolean"}
     return {"type": "string"}
 
 
@@ -138,10 +174,15 @@ def _parameters(spec: ToolSpec) -> dict:
 
 
 def tool_schemas() -> tuple[ToolSchema, ...]:
-    """The read-only tools as `ToolSchema`s, so `.definition()` is the ONE place a vendor shape
-    appears. The JSON-protocol prose below is rendered from these same objects."""
+    """Every tool as a `ToolSchema`, so `.definition()` is the ONE place a vendor shape appears.
+    The JSON-protocol prose below is rendered from these same objects.
+
+    `ALL_TOOLS`, not `READ_ONLY`: a posture with no scratch clone still DECLARES `edit`, and the
+    handler refuses it by naming the clone that is missing. One schema whatever the posture,
+    because a tool that appears and disappears teaches a model to infer the posture from the
+    absence."""
     return tuple(ToolSchema(name=spec.name, description=spec.describe,
-                            parameters=_parameters(spec)) for spec in READ_ONLY)
+                            parameters=_parameters(spec)) for spec in ALL_TOOLS)
 
 
 def _prose_arg(name: str, schema: dict, required: bool) -> str:
@@ -149,6 +190,8 @@ def _prose_arg(name: str, schema: dict, required: bool) -> str:
         accepts = " | ".join(json.dumps(v) for v in schema["enum"])
     elif schema.get("type") == "array":
         accepts = f"array of string, at most {schema.get('maxItems', TARGETS_MAX)}"
+    elif schema.get("type") == "boolean":
+        accepts = "boolean"
     else:
         accepts = schema.get("type", "string")
     return f"{name} ({accepts}{'' if required else ', optional'})"
@@ -343,6 +386,12 @@ def _check_args(spec: ToolSpec, args: object) -> str:
         elif accepts is list:
             if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
                 return f"{spec.name} argument {key!r} must be a list of strings"
+        elif accepts is bool:
+            # BEFORE the string branch, and `isinstance(value, int)` would NOT do: a bool is an
+            # int, but 1 is not the form we take, and accepting it teaches a form we refuse
+            # elsewhere.
+            if not isinstance(value, bool):
+                return f"{spec.name} argument {key!r} must be a boolean"
         elif not isinstance(value, str):
             return f"{spec.name} argument {key!r} must be a string"
     missing = [key for key in _REQUIRED.get(spec.name, ()) if key not in args]
@@ -441,11 +490,355 @@ def _probe(ws: Workspace, args: dict, *, budget_s: float) -> dict:
             "detail": dict(result.detail)}
 
 
-_HANDLERS = {"look": _look, "measure": _measure, "probe": _probe}
+# --- the scratch clone: where an edit is allowed to happen -------------------------------------
+#
+# THE PILLAR THIS SECTION EXISTS FOR: an investigator may EDIT, and until it concludes the edit
+# must be unreachable from the real shape. The arrangement is deliberately crude, because crude is
+# checkable: the real shape is COPIED once, the copy goes into a session marked `is_scratch`, and
+# that session's `try_package` refuses to commit. Nothing here holds the real session, so there is
+# no reference an edit could follow back to it - only the copy's own `RepairSession`.
+#
+# WHAT IS *NOT* WEAKENED. The rehearsal runs the real `try_op`: the real snapshot, the real caps
+# against the UPLOAD's measure, the real holds, the real declaration accounting and the real
+# per-operation rollback. An edit that would be refused in the run is refused here, which is the
+# only way a kept-edit log is worth replaying.
+
+
+def _clone(shape):
+    """A deep copy of the shape, structure and indices intact, sharing no TShape with the input.
+
+    A module-level seam so the unit tier can replace it; `operations._copied` is the real thing,
+    and `tests/native/test_native_repair_investigator_edit.py` is what proves the indices and the
+    fingerprints survive the copy.
+    """
+    from meshpipeline.cad.repair.operations import _copied
+
+    return _copied(shape)
+
+
+def _counts_of(shape) -> dict:
+    """The clone's sub-shape counts, or `{}` when they cannot be had.
+
+    REPORTED SO THE MODEL CAN SEE WHAT ITS EDIT DID to the part's shape at the coarsest level (a
+    solid lost, a face gained). `{}` is "not known", never zeros.
+    """
+    from meshpipeline.cad.repair.conservative import _counts
+
+    try:
+        found = _counts(shape) or {}
+    except Exception:  # noqa: BLE001 - a count that failed is not an answer, and never a raise
+        return {}
+    return {str(k): int(v) for k, v in found.items() if isinstance(v, int)}
+
+
+def _solids_of(shape) -> int | None:
+    """The CLONE's solid count for `PackageGuards`, or None when unknown.
+
+    THE CLONE, NOT THE PART, and that is the whole point of the seam: an earlier kept edit in the
+    rehearsal can have created or merged a solid, and an operation gated on the body count
+    (`fragment_bodies`) has to be judged against the shape it would actually run on. None fails
+    open, exactly as `model_author` has it - the session's own decline still stands.
+    """
+    from meshpipeline.cad.repair.model_author import _current_solids
+
+    return _current_solids(shape)
+
+
+@dataclass(frozen=True, slots=True)
+class EditRecord:
+    """One attempted edit on the clone, kept or not.
+
+    EVERY ATTEMPT IS RECORDED, including the declines and the rollbacks: what the investigator
+    learned is as much in what failed as in what worked, and `kept()` filters this list rather
+    than replacing it.
+    """
+
+    op: str
+    fingerprint: str
+    defect_code: str
+    status: str
+    reason: str = ""
+
+    @property
+    def kept(self) -> bool:
+        return self.status == KEPT
+
+    def recorded(self) -> dict:
+        """The entry as the author's plan records it - `model_author.plan_entry`'s second return
+        value, key for key, so a kept-edit log can be REPLAYED as a package plan."""
+        return {"op": self.op, "fingerprint": self.fingerprint, "defect_code": self.defect_code}
+
+
+class Scratch:
+    """A throwaway copy of the session's shape, and the log of what was tried on it.
+
+    Phase 3's tournament reuses this: K candidates each get their own `Scratch` over the same
+    session shape, so they rehearse in parallel without ever meeting.
+    """
+
+    def __init__(self, source, session: RepairSession, *, original: Measure, defects: tuple,
+                 reserved: frozenset, remaining_s, clock, measurer, scanner) -> None:
+        #: THE SESSION'S SHAPE, HELD ONLY TO COPY IT AGAIN on `reset`. Nothing applies an
+        #: operation to it: it is never passed to `try_op`, and it is not the session's shape.
+        self._source = source
+        self.session = session
+        self.original = original
+        #: The seeded list, kept so `reset` can seed the rebuilt session with it too.
+        self.seed_defects = tuple(defects)
+        self.reserved = frozenset(reserved)
+        self.remaining_s = remaining_s
+        self.clock = clock
+        self._measurer = measurer
+        self._scanner = scanner
+        self.edits: list[EditRecord] = []
+
+    @classmethod
+    def of(cls, session_shape, *, original: Measure, defects: tuple,
+           reserved: frozenset = frozenset(), remaining_s=None, clock=time.monotonic,
+           measurer=None, scanner=None) -> Scratch:
+        """A scratch clone of `session_shape`, ready to be edited and unable to commit.
+
+        `original` is the UPLOAD's measure and `defects` the session's current list; neither the
+        measurer nor the scanner is called here, so opening a clone costs a copy and nothing more
+        (`RepairSession.scratch` says why both are given rather than taken).
+
+        `measurer` and `scanner` are the session's own defaults unless given - injectable for the
+        same reason `RepairSession`'s are, so the bookkeeping can be tested without a kernel.
+        """
+        return cls._built(session_shape, original=original, defects=tuple(defects),
+                          reserved=frozenset(reserved), remaining_s=remaining_s, clock=clock,
+                          measurer=measurer, scanner=scanner)
+
+    @classmethod
+    def _built(cls, source, *, original, defects, reserved, remaining_s, clock, measurer,
+               scanner) -> Scratch:
+        session = cls._session(source, original=original, defects=defects, reserved=reserved,
+                               remaining_s=remaining_s, clock=clock, measurer=measurer,
+                               scanner=scanner)
+        return cls(source, session, original=original, defects=defects, reserved=reserved,
+                   remaining_s=remaining_s, clock=clock, measurer=measurer, scanner=scanner)
+
+    @staticmethod
+    def _session(source, *, original, defects, reserved, remaining_s, clock, measurer,
+                 scanner) -> RepairSession:
+        kwargs: dict = {"original": original, "defects": defects, "reserved": reserved,
+                        "remaining_s": remaining_s, "clock": clock}
+        if measurer is not None:
+            kwargs["measurer"] = measurer
+        if scanner is not None:
+            kwargs["scanner"] = scanner
+        # THE COPY IS MADE HERE AND NOWHERE ELSE, so there is exactly one line in the programme
+        # at which a shape becomes editable, and it is a copy.
+        return RepairSession.scratch(_clone(source), **kwargs)
+
+    @property
+    def shape(self):
+        """The clone AS THE EDITS LEFT IT. Never the session's shape."""
+        return self.session.shape
+
+    def defects(self) -> tuple:
+        """The clone's current defect list. Seeded at construction and replaced by each edit's
+        own re-inspection, so this costs no scan of its own."""
+        return self.session.defects()
+
+    def edited_faces(self) -> tuple[str, ...]:
+        """The faces the KEPT edits added or rebuilt, in order, deduplicated.
+
+        This is what `measure deviation` is measured on: it reads `edited_faces` off the
+        `Workspace`, which `_edit` keeps in step with this.
+        """
+        return tuple(dict.fromkeys(self.session._kept_faces))
+
+    def counts(self) -> dict:
+        return _counts_of(self.shape)
+
+    def kept(self) -> tuple[dict, ...]:
+        """The recorded `{op, fingerprint, defect_code}` of the KEPT edits, in the order kept.
+
+        THE DELIVERABLE OF A REHEARSAL. A declined or rolled-back edit is not in it, because the
+        point of the log is that it can be replayed into a package plan and reach the same place:
+        an entry that did nothing on the clone would be an operation the real session refuses,
+        and a plan that carries refusals is a plan that cannot commit.
+        """
+        return tuple(edit.recorded() for edit in self.edits if edit.kept)
+
+    def reset(self) -> None:
+        """Throw the clone away and start again from the same session shape.
+
+        A FRESH COPY OF `_source`, and a fresh session over it: the edits, the op log, the
+        accounting and the defect list all go back to where `of` left them. The source is copied
+        again rather than kept aside, so a reset cannot hand back a shape an edit has touched.
+        """
+        self.session = self._session(self._source, original=self.original,
+                                     defects=self.seed_defects, reserved=self.reserved,
+                                     remaining_s=self.remaining_s, clock=self.clock,
+                                     measurer=self._measurer, scanner=self._scanner)
+        self.edits = []
+
+
+class Editor:
+    """The `edit` tool's state: ONE scratch clone and the run's tolerance.
+
+    The tolerance is the RUN's, given here rather than accepted as an argument: a model that
+    could widen the tolerance per edit would be rehearsing a repair the run cannot perform.
+    `rims` is the run's paired-rim refusal (`model_author.rim_guard`), carried so a fill refused
+    for the part is refused on the clone too.
+    """
+
+    def __init__(self, scratch: Scratch, *, tolerance_mm: float,
+                 rims: frozenset = frozenset()) -> None:
+        self.scratch = scratch
+        self.tolerance_mm = float(tolerance_mm)
+        self.rims = frozenset(rims)
+
+    def plan(self, args: dict, region: Region) -> tuple[dict, dict]:
+        """One `edit` call as a session plan item, VALIDATED BY THE AUTHOR'S OWN VALIDATOR.
+
+        `model_author.plan_entry`, not a second copy of its rules: the catalogue check, the
+        region check, the hold, the paired rim, the "does this op answer that code" check and the
+        operation preconditions are one implementation, so the investigator and the package
+        author cannot come to disagree about what is proposable. Its `Refusal` message already
+        names the key, the enum or the precondition that was violated, which is the convention
+        this module's refusals follow anyway.
+        """
+        from meshpipeline.cad.repair.model_author import PackageGuards, RegionContext
+
+        clone = self.scratch
+        # THE CLONE'S CURRENT DEFECTS, not the workspace's opening list: once an edit has cleared
+        # a fingerprint, aiming at it again is a proposal about a defect that is no longer there,
+        # and the author's own region check is what refuses it.
+        defects = clone.defects()
+        ctx = RegionContext(region, defects)
+        guards = PackageGuards(defects, reserved=clone.reserved, rims=self.rims,
+                               original=clone.original,
+                               solids_of=lambda: _solids_of(clone.shape))
+        return plan_entry(dict(args), ctx, guards)
+
+    def apply(self, item: dict, region: Region):
+        """The plan item, through the SCRATCH session's `try_op`.
+
+        `within=region` is "local edit, local proof", the same scoping a package's operations get,
+        so a rehearsal costs a scoped re-inspection rather than a whole-part walk.
+        """
+        return self.scratch.session.try_op(
+            item["op"], item["targets"], item["defect_code"],
+            tolerance_mm=self.tolerance_mm, within=region)
+
+
+def editor(scratch: Scratch, *, tolerance_mm: float, rims: frozenset = frozenset()) -> Editor:
+    """An `Editor` over `scratch`. THE FACTORY IS WHERE THE TOLERANCE COMES FROM - the driver
+    hands the run's, and no `edit` argument can change it."""
+    return Editor(scratch, tolerance_mm=tolerance_mm, rims=rims)
+
+
+def _edit_form(args: dict) -> bool:
+    """True for the reset form, False for the edit form. Refuses anything between.
+
+    `{"reset": true}` ALONE, or `{"op", "fingerprint"}` with an optional `defect_code`. A mixture
+    is refused by name rather than resolved by precedence: a model that sent both did not mean
+    one of them, and quietly picking is how it learns a form we never promised.
+    """
+    if "reset" in args:
+        others = sorted(set(args) - {"reset"})
+        if others:
+            raise _Refused("edit takes 'reset' on its own; it was sent with "
+                           f"{', '.join(repr(k) for k in others)}")
+        if args["reset"] is not True:
+            raise _Refused("edit argument 'reset' must be true; false resets nothing - send "
+                           "{'op', 'fingerprint'} to make an edit instead")
+        return True
+    missing = [key for key in ("op", "fingerprint") if key not in args]
+    if missing:
+        raise _Refused(f"edit needs {', '.join(repr(k) for k in missing)}, or 'reset' on its own")
+    return False
+
+
+def _scoped(defects, region: Region, *, diagonal_mm: float) -> list[str]:
+    """The fingerprints of `defects` a scan scoped to `region` could report, sorted.
+
+    `localize.in_region`'s rule, so what an edit reports as cleared, remaining or new is the same
+    set the scoped re-inspection that judged it actually looked at.
+    """
+    from meshpipeline.cad.repair.localize import in_region
+
+    return sorted({str(d.fingerprint) for d in defects
+                   if d.fingerprint and in_region(d, region, diagonal_mm=diagonal_mm)})
+
+
+def _edit(ws: Workspace, args: dict, *, budget_s: float) -> dict:
+    """Try one operation ON THE CLONE, or throw the clone away.
+
+    THE REAL SHAPE IS NOT REACHABLE FROM HERE. The only shape this touches is `editor.scratch`'s,
+    which is a copy; `ws.shape` and `ws.edited_faces` are then pointed at the copy so the
+    read-only tools (and `measure deviation` in particular) go on describing what the model is
+    actually looking at.
+
+    EVERY OUTCOME IS AN ANSWER. A refused proposal, a declined operation and a rolled-back edit
+    are all results the model reads and learns from; only a proposal that could not be validated
+    is an `ok=False`, because there is no verdict to report for it.
+    """
+    editing = ws.editor
+    if editing is None:
+        raise _Refused("edit is unavailable here: this workspace has no scratch clone, so there "
+                       "is nothing an edit could safely touch")
+    scratch = editing.scratch
+    region = ws.region
+    diagonal = float(ws.original.diagonal_mm)
+
+    if _edit_form(args):
+        scratch.reset()
+        ws.shape = scratch.shape
+        ws.baseline_shape = scratch.shape
+        ws.edited_faces = ()
+        return {"reset": True, "kept_edits": 0, "edits": 0,
+                "remaining": _scoped(scratch.defects(), region, diagonal_mm=diagonal),
+                "counts": scratch.counts()}
+
+    # THE CAP IS THE RUN'S, AND IT IS CHECKED BEFORE THE KERNEL. A rehearsal longer than the
+    # package the run could actually commit teaches a plan that cannot be replayed.
+    cap = int(rcfg.CAD_REPAIR_MAX_OPS)
+    kept_before = len(scratch.kept())
+    if kept_before >= cap:
+        raise _Refused(f"the clone already holds {kept_before} kept edit(s), which is the bound "
+                       f"CAD_REPAIR_MAX_OPS sets ({cap}); reset the clone or conclude")
+
+    before = _scoped(scratch.defects(), region, diagonal_mm=diagonal)
+    try:
+        item, recorded = editing.plan(args, region)
+    except Refusal as exc:
+        # THE AUTHOR'S OWN WORDS. It already names the key, the code or the bound it refused on.
+        raise _Refused(str(exc)) from None
+
+    verdict = editing.apply(item, region)
+    record = EditRecord(op=str(recorded["op"]), fingerprint=str(recorded["fingerprint"]),
+                        defect_code=str(recorded["defect_code"]), status=str(verdict.status),
+                        reason=str(verdict.reason))
+    scratch.edits.append(record)
+
+    # THE WORKSPACE FOLLOWS THE CLONE, whether the edit was kept or rolled back: after a rollback
+    # the session restored the handle it had, so this points at that one.
+    ws.shape = scratch.shape
+    ws.edited_faces = scratch.edited_faces()
+    after = _scoped(scratch.defects(), region, diagonal_mm=diagonal)
+    return {"op": record.op, "fingerprint": record.fingerprint,
+            "defect_code": record.defect_code, "status": record.status,
+            "reason": record.reason, "kept": record.kept, "basis": str(verdict.basis),
+            # THE DECLARATIONS, which is what the accounting and a package's predicate are judged
+            # on - reported so the model sees what its edit CLAIMED, not only what happened.
+            "declared": dict(verdict.evidence),
+            "cleared": [fp for fp in before if fp not in set(after)],
+            "remaining": [fp for fp in after if fp in set(before)],
+            "new": [fp for fp in after if fp not in set(before)],
+            "counts": scratch.counts(),
+            "kept_edits": len(scratch.kept()), "edits": len(scratch.edits),
+            "kept_edits_max": cap}
+
+
+_HANDLERS = {"look": _look, "measure": _measure, "probe": _probe, "edit": _edit}
 
 
 def run_tool(ws: Workspace, name: str, args: object, *, budget_s: float) -> ToolResult:
-    """Run one read-only tool. NEVER RAISES: an unknown tool, a bad argument, an out-of-range
+    """Run one tool. NEVER RAISES: an unknown tool, a bad argument, an out-of-range
     target and a kernel that gave up are all `ok=False` results with the reason named."""
     started = time.monotonic()
 
@@ -455,7 +848,7 @@ def run_tool(ws: Workspace, name: str, args: object, *, budget_s: float) -> Tool
 
     spec = _SPEC_BY_NAME.get(str(name))
     if spec is None:
-        return refused(f"unknown tool {str(name)!r}; the read-only tools are "
+        return refused(f"unknown tool {str(name)!r}; the tools are "
                        f"{', '.join(_SPEC_BY_NAME)}")
     bad = _check_args(spec, args)
     if bad or not isinstance(args, dict):

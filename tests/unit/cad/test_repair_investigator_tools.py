@@ -66,7 +66,8 @@ def test_the_read_only_tools_are_look_measure_probe():
 def test_one_source_of_truth_for_the_two_transports():
     """The native schemas and the JSON-protocol prose are rendered from the SAME specs."""
     schemas = it.tool_schemas()
-    assert [s.name for s in schemas] == [spec.name for spec in it.READ_ONLY]
+    # EVERY tool, read-only and editing alike: one declaration whatever the posture.
+    assert [s.name for s in schemas] == [spec.name for spec in it.ALL_TOOLS]
     prose = it.tool_prose()
     for schema in schemas:
         assert schema.name in prose

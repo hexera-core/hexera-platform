@@ -18,6 +18,7 @@ import meshpipeline.settings.cad_repair as rcfg
 from meshpipeline.cad.repair import mesh_probe, oracle, package_review
 from meshpipeline.cad.repair.caps import (
     Accounting,
+    Measure,
     cumulative_refusal,
     sanity_refusal,
 )
@@ -459,7 +460,9 @@ class RepairSession:
     def __init__(self, shape, *, measurer=_measure, scanner=None,
                  remaining_s: Callable[[], float] | None = None,
                  reserved: frozenset = frozenset(),
-                 clock: Callable[[], float] = time.monotonic) -> None:
+                 clock: Callable[[], float] = time.monotonic,
+                 original: Measure | None = None, defects: tuple | None = None,
+                 is_scratch: bool = False) -> None:
         #: Defect codes per-defect review holds for a PERSON, as the planner has them. The planner
         #: will not aim at a held entity; this is the other half - an operation that removes one
         #: without aiming at it (a whole-shape sweep) is rolled back below.
@@ -486,7 +489,13 @@ class RepairSession:
         self.shape = shape
         #: THE UPLOAD'S OWN MEASUREMENT, taken once and never replaced. Every cumulative check is
         #: against this, which is what stops six small operations drifting past a cap together.
-        self.original = measurer(shape)
+        # NORMALLY THE UPLOAD'S OWN WALK. `original` is given only by `scratch` below, which
+        # must inherit the real session's measure rather than measure a clone: a clone measured
+        # afresh would compute the caps from a shape that is already mid-repair, so exploration
+        # would get a wider allowance than the run it is exploring for. Given, the measurer is
+        # NOT called at construction - `self._measure` is still the real one, so every
+        # per-operation `before`/`after` inside `try_op` is measured for real.
+        self.original = measurer(shape) if original is None else original
         #: THE UPLOAD ITSELF, as repair received it: what a package's deviation is measured
         #: against (`_deviation_evidence`), never the shape the package happened to start from -
         #: a run of small packages must not hide how far they moved the part together.
@@ -497,7 +506,14 @@ class RepairSession:
         #: Packages tried in a region SINCE its first review reject (the cap allows one).
         self._after_review_reject: dict[int, int] = {}
         self.accounting = Accounting()
-        self._defects: tuple | None = None
+        #: None until scanned. `defects` SEEDS it, which is how `scratch` starts without a
+        #: whole-shape scan of its own: the clone is a copy, so the session's list already
+        #: describes it entity for entity.
+        self._defects: tuple | None = None if defects is None else tuple(defects)
+        #: Is this a THROWAWAY CLONE an investigator may edit? A scratch session applies and
+        #: rolls back operations exactly as a real one does - that is the point, the rehearsal
+        #: has to be faithful - but it can never commit: `try_package`'s first act is to refuse.
+        self.is_scratch = bool(is_scratch)
         self.complete_scan: bool = True
         #: Has the mesh probe run on this session yet? Until it has, there is nothing to carry
         #: forward when a probe is skipped (`_with_mesh`).
@@ -514,6 +530,36 @@ class RepairSession:
         #: package never sees another's. Appended only on a keep.
         self._kept_faces: list[str] = []
         self._kept_inputs: list = []
+
+    @classmethod
+    def scratch(cls, shape, *, original: Measure, defects: tuple,
+                reserved: frozenset = frozenset(),
+                remaining_s: Callable[[], float] | None = None,
+                clock: Callable[[], float] = time.monotonic,
+                measurer=_measure, scanner=None) -> RepairSession:
+        """A session over a THROWAWAY SHAPE, for rehearsing edits that must never ship.
+
+        It is the real session - the same `try_op`, the same snapshot, the same caps, the same
+        declaration accounting - over a shape the caller has already copied. That faithfulness is
+        the whole point: an edit rehearsed under weaker rules teaches nothing about the edit that
+        would actually be attempted. What it cannot do is COMMIT: `try_package` refuses on it, so
+        no scratch session can review a package or carry one into a report.
+
+        IT COSTS NOTHING TO OPEN. Neither the measurer nor the scanner is called here:
+
+          * `original` is the UPLOAD'S measure, handed in, so every cap compares against the same
+            numbers the real run compares against and exploration is capped the way the run is. A
+            clone measured afresh would be measured mid-repair and quietly widen every allowance.
+          * `defects` is the session's current list, which already describes this shape entity for
+            entity (a copy keeps structure and indices), so there is no first whole-shape scan.
+
+        The caller - never this method - makes the copy, because what counts as "the shape to
+        copy" is the caller's business (`investigator_tools.Scratch` copies with
+        `operations._copied`).
+        """
+        return cls(shape, measurer=measurer, scanner=scanner, remaining_s=remaining_s,
+                   reserved=reserved, clock=clock, original=original, defects=tuple(defects),
+                   is_scratch=True)
 
     def _default_scan(self, shape, *, face_scan: bool = True, within: Region | None = None,
                       final: bool = False):
@@ -996,6 +1042,16 @@ class RepairSession:
         package replacing an inner proof rather than adding an outer one. When hold provenance
         arrives it must carry a human-directive marker, not come from the plan.
         """
+        if self.is_scratch:
+            # THE ONE THING A SCRATCH SESSION MAY NOT DO. Everything above this line is a
+            # rehearsal on a clone; committing is what makes an edit real - it reviews, it
+            # accounts and it hands a shape onward - so it is refused BEFORE the predicate is
+            # even read, with nothing applied and nothing reviewed. `reverted` with a `refused:`
+            # prefix because nothing ran, exactly as a malformed package is reported.
+            return self._record_package(PackageVerdict(
+                region_index=package.region.index, status=REVERTED,
+                reason=f"{REFUSED} a scratch session cannot commit"))
+
         region = package.region
         predicate = package.predicate
 
