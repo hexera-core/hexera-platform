@@ -1045,3 +1045,39 @@ def test_a_trial_is_taken_out_leaving_the_same_model_and_next_tags():
     slow, fast = _trial_left(False), _trial_left(True)
     assert fast == slow
     assert len(slow[0][2]) == 6 + 1                     # the other faces and the face itself, nothing of the trial
+
+
+def test_a_free_cell_with_sides_of_4_and_6_takes_rows_with_a_three_to_one_step():
+    """SHMESH-51o17: a four-sided cell whose opposite sides carry 4 and 6 segments (the other two 2 each) - gmsh paves
+    it with triangles; its own rows have the coarse count and one three-to-one step along the fine side: all quads,
+    inside the solver's limits, every boundary node kept."""
+    import gmsh
+
+    from meshpipeline.engines import shell_quality as SQ
+
+    gmsh.initialize()
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        occ = gmsh.model.occ
+        t = occ.addRectangle(0, 0, 0, 56.0, 24.0)
+        occ.synchronize()
+        curves = sorted(abs(int(c)) for _d, c in gmsh.model.getBoundary([(2, t)], oriented=False))
+        for c in curves:
+            a, b = gmsh.model.getBoundingBox(1, c)[0:3], gmsh.model.getBoundingBox(1, c)[3:6]
+            along_x = abs(b[0] - a[0]) > abs(b[1] - a[1])
+            low = along_x and a[1] < 1.0
+            gmsh.model.mesh.setTransfiniteCurve(c, (5 if low else 7) if along_x else 3)
+        gmsh.model.mesh.generate(2)
+        tags, coords, _p = gmsh.model.mesh.getNodes()
+        index = np.zeros(int(tags.max()) + 1, dtype=np.int64)
+        index[np.asarray(tags, dtype=np.int64)] = np.arange(len(tags))
+        xyz = np.asarray(coords, dtype=float).reshape(-1, 3)
+        pts, quads = ST.transition_cell(gmsh, t, index, xyz, 1.0)
+        X = np.vstack([xyz, pts])
+        assert len(quads) == 4 * 1 + 3 + 4      # one row of 4 below, then 3 plain and one step of 4
+        m = SQ.quad_measures(X, quads)
+        assert (m["min_jacobian"] > 0).all() and not SQ._quad_past(m).any()
+        on_edge = {int(index[x]) for c in curves for x in gmsh.model.mesh.getNodes(1, c, includeBoundary=True)[0]}
+        assert on_edge <= {int(x) for x in np.unique(quads)}
+    finally:
+        gmsh.finalize()

@@ -1988,6 +1988,7 @@ def _band_split(gaps: list[int], n: int) -> tuple[list[int], list[int]] | None:
 #: edge.
 TRANSITION_CELLS = True
 TRANSITION_SMOOTH = 4
+TRANSITION_NUDGE = 6
 
 
 def _side_chain(gmsh, curves: list[int], start: np.ndarray, index: np.ndarray, xyz: np.ndarray) -> np.ndarray:
@@ -2059,14 +2060,23 @@ def transition_cell(gmsh, t: int, index: np.ndarray, xyz: np.ndarray, mm: float,
         new.append(p_)
         return base + len(new) - 1
 
-    # rows 0..m-1 of the coarse count (row 0 the coarse side), by transfinite interpolation
+    # the k coarse segments, spread along the row, that step to three fine ones; the fine node each coarse node meets
+    steps = sorted({min(n - 1, int((q + 0.5) * n / k)) for q in range(k)}) if k else []
+    if len(steps) != k:
+        raise ValueError("its steps do not spread")
+    meet = [0]
+    for i in range(n):
+        meet.append(meet[-1] + (3 if i in steps else 1))
+    # rows 0..m-1 of the coarse count (row 0 the coarse side), by transfinite interpolation, each coarse node drawn
+    # from its place on the coarse side to the fine node it meets (so the steps' row is not sheared)
     lines: list[list[int]] = [list(bottom)]
     for j in range(1, m):
         row = [int(left[j])]
+        s_j = j / max(m - 1, 1)
         for i in range(1, n):
-            u = float(ub[i])
+            u = (1 - s_j) * float(ub[i]) + s_j * float(ut[meet[i]])
             v = (1 - u) * float(vl[j]) + u * float(vr[j])
-            p_ = ((1 - v) * Xb[i] + v * _at(Xt, ut, u) + (1 - u) * Xl[j] + u * Xr[j]
+            p_ = ((1 - v) * _at(Xb, ub, u) + v * _at(Xt, ut, u) + (1 - u) * Xl[j] + u * Xr[j]
                   - ((1 - u) * (1 - v) * Xb[0] + u * (1 - v) * Xb[-1] + (1 - u) * v * Xt[0] + u * v * Xt[-1]))
             row.append(add(p_))
         row.append(int(right[j]))
@@ -2075,10 +2085,7 @@ def transition_cell(gmsh, t: int, index: np.ndarray, xyz: np.ndarray, mm: float,
     for j in range(m - 1):
         for i in range(n):
             quads.append([lines[j][i], lines[j][i + 1], lines[j + 1][i + 1], lines[j + 1][i]])
-    # the last row: k of its n coarse segments, spread along it, step to three fine ones
-    steps = sorted({min(n - 1, int((q + 0.5) * n / k)) for q in range(k)}) if k else []
-    if len(steps) != k:
-        raise ValueError("its steps do not spread")
+    # the last row: its steps
     Q_ = lines[m - 1]
     allx = np.vstack([xyz, np.array(new)]) if new else xyz
     a = 0
@@ -2106,6 +2113,42 @@ def transition_cell(gmsh, t: int, index: np.ndarray, xyz: np.ndarray, mm: float,
         for _ in range(TRANSITION_SMOOTH):
             for v_ in range(base, len(X)):
                 X[v_] = X[sorted(nb[v_])].mean(axis=0)
+        # (then each new node nudged, in the cell's plane, where that eases the worst of its own quads: the steps'
+        # side quads come out near Nastran's taper limit as placed)
+        of: dict[int, list[int]] = {}
+        for qi, q in enumerate(Qa):
+            for v_ in q:
+                of.setdefault(int(v_), []).append(qi)
+        e_ = X[Qa[0][1]] - X[Qa[0][0]]
+        f_ = X[Qa[0][3]] - X[Qa[0][0]]
+        nrm = np.cross(e_, f_)
+        nrm = nrm / max(float(np.linalg.norm(nrm)), 1e-300)
+        d1 = e_ / max(float(np.linalg.norm(e_)), 1e-300)
+        d2 = np.cross(nrm, d1)
+        h_ = float(np.median(np.linalg.norm(X[Qa[:, 1]] - X[Qa[:, 0]], axis=1)))
+
+        def worst(qs: list[int]) -> float:
+            m_ = SQ.quad_measures(X, Qa[qs])
+            return float(np.max(np.maximum.reduce([m_["taper"] / 0.5, (90.0 - m_["min_angle_quad"]) / 45.0,
+                                                   (m_["max_angle_quad"] - 90.0) / 45.0,
+                                                   1.0 - np.abs(m_["min_jacobian"])])))
+
+        for step_ in (0.1, 0.05, 0.025):
+            for _ in range(TRANSITION_NUDGE):
+                moved = False
+                for v_ in range(base, len(X)):
+                    here = worst(of[v_])
+                    p0 = X[v_].copy()
+                    best = (here, p0)
+                    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)):
+                        X[v_] = p0 + step_ * h_ * (dx * d1 + dy * d2)
+                        w_ = worst(of[v_])
+                        if w_ < best[0] - 1e-9:
+                            best = (w_, X[v_].copy())
+                    X[v_] = best[1]
+                    moved = moved or best[1] is not p0
+                if not moved:
+                    break
     # (wound as gmsh's own elements of the cell)
     types, _tags, conns = gmsh.model.mesh.getElements(2, t)
     ref = None
