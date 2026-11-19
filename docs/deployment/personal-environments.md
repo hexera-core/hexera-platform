@@ -340,7 +340,9 @@ Shared dev's posture does **not** depend on what a dispatch asked for: the repos
 the caller. A merge to `main` gets the same answer as a manual run.
 
 What `live` commands today: the region loop, the mesh probe, the package reviewer, tier 2b's
-tolerant routing probe, and the four opt-in operations. `CAD_REPAIR_REBUILD_FACE` and
+tolerant routing probe, the repair investigator, and the four opt-in operations. The investigator's
+row carries the posture rather than mapping it, so a `shadow` slug runs a shadow investigation and a
+`live` slug a live one. `CAD_REPAIR_REBUILD_FACE` and
 `CAD_REPAIR_CLOSE_WIRE_GAPS` **move vertices** and are reviewer-gated - they ride with
 `CAD_REPAIR_PACKAGE_REVIEW=live` and must never be exported without it. A test pins that property
 for every posture value.
