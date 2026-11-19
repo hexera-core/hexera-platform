@@ -200,6 +200,9 @@ part it is in (in_part); in the pictures each area has its own colour and an F n
 the part grey. Words about such an area ("1 mm at the mounting holes", "fine on the fillets", "coarser on the big
 flat face") take the area's id; words about a whole part take the part's id; "elsewhere" or "everything else" means
 the rest of the parts (everything_else true), never the areas.
+- piece: true when the words mean only a piece of a part that no row of the table is ("the vertical leg" of a plate
+  that is one flat face, "the left end", "one side"): give that part's id, and piece true - the whole part is then
+  the nearest there is, and the user is told so. False when the words mean whole parts or a listed area.
 NOT sizes: an element COUNT ("500k elements"), loads, pressures, bolt sizes alone (M8), part dimensions,
 elements through a wall. If the notes say nothing about particular parts, phrases is an empty list.
 words: one or two short plain sentences for the user on how you read their words. No ids-only answers: name the
@@ -216,7 +219,7 @@ def size_tool() -> dict:
                 "phrases": {"type": "array", "items": {
                     "type": "object", "additionalProperties": False,
                     "required": ["parts", "everything_else", "ask", "min", "max", "unit", "quote", "why",
-                                 "confidence"],
+                                 "confidence", "piece"],
                     "properties": {
                         "parts": {"type": "array", "items": {"type": "string"}},
                         "everything_else": {"type": "boolean"},
@@ -224,7 +227,7 @@ def size_tool() -> dict:
                         "min": {"type": "number"}, "max": {"type": "number"},
                         "unit": {"type": "string", "enum": list(UNITS_MM)},
                         "quote": {"type": "string"}, "why": {"type": "string"},
-                        "confidence": {"type": "number"}}}},
+                        "confidence": {"type": "number"}, "piece": {"type": "boolean"}}}},
                 "words": {"type": "array", "items": {"type": "string"}}}}}}
 
 
@@ -363,6 +366,9 @@ def _check(arguments: str, table: list[dict], notes: str,
         entry: dict[str, Any] = {"phrase": i, "parts": [], "everything_else": rest, "ask": ask, "quote": quote, "why": why,
                  "confidence": round(float(conf), 2),
                  **({"min_mm": _g(lo_mm), "max_mm": _g(hi_mm), "unit": unit, "asked": [lo, hi]} if ask == "size" else {})}
+        if e.get("piece") is True and any(not rows[p].get("feature") for p in ids):
+            # the words mean a piece of a part no row is: the whole part is the nearest there is (told so)
+            entry["piece"] = True
         if ask != "size":
             entry["parts"] = ids
             if entry["parts"] or rest:

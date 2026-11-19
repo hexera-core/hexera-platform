@@ -239,6 +239,53 @@ def test_the_row_says_what_the_elements_there_came_out_at_against_what_was_asked
     assert row["met"] is False and MR.line(row).startswith("Elements of 1.5 mm at the bracket: not fully met - ")
 
 
+def test_a_piece_of_a_part_that_is_no_face_of_its_own_is_set_on_the_whole_part_and_told_as_the_nearest():
+    """The L plate (one flat face) asked "1.5 mm elements on the vertical leg": the reader ties it to the part and
+    says the words mean only a piece of it; the row says so, never plain "met"."""
+    req = _req(("the vertical leg", "size", 3.0, "3 mm elements on the vertical leg"))
+    entry = {**_size("3 mm elements on the vertical leg", ["Part_2"], 3.0), "piece": True}
+    _rows_, got = _plan(req, _reading(entry))
+    assert got["places"][0]["piece"] is True
+    rep = SR.report(_mesh(), req, None, places=got)
+    row = rep["rows"][0]
+    assert row["met"] is None and row["nearest"] is True and row["applied"] is True
+    assert row["delivered"] == ("applied to the whole part, the nearest there is - bracket: elements are about 3 mm "
+                                "(25 elements)")
+    assert MR.line(row) == ("Elements of 3 mm at the vertical leg: applied to the whole part, the nearest there is - "
+                            "bracket: elements are about 3 mm (25 elements).")
+    assert MR.summary(rep) == "Of the 1 thing you asked for: 0 met; 1 applied to the whole part, the nearest there is."
+    # the checked reading keeps the flag only on a part, never on an area (an area is the place itself)
+    table = [{"id": "Part_1", "name": "plate"}, {"id": "Feature_1", "feature": True, "kind": "hole", "name": "a hole"}]
+    phrase = {"everything_else": False, "ask": "size", "min": 3, "max": 3, "unit": "mm", "why": "the plate",
+              "confidence": 0.9, "piece": True}
+    args = json.dumps({"phrases": [{**phrase, "parts": ["Part_1"], "quote": "3 mm on the leg"},
+                                   {**phrase, "parts": ["Feature_1"], "quote": "3 mm at the hole"}], "words": []})
+    entries, _dropped, _w = PW.check(args, table, "3 mm on the leg. 3 mm at the hole.")
+    assert [e.get("piece") for e in entries] == [True, None]
+
+
+def test_the_coarser_warning_is_told_from_the_built_elements_and_a_smaller_mesh_says_why():
+    """Val4's flanges, asked 3 mm over our 2.5 mm, came out about 1.3 mm and were still told "coarser than our
+    accuracy rules": the warning now comes from the elements built there, and a place built well under its size
+    says what held it there."""
+    req = _req(("the bracket", "size", 6.0, "6 mm on the bracket"))
+    _rows_, got = _plan(req, _reading(_size("6 mm on the bracket", ["Part_2"], 6.0)))
+    p = got["places"][got["asks"][0]["places"][0]]
+    assert p["coarser"] is True and p["before_mm"] < 6.0
+    row = SR.report(_mesh(), req, None, places=got)["rows"][0]        # built at 3 mm there
+    assert row["delivered"].startswith("bracket: elements are about 3 mm (25 elements); smaller near holes, bends "
+                                       "and finer faces beside it, so shapes stay true and sizes change smoothly")
+    said = f"coarser than the {SP._g(p['before_mm'])} mm our accuracy rules use there"
+    assert said not in row["delivered"] and p["before_mm"] == 5.0
+    # built at the size asked, over our own 5 mm: the warning names both
+    xyz, quads, mid = _grid(200, 3, 6.0, "Mid_3")
+    at6 = ShellMesh(xyz=xyz, quads=quads, trias=np.zeros((0, 3), dtype=np.int64), wall=np.full(len(mid), 2.0),
+                    mid=mid, part=["Part_2"] * len(mid))
+    row = SR.report(at6, req, None, places=got)["rows"][0]
+    assert row["delivered"] == ("bracket: elements are about 6 mm (9 elements); its largest are about 6 mm, coarser "
+                                "than the 5 mm our accuracy rules use there, so results may be less exact")
+
+
 def test_finer_is_told_with_the_size_it_had_and_the_size_it_got():
     req = _req(("the base plate", "finer", None, "finer on the base plate"))
     _rows_, got = _plan(req, _reading({"quote": "finer on the base plate", "ask": "refine", "parts": ["Part_1"]}))
@@ -384,6 +431,37 @@ def test_an_area_inside_a_part_takes_its_size_and_a_hole_says_why_it_cannot(tmp_
     hole = rows["elements of 1 mm at the hole"]
     assert hole["applied"] is False and "a hole is only an edge on a shell" in hole["delivered"]
     assert "1 could not be applied to a shell mesh" in SR.summary(rec["requirements"])
+
+
+def _round_hole_nodes(ws: Path, cx: float, cy: float, r: float) -> int:
+    """The shell's nodes on the edge of a round hole at (cx, cy) of radius r (mm; the mesh is in metres)."""
+    gmsh.initialize()
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.open(str(ws / "shell.msh"))
+        _tags, xyz, _p = gmsh.model.mesh.getNodes()
+    finally:
+        gmsh.finalize()
+    xyz = 1000.0 * np.asarray(xyz).reshape(-1, 3)
+    return int((np.abs(np.hypot(xyz[:, 0] - cx, xyz[:, 1] - cy) - r) < 0.02).sum())
+
+
+def test_a_coarse_size_in_a_place_wins_round_its_holes_which_keep_eight_a_turn(tmp_path):
+    """Val4's flanges asked 3 mm came out about 1.3 mm: our arc sizes (12 a turn round each 4 mm hole) graded the
+    whole flange down. Asked coarser in a place, its holes are sized as under a size for the whole mesh: the size
+    asked, but never under SR.HOLE_PER_TURN round a hole."""
+    ws = _stage(sf.plate_with_hole(r=4.0), tmp_path / "src")
+    rules = _run(_copy(ws, tmp_path / "rules"))
+    assert rules["made"] and _round_hole_nodes(tmp_path / "rules", 100, 50, 4.0) >= 12
+    req = _req(("the plate", "size", 12, "12 mm elements on the plate"))
+    reading = PW.section("used", entries=[_size("12 mm elements on the plate", ["Part_1"], 12)],
+                         table=[{"id": "Part_1", "name": "plate"}])
+    reading["features"] = {}
+    rec = _run(_copy(ws, tmp_path / "ws"), req, reading)
+    assert rec["made"] and rec["quality"]["valid"] is True
+    assert SR.HOLE_PER_TURN <= _round_hole_nodes(tmp_path / "ws", 100, 50, 4.0) < 12
+    row = next(r for r in rec["requirements"]["rows"] if r["field"] == "local")
+    assert row["applied"] is True and row["met"] is True, row
 
 
 # #

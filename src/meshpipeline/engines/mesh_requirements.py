@@ -1888,7 +1888,10 @@ def summary(rep: Mapping | None, *, kind: str = "mesh", limit: int = 380, not_ap
     missed = [r for r in rows if r.get("met") is False]
     targets = [r for r in rows if r.get("met") is None and r.get("target")]
     aside = [r for r in rows if r.get("met") is None and not r.get("target") and r.get("applied") is False]
-    settings = [r for r in rows if r.get("met") is None and not r.get("target") and r.get("applied") is not False]
+    settings = [r for r in rows if r.get("met") is None and not r.get("target") and r.get("applied") is not False
+                and not r.get("nearest")]
+    # a size asked on a piece of a part that is no face of its own, set on the whole part (SHMESH-52)
+    nearest = [r for r in rows if r.get("met") is None and r.get("nearest") and r.get("applied") is not False]
     n = len(rows)
     out = f"Of the {n} thing{'' if n == 1 else 's'} you asked for: {len(met)} met"
     if missed:
@@ -1909,6 +1912,8 @@ def summary(rep: Mapping | None, *, kind: str = "mesh", limit: int = 380, not_ap
                 + (": " + ", ".join(shares) if shares else ""))
     if settings:
         out += f"; {len(settings)} applied as {'a setting' if len(settings) == 1 else 'settings'}"
+    if nearest:
+        out += f"; {len(nearest)} applied to the whole part, the nearest there is"
     if aside:
         out += f"; {len(aside)} could not be applied to a {kind} mesh (listed on the result)"
     if extra:

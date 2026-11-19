@@ -35,6 +35,9 @@ EDGE_KINDS = ("hole", "hole group", "bore", "notch")
 SOLID_KINDS = ("bosses",)
 #: a plan past this share of what a shell mesh is made of in the time allowed is stepped back (as SHMESH-24 does)
 FIT_SHARE = 0.95
+#: a place whose typical element came out under this share of the size asked says why (its holes, bends and finer
+#: neighbours keep their own sizes, graded out: SHMESH-52)
+SMALLER_SHARE = 0.8
 
 
 def _r(v: float) -> float:
@@ -80,7 +83,9 @@ def from_reading(ps: Mapping | None) -> dict | None:
             area = p in faces_of or bool(row.get("feature"))
             targets.append({"id": p, "name": str(row.get("name") or ""), "area": area,
                             "kind": str(row.get("kind") or ""), "rest": p in rest,
-                            **({"faces": faces_of.get(p, [])} if area else {})})
+                            **({"faces": faces_of.get(p, [])} if area else {}),
+                            # the words meant a piece of this part no row is: the whole part, the nearest there is
+                            **({"piece": True} if e.get("piece") and not area and p not in rest else {})})
         if targets:
             out["entries"].append({"quote": str(e.get("quote") or ""), "ask": ask,
                                    **({"min_mm": float(e["min_mm"]), "max_mm": float(e["max_mm"])}
@@ -215,7 +220,7 @@ def plan(rows: list[dict], owners: list[str], record: Mapping, places: Mapping |
         e = entries[i]
         p = {"entry": i, "id": t["id"], "name": name_of(t), "area": bool(t.get("area")), "ask": e["ask"],
              **({"min_mm": e["min_mm"], "max_mm": e["max_mm"]} if e["ask"] == "size" else {}),
-             "faces": 0, "mids": [], "why": "" if ks else _why_not(t)}
+             "faces": 0, "mids": [], "why": "" if ks else _why_not(t), **({"piece": True} if t.get("piece") else {})}
         if t.get("area") and ks:
             p["cad_faces"] = [on, len(t.get("faces") or [])]
         for k in ks:
@@ -322,7 +327,7 @@ def row(local_id, applied: Mapping | None, mesh) -> dict | None:
                 "delivered": "not applied - " + ("; ".join(whys) if whys else str(ask.get("why") or ""))}
     lo_e, hi_e = SR._edge_stats(mesh)
     mid = np.asarray(mesh.mid, dtype=object)
-    said, met, measured = [], True, None
+    said, met, measured, nearest = [], True, None, False
     for j in ask["places"]:
         p = places[j]
         sel = np.isin(mid, p["mids"]) if len(mid) else np.zeros(0, dtype=bool)
@@ -344,15 +349,27 @@ def row(local_id, applied: Mapping | None, mesh) -> dict | None:
             line += f" (on {p['cad_faces'][0]} of its {p['cad_faces'][1]} CAD faces; the rest are only edges of the shell)"
         if p.get("held"):
             line += "; that many elements would take longer than a shell mesh is given, so the nearest size that builds was used"
+        if n and p["ask"] == "size" and typical < SMALLER_SHARE * lo:
+            # the holes, bends and finer faces beside it keep their own sizes (SHMESH-52): said, not hidden
+            line += "; smaller near holes, bends and finer faces beside it, so shapes stay true and sizes change smoothly"
         if p.get("finer"):
             line += "; some are smaller than half the wall, finer than a shell usually needs"
-        elif p.get("coarser") and p["ask"] != "refine":
-            line += "; this is coarser than our accuracy rules ask for there, so results may be less exact"
+        elif p.get("coarser") and p["ask"] != "refine" and n:
+            # told from the built elements: the largest there against the size our rules gave those faces
+            big = float(np.percentile(0.5 * (lo_e[sel] + hi_e[sel]), 90))
+            if big > (1 + 1e-3) * float(p.get("before_mm") or 0.0):
+                line += (f"; its largest are about {_g(big)} mm, coarser than the {_g(p['before_mm'])} mm our "
+                         "accuracy rules use there, so results may be less exact")
+        if p.get("piece"):
+            # the words meant a piece of the part that is no face of its own: never told as plainly met
+            line = "applied to the whole part, the nearest there is - " + line
+            nearest = True
         said.append(line)
     for n_ in ask.get("not_applied") or []:
         met = False
         said.append(f"not applied on {n_['name']}: {n_['why']}")
-    return {"applied": True, "measured": measured, "met": met, "delivered": "; ".join(said)}
+    return {"applied": True, "measured": measured, "met": None if met and nearest else met,
+            **({"nearest": True} if met and nearest else {}), "delivered": "; ".join(said)}
 
 
 def summary_words(applied: Mapping | None) -> str:

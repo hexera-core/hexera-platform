@@ -1495,6 +1495,9 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
             if finest is not None and sizing is not None:
                 h0 = SR.curved_size(r_mm, 0.0, floor=finest, rule=(
                     rows[k]["size_mm"] if sizing.get("global_mm") is not None else h0), per_turn=SR.HOLE_PER_TURN)
+            elif "place" in rows[k]:
+                # SHMESH-52: a place's own size wins round its holes too, at least HOLE_PER_TURN round each
+                h0 = SR.curved_size(r_mm, 0.0, floor=0.0, rule=rows[k]["size_mm"], per_turn=SR.HOLE_PER_TURN)
             elif per_turn:
                 h0 = min(h0, max(2 * math.pi * r_mm / per_turn, mesh_min))
             return min(h0, rows[k]["size_mm"])
@@ -1700,6 +1703,10 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                         h0 = SR.curved_size(r * mm, 0.0, floor=finest, rule=(
                             rows[k]["size_mm"] if sizing.get("global_mm") is not None else h0),
                             per_turn=SR.HOLE_PER_TURN)
+                    elif "place" in rows[k]:
+                        # SHMESH-52: the size asked in a place wins over our arc sizes there, coarser or finer; a
+                        # hole keeps its shape (HOLE_PER_TURN a turn), as under the user's size for the whole mesh
+                        h0 = SR.curved_size(r * mm, 0.0, floor=0.0, rule=rows[k]["size_mm"], per_turn=SR.HOLE_PER_TURN)
                     if h0 < rows[k]["size_mm"]:
                         arcs_by.setdefault(float(f"{h0:.6g}"), []).append(abs(c))
         if short_edges is not None:
