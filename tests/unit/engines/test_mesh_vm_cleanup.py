@@ -560,7 +560,7 @@ def _held_sweep(vm, *, results=(), beacons=None, live=True, held=60.0):
             owner=lambda ref: pytest.fail("a held VM is judged by its job, not by a claim"),
             delete=lambda ref, why: deleted.append(why) or True,
             beacon_age=lambda b, k: (beacons or {}).get(k), job_live=lambda job: live,
-            hold_age=lambda job: held)
+            hold_age=lambda job: held, drop_hold=lambda job: deleted.append(f"hold of {job}"))
     return deleted
 
 
@@ -571,11 +571,11 @@ def test_the_sweep_keeps_a_held_vm_between_its_jobs_runs(ours):
     idle = S.WORKING_S + 60.0                                                # its run over, waiting for the next
     assert _held_sweep(vm, results={result}, beacons={beacon: idle}) == []
     assert _held_sweep(vm, results={result}, beacons={beacon: idle}, live=False) == [
-        "swept: the job that holds it has ended"]
+        "swept: the job that holds it has ended", "hold of job-1"]
     assert _held_sweep(vm, beacons={beacon: 4 * 3600.0}) == []              # waiting hours, still held
     assert _held_sweep(vm, held=S.HELD_STALE_S + 60) == [
-        f"swept: its job has not renewed its hold for {int(S.HELD_STALE_S + 60) // 60} minutes"]
-    assert _held_sweep(vm, held=None) == ["swept: its job no longer holds it"]
+        f"swept: its job has not renewed its hold for {int(S.HELD_STALE_S + 60) // 60} minutes", "hold of job-1"]
+    assert _held_sweep(vm, held=None) == ["swept: its job no longer holds it", "hold of job-1"]
     assert _held_sweep({**vm, "status": "TERMINATED"}) and _held_sweep(vm, live=None)
 
 

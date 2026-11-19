@@ -154,6 +154,20 @@ def _hold_age(job: str) -> float | None:
     return None if hold is None else max(0.0, time.time() - hold[0])
 
 
+#: Why a held VM is swept when its job holds it no more (its hold is deleted with it).
+UNHELD = frozenset({"the job that holds it has ended", "no job has the id it is held for",
+                    "its job no longer holds it"})
+
+
+def _drop_hold(job: str) -> None:
+    from meshpipeline.adapters.mesh_execution import gce_vm as G
+    try:
+        from meshpipeline.adapters.mesh_execution.gcs_exchange import storage_client
+        storage_client().bucket(provcfg.GCP_MESH_BUCKET).blob(G.hold_object(job)).delete()
+    except Exception as exc:  # noqa: BLE001 - none left, or not now: the next sweep tries again
+        logger.info("mesh VM sweep: the hold of job %s was not deleted (%s)", job, type(exc).__name__)
+
+
 def _job_live(job: str) -> bool | None:
     from meshpipeline.persistence.repositories.native_submission_repository import job_live
     return job_live(job)
@@ -165,7 +179,8 @@ def sweep(*, vms: list[dict] | None = None, now: float | None = None,
           delete: Callable | None = None,
           beacon_age: Callable[[str, str], float | None] | None = None,
           job_live: Callable[[str], bool | None] | None = None,
-          hold_age: Callable[[str], float | None] | None = None) -> dict:
+          hold_age: Callable[[str], float | None] | None = None,
+          drop_hold: Callable[[str], None] | None = None) -> dict:
     """One sweep: {"seen", "deleted": [(name, why)], "kept"}. Never raises: a question that cannot be answered
     keeps the VM (it is swept again next time, and Compute Engine's lifetime limit is the backstop)."""
     from meshpipeline.adapters.mesh_execution import gce_vm as G
@@ -192,6 +207,10 @@ def sweep(*, vms: list[dict] | None = None, now: float | None = None,
         ref = G.VmReference(f"projects/{provcfg.GCP_PROJECT_ID}/zones/{vm.get('zone')}/instances/{vm.get('name')}")
         if (delete or G.delete_vm)(ref, why=f"swept: {why}"):
             out["deleted"].append((str(vm.get("name")), why))
+            job = str((vm.get("labels") or {}).get("job") or "")
+            if job and (why in UNHELD or why.startswith("its job has not renewed")):
+                # a crashed run released nothing: its hold goes with the job's last VM
+                (drop_hold or _drop_hold)(job)
     if out["deleted"]:
         logger.warning("mesh VM sweep: deleted %s", "; ".join(f"{n} ({w})" for n, w in out["deleted"]))
     return out
