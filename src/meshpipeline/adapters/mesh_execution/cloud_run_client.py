@@ -57,6 +57,13 @@ class CloudRunMeshExecutor:
         beacon was written within the stall window (WAIT_STALL_S); None - neither."""
         return remote_state(operation_key)
 
+    def renew_job(self, job_id: str) -> None:
+        """The job's meshing run still holds its VMs (RUN-4, gce_vm.renew_job_hold)."""
+        if not (provcfg.GCP_PROJECT_ID and provcfg.GCP_MESH_BUCKET):
+            return
+        from meshpipeline.adapters.mesh_execution.gce_vm import renew_job_hold
+        renew_job_hold(job_id)
+
     def release_job(self, job_id: str) -> None:
         """The job has ended: delete the VMs held for it (RUN-4, gce_vm.release_job_vms)."""
         if not (provcfg.GCP_PROJECT_ID and provcfg.GCP_MESH_BUCKET):
@@ -924,7 +931,7 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
         if on_vm and vm_holder() and (collection_complete or isinstance(result, dict)):
             # HELD FOR ITS JOB (RUN-4): the VM's run is done, the VM is not - it waits for the job's next
             # run (a remesh takes it at once, no boot, no image pull), and the job's end releases it
-            # (release_job); one that waits past gce_vm.HOLD_IDLE_S ends itself, and the sweep deletes it.
+            # (release_job); one whose hold goes stale (gce_vm.HOLD_STALE_S) ends itself, and the sweep deletes it.
             logger.info("mesh VM for %s kept for its job's next run (%s)", engine,
                         "its result was collected" if collection_complete else "its result was written")
         elif on_vm and (collection_complete or isinstance(result, dict)):

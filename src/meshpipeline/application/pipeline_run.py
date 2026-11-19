@@ -953,7 +953,12 @@ async def _run_async(req: JobRequest) -> dict:
                 # (application/post_gate_rescue; lp_base and kart_chassis, dev-areen 25 Oct)
                 from meshpipeline.application.post_gate_rescue import run_to_end as _run_to_end
                 from meshpipeline.application.worker_handoff import run_unless_draining
-                with execution_ownership(ownership, session_factory=AsyncSessionLocal):
+
+                # THE MESHING RUN HOLDS ITS BIG-MACHINE VMS (RUN-4) for as long as it runs: one taken
+                # for a run stays up for the next remesh, never deleted for waiting on the builder
+                from meshpipeline.contracts.mesh_execution import hold_job_machines
+                with execution_ownership(ownership, session_factory=AsyncSessionLocal), \
+                        hold_job_machines(job_id):
                     return await run_unless_draining(
                         _run_to_end(graph, await _graph_input(graph), graph_config, jlog=jlog))
             finally:
@@ -1356,9 +1361,9 @@ async def _run_async(req: JobRequest) -> dict:
             await _worker_engine.dispose()
             return {"job_id": job_id, "status": "fenced", "skipped": "not_owner"}
         # THE JOB'S MESHING IS OVER: the big-machine VMs held for it across its remeshes (RUN-4) are
-        # released now, not left waiting out their idle hold. Only by the owner that finalized - a fenced
+        # released now, not left until their hold goes stale. Only by the owner that finalized - a fenced
         # worker's job may be meshing on them under its new owner. A crashed run's VMs end themselves
-        # once idle, and the VM sweep deletes one whose job has ended.
+        # once their hold is stale, and the VM sweep deletes one whose job has ended.
         from meshpipeline.contracts.mesh_execution import release_job_machines
         await asyncio.to_thread(release_job_machines, job_id)
         # Non-fenced publication always carries the rendered verdict (the fenced branch returned

@@ -220,3 +220,22 @@ def test_the_provider_runs_under_its_jobs_hold_and_the_jobs_end_releases_it(auth
     monkeypatch.setattr(mesh_execution, "_executor", executor)
     mesh_execution.release_job_machines(OWN.job_id)
     assert provider.released == [str(OWN.job_id)]
+
+
+def test_the_meshing_run_renews_its_hold_until_it_stops(monkeypatch):
+    import threading
+    renewed = threading.Event()
+    calls: list = []
+
+    class _P:
+        def renew_job(self, job_id):
+            calls.append(job_id)
+            renewed.set()
+
+    monkeypatch.setattr(mesh_execution, "_executor", _P())
+    with mesh_execution.hold_job_machines("job-1", every_s=0.01):
+        assert renewed.wait(5)
+    n = len(calls)
+    import time
+    time.sleep(0.05)
+    assert len(calls) <= n + 1 and set(calls) == {"job-1"}                  # stopped with the run

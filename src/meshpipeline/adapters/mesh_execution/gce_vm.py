@@ -35,10 +35,14 @@ CONTAINER_MARGIN_S = 1800
 #: How many times the VM asks to delete itself, and the pause between asks, before it powers off instead.
 SELF_DELETE_TRIES = 3
 
-#: HELD FOR ITS JOB (RUN-4): how long a VM held by a job (contracts/mesh_execution.vm_hold) waits, its run
-#: done, for the job's next run - a remesh, a step back down, a rerun - before it ends itself. Its next run
-#: is handed to it in its metadata and starts at once on a machine that is up, its image already pulled.
-HOLD_IDLE_S = 1800
+#: HELD FOR ITS JOB (RUN-4): a VM held by a job (contracts/mesh_execution.vm_hold) waits, its run done, for
+#: the job's next run - a remesh, a step back down, a rerun - for as long as the job's meshing run holds it:
+#: the run renews the hold (HOLDS_PREFIX/<job>, its time) every contracts VM_HOLD_RENEW_S while it runs, and
+#: the VM ends itself once the hold is gone (released) or older than HOLD_STALE_S (its worker died). Its next
+#: run is handed to it in its metadata and starts at once on a machine that is up, its image already pulled.
+HOLD_STALE_S = 300
+#: Where a job's hold on its VMs is kept, in the exchange bucket.
+HOLDS_PREFIX = "vm-holds/"
 #: Compute Engine's lifetime limit for a held VM, at least (it cannot be moved once the VM is up): room for
 #: the job's runs after the first. A run that would not fit in what is left of it goes to a new VM.
 HOLD_LIFETIME_S = 6 * 3600
@@ -48,8 +52,9 @@ HOLD_POLL_S = 15
 #: What the VM runs at boot: the job's own container, run by run. Each run is ONE metadata value
 #: (`mesh-run`: id|input|output|engine|timeout|contract|snapshots|ranks|image, read in one request so a run
 #: handed over meanwhile is never read half old, half new), with its workspace on disk, held to the run's
-#: timeout plus CONTAINER_MARGIN_S. A VM held for its job (`hold-idle-s` > 0) then waits up to that long for
-#: the job's next run and takes it; one with no holder ends after its one run, as it always did. THE VM ENDS
+#: timeout plus CONTAINER_MARGIN_S. A VM held for its job (`hold-lease`: its hold's URL) then waits for the
+#: job's next run and takes it, for as long as the hold is renewed; one with no holder ends after its one run,
+#: as it always did. A hold that cannot be read keeps its last time: a passing network fault is not a release. THE VM ENDS
 #: ITSELF however its last run ends - finished, failed, never started, or stopped at its deadline - whatever
 #: became of the worker that started it (RUN-4): it asks to delete itself, and when that is refused (job
 #: 6cb2d606, 28 Oct: its identity may not delete instances, and the silent `curl -sf` left a 16-core VM
@@ -110,25 +115,33 @@ docker run -d --rm --name mesh --cpus "$(nproc)" \
   done
   say "the mesh container has exited"
 }
-HOLD=$(get instance/attributes/hold-idle-s)
-case "$HOLD" in ''|*[!0-9]*) HOLD=0 ;; esac
+LEASE=$(get instance/attributes/hold-lease || true)
+HELD_AT=$(date +%s)
+held() {
+  [ -n "$LEASE" ] || return 1
+  TOKEN=$(get instance/service-accounts/default/token | sed -E 's/.*"access_token":"([^"]+)".*/\1/')
+  BODY=$(curl -s -w '|%{http_code}' -H "Authorization: Bearer $TOKEN" "$LEASE" || true)
+  case "${BODY##*|}" in
+    200) L=${BODY%%|*}; case "$L" in ''|*[!0-9]*) ;; *) HELD_AT=$L ;; esac ;;
+    404) say "its job has released it"; return 1 ;;
+  esac
+  if [ $(( $(date +%s) - HELD_AT )) -ge __STALE__ ]; then
+    say "its job has not renewed its hold in __STALE__ s"; return 1
+  fi
+}
 LAST=""
-IDLE_FROM=$(date +%s)
 while true; do
   RUN=$(get instance/attributes/mesh-run || true)
   if [ -n "$RUN" ] && [ "${RUN%%|*}" != "$LAST" ]; then
     LAST=${RUN%%|*}
     run_one "$RUN"
-    IDLE_FROM=$(date +%s)
+    continue
   fi
-  if [ $(( $(date +%s) - IDLE_FROM )) -ge "$HOLD" ]; then
-    [ "$HOLD" -gt 0 ] && say "no new run of its job in $HOLD s: ending"
-    break
-  fi
+  held || break
   sleep __POLL__
 done
 """.replace("__TRIES__", str(SELF_DELETE_TRIES)).replace("__MARGIN__", str(CONTAINER_MARGIN_S)).replace(
-    "__POLL__", str(HOLD_POLL_S))
+    "__POLL__", str(HOLD_POLL_S)).replace("__STALE__", str(HOLD_STALE_S))
 
 
 @dataclass(frozen=True)
@@ -226,11 +239,12 @@ def run_metadata(*, image: str, input_uri: str, output_uri: str, engine: str, ti
 
 def instance_body(*, name: str, zone: str, machine: str, image: str, account: str, input_uri: str,
                   output_uri: str, engine: str, timeout: int, disk_gb: int, holder: str = "") -> dict:
-    """The instances.insert body (pure: tests read it). A VM held for its job (`holder`) waits HOLD_IDLE_S
-    for the job's next run and lives at least HOLD_LIFETIME_S; one with no holder ends with its run."""
+    """The instances.insert body (pure: tests read it). A VM held for its job (`holder`) waits for the job's
+    next run while the job holds it (hold_url) and lives at least HOLD_LIFETIME_S; one with no holder ends with
+    its run."""
     meta = {**run_metadata(image=image, input_uri=input_uri, output_uri=output_uri, engine=engine,
                            timeout=timeout),
-            "hold-idle-s": str(HOLD_IDLE_S if holder else 0),
+            "hold-lease": hold_url(holder) if holder else "",
             "startup-script": STARTUP_SCRIPT}
     labels = {"purpose": LABEL, "engine": engine.lower()[:60]}
     if holder:
@@ -278,9 +292,56 @@ def _lifetime_left_s(vm: dict, now: float) -> float:
     return created + limit - now
 
 
-#: How long before a held VM's idle hold runs out it stops being handed runs: it may have stopped looking at
-#: its metadata (it is ending itself), and a run it never reads would be lost to the never-heard wait.
-HOLD_SAFETY_S = 300
+#: Renewals this close together keep a hold UNBROKEN (renew_job_hold): well inside HOLD_STALE_S, so a VM that
+#: saw no gap this long cannot have ended itself.
+HOLD_UNBROKEN_S = HOLD_STALE_S - 2 * HOLD_POLL_S
+#: The jobs this process holds VMs for: only they renew a hold (a job that never took a VM writes nothing).
+_HELD: set[str] = set()
+
+
+def hold_object(holder: str) -> str:
+    return f"{HOLDS_PREFIX}{job_label(holder)}"
+
+
+def hold_url(holder: str) -> str:
+    """Where the VM reads its job's hold (the JSON API's media URL: the VM has curl and a token, no SDK)."""
+    from urllib.parse import quote
+    return (f"https://storage.googleapis.com/storage/v1/b/{provcfg.GCP_MESH_BUCKET}/o/"
+            f"{quote(hold_object(holder), safe='')}?alt=media")
+
+
+def _read_hold(holder: str) -> tuple[float, float] | None:
+    """(when the hold was last renewed, since when it has been unbroken), or None when there is none."""
+    from meshpipeline.adapters.mesh_execution.gcs_exchange import storage_client
+    blob = storage_client().bucket(provcfg.GCP_MESH_BUCKET).blob(hold_object(holder))
+    try:
+        at, _, since = blob.download_as_text().partition("|")
+        return float(at), float(since or at)
+    except Exception:  # noqa: BLE001 - none, or unreadable: no hold to continue
+        return None
+
+
+def renew_job_hold(holder: str, *, now: float | None = None, force: bool = False) -> None:
+    """The job's meshing run still holds its VMs: write `<now>|<since>` to its hold, `since` carried over while
+    the renewals are unbroken (HOLD_UNBROKEN_S apart at most). Only for a job that took a VM (`force`)."""
+    if not (force or holder in _HELD):
+        return
+    _HELD.add(holder)
+    from meshpipeline.adapters.mesh_execution.gcs_exchange import storage_client
+    now = time.time() if now is None else now
+    prev = _read_hold(holder)
+    since = prev[1] if prev is not None and now - prev[0] <= HOLD_UNBROKEN_S else now
+    storage_client().bucket(provcfg.GCP_MESH_BUCKET).blob(hold_object(holder)).upload_from_string(
+        f"{int(now)}|{int(since)}", content_type="text/plain")
+
+
+def hold_since(holder: str, *, now: float | None = None) -> float | None:
+    """Since when the job's hold on its VMs has been unbroken, or None when it is gone or stale."""
+    now = time.time() if now is None else now
+    hold = _read_hold(holder)
+    if hold is None or now - hold[0] > HOLD_UNBROKEN_S:
+        return None
+    return hold[1]
 
 
 def _last_run(vm: dict) -> tuple[bool, float | None]:
@@ -308,14 +369,16 @@ def _last_run(vm: dict) -> tuple[bool, float | None]:
 
 
 def reusable(vm: dict, *, timeout: int, now: float | None = None, done: bool = True,
-             idle_s: float | None = 0.0) -> bool:
+             idle_s: float | None = 0.0, held_since: float | None = 0.0) -> bool:
     """Whether a held VM may take a run of `timeout` seconds (pure: tests read it): it is up, its last run is
     over (`done`: never one still meshing - a run of a job taken over must not queue behind, or kill, a pass
-    left to finish), it is still waiting for its next run (`idle_s`, since its beacon, well inside its hold),
-    and the run fits, with its margin, in what is left of its lifetime limit."""
+    left to finish), it is still waiting for its next run (its job's hold unbroken, `held_since`, since its
+    last run ended, `idle_s` ago by its beacon: a VM that saw its hold lapse may be ending itself, and a run it
+    never reads would be lost to the never-heard wait), and the run fits, with its margin, in what is left of
+    its lifetime limit."""
     now = time.time() if now is None else now
     return (str(vm.get("status") or "") in LIVE and done
-            and idle_s is not None and idle_s < HOLD_IDLE_S - HOLD_SAFETY_S
+            and idle_s is not None and held_since is not None and held_since <= now - idle_s
             and _lifetime_left_s(vm, now) >= int(timeout) + CONTAINER_MARGIN_S + 600)
 
 
@@ -379,13 +442,15 @@ def _held_vm(name: str, holder: str, machine: str, *, meta: dict,
         return None, True
     up = str(vm.get("status") or "") in LIVE
     done, idle_s = _last_run(vm) if up else (True, None)
-    if reusable(vm, timeout=timeout, done=done, idle_s=idle_s) and _hand_over(vm, meta):
+    since = hold_since(holder) if up and done else None
+    if reusable(vm, timeout=timeout, done=done, idle_s=idle_s, held_since=since) and _hand_over(vm, meta):
         logger.warning("mesh for %s runs on the %s VM its job holds (%s, %s): no boot, no image pull",
                        meta.get("engine"), machine, name, RULE)
         return _ref(vm), False
     if up and not done:
         return None, False
-    delete_vm(_ref(vm), why="it could not take its job's next run (ending, stopped, or too little lifetime left)")
+    delete_vm(_ref(vm), why="it could not take its job's next run (its hold lapsed, stopped, or too little "
+                            "lifetime left)")
     return None, _wait_gone(name)
 
 
@@ -448,6 +513,9 @@ def trigger_vm(*, input_uri: str, output_uri: str, engine: str, timeout: int, op
     if not holder:
         return insert(name=unheld, holder="")
     name = instance_name(operation_key, machine, holder)
+    # the run holds the job's VMs from now (a broken hold restarts its `since`: a VM idle across the gap is not
+    # handed the run)
+    renew_job_hold(holder, force=True)
     meta = run_metadata(image=image, input_uri=input_uri, output_uri=output_uri, engine=engine, timeout=timeout)
     held, free = _held_vm(name, holder, machine, meta=meta, timeout=timeout)
     if held is not None:
@@ -539,6 +607,12 @@ def release_job_vms(holder: str, *, why: str = "its job has ended") -> int:
     """Delete every VM held for job `holder` (RUN-4): the job has ended, nothing will run on them again.
     Best effort, never raises; how many were deleted."""
     label = job_label(holder)
+    _HELD.discard(holder)
+    try:
+        from meshpipeline.adapters.mesh_execution.gcs_exchange import storage_client
+        storage_client().bucket(provcfg.GCP_MESH_BUCKET).blob(hold_object(holder)).delete()
+    except Exception as exc:  # noqa: BLE001 - none to release, or not now: the VMs are deleted below anyway
+        logger.info("the hold of job %s was not deleted (%s)", holder, type(exc).__name__)
     gone = 0
     for vm in list_vms():
         if (vm.get("labels") or {}).get("job") == label and delete_vm(_ref(vm), why=why):
@@ -546,6 +620,7 @@ def release_job_vms(holder: str, *, why: str = "its job has ended") -> int:
     return gone
 
 
-__all__ = ["CONTAINER_MARGIN_S", "HOLD_IDLE_S", "HOLD_LIFETIME_S", "LABEL", "SELF_DELETE_TRIES", "STARTUP_SCRIPT",
+__all__ = ["CONTAINER_MARGIN_S", "HOLDS_PREFIX", "HOLD_LIFETIME_S", "HOLD_STALE_S", "LABEL", "SELF_DELETE_TRIES", "STARTUP_SCRIPT",
            "VmReference", "delete_vm", "describe_vm", "find_vm", "instance_body", "instance_name", "job_label",
-           "list_vms", "release_job_vms", "reusable", "run_metadata", "run_value", "trigger_vm"]
+           "hold_object", "hold_since", "hold_url", "list_vms", "release_job_vms", "renew_job_hold", "reusable",
+           "run_metadata", "run_value", "trigger_vm"]

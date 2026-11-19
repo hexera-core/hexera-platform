@@ -269,9 +269,9 @@ def abandonment_watch(check: Callable[[], str | None] | None) -> Iterator[None]:
 
 #: THE JOB A BIG-MACHINE VM IS HELD FOR (RUN-4): bound by the submission authority (application/
 #: native_submission) around every provider call, read by the VM route. A job keeps ONE VM per machine
-#: type for as long as it may mesh again - a remesh, a step up's return or a rerun takes the VM that is
-#: already up instead of booting another and pulling the image again - and the job's end releases it
-#: (release_job_machines). Unbound ("") means no holder: the VM ends with its run, as before.
+#: type for as long as its meshing run holds it (hold_job_machines) - a remesh, a step up's return or a rerun
+#: takes the VM that is already up instead of booting another and pulling the image again - and the job's end
+#: releases it (release_job_machines). Unbound ("") means no holder: the VM ends with its run, as before.
 _vm_holder: ContextVar[str] = ContextVar("mesh_vm_holder", default="")
 
 
@@ -288,9 +288,44 @@ def vm_holder() -> str:
     return _vm_holder.get()
 
 
+#: How often a job in its meshing run renews its hold on its big-machine VMs (hold_job_machines).
+VM_HOLD_RENEW_S = 60
+
+
+@contextmanager
+def hold_job_machines(job_id: Any, *, every_s: float = VM_HOLD_RENEW_S) -> Iterator[None]:
+    """THE MESHING RUN'S LOCK ON ITS VMS (RUN-4): while the job's graph runs - every remesh, rerun, step and
+    retry of it - its hold is renewed every `every_s`, so a VM it holds stays up between its runs however long
+    the builder takes, and is never deleted for being idle. A thread, not a task: a step that holds the event
+    loop must not cost the job its VM. When the run stops renewing (it ended, or its worker died) the VM ends
+    itself once the hold is stale (gce_vm.HOLD_STALE_S); the job's end releases it at once
+    (release_job_machines)."""
+    import threading
+
+    renew = getattr(_executor, "renew_job", None)
+    if renew is None or not job_id:
+        yield
+        return
+    stop = threading.Event()
+
+    def _keep() -> None:
+        while not stop.wait(every_s):
+            try:
+                renew(str(job_id))
+            except Exception as exc:  # noqa: BLE001 - a missed renewal is retried; the hold outlasts several
+                logger.warning("the hold on job %s's machines was not renewed (%s)", job_id, type(exc).__name__)
+
+    keeper = threading.Thread(target=_keep, name=f"vm-hold-{job_id}", daemon=True)
+    keeper.start()
+    try:
+        yield
+    finally:
+        stop.set()
+
+
 def release_job_machines(job_id: Any) -> None:
-    """The job has ended: release the machines held for it (RUN-4). Best effort, never raises - an
-    unreleased VM ends itself once idle, and the VM sweep deletes one whose job has ended."""
+    """The job's meshing is over: release the machines held for it (RUN-4). Best effort, never raises - an
+    unreleased VM ends itself once its hold is stale, and the VM sweep deletes one whose job has ended."""
     release = getattr(_executor, "release_job", None)
     if release is None or not job_id:
         return

@@ -249,6 +249,12 @@ class ClaimingMeshExecutor:
             return {**result, "adopted_from": key}
         return None
 
+    def renew_job(self, job_id: str) -> None:
+        """The job's meshing run still holds its machines (RUN-4, contracts/mesh_execution.hold_job_machines)."""
+        renew = getattr(self._inner, "renew_job", None)
+        if renew is not None:
+            renew(job_id)
+
     def release_job(self, job_id: str) -> None:
         """The job has ended: the machines held for it (RUN-4) are released (contracts/mesh_execution)."""
         release = getattr(self._inner, "release_job", None)
