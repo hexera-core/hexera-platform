@@ -360,6 +360,63 @@ _warn_no_authoring_time(CAD_REPAIR_MESH_PROBE, CAD_REPAIR_MESH_PROBE_TIMEOUT_S,
                         CAD_REPAIR_TIMEOUT_S)
 
 
+def _tolerant_probe_posture() -> str:
+    """The tier-2b posture, FAILING CLOSED: only the exact string `live` turns it on.
+
+    `_mesh_probe_posture`'s rule, unforgiving of case and space for the same reason: this one puts
+    an fTetWild run on a customer's part at the end of a repair, so `Live ` is read as the typo it
+    probably is and the pass stays off.
+    """
+    raw = optional_env("CAD_REPAIR_TOLERANT_PROBE", "off")
+    if raw not in ("live", "off"):
+        # Still read as off - but said out loud, so a deployment that meant `live` finds out.
+        logger.warning(
+            "CAD_REPAIR_TOLERANT_PROBE=%r is neither 'live' nor 'off'; reading it as off", raw)
+    return "live" if raw == "live" else "off"
+
+
+#: Whether a repair run's finishing verdict also records WHETHER THE TOLERANT RUNG WOULD EAT THE
+#: PART (tier 2b, cad/repair/tolerant_probe.py). "off" is byte-for-byte the prior behaviour: no
+#: fTetWild process, and no `routing` key in the report at all. "live" adds one coarse,
+#: hard-time-capped fTetWild pass, and only for a part gmsh refused at the VOLUME stage with an
+#: overlap - the 59% majority the tolerant rung plausibly answers. The verdict is RECORDED ONLY:
+#: nothing in this plan routes or stops on it. A posture, so a typo reads as off.
+CAD_REPAIR_TOLERANT_PROBE: str = _tolerant_probe_posture()
+
+#: Seconds one tier-2b pass may take. The finishing verdict hands it the lesser of this and what
+#: is left past the final-probe slack (oracle's `routing` rule), and skips the pass outright when
+#: nothing is left. 30 by default: a ROUTING ANSWER, not a mesh deliverable - tier 2b exists to
+#: answer a question in seconds, and a longer cap would make it the run.
+CAD_REPAIR_TOLERANT_PROBE_TIMEOUT_S: float = float(
+    optional_env("CAD_REPAIR_TOLERANT_PROBE_TIMEOUT_S", "30.0"))
+
+
+def _warn_no_authoring_time_with_tolerant(posture: str, tolerant: str, probe_timeout_s: float,
+                                          tolerant_timeout_s: float,
+                                          run_timeout_s: float) -> None:
+    """Say out loud when the two live probes' reserve consumes the whole run.
+
+    `goal.reserve_s` holds back one tier-2 cap, the final-probe slack AND the tolerant timeout, so
+    a generous tolerant cap can leave the driver nothing to author with - silently, because the
+    reserve is subtracted before the first operation is tried.
+    """
+    if tolerant != "live":
+        return
+    reserve = probe_timeout_s + _AUTHORING_RESERVE_EXTRA_S + tolerant_timeout_s
+    if reserve >= run_timeout_s:
+        logger.warning(
+            "CAD_REPAIR_MESH_PROBE_TIMEOUT_S=%s plus the %ss final-probe reserve plus "
+            "CAD_REPAIR_TOLERANT_PROBE_TIMEOUT_S=%s is not below CAD_REPAIR_TIMEOUT_S=%s: the "
+            "repair will author nothing", probe_timeout_s, _AUTHORING_RESERVE_EXTRA_S,
+            tolerant_timeout_s, run_timeout_s)
+
+
+_warn_no_authoring_time_with_tolerant(CAD_REPAIR_MESH_PROBE, CAD_REPAIR_TOLERANT_PROBE,
+                                      CAD_REPAIR_MESH_PROBE_TIMEOUT_S,
+                                      CAD_REPAIR_TOLERANT_PROBE_TIMEOUT_S,
+                                      CAD_REPAIR_TIMEOUT_S)
+
+
 def _llm_author_posture() -> str:
     """The model-author posture, FAILING CLOSED: only the exact strings `shadow` and `live` turn it
     on, and anything else but `off` is read as off OUT LOUD - the mesh probe's rule, because this

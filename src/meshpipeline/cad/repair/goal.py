@@ -21,7 +21,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from meshpipeline.cad.repair import grind, mesh_probe, oracle
+from meshpipeline.cad.repair import grind, mesh_probe, oracle, tolerant_probe
 from meshpipeline.cad.repair.contracts import DefectSeverity, RepairGoal
 
 if TYPE_CHECKING:
@@ -69,6 +69,10 @@ _NOT_CLEAN = (DefectSeverity.error, DefectSeverity.fatal)
 #: evidence of our own clock running out.
 _NO_ANSWER_KINDS = frozenset({mesh_probe.TIMEOUT, mesh_probe.PROBE_ERROR})
 
+#: The gmsh refusals a TOLERANT mesher plausibly gets through: two faces crossing. Read WITH the
+#: stage, because the same kind at the 2d stage is a surface that would not mesh at all.
+_TOLERANT_KINDS = frozenset({mesh_probe.OVERLAPPING_FACETS, mesh_probe.EDGE_THROUGH_FACE})
+
 
 def reserve_s(goal: RepairGoal | None, *, tolerant_live: bool,
               tolerant_timeout_s: float) -> float:
@@ -92,6 +96,59 @@ def reserve_s(goal: RepairGoal | None, *, tolerant_live: bool,
         # `tolerant_live=False`, so this branch is unreachable in production and tested here.
         reserve += max(0.0, float(tolerant_timeout_s))
     return reserve
+
+
+def volume_stage_overlap(meshability: dict) -> bool:
+    """Is this tier-2 reading the case TIER 2B EXISTS TO ANSWER? Pure.
+
+    An overlap gmsh met while meshing the VOLUME - `overlapping_facets` or `edge_through_face` at
+    the 3d stage - is the 59% majority of the corpus's volume-stage failures, and the family a
+    tolerant mesher plausibly gets through: its envelope does not care that two faces cross. A
+    failure at the 2d stage is a surface that would not mesh at all, and an `open_loop` is missing
+    geometry; neither is a question about tolerance, so neither is asked.
+    """
+    return (str(meshability.get("kind") or "") in _TOLERANT_KINDS
+            and str(meshability.get("stage") or "") == mesh_probe.STAGE_3D)
+
+
+def _routing(*, shape, final: Measure, reading: dict, deadline_s: float, clock,
+             tolerant_timeout_s: float, prober) -> dict:
+    """The tier-2b reading: would the tolerant rung eat this part?
+
+    RECORDED ONLY. Nothing in this plan branches on it - the finishing verdict reports it beside
+    the tier-2 score, and Task 6's evidence pass is its first reader. A pass that was not asked,
+    or had no time, says so rather than leaving a hole a reader could mistake for a refusal.
+    """
+    budget_s = oracle.probe_budget_s(oracle.CHECK_ROUTING, float(deadline_s) - float(clock()),
+                                     timeout_s=float(tolerant_timeout_s))
+    out = {"tier": oracle.TIER_2B.name, "verdict": tolerant_probe.NOT_ASKED, "tets": 0,
+           "seconds": 0.0, "stopped": False, "budget_s": budget_s, "message": ""}
+    if not volume_stage_overlap(reading):
+        return out
+    if budget_s <= 0.0:
+        out["verdict"] = tolerant_probe.NO_ANSWER
+        out["message"] = tolerant_probe.NO_TIME_LEFT
+        return out
+    result = prober(shape=shape, diagonal_mm=float(final.diagonal_mm), budget_s=budget_s)
+    out.update(verdict=str(result.verdict), tets=int(result.tets),
+               seconds=float(result.seconds), stopped=bool(result.stopped),
+               message=str(result.message))
+    return out
+
+
+def _default_tolerant_prober(*, shape, diagonal_mm: float, budget_s: float):
+    """Tier 2b on a temporary BREP, the tier-2 prober's rule for the same reason: fTetWild runs in
+    a fresh child, and an OCP pointer never crosses into it (the ABI rule in `mesh_probe`)."""
+    from OCP.BRepTools import BRepTools
+
+    with tempfile.TemporaryDirectory(prefix="repair-routing-") as tmp:
+        path = Path(tmp) / "shape.brep"
+        if not BRepTools.Write_s(shape, str(path)):
+            return tolerant_probe.TolerantResult(
+                tolerant_probe.NO_ANSWER, 0, 0.0, False,
+                "the routing pass could not write the shape to a BREP")
+        return tolerant_probe.tolerant_probe(path, diagonal_mm=float(diagonal_mm),
+                                             budget_s=float(budget_s))
 
 
 def _kernel_clean(final: Measure, defects: tuple) -> bool:
@@ -210,7 +267,9 @@ def _score(reading: dict) -> float | None:
 def finishing_verdict(goal: RepairGoal | None, *, shape, final: Measure, defects: tuple,
                       packages: tuple, deadline_s: float,
                       clock: Callable[[], float] = time.monotonic,
-                      prober: Callable[..., Any] | None = None) -> dict | None:
+                      prober: Callable[..., Any] | None = None,
+                      tolerant_live: bool = False, tolerant_timeout_s: float = 0.0,
+                      tolerant_prober: Callable[..., Any] | None = None) -> dict | None:
     """What this run finished with, read for `goal`. `None` when no goal was declared.
 
     NEVER RAISES. An internal error becomes `{"profile": ..., "error": "<type>"}`: the repair that
@@ -234,12 +293,23 @@ def finishing_verdict(goal: RepairGoal | None, *, shape, final: Measure, defects
     try:
         reading = _meshability(shape=shape, final=final, deadline_s=deadline_s, clock=clock,
                                prober=_default_prober if prober is None else prober)
-        return {"profile": profile,
-                "kernel_clean": _kernel_clean(final, tuple(defects)),
-                "meshability": reading,
-                "score": _score(reading),
-                "grind": _grind(reading, final),
-                "review": _review(tuple(packages))}
+        out = {"profile": profile,
+               "kernel_clean": _kernel_clean(final, tuple(defects)),
+               "meshability": reading,
+               "score": _score(reading),
+               "grind": _grind(reading, final),
+               "review": _review(tuple(packages))}
+        if tolerant_live:
+            # THE `routing` KEY IS THE FLAG'S OWN SIGNAL. Absent - not empty - with tier 2b off,
+            # because devtools/validation/repair_corpus.py reads its PRESENCE as "the tolerant
+            # pass was live for this file". An empty dict here would make every flag-off row read
+            # as a live row that answered nothing.
+            out["routing"] = _routing(
+                shape=shape, final=final, reading=reading, deadline_s=deadline_s, clock=clock,
+                tolerant_timeout_s=tolerant_timeout_s,
+                prober=(_default_tolerant_prober if tolerant_prober is None
+                        else tolerant_prober))
+        return out
     except Exception as exc:  # noqa: BLE001 - the finishing verdict never raises
         logger.info("repair goal verdict (%s): %s: %s", profile, type(exc).__name__, exc)
         return {"profile": profile, "error": type(exc).__name__}

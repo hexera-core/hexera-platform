@@ -13,6 +13,9 @@ WF = ROOT / ".github" / "workflows" / "deploy.yml"
 
 ON = "needs.target.outputs.crs_v3 != '' && 'live' || ''"
 LIVE_ONLY = "needs.target.outputs.crs_v3 == 'live' && 'true' || ''"
+# A POSTURE, not a boolean: the tolerant probe (tier 2b) reads `live`/`off`, and only the
+# exact crs_v3=live turns it on - a shadow run records the ladder, it does not run fTetWild.
+LIVE_POSTURE = "needs.target.outputs.crs_v3 == 'live' && 'live' || ''"
 
 # THE TABLE every later flag-adding task appends to: env name -> (metadata name, on-value expression).
 FLAGS: dict[str, tuple[str, str]] = {
@@ -23,6 +26,7 @@ FLAGS: dict[str, tuple[str, str]] = {
     "CAD_REPAIR_FRAGMENT_BODIES": ("cad-repair-fragment-bodies", LIVE_ONLY),
     "CAD_REPAIR_REBUILD_FACE": ("cad-repair-rebuild-face", LIVE_ONLY),
     "CAD_REPAIR_CLOSE_WIRE_GAPS": ("cad-repair-close-wire-gaps", LIVE_ONLY),
+    "CAD_REPAIR_TOLERANT_PROBE": ("cad-repair-tolerant-probe", LIVE_POSTURE),
 }
 
 VERTEX_MOVING = ("CAD_REPAIR_REBUILD_FACE", "CAD_REPAIR_CLOSE_WIRE_GAPS")

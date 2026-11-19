@@ -1635,6 +1635,9 @@ jobs:
       CAD_REPAIR_FRAGMENT_BODIES: ${{ needs.target.outputs.crs_v3 == 'live' && 'true' || '' }}
       CAD_REPAIR_REBUILD_FACE: ${{ needs.target.outputs.crs_v3 == 'live' && 'true' || '' }}
       CAD_REPAIR_CLOSE_WIRE_GAPS: ${{ needs.target.outputs.crs_v3 == 'live' && 'true' || '' }}
+      # Tier 2b runs fTetWild on a customer's part, so it needs `live` and not merely a v3 run:
+      # a shadow run records the ladder's questions, it does not start the tolerant mesher.
+      CAD_REPAIR_TOLERANT_PROBE: ${{ needs.target.outputs.crs_v3 == 'live' && 'live' || '' }}
     steps:
       # A SHALLOW CHECKOUT IS ENOUGH HERE, unlike release's. Nothing in this job reads history:
       # lib.sh derives the image tag from `rev-parse --short=12 HEAD` plus a `diff --quiet HEAD`

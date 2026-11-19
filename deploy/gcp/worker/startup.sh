@@ -92,6 +92,7 @@ for pair in "deployment-id:DEPLOYMENT_ID" \
             "cad-repair-fragment-bodies:CAD_REPAIR_FRAGMENT_BODIES" \
             "cad-repair-rebuild-face:CAD_REPAIR_REBUILD_FACE" \
             "cad-repair-close-wire-gaps:CAD_REPAIR_CLOSE_WIRE_GAPS" \
+            "cad-repair-tolerant-probe:CAD_REPAIR_TOLERANT_PROBE" \
             "verdict-by-limits:VERDICT_BY_LIMITS" \
             "mesh-progressive-snapshot-enabled:MESH_PROGRESSIVE_SNAPSHOT_ENABLED" \
             "mesh-snappy-ranks:MESH_SNAPPY_RANKS"; do
