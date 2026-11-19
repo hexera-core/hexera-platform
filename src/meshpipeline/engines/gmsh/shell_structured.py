@@ -65,6 +65,8 @@ BOLT_REACH = 10.0
 #: holes of one pattern: one plane, diameters alike within PATTERN_ALIKE; on a circle or in a row within PATTERN_TOL of
 #: their own radius
 PATTERN_ALIKE = 0.02
+#: SHMESH-51o6: a hole of bolt size on a plate that carries bolt holes is read as one
+BOLT_BESIDE = True
 PATTERN_TOL = 0.1
 #: a bolt hole's rings reach out at most BOLT_RING_MAX times its radius; their outer elements are no longer than the
 #: user's longest edge (with none given: BOLT_OUT face sizes, the longest a mapped segment may be); no ring's quad has
@@ -349,6 +351,16 @@ def bolt_holes(gmsh, tag_of: dict[int, int], bodies: dict[int, str] | None = Non
                 break
         if joined:
             out[(a["t"], a["j"])] = ("joined", "its plate is joined to another plate")
+    if BOLT_BESIDE:
+        # SHMESH-51o6: a round hole of bolt size (within BOLT_ALIKE of one) on a plate that carries bolt holes is one
+        # too: five 20.9 mm holes beside six 19.8 mm bolt holes of a real column's plate were read as nothing
+        read = [h for h in holes if (h["t"], h["j"]) in out]
+        for a in holes:
+            if (a["t"], a["j"]) in out:
+                continue
+            if any(tag_of.get(b["t"]) == tag_of.get(a["t"]) and abs(a["r"] - b["r"]) <= BOLT_ALIKE * max(a["r"], b["r"])
+                   for b in read):
+                out[(a["t"], a["j"])] = ("beside", "it is of bolt size on a plate with bolt holes")
     return out
 
 
