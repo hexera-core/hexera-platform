@@ -9,7 +9,7 @@ from dataclasses import dataclass
 import pytest
 
 from meshpipeline.cad.repair import goal as goal_mod
-from meshpipeline.cad.repair import mesh_probe
+from meshpipeline.cad.repair import grind, mesh_probe, oracle
 from meshpipeline.cad.repair.contracts import DefectCode, DefectSeverity, RepairGoal
 
 SHAPE = object()
@@ -21,6 +21,14 @@ class FakeMeasure:
 
     valid: bool = True
     diagonal_mm: float = 100.0
+
+
+@dataclass(frozen=True)
+class SizedMeasure(FakeMeasure):
+    """A measure that also carries the counts `grind` predicts from."""
+
+    solids: int = 1
+    faces: int = 200
 
 
 @dataclass(frozen=True)
@@ -221,3 +229,137 @@ def test_repair_step_file_takes_a_goal_and_defaults_to_none():
     parameter = inspect.signature(repair_step_file).parameters["goal"]
     assert parameter.default is None
     assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+
+
+# --------------------------------------------------------------------------------------------
+# THE ORACLE SEAM. Every budget this module spends is the oracle's, held by identity rather than
+# by a second copy of the number - two constants that could drift apart were the bug being fixed.
+# --------------------------------------------------------------------------------------------
+
+
+def test_the_budget_constants_are_the_oracles():
+    assert goal_mod.TIER2_HARD_CAP_S is oracle.TIER2_HARD_CAP_S
+    assert goal_mod.TIER2_ELEMENT_CAP is oracle.TIER2_ELEMENT_CAP
+    assert goal_mod.FINAL_PROBE_SLACK_S is oracle.FINAL_PROBE_SLACK_S
+
+
+def test_goal_states_no_budget_number_of_its_own():
+    """No literal copy of a budget survives in goal.py: the oracle is the only source.
+
+    An AST read, because the failure mode is textual - somebody re-typing `60.0` here is exactly
+    how the two numbers drifted apart before.
+    """
+    import ast
+    from pathlib import Path
+
+    tree = ast.parse(Path(goal_mod.__file__).read_text())
+    literals = {n.value for n in ast.walk(tree)
+                if isinstance(n, ast.Constant) and isinstance(n.value, (int, float))
+                and not isinstance(n.value, bool)}
+    assert 60.0 not in literals
+    assert 1_000_000 not in literals
+    assert 10.0 not in literals
+
+
+@pytest.mark.parametrize("remaining_s", [-1.0, 0.0, 1.0, 9.0, 10.0, 11.0, 30.0, 69.9, 70.0,
+                                         100.0, 1e6])
+def test_the_verdict_budget_tracks_the_oracles_rule(remaining_s):
+    """The probe's budget equals the oracle's `verdict` rule AT EVERY REMAINDER, not just one.
+
+    A TABLE, because a single remainder of 1e6 saturates at the hard cap and would keep passing
+    if the rule underneath were replaced by `min(remaining, 60)` - the slack term only shows up
+    near the deadline, which is precisely where a repair run ends.
+    """
+    expected = oracle.probe_budget_s(oracle.CHECK_VERDICT, remaining_s,
+                                     timeout_s=oracle.TIER2_HARD_CAP_S)
+    prober = Recorder(_meshed())
+    verdict = _verdict(RepairGoal.standalone, prober=prober, remaining_s=remaining_s,
+                       final=SizedMeasure())
+    assert verdict["meshability"]["budget_s"] == expected
+    if expected > 0.0:
+        assert prober.calls[0]["budget_s"] == expected
+    else:
+        assert prober.calls == []
+
+
+# --------------------------------------------------------------------------------------------
+# THE GRIND SEAM. The expected mesh cost is RECORDED beside the verdict. Nothing in cad/ branches
+# on it (tests/unit/cad/test_repair_grind.py holds that), so these pin the recorded value only.
+# --------------------------------------------------------------------------------------------
+
+
+def test_the_verdict_records_a_volume_refusal_as_standard():
+    verdict = _verdict(RepairGoal.standalone, final=SizedMeasure(faces=200),
+                       prober=Recorder(_failed(mesh_probe.OVERLAPPING_FACETS,
+                                               stage=mesh_probe.STAGE_3D)))
+    assert verdict["grind"] == {"tier": grind.STANDARD, "rule": grind.RULE_VOLUME_REFUSAL}
+
+
+def test_the_verdict_records_a_surface_refusal_as_cheap():
+    verdict = _verdict(RepairGoal.standalone, final=SizedMeasure(faces=138),
+                       prober=Recorder(_failed(mesh_probe.OPEN_LOOP,
+                                               stage=mesh_probe.STAGE_2D)))
+    assert verdict["grind"] == {"tier": grind.CHEAP, "rule": grind.RULE_SURFACE_REFUSAL}
+
+
+def test_the_verdict_records_a_meshed_part_as_cheap():
+    verdict = _verdict(RepairGoal.standalone, final=SizedMeasure(faces=50),
+                       prober=Recorder(_meshed()))
+    assert verdict["grind"] == {"tier": grind.CHEAP, "rule": grind.RULE_MESHED}
+
+
+def test_the_verdict_records_a_big_part_as_heavy():
+    verdict = _verdict(RepairGoal.standalone, final=SizedMeasure(faces=2_000),
+                       prober=Recorder(_meshed()))
+    assert verdict["grind"] == {"tier": grind.HEAVY, "rule": grind.RULE_MANY_FACES}
+
+
+def test_the_verdict_records_a_timeout_as_heavy():
+    verdict = _verdict(RepairGoal.standalone, final=SizedMeasure(faces=200),
+                       prober=Recorder(_failed(mesh_probe.TIMEOUT)))
+    assert verdict["grind"] == {"tier": grind.HEAVY, "rule": grind.RULE_NO_ANSWER}
+
+
+def test_grind_is_unknown_without_a_face_count():
+    """A measure with no face count is `UNKNOWN`, NEVER A GUESS - grind's own rule, held here
+    because the verdict is what reads the count off the measure."""
+    verdict = _verdict(RepairGoal.standalone, final=FakeMeasure(), prober=Recorder(_meshed()))
+    assert verdict["grind"] == {"tier": grind.UNKNOWN, "rule": grind.RULE_FACES_UNKNOWN}
+
+
+def test_a_skipped_probe_predicts_nothing():
+    """NO READING, NO PREDICTION. A skipped probe leaves `kind` empty, which grind would read as
+    "this meshed" and call cheap - a claim about a part nobody probed. It must say UNKNOWN."""
+    verdict = _verdict(RepairGoal.standalone, prober=_exploding_prober, remaining_s=-1.0,
+                       final=SizedMeasure(faces=50))
+    assert verdict["meshability"]["skipped"] == "no_time"
+    assert verdict["grind"]["tier"] == grind.UNKNOWN
+
+
+def test_the_grind_entry_is_exactly_tier_and_rule():
+    """The shape devtools/validation/repair_corpus.py `goal_row` reads: `grind{tier,rule}`."""
+    verdict = _verdict(RepairGoal.standalone, final=SizedMeasure(), prober=Recorder(_meshed()))
+    assert sorted(verdict["grind"]) == ["rule", "tier"]
+    assert verdict["grind"]["tier"] in {grind.CHEAP, grind.STANDARD, grind.HEAVY, grind.UNKNOWN}
+    assert verdict["grind"]["rule"] in grind.RULES
+
+
+def test_the_verdict_keys_are_what_the_corpus_runner_consumes():
+    """Producer/consumer parity with `goal_row`, which reads `profile`, `kernel_clean`,
+    `meshability`, `score` and `grind`, and treats `routing` as ABSENT until tier 2b is live."""
+    verdict = _verdict(RepairGoal.standalone, final=SizedMeasure(), prober=Recorder(_meshed()))
+    assert sorted(verdict) == ["grind", "kernel_clean", "meshability", "profile", "review",
+                               "score"]
+    assert "routing" not in verdict
+    assert {"meshes", "kind", "seconds"} <= set(verdict["meshability"])
+
+
+def test_a_grind_failure_cannot_break_the_verdict(monkeypatch):
+    """grind never raises; if it somehow did, the verdict still must not lose the repair."""
+    def boom(*args, **kwargs):
+        raise RuntimeError("grind exploded")
+
+    monkeypatch.setattr(goal_mod.grind, "record", boom)
+    assert _verdict(RepairGoal.standalone, final=SizedMeasure(),
+                    prober=Recorder(_meshed())) == {"profile": "standalone",
+                                                    "error": "RuntimeError"}
