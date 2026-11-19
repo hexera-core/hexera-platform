@@ -1,4 +1,4 @@
-# Responsibility: Delete the big-machine VMs (RUN-4) this deployment started that have nothing left to do - stopped, or with their result written, or whose job has ended or is unknown - whatever became of the worker that started them.
+# Responsibility: Delete the big-machine VMs (RUN-4) this deployment started that have nothing left to do - stopped, or with their result written (a VM held for its job: idle past its hold), or whose job has ended or is unknown - whatever became of the worker that started them.
 # Boundaries: lists and deletes this deployment's mesh VMs only (its exchange bucket, read off each VM's own metadata), and reads whether a result object exists and whether the job that started a VM is still running. It never touches a VM of another deployment, never a VM still working for a live job, and never the exchange's objects.
 # Collaborates with: gce_vm.py (list_vms, delete_vm, VmReference; the VM's own startup script stops it when its container exits), persistence/repositories/native_submission_repository.py (owner_live), runtime/celery_worker.py (runs it at start and every SWEEP_EVERY_S).
 """THE VM SWEEP (RUN-4).
@@ -13,6 +13,10 @@ worker also sweeps, at start and every SWEEP_EVERY_S, and deletes a VM of this d
   - its RESULT is written in the exchange (its run is over, collected or not);
   - the JOB that started it has ended, or no claim names it - its owner is gone - once it is older than
     OWNER_GRACE_S (a VM is started before its claim records it).
+
+A VM HELD FOR ITS JOB (its `job` label, gce_vm.instance_body; RUN-4) waits, its run done, for the job's next
+run: its written result is no reason to delete it. It is deleted when its job has ended (or no job has its
+id), or when it has had no run for HELD_IDLE_S - past the HOLD_IDLE_S after which it ends itself.
 
 A VM still WORKING is never touched (28 Oct): one whose beacon (runtime/mesh_runner, every minute while it
 meshes and while it sends its result back) was written within WORKING_S is left alone, whatever its claim says -
@@ -39,6 +43,9 @@ STOPPED = frozenset({"TERMINATED", "STOPPED", "STOPPING", "SUSPENDED"})
 #: A VM whose beacon was written this recently is working (the waiting worker's own stall window,
 #: cloud_run_client.WAIT_STALL_S: its beacon pulses every minute while it lives).
 WORKING_S = 900 + 300
+#: A held VM whose beacon is older than this has had no run of its job for longer than it waits for one
+#: (gce_vm.HOLD_IDLE_S): it should have ended itself.
+HELD_IDLE_S = 1800 + WORKING_S
 
 
 def _meta(vm: dict, key: str) -> str:
@@ -71,7 +78,8 @@ def age_s(vm: dict, now: float) -> float:
 
 def decide(vm: dict, *, now: float, bucket: str, result_written: Callable[[str, str], bool],
            owner: Callable[[str], bool | None],
-           beacon_age: Callable[[str, str], float | None] | None = None) -> str:
+           beacon_age: Callable[[str, str], float | None] | None = None,
+           job_live: Callable[[str], bool | None] | None = None) -> str:
     """Why this VM is to be deleted, in plain words, or "" to leave it. Pure but for the questions it asks
     (whether a result object exists; how long ago its beacon was written; whether the VM's job is still
     running), asked only when they matter."""
@@ -84,6 +92,18 @@ def decide(vm: dict, *, now: float, bucket: str, result_written: Callable[[str, 
     heard = (beacon_age or _beacon_age)(vm_bucket, progress_key_beside(out_key)) if out_key else None
     if heard is not None and heard <= WORKING_S:
         return ""          # working, sending its result back, or finishing after it: never swept
+    job = str((vm.get("labels") or {}).get("job") or "")
+    if job:
+        # HELD FOR ITS JOB: judged by its job, never by its last run's result
+        if heard is not None and heard > HELD_IDLE_S:
+            return f"it has had no run of its job for {int(heard) // 60} minutes"
+        if age_s(vm, now) >= OWNER_GRACE_S or (out_key and result_written(vm_bucket, result_key_beside(out_key))):
+            live = (job_live or _job_live)(job)
+            if live is False:
+                return "the job that holds it has ended"
+            if live is None:
+                return "no job has the id it is held for"
+        return ""
     if out_key and result_written(vm_bucket, result_key_beside(out_key)):
         # written LAST, after its output and every file sent on its own: the result is whole in the
         # exchange, which deleting the machine never touches - and its beacon has gone quiet
@@ -119,11 +139,17 @@ def _owner(reference: str) -> bool | None:
     return owner_live(reference)
 
 
+def _job_live(job: str) -> bool | None:
+    from meshpipeline.persistence.repositories.native_submission_repository import job_live
+    return job_live(job)
+
+
 def sweep(*, vms: list[dict] | None = None, now: float | None = None,
           result_written: Callable[[str, str], bool] | None = None,
           owner: Callable[[str], bool | None] | None = None,
           delete: Callable | None = None,
-          beacon_age: Callable[[str, str], float | None] | None = None) -> dict:
+          beacon_age: Callable[[str, str], float | None] | None = None,
+          job_live: Callable[[str], bool | None] | None = None) -> dict:
     """One sweep: {"seen", "deleted": [(name, why)], "kept"}. Never raises: a question that cannot be answered
     keeps the VM (it is swept again next time, and Compute Engine's lifetime limit is the backstop)."""
     from meshpipeline.adapters.mesh_execution import gce_vm as G
@@ -140,7 +166,7 @@ def sweep(*, vms: list[dict] | None = None, now: float | None = None,
         out["seen"] += 1
         try:
             why = decide(vm, now=now, bucket=bucket, result_written=result_written or _result_written,
-                         owner=owner or _owner, beacon_age=beacon_age)
+                         owner=owner or _owner, beacon_age=beacon_age, job_live=job_live)
         except Exception as exc:  # noqa: BLE001 - not judged this time is kept this time
             logger.warning("mesh VM sweep: %s not judged (%s)", vm.get("name"), type(exc).__name__)
             why = ""
@@ -169,5 +195,5 @@ def run_forever(stop=None) -> None:
         stop.wait(SWEEP_EVERY_S)
 
 
-__all__ = ["OWNER_GRACE_S", "STOPPED", "SWEEP_EVERY_S", "WORKING_S", "age_s", "decide", "exchange_of", "reference_of",
+__all__ = ["HELD_IDLE_S", "OWNER_GRACE_S", "STOPPED", "SWEEP_EVERY_S", "WORKING_S", "age_s", "decide", "exchange_of", "reference_of",
            "run_forever", "sweep"]

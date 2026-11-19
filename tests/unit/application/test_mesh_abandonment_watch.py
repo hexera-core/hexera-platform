@@ -194,3 +194,29 @@ def test_a_collection_of_an_earlier_run_waits_under_the_watch_too(authority, own
     provider = _WatchingProvider()
     ClaimingMeshExecutor(provider).run(authority.workspace, engine="snappy", timeout=60)
     assert provider.seen and "cancelled" in provider.seen[0]
+
+
+class _HoldingProvider:
+    def __init__(self) -> None:
+        self.holders: list = []
+        self.released: list = []
+
+    def run(self, workspace, *, engine, timeout, operation_key):
+        self.holders.append(mesh_execution.vm_holder())
+        return {"rc": 0, "provider_reference": "gce:x"}
+
+    def release_job(self, job_id):
+        self.released.append(job_id)
+
+
+def test_the_provider_runs_under_its_jobs_hold_and_the_jobs_end_releases_it(authority, ownership, monkeypatch):
+    # RUN-4: a big-machine VM is held for its job across remeshes, so the provider is told whose it is
+    monkeypatch.setattr(claims, "mark_accepted", lambda **kw: None)
+    provider = _HoldingProvider()
+    executor = ClaimingMeshExecutor(provider)
+    executor.run(authority.workspace, engine="snappy", timeout=60)
+    assert provider.holders == [str(OWN.job_id)]
+    assert mesh_execution.vm_holder() == "", "the hold leaked past the provider call"
+    monkeypatch.setattr(mesh_execution, "_executor", executor)
+    mesh_execution.release_job_machines(OWN.job_id)
+    assert provider.released == [str(OWN.job_id)]

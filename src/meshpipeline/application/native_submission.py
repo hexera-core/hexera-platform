@@ -17,6 +17,7 @@ from meshpipeline.contracts.mesh_execution import (
     HANDED_ON,
     RC_INFRASTRUCTURE,
     abandonment_watch,
+    vm_hold,
 )
 
 logger = logging.getLogger(__name__)
@@ -239,7 +240,7 @@ class ClaimingMeshExecutor:
             logger.warning("job %s generation %s adopts the mesh an earlier generation started (%s, "
                            "operation %s) instead of meshing again", own.job_id,
                            own.execution_generation, state, key[:16])
-            with abandonment_watch(abandonment_watch_for(own)):
+            with abandonment_watch(abandonment_watch_for(own)), vm_hold(own.job_id):
                 result = collect(workspace, engine=engine, timeout=timeout, operation_key=key)
             claims.mark_accepted(job_id=own.job_id, execution_generation=own.execution_generation,
                                  worker_token=own.worker_token,
@@ -247,6 +248,12 @@ class ClaimingMeshExecutor:
                                  or f"adopted:{key}", semantic_operation=operation)
             return {**result, "adopted_from": key}
         return None
+
+    def release_job(self, job_id: str) -> None:
+        """The job has ended: the machines held for it (RUN-4) are released (contracts/mesh_execution)."""
+        release = getattr(self._inner, "release_job", None)
+        if release is not None:
+            release(job_id)
 
     def run(self, workspace: Any, *, engine: str, timeout: int) -> dict:
         from meshpipeline.application import execution_fence as fence
@@ -283,7 +290,7 @@ class ClaimingMeshExecutor:
                 return _infrastructure_failure(
                     engine, "a previous worker's submission was accepted and this executor "
                             "cannot collect its result without submitting again")
-            with abandonment_watch(abandonment_watch_for(own)):
+            with abandonment_watch(abandonment_watch_for(own)), vm_hold(own.job_id):
                 return collect(workspace, engine=engine, timeout=timeout,
                                operation_key=outcome.operation_key)
 
@@ -306,7 +313,7 @@ class ClaimingMeshExecutor:
         try:
             # THE WATCH the provider waits under: a run whose job was cancelled, moved or ended
             # stops waiting and stops its execution, instead of paying for a mesh nobody reads.
-            with abandonment_watch(abandonment_watch_for(own)):
+            with abandonment_watch(abandonment_watch_for(own)), vm_hold(own.job_id):
                 result = self._inner.run(workspace, engine=engine, timeout=timeout,
                                          operation_key=outcome.operation_key)
         except Exception as exc:  # noqa: BLE001 - classified below, never swallowed

@@ -1355,6 +1355,12 @@ async def _run_async(req: JobRequest) -> dict:
         if _publication.fenced:
             await _worker_engine.dispose()
             return {"job_id": job_id, "status": "fenced", "skipped": "not_owner"}
+        # THE JOB'S MESHING IS OVER: the big-machine VMs held for it across its remeshes (RUN-4) are
+        # released now, not left waiting out their idle hold. Only by the owner that finalized - a fenced
+        # worker's job may be meshing on them under its new owner. A crashed run's VMs end themselves
+        # once idle, and the VM sweep deletes one whose job has ended.
+        from meshpipeline.contracts.mesh_execution import release_job_machines
+        await asyncio.to_thread(release_job_machines, job_id)
         # Non-fenced publication always carries the rendered verdict (the fenced branch returned
         # above); binding it explicitly keeps that guarantee visible rather than implied.
         assert _publication.result is not None

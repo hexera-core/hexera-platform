@@ -1,10 +1,12 @@
-# Responsibility: Run one mesh on a Compute Engine VM sized to fit it (contracts/mesh_machine), with the SAME image, service account and exchange contract as the Cloud Run mesh job - the VM runs the job's own container (meshpipeline.runtime.mesh_runner) with INPUT_URI / OUTPUT_URI / ENGINE / TIMEOUT, then deletes itself.
+# Responsibility: Run one mesh on a Compute Engine VM sized to fit it (contracts/mesh_machine), with the SAME image, service account and exchange contract as the Cloud Run mesh job - the VM runs the job's own container (meshpipeline.runtime.mesh_runner) with INPUT_URI / OUTPUT_URI / ENGINE / TIMEOUT, then deletes itself - or, held for its job (RUN-4), takes the job's next run and deletes itself once none comes.
 # Boundaries: moves work only. Whether it runs here is decided above it (the workspace's mesh_machine.json); the result is read from the exchange exactly as a Cloud Run run's is (cloud_run_client._exchange).
 # Collaborates with: cloud_run_client.py (dispatch, poll, collect), contracts/mesh_machine.py (which machine).
 from __future__ import annotations
 
 import hashlib
 import logging
+import re
+import time
 from dataclasses import dataclass
 
 import meshpipeline.settings.providers as provcfg
@@ -33,13 +35,26 @@ CONTAINER_MARGIN_S = 1800
 #: How many times the VM asks to delete itself, and the pause between asks, before it powers off instead.
 SELF_DELETE_TRIES = 3
 
-#: What the VM runs at boot: the job's own container with the run's four values from its metadata and its
-#: workspace on disk, held to the run's timeout plus CONTAINER_MARGIN_S. THE VM ENDS ITSELF however the
-#: container ends - finished, failed, never started, or stopped at its deadline - whatever became of the
-#: worker that started it (RUN-4): it asks to delete itself, and when that is refused (job 6cb2d606, 28 Oct:
-#: its identity may not delete instances, and the silent `curl -sf` left a 16-core VM billing for hours) it
-#: POWERS OFF, which needs no permission and stops the machine's billing. The worker's sweep deletes a VM
-#: that stopped (vm_sweep.py); Compute Engine's lifetime limit is the last backstop.
+#: HELD FOR ITS JOB (RUN-4): how long a VM held by a job (contracts/mesh_execution.vm_hold) waits, its run
+#: done, for the job's next run - a remesh, a step back down, a rerun - before it ends itself. Its next run
+#: is handed to it in its metadata and starts at once on a machine that is up, its image already pulled.
+HOLD_IDLE_S = 1800
+#: Compute Engine's lifetime limit for a held VM, at least (it cannot be moved once the VM is up): room for
+#: the job's runs after the first. A run that would not fit in what is left of it goes to a new VM.
+HOLD_LIFETIME_S = 6 * 3600
+#: How often a VM waiting for its job's next run looks at its metadata.
+HOLD_POLL_S = 15
+
+#: What the VM runs at boot: the job's own container, run by run. Each run is ONE metadata value
+#: (`mesh-run`: id|input|output|engine|timeout|contract|snapshots|ranks|image, read in one request so a run
+#: handed over meanwhile is never read half old, half new), with its workspace on disk, held to the run's
+#: timeout plus CONTAINER_MARGIN_S. A VM held for its job (`hold-idle-s` > 0) then waits up to that long for
+#: the job's next run and takes it; one with no holder ends after its one run, as it always did. THE VM ENDS
+#: ITSELF however its last run ends - finished, failed, never started, or stopped at its deadline - whatever
+#: became of the worker that started it (RUN-4): it asks to delete itself, and when that is refused (job
+#: 6cb2d606, 28 Oct: its identity may not delete instances, and the silent `curl -sf` left a 16-core VM
+#: billing for hours) it POWERS OFF, which needs no permission and stops the machine's billing. The worker's
+#: sweep deletes a VM that stopped (vm_sweep.py); Compute Engine's lifetime limit is the last backstop.
 STARTUP_SCRIPT = r"""#!/bin/bash
 set -u
 MD=http://metadata.google.internal/computeMetadata/v1
@@ -61,37 +76,59 @@ end_vm() {
   shutdown -h now || poweroff -f || echo o > /proc/sysrq-trigger
 }
 trap end_vm EXIT
-IMG=$(get instance/attributes/mesh-image)
 mkdir -p /mnt/stateful_partition/work /mnt/stateful_partition/dockercfg
 export HOME=/mnt/stateful_partition/dockercfg
-REG=$(echo "$IMG" | cut -d/ -f1)
-docker-credential-gcr configure-docker --registries="$REG" >/dev/null 2>&1 || true
-for i in 1 2 3; do docker pull "$IMG" && break; sleep 15; done
-T=$(get instance/attributes/timeout); T=${T:-0}
-END=$(( $(date +%s) + T + __MARGIN__ ))
+PULLED=""
+run_one() {
+  IFS='|' read -r ID IN OUT ENG T CON SNAP RANKS IMG <<< "$1"
+  case "$T" in ''|*[!0-9]*) T=0 ;; esac
+  if [ "$IMG" != "$PULLED" ]; then
+    REG=$(echo "$IMG" | cut -d/ -f1)
+    docker-credential-gcr configure-docker --registries="$REG" >/dev/null 2>&1 || true
+    for i in 1 2 3; do docker pull "$IMG" && break; sleep 15; done
+    PULLED=$IMG
+  fi
+  find /mnt/stateful_partition/work -mindepth 1 -delete 2>/dev/null || true
+  END=$(( $(date +%s) + T + __MARGIN__ ))
+  say "run $ID: meshing"
 # --cpus: every core of the VM, stated as the container's CPU QUOTA. The mesher sizes its parallel
 # work by that quota (engines/determinism.snappy_ranks); without one it fell back to MESH_THREADS (8)
 # and snappyHexMesh ran 8 ranks on a 16-, 32- or 64-core VM. Same machine type, same count.
 docker run -d --rm --name mesh --cpus "$(nproc)" \
-  -e INPUT_URI="$(get instance/attributes/input-uri)" \
-  -e OUTPUT_URI="$(get instance/attributes/output-uri)" \
-  -e ENGINE="$(get instance/attributes/engine)" \
-  -e TIMEOUT="$T" \
-  -e HEXERA_MESH_CONTRACT="$(get instance/attributes/mesh-contract)" \
-  -e MESH_PROGRESSIVE_SNAPSHOT_ENABLED="$(get instance/attributes/mesh-snapshots)" \
-  -e MESH_SNAPPY_RANKS="$(get instance/attributes/mesh-snappy-ranks)" \
-  -e TMPDIR=/work -v /mnt/stateful_partition/work:/work \
-  "$IMG" python -m meshpipeline.runtime.mesh_runner || say "the mesh container did not start"
-while docker inspect mesh >/dev/null 2>&1; do
-  if [ "$(date +%s)" -ge "$END" ]; then
-    say "past its deadline (the run's timeout + __MARGIN__ s): stopping the mesh"
-    docker stop -t 60 mesh || docker kill mesh || true
+    -e INPUT_URI="$IN" -e OUTPUT_URI="$OUT" -e ENGINE="$ENG" -e TIMEOUT="$T" \
+    -e HEXERA_MESH_CONTRACT="$CON" -e MESH_PROGRESSIVE_SNAPSHOT_ENABLED="$SNAP" \
+    -e MESH_SNAPPY_RANKS="$RANKS" \
+    -e TMPDIR=/work -v /mnt/stateful_partition/work:/work \
+    "$IMG" python -m meshpipeline.runtime.mesh_runner || say "the mesh container did not start"
+  while docker inspect mesh >/dev/null 2>&1; do
+    if [ "$(date +%s)" -ge "$END" ]; then
+      say "past its deadline (the run's timeout + __MARGIN__ s): stopping the mesh"
+      docker stop -t 60 mesh || docker kill mesh || true
+      break
+    fi
+    sleep 30
+  done
+  say "the mesh container has exited"
+}
+HOLD=$(get instance/attributes/hold-idle-s)
+case "$HOLD" in ''|*[!0-9]*) HOLD=0 ;; esac
+LAST=""
+IDLE_FROM=$(date +%s)
+while true; do
+  RUN=$(get instance/attributes/mesh-run || true)
+  if [ -n "$RUN" ] && [ "${RUN%%|*}" != "$LAST" ]; then
+    LAST=${RUN%%|*}
+    run_one "$RUN"
+    IDLE_FROM=$(date +%s)
+  fi
+  if [ $(( $(date +%s) - IDLE_FROM )) -ge "$HOLD" ]; then
+    [ "$HOLD" -gt 0 ] && say "no new run of its job in $HOLD s: ending"
     break
   fi
-  sleep 30
+  sleep __POLL__
 done
-say "the mesh container has exited"
-""".replace("__TRIES__", str(SELF_DELETE_TRIES)).replace("__MARGIN__", str(CONTAINER_MARGIN_S))
+""".replace("__TRIES__", str(SELF_DELETE_TRIES)).replace("__MARGIN__", str(CONTAINER_MARGIN_S)).replace(
+    "__POLL__", str(HOLD_POLL_S))
 
 
 @dataclass(frozen=True)
@@ -105,11 +142,27 @@ class VmReference:
         return f"gce:{self.instance_name}"
 
 
-def instance_name(operation_key: str, machine: str) -> str:
+def instance_name(operation_key: str, machine: str, holder: str = "") -> str:
     """A name derived from the operation (a replacement worker derives the same one) and the machine
-    (a step up is a new VM): lower-case, under 63 characters."""
-    digest = hashlib.sha256(f"{operation_key}|{machine}".encode()).hexdigest()[:20]
+    (a step up is a new VM): lower-case, under 63 characters. A VM HELD for its job (`holder`, RUN-4) is
+    named by the job and the machine instead: every run of the job on that machine derives the same one."""
+    ident = f"job:{holder}" if holder else operation_key
+    digest = hashlib.sha256(f"{ident}|{machine}".encode()).hexdigest()[:20]
     return f"mesh-big-{digest}"
+
+
+def job_label(holder: str) -> str:
+    """The `job` label a held VM carries (a label value: lower-case letters, digits, - and _)."""
+    return re.sub(r"[^a-z0-9_-]", "-", str(holder).lower())[:63]
+
+
+def run_value(*, input_uri: str, output_uri: str, engine: str, timeout: int, contract: str, snapshots: bool,
+              ranks: str, image: str) -> str:
+    """The `mesh-run` metadata value the VM reads a run from (STARTUP_SCRIPT), one request for all of it. Its
+    id is the run's output: the same run handed over twice is run once."""
+    rid = hashlib.sha256(output_uri.encode()).hexdigest()[:16]
+    return "|".join([rid, input_uri, output_uri, engine, str(int(timeout)), contract,
+                     "true" if snapshots else "false", ranks, image])
 
 
 def _job_container() -> tuple[str, str]:
@@ -134,9 +187,8 @@ def _job_container() -> tuple[str, str]:
     return image, account
 
 
-def instance_body(*, name: str, zone: str, machine: str, image: str, account: str, input_uri: str,
-                  output_uri: str, engine: str, timeout: int, disk_gb: int) -> dict:
-    """The instances.insert body (pure: tests read it)."""
+def run_metadata(*, image: str, input_uri: str, output_uri: str, engine: str, timeout: int) -> dict:
+    """The metadata of one run, as the VM reads it (`mesh-run`) and as an operator and the sweep read it."""
     from meshpipeline.contracts.mesh_execution import MESH_EXCHANGE_VERSION
 
     # THE SAME SWITCH THE CLOUD RUN ROUTE PASSES, for the same reason: the VM runs the job's own
@@ -166,12 +218,30 @@ def instance_body(*, name: str, zone: str, machine: str, image: str, account: st
     meta = {"mesh-image": image, "input-uri": input_uri, "output-uri": output_uri, "engine": engine,
             "timeout": str(int(timeout)), "mesh-contract": str(MESH_EXCHANGE_VERSION),
             "mesh-snapshots": "true" if snapshots else "false",
-            "mesh-snappy-ranks": ranks,
+            "mesh-snappy-ranks": ranks}
+    meta["mesh-run"] = run_value(input_uri=input_uri, output_uri=output_uri, engine=engine, timeout=timeout,
+                                 contract=str(MESH_EXCHANGE_VERSION), snapshots=snapshots, ranks=ranks, image=image)
+    return meta
+
+
+def instance_body(*, name: str, zone: str, machine: str, image: str, account: str, input_uri: str,
+                  output_uri: str, engine: str, timeout: int, disk_gb: int, holder: str = "") -> dict:
+    """The instances.insert body (pure: tests read it). A VM held for its job (`holder`) waits HOLD_IDLE_S
+    for the job's next run and lives at least HOLD_LIFETIME_S; one with no holder ends with its run."""
+    meta = {**run_metadata(image=image, input_uri=input_uri, output_uri=output_uri, engine=engine,
+                           timeout=timeout),
+            "hold-idle-s": str(HOLD_IDLE_S if holder else 0),
             "startup-script": STARTUP_SCRIPT}
+    labels = {"purpose": LABEL, "engine": engine.lower()[:60]}
+    if holder:
+        labels["job"] = job_label(holder)
+    lifetime = int(timeout) + LIFETIME_MARGIN_S
+    if holder:
+        lifetime = max(lifetime, HOLD_LIFETIME_S)
     body: dict = {
         "name": name,
         "machineType": f"zones/{zone}/machineTypes/{machine}",
-        "labels": {"purpose": LABEL, "engine": engine.lower()[:60]},
+        "labels": labels,
         "disks": [{"boot": True, "autoDelete": True,
                    "initializeParams": {"sourceImage": BOOT_IMAGE, "diskSizeGb": str(int(disk_gb)),
                                         "diskType": f"zones/{zone}/diskTypes/pd-balanced"}}],
@@ -180,16 +250,106 @@ def instance_body(*, name: str, zone: str, machine: str, image: str, account: st
         "metadata": {"items": [{"key": k, "value": v} for k, v in meta.items()]},
         "scheduling": {"automaticRestart": False, "onHostMaintenance": "TERMINATE",
                        "instanceTerminationAction": "DELETE",
-                       "maxRunDuration": {"seconds": str(int(timeout) + LIFETIME_MARGIN_S)}},
+                       "maxRunDuration": {"seconds": str(lifetime)}},
     }
     if account:
         body["serviceAccounts"] = [{"email": account, "scopes": ["https://www.googleapis.com/auth/cloud-platform"]}]
     return body
 
 
+#: The states of a VM that may still take its job's next run.
+LIVE = frozenset({"PROVISIONING", "STAGING", "RUNNING"})
+#: How long a worker waits for a held VM it could not reuse to be gone before starting its replacement.
+REPLACE_WAIT_S = 300
+
+
+def _ref(vm: dict) -> VmReference:
+    return VmReference(f"projects/{provcfg.GCP_PROJECT_ID}/zones/{vm.get('zone')}/instances/{vm.get('name')}")
+
+
+def _lifetime_left_s(vm: dict, now: float) -> float:
+    """What is left of a VM's Compute Engine lifetime limit (maxRunDuration), in seconds; 0 when unreadable."""
+    from datetime import datetime
+    try:
+        created = datetime.fromisoformat(str(vm.get("creationTimestamp"))).timestamp()
+        limit = float(((vm.get("scheduling") or {}).get("maxRunDuration") or {}).get("seconds") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    return created + limit - now
+
+
+def reusable(vm: dict, *, timeout: int, now: float | None = None) -> bool:
+    """Whether a held VM may take a run of `timeout` seconds (pure: tests read it): it is up, and the run
+    fits, with its margin, in what is left of its lifetime limit."""
+    now = time.time() if now is None else now
+    return (str(vm.get("status") or "") in LIVE
+            and _lifetime_left_s(vm, now) >= int(timeout) + CONTAINER_MARGIN_S + 600)
+
+
+def _hand_over(vm: dict, meta: dict, session=None) -> bool:
+    """Give a held VM its job's next run: its metadata is set to the run's (the VM reads `mesh-run` and
+    starts it). True once Compute Engine took the change; a request whose answer never came is
+    INDETERMINATE (the VM may be meshing it)."""
+    import requests as _rq
+
+    from meshpipeline.adapters.mesh_execution.cloud_run_client import _access_token
+    s = session or _rq
+    path = _ref(vm).instance_name
+    for _ in range(2):
+        md = vm.get("metadata") or {}
+        items = {str(i.get("key")): i.get("value") for i in (md.get("items") or [])}
+        items.update(meta)
+        body = {"fingerprint": md.get("fingerprint", ""),
+                "items": [{"key": k, "value": v} for k, v in items.items()]}
+        try:
+            resp = s.post(f"https://compute.googleapis.com/compute/v1/{path}/setMetadata", json=body,
+                          headers={"Authorization": f"Bearer {_access_token()}"}, timeout=60)
+        except _rq.exceptions.RequestException as exc:
+            raise SubmissionIndeterminate(
+                f"handing a run to VM {vm.get('name')} failed in transport ({type(exc).__name__})") from None
+        if 200 <= resp.status_code < 300:
+            return True
+        if resp.status_code != 412:            # 412: its metadata moved meanwhile - read it again, once
+            logger.warning("mesh VM %s did not take the run (HTTP %s)", vm.get("name"), resp.status_code)
+            return False
+        again = describe_vm(str(vm.get("name")), session=session)
+        if again is None:
+            return False
+        vm = again
+    return False
+
+
+def _wait_gone(name: str, limit_s: int = REPLACE_WAIT_S) -> None:
+    waited = 0
+    while waited < limit_s and describe_vm(name) is not None:
+        time.sleep(10)
+        waited += 10
+
+
+def _held_vm(name: str, holder: str, machine: str, *, meta: dict, timeout: int) -> VmReference | None:
+    """THE JOB'S VM, TAKEN AGAIN (RUN-4): the VM already held for this job on this machine takes the run, or
+    None when there is none to take it (any it could not take is deleted first, so its name is free). The
+    job's VM on ANOTHER machine - the run before a step up or back down - is released: one VM per job."""
+    label = job_label(holder)
+    for other in list_vms():
+        if (other.get("labels") or {}).get("job") == label and other.get("name") != name:
+            delete_vm(_ref(other), why=f"its job's next run is on a {machine}")
+    vm = describe_vm(name)
+    if vm is None:
+        return None
+    if reusable(vm, timeout=timeout) and _hand_over(vm, meta):
+        logger.warning("mesh for %s runs on the %s VM its job holds (%s, %s): no boot, no image pull",
+                       meta.get("engine"), machine, name, RULE)
+        return _ref(vm)
+    delete_vm(_ref(vm), why="it could not take its job's next run (stopped, or too little lifetime left)")
+    _wait_gone(name)
+    return None
+
+
 def trigger_vm(*, input_uri: str, output_uri: str, engine: str, timeout: int, operation_key: str,
-               decision: dict) -> VmReference:
-    """Start the VM. Each zone of the region is tried in turn when one has no such machine free; a
+               decision: dict, holder: str = "") -> VmReference:
+    """Start the run on a VM. A run of a job that holds a VM on this machine is handed to it (RUN-4);
+    otherwise one is started, each zone of the region tried in turn when one has no such machine free. A
     request whose answer never came is INDETERMINATE (the VM may exist), never "not started"."""
     import requests as _rq
 
@@ -198,14 +358,20 @@ def trigger_vm(*, input_uri: str, output_uri: str, engine: str, timeout: int, op
     if not machine:
         raise RuntimeError("no machine named for a Compute Engine run")
     image, account = _job_container()
-    name = instance_name(operation_key, machine)
+    name = instance_name(operation_key, machine, holder)
+    if holder:
+        meta = run_metadata(image=image, input_uri=input_uri, output_uri=output_uri, engine=engine,
+                            timeout=timeout)
+        held = _held_vm(name, holder, machine, meta=meta, timeout=timeout)
+        if held is not None:
+            return held
     disk_gb = max(MIN_DISK_GB, int(4 * float(decision.get("workspace_gib") or 0.0)) + 50)
     last = ""
     for suffix in ZONE_SUFFIXES:
         zone = f"{provcfg.GCP_REGION}-{suffix}"
         body = instance_body(name=name, zone=zone, machine=machine, image=image, account=account,
                              input_uri=input_uri, output_uri=output_uri, engine=engine, timeout=timeout,
-                             disk_gb=disk_gb)
+                             disk_gb=disk_gb, holder=holder)
         url = f"https://compute.googleapis.com/compute/v1/projects/{provcfg.GCP_PROJECT_ID}/zones/{zone}/instances"
         try:
             resp = _rq.post(url, json=body, headers={"Authorization": f"Bearer {_access_token()}"}, timeout=60)
@@ -214,7 +380,8 @@ def trigger_vm(*, input_uri: str, output_uri: str, engine: str, timeout: int, op
                 f"{engine}: the VM request failed in transport ({type(exc).__name__}); it may exist") from None
         if 200 <= resp.status_code < 300:
             ref = VmReference(f"projects/{provcfg.GCP_PROJECT_ID}/zones/{zone}/instances/{name}")
-            logger.warning("mesh for %s runs on a %s VM in %s (%s, %s)", engine, machine, zone, name, RULE)
+            logger.warning("mesh for %s runs on a %s VM in %s (%s, %s%s)", engine, machine, zone, name, RULE,
+                           f", held for job {holder}" if holder else "")
             return ref
         if resp.status_code == 409:
             # ALREADY THERE: a previous worker started this very run (same operation, same machine)
@@ -257,9 +424,8 @@ def list_vms(session=None) -> list[dict]:
     return out
 
 
-def find_vm(name: str, session=None) -> VmReference | None:
-    """The VM of this name in the region's zones, or None (a worker collecting a run another worker started
-    finds the VM by the name both derive: instance_name)."""
+def describe_vm(name: str, session=None) -> dict | None:
+    """The VM of this name in the region's zones as Compute Engine describes it (with its `zone`), or None."""
     import requests as _rq
 
     from meshpipeline.adapters.mesh_execution.cloud_run_client import _access_token
@@ -273,8 +439,15 @@ def find_vm(name: str, session=None) -> VmReference | None:
             logger.info("mesh VM %s not looked up in %s: %s", name, zone, type(exc).__name__)
             continue
         if resp.status_code == 200:
-            return VmReference(path)
+            return {**(resp.json() or {}), "name": name, "zone": zone}
     return None
+
+
+def find_vm(name: str, session=None) -> VmReference | None:
+    """The VM of this name in the region's zones, or None (a worker collecting a run another worker started
+    finds the VM by the name both derive: instance_name)."""
+    vm = describe_vm(name, session=session)
+    return None if vm is None else _ref(vm)
 
 
 def delete_vm(ref: VmReference, *, why: str) -> bool:
@@ -295,5 +468,17 @@ def delete_vm(ref: VmReference, *, why: str) -> bool:
     return ok
 
 
-__all__ = ["CONTAINER_MARGIN_S", "LABEL", "SELF_DELETE_TRIES", "STARTUP_SCRIPT", "VmReference", "delete_vm",
-           "find_vm", "instance_body", "instance_name", "list_vms", "trigger_vm"]
+def release_job_vms(holder: str, *, why: str = "its job has ended") -> int:
+    """Delete every VM held for job `holder` (RUN-4): the job has ended, nothing will run on them again.
+    Best effort, never raises; how many were deleted."""
+    label = job_label(holder)
+    gone = 0
+    for vm in list_vms():
+        if (vm.get("labels") or {}).get("job") == label and delete_vm(_ref(vm), why=why):
+            gone += 1
+    return gone
+
+
+__all__ = ["CONTAINER_MARGIN_S", "HOLD_IDLE_S", "HOLD_LIFETIME_S", "LABEL", "SELF_DELETE_TRIES", "STARTUP_SCRIPT",
+           "VmReference", "delete_vm", "describe_vm", "find_vm", "instance_body", "instance_name", "job_label",
+           "list_vms", "release_job_vms", "reusable", "run_metadata", "run_value", "trigger_vm"]

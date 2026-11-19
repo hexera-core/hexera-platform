@@ -267,6 +267,39 @@ def abandonment_watch(check: Callable[[], str | None] | None) -> Iterator[None]:
         _abandon_watch.reset(token)
 
 
+#: THE JOB A BIG-MACHINE VM IS HELD FOR (RUN-4): bound by the submission authority (application/
+#: native_submission) around every provider call, read by the VM route. A job keeps ONE VM per machine
+#: type for as long as it may mesh again - a remesh, a step up's return or a rerun takes the VM that is
+#: already up instead of booting another and pulling the image again - and the job's end releases it
+#: (release_job_machines). Unbound ("") means no holder: the VM ends with its run, as before.
+_vm_holder: ContextVar[str] = ContextVar("mesh_vm_holder", default="")
+
+
+@contextmanager
+def vm_hold(job_id: Any) -> Iterator[None]:
+    token = _vm_holder.set(str(job_id or ""))
+    try:
+        yield
+    finally:
+        _vm_holder.reset(token)
+
+
+def vm_holder() -> str:
+    return _vm_holder.get()
+
+
+def release_job_machines(job_id: Any) -> None:
+    """The job has ended: release the machines held for it (RUN-4). Best effort, never raises - an
+    unreleased VM ends itself once idle, and the VM sweep deletes one whose job has ended."""
+    release = getattr(_executor, "release_job", None)
+    if release is None or not job_id:
+        return
+    try:
+        release(str(job_id))
+    except Exception as exc:  # noqa: BLE001 - a release never touches the job's outcome
+        logger.warning("the machines held for job %s were not released (%s)", job_id, type(exc).__name__)
+
+
 #: WHY A WAIT WAS GIVEN UP, as the watch says it (application/native_submission). Only the first
 #: stops the remote run: a cancelled job's mesh is read by nobody. The second - the job taken over,
 #: or its lease lapsed - leaves the remote to finish, its result landing in the exchange for whoever
