@@ -2353,7 +2353,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                                      hole_faces=[int(w.owner) for w in go_])
             if hurt and pending is None:
                 _grid_first(hurt, why_cut, _two_faces(washers, boxed + gridded), set(grid_faces_made),
-                            no_cut)
+                            no_cut, _one_for_grid(washers))
                 pending = _NoCut(hurt, why_cut)
             if pending is not None and not GATHER:
                 raise pending
@@ -2906,7 +2906,8 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                 raise _NoCut(set(), {}, holes=[[float(x) for x in w.centre] + ([1.0] if id(w) in ring_b else [])
                                                for w in bad_b],
                              hole_faces=[int(w.owner) for w in bad_b], hole_why=[why_b[id(w)] for w in bad_b])
-        _grid_first(hurt_p, why_p, _two_faces(washers, boxed + gridded), set(grid_faces_made), no_cut)
+        _grid_first(hurt_p, why_p, _two_faces(washers, boxed + gridded), set(grid_faces_made), no_cut,
+                    _one_for_grid(washers))
         if hurt_p:
             raise _NoCut(hurt_p, {k: why_p[k] for k in hurt_p})
     if judge_faces and ST.BOLT_CHECK and not seam_due and requirements and requirements.get("limits"):
@@ -3194,7 +3195,22 @@ def _two_faces(washers: list, placed: list) -> set[int]:
     return {int(w.owner) for w in (washers if BOLT_FIRST_ANY else placed) if w.boxed2}
 
 
-def _grid_first(hurt: set[int], why: dict[int, dict], two: set[int], made: set[int], no_cut) -> None:
+#: SHMESH-51o14: a face whose bolt holes were held to one ring for its grid on this pass (SHMESH-51b's retry at
+#: planning) and whose grid is refused after meshing all the same keeps them at one ring in its free mesh (its bolt
+#: key with its face's), as a face 51b named after meshing does: the real column's plate E (and its twin) was refused
+#: its grid with one ring round its holes, took two rings back in its free face on the next pass and ended with 12
+#: triangles where one ring had 10 (its twin 12 to 6)
+ONE_KEPT_FREE = True
+
+
+def _one_for_grid(washers: list) -> set[int]:
+    """SHMESH-51o14: the sewn faces with bolt holes held to one ring for their grid on this pass."""
+    return {int(w.owner) for w in washers if w.info.get("one_ring") == "one ring so its face keeps its grid"
+            and w.info.get("bolt")} if ONE_KEPT_FREE else set()
+
+
+def _grid_first(hurt: set[int], why: dict[int, dict], two: set[int], made: set[int], no_cut,
+                one_kept: set[int] | None = None) -> None:
     """SHMESH-51b: in a set of faces refused their grids, each gridded face holding two-ring bolt holes gives up the
     second ring first (its key -k-1-BOLT_GRID_KEY in place of k), unless it already has."""
     if not ST.BOLT_GRID_FIRST:
@@ -3206,6 +3222,13 @@ def _grid_first(hurt: set[int], why: dict[int, dict], two: set[int], made: set[i
             hurt.add(kb_)
             why[kb_] = {k_: v_ for k_, v_ in why.get(kp, {}).items() if k_ != "grid_figures"}
             why[kb_].update(kind="bolt rings in a grid", then="one ring so its face keeps its grid")
+    for kp in sorted(hurt & (one_kept or set()) & made):
+        # (SHMESH-51o14: its holes already on one ring for this grid: the face goes free, its holes keep one ring)
+        kb_ = -(kp + BOLT_GRID_KEY) - 1
+        if kb_ not in no_cut and kb_ not in hurt:
+            hurt.add(kb_)
+            why[kb_] = {k_: v_ for k_, v_ in why.get(kp, {}).items() if k_ != "grid_figures"}
+            why[kb_].update(kind="bolt rings in a grid", then="one ring kept in its free mesh (held for its grid)")
 
 
 def _bolt_refused(no_cut) -> dict[int, str]:
