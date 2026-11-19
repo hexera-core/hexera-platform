@@ -518,7 +518,7 @@ API: it logs that the directory is missing and leaves `/ui` and `/static` unmoun
 
 <!-- Regenerate: python -m meshpipeline.settings.inventory --reference -->
 
-Every supported setting (297 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
+Every supported setting (299 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
 
 | Setting | Exposure | Read by | Secret |
 |---|---|---|---|
@@ -626,6 +626,8 @@ Every supported setting (297 entries). `template` settings are the ones `.env.ex
 | `CAD_REPAIR_SPLIT_CLOSED_FACES` | internal | app |  |
 | `CAD_REPAIR_STALL_LIMIT` | internal | app |  |
 | `CAD_REPAIR_TIMEOUT_S` | internal | app |  |
+| `CAD_REPAIR_TOLERANT_PROBE` | internal | app |  |
+| `CAD_REPAIR_TOLERANT_PROBE_TIMEOUT_S` | internal | app |  |
 | `CELERY_WORKER_CONCURRENCY` | template | compose |  |
 | `CONSOLE_SIGNUP_ENABLED` | template | app |  |
 | `CREDITS_PER_MESH_MINUTE` | template | app |  |

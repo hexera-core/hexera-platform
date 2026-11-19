@@ -922,13 +922,16 @@ def repair_step_file(source: Path, destination: Path, *,
     # clock exactly as the driver used to; a driver that spent the whole deadline would leave its
     # own run unjudged. With no goal the reserve is 0.0, so this is the expression it was.
     #
-    # THE TOLERANT (TIER 2B) SEAM: `tolerant_live` is False and `tolerant_timeout_s` 0.0 until
-    # `CAD_REPAIR_TOLERANT_PROBE` exists (CRS v3 Task 4), which is the task that makes this call
-    # site read that posture. Passed explicitly so the seam is visible rather than defaulted.
+    # THE TOLERANT (TIER 2B) SEAM, CLOSED. `CAD_REPAIR_TOLERANT_PROBE` is read HERE, at the one
+    # call site, rather than inside `goal.py`: the policy module reads no settings, so the reserve
+    # rule and the verdict's routing entry can both be exercised over a table of postures without
+    # touching the environment. Off - the default - reserves exactly what it reserved before.
     from meshpipeline.cad.repair import goal as goal_policy
 
+    tolerant_live = rcfg.CAD_REPAIR_TOLERANT_PROBE == "live"
+    tolerant_timeout_s = float(rcfg.CAD_REPAIR_TOLERANT_PROBE_TIMEOUT_S)
     driver_deadline = deadline - goal_policy.reserve_s(
-        goal, tolerant_live=False, tolerant_timeout_s=0.0)
+        goal, tolerant_live=tolerant_live, tolerant_timeout_s=tolerant_timeout_s)
     _occ()
 
     from meshpipeline.cad.repair.brep import _read_shape
@@ -1054,7 +1057,8 @@ def repair_step_file(source: Path, destination: Path, *,
     goal_verdict = goal_policy.finishing_verdict(
         goal, shape=result.shape, final=final, defects=result.defects,
         packages=regions_run.packages if regions_run is not None else (),
-        deadline_s=deadline)
+        deadline_s=deadline,
+        tolerant_live=tolerant_live, tolerant_timeout_s=tolerant_timeout_s)
     if goal_verdict is not None:
         measurements["goal"] = goal_verdict
 

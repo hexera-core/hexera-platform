@@ -752,6 +752,8 @@ WORKER_METADATA=(
   || WORKER_METADATA+=("cad-repair-rebuild-face=${CAD_REPAIR_REBUILD_FACE}")
 [ -z "${CAD_REPAIR_CLOSE_WIRE_GAPS:-}" ] \
   || WORKER_METADATA+=("cad-repair-close-wire-gaps=${CAD_REPAIR_CLOSE_WIRE_GAPS}")
+[ -z "${CAD_REPAIR_TOLERANT_PROBE:-}" ] \
+  || WORKER_METADATA+=("cad-repair-tolerant-probe=${CAD_REPAIR_TOLERANT_PROBE}")
 # The verdict by measured limits (docs/RULES.md VER), only when the target states it (dev does,
 # prod does not yet): the run decides pass, concerns or fail from the mesh's measured numbers and
 # the AI review only adds notes. Absent, the env object's value (the shipped default, off) stands.
