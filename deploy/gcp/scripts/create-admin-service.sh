@@ -558,4 +558,5 @@ log "  url           ${ADMIN_URL:-<not reported>}"
 if [ -n "${GITHUB_OUTPUT:-}" ] && [ -n "${ADMIN_URL}" ]; then
   printf 'admin_url=%s\n' "${ADMIN_URL}" >> "${GITHUB_OUTPUT}"
 fi
+prune_idle_revisions "${ADMIN_SERVICE}"
 log "done"

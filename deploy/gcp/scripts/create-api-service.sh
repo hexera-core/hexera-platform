@@ -506,4 +506,5 @@ log "  network       ${VPC_NETWORK}/${VPC_SUBNET}, private-ranges-only, ingress 
 log "  credentials   ${#SECRET_BINDINGS[@]} Secret Manager reference(s) - no value is in the spec"
 log "  invoker       ${INVOKER_STATE}"
 log "  url           ${API_URL:-<not reported>}"
+prune_idle_revisions "${API_SERVICE}"
 log "done"
