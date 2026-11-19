@@ -6,7 +6,7 @@ LIST=$1; OUT=$2; CORPUS=${3:-$HOME/bench/corpus2/corpus}
 PY=/opt/bench/venv/bin/python
 cd ~/bench
 # wait for any bench job already holding the cores
-while pgrep -f "harness[.]py|local[.]py" >/dev/null; do sleep 30; done
+while pgrep -f "bench/venv/bin/python .*(harness|local)[.]py" >/dev/null; do sleep 30; done
 while read -r rel; do
   [ -z "$rel" ] && continue
   n=$(basename "$rel"); n=${n%.*}

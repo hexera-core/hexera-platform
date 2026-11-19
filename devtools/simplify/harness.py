@@ -354,7 +354,7 @@ class Meshed:
     seconds: float
 
 
-def mesh_brep(brep: str, h_max: float, pick, threads: int = 1) -> Meshed | str:
+def mesh_brep(brep: str, h_max: float, pick, threads: int = 1, ho_optimize: int = 1) -> Meshed | str:
     """Mesh a BREP with 10-node tets; pick(bbox) -> set name or None names each surface's node set.
     Returns the reason as a string when a set comes out empty or the mesh has no tetrahedra."""
     import gmsh
@@ -369,7 +369,10 @@ def mesh_brep(brep: str, h_max: float, pick, threads: int = 1) -> Meshed | str:
         gmsh.option.setNumber("Mesh.MeshSizeMin", h_max / 200)
         gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 12)
         gmsh.option.setNumber("Mesh.ElementOrder", 2)
-        gmsh.option.setNumber("Mesh.HighOrderOptimize", 1)
+        gmsh.option.setNumber("Mesh.HighOrderOptimize", ho_optimize)
+        # without the optimiser, curved 10-node tets fold (CalculiX: "nonpositive jacobian", measured on
+        # KFL08); straight-sided quadratic elements cannot, at the price of a faceted boundary
+        gmsh.option.setNumber("Mesh.SecondOrderLinear", 0 if ho_optimize else 1)
         gmsh.option.setNumber("Mesh.Algorithm3D", 1)
         picked: dict[str, list[int]] = {}
         for _, t in gmsh.model.getEntities(2):
@@ -419,7 +422,7 @@ def run_ccx(m: Meshed, wd: Path, step_cards: str, threads: int = 1) -> tuple[boo
 
 
 def mesh_and_solve(brep: str, work: str, lc: dict, h_max: float, exclude: dict, threads: int = 1,
-                   keep_field: bool = False) -> Solved:
+                   keep_field: bool = False, ho_optimize: int = 1) -> Solved:
     lc = LoadCase(**lc)
     wd = Path(work)
     wd.mkdir(parents=True, exist_ok=True)
@@ -435,7 +438,7 @@ def mesh_and_solve(brep: str, work: str, lc: dict, h_max: float, exclude: dict, 
             return "NLOAD"
         return None
 
-    m = mesh_brep(brep, h_max, pick, threads)
+    m = mesh_brep(brep, h_max, pick, threads, ho_optimize)
     if isinstance(m, str):
         return Solved(False, m)
     if not m.sets.get("NFIX") or not m.sets.get("NLOAD"):
@@ -558,28 +561,45 @@ def _rel(q: dict, ref: dict, far_key: str) -> dict:
 def _job(args):
     """Run one mesh-and-solve in its OWN process. Measured on nist_ctc_02: a native abort inside
     gmsh/OCCT took a whole ProcessPoolExecutor down (BrokenProcessPool) and lost the part; as a
-    subprocess, a crash costs one row."""
-    name, brep, work, lc, h, excl, keep = args
+    subprocess, a crash costs one row.
+
+    `modes` are the high-order settings to try, in order. Only the ORIGINAL may fall back from 1
+    (curved, optimised) to 0 (straight-sided); every variant then runs in the original's mode alone,
+    because an original meshed one way compared with a variant meshed the other measures the
+    element type, not the feature."""
+    name, brep, work, lc, h, excl, keep, *rest = args
+    modes = tuple(rest[0]) if rest else (1,)
     wd = Path(work)
     wd.mkdir(parents=True, exist_ok=True)
     spec = wd / "spec.json"
-    spec.write_text(json.dumps({"brep": brep, "work": work, "lc": lc, "h": h, "exclude": excl, "keep": keep}))
-    try:
-        p = subprocess.run([sys.executable, "-I", __file__, "--one", str(spec)], capture_output=True, text=True,
-                           timeout=7200)
-    except subprocess.TimeoutExpired:
-        return name, asdict(Solved(False, "timed out"))
     res = wd / "solved.json"
-    if p.returncode != 0 or not res.exists():
+    # Measured on KFL08 (FreeCAD-library housing): gmsh's high-order optimiser ABORTS the process
+    # ("Failed to reach critical value in pass 1 for measure(s): ScaledJac") on some curved parts.
+    # One retry without it; the run records which it took, because the two meshes differ.
+    for ho in modes:
+        spec.write_text(json.dumps({"brep": brep, "work": work, "lc": lc, "h": h, "exclude": excl, "keep": keep,
+                                    "ho_optimize": ho}))
+        res.unlink(missing_ok=True)
+        try:
+            p = subprocess.run([sys.executable, "-I", __file__, "--one", str(spec)], capture_output=True, text=True,
+                               timeout=7200)
+        except subprocess.TimeoutExpired:
+            return name, asdict(Solved(False, "timed out"))
+        if p.returncode == 0 and res.exists():
+            out = json.loads(res.read_text())
+            out["ho_optimize"] = ho
+            return name, out
         tail = (p.stderr or "").strip().splitlines()[-1:] or [f"exit {p.returncode}"]
-        return name, asdict(Solved(False, f"worker died: {tail[0][:200]}"))
-    return name, json.loads(res.read_text())
+        if "critical value" not in tail[0]:
+            break
+    return name, asdict(Solved(False, f"worker died: {tail[0][:200]}"))
 
 
 def _one(spec_path: str) -> int:
     sp = json.loads(Path(spec_path).read_text())
     try:
-        r = mesh_and_solve(sp["brep"], sp["work"], sp["lc"], sp["h"], sp["exclude"], keep_field=sp["keep"])
+        r = mesh_and_solve(sp["brep"], sp["work"], sp["lc"], sp["h"], sp["exclude"], keep_field=sp["keep"],
+                           ho_optimize=sp.get("ho_optimize", 1))
     except Exception as exc:   # one bad feature must not end the run
         r = Solved(False, f"{type(exc).__name__}: {exc}")
     (Path(sp["work"]) / "solved.json").write_text(json.dumps(asdict(r), default=float))
@@ -642,8 +662,14 @@ def main(argv=None) -> int:
              False)]
     results: dict[str, dict] = {}
     t0 = time.time()
+    # the original first, alone: its high-order mode is the part's mode (see _job)
+    name, res = _job(base[0] + ((1, 0),))
+    results[name] = res
+    mode = (res.get("ho_optimize", 1),)
+    print(f"[{time.time() - t0:7.1f}s] original: {'ok' if res['ok'] else res['why']} elements={res['elements']} "
+          f"high-order mode {mode[0]}", flush=True)
     with ThreadPoolExecutor(max_workers=a.jobs) as ex:
-        futs = [ex.submit(_job, j) for j in base + jobs]
+        futs = [ex.submit(_job, j + (mode,)) for j in base[1:] + jobs]
         for fut in as_completed(futs):
             name, res = fut.result()
             results[name] = res
@@ -667,7 +693,7 @@ def main(argv=None) -> int:
     noise = results.get("noise", {})
     if noise.get("ok") and ref.get("ok"):
         noise["error"] = _rel(noise["qoi"], ref["qoi"], "none")
-    summary = {"part": a.step, "diag": diag, "h": h, "load_case": asdict(lc), "volume": v0,
+    summary = {"part": a.step, "diag": diag, "h": h, "load_case": asdict(lc), "volume": v0, "ho_optimize": mode[0],
                "n_features": len(feats), "original": ref, "noise": noise, "features": rows,
                "wall_s": time.time() - t0}
     (out / "result.json").write_text(json.dumps(summary, indent=1, default=float))

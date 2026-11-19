@@ -81,7 +81,7 @@ def main(argv=None) -> int:
         meta[name] = {"members": members, "skipped": skipped_ids, "how": how,
                       "volume_change": (H.volume(simp) - r["volume"]) / r["volume"]}
         jobs.append((f"package_{name}", str(path), str(hd / "work" / f"package_{name}"), asdict(lc), r["h"],
-                     excl, False))
+                     excl, False, (r.get("ho_optimize", 1),)))
     from concurrent.futures import ThreadPoolExecutor
     with ThreadPoolExecutor(max_workers=a.jobs) as ex:
         res = dict(ex.map(H._job, jobs))

@@ -122,9 +122,10 @@ def _read_rf(dat: Path) -> dict[int, np.ndarray]:
     return rf
 
 
-def _solve_piece(brep: Path, work: Path, h: float, region, tol: float, drive, lc=None) -> dict:
+def _solve_piece(brep: Path, work: Path, h: float, region, tol: float, drive, lc=None, ho: int = 1) -> dict:
     work.mkdir(parents=True, exist_ok=True)
-    m = H.mesh_brep(str(brep), h, lambda b: _plane_of(b, region, tol, lc))
+    # the part's own high-order mode (harness result `ho_optimize`), so a piece is the same element type
+    m = H.mesh_brep(str(brep), h, lambda b: _plane_of(b, region, tol, lc), ho_optimize=ho)
     if isinstance(m, str):
         return {"ok": False, "why": m}
     cut_sets = [k for k in m.sets if k.startswith("C")]
@@ -201,7 +202,7 @@ def t1_hole(shape, faces, fids: list[int], global_npz: Path, c_s: float, diag: f
 
 
 def _one(args) -> tuple[str, dict]:
-    step, fid, feat, harness_dir, h_global, k, diag, w_global, refine, lc, grow = args
+    step, fid, feat, harness_dir, h_global, k, diag, w_global, refine, lc, grow, ho = args
     h = h_global / refine
     out = Path(harness_dir) / "local" / fid
     try:
@@ -228,8 +229,8 @@ def _one(args) -> tuple[str, dict]:
         npz = Path(harness_dir) / "work" / fid / "field.npz"
         drive = _drive(npz, region, 2 * h_global)
         tol = 1e-4 * diag
-        po = _solve_piece(out / "orig.brep", out / "o", h, region, tol, drive, lc)
-        ps = _solve_piece(out / "simp.brep", out / "s", h, region, tol, drive, lc)
+        po = _solve_piece(out / "orig.brep", out / "o", h, region, tol, drive, lc, ho)
+        ps = _solve_piece(out / "simp.brep", out / "s", h, region, tol, drive, lc, ho)
         res: dict = {"ok": po["ok"] and ps["ok"], "pad": pad, "region": region}
         if not res["ok"]:
             res["why"] = po.get("why") or ps.get("why")
@@ -296,7 +297,7 @@ def main(argv=None) -> int:
             continue
         w_global = row["result"]["qoi"]["strain_energy"]
         todo.append((a.step, fid, row, str(hd), r["h"], a.k, r["diag"], w_global, a.refine, r["load_case"],
-                     a.grow))
+                     a.grow, r.get("ho_optimize", 1)))
     out: dict[str, dict] = {}
     with ThreadPoolExecutor(max_workers=a.jobs) as ex:
         for fut in as_completed([ex.submit(_isolated, t) for t in todo]):
