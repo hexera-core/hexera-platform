@@ -327,3 +327,27 @@ first deploy. Run the API first; see §4.
 
 **A deploy fails partway.** Every stage is idempotent and safe to rerun; the run continues from
 the state it finds rather than starting over.
+
+## The CRS v3 posture on shared dev
+
+Shared dev runs the CRS v3 flag set as **one unit**, as committed configuration: the `pick` step
+states `crs_v3=live` for the shared-dev target, and every v3 flag in the provision job derives from
+that single value. There is no half-on shared dev to reason about - the set turns on together or
+not at all. A flag whose plumbing row does not exist yet simply is not exported, and joins the set
+the moment its row lands, with no further change to the posture.
+
+Shared dev's posture does **not** depend on what a dispatch asked for: the repository states it, not
+the caller. A merge to `main` gets the same answer as a manual run.
+
+What `live` commands today: the region loop, the mesh probe, the package reviewer, tier 2b's
+tolerant routing probe, and the four opt-in operations. `CAD_REPAIR_REBUILD_FACE` and
+`CAD_REPAIR_CLOSE_WIRE_GAPS` **move vertices** and are reviewer-gated - they ride with
+`CAD_REPAIR_PACKAGE_REVIEW=live` and must never be exported without it. A test pins that property
+for every posture value.
+
+On `pipeline` workers tier 2b reads `unavailable`, because that image carries no fTetWild. That is
+recorded as an honest answer, not worked around.
+
+**Production stays off.** Its `pick` branch states `crs_v3=` permanently, so every v3 flag reads its
+in-code default of `off`. Ungating production is a separate owner decision. To turn shared dev off
+again, revert the one `crs_v3=live` line.

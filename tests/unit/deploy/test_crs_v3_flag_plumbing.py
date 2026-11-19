@@ -85,19 +85,21 @@ def test_crs_v3_is_one_switch_and_empty_on_prod(tmp_path):
         out = _pick(tmp_path, DISPATCH_SLUG="pranav", DISPATCH_CRS_V3=given)
         assert out["deployment_id"] == "dev-pranav"
         assert out.get("crs_v3") == expected, (given, out.get("crs_v3"))
-    # shared dev: stated empty, even when the input asked for live (Task 28 turns it on)
-    dev = _pick(tmp_path, DISPATCH_SLUG="", DISPATCH_CRS_V3="live")
+    # shared dev: `live` as COMMITTED CONFIG - it does not matter what the dispatch asked for,
+    # and a merge to main gets the same answer, because the repo states the posture, not the caller
+    dev = _pick(tmp_path, DISPATCH_SLUG="", DISPATCH_CRS_V3="off")
     assert dev["deployment_id"] == "dev"
-    assert dev.get("crs_v3") == ""
+    assert dev.get("crs_v3") == "live"
     merge = _pick(tmp_path, GITHUB_REF="refs/heads/main", GITHUB_EVENT_NAME="push")
     assert merge["deployment_id"] == "dev"
-    assert merge.get("crs_v3") == ""
+    assert merge.get("crs_v3") == "live"
     # prod: stated empty, permanently
     prod = _pick(tmp_path, GITHUB_REF="refs/tags/v9.9.9", GITHUB_EVENT_NAME="push",
                  DISPATCH_CRS_V3="live")
     assert prod["deployment_id"] == "prod"
     assert prod.get("crs_v3") == ""
-    assert len(re.findall(r'echo "crs_v3="', wf)) == 2
+    # exactly one target still states it empty: production
+    assert len(re.findall(r'echo "crs_v3="', wf)) == 1
 
     for env, (_, expr) in FLAGS.items():
         assert "prod" not in expr, env
@@ -136,3 +138,17 @@ def test_vertex_moving_ops_ride_with_the_reviewer():
 
 def test_input_budget_still_holds():
     assert len(_inputs()) <= 25
+
+
+# --- Task 28: the posture. Shared dev runs the v3 set as one unit; production stays off. -------
+
+
+def test_the_v3_flags_derive_only_from_the_one_switch():
+    """No v3 flag may read the deployment id or name production: one switch commands the set."""
+    for line in _text(".github/workflows/deploy.yml").splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("CAD_REPAIR_") or "crs_v3" not in stripped:
+            continue
+        name = stripped.split(":", 1)[0]
+        assert "deployment_id" not in stripped, f"{name} must derive from crs_v3 alone"
+        assert "'prod'" not in stripped, f"{name} must not name production"

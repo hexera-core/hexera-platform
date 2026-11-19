@@ -782,9 +782,20 @@ jobs:
               echo "worker_env_uri=gs://dev-transfer-224734058693/worker.env"
               # the measured limits decide pass, concerns or fail; the AI review only adds notes
               echo "verdict_by_limits=true"
-              # THE CRS v3 POSTURE is stated empty here whatever the dispatch chose; Task 28 of the
-              # CRS v3 plan turns shared dev on as committed config.
-              echo "crs_v3="
+              # THE CRS v3 POSTURE, committed config: shared dev runs the v3 flag set as ONE unit.
+              # Every v3 flag in the provision job derives from this single value, so the set turns
+              # on together or not at all - there is no half-on shared dev to reason about. A flag
+              # whose row does not exist yet simply is not exported; it joins the set the moment its
+              # row lands, with no change here.
+              #
+              # What `live` commands today: the region loop, the mesh probe, the package reviewer,
+              # tier 2b's tolerant routing probe, and the four opt-in operations. REBUILD_FACE and
+              # CLOSE_WIRE_GAPS MOVE VERTICES and are reviewer-gated - they ride with
+              # PACKAGE_REVIEW=live and must never be exported without it.
+              #
+              # Production stays empty, permanently, until the owner ungates it as a separate
+              # decision. To turn shared dev off again, revert this one line to `crs_v3=`.
+              echo "crs_v3=live"
               # the in-progress mesh frame is off here too, and snappyHexMesh runs on every core
               echo "mesh_snapshots=false"
               echo "mesh_snappy_ranks="
