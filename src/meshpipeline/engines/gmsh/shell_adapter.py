@@ -251,11 +251,16 @@ GUARD_OWN = True
 GUARD_PER_FACE = True
 GUARD_MAPPED = 0.99
 #: SHMESH-51o4: a trial starts with the holes drawn again so far still drawn (a hole's circle is the CAD's whatever its
-#: rings) instead of from the CAD: each restart had found them again, two passes
-GUARD_CARRY = True
+#: rings) instead of from the CAD - off (SHMESH-51o5): on the real column the long plate's trial alone came out with 44
+#: triangles this way and 38 from the CAD (the freed cells' keys a redraw lets go stayed kept)
+GUARD_CARRY = False
 #: ... and the other bodies' grids left out and back kept so (off: on a lab part it changed the trial's own result -
 #: bodies of a column are joined, a face's rings change the counts through its joints)
 GUARD_CARRY_GRIDS = False
+#: SHMESH-51o5: a trial switches to one ring only faces whose own triangles drop with it
+GUARD_OWN_GAIN = True
+#: ... a face is a candidate only with triangles of its own within GUARD_NEAR two-ring outer radii of its two-ring holes
+GUARD_NEAR = 4.5
 #: SHMESH-48x3: a grid refused for its share under the user's shortest edge comes back when it has no triangle, its
 #: free mesh has triangles and the shortest-edge line is no worse with it (the user's choice, 18 Nov)
 GRID_ZERO_TRIA = True
@@ -270,7 +275,33 @@ def _tria_faces(mesh, applied: dict, owners: list[str], everywhere: bool = False
         return []
     q = len(mesh.quads)
     with_t = {str(m) for m in mesh.mid[q:]}
+    if GUARD_NEAR and not everywhere:
+        # (SHMESH-51o5: triangles of its own near its two-ring holes - a face whose triangles lie away from its rings
+        # cannot lose them to one ring)
+        near = _near_trias(mesh, applied)
+        with_t = {m for m in with_t if near.get(m, 0)}
     return sorted(k for k, o in enumerate(owners) if str(o) in two and (everywhere or str(o) in with_t))
+
+
+def _near_trias(mesh, applied: dict) -> Counter:
+    """SHMESH-51o5: per mid-face, its triangles within GUARD_NEAR two-ring outer radii of one of its two-ring bolt
+    holes (about three box half widths: in or beside the hole's box)."""
+    lines = ((applied.get("quality") or {}).get("structure") or {}).get("hole_list") or []
+    holes: dict[str, list[tuple[np.ndarray, float]]] = {}
+    for h in lines:
+        if h.get("bolt") and int(h.get("rings") or 0) >= ST.BOLT_RINGS and h.get("at_mm") is not None:
+            r_out = 0.5 * float(h.get("diameter_mm") or 0.0) + float(h.get("planned_width_mm") or 0.0)
+            holes.setdefault(str(h.get("face")), []).append((np.asarray(h["at_mm"], dtype=float), GUARD_NEAR * r_out))
+    out: Counter = Counter()
+    q = len(mesh.quads)
+    if not len(mesh.trias):
+        return out
+    cen = np.asarray(mesh.xyz)[np.asarray(mesh.trias)].mean(axis=1)
+    for i, m in enumerate(mesh.mid[q:]):
+        hs = holes.get(str(m))
+        if hs and any(float(np.linalg.norm(cen[i] - c)) <= reach for c, reach in hs):
+            out[str(m)] += 1
+    return out
 
 
 def _grid_back(g_c: dict, free_: dict) -> tuple[bool, str]:
@@ -294,12 +325,20 @@ def _grid_back(g_c: dict, free_: dict) -> tuple[bool, str]:
     return False, ""
 
 
-def _first_trial(mesh, owners: list[str], faces: list[int]) -> list[int]:
+def _first_trial(mesh, owners: list[str], faces: list[int], applied: dict | None = None) -> list[int]:
     """SHMESH-51o4: the faces of the guard's first trial - those of the mid-face with the most triangles of its own
     among these (all of them when none has a triangle of its own)."""
     own_t = Counter(str(m) for m in mesh.mid[len(mesh.quads):])
+    if applied is not None and GUARD_NEAR:
+        own_t = _near_trias(mesh, applied)
     top = max(sorted({str(owners[k]) for k in faces}), key=lambda m_: (own_t.get(m_, 0), m_))
     return [k for k in faces if str(owners[k]) == top] if own_t.get(top, 0) else list(faces)
+
+
+def _own_gain(t_two: Counter, t_one: Counter, mids: list[str]) -> tuple[list[str], bool]:
+    """SHMESH-51o5: (the trial's mid-faces whose own triangles drop with one ring, whether every one of them does)."""
+    gain = [m_ for m_ in mids if t_one.get(m_, 0) < t_two.get(m_, 0)]
+    return gain, (not GUARD_OWN_GAIN or len(gain) == len(mids))
 
 
 def _guard_carry(sn: dict, faces: list[int], keys: set[int], body_of) -> tuple[set, dict, dict, set, set]:
@@ -1197,6 +1236,7 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
         guard_faces: list[list[int]] = []
         guard_log: list[dict] = []
         guard_snap: dict | None = None      # (SHMESH-51o4: the run's state when the mesh before a trial was made)
+        guard_part_tried = False            # (SHMESH-51o5: the faces that gained of a trial tried alone, once a run)
         regrid_log: list[dict] = []         # (SHMESH-48x3: grids back with no triangle, and their short elements)
 
         def redraw(wanted: list, seam_wanted: list, w_owner: list, s_owner: list) -> bool:
@@ -1491,11 +1531,42 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
                 t_a = Counter(str(m) for m in b_mesh.mid[q_a:])
                 t_b = Counter(str(m) for m in mesh.mid[q_b:])
                 mids = sorted({str(owners[k]) for k in guard_faces[-1]})
-                won = len(mesh.trias) < len(b_mesh.trias) and _not_worse(applied, past_n, b_applied, b_n)
+                # SHMESH-51o5: a face takes one ring only where its OWN triangles drop with it; a trial is kept only
+                # when every face it switches gains so (the real column's second trial, one ring round every other bolt
+                # hole, took 8 triangles off the run and none off its own faces - 0 to 0, 10 to 10 - and cost a 12-hole
+                # plate its two rings); where some gain and some do not, those that gain are tried alone (once, while
+                # time allows); the triangles that went elsewhere are told (`others`), never taken as the face's
+                gain, own_ok = _own_gain(t_a, t_b, mids)
+                won = own_ok and len(mesh.trias) < len(b_mesh.trias) and _not_worse(applied, past_n, b_applied, b_n)
+                others = {m_: [int(t_a.get(m_, 0)), int(t_b.get(m_, 0))] for m_ in sorted(set(t_a) | set(t_b))
+                          if m_ not in mids and t_a.get(m_, 0) != t_b.get(m_, 0)}
                 guard_log.append({"one_ring_faces": guard_faces[-1], "triangles_two": int(len(b_mesh.trias)),
                                   "triangles_one": int(len(mesh.trias)),
                                   "per_face": {m_: [int(t_a.get(m_, 0)), int(t_b.get(m_, 0))] for m_ in mids},
-                                  "kept": "one ring" if won else "two rings"})
+                                  "others": others,
+                                  "kept": "one ring" if won else ("two rings: no face of it gains on its own"
+                                                                   if not gain else "two rings")})
+                part = [k for k in guard_faces[-1] if str(owners[k]) in gain]
+                if (GUARD_OWN_GAIN and gain and not own_ok and not guard_part_tried and guard_snap is not None
+                        and (MESH_DEADLINE_S <= 0 or time.monotonic() - started < GUARD_TIME * MESH_DEADLINE_S)):
+                    # (only the faces that gained: from the mesh before the trial)
+                    guard_part_tried = True
+                    guard_log[-1]["kept"] = "only the faces that gained, tried alone"
+                    guard_best = (b_mesh, b_applied, b_n)
+                    sn = guard_snap
+                    guard_faces[-1] = part
+                    passes[-1][0] = "one ring better on some faces only: one ring there (start again)"
+                    keys_g = {-(k + BOLT_GRID_KEY) - 1 for k in part}
+                    no_cut, refused, compare, kept, unmap = _guard_carry(sn, part, keys_g, body_of)
+                    refused.update({k: {"kind": "bolt rings", "why": "its own triangles fewer with one ring",
+                                        "then": "one ring on this face"} for k in keys_g})
+                    unmapped, before_guard = 0, None
+                    if GUARD_CARRY:
+                        brep, reseated, redrawn, redraw_pass, asked, seated_now = sn["seat"]
+                    else:
+                        brep, reseated, redrawn, redraw_pass, asked, seated_now = (unseated, 0, [], redraw_off, [],
+                                                                                   [])
+                    continue
                 if not won:
                     mesh, applied, past_n = b_mesh, b_applied, b_n
                     sn = guard_snap or {}
@@ -1517,13 +1588,15 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
                 # long plate beside it took one ring); then, while time allows and triangles are left anywhere, one
                 # ring round every bolt hole - the mesh never ends with more triangles than that one, when it is tried
                 faces_g: list[int] = []
-                for every in ((False, True) if not guard_faces else (True,)):
+                for every in ((False, True) if not guard_faces and not GUARD_OWN_GAIN else
+                              (False,) if GUARD_OWN_GAIN else (True,)):
                     faces_g = [k for k in _tria_faces(mesh, applied, owners, everywhere=every)
-                               if -(k + BOLT_GRID_KEY) - 1 not in no_cut]
+                               if -(k + BOLT_GRID_KEY) - 1 not in no_cut
+                               and not (GUARD_OWN_GAIN and any(k in f_ for f_ in guard_faces))]
                     if faces_g:
                         break
                 if faces_g and GUARD_PER_FACE and not guard_faces:
-                    faces_g = _first_trial(mesh, owners, faces_g)
+                    faces_g = _first_trial(mesh, owners, faces_g, applied)
                 if faces_g:
                     guard_best = (mesh, applied, past_n)
                     guard_snap = {"no_cut": set(no_cut), "refused": dict(refused), "unmap": set(unmap),

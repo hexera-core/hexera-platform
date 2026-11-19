@@ -514,13 +514,16 @@ def test_a_strip_between_a_bolt_box_and_a_joint_takes_the_boxs_count(tmp_path):
     _check(applied)
 
 
-def test_two_rings_never_cost_triangles_one_ring_would_not_have():
+def test_two_rings_never_cost_triangles_one_ring_would_not_have(monkeypatch):
     """SHMESH-51o: the faces tried with one ring are those whose mid-face holds two-ring bolt holes and triangles of
     its own (then every such face, when triangles are left anywhere); none without triangles. The mesh with one
-    ring is kept only when it is no worse on the solver's limits and the user's lines."""
+    ring is kept only when it is no worse on the solver's limits and the user's lines. (Where the triangles lie -
+    SHMESH-51o5's near its rings - is tested on its own below.)"""
     from types import SimpleNamespace
 
     from meshpipeline.engines.gmsh import shell_adapter as SA
+
+    monkeypatch.setattr(SA, "GUARD_NEAR", 0.0)
 
     applied = {"quality": {"structure": {"hole_list": [
         {"face": "Mid_1", "bolt": "one of 4 alike holes in a row", "rings": 2},
@@ -666,8 +669,33 @@ def test_the_first_one_ring_trial_is_the_face_with_the_most_triangles_alone():
     assert SA._first_trial(mesh, owners, [0, 1]) == [0]                   # (Mid_A 12 against Mid_B 10)
     none = SimpleNamespace(quads=np.zeros((3, 4)), trias=np.zeros((0, 3)), mid=["Mid_A"] * 3)
     assert SA._first_trial(none, owners, [0, 4]) == [0, 4]                # (no face has its own: all of them)
-    # (a trial starts from the holes drawn again so far, a restart of SHMESH-51b from the CAD's)
-    assert SA.GUARD_CARRY and not SA.GUARD_CARRY_GRIDS
+    # (SHMESH-51o5: a trial starts from the CAD's holes, as SHMESH-51b starts again)
+    assert not SA.GUARD_CARRY and not SA.GUARD_CARRY_GRIDS
+
+
+def test_a_face_takes_one_ring_only_where_its_own_triangles_drop():
+    """SHMESH-51o5, the real column on a36f42e7: the second trial (one ring round the other bolt faces) took 8
+    triangles off the run and none off its own faces (A 0 to 0, B 10 to 10) - kept, it cost the 12-hole plate its two
+    rings. A trial is kept only when every face it switches has fewer triangles of its own; a face is a candidate only
+    with triangles of its own near its two-ring holes."""
+    from collections import Counter
+    from types import SimpleNamespace
+
+    from meshpipeline.engines.gmsh import shell_adapter as SA
+
+    assert SA._own_gain(Counter({"A": 0, "B": 10}), Counter({"A": 0, "B": 10}), ["A", "B"]) == ([], False)
+    assert SA._own_gain(Counter({"C": 18}), Counter(), ["C"]) == (["C"], True)
+    assert SA._own_gain(Counter({"A": 12, "B": 10}), Counter({"B": 10}), ["A", "B"]) == (["A"], False)
+    applied = {"quality": {"structure": {"hole_list": [
+        {"face": "Mid_1", "bolt": "a row", "rings": 2, "at_mm": [0.0, 0.0, 0.0], "diameter_mm": 17.4,
+         "planned_width_mm": 10.5}]}}}
+    xyz = np.array([[30.0, 0.0, 0.0], [31.0, 0.0, 0.0], [30.0, 1.0, 0.0],
+                    [300.0, 0.0, 0.0], [301.0, 0.0, 0.0], [300.0, 1.0, 0.0]])
+    mesh = SimpleNamespace(quads=np.zeros((0, 4), dtype=int), trias=np.array([[0, 1, 2], [3, 4, 5]]), xyz=xyz,
+                           mid=["Mid_1", "Mid_1"])
+    assert SA._near_trias(mesh, applied) == Counter({"Mid_1": 1})      # (30 mm from the hole: in reach; 300: not)
+    far = SimpleNamespace(quads=mesh.quads, trias=mesh.trias[1:], xyz=xyz, mid=["Mid_1"])
+    assert SA._tria_faces(far, applied, ["Mid_1"]) == [] and SA._tria_faces(mesh, applied, ["Mid_1"]) == [0]
 
 
 class SimpleWasher:
