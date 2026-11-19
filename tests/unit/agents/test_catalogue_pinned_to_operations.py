@@ -156,6 +156,9 @@ def test_the_limits_text_follows_both_flags_that_change_geometry(monkeypatch, re
     text = _wire.catalogue_limits(rebuild_face=rebuild, close_wire_gaps=close)
     assert ("re-trim one face from its own boundary" in text) is rebuild
     assert ("moving its loose vertices together" in text) is close
+    # THE CLOSING SENTENCE NEVER DENIES THE MOVE IT JUST OFFERED (and is untouched with it off).
+    assert ("beyond those slivers and that bounded vertex move it cannot move" in text) is close
+    assert ("beyond those slivers it cannot move" in text) is (not close)
     if not (rebuild or close):
         assert text == _wire.catalogue_limits(rebuild_face=False)
     monkeypatch.setattr(rcfg, "CAD_REPAIR_REBUILD_FACE", rebuild)

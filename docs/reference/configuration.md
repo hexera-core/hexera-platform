@@ -475,7 +475,10 @@ within the run's tolerance (`ShapeFix_Wire.FixConnected`), then closes the remai
 owning body. It measures what it did and declares it: `vertices_moved`, `max_vertex_move_mm`
 (the measured largest displacement), and the area change. It declines `gaps_exceed_tolerance`
 when the measured gap or the measured move is larger than the run's tolerance, and `not_closed`
-when the fixer closed nothing - a no-op is never kept. With the flag on, the rules baseline
+when the fixer closed nothing - a no-op is never kept. It is conservative by design: a gap at or
+below the face's own vertex tolerance is not a gap, and is declined - a missed repair is preferred
+to damage. Curve ends `FixGaps3d` reshapes are bounded by the run's tolerance but not measured,
+and the evidence says so. With the flag on, the rules baseline
 prefers it for a surface-stage `mesh_open_loop` and falls back to `fix_face_boundary`; a
 `wire_gap` still meets `fix_face_boundary` (which moves nothing) first. With the flag off, nothing
 changes.

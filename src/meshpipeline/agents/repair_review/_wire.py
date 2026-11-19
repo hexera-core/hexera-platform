@@ -73,12 +73,17 @@ def catalogue_limits(*, rebuild_face: bool | None = None,
     if close_wire_gaps:
         rebuild += (", close a face's open wire by moving its loose vertices together by at most "
                     "the run's tolerance")
+    # THE CLOSING SENTENCE MUST NOT DENY WHAT THE LINE ABOVE OFFERS: with the closure admitted,
+    # "cannot move geometry" would contradict it, so it names the one bounded move instead.
+    beyond = ("beyond those slivers and that bounded vertex move it cannot move, redraw or delete "
+              "geometry, change dimensions, or edit the part by hand" if close_wire_gaps else
+              "beyond those slivers it cannot move, redraw or delete geometry, change dimensions, "
+              "or edit the part by hand")
     return (
         "the repair catalogue can only merge small edges, sweep away a few measured sliver faces, "
         "fix a face boundary, sew faces, fill a planar hole, cap a small curved hole with a "
         "constrained patch, re-trim only the faces the kernel says cross each other"
-        f"{rebuild}, or run a whole-shape fix; beyond those slivers it cannot move, redraw or "
-        "delete geometry, change dimensions, or edit the part by hand")
+        f"{rebuild}, or run a whole-shape fix; {beyond}")
 
 
 CATALOGUE_LIMITS = catalogue_limits()

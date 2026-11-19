@@ -2546,6 +2546,11 @@ class RebuildFace:
                       "faces_targeted": 1, "precision_mm": float(tolerance_mm)})
 
 
+#: What `close_wire_gaps` says, in its evidence, about the curve ends FixGaps3d reshapes.
+CURVE_ENDS_UNMEASURED = ("curve-end displacement is bounded by SetMaxTolerance(tolerance_mm) "
+                         "but NOT measured")
+
+
 @dataclass(frozen=True, slots=True)
 class WireClosure:
     """What `_close_gaps` did to one owning body: everything `CloseWireGaps` judges and declares."""
@@ -2560,8 +2565,9 @@ class WireClosure:
     still_open: bool
     #: The displacement, in mm, of every vertex of the body that moved - measured, not predicted.
     moves: tuple[float, ...]
-    #: Every face of `owner` the closure rewrote: the target first, then each neighbour whose
-    #: wire carried a moved vertex.
+    #: Every face of `owner` the closure rewrote, found STRUCTURALLY (a face of `owner` that is
+    #: not a face of the body handed in): the target first, then every neighbour either pass
+    #: changed - a moved vertex or a reshaped shared curve alike.
     touched: tuple
     #: The largest vertex or edge tolerance on the touched faces afterwards, mm. Reported because
     #: the merge raises it (measured: 0.025 on a 0.05 mm gap, kept after the curves were brought
@@ -2687,20 +2693,30 @@ def _close_gaps(owner, face, *, tolerance_mm: float) -> WireClosure:
          tolerance are merged into one - the step that MOVES VERTICES (to their midpoint). Its
          history is applied to the whole owner, so every neighbour holding a merged vertex holds
          the new one.
-      2. FixGaps3d at the target's `_joint_precision`, on the target AND every face carrying a moved
-         vertex: the curves are brought to the moved vertex. Left out, the neighbour kept a curve
-         ending 0.025 mm from its vertex and the owner was BRepCheck-invalid.
+      2. FixGaps3d on the target AND every face carrying a moved vertex, EACH AT ITS OWN
+         precision measured before the merge (`_joint_precision` over the vertices the merge did
+         not create): the curves are brought to the moved vertex. Left out, the neighbour kept a
+         curve ending 0.025 mm from its vertex and the owner was BRepCheck-invalid. The target's
+         precision is never a neighbour's: a joint the neighbour's own tolerance closes is not a
+         gap (the face-29 lesson in `_joint_precision`).
     Then `ShapeFix_Edge` same-parameter and vertex-tolerance fixes on the touched faces' edges
     (the curves changed under their pcurves). Nothing is removed and nothing reordered.
 
+    TOUCHED IS STRUCTURAL: every face of the result that is not a face of the owner handed in -
+    anything either pass rewrote, including a neighbour that only shares an edge whose CURVE was
+    reshaped (no vertex of it moved). Measured: a pure curve gap on a shared edge renamed the
+    neighbour, which a moved-vertex test never saw.
+
     THE MOVES ARE MEASURED THROUGH THE HISTORY: each original vertex is followed through both
     passes' contexts to what it became, and the distance between the two points is its move.
+    CURVE ENDS ARE NOT MEASURED: FixGaps3d's displacement of a curve end is bounded by
+    `SetMaxTolerance(tolerance_mm)`, and that bound is all that is known of it.
     """
     from OCP.BRep import BRep_Tool
     from OCP.Precision import Precision
     from OCP.ShapeBuild import ShapeBuild_ReShape
     from OCP.ShapeFix import ShapeFix_Edge, ShapeFix_Wire
-    from OCP.TopAbs import TopAbs_EDGE, TopAbs_VERTEX
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_VERTEX
     from OCP.TopExp import TopExp_Explorer
     from OCP.TopoDS import TopoDS
 
@@ -2728,25 +2744,31 @@ def _close_gaps(owner, face, *, tolerance_mm: float) -> WireClosure:
     new_vertices = [v for v in _vertices_of(merged_owner) if not known.Contains(v)]
     gaps = ShapeBuild_ReShape()
     closed = False
-    rewritten: list = []
     for candidate in _faces_of(merged_owner):
-        if not (candidate.IsSame(target)
-                or any(v.IsSame(n) for v in _vertices_of(candidate) for n in new_vertices)):
+        is_target = candidate.IsSame(target)
+        carries = [v for v in _vertices_of(candidate) if any(v.IsSame(n) for n in new_vertices)]
+        if not (is_target or carries):
             continue
-        rewritten.append(candidate)
+        # THE NEIGHBOUR'S OWN PRECISION: its vertices' tolerances, those the merge created (and
+        # inflated) left out - what its joints were closed at before this operation.
+        own = precision if is_target else max(
+            [float(Precision.Confusion_s()),
+             *(BRep_Tool.Tolerance_s(TopoDS.Vertex_s(v)) for v in _vertices_of(candidate)
+               if not any(v.IsSame(n) for n in new_vertices))])
         for original in _wires_of(candidate):
             # A shared edge the previous face's pass already rewrote is picked up here - but the
             # replacement is recorded against the ORIGINAL wire, the one the faces still hold.
             wire = TopoDS.Wire_s(gaps.Apply(original))
-            fixer = ShapeFix_Wire(wire, candidate, precision)
+            fixer = ShapeFix_Wire(wire, candidate, own)
             fixer.SetContext(gaps)
             fixer.SetMaxTolerance(tolerance_mm)
             if fixer.FixGaps3d():
                 closed = True
                 gaps.Replace(original, fixer.Wire())
     result = gaps.Apply(merged_owner)
-    touched = [TopoDS.Face_s(gaps.Apply(f)) for f in rewritten]
     target = TopoDS.Face_s(gaps.Apply(target))
+    untouched = _indexed(owner, TopAbs_FACE)
+    touched = [f for f in _faces_of(result) if not untouched.Contains(f)]
 
     finisher = ShapeFix_Edge()
     for touched_face in touched:
@@ -2832,9 +2854,17 @@ class CloseWireGaps:
     WHAT IT DECLARES, ALL MEASURED: `vertices_moved` (count) and `max_vertex_move_mm` (the largest
     actual displacement, followed through the kernel's history - not the gap it predicted),
     `gap_mm` (the widest gap measured before), `max_tolerance_mm` (the largest tolerance left on
-    the touched faces - the merge raises it), and AREA_DELTA as the owner's area after minus
+    the touched faces - the merge raises it), `curve_ends` (the plain statement that curve-end
+    displacement is bounded by SetMaxTolerance but NOT measured), and AREA_DELTA as the owner's
+    area after minus
     before; no volume declaration (the cumulative cap's residual judges it). `rebuilt` names the
-    closed face and every neighbour the closure rewrote; `added` is empty - no face is created.
+    closed face and every neighbour the closure rewrote (structurally: any face the passes
+    replaced); `added` is empty - no face is created.
+
+    CONSERVATIVE BY DESIGN: a gap at or below the face's OWN vertex tolerance is not a gap, and
+    the operation declines it `not_closed`. That can miss a repair gmsh would have wanted (its
+    1D loop is built at its own precision, not the kernel's tolerance); it never moves a vertex
+    the kernel already calls connected. A missed repair is preferred to damage.
 
     WHY EACH DECLINE EXISTS, in the order checked:
       closing_disabled  - CAD_REPAIR_CLOSE_WIRE_GAPS, the consent, is absent.
@@ -2849,7 +2879,8 @@ class CloseWireGaps:
                           fixer reported nothing fixed, or a gap is still measurable after: a
                           no-op is a decline, never a kept operation.
       closed_invalid    - the closed face is not `BRepCheck`-valid.
-      owner_invalidated - the owner was valid (measured on the copy BEFORE the closure, which
+      owner_invalidated - a rewritten NEIGHBOUR face is not `BRepCheck`-valid (no waiver), or the
+                          owner was valid (measured on the copy BEFORE the closure, which
                           writes into shared edges) and is not after. An owner already invalid -
                           the usual case, an open wire is invalid - is not blamed on the closure.
     """
@@ -2927,7 +2958,8 @@ class CloseWireGaps:
         moved = max(closure.moves, default=0.0)
         measured = {"gap_mm": gap, "vertices_moved": len(closure.moves),
                     "max_vertex_move_mm": float(moved),
-                    "max_tolerance_mm": float(closure.max_tolerance_mm)}
+                    "max_tolerance_mm": float(closure.max_tolerance_mm),
+                    "curve_ends": CURVE_ENDS_UNMEASURED}
         if not closure.fixed or closure.still_open:
             return declined("not_closed (the fixer closed no gap)" if not closure.fixed else
                             "not_closed (a gap is still measurable after the fix)", **measured)
@@ -2936,6 +2968,13 @@ class CloseWireGaps:
                             f"the run's {tolerance:g} mm)", **measured)
         if not _is_valid(closure.face):
             return declined("closed_invalid (the closed face is not BRepCheck-valid)", **measured)
+        # EVERY NEIGHBOUR IT REWROTE MUST BE VALID. The pre-fix-invalid waiver below is for the
+        # target's own open wire only: a neighbour this operation reshaped and left invalid is
+        # damage whatever the owner was.
+        broken = sum(1 for f in closure.touched if f is not closure.face and not _is_valid(f))
+        if broken:
+            return declined(f"owner_invalidated ({broken} rewritten neighbour face(s) are not "
+                            "BRepCheck-valid)", **measured)
         if owner_was_valid and not _is_valid(closure.owner):
             return declined("owner_invalidated (the owning body was valid and is not with the "
                             "closed wires)", **measured)

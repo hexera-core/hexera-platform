@@ -74,7 +74,7 @@ def doubles(monkeypatch, flag_on):
 
     def configure(*, owner="SOLID", gap_mm=0.004, fixed=True, still_open=False,
                   moves=(0.002, 0.002), face_valid=True, owner_valid_before=True,
-                  owner_valid_after=True, areas=None, names=None,
+                  owner_valid_after=True, neighbour_valid=True, areas=None, names=None,
                   touched=("NEW_FACE", "NEIGHBOUR")):
         calls.clear()
         monkeypatch.setattr(operations, "sub_shape",
@@ -94,7 +94,7 @@ def doubles(monkeypatch, flag_on):
 
         monkeypatch.setattr(operations, "_close_gaps", close)
         validity = {"NEW_FACE": face_valid, "SOLID": owner_valid_before,
-                    "NEW_SOLID": owner_valid_after}
+                    "NEW_SOLID": owner_valid_after, "NEIGHBOUR": neighbour_valid}
         monkeypatch.setattr(operations, "_is_valid",
                             lambda shape: calls.append(("valid", shape)) or validity[shape])
 
@@ -188,6 +188,9 @@ def test_declares_the_measured_moves_and_area(doubles):
     assert outcome.evidence["max_vertex_move_mm"] == pytest.approx(0.002)
     assert outcome.evidence["gap_mm"] == pytest.approx(0.004)
     assert outcome.evidence["max_tolerance_mm"] == pytest.approx(0.002)
+    # Said plainly: what FixGaps3d did to curve ends is bounded, not measured.
+    assert outcome.evidence["curve_ends"] == operations.CURVE_ENDS_UNMEASURED
+    assert "NOT measured" in outcome.evidence["curve_ends"]
     # THE MEASURED AREA of the closed owner minus the original's; no volume declaration.
     assert outcome.evidence[AREA_DELTA] == pytest.approx(0.0125)
     assert VOLUME_DELTA not in outcome.evidence
@@ -298,6 +301,19 @@ def test_an_owner_that_would_lose_validity_is_declined(doubles):
     assert outcome.evidence["declined"].startswith("owner_invalidated")
     assert AREA_DELTA not in outcome.evidence
     assert not _called(doubles.calls, "splice")
+
+
+@pytest.mark.parametrize("owner_valid_before", [True, False], ids=["owner_valid", "owner_invalid"])
+def test_a_rewritten_neighbour_left_invalid_is_declined_without_a_waiver(doubles,
+                                                                       owner_valid_before):
+    # The pre-fix-invalid waiver is for the TARGET's own open wire: a neighbour this op reshaped
+    # and left invalid is damage even when the owner was invalid before.
+    outcome = doubles(neighbour_valid=False, owner_valid_before=owner_valid_before,
+                      owner_valid_after=False).apply("SHAPE", (REF,), tolerance_mm=0.01)
+    assert outcome.shape == "SHAPE"
+    assert outcome.evidence["declined"].startswith("owner_invalidated (1 rewritten neighbour")
+    assert not _called(doubles.calls, "splice")
+    assert ("valid", "NEIGHBOUR") in doubles.calls
 
 
 def test_an_owner_already_invalid_is_not_blamed_on_the_closure(doubles):

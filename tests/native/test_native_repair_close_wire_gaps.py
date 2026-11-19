@@ -94,6 +94,13 @@ def _ref(shape, index: int) -> EntityRef:
                                                 quantum=quantum_for(diagonal)))
 
 
+def _name(on, index: int, *, diagonal_mm: float) -> str:
+    """Face `index` of `on` named at a GIVEN diagonal's quantum - the pre-op part's, which is what
+    `rebuilt` and the session's probe name every face by (the closure moves the box a little)."""
+    return fingerprint_of("face", box_of(sub_shape(on, "face", index)),
+                          quantum=quantum_for(diagonal_mm))
+
+
 def _open_face_index(shape) -> int:
     open_faces = [i for i in (1, 2) if operations._wire_gap_mm(sub_shape(shape, "face", i)) > 0]
     assert len(open_faces) == 1, open_faces
@@ -190,6 +197,172 @@ def test_a_closed_face_is_declined_not_closed(closing_on):
     outcome = CloseWireGaps().apply(shape, (_ref(shape, 1),), tolerance_mm=0.1)
     assert outcome.evidence["declined"].startswith("not_closed"), outcome.evidence
     assert outcome.shape is shape
+
+
+def _curve_gap_shell(gap_mm: float = GAP_MM):
+    """The same two faces, every vertex SHARED, but the shared edge's LINE starts `gap_mm` short of
+    its start vertex: a pure curve gap on the edge both faces hold. Closing it reshapes that curve
+    and moves no vertex, so a moved-vertex test would never see the neighbour it renames."""
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepBuilderAPI import (
+        BRepBuilderAPI_MakeEdge,
+        BRepBuilderAPI_MakeFace,
+        BRepBuilderAPI_MakeVertex,
+    )
+    from OCP.Geom import Geom_Line
+    from OCP.gp import gp_Ax3, gp_Dir, gp_Pln, gp_Pnt
+    from OCP.TopAbs import TopAbs_FORWARD, TopAbs_REVERSED
+    from OCP.TopoDS import TopoDS_Edge, TopoDS_Shell, TopoDS_Wire
+
+    builder = BRep_Builder()
+
+    def vertex(x, y, z):
+        return BRepBuilderAPI_MakeVertex(gp_Pnt(x, y, z)).Vertex()
+
+    def edge(a, b):
+        return BRepBuilderAPI_MakeEdge(a, b).Edge()
+
+    s = SIDE_MM
+    v0, v1, v2, v3 = vertex(0, 0, 0), vertex(s, 0, 0), vertex(s, s, 0), vertex(0, s, 0)
+    shared = TopoDS_Edge()
+    builder.MakeEdge(shared, Geom_Line(gp_Pnt(-gap_mm, 0, 0), gp_Dir(1, 0, 0)), 1e-7)
+    builder.Add(shared, v0.Oriented(TopAbs_FORWARD))
+    builder.Add(shared, v1.Oriented(TopAbs_REVERSED))
+    builder.Range(shared, 0.0, s + gap_mm)
+
+    def wire_of(*pieces):
+        wire = TopoDS_Wire()
+        builder.MakeWire(wire)
+        for piece in pieces:
+            builder.Add(wire, piece)
+        return wire
+
+    face_a = BRepBuilderAPI_MakeFace(
+        gp_Pln(), wire_of(shared, edge(v1, v2), edge(v2, v3), edge(v3, v0)), True).Face()
+    v4, v5 = vertex(s, 0, s), vertex(0, 0, s)
+    plane_b = gp_Pln(gp_Ax3(gp_Pnt(0, 0, 0), gp_Dir(0, 1, 0), gp_Dir(1, 0, 0)))
+    face_b = BRepBuilderAPI_MakeFace(
+        plane_b, wire_of(shared, edge(v1, v4), edge(v4, v5), edge(v5, v0)), True).Face()
+    shell = TopoDS_Shell()
+    builder.MakeShell(shell)
+    builder.Add(shell, face_a)
+    builder.Add(shell, face_b)
+    return shell
+
+
+def test_a_pure_curve_gap_on_a_shared_edge_names_the_renamed_neighbour_in_rebuilt(closing_on):
+    shape = _curve_gap_shell()
+    # Both faces hold the gapped edge; the target is face 1, the neighbour face 2.
+    before = {i: _ref(shape, i).fingerprint for i in (1, 2)}
+    outcome = CloseWireGaps().apply(shape, (_ref(shape, 1),), tolerance_mm=0.1)
+    assert "declined" not in outcome.evidence, outcome.evidence
+    assert outcome.evidence["vertices_moved"] == 0          # a curve reshaped, no vertex moved
+    assert operations._is_valid(outcome.shape)
+    diagonal = measure(shape).diagonal_mm
+    after = {i: _name(outcome.shape, i, diagonal_mm=diagonal) for i in (1, 2)}
+    # THE NEIGHBOUR WAS RENAMED, and `rebuilt` says so - structurally, not by a vertex test.
+    assert after[2] != _name(shape, 2, diagonal_mm=diagonal) == before[2]
+    assert set(outcome.rebuilt) == {after[1], after[2]}
+    assert outcome.evidence["faces_touched"] == 2
+
+
+def _stub_probe(monkeypatch, shape, target_index: int, *, plant_on_neighbour: bool):
+    """`mesh_probe.mesh_defects` stubbed: the first (pre-op) probe reports gmsh's open loop on the
+    target, in the 2D stage; every later probe reports nothing - or, planted, an overlapping-facets
+    finding on the NEIGHBOUR face of whatever shape it is handed (its post-op name)."""
+    from meshpipeline.cad.repair import mesh_probe
+    from meshpipeline.cad.repair.contracts import DefectCode, DefectSeverity
+    from meshpipeline.cad.repair.localize import EntityDefect
+
+    neighbour = 2 if target_index == 1 else 1
+    calls: list[int] = []
+
+    def finding(on, index, code, diagonal_mm):
+        return EntityDefect(code=code, severity=DefectSeverity.error, entity_type="face",
+                            entity_index=index, message=code.value,
+                            fingerprint=_name(on, index, diagonal_mm=diagonal_mm),
+                            location=box_of(sub_shape(on, "face", index)),
+                            measurements={"stage": mesh_probe.STAGE_2D})
+
+    def probe(on, *, diagonal_mm, budget_s, within=None):
+        calls.append(1)
+        if len(calls) == 1:
+            return (finding(on, target_index, DefectCode.mesh_open_loop, diagonal_mm),)
+        if plant_on_neighbour:
+            return (finding(on, neighbour, DefectCode.mesh_overlapping_facets, diagonal_mm),)
+        return ()
+
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
+    monkeypatch.setattr(mesh_probe, "mesh_defects", probe)
+    return calls
+
+
+def test_the_session_keeps_an_open_loop_closure_with_both_faces_rebuilt(monkeypatch, closing_on):
+    """THE PRODUCTION PATH: a real session judging the mesh code MESH_OPS aims the op at."""
+    from meshpipeline.cad.repair.contracts import DefectCode
+    from meshpipeline.cad.repair.session import RepairSession
+
+    shape = _open_shell()
+    index = _open_face_index(shape)
+    _stub_probe(monkeypatch, shape, index, plant_on_neighbour=False)
+    session = RepairSession(shape)
+    ref = _ref(shape, index)
+    assert any(d.code is DefectCode.mesh_open_loop and d.fingerprint == ref.fingerprint
+               for d in session.defects())
+    applied: list = []
+    real = CloseWireGaps.apply
+
+    def spy(self, *args, **kwargs):
+        applied.append(real(self, *args, **kwargs))
+        return applied[-1]
+
+    monkeypatch.setattr(CloseWireGaps, "apply", spy)
+    verdict = session.try_op(CloseWireGaps(), (ref,), DefectCode.mesh_open_loop, tolerance_mm=0.1)
+    assert verdict.kept, (verdict.reason, verdict.evidence)
+    (outcome,) = applied
+    diagonal = measure(shape).diagonal_mm
+    both = {_name(outcome.shape, i, diagonal_mm=diagonal) for i in (1, 2)}
+    assert set(outcome.rebuilt) == both
+    # Both names are NEW: neither face crossed the closure unchanged.
+    assert not both & {_name(shape, i, diagonal_mm=diagonal) for i in (1, 2)}
+
+
+def test_a_mesh_finding_on_the_renamed_neighbour_is_damage_not_revealed(monkeypatch, closing_on):
+    from meshpipeline.cad.repair.contracts import DefectCode
+    from meshpipeline.cad.repair.session import RepairSession
+
+    shape = _open_shell()
+    index = _open_face_index(shape)
+    _stub_probe(monkeypatch, shape, index, plant_on_neighbour=True)
+    session = RepairSession(shape)
+    verdict = session.try_op(CloseWireGaps(), (_ref(shape, index),), DefectCode.mesh_open_loop,
+                             tolerance_mm=0.1)
+    # The neighbour's post-op name is in `rebuilt` and did not exist before: the op's own doing.
+    assert not verdict.kept
+    assert verdict.reason == "new_defect", (verdict.reason, verdict.delta)
+    assert not (verdict.delta or {}).get("revealed")
+
+
+def test_a_gap_inside_the_run_tolerance_but_past_the_session_caps_is_rolled_back(monkeypatch,
+                                                                                closing_on):
+    """THE TOLERANCE BOUNDARY: a 0.15 mm gap under a 0.2 mm run tolerance passes the op's own
+    bound - and the session's caps, not the op, are what refuse it. Measured: the deviation cap,
+    the part's box moved by 0.00125 of its diagonal against the 0.001 cap (each vertex 0.075 mm)."""
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MAX_DEVIATION_RATIO", 0.001)
+    from meshpipeline.cad.repair.contracts import DefectCode
+    from meshpipeline.cad.repair.session import RepairSession
+
+    shape = _open_shell(gap_mm=0.15)
+    index = _open_face_index(shape)
+    ref = _ref(shape, index)
+    outcome = CloseWireGaps().apply(shape, (ref,), tolerance_mm=0.2)
+    assert "declined" not in outcome.evidence, outcome.evidence
+    session = RepairSession(shape)
+    session._carries = lambda targets, code: True   # the heal tests' seam (see the session test)
+    verdict = session.try_op(CloseWireGaps(), (ref,), DefectCode.wire_gap, tolerance_mm=0.2)
+    assert not verdict.kept
+    assert verdict.reason.startswith("cap:"), (verdict.reason, verdict.evidence)
+    assert "diagonal" in verdict.reason
 
 
 def _points(shape) -> list:
