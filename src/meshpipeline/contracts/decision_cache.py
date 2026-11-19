@@ -16,6 +16,10 @@ across accounts). The answer is kept under that key.
     AI_DECISION_CACHE=record   every round is keyed and recorded; the model is always asked
     AI_DECISION_CACHE=reuse    (default) a round asked before is answered from its record
 
+A NATIVE TOOL CONVERSATION (the repair-review route with tools) is keyed the same way, over its
+tool schemas and its exact tool-call trace (`_trace_turns`): two investigations that differ only in
+one tool's result are two questions.
+
 A conversation is replayed round by round: when the first round is answered from the record, the
 second is asked with the same history and hits its own record, and so on - so a whole intake,
 build or review repeats exactly, until the inputs differ (a different mesh result, a different
@@ -42,6 +46,8 @@ from meshpipeline.contracts.model_inference import (
     ModelRoundResult,
     ProviderAttemptInfo,
     ToolCallRequest,
+    ToolsUnsupported,
+    accepts_tools,
 )
 from meshpipeline.settings.env import ConfigurationError, optional_env
 
@@ -119,12 +125,49 @@ def prompt_hash(messages: list, tools: list | None) -> str:
     return _digest({"system": system, "tools": _canon(tools or [])})[:16]
 
 
+def _trace_turns(messages: list) -> list:
+    """THE TOOL-CALL TRACE of a native tool conversation, canonically. A call id is run noise, so
+    each is replaced by the order it was first seen in - which keeps WHICH result answers WHICH
+    call. A call's arguments and a tool's result are kept EXACTLY (the result by the hash of its
+    content): there they are the product's own measurements, and a fingerprint or face id the
+    text rule would erase as noise is precisely what makes two investigations different. A result
+    that does carry run noise only misses the record - never answers a different question."""
+    ordinal: dict[str, int] = {}
+
+    def _call(cid: Any) -> int:
+        return ordinal.setdefault(str(cid or ""), len(ordinal))
+
+    out = []
+    for m in messages:
+        if not isinstance(m, dict) or m.get("role") == "system":
+            continue
+        role = m.get("role")
+        if role == "tool":
+            out.append({"role": "tool", "call": _call(m.get("tool_call_id")),
+                        "name": str(m.get("name") or ""),
+                        "content": _digest(m.get("content"))})
+        elif role == "assistant" and m.get("tool_calls"):
+            out.append({"role": "assistant", "content": _canon(m.get("content")),
+                        "tool_calls": [{"call": _call(c.get("id")),
+                                        "name": str((c.get("function") or {}).get("name") or ""),
+                                        "arguments": str((c.get("function") or {}).get("arguments") or "")}
+                                       for c in m["tool_calls"] if isinstance(c, dict)]})
+        else:
+            out.append(_canon(m))
+    return out
+
+
 def decision_key(*, step: str, model: str, messages: list, tools: list | None,
-                 tool_choice: Any, owner: str) -> tuple[str, str, str]:
-    """(key, prompt hash, inputs hash) of one model round."""
+                 tool_choice: Any, owner: str, trace: bool = False) -> tuple[str, str, str]:
+    """(key, prompt hash, inputs hash) of one model round. `trace` keys a native tool
+    conversation over its exact tool-call trace (`_trace_turns`); without it the key is today's,
+    unchanged, so no record kept before native tools stops matching."""
     ph = prompt_hash(messages, tools)
-    turns = [_canon(m) for m in messages if not (isinstance(m, dict) and m.get("role") == "system")]
-    ih = _digest({"turns": turns, "tool_choice": _canon(tool_choice)})[:32]
+    if trace:
+        ih = _digest({"trace": _trace_turns(messages), "tool_choice": _canon(tool_choice)})[:32]
+    else:
+        turns = [_canon(m) for m in messages if not (isinstance(m, dict) and m.get("role") == "system")]
+        ih = _digest({"turns": turns, "tool_choice": _canon(tool_choice)})[:32]
     key = _digest({"v": KEY_VERSION, "step": step, "model": model, "prompt": ph, "inputs": ih,
                    "owner": owner or ""})
     return key, ph, ih
@@ -240,7 +283,7 @@ class CachingModelRouter:
         self._mode = (mode or AI_DECISION_CACHE).lower()
 
     async def _round(self, step: str, call, *, messages, tools, tool_choice, job_id: str,
-                     user_id: str) -> ModelRoundResult:
+                     user_id: str, trace: bool = False) -> ModelRoundResult:
         if self._mode == "off":
             return await call()
         if not user_id:
@@ -252,7 +295,7 @@ class CachingModelRouter:
         try:
             model = str(self._model_of(step) or "")
             key, ph, ih = decision_key(step=step, model=model, messages=messages, tools=tools,
-                                       tool_choice=tool_choice, owner=user_id)
+                                       tool_choice=tool_choice, owner=user_id, trace=trace)
         except Exception:  # noqa: BLE001 - a key that cannot be made only means "ask the model"
             logger.warning("decision cache: no key for a %s round; asking the model", step,
                            exc_info=True)
@@ -337,12 +380,27 @@ class CachingModelRouter:
             parallel_tool_calls=parallel_tool_calls, on_reasoning=on_reasoning),
             messages=messages, tools=tools, tool_choice="auto", job_id=job_id, user_id=user_id)
 
-    async def call_repair_review_model(self, messages, job_id="", name="RepairReview"):
-        # the CAD-repair review names no owner, so - like every ownerless round - it is asked of
-        # the model and logged, never kept or replayed
-        return await self._round("repair_review", lambda: self._inner.call_repair_review_model(
-            messages=messages, job_id=job_id, name=name),
-            messages=messages, tools=None, tool_choice=name, job_id=job_id, user_id="")
+    async def call_repair_review_model(self, messages, job_id="", name="RepairReview", *,
+                                       tools=None, user_id=""):
+        if tools is None and not user_id:
+            # the CAD-repair review names no owner, so - like every ownerless round - it is asked
+            # of the model and logged, never kept or replayed
+            return await self._round("repair_review", lambda: self._inner.call_repair_review_model(
+                messages=messages, job_id=job_id, name=name),
+                messages=messages, tools=None, tool_choice=name, job_id=job_id, user_id="")
+        inner = self._inner.call_repair_review_model
+        if not accepts_tools(inner):
+            if tools is not None:
+                raise ToolsUnsupported("the wrapped router cannot call tools on the repair-review route")
+            return await self._round("repair_review", lambda: inner(
+                messages=messages, job_id=job_id, name=name),
+                messages=messages, tools=None, tool_choice=name, job_id=job_id, user_id=user_id)
+        # A NATIVE TOOL CONVERSATION is keyed over its schemas (the prompt hash) and its exact
+        # tool-call trace, so a recorded investigation replays round by round like any text one
+        return await self._round("repair_review", lambda: inner(
+            messages=messages, job_id=job_id, name=name, tools=tools, user_id=user_id),
+            messages=messages, tools=tools, tool_choice=name, job_id=job_id, user_id=user_id,
+            trace=tools is not None)
 
     async def call_summarizer_model(self, messages, job_id=""):
         # web search results are the world's, not ours: a summary of them is never replayed
