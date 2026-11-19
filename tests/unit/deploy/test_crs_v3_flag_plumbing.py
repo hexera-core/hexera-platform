@@ -31,6 +31,10 @@ FLAGS: dict[str, tuple[str, str]] = {
     "CAD_REPAIR_CLOSE_WIRE_GAPS": ("cad-repair-close-wire-gaps", LIVE_ONLY),
     "CAD_REPAIR_TOLERANT_PROBE": ("cad-repair-tolerant-probe", LIVE_POSTURE),
     "CAD_REPAIR_INVESTIGATOR": ("cad-repair-investigator", CARRIED),
+    # A TIER OF the review, so it is on wherever the review is - and inert until a run carries a
+    # customer deviation threshold. It never applies to the vertex-moving ops, which is asserted
+    # in the repair tests rather than here, because that rule lives in the tier, not the deploy.
+    "CAD_REPAIR_AUTO_ACCEPT": ("cad-repair-auto-accept", ON),
 }
 
 VERTEX_MOVING = ("CAD_REPAIR_REBUILD_FACE", "CAD_REPAIR_CLOSE_WIRE_GAPS")

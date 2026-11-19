@@ -1653,6 +1653,11 @@ jobs:
       # shadow/live/off, so a shadow slug gets a shadow investigation - recorded, executing
       # nothing - and a live slug a live one. Empty on shared dev and prod like the rest.
       CAD_REPAIR_INVESTIGATOR: ${{ needs.target.outputs.crs_v3 != '' && needs.target.outputs.crs_v3 || '' }}
+      # THE AUTO-ACCEPT TIER: on wherever the reviewer is on, because it is a TIER OF the
+      # review and not a replacement for it - and inert anyway until a run carries a customer
+      # deviation threshold. The vertex-moving ops above stay on the exact `live`, so they
+      # cannot exist on a slug without the reviewer that the tier always sends them to.
+      CAD_REPAIR_AUTO_ACCEPT: ${{ needs.target.outputs.crs_v3 != '' && 'live' || '' }}
     steps:
       # A SHALLOW CHECKOUT IS ENOUGH HERE, unlike release's. Nothing in this job reads history:
       # lib.sh derives the image tag from `rev-parse --short=12 HEAD` plus a `diff --quiet HEAD`

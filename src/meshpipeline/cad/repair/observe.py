@@ -142,8 +142,16 @@ def _attempt_of(verdict: PackageVerdict) -> dict:
             "targets_omitted": max(0, len(v.targets) - TARGETS_MAX),
             "defect_code": v.defect_code, "status": v.status,
             "reason": _text(v.reason, REASON_MAX)} for v in verdict.verdicts[:OPS_PER_ATTEMPT_MAX]]
-    return {"status": verdict.status, "reason": _text(verdict.reason, REASON_MAX),
-            "ops": ops, "ops_omitted": max(0, len(verdict.verdicts) - OPS_PER_ATTEMPT_MAX)}
+    out: dict[str, Any] = {
+        "status": verdict.status, "reason": _text(verdict.reason, REASON_MAX),
+        "ops": ops, "ops_omitted": max(0, len(verdict.verdicts) - OPS_PER_ATTEMPT_MAX)}
+    if verdict.review_objection is not None:
+        # THE SEAL. The MEASURED objection is the only thing a review reject hands the author, and
+        # `review_reason` - the reviewer's own prose - is deliberately absent: an author shown the
+        # grader's reasoning learns to word its way past the grader (the controller ruling behind
+        # REVIEW_REJECTED_REASON). Nothing else from the review may be added to this dict, ever.
+        out["review_objection"] = dict(verdict.review_objection)
+    return out
 
 
 def _caps(original: Measure) -> dict:

@@ -595,3 +595,38 @@ def _warn_inert_investigator(investigator: str, region_loop: str) -> None:
 
 
 _warn_inert_investigator(CAD_REPAIR_INVESTIGATOR, CAD_REPAIR_REGION_LOOP)
+
+
+def _auto_accept_posture() -> str:
+    """The auto-accept posture, FAILING CLOSED: only the exact string `live` turns it on.
+
+    `_tolerant_probe_posture`'s rule, and unforgiving for a stronger reason than any other
+    posture here: this one lets a package COMMIT WITHOUT A REVIEWER, so `Live ` is read as the
+    typo it probably is and every package keeps its seat in front of the model.
+    """
+    raw = optional_env("CAD_REPAIR_AUTO_ACCEPT", "off")
+    if raw not in ("live", "off"):
+        logger.warning("CAD_REPAIR_AUTO_ACCEPT=%r is neither 'live' nor 'off'; reading it as off",
+                       raw)
+    return "live" if raw == "live" else "off"
+
+
+#: Whether a SMALL, FULLY ACCOUNTED package may be accepted without a model reviewer, audited
+#: (cad/repair/review_tier.py). "off" is byte-for-byte the prior behaviour: every package that
+#: passed its predicate goes to the reviewer. "live" is still INERT without a customer deviation
+#: threshold on the run, and never applies to the vertex-moving operations (`rebuild_face`,
+#: `close_wire_gaps`) at any threshold - the reviewer's seat is spent on the large moves, which is
+#: the whole point of the tier. A posture, so a typo reads as off.
+CAD_REPAIR_AUTO_ACCEPT: str = _auto_accept_posture()
+
+
+def _warn_inert_auto_accept(auto_accept: str, review: str) -> None:
+    """Say out loud when auto-accept is live but the review it tiers is not: the tier decision is
+    read only inside the live review branch, so with CAD_REPAIR_PACKAGE_REVIEW off a live
+    CAD_REPAIR_AUTO_ACCEPT is silently inert (the `_warn_inert_investigator` rule)."""
+    if auto_accept == "live" and review != "live":
+        logger.warning("CAD_REPAIR_AUTO_ACCEPT=live but CAD_REPAIR_PACKAGE_REVIEW=%r: the tier "
+                       "is never consulted - it only tiers a review that is running", review)
+
+
+_warn_inert_auto_accept(CAD_REPAIR_AUTO_ACCEPT, CAD_REPAIR_PACKAGE_REVIEW)
