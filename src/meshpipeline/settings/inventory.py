@@ -378,6 +378,12 @@ INVENTORY: list[Group] = [
         EnvVar("MESH_PROGRESSIVE_SNAPSHOT_ENABLED", "false", kind="bool",
                help="publish one decimated boundary of snappy's castellated phase mid-run; SERIAL runs only, so pin MESH_SNAPPY_RANKS=1 beside it or nothing is published"),
     ]),
+    Group("CAD simplification", note="What a simplification could remove from a part, and what each feature costs the mesher. The first slice only inspects: it reads the geometry on its way to admission and changes nothing, so it needs no kill switch yet.", vars=[
+        EnvVar("CAD_SIMPLIFY_INSPECT_TIMEOUT_S", "60", kind="float", exposure="internal",
+               help="seconds simplification inspection may spend on one file before the run goes on without it"),
+        EnvVar("CAD_SIMPLIFY_INSPECT_MAX_BYTES", str(128 * 1024 * 1024), kind="int", exposure="internal",
+               help="files larger than this are not inspected for simplification"),
+    ]),
     Group("CAD repair", note="Whether a customer's geometry may be MUTATED, and the caps a conservative repair must stay inside. Inspection runs regardless and only ever reads; CAD_REPAIR_ENABLED is the switch that separates looking from changing, and with it off a repair is refused before any kernel call.", vars=[
         EnvVar("CAD_REPAIR_ENABLED", "false", kind="bool",
                help="allow repair attempts to write new geometry; inspection is unaffected"),

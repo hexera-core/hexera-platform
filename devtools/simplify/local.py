@@ -61,8 +61,21 @@ def _common(shape, box):
     return c.Shape() if c.IsDone() else None
 
 
-def _plane_of(b, region, tol):
-    """Which cut plane a surface lies on ('x0'...'z1'), or None for a surface of the part itself."""
+def _plane_of(b, region, tol, lc=None):
+    """Which cut plane a surface lies on ('CX0'...'CZ1'), 'TRIM' for one of the global load case's
+    two trimmed end faces, or None for a surface of the part itself.
+
+    The trimmed faces carry the GLOBAL boundary conditions (harness.prepare). Measured on
+    nist_ftc_09: holes 23 mm from the clamp had a region reaching past the clamped face, which the
+    piece then treated as a free surface; the piece came out too soft and T2 read hole20 at -0.11%
+    against a T3 of -0.69%. A trimmed face inside the region is driven like a cut face - by the
+    global field, which is exactly the clamp (zero) or the prescribed end displacement there."""
+    if lc is not None:
+        ax = lc["axis"]
+        if b[ax + 3] - b[ax] <= tol:
+            for val in (lc["lo"] + lc["band"], lc["hi"] - lc["band"]):
+                if abs(b[ax] - val) <= tol:
+                    return "TRIM"
     for k, ax in enumerate("xyz"):
         if b[k + 3] - b[k] <= tol:
             for side, val in (("0", region[k]), ("1", region[k + 3])):
@@ -109,16 +122,18 @@ def _read_rf(dat: Path) -> dict[int, np.ndarray]:
     return rf
 
 
-def _solve_piece(brep: Path, work: Path, h: float, region, tol: float, drive) -> dict:
+def _solve_piece(brep: Path, work: Path, h: float, region, tol: float, drive, lc=None) -> dict:
     work.mkdir(parents=True, exist_ok=True)
-    m = H.mesh_brep(str(brep), h, lambda b: _plane_of(b, region, tol))
+    m = H.mesh_brep(str(brep), h, lambda b: _plane_of(b, region, tol, lc))
     if isinstance(m, str):
         return {"ok": False, "why": m}
     cut_sets = [k for k in m.sets if k.startswith("C")]
     if not cut_sets:
         return {"ok": False, "why": "no cut faces"}
     row = {int(t): i for i, t in enumerate(m.tags)}
-    cut_nodes = sorted({n for k in cut_sets for n in m.sets[k]})
+    # driven: every cut face, and any trimmed end face inside the region (its global BC); the
+    # per-plane cut check below reads the cut faces only
+    cut_nodes = sorted({n for k in cut_sets + (["TRIM"] if "TRIM" in m.sets else []) for n in m.sets[k]})
     u = drive(m.xyz[[row[n] for n in cut_nodes]])
     cards = ["*STEP", "*STATIC", "*BOUNDARY"]
     for n, (ux, uy, uz) in zip(cut_nodes, u):
@@ -186,7 +201,7 @@ def t1_hole(shape, faces, fids: list[int], global_npz: Path, c_s: float, diag: f
 
 
 def _one(args) -> tuple[str, dict]:
-    step, fid, feat, harness_dir, h_global, k, diag, w_global, refine = args
+    step, fid, feat, harness_dir, h_global, k, diag, w_global, refine, lc, grow = args
     h = h_global / refine
     out = Path(harness_dir) / "local" / fid
     try:
@@ -199,7 +214,7 @@ def _one(args) -> tuple[str, dict]:
         if simp is None:
             return fid, {"ok": False, "why": why}
         zpad = 2.0 * f.size + 0.02 * diag
-        pad = max(k * f.size, zpad + 4 * h)
+        pad = grow * max(k * f.size, zpad + 4 * h)
         box, region = _box(f.bbox, pad)
         part_bb = H._bbox_of([shape])
         if all(region[i] <= part_bb[i] and region[i + 3] >= part_bb[i + 3] for i in range(3)):
@@ -213,8 +228,8 @@ def _one(args) -> tuple[str, dict]:
         npz = Path(harness_dir) / "work" / fid / "field.npz"
         drive = _drive(npz, region, 2 * h_global)
         tol = 1e-4 * diag
-        po = _solve_piece(out / "orig.brep", out / "o", h, region, tol, drive)
-        ps = _solve_piece(out / "simp.brep", out / "s", h, region, tol, drive)
+        po = _solve_piece(out / "orig.brep", out / "o", h, region, tol, drive, lc)
+        ps = _solve_piece(out / "simp.brep", out / "s", h, region, tol, drive, lc)
         res: dict = {"ok": po["ok"] and ps["ok"], "pad": pad, "region": region}
         if not res["ok"]:
             res["why"] = po.get("why") or ps.get("why")
@@ -269,6 +284,9 @@ def main(argv=None) -> int:
     ap.add_argument("--k", type=float, default=3.0, help="region padding = max(k x feature size, 2h)")
     ap.add_argument("--jobs", type=int, default=16)
     ap.add_argument("--refine", type=float, default=2.0, help="local mesh size = global h / REFINE")
+    ap.add_argument("--grow", type=float, default=1.0,
+                    help="scale the whole region padding (k alone does not move it for small features: "
+                         "the zone + 4h floor dominates)")
     a = ap.parse_args(argv)
     hd = Path(a.harness)
     r = json.loads((hd / "result.json").read_text())
@@ -277,14 +295,15 @@ def main(argv=None) -> int:
         if "error" not in row or not (hd / "work" / fid / "field.npz").exists():
             continue
         w_global = row["result"]["qoi"]["strain_energy"]
-        todo.append((a.step, fid, row, str(hd), r["h"], a.k, r["diag"], w_global, a.refine))
+        todo.append((a.step, fid, row, str(hd), r["h"], a.k, r["diag"], w_global, a.refine, r["load_case"],
+                     a.grow))
     out: dict[str, dict] = {}
     with ThreadPoolExecutor(max_workers=a.jobs) as ex:
         for fut in as_completed([ex.submit(_isolated, t) for t in todo]):
             fid, res = fut.result()
             out[fid] = res
             print(f"{fid}: {'ok' if res['ok'] else res['why']}", flush=True)
-    name = f"local_k{a.k:g}_r{a.refine:g}.json"
+    name = f"local_k{a.k:g}_r{a.refine:g}" + (f"_g{a.grow:g}" if a.grow != 1.0 else "") + ".json"
     (hd / name).write_text(json.dumps(out, indent=1, default=float))
     print(f"wrote {hd / name}")
     return 0

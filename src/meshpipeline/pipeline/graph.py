@@ -25,6 +25,7 @@ from meshpipeline.pipeline.executor import node_executor
 from meshpipeline.pipeline.geometry_admission import node_geometry_admission
 from meshpipeline.pipeline.repair_attempt import node_repair_attempt
 from meshpipeline.pipeline.repair_inspect import node_repair_inspect
+from meshpipeline.pipeline.simplify_inspect import node_simplify_inspect
 
 logger = logging.getLogger(__name__)
 
@@ -606,6 +607,7 @@ def build_graph(checkpointer):
     b.add_node("node_engine_select",   _fenced("node_engine_select", node_engine_select))
     b.add_node("node_repair_inspect",   _fenced("node_repair_inspect", node_repair_inspect))
     b.add_node("node_repair_attempt",   _fenced("node_repair_attempt", node_repair_attempt))
+    b.add_node("node_simplify_inspect", _fenced("node_simplify_inspect", node_simplify_inspect))
     b.add_node("node_geometry_admission", _fenced("node_geometry_admission", node_geometry_admission))
     b.add_node("node_builder",         _fenced("node_builder", node_builder))
     b.add_node("node_executor",        _fenced("node_executor", node_executor))
@@ -632,9 +634,12 @@ def build_graph(checkpointer):
     )
     # INSPECT, THEN FIX, THEN JUDGE. Inspection is evidence and the attempt refuses rather than
     # ending a run, so both have a single unconditional edge and the admission gate still decides -
-    # on whichever geometry the attempt left in place.
+    # on whichever geometry the attempt left in place. Simplification inspection follows repair,
+    # so it reads the geometry the mesher will see, and is evidence in the same way: one
+    # unconditional edge, no geometry returned.
     b.add_edge("node_repair_inspect", "node_repair_attempt")
-    b.add_edge("node_repair_attempt", "node_geometry_admission")
+    b.add_edge("node_repair_attempt", "node_simplify_inspect")
+    b.add_edge("node_simplify_inspect", "node_geometry_admission")
     b.add_conditional_edges(
         "node_geometry_admission",
         route_after_geometry_admission,

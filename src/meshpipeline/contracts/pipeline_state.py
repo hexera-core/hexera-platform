@@ -16,7 +16,11 @@ from meshpipeline.contracts.geometry_source import GeometryState
 # (thread_id = "<job_id>:s<version>"), so a redelivery after a deploy that changed the
 # schema starts FRESH instead of resuming an incompatible checkpoint - the single biggest
 # production-incident source for agent systems (state management).
-STATE_SCHEMA_VERSION = 15  # v15: `repair_attempt` - whether the run repaired its own geometry,
+STATE_SCHEMA_VERSION = 16  # v16: `simplify_status` + `simplify_report` - what CAD simplification
+                           # inspection found removable in the geometry on its way to admission
+                           # (pipeline/simplify_inspect.py). Diagnostics: neither field moves
+                           # geometry. Carries every v15 field.
+                           # v15: `repair_attempt` - whether the run repaired its own geometry,
                            # what it aimed at and what it did, or why it did not
                            # (pipeline/repair_attempt.py). Carries every v14 field.
                            # v14: `repair_lineage` - when repaired geometry REPLACED the approved
@@ -74,6 +78,12 @@ class PipelineState(TypedDict):
     # Diagnostics only - no reader may treat either as a decision, and neither moves `geometry`.
     repair_status: str
     repair_report: dict
+    # WHAT CAD SIMPLIFICATION INSPECTION FOUND (pipeline/simplify_inspect.py), after repair and
+    # before admission: a SimplifyStatus value and the typed SimplifyResult payload - the features a
+    # simplification could remove and what each costs the mesher. Diagnostics only, like the two
+    # repair fields above: no reader may treat either as a decision, and neither moves `geometry`.
+    simplify_status: str
+    simplify_report: dict
     # WHETHER THE RUN FIXED ITS OWN GEOMETRY (pipeline/repair_attempt.py), and either what it did -
     # the route, the targets, the operations - or why it declined. `attempted: False` is the
     # ordinary case and is never an error: every refusal on that path leaves the run on the file

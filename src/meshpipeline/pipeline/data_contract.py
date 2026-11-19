@@ -408,6 +408,9 @@ EVENT_TYPES: dict[str, str] = {
     "repair_inspect":     "training+qa: what CAD repair inspection measured on the verified "
                           "input before admission judged it - the defect taxonomy an operator's "
                           "repair decision is later learned from; deterministic, no model",
+    "simplify_inspect":   "training+qa: what CAD simplification inspection found removable in "
+                          "the geometry before admission judged it - the candidates a "
+                          "simplification decision is later learned from; deterministic, no model",
     "planner_run":        "training: the planner LLM's system, input, raw "
                           "response, parsed plan and usage",
     "builder_attempt":    "training: the builder's full trajectory per attempt",
@@ -443,6 +446,11 @@ STATE_FIELDS: dict[str, str] = {
                              "a decision, and never a reason to move the geometry",
     "repair_report":         "the typed RepairResult payload behind repair_status: defects, "
                              "measurements and the inspect operation that produced them",
+    "simplify_status":       "what CAD simplification inspection concluded about the geometry "
+                             "on its way to admission (SimplifyStatus); evidence, never a "
+                             "decision, and never a reason to move the geometry",
+    "simplify_report":       "the typed SimplifyResult payload behind simplify_status: each "
+                             "removable feature, its size and its estimated mesh cost",
     "repair_attempt":        "whether the run repaired its own geometry, what it aimed at and "
                              "what it did - or why it declined; a decline leaves the run on the "
                              "customer's own file",

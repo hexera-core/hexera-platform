@@ -77,7 +77,7 @@ identical mesh, which read as free, harmless simplifications. `remove()` now ref
 the same face count and volume. Most of the 12 are 180° concave part-cylinders - slot ends, not
 fillets - so the blend recogniser also needs to tell a full round from a fillet.
 
-Open:
+Open (superseded by the next entry where marked):
 
 | | |
 |---|---|
@@ -85,3 +85,77 @@ Open:
 | slot ends vs fillets | recogniser treats every concave part-cylinder < 3% diag as a blend |
 | stress probes | far stress is a weak QoI on a bending load (noise 1.6%); add a local QoI at named points |
 | invented load case | one bending case per part; a second (torsion or axial) to see whether rankings hold |
+
+## 2026-11-19 - the ground truth was noise; fixed; T1 and T2 measured against it
+
+**Correction to the entry above.** Its noise floor (0.02% on compliance) was one sample, and the
+load case behind it (a force on faces wholly inside a 1% end band) found no such faces on
+nist_ctc_01/03, so the corpus run gave those parts no load case. The fix tried next (every NODE in a
+3% end band fixed or loaded, force-controlled) raised the floor to 0.29%, and displacement control
+on the same node bands did not lower it: 0.31%.
+
+`converge.py` (five meshes of the same part per size, sizes x0.96-x1.04) said why:
+
+| size (diag / N) | elements | compliance spread, node-band BC | spread, trimmed-face BC |
+|---|---|---|---|
+| 20 | 58-60k | 0.18% | 0.035% |
+| 30 | 63-64k | **1.07%** | **0.042%** |
+| 45 | 70k | 0.47% | 0.013% |
+| 60 | 76-78k | 0.30% | 0.009% |
+
+With the node band, coarser meshes came out SOFTER - which a displacement-based FE model cannot do on
+its own: the band's edge cut through elements, so how much material was clamped depended on the
+mesh. `prepare()` now trims 3% off each end with two planes and puts the clamp and the prescribed
+displacement on the two planar cut faces, the same continuum problem for every mesh. Refinement now
+converges the right way (5.0735 -> 5.0766 -> 5.0787 -> 5.0802 e-5, finer is softer).
+
+Also: elements barely grow with the background size (58k -> 76k for a 3x finer h_max), because the
+curvature rule (12 per 2 pi) and the features set the size almost everywhere. Features ARE the cost.
+
+**nist_ftc_09 on the trimmed BC**, 38 removable features, T3 = one global solve each:
+
+| | |
+|---|---|
+| noise floor (original, size x0.93) | compliance **+0.003%**, max disp -0.001%, far stress +0.35% |
+| largest effects | blend40 -1.25%, hole20 -0.69%, hole4 -0.62%, hole25 -0.60%; median ~0.06% |
+| sign physics | filling a hole stiffens every time; removing a convex blend softens (blend35 +0.43%) |
+
+**T2 (local.py, k = 3, local mesh h/2)** against T3, compliance change: Spearman **0.970**, Pearson
+0.886, sign agreement **37/38**, median |T2/T3| **0.62** - consistently low. Local pieces: about 10k
+elements (orig + simp) against 64k for the global part. **T1 (holes, one solve)** against |T3|:
+Spearman **0.984**.
+
+Read with care:
+
+- T2 under-reads by ~40%. Two misses are larger than that: hole20 (T3 -0.69%, T2 -0.11%) and hole25
+  (-0.60% vs -0.06%), both with a small cut mismatch (0.008), so the cut check did not flag them.
+  T1 ranks both near the top (eta 4.6e-3, 4.2e-3). Screening with T1 before trusting T2 catches them;
+  T2 alone would not. Whether the under-read is the box or the first-order energy argument is what
+  the k = 6 run is for.
+- "max von Mises away from the feature" is not a usable QoI: about 20 holes all show the same
+  +5.45% because the peak sits at a sharp corner that moves with the mesh, not with the feature.
+  Replace with stress at fixed probe points, or a region mean.
+- One part, one invented load case. Nothing here generalises yet.
+
+**Earlier runs of this entry, superseded** (kept so the path is honest): with node-band BCs T2 vs
+T3 gave Spearman 0.86 (force control) and 0.49 (displacement control), T1 0.72 and 0.37, and a median
+|T2/T3| of 0.19 / 0.10 - all of it the 0.3-1% mesh noise in T3, not the estimators.
+
+## 2026-11-19 - product slice 1: inspection only, the way CAD repair started
+
+Integrated as CAD repair is (spec, "How it fits the repository"):
+
+- `cad/simplify/` - `contracts.py` (`SimplifyResult` etc., source identity reused from CRS's
+  `RepairInput`), `recognise.py` (holes, blends, and a new `slot_end` class that is reported but
+  never removable - the 12 no-op "removals" above), `inspect.py:inspect_features`.
+- `pipeline/simplify_inspect.py:node_simplify_inspect`, wired `node_repair_attempt ->
+  node_simplify_inspect -> node_geometry_admission`, one unconditional edge, no geometry returned,
+  inconclusive on timeout / exception / oversize, a `simplify_inspect` capture row.
+- State v16 (`simplify_status`, `simplify_report`), `data_contract` entries, settings
+  `CAD_SIMPLIFY_INSPECT_TIMEOUT_S` / `_MAX_BYTES` in their own inventory group, rulebook 73 (TIME-6
+  now names the simplification inspection clock).
+- Cost per feature is an ESTIMATE: surface triangles at the PLAN-fea-4 hot-spot size. To be
+  calibrated against the harness's measured cells saved.
+
+No kill switch yet: nothing in this slice can change geometry, and CRS's `CAD_REPAIR_ENABLED`
+arrived with the code it guards.
