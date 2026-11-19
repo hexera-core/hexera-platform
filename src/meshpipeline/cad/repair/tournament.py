@@ -230,3 +230,224 @@ def winner(rehearsals: Iterable[Rehearsal]) -> Rehearsal | None:
         if eligible(r):
             return r
     return None
+
+
+# -- rehearsal ---------------------------------------------------------------------------------
+#
+# THE PART THAT ACTUALLY REHEARSES, and the only part of this module that touches a shape. It
+# still owns no kernel code: every shape operation goes through `Scratch` (the clone), `ladder`
+# (the probe) and `deviation` (the measurement), each imported LAZILY so that scoring a recorded
+# rehearsal - the pure half above - never pays for a kernel load.
+#
+# A REHEARSAL IS NOT A REVIEW, and a scratch session cannot commit (`session.try_package` refuses
+# one before it reads the predicate). That is what makes a loser free, and it is also what makes
+# the winner a NOMINATION: it must still pass `package_review` on the real session.
+
+#: Below this, a rehearsal is not worth opening a clone for: the copy, three rungs and a
+#: deviation measurement cannot finish, so the honest answer is `not_rehearsed` rather than a
+#: half-measured one that would be SCORED against candidates that did finish.
+REHEARSAL_MIN_S = 2.0
+
+#: Tier 2 is asked only when at least a quarter of its own hard cap is left. A rung started with
+#: less than that is a rung that will time out, and a timeout costs the whole-part probe's setup
+#: for a None that ranks no better than not asking at all.
+TIER2_MIN_SHARE = 4
+
+#: The deviation measurement's own ceiling, whatever the rehearsal has left.
+DEVIATION_BUDGET_S = 10.0
+
+
+def _time_source(clock):
+    """The clock to read seconds from. An `InvestigationClock` carries the run's own in `.clock`,
+    so a rehearsal never constructs a second one - two clocks over one deadline is how a region
+    starves its successors."""
+    import time
+
+    source = getattr(clock, "clock", None)
+    return source if callable(source) else time.monotonic
+
+
+def _left(clock, started: float, wall: float, now) -> float:
+    """Seconds this rehearsal may still spend: its own share, AND the run's if a clock knows.
+
+    The lesser of the two, so a region that is out of time stops even with wall left, and a wall
+    that is spent stops even with run left. Never negative.
+    """
+    left = float(wall) - (now() - float(started))
+    ask = getattr(clock, "left", None)
+    if ask is not None:
+        try:
+            left = min(left, float(ask(started, wall)))
+        except Exception:  # noqa: BLE001 - a clock that cannot answer does not stop a rehearsal
+            logger.debug("tournament: the clock could not say what is left", exc_info=True)
+    return max(0.0, left)
+
+
+def _kept_status() -> str:
+    """The session's own name for a kept operation, READ from the session rather than copied: a
+    second spelling of "kept" here would let a rehearsal disagree with the commit it rehearses.
+    Imported lazily so the pure half's import stays cheap."""
+    from meshpipeline.cad.repair.session import KEPT
+
+    return KEPT
+
+
+def _fingerprints(defects, region, diagonal_mm: float, scope) -> frozenset[str]:
+    """The scoped defect list as a set of fingerprints - ONE scope, both sides of the comparison.
+
+    The session's progress rule, unchanged: a whole-shape list compared against a scoped scan is
+    a comparison between two different parts, so both sides go through `localize.scoped_to`.
+    """
+    return frozenset(str(d.fingerprint)
+                     for d in scope(tuple(defects), region, diagonal_mm=float(diagonal_mm))
+                     if getattr(d, "fingerprint", ""))
+
+
+def _tier2_floor() -> float:
+    """The least time tier 2 may be started with. Read from the oracle rather than copied, so the
+    rung's own hard cap and this floor cannot drift apart."""
+    from meshpipeline.cad.repair import oracle
+
+    return float(oracle.TIER2_HARD_CAP_S) / TIER2_MIN_SHARE
+
+
+def _ended(cand: Candidate, status: str, *, seconds: float, reason: str = "", kept_ops: int = 0,
+           tier0=None, tier1=None, tier2=None, cleared=frozenset(), revealed=frozenset(),
+           remaining=frozenset(), deviation_mm: float | None = None) -> Rehearsal:
+    return Rehearsal(candidate=cand, status=status, kept_ops=int(kept_ops), tier0=tier0,
+                     tier1=tier1, tier2=tier2, cleared=frozenset(cleared),
+                     revealed=frozenset(revealed), remaining=frozenset(remaining),
+                     deviation_mm=deviation_mm, seconds=float(seconds), reason=reason)
+
+
+def rehearse(cand: Candidate, *, session_shape, original, defects, region, tolerance_mm: float,
+             budget_s: float, clock=None, reserved: frozenset[str] = frozenset(),
+             diagonal_mm: float | None = None, make_scratch=None, run_tier=None, measure=None,
+             scope=None) -> Rehearsal:
+    """Play `cand` on ITS OWN CLONE of `session_shape` and report what happened. NEVER RAISES.
+
+    In order: open a clone; play the plan item by item through the clone's `try_op`, stopping at
+    the FIRST item it declines or rolls back (the session's package rule - one failed item fails
+    the whole package); ask tier 0, then tier 1 scoped to `region`, then tier 2 on the whole part
+    when there is time for it; and measure how far the kept edits moved the surface.
+
+    `session_shape` IS ONLY EVER COPIED. It is handed to `Scratch.of`, which makes the one copy
+    in the programme, and no operation here is given the session, the session's shape or any
+    handle another candidate holds - so two candidates in one tournament cannot meet.
+
+    An exception anywhere is `FAILED` with the exception type as the reason: a candidate that
+    came apart is a result about that candidate, not a repair run brought down over a tournament.
+    The four injection seams (`make_scratch`, `run_tier`, `measure`, `scope`) are test seams with
+    the real collaborators as defaults, for the same reason the session's are.
+    """
+    now = _time_source(clock)
+    started = now()
+    kept = 0
+
+    def spent() -> float:
+        return now() - started
+
+    if float(budget_s) < REHEARSAL_MIN_S:
+        return _ended(cand, NOT_REHEARSED, seconds=spent(),
+                      reason=f"no_time: {float(budget_s):.6g}s offered, {REHEARSAL_MIN_S:.6g}s "
+                             "is the least a rehearsal can use")
+    try:
+        if make_scratch is None or run_tier is None or measure is None or scope is None:
+            from meshpipeline.cad.repair import deviation as _deviation
+            from meshpipeline.cad.repair import ladder as _ladder
+            from meshpipeline.cad.repair import localize as _localize
+            from meshpipeline.cad.repair.investigator_tools import Scratch
+
+            make_scratch = make_scratch or Scratch.of
+            run_tier = run_tier or _ladder.run_tier
+            measure = measure or _deviation.measure_deviation
+            scope = scope or _localize.scoped_to
+
+        diagonal = float(getattr(original, "diagonal_mm", 0.0) if diagonal_mm is None
+                         else diagonal_mm)
+        before = _fingerprints(defects, region, diagonal, scope)
+
+        scratch = make_scratch(session_shape, original=original, defects=tuple(defects),
+                               reserved=frozenset(reserved), remaining_s=float(budget_s),
+                               clock=now)
+        keep = _kept_status()
+
+        for index, entry in enumerate(cand.package.plan):
+            item = dict(entry)
+            if _left(clock, started, budget_s, now) <= 0.0:
+                return _ended(cand, FAILED, seconds=spent(), kept_ops=kept,
+                              reason=f"budget: spent after {index} of "
+                                     f"{len(cand.package.plan)} operation(s)")
+            verdict = scratch.session.try_op(
+                item["op"], tuple(item["targets"]), item["defect_code"],
+                tolerance_mm=float(item.get("tolerance_mm", tolerance_mm)), within=region)
+            if getattr(verdict, "status", "") != keep:
+                # ONE FAILED ITEM FAILS THE PACKAGE. The predicate was written about the whole
+                # plan, so a partially applied one was never what the author claimed - and a plan
+                # that carries an operation the session refuses cannot commit.
+                return _ended(cand, FAILED, seconds=spent(), kept_ops=kept,
+                              reason=f"{getattr(verdict, 'op', item['op'])}: "
+                                     f"{verdict.status} {getattr(verdict, 'reason', '')}".strip())
+            kept += 1
+
+        tier0 = run_tier(scratch.shape, "0", diagonal_mm=diagonal,
+                         budget_s=_left(clock, started, budget_s, now))
+        tier1 = run_tier(scratch.shape, "1", diagonal_mm=diagonal, within=region,
+                         budget_s=_left(clock, started, budget_s, now))
+        left = _left(clock, started, budget_s, now)
+        reason = ""
+        tier2 = None
+        if left >= _tier2_floor():
+            tier2 = run_tier(scratch.shape, "2", diagonal_mm=diagonal, within=None, budget_s=left)
+        else:
+            reason = f"tier2 skipped: no_time ({left:.6g}s left, {_tier2_floor():.6g}s needed)"
+
+        moved = measure(session_shape, scratch.shape, tuple(scratch.edited_faces()),
+                        budget_s=min(DEVIATION_BUDGET_S, _left(clock, started, budget_s, now)))
+        after = _fingerprints(scratch.defects(), region, diagonal, scope)
+        return _ended(cand, REHEARSED, seconds=spent(), kept_ops=kept, tier0=tier0, tier1=tier1,
+                      tier2=tier2, cleared=before - after, revealed=after - before,
+                      remaining=before & after, deviation_mm=getattr(moved, "mm", None),
+                      reason=reason)
+    except Exception as exc:  # noqa: BLE001 - a candidate that came apart is a result
+        logger.info("tournament: rehearsal of a %s candidate came apart (%s: %s)", cand.source,
+                    type(exc).__name__, exc)
+        return _ended(cand, FAILED, seconds=spent(), kept_ops=kept,
+                      reason=f"{type(exc).__name__}: {exc}")
+
+
+def rehearse_all(candidates: Iterable[Candidate], *, wall_s: float, clock=None,
+                 limit: int | None = None, **kw) -> tuple[Rehearsal, ...]:
+    """Rehearse `candidates` SEQUENTIALLY on one wall, best effort. NEVER RAISES.
+
+    SEQUENTIALLY, and not as an accident of implementation: OCP holds the GIL, so parallel
+    rehearsals would not go faster, and one clone at a time is what keeps the memory of a
+    tournament bounded by one extra copy rather than by K.
+
+    `limit` is K (`k()` when not given), and a candidate past it is `NOT_REHEARSED` - which is
+    why K=1 is TODAY'S BEHAVIOUR: one candidate rehearsed, the rest recorded as never run.
+    Each rehearsal gets `min(what is left / how many are still owed one, wall_s)`, and one
+    offered less than `REHEARSAL_MIN_S` is `NOT_REHEARSED` too.
+
+    NOTHING IS DROPPED. Every candidate comes back with a `Rehearsal`, because a tournament has
+    to be able to say what it did not get to as well as what lost.
+    """
+    now = _time_source(clock)
+    started = now()
+    cands = tuple(candidates)
+    allowed = k() if limit is None else max(0, int(limit))
+    out: list[Rehearsal] = []
+    for index, cand in enumerate(cands):
+        if index >= allowed:
+            out.append(_ended(cand, NOT_REHEARSED, seconds=0.0,
+                              reason=f"not_rehearsed: K={allowed} reached"))
+            continue
+        owed = min(allowed, len(cands)) - index
+        share = min(_left(clock, started, wall_s, now) / owed, float(wall_s))
+        if share < REHEARSAL_MIN_S:
+            out.append(_ended(cand, NOT_REHEARSED, seconds=0.0,
+                              reason=f"no_time: {share:.6g}s of this region's wall would be "
+                                     f"this candidate's share"))
+            continue
+        out.append(rehearse(cand, budget_s=share, clock=clock, **kw))
+    return tuple(out)
