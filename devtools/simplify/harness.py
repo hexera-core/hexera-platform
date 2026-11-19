@@ -255,6 +255,59 @@ def remove(shape, faces) -> tuple[object | None, str]:
     return out, ""
 
 
+def wall_thickness(shape, diag: float, *, percentile: float = 10.0, max_rays: int = 3000) -> float | None:
+    """The part's thin-wall thickness: rays cast INWARD from points on its surface (triangle centroids
+    of an OCCT tessellation, along the face's inward normal) to where they first leave the solid; the
+    given percentile of those distances. None when no ray hit (an open shape)."""
+    import numpy as _np
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepMesh import BRepMesh_IncrementalMesh
+    from OCP.gp import gp_Dir, gp_Lin, gp_Pnt
+    from OCP.IntCurvesFace import IntCurvesFace_ShapeIntersector
+    from OCP.TopAbs import TopAbs_REVERSED
+    from OCP.TopLoc import TopLoc_Location
+    BRepMesh_IncrementalMesh(shape, 2e-3 * diag, False, 0.3, True)
+    pts, nrm, area = [], [], []
+    for f in _faces(shape)[0]:
+        loc = TopLoc_Location()
+        tri = BRep_Tool.Triangulation_s(f, loc)
+        if tri is None:
+            continue
+        tr = loc.Transformation()
+        p = _np.array([[q.X(), q.Y(), q.Z()] for q in (tri.Node(i).Transformed(tr) for i in range(1, tri.NbNodes() + 1))])
+        flip = f.Orientation() == TopAbs_REVERSED
+        for k in range(1, tri.NbTriangles() + 1):
+            a, b, c = (v - 1 for v in tri.Triangle(k).Get())
+            n = _np.cross(p[b] - p[a], p[c] - p[a])
+            ar = 0.5 * float(_np.linalg.norm(n))
+            if ar <= 0:
+                continue
+            n = n / (2 * ar)
+            pts.append((p[a] + p[b] + p[c]) / 3)
+            nrm.append(n if flip else -n)        # inward: OCCT triangles wind outward on a FORWARD face
+            area.append(ar)
+    if not pts:
+        return None
+    rng = _np.random.default_rng(0)
+    w = _np.asarray(area) / sum(area)
+    pick = rng.choice(len(pts), size=min(max_rays, len(pts)), replace=len(pts) < max_rays, p=w)
+    ints = IntCurvesFace_ShapeIntersector()
+    ints.Load(shape, 1e-6 * diag)
+    eps = 1e-5 * diag
+    d_hit = []
+    for i in pick:
+        o = pts[i] + eps * nrm[i]
+        ints.Perform(gp_Lin(gp_Pnt(*o), gp_Dir(*nrm[i])), 0.0, diag)
+        ws = [ints.WParameter(j) for j in range(1, ints.NbPnt() + 1)]
+        # a ray launched beside an edge can clip the neighbouring face within micrometres; measured on
+        # nist_ftc_09 those put the 10th percentile at 0.009 mm on a 3 mm plate. Hits under 0.1% of
+        # the diagonal are discarded - so a wall thinner than that is NOT seen (stated limitation).
+        ws = [x for x in ws if x > 1e-3 * diag]
+        if ws:
+            d_hit.append(min(ws) + eps)
+    return float(_np.percentile(d_hit, percentile)) if d_hit else None
+
+
 def volume(shape) -> float:
     from OCP.BRepGProp import BRepGProp
     from OCP.GProp import GProp_GProps
@@ -394,8 +447,42 @@ def mesh_brep(brep: str, h_max: float, pick, threads: int = 1, ho_optimize: int 
     if len(et) == 0:
         return "no tetrahedra"
     conn = np.asarray(en, dtype=np.int64).reshape(-1, 10)[:, list(GMSH_TET10_TO_SOLVER)]
-    return Meshed(np.asarray(tags, dtype=np.int64), np.asarray(xyz).reshape(-1, 3), np.asarray(et, dtype=np.int64),
-                  conn, sets, time.time() - t0)
+    m = Meshed(np.asarray(tags, dtype=np.int64), np.asarray(xyz).reshape(-1, 3), np.asarray(et, dtype=np.int64),
+               conn, sets, time.time() - t0)
+    # THE MESH MUST FILL THE PART. Measured on a region cut from nist_ftc_09's simplified package:
+    # gmsh meshed it without raising, at a twelfth of the tets the same region of the original took,
+    # and the "simplified" piece read 29% stiff. A mesh whose tets do not add up to the CAD volume is
+    # refused here, before anything is solved or scored.
+    v_cad = _brep_volume(brep)
+    v_mesh = mesh_volume(m)
+    if v_cad and abs(v_mesh - v_cad) > MESH_VOLUME_TOLERANCE * abs(v_cad):
+        return f"mesh volume {v_mesh:.6g} differs from the CAD volume {v_cad:.6g} by {(v_mesh - v_cad) / v_cad:+.2%}"
+    return m
+
+
+#: a curved boundary meshed with straight-sided or 2nd-order elements is a little off its CAD volume;
+#: a mesh that misses a piece of the part is far more than this
+MESH_VOLUME_TOLERANCE = 0.005
+
+
+def mesh_volume(m: Meshed) -> float:
+    """The tets' volume from their corner nodes (straight-edged; the curved mid-nodes move it a little)."""
+    row = {int(t): i for i, t in enumerate(m.tags)}
+    idx = np.vectorize(row.__getitem__)(m.conn[:, :4])
+    p = m.xyz[idx]
+    return float(np.abs(np.einsum("ij,ij->i", np.cross(p[:, 1] - p[:, 0], p[:, 2] - p[:, 0]), p[:, 3] - p[:, 0])).sum() / 6)
+
+
+def _brep_volume(path: str) -> float | None:
+    try:
+        from OCP.BRep import BRep_Builder
+        from OCP.BRepTools import BRepTools
+        from OCP.TopoDS import TopoDS_Shape
+        shape = TopoDS_Shape()
+        BRepTools.Read_s(shape, path, BRep_Builder())
+        return volume(shape)
+    except Exception:  # noqa: BLE001 - no CAD volume means no check, not a failed mesh
+        return None
 
 
 def run_ccx(m: Meshed, wd: Path, step_cards: str, threads: int = 1) -> tuple[bool, float]:
@@ -616,6 +703,8 @@ def main(argv=None) -> int:
     ap.add_argument("--jobs", type=int, default=os.cpu_count() or 4)
     ap.add_argument("--size", type=float, default=30.0, help="background element size = diagonal / SIZE")
     ap.add_argument("--max-features", type=int, default=60)
+    ap.add_argument("--no-wall-rule", action="store_true",
+                    help="size by the diagonal only (the bench's behaviour before PLAN-fea-3 was applied)")
     ap.add_argument("--keep-fields", action="store_true",
                     help="save each run's nodal U and S (work/<name>/field.npz) for local.py")
     a = ap.parse_args(argv)
@@ -625,7 +714,15 @@ def main(argv=None) -> int:
     (out / "geom").mkdir(parents=True, exist_ok=True)
 
     shape, diag, lc = prepare(a.step)
+    # PLAN-fea-3's rule, which the product's FEA plan applies and this bench did not: at least two
+    # elements through every wall. Measured on nist_ftc_09 (a 3 mm plate, h 11 mm): without it,
+    # removing features let the mesher coarsen the plate to one element through its thickness, and
+    # the stiffening that caused was read as the features' effect (a local check on its accepted
+    # package came out 29% stiff against a true 0.28%).
+    t_wall = wall_thickness(shape, diag)
     h = diag / a.size
+    if t_wall and not a.no_wall_rule:
+        h = min(h, t_wall / 2)
     feats, faces, _ = recognise(shape, diag)
     v0 = volume(shape)
     write_brep(shape, out / "geom" / "original.brep")
@@ -693,7 +790,8 @@ def main(argv=None) -> int:
     noise = results.get("noise", {})
     if noise.get("ok") and ref.get("ok"):
         noise["error"] = _rel(noise["qoi"], ref["qoi"], "none")
-    summary = {"part": a.step, "diag": diag, "h": h, "load_case": asdict(lc), "volume": v0, "ho_optimize": mode[0],
+    summary = {"part": a.step, "diag": diag, "h": h, "t_wall": t_wall, "wall_rule": not a.no_wall_rule,
+               "load_case": asdict(lc), "volume": v0, "ho_optimize": mode[0],
                "n_features": len(feats), "original": ref, "noise": noise, "features": rows,
                "wall_s": time.time() - t0}
     (out / "result.json").write_text(json.dumps(summary, indent=1, default=float))

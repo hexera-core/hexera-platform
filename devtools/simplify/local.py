@@ -37,6 +37,7 @@ import json
 import math
 import subprocess
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -202,7 +203,7 @@ def t1_hole(shape, faces, fids: list[int], global_npz: Path, c_s: float, diag: f
 
 
 def _one(args) -> tuple[str, dict]:
-    step, fid, feat, harness_dir, h_global, k, diag, w_global, refine, lc, grow, ho = args
+    step, fid, feat, harness_dir, h_global, k, diag, w_global, refine, lc, grow, ho, driver = args
     h = h_global / refine
     out = Path(harness_dir) / "local" / fid
     try:
@@ -226,7 +227,7 @@ def _one(args) -> tuple[str, dict]:
         out.mkdir(parents=True, exist_ok=True)
         H.write_brep(lo, out / "orig.brep")
         H.write_brep(ls, out / "simp.brep")
-        npz = Path(harness_dir) / "work" / fid / "field.npz"
+        npz = Path(driver) if driver else Path(harness_dir) / "work" / fid / "field.npz"
         drive = _drive(npz, region, 2 * h_global)
         tol = 1e-4 * diag
         po = _solve_piece(out / "orig.brep", out / "o", h, region, tol, drive, lc, ho)
@@ -285,26 +286,47 @@ def main(argv=None) -> int:
     ap.add_argument("--k", type=float, default=3.0, help="region padding = max(k x feature size, 2h)")
     ap.add_argument("--jobs", type=int, default=16)
     ap.add_argument("--refine", type=float, default=2.0, help="local mesh size = global h / REFINE")
+    ap.add_argument("--driver-brep", default="", help="drive every feature from ONE solve of this part "
+                    "(e.g. the harness's geom/package_all.brep) instead of each feature's own global solve")
+    ap.add_argument("--driver-size", type=float, default=0.0, help="the driver solve's size: diagonal / N "
+                    "(default: the harness's own size)")
+    ap.add_argument("--threads", type=int, default=16, help="solver threads for the driver solve")
     ap.add_argument("--grow", type=float, default=1.0,
                     help="scale the whole region padding (k alone does not move it for small features: "
                          "the zone + 4h floor dominates)")
     a = ap.parse_args(argv)
     hd = Path(a.harness)
     r = json.loads((hd / "result.json").read_text())
+    driver, w_driver = None, None
+    if a.driver_brep:
+        # ONE GLOBAL SOLVE FOR EVERY FEATURE: the part with the whole package removed, solved once (on
+        # every core) and used to drive every feature's local check - the product's fast path, with no
+        # solve of the original part at all
+        lc_d = r["load_case"]
+        size = a.driver_size or r["diag"] / r["h"]
+        dd = hd / "driver" / Path(a.driver_brep).stem / f"s{size:g}"
+        t0 = time.time()
+        g = H.mesh_and_solve(a.driver_brep, str(dd), lc_d, r["diag"] / size, {"none": []}, threads=a.threads,
+                             keep_field=True, ho_optimize=r.get("ho_optimize", 1))
+        if not g.ok:
+            raise SystemExit(f"driver solve failed: {g.why}")
+        driver, w_driver = str(dd / "field.npz"), g.qoi["strain_energy"]
+        print(f"driver: {g.elements} tets, {time.time() - t0:.1f}s (mesh {g.mesh_s:.1f}s, solve {g.solve_s:.1f}s)")
     todo = []
     for fid, row in r["features"].items():
-        if "error" not in row or not (hd / "work" / fid / "field.npz").exists():
+        if "error" not in row or (not driver and not (hd / "work" / fid / "field.npz").exists()):
             continue
-        w_global = row["result"]["qoi"]["strain_energy"]
+        w_global = w_driver if driver else row["result"]["qoi"]["strain_energy"]
         todo.append((a.step, fid, row, str(hd), r["h"], a.k, r["diag"], w_global, a.refine, r["load_case"],
-                     a.grow, r.get("ho_optimize", 1)))
+                     a.grow, r.get("ho_optimize", 1), driver))
     out: dict[str, dict] = {}
     with ThreadPoolExecutor(max_workers=a.jobs) as ex:
         for fut in as_completed([ex.submit(_isolated, t) for t in todo]):
             fid, res = fut.result()
             out[fid] = res
             print(f"{fid}: {'ok' if res['ok'] else res['why']}", flush=True)
-    name = f"local_k{a.k:g}_r{a.refine:g}" + (f"_g{a.grow:g}" if a.grow != 1.0 else "") + ".json"
+    name = (f"local_k{a.k:g}_r{a.refine:g}" + (f"_g{a.grow:g}" if a.grow != 1.0 else "")
+            + (f"_drv-{Path(a.driver_brep).stem}-s{a.driver_size or 0:g}" if a.driver_brep else "") + ".json")
     (hd / name).write_text(json.dumps(out, indent=1, default=float))
     print(f"wrote {hd / name}")
     return 0

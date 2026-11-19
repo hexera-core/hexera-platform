@@ -289,3 +289,62 @@ budget:
 m = 0.8 is the operating point on this data: no false accept, 45 of 49 harmless removals kept.
 **It was chosen on the same 82 removals it is scored on**, so it is a hypothesis until it holds on
 parts it has not seen (the heavy pair queued now is the first such test).
+
+## 2026-11-19 - speed: solver settings, a one-solve fast path, and two corrections to the bench
+
+**Solver settings** (CalculiX 2.21, Ubuntu build, SPOOLES; nist_ftc_09 original, 64k tets):
+
+| setting | wall | peak RSS | reaction vs reference |
+|---|---|---|---|
+| SPOOLES, 1 thread (what the bench used) | 32.2 s | 1.5 GB | reference |
+| **SPOOLES, 16 threads** | **17.4 s** | 2.6 GB | identical |
+| ITERATIVE CHOLESKY, 1 / 16 threads | 95.5 / 93.8 s | 0.4 / 1.0 GB | **+1.9% / +1.7% wrong** (not converged) |
+| ITERATIVE SCALING, 16 threads | 271.5 s | 1.0 GB | +0.001% |
+
+No PaStiX in this build. A faster solver (AMG-preconditioned CG on the same mesh, proven against
+CalculiX to 1e-6) is being built separately.
+
+**Correction 1: the bench never applied PLAN-fea-3** (at least two elements through every wall). The
+wall thickness (rays cast inward, 10th percentile, `harness.wall_thickness`) against the size used:
+
+| part | wall | h used (diag/30) | h the rule asks (wall/2) |
+|---|---|---|---|
+| nist_ftc_09 | 3.04 | 11.27 | 1.52 |
+| lbracket_b | 4.40 | 5.21 | 2.20 |
+| holeplate_graded | 6.00 | 7.18 | 3.00 |
+| tee_dn50_4b | 6.00 | 13.46 | 3.00 |
+| D2MI 906 | 1.17 | 4.20 | 0.59 |
+| KP08 housing | 1.38 | 2.11 | 0.69 |
+| SHF08 | 1.89 | 1.67 | 0.95 |
+
+Every part had one or two elements through its walls. T2 and T3 were computed at the same resolution,
+so their AGREEMENT stands; the SIZE of the errors and of the cells saved does not, because removing a
+feature let the mesher coarsen where it had been, and that stiffening was read as the feature's
+effect. `harness.py` now caps h at wall/2 (`--no-wall-rule` restores the old sizing). The ground
+truth has to be re-run under it.
+
+**Correction 2: a mesh can miss part of its volume silently.** A region cut out of nist_ftc_09's
+defeatured package was a shape OCCT calls invalid (healing made it valid; gmsh then failed with
+"1D mesh not forming a closed loop"); in the run itself gmsh meshed it without raising, at a twelfth
+of the tets of the same region of the original, and the simplified piece read 29% stiff. `mesh_brep`
+now refuses any mesh whose tets do not add up to the CAD volume within 0.5%. Region pieces are now
+made by cutting the ORIGINAL and defeaturing inside the piece.
+
+**The fast path** (`local.py --driver-brep`): every feature's local check driven by ONE global solve
+of the part with the whole package removed, instead of one global solve per feature. nist_ftc_09, 38
+features, package `all` (a 4.6% compliance change - the hardest case for a shared driver):
+
+| | global solves | wall | T2 rank | sign | false accepts at 0.1%, margin 1.0 / 0.8 / 0.5 |
+|---|---|---|---|---|---|
+| per-feature drivers | 38 | ~36 CPU-min | 0.99 | 1.00 | 3 / 0 / 0 |
+| one driver, size 30 | 1 (4.7 s) | **61 s** | 0.88 | 0.94 | 4 / 1 / 0 |
+| one coarse driver, size 15 | 1 (3.1 s) | **51 s** | 0.96 | 0.94 | 4 / 1 / 0 |
+
+About 40x less compute for a stricter margin: at m = 0.5 the shared driver keeps 17-18 of 24 harmless
+removals with no false accept (per-feature drivers keep 21 at m = 0.8). Two stages follow: the
+one-solve screen settles the clear cases, and only features reading between about 0.5x and 1.2x the
+budget get a driver of their own.
+
+`package_local.py` (merged regions from one coarse solve) was accurate where it worked (hole plate:
+-5.31% vs a true -5.40%) but is not a speed-up: dense features merge into one region the size of the
+part, meshed finer than the global solve. Per-feature regions from one driver are the fast path.
