@@ -370,7 +370,8 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
                 budget: LoopBudget | None = None, reserved: frozenset = frozenset(),
                 session: RepairSession | None = None, attempts: int | None = None,
                 clock: Callable[[], float] = time.monotonic,
-                deadline_s: float | None = None) -> RegionRun:
+                deadline_s: float | None = None,
+                auto_accept_mm: float | None = None) -> RegionRun:
     """Repair `shape` one region at a time, and report what each region's package did.
 
     `attempts` BOUNDS THE PACKAGES ONE REGION MAY BE OFFERED, defaulting to the deployment's
@@ -419,8 +420,13 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
     # entity, and the session will not let a sweep remove one it never aimed at. Nothing here
     # grants a package the engineer's `answered_held` exemption - a package is authored, and an
     # answer to a hold is a person's (session.try_package).
+    # `auto_accept_mm` REACHES A SESSION THIS FUNCTION CONSTRUCTS, exactly as `reserved` does: an
+    # INJECTED session keeps the threshold it was built with, so a test that injects one is testing
+    # the walk and not the tier. None - the default - is today's session: the auto-accept tier is
+    # inert without a threshold, so a caller that declares none gets the reviewer on every package.
     work = session if session is not None else RepairSession(
-        shape, remaining_s=remaining, reserved=reserved, clock=clock)
+        shape, remaining_s=remaining, reserved=reserved, clock=clock,
+        auto_accept_mm=auto_accept_mm)
     if work.remaining_s is None:
         work.remaining_s = remaining
     # WHAT THE SESSION ITSELF COUNTED, not arithmetic over the verdicts. Every scan a package

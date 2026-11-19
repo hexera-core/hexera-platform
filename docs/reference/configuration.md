@@ -489,6 +489,28 @@ is a changed part, and the reviewer is what replaces a numeric gate for an opera
 Startup logs a warning when `CAD_REPAIR_CLOSE_WIRE_GAPS` is on while `CAD_REPAIR_PACKAGE_REVIEW` is
 not `live`.
 
+## The auto-accept tier
+
+`CAD_REPAIR_AUTO_ACCEPT` (default `off`) decides whether a repair package that passed its
+predicate may be accepted WITHOUT the model reviewer. `off` is byte-for-byte the prior behaviour:
+every such package goes to `CAD_REPAIR_PACKAGE_REVIEW`. `live` adds one tier in front of that
+reviewer (`cad/repair/review_tier.py`), and it accepts a package only when ALL of these hold:
+
+- the run declared a CUSTOMER DEVIATION THRESHOLD above zero - without one the posture is inert
+  and every package is reviewed, which is the fail-closed direction;
+- no kept operation moves vertices: `rebuild_face` and `close_wire_gaps` ride with the reviewer at
+  any threshold and under any deviation, by construction in both the deploy expressions and the
+  tier;
+- nothing was discharged by relabelling and nothing new appeared under the repair;
+- the kept operations' declarations cover what was measured, under the same residuals `caps` uses;
+- the deviation was MEASURED - not off, not out of time, not failed - and is at or under the
+  threshold.
+
+An auto-accept is AUDITED, never silent: the package verdict records `review_tier: "auto"`, the
+reason the tier gave and the same clipped evidence the reviewer would have been sent. A package the
+tier declines records `review_tier: "reviewer"` beside the reviewer's own verdict. Neither key
+appears at all when the review posture is off.
+
 ## The repair investigator's budget
 
 `CAD_REPAIR_INVESTIGATOR` (default `off`) decides who authors a failing region's target package.
@@ -562,7 +584,7 @@ API: it logs that the directory is missing and leaves `/ui` and `/static` unmoun
 
 <!-- Regenerate: python -m meshpipeline.settings.inventory --reference -->
 
-Every supported setting (304 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
+Every supported setting (305 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
 
 | Setting | Exposure | Read by | Secret |
 |---|---|---|---|
@@ -635,6 +657,7 @@ Every supported setting (304 entries). `template` settings are the ones `.env.ex
 | `CAD_INSPECT_TIMEOUT_S` | internal | app |  |
 | `CAD_REPAIR_ALLOW_FACE_REMOVAL` | internal | app |  |
 | `CAD_REPAIR_AUTONOMOUS` | internal | app |  |
+| `CAD_REPAIR_AUTO_ACCEPT` | internal | app |  |
 | `CAD_REPAIR_CLOSE_WIRE_GAPS` | internal | app |  |
 | `CAD_REPAIR_ENABLED` | template | app |  |
 | `CAD_REPAIR_FILL_NONPLANAR_HOLES` | internal | app |  |

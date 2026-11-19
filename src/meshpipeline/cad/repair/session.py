@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import meshpipeline.settings.cad_repair as rcfg
-from meshpipeline.cad.repair import mesh_probe, oracle, package_review
+from meshpipeline.cad.repair import mesh_probe, oracle, package_review, review_tier
 from meshpipeline.cad.repair.caps import (
     Accounting,
     Measure,
@@ -403,6 +403,16 @@ class PackageVerdict:
     review_reason: str | None = None
     review_s: float | None = None
     review_evidence: dict | None = None
+    #: WHO ACCEPTED OR REFUSED IT: "reviewer" (the model) or "auto" (the audited auto-accept
+    #: tier, cad/repair/review_tier.py). Absent when the review posture is off, so a flag-off
+    #: report is byte-for-byte what it is today.
+    review_tier: str | None = None
+    #: THE MEASURED OBJECTION, and the ONLY thing a review reject may ever hand the author
+    #: (cad/repair/package_review.py: `review_package_objection`). A field name from a closed
+    #: tuple plus the value the SESSION measured for it - never a word the reviewer wrote.
+    #: `review_reason` is the reviewer's own prose and goes to the report only; `observe` carries
+    #: this key and not that one, which is the seal the objection design exists for.
+    review_objection: dict | None = None
 
     @property
     def committed(self) -> bool:
@@ -423,7 +433,9 @@ class PackageVerdict:
                     ("reviewed", self.reviewed),
                     ("review_reason", self.review_reason),
                     ("review_s", self.review_s),
-                    ("review_evidence", self.review_evidence)) if v is not None}}
+                    ("review_evidence", self.review_evidence),
+                    ("review_tier", self.review_tier),
+                    ("review_objection", self.review_objection)) if v is not None}}
 
 
 def _measure_total(own_s: float, verdicts: Iterable[OpVerdict]) -> float:
@@ -462,7 +474,8 @@ class RepairSession:
                  reserved: frozenset = frozenset(),
                  clock: Callable[[], float] = time.monotonic,
                  original: Measure | None = None, defects: tuple | None = None,
-                 is_scratch: bool = False) -> None:
+                 is_scratch: bool = False,
+                 auto_accept_mm: float | None = None) -> None:
         #: Defect codes per-defect review holds for a PERSON, as the planner has them. The planner
         #: will not aim at a held entity; this is the other half - an operation that removes one
         #: without aiming at it (a whole-shape sweep) is rolled back below.
@@ -530,6 +543,11 @@ class RepairSession:
         #: package never sees another's. Appended only on a keep.
         self._kept_faces: list[str] = []
         self._kept_inputs: list = []
+        #: THE CUSTOMER'S DEVIATION THRESHOLD, or None when the run declared none. The auto-accept
+        #: tier is INERT WITHOUT IT (`review_tier.decide`): a deployment that turned the posture on
+        #: but states no threshold still sends every package to the reviewer, which is the
+        #: fail-closed direction. None is the default, so a session nobody told is today's session.
+        self._auto_accept_mm = None if auto_accept_mm is None else float(auto_accept_mm)
 
     @classmethod
     def scratch(cls, shape, *, original: Measure, defects: tuple,
@@ -1235,15 +1253,39 @@ class RepairSession:
             # and a reject - or any no-answer - takes the failed predicate's revert below.
             review_started = self.clock()
             try:
+                # 8a. THE TIER. A small, fully accounted, non-vertex-moving package under the
+                # customer's threshold is accepted here, AUDITED and with no model call; anything
+                # else - and anything the tier could not read - goes to the reviewer. The decision
+                # is made on the same measured evidence the reviewer would have been sent.
+                # WHAT THE KEPT OPERATIONS REVEALED, read off the delta `try_op` recorded (the
+                # only place it survives): a finding that appeared under the repair and was
+                # excused as revealed rather than as damage. It is excused, not absent - so it is
+                # exactly the judgement call the reviewer's seat exists for.
+                revealed: frozenset = frozenset()
+                for kept_verdict in verdicts:
+                    if kept_verdict.kept:
+                        revealed |= frozenset(
+                            str(entry.get("fingerprint", ""))
+                            for entry in kept_verdict.delta.get("revealed", ()))
+                tier, tier_reason = review_tier.decide(
+                    verdicts=verdicts, reclassified=reclassified, revealed=revealed,
+                    declared_matches=review_tier.declaration_covers(
+                        before=before, after=after,
+                        declared_area_mm2=declared.declared_area_mm2,
+                        declared_volume_mm3=declared.declared_volume_mm3),
+                    deviation=deviation, deviation_status=deviation_status,
+                    threshold_mm=self._auto_accept_mm)
                 review = self._review(package, verdicts, boundary, found, whole=whole,
                                       before=before, after=after, declared=declared,
                                       deviation={**deviation,
-                                                 "deviation_status": deviation_status})
+                                                 "deviation_status": deviation_status},
+                                      tier=tier, tier_reason=tier_reason)
             except Exception as exc:  # noqa: BLE001 - a broken review is a reject, never a commit
                 logger.warning("session: package review failed (%s)", type(exc).__name__)
                 review = {"reviewed": package_review.REJECT,
                           "review_reason": f"review failed: {type(exc).__name__}",
-                          "review_s": self.clock() - review_started}
+                          "review_s": self.clock() - review_started,
+                          "review_tier": review_tier.REVIEWER}
             if review["reviewed"] != package_review.ACCEPT:
                 self.shape, self._defects, self.complete_scan, self.accounting = snapshot
                 rejects = self._review_rejects.setdefault(region.index, [])
@@ -1263,7 +1305,8 @@ class RepairSession:
 
     def _review(self, package: TargetPackage, verdicts: list[OpVerdict], boundary: tuple,
                 found: tuple, *, whole: bool, before, after, declared: Accounting,
-                deviation: dict) -> dict:
+                deviation: dict, tier: str = review_tier.REVIEWER,
+                tier_reason: str = "") -> dict:
         """The semantic reviewer's verdict on a package that passed its predicate, as the
         PackageVerdict fields `reviewed`, `review_reason` and `review_s`.
 
@@ -1298,12 +1341,29 @@ class RepairSession:
             review_rejects=tuple(self._review_rejects.get(package.region.index, ())))
         deadline = (started + float(self.remaining_s()) - package_review.DEADLINE_MARGIN_S
                     if self.remaining_s is not None else None)
-        verdict, reason = package_review.review_package(
+        if tier == review_tier.AUTO:
+            # NO MODEL CALL, AND NOTHING LESS IN THE RECORD. The evidence is built and clipped
+            # exactly as it is for the reviewer, because the audit of an auto-accept has to show
+            # what the acceptance was made on - an accept with no evidence behind it would make
+            # this tier unauditable, which is the one thing it may not be.
+            return {"reviewed": package_review.ACCEPT,
+                    "review_reason": f"auto-accept: {tier_reason}",
+                    "review_tier": review_tier.AUTO, "review_s": 0.0,
+                    "review_evidence": package_review.clip_evidence(evidence)}
+        verdict, reason, objection = package_review.review_package_objection(
             evidence, timeout_s=float(rcfg.CAD_REPAIR_PACKAGE_REVIEW_TIMEOUT_S),
             deadline_s=deadline, clock=self.clock)
-        return {"reviewed": verdict, "review_reason": reason,
-                "review_s": self.clock() - started,
-                "review_evidence": package_review.clip_evidence(evidence)}
+        out = {"reviewed": verdict, "review_reason": reason,
+               "review_tier": review_tier.REVIEWER,
+               "review_s": self.clock() - started,
+               "review_evidence": package_review.clip_evidence(evidence)}
+        if objection is not None:
+            # THE ONLY THING THAT CROSSES TO THE AUTHOR. It is MEASURED (`_objection_of` reads the
+            # session's own evidence, never the reply's text), so no word the reviewer wrote can
+            # ride on it - and `review_reason`, which is the reviewer's prose, is deliberately NOT
+            # in the attempt log `observe` builds.
+            out["review_objection"] = objection
+        return out
 
     def _deviation_evidence(self, *, cap_s: float) -> tuple[dict, str]:
         """The deviation fields for a package that passed its predicate ({} when not measured at

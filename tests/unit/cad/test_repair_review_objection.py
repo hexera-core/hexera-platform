@@ -271,10 +271,24 @@ def test_two_rejections_still_escalate(monkeypatch):
     assert all(_PROSE not in str(p.reason) for p in run.packages)
 
 
-@pytest.mark.skip(reason="cross-lane seam: session.PackageVerdict.review_objection and "
-                         "observe._attempt_of are owned by another lane this round. This module "
-                         "exports review_package_objection(); when the session adopts it, assert "
-                         "here that the investigator's re-call turn carries review_objection and "
-                         "no substring of review_reason.")
 def test_investigator_sees_the_objection_on_recall():
-    raise AssertionError("unimplemented: see skip reason")
+    """THE SEAM IS CLOSED. `session.PackageVerdict.review_objection` and `observe._attempt_of` now
+    carry the measured objection, so the assertion this test deferred is live - it lives beside
+    the session wiring it is about, in
+    `tests/unit/cad/test_repair_session_auto_accept.py::test_the_investigator_sees_the_objection_on_recall`
+    (plus `test_the_whole_observation_carries_no_reviewer_prose`, the hostile walk). Kept here as
+    the pointer, and still asserting the one thing this module owns: the author-facing key is
+    `review_objection` and `review_reason` is not a field of the attempt at all.
+    """
+    from meshpipeline.cad.repair import observe
+    from meshpipeline.cad.repair.session import PackageVerdict
+
+    verdict = PackageVerdict(region_index=0, status="reverted", reason="review: rejected by review",
+                             review_reason=_PROSE,
+                             review_objection={"field": "deviation_mm", "measured": 0.75})
+    attempt = observe._attempt_of(verdict)
+    assert attempt["review_objection"] == {"field": "deviation_mm", "measured": 0.75}
+    assert [k for k in attempt if k.startswith("review")] == ["review_objection"]
+    blob = json.dumps(attempt)
+    for word in _PROSE_WORDS:
+        assert word not in blob, word
