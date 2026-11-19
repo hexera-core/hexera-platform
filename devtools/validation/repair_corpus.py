@@ -23,6 +23,7 @@ import asyncio
 import hashlib
 import importlib.util
 import json
+import math
 import os
 import random
 import statistics
@@ -544,6 +545,11 @@ def corpus_summary(rows: list[dict], planner_mode: str = "off",
     # - which is also what --verify recomputes off the rows.
     if any(r.get("goal_profile") for r in rows):
         out["goal"] = goal_summary(rows)
+    # Same rule for the investigator: ABSENT unless a row carries a block, so --verify recomputes
+    # the identical summary for a run that never asked for one.
+    investigator = investigator_summary(rows)
+    if investigator:
+        out["investigator"] = investigator
     return out
 
 
@@ -981,6 +987,260 @@ def manifest_files(path: Path, roots: list[Path], *, sample: int = 0, seed: int 
     return [found[e["name"]] for e in entries if e["name"] in found], entries
 
 
+# ------------------------------------------------------------------ the investigator (gym records)
+#
+# WHAT THIS IS FOR. The investigator's value cannot be argued from a row: a row says a region was
+# committed, not whether the model looked at the right thing to get there. The transcript IS the
+# evidence, and a transcript is only worth keeping if the same conversation can be re-run without
+# a model - otherwise every policy comparison costs another live corpus pass. So the runner does
+# three things here and nothing more: it collects one record per author call, joins each record to
+# the verdict the session gave that package, and loads a previous run's records back for replay.
+#
+# WHAT NEVER GOES IN. No CAD, ever (plan: Global Constraints). A record carries names, hashes,
+# fingerprints, measurements, verdicts and the conversation; `scrub_record` is the gate, and it
+# drops geometry keys and raw bytes wherever they appear rather than trusting the producer. The
+# records are customer-derived data: they go to this devtools sink, never to a service.
+INVESTIGATOR_POSTURES = ("off", "shadow", "live")
+
+#: Keys a record may never carry out of the process, whatever nests them. Named rather than
+#: sniffed: a key called `brep` holding a str is a geometry leak just as much as one holding bytes.
+_GEOMETRY_KEYS = frozenset({
+    "shape", "shapes", "brep", "brep_bytes", "step", "step_bytes", "stl", "stl_bytes",
+    "geometry", "original_shape", "region_shape", "scratch_shape", "tshape",
+})
+
+
+def investigator_posture(value) -> str:
+    """The posture this run asked for - FAIL-CLOSED, like every other posture in this plan.
+
+    Only the exact on-values read as on. Anything else, including "on", "true", "LIVE" and None,
+    is `off`: a mistyped flag must not be the thing that decides a model ran over a customer's
+    part.
+    """
+    text = value if isinstance(value, str) else ""
+    return text if text in ("shadow", "live") else "off"
+
+
+def _plain(value):
+    """`value` as something json.dumps(allow_nan=False) accepts, with geometry removed.
+
+    Non-finite floats become None rather than raising or becoming a string: a `seconds` that came
+    back as nan is a missing measurement, and None is how the rest of this file says missing.
+    """
+    if isinstance(value, dict):
+        return {str(k): _plain(v) for k, v in value.items() if str(k) not in _GEOMETRY_KEYS}
+    if isinstance(value, (list, tuple)):
+        return [_plain(v) for v in value]
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return None  # raw bytes are the geometry leak this guard exists for
+    if isinstance(value, bool) or value is None or isinstance(value, (int, str)):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    return str(value)
+
+
+def scrub_record(record: dict) -> dict:
+    """One gym record, safe to write: JSON-safe, geometry-free, and a new dict either way."""
+    return _plain(dict(record))
+
+
+class TranscriptSink:
+    """What the investigator's `sink` is in a corpus run: one scrubbed record per author call.
+
+    Streams each line AS IT ARRIVES, for the same reason BundleWriter streams rows: a run that
+    dies half way through 300 files leaves the transcripts it earned on disk rather than in a list
+    nobody wrote. `path=None` collects in memory only, which is what the tests use.
+    """
+
+    def __init__(self, path=None) -> None:
+        self.records: list[dict] = []
+        self.path = Path(path) if path else None
+        self._handle = None
+        if self.path is not None:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self._handle = self.path.open("w", encoding="utf-8")
+
+    def __call__(self, record: dict) -> dict:
+        clean = scrub_record(record)
+        self.records.append(clean)
+        if self._handle is not None:
+            self._handle.write(json.dumps(clean, allow_nan=False) + "\n")
+            self._handle.flush()
+        return clean
+
+    def since(self, start: int) -> list[dict]:
+        """The records collected after index `start` - this file's, when the caller marked the
+        offset before the repair ran."""
+        return self.records[start:]
+
+    def close(self) -> None:
+        if self._handle is not None:
+            self._handle.close()
+            self._handle = None
+
+
+def package_verdicts(measured: dict | None) -> dict:
+    """`(region index, attempt) -> PackageVerdict dict`, from `measurements["regions"]`.
+
+    THE ATTEMPT IS THE ORDINAL, because a PackageVerdict records the region it judged and not
+    which try it was: the n-th package the session judged for a region IS that region's n-th
+    attempt, and the region loop appends them in order.
+    """
+    out: dict = {}
+    seen: dict = {}
+    for package in (measured or {}).get("packages") or []:
+        index = package.get("region_index")
+        attempt = seen[index] = seen.get(index, 0) + 1
+        out[(index, attempt)] = package
+    return out
+
+
+def join_verdicts(records, verdicts: dict) -> list[dict]:
+    """Each record with the verdict its package got, under `"verdict"`.
+
+    ABSENT RATHER THAN INVENTED when no package matches: a replay miss, or an investigation that
+    concluded nothing, produced no package, and a row that claimed one would be a fabrication.
+    Returns new dicts; the caller's records are not mutated.
+    """
+    joined = []
+    for record in records:
+        key = (record.get("region", {}).get("index"), record.get("attempt"))
+        verdict = verdicts.get(key)
+        joined.append({**record, "verdict": verdict} if verdict is not None else dict(record))
+    return joined
+
+
+#: What an investigation spent, as the record may state it: nested under `spent`, or flat.
+_SPEND_KEYS = ("tool_calls", "model_calls", "seconds", "input_tokens", "output_tokens")
+
+
+def _spent(record: dict) -> dict:
+    nested = record.get("spent") or {}
+    return {key: (nested.get(key) if nested.get(key) is not None else record.get(key)) or 0
+            for key in _SPEND_KEYS}
+
+
+def investigator_row(records) -> dict:
+    """The row's `investigator` block: what the investigations on this file cost, and how they
+    ended. EMPTY for no records, so a file nothing investigated gains no key."""
+    if not records:
+        return {}
+    totals = dict.fromkeys(_SPEND_KEYS, 0.0)
+    ends: dict[str, int] = {}
+    for record in records:
+        spend = _spent(record)
+        for key in _SPEND_KEYS:
+            totals[key] += float(spend[key])
+        end = str(record.get("end") or "")
+        if end:
+            ends[end] = ends.get(end, 0) + 1
+    return {"regions": len({r.get("region", {}).get("index") for r in records}),
+            "tool_calls": int(totals["tool_calls"]),
+            "model_calls": int(totals["model_calls"]),
+            "seconds": round(totals["seconds"], 2),
+            "input_tokens": int(totals["input_tokens"]),
+            "output_tokens": int(totals["output_tokens"]),
+            "ends": dict(sorted(ends.items()))}
+
+
+def investigator_summary(rows: list[dict]) -> dict:
+    """The run's investigator aggregate over the rows that carry a block. Pure, and EMPTY when no
+    row does - so a run without the flag prints and seals nothing new."""
+    blocks = [r["investigator"] for r in rows if r.get("investigator")]
+    if not blocks:
+        return {}
+    ends: dict[str, int] = {}
+    for block in blocks:
+        for end, count in (block.get("ends") or {}).items():
+            ends[end] = ends.get(end, 0) + count
+    out = {"files": len(blocks),
+           "regions": sum(int(b.get("regions") or 0) for b in blocks),
+           "ends": dict(sorted(ends.items()))}
+    for key in _SPEND_KEYS:
+        total = sum(float(b.get(key) or 0) for b in blocks)
+        out[key] = round(total, 2) if key == "seconds" else int(total)
+    return out
+
+
+def load_replay(path) -> list[dict]:
+    """A previous run's transcripts, for `--investigator-replay`. One JSON object per line.
+
+    A bad line NAMES ITSELF. A replay file is produced by a run that may have died mid-write, and
+    "Expecting value: line 1 column 1" over a 300-file transcript tells the operator nothing.
+    """
+    records: list[dict] = []
+    for number, line in enumerate(Path(path).read_text(encoding="utf-8").splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            records.append(json.loads(line))
+        except ValueError as exc:
+            raise ValueError(f"{path} line {number} is not a JSON record: {exc}") from exc
+    return records
+
+
+def investigator_settings(posture: str, transcripts: str, replay: str) -> dict:
+    """The three flags, frozen into a bundle's settings.json - and NOTHING when none was given,
+    so a run that asked for no investigator keeps the settings digest it has today."""
+    if investigator_posture(posture) == "off" and not transcripts and not replay:
+        return {}
+    return {"investigator": investigator_posture(posture),
+            "transcripts": transcripts, "investigator_replay": replay}
+
+
+def _investigator_module():
+    """`cad/repair/investigator.py`, or None on a build that has not got one yet (Task 11).
+
+    Imported BY NAME and tolerantly: this runner is useful on a branch where the investigator does
+    not exist, and an ImportError at that point would take the whole corpus pass with it.
+    """
+    try:
+        import importlib
+
+        return importlib.import_module("meshpipeline.cad.repair.investigator")
+    except Exception:  # noqa: BLE001 - absent or broken both mean "this build has no investigator"
+        return None
+
+
+def _offer(module, name: str, value) -> str:
+    """Hand `value` to `module.name` ONLY IF THE MODULE DECLARES IT. Returns a seam note or "".
+
+    The runner never invents an attribute on another module: a sink set on a name nothing reads is
+    a silent nothing, and this plan has lanes landing in parallel. Saying so is the whole point.
+    """
+    if not hasattr(module, name):
+        return (f"seam: {getattr(module, '__name__', module)} declares no `{name}`, so the runner "
+                f"could not install it")
+    setattr(module, name, value)
+    return ""
+
+
+def install_investigator(posture: str, *, transcripts: str = "", replay: str = ""
+                         ) -> tuple[TranscriptSink | None, str]:
+    """Switch the investigator on for this run and give it somewhere to write. Returns the sink
+    (None when nothing was asked for) and a note the operator must read.
+
+    The POSTURE goes into the environment before the repair settings are read, which is how every
+    other switch in this tool is set (see the CAD_REPAIR_ defaults at the top of this file). The
+    SINK and the REPLAY RECORDS are offered to `cad/repair/investigator.py`; a build without one,
+    or without the name, gets a note rather than a crash.
+    """
+    mode = investigator_posture(posture)
+    if mode == "off" and not transcripts and not replay:
+        return None, ""
+    os.environ["CAD_REPAIR_INVESTIGATOR"] = mode
+    sink = TranscriptSink(transcripts or None)
+    module = _investigator_module()
+    if module is None:
+        return sink, ("seam: this build has no cad/repair/investigator.py, so nothing will write "
+                      "an investigator transcript (Task 11)")
+    notes = [_offer(module, "sink", sink)]
+    if replay:
+        notes.append(_offer(module, "replay_records", load_replay(replay)))
+    return sink, "; ".join(n for n in notes if n)
+
+
 def _probe_before(path: Path) -> tuple[bool, str] | None:
     """The file probe's verdict on the input as delivered, or None when it cannot be measured.
     Taken BEFORE repair only under --force-repair, which needs it to decide whether to run one."""
@@ -995,7 +1255,7 @@ def _probe_before(path: Path) -> tuple[bool, str] | None:
 
 
 def _one(path: Path, scratch: Path, *, mode: str = "off", mesh_probe: bool = False,
-         force_repair: bool = False, goal=None) -> dict:
+         force_repair: bool = False, goal=None, sink=None) -> dict:
     # FORCE-REPAIR IS A BENCHMARK SWITCH, NOT A PRODUCT PATH. A file the before-probe says will not
     # mesh runs the repair session even where triage routed it away (a clean inspection goes to
     # mesh-as-is), so the in-session probe can locate what the inspector could not see.
@@ -1003,7 +1263,7 @@ def _one(path: Path, scratch: Path, *, mode: str = "off", mesh_probe: bool = Fal
     taken = _probe_before(path) if (force_repair and mesh_probe) else None
     if taken is not None:
         forced = not taken[0]
-    row = _repair_row(path, scratch, mode=mode, force=forced, goal=goal)
+    row = _repair_row(path, scratch, mode=mode, force=forced, goal=goal, sink=sink)
     if taken is not None and row.get("outcome") != "unreadable":
         row["meshes_before"], row["mesh_kind_before"] = taken
     if mesh_probe and row.get("outcome") != "unreadable":
@@ -1015,7 +1275,7 @@ def _one(path: Path, scratch: Path, *, mode: str = "off", mesh_probe: bool = Fal
 
 
 def _repair_row(path: Path, scratch: Path, *, mode: str = "off", force: bool = False,
-                goal=None) -> dict:
+                goal=None, sink=None) -> dict:
     from meshpipeline.cad.repair.conservative import (
         RepairRefused,
         RepairUnavailable,
@@ -1026,10 +1286,26 @@ def _repair_row(path: Path, scratch: Path, *, mode: str = "off", force: bool = F
 
     row: dict = {"file": path.name, "size_bytes": path.stat().st_size}
     started = time.monotonic()
+    # THE OFFSET BEFORE ANYTHING RAN, so the records this file produced can be told from the ones
+    # the files before it produced. `sink=None` is today's behaviour exactly: no key, no join.
+    transcripts_from = len(sink.records) if sink is not None else 0
 
     def scored(verdict: dict | None = None) -> dict:
         """The goal columns for this row, and nothing at all when no profile was asked for."""
         return goal_row(verdict, goal) if goal is not None else {}
+
+    def investigated(measured: dict | None = None) -> dict:
+        """This file's `investigator` block, and the verdict joined ONTO THE SINK'S OWN RECORDS -
+        the transcript is the thing a later replay reads, so the join has to reach it, not a copy
+        the row threw away. Empty when no investigation ran, whatever the posture asked for."""
+        if sink is None:
+            return {}
+        mine = sink.since(transcripts_from)
+        verdicts = package_verdicts((measured or {}).get("regions"))
+        for index, joined in enumerate(join_verdicts(mine, verdicts)):
+            sink.records[transcripts_from + index] = joined
+        block = investigator_row(sink.since(transcripts_from))
+        return {"investigator": block} if block else {}
 
     try:
         before = _inspect(path)
@@ -1086,7 +1362,7 @@ def _repair_row(path: Path, scratch: Path, *, mode: str = "off", force: bool = F
     try:
         repaired = repair_step_file(path, destination, **extra)
     except RepairUnavailable as exc:
-        row.update(outcome="unavailable", error=str(exc), **scored())
+        row.update(outcome="unavailable", error=str(exc), **scored(), **investigated())
         return row
     except RepairRefused as exc:
         # THE ATTEMPTS GO WITH THE REFUSAL (conservative.py puts them in its measurements), so a
@@ -1101,10 +1377,11 @@ def _repair_row(path: Path, scratch: Path, *, mode: str = "off", force: bool = F
                    seconds=round(time.monotonic() - started, 2),
                    # THE VERDICT SURVIVES THE REFUSAL: goal.py records it before the after-check
                    # refuses, so a refused repair still says what it would have finished as.
-                   **scored(measured.get("goal")))
+                   **scored(measured.get("goal")), **investigated(measured))
         return row
     except Exception as exc:  # noqa: BLE001
-        row.update(outcome="repair_failed", error=f"{type(exc).__name__}: {exc}", **scored())
+        row.update(outcome="repair_failed", error=f"{type(exc).__name__}: {exc}", **scored(),
+                   **investigated())
         return row
 
     measured = {m.name: m.value for m in repaired.measurements}
@@ -1128,6 +1405,7 @@ def _repair_row(path: Path, scratch: Path, *, mode: str = "off", force: bool = F
         mesh_located_remaining=_mesh_located(measured),
         timings=dict(measured.get("timings") or {}),
         **scored(measured.get("goal")),
+        **investigated(measured),
     )
 
     after = _inspect(destination)
@@ -1157,7 +1435,7 @@ def _repair_row(path: Path, scratch: Path, *, mode: str = "off", force: bool = F
 
 def run_files(files: list[Path], scratch: Path, *, mode: str = "off", loop: bool = False,
               bundle=None, mesh_probe: bool = False, force_repair: bool = False,
-              goal=None) -> list[dict]:
+              goal=None, sink=None) -> list[dict]:
     """Run the repair loop over `files`, printing a line per file; returns the rows. When `bundle`
     is a BundleWriter every row is streamed into it AS IT IS PRODUCED, so a run that dies half way
     leaves its evidence-so-far on disk rather than in a list that was never written."""
@@ -1171,11 +1449,11 @@ def run_files(files: list[Path], scratch: Path, *, mode: str = "off", loop: bool
             rules_dir.mkdir(parents=True, exist_ok=True)
             rules_row = _one(path, rules_dir)
             row = _one(path, scratch, mode="live", mesh_probe=mesh_probe,
-                       force_repair=force_repair, goal=goal)
+                       force_repair=force_repair, goal=goal, sink=sink)
             row["rules_only"] = rules_row
         else:
             row = _one(path, scratch, mode=mode, mesh_probe=mesh_probe,
-                       force_repair=force_repair, goal=goal)
+                       force_repair=force_repair, goal=goal, sink=sink)
         rows.append(row)
         if bundle is not None:
             bundle.write_row(row)
@@ -1241,6 +1519,17 @@ def main() -> int:
                         help="with --mesh-probe: a file whose before-probe fails runs the repair "
                              "session even when triage routed it away (benchmark only)")
     parser.add_argument("--json", dest="json_out", default="", help="write the rows here")
+    # THE INVESTIGATOR (cad/repair/investigator.py). Off is today's behaviour exactly: no record,
+    # no row key, no summary block and no settings key. `shadow` investigates and keeps its
+    # packages out of the kernel; `live` authors with them.
+    parser.add_argument("--investigator", choices=INVESTIGATOR_POSTURES, default="off",
+                        help="bounded investigator author: shadow records only, live authors")
+    parser.add_argument("--transcripts", default="",
+                        help="write one gym record per author call here, as JSONL (names, hashes, "
+                             "fingerprints, measurements and the conversation - never geometry)")
+    parser.add_argument("--investigator-replay", dest="investigator_replay", default="",
+                        help="a previous run's --transcripts file: rebuild each region's package "
+                             "from the recorded conclusion instead of calling a model")
     # THE GOAL PROFILE. Absent means the repair is not told what it is finishing for, which is
     # today's behaviour exactly: no kwarg, no row key, no summary block. `meshing` is not offered
     # here - its verdict is the product mesher, which this tool does not run.
@@ -1366,6 +1655,22 @@ def main() -> int:
         print(str(exc), file=sys.stderr)
         return 2
 
+    # BEFORE THE SETTINGS ARE READ, because the posture is an environment switch the settings
+    # module reads once at import - the same contract as the CAD_REPAIR_ defaults at the top of
+    # this file. A run that asked for nothing installs nothing and reads exactly today's settings.
+    try:
+        sink, note = install_investigator(args.investigator, transcripts=args.transcripts,
+                                          replay=args.investigator_replay)
+    except (OSError, ValueError) as exc:
+        print(f"--investigator-replay is not usable: {exc}", file=sys.stderr)
+        return 2
+    if sink is not None:
+        print(f"investigator={investigator_posture(args.investigator)}"
+              + (f"  transcripts -> {args.transcripts}" if args.transcripts else "")
+              + (f"  replaying {args.investigator_replay}" if args.investigator_replay else ""))
+    if note:
+        print(f"  {note}", file=sys.stderr)
+
     import meshpipeline.settings.cad_repair as rcfg
     repair_settings = repair_settings_of(rcfg)
     print("  ".join(f"{k}={v}" for k, v in repair_settings.items()))
@@ -1390,6 +1695,8 @@ def main() -> int:
     # and one that states them cannot be confused with a different sample of the same corpus.
     if args.goal:
         settings["goal"] = args.goal
+    settings.update(investigator_settings(args.investigator, args.transcripts,
+                                          args.investigator_replay))
     if args.manifest:
         settings.update(manifest=args.manifest, roots=list(args.roots),
                         sample=args.sample, seed=args.seed, shard=args.shard,
@@ -1415,7 +1722,9 @@ def main() -> int:
     writer = benchmark_bundle.BundleWriter(Path(args.bundle)) if args.bundle else None
     rows = run_files(files, scratch, mode=args.planner, loop=args.loop, bundle=writer,
                      mesh_probe=args.mesh_probe, force_repair=args.force_repair,
-                     goal=goal)
+                     goal=goal, sink=sink)
+    if sink is not None:
+        sink.close()
 
     # ONE AGGREGATE. Every section printed below reads this dict, and the bundle seal recomputes
     # the same function over the same rows, so the console and the evidence cannot disagree.
@@ -1511,6 +1820,16 @@ def main() -> int:
             print(f"  {count:>4}  grind: {tier}")
         for verdict, count in scores.get("tolerant_routing", {}).items():
             print(f"  {count:>4}  tier 2b: {verdict}")
+
+    if "investigator" in summary:
+        block = summary["investigator"]
+        print("\n== the investigator ==")
+        print(f"  files {block['files']}, regions {block['regions']}, "
+              f"tool calls {block['tool_calls']}, model calls {block['model_calls']}, "
+              f"{block['seconds']}s")
+        print(f"  tokens in {block['input_tokens']}, out {block['output_tokens']}")
+        for end, count in block["ends"].items():
+            print(f"  {count:>4}  ended: {end}")
 
     if args.planner != "off":
         _print_planner(summary["planner"], cache)
