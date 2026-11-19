@@ -20,6 +20,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 
 import meshpipeline.settings.cad_repair as rcfg
+from meshpipeline.cad.repair import oracle
 from meshpipeline.cad.repair.contracts import DefectSeverity
 from meshpipeline.cad.repair.localize import analyzer_only
 
@@ -41,7 +42,6 @@ from meshpipeline.cad.repair.regions import Region, decompose
 from meshpipeline.cad.repair.session import (
     DECLINED,
     ESCALATED,
-    FINAL_PROBE_SLACK_S,
     HEAL_OP,
     REVIEW_REJECTED,
     ROLLED_BACK,
@@ -345,13 +345,13 @@ def final_reserve_s() -> float:
     """Seconds the walk keeps in hand for its final whole-shape verification (final review I2).
 
     With the mesh probe live the final scan probes the whole part, so the walk stops authoring
-    while one probe's timeout plus `session.FINAL_PROBE_SLACK_S` is still left - the final
+    while one probe's timeout plus `oracle.FINAL_PROBE_SLACK_S` is still left - the final
     verification always has room, and its probe then gets whatever remains. 0 with the probe off,
-    so a flag-off walk stops exactly where it always did.
+    so a flag-off walk stops exactly where it always did. The rule is the oracle's; this is the
+    walk's door onto it, reading the posture and the configured per-probe timeout.
     """
-    if rcfg.CAD_REPAIR_MESH_PROBE != "live":
-        return 0.0
-    return float(rcfg.CAD_REPAIR_MESH_PROBE_TIMEOUT_S) + FINAL_PROBE_SLACK_S
+    return oracle.final_reserve_s(mesh_probe_live=rcfg.CAD_REPAIR_MESH_PROBE == "live",
+                                  timeout_s=float(rcfg.CAD_REPAIR_MESH_PROBE_TIMEOUT_S))
 
 
 def _observe_shape(author: Author, shape) -> None:
