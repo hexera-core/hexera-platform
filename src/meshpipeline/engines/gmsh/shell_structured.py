@@ -69,9 +69,10 @@ PATTERN_ALIKE = 0.02
 #: up with a hole of about its size in another plate, or is within BOLT_ALIKE of a round bolt hole's size on its plate
 #: (its size: its inscribed circle); its square ring then takes two rows where they fit
 SQUARE_BOLTS = True
-#: SHMESH-51o8: every bolt hole's free box (one ring too, in any face) grows no further than keeps its band's corner
-#: kites and segments under the user's longest edge: one-ring boxes drawn on to near lines (44.5 to 50.1 mm) refused
-#: their bands ("an edge over the longest edge") and were paved, with triangles
+#: SHMESH-51o8: every bolt hole's free box in a face gridded with others along its joints (one ring too) grows no
+#: further than keeps its band's corner kites and segments under the user's longest edge: one-ring boxes drawn on to
+#: near lines (44.5 to 50.1 mm) refused their bands ("an edge over the longest edge") and were paved, with triangles
+#: (in every face it cost a 50 mm pitch web its grid: its boxes could no longer share their lines)
 BOLT_BOX_KITE = True
 #: SHMESH-51o9: the bolt holes of a face gridded with others along its joints own their boxes too (no line ends on
 #: them): a joined plate's two-ring boxes carried their lines across the joint and cut a one-ring box's sides into
@@ -2156,7 +2157,7 @@ def box_band(gmsh, w: Washer, index: np.ndarray, xyz: np.ndarray, mm: float, lim
 
 
 def _face_plan(gmsh, t: int, ws: list[Washer], h_mm: float, mm: float, hole_size, low_mm: float | None,
-               high_mm: float | None, frame: tuple | None = None) -> dict | str:
+               high_mm: float | None, frame: tuple | None = None, joined: bool = False) -> dict | str:
     """SHMESH-41/47c: a face's grid plan before any line is drawn - its frame, each washer's O-grid plan, the
     straight edges and box sides along each axis, the boxes (48b: overlapping ones share a line), each box side's
     limits (48i) - or why it has none (words)."""
@@ -2327,7 +2328,7 @@ def _face_plan(gmsh, t: int, ws: list[Washer], h_mm: float, mm: float, hole_size
                     side = bx[hi_s] - bx[lo_s]
                     grow_ = min(grow_, max(0.0, 0.5 * (1.5 * h * p[0] / 4 - side)))
                     shrink_ = min(shrink_, max(0.0, 0.5 * (side - 0.6 * h * p[0] / 4)))
-                elif (w.boxed2 or (BOX_OWNS_SIDES and w.info.get("bolt") and (two_face or BOLT_BOX_KITE))) \
+                elif (w.boxed2 or (BOX_OWNS_SIDES and w.info.get("bolt") and (two_face or (BOLT_BOX_KITE and joined)))) \
                         and FREE_BAND and high_mm is not None and not w.corners:
                     # (SHMESH-51: a bolt hole's free box grows no further than keeps its band's segments under the
                     # user's longest edge)
@@ -2777,7 +2778,7 @@ def _join_faces(gmsh, by_face: dict[int, list[Washer]], tag_of: dict[int, int], 
     plan: dict[int, dict] = {}
     for t, ws in sorted(by_face.items()):
         if t in tag_of and tag_of[t] not in no_cut:
-            fp = _face_plan(gmsh, t, ws, size_mm[t], mm, hole_size, low_mm, high_mm)
+            fp = _face_plan(gmsh, t, ws, size_mm[t], mm, hole_size, low_mm, high_mm, joined=True)
             if not isinstance(fp, str):
                 fp["ws"] = ws
                 plan[t] = fp
@@ -2799,6 +2800,7 @@ def _join_faces(gmsh, by_face: dict[int, list[Washer]], tag_of: dict[int, int], 
                 continue
             del plan[t_old]
             fp_new = _face_plan(gmsh, t_new, fp_old["ws"], float(fp_old["h"]) * mm, mm, hole_size, low_mm, high_mm,
+                                joined=True,
                                 frame=fp_old["frame"])
             if not isinstance(fp_new, str):
                 fp_new["ws"] = fp_old["ws"]
@@ -3010,7 +3012,7 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
         try:
             h_mm = size_mm[t]
             jt = joint.get(tag_of[t])
-            fp = _face_plan(gmsh, t, ws, h_mm, mm, hole_size, low_mm, high_mm,
+            fp = _face_plan(gmsh, t, ws, h_mm, mm, hole_size, low_mm, high_mm, joined=jt is not None,
                             frame=jt[2] if jt else frames.get(tag_of[t]))
             if isinstance(fp, str):
                 no(fp)
@@ -3930,6 +3932,11 @@ class Band:
 #: from the ring's to the opening's in one row of 3-to-1 groups (none: paved by gmsh). Off: the 3-to-1 quads come out
 #: with a taper of 0.50-0.57 against Nastran's 0.5 and the clean-up splits them (60-104 triangles on a look-alike plate)
 POLAR_BAND = False
+#: SHMESH-51o10: ... but where the opening can take the ring's own count (its segments no shorter than BAND_EQUAL_MIN
+#: of the plate's size), the band is meshed in rings of that count, no drop and no 3-to-1 group (a real round plate's
+#: band round a 325 mm bore was paved, 17 to 23 triangles)
+POLAR_BAND_EQUAL = True
+BAND_EQUAL_MIN = 0.5
 BAND_SMOOTH = 5
 BAND_AB_DEPTH = 0.65
 BAND_AB_SPREAD = 0.25
@@ -3941,12 +3948,19 @@ def band_counts(gmsh, band: Band, known: dict[int, int], size_mm: float, mm: flo
     if any(c not in known for c in band.outer):
         return None
     n_out = sum(known[c] for c in band.outer)
-    r_out = float(np.mean([np.linalg.norm(_samples(gmsh, c, 4) - band.centre, axis=1).mean() for c in band.outer]))
-    want = n_out * band.r_in / max(r_out, 1e-300)
-    n_in = n_out - 2 * max(0, round((n_out - want) / 2))
-    n_in = max(n_in, n_out - 2 * (n_out // 3), 8)
-    if (n_out - n_in) % 2:
-        n_in -= 1
+    lengths_in = [float(gmsh.model.occ.getMass(1, c)) for c in band.inner]
+    if POLAR_BAND_EQUAL and sum(lengths_in) * mm / max(n_out, 1) >= BAND_EQUAL_MIN * size_mm:
+        # SHMESH-51o10: the ring's own count on the opening - rings of quads, no 3-to-1 group
+        n_in = n_out
+    elif not POLAR_BAND:
+        return None
+    else:
+        r_out = float(np.mean([np.linalg.norm(_samples(gmsh, c, 4) - band.centre, axis=1).mean() for c in band.outer]))
+        want = n_out * band.r_in / max(r_out, 1e-300)
+        n_in = n_out - 2 * max(0, round((n_out - want) / 2))
+        n_in = max(n_in, n_out - 2 * (n_out // 3), 8)
+        if (n_out - n_in) % 2:
+            n_in -= 1
     lengths = [float(gmsh.model.occ.getMass(1, c)) for c in band.inner]
     spread = _spread(n_in, lengths) if len(band.inner) > 1 else [n_in]
     if spread is None:
@@ -3972,7 +3986,7 @@ def band_mesh(gmsh, band: Band, index: np.ndarray, xyz: np.ndarray, mm: float, h
     C = band.centre * mm
     n = band.normal / max(float(np.linalg.norm(band.normal)), 1e-300)
     outer, inner = ring_nodes(band.outer), ring_nodes(band.inner)
-    if len(inner) != band.n_in or len(outer) <= len(inner) or (len(outer) - len(inner)) % 2:
+    if len(inner) != band.n_in or len(outer) < len(inner) or (len(outer) - len(inner)) % 2:
         raise ValueError(f"the band's rings carry {len(outer)} and {len(inner)} nodes")
     e1 = xyz[outer[0]] - C
     e1 = e1 - float(e1 @ n) * n
@@ -4366,7 +4380,7 @@ def polar_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
             cells_out.update(new)
         _remove_loose(gmsh, {c for got in omap[1:] for d, c in got if d == 1})
         curves = sorted({abs(int(c)) for s in new for _d, c in gmsh.model.getBoundary([(2, s)], oriented=False)})
-        if bands_out is not None and POLAR_BAND and Ri > 0 and not inner_shared and start >= r1 - 1e-9:
+        if bands_out is not None and (POLAR_BAND or POLAR_BAND_EQUAL) and Ri > 0 and not inner_shared and start >= r1 - 1e-9:
             # SHMESH-49l: the band round the central opening, meshed in rings (band_mesh) once its ring is counted
             for s_ in new:
                 bl = [abs(int(c)) for _d, c in gmsh.model.getBoundary([(2, s_)], oriented=False)]
