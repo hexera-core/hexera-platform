@@ -335,9 +335,17 @@ def _first_trial(mesh, owners: list[str], faces: list[int], applied: dict | None
     return [k for k in faces if str(owners[k]) == top] if own_t.get(top, 0) else list(faces)
 
 
+#: SHMESH-51o18: two rings round bolt holes are what the user asked for: the guard trades a face's second rings for
+#: triangles only where one ring takes off at least this share of the face's own triangles (34 to 2 on a 50-hole plate,
+#: 18 to 0 on the real column's), not a few of many (37 to 23 had cost a 50-hole look-alike all 50 of its two rings)
+GUARD_SHARE = 0.75
+
+
 def _own_gain(t_two: Counter, t_one: Counter, mids: list[str]) -> tuple[list[str], bool]:
-    """SHMESH-51o5: (the trial's mid-faces whose own triangles drop with one ring, whether every one of them does)."""
-    gain = [m_ for m_ in mids if t_one.get(m_, 0) < t_two.get(m_, 0)]
+    """SHMESH-51o5: (the trial's mid-faces whose own triangles drop with one ring - SHMESH-51o18: by GUARD_SHARE of
+    them or more -, whether every one of them does)."""
+    gain = [m_ for m_ in mids if t_one.get(m_, 0) < t_two.get(m_, 0)
+            and t_one.get(m_, 0) <= (1.0 - GUARD_SHARE) * t_two.get(m_, 0) + 1e-9]
     return gain, (not GUARD_OWN_GAIN or len(gain) == len(mids))
 
 
