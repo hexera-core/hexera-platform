@@ -495,10 +495,32 @@ def _arc_radius(gmsh, curve: int) -> float | None:
     return 1.0 / float(k[0]) if len(k) and float(k[0]) > 0 else None
 
 
+#: SHMESH-51o16: a narrow strip one cell from a two-ring bolt box's side takes the box's count along it (the real
+#: column's 12-hole plate: four end boxes' 56 mm sides sat in a class held at 6 by such a strip's count, their bands
+#: came out with 3 degree corners and were refused, and the four holes fell to one ring)
+STRIP_TAKES_BOX = True
+
+
+def _box_facing(gmsh, wish: dict[int, int], long: set[int]) -> dict[int, int]:
+    """SHMESH-51o16: {curve: count} - each single curve facing a two-ring bolt box's side across one four-sided cell,
+    with the box's count for that side (a curve two boxes face with two counts is left out)."""
+    out: dict[int, set[int]] = {}
+    for c in sorted(long & set(wish)):
+        for s_ in (int(x) for x in gmsh.model.getAdjacencies(1, c)[0]):
+            got = ST._four_sided(gmsh, s_)
+            if got is None:
+                continue
+            sides = got[0]
+            for i in range(4):
+                if sides[i] == [c] and len(sides[(i + 2) % 4]) == 1:
+                    out.setdefault(sides[(i + 2) % 4][0], set()).add(int(wish[c]))
+    return {c: next(iter(v)) for c, v in out.items() if len(v) == 1}
+
+
 def _map_strips(gmsh, tag_of: dict[int, int], rows: list[dict], mm: float,
                 sizing: dict | None = None, fine_at: dict[int, float] | None = None,
-                counts_out: dict[int, int] | None = None, held: set[int] | frozenset = frozenset()
-                ) -> dict[int, tuple[tuple[int, ...], float]]:
+                counts_out: dict[int, int] | None = None, held: set[int] | frozenset = frozenset(),
+                prefer: dict[int, int] | None = None) -> dict[int, tuple[tuple[int, ...], float]]:
     """SHMESH-16: every narrow four-sided strip (a bend, a flange, a strip between holes: its two long sides alike in
     length, its two ends alike, the long sides at least STRIP_LONG times the ends) is meshed as a mapped grid of
     quads - its planned size across it, and along it the size of the faces beside its long sides, at most
@@ -574,10 +596,18 @@ def _map_strips(gmsh, tag_of: dict[int, int], rows: list[dict], mm: float,
                 continue
         n_b = max(1, math.ceil(max(lb) / across - 1e-9))
         n_a = max(1, math.ceil(max(la) / along - 1e-9))
-        n_a = count.get(a[0], count.get(a[1], n_a))
-        n_b = count.get(b[0], count.get(b[1], n_b))
         if EVEN:
             n_a, n_b = even(n_a, max(la)), even(n_b, max(lb))
+        k_p = {prefer[c] for c in a if c in prefer} if prefer else set()
+        if len(k_p) == 1:
+            # SHMESH-51o16: a strip whose long side faces a two-ring bolt box's side across one cell takes the box's
+            # count along it where that count keeps its segments inside the user's edges and its stretch
+            k_ = k_p.pop()
+            if ((high is None or max(la) * mm / k_ <= 0.98 * high) and (low is None or min(la) * mm / k_ >= low)
+                    and max(la) / k_ <= stretch * across + 1e-12):
+                n_a = k_
+        n_a = count.get(a[0], count.get(a[1], n_a))
+        n_b = count.get(b[0], count.get(b[1], n_b))
         if any(count.get(c, n_a) != n_a for c in a) or any(count.get(c, n_b) != n_b for c in b):
             continue
         for c in a:
@@ -2034,7 +2064,8 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         mapped = (_map_strips(gmsh, tag_of, rows, mm, sizing,
                               fine_at=short_edges["fine_at"] if short_edges and FEATURE_UNMAP else None,
                               counts_out=strip_counts,
-                              held=frozenset(box_wish_long & set(box_wish)) if ST.BOX_HOLDS else frozenset())
+                              held=frozenset(box_wish_long & set(box_wish)) if ST.BOX_HOLDS else frozenset(),
+                              prefer=_box_facing(gmsh, box_wish, box_wish_long) if STRIP_TAKES_BOX else None)
                   if MAP_STRIPS and kind != "triangles" else {})
         # SHMESH-40: every other four-sided face is a mapped grid too (counts shared through the curves they share)
         grids: dict[int, list[int]] = {}
