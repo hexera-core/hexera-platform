@@ -284,18 +284,21 @@ HOLD_SAFETY_S = 300
 
 
 def _last_run(vm: dict) -> tuple[bool, float | None]:
-    """(whether the VM's current run has its result written, seconds since its beacon was last written - None
-    when unknown), read from the exchange its metadata names. Never raises: unreadable reads as busy."""
-    uri = next((str(i.get("value") or "") for i in ((vm.get("metadata") or {}).get("items") or [])
-                if i.get("key") == "output-uri"), "")
+    """(whether the VM's current run is over - its result is written, or it was collected and its exchange
+    released, input included - and seconds since its beacon was last written, None when unknown), read from the
+    exchange its metadata names. Never raises: unreadable reads as busy."""
+    meta = {str(i.get("key")): str(i.get("value") or "") for i in ((vm.get("metadata") or {}).get("items") or [])}
+    uri, in_uri = meta.get("output-uri", ""), meta.get("input-uri", "")
     if not uri.startswith("gs://"):
         return False, None
     bucket_name, _, key = uri[5:].partition("/")
+    in_key = in_uri[5:].partition("/")[2] if in_uri.startswith(f"gs://{bucket_name}/") else ""
     try:
         from meshpipeline.adapters.mesh_execution.gcs_exchange import storage_client
         from meshpipeline.artifact_keys import progress_key_beside, result_key_beside
         bucket = storage_client().bucket(bucket_name)
-        done = bool(bucket.blob(result_key_beside(key)).exists())
+        done = bool(bucket.blob(result_key_beside(key)).exists()) or bool(
+            in_key and not bucket.blob(in_key).exists())
         beacon = bucket.get_blob(progress_key_beside(key))
         updated = getattr(beacon, "updated", None) if beacon is not None else None
         return done, None if updated is None else max(0.0, time.time() - updated.timestamp())

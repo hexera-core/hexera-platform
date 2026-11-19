@@ -548,3 +548,17 @@ def test_the_sweep_keeps_a_held_vm_between_its_jobs_runs(ours):
     assert _held_sweep(vm, beacons={beacon: S.HELD_IDLE_S + 60}) == [
         f"swept: it has had no run of its job for {int(S.HELD_IDLE_S + 60) // 60} minutes"]
     assert _held_sweep({**vm, "status": "TERMINATED"}) and _held_sweep(vm, live=None)
+
+
+def test_a_collected_run_reads_as_over_and_a_meshing_one_does_not(monkeypatch):
+    # collection releases the exchange (input, output, result) and leaves the beacon: the run is over
+    store = {"jobs/k/input.tar.gz": b"x"}
+    bucket = type("B", (), {"blob": lambda self, k: type("O", (), {"exists": lambda o: k in store})(),
+                            "get_blob": lambda self, k: None})()
+    from meshpipeline.adapters.mesh_execution import gcs_exchange
+    monkeypatch.setattr(gcs_exchange, "storage_client", lambda: type("S", (), {"bucket": lambda self, n: bucket})())
+    vm = {"name": "mesh-big-h", "metadata": {"items": [{"key": "input-uri", "value": "gs://b/jobs/k/input.tar.gz"},
+                                                       {"key": "output-uri", "value": "gs://b/jobs/k/output.tar.gz"}]}}
+    assert G._last_run(vm) == (False, None)                                  # meshing: input there, no result
+    store.clear()
+    assert G._last_run(vm)[0] is True                                        # collected
