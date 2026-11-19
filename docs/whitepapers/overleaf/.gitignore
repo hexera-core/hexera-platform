@@ -1,0 +1,8 @@
+# tectonic / latexmk build output kept out of the repo; the PDFs are committed on purpose
+*.aux
+*.log
+*.out
+*.synctex.gz
+*.fls
+*.fdb_latexmk
+*.toc
