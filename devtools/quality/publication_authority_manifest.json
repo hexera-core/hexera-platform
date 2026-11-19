@@ -4766,19 +4766,6 @@
   "roots": []
  },
  {
-  "context": "engines/mesh_requirements.py::_check::search#4|NotAPublisher|not-a-publisher|",
-  "path": "engines/mesh_requirements.py",
-  "qualname": "_check",
-  "semantic": "search",
-  "method": "search",
-  "ordinal": 4,
-  "receiver": "re",
-  "authority": "NotAPublisher",
-  "lifecycle": "not-a-publisher",
-  "gated_required": false,
-  "roots": []
- },
- {
   "context": "engines/mesh_requirements.py::_flow_fields::search#1|NotAPublisher|not-a-publisher|",
   "path": "engines/mesh_requirements.py",
   "qualname": "_flow_fields",
@@ -4879,6 +4866,19 @@
   "method": "search",
   "ordinal": 1,
   "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/mesh_requirements.py::_percent_growth::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/mesh_requirements.py",
+  "qualname": "_percent_growth",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_PERCENT",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
   "gated_required": false,

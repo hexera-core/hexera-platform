@@ -195,7 +195,10 @@ def cfmesh_cells_across(target: dict, value) -> tuple[str, str]:
     """cfMesh, a flow through a passage: cells across it - the wall band's cell is the passage's width / N (its
     typical width, `passage_d`; engines/cfmesh/cfmesh_runner then puts it on the octree and says what it built)."""
     d = float(target.get("passage_d") or 0.0)
-    if not target.get("internal") or d <= 0.0:
+    if not target.get("internal"):
+        return "not_applied", "on a flow around a body the gaps get our own cells-across rule; a number of yours is " \
+                              "not wired there yet"
+    if d <= 0.0:
         return "not_applied", "the passage's width was not measured on this case, so the cells across it cannot be set"
     n = max(1, int(value))
     target["wall_cell"] = d / n

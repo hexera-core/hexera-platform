@@ -656,7 +656,9 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
     _passage_d = 2.0 * float((passage_radius or {}).get("median") or 0.0)
     _asked_across = None
     if _ask is not None:
-        _knobs = _ask.controls({"internal": bool(passage_radius), "passage_d": _passage_d, "wall_cell": wall_cell})
+        # a flow through a passage: the case measured its passage, or it has openings of its own
+        _knobs = _ask.controls({"internal": bool(passage_radius) or bool(port_widths), "passage_d": _passage_d,
+                                "wall_cell": wall_cell})
         if float(_knobs["wall_cell"]) != wall_cell:
             wall_cell, _band_r = float(_knobs["wall_cell"]), 0.0
             _asked_across = (_ask.req.get("controls") or {}).get("cells_across")
