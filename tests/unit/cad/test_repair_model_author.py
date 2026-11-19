@@ -530,10 +530,11 @@ def mesh_ops_on(monkeypatch):
         monkeypatch.setattr(rcfg, flag, True)
 
 
-def _refuse_case(ask, op, defect, *, solids=1):
+def _refuse_case(ask, op, defect, *, solids=1, monkeypatch=None):
     ask(_package_reply(plan=[{"op": op, "fingerprint": "fp1"}], cleared=["fp1"], unchanged=[]))
-    original = dataclasses.replace(ORIGINAL, solids=solids)
-    author = ma.model_author(None, original=original, face_reader=_faces, job_id="j")
+    if monkeypatch is not None:
+        monkeypatch.setattr(ma, "_current_solids", lambda shape: solids)
+    author = ma.model_author(object(), original=ORIGINAL, face_reader=_faces, job_id="j")
     assert author(REGION, (defect, _defect(2)), ()) is None
     return author
 
@@ -547,9 +548,10 @@ def _refuse_case(ask, op, defect, *, solids=1):
     ("fragment_bodies", DefectCode.mesh_edge_through_face, "2d", 2, "stage_precondition"),
     ("fragment_bodies", DefectCode.mesh_edge_through_face, "3d", 1, "needs_multiple_bodies"),
 ])
-def test_an_operations_preconditions_refuse_before_execution(ask, mesh_ops_on, op, code, stage,
-                                                            solids, reason):
-    author = _refuse_case(ask, op, _mesh_defect(1, code, stage), solids=solids)
+def test_an_operations_preconditions_refuse_before_execution(ask, mesh_ops_on, monkeypatch, op,
+                                                            code, stage, solids, reason):
+    author = _refuse_case(ask, op, _mesh_defect(1, code, stage), solids=solids,
+                          monkeypatch=monkeypatch)
     call = author.calls[-1]
     assert call["outcome"] == "refused" and reason in call["reason"]
     assert [r["reason"] for r in author.refusals] == [reason]
@@ -564,11 +566,11 @@ def test_a_disabled_operation_is_refused_as_not_in_the_catalogue(ask, monkeypatc
     assert "catalogue" in author.calls[-1]["reason"]
 
 
-def test_preconditions_met_is_a_package(ask, mesh_ops_on):
+def test_preconditions_met_is_a_package(ask, mesh_ops_on, monkeypatch):
     ask(_package_reply(plan=[{"op": "fragment_bodies", "fingerprint": "fp1"}],
                        cleared=["fp1"], unchanged=[]))
-    original = dataclasses.replace(ORIGINAL, solids=2)
-    author = ma.model_author(None, original=original, face_reader=_faces)
+    monkeypatch.setattr(ma, "_current_solids", lambda shape: 2)
+    author = ma.model_author(object(), original=ORIGINAL, face_reader=_faces)
     defects = (_mesh_defect(1, DefectCode.mesh_edge_through_face, "3d"), _defect(2))
     assert isinstance(author(REGION, defects, ()), TargetPackage)
 
@@ -604,3 +606,59 @@ def test_the_catalogue_with_every_flag_off_is_the_base_text_unchanged():
                                          rebuild_face=False)
     assert off == "\n".join(catalogue_words._BASE)
     assert "stage" not in off
+
+
+def test_an_unknown_solid_count_fails_open(ask, mesh_ops_on, monkeypatch):
+    # No shape, or a count that fails: nothing is refused, the session's own decline stands.
+    import meshpipeline.cad.repair.conservative as cons
+
+    def boom(shape):
+        raise RuntimeError("no kernel")
+
+    monkeypatch.setattr(cons, "_counts", boom)
+    for shape in (None, object()):
+        ask(_package_reply(plan=[{"op": "fragment_bodies", "fingerprint": "fp1"}],
+                           cleared=["fp1"], unchanged=[]))
+        author = ma.model_author(shape, original=ORIGINAL, face_reader=_faces)
+        defects = (_mesh_defect(1, DefectCode.mesh_edge_through_face, "3d"), _defect(2))
+        assert isinstance(author(REGION, defects, ()), TargetPackage)
+
+
+def test_the_current_shapes_solids_not_the_uploads_decide(ask, mesh_ops_on, monkeypatch):
+    # The upload had one solid; a fill since made two. fragment_bodies must not be refused.
+    ask(_package_reply(plan=[{"op": "fragment_bodies", "fingerprint": "fp1"}],
+                       cleared=["fp1"], unchanged=[]))
+    monkeypatch.setattr(ma, "_current_solids", lambda shape: 2)
+    author = ma.model_author(object(), original=dataclasses.replace(ORIGINAL, solids=1),
+                             face_reader=_faces)
+    defects = (_mesh_defect(1, DefectCode.mesh_edge_through_face, "3d"), _defect(2))
+    assert isinstance(author(REGION, defects, ()), TargetPackage)
+
+
+def test_an_op_answering_a_later_code_on_the_fingerprint_is_not_refused(ask):
+    # fp1 carries invalid_brep (sorts before curve_inconsistency) AND curve_inconsistency;
+    # fix_face_boundary answers only the second, so the plan is valid.
+    two = (_defect(1, code=DefectCode.invalid_brep), _defect(1), _defect(2))
+    ask(_package_reply())
+    author = _author()
+    package = author(REGION, two, ())
+    assert isinstance(package, TargetPackage)
+    assert package.plan[0]["defect_code"] is DefectCode.curve_inconsistency
+
+
+@pytest.mark.parametrize("op, code, right", [
+    ("split_closed_faces", DefectCode.mesh_periodic_surface, "2d"),
+    ("rebuild_face", DefectCode.mesh_overlapping_facets, "2d"),
+    ("fragment_bodies", DefectCode.mesh_edge_through_face, "3d"),
+])
+@pytest.mark.parametrize("stage", ["2d", "3d", "import", "", None])
+def test_the_stage_map_matches_targets_for(mesh_ops_on, op, code, right, stage):
+    # LOCKSTEP PIN: the author's map must never be STRICTER than the operation's own rule.
+    from meshpipeline.cad.repair.operations import catalogue
+
+    operation = next(o for o in catalogue() if o.name == op)
+    defect = _mesh_defect(1, code, stage)
+    session_accepts = bool(operation.targets_for(defect))
+    author_accepts = stage == ma._STAGE_REQUIRED[op]
+    assert author_accepts == session_accepts
+    assert session_accepts == (stage == right)
