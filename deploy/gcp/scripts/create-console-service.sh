@@ -308,4 +308,5 @@ log "  url           ${CONSOLE_URL:-<not reported>}"
 if [ -n "${GITHUB_OUTPUT:-}" ] && [ -n "${CONSOLE_URL}" ]; then
   printf 'console_url=%s\n' "${CONSOLE_URL}" >> "${GITHUB_OUTPUT}"
 fi
+prune_idle_revisions "${CONSOLE_SERVICE}"
 log "done"

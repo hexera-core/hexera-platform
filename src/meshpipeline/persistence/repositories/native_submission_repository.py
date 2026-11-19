@@ -210,6 +210,25 @@ def owner_live(provider_reference: str) -> bool | None:
     return str(row[0]) not in {s.name for s in TERMINAL_STATES}
 
 
+def job_live(job_label: str) -> bool | None:
+    """Whether the job a held VM is labelled with (gce_vm.job_label: its id, lower-case) is still running:
+    True while it has not ended, False once it has, None when no job has that id. Read-only and synchronous
+    (the VM sweep, adapters/mesh_execution/vm_sweep.py)."""
+    import uuid
+
+    from meshpipeline.persistence.job_state import TERMINAL_STATES
+    try:
+        job_id = uuid.UUID(str(job_label))
+    except ValueError:
+        return None
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute("select status::text from simulation_jobs where id = %(job)s", {"job": str(job_id)})
+        row = cur.fetchone()
+    if row is None:
+        return None
+    return str(row[0]) not in {s.name for s in TERMINAL_STATES}
+
+
 def cancelled_by_owner(*, job_id) -> bool:
     """Whether the job's owner cancelled it (its status is `cancelled`) - as opposed to the job being
     taken over or its lease lapsing, after which its remote run is still worth collecting."""
