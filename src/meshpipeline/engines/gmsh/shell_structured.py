@@ -1979,6 +1979,157 @@ def _band_split(gaps: list[int], n: int) -> tuple[list[int], list[int]] | None:
     return None if best is None else (best[1], best[2])
 
 
+#: SHMESH-51o17: TRANSITION CELLS - a four-sided free cell of a gridded face whose opposite sides carry n and n + 2k
+#: segments (its other two alike) is meshed as a mapped grid of the coarse count with, in its row along the fine side,
+#: k regular three-to-one steps (one coarse segment to three fine: four quads round two new nodes), in place of gmsh's
+#: paving: a two-ring bolt box's side of 4 beside a side of 6 (a slot end's 17.9 + 20.2 + 17.9 mm, a strip's 6) was
+#: paved with triangles on the real column's two long plates. Flat cells of straight sides only; refused (paving stays)
+#: where a quad would come out past the solver's own limits, outside the quad lines (as a band's) or over the longest
+#: edge.
+TRANSITION_CELLS = True
+TRANSITION_SMOOTH = 4
+
+
+def _side_chain(gmsh, curves: list[int], start: np.ndarray, index: np.ndarray, xyz: np.ndarray) -> np.ndarray:
+    """SHMESH-51o17: a straight side's mesh nodes in order from its corner nearest `start` (mm)."""
+    nodes = _loop_nodes(gmsh, curves, index)
+    d = np.linalg.norm(xyz[nodes] - start, axis=1)
+    return nodes[np.argsort(d, kind="stable")]
+
+
+def _along(chain_xyz: np.ndarray) -> np.ndarray:
+    """Arc-length fractions along a polyline (0 to 1)."""
+    seg = np.linalg.norm(np.diff(chain_xyz, axis=0), axis=1)
+    acc = np.concatenate([[0.0], np.cumsum(seg)])
+    return acc / max(float(acc[-1]), 1e-300)
+
+
+def _at(chain_xyz: np.ndarray, frac: np.ndarray, u: float) -> np.ndarray:
+    """The point at fraction u along a polyline."""
+    j = int(np.clip(np.searchsorted(frac, u) - 1, 0, len(frac) - 2))
+    t = (u - frac[j]) / max(float(frac[j + 1] - frac[j]), 1e-300)
+    return chain_xyz[j] + t * (chain_xyz[j + 1] - chain_xyz[j])
+
+
+def transition_cell(gmsh, t: int, index: np.ndarray, xyz: np.ndarray, mm: float, limits=None,
+                    high_mm: float | None = None) -> tuple[np.ndarray, np.ndarray]:
+    """SHMESH-51o17: a free four-sided cell's own mesh - rows of the coarse count, the last row (along the fine side)
+    with k three-to-one steps spread along it. Returns (the new nodes, mm; the quads, node indices - new nodes numbered
+    from len(xyz)), wound as gmsh's own elements there; ValueError when the cell is not one (its shape, its counts) or
+    a quad would come out past the limits (gmsh's paving then stays)."""
+    from meshpipeline.engines import shell_quality as SQ
+
+    if gmsh.model.getType(2, t) != "Plane":
+        raise ValueError("not flat")
+    got = _four_sided(gmsh, t)
+    if got is None:
+        raise ValueError("not four-sided")
+    sides, corners = got
+    if any(gmsh.model.getType(1, c) != "Line" for sd in sides for c in sd):
+        raise ValueError("a side not straight")
+    P = [np.asarray(gmsh.model.getValue(0, p, []), dtype=float) * mm for p in corners]
+    ch = [_side_chain(gmsh, sides[i], P[i], index, xyz) for i in range(4)]
+    cnt = [len(c_) - 1 for c_ in ch]
+    if min(cnt) < 1:
+        raise ValueError("a side with no segment")
+    # (sides 0 and 2 the pair that differs, 1 and 3 alike: rotate so)
+    if cnt[1] == cnt[3]:
+        r = 0
+    elif cnt[0] == cnt[2] and cnt[1] != cnt[3]:
+        r = 1
+    else:
+        raise ValueError(f"its sides carry {cnt}: no pair alike with the other two apart")
+    ch = ch[r:] + ch[:r]
+    cnt = cnt[r:] + cnt[:r]
+    A, R_, B, L_ = ch[0], ch[1], ch[2][::-1], ch[3][::-1]   # A, B from the corner 0 side; L, R from A to B
+    if cnt[0] < cnt[2]:
+        bottom, top, left, right = A, B, L_, R_
+    else:
+        bottom, top, left, right = B, A, L_[::-1], R_[::-1]
+    n, f, m = len(bottom) - 1, len(top) - 1, len(left) - 1
+    k = (f - n) // 2
+    if (f - n) % 2 or k < 0 or k > n:
+        raise ValueError(f"its sides carry {n} and {f} segments: not n and n + 2k")
+    Xb, Xt, Xl, Xr = xyz[bottom], xyz[top], xyz[left], xyz[right]
+    ub, ut, vl, vr = _along(Xb), _along(Xt), _along(Xl), _along(Xr)
+    new: list[np.ndarray] = []
+    base = len(xyz)
+
+    def add(p_: np.ndarray) -> int:
+        new.append(p_)
+        return base + len(new) - 1
+
+    # rows 0..m-1 of the coarse count (row 0 the coarse side), by transfinite interpolation
+    lines: list[list[int]] = [list(bottom)]
+    for j in range(1, m):
+        row = [int(left[j])]
+        for i in range(1, n):
+            u = float(ub[i])
+            v = (1 - u) * float(vl[j]) + u * float(vr[j])
+            p_ = ((1 - v) * Xb[i] + v * _at(Xt, ut, u) + (1 - u) * Xl[j] + u * Xr[j]
+                  - ((1 - u) * (1 - v) * Xb[0] + u * (1 - v) * Xb[-1] + (1 - u) * v * Xt[0] + u * v * Xt[-1]))
+            row.append(add(p_))
+        row.append(int(right[j]))
+        lines.append(row)
+    quads: list[list[int]] = []
+    for j in range(m - 1):
+        for i in range(n):
+            quads.append([lines[j][i], lines[j][i + 1], lines[j + 1][i + 1], lines[j + 1][i]])
+    # the last row: k of its n coarse segments, spread along it, step to three fine ones
+    steps = sorted({min(n - 1, int((q + 0.5) * n / k)) for q in range(k)}) if k else []
+    if len(steps) != k:
+        raise ValueError("its steps do not spread")
+    Q_ = lines[m - 1]
+    allx = np.vstack([xyz, np.array(new)]) if new else xyz
+    a = 0
+    for i in range(n):
+        if i in steps:
+            q0, q1 = allx[Q_[i]], allx[Q_[i + 1]]
+            c1 = add(0.5 * ((2 * q0 + q1) / 3) + 0.5 * xyz[top[a + 1]])
+            c2 = add(0.5 * ((q0 + 2 * q1) / 3) + 0.5 * xyz[top[a + 2]])
+            quads += [[Q_[i], c1, int(top[a + 1]), int(top[a])], [c1, c2, int(top[a + 2]), int(top[a + 1])],
+                      [c2, Q_[i + 1], int(top[a + 3]), int(top[a + 2])], [Q_[i], Q_[i + 1], c2, c1]]
+            a += 3
+        else:
+            quads.append([Q_[i], Q_[i + 1], int(top[a + 1]), int(top[a])])
+            a += 1
+    if a != f:
+        raise ValueError("its last row did not close")
+    Qa = np.array(quads, dtype=np.int64)
+    X = np.vstack([xyz, np.array(new)]) if new else xyz.copy()
+    if new:
+        # (the new nodes smoothed lightly: each to the mean of its neighbours; a flat cell stays in its plane)
+        nb: dict[int, set[int]] = {}
+        for q in Qa:
+            for k_ in range(4):
+                nb.setdefault(int(q[k_]), set()).update((int(q[k_ - 1]), int(q[(k_ + 1) % 4])))
+        for _ in range(TRANSITION_SMOOTH):
+            for v_ in range(base, len(X)):
+                X[v_] = X[sorted(nb[v_])].mean(axis=0)
+    # (wound as gmsh's own elements of the cell)
+    types, _tags, conns = gmsh.model.mesh.getElements(2, t)
+    ref = None
+    for et, conn in zip(types, conns, strict=True):
+        e_ = index[np.asarray(conn, dtype=np.int64)][: (4 if et == 3 else 3)]
+        if len(e_) >= 3:
+            ref = np.cross(xyz[e_[1]] - xyz[e_[0]], xyz[e_[2]] - xyz[e_[0]])
+            break
+    if ref is None:
+        raise ValueError("no element of gmsh's to wind by")
+    sgn = np.cross(X[Qa[:, 1]] - X[Qa[:, 0]], X[Qa[:, 3]] - X[Qa[:, 0]]) @ ref
+    Qa[sgn < 0] = Qa[sgn < 0][:, ::-1]
+    meas = SQ.quad_measures(X, Qa, extra=True)
+    if (meas["min_jacobian"] <= 0).any() or SQ._quad_past(meas).any():
+        raise ValueError("a quad past the solver's own limits")
+    aims = SQ.InForce(aims=tuple(limits.aims) if limits is not None and limits.aims else BAND_AIMS)
+    score = SQ.aim_score(meas, "quad", aims, len(Qa))
+    if (score >= SQ.AIM_OUTER).any() or int((score > 0).sum()) > BAND_SPARE:
+        raise ValueError(f"{int((score > 0).sum())} of its {len(Qa)} quads outside the quad lines")
+    if high_mm is not None and float(meas["max_edge"].max()) > float(high_mm):
+        raise ValueError("an edge over the longest edge asked")
+    return X[base:], Qa
+
+
 def box_band(gmsh, w: Washer, index: np.ndarray, xyz: np.ndarray, mm: float, limits=None,
              high_mm: float | None = None) -> tuple[np.ndarray, np.ndarray]:
     """SHMESH-48q: a free box's own mesh between its ring and its box, in place of gmsh's paving: one row of quads, two

@@ -2258,9 +2258,19 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                         w.info.clear()
                         w.info.update(info_)
                     banded.add(w.box)
+            if ST.TRANSITION_CELLS and ST.FREE_BAND and structure != "free":
+                # SHMESH-51o17: a free cell its own transition rows will mesh is judged on them (tried on a copy)
+                for s_t in _transition_cells(gmsh, tag_of, set(either), grids, rings, banded):
+                    try:
+                        ST.transition_cell(gmsh, s_t, index, xyz, mm, lim, high)
+                    except ValueError:
+                        continue
+                    banded.add(s_t)
             for kg, nbrs in sorted(either.items()):
                 # the joined faces its lines cut: no triangle, no quad past the solver's limits
                 for s_ in sorted(x for x, kx in tag_of.items() if kx in nbrs):
+                    if s_ in banded:
+                        continue        # (SHMESH-51o17: its own rows replace this paving)
                     for et, c_ in elements_of(s_):
                         if et == 2 or (et == 3 and shell_quality._quad_past(
                                 shell_quality.quad_measures(xyz, c_.reshape(-1, 4))).any()):
@@ -2466,6 +2476,19 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                 band_quads.append(np.asarray(quads_x, dtype=np.int64))
                 quads.append(quads_x)
                 q_face += [w.owner] * len(quads_x)
+        trans_done: set[int] = set()
+        if ST.TRANSITION_CELLS and ST.FREE_BAND and structure != "free":
+            # SHMESH-51o17: a free four-sided cell of a gridded face with sides of n and n + 2k segments: rows of the
+            # coarse count and k three-to-one steps, in place of gmsh's paving
+            for t_t in _transition_cells(gmsh, tag_of, set(cut_of) | set(join_of), grids, rings, box_done):
+                try:
+                    pts_t, quads_t = ST.transition_cell(gmsh, t_t, index, xyz, mm, lim, high)
+                except ValueError:
+                    continue
+                trans_done.add(t_t)
+                xyz = np.vstack([xyz, pts_t])
+                quads.append(quads_t)
+                q_face += [tag_of[t_t]] * len(quads_t)
         band_done: set[int] = set()
         for t_b, bd in sorted(band_of.items()):
             try:
@@ -2479,7 +2502,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
             quads.append(quads_b)
             q_face += [tag_of[t_b]] * len(quads_b)
         for t, k in sorted(tag_of.items()):
-            if t in ring_of or t in band_done or t in box_done:
+            if t in ring_of or t in band_done or t in box_done or t in trans_done:
                 continue
             types, _tags, conns = gmsh.model.mesh.getElements(2, t)
             for et, conn in zip(types, conns, strict=True):
@@ -3188,6 +3211,20 @@ def _beside_ok(hole_rounds, k: int) -> bool:
 #: and five square bolt holes) was refused its grid after meshing with its round holes' two rings in free cells, was
 #: no face 51b named, and kept two rings and 8 more triangles where on dddf4d64 it took one ring and kept its grid
 BOLT_FIRST_ANY = True
+
+
+def _transition_cells(gmsh, tag_of: dict[int, int], faces: set[int], grids, rings: list, done) -> list[int]:
+    """SHMESH-51o17: the free cells of these sewn faces that gmsh paved with triangles (no mapped cell, no washer's
+    annulus or box, none already replaced)."""
+    skip = set(grids) | set(done) | {w.annulus for w in rings} | {w.box for w in rings if w.box}
+    out = []
+    for t, k in sorted(tag_of.items()):
+        if k not in faces or t in skip:
+            continue
+        types, _tags, _conns = gmsh.model.mesh.getElements(2, t)
+        if any(int(et) == 2 for et in types):
+            out.append(t)
+    return out
 
 
 def _two_faces(washers: list, placed: list) -> set[int]:
