@@ -764,6 +764,21 @@ def select_author(shape, *, original: Measure, reserved: frozenset = frozenset()
     model_author).
     """
     from meshpipeline.cad.repair import investigator as inv
+    from meshpipeline.cad.repair import tournament as tn
+
+    # THE TOURNAMENT POSTURE IS CONSULTED FIRST (`CAD_REPAIR_TOURNAMENT`), because a tournament is
+    # not a FOURTH author beside these - it is the one that CONSUMES them, gathering the rules
+    # author's, the one-shot's and the investigator's packages and offering the one that survived
+    # its clone. A deployment that asked for it must not get one of its own sources instead. Off -
+    # the default - falls through untouched, so with the posture unset the rest of this function
+    # is byte-for-byte what it was. A tournament NEEDS NO ROUTER: the rules author alone makes a
+    # tournament of one, which is exactly today's behaviour at K=1.
+    bracket = tn.posture()
+    if bracket in ("live", "shadow"):
+        return tn.tournament_author(shape, original=original, reserved=reserved, job_id=job_id,
+                                    tolerance_mm=tolerance_mm, deadline_s=deadline_s,
+                                    shadow=bracket == "shadow"), (
+            tn.LABEL if bracket == "live" else RULES_LABEL)
 
     stance = inv.posture()
     if stance == "live" and _configured():
