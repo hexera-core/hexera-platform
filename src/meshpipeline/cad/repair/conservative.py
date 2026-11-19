@@ -15,6 +15,7 @@ from meshpipeline.cad.repair.contracts import (
     DefectCode,
     DefectSeverity,
     RepairDefect,
+    RepairGoal,
     RepairMeasurement,
     RepairProfile,
     RepairReport,
@@ -888,12 +889,19 @@ def _disposition(regions_run) -> dict:
 
 def repair_step_file(source: Path, destination: Path, *,
                      profile: RepairProfile = RepairProfile.conservative,
-                     directives: tuple[dict, ...] = ()) -> RepairReport:
+                     directives: tuple[dict, ...] = (),
+                     goal: RepairGoal | None = None) -> RepairReport:
     """Repair `source` into `destination`, or refuse. The input is never modified.
 
     Raises RepairUnavailable when repair is switched off or the kernel is missing, and
     RepairRefused when the result exceeded its caps - the two are not the same answer and must not
     be reported as one.
+
+    `goal` DECLARES WHAT THIS RUN IS FINISHING FOR (`cad/repair/goal.py`). Unset - what the
+    attempt node passes - is byte-for-byte today's behaviour: the driver gets the same deadline
+    and the report gains no key. A declared goal reserves its verdict's time out of the DRIVER's
+    deadline, not out of the margin the after-checks and the STEP write need, and records its
+    verdict under `measurements["goal"]`.
     """
     if not rcfg.CAD_REPAIR_ENABLED:
         # REFUSED BEFORE ANY KERNEL CALL. A deployment that has not opted in cannot mutate a
@@ -909,6 +917,18 @@ def repair_step_file(source: Path, destination: Path, *,
     # slice of THIS, and `DEADLINE_MARGIN_S` is left for the after-checks and the STEP write, so
     # the session no longer races the outer clock and loses the whole repair to it.
     deadline = time.monotonic() + float(rcfg.CAD_REPAIR_TIMEOUT_S) - DEADLINE_MARGIN_S
+    # WHAT THE GOAL'S FINISHING VERDICT COSTS COMES OUT OF THE DRIVER'S SHARE, not out of the
+    # margin above. A verdict that spent `DEADLINE_MARGIN_S` would race the attempt node's outer
+    # clock exactly as the driver used to; a driver that spent the whole deadline would leave its
+    # own run unjudged. With no goal the reserve is 0.0, so this is the expression it was.
+    #
+    # THE TOLERANT (TIER 2B) SEAM: `tolerant_live` is False and `tolerant_timeout_s` 0.0 until
+    # `CAD_REPAIR_TOLERANT_PROBE` exists (CRS v3 Task 4), which is the task that makes this call
+    # site read that posture. Passed explicitly so the seam is visible rather than defaulted.
+    from meshpipeline.cad.repair import goal as goal_policy
+
+    driver_deadline = deadline - goal_policy.reserve_s(
+        goal, tolerant_live=False, tolerant_timeout_s=0.0)
     _occ()
 
     from meshpipeline.cad.repair.brep import _read_shape
@@ -960,14 +980,14 @@ def repair_step_file(source: Path, destination: Path, *,
             # MODEL CALLS SPEND THE RUN'S OWN CLOCK - the attempt node bounds this whole function
             # by CAD_REPAIR_TIMEOUT_S - so model work must finish by the run's deadline.
             author, label = select_author(
-                before_shape, original=original, reserved=reserved, deadline_s=deadline)
+                before_shape, original=original, reserved=reserved, deadline_s=driver_deadline)
             model_record = getattr(author, "report", None)
         else:
             author, label = rules_author(before_shape, original=original,
                                          reserved=reserved), LABEL
         regions_run = run_regions(
             before_shape, tolerance_mm=tolerance, reserved=reserved, author=author,
-            deadline_s=deadline)
+            deadline_s=driver_deadline)
         final = measure(regions_run.shape)
         result = as_repair_run(regions_run, original=original.to_dict(), final=final.to_dict(),
                                planner_label=label)
@@ -978,7 +998,7 @@ def repair_step_file(source: Path, destination: Path, *,
     else:
         planner = RepairPlanner(directives or (), reserved=reserved)
         result = run_loop(before_shape, planner=planner, tolerance_mm=tolerance,
-                          reserved=reserved, deadline_s=deadline)
+                          reserved=reserved, deadline_s=driver_deadline)
         final = measure(result.shape)
 
     measurements = {
@@ -1021,6 +1041,22 @@ def repair_step_file(source: Path, destination: Path, *,
             # observation size and hash, clipped reply, outcome and refusal reason, its accepted
             # mesher verdicts and, in shadow, each proposal beside what the rules drove.
             measurements["model_author"] = model_record()
+
+    # THE GOAL'S FINISHING VERDICT, when a goal was declared. ABSENT ENTIRELY when it was not: an
+    # unset goal adds no key, starts no probe and leaves the report what it is today.
+    #
+    # BEFORE THE AFTER-CHECKS ON PURPOSE. A refused result is the run a reader most needs the
+    # verdict for - "it was kernel-clean and meshed, and the cumulative check still threw it away"
+    # is a different report from a verdict-less refusal - so the verdict is attached while the
+    # measurements can still travel on `RepairRefused`.
+    #
+    # IT NEVER RAISES, so no verdict can cost a repair that already succeeded.
+    goal_verdict = goal_policy.finishing_verdict(
+        goal, shape=result.shape, final=final, defects=result.defects,
+        packages=regions_run.packages if regions_run is not None else (),
+        deadline_s=deadline)
+    if goal_verdict is not None:
+        measurements["goal"] = goal_verdict
 
     # THE AFTER-CHECKS STILL HAVE THE LAST WORD. The session already refused any individual
     # operation that left the caps, so reaching here with a refusal would mean a bug - but the
