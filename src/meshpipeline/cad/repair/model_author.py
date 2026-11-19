@@ -30,7 +30,8 @@ import logging
 import math
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from typing import TYPE_CHECKING
 
 import meshpipeline.settings.cad_repair as rcfg
 from meshpipeline.cad.repair import observe
@@ -50,6 +51,9 @@ from meshpipeline.cad.repair.regions import Region
 from meshpipeline.cad.repair.rules_author import LABEL as RULES_LABEL
 from meshpipeline.cad.repair.rules_author import _keep_refusals, rules_author
 from meshpipeline.cad.repair.session import PackageVerdict
+
+if TYPE_CHECKING:  # the tool types are needed for annotations only; cad -> contracts stays lazy
+    from meshpipeline.contracts.model_inference import ModelReply, ToolSchema
 
 logger = logging.getLogger(__name__)
 
@@ -199,6 +203,59 @@ def converse_sync(messages: list[dict], *, job_id: str, timeout_s: float,
         return "", None
     text, reply = out
     return (text if isinstance(text, str) else ""), (reply if isinstance(reply, dict) else None)
+
+
+async def converse_tools(messages: list[dict], *, job_id: str, timeout_s: float,
+                         tools: Sequence[ToolSchema], name: str = TRACE_NAME,
+                         user_id: str = "") -> tuple[ModelReply | None, bool]:
+    """ONE bounded model call carrying a whole conversation AND native tool schemas.
+
+    `(reply, tools_unsupported)`. A SIBLING of `converse`, never a replacement: `converse` (and
+    `_ask` under it) is the seam the one-shot author's suites fake, and it stays exactly as it was
+    - asked with the three arguments it always was, with no tools constructed anywhere near it.
+
+    `ToolsUnsupported` IS A CAPABILITY ANSWER, NOT A FAILURE: `(None, True)` tells the caller to
+    use the JSON-in-text protocol instead, and it must not be charged against the model-call
+    budget, because no round happened. Every other failure - a raise, a timeout, `ok=False` - is
+    `(None, False)`, the same total contract `converse` keeps, and IS charged.
+
+    A reply may carry MANY tool calls (`reply.tool_calls`), so a caller's tool budget counts
+    `len(reply.tool_calls)` rather than rounds. The caller threads the round back with
+    `assistant_turn(reply)` plus one `tool_result_turn` per call, and asks again with the longer
+    list.
+    """
+    from meshpipeline.contracts.model_inference import ToolsUnsupported, call_repair_review_model
+    try:
+        result = await asyncio.wait_for(
+            call_repair_review_model(list(messages), job_id=job_id, name=name,
+                                     tools=list(tools), user_id=user_id), timeout=timeout_s)
+    except ToolsUnsupported:
+        logger.info("the repair-review route cannot call tools natively; falling back")
+        return None, True
+    except Exception as exc:  # noqa: BLE001 - total: a failed round is no proposal, never a raise
+        logger.warning("model author tool call failed: %s", type(exc).__name__)
+        return None, False
+    if not getattr(result, "ok", True):
+        return None, False
+    return result, False
+
+
+def converse_tools_sync(messages: list[dict], *, job_id: str, timeout_s: float,
+                        tools: Sequence[ToolSchema], name: str = TRACE_NAME,
+                        user_id: str = "") -> tuple[ModelReply | None, bool]:
+    """`converse_tools` from synchronous code, through the same worker-thread bridge.
+
+    Total: `(None, False)`. An abandoned thread is a charged failure, not a capability answer -
+    the router may well support tools; this call simply never came back.
+    """
+    out = _bounded_in_thread(
+        lambda: converse_tools(list(messages), job_id=job_id, timeout_s=timeout_s,
+                               tools=tools, name=name, user_id=user_id),
+        timeout_s=timeout_s, failure=(None, False))
+    if not (isinstance(out, tuple) and len(out) == 2):
+        return None, False
+    reply, unsupported = out
+    return reply, bool(unsupported)
 
 
 def _ask_sync(system: str, user: str, *, job_id: str, timeout_s: float) -> dict | None:
