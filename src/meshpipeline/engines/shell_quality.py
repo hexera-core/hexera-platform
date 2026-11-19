@@ -1448,6 +1448,30 @@ def measure(mesh: ShellMesh) -> dict:
     return out
 
 
+def per_face(mesh: ShellMesh) -> dict[str, dict[str, int]]:
+    """SHMESH-51o12: per mid-face, its triangles and its elements past each limit (LIMITS) - only the faces with any,
+    so a run's record says where its triangles and past elements sit."""
+    q = quad_measures(mesh.xyz, mesh.quads) if len(mesh.quads) else {}
+    t = tria_measures(mesh.xyz, mesh.trias) if len(mesh.trias) else {}
+    nq = len(mesh.quads)
+    mids = np.asarray([str(m) for m in mesh.mid], dtype=object)
+    out: dict[str, dict[str, int]] = {}
+
+    def add(names: np.ndarray, key: str) -> None:
+        for m, c in zip(*np.unique(names, return_counts=True), strict=True):
+            out.setdefault(str(m), {})[key] = int(c)
+
+    if len(mesh.trias):
+        add(mids[nq:], "trias")
+    for key, op, limit, _src in LIMITS:
+        for d, names in ((q, mids[:nq]), (t, mids[nq:])):
+            if key in d and len(names):
+                bad = d[key] < limit if op == ">=" else d[key] > limit
+                if bad.any():
+                    add(names[bad], key)
+    return {k: out[k] for k in sorted(out)}
+
+
 def element_angle_deg(radius: float, size: float) -> float:
     """The angle one element of `size` turns through on a curve of `radius` (degrees): the curvature check."""
     return math.degrees(size / radius) if radius > 0 else 0.0
