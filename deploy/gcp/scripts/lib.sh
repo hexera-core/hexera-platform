@@ -146,6 +146,43 @@ secret_confirmed_absent() {
 }
 run_job_exists() { gc run jobs describe "$1" --region "${GCP_REGION}" >/dev/null 2>&1; }
 run_svc_exists() { gc run services describe "$1" --region "${GCP_REGION}" >/dev/null 2>&1; }
+# Delete a service's revisions that serve no traffic and carry no tag, keeping the newest
+# REVISION_KEEP (default 3) as rollback targets. Every deploy adds a revision and nothing removed
+# them, so shared dev had passed 200 per service against Cloud Run's per-service cap of 1000.
+# Best-effort: when the live traffic cannot be read nothing is deleted, and a failed delete warns
+# rather than failing the rollout that just succeeded.
+prune_idle_revisions() {
+  local svc="$1" keep="${REVISION_KEEP:-3}" live rev n=0
+  local -a idle=()
+  case "${keep}" in
+    '' | *[!0-9]*)
+      warn "REVISION_KEEP=${keep} is not a whole number, so no revision was pruned"
+      return 0
+      ;;
+  esac
+  live="$(gc run services describe "${svc}" --region "${GCP_REGION}" \
+    --format='value(status.traffic[].revisionName)' 2>/dev/null || true)"
+  if [ -z "${live}" ]; then
+    warn "could not read ${svc}'s traffic, so no revision was pruned"
+    return 0
+  fi
+  live=";${live};"
+  while read -r rev; do
+    [ -n "${rev}" ] || continue
+    n=$((n + 1))
+    [ "${n}" -le "${keep}" ] && continue
+    case "${live}" in *";${rev};"*) continue ;; esac
+    idle+=("${rev}")
+  done < <(gc run revisions list --service "${svc}" --region "${GCP_REGION}" \
+    --sort-by='~metadata.creationTimestamp' --format='value(metadata.name)' 2>/dev/null || true)
+  if [ ${#idle[@]} -gt 0 ]; then
+    # Parallel because the first prune of a long-lived service is a backlog of hundreds.
+    printf '%s\n' "${idle[@]}" | xargs -P 8 -I{} gcloud --project "${GCP_PROJECT_ID}" \
+      run revisions delete {} --region "${GCP_REGION}" --async --quiet >/dev/null 2>&1 \
+      || warn "some of ${svc}'s ${#idle[@]} idle revisions could not be deleted; the next deploy retries them"
+  fi
+  log "revisions     pruned ${#idle[@]} idle; kept the newest ${keep} and any with traffic or a tag"
+}
 ar_repo_exists() {
   gc artifacts repositories describe "${ARTIFACT_REGISTRY_REPOSITORY}" \
     --location "${GCP_REGION}" >/dev/null 2>&1
