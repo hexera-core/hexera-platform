@@ -455,6 +455,13 @@ STATE_FIELDS: dict[str, str] = {
     "repair_directives":     "the repair directives a parked run's re-run plays before its rules "
                              "planner: kept operations replayed, then the engineer's decisions; "
                              "empty unless the run resumed from a repair review",
+    "repair_handback":       "the ONE handback a MESH-2 refusal bought: the faces the mesher "
+                             "named, the scoped repair's outcome, whether it committed, its "
+                             "report reference and the machine the failing attempt ran on "
+                             "(copied, never chosen). Also the latch - non-empty means this job "
+                             "has had its one handback. STATE ONLY: no dispatch argument, "
+                             "because no caller asks for a handback; the mesher's own refusal "
+                             "is the only thing that can ask for one",
     "repair_directive_outcomes": "what became of each engineer directive a re-run played "
                              "(kept, rolled_back, unplayable, not_reached) for the terminal "
                              "path to write back onto the review items; empty otherwise",

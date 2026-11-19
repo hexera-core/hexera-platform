@@ -16,6 +16,7 @@ from meshpipeline.agents.reviewer.visual import node_reviewer
 from meshpipeline.contracts.failure_cause import retry_can_help
 from meshpipeline.contracts.pipeline_state import PipelineState
 from meshpipeline.pipeline import cfd_wrap as _wrap
+from meshpipeline.pipeline import repair_handback as _handback_mod
 from meshpipeline.pipeline.cfd_wrap import node_cfd_wrap
 from meshpipeline.pipeline.classifier import node_classifier
 from meshpipeline.pipeline.engine_fallback import another_engine_takes_over, node_engine_fallback
@@ -24,6 +25,7 @@ from meshpipeline.pipeline.enums import Verdict
 from meshpipeline.pipeline.executor import node_executor
 from meshpipeline.pipeline.geometry_admission import node_geometry_admission
 from meshpipeline.pipeline.repair_attempt import node_repair_attempt
+from meshpipeline.pipeline.repair_handback import node_repair_handback
 from meshpipeline.pipeline.repair_inspect import node_repair_inspect
 
 logger = logging.getLogger(__name__)
@@ -270,10 +272,32 @@ def _sound_or_end(
     return _END
 
 
+def route_after_handback(
+    state: PipelineState,
+) -> Literal["node_geometry_admission", "node_deliver_sound", "node_cfd_wrap", "__end__"]:
+    """After the ONE handback: the re-mesh, or the end the mesher already wrote.
+
+    A handback that COMMITTED a repair promoted new geometry, so the run goes back through the
+    admission gate - which re-measures the repaired file - and on to one more build and one more
+    mesh. A handback that committed nothing changed no bytes, so re-meshing would run the same
+    mesh again for the same answer: the run ends exactly where `route_after_executor` would have
+    ended it, with the handback's own record attached (`_sound_or_end`, so an earlier sound mesh
+    is still delivered).
+    """
+    record = state.get("repair_handback") or {}
+    if record.get("committed"):
+        logger.warning("route_after_handback: the scoped repair committed -> one re-mesh through "
+                       "the admission gate - job_id=%s", state.get("job_id"))
+        return "node_geometry_admission"
+    logger.warning("route_after_handback: the scoped repair committed nothing (%s) -> the mesher's "
+                   "own refusal stands - job_id=%s", record.get("outcome"), state.get("job_id"))
+    return _sound_or_end(state)
+
+
 def route_after_executor(
     state: PipelineState,
 ) -> Literal["node_reviewer", "node_classifier", "node_guard_replay", "node_deliver_sound",
-             "node_cfd_wrap",
+             "node_cfd_wrap", "node_repair_handback",
              "__end__"]:
     success            = state.get("executor_success", False)
     retry_count        = state.get("retry_count", 0)
@@ -334,6 +358,20 @@ def route_after_executor(
                        "replay → END (ran out of time), unless an earlier attempt built a sound "
                        "mesh (LAD-cfd-3) - job_id=%s", state.get("job_id"))
         return _sound_or_end(state)
+
+    # THE MESHER NAMED THE FACES IT FAILED ON (MESH-2) and a geometry check had already flagged
+    # them: the one refusal that tells repair what the mesher actually disliked instead of leaving
+    # it to guess. ONE scoped repair of those faces and ONE re-mesh (pipeline/repair_handback.py),
+    # latched by `repair_handback` on state so a job gets one ever. Every other refusal, and every
+    # refusal at all with the posture off, routes exactly as it did.
+    _handback, _why = _handback_mod.wanted(state)
+    if _handback:
+        logger.warning("route_after_executor: the mesh failed at the faces a check flagged "
+                       "(MESH-2) -> node_repair_handback, once - job_id=%s", state.get("job_id"))
+        return "node_repair_handback"
+    if _why not in (_handback_mod.NOT_LIVE, _handback_mod.NOT_A_CAD_DEFECT):
+        logger.info("route_after_executor: no mesher handback (%s) - job_id=%s", _why,
+                    state.get("job_id"))
 
     if _wrap.tried(state):
         # THE WRAP RUNG IS THE LAST (LAD-cfd-5): a failure on the wrapped surface moves to the
@@ -606,6 +644,7 @@ def build_graph(checkpointer):
     b.add_node("node_engine_select",   _fenced("node_engine_select", node_engine_select))
     b.add_node("node_repair_inspect",   _fenced("node_repair_inspect", node_repair_inspect))
     b.add_node("node_repair_attempt",   _fenced("node_repair_attempt", node_repair_attempt))
+    b.add_node("node_repair_handback",  _fenced("node_repair_handback", node_repair_handback))
     b.add_node("node_geometry_admission", _fenced("node_geometry_admission", node_geometry_admission))
     b.add_node("node_builder",         _fenced("node_builder", node_builder))
     b.add_node("node_executor",        _fenced("node_executor", node_executor))
@@ -657,8 +696,17 @@ def build_graph(checkpointer):
             "node_guard_replay":  "node_guard_replay",
             "node_deliver_sound": "node_deliver_sound",
             "node_cfd_wrap":      "node_cfd_wrap",
+            "node_repair_handback": "node_repair_handback",
             END:                  END,
         },
+    )
+    # THE MESHER'S HANDBACK (MESH-2): one scoped repair, then one re-mesh through the admission
+    # gate - or the refusal the mesher already wrote, when the repair committed nothing
+    b.add_conditional_edges(
+        "node_repair_handback",
+        route_after_handback,
+        {"node_geometry_admission": "node_geometry_admission",
+         "node_deliver_sound": "node_deliver_sound", "node_cfd_wrap": "node_cfd_wrap", END: END},
     )
     # A GUARD-CLOCK REPLAY runs the same attempt again (docs/RULES.md TIME-3)
     b.add_edge("node_guard_replay", "node_builder")

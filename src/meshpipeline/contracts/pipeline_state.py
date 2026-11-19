@@ -16,7 +16,12 @@ from meshpipeline.contracts.geometry_source import GeometryState
 # (thread_id = "<job_id>:s<version>"), so a redelivery after a deploy that changed the
 # schema starts FRESH instead of resuming an incompatible checkpoint - the single biggest
 # production-incident source for agent systems (state management).
-STATE_SCHEMA_VERSION = 15  # v15: `repair_attempt` - whether the run repaired its own geometry,
+STATE_SCHEMA_VERSION = 16  # v16: `repair_handback` - the ONE scoped repair a MESH-2 refusal
+                           # bought (the faces the mesher named, what the repair did, whether it
+                           # committed, and the machine the failing attempt ran on), which is also
+                           # the latch that holds a job to one handback ever
+                           # (pipeline/repair_handback.py). Carries every v15 field.
+                           # v15: `repair_attempt` - whether the run repaired its own geometry,
                            # what it aimed at and what it did, or why it did not
                            # (pipeline/repair_attempt.py). Carries every v14 field.
                            # v14: `repair_lineage` - when repaired geometry REPLACED the approved
@@ -124,6 +129,14 @@ class PipelineState(TypedDict):
     # customer sent, which is most of them. `geometry` is always what IS being meshed - no reader
     # has to choose between two candidates - and this is the record of what it was before.
     repair_lineage: dict
+    # THE ONE HANDBACK THIS JOB GOT, and the latch that holds it to one (pipeline/
+    # repair_handback.py). The FEA ladder's MESH-2 refusal names the faces the mesh failed at that
+    # a geometry check had already flagged; this records those faces, the scoped repair's outcome,
+    # whether it committed, a reference to its report and THE MACHINE THE FAILING ATTEMPT RAN ON -
+    # copied, never chosen, so the handback's re-mesh cannot buy a bigger machine. Non-empty the
+    # moment the node runs, including when it refused, because an empty dict is what
+    # `route_after_executor` reads as "no handback yet". Empty on every job that never saw MESH-2.
+    repair_handback: dict
 
     domain:     str
     engine_params: dict   # engine-NATIVE declared params (ParamSpec answers; see data_contract)
