@@ -8,7 +8,9 @@
 #             `error` key, because a verdict that blew up must not lose the repair that produced
 #             it. It never reaches the product mesher: the `meshing` goal's answer is the NAME of
 #             the tier-3 path, and the existing promotion path still runs it, once, outside repair.
-# Collaborates with: cad/repair/mesh_probe.py (the tier-2 probe), cad/repair/contracts.py
+# Collaborates with: cad/repair/oracle.py (the ladder's tiers and every budget this module spends),
+#                    cad/repair/grind.py (the expected mesh cost recorded beside the verdict),
+#                    cad/repair/mesh_probe.py (the tier-2 probe), cad/repair/contracts.py
 #                    (`RepairGoal`), cad/repair/conservative.py (the one caller today).
 from __future__ import annotations
 
@@ -19,7 +21,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from meshpipeline.cad.repair import mesh_probe
+from meshpipeline.cad.repair import grind, mesh_probe, oracle
 from meshpipeline.cad.repair.contracts import DefectSeverity, RepairGoal
 
 if TYPE_CHECKING:
@@ -27,28 +29,21 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------------------------
-# THE ORACLE SEAM. Task 1 of the CRS v3 plan creates `cad/repair/oracle.py`, which owns the
-# ladder's tiers and their budgets: `TIER2_HARD_CAP_S`, `TIER2_ELEMENT_CAP`,
-# `FINAL_PROBE_SLACK_S` and `probe_budget_s(check, remaining_s, *, timeout_s)`. That module is
-# being written in a parallel lane, so these three numbers and `_verdict_budget_s` below are
-# stated here with the oracle's values and the oracle's rule, and the follow-up replaces them
-# with `from meshpipeline.cad.repair import oracle` plus
-# `oracle.probe_budget_s(oracle.CHECK_VERDICT, remaining, timeout_s=oracle.TIER2_HARD_CAP_S)`.
-# Nothing else in this module needs to change when that happens.
-# ---------------------------------------------------------------------------------------------
+# THE ORACLE SEAM, CLOSED. `cad/repair/oracle.py` owns the ladder's tiers and their budgets, so
+# this module states no number of its own: the three names below are RE-EXPORTS of the oracle's
+# (the `cad/repair/session.py` pattern), kept because callers and tests read them from here, and
+# the verdict's budget is the oracle's `verdict` rule rather than a second copy of its arithmetic.
+# Two constants that could drift apart were the bug; `is`-identity with the oracle is the fix.
 
 #: Seconds. The hard cap on any tier-2 whole-part probe this plan's code starts.
-TIER2_HARD_CAP_S = 60.0
+TIER2_HARD_CAP_S = oracle.TIER2_HARD_CAP_S
 
 #: Elements. A tier-2 verdict over this is `over_element_cap`: a QUALITY SIGNAL, never a failure.
-#: gmsh cannot enforce a ceiling mid-run, so the coarse sizing keeps the count small and this
-#: post-run read reports when it did not.
-TIER2_ELEMENT_CAP = 1_000_000
+TIER2_ELEMENT_CAP = oracle.TIER2_ELEMENT_CAP
 
 #: Seconds kept in hand beyond a probe's timeout for what FOLLOWS it: the kernel walk, the
 #: measure, the after-checks and the STEP write.
-FINAL_PROBE_SLACK_S = 10.0
+FINAL_PROBE_SLACK_S = oracle.FINAL_PROBE_SLACK_S
 
 #: The tier this verdict's meshability reading comes from, reported so a reader never mistakes a
 #: coarse probe's answer for the product mesher's.
@@ -97,18 +92,6 @@ def reserve_s(goal: RepairGoal | None, *, tolerant_live: bool,
         # `tolerant_live=False`, so this branch is unreachable in production and tested here.
         reserve += max(0.0, float(tolerant_timeout_s))
     return reserve
-
-
-def _verdict_budget_s(remaining_s: float) -> float:
-    """Seconds the finishing verdict's tier-2 probe may take: the oracle's `verdict` rule.
-
-    `max(0, min(TIER2_HARD_CAP_S, remaining - FINAL_PROBE_SLACK_S))`. A NaN or a non-positive
-    remainder is no time at all, which skips the probe rather than guessing at the part.
-    """
-    remaining = float(remaining_s)
-    if not remaining > 0.0:
-        return 0.0
-    return max(0.0, min(TIER2_HARD_CAP_S, remaining - FINAL_PROBE_SLACK_S))
 
 
 def _kernel_clean(final: Measure, defects: tuple) -> bool:
@@ -167,7 +150,8 @@ def _default_prober(*, shape, diagonal_mm: float, budget_s: float):
 
 def _meshability(*, shape, final: Measure, deadline_s: float, clock, prober) -> dict:
     """One tier-2 reading, or an honest statement that there was no time to take one."""
-    budget_s = _verdict_budget_s(float(deadline_s) - float(clock()))
+    budget_s = oracle.probe_budget_s(oracle.CHECK_VERDICT, float(deadline_s) - float(clock()),
+                                     timeout_s=oracle.TIER2_HARD_CAP_S)
     reading = {"tier": VERDICT_TIER, "meshes": None, "kind": "", "stage": "",
                "volume_elements": 0, "over_element_cap": False,
                "budget_s": budget_s, "seconds": 0.0, "skipped": ""}
@@ -192,6 +176,23 @@ def _meshability(*, shape, final: Measure, deadline_s: float, clock, prober) -> 
     # running out, or the child dying, is not a verdict about the customer's geometry at all.
     reading["meshes"] = None if kind in _NO_ANSWER_KINDS else False
     return reading
+
+
+def _grind(reading: dict, final: Measure) -> dict[str, str]:
+    """The expected mesh cost of the delivered part, RECORDED BESIDE the verdict and never read.
+
+    `grind` is a pure predictor over the tier-2 reading's failure kind, the stage it was refused
+    in and the part's size. Nothing in `cad/` branches on the answer - Task 8's investigator
+    budget is its first reader - so this is a column in the record, not a decision.
+
+    A SKIPPED PROBE PREDICTS NOTHING. With no reading, `kind` is `""`, which grind reads as "this
+    meshed" and would call cheap: a claim about a part nobody probed. Withholding the face count
+    is how this says "not enough is known", which is grind's `UNKNOWN` - the same honest answer a
+    part with no face count gets, and the same reason.
+    """
+    faces = None if reading["skipped"] else getattr(final, "faces", None)
+    return grind.record(str(reading["kind"]), str(reading["stage"]),
+                        solids=getattr(final, "solids", None), faces=faces)
 
 
 def _score(reading: dict) -> float | None:
@@ -237,6 +238,7 @@ def finishing_verdict(goal: RepairGoal | None, *, shape, final: Measure, defects
                 "kernel_clean": _kernel_clean(final, tuple(defects)),
                 "meshability": reading,
                 "score": _score(reading),
+                "grind": _grind(reading, final),
                 "review": _review(tuple(packages))}
     except Exception as exc:  # noqa: BLE001 - the finishing verdict never raises
         logger.info("repair goal verdict (%s): %s: %s", profile, type(exc).__name__, exc)
