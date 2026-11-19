@@ -467,6 +467,28 @@ operation records (`deviation_mm`) is evidence handed to the reviewer, never a r
 does not enforce the coupling - the deployment posture owns it - but startup logs a warning when
 `CAD_REPAIR_REBUILD_FACE` is on while `CAD_REPAIR_PACKAGE_REVIEW` is not `live`.
 
+`CAD_REPAIR_CLOSE_WIRE_GAPS` (default `false`) admits `close_wire_gaps`, the first operation
+licensed to **move vertices**. Aimed at one face (a `mesh_open_loop` gmsh recorded in its surface
+stage, or a kernel `wire_gap`), it merges the disconnected vertices of the face's wires that lie
+within the run's tolerance (`ShapeFix_Wire.FixConnected`), then closes the remaining curve gaps
+(`FixGaps3d`) on the face and on every neighbour sharing a moved vertex, and re-stitches the
+owning body. It measures what it did and declares it: `vertices_moved`, `max_vertex_move_mm`
+(the measured largest displacement), and the area change. It declines `gaps_exceed_tolerance`
+when the measured gap or the measured move is larger than the run's tolerance, and `not_closed`
+when the fixer closed nothing - a no-op is never kept. It is conservative by design: a gap at or
+below the face's own vertex tolerance is not a gap, and is declined - a missed repair is preferred
+to damage. Curve ends `FixGaps3d` reshapes are bounded by the run's tolerance but not measured,
+and the evidence says so. With the flag on, the rules baseline
+prefers it for a surface-stage `mesh_open_loop` and falls back to `fix_face_boundary`; a
+`wire_gap` still meets `fix_face_boundary` (which moves nothing) first. With the flag off, nothing
+changes.
+
+**This flag must not be set live on customer jobs until the semantic package reviewer
+(`CAD_REPAIR_PACKAGE_REVIEW=live`) is live.** The move is bounded and measured, but a moved vertex
+is a changed part, and the reviewer is what replaces a numeric gate for an operation like that.
+Startup logs a warning when `CAD_REPAIR_CLOSE_WIRE_GAPS` is on while `CAD_REPAIR_PACKAGE_REVIEW` is
+not `live`.
+
 ## Filesystem paths
 
 Path defaults are **relative** and resolved by runtime against the process working directory.
@@ -496,7 +518,7 @@ API: it logs that the directory is missing and leaves `/ui` and `/static` unmoun
 
 <!-- Regenerate: python -m meshpipeline.settings.inventory --reference -->
 
-Every supported setting (296 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
+Every supported setting (297 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
 
 | Setting | Exposure | Read by | Secret |
 |---|---|---|---|
@@ -569,6 +591,7 @@ Every supported setting (296 entries). `template` settings are the ones `.env.ex
 | `CAD_INSPECT_TIMEOUT_S` | internal | app |  |
 | `CAD_REPAIR_ALLOW_FACE_REMOVAL` | internal | app |  |
 | `CAD_REPAIR_AUTONOMOUS` | internal | app |  |
+| `CAD_REPAIR_CLOSE_WIRE_GAPS` | internal | app |  |
 | `CAD_REPAIR_ENABLED` | template | app |  |
 | `CAD_REPAIR_FILL_NONPLANAR_HOLES` | internal | app |  |
 | `CAD_REPAIR_FILL_PLANAR_HOLES` | internal | app |  |

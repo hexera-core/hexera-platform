@@ -526,7 +526,7 @@ def _mesh_defect(i: int, code, stage: str | None = "2d") -> EntityDefect:
 @pytest.fixture
 def mesh_ops_on(monkeypatch):
     for flag in ("CAD_REPAIR_SPLIT_CLOSED_FACES", "CAD_REPAIR_FRAGMENT_BODIES",
-                 "CAD_REPAIR_REBUILD_FACE"):
+                 "CAD_REPAIR_REBUILD_FACE", "CAD_REPAIR_CLOSE_WIRE_GAPS"):
         monkeypatch.setattr(rcfg, flag, True)
 
 
@@ -650,6 +650,8 @@ def test_an_op_answering_a_later_code_on_the_fingerprint_is_not_refused(ask):
     ("split_closed_faces", DefectCode.mesh_periodic_surface, "2d"),
     ("rebuild_face", DefectCode.mesh_overlapping_facets, "2d"),
     ("fragment_bodies", DefectCode.mesh_edge_through_face, "3d"),
+    ("close_wire_gaps", DefectCode.mesh_open_loop, "2d"),
+    ("close_wire_gaps", DefectCode.wire_gap, None),
 ])
 @pytest.mark.parametrize("stage", ["2d", "3d", "import", "", None])
 def test_the_stage_map_matches_targets_for(mesh_ops_on, op, code, right, stage):
@@ -659,9 +661,11 @@ def test_the_stage_map_matches_targets_for(mesh_ops_on, op, code, right, stage):
     operation = next(o for o in catalogue() if o.name == op)
     defect = _mesh_defect(1, code, stage)
     session_accepts = bool(operation.targets_for(defect))
-    author_accepts = stage == ma._STAGE_REQUIRED[op]
+    required = ma._stage_required(op, code.value)
+    author_accepts = required is None or stage == required
     assert author_accepts == session_accepts
-    assert session_accepts == (stage == right)
+    # `right` None: the operation gates no stage for this code (a kernel wire gap).
+    assert session_accepts == (right is None or stage == right)
 
 
 def test_a_count_without_a_solids_key_fails_open(ask, mesh_ops_on, monkeypatch):

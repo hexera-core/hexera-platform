@@ -208,6 +208,15 @@ class _Refused(ValueError):
 #: mesh defect (mesh_probe.py ~L346-347, value "2d"/"3d"/"import" or "" when unknown), so a missing
 #: or other stage is evidence `targets_for` itself declines - refused here to match it.
 _STAGE_REQUIRED = {"split_closed_faces": "2d", "rebuild_face": "2d", "fragment_bodies": "3d"}
+#: The same rule for an operation whose stage gate depends on the CODE it is aimed at:
+#: CloseWireGaps needs a 2d stage for `mesh_open_loop` and none for `wire_gap` (a kernel code,
+#: which carries no stage) - so a per-operation entry would be STRICTER than `targets_for`.
+_STAGE_REQUIRED_FOR_CODE = {("close_wire_gaps", "mesh_open_loop"): "2d"}
+
+
+def _stage_required(name: str, code: str) -> str | None:
+    """The stage `name`'s `targets_for` requires for a defect of `code`, or None for no rule."""
+    return _STAGE_REQUIRED.get(name) or _STAGE_REQUIRED_FOR_CODE.get((name, code))
 #: Operations that act on a part with more than one body (the CURRENT shape's solid count).
 _NEEDS_MULTIPLE_BODIES = frozenset({"fragment_bodies"})
 
@@ -300,7 +309,7 @@ def _plan_item(item: object, ctx: _Context, guards: _Guards) -> tuple[dict, dict
     if defect.code in guards.reserved:
         raise _Refused(f"plan aims at a {defect.code.value}, a code held for review")
     # OPERATION PRECONDITIONS, refused here so an invalid proposal costs no execution.
-    stage = _STAGE_REQUIRED.get(name)
+    stage = _stage_required(name, defect.code.value)
     if stage is not None and (getattr(defect, "measurements", None) or {}).get("stage") != stage:
         raise _Refused(f"stage_precondition: {name} needs a {stage}-stage defect",
                        code="stage_precondition", defect=fp)

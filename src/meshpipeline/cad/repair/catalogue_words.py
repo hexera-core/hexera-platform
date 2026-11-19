@@ -14,6 +14,8 @@ SPLIT_CLOSED = "split_closed_faces"
 FRAGMENT = "fragment_bodies"
 #: The operation that answers an overlapping-facets mesh failure (CAD_REPAIR_REBUILD_FACE).
 REBUILD = "rebuild_face"
+#: The operation that closes a face's open wire, moving vertices (CAD_REPAIR_CLOSE_WIRE_GAPS).
+CLOSE_GAPS = "close_wire_gaps"
 
 _BASE = (
     "- fix_small_edges: merge edges too short to keep",
@@ -29,7 +31,8 @@ _BASE = (
 
 def catalogue_text(*, split_closed_faces: bool | None = None,
                    fragment_bodies: bool | None = None,
-                   rebuild_face: bool | None = None) -> str:
+                   rebuild_face: bool | None = None,
+                   close_wire_gaps: bool | None = None) -> str:
     """One line per catalogued operation, for the given consent (the deployment's flags when not
     told)."""
     import meshpipeline.settings.cad_repair as rcfg
@@ -40,6 +43,8 @@ def catalogue_text(*, split_closed_faces: bool | None = None,
         fragment_bodies = bool(rcfg.CAD_REPAIR_FRAGMENT_BODIES)
     if rebuild_face is None:
         rebuild_face = bool(rcfg.CAD_REPAIR_REBUILD_FACE)
+    if close_wire_gaps is None:
+        close_wire_gaps = bool(rcfg.CAD_REPAIR_CLOSE_WIRE_GAPS)
     lines = list(_BASE)
     if split_closed_faces:
         lines.append(f"- {SPLIT_CLOSED}: split a closed (periodic) face - a full cylinder, cone, "
@@ -54,4 +59,8 @@ def catalogue_text(*, split_closed_faces: bool | None = None,
         lines.append(f"- {REBUILD}: re-trim one face from its own boundary on the same surface, "
                      "when the surface mesher reports overlapping facets on it; only for a 2D-stage "
                      "overlapping-facets failure on a located face")
+    if close_wire_gaps:
+        lines.append(f"- {CLOSE_GAPS}: close the gaps in one face's open boundary wire by merging "
+                     "its loose vertices, moving each by at most the run's tolerance; only for a "
+                     "2D-stage open-loop failure or a wire gap on a located face")
     return "\n".join(lines)
