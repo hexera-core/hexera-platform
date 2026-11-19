@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import meshpipeline.settings.cad_repair as rcfg
-from meshpipeline.cad.repair import mesh_probe, package_review
+from meshpipeline.cad.repair import mesh_probe, oracle, package_review
 from meshpipeline.cad.repair.caps import (
     Accounting,
     cumulative_refusal,
@@ -50,35 +50,24 @@ FAILED = "failed"
 #: ruling 1b). Every other operation is judged on the status walk alone, as before the analyzer.
 HEAL_OP = "heal_self_intersections"
 
-#: THE SHARE OF THE RUN'S REMAINING TIME ONE MESH PROBE MAY TAKE (final review I2), the
-#: `localize.face_scan_budget_s` pattern. A half, so a probe that times out - a real family on the
-#: corpus - always leaves the run as much time again for its after-checks, its final whole-shape
-#: probe and the STEP write; a whole-remainder budget let one probe spend the run.
-MESH_PROBE_FRACTION = 0.5
-
-#: Seconds the region loop keeps IN HAND beyond one probe's timeout for its final whole-shape
-#: verification (region_loop.final_reserve_s): the final scan's kernel walk and measure.
-FINAL_PROBE_SLACK_S = 10.0
+#: THE SHARE OF THE RUN'S REMAINING TIME ONE MESH PROBE MAY TAKE, and the seconds the region loop
+#: keeps in hand for its final whole-shape verification. Both are the oracle's now (the ladder is
+#: one policy module); re-exported here because `region_loop` and the tests read them off
+#: `session`.
+MESH_PROBE_FRACTION = oracle.MESH_PROBE_FRACTION
+FINAL_PROBE_SLACK_S = oracle.FINAL_PROBE_SLACK_S
 
 
 def mesh_probe_budget_s(remaining_s: float, *, final: bool = False) -> float:
     """Seconds one mesh probe may take with `remaining_s` left before the run's deadline.
 
-    The lesser of CAD_REPAIR_MESH_PROBE_TIMEOUT_S and `MESH_PROBE_FRACTION` of what is left, floor
-    0 (a 0 skips the probe: `_with_mesh` carries forward what it knew). The run's FINAL whole-shape
-    probe is the exception: the region loop stopped authoring with a reserve in hand for exactly
-    this scan, so it gets what remains MINUS `FINAL_PROBE_SLACK_S`: that slack is reserved for what
-    follows the probe (the kernel walk, measure, checks and STEP write), and a timed-out final
-    probe must not spend it. At or under the slack the probe is skipped (0). A NaN reads as
-    nothing left.
+    The rule is `oracle.probe_budget_s`'s, for the ladder's tier-2 checks: the whole-part probe
+    mid-run (`whole`) and the run's last scan (`final`). See the oracle for what each gets and
+    why; this is the session's door onto it, reading the configured per-probe timeout.
     """
-    remaining = float(remaining_s)
-    if not remaining > 0.0:
-        return 0.0
-    if final:
-        return max(0.0, remaining - FINAL_PROBE_SLACK_S)
-    return max(0.0, min(float(rcfg.CAD_REPAIR_MESH_PROBE_TIMEOUT_S),
-                        MESH_PROBE_FRACTION * remaining))
+    check = oracle.CHECK_FINAL if final else oracle.CHECK_WHOLE
+    return oracle.probe_budget_s(check, remaining_s,
+                                 timeout_s=float(rcfg.CAD_REPAIR_MESH_PROBE_TIMEOUT_S))
 
 
 #: A new defect at this severity or worse means the operation made things worse. An `info`
