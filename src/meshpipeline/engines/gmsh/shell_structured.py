@@ -1311,12 +1311,12 @@ def map_faces(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], mm: float
                         if BOX_HOLDS and wish_long and any(c in wish_long for c in cs):
                             fixed_roots.add(r)      # (SHMESH-51e: a two-ring bolt box's side holds its class)
                             box_roots.add(r)
-            if BOX_KEEPS_COUNT and wish and wish_long:
-                # SHMESH-51o15: a two-ring bolt box's side whose class takes another count (a curve of the class too
-                # long for the box's count under the user's longest edge, or a count held elsewhere) keeps its own:
-                # the mapped cells on that side go free and the side is held alone (below)
+            if BOX_KEEPS_COUNT and wish and wish_long and not pre and len(wished) == 1 and high_mm is not None:
+                # SHMESH-51o15: a two-ring bolt box's side whose class takes another count because a curve of the
+                # class is too long for the box's count under the user's longest edge keeps its own: the mapped cells
+                # on that side go free and the side is held alone (SHMESH-51c)
                 mine = [c for c in cs if c in wish_long and c in wish and wish[c] != n and c not in preset
-                        and c not in forced]
+                        and c not in forced and max(length[x] for x in cs) * mm / wish[c] > 0.98 * high_mm]
                 near = {t_ for t_ in faces_of[r] for c in mine if any(c in sd for sd in cand[t_][0])}
                 if near:
                     bad |= near
