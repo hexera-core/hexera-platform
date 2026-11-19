@@ -15,6 +15,7 @@ The reader's tool schema, its prompt lines, the checks, the "not on this mesher"
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 RULE = "NOTE-13"
@@ -61,6 +62,10 @@ class Control:
     where: tuple[str, ...] = ("mesh",)
     field: str = ""                             # an existing reader field that already reads it ("" = `controls`)
     integer: bool = False
+    #: THE CONTROL'S OWN SUBJECT, in the words people use for it: a `where` made only of these (and words that mean
+    #: "all of it": whole_mesh) restates the subject and is the whole-mesh ask ("4 elements across the thickness of
+    #: each wall", "30 cells across the pipe"); anything else names one place (place_of)
+    subject: tuple[str, ...] = ()
 
 
 _NO_FLOW_WALLS = NotHere("a flow mesh has cells, not elements through a wall")
@@ -82,21 +87,30 @@ CONTROLS: dict[str, Control] = {c.key: c for c in (
             routes=("fea",), stage="mesh",
             lanes={"fea_solid": "meshpipeline.engines.control_appliers.fea_wall_elements", "shell": _NO_SHELL_WALL,
                    **dict.fromkeys(_FLOW_LANES, _NO_FLOW_WALLS)},
-            verify="setting", rule=RULE, asked="{value} elements through the thickness of every wall"),
+            verify="setting", rule=RULE, asked="{value} elements through the thickness of every wall",
+            subject=("wall", "walls", "thickness", "thicknesses", "thick", "part", "solid", "body", "plate", "plates",
+                     "sheet", "section", "sections", "material")),
     Control(key="file_units", kind="choice", unit="none", sane=None, choices=("mm", "m"),
             prompt="the length unit of the delivered SOLVER FILES (not the unit of the numbers in the notes)",
             examples=("export in mm", "write the deck in millimetres", "Nastran deck in metres"),
             routes=("fea", "flow"), stage="delivery",
             lanes={lane: NotHere("every file is written in metres and says so; files in millimetres are not offered "
                                  "yet") for lane in LANES},
-            verify="setting", rule=RULE, asked="solver files in {choice}"),
+            verify="setting", rule=RULE, asked="solver files in {choice}",
+            subject=("file", "files", "deck", "decks", "export", "exports", "output", "outputs", "solver", "mesh")),
     Control(key="cells_across", kind="count", unit="count", sane=(4.0, 200.0), integer=True,
             prompt="CFD: cells ACROSS a passage, bore or gap",
             examples=("30 cells across the pipe", "at least 10 cells across the gap"), routes=("flow",), stage="mesh",
             lanes={"snappy": "meshpipeline.engines.control_appliers.snappy_cells_across",
-                   **dict.fromkeys(("gmsh_flow", "cfmesh", "snappy_multiregion", "vmtk", "snapgrid", "netgen"), _NOT_SNAPPY),
+                   "vmtk": "meshpipeline.engines.control_appliers.vmtk_cells_across",
+                   "cfmesh": "meshpipeline.engines.control_appliers.cfmesh_cells_across",
+                   **dict.fromkeys(("gmsh_flow", "snappy_multiregion", "snapgrid", "netgen"), _NOT_SNAPPY),
                    "fea_solid": NotHere("a solid has no flow passage"), "shell": NotHere("a shell has no flow passage")},
-            verify="setting", rule=RULE, asked="{value} cells across the passage"),
+            verify="setting", rule=RULE, asked="{value} cells across the passage",
+            subject=("pipe", "pipes", "bore", "bores", "passage", "passages", "duct", "ducts", "channel", "channels",
+                     "tube", "tubes", "inlet", "outlet", "opening", "openings", "port", "ports", "flow", "path",
+                     "diameter", "cross", "section", "gap", "gaps", "interior", "inside", "lumen", "vessel",
+                     "nozzle", "line", "manifold", "fluid", "domain")),
     Control(key="surface_level", kind="count", unit="count", sane=(0.0, 8.0), integer=True,
             prompt="CFD: the refinement LEVEL at the walls (snappyHexMesh's surface level: each level halves the cell)",
             examples=("surface refinement level 3", "4 levels at the surface"), routes=("flow",), stage="mesh",
@@ -107,7 +121,9 @@ CONTROLS: dict[str, Control] = {c.key: c for c in (
                    "snappy_multiregion": NotHere("this mesher sets its levels per region from the parts"),
                    "fea_solid": NotHere("a solid mesh has no refinement levels"),
                    "shell": NotHere("a shell mesh has no refinement levels")},
-            verify="setting", rule=RULE, asked="refinement level {value} at the walls"),
+            verify="setting", rule=RULE, asked="refinement level {value} at the walls",
+            subject=("wall", "walls", "surface", "surfaces", "body", "bodies", "boundary", "boundaries", "geometry",
+                     "part", "skin", "stl")),
     # SHMESH-52: a size (a number, "finer", "coarser") in ONE named place - the reader's own `local` field (NOTE-10);
     # the solid and every flow engine already decide each such row in their own code, the shell through this lane
     Control(key="place_size", kind="length", unit="length", sane=(1e-4, 1e5), field="local",
@@ -142,7 +158,9 @@ def prompt_lines() -> str:
     lines = []
     for c in read_by_reader():
         what = f"one of {', '.join(c.choices)} in `choice`" if c.kind == "choice" else "the number in `value`"
-        lines.append(f'  key "{c.key}": {c.prompt}; {what} ("' + '", "'.join(c.examples) + '").')
+        own = (f' `where` stays "" when the words only name its own subject ({", ".join(c.subject[:6])}, '
+               '"each", "every", "everywhere"): that is the whole mesh.' if c.subject else "")
+        lines.append(f'  key "{c.key}": {c.prompt}; {what} ("' + '", "'.join(c.examples) + '").' + own)
     return "\n".join(lines)
 
 
@@ -151,10 +169,30 @@ def asked_words(c: Control, value=None, choice: str = "") -> str:
     return c.asked.format(value=v, choice=choice)
 
 
+#: words that mean "all of it" or only join the subject's words ("the thickness of each wall", "everywhere")
+WHOLE_MESH = frozenset("the a an each every all any its their of in on at for to across through throughout around along "
+                       "within whole entire everywhere everything overall mesh model full complete same both".split())
+
+
+def place_of(c: Control, where: str) -> str:
+    """NOTE-13: the ONE place a control's `where` names, or "" when it only restates the control's own subject (its
+    `subject` words and WHOLE_MESH: "each wall", "the wall thickness", "everywhere", "the inlet passage", "the
+    bore") - which is the whole-mesh ask. A control that may apply in one place (`where` beyond "mesh") keeps its
+    place as written."""
+    said = " ".join(str(where or "").split())
+    if not said:
+        return ""
+    words = re.findall(r"[a-z]+", said.lower())
+    own = set(c.subject)
+    if all(w in WHOLE_MESH or w in own or (w.endswith("s") and w[:-1] in own) for w in words):
+        return ""
+    return said
+
+
 def lane_of(lane: str, key: str) -> str | NotHere | Legacy | None:
     c = CONTROLS.get(key)
     return c.lanes.get(lane) if c else None
 
 
-__all__ = ["CONTROLS", "KINDS", "LANES", "RULE", "STAGES", "WHERE", "Control", "Legacy", "NotHere", "asked_words",
-           "by_field", "lane_of", "prompt_lines", "read_by_reader"]
+__all__ = ["CONTROLS", "KINDS", "LANES", "RULE", "STAGES", "WHERE", "WHOLE_MESH", "Control", "Legacy", "NotHere",
+           "asked_words", "by_field", "lane_of", "place_of", "prompt_lines", "read_by_reader"]

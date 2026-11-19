@@ -214,17 +214,18 @@ def _zone_row(z: Mapping, spots: Mapping[str, Mapping]) -> dict:
 RULES_ASKS_KEY = "fea_notes_by_rules"
 
 
-def rules_asks(req: Mapping | None) -> list[str]:
-    """The asks of the notes' reading (engines/mesh_requirements) the rules apply and report themselves: every row
-    but an element count (the AI reads that, AI-fea-4) and a size in one named place (the parts reader's, AI-fea-9)."""
-    return [str(r.get("asked") or "") for r in (req or {}).get("rows") or []
-            if isinstance(r, Mapping) and r.get("asked") and not str(r.get("field") or "").startswith("cells:")
-            and str(r.get("field") or "") != "local"]
+def rules_asks(sec: Mapping | None) -> list[str]:
+    """Every ask of the notes' reading (the section engines/mesh_requirements returns) the rules decide and tell with
+    what was built - applied, the nearest, set aside by the checks, or no setting of ours (mesh_requirements.
+    decided_asks) - but an element count (the AI reads that, AI-fea-4) and a size in one named place (the parts
+    reader's, AI-fea-9)."""
+    from meshpipeline.engines.mesh_requirements import decided_asks
+    return decided_asks(sec, skip=("cells:", "local"))
 
 
-def with_rules_asks(state: Mapping, req: Mapping | None) -> Mapping:
-    """The run's state with the asks the rules handle (rules_asks), for the AI's brief; `state` itself when none."""
-    asks = rules_asks(req)
+def with_rules_asks(state: Mapping, sec: Mapping | None) -> Mapping:
+    """The run's state with the asks the rules decide (rules_asks), for the AI's brief; `state` itself when none."""
+    asks = rules_asks(sec)
     return {**state, RULES_ASKS_KEY: asks} if asks else state
 
 
@@ -266,13 +267,11 @@ def brief(record: Mapping, state: Mapping, zone_list: list[dict], *, diag_m: flo
             "named faces (joints may be suggested). Say in notes_remark what you did with them.")
         done = [str(a) for a in s.get(RULES_ASKS_KEY) or [] if str(a).strip()]
         if done:
-            # NOTE-13: the asks the rules apply and report themselves (sizes, quality limits, controls), so the
-            # remark never calls one "guidance" or says it found nothing to do beside a line that says it was met
-            out["notes_applied_by_rules"] = done[:30]
-            out["user_notes_fea"] += (
-                " The asks in notes_applied_by_rules are applied by the rules and reported to the user with what "
-                "was built - not yours: leave them out of notes_remark, and leave notes_remark empty when nothing "
-                "else in the notes was yours to act on.")
+            # NOTE-13: every ask the rules decide (applied, the nearest, set aside, no setting of ours), so the remark
+            # never calls one "guidance", claims one the rules refused, or says it found nothing to do
+            from meshpipeline.engines.mesh_requirements import DECIDED_WORDS
+            out["notes_decided_by_rules"] = done[:30]
+            out["user_notes_fea"] += " " + DECIDED_WORDS.format(key="notes_decided_by_rules")
     # AN ASSEMBLY (PLAN-fea-17, engines/fea_driver.prepare_assembly): its parts and where they meet,
     # for the joint suggestion (AI-fea-7) - the user's own answer on the stage is shown too
     asm = record.get("assembly_plan") or {}

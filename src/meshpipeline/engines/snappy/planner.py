@@ -594,6 +594,12 @@ async def plan_with_accounting(*, workspace, job_id: str, request_txt: str,
             user += ("\n\n" + _notes + "\nAdd \"notes_remark\": \"<one plain line on what the plan "
                      "did with the notes>\" to your JSON - this plan's own, even when an earlier "
                      "engine already planned this part.")
+            # NOTE-13: the asks the rules decide over this plan (the attempt's reading of the notes), so the plan does
+            # not act on them a second time and the remark never contradicts what the result says of them
+            from meshpipeline.engines import mesh_requirements as _MRq
+            _decided = _MRq.decided_block(_MRq.read(workspace)) if workspace else ""
+            if _decided:
+                user += "\n\n" + _decided
         if prior_feedback and previous_plan:
             user += ("\n\nYour PREVIOUS plan (which you must REVISE, not repeat) was:\n"
                      + json.dumps(previous_plan, indent=1)

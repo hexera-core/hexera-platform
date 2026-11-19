@@ -55,6 +55,11 @@ def apply(lane: str, req: Mapping | None, target: dict) -> dict[str, dict]:
         except Exception:  # noqa: BLE001 - a control never fails a mesh
             logger.warning("mesh controls: %s on %s failed - the plan's own value stands", key, lane, exc_info=True)
             status, built = "not_applied", "it could not be applied here (an error of ours); our own setting is used"
+        if entry.get("place") and status in ("applied", "nearest"):
+            # asked for ONE place (mesh_requirements: contracts/mesh_controls.place_of): set on the whole mesh, the
+            # nearest there is, and said - never dropped to our default
+            status, built = "nearest", (f"{built} - on the whole mesh, not only {entry['place']}: a setting for one "
+                                        "place is not offered yet")
         out[key] = {"id": entry.get("id"), "status": status, "built": built,
                     **({"value": entry["value"]} if isinstance(entry.get("value"), (int, float)) else {})}
     return out
@@ -174,6 +179,29 @@ def snappy_cells_across(target: dict, value) -> tuple[str, str]:
     return "applied", f"{n} cells across the bore"
 
 
+def vmtk_cells_across(target: dict, value) -> tuple[str, str]:
+    """VMTK (the vessel mesher): cells across every passage - its edge is `edge_length_factor` times the local radius,
+    so 2 / factor cells span a diameter (engines/vmtk/authoring: 0.15 puts about 13 across). The budget fit may
+    coarsen it after (engines/vmtk/vmtk_runner says so on the row)."""
+    n = int(value)
+    if n < 2:
+        target["edge_length_factor"] = 1.0
+        return "nearest", "2 cells across each passage: an edge no longer than the local radius is the coarsest"
+    target["edge_length_factor"] = round(2.0 / n, 5)
+    return "applied", f"{n} cells across every passage (each edge {2.0 / n:.3g} times the local radius)"
+
+
+def cfmesh_cells_across(target: dict, value) -> tuple[str, str]:
+    """cfMesh, a flow through a passage: cells across it - the wall band's cell is the passage's width / N (its
+    typical width, `passage_d`; engines/cfmesh/cfmesh_runner then puts it on the octree and says what it built)."""
+    d = float(target.get("passage_d") or 0.0)
+    if not target.get("internal") or d <= 0.0:
+        return "not_applied", "the passage's width was not measured on this case, so the cells across it cannot be set"
+    n = max(1, int(value))
+    target["wall_cell"] = d / n
+    return "applied", f"{n} cells across the passage (cells of {d / n * 1e3:.3g} mm at its walls)"
+
+
 def snappy_surface_level(target: dict, value) -> tuple[str, str]:
     """snappyHexMesh, a flow through a passage: the wall's refinement level against the background cell. The wall
     cell stays bore / cells across; the level sets how much coarser the background is (2 to the level)."""
@@ -201,5 +229,5 @@ def shell_place_sizes(target: dict, value) -> tuple[str, str]:
     return ("nearest" if got.get("held") else "applied"), SP.summary_words(got)
 
 
-__all__ = ["RECORD_KEY", "RULE", "apply", "asked", "asked_count", "fea_growth", "fea_wall_elements", "report_row",
+__all__ = ["RECORD_KEY", "RULE", "apply", "asked", "asked_count", "cfmesh_cells_across", "vmtk_cells_across", "fea_growth", "fea_wall_elements", "report_row",
            "shell_place_sizes", "snappy_cells_across", "snappy_surface_level"]

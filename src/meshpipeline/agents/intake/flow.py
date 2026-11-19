@@ -685,6 +685,26 @@ def cfd_submission(messages, case: dict, *, engine: str, engine_params: dict) ->
     return out
 
 
+def with_conditions_sentence(messages, args: dict) -> dict:
+    """CFDREQ-8: A SUMMARY REDONE IN THE MODEL'S OWN WORDS KEEPS THE CONDITIONS. The application's plan carries the
+    conditions as one fixed sentence the run reads back (contracts/flow_conditions); a note at the plan card ("use
+    snappyHexMesh") had the model submit a new summary in its own words, the sentence was gone, and the run sized
+    the layers as if no conditions step had been answered (job 9a7fcd14: relative layers, no conditions row). When
+    the conversation answered the conditions and the request carries no such sentence, it is added - the user's own
+    answer, as cfd_submission writes it. `args` itself otherwise."""
+    msgs = [m for m in messages or () if isinstance(m, dict)]
+    request = str(args.get("request_txt") or "")
+    if not cfd_declared(msgs) or not conditions_answered(msgs):
+        return args
+    patches = [p for p in args.get("patches") or () if isinstance(p, dict)]
+    if _FC.read(request, patches) is not None:
+        return args
+    got = flow_conditions(msgs)
+    said = _FC.sentence(got["fluid"], got["speed"], got["wall"], internal=flow_kind_of(msgs) == "internal",
+                        patches=patches)
+    return {**args, "request_txt": f"{request.rstrip()} {said}".strip()}
+
+
 def _engine_defaults(engine: str) -> dict:
     try:
         from meshpipeline.engines.registry import get_spec

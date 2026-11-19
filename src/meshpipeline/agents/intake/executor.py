@@ -1166,6 +1166,9 @@ class IntakeToolExecutor:
                 "about anything specific for this simulation, in its own words - do not ask it or "
                 "paraphrase it. Nothing was saved. After their answer, re-run "
                 "preview_selected_admission and call submit_requirements again."))
+        # CFDREQ-8: a summary the model redid in its own words keeps the conditions the user answered
+        from meshpipeline.agents.intake.flow import with_conditions_sentence
+        args = with_conditions_sentence(st.conversation, args)
         st.submit_args = args
         st.user_notes = notes
         logger.info("Intake: submit_requirements AUTHORIZED - domain=%r notes=%d - job_id=%s",

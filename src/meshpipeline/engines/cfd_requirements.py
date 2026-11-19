@@ -1138,6 +1138,8 @@ def vmtk_spec(ask: Ask, s: Mapping) -> dict:
         out["min_edge_length"] = float(lo)
     if hi is not None:
         out["max_edge_length"] = float(hi)
+    # NOTE-13: the controls the user's words set - cells across every passage is the edge factor (2 / N)
+    out = ask.controls(out)
     if ask.user_budget() or ask.floor is not None:
         out["max_cells"] = ask.budget(int(out.get("max_cells") or _hard()))
     if ask.n_layers is not None:
@@ -1156,6 +1158,35 @@ def vmtk_spec(ask: Ask, s: Mapping) -> dict:
     for e in ask.local:
         ask.not_here(e["id"], "this mesher sizes cells from the local vessel radius; it has no setting for one named place")
     return out
+
+
+def cfmesh_cells_built(ask: Ask, asked: Mapping, *, passage_d: float, wall_cell: float) -> None:
+    """NOTE-13 on cfMesh: the cells across the passage the octree really builds (its width over the cell cfMesh lands
+    on at the walls) against the count asked - said with the number either way."""
+    rid, n = asked.get("id"), asked.get("value")
+    row = ask.rows.get(str(rid or ""))
+    if not row or row.get("status") != "applied" or not n or wall_cell <= 0 or passage_d <= 0:
+        return
+    got = passage_d / float(wall_cell)
+    said = f"{MR._g(round(got, 1))} cells across the passage (cells of {_mm(wall_cell)} at its walls)"
+    if got < 0.95 * float(n):
+        ask.nearest(str(rid), f"{said}: the finest the passage's own cap and the run's time allow")
+    else:
+        ask.done(str(rid), said)
+
+
+def vmtk_cells_built(ask: Ask, edge_length_factor: float) -> None:
+    """NOTE-13 on VMTK: the cells across every passage the spec really carries (2 / its edge factor, after the cell
+    budget's fit) against the count asked - kept as asked, or the nearest with the number."""
+    c = (ask.req.get("controls") or {}).get("cells_across") or {}
+    rid, n = c.get("id"), c.get("value")
+    row = ask.rows.get(str(rid or ""))
+    if not row or row.get("status") != "applied" or not n or edge_length_factor <= 0:
+        return
+    got = 2.0 / float(edge_length_factor)
+    if got < 0.95 * float(n):
+        ask.nearest(str(rid), f"{MR._g(round(got, 1))} cells across every passage: {int(n)} would not fit the cell "
+                              "budget")
 
 
 # #

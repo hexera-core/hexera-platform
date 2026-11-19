@@ -140,6 +140,23 @@ MAX_ALLOWED_PERCENT = 50.0
 #: sizes: an element size anyone means (mm), a growth ratio, a multiple of the global size
 SIZE_RANGE_MM = (1e-4, 1e5)
 GROWTH_RANGE = (1.0, 3.0)
+#: a growth written as a percent ("grow by no more than 25%", "20 percent"): the ratio is 1 + p / 100, for p up to this
+GROWTH_PERCENT_MAX = 200.0
+_PERCENT = re.compile(r"%|\bper\s*cent\b", re.I)
+
+
+def _percent_growth(value: float | None, quote: str, numbers: list[float]) -> tuple[float | None, bool]:
+    """(the growth ratio, whether it was written as a percent) for a growth the model read: a percent sign or the word
+    percent in the user's words makes a number past the ratio range p% (25 -> 1.25), and a ratio the model already
+    turned into one (1.25) is the user's when its percent (25) is in their words. Else the value as read."""
+    if value is None or not _PERCENT.search(quote or ""):
+        return value, False
+    if GROWTH_RANGE[1] < value <= GROWTH_PERCENT_MAX and _in_quote(value, numbers):
+        return 1.0 + value / 100.0, True
+    if GROWTH_RANGE[0] < value <= GROWTH_RANGE[1] and not _in_quote(value, numbers) \
+            and _in_quote(round((value - 1.0) * 100.0, 6), numbers):
+        return value, True
+    return value, False
 MULTIPLE_RANGE = (0.01, 100.0)
 
 
@@ -178,7 +195,8 @@ words for it, copied exactly (one line or phrase, as short as holds the whole re
   near_wall = the cell or element size AT THE WALLS / on the body's surface, for the whole mesh ("surface cells 2 mm",
   "wall cell size 1 mm", "2 mm cells on the surface"). A first LAYER height is a layer, not this.
   growth = how fast cell or element sizes may grow from one to the next through the volume ("growth rate 1.2", "cell
-  size ratio at most 1.3"): unit "none". A growth or expansion ratio of the prism LAYERS is a layer, not this.
+  size ratio at most 1.3"): unit "none". A percent is the ratio 1 + percent / 100 ("grow by no more than 25% from
+  one to the next" -> 1.25). A growth or expansion ratio of the prism LAYERS is a layer, not this.
   thickness = a wall or shell thickness they state for the part ("2 mm sheet", "thickness = 1.5 mm").
   value and unit exactly as written: the unit beside the number (mm, cm, m, in for inches or ", um for microns);
   "x_global" when the number is a multiple of the global size ("0.5 x Global Size", "half the global size" -> 0.5,
@@ -192,8 +210,8 @@ words for it, copied exactly (one line or phrase, as short as holds the whole re
 - layers: the boundary layers at the walls (prism, inflation or wall layers; CFD). count ("5 prism layers" -> 5, "no
   boundary layers" -> 0); first_height ("first layer 0.02 mm", "first cell height 1e-5 m", "wall spacing 10 um"),
   value and unit as written; total_thickness (the whole stack: "layers 3 mm thick in total"); growth (how much each
-  layer grows over the one under it: "layer growth 1.2", "expansion ratio 1.15", "inflation rate 1.2" - unit
-  "none"); y_plus (the y+ they aim at: "y+ around 1" -> 1, "y+ < 5" -> 5, "y+ 30-100" -> 30, the low end of a
+  layer grows over the one under it: "layer growth 1.2", "expansion ratio 1.15", "inflation rate 1.2", "each layer
+  20% thicker" -> 1.2 - unit "none"); y_plus (the y+ they aim at: "y+ around 1" -> 1, "y+ < 5" -> 5, "y+ 30-100" -> 30, the low end of a
   range) - unit "none".
 - local: a size or a refinement in ONE named place, each with `where` = the place in the user's words ("the wing",
   "the inlet", "the bracket", "the holes", "the wake", "the gap between the wheels and the floor"). what: size (a
@@ -245,8 +263,10 @@ than 5 mm") is not a request: list only the value they ask for (3, 3, 2).
 An empty note, or one with no mesh requirement: empty lists (other still lists what was written)."""
 #: NOTE-13: the controls the registry declares, one line each, generated from contracts/mesh_controls
 SYSTEM += ("\n- controls: a setting from this list, each with its key, the user's number (`value`, 0 for a choice) or "
-           "choice (`choice`, \"\" for a number), the unit written beside it, `where` (\"\" for the whole mesh, else "
-           "the place in the user's words), `strict` (true only when they say it must hold) and the quote:\n"
+           "choice (`choice`, \"\" for a number), the unit written beside it, `where` (\"\" for the whole mesh - also "
+           "when the words only name what the setting is about: \"through each wall\", \"across the pipe\", "
+           "\"everywhere\"; else the ONE place in the user's words, \"the left flange\"), `strict` (true only when "
+           "they say it must hold) and the quote:\n"
            + _MC.prompt_lines())
 
 
@@ -970,7 +990,9 @@ def _flow_fields(raw: Mapping, out: dict, quoted, row, dropped: list[str], state
         if what not in LAYERS:
             dropped.append(f"{tag}: not a boundary-layer setting this step reads: not applied")
             continue
-        if value is None or value < 0 or not (_in_quote(value, numbers) or (what == "count" and value == 0
+        # a layer growth written as a percent is the ratio 1 + p / 100 ("each layer 20% thicker" -> 1.2)
+        value, as_pct = _percent_growth(value, quote, numbers) if what == "growth" else (value, False)
+        if value is None or value < 0 or not (as_pct or _in_quote(value, numbers) or (what == "count" and value == 0
                                                                           and re.search(r"\b(no|without|zero)\b",
                                                                                         quote, re.I))):
             dropped.append(f"{tag}: the number {e.get('value')!r} is not in those words: not applied")
@@ -1242,10 +1264,12 @@ def _check(arguments: str, notes: str, route: str = "") -> tuple[dict, list[str]
             if not any(_squash(quote) == _squash(str(x.get("quote") or "")) for x in _rows_of(raw, "controls")):
                 dropped.append(f"{tag}: a count of elements through or across a wall is not a size: not applied")
             continue
-        if value is None or value <= 0 or not _in_quote(value, numbers):
+        # a growth written as a percent is the ratio 1 + p / 100 ("no more than 25%" -> 1.25), never "a growth of 25"
+        value, as_pct = _percent_growth(value, quote, numbers) if what == "growth" else (value, False)
+        if value is None or value <= 0 or not (as_pct or _in_quote(value, numbers)):
             dropped.append(f"{tag}: the number {e.get('value')!r} is not in those words: not applied")
             continue
-        if _in_quote(value, replaced_numbers(quote)):
+        if not as_pct and _in_quote(value, replaced_numbers(quote)):
             sizes_swapped.setdefault(what, (_g(value), quote))
             continue
         key = {"global": "global_mm", "min_edge": "min_edge_mm", "max_edge": "max_edge_mm", "growth": "growth",
@@ -1466,10 +1490,11 @@ def _check(arguments: str, notes: str, route: str = "") -> tuple[dict, list[str]
             continue
         quote, numbers = got_q
         tag = f'"{_short(quote)}"'
-        where = " ".join(str(e.get("where") or "").split())[:120]
-        if where and c.where == ("mesh",) and not re.search(r"\b(?:whole|every|all|entire)\b", where, re.I):
-            dropped.append(f"{tag}: this setting is for the whole mesh only, not for {where} yet: not applied")
-            continue
+        # A `where` that only restates the control's own subject ("each wall", "the wall thickness", "everywhere",
+        # "the inlet passage", "the bore": contracts/mesh_controls.place_of) IS the whole-mesh ask. Only one place among
+        # several makes it a place-specific one, and then it is still applied - to the whole mesh, the nearest we
+        # have, and said on its row - never dropped to our default (jobs bfdc60b1, f2c6fc7d: 2 through for 4 and 5)
+        place = _MC.place_of(c, " ".join(str(e.get("where") or "").split())[:120]) if c.where == ("mesh",) else ""
         if c.kind == "choice":
             choice = str(e.get("choice") or "")
             said_it = {"mm": r"\bmm\b|millimet", "m": r"\bm\b|\bmetres?\b|\bmeters?\b"}.get(choice, re.escape(choice))
@@ -1495,6 +1520,9 @@ def _check(arguments: str, notes: str, route: str = "") -> tuple[dict, list[str]
         if c.key in controls:
             _later(controls[c.key]["quote"], quote)
             unrow(f"control:{c.key}")
+        if place:
+            entry["place"] = place
+            words += f" (asked for {place}: set on the whole mesh, the nearest there is)"
         entry.update(quote=quote, strict=bool(e.get("strict")), id=row(f"control:{c.key}", quote, words))
         controls[c.key] = entry
     if controls:
@@ -1505,7 +1533,9 @@ def _check(arguments: str, notes: str, route: str = "") -> tuple[dict, list[str]
     not_mesh: list[str] = []             # NOTE-12: asks that are no mesh setting, told with what to do instead
     typed = list(covered)                # the quotes read into a field: a line told "not applied" is what is left
     for e in _rows_of(raw, "other"):
-        quote = " ".join(str(e.get("quote") or "").split())[:400]
+        quote = " ".join(_unmarked(str(e.get("quote") or "")).split())[:400]
+        if not quote:
+            continue        # only a note's label ("[n1] (typed in the notes box)"): the application's words, no ask
         covered.append(quote)
         if rescued and kind_in_words(quote):
             continue        # NOTE-11: read above as the element kind
@@ -1523,13 +1553,15 @@ def _check(arguments: str, notes: str, route: str = "") -> tuple[dict, list[str]
               and not _notes_unit(quote, stated)):
             # read into no field (the flow's speed for a y+ is read: it is not told again); a heading asks nothing
             not_mesh.append(quote)
-    # NOTE-8's floor: words about the mesh that the reading listed NOWHERE are told too, as the user wrote them
-    for piece in _left_over(notes, covered):
+    # NOTE-8's floor: words about the mesh that the reading listed NOWHERE are told too, as the user wrote them (the
+    # notes' own labels and fences are the application's words, never told back as the user's)
+    bare = _unmarked(notes)
+    for piece in _left_over(bare, covered):
         if piece not in not_applied and not (rescued and kind_in_words(piece)) and not asks_nothing(piece):
             not_applied.append(piece)
     # NOTE-12's floor: an ask AROUND the mesh (the files, their units, numbering, time, cost, the data) that the reading
     # listed nowhere is told as not a mesh setting - two words are enough ("export CGNS")
-    for piece in _left_over(notes, [*covered, *not_applied], words=_AROUND_WORDS, least=2):
+    for piece in _left_over(bare, [*covered, *not_applied], words=_AROUND_WORDS, least=2):
         if piece not in not_mesh and not asks_nothing(piece) and not _notes_unit(piece, stated):
             not_mesh.append(piece)
     if not_mesh:
@@ -1566,6 +1598,48 @@ def requirements_of(sec: Mapping | None) -> dict | None:
 def not_applied_words(sec: Mapping | None) -> list[str]:
     """The lines of words() that say what was NOT applied (NOTE-8): they stay with the result."""
     return [w for w in words(sec) if w.startswith("Not applied")] if sec and sec.get("status") == "used" else []
+
+
+#: the application's own marks in a notes block (contracts/user_notes.render): "[n1] (typed in the notes box)", the
+#: fences round each note - never the user's words
+_NOTE_MARKS = re.compile(r"\[n\d+\]\s*\([^)\n]*\)|<<<|>>>")
+
+
+def _unmarked(text: str) -> str:
+    """The text with the notes block's labels and fences taken out (each left as a line break)."""
+    return _NOTE_MARKS.sub("\n", str(text or ""))
+
+
+def decided_asks(sec: Mapping | None, *, skip: tuple[str, ...] = ()) -> list[str]:
+    """NOTE-13: EVERY ask of the reading the rules decide and tell the user with what was built - applied, the nearest,
+    or not applied (a row of the set, an ask the checks set aside, words no setting matches) - for the AI steps that
+    also see the notes, so none of them claims, applies or refuses one in its own words. `skip`: row fields an AI step
+    still reads itself (the FEA AI's element count, "cells:")."""
+    if not sec or sec.get("status") != "used":
+        return []
+    req = sec.get("requirements") or {}
+    out = [str(r["asked"]) for r in req.get("rows") or []
+           if isinstance(r, Mapping) and r.get("asked") and not str(r.get("field") or "").startswith(skip)]
+    out += [str(d) for d in sec.get("dropped") or [] if str(d).strip()]
+    out += [f'"{_short(str(q))}" (no setting of ours matches it)' for q in sec.get("not_applied") or [] if str(q).strip()]
+    return out[:40]
+
+
+#: the instruction beside decided_asks in an AI step's prompt
+DECIDED_WORDS = ("The asks in {key} are decided by the rules - each is applied, applied as near as this mesher allows, "
+                 "or not applied - and told to the user with what was built. They are not yours: plan as if they "
+                 "were not asked (the rules set them over your plan), and leave them out of notes_remark - never say "
+                 "you applied, capped, kept, could not set or treated one as guidance. Leave notes_remark empty when "
+                 "nothing else in the notes was yours to act on.")
+
+
+def decided_block(sec: Mapping | None, *, skip: tuple[str, ...] = ()) -> str:
+    """decided_asks as a block of a prompt's text, with its instruction ('' with none)."""
+    asks = decided_asks(sec, skip=skip)
+    if not asks:
+        return ""
+    return ("THE ASKS THE RULES DECIDE (decided_by_rules):\n" + "\n".join(f"- {a}" for a in asks) + "\n"
+            + DECIDED_WORDS.format(key="decided_by_rules"))
 
 
 #: NOTE-12: how a line that is no mesh setting starts

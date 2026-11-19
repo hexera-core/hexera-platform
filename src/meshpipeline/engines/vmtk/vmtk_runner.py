@@ -484,6 +484,8 @@ def configure_mesh(workspace, *, strategy: dict, wall_patch: str = "",
         _fit = s.get("boundary_layers")
         if _ask.n_layers is not None and isinstance(_fit, int) and _fit < int(_ask.n_layers):
             _ask.nearest("layers:count", f"{_fit} layers: {int(_ask.n_layers)} would not fit the cell budget")
+        # NOTE-13: cells across set by the edge factor, which the budget fit may have coarsened - said with the count
+        CR.vmtk_cells_built(_ask, float(s.get("edge_length_factor") or 0.0))
         _ask.write(ws)
         CR.say_sync(ws, _ask.lines())
     out: dict = {"spec": s, "pype": " ".join(build_pype(s))}

@@ -156,6 +156,50 @@ def test_the_first_layer_is_checked_on_the_built_mesh(tmp_path):
     assert row["met"] is None
 
 
+def test_a_summary_redone_in_the_models_words_keeps_the_conditions():
+    """E3, job 9a7fcd14: a "Use snappyHexMesh" note had the model submit a new summary in its own words, the conditions
+    sentence was gone, and the run sized the layers as if the conditions were never answered."""
+    from meshpipeline.agents.intake import flow as F
+    msgs = [
+        {"role": "user", "content": "internal CFD"},
+        {"role": "assistant", "content": "GEOMETRY CHECK (confirmed by the user): the file is the part's wall, hollow "
+                                         "inside for the fluid (tapered pipe diffuser), input_kind body-surface; the "
+                                         "fluid flows through it. Openings: inlet (inlet), 149 mm across at (0, 0, 0) "
+                                         "mm; outlet (outlet), 221 mm across at (693, 0, 124) mm."},
+        {"role": "assistant", "content": F.conditions_question([])},
+        {"role": "user", "content": "OK"},
+        {"role": "assistant", "content": "Here's the plan. Add any notes, then press Proceed."},
+        {"role": "user", "content": "Use snappyHexMesh"},
+    ]
+    patches = [{"name": "inlet", "type": "inlet", "diameter_mm": 149}, {"name": "outlet", "type": "outlet"}]
+    args = {"request_txt": "Internal flow through the tapered pipe diffuser, meshed with snappyHexMesh.",
+            "patches": patches}
+    got = F.with_conditions_sentence(msgs, args)
+    c = FC.read(got["request_txt"], patches)
+    assert c is not None and c["fluid"] == "water" and c["velocity_ms"] == 1.0 and c["wall"] == "functions"
+    assert got["request_txt"].startswith("Internal flow through the tapered pipe diffuser, meshed with snappyHexMesh.")
+    # a summary that carries it already, or a run with no conditions step: left as it is
+    assert F.with_conditions_sentence(msgs, got) is got
+    assert F.with_conditions_sentence(msgs[:2], args) is args
+
+
+def test_the_cfd_mesh_report_lists_the_users_asks():
+    """E2: the CFD mesh report listed only the reviewer's criteria, never "You asked" rows."""
+    from meshpipeline.render import mesh_report as RPT
+    payload = {"quality": {"criteria": []}, "surface": {"quality": {"cells": 100}},
+               "asked": {"rows": [
+                   {"asked": "y+ of about 1 at the walls", "delivered": "first layer 0.02243 mm high, as asked; layers "
+                    "on 100% of the wall", "met": True, "applied": True, "from": "flow conditions"},
+                   {"asked": "30 cells across the passage", "delivered": "applied as a setting - 30 cells across",
+                    "met": None, "applied": True},
+                   {"asked": "solver files in mm", "delivered": "not applied - not offered yet", "met": None,
+                    "applied": False}]}}
+    html = RPT._cfd_limits(payload)
+    assert "You asked: Y+ of about 1 at the walls (from your flow conditions)" in html
+    assert "first layer 0.02243 mm high, as asked; layers on 100% of the wall" in html
+    assert html.count('class="ok">Met<') == 1 and "Set as asked" in html and "Not applied" in html
+
+
 def test_the_run_reads_the_conditions_with_no_notes(tmp_path):
     # before CFDREQ-8 a run with no notes wrote nothing here: the conditions step's answer reached no engine
     asyncio.run(CR.read_for_attempt(tmp_path, {"request_txt": INT_RESOLVED, "purpose": "internal_cfd"}))

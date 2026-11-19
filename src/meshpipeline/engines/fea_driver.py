@@ -2675,7 +2675,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     if asked is None:
         asked = await read_requirements(ws, state, job_id=job_id, run=run, publish=publish, say=False)
     from meshpipeline.engines import mesh_requirements as _MR
-    ai = await FA.decide(record, FA.with_rules_asks(state or {}, _MR.requirements_of(asked)), P.zones(record),
+    ai = await FA.decide(record, FA.with_rules_asks(state or {}, asked), P.zones(record),
                          diag_m=diag_m, limit=element_limit(record)[0], job_id=job_id, run=run,
                          wait_s=ai_wait_s(run))
     # what the AI did with the user's notes, kept for the result's "From your notes" line

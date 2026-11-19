@@ -40,9 +40,12 @@ def test_a_control_is_read_with_the_usual_checks():
     _req, dropped, _na = _read("3 elements through the thickness", controls=[_ctl("wall_elements", "3 elements through "
                                                                                   "the thickness", 5)])
     assert "not in those words" in dropped[0]
-    _req, dropped, _na = _read("3 elements through the ribs", controls=[_ctl("wall_elements", "3 elements through the "
-                                                                             "ribs", 3, where="the ribs")])
-    assert "whole mesh only" in dropped[0]
+    # one place among several: still applied - to the whole mesh, the nearest there is - and said, never dropped
+    req, dropped, _na = _read("3 elements through the ribs", controls=[_ctl("wall_elements", "3 elements through the "
+                                                                            "ribs", 3, where="the ribs")])
+    assert dropped == [] and req["controls"]["wall_elements"]["place"] == "the ribs"
+    assert req["rows"][0]["asked"] == ("3 elements through the thickness of every wall (asked for the ribs: set on "
+                                       "the whole mesh, the nearest there is)")
     req, dropped, _na = _read("Export in mm.", controls=[_ctl("file_units", "Export in mm.", choice="mm")])
     assert dropped == [] and req["controls"]["file_units"]["choice"] == "mm"
 
@@ -160,14 +163,16 @@ def test_the_fea_ai_is_told_which_asks_the_rules_apply_and_the_parts_reader_says
                          counts=[{"what": "target", "value": 500000, "quote": "about 500k elements"}])
     notes = {"user_notes": [{"text": "5 elements through the thickness, about 500k elements"}]}
     record = {"faces": {}, "hot_spots": [], "thickness": {"min_mm": 1.0}}
-    # the AI still reads the count itself (AI-fea-4): only what the rules apply is listed
-    assert FA.rules_asks(req) == ["5 elements through the thickness of every wall"]
-    told = FA.brief(record, FA.with_rules_asks(notes, req), [], diag_m=0.02, limit=1_000_000)
-    assert told["notes_applied_by_rules"] == ["5 elements through the thickness of every wall"]
-    assert "leave notes_remark empty when nothing else in the notes was yours to act on" in told["user_notes_fea"]
-    # nothing the rules apply: the brief (and the decision cache's key) is the one it always was
+    sec = MR.section("used", requirements=req)
+    # the AI still reads the count itself (AI-fea-4): only what the rules decide is listed
+    assert FA.rules_asks(sec) == ["5 elements through the thickness of every wall"]
+    told = FA.brief(record, FA.with_rules_asks(notes, sec), [], diag_m=0.02, limit=1_000_000)
+    assert told["notes_decided_by_rules"] == ["5 elements through the thickness of every wall"]
+    assert "Leave notes_remark empty when nothing else in the notes was yours to act on" in told["user_notes_fea"]
+    assert "treated one as guidance" in told["user_notes_fea"]
+    # nothing the rules decide: the brief (and the decision cache's key) is the one it always was
     assert FA.with_rules_asks(notes, None) is notes
-    assert "notes_applied_by_rules" not in FA.brief(record, notes, [], diag_m=0.02, limit=1_000_000)
+    assert "notes_decided_by_rules" not in FA.brief(record, notes, [], diag_m=0.02, limit=1_000_000)
     # the parts reader found no part named: its explanation is not a line of the result
     nothing = {"status": "used", "entries": [], "dropped": [], "unsure": [],
                "words": ["I found only an instruction for 5 elements through the thickness, which is an element count "
@@ -202,6 +207,131 @@ def test_the_report_holds_the_walls_to_the_count_asked():
                          controls=[_ctl("wall_elements", "5 elements through the thickness", 5)])
     assert CA.asked_count({"controls": CA.apply("fea_solid", req, knobs)}) == 5
     assert CA.asked_count({}) is None
+
+
+@pytest.mark.parametrize(("key", "quote", "value", "where"), [
+    ("wall_elements", "4 elements across the thickness of each wall", 4, "each wall"),            # job bfdc60b1
+    ("wall_elements", "I need five elements through the wall thickness everywhere", 5,
+     "the wall thickness everywhere"),                                                            # job f2c6fc7d
+    ("wall_elements", "4 elements through all the walls", 4, "all the walls"),
+    ("wall_elements", "3 elements through the plate", 3, "the plate"),
+    ("cells_across", "use 36 cells across the inlet passage", 36, "the inlet passage"),
+    ("cells_across", "30 cells across the pipe", 30, "the pipe"),
+    ("cells_across", "at least 20 cells across the bore", 20, "the bore"),
+    ("cells_across", "25 cells across the duct", 25, "the duct"),
+    ("surface_level", "surface refinement level 3 on the body", 3, "the body"),
+    ("surface_level", "refine the walls to level 2", 2, "the walls"),
+])
+def test_a_where_that_only_restates_the_controls_subject_is_the_whole_mesh(key, quote, value, where):
+    req, dropped, _na = _read(quote, route="fea" if key == "wall_elements" else "flow",
+                              controls=[_ctl(key, quote, value, where=where)])
+    assert dropped == [], dropped
+    got = req["controls"][key]
+    assert got["value"] == value and "place" not in got
+    assert "asked for" not in req["rows"][0]["asked"]
+
+
+@pytest.mark.parametrize(("key", "quote", "value", "where"), [
+    ("wall_elements", "4 elements through the left flange", 4, "the left flange"),
+    ("cells_across", "40 cells across the second branch", 40, "the second branch"),
+    ("wall_elements", "3 elements through the bracket's web", 3, "the bracket's web"),
+])
+def test_one_place_among_several_is_applied_to_the_whole_mesh_and_said(key, quote, value, where):
+    req, dropped, _na = _read(quote, route="fea" if key == "wall_elements" else "flow",
+                              controls=[_ctl(key, quote, value, where=where)])
+    assert dropped == [] and req["controls"][key]["place"] == where
+    knobs = {"zones": [], "growth": 1.3, "gentle": False, "internal": True, "cells_across": 24, "surface_level": 2}
+    got = CA.apply("fea_solid" if key == "wall_elements" else "snappy", req, knobs)[key]
+    assert got["status"] == "nearest"
+    assert got["built"].endswith(f"on the whole mesh, not only {where}: a setting for one place is not offered yet")
+
+
+def test_the_registry_declares_each_controls_own_subject_and_the_reader_is_told():
+    for key in ("wall_elements", "cells_across", "surface_level"):
+        assert MC.CONTROLS[key].subject, key
+    assert MC.place_of(MC.CONTROLS["wall_elements"], "every wall") == ""
+    assert MC.place_of(MC.CONTROLS["cells_across"], "the outlet pipe") == ""
+    assert MC.place_of(MC.CONTROLS["cells_across"], "the left branch") == "the left branch"
+    assert '`where` stays "" when the words only name its own subject (wall, walls, thickness' in MR.SYSTEM
+    assert '"through each wall", "across the pipe"' in MR.SYSTEM
+
+
+def test_cells_across_reaches_vmtk_and_cfmesh_through_the_registry():
+    """4d (VMTK, "30 cells across the pipe"): edge_length_factor 0.0667 was set outside the registry and the result
+    said "could not be applied"; 4e (cfMesh): "capped at 20+ across" said over 16.8 built. One seam each now."""
+    req, _d, _na = _read("30 cells across the pipe", route="flow",
+                         controls=[_ctl("cells_across", "30 cells across the pipe", 30, where="the pipe")])
+    assert isinstance(MC.lane_of("vmtk", "cells_across"), str) and isinstance(MC.lane_of("cfmesh", "cells_across"), str)
+    ask = CR.Ask(req, "vmtk")
+    spec = CR.vmtk_spec(ask, {"edge_length_factor": 0.15, "boundary_layers": 5})
+    assert spec["edge_length_factor"] == pytest.approx(2 / 30, rel=1e-4)
+    rid = req["controls"]["cells_across"]["id"]
+    assert ask.rows[rid]["status"] == "applied" and "30 cells across every passage" in ask.rows[rid]["built"]
+    CR.vmtk_cells_built(ask, 0.16)                          # the budget fit coarsened it to 12.5 across
+    assert ask.rows[rid]["status"] == "nearest" and ask.rows[rid]["built"].startswith("12.5 cells across")
+    # cfMesh: the wall band's cell is the passage's width over the count, and the octree's cell is said
+    ask = CR.Ask(req, "cfmesh")
+    knobs = ask.controls({"internal": True, "passage_d": 0.29, "wall_cell": 0.0172})
+    assert knobs["wall_cell"] == pytest.approx(0.29 / 30)
+    CR.cfmesh_cells_built(ask, req["controls"]["cells_across"], passage_d=0.29, wall_cell=0.29 / 32)
+    assert ask.rows[rid]["status"] == "applied" and ask.rows[rid]["built"].startswith("32 cells across the passage")
+    CR.cfmesh_cells_built(ask, req["controls"]["cells_across"], passage_d=0.29, wall_cell=0.0172)
+    assert ask.rows[rid]["status"] == "nearest" and ask.rows[rid]["built"].startswith("16.9 cells across")
+    # no measured passage: told, never set blind
+    ask = CR.Ask(req, "cfmesh")
+    ask.controls({"internal": False, "passage_d": 0.0, "wall_cell": 0.0172})
+    assert ask.rows[rid]["status"] == "not_applied"
+
+
+def test_every_ask_the_rules_decide_is_shown_to_the_ai_steps(tmp_path):
+    """1b/1c/3c: the AI remark claimed asks the checks had set aside ("limiting element growth to no more than 25%"
+    while the plan kept 1.3); the CFD builder's and planner's remarks claimed cells across and y+ the result told
+    otherwise. Every ask the reading holds - applied, nearest, set aside, no setting - is listed for them."""
+    from meshpipeline.agents.builder.attempt import user_notes_note
+    req, dropped, na = _read("growth 25 and smooth transitions please",
+                             sizes=[{"what": "growth", "value": 9, "unit": "none", "quote": "growth 25"}],
+                             other=[{"quote": "smooth transitions please", "kind": "mesh"}])
+    sec = MR.section("used", requirements=req, dropped=dropped, not_applied=na)
+    asks = MR.decided_asks(sec)
+    assert any("growth 25" in a for a in asks) and any("smooth transitions please" in a for a in asks)
+    block = MR.decided_block(sec)
+    assert block.startswith("THE ASKS THE RULES DECIDE") and "never say you applied, capped, kept" in block
+    MR.write(tmp_path, sec)
+    note = user_notes_note(tmp_path, {"user_notes": [{"id": "n1", "text": "growth 25 and smooth transitions please",
+                                                      "source": "console"}]})
+    assert "THE ASKS THE RULES DECIDE" in note and "growth 25" in note
+    assert MR.decided_block(MR.section("none")) == ""
+
+
+def test_a_growth_written_as_a_percent_is_its_ratio():
+    """3c: "elements should grow by no more than 25% from one to the next" was read as 25 and refused."""
+    q = "elements should grow by no more than 25% from one to the next"
+    for value in (25, 1.25):                                   # the model's raw number, or its ratio
+        req, dropped, _na = _read(q, sizes=[{"what": "growth", "value": value, "unit": "none", "quote": q}])
+        assert dropped == [] and req["sizes"]["growth"] == pytest.approx(1.25), (value, dropped)
+    req, dropped, _na = _read("growth 20 percent", sizes=[{"what": "growth", "value": 20, "unit": "none",
+                                                           "quote": "growth 20 percent"}])
+    assert req["sizes"]["growth"] == pytest.approx(1.2)
+    # no percent written: a 25 is still no growth anyone means
+    _req, dropped, _na = _read("growth 25", sizes=[{"what": "growth", "value": 25, "unit": "none",
+                                                    "quote": "growth 25"}])
+    assert "a growth of 25 is not between 1 and 3" in dropped[0]
+    # the layers' growth the same
+    req, dropped, _na = _read("each layer 20% thicker", route="flow",
+                              layers=[{"what": "growth", "value": 20, "unit": "none", "quote": "each layer 20% thicker"}])
+    assert dropped == [] and req["layers"]["growth"] == pytest.approx(1.2)
+    assert "A percent is the ratio 1 + percent / 100" in MR.SYSTEM
+
+
+def test_the_notes_labels_are_never_told_back_as_the_users_words():
+    """E1: 'Not a mesh setting: "[n1] (typed in the notes box)"'."""
+    notes = "[n1] (typed in the notes box)\n<<<\n4 elements through every wall\n>>>"
+    base = {"stated_unit": "none", "sizes": [], "counts": [], "layers": [], "local": [], "physics": [],
+            "element_kind": [], "limits": [], "controls": [_ctl("wall_elements", "4 elements through every wall", 4)],
+            "other": [{"quote": "[n1] (typed in the notes box)", "kind": "not_mesh"}]}
+    req, dropped, na = MR.check(json.dumps(base), notes, route="fea")
+    assert not any("typed in the notes box" in str(x) for x in [*(req.get("not_mesh") or []), *na, *dropped])
+    assert req["controls"]["wall_elements"]["value"] == 4
 
 
 def test_a_gentler_grading_the_ladder_needed_is_kept_and_said():

@@ -157,11 +157,28 @@ def _fea_limits(fea: Mapping) -> str:
 _CELL_TYPES = ("hexahedra", "polyhedra", "prisms", "pyramids", "tetrahedra")
 
 
+def _asked_rows(payload: Mapping) -> list[list[str]]:
+    """CFDREQ-6: each of the user's own asks against what the flow mesh delivers (application/viewer_payload's
+    "asked"), as rows of the limits table - the same asks the result's "From your notes" line counts."""
+    out = []
+    for r in (_m(x) for x in _l(_m(payload.get("asked")).get("rows"))):
+        asked = str(r.get("asked") or "")
+        came = f" (from your {r.get('from')})" if r.get("from") and r.get("from") != "stage" else ""
+        met = r.get("met")
+        result = (_ok(met) if met in (True, False) else
+                  '<span class="na">Not applied</span>' if r.get("applied") is False else
+                  '<span class="na">Set as asked</span>')
+        out.append([_e(f"You asked: {asked[:1].upper() + asked[1:]}{came}"), _e(r.get("delivered") or ""),
+                    _e("as asked"), result])
+    return out
+
+
 def _cfd_limits(payload: Mapping) -> str:
     q = _m(payload.get("quality"))
     rows = [[_e(r.get("label") or r.get("key")), _e(_num(r.get("measured"))), _e(r.get("ok_when") or ""),
              _ok(r.get("passed")) + (" <small>(decides the run)</small>" if r.get("gating") else "")]
             for r in (_m(x) for x in _l(q.get("criteria")))]
+    rows += _asked_rows(payload)
     surface = _m(payload.get("surface"))
     sq = _m(surface.get("quality"))
     cells = sq.get("cells")
