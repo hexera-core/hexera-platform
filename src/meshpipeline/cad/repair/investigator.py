@@ -44,6 +44,11 @@ logger = logging.getLogger(__name__)
 
 #: What this author reports itself as, beside `regions-rules-v1` and `regions-model-v1`.
 LABEL = "regions-investigator-v1"
+
+#: The corpus harness installs a transcript sink here and a record list for a replay arm. Both stay
+#: `None` in the product: a run writes no transcript and replays nothing unless a harness asks.
+sink = None
+replay_records = None
 #: The trace name every investigator round carries, so the router's traces attribute the spend.
 TRACE_NAME = "RepairInvestigator"
 #: The conversation's byte ceiling. Past it, the OLDEST tool results become `{"elided": true}`
