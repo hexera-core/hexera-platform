@@ -1277,6 +1277,18 @@ def map_faces(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], mm: float
                 bad |= faces_of[r]
                 continue
             wished = sorted({wish[c] for c in cs if c in wish}) if wish else []
+            if pre and BOX_SPLITS_HELD and TRANSITION_CELLS and wish and wish_long:
+                # SHMESH-51o20: a two-ring bolt box's side in a class another curve holds at another count (a narrow
+                # strip's, a block preset's) keeps its own: the mapped cell beside the HOLDING curve goes free - a
+                # transition cell (SHMESH-51o17) between the two counts - and the rest of the class takes the box's
+                held_n = next(iter(pre))
+                mine = [c for c in cs if c in wish_long and c in wish and wish[c] != held_n and c not in preset
+                        and c not in forced]
+                holders = [c for c in cs if c in preset or c in forced]
+                near = {t_ for t_ in faces_of[r] for c in holders if any(c in sd for sd in cand[t_][0])}
+                if mine and near and not any(c in sd for t_ in near for sd in cand[t_][0] for c in mine):
+                    bad |= near
+                    continue
             if pre:
                 fixed_roots.add(r)
                 n = pre.pop()
@@ -1911,6 +1923,10 @@ BOX_BUMP = True
 #: put past the user's longest edge, their bands came out with corners of 3 degrees and were refused, and the four holes
 #: fell to one ring - 12 of 12 two rings to 8)
 BOX_KEEPS_COUNT = True
+#: SHMESH-51o20: ... nor a count another curve of its class holds: the cell beside the holding curve goes free and
+#: takes a transition between the two counts (the real column's 12-hole plate: a 47 x 4.2 mm strip two and three cells
+#: out held its four end boxes' sides at 6; their bands were refused and the four holes fell to one ring)
+BOX_SPLITS_HELD = True
 #: SHMESH-51n: ... only for a side of BUMP_FROM segments or more: 8 round a hole (4 a side), a side of 6 left a band
 #: corner of 2 to 3 degrees and the band was refused every time (lab and the real column)
 BUMP_FROM = 5
