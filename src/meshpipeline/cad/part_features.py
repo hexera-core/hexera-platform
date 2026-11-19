@@ -92,15 +92,15 @@ def features(record: Mapping, surface) -> tuple[list[dict], dict[str, list[str]]
     # is listed" and nothing was refined). A blend is a torus, a hollow cylinder that is no hole or bore, or a convex
     # one no larger than its part's typical wall (larger ones are bosses or shafts, below).
     part_walls: dict[str, list[float]] = {}
-    for name, row in faces.items():
-        w = float(row.get("thickness_wall_mm") or row.get("thickness_median_mm") or 0.0)
-        if w > 0:
-            part_walls.setdefault(_part_of(name), []).append(w)
-    typical = {p: sorted(ws)[len(ws) // 2] for p, ws in part_walls.items()}
-    blends = by_part([(float(row["radius_mm"]), [name]) for name, row in faces.items()
-                      if row.get("radius_mm") and name not in taken and float(row["radius_mm"]) > 0
-                      and (row.get("kind") == "torus" or (row.get("kind") == "cylinder" and (
-                          row.get("concave") or float(row["radius_mm"]) <= typical.get(_part_of(name), 0.0))))])
+    for fname, frow in faces.items():
+        fw = float(frow.get("thickness_wall_mm") or frow.get("thickness_median_mm") or 0.0)
+        if fw > 0:
+            part_walls.setdefault(_part_of(fname), []).append(fw)
+    wall_of_part = {p: sorted(ws_)[len(ws_) // 2] for p, ws_ in part_walls.items()}
+    blends = by_part([(float(fr["radius_mm"]), [fn]) for fn, fr in faces.items()
+                      if fr.get("radius_mm") and fn not in taken and float(fr["radius_mm"]) > 0
+                      and (fr.get("kind") == "torus" or (fr.get("kind") == "cylinder" and (
+                          fr.get("concave") or float(fr["radius_mm"]) <= wall_of_part.get(_part_of(fn), 0.0))))])
     for _p, seen in blends.items():
         for r, group in _groups(seen):
             n = len(group)
