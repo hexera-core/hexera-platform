@@ -256,7 +256,15 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup-hexera
       - name: Install CalculiX
-        run: sudo apt-get install -y --no-install-recommends calculix-ccx
+        run: |
+          for attempt in 1 2 3 4; do
+            sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 \
+              install -y --no-install-recommends calculix-ccx && exit 0
+            [ "${attempt}" -lt 4 ] || break
+            echo "::warning::apt-get attempt ${attempt} failed; retrying in $((attempt * 30))s"
+            sleep $((attempt * 30))
+          done
+          exit 1
       - name: Textbook cases, meshed and solved
         env:
           HEXERA_CCX: /usr/bin/ccx
