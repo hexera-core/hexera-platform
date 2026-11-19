@@ -23,6 +23,26 @@ class RepairTarget(str, Enum):
     meshing = "meshing"
 
 
+class RepairGoal(str, Enum):
+    """What a repair run is FINISHING FOR. One loop, three finishing verdicts.
+
+    A SEPARATE ENUM FROM `RepairTarget`, deliberately. `RepairTarget` is read by the inspect path
+    and carried in the policy payload as a statement about what the caller WANTS from a file;
+    adding a third member to it would change what those readers can receive. This enum is read
+    only by `cad/repair/goal.py`, which decides how a finished run is judged:
+
+    - `standalone`: clean CAD back. Kernel-clean plus a fast meshability score plus the semantic
+      review; the product mesher is not involved.
+    - `meshing`: make it meshable, then mesh. The verdict is the handback, and the product mesher
+      runs once, at the end, on the winner.
+    - `benchmark`: evaluation. The standalone verdict's shape, on the sealed track.
+    """
+
+    standalone = "standalone"
+    meshing = "meshing"
+    benchmark = "benchmark"
+
+
 class RepairStatus(str, Enum):
     clean = "clean"
     repairable = "repairable"
