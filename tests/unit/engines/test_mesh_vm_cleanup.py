@@ -598,6 +598,9 @@ class _HoldBlob:
         self.store, self.key = store, key
 
     def download_as_text(self):
+        from google.api_core.exceptions import NotFound
+        if self.key not in self.store:
+            raise NotFound(self.key)
         return self.store[self.key]
 
     def upload_from_string(self, text, content_type=None):
@@ -624,3 +627,16 @@ def test_a_hold_stays_unbroken_while_renewed_and_restarts_after_a_gap(monkeypatc
     monkeypatch.setattr(G, "list_vms", lambda session=None: [])
     G.release_job_vms("job-9")
     assert store == {} and "job-9" not in G._HELD
+
+    store["vm-holds/job-8"] = "1000|900"                                     # adopted from another worker
+    G.renew_job_hold("job-8", now=1060)
+    assert store["vm-holds/job-8"] == "1060|900" and "job-8" in G._HELD
+    G._HELD.discard("job-8")
+
+
+def test_an_unreadable_hold_is_not_a_released_one(monkeypatch):
+    def boom():
+        raise ConnectionError("gcs is down")
+    from meshpipeline.adapters.mesh_execution import gcs_exchange
+    monkeypatch.setattr(gcs_exchange, "storage_client", boom)
+    assert S._hold_age("job-1") == 0.0                                       # kept: judged again next time

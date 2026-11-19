@@ -312,25 +312,41 @@ def hold_url(holder: str) -> str:
 
 
 def _read_hold(holder: str) -> tuple[float, float] | None:
-    """(when the hold was last renewed, since when it has been unbroken), or None when there is none."""
+    """(when the hold was last renewed, since when it has been unbroken), or None when there is none. A read
+    that fails for any other reason RAISES: unreadable is not released."""
+    from google.api_core.exceptions import NotFound
+
     from meshpipeline.adapters.mesh_execution.gcs_exchange import storage_client
     blob = storage_client().bucket(provcfg.GCP_MESH_BUCKET).blob(hold_object(holder))
     try:
-        at, _, since = blob.download_as_text().partition("|")
+        text = blob.download_as_text()
+    except NotFound:
+        return None
+    at, _, since = text.partition("|")
+    try:
         return float(at), float(since or at)
-    except Exception:  # noqa: BLE001 - none, or unreadable: no hold to continue
+    except ValueError:
+        return None
+
+
+def _read_hold_or_none(holder: str) -> tuple[float, float] | None:
+    try:
+        return _read_hold(holder)
+    except Exception as exc:  # noqa: BLE001 - not known: no hold to continue (a VM is then not reused)
+        logger.warning("the hold of job %s could not be read (%s)", holder, type(exc).__name__)
         return None
 
 
 def renew_job_hold(holder: str, *, now: float | None = None, force: bool = False) -> None:
     """The job's meshing run still holds its VMs: write `<now>|<since>` to its hold, `since` carried over while
-    the renewals are unbroken (HOLD_UNBROKEN_S apart at most). Only for a job that took a VM (`force`)."""
-    if not (force or holder in _HELD):
+    the renewals are unbroken (HOLD_UNBROKEN_S apart at most). Only for a job that holds VMs: one that took a
+    VM here (`force`), or whose hold is already there - a run adopted from a worker that handed the job on."""
+    now = time.time() if now is None else now
+    prev = _read_hold_or_none(holder)
+    if not (force or holder in _HELD or prev is not None):
         return
     _HELD.add(holder)
     from meshpipeline.adapters.mesh_execution.gcs_exchange import storage_client
-    now = time.time() if now is None else now
-    prev = _read_hold(holder)
     since = prev[1] if prev is not None and now - prev[0] <= HOLD_UNBROKEN_S else now
     storage_client().bucket(provcfg.GCP_MESH_BUCKET).blob(hold_object(holder)).upload_from_string(
         f"{int(now)}|{int(since)}", content_type="text/plain")
@@ -339,7 +355,7 @@ def renew_job_hold(holder: str, *, now: float | None = None, force: bool = False
 def hold_since(holder: str, *, now: float | None = None) -> float | None:
     """Since when the job's hold on its VMs has been unbroken, or None when it is gone or stale."""
     now = time.time() if now is None else now
-    hold = _read_hold(holder)
+    hold = _read_hold_or_none(holder)
     if hold is None or now - hold[0] > HOLD_UNBROKEN_S:
         return None
     return hold[1]
