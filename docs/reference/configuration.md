@@ -511,6 +511,47 @@ reason the tier gave and the same clipped evidence the reviewer would have been 
 tier declines records `review_tier: "reviewer"` beside the reviewer's own verdict. Neither key
 appears at all when the review posture is off.
 
+## Attempts bought by what the part costs
+
+`CAD_REPAIR_BUDGET_ATTEMPTS` (default `off`) decides where a region's PACKAGE ALLOWANCE comes
+from. `off` is byte-for-byte the prior behaviour: every region of every part gets the one flat
+`CAD_REPAIR_REGION_ATTEMPTS`, and the report gains no key. `live` reads the part's expected mesh
+cost instead (`cad/repair/grind.ATTEMPTS`, keyed by `grind.tier_of`):
+
+| tier | what it means | packages per region |
+|---|---|---|
+| `cheap` | gmsh refused in the surface stage, or meshed, on a modest part | 3 |
+| `standard` | gmsh built the whole volume before it refused | 6 |
+| `heavy` | gmsh never answered, or the part has over 1,000 faces | 10 |
+| `unknown` | no face count, so nothing is known | 3 - the cheapest, fail-closed |
+
+The tier is fixed ONCE, from the run's first whole-shape scan and the upload's own face and solid
+counts, before any region is authored for: deciding it per attempt would let a package that changed
+the face count change the budget it is judged under. An `attempts` argument a caller states
+explicitly still wins, and the record says which rule was in force (`attempt_budget: {tier,
+attempts, rule}`, under `measurements["regions"]`).
+
+NOTHING ELSE MOVES. `CAD_REPAIR_MAX_OPS`, the run's deadline, each package's own `PackageBudget`
+and the two-rejections review escalation are all still outside this allowance and are all still
+checked before every attempt, so a heavy part cannot grind past any of them and a rejected package
+is never retried until it is accepted. The allowance is read only by the region-scoped driver, so
+startup logs a warning when it is `live` while `CAD_REPAIR_REGION_LOOP` is not.
+
+## Replay for agent-driven runs
+
+A rules-only repair is reproduced from its own bytes, and the native determinism tests pin that.
+An AGENT-driven one cannot be: an investigator's or a tournament's proposal is not a function of
+the part, so re-running the agent proves nothing about the run being reproduced. What is
+reproducible is what it DECIDED, so a run with `CAD_REPAIR_REGION_LOOP=live` and at least one agent
+posture on (`CAD_REPAIR_INVESTIGATOR` in `shadow`/`live`, or `CAD_REPAIR_TOURNAMENT=live`) records
+one entry per COMMITTED package under `measurements["regions"]["packages_replay"]`: the region's
+sorted fingerprints, the plan as it was offered, the claim, the run's tolerance and the recorded
+review verdict and tier. `cad/repair/replay.py` re-applies those entries in order through a fresh
+`RepairSession.try_package`, with the recorded verdict standing in for the review so no model is
+called. Each entry's region is found by its fingerprints against a FRESH decomposition, and an
+entry with no exact match is recorded as `replay_miss` - never applied to the nearest-looking
+region. The key is absent entirely from a rules-only run's report.
+
 ## The repair investigator's budget
 
 `CAD_REPAIR_INVESTIGATOR` (default `off`) decides who authors a failing region's target package.
@@ -584,7 +625,7 @@ API: it logs that the directory is missing and leaves `/ui` and `/static` unmoun
 
 <!-- Regenerate: python -m meshpipeline.settings.inventory --reference -->
 
-Every supported setting (305 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
+Every supported setting (306 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
 
 | Setting | Exposure | Read by | Secret |
 |---|---|---|---|
@@ -658,6 +699,7 @@ Every supported setting (305 entries). `template` settings are the ones `.env.ex
 | `CAD_REPAIR_ALLOW_FACE_REMOVAL` | internal | app |  |
 | `CAD_REPAIR_AUTONOMOUS` | internal | app |  |
 | `CAD_REPAIR_AUTO_ACCEPT` | internal | app |  |
+| `CAD_REPAIR_BUDGET_ATTEMPTS` | internal | app |  |
 | `CAD_REPAIR_CLOSE_WIRE_GAPS` | internal | app |  |
 | `CAD_REPAIR_ENABLED` | template | app |  |
 | `CAD_REPAIR_FILL_NONPLANAR_HOLES` | internal | app |  |

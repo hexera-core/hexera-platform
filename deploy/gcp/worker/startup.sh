@@ -95,6 +95,7 @@ for pair in "deployment-id:DEPLOYMENT_ID" \
             "cad-repair-tolerant-probe:CAD_REPAIR_TOLERANT_PROBE" \
             "cad-repair-investigator:CAD_REPAIR_INVESTIGATOR" \
             "cad-repair-auto-accept:CAD_REPAIR_AUTO_ACCEPT" \
+            "cad-repair-budget-attempts:CAD_REPAIR_BUDGET_ATTEMPTS" \
             "verdict-by-limits:VERDICT_BY_LIMITS" \
             "mesh-progressive-snapshot-enabled:MESH_PROGRESSIVE_SNAPSHOT_ENABLED" \
             "mesh-snappy-ranks:MESH_SNAPPY_RANKS"; do

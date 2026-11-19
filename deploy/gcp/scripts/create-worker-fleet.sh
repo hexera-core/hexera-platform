@@ -758,6 +758,8 @@ WORKER_METADATA=(
   || WORKER_METADATA+=("cad-repair-investigator=${CAD_REPAIR_INVESTIGATOR}")
 [ -z "${CAD_REPAIR_AUTO_ACCEPT:-}" ] \
   || WORKER_METADATA+=("cad-repair-auto-accept=${CAD_REPAIR_AUTO_ACCEPT}")
+[ -z "${CAD_REPAIR_BUDGET_ATTEMPTS:-}" ] \
+  || WORKER_METADATA+=("cad-repair-budget-attempts=${CAD_REPAIR_BUDGET_ATTEMPTS}")
 # The verdict by measured limits (docs/RULES.md VER), only when the target states it (dev does,
 # prod does not yet): the run decides pass, concerns or fail from the mesh's measured numbers and
 # the AI review only adds notes. Absent, the env object's value (the shipped default, off) stands.

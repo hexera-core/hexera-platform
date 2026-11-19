@@ -1658,6 +1658,11 @@ jobs:
       # deviation threshold. The vertex-moving ops above stay on the exact `live`, so they
       # cannot exist on a slug without the reviewer that the tier always sends them to.
       CAD_REPAIR_AUTO_ACCEPT: ${{ needs.target.outputs.crs_v3 != '' && 'live' || '' }}
+      # THE PER-PART ATTEMPT ALLOWANCE: on wherever the region-scoped driver is, because it
+      # only changes how many PACKAGES a region may be offered and every outer bound - the
+      # run's operation allowance, its deadline, each package's own budget and the
+      # two-rejections escalation - is unchanged by it. Inert without the driver.
+      CAD_REPAIR_BUDGET_ATTEMPTS: ${{ needs.target.outputs.crs_v3 != '' && 'live' || '' }}
     steps:
       # A SHALLOW CHECKOUT IS ENOUGH HERE, unlike release's. Nothing in this job reads history:
       # lib.sh derives the image tag from `rev-parse --short=12 HEAD` plus a `diff --quiet HEAD`

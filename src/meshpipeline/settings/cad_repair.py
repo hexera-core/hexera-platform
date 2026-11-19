@@ -630,3 +630,42 @@ def _warn_inert_auto_accept(auto_accept: str, review: str) -> None:
 
 
 _warn_inert_auto_accept(CAD_REPAIR_AUTO_ACCEPT, CAD_REPAIR_PACKAGE_REVIEW)
+
+
+def _budget_attempts_posture() -> str:
+    """The budget-driven-attempts posture, FAILING CLOSED: only the exact string `live` turns it
+    on.
+
+    `_auto_accept_posture`'s rule. Off is byte-for-byte the committed behaviour - every region
+    gets CAD_REPAIR_REGION_ATTEMPTS, whatever the part costs - so a typo must not quietly hand a
+    heavy part ten attempts.
+    """
+    raw = optional_env("CAD_REPAIR_BUDGET_ATTEMPTS", "off")
+    if raw not in ("live", "off"):
+        logger.warning("CAD_REPAIR_BUDGET_ATTEMPTS=%r is neither 'live' nor 'off'; reading it as "
+                       "off", raw)
+    return "live" if raw == "live" else "off"
+
+
+#: Whether a region's PACKAGE ALLOWANCE comes from the part's expected mesh cost
+#: (`cad/repair/grind.ATTEMPTS`, keyed by `grind.tier_of`) instead of the one flat
+#: CAD_REPAIR_REGION_ATTEMPTS. "off" is byte-for-byte the prior behaviour, down to the report
+#: gaining no key. "live" reads the tier from the run's FIRST whole-shape scan and the upload's own
+#: face and solid counts; an unknown tier reads as the cheapest budget, and an `attempts` argument
+#: a caller states explicitly still wins. The run's CAD_REPAIR_MAX_OPS, its deadline, each
+#: package's own budget and the two-rejections escalation remain the outer bounds. A posture, so a
+#: typo reads as off.
+CAD_REPAIR_BUDGET_ATTEMPTS: str = _budget_attempts_posture()
+
+
+def _warn_inert_budget_attempts(budget_attempts: str, region_loop: str) -> None:
+    """Say out loud when the budget is live but the driver that reads it is not: the allowance is
+    read only by the region-scoped driver, so with CAD_REPAIR_REGION_LOOP off a live
+    CAD_REPAIR_BUDGET_ATTEMPTS is silently inert (the `_warn_inert_author` rule)."""
+    if budget_attempts == "live" and region_loop != "live":
+        logger.warning("CAD_REPAIR_BUDGET_ATTEMPTS=live but CAD_REPAIR_REGION_LOOP=%r: the "
+                       "per-region allowance is read only by the region-scoped driver, so it is "
+                       "never consulted", region_loop)
+
+
+_warn_inert_budget_attempts(CAD_REPAIR_BUDGET_ATTEMPTS, CAD_REPAIR_REGION_LOOP)
