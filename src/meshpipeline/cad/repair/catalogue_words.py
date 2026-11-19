@@ -43,11 +43,15 @@ def catalogue_text(*, split_closed_faces: bool | None = None,
     lines = list(_BASE)
     if split_closed_faces:
         lines.append(f"- {SPLIT_CLOSED}: split a closed (periodic) face - a full cylinder, cone, "
-                     "sphere or torus with one seam - in two so the mesher can wrap it")
+                     "sphere or torus with one seam - in two so the mesher can wrap it; only for a "
+                     "2D-stage periodic-surface failure on a located face")
     if fragment_bodies:
         lines.append(f"- {FRAGMENT}: make two touching bodies share their contact faces so the "
-                     "volume mesh is conformal there; declined when the bodies overlap")
+                     "volume mesh is conformal there; declined when the bodies overlap; only for a 3D-stage "
+                     "edge-through-face failure on a located face, in a part with more than one "
+                     "solid")
     if rebuild_face:
         lines.append(f"- {REBUILD}: re-trim one face from its own boundary on the same surface, "
-                     "when the surface mesher reports overlapping facets on it")
+                     "when the surface mesher reports overlapping facets on it; only for a 2D-stage "
+                     "overlapping-facets failure on a located face")
     return "\n".join(lines)

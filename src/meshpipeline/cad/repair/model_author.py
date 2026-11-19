@@ -188,7 +188,24 @@ def _strings(value: object) -> list[str] | None:
 
 
 class _Refused(ValueError):
-    """A reply that is not a bounded, catalogue-only claim; the message is the reason."""
+    """A reply that is not a bounded, catalogue-only claim; the message is the reason.
+
+    `code` and `defect` are set for a PRECONDITION refusal (a named reason the run's report counts,
+    in the shape `RunHistory.refuse` records); every other refusal carries the message alone."""
+
+    def __init__(self, message: str, *, code: str = "", defect: str = "") -> None:
+        super().__init__(message)
+        self.code = code
+        self.defect = defect
+
+
+#: What each stage-gated operation's `targets_for` requires of the defect's `measurements["stage"]`.
+#: KEPT IN LOCKSTEP with operations.py (SplitClosedFaces, RebuildFace: 2d; FragmentBodies: 3d). A
+#: drift means the author refuses where the session would decline - the same outcome, cheaper - or
+#: (the other way) defers to the session's own decline, which is still safe.
+_STAGE_REQUIRED = {"split_closed_faces": "2d", "rebuild_face": "2d", "fragment_bodies": "3d"}
+#: Operations that act on a part with more than one body (the upload's solid count).
+_NEEDS_MULTIPLE_BODIES = frozenset({"fragment_bodies"})
 
 
 def _form(reply: object) -> tuple[str, object]:
@@ -225,6 +242,7 @@ class _Guards:
         self.volume_cap = float(rcfg.CAD_REPAIR_MAX_VOLUME_CHANGE_RATIO) * original.volume_mm3
         # THE ACTIVE CATALOGUE, read per call so it follows the consent flags.
         self.ops = {op.name: op for op in op_catalogue()}
+        self.solids = int(original.solids)
 
 
 #: Every key a package body may carry. Anything else is refused, so an attempt to smuggle a field
@@ -257,6 +275,18 @@ def _plan_item(item: object, ctx: _Context, guards: _Guards) -> tuple[dict, dict
     defect = on[0]
     if defect.code in guards.reserved:
         raise _Refused(f"plan aims at a {defect.code.value}, a code held for review")
+    # OPERATION PRECONDITIONS, refused here so an invalid proposal costs no execution.
+    op = guards.ops[name]
+    if defect.code not in op.answers:
+        raise _Refused(f"op_does_not_answer: {name} does not answer a {defect.code.value}",
+                       code="op_does_not_answer", defect=fp)
+    stage = _STAGE_REQUIRED.get(name)
+    if stage is not None and (getattr(defect, "measurements", None) or {}).get("stage") != stage:
+        raise _Refused(f"stage_precondition: {name} needs a {stage}-stage defect",
+                       code="stage_precondition", defect=fp)
+    if name in _NEEDS_MULTIPLE_BODIES and guards.solids <= 1:
+        raise _Refused(f"needs_multiple_bodies: {name} needs more than one solid in the part "
+                       f"(this one has {guards.solids})", code="needs_multiple_bodies", defect=fp)
     target = EntityRef(entity_type=str(defect.entity_type), fingerprint=fp,
                        entity_index=int(defect.entity_index),
                        ambiguous=bool(getattr(defect, "ambiguous", False)))
@@ -463,6 +493,9 @@ def model_author(shape, *, original: Measure, reserved: frozenset = frozenset(),
             package, proposal = _package(body, ctx, guards)
         except _Refused as exc:
             record.update(outcome="refused", reason=str(exc))
+            if exc.code:
+                _keep_refusals(refusals, [{"defect": exc.defect, "reason": exc.code,
+                                           "detail": str(exc)}])
             return None
         record.update(outcome="package", reason="", proposal=proposal)
         return package

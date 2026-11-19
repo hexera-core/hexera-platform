@@ -5,12 +5,14 @@ with no router, no network and no kernel (the observation's face reader is injec
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 
 import pytest
 
 import meshpipeline.settings.cad_repair as rcfg
+from meshpipeline.cad.repair import catalogue_words
 from meshpipeline.cad.repair import model_author as ma
 from meshpipeline.cad.repair.caps import Measure
 from meshpipeline.cad.repair.contracts import DefectCode, DefectSeverity
@@ -24,7 +26,7 @@ ORIGINAL = Measure(valid=False, solids=1, shells=1, faces=10, edges=20, vertices
                    volume_mm3=20000.0)
 
 
-def _defect(i: int, code=DefectCode.invalid_brep, severity=DefectSeverity.error) -> EntityDefect:
+def _defect(i: int, code=DefectCode.curve_inconsistency, severity=DefectSeverity.error) -> EntityDefect:
     return EntityDefect(
         code=code, severity=severity, entity_type="face", entity_index=i,
         message=f"face {i} is broken", measurements={},
@@ -86,7 +88,7 @@ def test_valid_reply_becomes_a_package(ask):
     assert package.region is REGION
     assert [item["op"].name for item in package.plan] == ["fix_face_boundary"]
     assert package.plan[0]["targets"][0].fingerprint == "fp1"
-    assert package.plan[0]["defect_code"] is DefectCode.invalid_brep
+    assert package.plan[0]["defect_code"] is DefectCode.curve_inconsistency
     assert "tolerance_mm" not in package.plan[0]          # the loop owns the tolerance
     assert "answered_held" not in package.plan[0]
     assert package.predicate.cleared == frozenset({"fp1"})
@@ -173,7 +175,7 @@ def test_shadow_records_and_executes_nothing(ask):
     assert record["model"]["outcome"] == "package"
     assert record["model"]["proposal"]["plan"] == [{"op": "fix_shape_global",
                                                     "fingerprint": "fp2",
-                                                    "defect_code": "invalid_brep"}]
+                                                    "defect_code": "curve_inconsistency"}]
     assert author.label == ma.RULES_LABEL
 
 
@@ -512,3 +514,93 @@ def test_a_model_author_without_the_region_loop_is_warned_about(caplog, posture,
         caplog.clear()
         rcfg._warn_inert_author(posture, loop)
     assert any("CAD_REPAIR_LLM_AUTHOR" in r.getMessage() for r in caplog.records) is warned
+
+
+# ---- operation preconditions: refused BEFORE execution, with a named reason --------------------
+
+def _mesh_defect(i: int, code, stage: str | None = "2d") -> EntityDefect:
+    d = _defect(i, code=code)
+    return dataclasses.replace(d, measurements={"stage": stage} if stage else {})
+
+
+@pytest.fixture
+def mesh_ops_on(monkeypatch):
+    for flag in ("CAD_REPAIR_SPLIT_CLOSED_FACES", "CAD_REPAIR_FRAGMENT_BODIES",
+                 "CAD_REPAIR_REBUILD_FACE"):
+        monkeypatch.setattr(rcfg, flag, True)
+
+
+def _refuse_case(ask, op, defect, *, solids=1):
+    ask(_package_reply(plan=[{"op": op, "fingerprint": "fp1"}], cleared=["fp1"], unchanged=[]))
+    original = dataclasses.replace(ORIGINAL, solids=solids)
+    author = ma.model_author(None, original=original, face_reader=_faces, job_id="j")
+    assert author(REGION, (defect, _defect(2)), ()) is None
+    return author
+
+
+@pytest.mark.parametrize("op, code, stage, solids, reason", [
+    ("split_closed_faces", DefectCode.mesh_overlapping_facets, "2d", 1, "op_does_not_answer"),
+    ("fix_face_boundary", DefectCode.mesh_periodic_surface, "2d", 1, "op_does_not_answer"),
+    ("split_closed_faces", DefectCode.mesh_periodic_surface, "3d", 1, "stage_precondition"),
+    ("split_closed_faces", DefectCode.mesh_periodic_surface, None, 1, "stage_precondition"),
+    ("rebuild_face", DefectCode.mesh_overlapping_facets, "3d", 1, "stage_precondition"),
+    ("fragment_bodies", DefectCode.mesh_edge_through_face, "2d", 2, "stage_precondition"),
+    ("fragment_bodies", DefectCode.mesh_edge_through_face, "3d", 1, "needs_multiple_bodies"),
+])
+def test_an_operations_preconditions_refuse_before_execution(ask, mesh_ops_on, op, code, stage,
+                                                            solids, reason):
+    author = _refuse_case(ask, op, _mesh_defect(1, code, stage), solids=solids)
+    call = author.calls[-1]
+    assert call["outcome"] == "refused" and reason in call["reason"]
+    assert [r["reason"] for r in author.refusals] == [reason]
+    assert author.refusals[0]["defect"] == "fp1"
+    assert "proposal" not in call                          # nothing was built to execute
+
+
+def test_a_disabled_operation_is_refused_as_not_in_the_catalogue(ask, monkeypatch):
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_SPLIT_CLOSED_FACES", False)
+    author = _refuse_case(ask, "split_closed_faces",
+                          _mesh_defect(1, DefectCode.mesh_periodic_surface))
+    assert "catalogue" in author.calls[-1]["reason"]
+
+
+def test_preconditions_met_is_a_package(ask, mesh_ops_on):
+    ask(_package_reply(plan=[{"op": "fragment_bodies", "fingerprint": "fp1"}],
+                       cleared=["fp1"], unchanged=[]))
+    original = dataclasses.replace(ORIGINAL, solids=2)
+    author = ma.model_author(None, original=original, face_reader=_faces)
+    defects = (_mesh_defect(1, DefectCode.mesh_edge_through_face, "3d"), _defect(2))
+    assert isinstance(author(REGION, defects, ()), TargetPackage)
+
+
+def test_an_unlocated_defect_cannot_be_named(ask):
+    unlocated = dataclasses.replace(_defect(1), fingerprint="")
+    ask(_package_reply(plan=[{"op": "fix_face_boundary", "fingerprint": ""}], cleared=[]))
+    author = _author()
+    assert author(REGION, (unlocated, _defect(2)), ()) is None
+    assert author.calls[-1]["outcome"] == "refused"
+
+
+def test_a_precondition_refusal_runs_nothing_and_spends_one_call(ask, mesh_ops_on):
+    fake = ask(_package_reply(plan=[{"op": "split_closed_faces", "fingerprint": "fp1"}],
+                              cleared=["fp1"], unchanged=[]))
+    author = _author()
+    assert author(REGION, (_mesh_defect(1, DefectCode.mesh_periodic_surface, "3d"),
+                           _defect(2)), ()) is None
+    assert len(fake.calls) == 1 and len(author.calls) == 1
+
+
+def test_the_catalogue_tells_the_model_each_preconditions_in_words():
+    on = catalogue_words.catalogue_text(split_closed_faces=True, fragment_bodies=True,
+                                        rebuild_face=True)
+    lines = dict(line[2:].split(": ", 1) for line in on.splitlines())
+    assert "2D-stage" in lines["split_closed_faces"] and "located" in lines["split_closed_faces"]
+    assert "2D-stage" in lines["rebuild_face"]
+    assert "3D-stage" in lines["fragment_bodies"] and "more than one" in lines["fragment_bodies"]
+
+
+def test_the_catalogue_with_every_flag_off_is_the_base_text_unchanged():
+    off = catalogue_words.catalogue_text(split_closed_faces=False, fragment_bodies=False,
+                                         rebuild_face=False)
+    assert off == "\n".join(catalogue_words._BASE)
+    assert "stage" not in off
