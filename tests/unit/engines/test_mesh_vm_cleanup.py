@@ -410,7 +410,10 @@ def gce(monkeypatch):
         (v for v in state["vms"] if v["name"] == name), None))
     monkeypatch.setattr(G, "_hand_over", lambda vm, meta, session=None: state["handed"].append(
         (vm["name"], meta["mesh-run"])) or True)
-    monkeypatch.setattr(G, "_wait_gone", lambda name, limit_s=0: None)
+    monkeypatch.setattr(G, "_wait_gone", lambda name, limit_s=0: True)
+    state["runs"] = {}                     # name -> (its run's result is written, seconds since its beacon)
+    monkeypatch.setattr(G, "_last_run", lambda vm: state["runs"].get(vm["name"], (True, 60.0)))
+    state["conflict"] = set()              # names Compute Engine answers 409 for
 
     def delete(ref, why):
         name = ref.instance_name.rsplit("/", 1)[-1]
@@ -424,7 +427,8 @@ def gce(monkeypatch):
 
     def post(url, json, headers, timeout):
         state["posted"].append(json)
-        return type("R", (), {"status_code": 200, "text": ""})()
+        code = 409 if json["name"] in state["conflict"] else 200
+        return type("R", (), {"status_code": code, "text": ""})()
 
     monkeypatch.setattr(requests, "post", post)
     monkeypatch.setattr(G.provcfg, "GCP_PROJECT_ID", "p", raising=False)
@@ -467,6 +471,35 @@ def test_a_held_vm_that_cannot_take_the_run_is_replaced(gce):
     _trigger()
     assert gce["deleted"] and gce["deleted"][0][0] == name and not gce["handed"]
     assert gce["posted"] and gce["posted"][0]["name"] == name
+
+
+def test_a_job_taken_over_never_kills_or_queues_behind_a_pass_still_meshing(gce):
+    # hand_back: the next owner replays from pass one while a later pass is left to finish on the job's VMs
+    held = G.instance_name("op-1", "n2-highmem-16", "job-1")
+    bigger = G.instance_name("op-1", "n2-highmem-32", "job-1")
+    gce["vms"] = [_held(held), _held(bigger)]
+    gce["runs"] = {held: (False, 30.0), bigger: (False, 30.0)}
+    _trigger(key="op-2")
+    assert not gce["deleted"] and not gce["handed"]
+    assert gce["posted"][0]["name"] == G.instance_name("op-2", "n2-highmem-16")      # a VM of its own
+    assert "job" not in gce["posted"][0]["labels"]
+
+
+def test_a_held_vm_near_the_end_of_its_hold_is_not_handed_a_run_it_may_never_read(gce):
+    name = G.instance_name("op-1", "n2-highmem-16", "job-1")
+    gce["vms"] = [_held(name)]
+    gce["runs"] = {name: (True, float(G.HOLD_IDLE_S - G.HOLD_SAFETY_S))}
+    _trigger()
+    assert not gce["handed"] and gce["deleted"][0][0] == name
+    assert gce["posted"][0]["name"] == name and gce["posted"][0]["labels"]["job"] == "job-1"
+
+
+def test_a_held_name_still_taken_gives_the_run_a_vm_of_its_own(gce):
+    name = G.instance_name("op-1", "n2-highmem-16", "job-1")
+    gce["conflict"] = {name}
+    ref = _trigger(key="op-2")
+    assert [p["name"] for p in gce["posted"]] == [name, G.instance_name("op-2", "n2-highmem-16")]
+    assert ref.instance_name.endswith(G.instance_name("op-2", "n2-highmem-16"))
 
 
 def test_the_jobs_end_releases_only_its_own_vms(gce):

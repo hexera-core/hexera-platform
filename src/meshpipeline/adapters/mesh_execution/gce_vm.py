@@ -278,11 +278,41 @@ def _lifetime_left_s(vm: dict, now: float) -> float:
     return created + limit - now
 
 
-def reusable(vm: dict, *, timeout: int, now: float | None = None) -> bool:
-    """Whether a held VM may take a run of `timeout` seconds (pure: tests read it): it is up, and the run
-    fits, with its margin, in what is left of its lifetime limit."""
+#: How long before a held VM's idle hold runs out it stops being handed runs: it may have stopped looking at
+#: its metadata (it is ending itself), and a run it never reads would be lost to the never-heard wait.
+HOLD_SAFETY_S = 300
+
+
+def _last_run(vm: dict) -> tuple[bool, float | None]:
+    """(whether the VM's current run has its result written, seconds since its beacon was last written - None
+    when unknown), read from the exchange its metadata names. Never raises: unreadable reads as busy."""
+    uri = next((str(i.get("value") or "") for i in ((vm.get("metadata") or {}).get("items") or [])
+                if i.get("key") == "output-uri"), "")
+    if not uri.startswith("gs://"):
+        return False, None
+    bucket_name, _, key = uri[5:].partition("/")
+    try:
+        from meshpipeline.adapters.mesh_execution.gcs_exchange import storage_client
+        from meshpipeline.artifact_keys import progress_key_beside, result_key_beside
+        bucket = storage_client().bucket(bucket_name)
+        done = bool(bucket.blob(result_key_beside(key)).exists())
+        beacon = bucket.get_blob(progress_key_beside(key))
+        updated = getattr(beacon, "updated", None) if beacon is not None else None
+        return done, None if updated is None else max(0.0, time.time() - updated.timestamp())
+    except Exception as exc:  # noqa: BLE001 - not known is busy: the VM is left alone
+        logger.warning("mesh VM %s: its last run could not be read (%s)", vm.get("name"), type(exc).__name__)
+        return False, None
+
+
+def reusable(vm: dict, *, timeout: int, now: float | None = None, done: bool = True,
+             idle_s: float | None = 0.0) -> bool:
+    """Whether a held VM may take a run of `timeout` seconds (pure: tests read it): it is up, its last run is
+    over (`done`: never one still meshing - a run of a job taken over must not queue behind, or kill, a pass
+    left to finish), it is still waiting for its next run (`idle_s`, since its beacon, well inside its hold),
+    and the run fits, with its margin, in what is left of its lifetime limit."""
     now = time.time() if now is None else now
-    return (str(vm.get("status") or "") in LIVE
+    return (str(vm.get("status") or "") in LIVE and done
+            and idle_s is not None and idle_s < HOLD_IDLE_S - HOLD_SAFETY_S
             and _lifetime_left_s(vm, now) >= int(timeout) + CONTAINER_MARGIN_S + 600)
 
 
@@ -319,53 +349,52 @@ def _hand_over(vm: dict, meta: dict, session=None) -> bool:
     return False
 
 
-def _wait_gone(name: str, limit_s: int = REPLACE_WAIT_S) -> None:
+def _wait_gone(name: str, limit_s: int = REPLACE_WAIT_S) -> bool:
+    """Whether the VM of this name is gone, waited for up to `limit_s`."""
     waited = 0
-    while waited < limit_s and describe_vm(name) is not None:
+    while describe_vm(name) is not None:
+        if waited >= limit_s:
+            return False
         time.sleep(10)
         waited += 10
+    return True
 
 
-def _held_vm(name: str, holder: str, machine: str, *, meta: dict, timeout: int) -> VmReference | None:
-    """THE JOB'S VM, TAKEN AGAIN (RUN-4): the VM already held for this job on this machine takes the run, or
-    None when there is none to take it (any it could not take is deleted first, so its name is free). The
-    job's VM on ANOTHER machine - the run before a step up or back down - is released: one VM per job."""
+def _held_vm(name: str, holder: str, machine: str, *, meta: dict,
+             timeout: int) -> tuple[VmReference | None, bool]:
+    """THE JOB'S VM, TAKEN AGAIN (RUN-4): (the VM held for this job on this machine, when it took the run;
+    whether its name is free for a new one). The job's VM on ANOTHER machine - the run before a step up or
+    back down - is released once its run is over: one VM per job. A VM still meshing is never deleted (a job
+    taken over may have a pass left to finish on it), and never handed a run to queue behind that pass."""
     label = job_label(holder)
     for other in list_vms():
         if (other.get("labels") or {}).get("job") == label and other.get("name") != name:
-            delete_vm(_ref(other), why=f"its job's next run is on a {machine}")
+            if str(other.get("status") or "") not in LIVE or _last_run(other)[0]:
+                delete_vm(_ref(other), why=f"its job's next run is on a {machine}")
     vm = describe_vm(name)
     if vm is None:
-        return None
-    if reusable(vm, timeout=timeout) and _hand_over(vm, meta):
+        return None, True
+    up = str(vm.get("status") or "") in LIVE
+    done, idle_s = _last_run(vm) if up else (True, None)
+    if reusable(vm, timeout=timeout, done=done, idle_s=idle_s) and _hand_over(vm, meta):
         logger.warning("mesh for %s runs on the %s VM its job holds (%s, %s): no boot, no image pull",
                        meta.get("engine"), machine, name, RULE)
-        return _ref(vm)
-    delete_vm(_ref(vm), why="it could not take its job's next run (stopped, or too little lifetime left)")
-    _wait_gone(name)
-    return None
+        return _ref(vm), False
+    if up and not done:
+        return None, False
+    delete_vm(_ref(vm), why="it could not take its job's next run (ending, stopped, or too little lifetime left)")
+    return None, _wait_gone(name)
 
 
-def trigger_vm(*, input_uri: str, output_uri: str, engine: str, timeout: int, operation_key: str,
-               decision: dict, holder: str = "") -> VmReference:
-    """Start the run on a VM. A run of a job that holds a VM on this machine is handed to it (RUN-4);
-    otherwise one is started, each zone of the region tried in turn when one has no such machine free. A
-    request whose answer never came is INDETERMINATE (the VM may exist), never "not started"."""
+class _NameTaken(Exception):
+    """A held VM's name is taken by a VM that did not take this run."""
+
+
+def _insert(*, name: str, holder: str, machine: str, image: str, account: str, input_uri: str,
+            output_uri: str, engine: str, timeout: int, disk_gb: int) -> VmReference:
     import requests as _rq
 
     from meshpipeline.adapters.mesh_execution.cloud_run_client import _access_token
-    machine = str(decision.get("machine") or "")
-    if not machine:
-        raise RuntimeError("no machine named for a Compute Engine run")
-    image, account = _job_container()
-    name = instance_name(operation_key, machine, holder)
-    if holder:
-        meta = run_metadata(image=image, input_uri=input_uri, output_uri=output_uri, engine=engine,
-                            timeout=timeout)
-        held = _held_vm(name, holder, machine, meta=meta, timeout=timeout)
-        if held is not None:
-            return held
-    disk_gb = max(MIN_DISK_GB, int(4 * float(decision.get("workspace_gib") or 0.0)) + 50)
     last = ""
     for suffix in ZONE_SUFFIXES:
         zone = f"{provcfg.GCP_REGION}-{suffix}"
@@ -384,6 +413,9 @@ def trigger_vm(*, input_uri: str, output_uri: str, engine: str, timeout: int, op
                            f", held for job {holder}" if holder else "")
             return ref
         if resp.status_code == 409:
+            if holder:
+                # a held VM is named by its job, not its run: the VM there is not running THIS run
+                raise _NameTaken(name)
             # ALREADY THERE: a previous worker started this very run (same operation, same machine)
             return VmReference(f"projects/{provcfg.GCP_PROJECT_ID}/zones/{zone}/instances/{name}")
         text = resp.text[:400]
@@ -393,6 +425,38 @@ def trigger_vm(*, input_uri: str, output_uri: str, engine: str, timeout: int, op
             continue
         break
     raise RuntimeError(f"no {machine} VM could be started ({last})")
+
+
+def trigger_vm(*, input_uri: str, output_uri: str, engine: str, timeout: int, operation_key: str,
+               decision: dict, holder: str = "") -> VmReference:
+    """Start the run on a VM. A run of a job that holds a VM on this machine is handed to it (RUN-4);
+    otherwise one is started, each zone of the region tried in turn when one has no such machine free. When
+    the job's VM is busy, or its name is not yet free, the run gets a VM of its own that ends with it. A
+    request whose answer never came is INDETERMINATE (the VM may exist), never "not started"."""
+    machine = str(decision.get("machine") or "")
+    if not machine:
+        raise RuntimeError("no machine named for a Compute Engine run")
+    image, account = _job_container()
+    disk_gb = max(MIN_DISK_GB, int(4 * float(decision.get("workspace_gib") or 0.0)) + 50)
+    from functools import partial
+    insert = partial(_insert, machine=machine, image=image, account=account, input_uri=input_uri,
+                     output_uri=output_uri, engine=engine, timeout=timeout, disk_gb=disk_gb)
+    unheld = instance_name(operation_key, machine)
+    if not holder:
+        return insert(name=unheld, holder="")
+    name = instance_name(operation_key, machine, holder)
+    meta = run_metadata(image=image, input_uri=input_uri, output_uri=output_uri, engine=engine, timeout=timeout)
+    held, free = _held_vm(name, holder, machine, meta=meta, timeout=timeout)
+    if held is not None:
+        return held
+    if free:
+        try:
+            return insert(name=name, holder=holder)
+        except _NameTaken:
+            pass
+    logger.warning("mesh for %s runs on a %s VM of its own: the one job %s holds is busy or not yet gone",
+                   engine, machine, holder)
+    return insert(name=unheld, holder="")
 
 
 def _zones() -> list[str]:
