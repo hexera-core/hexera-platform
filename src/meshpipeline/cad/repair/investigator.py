@@ -322,9 +322,14 @@ class _Clock:
     def region_wall(self, budget: Budget) -> float:
         """The lesser of the budget's own wall and this region's SHARE of what the run has left
         above the reserve. Never negative: a region with no time gets no call, not a tiny one."""
+        # The budget's wall is LOOKING time and the proof reserve sits on top of it (see
+        # `investigator_budget.InvestigationClock.region_wall`).
+        # A zero wall stays "do not start".
+        looking = max(0.0, float(budget.wall_s))
+        looking = looking + self.proof_reserve_s if looking > 0.0 else 0.0
         if self.deadline_s is None:
-            return max(0.0, float(budget.wall_s))
-        return max(0.0, min(float(budget.wall_s), _share_wall(self._run_left(),
+            return looking
+        return max(0.0, min(looking, _share_wall(self._run_left(),
                                                                self.proof_reserve_s, self.share)))
 
     def left(self, started: float) -> float:

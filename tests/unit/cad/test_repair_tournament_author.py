@@ -362,6 +362,22 @@ def test_the_wall_is_the_regions_share_and_travels_into_the_rehearsal():
     assert plays.calls[0]["wall_s"] == pytest.approx(40.0)
 
 
+@pytest.mark.parametrize("deadline_s,wall_s", [
+    # The region's wall holds the PROOF RESERVE (40 s here) for the package the round nominates:
+    # its scoped proof and review run on the real session after the round. The rehearsal never
+    # calls `must_conclude`, so it must be handed only the time ABOVE that reserve (Greptile P1 on
+    # PR #494): 100 left - 20 final reserve = 80; wall 40 + 0.5 * (80 - 40) = 60; rehearse 20.
+    (1000.0 + 100.0, 20.0),
+    # No deadline: the budget's looking time (cheap, 60 s), not the reserve stacked on top of it.
+    (None, 60.0),
+])
+def test_the_rehearsal_never_spends_the_proof_reserve(deadline_s, wall_s):
+    author, _, plays = build(k=3, deadline_s=deadline_s, share=0.5, reserve_s=20.0,
+                             proof_reserve_s=40.0)
+    author(REGION, DEFECTS)
+    assert plays.calls[0]["wall_s"] == pytest.approx(wall_s)
+
+
 # --- shadow ------------------------------------------------------------------------------------
 
 def test_shadow_returns_the_rules_package():

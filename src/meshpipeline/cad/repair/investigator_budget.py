@@ -129,7 +129,12 @@ class InvestigationClock:
         """Seconds this region's investigation may run for: the lesser of its budget's wall and its
         share of what is left above the reserve. NEVER NEGATIVE - a region that is out of time gets
         0, which a driver reads as "do not start"."""
-        wall = max(0.0, float(budget.wall_s))
+        # The budget's wall is LOOKING time; the proof reserve is held on top of it. Capping at the
+        # bare wall put CHEAP's 60 s under the shipping 80 s reserve, so every cheap region had to
+        # conclude before its first tool call, at any run length.
+        # A zero wall stays "do not start".
+        looking = max(0.0, float(budget.wall_s))
+        wall = looking + self.proof_reserve_s if looking > 0.0 else 0.0
         left = self.run_left()
         if left == float("inf"):
             return wall

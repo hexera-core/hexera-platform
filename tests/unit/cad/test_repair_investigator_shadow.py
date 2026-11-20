@@ -385,7 +385,7 @@ def test_the_fit_tables_arithmetic_is_the_arithmetic_it_claims():
 
 @pytest.mark.parametrize("left, wall, fits", [
     # LITERAL seconds, with the arithmetic spelled out. `region_wall` is
-    # min(budget wall, proof + share * (left - proof)) with proof = 1.0 and share = 0.5 (the proof
+    # min(budget wall + proof, proof + share * (left - proof)) with proof = 1.0 and share = 0.5 (the proof
     # reserve PLUS the share above it - `share * left` alone sat below the reserve and forced a
     # conclusion before the first tool call), and `fits_shadow` needs left >= region_wall +
     # _GRACE_S (5.0). So a shadow fits from left = 11.0 upwards - BOTH SIDES of that boundary are
@@ -397,7 +397,7 @@ def test_the_fit_tables_arithmetic_is_the_arithmetic_it_claims():
     (11.0, 100.0, True),        # wall 6.0, needs exactly 11.0
     (12.0, 100.0, True),        # wall 6.5, needs 11.5
     (20.0, 100.0, True),
-    (10_000.0, 100.0, True),    # the BUDGET'S wall binds now: 100.0, needs 105.0
+    (10_000.0, 100.0, True),    # the BUDGET'S wall binds now: 100.0 + proof 1.0, needs 106.0
     (10_000.0, 0.0, False),     # a zero wall is "do not start", whatever the clock says
 ])
 def test_a_shadow_investigation_that_cannot_fit_is_skipped_whole(monkeypatch, left, wall, fits):

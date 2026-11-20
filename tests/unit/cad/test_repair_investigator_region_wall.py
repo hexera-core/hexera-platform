@@ -49,4 +49,19 @@ def test_a_run_with_no_time_above_the_proof_reserve_concludes_at_once(run_left):
 def test_the_budget_wall_still_caps_the_region():
     small = types.SimpleNamespace(wall_s=30.0, tier="cheap", tool_calls=6, model_calls=8)
     for c in _clocks(1000.0, 80.0, 0.5)[:2]:
-        assert c.region_wall(small) == 30.0
+        assert c.region_wall(small) == 30.0 + 80.0     # looking time, plus the proof reserve
+
+
+# The tier budgets' walls are LOOKING time. CHEAP's 60 s sat below the shipping proof reserve
+# (60 s scoped probe + 20 s review = 80 s), so capping a region at the bare budget wall made every
+# cheap region conclude before its first tool call, at any run length (0 packages on crsv3 at
+# 0ff8db35). The proof reserve is held ON TOP of the budget's wall, never carved out of it.
+@pytest.mark.parametrize("tier", ["cheap", "standard", "heavy"])
+def test_every_tier_budget_may_look_before_the_shipping_proof_reserve_forces_a_conclusion(tier):
+    from meshpipeline.cad.repair.investigator_budget import budget_for
+
+    budget = budget_for(tier)
+    for c in _clocks(1e6, 80.0, 0.5)[:2]:
+        wall = c.region_wall(budget)
+        assert wall == pytest.approx(budget.wall_s + 80.0)
+        assert not c.must_conclude(1000.0, wall)

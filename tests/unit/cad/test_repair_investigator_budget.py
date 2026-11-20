@@ -238,7 +238,8 @@ def test_the_region_wall_is_never_negative(now, expected):
 def test_no_deadline_uses_budget_wall(budget):
     sut = ib.InvestigationClock(None, reserve_s=60.0, proof_reserve_s=10.0, share=0.5,
                                 clock=_Clock(0.0))
-    assert sut.region_wall(ib.BUDGETS[budget]) == ib.BUDGETS[budget].wall_s
+    # The budget's wall is looking time; the proof reserve (10.0) is held on top of it.
+    assert sut.region_wall(ib.BUDGETS[budget]) == ib.BUDGETS[budget].wall_s + 10.0
 
 
 @pytest.mark.parametrize("now, wall, expected", [

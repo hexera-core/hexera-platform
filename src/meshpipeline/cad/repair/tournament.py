@@ -780,7 +780,11 @@ def tournament_author(shape, *, original, reserved: frozenset = frozenset(), job
             entry["end"] = NO_CANDIDATE
             return fallback
 
-        wall = float(timing.region_wall(_budget_of(defects, original)))
+        # The region's wall HOLDS the proof reserve for the package this round nominates (its
+        # scoped proof and review run on the real session afterwards). A rehearsal never asks
+        # `must_conclude`, so it gets only the time above that reserve.
+        wall = max(0.0, float(timing.region_wall(_budget_of(defects, original)))
+                   - float(getattr(timing, "proof_reserve_s", 0.0)))
         entry["wall_s"] = round(wall, 6)
         if wall < REHEARSAL_MIN_S or (shadow and not _fits_shadow(timing, wall)):
             # OUT OF TIME IS NOT A VERDICT ON THE REGION. Nothing is rehearsed and nothing is
