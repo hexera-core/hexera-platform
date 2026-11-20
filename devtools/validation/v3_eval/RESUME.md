@@ -411,7 +411,22 @@ volume integral rather than a volume - so the volume-comparison waiver on a soli
 load-bearing, not tolerated. No refusal was added: a split has never been observed, and the wave
 count is the condition for adding one.
 
-**Open.** Row 1, the contact search, is the last uninterruptible call outside the four
-`BRepCheck_Analyzer` sites, which every repair path runs and which is a larger change than any
-single distance call. Better location of unplaced defects (`regions_before {'unknown': 628}`) is
-the scan-cost lever and has no owner.
+**Done through row 6.** Every distance and Boolean call in the repair path runs in a child.
+`mesh_probe._clash_gap` was deleted rather than bounded: #503 replaced it with `_clash_gaps` and
+left the single-pair version behind, called by nothing, so the guard row had been reading as debt
+for a hang that could not happen.
+
+**PARKED, first post-merge infra item: a KEPT child.** Five call sites remain in the parent - the
+four `BRepCheck_Analyzer` ones (`caps.measure`, `localize_scan`, and each operation's validity
+check) and `spotlight._normal_of_face` (GeomAPI projection). Bounding the analyzer PER CALL is
+the wrong trade: a child costs 0.74 s of interpreter start-up before it measures anything, the
+analyzer runs several times per operation, and the deviation batch amortised that start-up over
+32 samples and still went 0.58 s -> 2.09 s. Against that, NONE of the three observed hangs was the
+analyzer - they were a distance, a Boolean and a gap. The fix that makes closing it cheap is
+`bounded_child` STARTED ONCE AND REUSED, which also takes back most of the deviation cost; it
+needs crash recovery and no state leaking between jobs, so it is infrastructure with its own
+lifecycle risks for an exposure never measured. Park it, with the spotlight site, until something
+observes an analyzer hang or the scan-cost budget needs the start-up back.
+
+**Open, unowned.** Better location of unplaced defects (`regions_before {'unknown': 628}`) is the
+scan-cost lever.
