@@ -1306,8 +1306,9 @@ def snapgrid_plan(ask: Ask, plan: Mapping) -> dict:
 # the vessel mesher (engines/vmtk): edge-length clamps on its radius-adaptive size, the layers, the budget
 # #
 
-#: CFDREQ-12: VMTK's stack is a share of the local radius; deeper than this it folds at branch crotches (vmtk/pack.py)
-VMTK_STACK_MAX = 0.15
+#: CFDREQ-12: VMTK's stack is a share of the local radius; never deeper than our own 0.10 (vmtk/pack.py: thicker stacks
+#: fold at branch crotches; the board, 20 Nov: 0.148 with 4 layers needed untangling on a transition duct, VMTK failed)
+VMTK_STACK_MAX = 0.10
 VMTK_GROWTH = 1.25
 
 
