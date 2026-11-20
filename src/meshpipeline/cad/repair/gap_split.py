@@ -129,25 +129,27 @@ def _distance(a, b) -> float | None:
         return None
 
 
-def _touch_mm(a, b) -> float:
-    """How close two faces may be and still TOUCH: the larger of their own B-rep tolerances. NOT
-    the run's healing tolerance, which is far coarser (0.1 mm by default) and would read the
-    corpus's 0.0508 mm walls as faces that meet."""
-    from OCP.BRep import BRep_Tool
-    from OCP.TopoDS import TopoDS
+def _touch_mm(mesh_size: float) -> float:
+    """How close two faces may be and still TOUCH: the probe's own margin
+    (`mesh_clash.touching_margin_mm`, 1e-6 x the diagonal), so the operation and the clash
+    locator agree on what a gap is. Not the faces' B-rep tolerance, which on 0060_00605911 was
+    coarser than its real 0.005 mm gap, and not the run's healing tolerance (0.1 mm by default),
+    which would read the corpus's 0.0508 mm walls as faces that meet."""
+    from meshpipeline.cad.repair import mesh_probe
+    from meshpipeline.cad.repair.mesh_clash import touching_margin_mm
 
-    return max(float(BRep_Tool.Tolerance_s(TopoDS.Face_s(a))),
-               float(BRep_Tool.Tolerance_s(TopoDS.Face_s(b))))
+    return touching_margin_mm(float(mesh_size) * float(mesh_probe._SIZE_DIVISOR))
 
 
 def partners(owner, face, *, mesh_size: float) -> list[tuple[object, float]]:
-    """The faces of `owner` across a SUB-MESH GAP from `face`: B-rep distance above both faces' own
-    tolerance (they do not meet) and below the mesh size, nearest first, at most MAX_PARTNERS."""
+    """The faces of `owner` across a SUB-MESH GAP from `face`: B-rep distance above the probe's touching
+    margin (they do not meet) and below the mesh size, nearest first, at most MAX_PARTNERS."""
     from OCP.TopAbs import TopAbs_FACE
 
     from meshpipeline.cad.repair.localize import _indexed
 
     target_box = _bbox(face)
+    touch = _touch_mm(mesh_size)
     faces = _indexed(owner, TopAbs_FACE)
     near: list[tuple[float, object]] = []
     for index in range(1, faces.Extent() + 1):
@@ -161,7 +163,7 @@ def partners(owner, face, *, mesh_size: float) -> list[tuple[object, float]]:
     found: list[tuple[object, float]] = []
     for _box_gap, other in near[:MAX_CANDIDATES]:
         distance = _distance(face, other)
-        if distance is not None and _touch_mm(face, other) < distance < mesh_size:
+        if distance is not None and touch < distance < mesh_size:
             found.append((other, distance))
     found.sort(key=lambda item: item[1])
     if not found:
