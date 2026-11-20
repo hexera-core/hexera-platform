@@ -2897,6 +2897,21 @@
   ]
  },
  {
+  "context": "application/pipeline_run.py::_run_async::error#3|NotAPublisher|not-a-publisher|application/pipeline_run.py::meshpipeline.application.pipeline_run._JobAdapter",
+  "path": "application/pipeline_run.py",
+  "qualname": "_run_async",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 3,
+  "receiver": "jlog",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": [
+   "application/pipeline_run.py::meshpipeline.application.pipeline_run._JobAdapter"
+  ]
+ },
+ {
   "context": "application/pipeline_run.py::_run_async._announce_dispute::note#1|ExecutionEventPublisher|execution-owned|application/pipeline_run.py::_ep",
   "path": "application/pipeline_run.py",
   "qualname": "_run_async._announce_dispute",

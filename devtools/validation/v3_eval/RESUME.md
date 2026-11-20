@@ -48,7 +48,7 @@ PR #494, branch `crs/v3-agentic`, HEAD **0ff8db35** (pushed). Personal env `crsv
 
 ## From any machine
 ```
-git clone git@github.com:hexera-core/hexera-platform.git && cd hexera-platform && git checkout crs/v3-agentic
+git clone --branch crs/v3-agentic git@github.com:hexera-core/hexera-platform.git && cd hexera-platform
 gcloud auth login && gcloud config set project hexera-dev     # needs access to the crsv3 bucket + compute
 python -m venv .venv && .venv/bin/pip install -e .              # or make setup
 C=0ff8db350582d7923ce455be4ee04a1db216880d
