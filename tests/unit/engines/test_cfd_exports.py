@@ -108,7 +108,7 @@ def test_a_zone_name_fluent_cannot_read_is_made_safe_and_the_rest_of_the_file_is
              b"(39 (11 wall motorBike_frame:016_16)())\n(39 (12 symmetry front)())\n")
     msh = tmp_path / "mesh.msh"
     msh.write_bytes(body + names)
-    n, renamed = CE._zip_fluent(msh, tmp_path / "f.zip", "mesh.msh")
+    n, renamed, _types = CE._zip_fluent(msh, tmp_path / "f.zip", "mesh.msh")
     with zipfile.ZipFile(tmp_path / "f.zip") as zf:
         out = zf.read("mesh.msh")
     assert out.startswith(body) and n == (tmp_path / "f.zip").stat().st_size

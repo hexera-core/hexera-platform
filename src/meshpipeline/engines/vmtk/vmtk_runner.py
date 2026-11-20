@@ -591,7 +591,9 @@ def _native_payload_members(workspace) -> list[str]:
     that must not ride along."""
     from meshpipeline.engines.vmtk.lumen_staging import STAGING_FACT
     ws = Path(workspace)
-    return [n for n in ("vmtk_spec.json", _LUMEN, "lumen_open.vtp", STAGING_FACT) if (ws / n).exists()]
+    # the confirmed boundaries and the flow conditions, which the Fluent export types its zones from
+    return [n for n in ("vmtk_spec.json", _LUMEN, "lumen_open.vtp", STAGING_FACT, "port_declaration.json",
+                        "request.txt") if (ws / n).exists()]
 
 
 def run_cartesian_mesh(workspace, *, timeout: int, context=None) -> dict:
