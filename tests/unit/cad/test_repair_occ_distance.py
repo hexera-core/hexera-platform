@@ -156,3 +156,78 @@ def test_a_batch_with_no_budget_is_all_unmeasured(monkeypatch):
     out = od.distances([_Shape(), _Shape()], [(0, 1)], budget_s=0.0)
 
     assert len(out) == 1 and out[0]["min_distance_mm"] is None
+
+
+def _manifest(tmp_path, spec):
+    path = tmp_path / "pairs.json"
+    path.write_text(json.dumps(spec))
+    return path
+
+
+def test_the_child_prunes_exactly_where_the_parent_did(monkeypatch, tmp_path):
+    """WHY THE CHILD AND NOT THE PARENT. `_nearest_faces` measures candidates in order of box
+    distance and stops at the first whose box is already further than the best EXACT distance it
+    has - a rule that needs the distances measured so far, which only the child has. Handing the
+    child a flat list of every candidate would measure faces the parent would have skipped, so the
+    pruning travels with the batch: the ordered bounds and the tolerance."""
+    measured: list[tuple[int, int]] = []
+    monkeypatch.setattr(od, "_read_brep", lambda path: _Shape())
+    monkeypatch.setattr(od, "_measure_here",
+                        lambda a, b: measured.append((0, 0)) or {"min_distance_mm": 4.0,
+                                                                 "point_a": None, "point_b": None})
+
+    manifest = _manifest(tmp_path, {"pairs": [[0, i] for i in range(1, 6)],
+                                    "bounds": [0.0, 1.0, 9.0, 20.0, 30.0], "tol": 0.5})
+    od._batch_main(tmp_path, manifest)
+
+    assert len(measured) == 2, (
+        "the third candidate's box is 9.0 away and the best exact distance is 4.0, so nothing from "
+        f"the third on can be nearest - it must not be measured (measured {len(measured)})")
+
+
+def test_a_batch_without_bounds_measures_every_pair(monkeypatch, tmp_path):
+    """Pruning is opt-in: the callers that have no ordering (a deviation sample, a contact pair
+    under its cap) still want every pair they asked for."""
+    measured: list[int] = []
+    monkeypatch.setattr(od, "_read_brep", lambda path: _Shape())
+    monkeypatch.setattr(od, "_measure_here",
+                        lambda a, b: measured.append(1) or {"min_distance_mm": 4.0,
+                                                            "point_a": None, "point_b": None})
+
+    od._batch_main(tmp_path, _manifest(tmp_path, [[0, i] for i in range(1, 6)]))
+
+    assert len(measured) == 5
+
+
+def test_a_pruned_tail_is_not_an_unmeasured_tail(monkeypatch):
+    """A PRUNED PAIR AND AN UNANSWERED PAIR MEAN OPPOSITE THINGS. Pruned is a proof - nothing from
+    there on can be nearest - and the caller may act on the answer. Unanswered is ignorance, and
+    the caller must report that it did not finish. One status for both would turn a bounded search
+    into a silent wrong answer, so they are told apart."""
+    lines = [json.dumps({"min_distance_mm": 4.0, "point_a": None, "point_b": None}),
+             json.dumps({"min_distance_mm": 4.5, "point_a": None, "point_b": None}),
+             json.dumps({"pruned_after": 2})]
+    script = "\n".join(f"print({json.dumps(line)})" for line in lines)
+    monkeypatch.setattr(od, "_CHILD_CMD", [sys.executable, "-c", script])
+
+    out = od.distances([_Shape()] * 6, [(0, i) for i in range(1, 6)],
+                       budget_s=5.0, bounds=[0.0, 1.0, 9.0, 20.0, 30.0], tol=0.5)
+
+    assert [a["distance_status"] for a in out] == ["measured", "measured", "pruned", "pruned",
+                                                   "pruned"]
+    assert all(a["min_distance_mm"] is None for a in out[2:]), "a pruned pair has no distance"
+
+
+def test_the_bounds_and_the_tolerance_reach_the_child(monkeypatch):
+    seen: dict = {}
+
+    def _batch(root, manifest, count, budget):
+        seen.update(json.loads(manifest.read_text()))
+        return [dict(od.UNMEASURED) for _ in range(count)]
+
+    monkeypatch.setattr(od, "_run_batch", _batch)
+
+    od.distances([_Shape()] * 3, [(0, 1), (0, 2)], budget_s=5.0, bounds=[0.0, 7.0], tol=0.25)
+
+    assert seen["bounds"] == [0.0, 7.0] and seen["tol"] == 0.25
+    assert seen["pairs"] == [[0, 1], [0, 2]]
