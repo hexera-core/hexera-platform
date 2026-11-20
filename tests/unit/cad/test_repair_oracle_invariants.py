@@ -61,9 +61,11 @@ BANNED = (
 #: The ONLY names of `engines/fea_tetwild` a v3 module may touch: the binary's location, one
 #: part's run, the CAD tessellation, and the three shares that size them. Everything else in that
 #: module is the production rung - `rung_machine`, `run_parts` and `mesh_into` above all, which
-#: choose a machine, schedule many parts and write into a gmsh model.
+#: choose a machine, schedule many parts and write into a gmsh model. `envelope_m` and `MAX_ITS`
+#: are read by tolerant_probe's DELIVERY mode (an evaluation reading at the production rung's
+#: envelope and iteration count) - two pure values, still no machine, schedule or gmsh model.
 FTETWILD_ALLOWED = {"binary", "run_part", "tessellate", "EPS_DIAG_SHARE", "TESSELLATION_SHARE",
-                    "SOFT_SHARE"}
+                    "SOFT_SHARE", "envelope_m", "MAX_ITS"}
 
 #: `cad/repair/` as it stood BEFORE CRS v3. A file that is neither one of these nor in
 #: `V3_MODULES` is a v3 module somebody forgot to list.

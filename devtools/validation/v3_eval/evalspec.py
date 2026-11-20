@@ -214,6 +214,12 @@ def harness_argv(name: str, kind: str, *, shard: str, inputs: str, out: str,
     else:
         argv += [inputs]
     argv += list(HARNESS_FLAGS)
+    if kind == "failing":
+        # THE TOLERANT ROUTE, SCORED APART (repair_corpus --tolerant-delivery): a file gmsh still
+        # refuses whose tier-2b reading is tolerant_rung_eats_it gets one fTetWild pass (<= 300 s)
+        # on what would be delivered. Its own column; never counted as repaired or newly meshed.
+        # Not on the clean kind: a clean part meshes, so the pass could never apply there.
+        argv += ["--tolerant-delivery"]
     if spec["investigator"] != "off":
         argv += ["--investigator", spec["investigator"],
                  "--transcripts", f"{out}/transcripts.jsonl"]

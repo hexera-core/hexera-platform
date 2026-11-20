@@ -276,3 +276,21 @@ def test_blank_results_is_independent():
     a["arms"]["t29_v3"]["n_files"] = 1
     assert b["arms"]["t29_v3"]["n_files"] is None
     assert copy.deepcopy(a) == a
+
+
+# THE TOLERANT ROUTE: its own column and its own sentence, never part of the T29 rule.
+
+def test_the_tolerant_route_is_stated_separately_and_does_not_move_the_rule():
+    base = rt.compute_verdict(_filled())
+    v = rt.compute_verdict(_filled({("t29_deterministic", "delivered_via_tolerant_mesher"): 40,
+                                    ("t29_v3", "delivered_via_tolerant_mesher"): 41}))
+    assert v["status"] == base["status"] and v["v3_newly_meshed"] == base["v3_newly_meshed"]
+    assert "Separately, and not counted as repaired or newly meshed" in v["statement"]
+    assert "deterministic 40, v3 41" in v["statement"]
+    assert "Separately" not in base["statement"]
+
+
+def test_the_tolerant_column_renders_and_reads_pending_when_unmeasured():
+    r = _filled({("t29_v3", "delivered_via_tolerant_mesher"): 41})
+    assert rt.macros(r)["vThreeTolerantMesher"] == "41"
+    assert rt.macros(_filled())["vThreeTolerantMesher"] == PENDING

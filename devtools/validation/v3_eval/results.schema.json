@@ -4,83 +4,268 @@
   "title": "CRS v3 verdict results",
   "description": "The numbers the CRS v3 whitepapers and the PR #494 evidence section are rendered from (results_to_tex.py, render_pr_section.py). A null value is NOT MEASURED YET and renders as a visible [PENDING], never as 0. The string \"n/a\" means the field does not apply to that arm (e.g. image digest of a local macOS run) and renders as n/a. Produced by `results_to_tex.py from-collect` out of collect.py's verdict.json and sealed bundles, or written by hand.",
   "type": "object",
-  "required": ["schema_version", "arms"],
+  "required": [
+    "schema_version",
+    "arms"
+  ],
   "additionalProperties": false,
   "properties": {
-    "schema_version": {"const": 1},
-    "generated_at": {"type": ["string", "null"], "description": "ISO-8601 time the file was produced"},
-    "source": {"type": ["string", "null"], "description": "what the numbers were read from (path of verdict.json, bundles, rows)"},
+    "schema_version": {
+      "const": 1
+    },
+    "generated_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "ISO-8601 time the file was produced"
+    },
+    "source": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "what the numbers were read from (path of verdict.json, bundles, rows)"
+    },
     "arms": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["t6_rules_only_local", "t29_deterministic", "t29_v3", "t19_tournament_off", "t19_tournament_on", "clean_control"],
+      "required": [
+        "t6_rules_only_local",
+        "t29_deterministic",
+        "t29_v3",
+        "t19_tournament_off",
+        "t19_tournament_on",
+        "clean_control"
+      ],
       "properties": {
-        "t6_rules_only_local": {"$ref": "#/$defs/arm"},
-        "t29_deterministic": {"$ref": "#/$defs/arm"},
-        "t29_v3": {"$ref": "#/$defs/arm"},
-        "t19_tournament_off": {"$ref": "#/$defs/arm"},
-        "t19_tournament_on": {"$ref": "#/$defs/arm"},
-        "clean_control": {"$ref": "#/$defs/clean"}
+        "t6_rules_only_local": {
+          "$ref": "#/$defs/arm"
+        },
+        "t29_deterministic": {
+          "$ref": "#/$defs/arm"
+        },
+        "t29_v3": {
+          "$ref": "#/$defs/arm"
+        },
+        "t19_tournament_off": {
+          "$ref": "#/$defs/arm"
+        },
+        "t19_tournament_on": {
+          "$ref": "#/$defs/arm"
+        },
+        "clean_control": {
+          "$ref": "#/$defs/clean"
+        }
       }
     },
     "verdict": {
       "description": "Informational copy of the T29 verdict. The renderers RECOMPUTE it from the arms (results_to_tex.compute_verdict) and never trust this block.",
-      "type": ["object", "null"]
+      "type": [
+        "object",
+        "null"
+      ]
     }
   },
   "$defs": {
-    "count": {"type": ["integer", "null"], "minimum": 0},
-    "number": {"anyOf": [{"type": ["number", "null"]}, {"const": "n/a"}]},
-    "text": {"type": ["string", "null"]},
+    "count": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "number": {
+      "anyOf": [
+        {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        {
+          "const": "n/a"
+        }
+      ]
+    },
+    "text": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "tally": {
       "description": "name -> count",
-      "anyOf": [{"type": "null"}, {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}}]
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      ]
     },
     "arm": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["arm", "label", "commit", "image_digest", "sample_sha256", "n_files",
-                   "newly_meshed", "newly_broken", "meshes_before", "meshes_after", "endings",
-                   "ops_kept", "ops_rolled_back", "model_calls", "cost_usd", "wall_s",
-                   "cost_per_fixed_part"],
+      "required": [
+        "arm",
+        "label",
+        "commit",
+        "image_digest",
+        "sample_sha256",
+        "n_files",
+        "newly_meshed",
+        "newly_broken",
+        "meshes_before",
+        "meshes_after",
+        "endings",
+        "ops_kept",
+        "ops_rolled_back",
+        "model_calls",
+        "cost_usd",
+        "wall_s",
+        "cost_per_fixed_part"
+      ],
       "properties": {
-        "arm": {"type": "string", "description": "the arm id; equals its key under arms"},
-        "label": {"type": "string", "description": "human label; t6_rules_only_local is EXACTLY 'rules-only baseline'"},
-        "commit": {"$ref": "#/$defs/text"},
-        "image_digest": {"$ref": "#/$defs/text"},
-        "sample_sha256": {"$ref": "#/$defs/text"},
-        "n_files": {"$ref": "#/$defs/count"},
-        "newly_meshed": {"$ref": "#/$defs/count"},
-        "newly_broken": {"$ref": "#/$defs/count"},
-        "meshes_before": {"$ref": "#/$defs/count"},
-        "meshes_after": {"$ref": "#/$defs/count"},
-        "endings": {"$ref": "#/$defs/tally", "description": "repair_corpus corpus_summary.endings"},
-        "ops_kept": {"$ref": "#/$defs/tally", "description": "catalogue.tally[op].kept"},
-        "ops_rolled_back": {"$ref": "#/$defs/tally", "description": "catalogue.tally[op].rolled_back"},
-        "model_calls": {"anyOf": [{"$ref": "#/$defs/count"}, {"const": "n/a"}]},
-        "cost_usd": {"$ref": "#/$defs/number", "description": "model spend + VM container time, list price"},
-        "wall_s": {"$ref": "#/$defs/number", "description": "summed shard seconds"},
-        "cost_per_fixed_part": {"$ref": "#/$defs/number", "description": "cost_usd / newly_meshed; null when newly_meshed is 0"},
-        "same_run_as": {"$ref": "#/$defs/text", "description": "set when this arm is literally another arm's run (t19_tournament_on is t29_v3)"},
-        "notes": {"$ref": "#/$defs/text"}
+        "arm": {
+          "type": "string",
+          "description": "the arm id; equals its key under arms"
+        },
+        "label": {
+          "type": "string",
+          "description": "human label; t6_rules_only_local is EXACTLY 'rules-only baseline'"
+        },
+        "commit": {
+          "$ref": "#/$defs/text"
+        },
+        "image_digest": {
+          "$ref": "#/$defs/text"
+        },
+        "sample_sha256": {
+          "$ref": "#/$defs/text"
+        },
+        "n_files": {
+          "$ref": "#/$defs/count"
+        },
+        "newly_meshed": {
+          "$ref": "#/$defs/count"
+        },
+        "newly_broken": {
+          "$ref": "#/$defs/count"
+        },
+        "meshes_before": {
+          "$ref": "#/$defs/count"
+        },
+        "meshes_after": {
+          "$ref": "#/$defs/count"
+        },
+        "delivered_via_tolerant_mesher": {
+          "$ref": "#/$defs/count",
+          "description": "files gmsh still refused that fTetWild meshed as delivered (repair_corpus --tolerant-delivery, plan-free production envelope/iterations). A SEPARATE success column, never part of newly_meshed or meshes_after. Optional: absent or null renders [PENDING]."
+        },
+        "endings": {
+          "$ref": "#/$defs/tally",
+          "description": "repair_corpus corpus_summary.endings"
+        },
+        "ops_kept": {
+          "$ref": "#/$defs/tally",
+          "description": "catalogue.tally[op].kept"
+        },
+        "ops_rolled_back": {
+          "$ref": "#/$defs/tally",
+          "description": "catalogue.tally[op].rolled_back"
+        },
+        "model_calls": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/count"
+            },
+            {
+              "const": "n/a"
+            }
+          ]
+        },
+        "cost_usd": {
+          "$ref": "#/$defs/number",
+          "description": "model spend + VM container time, list price"
+        },
+        "wall_s": {
+          "$ref": "#/$defs/number",
+          "description": "summed shard seconds"
+        },
+        "cost_per_fixed_part": {
+          "$ref": "#/$defs/number",
+          "description": "cost_usd / newly_meshed; null when newly_meshed is 0"
+        },
+        "same_run_as": {
+          "$ref": "#/$defs/text",
+          "description": "set when this arm is literally another arm's run (t19_tournament_on is t29_v3)"
+        },
+        "notes": {
+          "$ref": "#/$defs/text"
+        }
       }
     },
     "clean": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["arm", "label", "commit", "image_digest", "sample_sha256", "n_files", "byte_unchanged", "newly_broken"],
+      "required": [
+        "arm",
+        "label",
+        "commit",
+        "image_digest",
+        "sample_sha256",
+        "n_files",
+        "byte_unchanged",
+        "newly_broken"
+      ],
       "properties": {
-        "arm": {"const": "clean_control"},
-        "label": {"type": "string"},
-        "commit": {"$ref": "#/$defs/text"},
-        "image_digest": {"$ref": "#/$defs/text"},
-        "sample_sha256": {"$ref": "#/$defs/text"},
-        "n_files": {"$ref": "#/$defs/count"},
-        "byte_unchanged": {"$ref": "#/$defs/count", "description": "clean parts delivered unchanged; the minimum over every arm that ran the control"},
-        "newly_broken": {"$ref": "#/$defs/count"},
-        "arms_covered": {"type": ["array", "null"], "items": {"type": "string"}},
-        "basis": {"$ref": "#/$defs/text", "description": "how byte_unchanged was decided"},
-        "notes": {"$ref": "#/$defs/text"}
+        "arm": {
+          "const": "clean_control"
+        },
+        "label": {
+          "type": "string"
+        },
+        "commit": {
+          "$ref": "#/$defs/text"
+        },
+        "image_digest": {
+          "$ref": "#/$defs/text"
+        },
+        "sample_sha256": {
+          "$ref": "#/$defs/text"
+        },
+        "n_files": {
+          "$ref": "#/$defs/count"
+        },
+        "byte_unchanged": {
+          "$ref": "#/$defs/count",
+          "description": "clean parts delivered unchanged; the minimum over every arm that ran the control"
+        },
+        "newly_broken": {
+          "$ref": "#/$defs/count"
+        },
+        "arms_covered": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "basis": {
+          "$ref": "#/$defs/text",
+          "description": "how byte_unchanged was decided"
+        },
+        "notes": {
+          "$ref": "#/$defs/text"
+        }
       }
     }
   }

@@ -523,3 +523,40 @@ def test_the_call_site_reads_the_posture_rather_than_passing_a_constant():
     source = Path(conservative.__file__).read_text()
     assert "CAD_REPAIR_TOLERANT_PROBE" in source
     assert "tolerant_live=False" not in source
+
+
+# --------------------------------------------------------------------------------------------
+# DELIVERY MODE: the tolerant route scored apart (repair_corpus --tolerant-delivery).
+# --------------------------------------------------------------------------------------------
+
+
+def test_delivery_mode_runs_at_the_production_envelope_and_iterations(monkeypatch):
+    from meshpipeline.engines import fea_tetwild
+
+    jobs: list[dict] = []
+    monkeypatch.setattr(fea_tetwild, "run_part",
+                        lambda job: jobs.append(dict(job)) or {"tets": [1, 2, 3], "seconds": 4.0})
+    monkeypatch.setattr(fea_tetwild, "tessellate", lambda *a: ("XYZ", "TRIS", "LABELS"))
+    monkeypatch.setattr(tp, "_read_faces", lambda path: ("SHAPE", "FMAP", 6))
+    answer = tp.child_answer("/tmp/shape.step", 100.0, 300.0, tp.MODE_DELIVERY)
+    assert answer["tets"] == 3
+    job = jobs[0]
+    assert job["max_its"] == fea_tetwild.MAX_ITS              # production, not tier 2b's 10
+    assert job["epsilon"] == pytest.approx(fea_tetwild.envelope_m(100.0, None))  # unwidened
+    assert job["hard_at"] - job["soft_at"] == pytest.approx((1 - fea_tetwild.SOFT_SHARE) * 300.0)
+
+
+def test_delivery_mode_reaches_the_child_on_its_command_line(monkeypatch, tmp_path):
+    _binary(monkeypatch)
+    calls = _popen(monkeypatch, FakeProc(out=json.dumps({"tets": 5, "seconds": 1.0})))
+    result = tp.tolerant_probe(tmp_path / "part.step", diagonal_mm=100.0, budget_s=300.0,
+                               mode=tp.MODE_DELIVERY)
+    assert calls[0]["cmd"][-1] == tp.MODE_DELIVERY
+    assert result.verdict == tp.EATS and result.tets == 5
+
+
+def test_the_routing_question_is_unchanged_by_default(monkeypatch, tmp_path):
+    _binary(monkeypatch)
+    calls = _popen(monkeypatch, FakeProc(out=json.dumps({"tets": 5, "seconds": 1.0})))
+    tp.tolerant_probe(tmp_path / "part.brep", diagonal_mm=100.0, budget_s=30.0)
+    assert calls[0]["cmd"][-1] == tp.MODE_TIER2B

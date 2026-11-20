@@ -63,6 +63,19 @@ ENVELOPE_WIDENING = 2.0
 #: What the child calls its run, in the one temporary directory it owns.
 JOB_NAME = "tier2b"
 
+#: THE TWO QUESTIONS THE CHILD CAN BE ASKED. `tier2b` is the routing question above: coarse,
+#: widened, a handful of rounds. `delivery` asks whether the part MESHES at the production rung's
+#: own envelope and iteration count (`fea_tetwild.envelope_m`, `fea_tetwild.MAX_ITS`), unwidened:
+#: an evaluation reading of the tolerant route, never a deliverable either. It is PLAN-FREE - the
+#: production rung also clamps the envelope to the thinnest real wall and sizes the edge from the
+#: FEA plan, neither of which exists outside the FEA pipeline - so the ideal edge is fTetWild's own
+#: default share of the diagonal, and that is recorded with every answer (`DELIVERY_SETTINGS`).
+MODE_TIER2B = "tier2b"
+MODE_DELIVERY = "delivery"
+DELIVERY_SETTINGS = ("plan-free production rung: envelope fea_tetwild.envelope_m(diagonal, no "
+                     "wall clamp), max_its fea_tetwild.MAX_ITS, ideal edge 0.05 x diagonal "
+                     "(fTetWild's default), 1 thread")
+
 
 @dataclass(frozen=True, slots=True)
 class TolerantResult:
@@ -123,7 +136,8 @@ def _read_faces(path: str) -> tuple[Any, Any, int]:
     return shape, fmap, int(fmap.Extent())
 
 
-def child_answer(path: str, diagonal_mm: float, budget_s: float) -> dict:
+def child_answer(path: str, diagonal_mm: float, budget_s: float,
+                 mode: str = MODE_TIER2B) -> dict:
     """One coarse tolerant pass, as the JSON line the child prints. RUNS IN THE CHILD.
 
     THE JOB IS THE POLICY. One thread (worker CPU is the worker's), `oracle.TIER2B_MAX_ITS`
@@ -135,7 +149,9 @@ def child_answer(path: str, diagonal_mm: float, budget_s: float) -> dict:
 
     started = time.monotonic()
     diagonal = float(diagonal_mm)
-    epsilon = diagonal * fea_tetwild.EPS_DIAG_SHARE * ENVELOPE_WIDENING
+    delivery = mode == MODE_DELIVERY
+    epsilon = (fea_tetwild.envelope_m(diagonal, None) if delivery
+               else diagonal * fea_tetwild.EPS_DIAG_SHARE * ENVELOPE_WIDENING)
     _shape, fmap, faces = _read_faces(path)
     xyz, tris, _labels = fea_tetwild.tessellate(
         fmap, list(range(faces)), epsilon * fea_tetwild.TESSELLATION_SHARE)
@@ -144,7 +160,8 @@ def child_answer(path: str, diagonal_mm: float, budget_s: float) -> dict:
         result = fea_tetwild.run_part({
             "dir": tmp, "xyz": xyz, "tris": tris,
             "edge": diagonal * EDGE_DIAG_SHARE, "epsilon": epsilon, "bg": None,
-            "name": JOB_NAME, "threads": 1, "max_its": oracle.TIER2B_MAX_ITS,
+            "name": JOB_NAME, "threads": 1,
+            "max_its": fea_tetwild.MAX_ITS if delivery else oracle.TIER2B_MAX_ITS,
             "soft_at": started + fea_tetwild.SOFT_SHARE * float(budget_s),
             "hard_at": started + float(budget_s)})
 
@@ -157,10 +174,12 @@ def child_answer(path: str, diagonal_mm: float, budget_s: float) -> dict:
 
 
 def _child_main(argv: list[str]) -> int:
-    """`python -m meshpipeline.cad.repair.tolerant_probe PATH DIAGONAL BUDGET`: one JSON line."""
-    path, diagonal, budget = argv
+    """`python -m meshpipeline.cad.repair.tolerant_probe PATH DIAGONAL BUDGET [MODE]`: one JSON
+    line."""
+    path, diagonal, budget, *rest = argv
     try:
-        answer = child_answer(path, float(diagonal), float(budget))
+        answer = child_answer(path, float(diagonal), float(budget),
+                              rest[0] if rest else MODE_TIER2B)
     except Exception as exc:  # noqa: BLE001 - said as a refusal the parent can report
         answer = {"tets": 0, "seconds": 0.0, "stopped": False,
                   "error": f"{type(exc).__name__}: {exc}", "out_of_time": False}
@@ -173,15 +192,15 @@ def _child_main(argv: list[str]) -> int:
 # the parent: start it, bound it, read it
 # #
 
-def _run_child(path: str, diagonal_mm: float,
-               budget_s: float) -> dict[str, Any] | None | Literal["error"]:
+def _run_child(path: str, diagonal_mm: float, budget_s: float,
+               mode: str = MODE_TIER2B) -> dict[str, Any] | None | Literal["error"]:
     """The child's JSON answer; None when the PARENT's clock won; "error" when it died unspeaking.
 
     `start_new_session=True` and the group kill go together: fTetWild is this child's own child,
     so killing the interpreter alone would leave the mesher running on a worker.
     """
     cmd = [sys.executable, "-W", "ignore", "-m", "meshpipeline.cad.repair.tolerant_probe",
-           path, repr(float(diagonal_mm)), repr(float(budget_s))]
+           path, repr(float(diagonal_mm)), repr(float(budget_s)), mode]
     proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                             stderr=subprocess.DEVNULL, start_new_session=True, text=True)
     try:
@@ -206,7 +225,8 @@ def _run_child(path: str, diagonal_mm: float,
     return answer if isinstance(answer, dict) else "error"
 
 
-def tolerant_probe(path: Path, *, diagonal_mm: float, budget_s: float) -> TolerantResult:
+def tolerant_probe(path: Path, *, diagonal_mm: float, budget_s: float,
+                   mode: str = MODE_TIER2B) -> TolerantResult:
     """Would the tolerant rung eat the part in `path`? NEVER RAISES, never blocks past
     `budget_s + REAP_S`.
 
@@ -220,7 +240,7 @@ def tolerant_probe(path: Path, *, diagonal_mm: float, budget_s: float) -> Tolera
     if not float(budget_s) > 0.0:
         return TolerantResult(NO_ANSWER, 0, 0.0, False, NO_TIME_LEFT)
     try:
-        answer = _run_child(str(path), float(diagonal_mm), float(budget_s))
+        answer = _run_child(str(path), float(diagonal_mm), float(budget_s), mode)
     except Exception as exc:  # noqa: BLE001 - the probe never raises
         logger.info("tolerant_probe: %s: %s", type(exc).__name__, exc)
         answer = "error"

@@ -288,7 +288,7 @@ SCHEMA_ARM_KEYS = {"arm", "label", "commit", "image_digest", "sample_sha256", "n
                    "newly_meshed", "newly_broken", "meshes_before", "meshes_after", "endings",
                    "ops_kept", "ops_rolled_back", "model_calls", "cost_usd", "wall_s",
                    "cost_per_fixed_part"}
-SCHEMA_ARM_OPTIONAL = {"same_run_as", "notes"}
+SCHEMA_ARM_OPTIONAL = {"same_run_as", "notes", "delivered_via_tolerant_mesher"}
 SCHEMA_CLEAN_KEYS = {"arm", "label", "commit", "image_digest", "sample_sha256", "n_files",
                      "byte_unchanged", "newly_broken"}
 SCHEMA_CLEAN_OPTIONAL = {"arms_covered", "basis", "notes"}
@@ -583,3 +583,12 @@ def test_model_usage_counts_calls_by_purpose_and_never_guesses_an_old_one(tmp_pa
     assert usage["by_role"] == {"intake": 4}
     assert usage["by_purpose"] == {"investigator": 1, "reviewer": 1,
                                    "tournament:investigator": 1, "unlabelled": 1}
+
+
+def test_failing_shards_score_the_tolerant_route_and_clean_ones_do_not():
+    failing = spec.harness_argv("t29_deterministic", "failing", shard="1/4", inputs="/in",
+                                out="/out", code_root="/code")
+    clean = spec.harness_argv("t29_deterministic", "clean", shard="1/4", inputs="/in",
+                              out="/out", code_root="/code")
+    assert "--tolerant-delivery" in failing
+    assert "--tolerant-delivery" not in clean

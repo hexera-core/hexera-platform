@@ -791,6 +791,54 @@ def _score_meshing(row: dict, path: Path, scratch: Path) -> None:
                                       budget_s=MESH_PROBE_BUDGET_S))
 
 
+#: The hard ceiling on one delivery-settings tolerant pass (`_tolerant_delivery`), in seconds.
+TOLERANT_DELIVERY_BUDGET_S = 300.0
+
+
+def _tolerant_delivery(row: dict, path: Path, scratch: Path, *, probe=None) -> None:
+    """THE TOLERANT ROUTE, SCORED APART. For a file the repair did not leave gmsh-meshing, and
+    whose tier-2b reading said the tolerant rung would eat it, run fTetWild at the production
+    rung's envelope and iterations (`tolerant_probe.MODE_DELIVERY`, plan-free - see
+    `DELIVERY_SETTINGS`) on THE FILE THAT WOULD BE DELIVERED: the repaired STEP this run wrote,
+    else the upload. In a fresh subprocess with a hard ceiling (`tolerant_probe`'s own reaper).
+
+    RECORDED AS ITS OWN COLUMN, NEVER AS A REPAIR: `tolerant_delivery` holds what happened and
+    `delivered_via_tolerant_mesher` whether it meshed. Neither touches `outcome`, `meshes_after`
+    or `newly_meshed` - a part the tolerant mesher eats was not repaired, it was meshed another way.
+    `probe` is the test seam (`tolerant_probe.tolerant_probe`'s signature)."""
+    from meshpipeline.cad.repair import tolerant_probe as tp
+
+    if row.get("tolerant_route") != tp.EATS:
+        return
+    repaired = row.get("outcome") in _REPAIRED_OUTCOMES
+    if row.get("meshes_after") is True or (row.get("meshes_before") is True
+                                           and row.get("meshes_after") is None):
+        return  # gmsh meshes what would be delivered: the tolerant route is not needed
+    written = scratch / f"{path.stem}-repaired.step"
+    delivered = written if repaired and written.is_file() else path
+    try:
+        diagonal = _diagonal_of(delivered)
+    except Exception as exc:  # noqa: BLE001 - recorded, never raised
+        row["tolerant_delivery"] = {"attempted": False, "meshes": False, "elements": 0,
+                                    "seconds": 0.0, "failure": f"unreadable: {exc}"[:200],
+                                    "file": "repaired" if delivered == written else "upload",
+                                    "settings": tp.DELIVERY_SETTINGS}
+        row["delivered_via_tolerant_mesher"] = False
+        return
+    result = (probe or tp.tolerant_probe)(delivered, diagonal_mm=diagonal,
+                                          budget_s=TOLERANT_DELIVERY_BUDGET_S,
+                                          mode=tp.MODE_DELIVERY)
+    meshes = result.verdict == tp.EATS
+    row["tolerant_delivery"] = {
+        "attempted": result.verdict != tp.UNAVAILABLE,
+        "meshes": meshes, "elements": int(result.tets), "seconds": round(float(result.seconds), 2),
+        "failure": "" if meshes else (result.message or result.verdict)[:200],
+        "verdict": result.verdict, "stopped": bool(result.stopped),
+        "file": "repaired" if delivered == written else "upload",
+        "settings": tp.DELIVERY_SETTINGS}
+    row["delivered_via_tolerant_mesher"] = meshes
+
+
 def meshing_summary(rows: list[dict]) -> dict:
     """Aggregate the mesh keys. A file repair did not write keeps its before verdict as its after
     verdict, so `meshed_after` is the count of files that mesh once repair has had its go."""
@@ -809,9 +857,17 @@ def meshing_summary(rows: list[dict]) -> dict:
     # one that did not mesh before has meshes_after=None and is neither broken nor meshed. The key
     # appears only when a crash happened, so a run without one summarises byte-identically.
     crashed = sum(1 for r in rows if r.get("outcome") == CRASHED)
+    # THE TOLERANT ROUTE IS ITS OWN COUNT, present only when a row carries the reading, and never
+    # added to meshed_after or newly_meshed.
+    tolerant = [r for r in rows if "tolerant_delivery" in r]
     return {
         **({"forced_repairs": forced} if forced else {}),
         **({"crashed": crashed} if crashed else {}),
+        **({"tolerant_delivery_attempted": sum(
+                1 for r in tolerant if r["tolerant_delivery"].get("attempted")),
+            "delivered_via_tolerant_mesher": sum(
+                1 for r in tolerant if r.get("delivered_via_tolerant_mesher") is True)}
+           if tolerant else {}),
         "files": len(scored),
         "meshed_before": sum(1 for r in scored if r["meshes_before"]),
         "meshed_after": sum(1 for ok in after if ok),
@@ -1690,7 +1746,8 @@ def _isolated(path: Path, body, *, mesh_probe: bool) -> dict:
 
 def run_files(files: list[Path], scratch: Path, *, mode: str = "off", loop: bool = False,
               bundle=None, mesh_probe: bool = False, force_repair: bool = False,
-              goal=None, sink=None, entries=None, isolate: bool = False) -> list[dict]:
+              goal=None, sink=None, entries=None, isolate: bool = False,
+              tolerant_delivery: bool = False) -> list[dict]:
     """Run the repair loop over `files`, printing a line per file; returns the rows. When `bundle`
     is a BundleWriter every row is streamed into it AS IT IS PRODUCED, so a run that dies half way
     leaves its evidence-so-far on disk rather than in a list that was never written.
@@ -1722,6 +1779,8 @@ def run_files(files: list[Path], scratch: Path, *, mode: str = "off", loop: bool
                         force_repair=force_repair, goal=goal, sink=sink, stage=stage)
 
         row = _isolated(path, body, mesh_probe=mesh_probe) if isolate else body()
+        if tolerant_delivery:
+            _tolerant_delivery(row, path, scratch)
         row.update(stamp)
         rows.append(row)
         if bundle is not None:
@@ -1788,6 +1847,11 @@ def main() -> int:
                         help="with --mesh-probe: a file whose before-probe fails runs the repair "
                              "session even when triage routed it away (benchmark only)")
     parser.add_argument("--json", dest="json_out", default="", help="write the rows here")
+    parser.add_argument("--tolerant-delivery", dest="tolerant_delivery", action="store_true",
+                        help="for a file gmsh still refuses whose tier-2b reading is "
+                             "tolerant_rung_eats_it, mesh the delivered file with fTetWild at "
+                             "production envelope/iterations (<= 300 s) and record it as its own "
+                             "column - never as a repair")
     parser.add_argument("--isolate-files", dest="isolate", action="store_true",
                         help="repair each file in a forked child: a native crash becomes a "
                              "`crashed` row and the run continues (POSIX; benchmark harness)")
@@ -2001,7 +2065,8 @@ def main() -> int:
     writer = benchmark_bundle.BundleWriter(Path(args.bundle)) if args.bundle else None
     rows = run_files(files, scratch, mode=args.planner, loop=args.loop, bundle=writer,
                      mesh_probe=args.mesh_probe, force_repair=args.force_repair,
-                     goal=goal, sink=sink, entries=sample_entries, isolate=args.isolate)
+                     goal=goal, sink=sink, entries=sample_entries, isolate=args.isolate,
+                     tolerant_delivery=args.tolerant_delivery)
     if sink is not None:
         sink.close()
 
@@ -2093,6 +2158,10 @@ def main() -> int:
               f"(newly meshed {meshing['newly_meshed']}, newly broken {meshing['newly_broken']})")
         for kind, count in meshing["still_failing_by_kind"].items():
             print(f"  {count:>4}  still failing: {kind}")
+        if "delivered_via_tolerant_mesher" in meshing:
+            print(f"  separately, NOT a repair: delivered via the tolerant mesher "
+                  f"{meshing['delivered_via_tolerant_mesher']} of "
+                  f"{meshing['tolerant_delivery_attempted']} attempted")
 
     if "goal" in summary:
         scores = summary["goal"]

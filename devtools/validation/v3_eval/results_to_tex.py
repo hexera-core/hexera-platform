@@ -190,8 +190,23 @@ def compute_verdict(results: dict) -> dict:
     if not out["ratio_ok"]:
         tail.append("the count rule is not met")
     out["statement"] = (f"{out['status']}. {head}" + (f" Fails on: {'; '.join(tail)}." if tail else "")
-                        + (" The 4x goal is not claimed." if det == 0 else ""))
+                        + (" The 4x goal is not claimed." if det == 0 else "")
+                        + _tolerant_sentence(results))
     return out
+
+
+def _tolerant_sentence(results: dict) -> str:
+    """The tolerant route, STATED SEPARATELY and never part of the rule above: how many files
+    gmsh still refused were meshed by fTetWild as delivered. Empty until an arm measured it."""
+    det = get(results, "t29_deterministic", "delivered_via_tolerant_mesher")
+    v3 = get(results, "t29_v3", "delivered_via_tolerant_mesher")
+    if not (measured(det) or measured(v3)):
+        return ""
+    def word(x) -> str:
+        return str(int(x)) if measured(x) else "not measured"
+    return (f" Separately, and not counted as repaired or newly meshed: delivered via the "
+            f"tolerant mesher (fTetWild, plan-free production envelope) - deterministic "
+            f"{word(det)}, v3 {word(v3)}.")
 
 
 def zero_break_bound(results: dict):
@@ -242,7 +257,9 @@ def load(path: Path) -> dict:
 FIELD_MACROS = (  # (field, macro suffix, kind)
     ("n_files", "NFiles", "int"), ("newly_meshed", "NewlyMeshed", "int"),
     ("newly_broken", "NewlyBroken", "int"), ("meshes_before", "MeshesBefore", "int"),
-    ("meshes_after", "MeshesAfter", "int"), ("model_calls", "ModelCalls", "int"),
+    ("meshes_after", "MeshesAfter", "int"),
+    ("delivered_via_tolerant_mesher", "TolerantMesher", "int"),
+    ("model_calls", "ModelCalls", "int"),
     ("cost_usd", "CostUsd", "usd"), ("wall_s", "WallS", "seconds"),
     ("cost_per_fixed_part", "CostPerFixed", "usd"), ("commit", "Commit", "hash"),
     ("image_digest", "Image", "hash"), ("sample_sha256", "Sample", "hash"),
@@ -371,6 +388,8 @@ def _from_summary(arm: dict, summary: dict) -> None:
     arm["meshes_after"] = meshing.get("meshed_after")
     arm["newly_meshed"] = meshing.get("newly_meshed")
     arm["newly_broken"] = meshing.get("newly_broken")
+    # THE TOLERANT ROUTE, its own column: never folded into newly_meshed or meshes_after.
+    arm["delivered_via_tolerant_mesher"] = meshing.get("delivered_via_tolerant_mesher")
     arm["endings"] = summary.get("endings")
     tally = (summary.get("catalogue") or {}).get("tally")
     if isinstance(tally, dict):

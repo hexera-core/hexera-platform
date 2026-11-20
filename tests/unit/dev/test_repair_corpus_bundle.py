@@ -443,3 +443,89 @@ def test_a_row_counts_the_keeps_that_came_through_the_mesh_cure_door(kernel, tmp
     assert rows[0]["operations_kept"] == 2
     assert rows[0]["operations_kept_meshes_after_target_remains"] == 1
     assert rows[0]["operations"][0]["reason"] == MESHES_AFTER_TARGET_REMAINS
+
+
+# THE TOLERANT ROUTE, SCORED APART (--tolerant-delivery)
+
+
+def _tolerant_row(**over):
+    row = {"file": "part.step", "outcome": "refused", "meshes_before": False,
+           "meshes_after": None, "tolerant_route": "tolerant_rung_eats_it"}
+    row.update(over)
+    return row
+
+
+class _Probe:
+    def __init__(self, verdict="tolerant_rung_eats_it", tets=12345, message=""):
+        from meshpipeline.cad.repair.tolerant_probe import TolerantResult
+
+        self.calls: list = []
+        self.result = TolerantResult(verdict, tets, 42.0, False, message)
+
+    def __call__(self, path, *, diagonal_mm, budget_s, mode):
+        self.calls.append({"path": path, "budget_s": budget_s, "mode": mode})
+        return self.result
+
+
+def test_a_refused_part_the_tolerant_mesher_eats_is_its_own_column(kernel, tmp_path,
+                                                                   monkeypatch):
+    monkeypatch.setattr(rc, "_diagonal_of", lambda path: 100.0)
+    probe = _Probe()
+    row = _tolerant_row()
+    rc._tolerant_delivery(row, kernel.part, tmp_path, probe=probe)
+    assert probe.calls == [{"path": kernel.part, "budget_s": 300.0, "mode": "delivery"}]
+    assert row["delivered_via_tolerant_mesher"] is True
+    td = row["tolerant_delivery"]
+    assert (td["attempted"], td["meshes"], td["elements"], td["seconds"], td["failure"],
+            td["file"]) == (True, True, 12345, 42.0, "", "upload")
+    assert "plan-free" in td["settings"]
+    # NEVER a repair: the repair columns are untouched.
+    assert row["outcome"] == "refused" and row["meshes_after"] is None
+
+
+def test_the_delivered_file_is_the_repaired_one_when_this_run_wrote_it(kernel, tmp_path,
+                                                                       monkeypatch):
+    monkeypatch.setattr(rc, "_diagonal_of", lambda path: 100.0)
+    written = tmp_path / f"{kernel.part.stem}-repaired.step"
+    written.write_text("repaired")
+    probe = _Probe(verdict="tolerant_rung_refuses", tets=0, message="envelope did not close")
+    row = _tolerant_row(outcome="repaired", meshes_after=False)
+    rc._tolerant_delivery(row, kernel.part, tmp_path, probe=probe)
+    assert probe.calls[0]["path"] == written
+    assert row["delivered_via_tolerant_mesher"] is False
+    assert row["tolerant_delivery"]["failure"] == "envelope did not close"
+    assert row["tolerant_delivery"]["file"] == "repaired"
+
+
+@pytest.mark.parametrize("over", [
+    {"tolerant_route": "tolerant_rung_refuses"},          # tier 2b said no
+    {"outcome": "repaired", "meshes_after": True},        # gmsh meshes what is delivered
+    {"meshes_before": True},                              # it meshed all along
+])
+def test_the_tolerant_pass_is_not_run_where_it_does_not_apply(kernel, tmp_path, over):
+    probe = _Probe()
+    row = _tolerant_row(**over)
+    rc._tolerant_delivery(row, kernel.part, tmp_path, probe=probe)
+    assert probe.calls == [] and "tolerant_delivery" not in row
+
+
+def test_no_binary_is_recorded_as_not_attempted(kernel, tmp_path, monkeypatch):
+    monkeypatch.setattr(rc, "_diagonal_of", lambda path: 100.0)
+    row = _tolerant_row()
+    rc._tolerant_delivery(row, kernel.part, tmp_path,
+                          probe=_Probe(verdict="unavailable", tets=0, message="not installed"))
+    assert row["tolerant_delivery"]["attempted"] is False
+    assert row["delivered_via_tolerant_mesher"] is False
+
+
+def test_the_summary_counts_the_tolerant_route_apart_and_only_when_read():
+    plain = [{"meshes_before": False, "meshes_after": None}]
+    assert "delivered_via_tolerant_mesher" not in rc.meshing_summary(plain)
+    rows = [{"meshes_before": False, "meshes_after": None,
+             "tolerant_delivery": {"attempted": True}, "delivered_via_tolerant_mesher": True},
+            {"meshes_before": False, "meshes_after": None,
+             "tolerant_delivery": {"attempted": True}, "delivered_via_tolerant_mesher": False}]
+    summary = rc.meshing_summary(rows)
+    assert summary["delivered_via_tolerant_mesher"] == 1
+    assert summary["tolerant_delivery_attempted"] == 2
+    assert summary["newly_meshed"] == 0 and summary["meshed_after"] == 0
