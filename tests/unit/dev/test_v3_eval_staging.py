@@ -90,8 +90,10 @@ def test_launcher_dry_run_prints_labelled_self_deleting_vms(tmp_path):
         assert "--max-run-duration=" in line
         assert "--machine-type=c2d-highcpu-4" in line
         assert "n2-" not in line
+        # results land under the detached root eval/<arm>-<commit12>/ (collectable from GCS alone)
+        assert "v3-results=gs://dev-crsv3-transfer-224734058693/eval/v3-full-812ae0220000" in line
     # the secret is named, never valued
-    assert "openai-api-key" in r.stdout and "sk-" not in r.stdout
+    assert "openai-api-key" in r.stdout and "OPENAI_API_KEY=" not in r.stdout
 
 
 # ------------------------------------------------------------------ the sample

@@ -19,7 +19,7 @@ Layout (prefix defaults to gs://dev-crsv3-transfer-<projectnumber>/eval/v3-verdi
     <prefix>/sample.json                          name + sha256, sorted - identical for every arm
     <prefix>/clean-control-100.json               the clean manifest
     <prefix>/<commit12>/code.tgz                  `git archive <commit> devtools/validation`
-    <prefix>/<commit12>/out/<arm>/<kind>/shard-I-of-N/   what each VM writes back
+    <bucket>/eval/<arm>-<commit12>/<kind>/shard-I-of-N/  what each VM writes back (results root)
 
 The inputs do not depend on the commit, so they are staged once; the code and the outputs are
 per commit, so two commits can never write into one run.

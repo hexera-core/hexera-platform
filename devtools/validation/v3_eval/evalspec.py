@@ -131,7 +131,10 @@ def harness_argv(name: str, kind: str, *, shard: str, inputs: str, out: str,
     if spec["investigator"] != "off":
         argv += ["--investigator", spec["investigator"],
                  "--transcripts", f"{out}/transcripts.jsonl"]
-    argv += ["--json", f"{out}/rows.json"]
+    # --bundle streams one row per file into bundle/rows.jsonl AS IT IS PRODUCED (the VM syncs it
+    # to GCS), and --json writes the full rows at the end for the collector.
+    argv += ["--json", f"{out}/rows.json", "--bundle", f"{out}/bundle",
+             "--track", "mesh-failure-real" if kind == "failing" else "clean-control"]
     return argv
 
 

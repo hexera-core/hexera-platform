@@ -18,7 +18,8 @@ IMAGE="$(attr v3-image)"; COMMIT="$(attr v3-commit)"; ARM="$(attr v3-arm)"; KIND
 SHARD="$(attr v3-shard)"; PREFIX="$(attr v3-prefix)"; MACHINE="$(attr v3-machine-type)"
 SECRET="$(attr v3-model-secret)"; ACCEPT="$(attr v3-accept-inert || true)"
 I="${SHARD%/*}"; N="${SHARD#*/}"
-OUT_URI="${PREFIX}/${COMMIT:0:12}/out/${ARM}/${KIND}/shard-${I}-of-${N}"
+RESULTS="$(attr v3-results)"
+OUT_URI="${RESULTS}/${KIND}/shard-${I}-of-${N}"
 W=/var/lib/v3eval
 
 self_delete() {
@@ -79,6 +80,14 @@ ACCEPT_ARGS=()
 IFS=',' read -r -a _accept <<< "${ACCEPT}"
 for flag in "${_accept[@]}"; do [ -n "${flag}" ] && ACCEPT_ARGS+=(--accept-inert "${flag}"); done
 
+# ROWS LEAVE THE VM AS THEY ARE WRITTEN: repair_corpus streams one row per file into
+# bundle/rows.jsonl, and this loop syncs the output directory to GCS every few minutes, so a VM
+# that dies mid-shard still leaves every finished file's row behind.
+( while sleep 240; do
+    gcloud storage rsync -r -x 'clean-inputs/.*' "${W}/out" "${OUT_URI}" >/dev/null 2>&1
+  done ) &
+SYNC_PID=$!
+
 log "running ${ARM}/${KIND} shard ${SHARD} on ${MACHINE}"
 docker run --rm --name v3eval \
   --env-file "${W}/arm.env" --env-file "${W}/secret.env" \
@@ -89,6 +98,7 @@ docker run --rm --name v3eval \
   --code-root /eval/code --sample-json /eval/sample.json --commit "${COMMIT}" --image "${IMAGE}" \
   --machine-type "${MACHINE}" "${ACCEPT_ARGS[@]}" 2>&1 | tee "${W}/out/run.log"
 RC="${PIPESTATUS[0]}"
+kill "${SYNC_PID}" 2>/dev/null || true
 rm -f "${W}/secret.env"
 
 rm -rf "${W}/out/clean-inputs"   # symlinks into the inputs: CAD, never written back

@@ -10,9 +10,14 @@
 #             and VM time from PROVENANCE. No CAD is read or written.
 """Collect, check, seal and report the v3 verdict.
 
+    collect.py --commit <40-hex> --status          # which shards have DONE / FAILED / partial rows
     collect.py --commit <40-hex> --pull            # gcloud storage cp the outputs, then seal
-    collect.py --commit <40-hex> --from <dir>      # seal from an already-pulled out/ directory
+    collect.py --commit <40-hex> --from <dir>      # seal from an already-pulled directory
     collect.py ... --dry-run                       # print the pull, check what is local, seal nothing
+
+It needs GCS and nothing else: every arm's shards live under
+<bucket>/eval/<arm>-<commit12>/<kind>/shard-I-of-N/ (launch_fleet.results_root), so it can run
+from any session, any machine, after the fleet is long gone.
 """
 from __future__ import annotations
 
@@ -29,7 +34,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[2]
 VERDICT_DIR = REPO / "devtools/validation/evidence/2026-11-20-crs-v3-verdict"
-PREFIX = "gs://dev-crsv3-transfer-224734058693/eval/v3-verdict"
+BUCKET = "gs://dev-crsv3-transfer-224734058693"
 SHARD_RE = re.compile(r"^shard-(\d+)-of-(\d+)$")
 
 #: On-demand list prices, us-central1, USD per vCPU-hour and per GB-hour (Compute Engine pricing
@@ -281,11 +286,36 @@ def build_verdicts(reports: dict) -> dict:
     return verdicts
 
 
+def status(bucket: str, commit: str) -> int:
+    """Read-only: per arm and kind, which shards wrote DONE, FAILED, INCOMPLETE or only partial
+    rows - what a resume needs to know which shards to relaunch."""
+    for arm in evalspec.ARMS:
+        root = f"{bucket}/eval/{arm}-{commit[:12]}"
+        out = subprocess.run(["gcloud", "storage", "ls", "-r", root], capture_output=True,
+                             text=True)
+        if out.returncode:
+            print(f"{arm}: no results under {root}")
+            continue
+        shards: dict[tuple[str, str], set[str]] = {}
+        for line in out.stdout.splitlines():
+            m = re.search(r"/(failing|clean)/(shard-\d+-of-\d+)/(.+)$", line.strip())
+            if m:
+                shards.setdefault((m.group(1), m.group(2)), set()).add(m.group(3))
+        for (kind, shard), files in sorted(shards.items()):
+            state = next((s for s in ("DONE", "FAILED", "INCOMPLETE") if s in files), "running")
+            rows = "rows.json" if "rows.json" in files else (
+                "partial bundle/rows.jsonl" if "bundle/rows.jsonl" in files else "no rows yet")
+            print(f"{arm:<18} {kind:<8} {shard:<16} {state:<10} {rows}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--commit", required=True)
-    parser.add_argument("--prefix", default=PREFIX)
+    parser.add_argument("--bucket", default=BUCKET)
+    parser.add_argument("--status", action="store_true",
+                        help="list each arm's shard markers in GCS and exit (read-only)")
     parser.add_argument("--from", dest="source", default="",
                         help="an already-pulled out/ directory (<arm>/<kind>/shard-I-of-N)")
     parser.add_argument("--pull", action="store_true", help="gcloud storage cp the outputs first")
@@ -297,12 +327,20 @@ def main(argv: list[str] | None = None) -> int:
 
     source = Path(args.source) if args.source else Path(tempfile.gettempdir()) / (
         f"v3-eval-out-{args.commit[:12]}")
+    bucket = args.bucket.rstrip("/")
+    if args.status:
+        return status(bucket, args.commit)
     if args.pull:
-        cmd = ["gcloud", "storage", "cp", "-r",
-               f"{args.prefix.rstrip('/')}/{args.commit[:12]}/out/*", str(source)]
-        print(("DRY-RUN  " if args.dry_run else "") + " ".join(shlex.quote(c) for c in cmd))
-        if not args.dry_run:
-            source.mkdir(parents=True, exist_ok=True)
+        for arm in evalspec.ARMS:
+            root = f"{bucket}/eval/{arm}-{args.commit[:12]}"
+            cmd = ["gcloud", "storage", "cp", "-r", f"{root}/*", str(source / arm)]
+            print(("DRY-RUN  " if args.dry_run else "") + " ".join(shlex.quote(c) for c in cmd))
+            if args.dry_run:
+                continue
+            if subprocess.run(["gcloud", "storage", "ls", root], capture_output=True).returncode:
+                print(f"  {root}: no results (arm not run)")
+                continue
+            (source / arm).mkdir(parents=True, exist_ok=True)
             subprocess.run(cmd, check=True)
     if not source.is_dir():
         print(f"nothing pulled at {source}", file=sys.stderr)

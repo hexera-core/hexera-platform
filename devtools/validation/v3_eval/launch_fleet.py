@@ -13,8 +13,11 @@
 
 Each VM runs vm_startup.sh: docker-runs run_arm.py for shard I/N in the image, writes rows +
 PROVENANCE.json under <prefix>/<commit12>/out/<arm>/<kind>/shard-I-of-N/, writes DONE, and deletes
-itself. --instance-termination-action=DELETE with --max-run-duration is the backstop. Re-running
-the same command skips every shard whose DONE marker exists and every VM that already exists.
+itself. Results land under gs://dev-crsv3-transfer-<n>/eval/<arm>-<commit12>/<kind>/shard-I-of-N/
+(rows stream per file into bundle/rows.jsonl and are synced every few minutes), so the fleet is
+fully detached: nothing local needs to survive. --instance-termination-action=DELETE with
+--max-run-duration is the backstop. Re-running the same command skips every shard whose DONE
+marker exists and every VM that already exists; --only-shards narrows a resume further.
 """
 from __future__ import annotations
 
@@ -34,7 +37,9 @@ REPO = HERE.parents[2]
 PROJECT = "hexera-dev"
 PROJECT_NUMBER = "224734058693"
 REGION = "us-central1"
-PREFIX = f"gs://dev-crsv3-transfer-{PROJECT_NUMBER}/eval/v3-verdict"
+BUCKET = f"gs://dev-crsv3-transfer-{PROJECT_NUMBER}"
+#: Inputs and code (staged once by stage.py / clean_control.py fetch).
+PREFIX = f"{BUCKET}/eval/v3-verdict"
 #: The label every crsv3 resource carries (`make destroy-env SLUG=crsv3` uses DEPLOYMENT_ID=dev-crsv3).
 DEPLOYMENT_ID = "dev-crsv3"
 SERVICE_ACCOUNT = f"{PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
@@ -63,8 +68,14 @@ def vm_name(arm: str, kind: str, i: int, n: int) -> str:
     return name
 
 
-def out_uri(prefix: str, commit: str, arm: str, kind: str, i: int, n: int) -> str:
-    return f"{prefix}/{commit[:12]}/out/{arm}/{kind}/shard-{i}-of-{n}"
+def results_root(arm: str, commit: str, bucket: str = BUCKET) -> str:
+    """THE DETACHED RESULTS ROOT: every shard of one arm at one commit writes under
+    <bucket>/eval/<arm>-<commit12>/<kind>/shard-I-of-N/, so collect.py needs GCS and nothing else."""
+    return f"{bucket}/eval/{arm}-{commit[:12]}"
+
+
+def out_uri(arm: str, commit: str, kind: str, i: int, n: int, bucket: str = BUCKET) -> str:
+    return f"{results_root(arm, commit, bucket)}/{kind}/shard-{i}-of-{n}"
 
 
 def labels(arm: str, kind: str, commit: str) -> str:
@@ -77,6 +88,7 @@ def create_command(args, i: int, env_file: str) -> list[str]:
     metadata = "|".join([
         f"v3-image={args.image}", f"v3-commit={args.commit}", f"v3-arm={args.arm}",
         f"v3-kind={args.kind}", f"v3-shard={i}/{n}", f"v3-prefix={args.prefix}",
+        f"v3-results={results_root(args.arm, args.commit)}",
         f"v3-machine-type={args.machine_type}", f"v3-model-secret={evalspec.MODEL_SECRET}",
         f"v3-accept-inert={','.join(args.accept_inert)}",
     ])
@@ -192,9 +204,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--allow-untagged-image", action="store_true")
     parser.add_argument("--skip-preflight", action="store_true",
                         help="skip the host settings preflight (the container still runs it)")
+    parser.add_argument("--only-shards", default="",
+                        help="resume: launch only these shard indices (e.g. 3,7); the rest are "
+                             "left alone. Without it every shard lacking DONE is launched.")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
     validate(parser, args)
+    try:
+        args.only_shards = {int(x) for x in args.only_shards.split(",") if x.strip()}
+    except ValueError:
+        parser.error("--only-shards wants comma-separated shard indices")
+    if any(not 1 <= i <= args.shards for i in args.only_shards):
+        parser.error("--only-shards indices must be within 1..--shards")
     args.prefix = args.prefix.rstrip("/")
 
     problems = [] if args.skip_preflight else preflight_settings(args)
@@ -222,7 +243,9 @@ def main(argv: list[str] | None = None) -> int:
     created = skipped = 0
     for i in range(1, args.shards + 1):
         name = vm_name(args.arm, args.kind, i, args.shards)
-        done = out_uri(args.prefix, args.commit, args.arm, args.kind, i, args.shards) + "/DONE"
+        if args.only_shards and i not in args.only_shards:
+            continue
+        done = out_uri(args.arm, args.commit, args.kind, i, args.shards) + "/DONE"
         if args.dry_run:
             print(f"DRY-RUN  (skip if exists) gcloud storage ls {done}")
         elif name in existing:
