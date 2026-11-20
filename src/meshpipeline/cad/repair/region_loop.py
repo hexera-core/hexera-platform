@@ -253,7 +253,8 @@ _SEVERITY_RANK = {DefectSeverity.fatal: 0, DefectSeverity.error: 1,
                   DefectSeverity.warning: 2, DefectSeverity.info: 3}
 
 
-def _walk_order(regions: tuple[Region, ...], defects) -> tuple[Region, ...]:
+def _walk_order(regions: tuple[Region, ...], defects,
+                diagonal_mm: float | None = None) -> tuple[Region, ...]:
     """The regions in the order they should be OFFERED PACKAGES: worst defect first.
 
     WHY NOT `decompose` ORDER. `decompose` sorts spatially (ascending `bbox_min`), which is the
@@ -287,14 +288,88 @@ def _walk_order(regions: tuple[Region, ...], defects) -> tuple[Region, ...]:
     """
     worst: dict[int, int] = {}
     for defect in defects:
-        rank = _SEVERITY_RANK.get(defect.severity, len(_SEVERITY_RANK))
+        severity = _SEVERITY_RANK.get(defect.severity, len(_SEVERITY_RANK))
         for region in regions:
             if defect.fingerprint in region.fingerprints:
-                worst[region.index] = min(worst.get(region.index, rank), rank)
+                worst[region.index] = min(worst.get(region.index, severity), severity)
     stops_the_mesh = _mesh_located_regions(regions, defects)
-    return tuple(sorted(regions,
-                        key=lambda r: (0 if r.index in stops_the_mesh else 1,
-                                       worst.get(r.index, len(_SEVERITY_RANK)), r.index)))
+    really_meets = _real_intersection_regions(regions, defects, diagonal_mm)
+
+    def rank(region: Region) -> tuple:
+        if region.index in really_meets:
+            group = 0
+        elif region.index in stops_the_mesh:
+            group = 1
+        else:
+            group = 2
+        return (group, worst.get(region.index, len(_SEVERITY_RANK)), region.index)
+
+    return tuple(sorted(regions, key=rank))
+
+
+#: What `measurements["located_by"]` says on a defect the surface-mesh clash search placed
+#: (lane G, mesh_clash). Only those defects carry `clash_gap_mm`.
+CLASH_LOCATED = "surface-mesh-clash"
+
+
+#: What counts as touching, as a FRACTION OF THE PART'S DIAGONAL - the same rule lane G states
+#: for the measurement it ships, so the two cannot disagree about the word. An absolute margin
+#: was wrong in both directions: 1 nm called a 0.2 um contact on a 200 mm part "apart", while on
+#: a tiny part it would have been looser than the kernel's own tolerance.
+REAL_INTERSECTION_GAP_FRACTION = 1e-6
+#: The floor, for a part with no usable diagonal: floating point noise around an exact 0.
+REAL_INTERSECTION_GAP_FLOOR_MM = 1e-9
+
+
+def _touching_margin_mm(diagonal_mm: float | None) -> float:
+    """The gap at or under which two faces count as meeting, for a part this big."""
+    try:
+        scaled = REAL_INTERSECTION_GAP_FRACTION * float(diagonal_mm or 0.0)
+    except (TypeError, ValueError):
+        scaled = 0.0
+    return max(REAL_INTERSECTION_GAP_FLOOR_MM, scaled)
+
+
+def _real_intersection_regions(regions: tuple[Region, ...], defects,
+                               diagonal_mm: float | None = None) -> frozenset[int]:
+    """The regions holding a clash the kernel measured as GENUINELY MEETING and NOT ADJACENT.
+
+    Of the pairs gmsh complains about, only these are something an operation can heal. The other
+    two cases are not:
+
+    - A sub-element GAP (`clash_gap_mm` above the margin) is the mesher's own tolerance against
+      geometry that never touches, and no heal or re-trim closes it.
+    - An ADJACENT pair - two faces that merely share an edge - has a B-rep distance of trivially
+      0, so a gap test alone counts it as an intersection. Lane G measured this on real gmsh
+      output: it is a sizing or fold case, not geometry to repair, and `clash_adjacent` is what
+      tells the two apart.
+
+    EVERY UNKNOWN FAILS CLOSED. The keys are present only on a clash-located defect and are None
+    when the kernel could not measure them, so a default would rank regions as real intersections
+    on no evidence - the same as no ordering at all, and invisible in the numbers. `clash_adjacent`
+    must be EXPLICITLY False, not merely falsy: None means nobody knows. `located_by` is checked
+    too, so a 0.0 from another locator is not mistaken for a measured one. While lane G has not
+    shipped `clash_adjacent` yet this promotes nothing, which is the safe direction.
+    """
+    import meshpipeline.settings.cad_repair as rcfg
+
+    if getattr(rcfg, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "off") != "live":
+        return frozenset()
+    meeting = set()
+    for defect in defects:
+        measurements = getattr(defect, "measurements", None) or {}
+        if measurements.get("located_by") != CLASH_LOCATED:
+            continue
+        gap = measurements.get("clash_gap_mm")
+        if not isinstance(gap, (int, float)) or isinstance(gap, bool):
+            continue                                    # absent or None: unknown
+        if float(gap) > _touching_margin_mm(diagonal_mm):
+            continue                                    # a gap no operation closes
+        if measurements.get("clash_adjacent") is not False:
+            continue                                    # adjacent, or nobody measured it
+        if defect.fingerprint:
+            meeting.add(defect.fingerprint)
+    return frozenset(r.index for r in regions if meeting & set(r.fingerprints))
 
 
 def _mesh_located_regions(regions: tuple[Region, ...], defects) -> frozenset[int]:
@@ -708,7 +783,8 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
     # region carries its own index, so nothing is lost); the WALK goes worst-first.
     # SCOPED TO THE FACES SOMETHING ELSE ALREADY NAMED, when a caller named any. `()` - every
     # caller but the mesher handback - is the walk `_walk_order` just produced, unchanged.
-    walk, not_in_focus = focus_filter(_walk_order(regions, work.defects()), focus_faces)
+    walk, not_in_focus = focus_filter(
+        _walk_order(regions, work.defects(), work.original.diagonal_mm), focus_faces)
     packages: list[PackageVerdict] = []
     escalated: list[int] = []
     committed = False

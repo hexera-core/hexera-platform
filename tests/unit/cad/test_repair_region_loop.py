@@ -3,6 +3,8 @@
 #                 whole-shape scan after the merge deciding the run's verdict.
 from __future__ import annotations
 
+import pytest
+
 from meshpipeline.cad.repair.caps import Measure
 from meshpipeline.cad.repair.contracts import DefectCode, DefectSeverity
 from meshpipeline.cad.repair.identity import EntityRef
@@ -1213,3 +1215,107 @@ def test_an_unlocated_mesh_defect_does_not_promote_a_region(monkeypatch):
                _any_defect("", code=DefectCode.mesh_edge_through_face))
 
     assert _order(regions, defects, "live", monkeypatch) == [0, 1]
+
+
+# --- a REAL intersection outranks everything (lane G's clash fields) ---------------------------
+# Of the clash-located pairs, only the ones genuinely meeting (clash_gap_mm == 0) are something an
+# operation can heal; a sub-element GAP is the mesher's own tolerance problem. Lane G's contract:
+# the key is PRESENT only on a clash-located defect, is None when unmeasured, and absent
+# everywhere else - so absent or None must never promote a region.
+
+_ABSENT = object()
+
+
+def _clash(fingerprint: str, gap, *, located_by="surface-mesh-clash",
+           adjacent=False) -> EntityDefect:
+    measurements = {"located_by": located_by}
+    if gap is not _ABSENT:
+        measurements["clash_gap_mm"] = gap
+    if adjacent is not _ABSENT:
+        measurements["clash_adjacent"] = adjacent
+    return EntityDefect(code=DefectCode.mesh_overlapping_facets, severity=DefectSeverity.error,
+                        entity_type="face", entity_index=1, message="",
+                        fingerprint=fingerprint, measurements=measurements)
+
+
+def test_a_real_intersection_is_walked_before_any_other_mesh_region(monkeypatch):
+    regions = _mesh_regions("face:gap", "face:touching", "edge:warn")
+    defects = (_clash("face:gap", 0.004), _clash("face:touching", 0.0),
+               _any_defect("edge:warn", severity=DefectSeverity.fatal))
+
+    # The real intersection first, then the gap clash (still mesh-located), then the warning.
+    assert _order(regions, defects, "live", monkeypatch) == [1, 0, 2]
+
+
+@pytest.mark.parametrize("gap", [_ABSENT, None], ids=["absent", "unmeasured"])
+def test_an_unmeasured_gap_never_promotes_a_region(monkeypatch, gap):
+    """THE SILENT FAILURE THIS GUARDS. Reading the key with a default of 0 would make every
+    region a "real intersection", which is the same as no ordering at all and invisible in the
+    numbers."""
+    regions = _mesh_regions("face:unknown", "face:touching")
+    defects = (_clash("face:unknown", gap), _clash("face:touching", 0.0))
+
+    assert _order(regions, defects, "live", monkeypatch) == [1, 0]
+
+
+def test_a_zero_gap_only_counts_on_a_clash_located_defect(monkeypatch):
+    """Belt and braces, as lane G asked: a 0.0 that did not come from the clash search is not a
+    measured intersection."""
+    regions = _mesh_regions("face:other", "face:touching")
+    defects = (_clash("face:other", 0.0, located_by="contact-pair"),
+               _clash("face:touching", 0.0))
+
+    assert _order(regions, defects, "live", monkeypatch) == [1, 0]
+
+
+# Lane G measured on real gmsh that a gap of 0 ALSO fires for faces that merely share an edge -
+# their B-rep distance is trivially 0 - so "gap 0" over-counts. A shared edge is a sizing or fold
+# case, not geometry an operation can heal, and `clash_adjacent` is what tells them apart.
+@pytest.mark.parametrize("adjacent, promoted", [
+    (False, True),      # measured NOT adjacent: a real intersection
+    (True, False),      # a shared edge: an adjacent fold, nothing to heal
+    (None, False),      # unmeasured: unknown, and unknown never promotes
+    (_ABSENT, False),   # lane G has not shipped the key yet: still unknown
+])
+def test_only_a_measured_non_adjacent_clash_is_a_real_intersection(monkeypatch, adjacent,
+                                                                   promoted):
+    # The candidate sits at index 1 behind a plain mesh-located region, so ONLY promotion can
+    # move it: both are mesh-located, so without it the walk keeps index order.
+    regions = _mesh_regions("face:plain", "face:clash")
+    defects = (_clash("face:plain", 0.004, adjacent=False),
+               _clash("face:clash", 0.0, adjacent=adjacent))
+
+    order = _order(regions, defects, "live", monkeypatch)
+    assert (order == [1, 0]) is promoted, (adjacent, order)
+
+
+def test_a_gap_above_the_tolerance_is_not_a_real_intersection(monkeypatch):
+    regions = _mesh_regions("face:gap", "face:meeting")
+    defects = (_clash("face:gap", 0.004, adjacent=False),
+               _clash("face:meeting", 0.0, adjacent=False))
+
+    assert _order(regions, defects, "live", monkeypatch) == [1, 0]
+
+
+def test_touching_is_a_fraction_of_the_part_not_an_absolute_nanometre(monkeypatch):
+    """ONE DEFINITION OF TOUCHING, shared with the lane that measures it. Lane G's rule is a gap
+    at or under 1e-6 of the diagonal; an absolute nanometre margin would have called a real
+    0.2 um contact on a 200 mm part "apart" - and lane G's own worked example reads
+    clash_gap_mm 4.8e-15 on a single solid, which both rules accept, so only the larger gaps
+    distinguish them."""
+    from meshpipeline.cad.repair import region_loop as rl
+
+    assert rl._touching_margin_mm(200.0) == pytest.approx(2e-4)
+    assert rl._touching_margin_mm(None) == rl.REAL_INTERSECTION_GAP_FLOOR_MM
+    assert rl._touching_margin_mm(0.0) == rl.REAL_INTERSECTION_GAP_FLOOR_MM
+
+    regions = _mesh_regions("face:plain", "face:contact")
+    defects = (_clash("face:plain", 0.004, adjacent=False),
+               _clash("face:contact", 1.5e-4, adjacent=False))      # 0.15 um on a 200 mm part
+
+    import meshpipeline.settings.cad_repair as settings
+    monkeypatch.setattr(settings, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "live", raising=False)
+    # Under the part-relative margin the contact is touching and is promoted...
+    assert [r.index for r in rl._walk_order(regions, defects, 200.0)] == [1, 0]
+    # ...and with no diagonal to scale by, the floor applies and it is not.
+    assert [r.index for r in rl._walk_order(regions, defects)] == [0, 1]
