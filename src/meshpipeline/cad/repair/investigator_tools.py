@@ -938,6 +938,18 @@ def editor(scratch: Scratch, *, tolerance_mm: float, rims: frozenset = frozenset
     return Editor(scratch, tolerance_mm=tolerance_mm, rims=rims)
 
 
+def _unfilled(args: dict) -> dict:
+    """`args` without the strict transport's fillers: `reset: false` and empty strings.
+
+    A strict function-calling transport makes the model send EVERY declared property, so an edit
+    arrives as `{op, fingerprint, defect_code, reset: false}` and a reset as
+    `{op: "", fingerprint: "", defect_code: "", reset: true}`. Those values are the transport's
+    "unset", not a second form; read as a mixture they refused every edit of a live run.
+    """
+    return {k: v for k, v in args.items()
+            if not ((k == "reset" and v is False) or (isinstance(v, str) and v == ""))}
+
+
 def _edit_form(args: dict) -> bool:
     """True for the reset form, False for the edit form. Refuses anything between.
 
@@ -1001,6 +1013,7 @@ def _edit(ws: Workspace, args: dict, *, budget_s: float) -> dict:
     scratch = editing.scratch
     region = ws.region
     diagonal = float(ws.original.diagonal_mm)
+    args = _unfilled(args)
 
     if _edit_form(args):
         scratch.reset()

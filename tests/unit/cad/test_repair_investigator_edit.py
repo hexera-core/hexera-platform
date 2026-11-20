@@ -482,3 +482,47 @@ def test_reset_clears_edits_and_restores_the_copy(monkeypatch):
     assert scratch.session.accounting.declared_area_mm2 == 0.0
     assert ws.shape is scratch.shape and ws.edited_faces == ()
     assert ws.baseline_shape is scratch.shape
+
+
+# --- the strict-schema filler -------------------------------------------------------------------
+# A strict function-calling transport makes the model send EVERY declared property. Measured on a
+# live run at 0ff8db35 (CAD_REPAIR_TIMEOUT_S=420): every edit arrived as
+# {op, fingerprint, defect_code, reset: false} and every reset as
+# {op: "", fingerprint: "", defect_code: "", reset: true}, both were refused as a mixture, the
+# region ran away on identical calls and no package was ever concluded. `reset: false` and empty
+# strings are the transport's "unset", not a second form.
+def test_an_edit_sent_with_reset_false_is_an_edit(monkeypatch):
+    defect = _defect()
+    _catalogue(monkeypatch, _Op(outcomes=[_cleared_outcome()]))
+    scratch, _ = _scratch(defects=(defect,), scans=[((), True)])
+    ws = _workspace(scratch, defects=(defect,))
+
+    out = it.run_tool(ws, "edit", {"op": "fix_small_edges", "fingerprint": "edge:aaaa",
+                                   "defect_code": "", "reset": False}, budget_s=1.0)
+
+    assert out.ok is True, out.error
+    assert len(scratch.kept()) == 1
+
+
+def test_a_reset_sent_with_empty_string_fillers_is_a_reset(monkeypatch):
+    defect = _defect()
+    _catalogue(monkeypatch, _Op(outcomes=[_cleared_outcome()]))
+    scratch, _ = _scratch(defects=(defect,), scans=[((), True)], source=_Shape("part"))
+    ws = _workspace(scratch, defects=(defect,))
+
+    out = it.run_tool(ws, "edit", {"op": "", "fingerprint": "", "defect_code": "",
+                                   "reset": True}, budget_s=1.0)
+
+    assert out.ok is True, out.error
+    assert out.data["reset"] is True
+
+
+def test_a_real_mixture_is_still_refused(monkeypatch):
+    defect = _defect()
+    _catalogue(monkeypatch, _Op())
+    scratch, _ = _scratch(defects=(defect,))
+    ws = _workspace(scratch, defects=(defect,))
+
+    out = it.run_tool(ws, "edit", {"op": "fix_small_edges", "fingerprint": "edge:aaaa",
+                                   "reset": True}, budget_s=1.0)
+    assert out.ok is False and "reset" in out.error
