@@ -77,7 +77,11 @@ def doubles(monkeypatch, flag_on):
         # THE BOUNDED SEAM (row 6). `apply` asks for the fuse through the dispatcher's child, so
         # patching the kernel function would patch something it never calls.
         monkeypatch.setattr(operations, "_fuse_in_child",
-                            lambda a, b, faces: calls.append("fuse") or (images, "HISTORY"))
+                            lambda a, b, faces: calls.append("fuse") or (
+                                # The images to splice, the piece COUNTS the fuse reports, and
+                                # the history: a body the fuse left alone still comes back.
+                                (images[0] or ("owner-as-is",), images[1] or ("partner-as-is",)),
+                                (len(images[0]), len(images[1])), "HISTORY"))
         monkeypatch.setattr(operations, "splice",
                             lambda shape, pairs: calls.append(("splice", tuple(pairs)))
                             or ("SPLICED", "CTX"))
@@ -262,12 +266,23 @@ def test_fragment_declares_its_solids(doubles):
         "owner", "partner", "common", "fuse"]
 
 
-def test_an_unmodified_body_is_left_in_place(doubles):
-    # The fuse may split only one side's face (a small box on a big one): the other body is kept
-    # by identity, not replaced by itself.
+def test_an_unmodified_body_is_replaced_but_not_called_rebuilt(doubles):
+    """The fuse may cut only one side's face - a small box pressed into a big one is not cut -
+    and THE SHARED FACE IS THEN AN OBJECT OF THE UNTOUCHED BODY.
+
+    This test used to assert the untouched body was kept by identity, which is what in-process
+    code can do. The native tier disproved it for a fuse that runs in a child: the parent's
+    untouched body is a different object from the child's, so keeping it left a result with ZERO
+    shared faces - the opposite of what this operation exists to produce. Both bodies are now
+    replaced by the child's pair, which share with each other.
+
+    `rebuilt` still names only the body the fuse CUT. The untouched one comes back as an
+    identical copy with the same fingerprints, and calling its faces rebuilt would hand the
+    revealed and new-defect rules a part they would read as all-new geometry.
+    """
     doubles(images=(("A2",), ())).apply("SHAPE", (REF,), tolerance_mm=0.01)
     splices = [c for c in doubles.calls if isinstance(c, tuple)]
-    assert splices == [("splice", (("A", "A2"),))]
+    assert splices == [("splice", (("A", "A2"), ("B", "partner-as-is")))]
     outcome = doubles(images=(("A2",), ())).apply("SHAPE", (REF,), tolerance_mm=0.01)
     assert outcome.rebuilt == ("face:A2:1", "face:A2:2")   # the untouched body is not rebuilt
 

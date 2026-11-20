@@ -227,13 +227,16 @@ def test_the_fuse_runs_in_the_child_and_its_history_is_rebuilt_here(monkeypatch)
     then reads it exactly as it reads any operation's own context, unchanged."""
     face, image = _faces()
     seen = _fate(monkeypatch, {"a": ["owner_piece"], "b": ["partner_piece"],
+                               "a_pieces": 1, "b_pieces": 1,
                                "fate": [{"state": "image", "image": image}]})
 
-    pieces, history = operations._fuse_in_child("owner", "partner", (face,), budget_s=9.0)
+    images, counts, history = operations._fuse_in_child("owner", "partner", (face,),
+                                                        budget_s=9.0)
 
     assert seen["fn"] is operations._fuse_kernel
     assert seen["args"] == ("owner", "partner", face)
-    assert pieces == (("owner_piece",), ("partner_piece",))
+    assert images == (("owner_piece",), ("partner_piece",))
+    assert counts == (1, 1)
     assert history.IsRecorded(face)
     assert history.Value(face).IsSame(image), "the child's image is what the history now names"
 
@@ -242,9 +245,10 @@ def test_a_face_the_fuse_deleted_reads_as_gone(monkeypatch):
     """`mapping_from_context` reads a recorded-but-null value as the kernel saying the entity is
     gone, so that is what a deleted face has to come back as."""
     face, _other = _faces()
-    _fate(monkeypatch, {"a": [], "b": [], "fate": [{"state": "gone"}]})
+    _fate(monkeypatch, {"a": ["o"], "b": ["p"], "a_pieces": 1, "b_pieces": 0,
+                        "fate": [{"state": "gone"}]})
 
-    _pieces, history = operations._fuse_in_child("owner", "partner", (face,), budget_s=9.0)
+    _images, _counts, history = operations._fuse_in_child("owner", "partner", (face,), budget_s=9.0)
 
     assert history.IsRecorded(face)
     assert history.Value(face).IsNull(), "gone, not merely unrecorded"
@@ -254,9 +258,10 @@ def test_a_face_the_fuse_never_touched_is_not_recorded(monkeypatch):
     """Untouched is a third answer, and it is not "gone": `fate_of` calls it unknown and the
     geometric comparison decides instead."""
     face, _other = _faces()
-    _fate(monkeypatch, {"a": [], "b": [], "fate": [{"state": "absent"}]})
+    _fate(monkeypatch, {"a": ["o"], "b": ["p"], "a_pieces": 1, "b_pieces": 0,
+                        "fate": [{"state": "absent"}]})
 
-    _pieces, history = operations._fuse_in_child("owner", "partner", (face,), budget_s=9.0)
+    _images, _counts, history = operations._fuse_in_child("owner", "partner", (face,), budget_s=9.0)
 
     assert not history.IsRecorded(face)
 
@@ -268,8 +273,32 @@ def test_a_fuse_the_child_could_not_finish_is_no_answer(monkeypatch):
     assert operations._fuse_in_child("owner", "partner", (_faces()[0],), budget_s=9.0) is None
 
 
+def test_a_body_the_fuse_left_alone_still_comes_back(monkeypatch):
+    """THE BUG THE NATIVE TIER CAUGHT, as a unit. A small box pressed into a big box's side is
+    not cut, and the shared face is then an object of THAT UNTOUCHED BODY - an identity no process
+    boundary can carry. So the child sends its own copy of both bodies, from the one builder, and
+    the caller splices both; a count of 0 is what says the fuse left that one alone."""
+    _fate(monkeypatch, {"a": ["cut_owner"], "b": ["the child's own partner"],
+                        "a_pieces": 1, "b_pieces": 0, "fate": [{"state": "absent"}]})
+
+    images, counts, _history = operations._fuse_in_child("owner", "partner", (_faces()[0],),
+                                                         budget_s=9.0)
+
+    assert images == (("cut_owner",), ("the child's own partner",))
+    assert counts == (1, 0), "the untouched body is named by its COUNT, not by its absence"
+
+
+def test_an_answer_without_the_piece_counts_is_no_answer(monkeypatch):
+    """The counts are what `nothing_fragmented` and `body_split` are judged on, so an answer
+    missing them is not something to splice."""
+    _fate(monkeypatch, {"a": ["o"], "b": ["p"], "fate": [{"state": "absent"}]})
+
+    assert operations._fuse_in_child("owner", "partner", (_faces()[0],), budget_s=9.0) is None
+
+
 def test_an_answer_that_does_not_cover_the_faces_is_no_answer(monkeypatch):
     """A short or long fate list means the child and the parent disagree about what was asked."""
-    _fate(monkeypatch, {"a": [], "b": [], "fate": []})
+    _fate(monkeypatch, {"a": ["o"], "b": ["p"], "a_pieces": 1, "b_pieces": 1,
+                        "fate": []})
 
     assert operations._fuse_in_child("owner", "partner", (_faces()[0],), budget_s=9.0) is None
