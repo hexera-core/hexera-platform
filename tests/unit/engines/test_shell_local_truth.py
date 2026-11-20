@@ -571,3 +571,13 @@ def test_a_piece_told_as_the_nearest_still_has_its_row_in_the_report():
     got = SD.asked_rows({"requirements": {"rows": [row]}})
     assert [r["label"] for r in got] == ["You asked: elements of 1.5 mm at the vertical leg"]
     assert got[0]["said"].startswith("Elements of 1.5 mm at the vertical leg: applied to the whole part, the nearest")
+
+
+def test_a_part_that_is_one_plate_offers_no_flat_face_as_a_piece_of_it(tmp_path):
+    """The L-shaped plate's two big faces (its two sides) were offered as areas: "the vertical leg" was tied to one in
+    one run and told the nearest in another. A part that is one plate offers none - the part itself is the place."""
+    from meshpipeline.cad import part_features as PF
+    from meshpipeline.engines import fea_driver as FD
+    ws = _stage(sf.flat_plate(), tmp_path / "plate")
+    rows, _faces = PF.features(*FD.measure_staged(ws)[:2])
+    assert not [r for r in rows if r["kind"] in ("flat face", "thin wall")], rows

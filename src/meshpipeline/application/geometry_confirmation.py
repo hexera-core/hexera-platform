@@ -666,7 +666,11 @@ def confirmed_port_locations(session_id) -> list[dict]:
         c = o.get("centroid_mm") if isinstance(o, dict) else None
         if (o.get("role") in ("inlet", "outlet") and o.get("name") and isinstance(c, (list, tuple)) and len(c) == 3
                 and all(isinstance(v, (int, float)) and math.isfinite(float(v)) for v in c)):
-            out.append({"name": str(o["name"]), "type": str(o["role"]), "near_mm": [float(v) for v in c]})
+            # to a thousandth of a millimetre, and never a negative zero: the approved intent is fingerprinted on these
+            # numbers and stored as JSON in the database, which keeps no -0.0 - a centroid at (657, 660, -0) read
+            # back as 0 and the run was refused at dispatch ("the run's approved intent does not match its
+            # fingerprint", s_duct_004 and bend_elbow_004 after an engine switch, m483 round 10)
+            out.append({"name": str(o["name"]), "type": str(o["role"]), "near_mm": [round(float(v), 3) + 0.0 for v in c]})
     return out
 
 
