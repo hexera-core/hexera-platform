@@ -139,6 +139,35 @@
 # SIX DISTINCT PICTURES, blank lines 0 of 1280 on every one of them, and all six measure a
 # 0.00-cell wall and decline.
 #
+# ROUND 11: AND THOSE TWO PROOFS DO NOT SEPARATE THE REAL PART, which is this round's finding and
+# is why the table above can no longer be read as a certificate. MEASURED, 2026-11-19, REAL
+# PLATE, VOLUME, job 6dd6703c-c8d2-43cd-882c-a01c7375d014's through_the_plate zoom, by the SAME
+# two proofs: blank lines along the repeat axis 0 of 1280, 4-connected bodies 1. Identical to
+# every row above. That frame is a TRUE picture of this plate's channel array - 640 metal columns
+# in 41 runs of 16.0 px, which at 6.28945 um/px is 100.63 um, 1.0000 of the plan's own
+# 100.6312 um wall - and the two measurements that were being used to prove a picture metal-free
+# say exactly the same of it as of a field of coolant. What makes them agree is a TRANSVERSE
+# MANIFOLD: every metal column carries 33 inked pixels, all 33 in one band at rows 462..494, so
+# no column of 960 rows is bare and no body is separate. The proofs are kept because they are
+# what the six rows above were measured with and they are honest about those six; they are not
+# evidence that a frame has no metal in it, and this round stops them being quoted as though they
+# were. What tells the two apart is WHERE the metal is bare - see `_metal_mask`.
+#
+# AND THE WALL IS NO LONGER SUMMED DOWN THE WHOLE FRAME, which is the defect that found. Every
+# figure in every table above is unmoved: measured through the production ArtifactResolver over
+# 28 frames - the six metal-free pictures, the five sub-floor ribs, the anti-aliased frame, the
+# speck, the two plenum-beside shapes, the three magnification/anisotropy frames, the vertical
+# repeat, and a 35-frame sweep of passages 2..24 drawn cells by walls 1..32 - NOT ONE bare run
+# and NOT ONE verdict changed, and no metal-free picture got through. What moved is the real
+# plate's own frame, from a 0.0 px wall to 16.0 px.
+#
+# AND IT WAS NOT ANTI-ALIASING, which is what that refusal looked like. The real frame holds 179
+# distinct grey levels and NOT ONE PIXEL between 193 and 254 - its pixel counts under 193, 200,
+# 210, 220, 230, 240, 248 and 254 are all exactly 635,520 - so nothing in it blends toward the
+# background and no ink threshold could have moved the answer. A SURFACE cut is five greys
+# blending to white (see INK_MAX); a VOLUME cut of this engine's own render is a shaded fill
+# hard-edged against the background, and the two are different pictures.
+#
 # THE HEADING CLAIMED MORE THAN THE BODY ESTABLISHED, which is what round 10 corrects here. It
 # read "EVERY METAL-FREE PICTURE THE FIXTURES DRAW" over a list of FIVE, and the lattice fixture
 # takes its cell size as a parameter: at a FOUR-pixel cell it is the sixth row above, measured on
@@ -431,6 +460,17 @@ PLAN_CELLS_ACROSS_A_WALL = 4.0
 #: floor by 2.00x and 1.87x. A wall drawn exactly two cells thick reads 2.00 hard-edged and is
 #: admitted, and 1.75 anti-aliased and is not - so two cells is the edge of the window and three
 #: is inside it, and that is stated here rather than discovered on a run.
+#:
+#: AND WHERE THE OCCUPANCY IS TAKEN IS NOT DOWN THE WHOLE FRAME ANY MORE, which is round 11 and
+#: is the only thing about this floor that moved. The paragraphs above all stand: the floor is
+#: still half the planned wall, it is still applied to the narrowest wall, and every frame they
+#: name still measures what they say it does. What changed is the mask the runs are counted in -
+#: a sample is metal where it is bare AT THE ENDS of the structure's cross extent, not where it
+#: is bare on every line of the frame. MEASURED, REAL PLATE, VOLUME, job 6dd6703c's
+#: through_the_plate zoom: 0.00 cells before, 4.00 cells after, on a wall that measures 100.63 um
+#: against the plan's own 100.6312 um. See `_metal_mask` for the transverse manifold that made a
+#: whole-frame sum read a true picture of this part's wall as a field of coolant, and for the
+#: measured table showing that a per-line majority alone would have admitted the plenum.
 WALL_CELLS_MIN = PLAN_CELLS_ACROSS_A_WALL / 2.0
 
 #: Which way the scan runs, as a reader is told it.
@@ -492,7 +532,11 @@ def ink_structure(gray, *, ink_max: int = INK_MAX, min_repeats: int = MIN_REPEAT
     found = []
     for name, axis in zip(SCAN_AXES, (0, 1)):
         # axis=0 sums down the columns, which is the profile ALONG the frame's width
-        one = _profile_period(ink.sum(axis=axis).astype(float), min_period_px=min_period_px)
+        # THE METAL MASK NEEDS THE FRAME AND NOT THE PROFILE, so it is built here where both
+        # directions are still in hand and handed down. `lines[k]` is one scan line ACROSS the
+        # repeat axis: the frame's rows for the horizontal scan, its columns for the vertical.
+        one = _profile_period(ink.sum(axis=axis).astype(float), min_period_px=min_period_px,
+                              metal=_metal_mask(ink if axis == 0 else ink.T))
         one["scan"] = name
         one["edge_contrast"] = _line_contrast(a, ink, along_rows=(axis == 0))
         found.append(one)
@@ -590,10 +634,94 @@ def _line_contrast(grey, ink, *, along_rows: bool) -> int:
     return int(np.median(swing)) if swing.size else 0
 
 
-def _bare_runs(profile) -> tuple[float, float]:
-    """HOW WIDE THE METAL BETWEEN TWO PASSAGES IS, in samples of this profile: (the MEDIAN run of
-    samples carrying NO INK AT ALL, the NARROWEST such run). (0.0, 0.0) when every sample carries
-    some.
+def _metal_mask(lines):
+    """WHICH SAMPLES ALONG THE REPEAT AXIS ARE METAL, as a 1-D boolean over that axis. `lines` is
+    the frame's 2-D ink mask oriented so that `lines[k]` is ONE SCAN LINE across the repeat axis.
+
+    A sample is METAL when it carries no ink on the FIRST and LAST line of the structure's own
+    cross extent, and carries none on more than half the lines between.
+
+    WHY THIS IS NOT A COLUMN SUM, and it is the defect this round closes. The wall used to be read
+    off `profile <= 0.0` - the ink summed down the WHOLE frame - so a sample was metal only if it
+    was bare on EVERY line. MEASURED, 2026-11-19, REAL PLATE, VOLUME, job 6dd6703c's
+    through_the_plate zoom, the first cut of a real mesh INTERIOR that has ever been drawn: that
+    frame holds 640 metal columns in 41 runs of 16.0 px, which at the producer's 6.28945 um/px is
+    100.63 um - 1.0000 of the plan's own 100.6312 um wall, 4.00 planned cells. EVERY ONE OF THEM
+    read 0.0 px, because the plate has a TRANSVERSE MANIFOLD crossing every channel at rows
+    462..494 and 33 inked rows out of 960 put ink into all 1280 columns. The frame was refused
+    with "the metal between two passages measures 0.0 px at its narrowest" while its metal
+    measured exactly what the planner asked for.
+
+    AND IT IS NOT ANTI-ALIASING, which is what that refusal looked like and is not what it was.
+    MEASURED on the same PNG: the frame holds 179 distinct grey levels and NOT ONE PIXEL between
+    193 and 254 - the counts under 193, 200, 220, 240, 248 and 254 are all exactly 635,520 - so
+    there is no blend to the background anywhere in it and no brightness threshold could have
+    changed the answer. The 33 pixels in a metal column are not a trace, they are DARK: that
+    column's own histogram is {0: 3, 4: 2, 6: 1, 12: 1, 16: 1, 18: 1, 27: 1, 43: 1, 61: 1, 74: 1,
+    78: 1, 79: 17, 186: 2, 255: 167}. They are a real feature of the part, in the right place, and
+    the reduction over the whole height is what could not see past them.
+
+    THE ENDS ARE WHAT KEEPS THE METAL-FREE FAMILY OUT, and that is measured and not assumed.
+    `tests/unit/sandbox/_part_pictures.write_truncated_plenum` draws a field of coolant with NO
+    metal in it by running every other band only `deep_px` down, so the top of the frame is solid
+    coolant and the bottom looks like passages with walls. MEASURED, SYNTHETIC, VOLUME, 1280x960
+    at 4 px per cell, the mask built four ways:
+
+        frame                                  whole   ends only   majority only   ends AND maj
+        REAL through_the_plate_zoom           0.00 px    16.00 px        16.00 px       16.00 px
+        truncated_plenum(deep_px=200)         0.00 px     0.00 px        16.00 px        0.00 px
+        truncated_plenum(deep_px=912)         0.00 px     0.00 px         0.00 px        0.00 px
+        honest write_passages()              16.00 px    16.00 px        16.00 px       16.00 px
+
+    A MAJORITY ALONE ADMITS THE PLENUM AT A FOUR-CELL WALL, which is the row that decides this:
+    79.2% of that frame's lines show its 16 px gaps and a reduction that only counts lines cannot
+    tell them from walls. What a wall has and a truncation has not is that it is there AT BOTH
+    ENDS of the window - a wall runs the length of the passages and leaves the frame at both
+    sides, while a pool that stops partway is bounded by coolant at one of them.
+
+    AND THE MAJORITY CLAUSE IS NOT LOAD-BEARING ON ANY FRAME MEASURED, which is said rather than
+    implied. `_profile_period` cuts its material mask at half the profile's own 95th percentile,
+    so a sample inked on more than half the lines is already MATERIAL and supplies no rising edge:
+    there is then no repeat and the frame is refused on its repeat count before the wall is
+    reached. MEASURED, SYNTHETIC, VOLUME, honest passages with a full-width coolant band across
+    the middle of the frame: a join of 479 rows of 960 is admitted at 16.00 px and a join of 480
+    is refused at 0.00 - the transition is at exactly half, and it is that threshold's and not
+    this one's. The clause is kept so this measurement states its own meaning instead of resting
+    on that coincidence.
+
+    THE COST, measured and stated rather than discovered later. A frame whose transverse join
+    touches EITHER END of the cross extent is refused however narrow it is: measured on the same
+    family, a 33-row join - the width of this plate's own manifold - is admitted at 16.00 px in
+    the middle of the frame and refused at 0.00 px against the top edge. So a zoom window placed
+    so that it clips a manifold at its edge declines, and one placed over the channels does not.
+    The producer sizes that window at 8.05 mm of a 170 mm plate and centres it on the plan's fine
+    zone, and this plate's channels run 53 mm, so the window has to be put on a manifold on
+    purpose. ONE INK PIXEL in a metal column on the first or last line of the cross extent is
+    enough to refuse the frame, which is the same shape of cost `bare_run_min_px` already carries
+    for one narrow wall anywhere inside the repeat.
+    """
+    import numpy as np
+
+    a = np.asarray(lines, dtype=bool)
+    if a.ndim != 2 or a.size == 0:
+        return np.zeros(0, dtype=bool)
+    cross = a.sum(axis=1).astype(float)
+    top = float(cross.max())
+    if top <= 0.0:
+        return np.zeros(a.shape[1], dtype=bool)
+    # THE STRUCTURE'S OWN CROSS EXTENT, cut at half its maximum for the reason `ink_span` is: a
+    # line carrying one stray pixel is nowhere near a line carrying the structure, and the ends
+    # of the frame are not the ends of what is drawn in it.
+    idx = np.flatnonzero(cross >= 0.5 * top)
+    lo, hi = int(idx[0]), int(idx[-1])
+    bare = ~a[lo:hi + 1]
+    return bare[0] & bare[-1] & (bare.mean(axis=0) > 0.5)
+
+
+def _bare_runs(bare) -> tuple[float, float]:
+    """HOW WIDE THE METAL BETWEEN TWO PASSAGES IS, in samples along the repeat axis: (the MEDIAN
+    run of METAL samples, the NARROWEST such run). (0.0, 0.0) when no sample is metal. `bare` is
+    the boolean mask `_metal_mask` built, already cut to the repeat's own span by the caller.
 
     TWO FIGURES AND NOT ONE, because the median of a bimodal set is a width no wall in the picture
     has. MEASURED, SYNTHETIC, VOLUME, 1280x960 at 4 px per cell: passages 4 cells wide with walls
@@ -624,7 +752,9 @@ def _bare_runs(profile) -> tuple[float, float]:
     answers it wrongly by construction: a plenum whose section varies in depth reads its shallow
     columns as metal. See WALL_CELLS_MIN for the truncated field of coolant that measured a
     4-cell wall and discharged a region while containing one connected body of coolant and no
-    metal anywhere. Metal is where there is NO coolant, so that is what is counted.
+    metal anywhere. Metal is where there is NO coolant, so that is what is counted - and WHERE it
+    has to be none is `_metal_mask`'s question, not this one's. This function only measures the
+    runs of a mask it is handed.
 
     THE MEDIAN AND NOT THE MEAN, because a frame is not obliged to be uniform: a run of the
     coolant's own margin, or one wide bay among narrow walls, moves a mean and does not move
@@ -633,8 +763,8 @@ def _bare_runs(profile) -> tuple[float, float]:
     """
     import numpy as np
 
-    bare = np.asarray(profile) <= 0.0
-    if not bare.any():
+    bare = np.asarray(bare, dtype=bool)
+    if bare.ndim != 1 or not bare.any():
         return 0.0, 0.0
     edges = np.flatnonzero(np.diff(np.concatenate(([0], bare.astype(np.int8), [0]))))
     lengths = (edges[1::2] - edges[0::2]).astype(float)
@@ -702,7 +832,7 @@ def _periodic_run(starts, period: float) -> tuple[int, int]:
     return best
 
 
-def _profile_period(profile, *, min_period_px: float = MIN_PERIOD_PX) -> dict:
+def _profile_period(profile, *, min_period_px: float = MIN_PERIOD_PX, metal=None) -> dict:
     """One ink profile: how often it alternates, at what spacing, how periodic it really is, how
     far the repeat reaches, and how wide the metal between two passages is.
 
@@ -884,7 +1014,15 @@ def _profile_period(profile, *, min_period_px: float = MIN_PERIOD_PX) -> dict:
         first, last = _periodic_run(starts, out["period_px"] or med)
         if last > first:
             out["repeat_span"] = round((last - first + 1) / n, 4)
-            out["bare_run_px"], out["bare_run_min_px"] = _bare_runs(profile[first:last + 1])
+            # THE METAL IS A 2-D QUESTION AND THIS FUNCTION ONLY HOLDS A PROFILE, which is why
+            # the mask arrives from `ink_structure` rather than being cut out of `profile` here.
+            # See `_metal_mask` for the real plate's transverse manifold that put ink into every
+            # column of a frame whose metal measures the plan's wall exactly. With no mask - which
+            # is only the case for a caller that has no frame, i.e. a direct unit drive of this
+            # function - the old whole-profile reading stands, so nothing silently changes shape.
+            m = ((np.asarray(profile) <= 0.0) if metal is None
+                 else np.asarray(metal, dtype=bool))
+            out["bare_run_px"], out["bare_run_min_px"] = _bare_runs(m[first:last + 1])
     return out
 
 

@@ -386,3 +386,45 @@ def write_plenum_either_side(path, width: int = 1280, height: int = 960, *, cell
     path.parent.mkdir(parents=True, exist_ok=True)
     im.save(path, format="PNG")
     return path
+
+
+def write_passages_with_a_transverse_join(path, width: int = 1280, height: int = 960, *,
+                                          cells_px: int = 4, band_px: int = 16,
+                                          period_px: int = 32, join_px: int = 33,
+                                          join_at: str = "middle"):
+    """THE REAL PLATE'S OWN SHAPE: honest passages crossed by a full-width TRANSVERSE MANIFOLD.
+
+    This is `write_passages` with one band of coolant ruled all the way across it, which is what a
+    cold plate whose channels are fed by a cross manifold draws as - and what job
+    6dd6703c-c8d2-43cd-882c-a01c7375d014's through_the_plate zoom IS.
+
+    MEASURED, 2026-11-19, REAL PLATE, VOLUME, on that job's own PNG, the first cut of a real mesh
+    INTERIOR ever drawn: 1280x960, 51.7188% ink, 640 metal columns and 640 coolant columns, metal
+    in 41 runs of 16.0 px (median 16.0, max 16.0; the two clipped at the frame edges read 8.0),
+    coolant in 40 runs of 16.0 px, and EVERY metal column carrying exactly 33 inked pixels - all
+    33 of them in ONE contiguous band at rows 462..494 where all 640 metal columns are inked at
+    once. The defaults here draw that: a 33-row join across the middle of a 16/32 array.
+
+    AND THE REAL FRAME IS NOT ANTI-ALIASED, which this does not have to reproduce because it is
+    not what the join costs. Measured on the same PNG: 179 distinct grey levels and NOT ONE PIXEL
+    between 193 and 254, so the counts under 193, 220, 240 and 254 are all exactly 635,520. The
+    33 pixels in a metal column are dark, not faint.
+
+    `join_at` puts the band in the MIDDLE, as the real plate has it, or against the TOP edge,
+    which is where `write_truncated_plenum` puts its solid coolant and is the shape that must stay
+    refused. The two differ in nothing but where the band sits.
+    """
+    from PIL import Image, ImageDraw
+
+    w, h = int(width), int(height)
+    im = Image.new("RGB", (w, h), BACKGROUND)
+    d = ImageDraw.Draw(im)
+    for bx in range(0, w, int(period_px)):
+        _grid(d, [bx, 0, min(bx + int(band_px) - 1, w - 1), h - 1], int(cells_px))
+    j = int(join_px)
+    if j > 0:
+        y0 = 0 if str(join_at) == "top" else (h - j) // 2
+        _grid(d, [0, y0, w - 1, min(y0 + j - 1, h - 1)], int(cells_px))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    im.save(path, format="PNG")
+    return path
