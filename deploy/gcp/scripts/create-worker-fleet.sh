@@ -770,6 +770,8 @@ WORKER_METADATA=(
   || WORKER_METADATA+=("cad-repair-mesh-handback=${CAD_REPAIR_MESH_HANDBACK}")
 [ -z "${CAD_REPAIR_STANDALONE_JOBS:-}" ] \
   || WORKER_METADATA+=("cad-repair-standalone-jobs=${CAD_REPAIR_STANDALONE_JOBS}")
+[ -z "${CAD_REPAIR_INVESTIGATION_TRACE:-}" ] \
+  || WORKER_METADATA+=("cad-repair-investigation-trace=${CAD_REPAIR_INVESTIGATION_TRACE}")
 # The verdict by measured limits (docs/RULES.md VER), only when the target states it (dev does,
 # prod does not yet): the run decides pass, concerns or fail from the mesh's measured numbers and
 # the AI review only adds notes. Absent, the env object's value (the shipped default, off) stands.

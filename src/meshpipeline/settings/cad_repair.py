@@ -545,6 +545,12 @@ def _investigator_posture() -> str:
 #: Read only by the region-scoped driver (CAD_REPAIR_REGION_LOOP=live).
 CAD_REPAIR_INVESTIGATOR: str = _investigator_posture()
 
+#: Persist each investigation's per-turn trace (tool calls, edit kept/rolled-back with reason,
+#: conclusion, budget) and a per-region outcome table ("why no package") into the repair report,
+#: and the trace as JSONL beside the job's artifacts. Dev diagnostics: off in production, on in
+#: shared dev and crsv3. Off is byte-for-byte the prior behaviour. Redacted and size-capped.
+CAD_REPAIR_INVESTIGATION_TRACE: bool = bool_env("CAD_REPAIR_INVESTIGATION_TRACE", "false")
+
 #: CRS v3 postures read RAW here and validated by their ONE consumer, which fails closed (anything
 #: but the exact strings it accepts reads as off, out loud). Each defaults to "off", byte-for-byte
 #: the prior behaviour. Before these rows existed every consumer's `getattr(rcfg, NAME, "off")`

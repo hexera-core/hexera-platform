@@ -314,3 +314,45 @@ def test_the_drivers_deadline_is_taken_before_the_read(monkeypatch, tmp_path, re
     # inside the outer wait_for's (which started at or before 1000), whatever the read cost.
     assert seen["deadline_s"] == 1000.0 + 120.0 - conservative.DEADLINE_MARGIN_S
     assert seen["deadline_s"] < 1000.0 + rcfg.CAD_REPAIR_TIMEOUT_S
+
+
+# THE INVESTIGATION TRACE HOOK (lane D). With CAD_REPAIR_INVESTIGATION_TRACE on, whatever the
+# investigator hands its module sink during the region run is collected and summarised - and the
+# module sink is put back however the run ends.
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_the_region_run_is_traced_only_when_the_flag_is_on(monkeypatch, tmp_path, enabled):
+    import meshpipeline.cad.repair.caps as caps
+    import meshpipeline.cad.repair.conservative as conservative
+    import meshpipeline.cad.repair.region_loop as rl
+    from meshpipeline.cad.repair import investigation_trace
+    from meshpipeline.cad.repair import investigator as inv
+    from meshpipeline.cad.repair.caps import Measure
+
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_ENABLED", True)
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_REGION_LOOP", "live")
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_LLM_AUTHOR", "off")
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_INVESTIGATION_TRACE", enabled, raising=False)
+    monkeypatch.setattr(inv, "sink", None)
+    monkeypatch.setattr(conservative, "_occ", lambda: None)
+    monkeypatch.setattr("meshpipeline.cad.repair.brep._read_shape", lambda path: "shape")
+    monkeypatch.setattr(caps, "measure", lambda shape: Measure(
+        valid=True, solids=1, shells=1, faces=20, edges=60, vertices=40, diagonal_mm=200.0,
+        max_tolerance_mm=0.01, surface_area_mm2=1000.0, volume_mm3=8000.0))
+    summaries: list = []
+    real_finish = investigation_trace.finish
+    monkeypatch.setattr(investigation_trace, "finish",
+                        lambda c, **kw: summaries.append(real_finish(c, **kw)) or summaries[-1])
+
+    def region_run(*args, **kwargs):
+        if inv.sink is not None:
+            inv.sink({"region": 0, "end": "runaway", "messages": []})
+        raise _Stop
+    monkeypatch.setattr(rl, "run_regions", region_run)
+    with pytest.raises(_Stop):
+        conservative.repair_step_file(tmp_path / "in.step", tmp_path / "out.step")
+    assert inv.sink is None
+    if enabled:
+        assert [o["end"] for o in summaries[0]["outcomes"]] == ["runaway"]
+    else:
+        assert summaries == [None]

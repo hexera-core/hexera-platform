@@ -73,6 +73,7 @@ output, and the provision job derives every posture from that one value:
 | `CAD_REPAIR_REVIEW_OBJECTION` | not stated | not stated | `live` |
 | `CAD_REPAIR_MESH_HANDBACK` | not stated | not stated | `live` |
 | `CAD_REPAIR_STANDALONE_JOBS` | not stated | not stated | `live` |
+| `CAD_REPAIR_INVESTIGATION_TRACE` | not stated | not stated | `true` |
 
 - **The package reviewer is on in both `shadow` and `live`.** A v3 run is never unreviewed.
 - **Postures with a real shadow carry it.** The investigator and the tournament read

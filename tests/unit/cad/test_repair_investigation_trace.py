@@ -136,3 +136,122 @@ def test_trace_is_capped_and_says_so():
     assert size <= 4_000
     assert any(ln["kind"] == "truncated" for ln in lines)
     assert lines[-1]["kind"] == "end"
+
+
+# ---------------------------------------------------------------- the product collector
+
+def test_collector_receives_what_the_investigator_hands_its_module_sink(monkeypatch):
+    from meshpipeline.cad.repair import investigator as inv
+    monkeypatch.setattr(inv, "sink", None)
+    collector = it.start()
+    try:
+        inv.sink({"region": 0, "end": "runaway"})  # what `close` does with globals()["sink"]
+    finally:
+        it.stop(collector)
+    assert collector.records == [{"region": 0, "end": "runaway"}]
+
+
+def test_collector_outside_a_run_collects_nothing(monkeypatch):
+    from meshpipeline.cad.repair import investigator as inv
+    monkeypatch.setattr(inv, "sink", None)
+    collector = it.start()
+    it.stop(collector)
+    assert inv.sink is None  # the product's module sink is put back once no run collects
+    it.dispatch({"region": 9})  # a stray record with no collector open goes nowhere
+    assert collector.records == []
+
+
+def test_collector_chains_a_harness_sink_rather_than_replacing_it(monkeypatch):
+    from meshpipeline.cad.repair import investigator as inv
+    seen = []
+    monkeypatch.setattr(inv, "sink", seen.append)
+    collector = it.start()
+    try:
+        inv.sink({"region": 1})
+    finally:
+        it.stop(collector)
+    assert seen == [{"region": 1}]
+    assert collector.records == [{"region": 1}]
+
+
+def test_summary_keeps_the_latest_record_per_region_and_caps_the_lines():
+    first = _record(end="budget_spent")
+    later = _record(end="runaway")
+    other = {**_record(end="skipped"), "region": 2, "messages": []}
+    out = it.summary([first, later, other], job_id="j", bytes_max=100_000)
+    assert [o["region"] for o in out["outcomes"]] == [0, 2]
+    assert out["outcomes"][0]["end"] == "runaway"
+    assert {ln["region"] for ln in out["lines"]} == {0, 2}
+    small = it.summary([later] * 1, job_id="j", bytes_max=1_500)
+    assert sum(len(json.dumps(ln)) + 1 for ln in small["lines"]) <= 1_500
+    assert small["truncated"] is True
+
+
+# ---------------------------------------------------------------- end to end, real investigator
+
+from tests.unit.cad.test_repair_investigator_live_scratch import (  # noqa: E402
+    DEFECT,
+    FP,
+    ORIGINAL,
+    REGION,
+    _Call,
+    _Reply,
+    _Router,
+    _Shape,
+    live,  # noqa: F401 - the fixture
+)
+
+
+def test_a_real_live_investigation_reaches_the_collector_with_its_edit_verdicts(live,  # noqa: F811
+                                                                                  monkeypatch):
+    from meshpipeline.cad.repair import investigator as inv
+    from meshpipeline.cad.repair import model_author as ma
+
+    monkeypatch.setattr(inv, "sink", None)
+    monkeypatch.setattr(ma, "converse_tools_sync", _Router(
+        _Reply(tool_calls=[_Call("edit", {"op": "fix_small_edges", "fingerprint": FP})]),
+        _Reply(text=json.dumps({"tool": "conclude", "args": {"package": {
+            "intent": "remove the small edge", "cleared": [FP], "unchanged": [],
+            "max_area_delta_mm2": 1.0, "max_volume_delta_mm3": 1.0}}}))))
+    collector = it.start()
+    try:
+        author, _ = ma.select_author(_Shape("part"), original=ORIGINAL, job_id="j",
+                                     tolerance_mm=0.01)
+        author.observe_part((DEFECT,))
+        author(REGION, (DEFECT,), ())
+    finally:
+        it.stop(collector)
+    out = it.summary(collector.records, job_id="j")
+    [row] = out["outcomes"]
+    assert row["end"] == "concluded" and row["form"] == "package"
+    assert row["edits"] == {"tried": 1, "kept": 1, "rolled_back": {}}
+    edits = [ln["edit"] for ln in out["lines"] if ln.get("edit")]
+    assert edits and edits[0]["kept"] is True and edits[0]["op"] == "fix_small_edges"
+
+
+def test_begin_if_enabled_is_off_by_default(monkeypatch):
+    import meshpipeline.settings.cad_repair as rcfg
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_INVESTIGATION_TRACE", False, raising=False)
+    assert it.begin_if_enabled() is None
+    assert it.finish(None) is None
+
+
+def test_begin_if_enabled_collects_and_finish_summarises(monkeypatch):
+    import meshpipeline.settings.cad_repair as rcfg
+    from meshpipeline.cad.repair import investigator as inv
+    monkeypatch.setattr(inv, "sink", None)
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_INVESTIGATION_TRACE", True, raising=False)
+    collector = it.begin_if_enabled()
+    inv.sink(_record())
+    out = it.finish(collector)
+    assert inv.sink is None
+    assert [o["end"] for o in out["outcomes"]] == ["runaway"]
+    assert out["lines"]
+
+
+def test_finish_with_no_investigation_says_so(monkeypatch):
+    import meshpipeline.settings.cad_repair as rcfg
+    from meshpipeline.cad.repair import investigator as inv
+    monkeypatch.setattr(inv, "sink", None)
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_INVESTIGATION_TRACE", True, raising=False)
+    assert it.finish(it.begin_if_enabled()) == {"outcomes": [], "lines": [], "truncated": False}

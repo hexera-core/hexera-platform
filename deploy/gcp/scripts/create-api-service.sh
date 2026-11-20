@@ -302,6 +302,8 @@ fi
   || API_ENV_PAIRS+=("CAD_REPAIR_MESH_HANDBACK=${CAD_REPAIR_MESH_HANDBACK}")
 [ -z "${CAD_REPAIR_STANDALONE_JOBS:-}" ] \
   || API_ENV_PAIRS+=("CAD_REPAIR_STANDALONE_JOBS=${CAD_REPAIR_STANDALONE_JOBS}")
+[ -z "${CAD_REPAIR_INVESTIGATION_TRACE:-}" ] \
+  || API_ENV_PAIRS+=("CAD_REPAIR_INVESTIGATION_TRACE=${CAD_REPAIR_INVESTIGATION_TRACE}")
 # UNTICKED IS A STATED INTENT TOO. The live-setting check below refuses to drop a name this run
 # does not declare, so a revision that once had repair on could never be deployed with it off: the
 # rollout stopped and the old revision kept serving with repair enabled. An unset opt-in is named
@@ -332,6 +334,7 @@ OPT_IN_DROPPABLE=()
 [ -n "${CAD_REPAIR_REVIEW_OBJECTION:-}" ] || OPT_IN_DROPPABLE+=(CAD_REPAIR_REVIEW_OBJECTION)
 [ -n "${CAD_REPAIR_MESH_HANDBACK:-}" ] || OPT_IN_DROPPABLE+=(CAD_REPAIR_MESH_HANDBACK)
 [ -n "${CAD_REPAIR_STANDALONE_JOBS:-}" ] || OPT_IN_DROPPABLE+=(CAD_REPAIR_STANDALONE_JOBS)
+[ -n "${CAD_REPAIR_INVESTIGATION_TRACE:-}" ] || OPT_IN_DROPPABLE+=(CAD_REPAIR_INVESTIGATION_TRACE)
 # The database this deployment migrated. POSTGRES_* and not DATABASE_URL: a DSN carries the
 # password, and DATABASE_URL is declared secret precisely because it does.
 if [ -n "${MIGRATE_DB_HOST:-}" ]; then

@@ -8,7 +8,11 @@
 #                    repair), pipeline/repair_promote.py (the staging proof and the lineage).
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import json
 import logging
+import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -244,6 +248,44 @@ class _EmptyPlan:
     call_failures: tuple = ()
 
 
+async def _park_trace(job_id: str, measured: dict) -> None:
+    """Move the investigation trace's per-turn `lines` out of the report and into the job's object
+    storage, leaving `transcript` (where it went, or why it did not) beside the outcome table.
+
+    CAD_REPAIR_INVESTIGATION_TRACE only: with it off the repair adds no `investigation_trace` and
+    this does nothing. A failed upload is recorded, never raised - diagnostics must not cost a
+    run - and the lines are dropped either way, so the report and the state stay small."""
+    trace = measured.get("investigation_trace") if isinstance(measured, dict) else None
+    if not isinstance(trace, dict) or not trace.get("lines"):
+        return
+    lines = trace.pop("lines")
+    body = "".join(json.dumps({**line, "job_id": job_id}, sort_keys=True, default=str) + "\n"
+                   for line in lines).encode()
+    digest = hashlib.sha256(body).hexdigest()
+    from meshpipeline.artifact_keys import investigation_trace_key
+
+    key = investigation_trace_key(job_id, digest)
+    transcript: dict = {"lines": len(lines), "bytes": len(body), "sha256": digest}
+
+    def upload() -> None:
+        from meshpipeline.contracts.object_storage import get_object_store
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "trace.jsonl"
+            path.write_bytes(body)
+            get_object_store().upload_file(local_path=path, object_key=key,
+                                           content_type="application/x-ndjson")
+
+    try:
+        await asyncio.to_thread(upload)
+        transcript["object_key"] = key
+    except Exception as exc:  # noqa: BLE001 - a diagnostic that fails must not cost a repair
+        logger.warning("node_repair_attempt: investigation trace upload failed (%s) - job_id=%s",
+                       type(exc).__name__, job_id)
+        transcript["error"] = f"{type(exc).__name__}: {exc}"[:300]
+    trace["transcript"] = transcript
+
+
 def _accepts(func, name: str) -> bool:
     """Does `func` take a keyword called `name`? A LANE SEAM, READ RATHER THAN ASSUMED.
 
@@ -416,6 +458,9 @@ async def _attempt(state: PipelineState) -> dict:
             asyncio.to_thread(repair_step_file, source, destination,
                               directives=directives, goal=goal, **extra),
             timeout=rcfg.CAD_REPAIR_TIMEOUT_S)
+        for item in repair_report.measurements:
+            if item.name == "investigation_trace" and isinstance(item.value, dict):
+                await _park_trace(str(job_id), {"investigation_trace": item.value})
     except TimeoutError:
         logger.warning("node_repair_attempt: the repair exceeded %.1fs - continuing on the "
                        "original - job_id=%s", rcfg.CAD_REPAIR_TIMEOUT_S, job_id)
@@ -438,6 +483,7 @@ async def _attempt(state: PipelineState) -> dict:
         # and this is the evidence an operator needs to decide what to do instead.
         logger.info("node_repair_attempt: repair refused (%s) - continuing on the original "
                     "- job_id=%s", exc, job_id)
+        await _park_trace(str(job_id), exc.measurements)
         outcomes = _outcomes(state, exc.measurements.get("operations", []),
                              exc.measurements.get("refusals", []),
                              discarded=bool(exc.measurements.get("result_discarded")),

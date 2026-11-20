@@ -35,6 +35,7 @@ V3_MODULES = [
     "cad/repair/tolerant_probe.py",
     "cad/repair/ladder.py",
     "cad/repair/investigator_tools.py",
+    "cad/repair/investigation_trace.py",
     "cad/repair/investigator.py",
     "cad/repair/tournament.py",
     "cad/repair/investigator_budget.py",

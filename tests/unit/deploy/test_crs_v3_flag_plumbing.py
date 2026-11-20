@@ -50,6 +50,10 @@ FLAGS: dict[str, tuple[str, str]] = {
     "CAD_REPAIR_REVIEW_OBJECTION": ("cad-repair-review-objection", LIVE_POSTURE),
     "CAD_REPAIR_MESH_HANDBACK": ("cad-repair-mesh-handback", LIVE_POSTURE),
     "CAD_REPAIR_STANDALONE_JOBS": ("cad-repair-standalone-jobs", LIVE_POSTURE),
+    # DEV DIAGNOSTICS (lane D): the investigation trace - per-turn JSONL beside the job's
+    # artifacts and a per-region "why no package" table in the report. A boolean, on only where
+    # crs_v3 is live (shared dev, crsv3), never in production.
+    "CAD_REPAIR_INVESTIGATION_TRACE": ("cad-repair-investigation-trace", LIVE_ONLY),
 }
 
 # PLUMBED AHEAD OF THEIR SETTINGS ROW. The code reads each of these with `getattr(rcfg, NAME,

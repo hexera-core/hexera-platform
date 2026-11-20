@@ -101,6 +101,7 @@ for pair in "deployment-id:DEPLOYMENT_ID" \
             "cad-repair-review-objection:CAD_REPAIR_REVIEW_OBJECTION" \
             "cad-repair-mesh-handback:CAD_REPAIR_MESH_HANDBACK" \
             "cad-repair-standalone-jobs:CAD_REPAIR_STANDALONE_JOBS" \
+            "cad-repair-investigation-trace:CAD_REPAIR_INVESTIGATION_TRACE" \
             "verdict-by-limits:VERDICT_BY_LIMITS" \
             "mesh-progressive-snapshot-enabled:MESH_PROGRESSIVE_SNAPSHOT_ENABLED" \
             "mesh-snappy-ranks:MESH_SNAPPY_RANKS"; do

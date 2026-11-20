@@ -16,6 +16,9 @@ from __future__ import annotations
 
 import json
 import re
+import threading
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 
 #: The trace's byte ceiling per region record (JSONL bytes). Past it the middle is dropped and a
 #: `truncated` line says how many entries went; the `end` line always survives.
@@ -187,3 +190,95 @@ def _capped(lines: list[dict], end: dict, bytes_max: int) -> list[dict]:
     marker = {"job_id": end["job_id"], "region": end["region"], "kind": "truncated",
               "dropped": dropped}
     return [*head, marker, *reversed(tail), end]
+
+
+# --- the product collector -------------------------------------------------------------------
+#
+# The investigator hands each region's record to its module-level `sink` (None in the product).
+# A run that wants its trace opens a collector: `start()` installs `dispatch` as that sink -
+# chaining whatever a harness had installed - and `stop()` puts the previous sink back once no
+# run in the process is collecting. The records go to the collector bound IN THIS CONTEXT
+# (a ContextVar, which `asyncio.to_thread` copies), so concurrent repairs never mix records.
+
+_current: ContextVar[Collector | None] = ContextVar("investigation_trace_collector",
+                                                    default=None)
+_lock = threading.Lock()
+_state: dict = {"active": 0, "previous": None}
+
+
+@dataclass
+class Collector:
+    records: list[dict] = field(default_factory=list)
+    token: object = None
+
+
+def dispatch(record: dict) -> None:
+    """The sink installed on the investigator while any run collects."""
+    previous = _state["previous"]
+    if callable(previous):
+        previous(record)
+    collector = _current.get()
+    if collector is not None:
+        collector.records.append(dict(record))
+
+
+def start() -> Collector:
+    from meshpipeline.cad.repair import investigator as inv
+
+    collector = Collector()
+    collector.token = _current.set(collector)
+    with _lock:
+        if inv.sink is not dispatch:
+            _state["previous"] = inv.sink
+            inv.sink = dispatch
+        _state["active"] += 1
+    return collector
+
+
+def stop(collector: Collector) -> None:
+    from meshpipeline.cad.repair import investigator as inv
+
+    try:
+        _current.reset(collector.token)  # type: ignore[arg-type]
+    except (ValueError, TypeError):
+        _current.set(None)
+    with _lock:
+        _state["active"] = max(0, _state["active"] - 1)
+        if _state["active"] == 0 and inv.sink is dispatch:
+            inv.sink = _state["previous"]
+            _state["previous"] = None
+
+
+#: The whole job's trace ceiling, shared across its regions.
+JOB_TRACE_BYTES_MAX = 512_000
+
+
+def summary(records: list[dict], *, job_id: str = "",
+            bytes_max: int = JOB_TRACE_BYTES_MAX) -> dict:
+    """The run's outcome table and its trace lines. A region's LATEST record is used: a re-call
+    continues the same investigation, so its record already holds the earlier conversation."""
+    latest: dict = {}
+    for record in records:
+        latest[record.get("region")] = record
+    regions = list(latest.values())
+    share = bytes_max // max(1, len(regions))
+    lines = [ln for r in regions for ln in trace(r, job_id=job_id, bytes_max=share)]
+    return {"outcomes": [outcome(r) for r in regions], "lines": lines,
+            "truncated": any(ln.get("kind") == "truncated" for ln in lines)}
+
+
+def begin_if_enabled() -> Collector | None:
+    """A collector when `CAD_REPAIR_INVESTIGATION_TRACE` is on, else None (the product default)."""
+    import meshpipeline.settings.cad_repair as rcfg
+
+    if not bool(getattr(rcfg, "CAD_REPAIR_INVESTIGATION_TRACE", False)):
+        return None
+    return start()
+
+
+def finish(collector: Collector | None, *, job_id: str = "") -> dict | None:
+    """Close `collector` and return its `summary`; None when no collector was opened."""
+    if collector is None:
+        return None
+    stop(collector)
+    return summary(collector.records, job_id=job_id)

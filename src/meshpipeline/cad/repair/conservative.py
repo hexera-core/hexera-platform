@@ -994,6 +994,7 @@ def repair_step_file(source: Path, destination: Path, *,
     # until an engineer's directive does.
     reserved = REVIEW_RESERVED_CODES if rcfg.CAD_REPAIR_REVIEW_ENABLED else frozenset()
     regions_run = None
+    traced: dict | None = None
     model_record = None
     if rcfg.CAD_REPAIR_REGION_LOOP == "live":
         # THE REGION-SCOPED DRIVER. Every after-check below is unchanged and still has the last
@@ -1047,10 +1048,20 @@ def repair_step_file(source: Path, destination: Path, *,
         # enough to auto-accept, and the whole tier is inert. `None` means no threshold was
         # stated, which is not the same as a threshold of zero - the tier then spends the
         # reviewer's seat on every package, exactly as it did before the tier existed.
-        regions_run = run_regions(
-            before_shape, tolerance_mm=tolerance, reserved=reserved, author=author,
-            deadline_s=driver_deadline, focus_faces=focus_faces,
-            auto_accept_mm=auto_accept_mm)
+        # THE INVESTIGATION TRACE (CAD_REPAIR_INVESTIGATION_TRACE, dev diagnostics, off in
+        # production): a collector catches every record the investigator hands its module sink
+        # during this run - including a tournament's investigator - so the report can say, per
+        # region, how it ended and why no package. Off opens nothing and adds no key.
+        from meshpipeline.cad.repair import investigation_trace
+
+        trace = investigation_trace.begin_if_enabled()
+        try:
+            regions_run = run_regions(
+                before_shape, tolerance_mm=tolerance, reserved=reserved, author=author,
+                deadline_s=driver_deadline, focus_faces=focus_faces,
+                auto_accept_mm=auto_accept_mm)
+        finally:
+            traced = investigation_trace.finish(trace)
         final = measure(regions_run.shape)
         result = as_repair_run(regions_run, original=original.to_dict(), final=final.to_dict(),
                                planner_label=label)
@@ -1119,6 +1130,10 @@ def repair_step_file(source: Path, destination: Path, *,
             # first-class outcome, so it travels in the report exactly like a conclusion.
             # ABSENT when no investigator authored, because the posture was off.
             measurements["investigations"] = [dict(item) for item in investigations]
+        if traced is not None:
+            # `outcomes` stays in the report; `lines` (the per-turn trace) is moved to the job's
+            # object storage by the pipeline node, which leaves its location here instead.
+            measurements["investigation_trace"] = traced
         tournaments = getattr(author, "tournaments", None)
         if tournaments is not None:
             # THE TOURNAMENTS, BESIDE THE INVESTIGATIONS by the same rule: one round per author
