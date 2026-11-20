@@ -360,7 +360,10 @@ async def _ask(system: str, user: str, *, job_id: str, timeout_s: float) -> dict
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     try:
         result = await asyncio.wait_for(
-            call_repair_review_model(messages, job_id=job_id), timeout=timeout_s)
+            # ITS OWN LABEL: the one-shot author asks as "RepairReview", and telemetry must tell a
+            # reviewer's call from an author's.
+            call_repair_review_model(messages, job_id=job_id, name="RepairPackageReview"),
+            timeout=timeout_s)
     except Exception as exc:  # noqa: BLE001 - total: a failed call is a reject, never a raise
         logger.warning("package review call failed: %s", type(exc).__name__)
         return None

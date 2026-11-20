@@ -205,7 +205,10 @@ async def _run_chat(route, label, messages: Conversation, job_id: str,
             on_reasoning=None, label=label,
             trace=langfuse_kwargs(session_id=job_id, user_id=user_id, name=label))
 
-    return await _run(route, _invoke, job_id=job_id)
+    from meshpipeline.contracts.inference_telemetry import calling
+
+    with calling(label):
+        return await _run(route, _invoke, job_id=job_id)
 
 
 async def call_intake_model(messages: Conversation, job_id: str = "", user_id: str = "",

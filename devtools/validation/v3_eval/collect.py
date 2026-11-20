@@ -131,6 +131,7 @@ def model_usage(provenances: list[dict]) -> dict:
     calls = tokens_in = tokens_out = 0
     cost = 0.0
     by_role: dict[str, int] = {}
+    by_purpose: dict[str, int] = {}
     statuses: dict[str, int] = {}
     for prov in provenances:
         path = Path(prov["_dir"]) / "model-calls.jsonl"
@@ -145,10 +146,15 @@ def model_usage(provenances: list[dict]) -> dict:
             tokens_out += int(rec.get("output_tokens") or 0)
             cost += float(rec.get("estimated_cost_usd") or 0.0)
             by_role[str(rec.get("role"))] = by_role.get(str(rec.get("role")), 0) + 1
+            # WHO ASKED (investigator / reviewer / author / tournament:<source>). Calls written
+            # before the field existed read as "unlabelled", never guessed from the route.
+            purpose = str(rec.get("purpose") or "unlabelled")
+            by_purpose[purpose] = by_purpose.get(purpose, 0) + 1
             status = str(rec.get("provider_status") or rec.get("failure_category") or "?")
             statuses[status] = statuses.get(status, 0) + 1
     return {"calls": calls, "input_tokens": tokens_in, "output_tokens": tokens_out,
-            "cost_usd": round(cost, 4), "by_role": by_role, "statuses": statuses}
+            "cost_usd": round(cost, 4), "by_role": by_role, "by_purpose": by_purpose,
+            "statuses": statuses}
 
 
 def vm_cost(provenances: list[dict]) -> dict:

@@ -569,3 +569,17 @@ def test_every_arm_runs_the_shared_dev_review_posture():
 
     assert evalspec.EVERYTHING_ON["CAD_REPAIR_REVIEW_OBJECTION"] == "live"
     assert evalspec.EVERYTHING_ON["CAD_REPAIR_PACKAGE_REVIEW"] == "live"
+
+
+def test_model_usage_counts_calls_by_purpose_and_never_guesses_an_old_one(tmp_path):
+    collect = _load("v3_collect_under_test_purpose", V3 / "collect.py")
+    d = _shard(tmp_path, "v3_full", "failing", 1, 1)
+    (d / "model-calls.jsonl").write_text("\n".join(json.dumps(r) for r in [
+        {"role": "intake", "purpose": "investigator"},
+        {"role": "intake", "purpose": "reviewer"},
+        {"role": "intake", "purpose": "tournament:investigator"},
+        {"role": "intake"}]) + "\n")
+    usage = collect.model_usage([{"_dir": str(d)}])
+    assert usage["by_role"] == {"intake": 4}
+    assert usage["by_purpose"] == {"investigator": 1, "reviewer": 1,
+                                   "tournament:investigator": 1, "unlabelled": 1}

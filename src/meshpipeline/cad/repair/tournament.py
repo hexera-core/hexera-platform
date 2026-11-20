@@ -721,7 +721,12 @@ def tournament_author(shape, *, original, reserved: frozenset = frozenset(), job
                                          "reason": f"K={cap} already has its candidates"})
                 continue
             try:
-                package = ask(region, tuple(defects), tuple(attempts))
+                # TELEMETRY SAYS WHICH SOURCE ASKED: every model call the source makes is labelled
+                # `tournament:<source>` rather than only as the route that carried it.
+                from meshpipeline.contracts.inference_telemetry import scope
+
+                with scope(f"tournament:{source}"):
+                    package = ask(region, tuple(defects), tuple(attempts))
             except Exception as exc:  # noqa: BLE001 - a source that came apart is a result
                 logger.info("tournament: the %s source came apart (%s: %s)", source,
                             type(exc).__name__, exc)

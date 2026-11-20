@@ -181,7 +181,12 @@ def _bounded_in_thread(start: Callable, *, timeout_s: float, failure):
         except BaseException as exc:  # noqa: BLE001 - total: reported below, never raised
             box["error"] = exc
 
-    worker = threading.Thread(target=run, name="model-author", daemon=True)
+    # THE CALLER'S CONTEXT CROSSES THE THREAD (a Thread starts with an empty one), so a call made
+    # under a tournament's telemetry scope is still labelled with it.
+    import contextvars
+
+    context = contextvars.copy_context()
+    worker = threading.Thread(target=lambda: context.run(run), name="model-author", daemon=True)
     worker.start()
     worker.join(timeout_s + _GRACE_S)
     if worker.is_alive():

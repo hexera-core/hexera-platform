@@ -734,3 +734,28 @@ def test_run_regions_hands_the_authors_the_real_sessions_accounting():
                 budget=LoopBudget(max_ops=9, stall_limit=9, timeout_s=1000.0),
                 session=session, clock=part.clock, attempts=1)
     assert seen and all(each is session.accounting for each in seen)
+
+
+def test_each_source_is_asked_under_its_own_telemetry_scope():
+    """Telemetry (lane D): a model call a tournament source makes is labelled
+    `tournament:<source>`, so a tournament's spend is told from a plain investigator's."""
+    from meshpipeline.contracts import inference_telemetry as tel
+
+    seen: dict = {}
+
+    class Scoped(Source):
+        def __init__(self, name, op):
+            super().__init__(op)
+            self.name = name
+
+        def __call__(self, region, defects, attempts=()):
+            seen[self.name] = tel.current()[1]
+            return super().__call__(region, defects, attempts)
+
+    author = T.tournament_author(
+        "upload", original=ORIGINAL, k=3, clock=lambda: 1000.0,
+        rules=Scoped(T.RULES, "sew"), one_shot=Scoped(T.ONE_SHOT, "fill"),
+        investigate=Scoped(T.INVESTIGATOR, "fragment"), rehearse_with=Rehearsals())
+    author(REGION, DEFECTS)
+    assert seen == {T.RULES: "tournament:rules", T.ONE_SHOT: "tournament:one_shot",
+                    T.INVESTIGATOR: "tournament:investigator"}
