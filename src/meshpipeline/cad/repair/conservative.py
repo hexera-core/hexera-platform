@@ -21,6 +21,7 @@ from meshpipeline.cad.repair.contracts import (
     RepairReport,
     RepairStatus,
 )
+from meshpipeline.cad.repair.ending import REFUSED, ending_for
 
 logger = logging.getLogger(__name__)
 
@@ -31,11 +32,29 @@ class RepairRefused(RuntimeError):
     SEPARATE FROM A FAILURE. A refusal means the kernel produced something and we are declining
     it: the geometry moved too far, a tolerance was inflated past the cap, faces disappeared. The
     customer's file is unharmed and the honest next step is an operator's judgement, not a retry.
+
+    NOT EVERY `RepairRefused` IS A REFUSAL, and that is the reporting defect `ending` exists to
+    fix. This exception is the one control-flow path out of a run that produced no usable file, so
+    it carries "nothing needed doing", "nothing claims this defect", "we tried and nothing held",
+    "we could not see the part" and "a gate said no" alike. `ending` says WHICH; only the last is
+    a refusal in any ordinary sense. Readers that branch on consequence (there is no file, mesh
+    the original) should keep catching the exception; readers that TELL SOMEBODY what happened
+    must read `ending`.
     """
 
     def __init__(self, message: str, *, measurements: dict | None = None) -> None:
         super().__init__(message)
         self.measurements = dict(measurements or {})
+
+    @property
+    def ending(self) -> str:
+        """How the run ended, in the `cad/repair/ending.py` vocabulary.
+
+        `refused` when the measurements do not say - the writer-level refusals above carry none,
+        and they really are gates. Defaulting to the harshest word is the only safe direction: a
+        missing fact must never buy a part a kinder sentence than it earned.
+        """
+        return str(self.measurements.get("ending") or REFUSED)
 
 
 class RepairUnavailable(RuntimeError):
@@ -1045,6 +1064,12 @@ def repair_step_file(source: Path, destination: Path, *,
                           reserved=reserved, deadline_s=driver_deadline)
         final = measure(result.shape)
 
+    # COUNTED ONCE, as ints, because both the report and `ending_for` read them: a `measurements`
+    # value is a plain object by the time it is back out of the dict, and the ending must not be
+    # derived from something a later writer could have put there as a string.
+    attempted_count = len(result.verdicts)
+    kept_count = sum(1 for v in result.verdicts if v.kept)
+
     measurements = {
         "before": original.to_dict(), "after": final.to_dict(),
         "tolerance_requested_mm": tolerance,
@@ -1057,8 +1082,8 @@ def repair_step_file(source: Path, destination: Path, *,
         # WHAT WAS DELIBERATELY NOT ATTEMPTED AND WHY - the paired rims of a missing bore wall
         # above all. This used to be a silent skip inside the fill.
         "refusals": [dict(r) for r in result.refusals],
-        "operations_attempted": len(result.verdicts),
-        "operations_kept": sum(1 for v in result.verdicts if v.kept),
+        "operations_attempted": attempted_count,
+        "operations_kept": kept_count,
         # WHERE THE TIME WENT, so a later change can be shown to have made the run faster.
         # `measure_s` is the whole-shape `caps.measure` calls, a cost centre beside the scan.
         # A region run adds its own scan counts to these (below) and OVERRIDES `measure_s` with
@@ -1162,6 +1187,12 @@ def repair_step_file(source: Path, destination: Path, *,
         # done - and never silently dropped either.
         measurements.setdefault("operations", [dict(a) for a in attempts])
         measurements["result_discarded"] = True
+        # THE ONE TRUE REFUSAL. A cap, a tolerance over the effective cap or a sanity check said
+        # no to a result we were holding, so `gate_refusal` is stated here and nowhere else on
+        # this path. It outranks every other fact about the run on purpose.
+        measurements["ending"] = ending_for(
+            kept=kept_count, attempted=attempted_count,
+            stopped_because=result.stopped_because, gate_refusal=True)
         raise RepairRefused(refusal, measurements=measurements)
 
     if measurements["operations_kept"] == 0:
@@ -1180,11 +1211,27 @@ def repair_step_file(source: Path, destination: Path, *,
         # sequence is the more valuable example, since it says what did NOT work. The node's
         # `RepairRefused` handler logs these before returning the decline.
         measurements["operations"] = [dict(a) for a in attempts]
+        # NO GATE WAS CONSULTED HERE. Nothing survived to judge, so this path carries no refusal -
+        # it carries which of the four honest "we got this far" answers it actually was. The
+        # exception type stays `RepairRefused` because the CONSEQUENCE is the same (no file, mesh
+        # the original) and every caller's control flow depends on it; `ending` is what a report
+        # reads. See the ruling in cad/repair/ending.py's header.
+        measurements["ending"] = ending_for(
+            kept=0, attempted=attempted_count,
+            stopped_because=result.stopped_because)
         raise RepairRefused(
             f"nothing was kept ({measurements['operations_attempted']} operation(s) attempted, "
             f"stopped because {result.stopped_because}), so there is nothing to promote - "
             "re-exporting the upload would change its topology without repairing it",
             measurements=measurements)
+
+    # HOW THIS RUN ENDED, in the vocabulary a report may print (cad/repair/ending.py). Set only
+    # once both refusal paths above are past, so the word here can only ever be one that comes
+    # with a written file - `repaired`, or one of the honest partials (`escalated`, `unmeshable`,
+    # `scan_incomplete`) that must never read as a delivery.
+    measurements["ending"] = ending_for(
+        kept=kept_count, attempted=attempted_count,
+        stopped_because=result.stopped_because)
 
     from meshpipeline.cad.unit_evidence import parser_applied_unit
 

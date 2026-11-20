@@ -311,6 +311,23 @@ def _undone_whole_rows(view: Mapping) -> list[dict]:
         return [_row("The repair was undone", "Nothing changed",
                      "the finished result did not hold up when the whole part was measured, "
                      "so your original file was used")]
+    # AND "THE LOOP KEPT NOTHING" IS NOT ONE ANSWER EITHER. "no attempt held up" is simply untrue
+    # of a part where nothing was attempted, which is the commonest of these runs - so the row
+    # follows the recorded ending (cad/repair/ending.py). The sentence below stays the fallback,
+    # because a run that did not say how it ended must be told the harshest true thing.
+    ending = str(measured.get("ending") or "") if isinstance(measured, Mapping) else ""
+    if ending == "nothing_to_repair":
+        return [_row("Nothing needed repairing", "Nothing changed",
+                     "the check found nothing to aim an operation at, so your original file "
+                     "was used")]
+    if ending == "no_operation_claims_it":
+        return [_row("Nothing was repaired", "Nothing changed",
+                     "we have no automatic fix for what is in this part, so your original file "
+                     "was used")]
+    if ending == "scan_incomplete":
+        return [_row("Nothing was repaired", "Nothing changed",
+                     "the check could not see all of the part, so nothing was attempted and "
+                     "your original file was used")]
     return [_row("Nothing was repaired", "Nothing changed",
                  "no attempt held up when it was measured, so your original file was used")]
 
