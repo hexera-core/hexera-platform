@@ -1135,6 +1135,15 @@ def package_verdicts(measured: dict | None) -> dict:
     return out
 
 
+def _region_index(record: dict):
+    """The region a record is about. `_Investigation.to_dict()` writes it as a bare int; an older
+    record shape nested it as `{"index": ...}`. Both read; anything else is None."""
+    region = record.get("region")
+    if isinstance(region, dict):
+        return region.get("index")
+    return region if isinstance(region, int) and not isinstance(region, bool) else None
+
+
 def join_verdicts(records, verdicts: dict) -> list[dict]:
     """Each record with the verdict its package got, under `"verdict"`.
 
@@ -1143,8 +1152,15 @@ def join_verdicts(records, verdicts: dict) -> list[dict]:
     Returns new dicts; the caller's records are not mutated.
     """
     joined = []
+    seen: dict = {}
     for record in records:
-        key = (record.get("region", {}).get("index"), record.get("attempt"))
+        index = _region_index(record)
+        # THE PRODUCER WRITES NO `attempt` (cad/repair/investigator.py closes one region's
+        # investigation once per author call, so the n-th record for a region IS its n-th
+        # attempt - the same ordinal package_verdicts keys on). A stated one is kept.
+        ordinal = seen[index] = seen.get(index, 0) + 1
+        attempt = record.get("attempt")
+        key = (index, attempt if isinstance(attempt, int) else ordinal)
         verdict = verdicts.get(key)
         joined.append({**record, "verdict": verdict} if verdict is not None else dict(record))
     return joined
@@ -1174,7 +1190,7 @@ def investigator_row(records) -> dict:
         end = str(record.get("end") or "")
         if end:
             ends[end] = ends.get(end, 0) + 1
-    return {"regions": len({r.get("region", {}).get("index") for r in records}),
+    return {"regions": len({_region_index(r) for r in records}),
             "tool_calls": int(totals["tool_calls"]),
             "model_calls": int(totals["model_calls"]),
             "seconds": round(totals["seconds"], 2),

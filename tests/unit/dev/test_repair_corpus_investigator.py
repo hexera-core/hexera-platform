@@ -308,3 +308,54 @@ def test_a_sink_with_records_adds_the_block_and_the_verdict(kernel, tmp_path):
     assert row["investigator"]["regions"] == 1
     assert row["investigator"]["model_calls"] == 2
     assert sink.records[0]["verdict"]["status"] == "committed"
+
+
+# ---------------------------------------------------------------- the producer's own record shape
+
+def _producer_record(index: int, *, model_calls: int = 1, end: str = "concluded") -> dict:
+    """A record AS cad/repair/investigator.py's sink receives it: `_Investigation.to_dict()` plus
+    the messages. `region` is an int and there is no `attempt` - unlike the synthetic `_record`."""
+    from meshpipeline.cad.repair import investigator as inv_mod
+    from meshpipeline.cad.repair.regions import Region
+
+    inv = inv_mod._Investigation(Region(index=index, fingerprints=frozenset({"edge:a"}),
+                                        bbox_min=(0.0, 0.0, 0.0), bbox_max=(1.0, 1.0, 1.0)),
+                                 (), inv_mod._budget_of("small"), system="s")
+    inv.model_calls = model_calls
+    inv.end = end
+    return {**inv.to_dict(), "messages": [dict(m) for m in inv.messages]}
+
+
+def test_the_producers_record_has_the_shape_the_runner_reads():
+    record = _producer_record(3)
+    assert record["region"] == 3 and "attempt" not in record
+
+
+def test_a_real_investigator_record_joins_and_aggregates(kernel, tmp_path):
+    # Two author calls on region 0 (the region's one investigation, closed twice) and one on
+    # region 1: the n-th record for a region is that region's n-th attempt.
+    sink = rc.TranscriptSink(None)
+    import meshpipeline.cad.repair.conservative as cons
+    _ORIGINAL = cons.repair_step_file
+
+    def repair(source, destination, **kwargs):
+        sink(_producer_record(0, end="concluded"))
+        sink(_producer_record(0, model_calls=2, end="budget_spent"))
+        sink(_producer_record(1, end="skipped"))
+        out = _ORIGINAL(source, destination, **kwargs)
+        out.measurements[1].value["packages"] = [
+            {"region_index": 0, "status": "reverted", "reason": "r"},
+            {"region_index": 0, "status": "committed", "reason": ""},
+            {"region_index": 1, "status": "committed", "reason": ""}]
+        return out
+
+    cons.repair_step_file = repair
+    try:
+        row = rc._repair_row(kernel.part, tmp_path, sink=sink)
+    finally:
+        cons.repair_step_file = _ORIGINAL
+    assert row["investigator"]["regions"] == 2
+    assert row["investigator"]["model_calls"] == 4
+    assert row["investigator"]["ends"] == {"budget_spent": 1, "concluded": 1, "skipped": 1}
+    assert [r["verdict"]["status"] for r in sink.records] == ["reverted", "committed",
+                                                               "committed"]
