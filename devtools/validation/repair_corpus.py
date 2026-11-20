@@ -1271,20 +1271,33 @@ def _offer(module, name: str, value) -> str:
     return ""
 
 
-def install_investigator(posture: str, *, transcripts: str = "", replay: str = ""
+def _apply_investigator_posture(mode: str) -> None:
+    """Make `mode` the posture the repair READS. The settings module is already imported by the
+    time a flag is parsed (the `ending` import at the top of this file loads it), so writing the
+    environment alone changes nothing: the module's value is set too. The investigator and the
+    conservative seam read `rcfg.CAD_REPAIR_INVESTIGATOR` at call time."""
+    import meshpipeline.settings.cad_repair as rcfg
+
+    os.environ["CAD_REPAIR_INVESTIGATOR"] = mode
+    rcfg.CAD_REPAIR_INVESTIGATOR = mode
+
+
+def install_investigator(posture: str | None, *, transcripts: str = "", replay: str = ""
                          ) -> tuple[TranscriptSink | None, str]:
     """Switch the investigator on for this run and give it somewhere to write. Returns the sink
     (None when nothing was asked for) and a note the operator must read.
 
-    The POSTURE goes into the environment before the repair settings are read, which is how every
-    other switch in this tool is set (see the CAD_REPAIR_ defaults at the top of this file). The
-    SINK and the REPLAY RECORDS are offered to `cad/repair/investigator.py`; a build without one,
-    or without the name, gets a note rather than a crash.
+    A GIVEN POSTURE (`--investigator off|shadow|live`) is applied to the settings the repair reads
+    - including an explicit `off` over an inherited one. `None` (the flag not given) keeps the
+    posture the process was launched with, so an environment-driven run is never overridden by a
+    default. The SINK and the REPLAY RECORDS are offered to `cad/repair/investigator.py`; a build
+    without one, or without the name, gets a note rather than a crash.
     """
+    if posture is not None:
+        _apply_investigator_posture(investigator_posture(posture))
     mode = investigator_posture(posture)
     if mode == "off" and not transcripts and not replay:
         return None, ""
-    os.environ["CAD_REPAIR_INVESTIGATOR"] = mode
     sink = TranscriptSink(transcripts or None)
     module = _investigator_module()
     if module is None:
@@ -1597,9 +1610,11 @@ def main() -> int:
     parser.add_argument("--json", dest="json_out", default="", help="write the rows here")
     # THE INVESTIGATOR (cad/repair/investigator.py). Off is today's behaviour exactly: no record,
     # no row key, no summary block and no settings key. `shadow` investigates and keeps its
-    # packages out of the kernel; `live` authors with them.
-    parser.add_argument("--investigator", choices=INVESTIGATOR_POSTURES, default="off",
-                        help="bounded investigator author: shadow records only, live authors")
+    # packages out of the kernel; `live` authors with them. NOT GIVEN (None) keeps the
+    # CAD_REPAIR_INVESTIGATOR the process was launched with; given, it overrides it.
+    parser.add_argument("--investigator", choices=INVESTIGATOR_POSTURES, default=None,
+                        help="bounded investigator author: shadow records only, live authors "
+                             "(default: the CAD_REPAIR_INVESTIGATOR environment value)")
     parser.add_argument("--transcripts", default="",
                         help="write one gym record per author call here, as JSONL (names, hashes, "
                              "fingerprints, measurements and the conversation - never geometry)")

@@ -206,9 +206,55 @@ def test_settings_gain_nothing_when_no_flag_was_given():
 
 # ---------------------------------------------------------------- the install seam
 
+@pytest.fixture(autouse=True)
+def _posture_restored(monkeypatch):
+    """install_investigator writes the posture into the settings module; put it back after."""
+    import os
+
+    import meshpipeline.settings.cad_repair as rcfg
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_INVESTIGATOR", rcfg.CAD_REPAIR_INVESTIGATOR)
+    if "CAD_REPAIR_INVESTIGATOR" in os.environ:
+        monkeypatch.setenv("CAD_REPAIR_INVESTIGATOR", os.environ["CAD_REPAIR_INVESTIGATOR"])
+    else:
+        monkeypatch.delenv("CAD_REPAIR_INVESTIGATOR", raising=False)
+    return rcfg
+
+
 def test_off_installs_nothing():
     sink, note = rc.install_investigator("off")
     assert sink is None and note == ""
+
+
+@pytest.mark.parametrize("asked", ["live", "shadow"])
+def test_the_flag_reaches_the_settings_already_imported(_posture_restored, asked):
+    # The settings module was imported with this file (the `ending` import at its top), so the
+    # environment is read already: the flag must reach the value the investigator reads.
+    from meshpipeline.cad.repair import investigator as inv_mod
+    rcfg = _posture_restored
+    rcfg.CAD_REPAIR_INVESTIGATOR = "off"
+    rc.install_investigator(asked)
+    assert inv_mod.posture() == asked
+
+
+def test_an_explicit_off_turns_an_inherited_posture_off(_posture_restored):
+    from meshpipeline.cad.repair import investigator as inv_mod
+    rcfg = _posture_restored
+    rcfg.CAD_REPAIR_INVESTIGATOR = "live"
+    rc.install_investigator("off", transcripts="")
+    assert inv_mod.posture() == "off"
+
+
+@pytest.mark.parametrize("inherited", ["live", "shadow", "off"])
+def test_no_flag_keeps_the_environments_posture(_posture_restored, tmp_path, inherited):
+    # An environment-driven launch (CAD_REPAIR_INVESTIGATOR set before import) that passes
+    # --transcripts without --investigator must keep the posture it was launched with.
+    from meshpipeline.cad.repair import investigator as inv_mod
+    rcfg = _posture_restored
+    rcfg.CAD_REPAIR_INVESTIGATOR = inherited
+    rc.install_investigator(None, transcripts=str(tmp_path / "t.jsonl"))
+    assert inv_mod.posture() == inherited
+    rc.install_investigator(None)
+    assert inv_mod.posture() == inherited
 
 
 def test_install_offers_the_sink_to_the_investigator_module(monkeypatch, tmp_path):
