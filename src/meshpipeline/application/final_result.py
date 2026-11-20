@@ -1678,8 +1678,16 @@ def narrow_passage_caveat(outcome: RunOutcome) -> dict | None:
         return None
     raw = v.side.get("cells_across")
     cells: Mapping = raw if isinstance(raw, Mapping) else {}
+    # THE PLAN'S OWN FACTS (engines/gap_sizing.quality_plan), when the pass planned narrow spots:
+    # how many places, the narrowest and where, the count aimed at, and the cells that would
+    # resolve them - the choice the note gives the user (rulebook 75)
+    raw_plan = q.get("gap_plan")
+    plan: Mapping = raw_plan if isinstance(raw_plan, Mapping) else {}
     return {"kind": NARROW_PASSAGES, "floor": v.floor,
             "cells_across": cells.get("p05"), "cells_across_min": cells.get("min"),
+            "spots": plan.get("spots"), "spot_narrowest_m": plan.get("narrowest_m"),
+            "spot_where_m": plan.get("where_m"), "aim": plan.get("rule_cells_across"),
+            "cells_needed": plan.get("needed"), "cell_limit": plan.get("limit"),
             "width_m": v.side.get("width_m"),
             "narrowest_width_m": v.side.get("narrowest_width_m"),
             "share": v.side.get("under_floor_share"),
@@ -1812,7 +1820,25 @@ def _narrow_passage_lines(c: Mapping) -> list[str]:
         if main_x is not None:
             way += f", with about {main_x:.1f} or more cells across it"
     lines.append(way + ". So the mesh is delivered.")
-    lines.append("    If the flow in these gaps matters to you, ask for a finer mesh.")
+    # THE PLACES AND THE WAY TO RESOLVE THEM, from the pass's own gap plan (rulebook 75): never a
+    # set-aside without how many, the narrowest, what we aim for and the count that gets it
+    spots, aim = n(c.get("spots")), n(c.get("aim")) or 13.0
+    need, limit = n(c.get("cells_needed")), n(c.get("cell_limit"))
+    narrow = _mm_text(c.get("spot_narrowest_m"))
+    where = c.get("spot_where_m")
+    if spots:
+        at = (f" at ({', '.join(f'{float(v) * 1000:.0f}' for v in where)}) mm"
+              if isinstance(where, (list, tuple)) and len(where) == 3 else "")
+        lines.append(f"    The mesh plan found {spots:.0f} narrow place(s)"
+                     + (f", the narrowest {narrow} across{at}" if narrow else "")
+                     + f". We aim for {aim:g} cells across every gap.")
+    if need and (limit is None or need > limit):
+        from meshpipeline.contracts.mesh_machine import normal_cells
+        lines.append(f"    To get {aim:g} cells across all of them, ask for about "
+                     f"{need / 1e6:.3g} million cells in your notes"
+                     + (" - that mesh runs on a bigger machine." if need > normal_cells() else "."))
+    else:
+        lines.append("    If the flow in these gaps matters to you, ask for a finer mesh.")
     return lines
 
 

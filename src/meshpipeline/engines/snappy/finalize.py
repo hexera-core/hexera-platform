@@ -134,6 +134,10 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
         # tube bank's gaps are told on the delivered mesh instead of refusing it (job 02ed0d14).
         from meshpipeline.engines.passage_flow import passage_flow_of_polymesh
         q.update(passage_flow_of_polymesh(ws, q))
+        # ...and the pass's gap plan (engines/gap_sizing), so the delivery's note on the gaps it
+        # set aside names how many places, the narrowest and the cells that would resolve them
+        from meshpipeline.engines.gap_sizing import quality_plan
+        q.update(quality_plan(ws))
     # NEAR-WALL PRISM LAYER COVERAGE - a MEASURED number, not a visual: a ~1e-4 m layer band
     # on a metre-scale body is invisible in any whole-body render, so the reviewer must judge
     # the layer axis from this figure (it otherwise mistook an unresolvable near-wall region

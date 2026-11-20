@@ -88,6 +88,9 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
         # narrowest wall under the floor (engines/passage_flow.py, as in the snappy finalize)
         from meshpipeline.engines.passage_flow import passage_flow_of_polymesh
         q.update(passage_flow_of_polymesh(ws, q))
+        # ...and the gap plan, for the delivery's note (as in the snappy finalize)
+        from meshpipeline.engines.gap_sizing import quality_plan
+        q.update(quality_plan(ws))
     # NEAR-WALL PRISM LAYER COVERAGE - a MEASURED number, not a visual: a ~1e-4 m layer band
     # on a metre-scale body is invisible in any whole-body render, so the reviewer must judge
     # the layer axis from this figure (it otherwise mistook an unresolvable near-wall region
