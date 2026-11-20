@@ -1332,7 +1332,11 @@ class RepairSession:
         # area and volume DECLARATIONS of geometry that no longer exists. The next legitimate
         # operation anywhere in the run - in this region or any later one - is then refused for a
         # residual nothing accounted for, which is one discarded package poisoning the whole run.
-        snapshot = (self.shape, self._defects, self.complete_scan, self.accounting)
+        # ... AND THE STANDING MESH FAILURE: a cure inside the package consumes it (`try_op`), so a
+        # package reverted to this boundary must restore it, or the real session could never cure
+        # on it again while a freshly seeded clone would (Greptile PRRT_kwDOUFq_Ps6574yk).
+        snapshot = (self.shape, self._defects, self.complete_scan, self.accounting,
+                    self._standing_mesh)
         apply_s = 0.0
         verdicts: list[OpVerdict] = []
         # A VOLUME-STAGE ANSWER IS PROVED ON THE WHOLE SHAPE (`_judged_whole`): every operation's
@@ -1348,7 +1352,8 @@ class RepairSession:
         for item in package.plan:
             spent = self.clock() - started
             if spent > package.budget.timeout_s:
-                self.shape, self._defects, self.complete_scan, self.accounting = snapshot
+                (self.shape, self._defects, self.complete_scan, self.accounting,
+                 self._standing_mesh) = snapshot
                 return self._record_package(PackageVerdict(
                     region_index=region.index, status=ESCALATED,
                     reason=f"budget: {spent:.6g}s of {package.budget.timeout_s:.6g}s spent after "
@@ -1375,7 +1380,8 @@ class RepairSession:
         # the package has left (`_with_mesh` still also caps it by the run's remaining time).
         spent = self.clock() - started
         if spent > package.budget.timeout_s:
-            self.shape, self._defects, self.complete_scan, self.accounting = snapshot
+            (self.shape, self._defects, self.complete_scan, self.accounting,
+                 self._standing_mesh) = snapshot
             return self._record_package(PackageVerdict(
                 region_index=region.index, status=ESCALATED,
                 reason=f"budget: {spent:.6g}s of {package.budget.timeout_s:.6g}s spent after "
@@ -1397,7 +1403,8 @@ class RepairSession:
             # reader the claim was tested and failed, and this claim was never judged at all - we
             # could not see enough of the region to decide. An unjudgeable region belongs in front
             # of a person, not filed as a failed claim. No `refused:` prefix: the package DID run.
-            self.shape, self._defects, self.complete_scan, self.accounting = snapshot
+            (self.shape, self._defects, self.complete_scan, self.accounting,
+                 self._standing_mesh) = snapshot
             return self._record_package(PackageVerdict(
                 region_index=region.index, status=ESCALATED,
                 reason="scan incomplete: a scoped re-inspection that stopped early supports no "
@@ -1451,7 +1458,8 @@ class RepairSession:
                            declared_area_mm2=declared.declared_area_mm2,
                            declared_volume_mm3=declared.declared_volume_mm3)
         if reason:
-            self.shape, self._defects, self.complete_scan, self.accounting = snapshot
+            (self.shape, self._defects, self.complete_scan, self.accounting,
+                 self._standing_mesh) = snapshot
             return self._record_package(PackageVerdict(
                 region_index=region.index, status=REVERTED, reason=reason,
                 verdicts=tuple(verdicts), reclassified=reclassified,
@@ -1501,7 +1509,8 @@ class RepairSession:
                           "review_s": self.clock() - review_started,
                           "review_tier": review_tier.REVIEWER}
             if review["reviewed"] != package_review.ACCEPT:
-                self.shape, self._defects, self.complete_scan, self.accounting = snapshot
+                (self.shape, self._defects, self.complete_scan, self.accounting,
+                 self._standing_mesh) = snapshot
                 rejects = self._review_rejects.setdefault(region.index, [])
                 rejects.append(str(review["review_reason"]))
                 twice = len(rejects) >= 2

@@ -626,3 +626,29 @@ def test_replay_of_what_the_clone_kept_commits_the_first_working_repair(monkeypa
     refused = fresh.try_package(both)
     assert refused.verdicts[1].reason == "target_remains"
     assert refused.status != session_mod.COMMITTED
+
+
+def test_a_rolled_back_package_restores_the_standing_failure_its_cure_consumed(monkeypatch):
+    # A package whose first op cures the mesh (consuming the standing failure) but whose package
+    # predicate then fails is rolled back to the BOUNDARY: the part is back on the failing shape,
+    # so the standing failure must come back with it. Left empty, the real session could never
+    # again cure on it while a freshly seeded clone would - the replay divergence again.
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
+    _seq(monkeypatch, session_mod, "_localize_scan", [((_SHORT, _SHORT2), True)])
+    _seq(monkeypatch, mesh_probe, "mesh_defects", [()])
+    real = RepairSession("shape", measurer=lambda s: MEASURE,
+                         standing_mesh=frozenset({"mesh_other"}))
+    real.defects()
+    op = _FixEdgesAgain()
+    package = TargetPackage(
+        region=_REGION2, intent="cures, then claims more than it cleared",
+        plan=({"op": op, "targets": op.targets_for(_SHORT), "defect_code": _SHORT.code},),
+        predicate=Predicate(cleared=frozenset({"edge:short", "edge:short2"}),
+                            reclassified=frozenset(), unchanged=frozenset(),
+                            max_area_delta_mm2=10.0, max_volume_delta_mm3=10.0),
+        budget=PackageBudget(max_ops=2, timeout_s=60.0, model_calls=0, deviation_mm=0.0))
+    verdict = real.try_package(package)
+    assert verdict.verdicts and verdict.verdicts[0].reason == session_mod.MESHES_AFTER_TARGET_REMAINS
+    assert verdict.status != session_mod.COMMITTED
+    assert real.shape == "shape"
+    assert real._standing_mesh == frozenset({"mesh_other"})
