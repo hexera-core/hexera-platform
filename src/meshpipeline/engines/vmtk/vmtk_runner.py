@@ -579,11 +579,16 @@ def _unstaged_refusal(ws: Path) -> dict | None:
 # run (isolated subprocess)
 
 def _native_payload_members(workspace) -> list[str]:
-    """What the remote vmtk pype consumes: the spec (argv is built from it there) and the staged
-    lumen. Everything else in the attempt's workspace is local-only or a PRIOR pass's output
-    (mesh.vtu, centerlines.vtp, the distance surface, log.vmtk) that must not ride along."""
+    """What the remote vmtk pype consumes: the spec (argv is built from it there), the staged
+    lumen, and the staging record - the declared ports, by which the delivered OpenFOAM case names
+    each cap after the opening the user confirmed (export_openfoam_case). Without the record every
+    cap rode home as cap_N (the CFD board, 20 Nov: a transition duct's inlet and outlet were cap_3 and
+    cap_2 in the OpenFOAM, Fluent and EnSight files). Everything else in the attempt's workspace is
+    local-only or a PRIOR pass's output (mesh.vtu, centerlines.vtp, the distance surface, log.vmtk)
+    that must not ride along."""
+    from meshpipeline.engines.vmtk.lumen_staging import STAGING_FACT
     ws = Path(workspace)
-    return [n for n in ("vmtk_spec.json", _LUMEN, "lumen_open.vtp") if (ws / n).exists()]
+    return [n for n in ("vmtk_spec.json", _LUMEN, "lumen_open.vtp", STAGING_FACT) if (ws / n).exists()]
 
 
 def run_cartesian_mesh(workspace, *, timeout: int, context=None) -> dict:
@@ -1119,6 +1124,8 @@ def export_openfoam_case(workspace, *, bashrc: str = rtcfg.OPENFOAM_BASHRC,
                            "%s): %s", proc.returncode, missing, (proc.stdout or "")[-600:])
             shutil.rmtree(case / "constant" / "polyMesh", ignore_errors=True)
             return None
+        # gmshToFoam types every patch "patch": the lumen wall is a wall in the case the user opens
+        _type_wall(case / "constant" / "polyMesh" / "boundary", names[_WALL_ENTITY])
         return _OPENFOAM_CASE
     except subprocess.TimeoutExpired:
         note_guard_trip("vmtk.export", guard_s=float(timeout))
@@ -1126,6 +1133,21 @@ def export_openfoam_case(workspace, *, bashrc: str = rtcfg.OPENFOAM_BASHRC,
     except Exception:  # noqa: BLE001 - the .vtu is the mesh; the case is a convenience
         logger.exception("vmtk: OpenFOAM case export failed")
         return None
+
+
+def _type_wall(boundary: Path, wall: str) -> None:
+    """The `wall` patch of a polyMesh boundary file typed wall (gmshToFoam writes every patch as a patch)."""
+    import re
+    try:
+        text = boundary.read_text()
+    except OSError:
+        return
+    pat = re.compile(r"(\b" + re.escape(wall) + r"\s*\{[^}]*?\btype\s+)patch(\s*;)(?:(\s*physicalType\s+)patch(\s*;))?",
+                     re.S)
+    new = pat.sub(lambda m: m.group(1) + "wall" + m.group(2) + ((m.group(3) + "wall" + m.group(4)) if m.group(3) else ""),
+                  text, count=1)
+    if new != text:
+        boundary.write_text(new)
 
 
 _CONTROL_DICT = """FoamFile

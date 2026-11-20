@@ -775,3 +775,28 @@ def test_viewer_names_caps_after_the_staged_ports_but_the_gate_form_keeps_ids(tm
     assert {"wall", "inlet"} <= set(named) and "cap_2" not in named
     plain = surface_patches(tmp_path)
     assert {"wall", "cap_2"} <= set(plain) and "inlet" not in plain
+
+
+def test_the_staging_record_rides_to_the_mesher_so_caps_keep_their_port_names(tmp_path):
+    """The CFD board, 20 Nov: the remote payload left vmtk_staging.json behind, so export_openfoam_case found no ports
+    and a transition duct's inlet and outlet reached the OpenFOAM, Fluent and EnSight files as cap_3 and cap_2."""
+    from meshpipeline.engines.vmtk import vmtk_runner as R
+    from meshpipeline.engines.vmtk.lumen_staging import STAGING_FACT
+    for n in ("vmtk_spec.json", "lumen.vtp", "lumen_open.vtp", STAGING_FACT, "mesh.vtu"):
+        (tmp_path / n).write_text("x")
+    got = R._native_payload_members(tmp_path)
+    assert STAGING_FACT in got and "mesh.vtu" not in got
+
+
+def test_the_lumen_wall_is_typed_wall_in_the_openfoam_case(tmp_path):
+    from meshpipeline.engines.vmtk import vmtk_runner as R
+    b = tmp_path / "boundary"
+    b.write_text("3\n(\n    wall\n    {\n        type            patch;\n        physicalType    patch;\n"
+                 "        nFaces          10;\n        startFace       5;\n    }\n    inlet\n    {\n"
+                 "        type            patch;\n        physicalType    patch;\n        nFaces 2;\n"
+                 "        startFace 15;\n    }\n)\n")
+    R._type_wall(b, "wall")
+    text = b.read_text()
+    wall, inlet = text.split("inlet", 1)
+    assert "type            wall;" in wall and "physicalType    wall;" in wall
+    assert "type            patch;" in inlet
