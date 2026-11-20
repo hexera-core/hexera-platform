@@ -40,6 +40,10 @@ os.environ.setdefault("CAD_REPAIR_AUTONOMOUS", "true")
 
 # Imported at the top so that a broken import fails before any output, not after the summaries and
 # before the --json write. It must follow the environment defaults above: settings read them once.
+# THE ENDING VOCABULARY, imported rather than restated: the words a row reports and the words
+# cad/repair/ending.py derives must be the same strings, and a tool spelling one of them itself
+# would split the tally the moment either side was renamed.
+from meshpipeline.cad.repair import ending as repair_ending  # noqa: E402
 from meshpipeline.cad.repair.operations import OPERATIONS  # noqa: E402
 
 
@@ -507,6 +511,17 @@ def corpus_summary(rows: list[dict], planner_mode: str = "off",
         key = row["outcome"].split(":")[0] if row["outcome"].startswith("not_attempted") \
             else row["outcome"]
         outcomes[key] = outcomes.get(key, 0) + 1
+    # THE SAME RUN IN THE PRECISE VOCABULARY, beside `outcomes` and not instead of it. `outcomes`
+    # is what older bundles stored and what `load_bundle` rechecks field by field, so it is
+    # untouched; this is the tally that does not say `refused: 66` for 65 parts no gate ever
+    # judged. Rows written before `ending` existed are backfilled from what they do carry
+    # (cad/repair/ending.backfill_ending), so a --verify of an old bundle recomputes a real
+    # histogram rather than a column of `refused`.
+    endings: dict[str, int] = {}
+    for row in rows:
+        key = repair_ending.backfill_ending(row)
+        key = key.split(":")[0] if key.startswith("not_attempted") else key
+        endings[key] = endings.get(key, 0) + 1
     repaired_by_code: dict[str, int] = {}
     for row in rows:
         for code, count in (row.get("repaired_defects") or {}).items():
@@ -533,7 +548,8 @@ def corpus_summary(rows: list[dict], planner_mode: str = "off",
                                  if r["heal_corroborated"] is False],
         "unknown_files": [r["file"] for r in kept_heals if r["heal_corroborated"] is None],
     }
-    out = {"outcomes": outcomes, "repaired_by_code": repaired_by_code, "routes": routes,
+    out = {"outcomes": outcomes, "endings": endings,
+           "repaired_by_code": repaired_by_code, "routes": routes,
            "stopped_because": stops, "catalogue": summarise_catalogue(rows, catalogue),
            "refusals_by_reason": refusals_by_reason, "heals": heals,
            "cad_simplicity": cad_simplicity(rows)}
@@ -1392,7 +1408,16 @@ def _repair_row(path: Path, scratch: Path, *, mode: str = "off", force: bool = F
         # model operation that rolled back and left nothing kept is still counted. A result the
         # after-check discarded kept nothing either: its `kept` operations count as rolled back.
         measured = dict(getattr(exc, "measurements", None) or {})
-        row.update(outcome="refused", error=str(exc),
+        # `outcome` IS LEFT EXACTLY AS IT WAS - every `RepairRefused` is still `refused` there, so
+        # the benchmark track, `_REPAIRED_OUTCOMES` and every sealed bundle's `outcomes` tally keep
+        # the numbers they have. `ending` is the ADDED precise field and says which of the five
+        # answers this actually was; `stopped_because` now travels on this row too, because a
+        # refusal that did not record why the loop stopped was the reason the old word had to be a
+        # guess (cad/repair/ending.py).
+        row.update(outcome="refused", ending=exc.ending, error=str(exc),
+                   stopped_because=str(measured.get("stopped_because", "")),
+                   resolved=bool(measured.get("resolved", False)),
+                   complete_scan=bool(measured.get("complete_scan", True)),
                    mesh_located_remaining=_mesh_located(measured),
                    timings=dict(measured.get("timings") or {}),
                    operations=_operation_rows(measured.get("operations") or ()),
@@ -1452,6 +1477,18 @@ def _repair_row(path: Path, scratch: Path, *, mode: str = "off", force: bool = F
     row["outcome"] = ("repaired" if fixed else
                       "no_change" if row["located_after"] == row["located_before"] else
                       "changed_without_fixing")
+    # THE CREDIT STILL COMES FROM THE RE-INSPECTION, never from the loop's own word: a run the
+    # loop called `repaired` whose defects are all still there is `no_change` here and the ending
+    # follows that, so no part can be made to look delivered by the repair's own claim. The loop's
+    # own ending is kept beside it (`loop_ending`) - that is where `escalated` and `unmeshable`
+    # live, and a reader comparing the two sees exactly where they disagree.
+    loop_ending = str(measured.get("ending") or "")
+    row["ending"] = (loop_ending
+                     if loop_ending in (repair_ending.ESCALATED, repair_ending.UNMESHABLE,
+                                        repair_ending.SCAN_INCOMPLETE)
+                     else row["outcome"])
+    if loop_ending:
+        row["loop_ending"] = loop_ending
     row["seconds"] = round(time.monotonic() - started, 2)
     return row
 
@@ -1631,6 +1668,7 @@ def main() -> int:
               f"  engine commit  {manifest['engine_commit']}\n"
               f"  hardware       {manifest['hardware_class']}\n"
               f"  settings       {len(settings)} key(s), digest {manifest['settings_digest'][:16]}\n"
+              f"  endings        {summary.get('endings')}\n"
               f"  outcomes       {summary.get('outcomes')}")
         return 0
 
@@ -1753,7 +1791,14 @@ def main() -> int:
     # the same function over the same rows, so the console and the evidence cannot disagree.
     summary = corpus_summary(rows, args.planner)
 
-    print("\n== summary ==")
+    # THE HEADLINE IS THE PRECISE VOCABULARY. The old `outcomes` tally is still in summary.json
+    # for anything that reads it, but it is not what a human is shown: a column saying
+    # `refused: 66` where 65 parts were never refused by anything is the reporting defect this
+    # replaces. The coarse tally is printed underneath, named for what it is.
+    print("\n== summary (how each run ended) ==")
+    for key, count in sorted(summary["endings"].items(), key=lambda kv: -kv[1]):
+        print(f"  {count:>4}  {key}")
+    print("\n== the same runs in the older, coarser words (kept for compatibility) ==")
     for key, count in sorted(summary["outcomes"].items(), key=lambda kv: -kv[1]):
         print(f"  {count:>4}  {key}")
 

@@ -424,6 +424,35 @@ def test_a_loop_that_kept_nothing_says_so_rather_than_claiming_it_was_undone():
     assert all(not leaks(r.get("why", "")) for r in rows)
 
 
+def test_a_part_that_needed_nothing_is_not_told_that_no_attempt_held_up():
+    """"no attempt held up when it was measured" is false of a run that attempted nothing, and
+    that run was the commonest of the 63 the owner saw reported as refusals."""
+    rows = R.repair_receipt_rows(_state(), _refused_out(
+        ending="nothing_to_repair", operations_attempted=0,
+        refusals=[{"defect": "edge:1", "reason": "untargetable"}]))
+    row = _find(rows, "Nothing needed repairing")
+    # STILL "Nothing changed": the part is not claimed to have been improved or delivered.
+    assert row["value"] == "Nothing changed"
+    assert "no attempt held up" not in row["why"]
+    assert "Nothing was repaired" not in _labels(rows)
+    assert all(not leaks(r.get("why", "")) for r in rows)
+
+
+def test_a_scan_that_could_not_finish_and_a_catalogue_with_no_fix_say_which():
+    seen = R.repair_receipt_rows(_state(), _refused_out(
+        ending="scan_incomplete", refusals=[{"defect": "edge:1", "reason": "untargetable"}]))
+    assert "could not see all of the part" in _find(seen, "Nothing was repaired")["why"]
+    nothing_claims = R.repair_receipt_rows(_state(), _refused_out(
+        ending="no_operation_claims_it",
+        refusals=[{"defect": "edge:1", "reason": "untargetable"}]))
+    assert "no automatic fix" in _find(nothing_claims, "Nothing was repaired")["why"]
+    # A GATE REFUSAL IS UNCHANGED, and still the harshest row on this surface.
+    gate = R.repair_receipt_rows(_state(), _refused_out(
+        ending="refused", result_discarded=True,
+        refusals=[{"defect": "edge:1", "reason": "untargetable"}]))
+    assert _find(gate, "The repair was undone")["value"] == "Nothing changed"
+
+
 def test_a_refusal_with_nothing_measured_sends_no_receipt_at_all():
     """A heading whose only row restates the lane's own sentence claims a record that is not
     there. `repair_words` already says "Nothing could be repaired safely"."""
