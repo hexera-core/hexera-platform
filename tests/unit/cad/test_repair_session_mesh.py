@@ -925,3 +925,29 @@ def test_the_author_is_shown_the_current_shape_after_a_commit(monkeypatch):
     run = region_loop.run_regions("upload", author=author, tolerance_mm=0.01, session=session)
     assert [p.status for p in run.packages] == [session_mod.COMMITTED]
     assert shown == ["upload", "sewn"]
+
+
+# --- review and the keep rule read ONE measurement of ONE artefact ----------------------------
+def test_the_keep_rule_is_the_delivered_probe_read_as_a_boolean(monkeypatch):
+    """`_meshes_now` and the reviewer's `mesh_after` must never judge different objects: the keep
+    rule is now the same `_delivered_defects` call read as a yes/no. A delivered probe that could
+    not be taken is False, because a cure may not rest on a reading nobody took."""
+    session = RepairSession("shape", measurer=lambda s: MEASURE,
+                            remaining_s=lambda: 300.0)
+    calls: list = []
+
+    def answer(found):
+        def _delivered(*, cap_s=None):
+            calls.append(cap_s)
+            return found
+        return _delivered
+
+    monkeypatch.setattr(session, "_delivered_defects", answer(()))
+    assert session._meshes_now() is True
+
+    monkeypatch.setattr(session, "_delivered_defects", answer((object(),)))
+    assert session._meshes_now() is False
+
+    monkeypatch.setattr(session, "_delivered_defects", answer(None))
+    assert session._meshes_now() is False, "an unmeasured delivered probe is not a pass"
+    assert len(calls) == 3
