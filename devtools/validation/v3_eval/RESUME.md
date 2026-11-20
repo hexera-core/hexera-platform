@@ -74,6 +74,7 @@
 - No eval VMs are running. Lane B is waiting for LEAD's AI-wave launch ids.
 - **00:25 PT 11-20:** Lane B is babysitting the AI wave **11200820** (12x c2d-standard-8, us-central1-b, 96 shards, all 5 units, code b04befe8, 420 s). All 12 VMs are RUNNING. Lane B relaunches failed or stockout shards with `--only`, then runs `collect.py --pull --t6`.
 - **00:55 PT:** wave 11200820 is at 92/96 DONE, 0 FAILED. Reviewer reachable in every arm (all det calls ok). 14 `invalid_request` calls (9 v3_full, 5 t19_off) are the 97a9e216 defect. LEAD ruling: wave 1 is PRELIMINARY, sealed with the affected files named; the arms of record come from wave 2 at lane E's sha. Lane B seals wave 1 with `--out devtools/validation/v3_eval/supporting/wave1-b04befe8/`, not the evidence dir, so wave 2 fills that.
+- **01:40 PT:** WAVE 1 (11200820) SEALED as PRELIMINARY in `devtools/validation/v3_eval/supporting/wave1-b04befe8/`. Newly meshed: det 1, v3 1, t19_off 0 (all 0060_00608290). 0 broken. Clean 97/100 untouched. Regions about 96% concluded of those asked; runaways are refused conclusions. See its README. Lane B is now watching WAVE 2 **11200927** (12x c2-standard-8, us-central1-a, df7e1d7a): these are the arms of record.
 
 ## Lane C status (PR #494 merge readiness), 2026-11-20
 
@@ -114,6 +115,7 @@
   - The eval harness now isolates it, but a production worker running the same repair would die with it.
   - The repair session needs the same out-of-process guard the mesher has (`engines/` native-crash isolation) before CRS repair runs on untrusted uploads.
 - **Model-call telemetry labels every call `role=intake`.** Reviewer, investigator and tournament calls cannot be split from `model-calls.jsonl` (wave 11200820: all 4,604 calls were `intake`). Per-role cost and reachability need a real role on each call.
+- **`CAD_REPAIR_TIMEOUT_S` does not bound one part's wall.** `abc/0055_00556585_b7edb4698d5ebd4d0414ee58_step_000.step` (23.7 MB, 3,129 shells) takes 21-36 min in every arm: 2,103 s of repair under a 120 s budget at 0ff8db35, and 1,267-2,151 s per row at b04befe8 with 420 s. Some phase before or outside the clocked loop is unbounded. In production it would hold a worker.
 
 ## Earlier handoff (21:55 PT)
 
