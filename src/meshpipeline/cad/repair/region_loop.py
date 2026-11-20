@@ -528,8 +528,12 @@ def _gap_prepass(work, regions, *, remaining: Callable[[], float], reserve: floa
         if remaining() <= max(reserve, spend_until) or charged >= max_ops:
             break
         tries = ra.gap_tries(tuple(tried))
-        aim = next((d for d in ra.gap_defects(work.defects())
-                    if d.fingerprint in region_of and not tries.spent(d.fingerprint)), None)
+        # EVERY FACE'S FIRST RUNG BEFORE ANY FACE'S SECOND: a finer retry of a face that already
+        # failed is the last resort, not the next thing (0051_00519054: three rungs on one doomed
+        # face spent the budget its neighbour's coarse split would have fixed the part with).
+        open_aims = [d for d in ra.gap_defects(work.defects())
+                     if d.fingerprint in region_of and not tries.spent(d.fingerprint)]
+        aim = min(open_aims, key=lambda d: tries.rung(d.fingerprint), default=None)
         if aim is None:
             break
         region = region_of[aim.fingerprint]

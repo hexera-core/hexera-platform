@@ -276,7 +276,8 @@ def _gap_lead(defects, tries: GapTries, region: Region, *,
     held = held_fingerprints(defects, reserved)
     ordered = sorted((d for d in defects if _sub_element_gap(d) and _volume_stage_recorded(d)
                       and d.code in op.answers and d.code not in reserved),
-                     key=lambda d: (d.entity_index, d.code.value, d.fingerprint))
+                     key=lambda d: (tries.rung(d.fingerprint), d.entity_index, d.code.value,
+                                    d.fingerprint))
     for defect in ordered:
         if (not defect.fingerprint or defect.fingerprint in held
                 or defect.fingerprint not in region.fingerprints
@@ -361,7 +362,8 @@ def _mesh_candidate(defects, history: RunHistory, *, reserved: frozenset,
     held = held_fingerprints(defects, reserved)
     ordered = sorted((d for d in defects if _is_mesh(d)
                       and not (skip_gaps and _sub_element_gap(d))),
-                     key=lambda d: (d.entity_index, d.code.value, d.fingerprint))
+                     key=lambda d: (tries.rung(d.fingerprint) if tries is not None else 0,
+                                    d.entity_index, d.code.value, d.fingerprint))
     for defect in ordered:
         if defect.code in reserved:
             continue

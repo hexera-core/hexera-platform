@@ -274,3 +274,29 @@ def test_the_prepass_respects_its_clock_share_and_the_flag(baseline_on, monkeypa
     assert _prepass(work, left=5.0) == []          # inside the final reserve
     monkeypatch.setattr(rcfg, "CAD_REPAIR_RESOLVE_SUB_MESH_GAP", False)
     assert _prepass(_Work((_gap_clash(),))) == []
+
+
+def test_every_faces_first_rung_comes_before_any_faces_second(baseline_on):
+    """0051_00519054: three rungs on one doomed face spent what a neighbour's coarse split needed."""
+    import dataclasses
+
+    other = dataclasses.replace(_gap_clash(), entity_index=2, fingerprint="face:other")
+    region = Region(index=0, fingerprints=frozenset({"face:wall", "face:other"}),
+                    bbox_min=(0.0, 0.0, 0.0), bbox_max=(10.0, 10.0, 10.0),
+                    face_indices=frozenset({1, 2}))
+
+    class _Two(_Work):
+        def try_package(self, package):
+            self.aimed = [*getattr(self, "aimed", []), package.plan[0]["targets"][0].fingerprint]
+            verdict = super().try_package(package)
+            fp = package.plan[0]["targets"][0].fingerprint
+            return dataclasses.replace(verdict, verdicts=tuple(
+                dataclasses.replace(v, targets=(fp,)) for v in verdict.verdicts))
+
+    from meshpipeline.cad.repair import region_loop
+
+    work = _Two((_gap_clash(), other))
+    region_loop._gap_prepass(work, (region,), remaining=lambda: 1000.0, reserve=10.0,
+                             tolerance_mm=1e-4, max_ops=6)
+    assert work.aimed[:2] == ["face:wall", "face:other"]
+    assert work.offered[:2] == [0.25, 0.25] and work.offered[2] == 0.125
