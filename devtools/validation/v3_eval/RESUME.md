@@ -39,6 +39,27 @@
 - **Segfault:** failing shard 15/21 exits 139 on both attempts (11200639 and 11200655), on `abc/0059_00597937_2e928f752b8806de5a85c14b_step_000.step` (sha256 fc4e4a440ffd…), after OCC FixShape `Geom_RectangularTrimmedSurface::U parameters out of range`. The process dies, so the file gets no row. LEAD routed per-file crash isolation (an outcome=crashed row) to lane C as a blocker for the AI wave. No sample change; shard 15 is not to be relaunched again.
 - No eval VMs are running. Lane B is waiting for LEAD's AI-wave launch ids.
 
+## Lane C status (PR #494 merge readiness), 2026-11-20
+
+- **CI:** PR #494 CI fully green at e6b24a6d. Fixed along the way: a mypy error in the tournament, an unpinned clone in this file, a stale publication-authority manifest, and the stale settings roster in `docs/reference/configuration.md`.
+- **Greptile:** the 3 `results_to_tex` threads and the 2 `launch_fleet` threads are fixed test-first and resolved.
+  - The worst: `from-collect` matched no arm and would have left every number `[PENDING]`.
+  - The 2 investigator-clock P1s belong to lane A.
+- **Launch preflight:** refuses unless the compute SA holds a replace/delete-capable role on the RESULTS bucket. objectCreator alone is refused.
+- **Crash isolation (9e8db5d8):** `--isolate-files` is in HARNESS_FLAGS, so a native crash becomes an `outcome=crashed` row with signal, exit code and stage, and the shard goes on.
+  - A crashed file counts in `newly_broken` only if it meshed before; otherwise it goes in the separate `meshing.crashed` count.
+  - `run_arm` counts model calls from `model-calls.jsonl`.
+  - Proved with a SIGSEGV stub only, not yet on the real file.
+- **Evidence:** all 4 PDFs build and none is stale. RUNBOOK §3b has the numbers-to-PDF steps and lists the hand-edited text.
+- **PR body:** has the merge checklist: what is measured, T6 shard 4 dropped, images deferred, and the fixes that postdate measured commits.
+- **Unit suite:** triage in progress, see the next lane C entry.
+
+## Product follow-ups (not for this PR)
+
+- **A ShapeFix segfault kills the process.** `abc/0059_00597937_2e928f752b8806de5a85c14b_step_000.step` (sha256 fc4e4a440ffd...) segfaults (exit 139) right after OCC "FixShape failed with exception Geom_RectangularTrimmedSurface::U parameters out of range", on both attempts.
+  - The eval harness now isolates it, but a production worker running the same repair would die with it.
+  - The repair session needs the same out-of-process guard the mesher has (`engines/` native-crash isolation) before CRS repair runs on untrusted uploads.
+
 ## Earlier handoff (21:55 PT)
 
 PR #494, branch `crs/v3-agentic`, HEAD **0ff8db35** (pushed). Personal env `crsv3` (GCP hexera-dev). Bucket: `gs://dev-crsv3-transfer-224734058693/eval/`. This file is also at `gs://.../eval/RESUME.md`.
