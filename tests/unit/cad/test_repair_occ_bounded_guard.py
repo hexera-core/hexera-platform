@@ -144,11 +144,9 @@ def _child_side(module: str, tree: ast.AST, where: dict[ast.AST, str]) -> set[st
 #: it survives reformatting and line moves, and so a SECOND call in the same function is caught.
 KNOWN_UNBOUNDED = {
     # --- rows 1-3 of the audit: a deadline checked only BETWEEN calls -------------------------
-    # Up to eight solid pairs.
-    ("mesh_probe.py", "_contact_support_faces", "BRepExtrema_DistShapeShape"),
-    # The clash gap. Reported as dead after #503; it is still CALLED on main at mesh_probe.py:752,
-    # which is why it is listed rather than deleted.
-    ("mesh_probe.py", "_clash_gap", "BRepExtrema_DistShapeShape"),
+    # ALL THREE ARE DONE. The contact search measures its pairs in `_contact_extrema` inside the
+    # dispatcher's child and resolves each in-face support through the bounded nearest-face
+    # search, which is why `_contact_support_faces` is no longer named here.
     # --- rows 4-6: inside fragment_bodies.apply ------------------------------------------------
     # On expiry the OPERATION must DECLINE, which is a different contract from reporting an
     # unmeasured value, so these were their own change. ALL THREE ARE NOW DONE: the partner search
