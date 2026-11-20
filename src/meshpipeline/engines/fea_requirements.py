@@ -172,6 +172,12 @@ def report(mesh, req: Mapping | None, *, mm_per_unit: float = 1000.0, order: int
             got = {"applied": True, "measured": float(f"{typical:.6g}"),
                    "met": bool(n) and 0.5 * s["global_mm"] <= typical <= 1.5 * s["global_mm"],
                    "delivered": f"elements are about {MR._g(typical)} mm"}
+            xyz = np.asarray(getattr(mesh, "xyz", ()), dtype=float).reshape(-1, 3)
+            # NOTE-14: built far finer than asked - the same true thing the plan says, with why (finer_global)
+            fin = MR.finer_global(row, float(s["global_mm"]), typical,
+                                  float(np.max(np.ptp(xyz, axis=0))) * mm_per_unit if len(xyz) else 0.0)
+            if fin is not None:
+                got.update(fin)
         elif field in ("min_edge", "max_edge"):
             limit = float(s[f"{field}_mm"])
             v = lo if field == "min_edge" else hi

@@ -249,11 +249,18 @@ def _size_row(row: Mapping, field: str, mesh, sizing: Mapping | None, req: Mappi
             out["met"] = False
             said += (f"; {_g(s['global_mm'])} mm would make more elements than a shell mesh is made of in the time "
                      f"allowed, so the nearest size that builds was used ({_g(s['global_mm'] * sizing['scale'])} mm)")
-        elif sizing.get("coarser"):
+        elif sizing.get("coarser") and typical >= BAND[0] * s["global_mm"]:
+            # (only when the built elements are near the size asked: built far finer, they are not coarser than ours)
             said += "; this is coarser than our accuracy rules ask for on some faces, so results may be less exact"
         if sizing.get("finer"):
             said += "; some elements are smaller than half the wall, finer than a shell usually needs"
         out["delivered"] = said
+        if not sizing.get("held") and len(mesh.xyz):
+            # NOTE-14: built far finer than asked - the same true thing the plan says, with why (finer_global)
+            ext = float(np.max(np.ptp(np.asarray(mesh.xyz, dtype=float), axis=0)))
+            got = MR.finer_global(row, float(s["global_mm"]), typical, ext)
+            if got is not None:
+                out.update(got)
     elif field in ("min_edge", "max_edge"):
         limit = float(s[f"{field}_mm"])
         v = lo if field == "min_edge" else hi

@@ -150,6 +150,8 @@ STRICT_SIZES = ("global", "min_edge", "max_edge", "near_wall")
 #: the angle measures ("the angle limits are hard")
 STRICT_ANGLES = ("min_angle", "max_angle", "skew", "warpage")
 _STRICT_TARGETS = (*STRICT_SIZES, *MEASURES, "count", *STRICT_GROUPS)
+#: STD-5: the kinds of mesh words can speak to (a saved standard is applied by them, engines/meshing_standard.merge)
+MESH_KINDS = ("shell", "solid", "cfd", "any")
 #: sizes: an element size anyone means (mm), a growth ratio, a multiple of the global size
 SIZE_RANGE_MM = (1e-4, 1e5)
 GROWTH_RANGE = (1.0, 3.0)
@@ -279,6 +281,11 @@ words for it, copied exactly (one line or phrase, as short as holds the whole re
   with its number when they gave one. Only how strict a limit is: "flexible hose", "hard anodised", "a hard material"
   are no strictness. The same sentence may also give the limit itself: list it in its own field too. A later
   sentence refines an earlier one: list both, in the order written.
+- applies_to: which kinds of mesh the words speak to - shell, solid, cfd, or any. whole: the list as a whole (a
+  structural quality list - warpage, quad and tria angles, Jacobian, element lengths - is shell and solid, its global
+  size too; one of cells, y+, prism layers, non-orthogonality is cfd; a note of one or two asks is any). lines: only
+  the lines that speak to other kinds than the whole list does ("export in mm", "at most 2 million cells or elements"
+  -> any), each with its quote.
 When the notes give the SAME thing twice ("5 layers. Actually 10 layers."), list BOTH entries, in the order written:
 the LATEST one is kept (the user changed their mind).
 A number the user names as the one being REPLACED ("3 prism layers instead of 8", "3 layers, not 8", "2 mm rather
@@ -301,7 +308,7 @@ def tool() -> dict:
         "parameters": {
             "type": "object", "additionalProperties": False,
             "required": ["stated_unit", "sizes", "counts", "layers", "local", "physics", "element_kind", "limits",
-                         "other", "controls", "strictness"],
+                         "other", "controls", "strictness", "applies_to"],
             "properties": {
                 "stated_unit": {"type": "string", "enum": [*UNITS_MM, "none"]},
                 "sizes": {"type": "array", "items": {
@@ -359,6 +366,16 @@ def tool() -> dict:
                     "required": ["target", "strictness", "quote"],
                     "properties": {"target": {"type": "string", "enum": list(_STRICT_TARGETS)},
                                    "strictness": {"type": "string", "enum": list(STRICTNESS)}, "quote": q}}},
+                # STD-5: which kinds of mesh a saved standard (and each line that differs from it) speaks to
+                "applies_to": {
+                    "type": "object", "additionalProperties": False, "required": ["whole", "lines"],
+                    "properties": {
+                        "whole": {"type": "array", "items": {"type": "string", "enum": list(MESH_KINDS)}},
+                        "lines": {"type": "array", "items": {
+                            "type": "object", "additionalProperties": False, "required": ["kinds", "quote"],
+                            "properties": {"kinds": {"type": "array",
+                                                     "items": {"type": "string", "enum": list(MESH_KINDS)}},
+                                           "quote": q}}}}},
             }}}}
 
 
@@ -1575,6 +1592,20 @@ def _check(arguments: str, notes: str, route: str = "") -> tuple[dict, list[str]
         out["strictness"] = strict
         apply_strictness(out)
 
+    # STD-5: the kinds of mesh the words speak to (read for a saved standard; the job's own notes apply as typed) - each
+    # line's quote checked as every field's; kept only when it says more than "any"
+    raw_told = raw.get("applies_to")
+    kinds_told: Mapping = raw_told if isinstance(raw_told, Mapping) else {}
+    kinds_whole = [k for k in kinds_told.get("whole") or [] if k in MESH_KINDS]
+    kinds_lines = []
+    for ke in [x for x in kinds_told.get("lines") or [] if isinstance(x, Mapping)]:
+        kinds = [k for k in ke.get("kinds") or [] if k in MESH_KINDS]
+        quote = " ".join(str(ke.get("quote") or "").split())[:400]
+        if kinds and quote and _quoted(quote, said, squashed):
+            kinds_lines.append({"quote": quote, "kinds": kinds})
+    if (kinds_whole and set(kinds_whole) != {"any"}) or kinds_lines:
+        out["applies_to"] = {"whole": kinds_whole or ["any"], "lines": kinds_lines}
+
     # what fits no field (NOTE-8): told, never silently dropped
     not_applied: list[str] = []
     not_mesh: list[str] = []             # NOTE-12: asks that are no mesh setting, told with what to do instead
@@ -1938,6 +1969,21 @@ def strictness_words(req: Mapping | None) -> list[str]:
     return out
 
 
+def finer_global(row: Mapping, asked_mm: float, typical_mm: float, extent_mm: float) -> dict | None:
+    """NOTE-14 on a size for the whole mesh that came out far finer than asked (under half of it): the row says the
+    same true thing the plan does - what was asked, what was built, and why it is finer (the part is smaller than the
+    size, or its walls, holes and curves need smaller elements to keep their shape). Flexible (the default for a size)
+    it is information, never "not met"; hard it is told not met, with the same why. None when it is not that far finer."""
+    if not (asked_mm > 0 and 0 < typical_mm < 0.5 * asked_mm):
+        return None
+    across = (f"your part is {_g(extent_mm)} mm across, so " if 0 < extent_mm < 3.0 * asked_mm else "")
+    said = (f"elements are about {_g(typical_mm)} mm, finer than the {_g(asked_mm)} mm asked: {across}its walls, holes "
+            "and curves need smaller elements to keep their shape")
+    if strictness(row) == "hard":
+        return {"met": False, "delivered": said}
+    return {"met": None, "finer_than_asked": True, "delivered": said}
+
+
 def carried(row: Mapping) -> dict:
     """NOTE-14: what a route's report row carries over from its requirement row: the strictness the user said."""
     return {"strictness": row["strictness"]} if row.get("strictness") in STRICTNESS else {}
@@ -2019,7 +2065,8 @@ def asked_rows(quality: Mapping | None, *, source: str = "your notes") -> list[d
     out = []
     for r in (rep.get("rows") if isinstance(rep, Mapping) else None) or []:
         # NOTE-14: a limit the user said is flexible, outside in places, is a row too - information, never a miss
-        if not isinstance(r, Mapping) or (r.get("met") not in (True, False) and not r.get("flexible")):
+        if not isinstance(r, Mapping) or (r.get("met") not in (True, False) and not r.get("flexible")
+                                          and not r.get("finer_than_asked")):
             continue
         came = str(r.get("from") or "")
         label = (f"Chosen on the stage: {r.get('asked')}" if came == "stage"
@@ -2050,7 +2097,11 @@ def summary(rep: Mapping | None, *, kind: str = "mesh", limit: int = 380, not_ap
     targets = [r for r in rows if r.get("met") is None and r.get("target")]
     aside = [r for r in rows if r.get("met") is None and not r.get("target") and r.get("applied") is False]
     settings = [r for r in rows if r.get("met") is None and not r.get("target") and r.get("applied") is not False
-                and not r.get("nearest")]
+                and not r.get("nearest") and not r.get("finer_than_asked") and not r.get("layer_cells")]
+    # CFDREQ-11: a limit for even cells on a mesh with prism layers - told, not judged
+    layered = [r for r in rows if r.get("met") is None and r.get("layer_cells")]
+    # NOTE-14: a size for the whole mesh the part's shape made finer (finer_global) - information, with its why
+    finer = [r for r in rows if r.get("met") is None and r.get("finer_than_asked")]
     # a size asked on a piece of a part that is no face of its own, set on the whole part (SHMESH-52)
     nearest = [r for r in rows if r.get("met") is None and r.get("nearest") and r.get("applied") is not False]
     n = len(rows)
@@ -2083,6 +2134,11 @@ def summary(rep: Mapping | None, *, kind: str = "mesh", limit: int = 380, not_ap
         out += f"; {len(settings)} applied as {'a setting' if len(settings) == 1 else 'settings'}"
     if nearest:
         out += f"; {len(nearest)} applied to the whole part, the nearest there is"
+    if finer:
+        out += "; " + "; ".join(f"{r['asked']}: {r['delivered']}" for r in finer[:2])
+    if layered:
+        out += (f"; {len(layered)} limit{'' if len(layered) == 1 else 's'} for even cells told, not judged, on a mesh "
+                "with prism layers")
     if aside:
         out += f"; {len(aside)} could not be applied to a {kind} mesh (listed on the result)"
     if extra:
