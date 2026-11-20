@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+from meshpipeline.cad.repair import occ_distance
 from meshpipeline.cad.repair.contracts import DefectCode, DefectSeverity
 from meshpipeline.cad.repair.localize import (
     EntityDefect,
@@ -464,12 +465,19 @@ def _nearest_faces(faces, point: tuple[float, float, float], *, tol: float,
     already further than the best exact distance (+ tol): nothing after it can be nearer. Taking
     only the faces with the least BOX distance would not be exact - the point may sit inside the
     box of a large curved face that is itself far away. A face with no box is measured first.
+
+    MEASURED IN A BOUNDED CHILD. `BRepExtrema_DistShapeShape` cannot be interrupted, so one slow
+    face used to hang the worker with the deadline checked only BETWEEN faces. The ordered
+    candidates, their box distances and `tol` go to one fresh interpreter, which applies THE SAME
+    break rule - so it measures no more faces than this loop ever did - and the group is killed
+    when the budget runs out. A batch that was killed before it could prune is not an answer:
+    None, exactly as a passed deadline used to be.
     """
     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
-    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
     from OCP.gp import gp_Pnt
 
-    if time.monotonic() >= deadline:
+    budget = deadline - time.monotonic()
+    if budget <= 0.0:
         return None
     order: list[tuple[float, int]] = []
     for index in range(1, faces.Extent() + 1):
@@ -478,18 +486,19 @@ def _nearest_faces(faces, point: tuple[float, float, float], *, tol: float,
                       index))
     order.sort()
     vertex = BRepBuilderAPI_MakeVertex(gp_Pnt(*point)).Vertex()
+    answers = occ_distance.distances([vertex, *(faces.FindKey(i) for _, i in order)],
+                                     [(0, n + 1) for n in range(len(order))],
+                                     budget_s=budget, bounds=[b for b, _ in order], tol=tol)
     distances: dict[int, float] = {}
-    for bound, index in order:
-        if distances and bound > min(distances.values()) + tol:
-            break
-        if time.monotonic() >= deadline:
-            return None
-        try:
-            extrema = BRepExtrema_DistShapeShape(vertex, faces.FindKey(index))
-            if extrema.IsDone():
-                distances[index] = float(extrema.Value())
-        except Exception as exc:  # noqa: BLE001 - a face the kernel cannot measure is not nearest
-            logger.debug("mesh_probe: face %d unmeasurable from %s: %s", index, point, exc)
+    for (_bound, index), answer in zip(order, answers, strict=True):
+        if answer["distance_status"] == occ_distance.PRUNED:
+            break                                    # the child stopped where this loop used to
+        if not occ_distance.answered(answer):
+            return None                              # the search did not finish; do not guess
+        if answer["min_distance_mm"] is not None:
+            distances[index] = float(answer["min_distance_mm"])
+        else:
+            logger.debug("mesh_probe: face %d unmeasurable from %s", index, point)
     if not distances:
         return []
     least = min(distances.values())

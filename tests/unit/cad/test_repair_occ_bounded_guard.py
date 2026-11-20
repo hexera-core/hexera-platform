@@ -48,14 +48,11 @@ KNOWN_UNBOUNDED = {
     # --- rows 1-3 of the audit: a deadline checked only BETWEEN calls -------------------------
     # Up to eight solid pairs.
     ("mesh_probe.py", "_contact_support_faces", "BRepExtrema_DistShapeShape"),
-    # One call per candidate face. It PRUNES by bbox bound, so a naive batch would measure MORE
-    # faces than today - the child has to prune exactly as the parent does.
-    ("mesh_probe.py", "_nearest_faces", "BRepExtrema_DistShapeShape"),
-    # One call per deviation sample, inside every tournament rehearsal (the K-fold cost).
-    ("deviation.py", "distance", "BRepExtrema_DistShapeShape"),
     # The clash gap. Reported as dead after #503; it is still CALLED on main at mesh_probe.py:752,
     # which is why it is listed rather than deleted.
     ("mesh_probe.py", "_clash_gap", "BRepExtrema_DistShapeShape"),
+    # One call per deviation sample, inside every tournament rehearsal (the K-fold cost).
+    ("deviation.py", "distance", "BRepExtrema_DistShapeShape"),
     # --- rows 4-6: inside fragment_bodies.apply ------------------------------------------------
     # On expiry the OPERATION must DECLINE, which is a different contract from reporting an
     # unmeasured value, so these are their own change.

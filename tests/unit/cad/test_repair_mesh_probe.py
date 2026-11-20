@@ -503,3 +503,124 @@ def test_the_gap_child_is_a_fresh_interpreter_not_a_fork(monkeypatch):
     monkeypatch.setattr(os, "fork", no_fork)
     argv = mesh_probe._gap_child_argv("/tmp/x.brep", [[1, 2]])
     assert argv[1:4] == ["-W", "ignore", "-m"] and "--gaps" in argv
+
+
+# --- the nearest-face search measures in a bounded child (audit row 2) ------------------------
+
+
+class _FaceMap:
+    """The indexed face map `_nearest_faces` walks. Only Extent and FindKey are ever used."""
+
+    def __init__(self, count: int) -> None:
+        self._count = count
+
+    def Extent(self) -> int:                                       # noqa: N802 - OCC's name
+        return self._count
+
+    def FindKey(self, index: int):                                 # noqa: N802 - OCC's name
+        return f"face-{index}"
+
+
+def _boxes(monkeypatch, distances_from_point):
+    """Give face n a box `distances_from_point[n - 1]` away, straight through `_box_distance`."""
+    from meshpipeline.cad.repair import mesh_probe as mp
+
+    monkeypatch.setattr(mp, "_bounds_of", lambda face: ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0)))
+    monkeypatch.setattr(mp, "_box_distance",
+                        lambda point, box, _d=distances_from_point: _d.pop(0))
+
+
+def _answers(monkeypatch, answers):
+    from meshpipeline.cad.repair import mesh_probe as mp
+
+    seen: dict = {}
+
+    def _distances(shapes, pairs, *, budget_s, bounds=None, tol=0.0):
+        seen.update(shapes=shapes, pairs=pairs, budget_s=budget_s, bounds=bounds, tol=tol)
+        return answers
+
+    monkeypatch.setattr(mp.occ_distance, "distances", _distances)
+    return seen
+
+
+def _measured(value):
+    return {"min_distance_mm": value, "point_a": None, "point_b": None,
+            "distance_status": "measured"}
+
+
+def _pruned():
+    from meshpipeline.cad.repair import occ_distance
+
+    return {**occ_distance.UNMEASURED, "distance_status": occ_distance.PRUNED}
+
+
+def test_the_candidates_go_down_in_box_order_with_their_bounds(monkeypatch):
+    """A BATCH WITHOUT THE BOUNDS WOULD MEASURE MORE FACES THAN THE OLD LOOP. The order and the
+    bounds are what let the child stop early, so they travel with the pairs - every candidate
+    offered, in increasing box distance, each paired with the vertex."""
+    import time
+
+    from meshpipeline.cad.repair import mesh_probe as mp
+
+    _boxes(monkeypatch, [9.0, 1.0, 20.0])
+    seen = _answers(monkeypatch, [_measured(1.5), _pruned(), _pruned()])
+
+    near = mp._nearest_faces(_FaceMap(3), (0.0, 0.0, 0.0), tol=0.25,
+                             deadline=time.monotonic() + 30.0)
+
+    assert seen["bounds"] == [1.0, 9.0, 20.0], "the candidates must be offered in box order"
+    assert seen["pairs"] == [(0, 1), (0, 2), (0, 3)]
+    assert seen["tol"] == 0.25
+    assert near == [2], "face 2 has the least box distance, so it is measured first and wins"
+
+
+def test_a_batch_killed_before_it_could_prune_is_not_an_answer(monkeypatch):
+    """WHAT THE OLD DEADLINE MEANT. The in-parent loop returned None the moment its deadline
+    passed, because a search that stopped early cannot say which face is nearest. A batch the
+    budget killed is the same thing: None, never the best of what happened to answer - that would
+    place a defect on a face only because a nearer one was never measured."""
+    import time
+
+    from meshpipeline.cad.repair import mesh_probe as mp
+    from meshpipeline.cad.repair import occ_distance
+
+    _boxes(monkeypatch, [1.0, 2.0, 3.0])
+    _answers(monkeypatch, [_measured(5.0),
+                           {**occ_distance.UNMEASURED,
+                            "distance_status": "unmeasured: budget_spent"},
+                           {**occ_distance.UNMEASURED,
+                            "distance_status": "unmeasured: budget_spent"}])
+
+    assert mp._nearest_faces(_FaceMap(3), (0.0, 0.0, 0.0), tol=0.25,
+                             deadline=time.monotonic() + 30.0) is None
+
+
+def test_a_face_the_kernel_cannot_measure_is_merely_not_nearest(monkeypatch):
+    """One piece of unmeasurable geometry is not a failed search: the loop logged it and carried
+    on, and so does this."""
+    import time
+
+    from meshpipeline.cad.repair import mesh_probe as mp
+    from meshpipeline.cad.repair import occ_distance
+
+    _boxes(monkeypatch, [1.0, 2.0])
+    _answers(monkeypatch, [{**occ_distance.UNMEASURED,
+                            "distance_status": "unmeasured: the kernel gave no distance"},
+                           _measured(7.0)])
+
+    assert mp._nearest_faces(_FaceMap(2), (0.0, 0.0, 0.0), tol=0.25,
+                             deadline=time.monotonic() + 30.0) == [2]
+
+
+def test_a_spent_deadline_asks_nothing(monkeypatch):
+    import time
+
+    from meshpipeline.cad.repair import mesh_probe as mp
+
+    def _never(*_a, **_k):
+        raise AssertionError("a spent deadline must start no child")
+
+    monkeypatch.setattr(mp.occ_distance, "distances", _never)
+
+    assert mp._nearest_faces(_FaceMap(2), (0.0, 0.0, 0.0), tol=0.25,
+                             deadline=time.monotonic() - 1.0) is None

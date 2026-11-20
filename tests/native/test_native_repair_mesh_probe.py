@@ -321,8 +321,12 @@ def test_locating_past_the_deadline_leaves_the_failure_unlocated(monkeypatch):
     assert defect.fingerprint == ""
 
 
-def test_nearest_face_search_measures_few_faces(monkeypatch):
-    """The box-bounded search: a point on one box of a far-apart pair measures that box only."""
+def test_nearest_face_search_measures_nothing_in_the_parent(monkeypatch):
+    """THE WHOLE POINT, THROUGH THE REAL KERNEL. The search is still exact - a point on the top of
+    one box of a far-apart pair finds that one face - and the parent process constructs no
+    DistShapeShape at all: every measurement happens in the bounded child, where a slow face can
+    be killed instead of hanging the worker. Counting in the parent is the assertion, because a
+    count of zero is the only observation that proves the call left it."""
     from OCP.BRepExtrema import BRepExtrema_DistShapeShape
 
     measured = []
@@ -339,7 +343,8 @@ def test_nearest_face_search_measures_few_faces(monkeypatch):
     near = mesh_probe._nearest_faces(faces, (5.0, 5.0, 10.0), tol=1e-4,
                                      deadline=time.monotonic() + 60.0)
     assert near is not None and len(near) == 1
-    assert len(measured) < faces.Extent() == 12
+    assert faces.Extent() == 12
+    assert measured == [], "the kernel call must run in the child, never in this process"
 
 
 def test_scoped_defect_outside_the_region_is_dropped_not_unlocated(monkeypatch):
