@@ -445,6 +445,13 @@ class ResolveSubMeshGap:
         if len(owners) > 1:
             return declined(f"non_manifold ({len(owners)} solids share the face)")
         owner = owners[0]
+        if _shares_topology(shape, owner):
+            # THE CHILD RETURNS THE OWNER REBUILT BY ONE BUILDER, so sharing INSIDE it holds; sharing
+            # WITH ANOTHER SOLID cannot survive the BREP hand-off (lane A's fragment_bodies lesson):
+            # the spliced solid would hold its own copy of the shared edge, and the part would
+            # come back with two unshared boundaries. Declined rather than delivered that way.
+            return declined("shares_topology (the owning solid shares edges with another "
+                            "solid; a split across the process boundary would unshare them)")
         diagonal = _diagonal_of(shape)
         part_area = float(_area_and_volume(shape)["surface_area_mm2"])
 
@@ -673,6 +680,21 @@ def _precise(shape) -> tuple[float, float]:
     BRepGProp.SurfaceProperties_s(shape, area, 1e-6)
     BRepGProp.VolumeProperties_s(shape, volume, 1e-6)
     return abs(float(area.Mass())), abs(float(volume.Mass()))
+
+
+def _shares_topology(shape, owner) -> bool:
+    """Does any edge of `owner` also belong to a different solid of `shape`? Topology only."""
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_SOLID
+    from OCP.TopExp import TopExp
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+
+    ancestors = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(shape, TopAbs_EDGE, TopAbs_SOLID, ancestors)
+    for index in range(1, ancestors.Extent() + 1):
+        solids = list(ancestors.FindFromIndex(index))
+        if any(s.IsSame(owner) for s in solids) and any(not s.IsSame(owner) for s in solids):
+            return True
+    return False
 
 
 def _is_solid(shape) -> bool:
