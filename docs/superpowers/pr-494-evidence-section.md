@@ -1,13 +1,12 @@
-## Evidence (CRS v3 verdict)
+## Evidence (CRS v3 evaluation)
 
-> Rendered by `devtools/validation/v3_eval/render_pr_section.py` from the results JSON. **[PENDING]** means not measured yet; it is never a zero.
+> Rendered by `devtools/validation/v3_eval/render_pr_section.py` from the results JSON. **[PENDING]** means not measured yet; it is never a zero. No arm passes or fails: the numbers are reported as measured.
 
-### Verdict (T29)
+### Files fixed
 
-- Rule: v3 newly_meshed >= 4 x deterministic newly_meshed, newly_broken == 0 in both arms, and every clean-control part unchanged. If the deterministic arm newly meshes nothing the ratio is undefined, the verdict is judged on v3's absolute count, and the 4x goal is not claimed.
-- Result: **[PENDING]**
-- Clean control: **[PENDING]** of **[PENDING]** parts unchanged, **[PENDING]** newly broken.
-- Zero-break bound: with no break in the v3 arm's failing sample plus the clean control, the 95% upper bound on the break rate is **[PENDING]** (rule of three over the pooled parts). It is a bound, not a proof of safety.
+- CRS v3 files fixed (CAD-repaired, and the repaired STEP newly meshes in gmsh): **[PENDING]** of **[PENDING]**; deterministic catalogue: **[PENDING]** of **[PENDING]**.
+- Clean control: **[PENDING]** of **[PENDING]** parts still mesh with no new defect, **[PENDING]** newly broken. For information: repair changed **[PENDING]** clean parts (a kept operation or a crash).
+- Zero-break bound (information): with no break in the v3 arm's failing sample plus the clean control, the 95% upper bound on the break rate is **[PENDING]** (rule of three over the pooled parts). It is a bound, not a proof of safety.
 
 ### Per arm
 
@@ -16,7 +15,7 @@
 | files | **[PENDING]** | **[PENDING]** | **[PENDING]** | **[PENDING]** | **[PENDING]** |
 | meshed before | **[PENDING]** | **[PENDING]** | **[PENDING]** | **[PENDING]** | **[PENDING]** |
 | meshed after | **[PENDING]** | **[PENDING]** | **[PENDING]** | **[PENDING]** | **[PENDING]** |
-| **newly meshed** | **[PENDING]** | **[PENDING]** | **[PENDING]** | **[PENDING]** | **[PENDING]** |
+| **files fixed** (newly meshed by CAD repair) | **[PENDING]** | **[PENDING]** | **[PENDING]** | **[PENDING]** | **[PENDING]** |
 | **newly broken** | **[PENDING]** | **[PENDING]** | **[PENDING]** | **[PENDING]** | **[PENDING]** |
 | model calls | **[PENDING]** | **[PENDING]** | **[PENDING]** | **[PENDING]** | **[PENDING]** |
 | cost (model + VM) | **[PENDING]** | **[PENDING]** | **[PENDING]** | **[PENDING]** | **[PENDING]** |
@@ -33,6 +32,14 @@ Endings, operations kept and rolled back:
 - **T29 v3**: endings **[PENDING]**; kept **[PENDING]**; rolled back **[PENDING]**
 - **T19 tournament off**: endings **[PENDING]**; kept **[PENDING]**; rolled back **[PENDING]**
 - **T19 tournament on (= T29 v3 run)**: endings **[PENDING]**; kept **[PENDING]**; rolled back **[PENDING]**
+
+### Diagnostic (appendix, not a result)
+
+Off by default (`repair_corpus --tolerant-delivery`). Not a fix, not a product fallback, and never counted in files fixed.
+
+| | T6 rules-only baseline | T29 deterministic | T29 v3 | T19 tournament off | T19 tournament on (= T29 v3 run) |
+|---|---|---|---|---|---|
+| tolerant-mesher meshable (not counted as CAD repair) | **[PENDING]** | **[PENDING]** | **[PENDING]** | **[PENDING]** | **[PENDING]** |
 
 ### What this does not show
 
