@@ -466,3 +466,10 @@ def test_a_conditional_or_someone_elses_write_grant_does_not_count():
                                  "condition": {"expression": "resource.name.startsWith('x')"}}]}
     other = _policy(("roles/storage.objectAdmin", ["serviceAccount:other@x.iam.gserviceaccount.com"]))
     assert launch.sa_write_problem(conditional, other)
+
+
+def test_every_arm_runs_the_shipping_repair_timeout():
+    """At the 120 s settings default the investigator had no time above its reserves and made 0
+    tool calls; shared dev runs 420. Every arm gets it, or the arms stop being comparable."""
+    for name, arm in spec.ARMS.items():
+        assert arm["env"].get("CAD_REPAIR_TIMEOUT_S") == "420", name
