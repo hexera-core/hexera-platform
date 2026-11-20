@@ -777,34 +777,101 @@ def _mesh_defects(shape, *, diagonal_mm: float, budget_s: float,
 #: The wall, in seconds, for measuring every located clash pair's B-rep gap. MEASURED, wave 4:
 #: one BRepExtrema_DistShapeShape between two BSpline faces of abc/0054_00540003 ran 150+ s in the
 #: parent - uninterruptible kernel code that no deadline check between calls could stop - and the
-#: file took 53 min with one core pinned. So the gaps are measured in ONE bounded child
-#: (`localize._bounded`: forked, SIGKILLed at the wall) and are evidence, never worth the run.
+#: file took 53 min with one core pinned. So the gaps are measured in ONE fresh interpreter, killed
+#: at the wall, and are evidence, never worth the run.
 CLASH_EVIDENCE_S = 10.0
+
+
+def _gap_child_argv(path: str, pairs: list[list[int]]) -> list[str]:
+    """The gap child's command: a FRESH interpreter, exactly as the mesh child is - never a fork.
+    The worker that calls this is threaded, and a forked child inherits every lock another thread
+    held (the allocator's among them, which the kernel takes on its first allocation). A seam for
+    the tests."""
+    return [sys.executable, "-W", "ignore", "-m", "meshpipeline.cad.repair.mesh_probe",
+            "--gaps", path, json.dumps(pairs)]
+
+
+def _gaps_main(argv: Sequence[str]) -> int:
+    """`python -m meshpipeline.cad.repair.mesh_probe --gaps PATH PAIRS`: one JSON line, the B-rep
+    distance between faces I and J (1-based in PATH's face map) for each [I, J] of PAIRS."""
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+    from OCP.BRepTools import BRepTools
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopoDS import TopoDS_Shape
+
+    path, pairs = argv[0], json.loads(argv[1])
+    shape = TopoDS_Shape()
+    BRepTools.Read_s(shape, path, BRep_Builder())
+    faces = _indexed(shape, TopAbs_FACE)
+    gaps: list[float | None] = []
+    for a, b in pairs:
+        try:
+            extrema = BRepExtrema_DistShapeShape(faces.FindKey(int(a)), faces.FindKey(int(b)))
+            gaps.append(float(extrema.Value()) if extrema.IsDone() else None)
+        except Exception:  # noqa: BLE001 - an unmeasurable pair is unknown, never guessed
+            gaps.append(None)
+    sys.stdout.write("\n" + json.dumps({"gaps": gaps}) + "\n")
+    sys.stdout.flush()
+    return 0
 
 
 def _clash_gaps(faces, mapping: dict[int, int], clashes: list[Clash], *,
                 budget_s: float) -> tuple[dict[tuple[int, int], float | None], str]:
-    """Every distinct pair's gap, measured in one bounded child: (gaps by pair, "") or, when the
-    child ran out of `budget_s` or died, ({}, "budget_spent") - every gap then reads None
-    (unmeasured), never a guess. NEVER RAISES, NEVER BLOCKS PAST `budget_s` (plus the reap)."""
-    # IMPORTED HERE, IN THE PARENT, before the fork: the child then runs only kernel compute and a
-    # pipe write - no import, so no import lock another parent thread might hold at fork time.
-    from OCP.BRepExtrema import BRepExtrema_DistShapeShape  # noqa: F401
-
-    from meshpipeline.cad.repair.localize import _bounded
+    """Every distinct pair's gap, measured in one bounded FRESH interpreter: (gaps by pair, "") or,
+    when it ran out of `budget_s` or died, ({}, "budget_spent") - every gap then reads None
+    (unmeasured), never a guess. A pair with an unmapped face is None without asking. NEVER
+    RAISES, NEVER BLOCKS PAST `budget_s` (plus a few seconds to reap the process group)."""
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepTools import BRepTools
+    from OCP.TopoDS import TopoDS_Compound
 
     pairs = list(dict.fromkeys(c.surfaces for c in clashes))
-    by_pair = {c.surfaces: c for c in clashes}
-
-    def measure() -> dict[tuple[int, int], float | None]:
-        # In the child: no deadline needed, the parent's SIGKILL is the deadline.
-        return {pair: _clash_gap(faces, mapping, by_pair[pair], deadline=float("inf"))
-                for pair in pairs}
-
-    found = _bounded(measure, budget_s=max(0.0, float(budget_s)))
-    if found is None:
+    known = {pair: (mapping.get(pair[0]), mapping.get(pair[1])) for pair in pairs}
+    asked = [pair for pair, (a, b) in known.items() if a and b]
+    out: dict[tuple[int, int], float | None] = dict.fromkeys(pairs)
+    if not asked:
+        return out, ""
+    if budget_s <= 0:
         return {}, "budget_spent"
-    return found, ""
+    try:
+        # ONLY THE FACES ASKED ABOUT go to the child, in a compound whose face map is their order.
+        order = list(dict.fromkeys(i for pair in asked for i in known[pair]))
+        builder, compound = BRep_Builder(), TopoDS_Compound()
+        builder.MakeCompound(compound)
+        for index in order:
+            builder.Add(compound, faces.FindKey(index))
+        position = {index: n + 1 for n, index in enumerate(order)}
+        with tempfile.TemporaryDirectory(prefix="mesh-gaps-") as tmp:
+            path = Path(tmp) / "faces.brep"
+            if not BRepTools.Write_s(compound, str(path)):
+                return {}, "budget_spent"
+            argv = _gap_child_argv(str(path), [[position[known[p][0]], position[known[p][1]]]
+                                               for p in asked])
+            proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                    stderr=subprocess.DEVNULL, start_new_session=True, text=True)
+            try:
+                text, _ = proc.communicate(timeout=float(budget_s))
+            except subprocess.TimeoutExpired:
+                _kill_group(proc)
+                try:
+                    proc.communicate(timeout=5)
+                except Exception:  # noqa: BLE001
+                    pass
+                return {}, "budget_spent"
+            finally:
+                if proc.poll() is None:
+                    _kill_group(proc)
+        lines = [ln for ln in (text or "").splitlines() if ln.strip()]
+        gaps = json.loads(lines[-1])["gaps"] if proc.returncode == 0 and lines else None
+        if not isinstance(gaps, list) or len(gaps) != len(asked):
+            return {}, "budget_spent"
+        for pair, gap in zip(asked, gaps, strict=True):
+            out[pair] = None if gap is None else float(gap)
+        return out, ""
+    except Exception as exc:  # noqa: BLE001 - evidence: a failure is "unmeasured", never a raise
+        logger.info("mesh_probe: clash gaps: %s: %s", type(exc).__name__, exc)
+        return {}, "budget_spent"
 
 
 def _clash_gap(faces, mapping: dict[int, int], clash: Clash, *,
@@ -843,4 +910,6 @@ def _tag_in_region(tag: int, box: Box, mapping: dict[int, int], faces, within: R
 
 
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["--gaps"]:
+        raise SystemExit(_gaps_main(sys.argv[2:]))
     raise SystemExit(_child_main(sys.argv[1:]))
