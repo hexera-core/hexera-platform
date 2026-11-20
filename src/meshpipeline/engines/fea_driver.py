@@ -475,6 +475,10 @@ async def read_requirements(ws: Path, state, *, job_id: str, run=None, publish=N
     # STD-4: a shell's elements picked on the stage (Quads | Triangles) are the last word on that one field; no
     # pick (the control left where it started, or a solid run): the section as read, the same object
     sec = MS.stage(read, (state or {}).get(MS.STAGE_KEY)) if mesh_as_of(state) != "solid" else read
+    # NOTE-15: what the notes say that the product acted on outside the reading (the engine they name, the kind of
+    # mesh, the unit) is never told or counted as not applied
+    from meshpipeline.engines import notes_acted as NA
+    sec = NA.apply(sec, MR.notes_text(state or {}), NA.facts_of(state))
     MR.write(ws, sec)
     if read.get("status") == "none" and read.get("standard_not_applied"):
         # STD-5: a saved standard written for flow meshes, applied in nothing here: told, the run as with no standard

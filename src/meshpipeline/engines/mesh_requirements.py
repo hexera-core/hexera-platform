@@ -1708,6 +1708,10 @@ def decided_asks(sec: Mapping | None, *, skip: tuple[str, ...] = ()) -> list[str
            if isinstance(r, Mapping) and r.get("asked") and not str(r.get("field") or "").startswith(skip)]
     out += [str(d) for d in sec.get("dropped") or [] if str(d).strip()]
     out += [f'"{_short(str(q))}" (no setting of ours matches it)' for q in sec.get("not_applied") or [] if str(q).strip()]
+    # NOTE-15: an ask the product acted on outside the reading (the engine the notes name) is decided too
+    out += [f'"{_short(str(q))}" ({str(e["line"]).removeprefix("From your notes: ").rstrip(".")})'
+            for e in sec.get("acted") or [] if isinstance(e, Mapping) and e.get("line")
+            for q in (e.get("quotes") or [])[:1] if str(q).strip()]
     return out[:40]
 
 
@@ -1767,7 +1771,8 @@ def write(workspace, sec: Mapping | None) -> bool:
     path = Path(workspace) / FILE
     try:
         # (a pick on the stage, STD-4, is kept too: the result says which elements were made and why)
-        if requirements_of(sec) is None and not told_words(sec) and not (sec or {}).get("stage"):
+        if (requirements_of(sec) is None and not told_words(sec) and not (sec or {}).get("stage")
+                and not (sec or {}).get("acted")):
             path.unlink(missing_ok=True)
             return False
         path.write_text(json.dumps(sec, indent=1, sort_keys=True), encoding="utf-8")
@@ -1795,12 +1800,15 @@ def words(sec: Mapping | None) -> list[str]:
     if isinstance(sec.get("lines"), list):
         # merged with the team's meshing standard (engines/meshing_standard): said by where each came from
         return [str(w) for w in sec["lines"]]
+    # NOTE-15: what the product acted on outside the reading (the engine the notes name, ...), one line each
+    acted = [str(e["line"]) for e in sec.get("acted") or [] if isinstance(e, Mapping) and e.get("line")]
     if sec.get("status") != "used":
-        return [str(sec.get("note") or UNREAD_WORDS)]
+        return [str(sec.get("note") or UNREAD_WORDS), *acted]
     out = [f"From your notes: {r['asked']}." for r in (sec.get("requirements") or {}).get("rows") or []]
     out += strictness_words(sec.get("requirements"))
     if sec.get("source") == "saved" and sec.get("note"):
         out.append(str(sec["note"]))
+    out += acted
     out += [f"Not applied: {d}." for d in sec.get("dropped") or []]
     out += [f'Not applied: "{_short(q)}" - no mesh setting of ours matches it yet.' for q in sec.get("not_applied") or []]
     out += not_mesh_words((sec.get("requirements") or {}).get("not_mesh"))

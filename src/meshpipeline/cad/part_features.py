@@ -175,12 +175,17 @@ def features(record: Mapping, surface) -> tuple[list[dict], dict[str, list[str]]
         for flat in flats:
             take("flat face", f"a large flat face, {float(faces[flat].get('area_mm2') or 0):,.0f} mm²", 1, [flat])
     found = found[:MAX_FEATURES]
+    # NOTE-6: AN AREA THAT IS THE WHOLE PART - every face of its part outside it is an opening (a hole, a bore, a
+    # notch) or an edge (a face too small to be any area of its own): words that name it name the whole part
+    openings = {f for kind, _n, _c, fs in found if kind in OPENING_KINDS for f in fs}
     rows: list[dict] = []
     faces_of: dict[str, list[str]] = {}
     for k, (kind, name, count, fs) in enumerate(found, start=1):
         fid = f"Feature_{k}"
         row: dict = {"id": fid, "feature": True, "kind": kind, "name": name.strip(), "count": count,
                      "in_part": _part_of(fs[0]), "faces": len(fs)}
+        if kind not in OPENING_KINDS and whole_of_part(fs, per_part.get(_part_of(fs[0]), []), faces, openings):
+            row["whole_part"] = True
         labs = [index[f] for f in fs if f in index]
         if labs and len(tris):
             sel = tris[np.isin(label, labs)]
@@ -203,6 +208,19 @@ def features(record: Mapping, surface) -> tuple[list[dict], dict[str, list[str]]
 
 #: NOTE-6: a part is one plate when its two largest flat faces are parallel and together this share of its area
 ONE_PLATE_SHARE = 0.7
+#: the areas that are openings of a part, not a place of it
+OPENING_KINDS = ("hole", "hole group", "bore", "notch")
+
+
+def whole_of_part(fs: list[str], part_faces: list[str], faces: Mapping, openings: set[str]) -> bool:
+    """NOTE-6: whether faces `fs` are the whole of their part as a place - every other face of the part is an opening
+    (`openings`) or an edge: a face under FLAT_SHARE of the part's area, too small to be an area of its own."""
+    area = sum(float(faces[n].get("area_mm2") or 0.0) for n in part_faces if n in faces)
+    if area <= 0 or not fs:
+        return False
+    mine = set(fs)
+    return all(n in mine or n in openings or float(faces[n].get("area_mm2") or 0.0) < FLAT_SHARE * area
+               for n in part_faces if n in faces)
 
 
 def _one_plate(flats: list[str], faces: Mapping, area: float, normal_of) -> bool:

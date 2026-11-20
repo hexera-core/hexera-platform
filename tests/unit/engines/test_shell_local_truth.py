@@ -595,3 +595,91 @@ def test_a_nearest_place_row_is_never_shown_as_met():
     html = RP._fea_limits({"check": {"rows": [{"label": got[0]["label"], "measured": 0, "op": "==", "limit": 0,
                                                "ok": None, "told": "nearest"}]}})
     assert "Nearest there is" in html and ">Met<" not in html
+
+
+# #
+# whole part or a portion of it (m483 round 12, 6c): geometry first, then the reader's extent - never a word list
+# #
+
+def _tied(quote: str, parts: list[str], table: list[dict], **reading) -> dict:
+    """One phrase of the parts reader, checked (cad/part_words.check) against `table`."""
+    phrase = {"everything_else": False, "ask": "size", "min": 3, "max": 3, "unit": "mm", "why": "the part",
+              "confidence": 0.9, "parts": parts, "quote": quote, **reading}
+    entries, dropped, _w = PW.check(json.dumps({"phrases": [phrase], "words": []}), table, quote)
+    assert not dropped, dropped
+    return entries[0]
+
+
+ONE_BODY = [{"id": "Part_2", "name": "Part_2"}]
+
+
+def test_the_name_of_a_one_plate_part_is_the_whole_part_and_its_row_is_met():
+    """6c: the NEMA17 mount is one flat plate, so it offers no flat face (the one-plate rule removes only the "which
+    side" question). "2 mm elements on the base plate" names the part itself: the row is judged on the whole part's
+    elements and is met when they are the size asked - never "the nearest there is"."""
+    entry = _tied("3 mm elements on the base plate", ["Part_2"], ONE_BODY, extent="whole",
+                  extent_words="the base plate")
+    assert "piece" not in entry
+    req = _req(("the base plate", "size", 3.0, "3 mm elements on the base plate"))
+    _rows_, got = _plan(req, _reading(entry))
+    assert not got["places"][0].get("piece")
+    row = SR.report(_mesh(), req, None, places=got)["rows"][0]
+    assert row["met"] is True and not row.get("nearest")
+    assert MR.summary(SR.report(_mesh(), req, None, places=got)) == "Of the 1 thing you asked for: 1 met."
+
+
+def test_a_portion_with_no_face_of_its_own_is_the_nearest_there_is():
+    """6b: "the vertical leg" of an L plate that is one flat face is a portion of the part no row is."""
+    entry = _tied("3 mm elements on the vertical leg", ["Part_2"], ONE_BODY, extent="portion",
+                  extent_words="the vertical leg")
+    assert entry["piece"] is True
+    req = _req(("the vertical leg", "size", 3.0, "3 mm elements on the vertical leg"))
+    _rows_, got = _plan(req, _reading(entry))
+    row = SR.report(_mesh(), req, None, places=got)["rows"][0]
+    assert row["met"] is None and row["nearest"] is True
+
+
+@pytest.mark.parametrize("words", ["the bracket", "the mount", "the part", "the body"])
+def test_a_one_body_part_called_by_any_name_is_the_whole_part(words):
+    entry = _tied(f"3 mm elements on {words}", ["Part_2"], ONE_BODY, extent="whole", extent_words=words)
+    assert "piece" not in entry
+
+
+@pytest.mark.parametrize("reading", [{"extent": "unsure", "extent_words": "the mount"},
+                                     {"extent": "whole", "extent_words": "the frame"},     # not the user's words
+                                     {"extent": "whole", "extent_words": ""},
+                                     {}])                                                 # no extent at all
+def test_unsure_missing_or_unquoted_is_a_portion_told_as_the_nearest(reading):
+    entry = _tied("3 mm elements on the mount", ["Part_2"], ONE_BODY, **reading)
+    assert entry["piece"] is True
+
+
+def test_a_two_body_model_where_the_plate_is_one_body_is_that_body():
+    table = [{"id": "Part_1", "name": "plate"}, {"id": "Part_2", "name": "frame"}]
+    entry = _tied("3 mm elements on the plate", ["Part_1"], table, extent="whole", extent_words="the plate")
+    assert entry["parts"] == ["Part_1"] and "piece" not in entry
+
+
+def test_an_area_that_is_the_whole_of_its_part_is_the_part_whatever_the_reading_says():
+    """Geometry first: an area every other face of whose part is an opening or an edge IS the part - the reader's
+    "portion" does not make it a piece; an area that is a real portion stays that area."""
+    table = [{"id": "Part_1", "name": "Part_1"},
+             {"id": "Feature_1", "feature": True, "kind": "flat face", "name": "a large flat face", "in_part": "Part_1",
+              "whole_part": True},
+             {"id": "Feature_2", "feature": True, "kind": "flat face", "name": "a large flat face", "in_part": "Part_1"}]
+    whole = _tied("3 mm elements on the top", ["Feature_1"], table, extent="portion", extent_words="the top")
+    assert whole["parts"] == ["Part_1"] and "piece" not in whole
+    area = _tied("3 mm elements on the top", ["Feature_2"], table, extent="portion", extent_words="the top")
+    assert area["parts"] == ["Feature_2"] and "piece" not in area
+
+
+def test_the_share_of_the_part_an_area_covers_decides_whether_it_is_the_whole_part():
+    from meshpipeline.cad import part_features as PF
+    faces = {"Part_1_Face_1": {"area_mm2": 900.0}, "Part_1_Face_2": {"area_mm2": 20.0},     # an edge strip
+             "Part_1_Face_3": {"area_mm2": 60.0},                                             # a hole
+             "Part_1_Face_4": {"area_mm2": 20.0}}                                             # another edge
+    names = list(faces)
+    assert PF.whole_of_part(["Part_1_Face_1"], names, faces, {"Part_1_Face_3"})
+    # the other side of a plate is no edge: one side is a portion
+    faces["Part_1_Face_2"] = {"area_mm2": 880.0}
+    assert not PF.whole_of_part(["Part_1_Face_1"], names, faces, {"Part_1_Face_3"})
