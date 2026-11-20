@@ -127,6 +127,18 @@ def features(record: Mapping, surface) -> tuple[list[dict], dict[str, list[str]]
             part_pts[p_] = xyz[np.unique(tris[np.isin(label, mine)])]
         return _lie(xyz[tris[np.isin(label, labs_)]], part_pts[p_])
 
+    def normal_of(name_: str) -> np.ndarray | None:
+        # a flat face's unit normal, sign-free (its largest triangle's direction), None when the surface lacks it
+        if name_ not in index or not len(tris):
+            return None
+        t_ = xyz[tris[label == index[name_]]]
+        if not len(t_):
+            return None
+        n_ = np.cross(t_[:, 1] - t_[:, 0], t_[:, 2] - t_[:, 0])
+        big = n_[int(np.argmax(np.linalg.norm(n_, axis=1)))]
+        size_ = float(np.linalg.norm(big))
+        return big / size_ if size_ > 0 else None
+
     walls = {name: float(row.get("thickness_wall_mm") or row.get("thickness_median_mm") or 0.0)
              for name, row in faces.items()}
     per_part: dict[str, list[str]] = {}
@@ -138,6 +150,9 @@ def features(record: Mapping, surface) -> tuple[list[dict], dict[str, list[str]]
             continue
         typical = ws[len(ws) // 2]
         thin = [n for n in names if 0 < walls[n] < THIN_SHARE * typical and n not in taken]
+        area = sum(float(faces[n].get("area_mm2") or 0.0) for n in names) or 1.0
+        if _one_plate(thin, faces, area, normal_of):
+            thin = []                       # (the part is one plate: its two sides are the part, below)
         if thin:
             # walls that lie apart (a bent bracket's upright leg and its level base) are areas apart, each said how it
             # lies, so "the vertical leg" is the upright one (round 9); walls that all lie alike stay one area
@@ -149,10 +164,14 @@ def features(record: Mapping, surface) -> tuple[list[dict], dict[str, list[str]]
                 t = min(walls[n] for n in fs)
                 take("thin wall", f"thin walls (ribs or flanges), {_mm(t)} thick" + (f", {lie}" if lie else ""),
                      len(fs), fs)
-        area = sum(float(faces[n].get("area_mm2") or 0.0) for n in names) or 1.0
         flats = sorted((n for n in names if faces[n].get("kind") == "plane" and n not in taken
                         and float(faces[n].get("area_mm2") or 0.0) >= FLAT_SHARE * area),
                        key=lambda n: -float(faces[n].get("area_mm2") or 0.0))[:FLAT_COUNT]
+        if _one_plate(flats, faces, area, normal_of):
+            # NOTE-6: A PART THAT IS ONE PLATE (its two big faces, parallel, are most of it) has no flat face that is a
+            # piece of it - offered as areas, "the vertical leg" of an L-shaped plate was tied to one of them in one
+            # run and told the nearest in another (m483 round 10, 6b). The part itself is the place
+            flats = []
         for flat in flats:
             take("flat face", f"a large flat face, {float(faces[flat].get('area_mm2') or 0):,.0f} mm²", 1, [flat])
     found = found[:MAX_FEATURES]
@@ -180,6 +199,29 @@ def features(record: Mapping, surface) -> tuple[list[dict], dict[str, list[str]]
         rows.append(row)
         faces_of[fid] = list(fs)
     return rows, faces_of
+
+
+#: NOTE-6: a part is one plate when its two largest flat faces are parallel and together this share of its area
+ONE_PLATE_SHARE = 0.7
+
+
+def _one_plate(flats: list[str], faces: Mapping, area: float, normal_of) -> bool:
+    """NOTE-6: whether the part is one plate - exactly two large flat faces, parallel and a wall apart (each other's
+    other side: their centroids lie their measured thickness apart along the normal), that together are most of its
+    area: neither is a piece of the part, each is the part's own side."""
+    if len(flats) != 2:
+        return False
+    a, b = (normal_of(f) for f in flats)
+    if a is None or b is None or abs(float(np.dot(a, b))) < 0.99:
+        return False
+    c1, c2 = (faces[f].get("centroid_mm") for f in flats)
+    t = float(faces[flats[0]].get("thickness_median_mm") or 0.0)
+    if not (isinstance(c1, (list, tuple)) and isinstance(c2, (list, tuple)) and len(c1) == len(c2) == 3 and t > 0):
+        return False
+    apart = abs(float(np.dot(np.asarray(c1, dtype=float) - np.asarray(c2, dtype=float), a)))
+    if abs(apart - t) > 0.25 * t:
+        return False
+    return sum(float(faces[f].get("area_mm2") or 0.0) for f in flats) >= ONE_PLATE_SHARE * float(area)
 
 
 #: NOTE-6: a flat face this close to level (or upright) is said so: |n.z| over LEVEL_COS, under UPRIGHT_COS

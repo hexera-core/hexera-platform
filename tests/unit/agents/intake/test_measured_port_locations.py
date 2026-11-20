@@ -58,3 +58,11 @@ def test_an_ai_remark_is_kept_only_when_the_rules_decided_no_ask(tmp_path):
     req, dropped, na = MR.check(json.dumps(answer), "at least 20 cells across the bore", route="flow")
     MR.write(tmp_path, MR.section("used", requirements=req, dropped=dropped, not_applied=na))
     assert MR.decided_asks(MR.read(tmp_path)) and MR.ai_remark_kept(tmp_path) is False
+
+
+def test_a_centroid_at_negative_zero_fingerprints_as_the_database_keeps_it():
+    """The approved intent is fingerprinted before it is stored as JSONB, which keeps no -0.0: a port at (657, 660, -0)
+    read back as 0 and the run was refused at dispatch (m483 round 10). The sign of a zero is no part of the intent."""
+    from meshpipeline.agents.intake import admission_token as at
+    assert at.fingerprint({"patches": [{"near_mm": [657.0, 660.0, -0.0]}]}) ==         at.fingerprint({"patches": [{"near_mm": [657.0, 660.0, 0.0]}]})
+    assert at.fingerprint({"x": [1.0]}) != at.fingerprint({"x": [-1.0]})

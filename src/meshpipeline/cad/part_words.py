@@ -347,6 +347,15 @@ def _check(arguments: str, table: list[dict], notes: str,
         if unit not in UNITS_MM:
             dropped.append(f"{tag}: the unit {unit!r} is not a length unit, so nothing was applied for it")
             continue
+        holes = _holes_named(quote, rows)
+        if holes and (conf is None or conf < MIN_CONFIDENCE
+                      or not any(str(p) in rows for p in e.get("parts") or [])):
+            # NOTE-6: words about the holes are tied by our own hole finding, the same every run: every area of the
+            # hole kinds (holes, hole groups, bores). A reader unsure whether "the holes" meant the one bore it saw
+            # left a place that exists on the part "could not be applied" (fea0184, m483 round 10)
+            e = {**e, "parts": holes, "everything_else": False}
+            conf = max(float(conf or 0.0), MIN_CONFIDENCE)
+            why = (f"{why} - " if why else "") + "tied to the part's holes as our own hole finding found them"
         if conf is None or conf < MIN_CONFIDENCE:
             if unsure is not None:
                 unsure.append({"phrase": i, "quote": quote, "ask": ask, "why": why,
@@ -420,6 +429,19 @@ def _check(arguments: str, table: list[dict], notes: str,
 
 def _mm(v: float) -> str:
     return f"{float(v):.3g} mm"
+
+
+#: NOTE-6: the areas our own code finds as holes (cad/part_features), and the words the user's quote names them by
+HOLE_KINDS = ("hole", "hole group", "bore")
+_HOLE_WORDS = re.compile(r"\b(?:holes?|bores?|bolt ?holes?|through ?holes?)\b", re.I)
+
+
+def _holes_named(quote: str, rows: Mapping[str, Mapping]) -> list[str]:
+    """The ids of every hole area of the table when the user's words name holes ("on the holes", "around the bolt
+    holes") - our hole finding's, not a reading's guess; [] when the words name none or the part has none."""
+    if not _HOLE_WORDS.search(str(quote or "")):
+        return []
+    return [str(i) for i, r in rows.items() if r.get("feature") and str(r.get("kind") or "") in HOLE_KINDS]
 
 
 def per_part(entries: list[dict], faces_of: Mapping[str, list[str]] | None = None) -> dict[str, dict]:
