@@ -20,7 +20,10 @@ STATE_SCHEMA_VERSION = 16  # v16: `repair_handback` - the ONE scoped repair a ME
                            # bought (the faces the mesher named, what the repair did, whether it
                            # committed, and the machine the failing attempt ran on), which is also
                            # the latch that holds a job to one handback ever
-                           # (pipeline/repair_handback.py). Carries every v15 field.
+                           # (pipeline/repair_handback.py). Also, from the same unreleased
+                           # branch, `repair_goal` + `repair_delivery` - what a run is finishing
+                           # for and a standalone repair job's ending (pipeline/repair_goal.py,
+                           # pipeline/repair_deliver.py). Carries every v15 field.
                            # v15: `repair_attempt` - whether the run repaired its own geometry,
                            # what it aimed at and what it did, or why it did not
                            # (pipeline/repair_attempt.py). Carries every v14 field.
