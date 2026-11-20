@@ -476,6 +476,12 @@ async def read_requirements(ws: Path, state, *, job_id: str, run=None, publish=N
     # pick (the control left where it started, or a solid run): the section as read, the same object
     sec = MS.stage(read, (state or {}).get(MS.STAGE_KEY)) if mesh_as_of(state) != "solid" else read
     MR.write(ws, sec)
+    if read.get("status") == "none" and read.get("standard_not_applied"):
+        # STD-5: a saved standard written for flow meshes, applied in nothing here: told, the run as with no standard
+        MS.told_not_applied(ws, str(read["standard_not_applied"]))
+        if say and publish is not None:
+            from meshpipeline.contracts import narration as _N
+            await _N.asay(publish, str(read["standard_not_applied"]), op_id="fea:notes:standard")
     if sec.get("status") == "none":
         return sec
     entries = ([*MR.decisions(read, stage="fea_ai"), *MS.decisions(read, stage="fea_ai")]

@@ -167,6 +167,9 @@ def _asked_rows(payload: Mapping) -> list[list[str]]:
         met = r.get("met")
         result = (_ok(met) if met in (True, False) else
                   '<span class="na">Not applied</span>' if r.get("applied") is False else
+                  '<span class="na">Flexible: told</span>' if r.get("flexible") else
+                  '<span class="na">Told: prism layers</span>' if r.get("layer_cells") else
+                  '<span class="na">Finer: told</span>' if r.get("finer_than_asked") else
                   '<span class="na">Nearest there is</span>' if r.get("nearest") else
                   '<span class="na">Set as asked</span>')
         out.append([_e(f"You asked: {asked[:1].upper() + asked[1:]}{came}"), _e(r.get("delivered") or ""),
