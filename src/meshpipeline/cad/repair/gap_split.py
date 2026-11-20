@@ -57,6 +57,10 @@ logger = logging.getLogger(__name__)
 #: own sag, for gmsh's freedom to place interior vertices, and for the neighbours' unsplit edges
 #: (measured on 0056_00565386: at a half, the clash moved onto the new patches).
 SAG_SHARE = 0.25
+#: THE RETRY LADDER (lead, wave 6): a split that left the clash in place is retried finer, each
+#: rung a quarter, an eighth, then a sixteenth of the gap, still within MAX_ISO_EDGES and the child
+#: budget. `rules_author` picks the rung from how many times the face's split was already tried.
+SAG_LADDER: tuple[float, ...] = (SAG_SHARE, 0.125, 0.06)
 #: No patch or new edge may be one the localiser would report (localize.SMALL_FACE_AREA_FRACTION,
 #: SMALL_EDGE_LENGTH_FRACTION): the session reads a new warning as a new defect and rolls the split
 #: back (measured on 0051_00519054). This margin keeps every patch and span above twice the bar.
@@ -181,7 +185,7 @@ def _directional_curvature(props, which: str) -> tuple[float, float]:
 
 
 def split_plan(face, *, gap_mm: float, mesh_size: float, part_area_mm2: float = 0.0,
-               diagonal_mm: float = 0.0) -> dict[str, list[float]]:
+               diagonal_mm: float = 0.0, sag_share: float = SAG_SHARE) -> dict[str, list[float]]:
     """The parameter values to split `face` at, per direction.
 
     For each direction the largest normal curvature k and the longest iso-length L are sampled
@@ -225,7 +229,7 @@ def split_plan(face, *, gap_mm: float, mesh_size: float, part_area_mm2: float = 
             length = max(length, run)
         if kmax * mesh_size < 1e-6 or length <= 0:
             continue                      # flat in this direction: no sag to resolve
-        chord = min(mesh_size, math.sqrt(8.0 * SAG_SHARE * max(gap_mm, 1e-9) / kmax))
+        chord = min(mesh_size, math.sqrt(8.0 * sag_share * max(gap_mm, 1e-9) / kmax))
         segments = min(MAX_SEGMENTS, math.ceil(length / chord))
         if diagonal_mm > 0:
             shortest = SMALL_MARGIN * SMALL_EDGE_LENGTH_FRACTION * diagonal_mm
@@ -371,6 +375,11 @@ class ResolveSubMeshGap:
     """
 
     name = NAME
+
+    def __init__(self, sag_share: float = SAG_SHARE) -> None:
+        #: The share of the gap a chord may sag (SAG_LADDER's rung). Same NAME at every rung: the
+        #: ledger and the rows count one operation, and the evidence states the rung.
+        self.sag_share = float(sag_share)
     answers = frozenset({DefectCode.mesh_edge_through_face, DefectCode.mesh_overlapping_facets})
     #: One solid, refined but not reshaped: wider than a one-face fix, narrower than a fuse.
     scope = 6
@@ -442,8 +451,9 @@ class ResolveSubMeshGap:
         # the trims, the split and the guard. In the parent, BRepExtrema held the GIL for an hour
         # on wave 6 (0054_00540003) and no clock could interrupt it.
         answer, divided = _bounded(owner, face, diagonal_mm=diagonal, part_area_mm2=part_area,
-                                   budget_s=KERNEL_BUDGET_S)
+                                   budget_s=KERNEL_BUDGET_S, sag_share=self.sag_share)
         measured = {k: answer[k] for k in _MEASURED_KEYS if k in answer}
+        measured["sag_share"] = self.sag_share
         if answer.get("declined") or divided is None:
             return declined(str(answer.get("declined") or "split_failed (no result came back)"),
                             **measured)
@@ -519,7 +529,7 @@ def _kill_group(proc: subprocess.Popen) -> None:
 
 
 def _bounded(owner, face, *, diagonal_mm: float, part_area_mm2: float,
-             budget_s: float) -> tuple[dict, object | None]:
+             budget_s: float, sag_share: float = SAG_SHARE) -> tuple[dict, object | None]:
     """Run `_work` on `owner` in a FRESH INTERPRETER (never a fork: a forked child inherits the
     parent's OCC state and locks), in its own session, killed as a group past `budget_s`.
 
@@ -533,7 +543,7 @@ def _bounded(owner, face, *, diagonal_mm: float, part_area_mm2: float,
             source, result = Path(tmp) / "owner.brep", Path(tmp) / "divided.brep"
             write_brep(owner, source)
             request = json.dumps({"face": index, "box": _box_of(face), "diagonal_mm": diagonal_mm,
-                                  "part_area_mm2": part_area_mm2})
+                                  "part_area_mm2": part_area_mm2, "sag_share": sag_share})
             proc = subprocess.Popen([*_CHILD_CMD, str(source), request, str(result)],
                                     stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                     stderr=subprocess.DEVNULL, start_new_session=True, text=True)
@@ -564,7 +574,8 @@ def _bounded(owner, face, *, diagonal_mm: float, part_area_mm2: float,
         return {"declined": f"split_failed ({type(exc).__name__})"}, None
 
 
-def _work(owner, face, *, diagonal_mm: float, part_area_mm2: float) -> tuple[dict, object | None]:
+def _work(owner, face, *, diagonal_mm: float, part_area_mm2: float,
+          sag_share: float = SAG_SHARE) -> tuple[dict, object | None]:
     """The kernel half of the operation. ONLY EVER RUN IN THE CHILD (`_bounded`)."""
     size = _mesh_size(diagonal_mm)
     across = partners(owner, face, mesh_size=size)
@@ -579,7 +590,7 @@ def _work(owner, face, *, diagonal_mm: float, part_area_mm2: float) -> tuple[dic
     split: list = []
     for each in (face, *(other for other, _ in across)):
         plan = split_plan(each, gap_mm=gap, mesh_size=size, part_area_mm2=part_area_mm2,
-                          diagonal_mm=diagonal_mm)
+                          diagonal_mm=diagonal_mm, sag_share=sag_share)
         if not (plan["u"] or plan["v"]):
             continue
         pieces = iso_edges(each, plan)
@@ -638,6 +649,7 @@ def _child_main(argv: list[str]) -> int:
         answer: dict = {"declined": "not_resolved (the target face did not survive the hand-off)"}
     else:
         answer, divided = _work(owner, face, diagonal_mm=float(request["diagonal_mm"]),
+                                sag_share=float(request.get("sag_share", SAG_SHARE)),
                                 part_area_mm2=float(request["part_area_mm2"]))
         if divided is not None:
             write_brep(divided, result)
