@@ -1,0 +1,195 @@
+{
+ "arms": {
+  "t19_tournament_off/failing": {
+   "cost_per_fixed_part_usd": null,
+   "files": 120,
+   "model": {
+    "by_purpose": {
+     "investigator": 2110,
+     "reviewer": 1
+    },
+    "by_role": {
+     "intake": 2111
+    },
+    "calls": 2111,
+    "cost_usd": 0.7758,
+    "input_tokens": 10344578,
+    "output_tokens": 234454,
+    "statuses": {
+     "ok": 2111
+    }
+   },
+   "shards": 29,
+   "total_cost_usd": 1.1007,
+   "vm": {
+    "container_cost_usd": 0.3249,
+    "longest_shard_s": 2447.8,
+    "note": "container wall only; VM boot, docker install and image pull add ~5-10 min/VM",
+    "shard_seconds": 25763.5
+   },
+   "wall_per_fixed_part_s": null
+  },
+  "t29_deterministic/clean": {
+   "clean": {
+    "changed": 4,
+    "crashed_files": [],
+    "files_with_kept_ops": [
+     "00514684_7f0805030eb57e4abb36a15f_step_000.step",
+     "00552206_58acbbeb0c5c6a0f76db00bb_step_018.step",
+     "00576720_c89f6e67fe4a73823a34cf49_step_003.step",
+     "00591591_fea9cf6e8da1b878be43a67f_step_000.step"
+    ],
+    "files_with_new_defects": [],
+    "new_defects": {},
+    "newly_broken": 0,
+    "not_good": [],
+    "still_meshes_no_new_defects": 100
+   },
+   "cost_per_fixed_part_usd": null,
+   "files": 100,
+   "model": {
+    "by_purpose": {
+     "reviewer": 4
+    },
+    "by_role": {
+     "intake": 4
+    },
+    "calls": 4,
+    "cost_usd": 0.0015,
+    "input_tokens": 4069,
+    "output_tokens": 556,
+    "statuses": {
+     "ok": 4
+    }
+   },
+   "shards": 7,
+   "total_cost_usd": 0.0361,
+   "vm": {
+    "container_cost_usd": 0.0346,
+    "longest_shard_s": 525.0,
+    "note": "container wall only; VM boot, docker install and image pull add ~5-10 min/VM",
+    "shard_seconds": 2740.6
+   },
+   "wall_per_fixed_part_s": null
+  },
+  "t29_deterministic/failing": {
+   "cost_per_fixed_part_usd": 0.3389,
+   "files": 120,
+   "model": {
+    "by_purpose": {
+     "reviewer": 16
+    },
+    "by_role": {
+     "intake": 16
+    },
+    "calls": 16,
+    "cost_usd": 0.0069,
+    "input_tokens": 16277,
+    "output_tokens": 3014,
+    "statuses": {
+     "ok": 16
+    }
+   },
+   "shards": 21,
+   "total_cost_usd": 0.3389,
+   "vm": {
+    "container_cost_usd": 0.332,
+    "longest_shard_s": 2740.4,
+    "note": "container wall only; VM boot, docker install and image pull add ~5-10 min/VM",
+    "shard_seconds": 26330.4
+   },
+   "wall_per_fixed_part_s": 26330.4
+  },
+  "v3_full/clean": {
+   "clean": {
+    "changed": 1,
+    "crashed_files": [],
+    "files_with_kept_ops": [
+     "00552206_58acbbeb0c5c6a0f76db00bb_step_018.step"
+    ],
+    "files_with_new_defects": [],
+    "new_defects": {},
+    "newly_broken": 0,
+    "not_good": [],
+    "still_meshes_no_new_defects": 100
+   },
+   "cost_per_fixed_part_usd": null,
+   "files": 100,
+   "model": {
+    "by_purpose": {
+     "reviewer": 1,
+     "tournament:investigator": 790,
+     "tournament:one_shot": 104
+    },
+    "by_role": {
+     "intake": 895
+    },
+    "calls": 895,
+    "cost_usd": 0.2957,
+    "input_tokens": 3284102,
+    "output_tokens": 105387,
+    "statuses": {
+     "ok": 895
+    }
+   },
+   "shards": 7,
+   "total_cost_usd": 0.3457,
+   "vm": {
+    "container_cost_usd": 0.05,
+    "longest_shard_s": 815.9,
+    "note": "container wall only; VM boot, docker install and image pull add ~5-10 min/VM",
+    "shard_seconds": 3963.0
+   },
+   "wall_per_fixed_part_s": null
+  },
+  "v3_full/failing": {
+   "cost_per_fixed_part_usd": 1.3109,
+   "files": 120,
+   "model": {
+    "by_purpose": {
+     "reviewer": 5,
+     "tournament:investigator": 1859,
+     "tournament:one_shot": 334
+    },
+    "by_role": {
+     "intake": 2198
+    },
+    "calls": 2198,
+    "cost_usd": 0.9437,
+    "input_tokens": 9712434,
+    "output_tokens": 338719,
+    "statuses": {
+     "ok": 2198
+    }
+   },
+   "shards": 32,
+   "total_cost_usd": 1.3109,
+   "vm": {
+    "container_cost_usd": 0.3672,
+    "longest_shard_s": 3954.7,
+    "note": "container wall only; VM boot, docker install and image pull add ~5-10 min/VM",
+    "shard_seconds": 29116.9
+   },
+   "wall_per_fixed_part_s": 29116.9
+  }
+ },
+ "checked": {
+  "commit": "17d5f55e7dbf84f3a4ea0659f8a08ec31ad35d61",
+  "image": "us-central1-docker.pkg.dev/hexera-dev/mesh/app@sha256:00ce015614daaccebfb7169ac24b2766f0069eeb5570fb5d4bb4b5518a597832",
+  "image_commit": "5d496416e3433ce7df626a07bc441f2459d34e49",
+  "samples": {
+   "clean": "3954d6e301cc1c7f41f69e4a4f39163ff8bcdd7e419a6151f1e3809372043cc0",
+   "failing": "95787045f8a49b4001496afe319cf44abb522d303c097f1e3324fe67b830cfbc"
+  }
+ },
+ "comparisons": {
+  "T19": {
+   "off_newly_broken": 0,
+   "off_newly_meshed": 0,
+   "off_usd_per_fixed": null,
+   "on_newly_broken": 0,
+   "on_newly_meshed": 1,
+   "on_usd_per_fixed": 1.3109
+  }
+ }
+}

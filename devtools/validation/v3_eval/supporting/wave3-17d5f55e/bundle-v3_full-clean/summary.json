@@ -1,0 +1,133 @@
+{
+  "cad_simplicity": {
+    "edge_delta": {
+      "count": 1,
+      "max": -6.0,
+      "mean": -6.0,
+      "median": -6.0,
+      "min": -6.0
+    },
+    "face_delta": {
+      "count": 1,
+      "max": -1.0,
+      "mean": -1.0,
+      "median": -1.0,
+      "min": -1.0
+    },
+    "files_measured": 1,
+    "files_with_fewer_faces": 1,
+    "files_with_more_faces": 0,
+    "operations_kept": {
+      "count": 1,
+      "max": 1.0,
+      "mean": 1.0,
+      "median": 1.0,
+      "min": 1.0
+    },
+    "solid_count_changed": 0,
+    "vertex_delta": {
+      "count": 1,
+      "max": -12.0,
+      "mean": -12.0,
+      "median": -12.0,
+      "min": -12.0
+    }
+  },
+  "catalogue": {
+    "never_exercised": [
+      "fix_small_edges",
+      "split_closed_faces",
+      "fix_face_boundary",
+      "rebuild_face",
+      "close_wire_gaps",
+      "sew_faces",
+      "fill_planar_hole",
+      "fill_nonplanar_hole",
+      "heal_self_intersections",
+      "fragment_bodies",
+      "fix_shape_global"
+    ],
+    "only_declined": [],
+    "tally": {
+      "fix_small_faces": {
+        "declined": 0,
+        "failed": 0,
+        "kept": 1,
+        "rolled_back": 0
+      }
+    }
+  },
+  "endings": {
+    "attempted_none_held": 5,
+    "not_attempted": 1,
+    "nothing_to_repair": 93,
+    "repaired": 1
+  },
+  "goal": {
+    "files": 100,
+    "grind_by_tier": {
+      "cheap": 27
+    },
+    "kernel_clean": 20,
+    "not_run": 73,
+    "profile": "benchmark",
+    "score_mean": 1.0,
+    "tier2_meshes": 27,
+    "tier2_no_answer": 0,
+    "tier2_refuses": 0,
+    "tolerant_routing": {
+      "not_asked": 27
+    }
+  },
+  "heals": {
+    "corroborated": 0,
+    "kept": 0,
+    "uncorroborated_files": [],
+    "unknown": 0,
+    "unknown_files": []
+  },
+  "investigator": {
+    "ends": {
+      "budget_spent": 5,
+      "concluded": 162,
+      "runaway": 2,
+      "skipped": 18
+    },
+    "files": 27,
+    "input_tokens": 0,
+    "model_calls": 791,
+    "output_tokens": 0,
+    "regions": 187,
+    "seconds": 2527.51,
+    "tool_calls": 919
+  },
+  "meshing": {
+    "files": 100,
+    "meshed_after": 100,
+    "meshed_before": 100,
+    "newly_broken": 0,
+    "newly_meshed": 0,
+    "still_failing_by_kind": {}
+  },
+  "outcomes": {
+    "not_attempted": 1,
+    "nothing_to_repair": 72,
+    "refused": 26,
+    "repaired": 1
+  },
+  "refusals_by_reason": {},
+  "repaired_by_code": {
+    "small_edge": 2,
+    "small_face": 1
+  },
+  "routes": {
+    "conservative_repair": 27,
+    "manual_cleanup": 1,
+    "mesh_as_is": 72
+  },
+  "row_count": 100,
+  "stopped_because": {
+    "regions_exhausted": 5,
+    "resolved": 22
+  }
+}
