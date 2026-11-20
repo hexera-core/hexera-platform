@@ -782,114 +782,34 @@ def face_scan_budget_s(remaining_s: float) -> float:
 def _bounded(fn, *args, budget_s: float):
     """`fn(*args)`'s result, or None when it ran past `budget_s` or failed in any way.
 
-    IN A FORKED CHILD, NOT A DAEMON THREAD, and that is a measured decision. OCP's bindings HOLD
-    THE GIL through a kernel call: with `BOPAlgo_ArgumentAnalyzer.Perform` running in a daemon
-    thread, the caller's `join(0.2)` returned only when the 3-second analysis finished, and a
-    second Python thread ticked twice in that time. An abandoned thread would therefore be waited
-    for anyway - exactly what a budget exists to prevent. Nor can the kernel be asked to stop:
-    OCP exposes `Message_ProgressIndicator` without a constructor, so no Python user-break
-    indicator can be handed to `Perform`.
-    A child process is stopped for real: on expiry it is SIGKILLed and reaped, so the analysis
-    ends rather than being ignored while it burns a core. It also means a kernel crash on a
-    pathological part kills the child, not the worker - the pipe closes empty and the answer is
-    the same silence as a timeout.
+    IN A FRESH INTERPRETER, NEVER A FORK, and NOT A DAEMON THREAD - both measured decisions.
+    OCP's bindings HOLD THE GIL through a kernel call: with `BOPAlgo_ArgumentAnalyzer.Perform`
+    running in a daemon thread, the caller's `join(0.2)` returned only when the 3-second analysis
+    finished, so an abandoned thread would be waited for anyway. Nor can the kernel be asked to
+    stop: OCP exposes `Message_ProgressIndicator` without a constructor. And a FORK is unsafe here:
+    the repair worker is threaded (Celery, plus model-call threads), and a forked child inherits
+    their locks - the allocator's, which OCC takes at once - held by threads that do not exist in
+    it, so it can deadlock and the evidence is silently lost. `bounded_child` starts a new
+    `python -m` in its own session, hands it the shapes as BREP, and SIGKILLs the group at the wall.
+
+    `fn` MUST BE ON `bounded_child.KERNELS`, the allow-list the child dispatches by key; anything
+    else is refused (None) without starting a child. Shape arguments cross as one BREP, so shared
+    sub-shapes keep their identity and the face map its order; every other argument and the answer
+    cross as JSON (bytes as base64; a tuple comes back a list).
 
     NEVER RAISES, NEVER BLOCKS PAST BUDGET. Every failure - expiry, an exception in `fn`, a child
-    that died, a platform without `fork` - is logged at info and returned as None, because the
-    caller treats this as optional evidence (see `face_self_intersections`).
-    The result crosses the pipe pickled, so `fn` must return something picklable.
+    that died, an argument JSON cannot carry, a spawn that failed - is logged at info and returned
+    as None, because the caller treats this as optional evidence (see `face_self_intersections`).
     """
     if not budget_s or budget_s <= 0:
         return None
     try:
-        return _in_child(fn, args, float(budget_s))
+        from meshpipeline.cad.repair import bounded_child
+
+        return bounded_child.run(fn, args, float(budget_s))
     except Exception as exc:  # noqa: BLE001 - optional evidence; a failure here is silence
         logger.info("localize: bounded analysis gave no answer (%s: %s)", type(exc).__name__, exc)
         return None
-
-
-def _in_child(fn, args, budget_s: float):
-    import os
-    import pickle  # noqa: S403 - the only producer is our own forked child
-    import select
-    import signal
-    import time
-
-    if not hasattr(os, "fork"):
-        logger.info("localize: no fork on this platform - the bounded analysis is skipped")
-        return None
-
-    read_end, write_end = os.pipe()
-    try:
-        pid = os.fork()
-    except BaseException:
-        # EAGAIN or ENOMEM: no child, so neither end has an owner. Closed here or they leak once
-        # per failed call.
-        os.close(read_end)
-        os.close(write_end)
-        raise
-    if pid == 0:  # pragma: no cover - runs in the child, whose coverage nobody collects
-        # NO GARBAGE COLLECTION IN THE CHILD, first of all. A cyclic object inherited from the
-        # parent - a DB session, say - would have its `__del__` run here and write (a ROLLBACK)
-        # onto a socket the parent still owns.
-        import gc
-
-        gc.disable()
-        # THE CHILD TOUCHES NOTHING BUT `fn` AND THE PIPE, and always leaves through `_exit`: it
-        # holds a copy of the parent's every lock and handler (pytest's, Celery's, logging's), and
-        # running any of them here is how a forked child deadlocks or double-flushes.
-        try:
-            os.close(read_end)
-            try:
-                payload = pickle.dumps((True, fn(*args)))
-            except BaseException as exc:  # noqa: BLE001 - reported to the parent, never raised
-                payload = pickle.dumps((False, f"{type(exc).__name__}: {exc}"))
-            view = memoryview(payload)
-            while view:
-                view = view[os.write(write_end, view):]
-        finally:
-            os._exit(0)
-
-    os.close(write_end)
-    deadline = time.monotonic() + budget_s
-    chunks: list[bytes] = []
-    expired = False
-    finished = False
-    try:
-        while True:
-            left = deadline - time.monotonic()
-            if left <= 0 or not select.select([read_end], [], [], left)[0]:
-                expired = True
-                break
-            chunk = os.read(read_end, 1 << 16)
-            if not chunk:
-                finished = True
-                break
-            chunks.append(chunk)
-    finally:
-        os.close(read_end)
-        # KILLED UNLESS IT FINISHED, not only on expiry: a NaN or infinite budget makes `select`
-        # raise, and a KeyboardInterrupt can land mid-wait - either way the reap below would
-        # otherwise wait out the whole analysis.
-        if not finished:
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-        os.waitpid(pid, 0)
-
-    if expired:
-        logger.info("localize: bounded analysis passed its %.2fs budget and was stopped",
-                    budget_s)
-        return None
-    if not chunks:
-        logger.info("localize: bounded analysis ended without an answer (the child died)")
-        return None
-    ok, value = pickle.loads(b"".join(chunks))  # noqa: S301 - our own child's bytes
-    if not ok:
-        logger.info("localize: bounded analysis raised (%s)", value)
-        return None
-    return value
 
 
 def _kernel_face_pairs(shape) -> list[tuple[int, int]]:
@@ -907,7 +827,8 @@ def _kernel_face_pairs(shape) -> list[tuple[int, int]]:
     FACE-TYPED PAIRS ONLY. The checker also reports vertex, edge and solid participants (on two
     overlapping boxes, roughly half its records name a solid or an edge); a heal aims at faces,
     and an edge or solid record carries no face index to aim with.
-    Serial, never `RunParallel`: this runs in a forked child, where a thread pool is a liability.
+    Serial, never `RunParallel`: this runs in a bounded child (`_bounded`) that is killed at its
+    wall, and a thread pool there would only compete with the worker for cores.
     """
     from OCP.BOPAlgo import BOPAlgo_ArgumentAnalyzer, BOPAlgo_CheckStatus
     from OCP.TopAbs import TopAbs_FACE
