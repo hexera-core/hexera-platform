@@ -260,13 +260,27 @@ def test_no_flag_keeps_the_environments_posture(_posture_restored, tmp_path, inh
 def test_install_offers_the_sink_to_the_investigator_module(monkeypatch, tmp_path):
     module = SimpleNamespace(sink=None, replay_records=None)
     monkeypatch.setattr(rc, "_investigator_module", lambda: module)
+    sink, note = rc.install_investigator("live", transcripts=str(tmp_path / "out.jsonl"))
+    assert module.sink is sink is not None
+    assert "seam" not in note
+
+
+@pytest.mark.parametrize("posture", [None, "off", "shadow", "live"])
+def test_a_replay_is_refused_while_nothing_reads_it(monkeypatch, tmp_path, _posture_restored,
+                                                    posture):
+    # Nothing in cad/repair reads `investigator.replay_records`: an accepted replay would call the
+    # model (or, off, replay nothing) while looking reproducible. Refused before anything is set.
+    module = SimpleNamespace(sink=None, replay_records=None)
+    monkeypatch.setattr(rc, "_investigator_module", lambda: module)
+    rcfg = _posture_restored
+    rcfg.CAD_REPAIR_INVESTIGATOR = "off"
     records_in = tmp_path / "in.jsonl"
     records_in.write_text(json.dumps(_record()) + "\n", encoding="utf-8")
-    sink, note = rc.install_investigator("live", transcripts=str(tmp_path / "out.jsonl"),
-                                         replay=str(records_in))
-    assert module.sink is sink is not None
-    assert len(module.replay_records) == 1
-    assert "seam" not in note
+    with pytest.raises(ValueError, match="replay"):
+        rc.install_investigator(posture, transcripts=str(tmp_path / "out.jsonl"),
+                                replay=str(records_in))
+    assert module.sink is None and module.replay_records is None
+    assert rcfg.CAD_REPAIR_INVESTIGATOR == "off"
 
 
 def test_install_reports_the_seam_when_the_build_has_no_investigator(monkeypatch):
@@ -274,16 +288,6 @@ def test_install_reports_the_seam_when_the_build_has_no_investigator(monkeypatch
     sink, note = rc.install_investigator("live", transcripts="")
     assert sink is not None  # the runner still collects what it is handed
     assert "seam" in note and "investigator" in note
-
-
-def test_install_reports_the_seam_when_the_module_takes_no_replay(monkeypatch, tmp_path):
-    module = SimpleNamespace(sink=None)  # no replay_records attribute
-    monkeypatch.setattr(rc, "_investigator_module", lambda: module)
-    records_in = tmp_path / "in.jsonl"
-    records_in.write_text(json.dumps(_record()) + "\n", encoding="utf-8")
-    sink, note = rc.install_investigator("live", replay=str(records_in))
-    assert module.sink is sink
-    assert "replay_records" in note and "seam" in note
 
 
 def test_install_never_invents_an_attribute_on_another_module(monkeypatch):

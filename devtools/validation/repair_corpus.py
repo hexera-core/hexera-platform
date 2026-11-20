@@ -1292,7 +1292,14 @@ def install_investigator(posture: str | None, *, transcripts: str = "", replay: 
     posture the process was launched with, so an environment-driven run is never overridden by a
     default. The SINK and the REPLAY RECORDS are offered to `cad/repair/investigator.py`; a build
     without one, or without the name, gets a note rather than a crash.
+
+    A REPLAY IS REFUSED, before anything is set: nothing in cad/repair reads
+    `investigator.replay_records` yet, so an accepted replay would call the model (or, with the
+    investigator off, replay nothing) while its settings claimed a reproducible run.
     """
+    if replay:
+        raise ValueError("--investigator-replay is not implemented: nothing in cad/repair reads "
+                         "the recorded conclusions, so the run would call the model instead")
     if posture is not None:
         _apply_investigator_posture(investigator_posture(posture))
     mode = investigator_posture(posture)
@@ -1303,10 +1310,7 @@ def install_investigator(posture: str | None, *, transcripts: str = "", replay: 
     if module is None:
         return sink, ("seam: this build has no cad/repair/investigator.py, so nothing will write "
                       "an investigator transcript (Task 11)")
-    notes = [_offer(module, "sink", sink)]
-    if replay:
-        notes.append(_offer(module, "replay_records", load_replay(replay)))
-    return sink, "; ".join(n for n in notes if n)
+    return sink, _offer(module, "sink", sink)
 
 
 def _probe_before(path: Path) -> tuple[bool, str] | None:
@@ -1619,8 +1623,8 @@ def main() -> int:
                         help="write one gym record per author call here, as JSONL (names, hashes, "
                              "fingerprints, measurements and the conversation - never geometry)")
     parser.add_argument("--investigator-replay", dest="investigator_replay", default="",
-                        help="a previous run's --transcripts file: rebuild each region's package "
-                             "from the recorded conclusion instead of calling a model")
+                        help="NOT IMPLEMENTED - refused: nothing in cad/repair reads recorded "
+                             "conclusions yet, so a replay would still call the model")
     # THE GOAL PROFILE. Absent means the repair is not told what it is finishing for, which is
     # today's behaviour exactly: no kwarg, no row key, no summary block. `meshing` is not offered
     # here - its verdict is the product mesher, which this tool does not run.
