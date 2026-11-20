@@ -336,3 +336,19 @@ def test_as_delivered_round_trips_a_real_solid_through_step():
     props = GProp_GProps()
     BRepGProp.VolumeProperties_s(back, props)
     assert props.Mass() == pytest.approx(6000.0, rel=1e-6)
+
+
+def test_an_operation_that_changed_nothing_is_never_cured(monkeypatch):
+    # A STEP round-trip alone may change gmsh's answer; that is the export's doing, never the
+    # operation's, so an op handing back the very shape it was given cannot take the cure door.
+    class _Same(_FixEdges):
+        def apply(self, shape, targets, *, tolerance_mm):
+            return OpOutcome(shape=shape)
+
+    _seq(monkeypatch, session_mod, "_localize_scan", [((_SHORT,), True)])
+    _seq(monkeypatch, mesh_probe, "mesh_defects", [(_FACETS,), ()])
+    session = RepairSession("shape", measurer=lambda s: MEASURE)
+    target = session.defects()[0]
+    verdict = session.try_op(_Same(), _Same().targets_for(target), target.code,
+                             tolerance_mm=0.01, within=_REGION)
+    assert not verdict.kept and verdict.reason == "target_remains"

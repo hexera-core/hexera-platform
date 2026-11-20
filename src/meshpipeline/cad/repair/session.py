@@ -108,6 +108,17 @@ def _judged_whole(package) -> bool:
                for item in package.plan)
 
 
+def _same_shape(before, after) -> bool:
+    """Is `after` the very shape `before` was - the same object, or the kernel's same TShape?"""
+    if before is after:
+        return True
+    is_same = getattr(before, "IsSame", None)
+    try:
+        return bool(is_same(after)) if callable(is_same) else before == after
+    except Exception:  # noqa: BLE001 - unknown means changed; the probe still has to pass
+        return False
+
+
 def _as_delivered(shape):
     """`shape` as a customer receives it: written to STEP by the writer promotion uses
     (`conservative._write_step`) and read back. None when either side fails - never a guess.
@@ -1099,7 +1110,9 @@ class RepairSession:
             revealed=frozenset((d.fingerprint, d.code.value) for d in revealed),
             standing=standing, tolerance_mm=tolerance_mm)
         cured: tuple[str, ...] = ()
-        if reason == "target_remains":
+        if reason == "target_remains" and not _same_shape(snapshot[0], self.shape):
+            # AN OPERATION THAT CHANGED NOTHING IS NEVER CURED: a STEP round-trip alone can move
+            # gmsh's answer, and that is the export's doing, not the operation's.
             cured = self._mesh_cure(whole_before, found, within=within)
             if cured:
                 # THE DEFECT WAS THE PART NOT MESHING, AND IT MESHES NOW. Everything else the rule
