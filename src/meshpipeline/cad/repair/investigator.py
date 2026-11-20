@@ -672,11 +672,15 @@ def investigator(shape, *, original: Measure, reserved: frozenset = frozenset(),
         else:
             inv.at = len(investigations)
             investigations.append(record)
-        if sink is not None:
+        # THE STATED SINK, ELSE THE ONE A HARNESS INSTALLED in this module's `sink` - read at
+        # write time, because `select_author` states none and the corpus runner installs its
+        # callback there. `None` in the product, so a product run still writes nothing.
+        out = sink if sink is not None else globals().get("sink")
+        if out is not None:
             try:
                 # THE FULL TRANSCRIPT GOES ONLY TO A DEVTOOLS SINK. The report carries the clipped
                 # record above; a conversation is customer-derived data.
-                sink({**record, "messages": [dict(m) for m in inv.messages]})
+                out({**record, "messages": [dict(m) for m in inv.messages]})
             except Exception as exc:  # noqa: BLE001 - a sink that breaks must not cost a repair
                 logger.warning("investigator sink failed: %s", type(exc).__name__)
 

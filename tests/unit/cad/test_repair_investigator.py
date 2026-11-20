@@ -706,3 +706,30 @@ def test_stated_reserves_still_win(monkeypatch):
                               reserve_s=5.0, proof_reserve_s=2.0, share=1.0)
     assert (author.clock.reserve_s, author.clock.proof_reserve_s, author.clock.share) == (
         5.0, 2.0, 1.0)
+
+
+# --- the installed transcript sink (PR #494 review: live transcripts were never collected) ----
+
+_UNLOCATED = Region(index=7, fingerprints=frozenset({"fp9"}), bbox_min=None, bbox_max=None,
+                    face_indices=frozenset(), located=False)
+
+
+def test_the_live_investigator_writes_to_the_installed_module_sink(monkeypatch):
+    """The corpus harness installs its transcript callback in the module-level `sink`, and
+    `select_author` passes the live investigator none. The live author must read the installed
+    one, or a live corpus run writes no transcripts and reports no investigator spend."""
+    got: list = []
+    monkeypatch.setattr(inv, "sink", got.append)
+    author = inv.investigator(None, original=ORIGINAL)
+    author(_UNLOCATED, DEFECTS)
+    assert [r["region"] for r in got] == [7]
+    assert "messages" in got[0]
+
+
+def test_a_stated_sink_wins_over_the_installed_one(monkeypatch):
+    installed: list = []
+    stated: list = []
+    monkeypatch.setattr(inv, "sink", installed.append)
+    author = inv.investigator(None, original=ORIGINAL, sink=stated.append)
+    author(_UNLOCATED, DEFECTS)
+    assert (len(stated), len(installed)) == (1, 0)
