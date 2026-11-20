@@ -14,6 +14,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
+from meshpipeline.cad.repair import bounded_child
 from meshpipeline.cad.repair.contracts import DefectCode
 from meshpipeline.cad.repair.identity import EntityMapping, EntityRef, fingerprint_of, quantum_for
 
@@ -2227,7 +2228,55 @@ def _centre(box) -> tuple[float, float, float] | None:
     return ((x0 + x1) / 2.0, (y0 + y1) / 2.0, (z0 + z1) / 2.0)
 
 
-def _meeting_partner(shape, body, face):
+#: What `fragment_bodies`' two kernel questions get. The pair is rebuilt on the strength of their
+#: answers, so an answer that does not arrive DECLINES the operation - it is not worth guessing.
+#: The face scan's own ceiling is the precedent (`HEAL_ANALYSIS_BUDGET_S`): a fragment never waits
+#: longer than a scan would.
+FRAGMENT_KERNEL_BUDGET_S = 30.0
+
+#: `_meeting_partner` could not finish asking. DISTINCT FROM None, which means the boxes say there
+#: is no candidate at all: one is geometry, the other is ignorance, and only the second is a
+#: reason to stop rather than to report `no_partner`.
+PARTNER_UNMEASURED = object()
+
+
+def _distances_to(face, *bodies) -> list[float | None]:
+    """How far `face` is from each of `bodies`, None for one the kernel could not measure.
+
+    ONLY EVER RUN IN THE CHILD (registered with `bounded_child` as `operations.face_distances`).
+    `BRepExtrema_DistShapeShape` cannot be interrupted, so this ran once per candidate in the
+    parent with nothing able to stop it - row 4 of the audit.
+
+    THE BODIES CROSS AS SHAPES, NOT AS INDICES. The dispatcher writes the operands as a compound
+    and reads them back in order, so the answers line up with the candidates positionally; asking
+    the child to re-walk a round-tripped shape and trust that its `_indexed` order matches the
+    parent's would be an assumption nothing here proves.
+    """
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+
+    out: list[float | None] = []
+    for body in bodies:
+        try:
+            extrema = BRepExtrema_DistShapeShape(face, body)
+            out.append(float(extrema.Value()) if extrema.IsDone() else None)
+        except Exception as exc:  # noqa: BLE001 - an unmeasurable pair is merely not nearest
+            logger.debug("fragment_bodies: no distance to a candidate body (%s)", exc)
+            out.append(None)
+    return out
+
+
+def _bounded_common_volume(a, b) -> float | None:
+    """`_common_volume` in a bounded child, or None - which the caller declines on, exactly as it
+    declines on a kernel that could not compute it.
+
+    Row 5. The function was already registered with the dispatcher and `investigator_tools`
+    already took that route; `apply` called it straight, so on the fragment path the Boolean was
+    as unbounded as it ever was. REGISTERING A KERNEL IS NOT BOUNDING IT: the call site is.
+    """
+    return bounded_child.run(_common_volume, (a, b), budget_s=FRAGMENT_KERNEL_BUDGET_S)
+
+
+def _meeting_partner(shape, body, face, *, budget_s: float = FRAGMENT_KERNEL_BUDGET_S):
     """The solid other than `body` whose bounding box meets `body`'s, nearest the failing `face`,
     or None when no other solid's box meets it.
 
@@ -2241,7 +2290,6 @@ def _meeting_partner(shape, body, face):
     there is nothing to compare, and the LOWEST-INDEX candidate (TopExp's order) wins: arbitrary,
     but deterministic.
     """
-    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
     from OCP.TopAbs import TopAbs_SOLID
 
     from meshpipeline.cad.repair.localize import _indexed
@@ -2249,7 +2297,7 @@ def _meeting_partner(shape, body, face):
     solids = _indexed(shape, TopAbs_SOLID)
     own = _bnd(body)
     aim = _centre(_bnd(face))
-    best, best_key = None, None
+    candidates: list[tuple[int, object, object]] = []
     for index in range(1, solids.Extent() + 1):
         other = solids.FindKey(index)
         if other.IsSame(body):
@@ -2257,17 +2305,23 @@ def _meeting_partner(shape, body, face):
         box = _bnd(other)
         if own.IsOut(box):
             continue
-        try:
-            extrema = BRepExtrema_DistShapeShape(face, other)
-            distance = float(extrema.Value()) if extrema.IsDone() else float("inf")
-        except Exception as exc:  # noqa: BLE001 - an unmeasurable pair is merely not nearest
-            logger.debug("fragment_bodies: no distance to solid %d (%s)", index, exc)
-            distance = float("inf")
+        candidates.append((index, other, box))
+    if not candidates:
+        return None                      # the boxes say so: `no_partner`, and no child is started
+    measured = bounded_child.run(_distances_to, (face, *(other for _i, other, _b in candidates)),
+                                 budget_s=budget_s)
+    if measured is None or len(measured) != len(candidates):
+        # The child was killed, failed, or answered about something else. Which body the failing
+        # face belongs to is then undetermined, and the operation declines rather than rebuild a
+        # pair chosen from a partial answer.
+        return PARTNER_UNMEASURED
+    best, best_key = None, None
+    for (index, other, box), distance in zip(candidates, measured, strict=True):
         centre = _centre(box)
         offset = (0.0 if aim is None or centre is None
                   else sum((a - c) ** 2 for a, c in zip(aim, centre)) ** 0.5)
         # Distances are rounded so kernel noise in the last digits does not decide a tie.
-        key = (round(distance, 9), offset, index)
+        key = (round(float("inf") if distance is None else float(distance), 9), offset, index)
         if best_key is None or key < best_key:
             best, best_key = other, key
     return best
@@ -2498,13 +2552,17 @@ class FragmentBodies:
             return declined(f"already_shared ({len(owners)} solids already own the face)")
         owner = owners[0]
         partner = _meeting_partner(shape, owner, face)
+        if partner is PARTNER_UNMEASURED:
+            return declined("unmeasured (the distances from the failing face to the candidate "
+                            "bodies did not finish in their budget; which body the face belongs "
+                            "to is then a guess, and this operation rebuilds the pair it picks)")
         if partner is None:
             return declined("no_partner (no other solid's bounding box meets the owner's)")
         if _shares_with_third_body((owner, partner), _face_owner_sets(shape)):
             return declined("shared_with_third_body (a body of the pair already shares a face "
                             "with a body outside it; rebuilding the pair would break that "
                             "interface)")
-        common = _common_volume(owner, partner)
+        common = _bounded_common_volume(owner, partner)
         if common is None:
             return declined("unmeasured (the kernel could not measure the bodies' common "
                             "volume; an unmeasured pair is never read as touching)")
