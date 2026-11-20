@@ -199,7 +199,8 @@ async def read_job_repair_trace(job_id: str) -> dict:
     trace = measurements.get("investigation_trace") if isinstance(measurements, dict) else None
     if not isinstance(trace, dict):
         raise missing
-    transcript = trace.get("transcript") if isinstance(trace.get("transcript"), dict) else {}
+    raw_transcript = trace.get("transcript")
+    transcript: dict = raw_transcript if isinstance(raw_transcript, dict) else {}
     lines: list = []
     if transcript.get("object_key"):
         try:
