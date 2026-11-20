@@ -271,7 +271,9 @@ def test_the_shadow_hands_the_model_only_the_read_only_schemas(watching):
     author, script, _ = watching(repeat=conclude(escalate={"reason": "no"}))
     author(REGION, DEFECTS, ())
     handed = [schema.name for schema in script.rounds[0]["tools"]]
-    assert handed == [spec.name for spec in it.READ_ONLY]
+    # The read-only tools, then `conclude`: a shadow still has to be able to conclude, and that
+    # is the driver's own tool, not one of the registry's.
+    assert handed == [spec.name for spec in it.READ_ONLY] + ["conclude"]
     assert it.EDIT.name not in handed
 
 

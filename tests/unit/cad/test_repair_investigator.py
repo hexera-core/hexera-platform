@@ -244,7 +244,9 @@ def test_the_trace_is_named_for_the_investigator(wired):
     author(REGION, DEFECTS, ())
     assert model.rounds[0]["name"] == inv.TRACE_NAME == "RepairInvestigator"
     assert model.rounds[0]["job_id"] == "job-1"
-    assert [t.name for t in model.rounds[0]["tools"]] == [s.name for s in it.tool_schemas()]
+    # The registry's tools, then `conclude` - the one tool the driver itself handles.
+    assert ([t.name for t in model.rounds[0]["tools"]]
+            == [s.name for s in it.tool_schemas()] + ["conclude"])
 
 
 # --- the budgets, as tables -------------------------------------------------------------------
@@ -259,9 +261,12 @@ def test_never_concluding_model_stops_at_budget(wired, ceiling):
     assert record["end"] == "budget_spent"
     assert record["spent"]["tool_calls"] == ceiling
     assert len(seen) == ceiling
-    # AND IT STOPPED ASKING. A ceiling that only stops the tools, while the rounds keep going,
-    # spends the model-call budget to learn nothing - so the round count is pinned too.
-    assert model.calls == ceiling
+    # AND IT STOPPED ASKING, after ONE last round that asks only for a conclusion: a region that
+    # has spent its tools may still have kept edits to offer, and a model that never answers that
+    # round buys exactly one call, not a budget's worth.
+    assert model.calls == ceiling + 1
+    assert [m for round_ in model.rounds for m in round_["messages"]
+            if m.get("content") == "your tool calls are spent. conclude now"]
 
 
 @pytest.mark.parametrize("ceiling", [1, 2, 4, 7])
@@ -282,7 +287,9 @@ def test_the_tool_budget_counts_calls_not_rounds(wired, per_round):
                                    budget=Budget(tool_calls=per_round, model_calls=99))
     assert author(REGION, DEFECTS, ()) is None
     assert len(seen) == per_round
-    assert model.calls == 1                       # ONE round spent the whole tool budget
+    # ONE round spent the whole tool budget, and a second asks for a conclusion - except at 3
+    # identical calls, where the repeat guard ends the region inside the round and asks nothing.
+    assert model.calls == (1 if per_round >= inv.REPEAT_MAX else 2)
     assert author.investigations[-1]["spent"]["tool_calls"] == per_round
 
 
@@ -738,3 +745,51 @@ def test_a_stated_sink_wins_over_the_installed_one(monkeypatch):
     author = inv.investigator(None, original=ORIGINAL, sink=stated.append)
     author(_UNLOCATED, DEFECTS)
     assert (len(stated), len(installed)) == (1, 0)
+
+
+# --- concluding over the native transport ------------------------------------------------------
+# Measured live at e6b24a6d (gpt-5.6-luna, 420 s): 16 tool calls over 3 regions and NO conclusion.
+# `conclude` was never declared as a function, so a native-tool model could only conclude by
+# dropping its tools and writing a JSON text reply - which it did not do, even when told
+# "conclude now"; and a region that spent its tool calls closed without being asked at all.
+
+def _tool_names(round_) -> set:
+    return {getattr(t, "name", None) or t["function"]["name"] for t in round_["tools"]}
+
+
+def test_conclude_is_a_declared_native_tool(wired):
+    author, model, _, _ = wired(conclude(escalate={"reason": "stop"}),
+                                budget=Budget(tool_calls=9, model_calls=9))
+    author(REGION, DEFECTS, ())
+    assert "conclude" in _tool_names(model.rounds[0])
+
+
+def test_a_forced_turn_offers_only_conclude(wired):
+    clock = Clock(step=1.0)
+    author, model, _, _ = wired(repeat=greedy, clock=clock,
+                                budget=Budget(tool_calls=99, model_calls=99, wall_s=4.0),
+                                proof_reserve_s=3.0)
+    author(REGION, DEFECTS, ())
+    forced = [r for r in model.rounds
+              if any(m.get("content") == "conclude now" for m in r["messages"])]
+    assert forced and all(_tool_names(r) == {"conclude"} for r in forced)
+
+
+def test_a_region_out_of_tool_calls_is_asked_to_conclude(wired):
+    author, model, _, _ = wired(native("look"),
+                                native("conclude", escalate={"reason": "needs a person"}),
+                                budget=Budget(tool_calls=1, model_calls=9))
+    author(REGION, DEFECTS, ())
+    record = author.investigations[-1]
+    assert record["conclusion"]["form"] == "escalate", record
+    assert record["end"] == "concluded"
+
+
+def test_a_native_conclusion_with_strict_fillers_is_one_conclusion(wired):
+    clone = FakeScratch()
+    clone.kept_log.extend(KEPT)
+    author, _, _, _ = wired(
+        native("conclude", package=package_body(),
+               mesher_side={"mesher_problem": [], "reason": ""}, escalate={"reason": ""}),
+        scratch=clone, budget=Budget(tool_calls=9, model_calls=9))
+    assert isinstance(author(REGION, DEFECTS, ()), TargetPackage)

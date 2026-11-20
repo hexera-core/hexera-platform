@@ -206,6 +206,60 @@ def _schemas(shadow: bool) -> tuple:
     return tuple(schema for schema in every if schema.name in allowed)
 
 
+#: `conclude` AS A DECLARED FUNCTION. The three forms are the driver's (`_CONCLUSIONS`), and the
+#: handler is `_conclude`, so this schema states shapes and nothing else. It is declared because a
+#: native-tool model concludes by CALLING a tool: left undeclared, the only route to a conclusion
+#: was to abandon the tool transport and write the prose protocol's JSON instead, which a live run
+#: at e6b24a6d never did - 16 tool calls over 3 regions and not one conclusion.
+_CONCLUDE_PARAMETERS: dict = {
+    "type": "object",
+    "properties": {
+        "package": {
+            "type": "object",
+            "description": ("the repair to commit. the PLAN IS THE LOG of the edits you kept, so "
+                            "there is no plan key and a conclusion with no kept edit is refused"),
+            "properties": {
+                "intent": {"type": "string"},
+                "cleared": {"type": "array", "items": {"type": "string"}},
+                "unchanged": {"type": "array", "items": {"type": "string"}},
+                "max_area_delta_mm2": {"type": "number"},
+                "max_volume_delta_mm3": {"type": "number"},
+            },
+        },
+        "mesher_side": {
+            "type": "object",
+            "description": "the geometry is sound and the mesher is at fault",
+            "properties": {
+                "mesher_problem": {"type": "array", "items": {"type": "string"}},
+                "reason": {"type": "string"},
+            },
+        },
+        "escalate": {
+            "type": "object",
+            "description": "this region needs a person",
+            "properties": {"reason": {"type": "string"}},
+        },
+    },
+}
+
+
+def _conclude_schema():
+    from meshpipeline.contracts.model_inference import ToolSchema
+
+    return ToolSchema(name="conclude",
+                      description=("finish this region with EXACTLY ONE of package, mesher_side "
+                                   "or escalate. the only way to end an investigation"),
+                      parameters=dict(_CONCLUDE_PARAMETERS))
+
+
+def _native_schemas(shadow: bool, *, only_conclude: bool = False) -> tuple:
+    """What the NATIVE transport declares: the posture's tools plus `conclude`, or `conclude` alone
+    on a turn where a conclusion is the only answer that can still be used."""
+    if only_conclude:
+        return (_conclude_schema(),)
+    return (*_schemas(shadow), _conclude_schema())
+
+
 def _roster(shadow: bool = False) -> str:
     """The tool roster as the native transport's schemas describe it - ONE SOURCE, TWO
     TRANSPORTS. The names and argument schemas are the registry's, never restated here."""
@@ -800,8 +854,16 @@ def investigator(shape, *, original: Measure, reserved: frozenset = frozenset(),
 
         while True:
             if inv.tool_calls >= int(inv.budget.tool_calls):
-                close(inv, "budget_spent", "the region's tool calls are spent", started)
-                break
+                # SPENT TOOL CALLS ARE NOT A VERDICT. A region that has looked and edited is
+                # asked for its conclusion before it is closed; closing here threw away every
+                # kept edit a region had to show (measured: 12 tool calls, 0 packages).
+                if not inv.told_to_conclude and inv.model_calls < int(inv.budget.model_calls):
+                    inv.told_to_conclude = True
+                    inv.say({"role": "user",
+                             "content": "your tool calls are spent. conclude now"})
+                else:
+                    close(inv, "budget_spent", "the region's tool calls are spent", started)
+                    break
             if inv.model_calls >= int(inv.budget.model_calls):
                 close(inv, "budget_spent", "the region's model calls are spent", started)
                 break
@@ -824,7 +886,8 @@ def investigator(shape, *, original: Measure, reserved: frozenset = frozenset(),
             if inv.native:
                 reply, unsupported = ma.converse_tools_sync(
                     inv.messages, job_id=job_id, timeout_s=timeout,
-                    tools=_schemas(shadow), name=TRACE_NAME)
+                    tools=_native_schemas(shadow, only_conclude=inv.told_to_conclude),
+                    name=TRACE_NAME)
                 if unsupported:
                     # A CAPABILITY ANSWER, NEVER A FAILURE: no round happened, so nothing is
                     # charged. The same tools go in the system turn as prose instead.
@@ -999,6 +1062,29 @@ def _tool_result_turn(call, content: str) -> dict:
 _CONCLUSIONS = ("package", "mesher_side", "escalate")
 
 
+def _stated(body: object) -> bool:
+    """True when a conclusion form carries anything at all: a non-empty string, a non-empty list,
+    a number. `{"reason": ""}` and `{"mesher_problem": []}` say nothing."""
+    if not isinstance(body, dict):
+        return bool(body)
+    return any(bool(v) or isinstance(v, (int, float)) and not isinstance(v, bool)
+               for v in body.values())
+
+
+def _one_form(args: dict) -> dict:
+    """`args` with the strict transport's EMPTY forms dropped, when another form is stated.
+
+    A strict function-calling transport sends every declared property, so a conclusion arrives as
+    all three forms at once with two of them blank. Only a mixture of STATED forms is a mixture;
+    a single form keeps its own refusal, blank or not, so "escalate gives no reason" still reads
+    as itself rather than as a count of forms.
+    """
+    stated = [key for key in _CONCLUSIONS if key in args and _stated(args[key])]
+    if len(stated) != 1:
+        return args
+    return {key: value for key, value in args.items() if key not in _CONCLUSIONS or key in stated}
+
+
 def _conclude(args: object, inv: _Investigation, *, ctx, scratch, region: Region,
               defects: tuple, state: dict, refusals: list, verdicts: list, escalations: list,
               held_codes: frozenset,
@@ -1016,6 +1102,7 @@ def _conclude(args: object, inv: _Investigation, *, ctx, scratch, region: Region
     """
     if not isinstance(args, dict):
         raise ma.Refusal("conclude takes an object of arguments")
+    args = _one_form(args)
     forms = [key for key in _CONCLUSIONS if key in args]
     if len(forms) != 1 or len(args) != 1:
         raise ma.Refusal("conclude takes exactly one of "
