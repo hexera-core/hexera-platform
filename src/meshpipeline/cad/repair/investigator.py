@@ -326,6 +326,42 @@ def _roster(shadow: bool = False) -> str:
     return "\n".join(lines)
 
 
+#: An operation that answers a SUB-ELEMENT GAP by splitting the two faces, if the deployment
+#: builds one. Read from the active catalogue rather than written as a literal: an operation a
+#: deployment does not have must not be advertised to the model, and a rename must not leave the
+#: prompt pointing at a name nobody answers.
+_GAP_OP = "resolve_sub_mesh_gap"
+
+
+def _gap_op_name() -> str | None:
+    """The gap-splitting operation's name, or None when this deployment has none."""
+    from meshpipeline.cad.repair import operations
+
+    try:
+        names = {op.name for op in operations.catalogue()}
+    except Exception:  # noqa: BLE001 - prompt text may never break a repair
+        return None
+    return _GAP_OP if _GAP_OP in names else None
+
+
+def _gap_advice() -> str:
+    """What to do about a gap wider than the touching margin.
+
+    IT DEPENDS ON WHETHER ANYTHING CAN FIX ONE. With a splitting operation in the catalogue a gap
+    is ACTIONABLE - it splits the two faces along their own iso-curves so the mesher can fit
+    between them, closing nothing and moving no surface - and telling the model to give up would
+    stop it reaching the one operation that repairs these (lane H measured 4 of 16 gap files newly
+    meshing). With no such operation the gap really is the mesher's own tolerance, and
+    `mesher_side` is the honest answer.
+    """
+    name = _gap_op_name()
+    if name:
+        return (f"TRY `{name}` THERE: it splits the two faces along their own iso-curves so the "
+                "mesher can fit between them, and it closes nothing and moves no surface. Only "
+                "conclude `mesher_side` once it has been tried and did not help.")
+    return "Prefer `mesher_side` over spending turns on it."
+
+
 def _touching_mm(original: Measure) -> float:
     """The gap THIS PART's faces count as meeting at, from the walk's own rule."""
     from meshpipeline.cad.repair.region_loop import _touching_margin_mm
@@ -360,7 +396,7 @@ def system_prompt(*, prose: str = "", shadow: bool = False,
                                 close_wire_gaps=True) if free else catalogue_text())
     text = template.format(catalogue=catalogue, roster=_roster(shadow))
     if free:
-        text = f"{text}\n{AGGRESSIVE_RULE.format(touching=float(touching_mm))}"
+        text = f"{text}\n{AGGRESSIVE_RULE.format(touching=float(touching_mm), gap_advice=_gap_advice())}"
     return f"{text}\n{prose}" if prose else text
 
 
@@ -385,8 +421,8 @@ AGGRESSIVE_RULE = (
     "reading with `clash_adjacent` TRUE means they only share an edge - their distance is "
     "trivially small - which is a sizing or fold problem and not something an edit heals. A "
     "`clash_gap_mm` ABOVE {touching:g} mm means they never touch and the mesher's own tolerance "
-    "crossed them. In those last two, prefer `mesher_side` over spending turns. A missing or null "
-    "value means nobody measured it: unknown, not zero and not false.\n"
+    "crossed them - usually a thin wall. {gap_advice} A fold, and a missing or null value, are "
+    "different: a null means nobody measured it, which is unknown, not zero and not false.\n"
     "- SPEND THE BUDGET. a region that ends with turns left and nothing tried has told us "
     "nothing. there is no 'escalate' to reach for: if you cannot support a package, say so with "
     "`mesher_side` when the geometry is sound, and otherwise keep working until the budget ends.")
