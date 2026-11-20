@@ -219,6 +219,19 @@ def revive(approval: dict, *, user_msg_count: int) -> dict:
     return out
 
 
+def rearm(approval: dict, *, user_msg_count: int) -> dict:
+    """THE PLAN OFFERED AGAIN, as it stands: a fresh awaiting snapshot of the same approved submission - a new id, a
+    new expiry, answerable by the user's next message - with no trace of a run (a snapshot that dispatched a run
+    that never started, or that expired unanswered). The approval authority verifies it like any other."""
+    now = time.time()
+    out = {k: v for k, v in approval.items()
+           if k not in ("job_id", "invalidated_reason", "invalidated_at", "dispatched_at", "approved_at")}
+    out.update(id=uuid.uuid4().hex, status=AWAITING, created_at=now, expires_at=now + APPROVAL_TTL_S,
+               expected_confirmation_msg_count=int(user_msg_count) + 1,
+               rearmed_count=int(approval.get("rearmed_count", 0) or 0) + 1)
+    return out
+
+
 #: The fields a summary's change is read from, in the words a user knows them by.
 _CHANGE_LABELS = (("mesh_engine", "engine"), ("purpose", "purpose"), ("input_kind", "input"),
                   ("dimensionality", "dimensions"), ("mesh_fidelity", "detail level"),
