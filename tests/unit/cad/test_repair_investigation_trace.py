@@ -369,6 +369,8 @@ def _evidence() -> dict:
         "removed": {"faces": 3, "area_mm2": 0.342214},
         "mesh_before": ["edge_through_face"],
         "mesh_after": [],
+        "mesh_after_source": "delivered",
+        "mesh_after_in_memory": ["mesh_edge_through_face"],
         "defects_cleared": ["small_face"],
         "defects_revealed": [],
         "defects_remaining": ["small_edge"],
@@ -387,6 +389,11 @@ def test_the_measured_evidence_travels_with_the_verdict():
     measured = row["evidence"]
 
     assert measured["mesh_after"] == [] and measured["mesh_before"] == ["edge_through_face"]
+    # WHICH ARTEFACT, AND THE OTHER READING. The pair is the whole point: the delivered file
+    # meshes while the in-memory shape did not, and a row that showed only the first would hide
+    # the disagreement.
+    assert measured["mesh_after_source"] == "delivered"
+    assert measured["mesh_after_in_memory"] == ["mesh_edge_through_face"]
     assert measured["deviation_mm"] == 0.0012
     assert measured["deviation_basis"] == "whole_part"
     assert measured["deviation_samples"] == 240

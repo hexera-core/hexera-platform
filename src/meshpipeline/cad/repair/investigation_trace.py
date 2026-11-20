@@ -342,7 +342,13 @@ _EVIDENCE_MEASURED = (
     "area_mm2", "volume_mm3", "faces", "solids", "diagonal_mm", "area_mm2_before",
     "volume_mm3_before", "deviation_status", "deviation_basis", "deviation_mm",
     "deviation_samples", "deviation_faces", "deviation_faces_skipped", "removed",
-    "mesh_before", "mesh_after", "defects_cleared", "defects_revealed", "defects_remaining",
+    "mesh_before", "mesh_after",
+    # WHICH ARTEFACT `mesh_after` IS, and the other reading when they disagree. The reviewer
+    # judges the DELIVERED STEP, because a repaired shape can fail in memory and mesh once
+    # exported (measured on abc 0060_00608290, three probes each way). A row that carried only
+    # the authoritative number would hide exactly the disagreement these keys exist to show.
+    "mesh_after_source", "mesh_after_in_memory",
+    "defects_cleared", "defects_revealed", "defects_remaining",
 )
 #: Evidence keys that are PROSE and never travel: the author's own words for what it meant to do,
 #: and the words of this region's earlier review rejects.
