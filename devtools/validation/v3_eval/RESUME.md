@@ -285,12 +285,44 @@ RUNBOOK. Four rules, now stated the same way everywhere:
   - The handler was run locally against the exact crsv3 report and trace bytes: it returned region 15 and all 5 lines.
   - LEAD ruling: verify on shared dev after merge (checklist below). No admin secret goes on crsv3.
 
-### Post-merge shared-dev checklist (lane D)
-1. After a human runs the shared-dev deploy at the merge sha, submit one corpus part (e.g. `abc/00502475_5895e91efca3da0f6b68639a_step_003.step`) through the product. Wait for a terminal status.
-2. `curl -H "X-Admin-Key: $ADMIN_API_KEY" "$API/api/v1/admin/ops/jobs/<job_id>/repair-trace"`. Expect 200 with:
-   - `outcomes[]`: region, end, form, edits and `why_no_package`, plus `packages[]` with `reviewed` / `review_tier` / `objection` and no `review_reason`;
-   - `transcript.object_key` under `jobs/<job_id>/`;
-   - `lines[]`;
-   - `handback` too, if the mesher handed back.
-3. Open the admin console at `/jobs/<job_id>/why`. Expect the "Repair investigation" panel: an outcome table, plus a "Per-turn trace (N lines…)" expander. If a handback ran, also expect the "Repair investigation after the mesh failed" panel.
-4. Check the model-call telemetry for the job: calls carry `purpose`, one of investigator, reviewer, author or `tournament:<source>`.
+### Post-merge shared-dev checklist (lane D). FOR THE OWNER: shared dev is human-run
+Agents neither submit jobs to shared dev nor read its `admin-api-key`. Steps 1, 3 and 4 are yours. Step 2 is read-only, and lane D can do it once you send the job id.
+
+0. **Pre-check that the flag reached the workers** (read-only). This must print `cad-repair-investigation-trace` = `true`:
+   ```
+   gcloud compute instance-templates list --project hexera-dev --filter="name~^dev-worker" --sort-by=~creationTimestamp --limit 1 --format=json \
+     | python3 -c "import json,sys;[print(i['key'],'=',i['value']) for i in json.load(sys.stdin)[0]['properties']['metadata']['items'] if 'investigation' in i['key']]"
+   ```
+1. **Submit one part** through the shared-dev console, https://dev-console-s7toqcfd3a-uc.a.run.app:
+   - Part: `abc/00502475_5895e91efca3da0f6b68639a_step_003.step`, sha256 `81708e24669d635d5f45657ba8fa1730f7880809e504da56f4b3c53153b458cf`. It is in the mesh-fail corpus (on the owner's Mac: `~/Downloads/mesh-fail-corpus-for-areen/abc/`). On crsv3 it repaired, traced and meshed in about 19 min (job a713057e).
+   - Chat: "I need a solid volume mesh of this part for a static stress FEA. Use the default settings."
+   - Press Proceed on the geometry check, answer "yes" to the confirmation, and wait for a terminal status.
+   - Note the job id: it is on the job page and in the admin Activity list.
+2. **Read the artifacts** (read-only):
+   ```
+   J=<job id>
+   gcloud storage ls gs://hexera-dev-artifacts-224734058693/jobs/$J/
+   gcloud storage cat "$(gcloud storage ls gs://hexera-dev-artifacts-224734058693/jobs/$J/ | grep repair_report)" \
+     | python3 -c "import json,sys;r=json.load(sys.stdin);a=r.get('repair_attempt') or {};m=a.get('measurements') or (a.get('detail') or {}).get('measurements') or {};print(json.dumps(m.get('investigation_trace'),indent=1))"
+   gcloud storage cat "$(gcloud storage ls gs://hexera-dev-artifacts-224734058693/jobs/$J/ | grep investigation-trace)" | head -20
+   ```
+   Expect:
+   - an `investigation-trace-<sha16>.jsonl`;
+   - in the report, `investigation_trace` with `outcomes[]` (region, end, form, edits, `why_no_package`, `packages[]`), `transcript.object_key` pointing at that JSONL, and no `lines` key and no `review_reason` anywhere in it.
+3. **The admin API**, with the shared-dev admin key you supply:
+   ```
+   curl -s -H "X-Admin-Key: <ADMIN_API_KEY>" \
+     "https://dev-api-s7toqcfd3a-uc.a.run.app/api/v1/admin/ops/jobs/$J/repair-trace" | python3 -m json.tool | head -60
+   ```
+   Expect 200 with:
+   - `outcomes` matching step 2;
+   - `transcript.object_key`;
+   - `lines` equal to the JSONL's lines (kinds `driver` / `model` / `call` / `end`; `call` lines with an `edit` carry status, reason and kept);
+   - `handback`, only if the mesher handed back.
+
+   A 404 `no investigation trace for this run` means the flag was off on the worker that ran the job (see step 0) or no investigator ran.
+4. **The admin page.** Open https://dev-admin-s7toqcfd3a-uc.a.run.app/activity, find the run and click **why**, or go straight to https://dev-admin-s7toqcfd3a-uc.a.run.app/jobs/$J/why. Below the decisions, the **"Repair investigation"** panel ("per region: how it ended, and why no package") shows:
+   - one table row per investigated region, with columns Region, Tier, Ending (e.g. `concluded (escalate)`), Tool / model calls, Seconds, Edits tried / kept, Rolled back, and Why no package (a package that was concluded shows "a package was concluded");
+   - a "Per-turn trace (N lines, jobs/$J/investigation-trace-….jsonl)" expander holding the JSONL.
+
+   A second panel, "Repair investigation after the mesh failed", appears only if a handback ran. For comparison, on crsv3 this part gave one row: region 15, `concluded (escalate)`, 0 / 0 edits.
