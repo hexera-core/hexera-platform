@@ -262,7 +262,7 @@ def _conclude_schema(shadow: bool = False):
     from meshpipeline.contracts.model_inference import ToolSchema
 
     properties = {**_CONCLUDE_PROPERTIES}
-    if clone_freedom():
+    if clone_freedom() and not shadow:
         # NOT OFFERED, STILL HANDLED. The owner's policy: escalation is what happens when the
         # whole job fails, never a per-region exit - and a form that needs only a sentence, while
         # `package` needs a kept edit, is the exit every region took (538 of 623 on wave 1). A
@@ -335,7 +335,15 @@ def system_prompt(*, prose: str = "", shadow: bool = False) -> str:
     the posture does not declare cannot be built.
     """
     template = SHADOW_SYSTEM if shadow else INVESTIGATOR_SYSTEM
-    text = template.format(catalogue=catalogue_text(), roster=_roster(shadow))
+    # THE CATALOGUE THE CLONE WILL ACTUALLY ACCEPT. Under the live posture the clone's validator
+    # admits every operation (`model_author.PackageGuards._catalogue`), so a roster built from the
+    # deployment's consent flags would name fewer than the model may use - and an operation it is
+    # never told about is one it can only reach by guessing the name. A SHADOW has no clone, so it
+    # keeps the deployment's own catalogue.
+    free = clone_freedom() and not shadow
+    catalogue = (catalogue_text(split_closed_faces=True, fragment_bodies=True, rebuild_face=True,
+                                close_wire_gaps=True) if free else catalogue_text())
+    text = template.format(catalogue=catalogue, roster=_roster(shadow))
     if not shadow and clone_freedom():
         text = f"{text}\n{AGGRESSIVE_RULE}"
     return f"{text}\n{prose}" if prose else text
@@ -1233,7 +1241,10 @@ def _conclude(args: object, inv: _Investigation, *, ctx, scratch, region: Region
     form, body = forms[0], args[forms[0]]
 
     if form == "escalate":
-        if clone_freedom():
+        # A SHADOW HAS NO CLONE, so "keep working on the copy" is advice it cannot take and
+        # `escalate` is one of its two honest answers. The live posture is about what an
+        # investigation with a disposable copy may do, and it must not reach in here.
+        if clone_freedom() and not shadow:
             # NOT A CONCLUSION AT ALL under the owner's policy: escalation is what happens when
             # the whole JOB fails, and a region cannot choose it. Taking it out of the schema was
             # not enough - on wave 3, 379 regions sent the form from memory and the driver

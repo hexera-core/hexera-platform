@@ -949,3 +949,26 @@ def test_an_escalate_is_still_a_conclusion_with_the_posture_off(wired, monkeypat
     assert author(REGION, DEFECTS, ()) is None
     assert author.investigations[-1]["conclusion"]["form"] == "escalate"
     assert author.escalations == [{"region": 0, "reason": "needs a person"}]
+
+
+def test_the_prompt_lists_every_operation_the_clone_will_actually_accept(monkeypatch):
+    """ALLOWED REPAIRS MUST NOT STAY HIDDEN. The clone's validator admits the whole catalogue
+    under the live posture, so a roster built from the deployment's consent flags told the model
+    about fewer operations than it may use - and an operation it is never told about is one it can
+    only reach by guessing the name."""
+    import meshpipeline.settings.cad_repair as settings
+
+    for flag in ("CAD_REPAIR_SPLIT_CLOSED_FACES", "CAD_REPAIR_FRAGMENT_BODIES",
+                 "CAD_REPAIR_REBUILD_FACE", "CAD_REPAIR_CLOSE_WIRE_GAPS"):
+        monkeypatch.setattr(settings, flag, False, raising=False)
+
+    monkeypatch.setattr(settings, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "off", raising=False)
+    off = inv.system_prompt()
+    assert "fragment_bodies" not in off and "rebuild_face" not in off
+
+    monkeypatch.setattr(settings, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "live", raising=False)
+    live = inv.system_prompt()
+    for name in ("fragment_bodies", "rebuild_face", "close_wire_gaps", "split_closed_faces"):
+        assert name in live, name
+    # The SHADOW prompt keeps the deployment's own catalogue: it has no clone to be free with.
+    assert "fragment_bodies" not in inv.system_prompt(shadow=True)

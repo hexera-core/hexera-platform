@@ -539,3 +539,27 @@ def test_the_shadow_conclude_schema_requires_the_plan_it_handles():
     assert "plan" in shadow_pkg["properties"]
     assert "plan" in shadow_pkg.get("required", ())
     assert "plan" in shadow_pkg["description"]
+
+
+# --- the live posture must not reach into the shadow posture ----------------------------------
+def test_a_shadow_may_still_conclude_escalate_under_the_live_posture(watching, monkeypatch):
+    """A SHADOW HAS NO CLONE. It cannot try an operation, so "keep working on the copy" is advice
+    it cannot take, and `escalate` is one of its two honest answers. Refusing it there turned a
+    legitimate conclusion into a refusal, and three of those into a runaway."""
+    import meshpipeline.settings.cad_repair as settings
+
+    monkeypatch.setattr(settings, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "live", raising=False)
+    author, _, _ = watching(repeat=conclude(escalate={"reason": "a person is needed"}))
+
+    assert author(REGION, DEFECTS, ()) is None
+    record = author.investigations[-1]
+    assert record["conclusion"]["form"] == "escalate", record
+    assert record["end"] == "concluded"
+
+
+def test_the_shadow_schema_still_offers_escalate_under_the_live_posture(monkeypatch):
+    import meshpipeline.settings.cad_repair as settings
+
+    monkeypatch.setattr(settings, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "live", raising=False)
+    offered = {s.name: s for s in inv._native_schemas(True)}["conclude"]
+    assert "escalate" in offered.parameters["properties"]
