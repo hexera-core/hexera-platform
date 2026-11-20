@@ -91,7 +91,12 @@ class Measure:
             diagonal_mm=float(payload.get("diagonal_mm", 0.0) or 0.0),
             max_tolerance_mm=float(payload.get("max_tolerance_mm", 0.0) or 0.0),
             surface_area_mm2=float(payload.get("surface_area_mm2", 0.0) or 0.0),
-            volume_mm3=float(payload.get("volume_mm3", 0.0) or 0.0))
+            volume_mm3=float(payload.get("volume_mm3", 0.0) or 0.0),
+            # ABSENT MEANS NOT MEASURED, which is what an older report carries and what every
+            # reader of this field already treats as unknown. Dropping it here would lose a real
+            # measurement silently, and `solid_change` would say `known: False` about a shape
+            # whose bodies WERE measured.
+            solid_volumes=tuple(float(v) for v in payload.get("solid_volumes") or ()))
 
 
 def measure(shape) -> Measure:

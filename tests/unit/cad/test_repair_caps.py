@@ -386,6 +386,19 @@ def _with_solids(volumes, **fields) -> Measure:
                     volume_mm3=float(sum(volumes)), **fields)
 
 
+def test_a_round_trip_keeps_the_per_body_volumes():
+    """`from_dict` rebuilds a recorded measurement, and anything it drops is lost SILENTLY - the
+    reader would see `known: False` and read it as "nobody measured the bodies" when the truth is
+    "the measurement did not survive being written down"."""
+    from meshpipeline.cad.repair.caps import Measure
+
+    measured = _with_solids([8000.0, 0.94])
+
+    assert Measure.from_dict(measured.to_dict()) == measured
+    # And an older report, which never had the key, still rebuilds as "not measured".
+    assert Measure.from_dict(_SOUND.to_dict()).solid_volumes == ()
+
+
 def test_a_new_body_is_told_from_a_split_body():
     from meshpipeline.cad.repair.caps import solid_change
 
