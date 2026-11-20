@@ -96,10 +96,16 @@ def run_engine_local(workspace: Any, *, engine: str, timeout: int) -> dict:
     # and an EnSight case, written here where OpenFOAM's converters are - the user picks at download.
     # Inside what is left of the run's wall; a run that built nothing only loses a previous pass's files.
     from meshpipeline.engines.cfd_exports import after_run as cfd_exports
+    # THE STEPS AFTER THE MESHER, TIMED: a tube bank's run spent 12.8 minutes between its exports and
+    # the driver's verdict with nothing logged (CFD board, 20 Nov) - each step's seconds now ride home
+    _t_mesh = time.monotonic()
     exports = cfd_exports(workspace, engine=engine, result=out, bashrc=_DEFAULT_BASHRC,
                           left_s=float(timeout) - (time.monotonic() - started))
+    _stamps = {"mesher_s": round(_t_mesh - started, 1),
+               "exports_s": round(time.monotonic() - _t_mesh, 1)}
     if exports and isinstance(out, dict):
         out["cfd_exports"] = exports
+    _t_scope = time.monotonic()
     # WHAT RIDES HOME (engines/return_scope.py): the workspace is archived and extracted under a
     # size ceiling after this; scratch and, when it would not fit, the optional volume export stay
     # behind - a built mesh is never lost on the way back for a file the delivery can do without
@@ -121,6 +127,10 @@ def run_engine_local(workspace: Any, *, engine: str, timeout: int) -> dict:
             out["returned_bytes"] = returned_bytes(workspace)
         except Exception:  # noqa: BLE001 - a measurement, never a reason to fail a run
             pass
+        _stamps["return_scope_s"] = round(time.monotonic() - _t_scope, 1)
+        out["post_mesh_s"] = _stamps
+        import logging
+        logging.getLogger(__name__).info("%s: after the mesher (s): %s", engine, _stamps)
     return out
 
 

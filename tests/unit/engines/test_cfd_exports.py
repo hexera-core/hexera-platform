@@ -320,6 +320,10 @@ def test_every_engine_run_writes_its_exports_before_it_goes_home(tmp_path, monke
     out = D.run_engine_local(ws, engine="netgen", timeout=600)
     assert out["cfd_exports"] == {"files": {"x": {}}}
     assert seen["engine"] == "netgen" and 590 < seen["left_s"] <= 600
+    # the steps after the mesher are timed and ride home with the result (12.8 unlogged minutes on
+    # the CFD board's tube bank, 20 Nov)
+    assert set(out["post_mesh_s"]) == {"mesher_s", "exports_s", "return_scope_s"}
+    assert all(v >= 0.0 for v in out["post_mesh_s"].values())
 
 
 def test_a_big_export_stays_in_the_bucket_and_one_too_big_to_send_home_is_left_out(tmp_path, monkeypatch):
