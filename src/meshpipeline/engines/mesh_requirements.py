@@ -1708,6 +1708,10 @@ def decided_asks(sec: Mapping | None, *, skip: tuple[str, ...] = ()) -> list[str
            if isinstance(r, Mapping) and r.get("asked") and not str(r.get("field") or "").startswith(skip)]
     out += [str(d) for d in sec.get("dropped") or [] if str(d).strip()]
     out += [f'"{_short(str(q))}" (no setting of ours matches it)' for q in sec.get("not_applied") or [] if str(q).strip()]
+    # NOTE-15: an ask the product acted on outside the reading (the engine the notes name) is decided too
+    out += [f'"{_short(str(q))}" ({str(e["line"]).removeprefix("From your notes: ").rstrip(".")})'
+            for e in sec.get("acted") or [] if isinstance(e, Mapping) and e.get("line")
+            for q in (e.get("quotes") or [])[:1] if str(q).strip()]
     # NOTE-14: how strict the limits are is the rules' too - held on the limits it names, told with them
     out += [f'"{_short(str(e["quote"]))}" (how strict the limits are: the rules hold the limits it names to it)'
             for e in req.get("strictness") or [] if isinstance(e, Mapping) and str(e.get("quote") or "").strip()]
@@ -1795,6 +1799,7 @@ def write(workspace, sec: Mapping | None) -> bool:
         # (a pick on the stage, STD-4, is kept too: the result says which elements were made and why)
         # (and a strictness: every step reads it as the rules', so no AI step's remark speaks for it, NOTE-14)
         if (requirements_of(sec) is None and not told_words(sec) and not (sec or {}).get("stage")
+                and not (sec or {}).get("acted")
                 and not ((sec or {}).get("requirements") or {}).get("strictness")):
             path.unlink(missing_ok=True)
             return False
