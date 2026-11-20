@@ -287,3 +287,127 @@ def test_contact_search_respects_budget(monkeypatch):
     # And through mesh_defects the whole call stays unlocated at a spent budget.
     (defect,) = mp.mesh_defects(shape, diagonal_mm=17.3, budget_s=0.0)
     assert defect.entity_index == 0 and "located_by" not in defect.measurements
+
+
+# --- surface-mesh clash: gmsh's PLC names nothing, the clashing triangles do -------------------
+
+def _clash_probe(monkeypatch, *, failure, clashes, contact_calls):
+    """mesh_defects over a real 2-box compound; gmsh's answer faked WITH a clash report and tag
+    boxes equal to the OCC faces' own, so tag N is face N."""
+    pytest.importorskip("OCP.BRepTools", reason="the CAD kernel is a native-tier dependency")
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCP.gp import gp_Pnt
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopoDS import TopoDS_Compound
+
+    from meshpipeline.cad.repair import mesh_probe
+    from meshpipeline.cad.repair.localize import _indexed
+    from meshpipeline.cad.repair.mesh_probe import ProbeResult
+
+    builder, shape = BRep_Builder(), TopoDS_Compound()
+    builder.MakeCompound(shape)
+    for x in (0.0, 5.0):          # overlapping boxes: a real interference
+        builder.Add(shape, BRepPrimAPI_MakeBox(gp_Pnt(x, 0, 0), 10, 10, 10).Shape())
+    boxes = mesh_probe._face_boxes(_indexed(shape, TopAbs_FACE))
+    monkeypatch.setattr(mesh_probe, "probe_file",
+                        lambda path, **kw: ProbeResult(False, 0, failure, boxes, clashes))
+
+    def no_contact(*a, **kw):
+        contact_calls.append(1)
+        return None
+
+    monkeypatch.setattr(mesh_probe, "_contact_support_faces", no_contact)
+    return mesh_probe, shape
+
+
+def test_plc_with_no_point_is_located_by_the_clashing_triangles(monkeypatch):
+    from meshpipeline.cad.repair.mesh_clash import Clash
+    from meshpipeline.cad.repair.mesh_probe import MeshFailure
+
+    calls: list = []
+    failure = MeshFailure(EDGE_THROUGH_FACE, (), None, _PLC_BARE, stage="3d")
+    mesh_probe, shape = _clash_probe(monkeypatch, failure=failure, contact_calls=calls,
+                                     clashes=(Clash((2, 7), 12, (5.0, 5.0, 5.0), "crossing"),))
+
+    found = mesh_probe.mesh_defects(shape, diagonal_mm=20.6, budget_s=60.0)
+
+    assert [d.entity_index for d in found] == [2, 7]
+    assert all(d.code.value == "mesh_edge_through_face" and d.fingerprint
+               and d.measurements["stage"] == "3d" for d in found)
+    assert all(d.measurements["located_by"] == mesh_probe.LOCATED_BY_CLASH
+               == "surface-mesh-clash" for d in found)
+    assert found[0].measurements["clash_pairs"] == [[2, 7]]
+    assert found[0].measurements["clash_kind"] == "crossing"
+    assert calls == []            # evidence first: the contact inference was never needed
+
+
+def test_overlap_tags_gmsh_could_not_map_fall_back_to_the_clash(monkeypatch):
+    from meshpipeline.cad.repair.mesh_clash import Clash
+    from meshpipeline.cad.repair.mesh_probe import MeshFailure
+
+    failure = MeshFailure(OVERLAPPING_FACETS, (999,), None,
+                          "Invalid boundary mesh (overlapping facets) on surface 999",
+                          stage="3d")
+    mesh_probe, shape = _clash_probe(monkeypatch, failure=failure, contact_calls=[],
+                                     clashes=(Clash((3, 9), 4, (1.0, 1.0, 1.0), "coplanar"),))
+
+    found = mesh_probe.mesh_defects(shape, diagonal_mm=20.6, budget_s=60.0)
+
+    assert [d.entity_index for d in found] == [3, 9]
+    assert all(d.code.value == "mesh_overlapping_facets" for d in found)
+
+
+def test_no_clash_still_falls_back_to_contact(monkeypatch):
+    from meshpipeline.cad.repair.mesh_probe import MeshFailure
+
+    calls: list = []
+    failure = MeshFailure(EDGE_THROUGH_FACE, (), None, _PLC_BARE, stage="3d")
+    mesh_probe, shape = _clash_probe(monkeypatch, failure=failure, clashes=(),
+                                     contact_calls=calls)
+    (defect,) = mesh_probe.mesh_defects(shape, diagonal_mm=20.6, budget_s=60.0)
+    assert defect.fingerprint == "" and calls == [1]
+
+
+def test_a_clash_records_the_kernel_gap_between_its_faces(monkeypatch):
+    # A clash between faces that do not meet in the B-rep is the coarse surface mesh's chord
+    # cutting across a thin gap: a mesher-side cause. The gap is evidence the author can read.
+    from meshpipeline.cad.repair.mesh_clash import Clash
+    from meshpipeline.cad.repair.mesh_probe import MeshFailure
+
+    failure = MeshFailure(EDGE_THROUGH_FACE, (), None, _PLC_BARE, stage="3d")
+    # Box 1 spans x 0..10, box 2 x 5..15; face 1 is box 1's x=0 wall, face 8 box 2's x=15 wall.
+    mesh_probe, shape = _clash_probe(monkeypatch, failure=failure, contact_calls=[],
+                                     clashes=(Clash((1, 8), 3, (5.0, 5.0, 5.0), "crossing"),))
+    found = mesh_probe.mesh_defects(shape, diagonal_mm=20.6, budget_s=60.0)
+
+    gaps = {d.measurements["clash_gap_mm"] for d in found}
+    assert len(gaps) == 1
+    (gap,) = gaps
+    assert gap is not None and abs(gap - 15.0) < 1e-6
+
+
+def test_each_face_carries_its_own_clash_measurements(monkeypatch):
+    # Greptile #495: every face took the FIRST pair's gap, kind and point, so a face whose pair
+    # really meets could read as another pair's sizing gap.
+    from meshpipeline.cad.repair.mesh_clash import Clash
+    from meshpipeline.cad.repair.mesh_probe import MeshFailure
+
+    failure = MeshFailure(EDGE_THROUGH_FACE, (), None, _PLC_BARE, stage="3d")
+    # Pair (1, 8): 15 mm apart. Pair (2, 9): box 1's x=10 wall crosses box 2's y=0 floor, gap 0.
+    mesh_probe, shape = _clash_probe(monkeypatch, failure=failure, contact_calls=[],
+                                     clashes=(Clash((1, 8), 5, (5.0, 5.0, 5.0), "crossing"),
+                                              Clash((2, 9), 2, (10.0, 0.0, 5.0), "coplanar")))
+    by_face = {d.entity_index: d.measurements
+               for d in mesh_probe.mesh_defects(shape, diagonal_mm=20.6, budget_s=60.0)}
+
+    assert set(by_face) == {1, 2, 8, 9}
+    for face in (1, 8):
+        assert by_face[face]["clash_gap_mm"] == pytest.approx(15.0)
+        assert by_face[face]["clash_kind"] == "crossing"
+        assert by_face[face]["clash_pair"] == [1, 8]
+    for face in (2, 9):
+        assert by_face[face]["clash_gap_mm"] == pytest.approx(0.0, abs=1e-9)
+        assert by_face[face]["clash_kind"] == "coplanar"
+        assert by_face[face]["clash_point"] == [10.0, 0.0, 5.0]
+        assert by_face[face]["clash_pair"] == [2, 9]

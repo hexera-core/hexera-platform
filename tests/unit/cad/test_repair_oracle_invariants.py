@@ -38,6 +38,7 @@ V3_MODULES = [
     "cad/repair/investigation_trace.py",
     "cad/repair/investigator.py",
     "cad/repair/tournament.py",
+    "cad/repair/mesh_clash.py",
     "cad/repair/investigator_budget.py",
     "cad/repair/review_tier.py",
     "cad/repair/memory.py",
