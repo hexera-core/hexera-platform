@@ -443,7 +443,10 @@ def configure_mesh(workspace, *, strategy: dict, wall_patch: str = "",
     from meshpipeline.engines import cfd_requirements as CR
     _ask = CR.Ask.of(ws, "vmtk")
     if _ask is not None:
-        s = CR.vmtk_spec(_ask, s)
+        # CFDREQ-12: the vessel's median radius is the reference its layer stack is a share of
+        _staged = read_staging(ws) or {}
+        _r = (_staged.get("radius_m") or {}).get("median") if isinstance(_staged.get("radius_m"), dict) else None
+        s = CR.vmtk_spec(_ask, s, radius_m=float(_r) if _r else None)
     # THE RESOLUTION LADDER'S RUNG (engines/resolution_policy, LAD-cfd-1): a retry after a sound
     # fill short of the floor puts `factor` times the cells across every passage - the edge factor
     # is the local radius' share, so the fill stays local to each passage's own width (PLAN-cfd-1)

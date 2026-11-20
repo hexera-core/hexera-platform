@@ -69,7 +69,8 @@ def test_snappy_sizes_the_first_layer_from_the_conditions(tmp_path):
     ask.length_m, ask.length_from = 0.05, "the bore"
     text, _s = _snappy(tmp_path / "c", ask)
     h = re_num(text, "firstLayerThickness")
-    expected, missing, _how = CR.y_plus_height(1.0, {"velocity_ms": 1.0, "fluid": "water"}, length_m=0.05)
+    expected, missing, _how = CR.y_plus_height(1.0, {"velocity_ms": 1.0, "fluid": "water", "flow": "internal"},
+                                               length_m=0.05)
     assert missing == [] and math.isclose(h, expected, rel_tol=1e-4)
     assert ask.rows["c1"]["status"] == "applied" and "first layer" in ask.rows["c1"]["built"]
 
@@ -81,7 +82,10 @@ def test_cfmesh_and_netgen_take_it_and_the_engines_without_layers_say_so():
     assert out["first_layer_thickness"] > 0 and a.rows["c1"]["status"] == "applied"
     a = CR.Ask(req, "netgen")
     out = CR.netgen_inputs(a, layers=3, port_diameters=[0.05], soft_budget=1_000_000, cell_limit=8_000_000)
-    assert out["first_layer"] > 0 and a.rows["c1"]["status"] == "applied"
+    # CFDREQ-12: Netgen's length here is the 50 mm port - Re 3.3e4 round a body is laminar: no wall-function target,
+    # said on the row, and the layers keep Netgen's own sizing
+    assert "first_layer" not in out and a.rows["c1"]["status"] == "applied"
+    assert "laminar at these conditions" in a.rows["c1"]["built"]
     for engine, fn in (("gmsh", lambda x: CR.gmsh_sizes(x, 0.01, external=True)),
                        ("snapgrid", lambda x: CR.snapgrid_plan(x, {"max_cells": 1_000_000})),
                        ("vmtk", lambda x: CR.vmtk_spec(x, {"boundary_layers": 5}))):
@@ -206,29 +210,37 @@ ACCEPTED_FUNCTIONS = ("Internal flow through the diffuser, confirmed by the user
                       + f" {FC.ACCEPTED_LEAD} the fluid, its speed, the wall treatment.")
 
 
-@pytest.mark.parametrize(("job", "wall_cell_mm", "y50_first_mm"), [
-    ("07fd516d", 1.716, 1.348),       # no-notes external rotor: 5.7% of the wall had layers
-    ("8eec5b7b", 1.716, 1.348),       # the same file with a note the checks set aside: 5.59%
-    ("c0b45ad1", 2.352, 0.989),       # diffuser plenum: 4.18%
+@pytest.mark.parametrize(("job", "wall_cell_mm", "y50_first_mm", "built"), [
+    ("07fd516d", 1.716, 1.348, "resolved"),     # no-notes external rotor: 5.7% of the wall had layers
+    ("8eec5b7b", 1.716, 1.348, "resolved"),     # the same file with a note the checks set aside: 5.59%
+    ("c0b45ad1", 2.352, 0.989, "functions"),    # diffuser plenum: 4.18%
 ])
-def test_proposed_wall_functions_only_accepted_keep_the_meshers_own_layers(job, wall_cell_mm, y50_first_mm):
-    """F: pressing OK on the proposed conditions made an absolute y+ 50 first layer about as thick as the wall cells;
-    snappyHexMesh grew it on 4-6% of the wall. Accepted, it is no ask: the mesher's own relative layers (5 layers, the
-    last 0.3 of the cell, growing 1.2) stay, as on main - a first layer 0.145 of the wall cell, which it grows on the
-    whole wall."""
+def test_proposed_wall_functions_accepted_are_fitted_to_the_wall_cells(job, wall_cell_mm, y50_first_mm, built):
+    """CFDREQ-12 (was round 4, F): pressing OK on the proposed wall functions made an absolute y+ 50 first layer about
+    as thick as the wall cells, which snappyHexMesh grew on 4-6% of the wall; keeping the mesher's relative layers
+    instead put the first cell at y+ 3-14 (the CFD board, 20 Nov). Now the accepted wall functions are an ask, fitted
+    to the wall cells: a first layer that fits stays (one layer at most 0.6 of the cell, its centre at y+ 30 or more);
+    where none fits, the wall is resolved - never a stack several cells deep."""
     c = FC.read(ACCEPTED_FUNCTIONS)
     assert c["wall"] == "functions" and c["wall_said"] is False
-    assert FC.PROPOSED_WORDS in ACCEPTED_FUNCTIONS and "sized for y⁺ ≈ 50" not in ACCEPTED_FUNCTIONS
-    none = MR.section("none")
-    assert CR.with_conditions(none, {"request_txt": ACCEPTED_FUNCTIONS}) is none        # no Ask: main's own case
-    first = 0.3 * wall_cell_mm / 1.2 ** 4
-    assert first / wall_cell_mm == pytest.approx(0.1447, abs=1e-3) and first < y50_first_mm
-    # a y+ the user typed is still theirs, sized at the conditions' speed (CFDREQ-8), and made one the mesher keeps
+    assert FC.PROPOSED_WORDS in ACCEPTED_FUNCTIONS and "resolved instead" in FC.PROPOSED_WORDS
+    req = MR.requirements_of(CR.with_conditions(MR.section("none"), {"request_txt": ACCEPTED_FUNCTIONS}))
+    assert req["layers"]["y_plus"] == 50.0 and req["layers"]["treatment"] == "functions"
+    ask = CR.Ask(req, "snappy")
+    ask.how = {"visc_m": y50_first_mm / 1000.0 / 50.0}        # the job's y+ 50 height: its viscous length
+    fit = CR.wall_fit(ask, 2 * y50_first_mm / 1000.0, wall_cell_mm / 1000.0)
+    assert fit["treatment"] == built
+    if built == "functions":
+        assert fit["first_m"] <= 0.6 * wall_cell_mm / 1000.0 + 1e-12 and fit["y_plus"] >= 30
+    else:
+        assert fit["y_plus"] == pytest.approx(0.5) and "do not suit" in fit["why"]       # y+ 1 at the top
+    # a y+ the user typed is still theirs, sized at the conditions' speed (CFDREQ-8)
     req, _d, _na = _read("y+ of 1 at the wall",
                          layers=[{"what": "y_plus", "value": 1, "unit": "none", "quote": "y+ of 1 at the wall"}])
     got = MR.requirements_of(CR.with_conditions(MR.section("used", requirements=req),
                                                 {"request_txt": ACCEPTED_FUNCTIONS}))
     assert got["layers"]["y_plus"] == 1.0 and got["physics"]["velocity_ms"] == 1.0
+    assert got["layers"].get("treatment") is None                 # theirs: no wall-treatment fit
     # a wall treatment the user chose is an ask, as before
     assert FC.read(INT_RESOLVED)["wall_said"] is True
     assert MR.requirements_of(CR.with_conditions(MR.section("none"), {"request_txt": INT_RESOLVED}))["layers"][

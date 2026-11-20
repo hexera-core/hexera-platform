@@ -22,6 +22,9 @@
               dictionary or mesh.
     CFDREQ-8  THE FLOW CONDITIONS the user confirmed (fluid, speed, wall treatment) size the first layer as a y+
               in the notes would; the notes' own layer values win (with_conditions).
+    CFDREQ-12 THE WALL TREATMENT accepted ("OK": wall functions) or chosen (resolved) is a y+ at the first cell's
+              centre, from the flow's own length (a passage's hydraulic diameter, a body's length), fitted to the wall
+              cells: inside the wall-function band, else the nearest in it, else a resolved wall - said (wall_fit).
 """
 from __future__ import annotations
 
@@ -46,6 +49,7 @@ RULE_LAYERS = "CFDREQ-4"
 RULE_LIMITS = "CFDREQ-5"
 RULE_REPORT = "CFDREQ-6"
 RULE_SAME = "CFDREQ-7"
+RULE_WALL = "CFDREQ-12"
 ROUTE = MR.FLOW
 CONSUMER = "mesh_requirements"
 #: each CFD engine's lane in the controls registry (contracts/mesh_controls.LANES): gmsh's flow lane is its own
@@ -202,16 +206,52 @@ def skin_friction(re_number: float) -> float:
     return 0.026 * float(re_number) ** (-1.0 / 7.0)
 
 
+#: CFDREQ-12: below these Reynolds numbers the flow is laminar (or transitional): no wall-function target exists
+RE_LAMINAR_PIPE = 2300.0          # on the passage's hydraulic diameter
+RE_LAMINAR_PLATE = 5.0e5          # on the body's length (flat-plate transition)
+
+
+def friction(re_number: float, *, internal: bool) -> tuple[float, bool, str]:
+    """CFDREQ-12: (the turbulent skin-friction coefficient the first layer is sized with, laminar?, the estimate's
+    name). A passage: the smooth-pipe friction factor on its hydraulic diameter, as a Fanning coefficient (Blasius
+    below Re 1e5, Haaland above); a body: the flat plate on its length (Cf = 0.026 Re^-1/7). The height is always
+    sized with the turbulent estimate - thinner than a laminar one, so a y+ asked is never overshot near transition;
+    laminar (Re under 2300 in a passage, 5e5 on a body) says that the flow has no wall-function target at all."""
+    re_n = max(float(re_number), 1.0)
+    if internal:
+        laminar = re_n < RE_LAMINAR_PIPE
+        if re_n < 1.0e5:
+            return 0.316 * re_n ** -0.25 / 4.0, laminar, "smooth-pipe friction (Blasius)"
+        return (1.0 / (-1.8 * math.log10(6.9 / re_n))) ** 2 / 4.0, laminar, "smooth-pipe friction (Haaland)"
+    return skin_friction(re_n), re_n < RE_LAMINAR_PLATE, "flat-plate skin friction"
+
+
+#: CFDREQ-12: from this y+ up the target is the first cell's CENTRE (the y+ the solver reports): wall functions'
+#: 50, a typed 30 - their height at the target would put the centre at half of it, in the buffer layer. Under it (a
+#: resolved wall's y+ 1, typed or chosen) the target is the cell's full height, so its centre sits at about half -
+#: the safe side for a resolved wall, on an estimate good to a factor of two
+Y_PLUS_AT_CENTRE_FROM = 5.0
+#: the buffer layer: neither wall functions nor a resolved wall is accurate with the first cell centre in it
+BUFFER_LAYER = (5.0, 30.0)
+
+
 def y_plus_height(y_plus: float, physics: Mapping | None, *, length_m: float | None = None,
                   length_from: str = "") -> tuple[float | None, list[str], dict]:
-    """(the first layer height in metres for this y+, the numbers missing for it, how it was worked out). The
-    reference length is the notes' own, else `length_m` (the case's: the user's ruler, else the body's length
-    along the flow, said by `length_from`)."""
+    """(the first layer height in metres for this y+, the numbers missing for it, how it was worked out). CFDREQ-12:
+    a y+ of 5 or more is the one the solver reports, at the first cell's CENTRE (the height is twice y+ nu / u_tau);
+    under 5 it is the cell's full height (y+ nu / u_tau), as it always was. A flow
+    through a part takes its Reynolds number on the passage's hydraulic diameter (the conditions' inlet, in
+    `physics`) and the smooth-pipe friction; a flow round a body on the reference length - the notes' own, else
+    `length_m` (the case's: the user's ruler, else the body's length along the flow, said by `length_from`) - and the
+    flat plate."""
     ph = dict(physics or {})
     U, nu, Re = ph.get("velocity_ms"), ph.get("nu_m2s"), ph.get("reynolds")
     if nu is None and ph.get("fluid") in NU:
         nu = NU[str(ph["fluid"])]
+    internal = ph.get("flow") == "internal"
     L, said_L = ph.get("length_m"), "the length in your notes"
+    if L is None and internal and ph.get("hydraulic_diameter_m"):
+        L, said_L = float(ph["hydraulic_diameter_m"]), "the inlet's hydraulic diameter"
     if L is None and length_m:
         L, said_L = float(length_m), length_from or "the body's length"
     missing = []
@@ -226,13 +266,26 @@ def y_plus_height(y_plus: float, physics: Mapping | None, *, length_m: float | N
         return None, missing, {}
     length = float(L or 0.0)
     re_n = float(Re) if Re is not None else float(U or 0.0) * length / float(nu or 1.0)
-    cf = skin_friction(re_n)
+    cf, laminar, basis = friction(re_n, internal=internal)
     if U is not None and nu is not None:
-        h = float(y_plus) * float(nu) / (float(U) * math.sqrt(cf / 2.0))
+        visc = float(nu) / (float(U) * math.sqrt(cf / 2.0))          # nu / u_tau, the wall's viscous length
     else:
-        h = float(y_plus) * length / (re_n * math.sqrt(cf / 2.0))
+        visc = length / (re_n * math.sqrt(cf / 2.0))
+    centre = float(y_plus) >= Y_PLUS_AT_CENTRE_FROM
+    h = (2.0 if centre else 1.0) * float(y_plus) * visc
     return h, [], {"reynolds": float(f"{re_n:.4g}"), "cf": float(f"{cf:.4g}"), "length_m": length,
-                   "length_from": said_L, "first_m": float(f"{h:.4g}")}
+                   "length_from": said_L, "first_m": float(f"{h:.4g}"), "laminar": laminar, "friction": basis,
+                   "first_exact_m": h, "visc_m": visc, "at_centre": centre}
+
+
+def y_plus_of(height_m: float, how: Mapping, y_plus: float | None = None) -> float:
+    """The y+ at the CENTRE of a first cell `height_m` high, by the same estimate (y_plus_height's `how`). `y_plus` is
+    the target the height was sized for - used only when `how` predates the viscous length."""
+    visc = how.get("visc_m")
+    if visc:
+        return 0.5 * float(height_m) / float(visc)
+    ref = how.get("first_exact_m") or how.get("first_m") or 0.0
+    return float(y_plus or 0.0) * float(height_m) / max(float(ref), 1e-30)
 
 
 # #
@@ -257,21 +310,29 @@ def with_conditions(sec: dict, state) -> dict:
     c = FC.read(str(s.get("request_txt") or ""), s.get("intake_patches") or [])
     if c is None:
         return sec
-    if not c.get("wall_said", True) and c["wall"] == "functions":
-        # THE PROPOSAL ONLY ACCEPTED IS NO ASK (round 4, F): pressing OK on the proposed wall functions made an
-        # absolute y+ 50 first layer about as thick as the wall cells, which snappyHexMesh grew on 4-6% of the wall
-        # (jobs 07fd516d, 8eec5b7b, c0b45ad1); the mesher's own relative layers grow on all of it. A y+, first layer or
-        # wall treatment the user gave themselves stays an ask (below, and CFDREQ-9 makes it one the mesher keeps).
-        # Their speed and fluid still reach a y+ of their own notes.
-        req0 = (sec.get("requirements") or {}) if sec.get("status") == "used" else {}
-        lay0, ph0 = req0.get("layers") or {}, req0.get("physics") or {}
-        if lay0.get("y_plus") is None or (ph0.get("velocity_ms") is not None and ph0.get("fluid") is not None):
-            return sec
+    # CFDREQ-12: THE PROPOSAL ACCEPTED SIZES THE WALL TOO. Pressing OK on the proposed wall functions was no ask before
+    # (round 4, F: an absolute y+ 50 first layer as thick as the wall cells grew on 4-6% of the wall), and the mesher's
+    # own relative layers put the first cell at y+ 3-14 - the buffer layer, wrong for wall functions and for a resolved
+    # wall alike (the CFD board, 20 Nov: torus pipe 3.2, blood-pump chassis 4.6, cyclone 14). Now the accepted wall
+    # functions are a y+ target like a chosen one, and every engine fits the first layer to its wall cells
+    # (wall_fit): where a wall-function first cell does not fit the cells across the passage, the wall is resolved.
+    accepted = not c.get("wall_said", True) and c["wall"] == "functions"
     before = MR.words(sec)
     used = sec.get("status") == "used"
     req = copy.deepcopy(dict(sec.get("requirements") or MR.empty())) if used else MR.empty()
     lay = req.setdefault("layers", {})
     ph = req.setdefault("physics", {})
+    # CFDREQ-12: the flow's own length scale - a passage's hydraulic diameter (its inlet, as the user confirmed it) on
+    # a flow through a part; the engines give the body's length on a flow round one
+    req_txt = str(s.get("request_txt") or "")
+    internal = ("internal" in str(s.get("purpose") or "") or str(s.get("flow_topology") or "") == "internal"
+                or req_txt.lstrip().startswith("Internal flow") or " at the inlet. Near the walls:" in req_txt)
+    ph.setdefault("flow", "internal" if internal else "external")
+    if internal and ph.get("hydraulic_diameter_m") is None:
+        d_in = [float(p.get("diameter_mm") or 0.0) for p in s.get("intake_patches") or ()
+                if isinstance(p, Mapping) and p.get("type") == "inlet" and p.get("diameter_mm")]
+        if d_in:
+            ph["hydraulic_diameter_m"] = max(d_in) / 1000.0
     treatment = "a resolved wall" if c["wall"] == "resolved" else "wall functions, y+ 30-300"
     lead = "From your flow conditions:"
     if lay.get("count") == 0:
@@ -289,11 +350,14 @@ def with_conditions(sec: dict, state) -> dict:
             ph["fluid"] = c["fluid"]
     else:
         lay["y_plus"] = float(c["y_plus"])
+        # CFDREQ-12: which wall treatment this y+ stands for - the engines fit the first layer to it (wall_fit)
+        lay["treatment"] = c["wall"]
         if ph.get("velocity_ms") is None and c["velocity_ms"] is not None:
             ph["velocity_ms"] = float(c["velocity_ms"])
         if ph.get("fluid") is None and c["fluid"] in FC.NU:
             ph["fluid"] = c["fluid"]
-        asked = f"y+ of about {MR._g(c['y_plus'])} at the walls ({treatment}), for {c['fluid_words']} at {c['speed_words']}"
+        asked = (f"y+ of about {MR._g(c['y_plus'])} at the walls ({treatment}"
+                 + (", the proposal you accepted" if accepted else "") + f"), for {c['fluid_words']} at {c['speed_words']}")
         req.setdefault("rows", []).append({"id": "c1", "field": "layers:y_plus", "asked": asked,
                                            "quote": f"Fluid: {c['fluid_words']} at {c['speed_words']}; "
                                                     f"{FC.WALL_WORDS[c['wall']]}",
@@ -341,6 +405,8 @@ class Ask:
         self.total_m = _m(lay.get("total_mm"))
         self.layer_growth = lay.get("growth")
         self.y_plus = lay.get("y_plus")
+        #: CFDREQ-12: "functions" / "resolved" when the y+ is the wall treatment's (the conditions), else None
+        self.treatment = lay.get("treatment")
         self.local = [dict(e) for e in self.req.get("local") or []]
         self.limits = [dict(lim) for lim in self.req.get("limits") or []]
         #: the case's reference length for a y+ (the engine sets it: the user's ruler, else the body's length)
@@ -351,6 +417,9 @@ class Ask:
         self.raised = False
         #: why the layers may cover less of the wall (a quality limit of the user's held while they are added)
         self.layer_note = ""
+        #: CFDREQ-12: how the y+ was turned into a height (y_plus_height's record), and a laminar flow seen
+        self.how: dict = {}
+        self.laminar = False
 
     @classmethod
     def of(cls, workspace, engine: str) -> Ask | None:
@@ -509,9 +578,87 @@ class Ask:
                                            "known, so the first layer height cannot be worked out from it; "
                                            "the layers keep our sizing")
             return None
-        self.done("layers:y_plus", f"first layer {_mm(h)} high (worked out at Re {MR._g(how['reynolds'])}, with "
-                                   f"{how['length_from']} as the reference length)", **how)
+        self.how = how
+        if self.treatment and how.get("laminar"):
+            # CFDREQ-12: a laminar (or transitional) flow has no wall-function band and no buffer layer to avoid: the
+            # wall is resolved by the cells across the passage, with our own layers
+            self.done("layers:y_plus", f"the flow is laminar at these conditions (Re {MR._g(how['reynolds'])} on "
+                                       f"{how['length_from']}), so there is no wall-function target: the wall is "
+                                       "resolved by the cells across the passage, with our own layers",
+                      laminar=True, reynolds=how["reynolds"])
+            self.laminar = True
+            return None
+        yc = y_plus_of(h, how)
+        said = (f"first layer {_mm(h)} high, its centre at y+ about {MR._g(round(yc, 2))} (worked out at Re "
+                f"{MR._g(how['reynolds'])}, with {how['length_from']} as the reference length)")
+        if BUFFER_LAYER[0] <= float(self.y_plus) < BUFFER_LAYER[1]:
+            said += (" - that is the buffer layer (y+ 5-30), where neither wall functions nor a resolved wall is "
+                     "accurate")
+        self.done("layers:y_plus", said, **{k: v for k, v in how.items() if k not in ("visc_m", "first_exact_m")},
+                  y_plus_centre=float(f"{yc:.3g}"))
         return h
+
+
+# #
+# CFDREQ-12: the wall treatment's own first layer, fitted to the wall cells
+# #
+
+#: the y+ band a wall-function first cell centre must sit in (the target is the conditions' 50); under 30 is the
+#: buffer layer, which neither wall functions nor a resolved wall model (Pope, Turbulent Flows; the solvers' guides)
+WALL_FUNCTIONS_BAND = (30.0, 100.0)
+#: the resolved wall's y+ at the first cell centre
+RESOLVED_Y_PLUS = 1.0
+#: the thickest first layer a wall cell takes, as a share of it (one layer; the next cell keeps 0.4 of the wall cell,
+#: inside the board's last-layer-to-core band 0.3-1)
+FIRST_CAP_REL = 0.6
+#: a wall-function stack's last layer aims at this share of the wall cell (a smooth step into the core cells)
+STACK_TOP_REL = 0.4
+#: the most layers a wall-function stack gets
+MAX_WALL_FUNCTION_LAYERS = 10
+
+
+def wall_fit(ask: Ask, first_m: float, wall_cell_m: float, *, cap_rel: float = FIRST_CAP_REL) -> dict:
+    """CFDREQ-12: what a wall-function first layer of `first_m` (sized for the conditions' y+) becomes under wall
+    cells of `wall_cell_m`: {"treatment", "first_m", "y_plus", "why"}.
+      - it fits under `cap_rel` of the wall cell: kept, y+ as targeted;
+      - it does not, but the thickest that fits still puts the first cell centre at y+ 30 or more: that one;
+      - else wall functions do not suit this wall (the cells the passage needs across are finer than a wall-function
+        first cell): the wall is resolved - the first layer for y+ 1, by the same estimate.
+    A laminar flow never reaches here (Ask.first_layer)."""
+    yp = float(ask.y_plus or 50.0)
+    how = ask.how or {"visc_m": float(first_m) / (2.0 * yp)}
+    visc = float(how.get("visc_m") or float(first_m) / (2.0 * yp))
+    cap = float(cap_rel) * float(wall_cell_m)
+    if first_m <= cap:
+        return {"treatment": "functions", "first_m": float(first_m), "y_plus": y_plus_of(first_m, how, yp), "why": ""}
+    y_cap = y_plus_of(cap, how, yp)
+    if y_cap >= WALL_FUNCTIONS_BAND[0] * (1 - 1e-9):
+        return {"treatment": "functions", "first_m": cap, "y_plus": y_cap,
+                "why": f"the {_mm(wall_cell_m)} cells at the wall leave room for no thicker first layer"}
+    h30 = 2.0 * WALL_FUNCTIONS_BAND[0] * visc
+    h1 = RESOLVED_Y_PLUS * visc                     # a resolved wall's first layer: y+ 1 at its top, as typed
+    return {"treatment": "resolved", "first_m": h1, "y_plus": y_plus_of(h1, how, yp),
+            "why": (f"wall functions do not suit this wall at these conditions: a first cell at y+ 30 would be "
+                    f"{_mm(h30)} high, more than the {_mm(wall_cell_m)} cells the passage needs at the wall "
+                    "allow, and a thinner one sits in the buffer layer (y+ 5-30), which no wall treatment models")}
+
+
+def wall_words(ask: Ask, fit: Mapping, n: int, g: float, *, engine_words: str = "") -> str:
+    """The plain line for the y+ row: which wall treatment was built, its first layer, layers, and the y+ it expects
+    for the fluid and speed assumed."""
+    ph = ask.req.get("physics") or {}
+    fluid = str(ph.get("fluid") or "the fluid")
+    u = ph.get("velocity_ms")
+    at = f"{fluid} at {MR._g(float(u))} m/s" if u is not None else fluid
+    re_s = f", Re {MR._g(ask.how['reynolds'])} on {ask.how.get('length_from')}" if ask.how.get("reynolds") else ""
+    kind = "wall functions" if fit["treatment"] == "functions" else "a resolved wall"
+    layers = f"{n} layer{'s' if n != 1 else ''}" + (f" growing {MR._g(g)}" if n > 1 else "")
+    yc = float(fit["y_plus"])
+    out = (f"{kind}: first layer {_mm(fit['first_m'])} high, {layers}, so the first cell's centre sits at y+ about "
+           f"{MR._g(round(yc, 1) if yc >= 2 else round(yc, 2))} for {at}{re_s}")
+    if fit.get("why"):
+        out += f" ({fit['why']})"
+    return out + engine_words
 
 
 def _wrap_of(workspace) -> dict | None:
@@ -829,6 +976,43 @@ def cfmesh_strategy(ask: Ask, strategy: Mapping, *, length_m: float | None = Non
     return out
 
 
+#: CFDREQ-12: cfMesh splits a stack about this share of its wall cell deep into its layers (measured on a 50 mm pipe
+#: with 1.25 mm wall cells: 4 layers at 1.2 made 0.64 mm, the first 0.119 mm; the CFD board, tests/known_layers)
+CFMESH_STACK_REL = 0.5
+
+
+@guarded(lambda ask, strategy, wall_cell_m: dict(strategy))
+def cfmesh_layer_fit(ask: Ask | None, strategy: Mapping, wall_cell_m: float) -> dict:
+    """CFDREQ-12 on cfMesh, once its wall cell is settled: the wall treatment's first layer fitted to it (wall_fit;
+    its thickest first layer is the whole stack it splits, half the wall cell), and the layers counted so the stack
+    starts at that height (maxFirstLayerThickness caps it; fewer layers make the first one thicker). Unchanged with no
+    wall treatment's y+, a height of the user's own, or no layers."""
+    out = dict(strategy)
+    first = out.get("first_layer_thickness")
+    if ask is None or not ask.treatment or ask.first_m is not None or first is None or not wall_cell_m:
+        return out
+    g = float(out.get("thickness_ratio", 1.2))
+    stack = CFMESH_STACK_REL * float(wall_cell_m)
+    if ask.treatment == "functions":
+        fit = wall_fit(ask, float(first), float(wall_cell_m), cap_rel=CFMESH_STACK_REL)
+    else:
+        fit = {"treatment": "resolved", "first_m": float(first), "y_plus": y_plus_of(float(first), ask.how),
+               "why": ""}
+    if ask.n_layers is None and fit["treatment"] == "functions":
+        if g > 1.0001:
+            n = int(math.floor(math.log(1.0 + stack * (g - 1.0) / fit["first_m"]) / math.log(g)))
+        else:
+            n = int(stack // fit["first_m"])
+        out["n_layers"] = max(1, min(MAX_WALL_FUNCTION_LAYERS, n))
+    n = int(out.get("n_layers") or 0)
+    out["first_layer_thickness"] = float(fit["first_m"])
+    natural = stack * (g - 1.0) / (g ** max(n, 1) - 1.0) if g > 1.0001 else stack / max(n, 1)
+    built = min(float(fit["first_m"]), natural)
+    yp = y_plus_of(built, ask.how, float(ask.y_plus or 1.0)) if ask.how else fit["y_plus"]
+    _say_wall(ask, dict(fit, first_m=built, y_plus=yp), n, g)
+    return out
+
+
 #: cfMesh's own edge (engines/cfmesh/rescue.NEAR_EDGE_NON_ORTHO): past it the engine's optimiser is tried
 CFMESH_EDGE_NON_ORTHO = 75.0
 
@@ -1122,8 +1306,56 @@ def snapgrid_plan(ask: Ask, plan: Mapping) -> dict:
 # the vessel mesher (engines/vmtk): edge-length clamps on its radius-adaptive size, the layers, the budget
 # #
 
-@guarded(lambda ask, s: dict(s))
-def vmtk_spec(ask: Ask, s: Mapping) -> dict:
+#: CFDREQ-12: VMTK's stack is a share of the local radius; deeper than this it folds at branch crotches (vmtk/pack.py)
+VMTK_STACK_MAX = 0.15
+VMTK_GROWTH = 1.25
+
+
+def _vmtk_wall(ask: Ask, out: dict, radius_m: float) -> bool:
+    """CFDREQ-12 on VMTK: the wall treatment's first layer as its stack (a share of the vessel's radius, over the
+    reference radius). True when it decided the y+ row."""
+    if not ask.treatment or ask.first_m is not None or ask.y_plus is None or not radius_m:
+        return False
+    first = ask.first_layer(length_m=2.0 * float(radius_m), length_from="the vessel's diameter")
+    if first is None:
+        return True                                       # laminar, or numbers missing: the row says which
+    R = float(radius_m)
+    ef = float(out.get("edge_length_factor") or 0.15)
+    g = float(out.get("layer_growth") or VMTK_GROWTH)
+    _bl = out.get("boundary_layers")
+    n0 = int(_bl) if _bl is not None else 5
+    t0 = float(out.get("boundary_layer_thickness_factor") or 0.10)
+    if n0 <= 0:
+        return False
+    if ask.treatment == "functions":
+        fit = wall_fit(ask, float(first), ef * R, cap_rel=min(FIRST_CAP_REL, VMTK_STACK_MAX / ef))
+    else:
+        fit = {"treatment": "resolved", "first_m": float(first), "y_plus": y_plus_of(float(first), ask.how),
+               "why": ""}
+    if fit["treatment"] == "functions":
+        n = n0 if ask.n_layers is not None else stack_count(fit["first_m"], ef * R, g)
+        while True:
+            t = fit["first_m"] * ((g ** n - 1.0) / (g - 1.0) if g > 1.0001 else n) / R
+            if t <= VMTK_STACK_MAX or n <= 1 or ask.n_layers is not None:
+                break
+            n -= 1
+        t = min(t, VMTK_STACK_MAX)
+        out["boundary_layers"], out["boundary_layer_thickness_factor"] = int(n), float(f"{t:.4g}")
+        built = t * R * ((g - 1.0) / (g ** n - 1.0) if g > 1.0001 else 1.0 / n)
+        _say_wall(ask, dict(fit, first_m=built, y_plus=y_plus_of(built, ask.how, float(ask.y_plus))), n, g)
+        return True
+    # a resolved wall: a stack thin enough for y+ 1 makes slivers here (under 5% of the radius), so the stack stays
+    # ours and the row says the y+ it gives
+    built = t0 * R * ((g - 1.0) / (g ** n0 - 1.0) if g > 1.0001 else 1.0 / n0)
+    yp = y_plus_of(built, ask.how, float(ask.y_plus))
+    _say_wall(ask, dict(fit, first_m=built, y_plus=yp,
+                        why=(fit.get("why", "") + ("; " if fit.get("why") else "")
+                             + "this mesher's thinnest stack that does not fold is ours")), n0, g)
+    return True
+
+
+@guarded(lambda ask, s, **kw: dict(s))
+def vmtk_spec(ask: Ask, s: Mapping, *, radius_m: float | None = None) -> dict:
     """The VMTK spec with the user's sizes as clamps on its radius-adaptive edge length (metres), their layer count
     and growth, and their cell count as its budget. A size in a named place, a volume growth, a stack thickness and
     a first layer height are not settings it has (it sizes everything from the local vessel radius): said."""
@@ -1159,8 +1391,9 @@ def vmtk_spec(ask: Ask, s: Mapping) -> dict:
     if ask.layer_growth is not None:
         out["layer_growth"] = float(ask.layer_growth)
         ask.done("layers:growth", f"each layer {MR._g(ask.layer_growth)} times the one under it")
+    walled = _vmtk_wall(ask, out, float(radius_m or 0.0))
     for f in ("layers:first_height", "layers:total_thickness", "layers:y_plus"):
-        if ask.rid(f):
+        if ask.rid(f) and not (walled and f == "layers:y_plus"):
             ask.not_here(f, "this mesher sizes the layer stack as a share of the local vessel radius; an absolute layer "
                             "thickness is not a setting it has")
     if ask.growth is not None:
@@ -1550,6 +1783,20 @@ def _snappy_layers(ask: Ask, text: str, wall_cell_m: float | None, bridge: Mappi
             ask.done("layers:growth", f"each layer {MR._g(g)} times the one under it")
         return out
     n = int(_num(out, "nSurfaceLayers") or 3)
+    # CFDREQ-12: a y+ that is the wall treatment's (the conditions) is fitted to the wall cells - wall functions keep
+    # their first cell in the band or the wall is resolved (wall_fit); a resolved wall goes on to the bridge below
+    wf = None
+    if first is not None and ask.treatment and ask.first_m is None and total is None and wall_cell_m and n > 0:
+        if ask.treatment == "functions":
+            wf = wall_fit(ask, float(first), float(wall_cell_m))
+            first = wf["first_m"]
+            if wf["treatment"] == "functions" and ask.n_layers is None:
+                n_wf = stack_count(first, float(wall_cell_m), g)
+                out = re.sub(r"\bnSurfaceLayers\s+[1-9][0-9]*\s*;", f"nSurfaceLayers {n_wf};", out)
+                n = n_wf
+        else:
+            wf = {"treatment": "resolved", "first_m": float(first), "y_plus": y_plus_of(float(first), ask.how),
+                  "why": ""}
     bridged = None
     if (bridge is not None and first is not None and total is None and ask.n_layers is None and n > 0
             and wall_cell_m and wall_cell_m / first > THIN_LAYER_RATIO):
@@ -1562,7 +1809,7 @@ def _snappy_layers(ask: Ask, text: str, wall_cell_m: float | None, bridge: Mappi
             n, first = n_new, first_new
     thick = None
     if (bridged is None and first is not None and total is None and ask.n_layers is None and n > 0
-            and wall_cell_m):
+            and wall_cell_m and not (wf is not None and wf["treatment"] == "functions")):
         # CFDREQ-9, THE THICK SIDE: a first layer so thick that the plan's layers make a stack several wall cells
         # deep, which snappyHexMesh cannot shrink the mesh for (a y+ 50 layer, 1.35 mm under 1.72 mm cells: 5 layers
         # are 10 mm, and grew on 5.7% of the wall) - as few layers as fill the stack our own plan gives the wall
@@ -1622,6 +1869,9 @@ def _snappy_layers(ask: Ask, text: str, wall_cell_m: float | None, bridge: Mappi
         _say_bridge(ask, bridged, g, float(wall_cell_m or 0.0))
     if thick is not None:
         _say_thick(ask, thick, g, float(wall_cell_m or 0.0))
+    if wf is not None and first is not None:
+        built = dict(wf, first_m=float(first), y_plus=y_plus_of(float(first), ask.how) if ask.how else wf["y_plus"])
+        _say_wall(ask, built, n, g)
     return out
 
 
@@ -1661,6 +1911,9 @@ def engine_that_can(sec: Mapping | None, engine: str, ladder, *, conditions_y_pl
     fields = [str(r.get("field") or "") for r in req.get("rows") or [] if isinstance(r, Mapping)]
     if conditions_y_plus and "layers:y_plus" not in fields and "layers:first_height" not in fields:
         fields.append("layers:y_plus")
+    if (req.get("layers") or {}).get("treatment") == "functions" and engine == "vmtk" and not conditions_y_plus:
+        # CFDREQ-12: VMTK sizes a wall-function stack itself (_vmtk_wall); only a resolved wall moves the engine
+        fields = [f for f in fields if f != "layers:y_plus"]
     missing = [f for f in fields if _cannot(engine, f)]
     if not missing:
         return engine, ""
@@ -1682,6 +1935,34 @@ def engine_that_can(sec: Mapping | None, engine: str, ladder, *, conditions_y_pl
                 (str(r.get("asked")) for r in req.get("rows") or [] if r.get("field") == missing[0]), "what")
             return str(other), f"Meshed with {name}, because it can set {what} you asked for."
     return engine, ""
+
+
+def stack_count(first_m: float, wall_cell_m: float, g: float) -> int:
+    """CFDREQ-12: the layers a wall-function stack gets - from its first layer, growing `g`, until the last one is
+    about STACK_TOP_REL of the wall cell (a smooth step into the core); one when the first layer is that thick."""
+    top = STACK_TOP_REL * float(wall_cell_m)
+    if first_m >= top or g <= 1.0001:
+        return 1
+    return max(1, min(MAX_WALL_FUNCTION_LAYERS, 1 + int(round(math.log(top / float(first_m)) / math.log(g)))))
+
+
+def _say_wall(ask: Ask, fit: Mapping, n: int, g: float, *, engine_words: str = "") -> None:
+    """CFDREQ-12 on the y+ row: which wall treatment was built and the y+ it expects - applied when it is the one the
+    conditions asked for, the nearest (with why) when the wall had to be resolved instead or the y+ moved."""
+    rid = ask.rid("layers:y_plus")
+    if not rid:
+        return
+    words = wall_words(ask, fit, n, g, engine_words=engine_words)
+    moved = fit["treatment"] != ask.treatment or bool(fit.get("why"))
+    prev = ask.rows.get(rid, {})
+    extra = prev.get("built", "") if "layers" in prev and "stack fills" in prev.get("built", "") else ""
+    row = {"first_m": float(f"{float(fit['first_m']):.4g}"), "layers": int(n), "treatment": fit["treatment"],
+           "y_plus_expected": float(f"{float(fit['y_plus']):.3g}"), **{k: v for k, v in (ask.how or {}).items()
+                                                                       if k in ("reynolds", "cf", "friction")}}
+    if moved:
+        ask.nearest(rid, words + (f"; {extra.split('; ', 1)[1]}" if "; " in extra else ""), **row)
+    else:
+        ask.done(rid, words + (f"; {extra.split('; ', 1)[1]}" if "; " in extra else ""), **row)
 
 
 def _say_thick(ask: Ask, thick: tuple, g: float, wall_cell_m: float) -> None:
