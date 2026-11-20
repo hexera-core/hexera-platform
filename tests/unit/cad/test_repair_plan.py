@@ -1,6 +1,8 @@
 # Responsibility: Verify the rules planner's ordering, its refusal to repeat what did not work, and that it reports skipping a defect rather than skipping it silently.
 from __future__ import annotations
 
+import pytest
+
 import meshpipeline.cad.repair.plan as plan_module
 from meshpipeline.cad.repair.contracts import DefectCode, DefectSeverity
 from meshpipeline.cad.repair.identity import EntityRef
@@ -595,3 +597,75 @@ def test_an_operation_that_answers_but_offers_nothing_is_not_a_claim():
     assert RulesPlanner(ops=(silent,)).propose(
         (_defect(DefectCode.small_edge, fingerprint="edge:a"),), history, shape=None) is None
     assert [r["reason"] for r in history.refusals] == ["no_operation_claims_it"]
+
+
+# --- a clash defect ADDS to the kernel's findings; it never displaces their cure ---------------
+# Wave 4 fixed 0 files in every arm, including the rules-only one, and lost 0060_00608290 - which
+# fix_small_faces had repaired in every earlier wave. The #495 locator had added a mesh-located
+# clash defect to that region, and a mesh code is an ERROR while a sliver is a WARNING, so the
+# planner proposed the clash first and the cure only after the clash op had failed.
+
+_HEAL = _Op("heal_self_intersections", {DefectCode.mesh_overlapping_facets}, 4)
+_SLIVER = _Op("fix_small_faces", {DefectCode.small_face}, 1)
+
+
+def _clash_and_sliver():
+    return (_defect(DefectCode.mesh_overlapping_facets, fingerprint="face:clash",
+                    severity=DefectSeverity.error, kind="face", index=7,
+                    measurements={"located_by": "surface-mesh-clash", "clash_gap_mm": 0.0,
+                                  "clash_adjacent": False}),
+            _defect(DefectCode.small_face, fingerprint="face:sliver",
+                    severity=DefectSeverity.warning, kind="face", index=9))
+
+
+def test_the_kernel_cure_is_still_reached_when_a_clash_shares_the_region(monkeypatch):
+    """THE REGRESSION PIN. Whatever the order, the sliver cure must be proposed - a clash defect
+    adds a finding, it does not take the region's repair away."""
+    import meshpipeline.settings.cad_repair as settings
+
+    for posture in ("off", "live"):
+        monkeypatch.setattr(settings, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", posture,
+                            raising=False)
+        planner = RulesPlanner(ops=(_SLIVER, _HEAL))
+        history = RunHistory()
+        proposed = []
+        for _ in range(4):
+            candidate = planner.propose(_clash_and_sliver(), history, shape=None)
+            if candidate is None:
+                break
+            proposed.append((candidate.op.name, candidate.defect_fingerprint))
+            # The run tried it and it did nothing, which is what sends the planner onward.
+            history.mark_ineffective(candidate.defect_fingerprint, candidate.op.name)
+        assert ("fix_small_faces", "face:sliver") in proposed, (posture, proposed)
+
+
+@pytest.mark.parametrize("kind, first", [
+    # A GAP clash is what 0060 actually had: 1.46 mm apart, which no operation closes. It goes
+    # after the cheap cure, which is the regression this pins.
+    ("gap", "fix_small_faces"),
+    # No clash evidence at all is also not a known intersection, so the same rule applies.
+    (None, "fix_small_faces"),
+    # A measured CROSSING is geometry to repair and keeps its severity position.
+    ("crossing", "heal_self_intersections"),
+])
+def test_what_goes_first_depends_on_the_measured_clash_kind(monkeypatch, kind, first):
+    """ORDER MATTERS WHEN THE BUDGET BINDS. fix_small_faces has repaired real files on this
+    corpus; a gap clash has repaired none of it. `clash_kind` is lane G's classification and the
+    authority, because the triangle test alone called a 1.46 mm gap a crossing."""
+    import meshpipeline.settings.cad_repair as settings
+
+    monkeypatch.setattr(settings, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "live", raising=False)
+    clash, sliver = _clash_and_sliver()
+    measurements = dict(clash.measurements)
+    if kind is None:
+        measurements.pop("clash_kind", None)
+    else:
+        measurements["clash_kind"] = kind
+    clash = _defect(clash.code, fingerprint=clash.fingerprint, severity=clash.severity,
+                    kind=clash.entity_type, index=clash.entity_index,
+                    measurements=measurements)
+    planner = RulesPlanner(ops=(_SLIVER, _HEAL))
+
+    candidate = planner.propose((clash, sliver), RunHistory(), shape=None)
+
+    assert candidate is not None and candidate.op.name == first

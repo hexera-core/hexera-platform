@@ -68,6 +68,33 @@ def _same_shape(left, right) -> bool:
 
 #: Worse first. The loop exists to clear errors; warnings are worth attending to only once the
 #: errors are gone, because a sliver edge beside an open shell is not the part's problem.
+def _demote_mesh_findings() -> bool:
+    """Is `CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS` live? Only then is the order changed, so a
+    flag-off run proposes exactly what it proposed before."""
+    import meshpipeline.settings.cad_repair as rcfg
+
+    return getattr(rcfg, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "off") == "live"
+
+
+def _is_mesh_finding(defect) -> bool:
+    """True for a mesh finding that is NOT a known real intersection, and so should not spend a
+    region's budget before the kernel's own cure.
+
+    `clash_kind == "crossing"` is lane G's classification, and it is the authority: the triangle
+    test alone called a 1.46 mm gap a crossing (coarse cylinder chords cut a plane the real
+    surface never reaches), so the kind now accounts for the measured B-rep distance. A crossing
+    keeps its severity position - it is geometry to repair. Everything else the mesher reported,
+    including a gap clash, an adjacent fold and a finding with no clash evidence at all, goes
+    after the cheap cure that has actually repaired parts on this corpus.
+    """
+    from meshpipeline.cad.repair import mesh_probe
+
+    if getattr(defect, "code", None) not in mesh_probe.MESH_CODES:
+        return False
+    measurements = getattr(defect, "measurements", None) or {}
+    return measurements.get("clash_kind") != "crossing"
+
+
 _SEVERITY_RANK = {DefectSeverity.fatal: 0, DefectSeverity.error: 1,
                   DefectSeverity.warning: 2, DefectSeverity.info: 3}
 
@@ -374,9 +401,17 @@ class RulesPlanner:
         rims = paired_rim_fingerprints(shape, defects) if shape is not None else frozenset()
         refuse_paired_rims(history, rims)
 
+        # A MESH FINDING ADDS TO THE KERNEL'S, AND MUST NOT SPEND THE REGION'S BUDGET FIRST.
+        # A mesh code is an ERROR and a sliver a WARNING, so severity alone proposed the clash
+        # first and the kernel cure only after the clash operation had failed. On wave 4 that
+        # cost every arm its repairs, including the rules-only one, and lost a file
+        # fix_small_faces had cured in every earlier wave. The cheap cure that has actually
+        # repaired parts on this corpus goes first; the clash attempt still follows it.
+        mesh_last = _demote_mesh_findings()
         ordered = sorted(
             defects,
-            key=lambda d: (_SEVERITY_RANK.get(d.severity, 9),
+            key=lambda d: (1 if mesh_last and _is_mesh_finding(d) else 0,
+                           _SEVERITY_RANK.get(d.severity, 9),
                            _CODE_RANK.get(d.code, 0),
                            _ENTITY_RANK.get(d.entity_type, 9), d.entity_index,
                            d.code.value))
