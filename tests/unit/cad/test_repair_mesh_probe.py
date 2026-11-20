@@ -367,3 +367,21 @@ def test_no_clash_still_falls_back_to_contact(monkeypatch):
                                      contact_calls=calls)
     (defect,) = mesh_probe.mesh_defects(shape, diagonal_mm=20.6, budget_s=60.0)
     assert defect.fingerprint == "" and calls == [1]
+
+
+def test_a_clash_records_the_kernel_gap_between_its_faces(monkeypatch):
+    # A clash between faces that do not meet in the B-rep is the coarse surface mesh's chord
+    # cutting across a thin gap: a mesher-side cause. The gap is evidence the author can read.
+    from meshpipeline.cad.repair.mesh_clash import Clash
+    from meshpipeline.cad.repair.mesh_probe import MeshFailure
+
+    failure = MeshFailure(EDGE_THROUGH_FACE, (), None, _PLC_BARE, stage="3d")
+    # Box 1 spans x 0..10, box 2 x 5..15; face 1 is box 1's x=0 wall, face 8 box 2's x=15 wall.
+    mesh_probe, shape = _clash_probe(monkeypatch, failure=failure, contact_calls=[],
+                                     clashes=(Clash((1, 8), 3, (5.0, 5.0, 5.0), "crossing"),))
+    found = mesh_probe.mesh_defects(shape, diagonal_mm=20.6, budget_s=60.0)
+
+    gaps = {d.measurements["clash_gap_mm"] for d in found}
+    assert len(gaps) == 1
+    (gap,) = gaps
+    assert gap is not None and abs(gap - 15.0) < 1e-6
