@@ -60,6 +60,19 @@ def reported_kind(mesh_kind: str, gap_mm: float | None, diagonal_mm: float | Non
         return mesh_kind
     return GAP if float(gap_mm) > touching_margin_mm(diagonal_mm) else mesh_kind
 
+#: Two triangles of DIFFERENT surfaces that share an edge and lie folded onto each other (their
+#: apexes on the same side, dihedral ~0): gmsh's "overlapping facets" between two surfaces.
+#: Measured on abc/0059_00595955 (surfaces 370/376): three such pairs at exactly 0 degrees.
+FOLD = "fold"
+
+#: One facet meshed on two DIFFERENT surfaces: all three nodes shared. Measured on
+#: abc/0059_00595955, which is what gmsh's "overlapping facets on surface 370 surface 376" was.
+DUPLICATE = "duplicate"
+
+#: The largest angle, in degrees, between two edge-sharing triangles' apex directions that is
+#: still a fold. A real sharp edge is degrees; a fold is numerically flat.
+FOLD_DEGREES = 0.1
+
 #: Relative tolerances, as fractions of the mesh's diagonal (lengths) or plain numbers (barycentric
 #: and parametric). An edge that merely ENDS on another surface is not a crossing: tetgen accepts
 #: that when the node is shared, and the parametric margin keeps float noise at a seam out.
@@ -208,6 +221,26 @@ def _edge_hits(coords: np.ndarray, tris: np.ndarray, a: np.ndarray, b: np.ndarra
     return hit, point
 
 
+def _folded(coords: np.ndarray, tris: np.ndarray, a: np.ndarray, b: np.ndarray,
+            same: np.ndarray) -> np.ndarray:
+    """For pairs (a[k], b[k]) sharing exactly one edge: are they folded onto each other - the
+    apexes, seen across the shared edge, within FOLD_DEGREES of the same direction?"""
+    apex_a = tris[a][~same.any(axis=2)]                           # the node of a not in b
+    apex_b = tris[b][~same.any(axis=1)]                           # the node of b not in a
+    edge = tris[a][same.any(axis=2)].reshape(-1, 2)
+    e0, e1 = coords[edge[:, 0]], coords[edge[:, 1]]
+    axis = e1 - e0
+    axis /= np.maximum(np.linalg.norm(axis, axis=1), 1e-300)[:, None]
+
+    def across(apex: np.ndarray) -> np.ndarray:
+        v = coords[apex] - e0
+        v -= np.einsum("ij,ij->i", v, axis)[:, None] * axis
+        return v / np.maximum(np.linalg.norm(v, axis=1), 1e-300)[:, None]
+
+    cos = np.einsum("ij,ij->i", across(apex_a), across(apex_b))
+    return cos >= np.cos(np.radians(FOLD_DEGREES))
+
+
 def _inside_2d(p: np.ndarray, tri: np.ndarray) -> bool:
     """Is 2D point p strictly inside 2D triangle tri?"""
     def side(a, b, c) -> float:
@@ -293,9 +326,18 @@ def clashing_surfaces(coords: np.ndarray, tris: np.ndarray, tags: np.ndarray, *,
         if deadline is not None and time.monotonic() >= deadline:
             break
         a, b = pairs[start:start + _CHUNK, 0], pairs[start:start + _CHUNK, 1]
-        keep = ((lo[a] <= hi[b] + pad) & (lo[b] <= hi[a] + pad)).all(axis=1)
-        keep &= ~(tris[a][:, :, None] == tris[b][:, None, :]).any(axis=(1, 2))
-        a, b = a[keep], b[keep]
+        meets = ((lo[a] <= hi[b] + pad) & (lo[b] <= hi[a] + pad)).all(axis=1)
+        a, b = a[meets], b[meets]
+        same = tris[a][:, :, None] == tris[b][:, None, :]          # (K, 3, 3)
+        shared = same.any(axis=2).sum(axis=1)
+        for k in np.nonzero(shared == 3)[0]:
+            record(int(a[k]), int(b[k]), corners[a[k]].mean(axis=0), DUPLICATE)
+        edge = shared == 2
+        if edge.any():
+            fa, fb = a[edge], b[edge]
+            for k in np.nonzero(_folded(coords, tris, fa, fb, same[edge]))[0]:
+                record(int(fa[k]), int(fb[k]), corners[fa[k]].mean(axis=0), FOLD)
+        a, b = a[shared == 0], b[shared == 0]
         if not len(a):
             continue
         cos = np.abs(np.einsum("ij,ij->i", unit[a], unit[b]))

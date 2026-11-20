@@ -834,6 +834,47 @@ def _score_meshing(row: dict, path: Path, scratch: Path) -> None:
             stopped_because=str(row.get("stopped_because", "")), newly_meshes=True)
 
 
+#: The hard ceiling on one face-sizing diagnostic (`_face_sizing_delivery`), in seconds: the
+#: unsized probe, the gap measurement and up to two sized re-meshes together.
+FACE_SIZING_BUDGET_S = 300.0
+
+
+def _face_sizing_of(path: Path, *, diagonal_mm: float, budget_s: float) -> dict:
+    """`mesh_probe.face_sizing` on the shape read from `path`. The seam the tests replace."""
+    from meshpipeline.cad.repair import mesh_probe
+    from meshpipeline.cad.repair.brep import _read_shape
+
+    return mesh_probe.face_sizing(_read_shape(path), diagonal_mm=diagonal_mm, budget_s=budget_s)
+
+
+def _face_sizing_delivery(row: dict, path: Path, scratch: Path, *, sizing=None) -> None:
+    """THE FACE-SIZING DIAGNOSTIC, SCORED APART. For a file gmsh still refuses, ask whether every
+    remaining failure is a clash across a B-rep GAP thinner than the probe's mesh, and if so
+    whether gmsh meshes the delivered file once only those surfaces are meshed finer
+    (`mesh_probe.face_sizing`). The owner's category "CAD sound, meshes in gmsh with per-face
+    sizing": NOT a repair and NOT a hidden failure.
+
+    RECORDED AS ITS OWN COLUMN: `face_sizing` holds what happened, and `meshes_with_face_sizing`
+    is True/False when the test applied and None when it did not (a real intersection, no clash,
+    an unmeasured gap). Neither touches `outcome`, `meshes_after` or `newly_meshed`.
+    `sizing` is the test seam (`_face_sizing_of`'s signature)."""
+    if row.get("meshes_after") is True or (row.get("meshes_before") is True
+                                           and row.get("meshes_after") is None):
+        return  # gmsh meshes what would be delivered: there is nothing to diagnose
+    written = scratch / f"{path.stem}-repaired.step"
+    repaired = row.get("outcome") in _REPAIRED_OUTCOMES
+    delivered = written if repaired and written.is_file() else path
+    try:
+        diagonal = _diagonal_of(path)
+        found = (sizing or _face_sizing_of)(delivered, diagonal_mm=diagonal,
+                                            budget_s=FACE_SIZING_BUDGET_S)
+    except Exception as exc:  # noqa: BLE001 - recorded, never raised
+        found = {"applicable": False, "reason": f"unreadable: {exc}"[:200], "meshes": None}
+    found["file"] = "repaired" if delivered == written else "upload"
+    row["face_sizing"] = found
+    row["meshes_with_face_sizing"] = found.get("meshes") if found.get("applicable") else None
+
+
 #: The hard ceiling on one delivery-settings tolerant pass (`_tolerant_delivery`), in seconds.
 TOLERANT_DELIVERY_BUDGET_S = 300.0
 
@@ -903,7 +944,15 @@ def meshing_summary(rows: list[dict]) -> dict:
     # THE TOLERANT ROUTE IS ITS OWN COUNT, present only when a row carries the reading, and never
     # added to meshed_after or newly_meshed.
     tolerant = [r for r in rows if "tolerant_delivery" in r]
+    # THE FACE-SIZING DIAGNOSTIC IS ITS OWN COUNT TOO ("CAD sound, meshes in gmsh with per-face
+    # sizing"): present only when a row carries the reading, never added to newly_meshed.
+    sized = [r for r in rows if "face_sizing" in r]
     return {
+        **({"face_sizing_applicable": sum(
+                1 for r in sized if r["face_sizing"].get("applicable")),
+            "meshes_with_face_sizing": sum(
+                1 for r in sized if r.get("meshes_with_face_sizing") is True)}
+           if sized else {}),
         **({"forced_repairs": forced} if forced else {}),
         **({"crashed": crashed} if crashed else {}),
         **({"tolerant_delivery_attempted": sum(
@@ -1790,7 +1839,8 @@ def _isolated(path: Path, body, *, mesh_probe: bool) -> dict:
 def run_files(files: list[Path], scratch: Path, *, mode: str = "off", loop: bool = False,
               bundle=None, mesh_probe: bool = False, force_repair: bool = False,
               goal=None, sink=None, entries=None, isolate: bool = False,
-              tolerant_delivery: bool = False, row_marks: dict | None = None) -> list[dict]:
+              tolerant_delivery: bool = False, row_marks: dict | None = None,
+              face_sizing: bool = False) -> list[dict]:
     """Run the repair loop over `files`, printing a line per file; returns the rows. When `bundle`
     is a BundleWriter every row is streamed into it AS IT IS PRODUCED, so a run that dies half way
     leaves its evidence-so-far on disk rather than in a list that was never written.
@@ -1822,6 +1872,8 @@ def run_files(files: list[Path], scratch: Path, *, mode: str = "off", loop: bool
                         force_repair=force_repair, goal=goal, sink=sink, stage=stage)
 
         row = _isolated(path, body, mesh_probe=mesh_probe) if isolate else body()
+        if face_sizing:
+            _face_sizing_delivery(row, path, scratch)
         if tolerant_delivery:
             _tolerant_delivery(row, path, scratch)
         row.update(stamp)
@@ -1898,6 +1950,11 @@ def main() -> int:
                              "tolerant_rung_eats_it, mesh the delivered file with fTetWild at "
                              "production envelope/iterations (<= 300 s) and record it as its own "
                              "column - never as a repair")
+    parser.add_argument("--face-sizing", dest="face_sizing", action="store_true",
+                        help="for a file gmsh still refuses whose every remaining clash is a "
+                             "B-rep gap thinner than the probe's mesh, re-mesh only those "
+                             "surfaces finer (gmsh, <= 300 s) and record meshes_with_face_sizing "
+                             "as its own column - never as a repair")
     parser.add_argument("--isolate-files", dest="isolate", action="store_true",
                         help="repair each file in a forked child: a native crash becomes a "
                              "`crashed` row and the run continues (POSIX; benchmark harness)")
@@ -2120,7 +2177,8 @@ def main() -> int:
     rows = run_files(files, scratch, mode=args.planner, loop=args.loop, bundle=writer,
                      mesh_probe=args.mesh_probe, force_repair=args.force_repair,
                      goal=goal, sink=sink, entries=sample_entries, isolate=args.isolate,
-                     tolerant_delivery=args.tolerant_delivery, row_marks=row_marks)
+                     tolerant_delivery=args.tolerant_delivery, row_marks=row_marks,
+                     face_sizing=args.face_sizing)
     if sink is not None:
         sink.close()
 
