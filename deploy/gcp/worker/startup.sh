@@ -96,6 +96,11 @@ for pair in "deployment-id:DEPLOYMENT_ID" \
             "cad-repair-investigator:CAD_REPAIR_INVESTIGATOR" \
             "cad-repair-auto-accept:CAD_REPAIR_AUTO_ACCEPT" \
             "cad-repair-budget-attempts:CAD_REPAIR_BUDGET_ATTEMPTS" \
+            "cad-repair-tournament:CAD_REPAIR_TOURNAMENT" \
+            "cad-repair-memory:CAD_REPAIR_MEMORY" \
+            "cad-repair-review-objection:CAD_REPAIR_REVIEW_OBJECTION" \
+            "cad-repair-mesh-handback:CAD_REPAIR_MESH_HANDBACK" \
+            "cad-repair-standalone-jobs:CAD_REPAIR_STANDALONE_JOBS" \
             "verdict-by-limits:VERDICT_BY_LIMITS" \
             "mesh-progressive-snapshot-enabled:MESH_PROGRESSIVE_SNAPSHOT_ENABLED" \
             "mesh-snappy-ranks:MESH_SNAPPY_RANKS"; do
