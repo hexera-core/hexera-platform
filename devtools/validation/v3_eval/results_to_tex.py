@@ -290,7 +290,9 @@ def diagnostic_table(results: dict, m: dict[str, str]) -> str:
         r"tolerant mesher (fTetWild) meshes as delivered. Not a fix, not a product fallback, and "
         r"never counted in files fixed.}",
         r"\label{tab:v3diagnostic}", r"\footnotesize",
-        r"\begin{tabular}{@{}l" + "r" * len(cols) + r"@{}}", r"\toprule",
+        # The row label is long; a wrapped first column keeps the table inside the text width.
+        r"\begin{tabular}{@{}>{\raggedright\arraybackslash}p{32mm}" + "r" * len(cols) + r"@{}}",
+        r"\toprule",
         _row("", [r"\textbf{" + ARMS[a][1] + "}" for a in cols]), r"\midrule",
         _row(m["vThreeDiagTolerantMesherLabel"],
              [m[f"vThreeDiag{ARMS[a][0]}TolerantMesher"] for a in cols]),
