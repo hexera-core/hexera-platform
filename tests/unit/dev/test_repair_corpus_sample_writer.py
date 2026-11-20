@@ -1,5 +1,8 @@
 """The bundle sample writer: the gym's one guard against scoring two different samples."""
-import importlib.util, json, pathlib, sys
+import hashlib
+import importlib.util
+import json
+import pathlib
 
 spec = importlib.util.spec_from_file_location(
     "rc", pathlib.Path(__file__).resolve().parents[3] / "devtools/validation/repair_corpus.py")
@@ -24,7 +27,9 @@ def test_two_arms_of_the_same_sample_agree_and_a_different_one_does_not(tmp_path
     rc.write_bundle_sample(a, same, seed=1)
     rc.write_bundle_sample(b, list(reversed(same)), seed=1)   # order must not matter
     rc.write_bundle_sample(c, [{"name": "x", "sha256": "11"}, {"name": "z", "sha256": "33"}], seed=1)
-    import hashlib
-    h = lambda d: hashlib.sha256((d / "sample.json").read_bytes()).hexdigest()
+
+    def h(d):
+        return hashlib.sha256((d / "sample.json").read_bytes()).hexdigest()
+
     assert h(a) == h(b), "the same files in another order are the same sample"
     assert h(a) != h(c), "a different file set must not score as the same sample"
