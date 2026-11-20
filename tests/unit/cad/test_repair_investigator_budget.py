@@ -372,11 +372,14 @@ def test_the_module_is_listed_in_v3_modules():
 
 def test_the_live_posture_buys_more_turns_and_the_same_wall(monkeypatch):
     """A policy that asks for many attempts pays for the calls, not for the clock: the wall is
-    what a region's successors and the proof reserve are measured against."""
+    what a region's successors and the proof reserve are measured against. TOOL calls get the
+    larger rise - wave 3 freed the clone, edits tried went 303 -> 703, and the tool cap became
+    what ended an investigation (3 regions -> 22)."""
     monkeypatch.setattr(rcfg, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "live", raising=False)
     for tier, base in ib.BUDGETS.items():
         live = ib.budget_for(tier)
-        assert live.tool_calls == base.tool_calls + ib.CLONE_FREEDOM_TURNS
+        assert live.tool_calls == (base.tool_calls + ib.CLONE_FREEDOM_TURNS
+                                   + ib.CLONE_FREEDOM_TOOL_CALLS)
         assert live.model_calls == base.model_calls + ib.CLONE_FREEDOM_TURNS
         assert live.wall_s == base.wall_s
 

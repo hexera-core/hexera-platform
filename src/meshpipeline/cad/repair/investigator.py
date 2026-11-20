@@ -1090,8 +1090,13 @@ def investigator(shape, *, original: Measure, reserved: frozenset = frozenset(),
                 key = f"{ask.tool}:{_args_text(ask.args)}"
                 inv.calls_seen[key] = inv.calls_seen.get(key, 0) + 1
                 if inv.calls_seen[key] >= REPEAT_MAX:
-                    runaway = (f"the same call was asked {REPEAT_MAX} times: identical "
-                               f"{ask.tool} arguments cannot give a new answer")
+                    # NAMED AS A REPEAT, with what would make it a new question. Two wave-3
+                    # runaways were a model re-sending identical edit arguments, which reads to it
+                    # as an unexplained ending unless the words say what happened.
+                    runaway = (f"this is the same {ask.tool} call for the {REPEAT_MAX}th time, "
+                               f"with identical arguments ({_args_text(ask.args)}): an identical "
+                               "call measures the same thing and cannot give a new answer. aim at "
+                               "a different fingerprint, use a different operation, or conclude")
                 inv.tool_calls += 1
                 if shadow and ask.tool not in _read_only_names():
                     # REFUSED BEFORE THE REGISTRY IS REACHED, in the registry's own words for an
@@ -1228,6 +1233,17 @@ def _conclude(args: object, inv: _Investigation, *, ctx, scratch, region: Region
     form, body = forms[0], args[forms[0]]
 
     if form == "escalate":
+        if clone_freedom():
+            # NOT A CONCLUSION AT ALL under the owner's policy: escalation is what happens when
+            # the whole JOB fails, and a region cannot choose it. Taking it out of the schema was
+            # not enough - on wave 3, 379 regions sent the form from memory and the driver
+            # accepted every one. Refused like any invalid conclusion: it costs the turn, the
+            # refusal guard counts it, and the region goes on working.
+            raise ma.Refusal(
+                "escalate is not a conclusion this region may reach: escalation is for a whole "
+                "job that cannot be repaired, never one region. keep working - try an operation "
+                "on the copy, or conclude with `mesher_side` if the geometry is sound and the "
+                "mesher is at fault")
         if not isinstance(body, dict) or not str(body.get("reason") or "").strip():
             raise ma.Refusal("escalate gives no reason")
         reason = observe.clip_text(body["reason"], ma.INTENT_MAX)

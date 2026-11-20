@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -170,7 +171,8 @@ EDIT = ToolSpec(
     "declared, which defects of the region cleared, remain or are new, and the copy's counts. "
     "CLAIM THE MEASURED MOVEMENT, NOT THE DECLARED ONE: the answer's "
     "'measured_area_delta_mm2' and 'measured_volume_delta_mm3' are what the copy actually "
-    "moved, and a package is judged on those. An operation's own figure may be a different "
+    "moved, ROUNDED UP so that claiming exactly those numbers is safe, and a package is judged "
+    "on them. An operation's own figure may be a different "
     "quantity - 'area_removed_mm2' is the removed faces' area alone, and removing a sliver can "
     "move the surface far more than that by rebuilding its neighbours - so a package whose "
     "max_area_delta_mm2 or max_volume_delta_mm3 is copied from the declaration rather than "
@@ -1112,10 +1114,30 @@ def _measured_delta(verdict) -> dict:
                       ("volume_mm3", "measured_volume_delta_mm3")):
         if key in before and key in after:
             try:
-                out[name] = round(float(after[key]) - float(before[key]), 6)
+                out[name] = _rounded_up(float(after[key]) - float(before[key]))
             except (TypeError, ValueError):
                 continue
     return out
+
+
+def _rounded_up(value: float, places: int = 6) -> float:
+    """`value` rounded AWAY FROM ZERO at `places`, so a claim of the reported figure is never
+    under the real movement.
+
+    THE ROUNDING TRAP, measured on wave 2. `package.evaluate` refuses a package when the movement
+    is STRICTLY GREATER than the claim, and the only figure the author had was rounded to six
+    places - so a model that claimed exactly what it was shown was a hair short, every time. On
+    0060_00608290 the surface moved 0.342213... mm2, the model claimed 0.342213, and the one
+    repair the rules arm keeps on that part was reverted in both of its regions.
+    """
+    if not math.isfinite(value):
+        return value
+    scale = 10 ** places
+    scaled = value * scale
+    whole = math.floor(abs(scaled))
+    if abs(scaled) > whole:
+        whole += 1
+    return math.copysign(whole / scale, value)
 
 
 _HANDLERS = {"look": _look, "measure": _measure, "probe": _probe, "edit": _edit}

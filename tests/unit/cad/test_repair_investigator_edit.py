@@ -687,3 +687,44 @@ def test_the_clone_is_offered_every_catalogue_op_whatever_the_consent_flags(monk
     clone = set(PackageGuards((defect,), clone=True, **kw).ops)
     assert {"fragment_bodies", "rebuild_face", "close_wire_gaps",
             "split_closed_faces"} <= clone
+
+
+def test_the_measured_delta_is_rounded_up_so_claiming_it_passes(monkeypatch):
+    """THE ROUNDING TRAP, measured on wave 2. `package.evaluate` refuses when the movement is
+    STRICTLY GREATER than the claim, and the only figure the author had was rounded to 6 places -
+    so a model that claimed exactly what it was shown was always a hair short. On
+    0060_00608290 the movement was 0.342213... , the model claimed 0.342213, and the cure the
+    rules arm keeps was reverted in both regions. Rounded UP, claiming the reported number is
+    safe."""
+    from meshpipeline.cad.repair import package as pkg
+
+    defect = _defect()
+    before = ORIGINAL
+    moved = before.surface_area_mm2 + 0.3422134
+    after = replace(before, surface_area_mm2=moved,
+                    volume_mm3=before.volume_mm3 + 0.7311117)
+    _catalogue(monkeypatch, _Op(outcomes=[_cleared_outcome(evidence={
+        "faces_removed": 1, "area_removed_mm2": 0.342213})]))
+    scratch, _ = _scratch(defects=(defect,), scans=[((), True)], measures=[before, after])
+    ws = _workspace(scratch, defects=(defect,))
+
+    out = it.run_tool(ws, "edit", {"op": "fix_small_edges", "fingerprint": "edge:aaaa"},
+                      budget_s=1.0)
+
+    reported = out.data["measured_area_delta_mm2"]
+    assert reported >= 0.3422134, reported          # never under the real movement
+    assert reported == pytest.approx(0.342214)      # rounded UP at six places
+    # THE OTHER CLAIM THE AUTHOR COPIES. `max_area_delta_mm2` and `max_volume_delta_mm3` are the
+    # only numbers a package body carries, and both meet the same strict-greater comparison, so
+    # both are rounded the same way.
+    volume = out.data["measured_volume_delta_mm3"]
+    assert volume >= 0.7311117, volume
+    assert volume == pytest.approx(0.731112)
+
+    # AND THE POINT OF IT: a package claiming exactly the reported figure is accepted.
+    predicate = Predicate(cleared=frozenset({"edge:aaaa"}), unchanged=frozenset(),
+                          reclassified=frozenset(), max_area_delta_mm2=reported,
+                          max_volume_delta_mm3=volume)
+    assert pkg.evaluate(predicate, before=before, after=after,
+                        defects_before=("edge:aaaa",), defects_after=(),
+                        declared_area_mm2=0.0, declared_volume_mm3=0.0) == ""
