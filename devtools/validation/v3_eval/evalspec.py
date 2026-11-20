@@ -205,7 +205,7 @@ def env_file_text(name: str) -> str:
 
 
 def harness_argv(name: str, kind: str, *, shard: str, inputs: str, out: str,
-                 code_root: str) -> list[str]:
+                 code_root: str, tolerant_diagnostic: bool = False) -> list[str]:
     """repair_corpus.py's argv for one shard of one arm. The failing kind selects the sample from
     the manifest by repair_corpus's own sampler; the clean kind is a directory the runner filled
     with this shard's files (repair_corpus's directory mode, as T6's clean control ran)."""
@@ -219,11 +219,12 @@ def harness_argv(name: str, kind: str, *, shard: str, inputs: str, out: str,
     else:
         argv += [inputs]
     argv += list(HARNESS_FLAGS)
-    if kind == "failing":
-        # THE TOLERANT ROUTE, SCORED APART (repair_corpus --tolerant-delivery): a file gmsh still
-        # refuses whose tier-2b reading is tolerant_rung_eats_it gets one fTetWild pass (<= 300 s)
-        # on what would be delivered. Its own column; never counted as repaired or newly meshed.
-        # Not on the clean kind: a clean part meshes, so the pass could never apply there.
+    if kind == "failing" and tolerant_diagnostic:
+        # THE TOLERANT ROUTE IS A DIAGNOSTIC, OFF BY DEFAULT (owner decision): fTetWild meshing a
+        # file is not a fix and not a product fallback, so no default run takes it. Asked for, a
+        # file gmsh still refuses whose tier-2b reading is tolerant_rung_eats_it gets one fTetWild
+        # pass (<= 300 s) on what would be delivered, reported only in the diagnostic appendix.
+        # Never on the clean kind: a clean part meshes, so the pass could never apply there.
         argv += ["--tolerant-delivery"]
     if spec["investigator"] != "off":
         argv += ["--investigator", spec["investigator"],

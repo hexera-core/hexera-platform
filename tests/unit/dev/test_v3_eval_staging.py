@@ -633,10 +633,48 @@ def test_model_usage_counts_calls_by_purpose_and_never_guesses_an_old_one(tmp_pa
                                    "tournament:investigator": 1, "unlabelled": 1}
 
 
-def test_failing_shards_score_the_tolerant_route_and_clean_ones_do_not():
-    failing = spec.harness_argv("t29_deterministic", "failing", shard="1/4", inputs="/in",
-                                out="/out", code_root="/code")
+def test_the_tolerant_route_is_off_by_default_and_only_a_diagnostic():
+    # Owner amendment: fTetWild is not a fix and not a product fallback. No default run takes it.
+    assert "--tolerant-delivery" not in spec.HARNESS_FLAGS
+    for arm_name in spec.ARMS:
+        for kind in spec.KINDS:
+            argv = spec.harness_argv(arm_name, kind, shard="1/4", inputs="/in", out="/out",
+                                     code_root="/code")
+            assert "--tolerant-delivery" not in argv, (arm_name, kind)
+    diag = spec.harness_argv("t29_deterministic", "failing", shard="1/4", inputs="/in",
+                             out="/out", code_root="/code", tolerant_diagnostic=True)
+    assert "--tolerant-delivery" in diag
     clean = spec.harness_argv("t29_deterministic", "clean", shard="1/4", inputs="/in",
-                              out="/out", code_root="/code")
-    assert "--tolerant-delivery" in failing
+                              out="/out", code_root="/code", tolerant_diagnostic=True)
     assert "--tolerant-delivery" not in clean
+
+
+def test_files_fixed_is_newly_meshed_from_the_repaired_steps_gmsh_probe_only(tmp_path):
+    """Files fixed counts a part only when it did not mesh before and the gmsh probe of the
+    repaired STEP this run exported meshes (meshes_after True). A part the tolerant mesher ate,
+    a part repair wrote nothing for, and a part whose repaired STEP still refuses are not fixed."""
+    collect = _load("v3_collect_under_test_files_fixed", V3 / "collect.py")
+    rows = [
+        {"file": "fixed.step", "outcome": "repaired", "meshes_before": False,
+         "meshes_after": True, "mesh_kind_before": "x", "mesh_kind_after": ""},
+        {"file": "tolerant_only.step", "outcome": "repaired", "meshes_before": False,
+         "meshes_after": False, "mesh_kind_before": "x", "mesh_kind_after": "x",
+         "tolerant_route": "tolerant_rung_eats_it", "delivered_via_tolerant_mesher": True,
+         "tolerant_delivery": {"attempted": True, "meshes": True, "file": "repaired"}},
+        {"file": "tolerant_upload.step", "outcome": "nothing_to_repair", "meshes_before": False,
+         "meshes_after": None, "mesh_kind_before": "x", "mesh_kind_after": "",
+         "delivered_via_tolerant_mesher": True,
+         "tolerant_delivery": {"attempted": True, "meshes": True, "file": "upload"}},
+        {"file": "nothing_written.step", "outcome": "repair_refused", "meshes_before": False,
+         "meshes_after": None, "mesh_kind_before": "x", "mesh_kind_after": ""},
+    ]
+    d = _shard(tmp_path, "v3_full", "failing", 1, 1, rows=rows)
+    runs = collect.load_runs(tmp_path)
+    rep = collect.arm_report(runs["arms"][("v3_full", "failing")])
+    arm = collect.result_arm("t29_v3", rep, runs["checked"], "s" * 64)
+    assert arm["newly_meshed"] == 1
+    assert arm["delivered_via_tolerant_mesher"] == 2  # its own diagnostic count, never summed
+    assert rep["cost_per_fixed_part_usd"] == rep["total_cost_usd"]  # divided by 1, not 3
+    assert d.is_dir()
+
+

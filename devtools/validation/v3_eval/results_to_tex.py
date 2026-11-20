@@ -43,8 +43,10 @@ PENDING_MD = "**[PENDING]**"
 NA = "n/a"
 SCHEMA_VERSION = 2
 
-#: THE TOLERANT ROUTE'S LABEL, exactly, everywhere it is shown. Its count is never part of
-#: newly_meshed / files fixed: a part fTetWild meshes was meshed another way, not repaired.
+#: THE TOLERANT ROUTE'S LABEL, exactly, everywhere it is shown. It is a DIAGNOSTIC (off by default,
+#: repair_corpus --tolerant-delivery): never in the headline or the main table, only in the
+#: diagnostic appendix (\vThreeDiag* macros, \vThreeDiagnosticTable), and never part of
+#: newly_meshed / files fixed - a part fTetWild meshes was meshed another way, not repaired.
 TOLERANT_LABEL = "tolerant-mesher meshable (not counted as CAD repair)"
 
 #: arm id -> (macro infix, column header). t29_v3's infix is empty so its macros read
@@ -204,7 +206,6 @@ FIELD_MACROS = (  # (field, macro suffix, kind)
     ("newly_meshed", "NewlyMeshed", "int"),
     ("newly_broken", "NewlyBroken", "int"), ("meshes_before", "MeshesBefore", "int"),
     ("meshes_after", "MeshesAfter", "int"),
-    ("delivered_via_tolerant_mesher", "TolerantMesher", "int"),
     ("model_calls", "ModelCalls", "int"),
     ("cost_usd", "CostUsd", "usd"), ("wall_s", "WallS", "seconds"),
     ("cost_per_fixed_part", "CostPerFixed", "usd"), ("commit", "Commit", "hash"),
@@ -223,7 +224,11 @@ def macros(results: dict) -> dict[str, str]:
         out[f"vThree{infix}OpsKept"] = fmt_tally(arm.get("ops_kept"))
         out[f"vThree{infix}OpsRolledBack"] = fmt_tally(arm.get("ops_rolled_back"))
         out[f"vThree{infix}Label"] = tex_escape(arm.get("label") or LABELS[arm_id])
-    out["vThreeTolerantMesherLabel"] = tex_escape(TOLERANT_LABEL)
+    # THE DIAGNOSTIC APPENDIX: its own macro family, never in a headline or the main table.
+    out["vThreeDiagTolerantMesherLabel"] = tex_escape(TOLERANT_LABEL)
+    for arm_id, (infix, _) in ARMS.items():
+        arm = (results.get("arms") or {}).get(arm_id) or {}
+        out[f"vThreeDiag{infix}TolerantMesher"] = fmt(arm.get("delivered_via_tolerant_mesher"))
     clean = (results.get("arms") or {}).get(CLEAN) or {}
     for field, suffix, kind in (("n_files", "NFiles", "int"),
                                 ("still_meshes_no_new_defects", "StillGood", "int"),
@@ -247,9 +252,9 @@ def results_table(results: dict, m: dict[str, str]) -> str:
         r"\begin{table}[h]", r"\centering",
         r"\caption{CRS v3 measured results. Columns are the five arms; T19 ``tournament on'' is the "
         r"same run as T29 v3. Every count is a part count from the coarse gmsh probe. Files "
-        r"fixed are parts newly meshed by CAD repair; the tolerant-mesher row is a separate "
-        r"count, never part of files fixed. No arm passes or fails: the numbers are reported "
-        r"as measured. A \textbf{[PENDING]} cell has not been measured; it is not a zero.}",
+        r"fixed are parts CAD repair newly meshes: the gmsh probe of the repaired STEP meshes "
+        r"where the input did not. No arm passes or fails: the numbers are reported as "
+        r"measured. A \textbf{[PENDING]} cell has not been measured; it is not a zero.}",
         r"\label{tab:v3results}", r"\footnotesize",
         r"\begin{tabular}{@{}l" + "r" * len(cols) + r"@{}}", r"\toprule",
         _row("", [r"\textbf{" + ARMS[a][1] + "}" for a in cols]), r"\midrule",
@@ -258,7 +263,6 @@ def results_table(results: dict, m: dict[str, str]) -> str:
                           ("Meshed after", "MeshesAfter"),
                           (r"\textbf{Files fixed} (newly meshed by CAD repair)", "FilesFixed"),
                           (r"\textbf{Newly broken}", "NewlyBroken"),
-                          (tex_escape(TOLERANT_LABEL), "TolerantMesher"),
                           ("Model calls", "ModelCalls"),
                           (r"Cost (model + VM)", "CostUsd"), ("Shard wall time", "WallS"),
                           ("Cost per fixed part", "CostPerFixed")):
@@ -273,6 +277,24 @@ def results_table(results: dict, m: dict[str, str]) -> str:
               r"crash).} \\",
               r"\bottomrule", r"\end{tabular}", r"\end{table}"]
     return "\n".join(lines)
+
+
+def diagnostic_table(results: dict, m: dict[str, str]) -> str:
+    """THE DIAGNOSTIC APPENDIX: the tolerant-mesher count per arm, under its exact label. Off by
+    default (a run must ask for --tolerant-delivery), so it reads [PENDING] unless measured. It is
+    not a fix, not a product fallback, and never part of files fixed."""
+    cols = list(ARMS)
+    return "\n".join([
+        r"\begin{table}[h]", r"\centering",
+        r"\caption{Diagnostic only, not a result: parts gmsh still refuses after repair that the "
+        r"tolerant mesher (fTetWild) meshes as delivered. Not a fix, not a product fallback, and "
+        r"never counted in files fixed.}",
+        r"\label{tab:v3diagnostic}", r"\footnotesize",
+        r"\begin{tabular}{@{}l" + "r" * len(cols) + r"@{}}", r"\toprule",
+        _row("", [r"\textbf{" + ARMS[a][1] + "}" for a in cols]), r"\midrule",
+        _row(m["vThreeDiagTolerantMesherLabel"],
+             [m[f"vThreeDiag{ARMS[a][0]}TolerantMesher"] for a in cols]),
+        r"\bottomrule", r"\end{tabular}", r"\end{table}"])
 
 
 def ops_table(results: dict) -> str:
@@ -309,6 +331,8 @@ def render_tex(results: dict, *, source: str = "") -> str:
     lines.append(results_table(results, m) + "}")
     lines.append(r"\providecommand{\vThreeOpsTable}{%")
     lines.append(ops_table(results) + "}")
+    lines.append(r"\providecommand{\vThreeDiagnosticTable}{%")
+    lines.append(diagnostic_table(results, m) + "}")
     return "\n".join(lines) + "\n"
 
 
@@ -334,7 +358,7 @@ def _from_summary(arm: dict, summary: dict) -> None:
     arm["meshes_after"] = meshing.get("meshed_after")
     arm["newly_meshed"] = meshing.get("newly_meshed")
     arm["newly_broken"] = meshing.get("newly_broken")
-    # THE TOLERANT ROUTE, its own column: never folded into newly_meshed or meshes_after.
+    # THE TOLERANT ROUTE, diagnostic only: never folded into newly_meshed or meshes_after.
     arm["delivered_via_tolerant_mesher"] = meshing.get("delivered_via_tolerant_mesher")
     arm["endings"] = summary.get("endings")
     tally = (summary.get("catalogue") or {}).get("tally")

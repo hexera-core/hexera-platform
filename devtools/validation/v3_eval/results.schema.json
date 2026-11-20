@@ -147,7 +147,7 @@
         },
         "newly_meshed": {
           "$ref": "#/$defs/count",
-          "description": "files fixed: parts newly meshed by CAD repair (the headline). Never includes delivered_via_tolerant_mesher."
+          "description": "files fixed (the headline): parts that did not mesh before and whose repaired STEP, as exported by this run, meshes in the gmsh probe. Never includes delivered_via_tolerant_mesher."
         },
         "newly_broken": {
           "$ref": "#/$defs/count"
@@ -160,7 +160,7 @@
         },
         "delivered_via_tolerant_mesher": {
           "$ref": "#/$defs/count",
-          "description": "labelled exactly 'tolerant-mesher meshable (not counted as CAD repair)'. files gmsh still refused that fTetWild meshed as delivered (repair_corpus --tolerant-delivery, plan-free production envelope/iterations). A SEPARATE success column, never part of newly_meshed or meshes_after. Optional: absent or null renders [PENDING]."
+          "description": "DIAGNOSTIC ONLY, labelled exactly 'tolerant-mesher meshable (not counted as CAD repair)'. Files gmsh still refused after repair that fTetWild meshed as delivered; measured only when a run asks for repair_corpus --tolerant-delivery (off by default). Not a fix, not a product fallback, never part of newly_meshed (files fixed) or meshes_after, rendered only in the diagnostic appendix. Optional: absent or null renders [PENDING]."
         },
         "endings": {
           "$ref": "#/$defs/tally",

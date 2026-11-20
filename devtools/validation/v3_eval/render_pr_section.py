@@ -40,7 +40,6 @@ ROWS = (("files", "n_files", "int"), ("meshed before", "meshes_before", "int"),
         ("meshed after", "meshes_after", "int"),
         ("**files fixed** (newly meshed by CAD repair)", "newly_meshed", "int"),
         ("**newly broken**", "newly_broken", "int"),
-        ("delivered_via_tolerant_mesher", "delivered_via_tolerant_mesher", "int"),
         ("model calls", "model_calls", "int"),
         ("cost (model + VM)", "cost_usd", "usd"), ("shard wall time", "wall_s", "seconds"),
         ("cost per fixed part", "cost_per_fixed_part", "usd"), ("commit", "commit", "hash"),
@@ -90,14 +89,10 @@ def render(results: dict) -> str:
              "JSON. **[PENDING]** means not measured yet; it is never a zero. No arm passes or "
              "fails: the numbers are reported as measured.", "",
              "### Files fixed", "",
-             f"- CRS v3 files fixed (newly meshed by CAD repair): "
+             f"- CRS v3 files fixed (CAD-repaired, and the repaired STEP newly meshes in gmsh): "
              f"{rt.fmt(v3.get('newly_meshed'), md=md)} of {rt.fmt(v3.get('n_files'), md=md)}; "
              f"deterministic catalogue: {rt.fmt(det.get('newly_meshed'), md=md)} of "
              f"{rt.fmt(det.get('n_files'), md=md)}.",
-             f"- {rt.TOLERANT_LABEL}: CRS v3 "
-             f"{rt.fmt(v3.get('delivered_via_tolerant_mesher'), md=md)}, deterministic "
-             f"{rt.fmt(det.get('delivered_via_tolerant_mesher'), md=md)}. A separate count, "
-             "never added to files fixed.",
              f"- Clean control: {rt.fmt(clean.get('still_meshes_no_new_defects'), md=md)} of "
              f"{rt.fmt(clean.get('n_files'), md=md)} parts still mesh with no new defect, "
              f"{rt.fmt(clean.get('newly_broken'), md=md)} newly broken"
@@ -112,7 +107,6 @@ def render(results: dict) -> str:
              "| | " + " | ".join(h for _, h in COLUMNS) + " |",
              "|---|" + "---|" * len(COLUMNS)]
     for label, field, kind in ROWS:
-        label = rt.TOLERANT_LABEL if field == "delivered_via_tolerant_mesher" else label
         lines.append(f"| {label} | " + " | ".join(
             rt.fmt((arms.get(a) or {}).get(field), kind, md=md) for a, _ in COLUMNS) + " |")
     lines += ["", "Endings, operations kept and rolled back:", ""]
@@ -122,6 +116,14 @@ def render(results: dict) -> str:
                      f"{rt.fmt_tally(arm.get('ops_kept'), md=md)}; rolled back "
                      f"{rt.fmt_tally(arm.get('ops_rolled_back'), md=md)}"
                      + (f". _{arm['notes']}_" if arm.get("notes") else ""))
+    lines += ["", "### Diagnostic (appendix, not a result)", "",
+              "Off by default (`repair_corpus --tolerant-delivery`). Not a fix, not a product "
+              "fallback, and never counted in files fixed.", "",
+              "| | " + " | ".join(h for _, h in COLUMNS) + " |",
+              "|---|" + "---|" * len(COLUMNS),
+              f"| {rt.TOLERANT_LABEL} | " + " | ".join(
+                  rt.fmt((arms.get(a) or {}).get("delivered_via_tolerant_mesher"), md=md)
+                  for a, _ in COLUMNS) + " |"]
     lines += ["", "### What this does not show", "",
               "- **T6 is the rules-only baseline.** macOS, commit `0bf78625`, no model configured, "
               "and the tournament and memory inert because their settings rows did not exist yet. "

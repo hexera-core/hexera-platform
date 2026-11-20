@@ -89,7 +89,7 @@ def test_pending_example_renders_every_number_pending():
     m = rt.macros(results)
     numeric = [k for k in m if k.endswith(("NewlyMeshed", "NewlyBroken", "NFiles", "CostUsd",
                                            "CostPerFixed", "FilesFixed", "StillGood",
-                                           "CleanChanged", "TolerantMesher"))]
+                                           "CleanChanged"))]
     assert numeric and all(m[k] == PENDING for k in numeric)
     tex = rt.render_tex(results)
     assert "{0}" not in tex  # no macro body is a bare zero
@@ -161,16 +161,28 @@ def test_files_fixed_never_includes_tolerant_mesher_only_parts():
                            ("t29_v3", "delivered_via_tolerant_mesher"): 41}))
     assert m["vThreeFilesFixed"] == base["vThreeFilesFixed"] == "12"
     assert m["vThreeDetFilesFixed"] == base["vThreeDetFilesFixed"] == "3"
-    assert m["vThreeTolerantMesher"] == "41" and m["vThreeDetTolerantMesher"] == "40"
+    assert m["vThreeDiagTolerantMesher"] == "41" and m["vThreeDiagDetTolerantMesher"] == "40"
 
 
-def test_the_tolerant_column_carries_its_exact_label_everywhere():
+def test_the_tolerant_count_is_only_in_the_diagnostic_appendix_with_its_exact_label():
     label = "tolerant-mesher meshable (not counted as CAD repair)"
     assert rt.TOLERANT_LABEL == label
     r = _filled({("t29_v3", "delivered_via_tolerant_mesher"): 41})
-    assert rt.macros(r)["vThreeTolerantMesherLabel"] == rt.tex_escape(label)
-    assert rt.tex_escape(label) in rt.results_table(r, rt.macros(r))
-    assert f"| {label} |" in pr.render(r)
+    m = rt.macros(r)
+    assert m["vThreeDiagTolerantMesherLabel"] == rt.tex_escape(label)
+    # NOT in the main table or any non-diagnostic macro
+    assert not [k for k in m if "Tolerant" in k and not k.startswith("vThreeDiag")]
+    main = rt.results_table(r, m)
+    assert "olerant" not in main and "41" not in main
+    diag = rt.diagnostic_table(r, m)
+    assert rt.tex_escape(label) in diag and "41" in diag
+    tex = rt.render_tex(r)
+    assert r"\providecommand{\vThreeDiagnosticTable}" in tex
+    md = pr.render(r)
+    headline_and_main = md.split("### Diagnostic")[0]
+    assert "olerant" not in headline_and_main
+    appendix = md.split("### Diagnostic")[1].split("## What this PR fixes")[0]
+    assert f"| {label} |" in appendix and "41" in appendix
     schema = json.loads((V3 / "results.schema.json").read_text())
     assert label in schema["$defs"]["arm"]["properties"]["delivered_via_tolerant_mesher"][
         "description"]
@@ -315,6 +327,7 @@ def test_pr_section_pending_and_filled():
     assert "**[PENDING]**" in pending and "| 0 |" not in pending
     filled = pr.render(_filled({(a, "delivered_via_tolerant_mesher"): 40 for a in rt.ARMS}))
     body = filled.split("### Files fixed")[1].split("## What this PR fixes")[0]
+    assert "### Diagnostic" in body
     assert "**[PENDING]**" not in body
 
 
@@ -329,5 +342,5 @@ def test_blank_results_is_independent():
 
 def test_the_tolerant_column_renders_and_reads_pending_when_unmeasured():
     r = _filled({("t29_v3", "delivered_via_tolerant_mesher"): 41})
-    assert rt.macros(r)["vThreeTolerantMesher"] == "41"
-    assert rt.macros(_filled())["vThreeTolerantMesher"] == PENDING
+    assert rt.macros(r)["vThreeDiagTolerantMesher"] == "41"
+    assert rt.macros(_filled())["vThreeDiagTolerantMesher"] == PENDING

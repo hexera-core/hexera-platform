@@ -353,7 +353,9 @@ def placeholders(reports: dict, checked: dict, comparisons: dict) -> dict[str, s
             f"{key}.NEWLY_BROKEN": str(meshing.get("newly_broken", "n/a")),
             f"{key}.MESHED_BEFORE": str(meshing.get("meshed_before", "n/a")),
             f"{key}.MESHED_AFTER": str(meshing.get("meshed_after", "n/a")),
-            f"{key}.TOLERANT_MESHER": str(meshing.get("delivered_via_tolerant_mesher", "n/a")),
+            # DIAGNOSTIC ONLY (off by default): never part of files fixed.
+            f"{key}.DIAG_TOLERANT_MESHER": str(meshing.get("delivered_via_tolerant_mesher",
+                                                           "n/a")),
             f"{key}.ENDINGS": _fmt(rep["summary"].get("endings")),
             f"{key}.OPS": "; ".join(f"{op} kept {c['kept']}/rolled back {c['rolled_back']}"
                                     for op, c in sorted(tally.items())) or "none attempted",
@@ -444,7 +446,8 @@ def result_arm(result_id: str, rep: dict, checked: dict, kind_sha: str) -> dict:
            "image_digest": checked["image"], "sample_sha256": kind_sha, "n_files": rep["files"],
            "newly_meshed": meshing.get("newly_meshed"), "newly_broken": meshing.get("newly_broken"),
            "meshes_before": meshing.get("meshed_before"), "meshes_after": meshing.get("meshed_after"),
-           # ITS OWN COLUMN: files fTetWild meshed as delivered, never part of newly_meshed.
+           # DIAGNOSTIC ONLY: files fTetWild meshed as delivered (null unless the run asked for
+           # --tolerant-delivery). Never part of newly_meshed / files fixed.
            "delivered_via_tolerant_mesher": meshing.get("delivered_via_tolerant_mesher"),
            "endings": rep["summary"].get("endings"), "ops_kept": kept, "ops_rolled_back": rolled,
            "model_calls": rep["model"]["calls"], "cost_usd": rep["total_cost_usd"],
