@@ -98,7 +98,7 @@ def test_off_never_calls_probe(monkeypatch):
     session._rescan(face_scan=False, within=_REGION)
     session._region_scan(_REGION)
     # The whole-shape call is still exactly the call it always was.
-    assert calls[0] == {"face_scan_s": 0.0}
+    assert calls[0] == {"face_scan_s": 0.0, "quantum_diagonal_mm": MEASURE.diagonal_mm}
 
 
 @pytest.mark.parametrize("raw,expected", [
@@ -144,7 +144,7 @@ def test_live_appends_after_localize(monkeypatch):
     session = RepairSession("shape", measurer=lambda s: MEASURE, remaining_s=lambda: 300.0)
     assert session.defects() == (_OPENING, _OVERLAP)
     # localize is called exactly as it always was: mesh defects are never passed INTO it.
-    assert calls == [{"face_scan_s": 0.0}]
+    assert calls == [{"face_scan_s": 0.0, "quantum_diagonal_mm": MEASURE.diagonal_mm}]
     assert probes == [{"diagonal_mm": 200.0, "budget_s": 120.0, "within": None}]
 
 
@@ -266,7 +266,8 @@ def test_scoped_scan_passes_region(monkeypatch):
 
     found, complete = session._region_scan(_REGION)
     assert found == (_OPENING, _OVERLAP) and complete
-    assert calls[-1] == {"face_scan_s": 0.0, "within": _REGION, "scope_diagonal_mm": 200.0}
+    assert calls[-1] == {"face_scan_s": 0.0, "within": _REGION, "scope_diagonal_mm": 200.0,
+                         "quantum_diagonal_mm": 200.0}
     assert probes[-1] == {"diagonal_mm": 200.0, "budget_s": 120.0, "within": _REGION}
 
     found = session._rescan(face_scan=False, within=_REGION)

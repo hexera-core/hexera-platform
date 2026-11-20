@@ -743,6 +743,11 @@ def _stamped(found: tuple[EntityDefect, ...], *,
     Done HERE, in one place, after the whole scan: the fingerprint's grid is a fraction of the
     PART's diagonal, so it cannot be computed by each defect producer in isolation without each
     of them re-measuring the shape.
+
+    `diagonal_mm` IS THE RUN'S, NOT NECESSARILY THIS SHAPE'S. `localize_scan` passes its
+    `quantum_diagonal_mm` when it was given one, so every scan of one repair run names on the
+    upload's grid; it passes the scanned shape's own diagonal only for a caller with no run to
+    belong to. See `localize_scan` for what the difference bought.
     """
     from dataclasses import replace
 
@@ -1026,6 +1031,7 @@ def _linked(found: tuple[EntityDefect, ...]) -> tuple[EntityDefect, ...]:
 def localize_scan(shape, *, valid: bool | None = None, face_scan_s: float = 0.0,
                   within: Region | None = None,
                   scope_diagonal_mm: float | None = None,
+                  quantum_diagonal_mm: float | None = None,
                   ) -> tuple[tuple[EntityDefect, ...], bool]:
     """Every located failure point this module can find, and whether the scan was exhaustive.
 
@@ -1062,6 +1068,24 @@ def localize_scan(shape, *, valid: bool | None = None, face_scan_s: float = 0.0,
     classification are all measured on the whole shape, because a name or a threshold that moved
     with the scope would make two scans of one shape incomparable - which is the one thing this
     function may never do.
+
+    `quantum_diagonal_mm` IS THE RUN'S NAMING GRID, AND IT IS NOT AN OPTIMISATION. Left `None`,
+    each scan names its entities on a grid scaled to the diagonal of the shape IT JUST SCANNED,
+    which is how a repair that moved the part's extent came to rename every entity on the part -
+    including entities nobody had touched - so the progress rule could not find the defect it had
+    just named and read that as the defect being gone. A FALSE KEEP; measured on
+    0059_00592781_58be5d61afe56e0fcdda08e3_step_000, where four zero-length edges sat at boxes
+    identical to the micrometre either side of an operation that removed nothing, and all four
+    were renamed (docs/superpowers/specs/2026-11-19-target-remains-diagnosis.md).
+    `identity.quantum_for` now snaps the diagonal up to a binary octave, which absorbs any extent
+    change short of a factor of two - but a part whose diagonal straddles a power of two still
+    moves the grid once, and the deeper point stands whatever the snap absorbs: AN ENTITY'S NAME
+    MUST BE A FACT ABOUT THE ENTITY, not about what else happened to the part. So a run hands the
+    UPLOAD's diagonal here, the same number it hands `scope_diagonal_mm`, and the grid becomes a
+    property of the run rather than of the scan.
+    `None` KEEPS THE SHAPE'S OWN DIAGONAL, which is right - and is all that is available - for a
+    caller with no run to belong to: `brep.inspect_brep_file` scans one shape once and has no
+    upload diagonal to offer. A caller that cannot supply it must not be handed a guess.
 
     `scope_diagonal_mm` IS THE DIAGONAL THAT GROWS THE REGION'S BOX, and it exists so that the
     two sides of a scope cannot disagree. A caller comparing its own records against a scoped
@@ -1135,7 +1159,11 @@ def localize_scan(shape, *, valid: bool | None = None, face_scan_s: float = 0.0,
     # STAMPED AFTER THE SORT, so the collision suffix a shared box gets is assigned in the same
     # stable order the report is read in - two scans of identical bytes must produce identical
     # names, or nothing can be compared across a repair.
-    stamped = _stamped(tuple(found), diagonal_mm=diagonal)
+    # NAMED ON THE RUN'S GRID WHEN THE CALLER HAS ONE, on this shape's own when it has not. Every
+    # OTHER use of `diagonal` above - the sliver thresholds, the free-bound tolerance, the grown
+    # scope box - is untouched by it: this parameter buys a stable NAME, not a stable threshold.
+    stamped = _stamped(tuple(found), diagonal_mm=(
+        diagonal if quantum_diagonal_mm is None else float(quantum_diagonal_mm)))
     return (_linked(stamped) if ran_face_scan else stamped), complete
 
 

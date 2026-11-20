@@ -588,25 +588,35 @@ class RepairSession:
         is what keeps a flag-off run's scans byte-for-byte what they were. `face_scan=False` is
         the status-walk re-inspection (`_rescan`): budget 0.0 there too, whatever the flag.
 
-        `within=None` IS THE WHOLE-SHAPE SCAN THIS HAS ALWAYS BEEN, and it is made with the CALL
-        IT ALWAYS WAS - argument for argument, without even a `within=None` - because the
-        committed baseline is what a difference between the two drivers is attributed against,
-        and a test that watches this call (`test_repair_face_scan`) is entitled to see no trace
-        of a feature an unscoped run does not use.
+        `within=None` IS THE WHOLE-SHAPE SCAN THIS HAS ALWAYS BEEN, and it is made without even a
+        `within=None`, because the committed baseline is what a difference between the two drivers
+        is attributed against and a test that watches this call (`test_repair_face_scan`) is
+        entitled to see no trace of a scoping feature an unscoped run does not use.
+
+        `quantum_diagonal_mm` IS ON EVERY SCAN THIS SESSION TAKES, scoped or not, and is the one
+        argument that is not optional: it is the UPLOAD's diagonal, so every scan in the run names
+        its entities on ONE grid. Named at the CURRENT shape's diagonal instead, a repair that
+        moved the part's extent renamed every entity on the part - including entities nobody
+        touched - and `_progress_refusal` then could not find the defect it had just named and
+        kept an operation that had repaired nothing
+        (docs/superpowers/specs/2026-11-19-target-remains-diagnosis.md). An entity's name must be
+        a fact about the entity, not about what else happened to the part.
         """
         budget = 0.0
         if face_scan and rcfg.CAD_REPAIR_HEAL_SELF_INTERSECTIONS:
             remaining = self.remaining_s or (lambda: float(rcfg.CAD_REPAIR_TIMEOUT_S))
             budget = face_scan_budget_s(remaining())
         if within is None:
-            found, complete = _localize_scan(shape, face_scan_s=budget)
+            found, complete = _localize_scan(shape, face_scan_s=budget,
+                                             quantum_diagonal_mm=self.original.diagonal_mm)
         else:
             # THE UPLOAD'S DIAGONAL GROWS THE REGION'S BOX, the same number `scoped_to` and
             # `in_region` are handed below, so the scan's scope and the filters compared against
             # it are one box. The current shape's diagonal would drift as the repair reshapes the
             # part.
             found, complete = _localize_scan(shape, face_scan_s=budget, within=within,
-                                             scope_diagonal_mm=self.original.diagonal_mm)
+                                             scope_diagonal_mm=self.original.diagonal_mm,
+                                             quantum_diagonal_mm=self.original.diagonal_mm)
         return self._with_mesh(found, shape, within=within, final=final), complete
 
     def _with_mesh(self, found, shape, *, within: Region | None, cap_s: float | None = None,
@@ -1503,12 +1513,16 @@ class RepairSession:
                 remaining = self.remaining_s or (lambda: float(rcfg.CAD_REPAIR_TIMEOUT_S))
                 budget = face_scan_budget_s(remaining())
             if whole_shape:
-                found, complete = _localize_scan(self.shape, face_scan_s=budget)
+                found, complete = _localize_scan(
+                    self.shape, face_scan_s=budget,
+                    quantum_diagonal_mm=self.original.diagonal_mm)
                 found = self._with_mesh(found, self.shape, within=None, cap_s=cap_s)
             else:
                 # ONE GROWN BOX FOR BOTH SIDES OF THE SCOPE, as in `_default_scan`.
-                found, complete = _localize_scan(self.shape, face_scan_s=budget, within=region,
-                                                 scope_diagonal_mm=self.original.diagonal_mm)
+                found, complete = _localize_scan(
+                    self.shape, face_scan_s=budget, within=region,
+                    scope_diagonal_mm=self.original.diagonal_mm,
+                    quantum_diagonal_mm=self.original.diagonal_mm)
                 found = self._with_mesh(found, self.shape, within=region, cap_s=cap_s)
         return tuple(found), bool(complete)
 

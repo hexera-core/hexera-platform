@@ -480,10 +480,12 @@ class _ScanSpy:
         self._scans = tuple(scans)
         self._clock = clock
 
-        def spy(_shape, *, face_scan_s=0.0, within=None, scope_diagonal_mm=None):
-            # `scope_diagonal_mm` IS ACCEPTED AND IGNORED: this double reports by fingerprint, so
-            # it has no grown box to grow. What the real scan does with it is a native test's
-            # (`test_native_repair_scoped_scan`).
+        def spy(_shape, *, face_scan_s=0.0, within=None, scope_diagonal_mm=None,
+                quantum_diagonal_mm=None):
+            # `scope_diagonal_mm` AND `quantum_diagonal_mm` ARE ACCEPTED AND IGNORED: this double
+            # reports by fingerprint, so it has no grown box to grow and no entity to name. What
+            # the real scan does with them is a native test's (`test_native_repair_scoped_scan`)
+            # and a unit test's (`test_repair_run_grid`).
             self.within.append(within)
             self._clock.now += _SCAN_S
             found = self._scans[min(len(self.within), len(self._scans)) - 1]

@@ -84,7 +84,9 @@ def test_with_the_heal_flag_off_the_session_never_asks_for_a_face_scan(monkeypat
     seen = []
     monkeypatch.setattr(session_mod, "_localize_scan", lambda s, **kw: seen.append(kw) or ((), True))
     RepairSession(object(), measurer=lambda s: MEASURE).defects()
-    assert seen == [{"face_scan_s": 0.0}]
+    # `quantum_diagonal_mm` IS THE UPLOAD'S DIAGONAL on every scan a run takes, so an entity's
+    # name cannot move when a repair moves the part's extent (see `localize.localize_scan`).
+    assert seen == [{"face_scan_s": 0.0, "quantum_diagonal_mm": MEASURE.diagonal_mm}]
 
 
 def test_with_the_flag_on_the_session_asks_with_the_remaining_budget_slice(monkeypatch):
@@ -92,7 +94,7 @@ def test_with_the_flag_on_the_session_asks_with_the_remaining_budget_slice(monke
     seen = []
     monkeypatch.setattr(session_mod, "_localize_scan", lambda s, **kw: seen.append(kw) or ((), True))
     RepairSession(object(), measurer=lambda s: MEASURE, remaining_s=lambda: 40.0).defects()
-    assert seen == [{"face_scan_s": 10.0}]
+    assert seen == [{"face_scan_s": 10.0, "quantum_diagonal_mm": MEASURE.diagonal_mm}]
 
 
 # THE FLOOR FIX (floor-fix-brief.md, binding ruling). The analyzer's findings exist to target the

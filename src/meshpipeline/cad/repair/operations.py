@@ -83,6 +83,19 @@ class RepairOp(Protocol):
     #: operation that claims a defect, because a narrow fix that fails costs one entity's worth of
     #: rollback rather than the whole part's.
     scope: int
+    #: TRUE WHEN `apply` DOES THE SAME THING WHATEVER IT IS AIMED AT. Not a statement about how
+    #: much of the part the result touches - that is `scope` - but about whether the TARGETS are
+    #: an input to the kernel call at all. `ShapeFix_Wireframe`, `ShapeFix_Shape` and
+    #: `BRepBuilderAPI_Sewing` are handed the whole shape and no entity, so the targets only name
+    #: what was AIMED at, for the progress rule to judge against; `ShapeFix_Face` and the fills
+    #: are handed one resolved sub-shape and do different work for different ones.
+    #:
+    #: WHAT THE PLANNER DOES WITH IT: refuses to re-propose a true one on a shape it has already
+    #: run on, because that is the identical call and the identical answer (RunHistory
+    #: `tried_whole_shape`; 17 of the corpus run's 81 `target_remains` were exactly that).
+    #: Declaring it TRUE when the targets really do matter would throw repairs away, so it is
+    #: declared per operation and read with a default of False.
+    whole_shape: bool
 
     def targets_for(self, defect) -> tuple[EntityRef, ...]:
         """The entities this operation would aim at for one defect, or () if it cannot."""
@@ -265,7 +278,10 @@ class FixSmallEdges:
     FIRST attempt on its file, and all 17 second-and-later attempts were rolled back
     (docs/superpowers/specs/2026-11-19-target-remains-diagnosis.md). Suppressing the retry is the
     planner's business, not this operation's - `targets_for` is handed one defect and knows
-    nothing of the run's history - so it is recorded here and reported as a seam.
+    nothing of the run's history - and it is now suppressed there: this class declares
+    `whole_shape = True` and the planner will not re-propose it on a shape it has already run on
+    (`plan.RunHistory.tried_whole_shape`). It becomes proposable again as soon as the shape
+    changes, because the kernel may then have something to do.
 
     `ModeDropSmallEdges = False` DELIBERATELY: dropping an edge rather than merging it removes
     geometry, and removing geometry is an operator's decision.
@@ -277,6 +293,9 @@ class FixSmallEdges:
     name = "fix_small_edges"
     answers = frozenset({DefectCode.small_edge, DefectCode.degenerate_edge})
     scope = 1
+    #: ShapeFix_Wireframe is handed the WHOLE SHAPE and no entity: one call merges every small
+    #: edge it will merge, so a second aim is the same call (see the class note above).
+    whole_shape = True
 
     def targets_for(self, defect) -> tuple[EntityRef, ...]:
         if getattr(defect, "code", None) not in self.answers:
@@ -464,6 +483,8 @@ class SplitClosedFaces:
     name = "split_closed_faces"
     answers = frozenset({DefectCode.mesh_periodic_surface})
     scope = 1
+    #: ShapeUpgrade_ShapeDivideClosed runs on the ONE owner body of the ONE named face.
+    whole_shape = False
 
     def targets_for(self, defect) -> tuple[EntityRef, ...]:
         import meshpipeline.settings.cad_repair as rcfg
@@ -548,6 +569,8 @@ class FixFaceBoundary:
     answers = frozenset({DefectCode.curve_inconsistency, DefectCode.wire_gap,
                          DefectCode.duplicate_surface_data})
     scope = 2
+    #: ShapeFix_Face is the narrowest call in the catalogue: one resolved face, spliced back.
+    whole_shape = False
 
     def targets_for(self, defect) -> tuple[EntityRef, ...]:
         if getattr(defect, "code", None) not in self.answers:
@@ -748,6 +771,15 @@ class FixSmallFaces:
     name = "fix_small_faces"
     answers = frozenset({DefectCode.small_face, DefectCode.small_edge})
     scope = 3
+    #: FALSE DESPITE THE KERNEL CALL BEING WHOLE-SHAPE, and the reason is not a technicality.
+    #: `ShapeFix_FixSmallFace.Init(shape)` does sweep the part - but this operation DECLINES
+    #: BEFORE THE KERNEL on a per-target test (`not_small`), so two aims at two different entities
+    #: are two different questions, and one declined aim says nothing about the next. The
+    #: planner's rule is recorded at PROPOSAL, so declaring this true would let a `not_small`
+    #: decline on one sliver suppress a sweep that would have carried off another. That is a lost
+    #: repair, which the rule may never cost. The per-aim `declined` ledger already handles the
+    #: repeat this operation actually produces.
+    whole_shape = False
 
     def targets_for(self, defect) -> tuple[EntityRef, ...]:
         import meshpipeline.settings.cad_repair as rcfg
@@ -1026,6 +1058,9 @@ class SewFaces:
     name = "sew_faces"
     answers = frozenset({DefectCode.open_shell})
     scope = 4
+    #: BRepBuilderAPI_Sewing is handed a BODY, never an entity: the targets name the rim that
+    #: prompted it and change nothing about the call (see WHAT IT CANNOT DO, MEASURED).
+    whole_shape = True
 
     def targets_for(self, defect) -> tuple[EntityRef, ...]:
         if getattr(defect, "code", None) not in self.answers:
@@ -1147,6 +1182,8 @@ class FillPlanarHole:
     name = "fill_planar_hole"
     answers = frozenset({DefectCode.open_shell})
     scope = 5
+    #: The patch is built on the free wire containing the ONE named edge.
+    whole_shape = False
 
     def targets_for(self, defect) -> tuple[EntityRef, ...]:
         if getattr(defect, "code", None) not in self.answers:
@@ -1534,6 +1571,8 @@ class FillNonplanarHole:
     name = "fill_nonplanar_hole"
     answers = frozenset({DefectCode.open_shell})
     scope = 6
+    #: As fill_planar_hole: the one named rim's wire is what gets surfaced.
+    whole_shape = False
 
     def targets_for(self, defect) -> tuple[EntityRef, ...]:
         import meshpipeline.settings.cad_repair as rcfg
@@ -1863,6 +1902,8 @@ class HealSelfIntersections:
     name = "heal_self_intersections"
     answers = frozenset({DefectCode.self_intersection})
     scope = 7
+    #: The heal rebuilds the named face and its partners, and nothing else.
+    whole_shape = False
 
     def targets_for(self, defect) -> tuple[EntityRef, ...]:
         import meshpipeline.settings.cad_repair as rcfg
@@ -2245,6 +2286,8 @@ class FragmentBodies:
     answers = frozenset({DefectCode.mesh_edge_through_face})
     #: Two whole bodies: wider than any face fix, narrower than the whole-shape pass.
     scope = 8
+    #: Fragmentation runs on the bodies the ONE named face belongs to.
+    whole_shape = False
 
     def targets_for(self, defect) -> tuple[EntityRef, ...]:
         import meshpipeline.settings.cad_repair as rcfg
@@ -2484,6 +2527,8 @@ class RebuildFace:
     answers = frozenset({DefectCode.mesh_overlapping_facets})
     #: One face (re-stitched into its owner): as narrow as the face fixer.
     scope = 2
+    #: One named face is rebuilt and re-stitched into its owner.
+    whole_shape = False
 
     def targets_for(self, defect) -> tuple[EntityRef, ...]:
         import meshpipeline.settings.cad_repair as rcfg
@@ -2911,6 +2956,8 @@ class CloseWireGaps:
     #: One face and the neighbours sharing what moved: wider than the face fixer, which moves
     #: nothing and so must meet a wire gap first; far narrower than the whole-shape pass.
     scope = 3
+    #: The gaps closed are those of the ONE named face's wires.
+    whole_shape = False
 
     def targets_for(self, defect) -> tuple[EntityRef, ...]:
         import meshpipeline.settings.cad_repair as rcfg
@@ -3053,6 +3100,9 @@ class FixShapeGlobal:
         DefectCode.duplicate_surface_data,
     })
     scope = 99
+    #: ShapeFix_Shape is handed the WHOLE SHAPE and no entity, and was measured a no-op on the
+    #: corpus parts probed: IsSame TRUE, zero recorded replacements.
+    whole_shape = True
 
     def targets_for(self, defect) -> tuple[EntityRef, ...]:
         # ANY ENTITY TYPE, because the fixer runs over the whole shape regardless; the ref records

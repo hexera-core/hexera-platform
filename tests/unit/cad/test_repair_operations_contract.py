@@ -31,6 +31,20 @@ def test_every_operation_declares_a_scope_so_the_planner_can_prefer_the_narrow_o
         assert isinstance(op.scope, int) and op.scope > 0
 
 
+def test_every_operation_declares_whether_its_targets_change_the_call_it_makes():
+    # `whole_shape` IS WHAT THE PLANNER REFUSES TO REPEAT (plan.RunHistory.tried_whole_shape), so
+    # an operation that fails to declare it is an operation whose retries are never suppressed -
+    # and one that declares TRUE wrongly is a lost repair. Read with a default of False, so the
+    # failure mode of silence is waste rather than loss; declared explicitly here so silence is
+    # never what a catalogue entry means.
+    for op in OPERATIONS:
+        assert isinstance(op.whole_shape, bool), f"{op.name} does not declare whole_shape"
+    # The three the diagnosis measured: each is a thin wrapper over a kernel call that takes the
+    # SHAPE and no entity (ShapeFix_Wireframe, BRepBuilderAPI_Sewing, ShapeFix_Shape).
+    assert {op.name for op in OPERATIONS if op.whole_shape} == {
+        "fix_small_edges", "sew_faces", "fix_shape_global"}
+
+
 def test_the_whole_shape_fallback_is_the_widest_scope_in_the_catalogue():
     # `fix_shape_global` is the last resort, and the planner expresses that by ordering on scope.
     # If anything were wider, the planner would reach for it first.
