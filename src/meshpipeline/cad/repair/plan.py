@@ -76,23 +76,46 @@ def _demote_mesh_findings() -> bool:
     return getattr(rcfg, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "off") == "live"
 
 
-def _is_mesh_finding(defect) -> bool:
-    """True for a mesh finding that is NOT a known real intersection, and so should not spend a
-    region's budget before the kernel's own cure.
-
-    `clash_kind == "crossing"` is lane G's classification, and it is the authority: the triangle
-    test alone called a 1.46 mm gap a crossing (coarse cylinder chords cut a plane the real
-    surface never reaches), so the kind now accounts for the measured B-rep distance. A crossing
-    keeps its severity position - it is geometry to repair. Everything else the mesher reported,
-    including a gap clash, an adjacent fold and a finding with no clash evidence at all, goes
-    after the cheap cure that has actually repaired parts on this corpus.
-    """
+def _goes_after_the_cure(defect) -> bool:
+    """True for a mesh finding the kernel's own cure should be proposed before."""
     from meshpipeline.cad.repair import mesh_probe
+
+    return (getattr(defect, "code", None) in mesh_probe.MESH_CODES
+            and not mesh_finding_outranks_kernel(defect))
+
+
+def mesh_finding_outranks_kernel(defect) -> bool:
+    """May this MESH finding be proposed before the kernel's own cure for the region?
+
+    ONE RULE, ONE PLACE, TWO CALLERS: `RulesPlanner.propose` orders a region's defects with it and
+    `rules_author` decides its severity promotion with it. There were two such tests before, one
+    per layer and written for different reasons, and two half-demotions could have pushed a
+    genuine crossing out of reach - the opposite of the bug each was fixing.
+
+    WHAT IS DEMOTED IS WHAT CANNOT BE REPAIRED, and only that: a clash-located finding whose
+    faces the kernel measured APART (`mesh_clash.GAP` - the mesher's own chord, which no heal or
+    fragment closes) or that merely SHARE AN EDGE (`clash_adjacent`, a fold). Those two were
+    jumping the queue on wave 4: the order replaced the `fix_small_faces` every earlier wave kept
+    with a clash operation that could not help, and every arm fixed nothing.
+
+    EVERY OTHER MESH FINDING STILL OUTRANKS THE CURE, and deliberately: a mapped failure like
+    `mesh_open_loop` with `fix_face_boundary` behind it IS why the part will not mesh, and a
+    sliver warning is not. Demoting those as well would trade one lost repair for another - the
+    reason this asks "is it a clash that cannot be repaired" rather than "is it a measured
+    crossing".
+
+    A non-mesh defect is not a mesh finding and gets False, so a caller may ask about any defect.
+    """
+    from meshpipeline.cad.repair import mesh_clash, mesh_probe
 
     if getattr(defect, "code", None) not in mesh_probe.MESH_CODES:
         return False
     measurements = getattr(defect, "measurements", None) or {}
-    return measurements.get("clash_kind") != "crossing"
+    if measurements.get("located_by") != mesh_probe.LOCATED_BY_CLASH:
+        return True                      # not a clash at all: the mesher named it, aim at it
+    if measurements.get("clash_kind") == mesh_clash.GAP:
+        return False                     # measured apart: no operation closes it
+    return measurements.get("clash_adjacent") is not True
 
 
 _SEVERITY_RANK = {DefectSeverity.fatal: 0, DefectSeverity.error: 1,
@@ -410,7 +433,7 @@ class RulesPlanner:
         mesh_last = _demote_mesh_findings()
         ordered = sorted(
             defects,
-            key=lambda d: (1 if mesh_last and _is_mesh_finding(d) else 0,
+            key=lambda d: (1 if mesh_last and _goes_after_the_cure(d) else 0,
                            _SEVERITY_RANK.get(d.severity, 9),
                            _CODE_RANK.get(d.code, 0),
                            _ENTITY_RANK.get(d.entity_type, 9), d.entity_index,

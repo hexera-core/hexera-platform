@@ -1138,6 +1138,19 @@ def investigator(shape, *, original: Measure, reserved: frozenset = frozenset(),
                 except ma.Refusal as exc:
                     inv.refused_in_a_row += 1
                     inv.record(tool="conclude", args=ask.args, ok=False, error=str(exc))
+                    if inv.told_to_conclude:
+                        # THE CLOCK, NOT A CLAIM, AND NOT A LOOP. A forced region whose conclusion
+                        # is refused has nothing left to try: re-asking spends the model budget to
+                        # learn nothing, and on wave 4 the forms it could still reach turned into
+                        # 232 `mesher_side` conclusions from regions that made ZERO tool calls.
+                        # What is true of such a region is that it ran out of time, so that is
+                        # what it records.
+                        inv.say({"role": "assistant",
+                                 "content": str(getattr(reply, "assistant_text", "") or "")})
+                        close(inv, "budget_spent",
+                              "the region had only proof time left and the conclusion it reached "
+                              f"for was refused: {exc}", started)
+                        break
                     inv.say({"role": "assistant",
                              "content": str(getattr(reply, "assistant_text", "") or "")})
                     inv.say({"role": "user",
