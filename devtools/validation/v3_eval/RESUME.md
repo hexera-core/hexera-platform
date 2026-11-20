@@ -1,0 +1,49 @@
+# CRS v3 ship: RESUME (hard handoff, 2026-11-19 ~21:55 PT)
+
+PR #494, branch `crs/v3-agentic`, HEAD **0ff8db35** (pushed). Personal env `crsv3` (GCP hexera-dev). Bucket: `gs://dev-crsv3-transfer-224734058693/eval/`. This file is also at `gs://.../eval/RESUME.md`.
+
+## Launched (detached, self-deleting; nothing depends on the Mac)
+- Arm **t29_deterministic** (rules-only plus PACKAGE_REVIEW=live), failing 21 shards plus clean control 7 shards, at code commit **0ff8db350582d7923ce455be4ee04a1db216880d**, image `mesh/app@sha256:00ce0156...` (built from 5d496416).
+- Launch IDs **11200547** (1 VM, c2d-standard-8, us-central1-b) and **11200548** (3 VMs, c2-standard-8, us-central1-a). us-central1-a/c/f c2d hit ZONE_RESOURCE stockouts.
+- Caveat: the clean-control fetch was ~90/100 parts in GCS at launch (the Mac fetch dies). Clean shards whose inputs are missing end FAILED. Rerun the fetch, then relaunch only those shards.
+- Caveat: the eval spec does not set `CAD_REPAIR_TIMEOUT_S`, so runs get the 120 s default, not shared dev's 420. Record this with the result. Rerun with 420 if the comparison needs the shipping posture (see bug below).
+
+## From any machine
+```
+git clone git@github.com:hexera-core/hexera-platform.git && cd hexera-platform && git checkout crs/v3-agentic
+gcloud auth login && gcloud config set project hexera-dev     # needs access to the crsv3 bucket + compute
+python -m venv .venv && .venv/bin/pip install -e .              # or make setup
+C=0ff8db350582d7923ce455be4ee04a1db216880d
+gcloud compute instances list --project hexera-dev --filter="labels.purpose=v3-eval"     # VMs alive
+PYTHONPATH=$PWD/src .venv/bin/python devtools/validation/v3_eval/collect.py --commit $C --status
+```
+Collect refuses until EVERY planned unit (all arms × kinds) exists. Interim per-shard rows are under `gs://.../eval/t29_deterministic-0ff8db350582/{failing,clean}/shard-I-of-N/rows.json`.
+Relaunch missing or failed shards (it skips DONE and running ones; scope with `--only arm:kind:I/N,...`; on stockout try `--zone us-central1-b` or `--machine-type c2-standard-8`):
+```
+PYTHONPATH=$PWD/src .venv/bin/python devtools/validation/v3_eval/launch_fleet.py \
+  --image us-central1-docker.pkg.dev/hexera-dev/mesh/app@sha256:00ce015614daaccebfb7169ac24b2766f0069eeb5570fb5d4bb4b5518a597832 \
+  --commit $C --image-commit 5d496416e3433ce7df626a07bc441f2459d34e49 --zone us-central1-a --machine-type c2-standard-8 --only "<units>"
+```
+Clean fetch (finish it): `PYTHONPATH=$PWD/src .venv/bin/python devtools/validation/v3_eval/clean_control.py fetch --work /tmp/v3-clean --gcs gs://dev-crsv3-transfer-224734058693/eval/v3-verdict/inputs/clean`. It is hash-checked; the slow part is about 6 min per ABC chunk.
+
+## AI arms NOT launched: the 0-packages bug
+- **Symptom:** the live investigator makes 0 tool calls and concludes `budget_spent` in every region, so 0 packages, and T19/T29-agentic would measure nothing.
+- **9ecb677c** (Greptile fix "investigations spend reserved verification time") made unstated clocks use share 0.5 and proof reserve `min(60, L/2)+20`. Since `share*L` is below that reserve for every L, `must_conclude` fired before the first tool call. Reproduced locally at 859cbf7c: 0 tool calls in 3 regions.
+- **0ff8db35** fixes the arithmetic in both clocks (`investigator._share_wall`, `InvestigationClock.region_wall`): the wall is the proof reserve plus share × the time above it. It has table tests.
+- **But a repro at 0ff8db35 still gives 0 tool calls.** Region 0 got a 20.7 s wall, i.e. no time left above the proof reserve. Cause: the 120 s default `CAD_REPAIR_TIMEOUT_S` leaves about 21 s after the final reserve (60 s probe + 10 s slack + 5 s margin), and the proof reserve alone is 30 s or more.
+- **Leading hypothesis:** the run is simply too short. Production dev uses 420 (`deploy.yml:1613`), and the eval spec never sets it.
+- **Next diagnostic:** rerun the same local repro with `CAD_REPAIR_TIMEOUT_S=420` and check the transcript for tool calls >0, a concluded package and its fate. Repro command and env: see the diagnosis notes in this file's history. It is `repair_corpus.py <abc/00504025_5896ef7054620e0fdd79f59d_step_085.step> --mesh-probe --force-repair --transcripts ...` with run_arm's model wiring and the key from secret `openai-api-key`.
+- **If 420 works:** add `CAD_REPAIR_TIMEOUT_S=420` to every arm's env in `devtools/validation/v3_eval/evalspec.py`. Run it for every arm so they stay comparable, and that means relaunching t29_deterministic too. Commit, restage (`stage.py --commit <new>`), launch all units.
+- **Second hypothesis**, if 420 still gives 0: the proof reserve is too large relative to the region share. Check `investigator_budget.proof_reserve_s` and `region_loop.final_reserve_s`.
+
+## Launch T19 + T29-agentic once fixed
+`launch_fleet.py ... --commit <fixed> --only "v3_full:failing:1/32,...,v3_full:clean:1/7..7/7,t19_tournament_off:failing:1/29..29/29"`. Omit `--only` to launch every not-done unit (stage first). Ceiling 100 vCPU; C2D quota 100, C2 quota 100; stockouts are common in us-central1-a/c/f.
+
+## After results land
+`collect.py --commit <C> --pull --t6` (seals bundles plus results.json) → `results_to_tex.py from-collect ...` → `render` → `render_pr_section.py` → rebuild PDFs (see RUNBOOK.md) → commit, push → CI green → the owner merges. Then verify on shared dev, then `make destroy-env SLUG=crsv3` (collect first; it deletes the transfer bucket).
+
+## Other state
+- T6 shard 4: **dropped.** T6 is the rules-only local baseline on 90 files (`eval/t6-rules-only-0bf78625/`).
+- Greptile: 21 comments, 20 fixed, 1 deferred (images), all resolved. 0ff8db35 itself is a fix to a Greptile fix and has not been reviewed.
+- Unit suite: the 6 local shards died with the Mac. PR CI skips unit/integration by design; run `make test-fast` on a Linux box, or rely on post-merge main CI.
+- Pending crsv3 gate jobs 50da0655 / 81fd1b1a ran at 5d496416 (pre-fix); ignore their repair outcome.
