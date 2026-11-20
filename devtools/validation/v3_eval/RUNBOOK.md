@@ -99,6 +99,24 @@ Collect refuses any of the following:
 - a row count other than 120 (failing) or 100 (clean);
 - a file that appears in two shards.
 
+### 3b. Numbers into the papers, the PR and the PDFs
+
+`collect.py` already writes a schema-v1 `results.json`; `render` can read it directly. The
+`from-collect` adapter is the same mapping (it adds `--t6-rows`), and both take the clean
+control's `newly_broken` as the worst arm.
+
+```bash
+$PY $V/results_to_tex.py render --results <collect out>/results.json   # -> overleaf/crs-v3-results.tex
+$PY $V/render_pr_section.py --results <collect out>/results.json      # -> docs/superpowers/pr-494-evidence-section.md
+(cd docs/whitepapers/overleaf && latexmk -pdf main.tex full-paper.tex customer-brief.tex && latexmk -c)
+uv run --no-project --with reportlab python docs/whitepapers/build_crs_technical_overview.py
+```
+
+Not generated, edit by hand once numbers land: the reportlab overview's section 5 ("not yet
+measured"), the hand-typed T6 "0 of its first 90 files" sentence in `main.tex` / `full-paper.tex`
+and `render_pr_section.py`, and the evidence README's `CAVEAT_*` / `T19_DIFF_FILES` /
+`T19_TOURNAMENT_DETAIL` placeholders.
+
 Collect BEFORE `make destroy-env SLUG=crsv3`: destroy-env deletes the transfer bucket.
 
 ## 4. Resume (after a laptop restart, a lost session, or a failed shard)
