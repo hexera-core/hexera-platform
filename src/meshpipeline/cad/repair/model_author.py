@@ -373,16 +373,32 @@ class PackageGuards:
     the paired-rim half can touch the kernel and a pass or a verdict needs none of it."""
 
     def __init__(self, defects: tuple, *, reserved: frozenset, rims: frozenset,
-                 original: Measure, solids_of: Callable[[], int | None] = lambda: None) -> None:
+                 original: Measure, solids_of: Callable[[], int | None] = lambda: None,
+                 clone: bool = False) -> None:
         self.reserved = frozenset(reserved)
         self.held = held_fingerprints(defects, self.reserved)
         self.rims = rims
         # THE RUN'S CAPS, read exactly as rules_author reads them: a claim may never be wider.
         self.area_cap = float(rcfg.CAD_REPAIR_MAX_AREA_CHANGE_RATIO) * original.surface_area_mm2
         self.volume_cap = float(rcfg.CAD_REPAIR_MAX_VOLUME_CHANGE_RATIO) * original.volume_mm3
-        # THE ACTIVE CATALOGUE, read per call so it follows the consent flags.
-        self.ops = {op.name: op for op in op_catalogue()}
+        # THE ACTIVE CATALOGUE, read per call so it follows the consent flags - except on a
+        # DISPOSABLE CLONE under `CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS`, which is offered every
+        # operation the catalogue can build. The four consent flags say what a DEPLOYMENT may
+        # DELIVER; on a copy they were deciding what an investigation is allowed to learn, and a
+        # deployment that has not consented to an operation still cannot commit one, because
+        # delivery reads this same catalogue with `clone` false.
+        self.ops = {op.name: op for op in self._catalogue(clone)}
         self.solids_of = solids_of
+
+
+    @staticmethod
+    def _catalogue(clone: bool) -> tuple:
+        """The operations these guards admit. The deployment's own, or - for a clone under the
+        live posture - every operation `operations.catalogue` can build."""
+        if not clone or getattr(rcfg, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "off") != "live":
+            return tuple(op_catalogue())
+        return tuple(op_catalogue(split_closed_faces=True, fragment_bodies=True,
+                                 rebuild_face=True, close_wire_gaps=True))
 
 
 #: Every key a package body may carry. Anything else is refused, so an attempt to smuggle a field

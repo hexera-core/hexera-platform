@@ -661,3 +661,29 @@ def test_delivery_still_refuses_a_fill_on_a_paired_rim_and_a_held_code():
     with pytest.raises(model_author.Refusal, match="held for review"):
         _plan({"op": "fix_small_faces", "fingerprint": "face:held"}, small,
               reserved=frozenset({DefectCode.small_face}))
+
+
+def test_the_clone_is_offered_every_catalogue_op_whatever_the_consent_flags(monkeypatch):
+    """The owner's policy: ALL catalogue operations on the copy. The four consent flags
+    (split_closed_faces, fragment_bodies, rebuild_face, close_wire_gaps) decide what a DEPLOYMENT
+    may deliver; on a disposable clone they were deciding what an investigation may learn."""
+    from meshpipeline.cad.repair.model_author import PackageGuards
+
+    for flag in ("CAD_REPAIR_SPLIT_CLOSED_FACES", "CAD_REPAIR_FRAGMENT_BODIES",
+                 "CAD_REPAIR_REBUILD_FACE", "CAD_REPAIR_CLOSE_WIRE_GAPS"):
+        monkeypatch.setattr(rcfg, flag, False, raising=False)
+    defect = _mesh_defect()
+    kw = {"reserved": frozenset(), "rims": frozenset(), "original": ORIGINAL,
+          "solids_of": lambda: 2}
+
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "off", raising=False)
+    delivery = set(PackageGuards((defect,), **kw).ops)
+    assert "fragment_bodies" not in delivery and "rebuild_face" not in delivery
+
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "live", raising=False)
+    # DELIVERY is still the deployment's own catalogue: a flag off is a flag off.
+    assert set(PackageGuards((defect,), **kw).ops) == delivery
+    # THE CLONE gets everything the catalogue can build.
+    clone = set(PackageGuards((defect,), clone=True, **kw).ops)
+    assert {"fragment_bodies", "rebuild_face", "close_wire_gaps",
+            "split_closed_faces"} <= clone
