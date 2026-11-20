@@ -480,6 +480,11 @@ async def read_requirements(ws: Path, state, *, job_id: str, run=None, publish=N
     from meshpipeline.engines import notes_acted as NA
     sec = NA.apply(sec, MR.notes_text(state or {}), NA.facts_of(state))
     MR.write(ws, sec)
+    if MR.strictness_unnamed(sec):
+        # NOTE-14: a note on how strict the limits are that names none the user set: one fixed plain line on the
+        # result, never a model's sentence (A6: "Treated the flexible note as guidance; all geometry remains present")
+        from meshpipeline.contracts.user_notes import record_remark
+        record_remark(ws, MR.NO_LIMIT_WORDS, by=MR.STRICTNESS_REMARK)
     if read.get("status") == "none" and read.get("standard_not_applied"):
         # STD-5: a saved standard written for flow meshes, applied in nothing here: told, the run as with no standard
         MS.told_not_applied(ws, str(read["standard_not_applied"]))
@@ -2689,7 +2694,9 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                          diag_m=diag_m, limit=element_limit(record)[0], job_id=job_id, run=run,
                          wait_s=ai_wait_s(run))
     # what the AI did with the user's notes, kept for the result's "From your notes" line
-    if (ai.get("decision") or {}).get("notes_remark"):
+    # - only when the rules decided none of the notes' asks (NOTE-13; a strictness is theirs too, NOTE-14): beside the
+    # rules' own lines a model's sentence could only say them again, or wrongly (A6, round 12)
+    if (ai.get("decision") or {}).get("notes_remark") and _MR.ai_remark_kept_for(asked, skip=_MR.COUNT_FIELDS):
         from meshpipeline.contracts.user_notes import record_remark
         record_remark(ws, ai["decision"]["notes_remark"], by="fea_ai")
     # PLAN-fea-27: an element count the user named, as the AI read it from their notes (AI-fea-4)
