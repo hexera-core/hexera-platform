@@ -461,3 +461,33 @@ def test_reported_kind_follows_the_part_relative_touching_margin():
     # One rule for the word, here and in the region ordering.
     assert TOUCHING_GAP_FRACTION == region_loop.REAL_INTERSECTION_GAP_FRACTION
     assert TOUCHING_GAP_FLOOR_MM == region_loop.REAL_INTERSECTION_GAP_FLOOR_MM
+
+
+def test_a_gap_measurement_that_hangs_cannot_hang_the_probe(monkeypatch):
+    # WAVE 4: on abc/0054_00540003 one BRepExtrema_DistShapeShape between two clashing faces ran
+    # 150+ s in the PARENT - uninterruptible kernel code, past every deadline, 53 min per file.
+    # The gap is evidence, never worth the run: it is measured in a bounded child, and on expiry
+    # every gap is None and the defect says the evidence was cut short.
+    import time
+
+    from meshpipeline.cad.repair.mesh_clash import Clash
+    from meshpipeline.cad.repair.mesh_probe import MeshFailure
+
+    failure = MeshFailure(EDGE_THROUGH_FACE, (), None, _PLC_BARE, stage="3d")
+    mesh_probe, shape = _clash_probe(monkeypatch, failure=failure, contact_calls=[],
+                                     clashes=(Clash((1, 8), 5, (5.0, 5.0, 5.0), "crossing"),))
+
+    def hangs(*a, **k):
+        time.sleep(30)
+        return 1.0
+
+    monkeypatch.setattr(mesh_probe, "_clash_gap", hangs)
+    monkeypatch.setattr(mesh_probe, "CLASH_EVIDENCE_S", 1.0)
+    started = time.monotonic()
+    found = mesh_probe.mesh_defects(shape, diagonal_mm=20.6, budget_s=60.0)
+    took = time.monotonic() - started
+
+    assert took < 10.0, took
+    assert [d.entity_index for d in found] == [1, 8]        # still located: only evidence is lost
+    assert all(d.measurements["clash_gap_mm"] is None for d in found)
+    assert all(d.measurements["clash_evidence"] == "budget_spent" for d in found)
