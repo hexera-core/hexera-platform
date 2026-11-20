@@ -287,10 +287,10 @@ def _walk_order(regions: tuple[Region, ...], defects) -> tuple[Region, ...]:
     """
     worst: dict[int, int] = {}
     for defect in defects:
-        rank = _SEVERITY_RANK.get(defect.severity, len(_SEVERITY_RANK))
+        severity = _SEVERITY_RANK.get(defect.severity, len(_SEVERITY_RANK))
         for region in regions:
             if defect.fingerprint in region.fingerprints:
-                worst[region.index] = min(worst.get(region.index, rank), rank)
+                worst[region.index] = min(worst.get(region.index, severity), severity)
     stops_the_mesh = _mesh_located_regions(regions, defects)
     really_meets = _real_intersection_regions(regions, defects)
 
