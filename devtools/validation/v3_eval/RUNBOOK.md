@@ -1,145 +1,173 @@
-# CRS v3 verdict runs (T19, T29): runbook
+# CRS v3 verdict runs (T19 + T29): runbook
 
-Everything below runs from a checkout at the run's commit with the venv:
+One wave launches everything: three arms on the 120-file sample and the 100-part clean control
+under two of them. Run from a checkout that contains `devtools/validation/v3_eval/`:
 
 ```bash
 PY="env PYTHONPATH=$PWD/src .venv/bin/python"
 V=devtools/validation/v3_eval
-COMMIT=$(git rev-parse HEAD)              # the full sha; the image must be built from it
-C12=${COMMIT:0:12}
 B=gs://dev-crsv3-transfer-224734058693
+COMMIT=<full sha of the code to run>    # its src/ + devtools/validation go to the VMs (code.tgz)
+IMAGE_COMMIT=<sha the image was built from>
+IMAGE=<pipeline image, ...@sha256:...>
 ```
 
-Every launcher/stager/collector command has `--dry-run`; run it first and read it.
+Every stager, launcher and collector command has `--dry-run`. Run it first and read it.
 
-## 0. Blockers to clear before any launch (as of 812ae022)
+## What runs where
 
-`launch_fleet.py` (host) and `run_arm.py` (in the container) both run a settings preflight and
-**refuse** an arm whose flags the build does not read. At 812ae022 it refuses:
+| | |
+|---|---|
+| code | `git archive $COMMIT src devtools/validation` → `$B/eval/v3-verdict/code-<c12>/code.tgz`, extracted on each VM; every container runs with `PYTHONPATH=/eval/code/src`, so the image's installed wheel is shadowed. `run_arm.py` refuses if `meshpipeline` imports from anywhere else, and records the path. |
+| image | toolchain only (OCP, gmsh, fTetWild, Python deps). Built from `$IMAGE_COMMIT`. A tag mismatch is a WARNING. A change under `requirements/`, `pyproject.toml`, `Dockerfile` or `deploy/docker/` between `$IMAGE_COMMIT` and `$COMMIT` is REFUSED (`--allow-dep-drift` to override): the image would not carry it. |
+| PROVENANCE | `commit` (code) and `image_commit` (image), `image` digest, `meshpipeline_from`, arm env, `known_noops` (memory flag inert: no consumer wired), `ftetwild`, sample sha256, start/end, model calls and $ |
+| arms | `t29_deterministic` (investigator + tournament off; reviewer live, so it calls the model as a reviewer only), `v3_full` (investigator live, tournament live K=3: T29's v3 arm AND T19's "on" arm, run once), `t19_tournament_off` (`v3_full` with tournament off) |
+| clean control | 100 parts under `v3_full` and under `t29_deterministic` |
+| shards | 96, one per vCPU (`docker --cpus=1`, `OMP_NUM_THREADS=1`), 8 per c2d-standard-8 (4 GB RAM per shard), 12 VMs = 96 vCPU ≤ 100. Shard counts per unit come from `evalspec.shard_plan` (estimated minutes per file × files), so every shard takes about the same wall. |
+| results | `$B/eval/<arm>-<c12>/<kind>/shard-I-of-N/`: `bundle/rows.jsonl` streamed per file and synced every 4 min, then `rows.json`, `PROVENANCE.json`, `model-calls.jsonl`, `transcripts.jsonl` (investigator arms), `run.log`, `DONE` (or `FAILED` / `INCOMPLETE` + `run.partial.log`) |
 
-| flag | why | effect if accepted anyway |
-|---|---|---|
-| `CAD_REPAIR_TOURNAMENT=live`, `CAD_REPAIR_TOURNAMENT_K=3` | no row in `settings/cad_repair.py`; `tournament.posture()` reads `getattr(rcfg, ..., "off")` | `v3-full` == `v3-no-tournament`; **T19 is meaningless** |
-| `CAD_REPAIR_MEMORY=live` | no settings row, and nothing in `cad/repair/` imports `memory.py` | none (memory is unwired) |
+The plan for `--shards-total 96`:
 
-Fix: land the three settings rows (+ inventory + configuration.md, the plan's three-place rule),
-rebuild/redeploy `crsv3`, then use THAT commit. `--accept-inert CAD_REPAIR_MEMORY` is a defensible
-override (it is recorded in every PROVENANCE and bundle); accepting the tournament flags is not.
+| unit | shards | files/shard | est. min/file | est. shard wall |
+|---|---|---|---|---|
+| t29_deterministic / failing | 21 | ≤ 6 | 3.5 | ~21 min |
+| v3_full / failing | 32 | ≤ 4 | 5.5 | ~22 min |
+| t19_tournament_off / failing | 29 | ≤ 5 | 5.0 | ~25 min |
+| v3_full / clean | 7 | ≤ 15 | 1.5 | ~23 min |
+| t29_deterministic / clean | 7 | ≤ 15 | 1.5 | ~23 min |
 
-Image: use the **mesh** image (`.../mesh/mesh@sha256:...`). The `pipeline`/`app` image has no
-fTetWild (Dockerfile: only `mesh-toolchain` copies `/opt/ftetwild`), so tier 2b would read
-`unavailable`; `run_arm.py` refuses that unless `--allow-no-ftetwild`. Get the digest after the
-redeploy:
-
-```bash
-IMAGE=$(gcloud run jobs describe dev-crsv3-mesh --region us-central1 --project hexera-dev \
-  --format='value(spec.template.spec.template.spec.containers[0].image)')
-gcloud artifacts docker images describe "$IMAGE" --format='value(image_summary.tags)'  # must list $C12
-```
-
-## 1. Stage (once per sample; code once per commit)
+## 1. Stage (no VM, uploads only)
 
 ```bash
-$PY $V/stage.py --commit $COMMIT --dry-run         # resolves the 120 locally, writes sample.json
-$PY $V/stage.py --commit $COMMIT                   # uploads 120 parts (~700 MB), sample, clean manifest, code.tgz
+$PY $V/stage.py --commit $COMMIT --dry-run       # resolves the 120 locally via repair_corpus, prints uploads
+$PY $V/stage.py --commit $COMMIT                 # 120 parts (~700 MB) once, sample.json, clean manifest, code.tgz
 $PY $V/clean_control.py fetch --work /tmp/v3-clean --gcs $B/eval/v3-verdict/inputs/clean --dry-run
 $PY $V/clean_control.py fetch --work /tmp/v3-clean --gcs $B/eval/v3-verdict/inputs/clean
 ```
 
-The clean fetch downloads ten ABC chunk archives (~870 MB each, ~8.7 GB total) from NYU, checks
-each archive's sha256 against the track manifest, extracts only the ~10 drawn members per chunk,
-checks each part's sha256, uploads 100 parts (~37 MB), and deletes the archive.
+The inputs are commit-independent and are staged once. Re-running `stage.py` at a newer `$COMMIT`
+re-uploads only `code.tgz` (the parts use `--no-clobber`). The clean fetch downloads ten ABC chunk
+archives (~870 MB each) from NYU, checks each archive's sha256, extracts only the drawn members,
+checks each part's sha256, uploads 100 parts (~37 MB), and deletes each archive.
 
-## 2. T19 (wave 1: 80 c2d vCPUs of 100)
+## 2. Launch everything (ONE command)
 
 ```bash
-for ARM in v3-no-tournament v3-full; do
-  $PY $V/launch_fleet.py --arm $ARM --kind failing --image "$IMAGE" --commit $COMMIT --shards 10 --dry-run
-done
-# then the same without --dry-run
+$PY $V/launch_fleet.py --image "$IMAGE" --commit $COMMIT --image-commit $IMAGE_COMMIT --dry-run
+$PY $V/launch_fleet.py --image "$IMAGE" --commit $COMMIT --image-commit $IMAGE_COMMIT
 ```
 
-## 3. T29 (wave 2, after wave 1 has gone: 80 c2d vCPUs)
+Before it creates anything, a live launch checks:
+- the settings preflight for each arm against this checkout;
+- toolchain drift between the two commits;
+- the image tag (a warning only);
+- that `code.tgz`, `sample.json`, the clean manifest and both input sets are staged;
+- the C2D quota;
+- which shards already have `DONE` or are claimed by a running VM.
 
-`v3-full/failing` from wave 1 IS T29's v3 arm (same sample, commit, env); it is not re-run.
+Each container repeats the preflight against the archived `src/`:
+- environment drift;
+- flags the build does not read (`CAD_REPAIR_MEMORY` is accepted as a known no-op);
+- fTetWild present;
+- model key present;
+- the staged sample sha256 equals the sampler's;
+- `meshpipeline` imports from the archive.
+
+## 3. Collect, seal, emit results.json (any session, GCS only)
 
 ```bash
-$PY $V/launch_fleet.py --arm deterministic --kind failing --image "$IMAGE" --commit $COMMIT --shards 10
-$PY $V/launch_fleet.py --arm deterministic --kind clean   --image "$IMAGE" --commit $COMMIT --shards 5 --max-run-hours 2
-$PY $V/launch_fleet.py --arm v3-full       --kind clean   --image "$IMAGE" --commit $COMMIT --shards 5 --max-run-hours 2
-```
-
-(Optional, for T19's clean control: `--arm v3-no-tournament --kind clean`.)
-
-Results land, per arm, under `$B/eval/<arm>-$C12/<kind>/shard-I-of-N/`:
-`bundle/rows.jsonl` (one row per file, synced every 4 min while running), `rows.json`,
-`PROVENANCE.json`, `model-calls.jsonl`, `transcripts.jsonl` (v3 arms), `run.log`, then `DONE`
-(or `FAILED` / `INCOMPLETE` + `run.partial.log`).
-
-## 4. Collect and seal (any session, any machine: needs GCS only)
-
-```bash
-$PY $V/collect.py --commit $COMMIT --status                # per shard: DONE / FAILED / running
-$PY $V/collect.py --commit $COMMIT --pull --dry-run        # pulls, checks, prints the verdict
-$PY $V/collect.py --commit $COMMIT --pull                  # seals bundles + fills the README
+$PY $V/collect.py --commit $COMMIT --status               # per shard: DONE / FAILED / running
+$PY $V/collect.py --commit $COMMIT --pull --t6 --dry-run  # pulls, checks, prints the verdict
+$PY $V/collect.py --commit $COMMIT --pull --t6            # seals bundles, writes results.json + README
 for d in devtools/validation/evidence/2026-11-20-crs-v3-verdict/bundle-*; do
   $PY devtools/validation/repair_corpus.py --verify "$d"; done
 ```
 
-It refuses: a missing/failed/unfinished shard, mixed commits or images, a sample sha256 that
-differs between arms, a row count that is not 120 (failing) / 100 (clean), a file in two shards.
+`results.json` follows the evidence lane's `devtools/validation/v3_eval/results.schema.json`
+(schema_version 1):
+- `t29_v3` and `t19_tournament_on` are both filled from `v3_full`, and the latter has
+  `same_run_as: t29_v3`.
+- `t6_rules_only_local` is filled from `$B/eval/t6-rules-only-0bf78625/` (90 files, shards 1–3).
+- `clean_control.byte_unchanged` is the minimum, over the arms covered, of the clean parts with no
+  kept operation.
+- Anything unmeasured is null.
+
+Collect refuses any of the following:
+- a missing, failed or unfinished shard;
+- mixed code commits, image commits or images;
+- a sample sha256 that differs between arms;
+- a row count other than 120 (failing) or 100 (clean);
+- a file that appears in two shards.
+
 Collect BEFORE `make destroy-env SLUG=crsv3`: destroy-env deletes the transfer bucket.
 
-## 5. Resume (after a laptop restart, or a failed shard)
+## 4. Resume (after a laptop restart, a lost session, or a failed shard)
 
-The fleet is detached: VMs run and self-delete with nothing local. To pick up:
+The fleet is detached: VMs run and self-delete with nothing local.
 
 ```bash
-# what is still running
+# eval VMs still running, and which shards each one carries
 gcloud compute instances list --project hexera-dev --filter='labels.purpose=v3-eval' \
-  --format='table(name,zone.basename(),status,labels.arm,labels.kind,creationTimestamp)'
+  --format='table(name,zone.basename(),status,labels.shards,labels.arms,creationTimestamp)'
 # which shards have results
 $PY $V/collect.py --commit $COMMIT --status
-# relaunch only what is missing: the launcher skips every shard with DONE and every VM that exists
-$PY $V/launch_fleet.py --arm <arm> --kind <kind> --image "$IMAGE" --commit $COMMIT --shards <same N> --dry-run
-$PY $V/launch_fleet.py --arm <arm> --kind <kind> --image "$IMAGE" --commit $COMMIT --shards <same N>
-# or name them explicitly
-$PY $V/launch_fleet.py ... --shards 10 --only-shards 3,7
+# relaunch ONLY the missing shards: the same command skips every shard with DONE and every shard
+# claimed by a VM that still exists (read off its v3-units metadata)
+$PY $V/launch_fleet.py --image "$IMAGE" --commit $COMMIT --image-commit $IMAGE_COMMIT --dry-run
+$PY $V/launch_fleet.py --image "$IMAGE" --commit $COMMIT --image-commit $IMAGE_COMMIT
+# or name them
+$PY $V/launch_fleet.py ... --only 'v3_full:failing:7/32,t29_deterministic:clean:3/7'
 ```
 
-Use the SAME `--shards N` as the original launch (the shard is the sorted sample sliced
-`[I-1::N]`; a different N is a different partition and collect refuses mixed N). A rerun VM clears
-its shard's FAILED/INCOMPLETE markers before starting. A shard still shown `running` with no VM
-listed died without its shutdown script: relaunch it.
+Keep `--shards-total` the same as the original launch. The plan is recomputed from it, and a
+different total is a different partition, which collect refuses. A rerun shard clears its old
+FAILED/INCOMPLETE marker before starting. If `--status` shows a shard as `running` but no VM
+carries it, the VM died without its shutdown script: relaunch the shard.
 
-## 6. Verify the VMs are gone
+## 5. Verify the VMs are gone
 
 ```bash
 gcloud compute instances list --project hexera-dev --filter='labels.purpose=v3-eval'   # expect: 0 items
 gcloud compute disks list --project hexera-dev --filter='name~^dev-crsv3-v3e-'          # expect: 0 items
 ```
 
-Every VM deletes itself at the end of its shard; `--max-run-duration` (4 h default, 2 h for clean)
-with `--instance-termination-action=DELETE` deletes it regardless. Boot disks auto-delete with the
-instance. Last resort:
-`gcloud compute instances delete $(gcloud compute instances list --project hexera-dev --filter='labels.purpose=v3-eval' --format='value(name)') --zone us-central1-a --project hexera-dev`.
+Every VM deletes itself once all its shards finish. `--max-run-duration=3h` with
+`--instance-termination-action=DELETE` deletes it regardless. Boot disks auto-delete.
 
 ## Estimates
 
-Basis: T6 at 0bf78625 (same sampler, same 120, 3 of 4 shards ran on the laptop): 97 s mean repair
-per file, ~132 s per file of shard wall including the two probes. `--goal benchmark` adds a
-tier-2/2b verdict (≤ 60 + 30 s); model arms add review/investigation calls inside the same
-`CAD_REPAIR_TIMEOUT_S` budget. VM overhead: ~5-10 min (docker install, image pull).
+**Per-file times.** T6 (0bf78625) measured ~3.5 min per file rules-only, including both probes and
+the goal verdict. The model arms are estimated at 5.0–5.5 min per file, and the clean parts at
+1.5 min per file because most mesh before repair.
 
-| wave | arms | VMs × type | per-shard files | est. wall | VM $ | model $ |
-|---|---|---|---|---|---|---|
-| 1 (T19) | v3-no-tournament, v3-full (failing) | 20 × c2d-highcpu-4 | 12 | ~50-70 min | ~$3 | ~$5-35 (luna $0.20/$1.20 per M tok; investigator ≤ 48 calls/file; K=3 multiplies) |
-| 2 (T29) | deterministic (failing), 2 × clean | 10 + 5 + 5 × c2d-highcpu-4 | 12 / 20 | ~40-50 min / ~20 min | ~$1.5 | ~$1-5 (reviewer only, plus v3-full on clean parts) |
+**Wall clock.** About 25 minutes for the slowest shard, plus 5–10 minutes per VM for boot, docker
+install and image pull: **about 35–40 minutes end to end**. If parts run twice as slow as
+estimated, it is about 60 minutes, still inside the 3 h backstop.
 
-c2d-highcpu-4 lists at ~$0.150/h on demand in us-central1. Whole T19 + T29: about 2 h wall in two
-waves, under ~$50 all-in at the upper model estimate. `collect.py` prints the measured figures
-(model spend from per-call telemetry, VM spend from shard wall).
+**Cost.**
 
-Quota (us-central1, read 2026-11-19): C2D_CPUS 0/100, C3_CPUS 0/24, C2_CPUS 0/100, N2_CPUS 16/200
-(not used: shared with the product fleets), CPUS 76/200, PREEMPTIBLE_CPUS 0/0 (hence STANDARD VMs,
-not Spot).
+| | Estimate |
+|---|---|
+| VMs | 12 × c2d-standard-8 at ~$0.36/h × ~0.7 h ≈ **$3** |
+| Model, investigator arms | ~$5–25 each (240 files) |
+| Model, `t29_deterministic` | ~$1–3 (reviewer only) |
+| **All-in** | **well under ~$60** |
+
+Model prices are gpt-5.6-luna list: $0.20 per million input tokens, $1.20 per million output
+tokens. `collect.py` reports the measured figures: model spend from per-call telemetry, VM spend
+from shard wall time.
+
+**RAM.** 4 GB per shard. If a shard dies of OOM on a >100k-entity part, relaunch with
+`--machine-type c2d-highmem-8` (8 GB per shard, ~$0.49/h). The plan and the 96 vCPU total stay
+the same.
+
+**Quota (us-central1, read 2026-11-19).**
+
+| Metric | Used / limit |
+|---|---|
+| C2D_CPUS | 0/100 (this launch takes 96) |
+| C2_CPUS | 0/100 |
+| C3_CPUS | 0/24 |
+| CPUS | 76/200 |
+| N2_CPUS | 16/200 (never used) |
+| PREEMPTIBLE_CPUS | 0/0 (hence STANDARD VMs) |

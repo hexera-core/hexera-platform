@@ -222,6 +222,7 @@ def _fmt(value) -> str:
 
 def placeholders(reports: dict, checked: dict, verdicts: dict) -> dict[str, str]:
     out = {"COMMIT": checked["commit"], "IMAGE": checked["image"],
+           "IMAGE_COMMIT": str(checked.get("image_commit") or "n/a"),
            "SAMPLE_SHA256": checked["samples"].get("failing", "n/a"),
            "CLEAN_SHA256": checked["samples"].get("clean", "n/a")}
     for (arm, kind), rep in reports.items():
