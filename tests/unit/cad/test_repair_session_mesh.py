@@ -925,3 +925,74 @@ def test_the_author_is_shown_the_current_shape_after_a_commit(monkeypatch):
     run = region_loop.run_regions("upload", author=author, tolerance_mm=0.01, session=session)
     assert [p.status for p in run.packages] == [session_mod.COMMITTED]
     assert shown == ["upload", "sewn"]
+
+
+
+# --- wave 4 (abc 0060_00608290): a clash defect never displaces the kernel's own finding ----------
+
+_SMALL_FACE = EntityDefect(code=DefectCode.small_face, severity=DefectSeverity.warning,
+                           entity_type="face", entity_index=4, message="small",
+                           fingerprint="face:f4", location=dict(_BOX),
+                           measurements={"area": 0.19, "area_fraction": 6e-7})
+_CLASH_MEASURED = {"mesh_kind": "edge_through_face", "stage": "3d",
+                   "located_by": mesh_probe.LOCATED_BY_CLASH, "clash_pair": [4, 7],
+                   "clash_gap_mm": 1.46, "clash_kind": "gap", "clash_mesh_kind": "crossing"}
+
+
+def _clash(**measured) -> EntityDefect:
+    return EntityDefect(code=DefectCode.mesh_edge_through_face, severity=DefectSeverity.error,
+                        entity_type="face", entity_index=4,
+                        message="a segment and a facet intersect", fingerprint="face:f4",
+                        location=dict(_BOX), measurements={**_CLASH_MEASURED, **measured})
+
+
+def test_a_clash_on_a_face_is_added_to_its_kernel_defect_never_instead(monkeypatch):
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
+    clash = _clash()
+    _scan(monkeypatch, ((_SMALL_FACE,), True))
+    _probe(monkeypatch, (clash,))
+    session = RepairSession("shape", measurer=lambda s: MEASURE, remaining_s=lambda: 300.0)
+
+    # Whole shape, the first scan and a rescan: both findings on the one face, kernel first.
+    assert session.defects() == (_SMALL_FACE, clash)
+    assert session._rescan(face_scan=False) == (_SMALL_FACE, clash)
+    # Scoped (a package's proof): the same face, the same two findings.
+    found, _ = session._region_scan(_REGION)
+    assert _SMALL_FACE in found and clash in found
+
+
+def test_the_rules_author_keeps_the_kernel_cure_beside_a_sub_element_gap(monkeypatch):
+    # The deterministic arm of wave 4 aimed fragment_bodies at the clash instead of
+    # fix_small_faces at the small face. A clash whose faces are measured APART is the mesher's
+    # chord: it does not jump a kernel warning's cure.
+    import meshpipeline.cad.repair.rules_author as rules_author_module
+    from meshpipeline.cad.repair.operations import catalogue
+    from meshpipeline.cad.repair.rules_author import mesh_ops, rules_author
+
+    monkeypatch.setattr(rules_author_module, "MESH_OPS", mesh_ops(fragment_bodies=True))
+    monkeypatch.setattr(rules_author_module, "_OPS_BY_NAME",
+                        {op.name: op for op in catalogue(fragment_bodies=True)})
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_FIX_SMALL_FACES", True)
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_FRAGMENT_BODIES", True)
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
+    gap = _clash()
+    _scan(monkeypatch, ((_SMALL_FACE,), True))
+    _probe(monkeypatch, (gap,))
+    session = RepairSession("shape", measurer=lambda s: MEASURE, remaining_s=lambda: 300.0)
+    region = Region(index=0, fingerprints=frozenset({"face:f4"}),
+                    bbox_min=(0.0, 0.0, 0.0), bbox_max=(10.0, 10.0, 10.0),
+                    face_indices=frozenset({4}))
+
+    package = rules_author(None, original=MEASURE)(region, session.defects(), ())
+    assert package is not None
+    assert package.plan[0]["op"].name == "fix_small_faces"
+    assert package.plan[0]["defect_code"] is DefectCode.small_face
+
+    # A clash whose faces really MEET still goes first, as P2-R8 says.
+    meeting = _clash(clash_gap_mm=0.0, clash_kind="crossing")
+    package = rules_author(None, original=MEASURE)(region, (_SMALL_FACE, meeting), ())
+    assert package is not None and package.plan[0]["op"].name == "fragment_bodies"
+
+    # And with no kernel cure at all, the gap is still aimed at, exactly as before.
+    package = rules_author(None, original=MEASURE)(region, (gap,), ())
+    assert package is not None and package.plan[0]["op"].name == "fragment_bodies"
