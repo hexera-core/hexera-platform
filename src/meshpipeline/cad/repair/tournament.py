@@ -382,7 +382,8 @@ def rehearse(cand: Candidate, *, session_shape, original, defects, region, toler
         before = _fingerprints(defects, region, diagonal, scope)
 
         scratch = make_scratch(session_shape, original=original, defects=tuple(defects),
-                               reserved=frozenset(reserved), remaining_s=float(budget_s),
+                               reserved=frozenset(reserved),
+                               remaining_s=lambda: _left(clock, started, budget_s, now),
                                clock=now)
         keep = _kept_status()
 

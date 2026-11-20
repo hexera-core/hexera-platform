@@ -97,6 +97,8 @@ def harness(*, statuses=(), after=("f2",), before=("f1", "f2"), tiers=None, rais
     def make_scratch(source, **kw):
         s = FakeScratch(source, after=[defect(f) for f in after], statuses=statuses,
                         raises=raises, **kw)
+        # What the clone was OFFERED: its clock read at the moment it was built.
+        s.offered = float(kw["remaining_s"]())
         scratches.append(s)
         return s
 
@@ -110,7 +112,7 @@ def harness(*, statuses=(), after=("f2",), before=("f1", "f2"), tiers=None, rais
             # The LAST thing a rehearsal does, so this says "the candidate used the whole
             # allowance it was given" and the wall really runs down across `rehearse_all`
             # instead of being handed out again untouched.
-            at[0] += float(scratches[-1].kwargs["remaining_s"])
+            at[0] += float(scratches[-1].kwargs["remaining_s"]())
         return types.SimpleNamespace(mm=deviation_mm, seconds=0.0)
 
     # A clock shaped like `InvestigationClock` (which carries the run's own in `.clock`), driven
@@ -122,6 +124,24 @@ def harness(*, statuses=(), after=("f2",), before=("f1", "f2"), tiers=None, rais
               "tolerance_mm": 0.01, "make_scratch": make_scratch, "run_tier": run_tier,
               "measure": measure}
     return kwargs, scratches, tier_calls
+
+
+# --- the clone's clock ---------------------------------------------------------------------
+
+def test_the_clone_is_handed_a_clock_not_a_number():
+    """`RepairSession` CALLS `remaining_s()` before every mesh probe and review deadline.
+
+    Handing it a float made the first probe inside any rehearsal raise TypeError, which
+    `rehearse` swallows into FAILED - so every tournament candidate that reached a probe
+    failed, whatever its geometry did. The clone gets the rehearsal's own `_left`, live.
+    """
+    kwargs, scratches, _ = harness(statuses=["kept"])
+    T.rehearse(cand(plan=[item()]), budget_s=30.0, **kwargs)
+    remaining = scratches[0].kwargs["remaining_s"]
+    assert callable(remaining)
+    at = kwargs["clock"].clock
+    assert remaining() == pytest.approx(30.0 - (at() - 1000.0))
+    assert remaining() <= 30.0
 
 
 # --- the plan on the clone -------------------------------------------------------------------
@@ -250,7 +270,7 @@ def test_budget_is_split_and_late_candidates_are_not_rehearsed(wall_s, shares):
     assert len(out) == 3
     expected = [T.NOT_REHEARSED if s is None else T.REHEARSED for s in shares]
     assert [r.status for r in out] == expected
-    assert [s.kwargs["remaining_s"] for s in scratches] == pytest.approx(
+    assert [s.offered for s in scratches] == pytest.approx(
         [s for s in shares if s is not None])
     for r in out:
         if r.status == T.NOT_REHEARSED:
