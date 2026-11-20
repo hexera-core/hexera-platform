@@ -174,6 +174,13 @@ _UNAUTHENTICATED_ROUTE_ALLOWED: dict[str, str] = {
         "actor is not taken on trust either - the admin console sends the IAP-verified identity "
         "and the decision row records it, so a decision names a person even though the shared "
         "credential cannot."),
+    "api/v1/admin_repair.py:run_standalone": (
+        "POST /api/v1/admin/repair/jobs/{id}/standalone is the same operator surface as assign "
+        "and decide: it re-dispatches an EXISTING customer job as a standalone repair job, which "
+        "is staff work across the tenant boundary, so `owner_dep` (one tenant) is the wrong "
+        "proof. It is not ungated: it carries Depends(admin_dep) like every route in that module, "
+        "fails closed with 409 unless CAD_REPAIR_STANDALONE_JOBS is live, and records the "
+        "operator's actor as a claim beside the IAP-verified identity."),
     "api/v1/admin_billing.py:raise_invoice": (
         "POST /api/v1/admin/billing/organizations/{id}/invoices is the OPERATOR's route, not a "
         "tenant's: it raises an invoice ACROSS the tenant boundary for an account that is invoiced "

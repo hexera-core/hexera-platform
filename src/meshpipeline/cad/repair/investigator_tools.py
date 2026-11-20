@@ -956,7 +956,7 @@ def _scoped(defects, region: Region, *, diagonal_mm: float) -> list[str]:
                    if d.fingerprint and in_region(d, region, diagonal_mm=diagonal_mm)})
 
 
-def _planned(editing: Editor, args: dict, region: object) -> tuple:
+def _planned(editing: Editor, args: dict, region: Region) -> tuple:
     """Plan one edit on the clone.
 
     A seam, not indirection: `publication_authority` resolves a receiver it can read an annotation
