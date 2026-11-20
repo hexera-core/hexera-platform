@@ -1156,3 +1156,60 @@ def test_a_verdict_ends_the_region_and_leaves_the_defect():
     assert run.stopped_because == plain.stopped_because == REGIONS_EXHAUSTED
     assert [d.fingerprint for d in run.defects_after] == ["edge:b"]
     assert run.escalated == plain.escalated
+
+
+# --- the mesh-located region is walked first (CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS) ------------
+# Wave 1: 84% of the gmsh-located failure faces sat inside investigated regions, yet 385 of 538
+# escalations had 0 tool calls because the run's clock was shared across up to 35 regions in
+# SEVERITY order. A mesh-located defect is the reason the part fails; a sliver warning is not.
+
+def _any_defect(fingerprint: str, *, code=DefectCode.small_edge,
+                severity=DefectSeverity.error) -> EntityDefect:
+    return EntityDefect(code=code, severity=severity, entity_type=fingerprint.split(":")[0],
+                        entity_index=1, message="", fingerprint=fingerprint)
+
+
+def _mesh_regions(*fingerprints):
+    from meshpipeline.cad.repair.regions import Region
+
+    return tuple(Region(index=i, fingerprints=frozenset({fp}) if fp else frozenset(),
+                        bbox_min=(0.0, 0.0, float(i)), bbox_max=(1.0, 1.0, float(i) + 1.0),
+                        face_indices=frozenset({i + 1}), located=True)
+                 for i, fp in enumerate(fingerprints))
+
+
+def _order(regions, defects, posture, monkeypatch):
+    import meshpipeline.settings.cad_repair as settings
+    from meshpipeline.cad.repair import region_loop as rl
+
+    monkeypatch.setattr(settings, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", posture, raising=False)
+    return [r.index for r in rl._walk_order(regions, defects)]
+
+
+def test_a_mesh_located_region_is_walked_first_when_the_posture_is_live(monkeypatch):
+    regions = _mesh_regions("edge:warn", "face:mesh")
+    defects = (_any_defect("edge:warn", severity=DefectSeverity.fatal),
+               _any_defect("face:mesh", code=DefectCode.mesh_overlapping_facets))
+
+    # OFF: severity decides, so the fatal warning-region outranks the mesh failure.
+    assert _order(regions, defects, "off", monkeypatch) == [0, 1]
+    # LIVE: the region that actually stops the mesh goes first, whatever its neighbour's severity.
+    assert _order(regions, defects, "live", monkeypatch) == [1, 0]
+
+
+def test_mesh_located_regions_keep_severity_and_index_order_among_themselves(monkeypatch):
+    regions = _mesh_regions("face:m1", "edge:warn", "face:m2")
+    defects = (_any_defect("face:m1", code=DefectCode.mesh_overlapping_facets),
+               _any_defect("edge:warn", severity=DefectSeverity.warning),
+               _any_defect("face:m2", code=DefectCode.mesh_edge_through_face))
+
+    assert _order(regions, defects, "live", monkeypatch) == [0, 2, 1]
+
+
+def test_an_unlocated_mesh_defect_does_not_promote_a_region(monkeypatch):
+    """A mesh failure with no fingerprint names no face, so it cannot say which region matters."""
+    regions = _mesh_regions("edge:err", "face:quiet")
+    defects = (_any_defect("edge:err"),
+               _any_defect("", code=DefectCode.mesh_edge_through_face))
+
+    assert _order(regions, defects, "live", monkeypatch) == [0, 1]

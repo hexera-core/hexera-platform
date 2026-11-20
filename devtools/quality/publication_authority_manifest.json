@@ -2897,6 +2897,21 @@
   ]
  },
  {
+  "context": "application/pipeline_run.py::_run_async::error#3|NotAPublisher|not-a-publisher|application/pipeline_run.py::meshpipeline.application.pipeline_run._JobAdapter",
+  "path": "application/pipeline_run.py",
+  "qualname": "_run_async",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 3,
+  "receiver": "jlog",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": [
+   "application/pipeline_run.py::meshpipeline.application.pipeline_run._JobAdapter"
+  ]
+ },
+ {
   "context": "application/pipeline_run.py::_run_async._announce_dispute::note#1|ExecutionEventPublisher|execution-owned|application/pipeline_run.py::_ep",
   "path": "application/pipeline_run.py",
   "qualname": "_run_async._announce_dispute",
@@ -3661,6 +3676,60 @@
   "gated_required": false,
   "roots": [
    "cad/midsurface.py::instance of meshpipeline.cad.midsurface._Clock"
+  ]
+ },
+ {
+  "context": "cad/repair/ending.py::backfill_ending::search#1|NotAPublisher|not-a-publisher|",
+  "path": "cad/repair/ending.py",
+  "qualname": "backfill_ending",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_STOPPED_RE",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "cad/repair/ending.py::backfill_ending::search#2|NotAPublisher|not-a-publisher|",
+  "path": "cad/repair/ending.py",
+  "qualname": "backfill_ending",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "_ATTEMPTED_RE",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "cad/repair/investigator_tools.py::_planned::plan#1|NotAPublisher|not-a-publisher|",
+  "path": "cad/repair/investigator_tools.py",
+  "qualname": "_planned",
+  "semantic": "plan",
+  "method": "plan",
+  "ordinal": 1,
+  "receiver": "editing",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "cad/repair/investigator_tools.py::_render_kernel::screenshot#1|NotAPublisher|not-a-publisher|cad/repair/investigator_tools.py::result of pv.Plotter(off_screen=True, window_size=[width, height])",
+  "path": "cad/repair/investigator_tools.py",
+  "qualname": "_render_kernel",
+  "semantic": "screenshot",
+  "method": "screenshot",
+  "ordinal": 1,
+  "receiver": "plotter",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": [
+   "cad/repair/investigator_tools.py::result of pv.Plotter(off_screen=True, window_size=[width, height])"
   ]
  },
  {

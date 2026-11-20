@@ -15,11 +15,13 @@ from meshpipeline.cad.repair.contracts import (
     DefectCode,
     DefectSeverity,
     RepairDefect,
+    RepairGoal,
     RepairMeasurement,
     RepairProfile,
     RepairReport,
     RepairStatus,
 )
+from meshpipeline.cad.repair.ending import REFUSED, ending_for
 
 logger = logging.getLogger(__name__)
 
@@ -30,11 +32,29 @@ class RepairRefused(RuntimeError):
     SEPARATE FROM A FAILURE. A refusal means the kernel produced something and we are declining
     it: the geometry moved too far, a tolerance was inflated past the cap, faces disappeared. The
     customer's file is unharmed and the honest next step is an operator's judgement, not a retry.
+
+    NOT EVERY `RepairRefused` IS A REFUSAL, and that is the reporting defect `ending` exists to
+    fix. This exception is the one control-flow path out of a run that produced no usable file, so
+    it carries "nothing needed doing", "nothing claims this defect", "we tried and nothing held",
+    "we could not see the part" and "a gate said no" alike. `ending` says WHICH; only the last is
+    a refusal in any ordinary sense. Readers that branch on consequence (there is no file, mesh
+    the original) should keep catching the exception; readers that TELL SOMEBODY what happened
+    must read `ending`.
     """
 
     def __init__(self, message: str, *, measurements: dict | None = None) -> None:
         super().__init__(message)
         self.measurements = dict(measurements or {})
+
+    @property
+    def ending(self) -> str:
+        """How the run ended, in the `cad/repair/ending.py` vocabulary.
+
+        `refused` when the measurements do not say - the writer-level refusals above carry none,
+        and they really are gates. Defaulting to the harshest word is the only safe direction: a
+        missing fact must never buy a part a kinder sentence than it earned.
+        """
+        return str(self.measurements.get("ending") or REFUSED)
 
 
 class RepairUnavailable(RuntimeError):
@@ -888,12 +908,28 @@ def _disposition(regions_run) -> dict:
 
 def repair_step_file(source: Path, destination: Path, *,
                      profile: RepairProfile = RepairProfile.conservative,
-                     directives: tuple[dict, ...] = ()) -> RepairReport:
+                     directives: tuple[dict, ...] = (),
+                     goal: RepairGoal | None = None,
+                     focus_faces: tuple[int, ...] = (),
+                     auto_accept_mm: float | None = None) -> RepairReport:
     """Repair `source` into `destination`, or refuse. The input is never modified.
 
     Raises RepairUnavailable when repair is switched off or the kernel is missing, and
     RepairRefused when the result exceeded its caps - the two are not the same answer and must not
     be reported as one.
+
+    `focus_faces` SCOPES THE WALK TO THE FACES SOMETHING ELSE ALREADY NAMED (1-based kernel face
+    indices, `Face_<k>`): the mesher handback hands repair the faces the FEA ladder actually
+    failed on (`pipeline/repair_handback.py`), and a run under a focus leaves every other region
+    standing and REPORTED (`region_loop.NOT_IN_FOCUS`) rather than spending the part's clock on
+    loci nobody complained about. An EMPTY tuple - what every other caller passes - is
+    byte-for-byte today's behaviour.
+
+    `goal` DECLARES WHAT THIS RUN IS FINISHING FOR (`cad/repair/goal.py`). Unset - what the
+    attempt node passes - is byte-for-byte today's behaviour: the driver gets the same deadline
+    and the report gains no key. A declared goal reserves its verdict's time out of the DRIVER's
+    deadline, not out of the margin the after-checks and the STEP write need, and records its
+    verdict under `measurements["goal"]`.
     """
     if not rcfg.CAD_REPAIR_ENABLED:
         # REFUSED BEFORE ANY KERNEL CALL. A deployment that has not opted in cannot mutate a
@@ -903,12 +939,36 @@ def repair_step_file(source: Path, destination: Path, *,
     if profile is not RepairProfile.conservative:
         raise RepairUnavailable(
             f"only the conservative profile is implemented; {profile.value} needs an operator")
+    if focus_faces and rcfg.CAD_REPAIR_REGION_LOOP != "live":
+        # A FOCUS IS THE REGION DRIVER'S TO HONOUR, and that is decided BEFORE the file is read.
+        # The operation-at-a-time driver walks the whole shape and has no region to scope to, so
+        # accepting a focus here would run an UNSCOPED repair for a caller that asked for a scoped
+        # one - the one failure the mesher handback exists to avoid, and the sort that reads as
+        # success in a report. Refused instead, as OUR limitation and never a verdict on the file.
+        raise RepairUnavailable(
+            "a focused repair needs the region driver (CAD_REPAIR_REGION_LOOP=live); the "
+            "operation-at-a-time driver cannot scope a walk to named faces")
     # THE RUN'S ONE ABSOLUTE DEADLINE (final review I2), taken at entry - BEFORE the STEP is read
     # and measured - because the attempt node's `wait_for(CAD_REPAIR_TIMEOUT_S)` started its clock
     # before this call, not after the read. Every driver, probe and model call below spends a
     # slice of THIS, and `DEADLINE_MARGIN_S` is left for the after-checks and the STEP write, so
     # the session no longer races the outer clock and loses the whole repair to it.
     deadline = time.monotonic() + float(rcfg.CAD_REPAIR_TIMEOUT_S) - DEADLINE_MARGIN_S
+    # WHAT THE GOAL'S FINISHING VERDICT COSTS COMES OUT OF THE DRIVER'S SHARE, not out of the
+    # margin above. A verdict that spent `DEADLINE_MARGIN_S` would race the attempt node's outer
+    # clock exactly as the driver used to; a driver that spent the whole deadline would leave its
+    # own run unjudged. With no goal the reserve is 0.0, so this is the expression it was.
+    #
+    # THE TOLERANT (TIER 2B) SEAM, CLOSED. `CAD_REPAIR_TOLERANT_PROBE` is read HERE, at the one
+    # call site, rather than inside `goal.py`: the policy module reads no settings, so the reserve
+    # rule and the verdict's routing entry can both be exercised over a table of postures without
+    # touching the environment. Off - the default - reserves exactly what it reserved before.
+    from meshpipeline.cad.repair import goal as goal_policy
+
+    tolerant_live = rcfg.CAD_REPAIR_TOLERANT_PROBE == "live"
+    tolerant_timeout_s = float(rcfg.CAD_REPAIR_TOLERANT_PROBE_TIMEOUT_S)
+    driver_deadline = deadline - goal_policy.reserve_s(
+        goal, tolerant_live=tolerant_live, tolerant_timeout_s=tolerant_timeout_s)
     _occ()
 
     from meshpipeline.cad.repair.brep import _read_shape
@@ -934,6 +994,7 @@ def repair_step_file(source: Path, destination: Path, *,
     # until an engineer's directive does.
     reserved = REVIEW_RESERVED_CODES if rcfg.CAD_REPAIR_REVIEW_ENABLED else frozenset()
     regions_run = None
+    traced: dict | None = None
     model_record = None
     if rcfg.CAD_REPAIR_REGION_LOOP == "live":
         # THE REGION-SCOPED DRIVER. Every after-check below is unchanged and still has the last
@@ -954,20 +1015,53 @@ def repair_step_file(source: Path, destination: Path, *,
         # WHO AUTHORS THE PACKAGES (CAD_REPAIR_LLM_AUTHOR). Off is the rules author exactly as
         # before; shadow and live are chosen by `model_author.select_author` (live needs a model
         # router, or the rules drive), and the model's record travels in the report below.
-        if rcfg.CAD_REPAIR_LLM_AUTHOR in ("shadow", "live"):
+        # THE INVESTIGATOR POSTURE IS A SECOND WAY TO THE SAME SEAM (CAD_REPAIR_INVESTIGATOR), so
+        # it is read HERE as well: a deployment that asked for the bounded tool loop with the
+        # one-shot author off must still reach `select_author`, which consults the investigator
+        # first. READ BY `getattr` because the setting belongs to the investigator's own task;
+        # with BOTH postures off this condition is exactly the one it was, and no investigator
+        # module is imported.
+        # THE TOURNAMENT POSTURE IS A THIRD WAY TO THE SAME SEAM (CAD_REPAIR_TOURNAMENT), read
+        # here for the same reason: a deployment that asked for the tournament with the one-shot
+        # author and the investigator off must still reach `select_author`, which consults the
+        # tournament posture first. A tournament needs no router - the rules author alone makes a
+        # tournament of one - so this condition cannot be folded into the model ones.
+        if (rcfg.CAD_REPAIR_LLM_AUTHOR in ("shadow", "live")
+                or str(getattr(rcfg, "CAD_REPAIR_INVESTIGATOR", "off")) in ("shadow", "live")
+                or str(getattr(rcfg, "CAD_REPAIR_TOURNAMENT", "off")) in ("shadow", "live")):
             from meshpipeline.cad.repair.model_author import select_author
 
             # MODEL CALLS SPEND THE RUN'S OWN CLOCK - the attempt node bounds this whole function
             # by CAD_REPAIR_TIMEOUT_S - so model work must finish by the run's deadline.
+            # `tolerance_mm` is the run's own tolerance: the investigator's edits run on a scratch
+            # session, and `try_op` takes one, so an investigation must explore under exactly the
+            # tolerance the real session would apply.
             author, label = select_author(
-                before_shape, original=original, reserved=reserved, deadline_s=deadline)
+                before_shape, original=original, reserved=reserved, deadline_s=driver_deadline,
+                tolerance_mm=tolerance)
             model_record = getattr(author, "report", None)
         else:
             author, label = rules_author(before_shape, original=original,
                                          reserved=reserved), LABEL
-        regions_run = run_regions(
-            before_shape, tolerance_mm=tolerance, reserved=reserved, author=author,
-            deadline_s=deadline)
+        # THE CUSTOMER'S THRESHOLD, CARRIED VERBATIM. This is the only path from the request to
+        # the review tier: without it `auto_accept_mm` is never set, no change is ever small
+        # enough to auto-accept, and the whole tier is inert. `None` means no threshold was
+        # stated, which is not the same as a threshold of zero - the tier then spends the
+        # reviewer's seat on every package, exactly as it did before the tier existed.
+        # THE INVESTIGATION TRACE (CAD_REPAIR_INVESTIGATION_TRACE, dev diagnostics, off in
+        # production): a collector catches every record the investigator hands its module sink
+        # during this run - including a tournament's investigator - so the report can say, per
+        # region, how it ended and why no package. Off opens nothing and adds no key.
+        from meshpipeline.cad.repair import investigation_trace
+
+        trace = investigation_trace.begin_if_enabled()
+        try:
+            regions_run = run_regions(
+                before_shape, tolerance_mm=tolerance, reserved=reserved, author=author,
+                deadline_s=driver_deadline, focus_faces=focus_faces,
+                auto_accept_mm=auto_accept_mm)
+        finally:
+            traced = investigation_trace.finish(trace)
         final = measure(regions_run.shape)
         result = as_repair_run(regions_run, original=original.to_dict(), final=final.to_dict(),
                                planner_label=label)
@@ -978,8 +1072,14 @@ def repair_step_file(source: Path, destination: Path, *,
     else:
         planner = RepairPlanner(directives or (), reserved=reserved)
         result = run_loop(before_shape, planner=planner, tolerance_mm=tolerance,
-                          reserved=reserved, deadline_s=deadline)
+                          reserved=reserved, deadline_s=driver_deadline)
         final = measure(result.shape)
+
+    # COUNTED ONCE, as ints, because both the report and `ending_for` read them: a `measurements`
+    # value is a plain object by the time it is back out of the dict, and the ending must not be
+    # derived from something a later writer could have put there as a string.
+    attempted_count = len(result.verdicts)
+    kept_count = sum(1 for v in result.verdicts if v.kept)
 
     measurements = {
         "before": original.to_dict(), "after": final.to_dict(),
@@ -993,8 +1093,8 @@ def repair_step_file(source: Path, destination: Path, *,
         # WHAT WAS DELIBERATELY NOT ATTEMPTED AND WHY - the paired rims of a missing bore wall
         # above all. This used to be a silent skip inside the fill.
         "refusals": [dict(r) for r in result.refusals],
-        "operations_attempted": len(result.verdicts),
-        "operations_kept": sum(1 for v in result.verdicts if v.kept),
+        "operations_attempted": attempted_count,
+        "operations_kept": kept_count,
         # WHERE THE TIME WENT, so a later change can be shown to have made the run faster.
         # `measure_s` is the whole-shape `caps.measure` calls, a cost centre beside the scan.
         # A region run adds its own scan counts to these (below) and OVERRIDES `measure_s` with
@@ -1021,6 +1121,55 @@ def repair_step_file(source: Path, destination: Path, *,
             # observation size and hash, clipped reply, outcome and refusal reason, its accepted
             # mesher verdicts and, in shadow, each proposal beside what the rules drove.
             measurements["model_author"] = model_record()
+        investigations = getattr(author, "investigations", None)
+        if investigations is not None:
+            # THE INVESTIGATIONS, BESIDE THE MODEL AUTHOR'S RECORD rather than inside it: one
+            # entry per region, with the tier and budget it was given, what it spent, every turn
+            # (tool, clipped args, result hash and bytes), the kept edits and HOW IT ENDED -
+            # concluded, budget_spent, runaway, no_router or skipped. An honest "could not" is a
+            # first-class outcome, so it travels in the report exactly like a conclusion.
+            # ABSENT when no investigator authored, because the posture was off.
+            measurements["investigations"] = [dict(item) for item in investigations]
+        if traced is not None:
+            # `outcomes` stays in the report; `lines` (the per-turn trace) is moved to the job's
+            # object storage by the pipeline node, which leaves its location here instead.
+            # EACH REGION'S JUDGED PACKAGES join its outcome row: the review verdict and its
+            # measured objection, for audit - never the reviewer's prose, never fed to an author.
+            regions_doc = measurements.get("regions")
+            measurements["investigation_trace"] = investigation_trace.with_reviews(
+                traced, (regions_doc.get("packages") if isinstance(regions_doc, dict) else None)
+                or [])
+        tournaments = getattr(author, "tournaments", None)
+        if tournaments is not None:
+            # THE TOURNAMENTS, BESIDE THE INVESTIGATIONS by the same rule: one round per author
+            # call, with the candidates it gathered, what each source said, what each rehearsal
+            # on its own clone scored, which one was OFFERED and HOW THE ROUND ENDED - offered,
+            # no_eligible_candidate, no_candidate, no_time or not_located. A round where nothing
+            # survived its clone offered nothing, and that is a first-class result, so it travels
+            # exactly like a win. ABSENT when no tournament authored, because the posture was off.
+            measurements["tournaments"] = [dict(item) for item in tournaments]
+            summary = getattr(author, "tournament_report", None)
+            if callable(summary):
+                # `offered` AND `committed` both: a win is a nomination, so the gap between them
+                # is the review tier having had the last word on the real session.
+                measurements["tournament"] = summary(regions_run.packages)
+
+    # THE GOAL'S FINISHING VERDICT, when a goal was declared. ABSENT ENTIRELY when it was not: an
+    # unset goal adds no key, starts no probe and leaves the report what it is today.
+    #
+    # BEFORE THE AFTER-CHECKS ON PURPOSE. A refused result is the run a reader most needs the
+    # verdict for - "it was kernel-clean and meshed, and the cumulative check still threw it away"
+    # is a different report from a verdict-less refusal - so the verdict is attached while the
+    # measurements can still travel on `RepairRefused`.
+    #
+    # IT NEVER RAISES, so no verdict can cost a repair that already succeeded.
+    goal_verdict = goal_policy.finishing_verdict(
+        goal, shape=result.shape, final=final, defects=result.defects,
+        packages=regions_run.packages if regions_run is not None else (),
+        deadline_s=deadline,
+        tolerant_live=tolerant_live, tolerant_timeout_s=tolerant_timeout_s)
+    if goal_verdict is not None:
+        measurements["goal"] = goal_verdict
 
     # THE AFTER-CHECKS STILL HAVE THE LAST WORD. The session already refused any individual
     # operation that left the caps, so reaching here with a refusal would mean a bug - but the
@@ -1058,6 +1207,12 @@ def repair_step_file(source: Path, destination: Path, *,
         # done - and never silently dropped either.
         measurements.setdefault("operations", [dict(a) for a in attempts])
         measurements["result_discarded"] = True
+        # THE ONE TRUE REFUSAL. A cap, a tolerance over the effective cap or a sanity check said
+        # no to a result we were holding, so `gate_refusal` is stated here and nowhere else on
+        # this path. It outranks every other fact about the run on purpose.
+        measurements["ending"] = ending_for(
+            kept=kept_count, attempted=attempted_count,
+            stopped_because=result.stopped_because, gate_refusal=True)
         raise RepairRefused(refusal, measurements=measurements)
 
     if measurements["operations_kept"] == 0:
@@ -1076,11 +1231,27 @@ def repair_step_file(source: Path, destination: Path, *,
         # sequence is the more valuable example, since it says what did NOT work. The node's
         # `RepairRefused` handler logs these before returning the decline.
         measurements["operations"] = [dict(a) for a in attempts]
+        # NO GATE WAS CONSULTED HERE. Nothing survived to judge, so this path carries no refusal -
+        # it carries which of the four honest "we got this far" answers it actually was. The
+        # exception type stays `RepairRefused` because the CONSEQUENCE is the same (no file, mesh
+        # the original) and every caller's control flow depends on it; `ending` is what a report
+        # reads. See the ruling in cad/repair/ending.py's header.
+        measurements["ending"] = ending_for(
+            kept=0, attempted=attempted_count,
+            stopped_because=result.stopped_because)
         raise RepairRefused(
             f"nothing was kept ({measurements['operations_attempted']} operation(s) attempted, "
             f"stopped because {result.stopped_because}), so there is nothing to promote - "
             "re-exporting the upload would change its topology without repairing it",
             measurements=measurements)
+
+    # HOW THIS RUN ENDED, in the vocabulary a report may print (cad/repair/ending.py). Set only
+    # once both refusal paths above are past, so the word here can only ever be one that comes
+    # with a written file - `repaired`, or one of the honest partials (`escalated`, `unmeshable`,
+    # `scan_incomplete`) that must never read as a delivery.
+    measurements["ending"] = ending_for(
+        kept=kept_count, attempted=attempted_count,
+        stopped_because=result.stopped_because)
 
     from meshpipeline.cad.unit_evidence import parser_applied_unit
 
@@ -1122,7 +1293,7 @@ def _summary(result, final) -> str:
     complete scan, no error defects, and nothing a failed attempt abandoned - so anything else
     has to read as partial, whatever the loop happened to stop on.
     """
-    from meshpipeline.cad.repair.loop import SCAN_INCOMPLETE
+    from meshpipeline.cad.repair.loop import NO_CANDIDATE, RESOLVED, SCAN_INCOMPLETE
 
     if result.resolved:
         base = ("Repaired within the conservative caps."
@@ -1150,7 +1321,18 @@ def _summary(result, final) -> str:
         return ("Repaired as far as the inspection could see; the defect scan was partial, so "
                 "this is not a clean bill of health.")
     if not any(v.kept for v in result.verdicts):
-        return "Nothing could be repaired safely; a person should look at this."
+        # FOUR DIFFERENT ANSWERS, NOT ONE. "Nothing was kept" was reported with the same
+        # sentence whether the part needed no work, whether the catalogue had no operation for
+        # it, or whether we tried and nothing held - and the sentence chosen was the one that
+        # reads like a failure. A part nobody needed to touch is not a part we failed on.
+        if result.stopped_because == RESOLVED and not result.verdicts:
+            return ("Nothing needed repairing - the inspection found no defect this catalogue "
+                    "acts on. The file is unchanged.")
+        if result.stopped_because == NO_CANDIDATE:
+            return ("No repair in this catalogue claims the defects found, so nothing was "
+                    "attempted. The file is unchanged and a person should look at it.")
+        return ("Repairs were attempted and none held, so nothing was kept; a person should "
+                "look at this. The file is unchanged.")
     return (f"Partially repaired - the run stopped at {result.stopped_because} with "
             f"{len(result.defects)} defect(s) left.")
 

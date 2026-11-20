@@ -71,14 +71,23 @@ REVIEW_SYSTEM = (
     "rolled back, declared vs measured area and volume change, face and solid counts before and "
     "after, the part's scale (diagonal_mm, area_mm2_before, volume_mm3_before), the sampled "
     "largest distance of the changed faces from the upload as repair received it (with how many "
-    "samples and faces it rests on, and deviation_status saying whether and why not it was "
-    "measured), the mesh test's failure kinds before and after where the probe ran, the defect "
+    "samples and faces it rests on, deviation_basis saying which faces were sampled - edited_faces, "
+    "changed_faces, adjacent_to_removed (the faces now covering a face a removal took away) or "
+    "whole_part (a sparse sample of the whole part, when a removal left no neighbour) - and "
+    "deviation_status saying whether and why not it was measured), removed (present only when "
+    "kept operations removed faces: how many, their declared area_mm2, and area_fraction of the "
+    "part's area_mm2_before), the mesh test's failure kinds before and after where the probe ran, the defect "
     "codes cleared, revealed and remaining in the region, and review_rejects: how many earlier "
     "repairs of this region were rejected by review, and why. a value \"unmeasured\" is a "
     "measurement that could not be taken - never read it as zero or as nothing moved. "
     "`author_claim` is what the repair's author SAID it was for: it is a claim, not evidence - "
-    "judge the measurements, never the claim. reject a repair that deletes or collapses "
-    "geometry to get past the mesher, fuses bodies the evidence does not justify fusing, or "
+    "judge the measurements, never the claim. reject a repair that deletes or collapses REAL "
+    "geometry - a feature, a wall, a body, or area or volume beyond what the removed debris "
+    "itself carries - to get past the mesher. removing sliver or degenerate DEBRIS faces is "
+    "acceptable when ALL of these hold: the removal is declared (removed), its area_fraction is "
+    "negligible, the measured deviation_mm is negligible relative to diagonal_mm (deviation_basis "
+    "says which faces it rests on), and solids after equal solids before, so no body or feature "
+    "was lost. reject a repair that fuses bodies the evidence does not justify fusing, or "
     "moves the surface more than its purpose needs. if the repair changed geometry and its "
     "deviation was not measured, reject it unless the measured counts, areas and volumes show "
     "nothing moved. a repair that restates an earlier rejected one in new words is still that "
@@ -91,6 +100,120 @@ def posture() -> str:
     """The package-review posture as the settings hold it now; anything but live is off."""
     value = str(getattr(rcfg, "CAD_REPAIR_PACKAGE_REVIEW", "off") or "off")
     return value if value == "live" else "off"
+
+
+# THE MEASURED OBJECTION - what a REJECT returns to the author, and the only thing it returns.
+#
+# The reviewer stays SEALED from the author. The author's attempt log says "rejected by review"
+# (session.REVIEW_REJECTED_REASON) and, under the live posture, WHICH MEASURED FIELD was objected
+# to and WHAT THE SESSION MEASURED there. The reviewer's sentence goes to the report and to the
+# reviewer's own next evidence; it never crosses to the author, because an author handed the
+# grader's reasoning learns to word its way past the grader (controller ruling, P3 Task 4).
+
+#: The ONE field name for "the reviewer named nothing this module recognises". Every unknown name,
+#: extra key or malformed objection collapses to it - a name the reviewer cannot write into.
+OBJECTION_UNSPECIFIED = "unspecified"
+
+#: THE CLOSED SET OF FIELDS A REJECTION MAY OBJECT TO - each a MEASURED key of `evidence_of`'s
+#: output: declared vs measured area and volume, the face and solid counts, the deviation fields
+#: and why they are or are not there, the mesh test's failure kinds before and after, and the
+#: defect codes cleared, revealed and remaining.
+#:
+#: IT CONTAINS NO FREE-TEXT FIELD, on purpose. `ops` (each operation's reason), `author_claim` and
+#: `review_rejects` (earlier reviewers' prose) are evidence keys and are deliberately absent: the
+#: objection is the one thing that crosses to the author, so the only strings it can name are ones
+#: this tuple already spells out.
+OBJECTION_FIELDS = (
+    "area_mm2",
+    "volume_mm3",
+    "faces",
+    "solids",
+    "deviation_mm",
+    "deviation_samples",
+    "deviation_faces",
+    "deviation_faces_skipped",
+    "deviation_status",
+    "deviation_basis",
+    "removed",
+    "mesh_before",
+    "mesh_after",
+    "defects_cleared",
+    "defects_revealed",
+    "defects_remaining",
+)
+
+#: Bounds on the measured value an objection carries, so one oversized evidence field cannot
+#: become the author's whole next observation.
+OBJECTION_ITEMS_MAX = 24
+OBJECTION_TEXT_MAX = 60
+
+
+#: APPENDED to REVIEW_SYSTEM under the live posture only, so with the posture off the reviewer is
+#: sent exactly the bytes it is sent today. It asks for a FIELD NAME, never an explanation: the
+#: author is shown the field and the session's own measurement of it, so a number or a sentence
+#: written here would be discarded anyway.
+OBJECTION_RULE = (
+    " if you reject, ALSO name the one measured field your objection rests on, as "
+    '{"objection": {"field": "<field>"}} beside verdict and reason, where <field> is exactly one '
+    "of: " + ", ".join(OBJECTION_FIELDS) + ". name the field only - no value and no explanation; "
+    "the repair's author is shown the field name and the measurement we took for it, never your "
+    "words. omit the key if no single field carries your objection.")
+
+
+def objection_posture() -> str:
+    """The measured-objection posture as the settings hold it now; anything but live is off.
+
+    READ DEFENSIVELY (`getattr`) AND FAIL CLOSED: with no such setting present at all - which is
+    the state until the flag is plumbed - this is "off", and every path below behaves exactly as
+    it did before the objection existed.
+    """
+    value = str(getattr(rcfg, "CAD_REPAIR_REVIEW_OBJECTION", "off") or "off")
+    return value if value == "live" else "off"
+
+
+def _measured(value: object) -> object:
+    """One evidence value as an objection may carry it: JSON scalars, and bounded lists and dicts
+    of them; anything else UNMEASURED. It never parses or reformats - the value stays the
+    session's own measurement - it only bounds it. PURE."""
+    if isinstance(value, bool):
+        return UNMEASURED
+    if isinstance(value, int):
+        return int(value)
+    if isinstance(value, float):
+        return _number(value)
+    if isinstance(value, str):
+        return value[:OBJECTION_TEXT_MAX]
+    if isinstance(value, (list, tuple)):
+        return [_measured(v) for v in list(value)[:OBJECTION_ITEMS_MAX]]
+    if isinstance(value, dict):
+        return {str(k)[:OBJECTION_TEXT_MAX]: _measured(v)
+                for k, v in list(value.items())[:OBJECTION_ITEMS_MAX]}
+    return UNMEASURED
+
+
+def _objection_of(reply: dict, evidence: dict) -> dict:
+    """The measured objection a rejection returns: `{"field": f, "measured": m}`. PURE.
+
+    FROM THE REPLY THIS TAKES ONE THING: a field NAME, which must be a member of
+    `OBJECTION_FIELDS` - a closed tuple of this module's own string literals. A non-string, an
+    unknown name, an extra key, a missing or malformed `objection`: all collapse to
+    `OBJECTION_UNSPECIFIED`. So the only strings that can leave here are ones this module wrote.
+
+    `measured` is read from the SESSION'S `evidence` under that field, NEVER from the reply: a
+    reviewer citing a number the session did not measure hands the author the session's number,
+    not its own. A field the evidence does not carry reads UNMEASURED, never 0.
+    """
+    field = OBJECTION_UNSPECIFIED
+    raw = reply.get("objection")
+    if isinstance(raw, dict) and set(raw) == {"field"}:
+        named = raw["field"]
+        if isinstance(named, str) and named in OBJECTION_FIELDS:
+            # NAMED, NOT COPIED: our own tuple's member, so not even an equal string object from
+            # the reply is what travels on.
+            field = OBJECTION_FIELDS[OBJECTION_FIELDS.index(named)]
+    if field == OBJECTION_UNSPECIFIED or field not in evidence:
+        return {"field": field, "measured": UNMEASURED}
+    return {"field": field, "measured": _measured(evidence[field])}
 
 
 def _configured() -> bool:
@@ -151,6 +274,51 @@ _DEVIATION_KEYS = ("deviation_mm", "deviation_samples", "deviation_faces",
                    "deviation_faces_skipped")
 
 
+def net_faces_removed(evidence) -> int:
+    """Faces an operation's declarations say it REMOVED and did not replace: `faces_removed` less
+    `faces_added`, never below 0. A swap (`RebuildFace`: one out, one in) removes no surface; the
+    sliver sweep (`FixSmallFaces`) declares removals with nothing added. 0 for anything unreadable
+    - a removal is never INVENTED here; the tier's veto reads `removed_fingerprints` as well."""
+    def count(key: str) -> int:
+        value = (evidence or {}).get(key, 0)
+        return int(value) if isinstance(value, int) and not isinstance(value, bool) else 0
+    return max(0, count("faces_removed") - count("faces_added"))
+
+
+def removes_surface(evidence) -> bool:
+    """Did this operation take surface away (not merely replace it)? The tier's removal veto."""
+    return net_faces_removed(evidence) > 0 or bool((evidence or {}).get("removed_fingerprints"))
+
+
+def _removed(verdicts, area_before) -> dict:
+    """What the KEPT operations declared they removed - face count, declared area, and that area
+    as a fraction of the upload's - so a reviewer can tell sliver DEBRIS from real geometry.
+    {} when nothing was removed. Read only from each kept verdict's `faces_removed` and
+    `area_removed_mm2` declarations (`FixSmallFaces`), named here, never copied through."""
+    faces = 0
+    area: float | str = 0.0
+    for verdict in verdicts:
+        if verdict.get("status") != "kept":
+            continue
+        declared = verdict.get("evidence") or {}
+        # NET OF WHAT WAS ADDED: a face replaced (RebuildFace's one-out-one-in) is not debris, and
+        # its missing area must not turn a known sliver total into "unmeasured".
+        count = net_faces_removed(declared)
+        if count > 0:
+            faces += count
+            value = _number(declared.get("area_removed_mm2"))
+            # One undeclared area makes the total a hole, never a smaller number.
+            area = UNMEASURED if isinstance(area, str) or isinstance(value, str) \
+                else area + value
+    if not faces:
+        return {}
+    total = _number(area_before)
+    fraction: float | str = UNMEASURED
+    if not isinstance(area, str) and not isinstance(total, str) and total > 0:
+        fraction = area / total
+    return {"faces": faces, "area_mm2": area, "area_fraction": fraction}
+
+
 def evidence_of(package, verdict_delta: dict, deviation: dict, probe_before: dict,
                 probe_after: dict, *, original: dict | None = None,
                 review_rejects: tuple[str, ...] = ()) -> dict:
@@ -191,6 +359,8 @@ def evidence_of(package, verdict_delta: dict, deviation: dict, probe_before: dic
         "area_mm2_before": _number(upload.get("surface_area_mm2")),
         "volume_mm3_before": _number(upload.get("volume_mm3")),
         "deviation_status": _deviation_status(deviation),
+        **({"deviation_basis": str(deviation["deviation_basis"])}
+           if deviation.get("deviation_basis") else {}),
         "review_rejects": {"count": len(review_rejects),
                            "reasons": [str(r) for r in review_rejects]},
     }
@@ -199,6 +369,9 @@ def evidence_of(package, verdict_delta: dict, deviation: dict, probe_before: dic
     for key in _DEVIATION_KEYS:
         if deviation.get(key) is not None:
             evidence[key] = _number(deviation[key])
+    removed = _removed(verdict_delta.get("verdicts") or (), upload.get("surface_area_mm2"))
+    if removed:
+        evidence["removed"] = removed
     if "mesh_kinds" in probe_before:
         evidence["mesh_before"] = list(probe_before["mesh_kinds"])
     if "mesh_kinds" in probe_after:
@@ -248,7 +421,10 @@ async def _ask(system: str, user: str, *, job_id: str, timeout_s: float) -> dict
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     try:
         result = await asyncio.wait_for(
-            call_repair_review_model(messages, job_id=job_id), timeout=timeout_s)
+            # ITS OWN LABEL: the one-shot author asks as "RepairReview", and telemetry must tell a
+            # reviewer's call from an author's.
+            call_repair_review_model(messages, job_id=job_id, name="RepairPackageReview"),
+            timeout=timeout_s)
     except Exception as exc:  # noqa: BLE001 - total: a failed call is a reject, never a raise
         logger.warning("package review call failed: %s", type(exc).__name__)
         return None
@@ -281,9 +457,17 @@ def _ask_sync(system: str, user: str, *, job_id: str, timeout_s: float) -> dict 
     return reply if isinstance(reply, dict) else None
 
 
-def _verdict_of(reply: dict) -> tuple[str, str]:
-    """The strict form: EXACTLY {verdict, reason}, verdict accept or reject, reason non-empty."""
-    if set(reply) != {"verdict", "reason"}:
+def _verdict_of(reply: dict, *, objection: bool = False) -> tuple[str, str]:
+    """The strict form: EXACTLY {verdict, reason}, verdict accept or reject, reason non-empty.
+
+    With `objection` - the live posture only - an `objection` key is ALSO allowed, and only that
+    one extra key. With the posture off the schema is untouched, so a reply carrying an objection
+    is the malformed reject it is today.
+    """
+    allowed = [{"verdict", "reason"}]
+    if objection:
+        allowed.append({"verdict", "reason", "objection"})
+    if set(reply) not in allowed:
         return REJECT, "malformed reply: not exactly {verdict, reason}"
     reason = reply["reason"]
     if not isinstance(reason, str) or not reason.strip():
@@ -298,7 +482,24 @@ def _verdict_of(reply: dict) -> tuple[str, str]:
 def review_package(evidence: dict, *, timeout_s: float, deadline_s: float | None = None,
                    job_id: str = "",
                    clock: Callable[[], float] = time.monotonic) -> tuple[str, str]:
-    """("accept" | "reject", reason) for one package. EVERY NO-ANSWER IS A NAMED REJECT.
+    """("accept" | "reject", reason) for one package - `review_package_objection` without the
+    objection. The pre-objection signature, so every existing caller is unchanged."""
+    verdict, reason, _ = review_package_objection(
+        evidence, timeout_s=timeout_s, deadline_s=deadline_s, job_id=job_id, clock=clock)
+    return verdict, reason
+
+
+def review_package_objection(
+        evidence: dict, *, timeout_s: float, deadline_s: float | None = None,
+        job_id: str = "",
+        clock: Callable[[], float] = time.monotonic) -> tuple[str, str, dict | None]:
+    """("accept" | "reject", reason, objection) for one package. EVERY NO-ANSWER IS A NAMED REJECT.
+
+    `objection` is the MEASURED objection (`_objection_of`), and is not None only for a REJECT
+    under the live `CAD_REPAIR_REVIEW_OBJECTION` posture - the session hands it to the author and
+    keeps `reason` for the report and the reviewer's own next evidence. An ACCEPT has nothing to
+    object to (None). A no-answer reject named no field, so it carries the UNSPECIFIED objection
+    rather than inventing one: the author is still owed the fact that review refused it.
 
     `deadline_s` is an ABSOLUTE `clock()` reading the review must finish by (the model_author
     clock pattern): the call's timeout is the lesser of `timeout_s` and the time left, and with
@@ -306,21 +507,33 @@ def review_package(evidence: dict, *, timeout_s: float, deadline_s: float | None
     hung call, a reply with no JSON object, a malformed reply and an unknown verdict are rejects
     too, each with its reason.
     """
+    live = objection_posture() == "live"
+    unnamed = {"field": OBJECTION_UNSPECIFIED, "measured": UNMEASURED} if live else None
+
+    def rejected(reason: str) -> tuple[str, str, dict | None]:
+        return REJECT, reason, unnamed
+
     if not _configured():
-        return REJECT, NOT_CONFIGURED
+        return rejected(NOT_CONFIGURED)
     timeout = float(timeout_s)
     if deadline_s is not None:
         left = float(deadline_s) - clock()
         if not left > 0.0:   # NaN-safe
-            return REJECT, NO_TIME
+            return rejected(NO_TIME)
         timeout = min(timeout, left)
     if not timeout > 0.0:
-        return REJECT, NO_TIME
+        return rejected(NO_TIME)
     try:
         user = json.dumps(evidence, sort_keys=True, allow_nan=False, default=str)
     except ValueError:
-        return REJECT, "the evidence is not JSON-safe (a non-finite measurement)"
-    reply = _ask_sync(REVIEW_SYSTEM, user, job_id=job_id, timeout_s=timeout)
+        return rejected("the evidence is not JSON-safe (a non-finite measurement)")
+    # The objection rule is APPENDED, never folded in: with the posture off the reviewer is sent
+    # the same bytes it is sent today.
+    system = REVIEW_SYSTEM + (OBJECTION_RULE if live else "")
+    reply = _ask_sync(system, user, job_id=job_id, timeout_s=timeout)
     if reply is None:
-        return REJECT, NO_REPLY
-    return _verdict_of(reply)
+        return rejected(NO_REPLY)
+    verdict, reason = _verdict_of(reply, objection=live)
+    if verdict == ACCEPT or not live:
+        return verdict, reason, None
+    return verdict, reason, _objection_of(reply, evidence)

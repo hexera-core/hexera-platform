@@ -736,6 +736,46 @@ WORKER_METADATA=(
   || WORKER_METADATA+=("cad-inspect-timeout-s=${CAD_INSPECT_TIMEOUT_S}")
 [ -z "${CAD_REPAIR_LLM_PLANNER:-}" ] \
   || WORKER_METADATA+=("cad-repair-llm-planner=${CAD_REPAIR_LLM_PLANNER}")
+# The CRS v3 postures (the workflow's crs_v3 input, personal environments only). Absent, the env
+# object's shipped value (off) stands.
+[ -z "${CAD_REPAIR_REGION_LOOP:-}" ] \
+  || WORKER_METADATA+=("cad-repair-region-loop=${CAD_REPAIR_REGION_LOOP}")
+[ -z "${CAD_REPAIR_MESH_PROBE:-}" ] \
+  || WORKER_METADATA+=("cad-repair-mesh-probe=${CAD_REPAIR_MESH_PROBE}")
+[ -z "${CAD_REPAIR_PACKAGE_REVIEW:-}" ] \
+  || WORKER_METADATA+=("cad-repair-package-review=${CAD_REPAIR_PACKAGE_REVIEW}")
+[ -z "${CAD_REPAIR_SPLIT_CLOSED_FACES:-}" ] \
+  || WORKER_METADATA+=("cad-repair-split-closed-faces=${CAD_REPAIR_SPLIT_CLOSED_FACES}")
+[ -z "${CAD_REPAIR_FRAGMENT_BODIES:-}" ] \
+  || WORKER_METADATA+=("cad-repair-fragment-bodies=${CAD_REPAIR_FRAGMENT_BODIES}")
+[ -z "${CAD_REPAIR_REBUILD_FACE:-}" ] \
+  || WORKER_METADATA+=("cad-repair-rebuild-face=${CAD_REPAIR_REBUILD_FACE}")
+[ -z "${CAD_REPAIR_CLOSE_WIRE_GAPS:-}" ] \
+  || WORKER_METADATA+=("cad-repair-close-wire-gaps=${CAD_REPAIR_CLOSE_WIRE_GAPS}")
+[ -z "${CAD_REPAIR_TOLERANT_PROBE:-}" ] \
+  || WORKER_METADATA+=("cad-repair-tolerant-probe=${CAD_REPAIR_TOLERANT_PROBE}")
+[ -z "${CAD_REPAIR_INVESTIGATOR:-}" ] \
+  || WORKER_METADATA+=("cad-repair-investigator=${CAD_REPAIR_INVESTIGATOR}")
+[ -z "${CAD_REPAIR_AUTO_ACCEPT:-}" ] \
+  || WORKER_METADATA+=("cad-repair-auto-accept=${CAD_REPAIR_AUTO_ACCEPT}")
+[ -z "${CAD_REPAIR_BUDGET_ATTEMPTS:-}" ] \
+  || WORKER_METADATA+=("cad-repair-budget-attempts=${CAD_REPAIR_BUDGET_ATTEMPTS}")
+[ -z "${CAD_REPAIR_TOURNAMENT:-}" ] \
+  || WORKER_METADATA+=("cad-repair-tournament=${CAD_REPAIR_TOURNAMENT}")
+[ -z "${CAD_REPAIR_TOURNAMENT_K:-}" ] \
+  || WORKER_METADATA+=("cad-repair-tournament-k=${CAD_REPAIR_TOURNAMENT_K}")
+[ -z "${CAD_REPAIR_MEMORY:-}" ] \
+  || WORKER_METADATA+=("cad-repair-memory=${CAD_REPAIR_MEMORY}")
+[ -z "${CAD_REPAIR_REVIEW_OBJECTION:-}" ] \
+  || WORKER_METADATA+=("cad-repair-review-objection=${CAD_REPAIR_REVIEW_OBJECTION}")
+[ -z "${CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS:-}" ] \
+  || WORKER_METADATA+=("cad-repair-escalate-requires-attempts=${CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS}")
+[ -z "${CAD_REPAIR_MESH_HANDBACK:-}" ] \
+  || WORKER_METADATA+=("cad-repair-mesh-handback=${CAD_REPAIR_MESH_HANDBACK}")
+[ -z "${CAD_REPAIR_STANDALONE_JOBS:-}" ] \
+  || WORKER_METADATA+=("cad-repair-standalone-jobs=${CAD_REPAIR_STANDALONE_JOBS}")
+[ -z "${CAD_REPAIR_INVESTIGATION_TRACE:-}" ] \
+  || WORKER_METADATA+=("cad-repair-investigation-trace=${CAD_REPAIR_INVESTIGATION_TRACE}")
 # The verdict by measured limits (docs/RULES.md VER), only when the target states it (dev does,
 # prod does not yet): the run decides pass, concerns or fail from the mesh's measured numbers and
 # the AI review only adds notes. Absent, the env object's value (the shipped default, off) stands.

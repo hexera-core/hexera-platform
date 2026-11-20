@@ -1,0 +1,133 @@
+{
+ "v3_full/failing": [
+  {
+   "file": "0054_00542564_58a86fb23522310f74b8c61d_step_000.step",
+   "region": 21,
+   "end": "budget_spent"
+  },
+  {
+   "file": "0055_00552585_4f4e73c869b67fbace588c82_step_014.step",
+   "region": 0,
+   "end": "budget_spent"
+  },
+  {
+   "file": "0061_00612526_549d7c70bee9d51d6c930ceb_step_000.step",
+   "region": 0,
+   "end": "budget_spent"
+  },
+  {
+   "file": "0059_00592618_fd46b3b48148da0bb446013b_step_000.step",
+   "region": 26,
+   "end": "budget_spent"
+  },
+  {
+   "file": "0056_00563150_bfb0bbc21a3432efe402c01c_step_000.step",
+   "region": 1,
+   "end": "budget_spent"
+  },
+  {
+   "file": "0055_00559057_fc74e77f65ed1bc5b615564b_step_002.step",
+   "region": 24,
+   "end": "budget_spent"
+  },
+  {
+   "file": "0060_00608290_03bd4ca010ce5f1747b235cb_step_000.step",
+   "region": 0,
+   "end": "budget_spent"
+  },
+  {
+   "file": "0057_00575402_45fad15cbdfec75d4fa7fb8c_step_003.step",
+   "region": 0,
+   "end": "budget_spent"
+  },
+  {
+   "file": "0059_00590647_58bd9521be6d560f7d16dfe1_step_008.step",
+   "region": 26,
+   "end": "budget_spent"
+  },
+  {
+   "file": "0056_00566662_58b365a28922001023aad325_step_000.step",
+   "region": 13,
+   "end": "budget_spent"
+  },
+  {
+   "file": "0057_00578324_58b7e03e217ef1105a9efe05_step_000.step",
+   "region": 10,
+   "end": "budget_spent"
+  },
+  {
+   "file": "0052_00523209_1519f83024d29ad8f5872d22_step_011.step",
+   "region": 0,
+   "end": "budget_spent"
+  },
+  {
+   "file": "0059_00591741_58bdcd238a110b0fc521ceac_step_003.step",
+   "region": 2,
+   "end": "budget_spent"
+  },
+  {
+   "file": "0056_00566285_b419f29b1306ad9db0e7b332_step_000.step",
+   "region": 1,
+   "end": "budget_spent"
+  },
+  {
+   "file": "0056_00566285_b419f29b1306ad9db0e7b332_step_000.step",
+   "region": 27,
+   "end": "budget_spent"
+  }
+ ],
+ "v3_full/clean": [
+  {
+   "file": "00519527_cdc574e675d693d545b04586_step_000.step",
+   "region": 7,
+   "end": "budget_spent"
+  },
+  {
+   "file": "00512810_ed5002fa75d17bcb9a5ecf35_step_000.step",
+   "region": 5,
+   "end": "budget_spent"
+  },
+  {
+   "file": "00512810_ed5002fa75d17bcb9a5ecf35_step_000.step",
+   "region": 8,
+   "end": "runaway"
+  },
+  {
+   "file": "00514684_7f0805030eb57e4abb36a15f_step_000.step",
+   "region": 3,
+   "end": "budget_spent"
+  }
+ ],
+ "t19_tournament_off/failing": [
+  {
+   "file": "0057_00571503_58b58780df48ba0f83581445_step_000.step",
+   "region": 1,
+   "end": "budget_spent"
+  },
+  {
+   "file": "0053_00534182_58a4a0d25aa7880fcd51d495_step_014.step",
+   "region": 5,
+   "end": "runaway"
+  },
+  {
+   "file": "0054_00544974_58a9cf917d8acd0fec4204df_step_075.step",
+   "region": 2,
+   "end": "budget_spent"
+  },
+  {
+   "file": "0056_00563775_58b1c04822f8670f75d960e4_step_000.step",
+   "region": 0,
+   "end": "budget_spent"
+  },
+  {
+   "file": "0057_00575402_45fad15cbdfec75d4fa7fb8c_step_003.step",
+   "region": 0,
+   "end": "budget_spent"
+  },
+  {
+   "file": "0060_00608290_03bd4ca010ce5f1747b235cb_step_000.step",
+   "region": 0,
+   "end": "budget_spent"
+  }
+ ]
+}

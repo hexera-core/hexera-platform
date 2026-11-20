@@ -1,0 +1,96 @@
+{
+  "cad_simplicity": {
+    "files_measured": 0,
+    "files_with_fewer_faces": 0,
+    "files_with_more_faces": 0,
+    "solid_count_changed": 0
+  },
+  "catalogue": {
+    "never_exercised": [
+      "fix_small_edges",
+      "split_closed_faces",
+      "fix_face_boundary",
+      "rebuild_face",
+      "close_wire_gaps",
+      "fix_small_faces",
+      "sew_faces",
+      "fill_planar_hole",
+      "fill_nonplanar_hole",
+      "heal_self_intersections",
+      "fragment_bodies",
+      "fix_shape_global"
+    ],
+    "only_declined": [],
+    "tally": {}
+  },
+  "endings": {
+    "attempted_none_held": 34,
+    "nothing_to_repair": 4,
+    "scan_incomplete": 7,
+    "unmeshable": 74
+  },
+  "goal": {
+    "files": 119,
+    "grind_by_tier": {
+      "cheap": 9,
+      "heavy": 21,
+      "standard": 84,
+      "unknown": 3
+    },
+    "kernel_clean": 84,
+    "not_run": 2,
+    "profile": "benchmark",
+    "score_mean": 0.0187,
+    "tier2_meshes": 2,
+    "tier2_no_answer": 10,
+    "tier2_refuses": 105,
+    "tolerant_routing": {
+      "no_answer": 24,
+      "not_asked": 23,
+      "tolerant_rung_eats_it": 69,
+      "tolerant_rung_refuses": 1
+    }
+  },
+  "heals": {
+    "corroborated": 0,
+    "kept": 0,
+    "uncorroborated_files": [],
+    "unknown": 0,
+    "unknown_files": []
+  },
+  "meshing": {
+    "files": 119,
+    "forced_repairs": 42,
+    "meshed_after": 2,
+    "meshed_before": 2,
+    "newly_broken": 0,
+    "newly_meshed": 0,
+    "still_failing_by_kind": {
+      "edge_through_face": 29,
+      "no_volume": 3,
+      "open_loop": 3,
+      "other": 3,
+      "overlapping_facets": 68,
+      "periodic_surface": 5,
+      "timeout": 6
+    }
+  },
+  "outcomes": {
+    "nothing_to_repair": 2,
+    "refused": 117
+  },
+  "refusals_by_reason": {},
+  "repaired_by_code": {},
+  "routes": {
+    "conservative_repair": 75,
+    "manual_cleanup": 11,
+    "mesh_as_is": 33
+  },
+  "row_count": 119,
+  "stopped_because": {
+    "resolved": 2,
+    "scan_incomplete": 7,
+    "time_budget": 34,
+    "unmeshable": 74
+  }
+}

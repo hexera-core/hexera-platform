@@ -1,0 +1,251 @@
+{
+ "label": "t29_deterministic@0ff8db35/120s",
+ "status": "SUPPORTING DATA, not the arm of record",
+ "caveats": [
+  "CAD_REPAIR_TIMEOUT_S unset -> 120 s default (shared dev ships 420)",
+  "failing: 119 files with rows + 1 crash (segfault, no row); shard 15/21 VM cost not counted (no PROVENANCE)",
+  "not sealed by collect.py (it needs every arm at one commit); summarised with collect.py's own functions"
+ ],
+ "crash": {
+  "kind": "failing",
+  "shard": "15/21",
+  "file": "0059_00597937_2e928f752b8806de5a85c14b_step_000.step",
+  "sha256_prefix": "fc4e4a440ffd",
+  "exit": 139,
+  "attempts": [
+   "11200639",
+   "11200655"
+  ]
+ },
+ "checked": {
+  "commit": "0ff8db350582d7923ce455be4ee04a1db216880d",
+  "image_commit": "5d496416e3433ce7df626a07bc441f2459d34e49",
+  "image": "us-central1-docker.pkg.dev/hexera-dev/mesh/app@sha256:00ce015614daaccebfb7169ac24b2766f0069eeb5570fb5d4bb4b5518a597832",
+  "samples": {
+   "clean": "3954d6e301cc1c7f41f69e4a4f39163ff8bcdd7e419a6151f1e3809372043cc0",
+   "failing": "95787045f8a49b4001496afe319cf44abb522d303c097f1e3324fe67b830cfbc"
+  }
+ },
+ "failing": {
+  "files": 119,
+  "shards": 21,
+  "summary": {
+   "outcomes": {
+    "refused": 117,
+    "nothing_to_repair": 2
+   },
+   "endings": {
+    "unmeshable": 74,
+    "attempted_none_held": 34,
+    "scan_incomplete": 7,
+    "nothing_to_repair": 4
+   },
+   "repaired_by_code": {},
+   "routes": {
+    "conservative_repair": 75,
+    "manual_cleanup": 11,
+    "mesh_as_is": 33
+   },
+   "stopped_because": {
+    "unmeshable": 74,
+    "time_budget": 34,
+    "scan_incomplete": 7,
+    "resolved": 2
+   },
+   "catalogue": {
+    "tally": {},
+    "never_exercised": [
+     "fix_small_edges",
+     "split_closed_faces",
+     "fix_face_boundary",
+     "rebuild_face",
+     "close_wire_gaps",
+     "fix_small_faces",
+     "sew_faces",
+     "fill_planar_hole",
+     "fill_nonplanar_hole",
+     "heal_self_intersections",
+     "fragment_bodies",
+     "fix_shape_global"
+    ],
+    "only_declined": []
+   },
+   "refusals_by_reason": {},
+   "heals": {
+    "kept": 0,
+    "corroborated": 0,
+    "unknown": 0,
+    "uncorroborated_files": [],
+    "unknown_files": []
+   },
+   "cad_simplicity": {
+    "files_measured": 0,
+    "files_with_more_faces": 0,
+    "files_with_fewer_faces": 0,
+    "solid_count_changed": 0
+   },
+   "meshing": {
+    "forced_repairs": 42,
+    "files": 119,
+    "meshed_before": 2,
+    "meshed_after": 2,
+    "newly_meshed": 0,
+    "newly_broken": 0,
+    "still_failing_by_kind": {
+     "edge_through_face": 29,
+     "no_volume": 3,
+     "open_loop": 3,
+     "other": 3,
+     "overlapping_facets": 68,
+     "periodic_surface": 5,
+     "timeout": 6
+    }
+   },
+   "goal": {
+    "files": 119,
+    "profile": "benchmark",
+    "kernel_clean": 84,
+    "tier2_meshes": 2,
+    "tier2_refuses": 105,
+    "tier2_no_answer": 10,
+    "not_run": 2,
+    "score_mean": 0.0187,
+    "grind_by_tier": {
+     "cheap": 9,
+     "heavy": 21,
+     "standard": 84,
+     "unknown": 3
+    },
+    "tolerant_routing": {
+     "no_answer": 24,
+     "not_asked": 23,
+     "tolerant_rung_eats_it": 69,
+     "tolerant_rung_refuses": 1
+    }
+   }
+  },
+  "model": {
+   "calls": 0,
+   "input_tokens": 0,
+   "output_tokens": 0,
+   "cost_usd": 0.0,
+   "by_role": {},
+   "statuses": {}
+  },
+  "vm": {
+   "shard_seconds": 9397.2,
+   "longest_shard_s": 2638.8,
+   "container_cost_usd": 0.1239,
+   "note": "container wall only; VM boot, docker install and image pull add ~5-10 min/VM"
+  },
+  "total_cost_usd": 0.1239,
+  "cost_per_fixed_part_usd": null,
+  "wall_per_fixed_part_s": null,
+  "bundle": "/tmp/v3e-out/bundle-t29_deterministic-failing"
+ },
+ "clean": {
+  "files": 100,
+  "shards": 7,
+  "summary": {
+   "outcomes": {
+    "nothing_to_repair": 72,
+    "refused": 27,
+    "not_attempted": 1
+   },
+   "endings": {
+    "nothing_to_repair": 92,
+    "attempted_none_held": 7,
+    "not_attempted": 1
+   },
+   "repaired_by_code": {},
+   "routes": {
+    "mesh_as_is": 72,
+    "conservative_repair": 27,
+    "manual_cleanup": 1
+   },
+   "stopped_because": {
+    "time_budget": 7,
+    "resolved": 20
+   },
+   "catalogue": {
+    "tally": {},
+    "never_exercised": [
+     "fix_small_edges",
+     "split_closed_faces",
+     "fix_face_boundary",
+     "rebuild_face",
+     "close_wire_gaps",
+     "fix_small_faces",
+     "sew_faces",
+     "fill_planar_hole",
+     "fill_nonplanar_hole",
+     "heal_self_intersections",
+     "fragment_bodies",
+     "fix_shape_global"
+    ],
+    "only_declined": []
+   },
+   "refusals_by_reason": {},
+   "heals": {
+    "kept": 0,
+    "corroborated": 0,
+    "unknown": 0,
+    "uncorroborated_files": [],
+    "unknown_files": []
+   },
+   "cad_simplicity": {
+    "files_measured": 0,
+    "files_with_more_faces": 0,
+    "files_with_fewer_faces": 0,
+    "solid_count_changed": 0
+   },
+   "meshing": {
+    "files": 100,
+    "meshed_before": 100,
+    "meshed_after": 100,
+    "newly_meshed": 0,
+    "newly_broken": 0,
+    "still_failing_by_kind": {}
+   },
+   "goal": {
+    "files": 100,
+    "profile": "benchmark",
+    "kernel_clean": 20,
+    "tier2_meshes": 27,
+    "tier2_refuses": 0,
+    "tier2_no_answer": 0,
+    "not_run": 73,
+    "score_mean": 1.0,
+    "grind_by_tier": {
+     "cheap": 27
+    },
+    "tolerant_routing": {
+     "not_asked": 27
+    }
+   }
+  },
+  "model": {
+   "calls": 0,
+   "input_tokens": 0,
+   "output_tokens": 0,
+   "cost_usd": 0.0,
+   "by_role": {},
+   "statuses": {}
+  },
+  "vm": {
+   "shard_seconds": 659.5,
+   "longest_shard_s": 165.2,
+   "container_cost_usd": 0.0086,
+   "note": "container wall only; VM boot, docker install and image pull add ~5-10 min/VM"
+  },
+  "total_cost_usd": 0.0086,
+  "cost_per_fixed_part_usd": null,
+  "wall_per_fixed_part_s": null,
+  "clean": {
+   "untouched": true,
+   "files_with_kept_ops": [],
+   "newly_broken": 0
+  },
+  "bundle": "/tmp/v3e-out/bundle-t29_deterministic-clean"
+ }
+}

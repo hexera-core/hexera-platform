@@ -159,6 +159,37 @@ export async function readJobWhy(jobId: string): Promise<Read<AdminJobWhy>> {
   return request(hexeraApiRoutes.adminOpsJobWhy(jobId));
 }
 
+export type AdminRepairOutcome = {
+  edits: { kept: number; rolled_back: Record<string, number>; tried: number };
+  end: string;
+  form: string;
+  model_calls: number;
+  reason: string;
+  region: number | null;
+  seconds: number;
+  tier: string;
+  tool_calls: number;
+  why_no_package: string;
+};
+
+export type AdminRepairTraceSection = {
+  lines: Record<string, unknown>[];
+  outcomes: AdminRepairOutcome[];
+  transcript: Record<string, unknown>;
+  truncated: boolean;
+};
+
+// The first repair's trace, and the mesher handback's own when one ran.
+export type AdminRepairTrace = AdminRepairTraceSection & {
+  handback?: AdminRepairTraceSection;
+  job_id: string;
+};
+
+// Dev diagnostics (CAD_REPAIR_INVESTIGATION_TRACE): a 404 means the run traced nothing.
+export async function readJobRepairTrace(jobId: string): Promise<Read<AdminRepairTrace>> {
+  return request(hexeraApiRoutes.adminOpsJobRepairTrace(jobId));
+}
+
 export async function readActivity(): Promise<Read<{ runs: AdminRun[] }>> {
   return request(hexeraApiRoutes.adminOpsActivity);
 }

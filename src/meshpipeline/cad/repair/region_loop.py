@@ -15,12 +15,15 @@
 from __future__ import annotations
 
 import logging
+import math
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 
 import meshpipeline.settings.cad_repair as rcfg
+from meshpipeline.cad.repair import grind, oracle
 from meshpipeline.cad.repair.contracts import DefectSeverity
+from meshpipeline.cad.repair.identity import EntityRef
 from meshpipeline.cad.repair.localize import analyzer_only
 
 # THE STOP-REASON VOCABULARY IS SHARED WITH THE OPERATION-AT-A-TIME LOOP, imported rather than
@@ -41,7 +44,6 @@ from meshpipeline.cad.repair.regions import Region, decompose
 from meshpipeline.cad.repair.session import (
     DECLINED,
     ESCALATED,
-    FINAL_PROBE_SLACK_S,
     HEAL_OP,
     REVIEW_REJECTED,
     ROLLED_BACK,
@@ -114,13 +116,28 @@ class RegionRun:
     #: owed must not depend on which driver ran, and a benchmark row that reports refusals on one
     #: arm and silence on the other is not a comparison.
     refusals: tuple[dict, ...] = ()
+    #: WHAT THE PART'S EXPECTED COST BOUGHT EACH REGION: `{"tier", "attempts", "rule"}`, or `{}`
+    #: when `CAD_REPAIR_BUDGET_ATTEMPTS` is off or a caller stated `attempts` itself. Empty is
+    #: absent from `to_dict`, so a flag-off report is byte-for-byte what it is today.
+    attempt_budget: dict = field(default_factory=dict)
+    #: ONE RECORD PER COMMITTED PACKAGE, in commit order - what `replay.replay_packages` re-applies
+    #: (`replay_record`). Empty, and absent from `to_dict`, unless an AGENT drove the run: a
+    #: rules-only run is byte-identically replayable from its bytes and needs no package log,
+    #: which is the contract the native determinism tests pin.
+    packages_replay: tuple[dict, ...] = ()
 
     @property
     def resolved(self) -> bool:
         return self.stopped_because == RESOLVED
 
     def to_dict(self) -> dict:
-        return {"stopped_because": self.stopped_because, "resolved": self.resolved,
+        extra: dict = {}
+        if self.attempt_budget:
+            extra["attempt_budget"] = dict(self.attempt_budget)
+        if self.packages_replay:
+            extra["packages_replay"] = [dict(r) for r in self.packages_replay]
+        return {**extra,
+                "stopped_because": self.stopped_because, "resolved": self.resolved,
                 "refusals": [dict(r) for r in self.refusals],
                 "complete_scan": bool(self.complete_scan),
                 "escalated": [int(i) for i in self.escalated],
@@ -274,8 +291,74 @@ def _walk_order(regions: tuple[Region, ...], defects) -> tuple[Region, ...]:
         for region in regions:
             if defect.fingerprint in region.fingerprints:
                 worst[region.index] = min(worst.get(region.index, rank), rank)
+    stops_the_mesh = _mesh_located_regions(regions, defects)
     return tuple(sorted(regions,
-                        key=lambda r: (worst.get(r.index, len(_SEVERITY_RANK)), r.index)))
+                        key=lambda r: (0 if r.index in stops_the_mesh else 1,
+                                       worst.get(r.index, len(_SEVERITY_RANK)), r.index)))
+
+
+def _mesh_located_regions(regions: tuple[Region, ...], defects) -> frozenset[int]:
+    """The regions holding a defect gmsh LOCATED, under `CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS`.
+    Empty with the posture off, which leaves the walk exactly as severity ordered it.
+
+    WHY THESE GO FIRST. A mesh-located defect IS the reason the part will not mesh; a sliver
+    warning elsewhere is not, however severe the analyzer calls it. Measured on wave 1: 84% of the
+    gmsh-located failure faces sat inside investigated regions, and yet 385 of 538 escalations
+    were reached with no time left to make a single tool call, because the run's clock was shared
+    across up to 35 regions in severity order. Severity still orders the two groups internally, so
+    this re-ranks WHICH region is reached first and nothing about what any of them may do.
+
+    AN UNLOCATED MESH FAILURE PROMOTES NOTHING: with no fingerprint it names no face, so it cannot
+    say which region is the one that matters (`mesh_probe.mesh_defects` reports exactly one such
+    defect for a failure it could not place).
+    """
+    import meshpipeline.settings.cad_repair as rcfg
+
+    if getattr(rcfg, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "off") != "live":
+        return frozenset()
+    from meshpipeline.cad.repair import mesh_probe
+
+    located = {d.fingerprint for d in defects
+               if getattr(d, "code", None) in mesh_probe.MESH_CODES and d.fingerprint}
+    return frozenset(r.index for r in regions if located & set(r.fingerprints))
+
+
+#: A REGION THE FOCUS DID NOT NAME. The mesher handback (pipeline/repair_handback.py) hands repair
+#: the faces the FEA ladder actually failed on, so a run under a focus must not spend the part's
+#: clock on loci nobody complained about. Such a region is REPORTED and left standing - not
+#: silently skipped - because a partial repair a customer is owed an account of is the whole
+#: reason this loop reports refusals at all.
+NOT_IN_FOCUS = "not_in_focus"
+
+
+def focus_filter(walk: tuple[Region, ...],
+                 focus_faces: tuple[int, ...] = ()) -> tuple[tuple[Region, ...], tuple[dict, ...]]:
+    """`(walked, refused)` for a walk under `focus_faces` (1-based kernel face indices).
+
+    An EMPTY focus is byte-for-byte the walk it was given and no refusal, which is what every
+    caller but the handback passes.
+
+    A region is IN FOCUS when it holds one of those faces (`Region.face_indices`, the kernel face
+    indices of its member defects). Edges and vertices contribute only to a region's box, so a
+    region whose defects are all edges is out of focus however close it sits - which is correct:
+    the mesher named faces, and those are what it could not mesh.
+
+    FILTERS, NEVER RE-ORDERS. `_walk_order`'s severity ranking is the budget's order and remains
+    so; a focus only removes.
+
+    A FOCUS NAMING NOTHING ON THE PART RUNS NOTHING. The alternative - falling back to the whole
+    walk - would turn "the mesher named faces we cannot locate" into an unscoped repair, which is
+    the one outcome the handback exists to avoid.
+    """
+    focus = frozenset(int(k) for k in focus_faces or ())
+    if not focus:
+        return tuple(walk), ()
+    kept = tuple(r for r in walk if r.face_indices & focus)
+    refused = tuple({"refusal": NOT_IN_FOCUS, "region": int(r.index),
+                     "reason": "none of the faces this run was scoped to is in this region",
+                     "focus_faces": sorted(focus)}
+                    for r in walk if not (r.face_indices & focus))
+    return kept, refused
 
 
 def _refusals_of(author: Author) -> tuple[dict, ...]:
@@ -345,16 +428,138 @@ def final_reserve_s() -> float:
     """Seconds the walk keeps in hand for its final whole-shape verification (final review I2).
 
     With the mesh probe live the final scan probes the whole part, so the walk stops authoring
-    while one probe's timeout plus `session.FINAL_PROBE_SLACK_S` is still left - the final
+    while one probe's timeout plus `oracle.FINAL_PROBE_SLACK_S` is still left - the final
     verification always has room, and its probe then gets whatever remains. 0 with the probe off,
-    so a flag-off walk stops exactly where it always did.
+    so a flag-off walk stops exactly where it always did. The rule is the oracle's; this is the
+    walk's door onto it, reading the posture and the configured per-probe timeout.
     """
-    if rcfg.CAD_REPAIR_MESH_PROBE != "live":
-        return 0.0
-    return float(rcfg.CAD_REPAIR_MESH_PROBE_TIMEOUT_S) + FINAL_PROBE_SLACK_S
+    return oracle.final_reserve_s(mesh_probe_live=rcfg.CAD_REPAIR_MESH_PROBE == "live",
+                                  timeout_s=float(rcfg.CAD_REPAIR_MESH_PROBE_TIMEOUT_S))
 
 
-def _observe_shape(author: Author, shape) -> None:
+#: The rule `attempt_budget` names when the allowance came from the part's cost tier. A reader
+#: downstream routes on it, so it is a constant rather than a literal spelled at the call site.
+BUDGET_RULE_TIER = "grind_tier"
+#: The rule it names when a caller stated `attempts` itself: the explicit argument wins over the
+#: tier, and the record says which one was in force rather than leaving the reader to guess.
+BUDGET_RULE_EXPLICIT = "explicit"
+
+
+def budget_attempts_live() -> bool:
+    """Is the per-part attempt allowance in force? READ AT CALL TIME off the settings module, like
+    every other posture here, so a test that patches the attribute is obeyed, and FAILING CLOSED:
+    anything but the exact string `live` is off."""
+    return str(getattr(rcfg, "CAD_REPAIR_BUDGET_ATTEMPTS", "off") or "off") == "live"
+
+
+def agent_posture_live() -> bool:
+    """Is an AGENT driving this run - the investigator or the tournament, in any non-off posture?
+
+    WHAT IT GATES: `packages_replay`. Byte-identical replay is retired for agent-driven runs only
+    (spec pillar 4); a rules-only run is still reproduced from its own bytes, so recording a
+    package log for one would add a key to a report whose contract says it has none.
+
+    READ BY `getattr` because both settings belong to other tasks' modules: with both postures
+    absent this is `False`, which is the committed behaviour.
+    """
+    investigator = str(getattr(rcfg, "CAD_REPAIR_INVESTIGATOR", "off") or "off")
+    tournament = str(getattr(rcfg, "CAD_REPAIR_TOURNAMENT", "off") or "off")
+    return investigator in ("shadow", "live") or tournament == "live"
+
+
+def _count(value: object) -> int | None:
+    """A face or solid count as `grind` wants it, or None when there is not one.
+
+    GUARDED WITH `math.isfinite` RATHER THAN A BARE `>= 0`: a `float("inf")` or a `NaN` arriving
+    from a measurement that went wrong would sail through a comparison - `NaN >= 0` is False and
+    `inf > HEAVY_FACES` is True - and either answer would be a number nobody measured. None is
+    what `grind` reads as UNKNOWN, which is the cheapest budget.
+    """
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, float):
+        return int(value) if math.isfinite(value) and value >= 0 else None
+    return None
+
+
+def attempt_budget(defects, *, solids: object, faces: object,
+                   attempts: int | None = None) -> dict:
+    """How many packages one region of THIS part may be offered, and on what grounds.
+
+    `{}` - and no report key at all - when the posture is off, which is the whole of the flag-off
+    guarantee: the caller then falls back to `CAD_REPAIR_REGION_ATTEMPTS` exactly as it always did.
+
+    AN EXPLICIT `attempts` STILL WINS, and is recorded as such. A caller that states a bound is
+    not asking for a policy, and the corpus runner and the tests both state one.
+
+    THE TIER COMES FROM THE RUN'S FIRST WHOLE-SHAPE SCAN and the UPLOAD's own counts, so the
+    allowance is fixed once, before anything has moved: deciding it per attempt would let a
+    package that changed the face count change the budget it is being judged under.
+
+    NEVER RAISES, for `grind`'s own reason: an allowance must not break the repair it bounds. A
+    predictor that somehow throws gets the cheapest tier's attempts.
+    """
+    if not budget_attempts_live():
+        return {}
+    if attempts is not None:
+        return {"tier": "", "attempts": max(1, int(attempts)), "rule": BUDGET_RULE_EXPLICIT}
+    try:
+        tier = grind.tier_of(defects or (), solids=_count(solids), faces=_count(faces))
+    except Exception:  # noqa: BLE001 - an allowance must never break the repair it bounds
+        tier = grind.UNKNOWN
+    return {"tier": str(tier), "attempts": max(1, grind.attempts_for(tier)),
+            "rule": BUDGET_RULE_TIER}
+
+
+def replay_record(package: TargetPackage, verdict: PackageVerdict, *,
+                  tolerance_mm: float) -> dict:
+    """What one COMMITTED package has to say about itself for an agent-driven run to be replayed.
+
+    REPLAY MEANS RE-APPLYING THE RECORDED PACKAGES, not reproducing the bytes (spec pillar 4): an
+    agent's proposal is not a function of the part, so the only reproducible thing about an agent
+    run is what it decided. These are exactly the inputs `session.try_package` needs plus the
+    verdict that stands in for the review, and nothing else - no model prose, no evidence blob.
+
+    THE REGION TRAVELS AS ITS SORTED FINGERPRINTS, not as its index. An index is a position in one
+    decomposition; a re-run decomposes the part itself, so the index may name a different region
+    and a replay that trusted it would apply a package to the wrong geometry. Sorted, so two
+    records of the same region are equal as written.
+    """
+    return {
+        "region_fingerprints": sorted(package.region.fingerprints),
+        "plan": [_plain_item(item) for item in package.plan],
+        "predicate": {"cleared": sorted(package.predicate.cleared),
+                      "reclassified": sorted(package.predicate.reclassified),
+                      "unchanged": sorted(package.predicate.unchanged),
+                      "max_area_delta_mm2": float(package.predicate.max_area_delta_mm2),
+                      "max_volume_delta_mm3": float(package.predicate.max_volume_delta_mm3)},
+        "tolerance_mm": float(tolerance_mm),
+        "review_tier": verdict.review_tier,
+        "reviewed": verdict.reviewed,
+    }
+
+
+def _plain_item(item: dict) -> dict:
+    """One plan item as PLAIN DATA, so the record survives the JSON report it is delivered in.
+
+    The live item holds a `RepairOp` and `EntityRef`s, which the report's `default=str` flattens
+    into strings nothing can apply. So the operation travels by NAME, each target as its fields
+    and the code as its value; `replay._package_of` resolves them back against the catalogue
+    (PR #494 review, region_loop.py:503).
+    """
+    op, code = item.get("op"), item.get("defect_code")
+    return {**item,
+            "op": op if isinstance(op, str) else getattr(op, "name", str(op)),
+            "targets": [{"entity_type": t.entity_type, "fingerprint": t.fingerprint,
+                         "entity_index": int(t.entity_index), "ambiguous": bool(t.ambiguous)}
+                        if isinstance(t, EntityRef) else t
+                        for t in item.get("targets") or ()],
+            "defect_code": getattr(code, "value", code)}
+
+
+def _observe_shape(author: Author, shape, accounting=None, part_defects=None) -> None:
     """Tell the author the session's CURRENT shape before it is asked (final review M1).
 
     Read off the callable and optional, like `_observe_part`. An author that reads faces by index
@@ -364,24 +569,54 @@ def _observe_shape(author: Author, shape) -> None:
     observe = getattr(author, "observe_shape", None)
     if observe is not None:
         observe(shape)
+    # AND THE DECLARATIONS THAT SHAPE CARRIES. An author that rehearses on a scratch clone of it
+    # (the investigator, the tournament) opens a session whose caps compare against the UPLOAD,
+    # so it needs the real session's accumulated declarations or every earlier package's declared
+    # change reads as unexplained there. Immutable (`caps.Accounting`), so nothing an author does
+    # with it reaches this session.
+    seen = getattr(author, "observe_accounting", None)
+    if seen is not None and accounting is not None:
+        seen(accounting)
+    # AND THE WHOLE PART'S MESH FAILURES, as codes: an author whose clone is seeded with one
+    # region's defects cannot otherwise see that the part fails gmsh, and so cannot keep an edit
+    # whose delivered part newly meshes (session._mesh_cure; Greptile PRRT_kwDOUFq_Ps656SQJ).
+    # Read off the session's cached whole list - no scan is paid for it.
+    told = getattr(author, "observe_mesh", None)
+    if told is not None and part_defects is not None:
+        from meshpipeline.cad.repair import mesh_probe as _mesh_probe
+
+        told(frozenset(d.code.value for d in part_defects
+                       if str(getattr(d.code, "value", d.code)).startswith("mesh_")
+                       and d.code not in _mesh_probe.NO_ANSWER_CODES))
 
 
 def run_regions(shape, *, author: Author, tolerance_mm: float,
                 budget: LoopBudget | None = None, reserved: frozenset = frozenset(),
                 session: RepairSession | None = None, attempts: int | None = None,
                 clock: Callable[[], float] = time.monotonic,
-                deadline_s: float | None = None) -> RegionRun:
+                deadline_s: float | None = None,
+                auto_accept_mm: float | None = None,
+                focus_faces: tuple[int, ...] = ()) -> RegionRun:
     """Repair `shape` one region at a time, and report what each region's package did.
 
     `attempts` BOUNDS THE PACKAGES ONE REGION MAY BE OFFERED, defaulting to the deployment's
     CAD_REPAIR_REGION_ATTEMPTS. The run's `max_ops` and `timeout_s` are still the outer bounds and
     are checked before every attempt, not merely before every region.
 
+    WITH `CAD_REPAIR_BUDGET_ATTEMPTS` LIVE the bound instead comes from what the PART is expected
+    to cost a mesher (`attempt_budget`, keyed by `grind.tier_of` over the run's first whole-shape
+    scan), and the run records which tier bought how many attempts. An explicit `attempts` still
+    wins, and with the posture off nothing about this run differs by a byte.
+
     `deadline_s` IS THE RUN'S ONE ABSOLUTE DEADLINE, a `clock()` reading
     (`conservative.repair_step_file` takes it at entry, before the STEP is read, less a margin), so
     every slice of time - the probes', the author's, the walk's - is a slice of what the attempt
     node's clock actually has left. None, for a direct caller, is the old behaviour: the budget's
     `timeout_s` from when this function started. Given, the walk has the lesser of the two.
+
+    `focus_faces` SCOPES THE WALK to the regions holding those 1-based kernel face indices; every
+    other region is reported `NOT_IN_FOCUS` and left standing, unrun. `()` - what every caller but
+    the mesher handback passes - is byte-for-byte the walk and the refusal list it was before.
 
     `session` and `clock` are injectable so the walk and the budget arithmetic can be tested
     without a kernel and without waiting. `reserved` reaches a session this function CONSTRUCTS;
@@ -419,8 +654,13 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
     # entity, and the session will not let a sweep remove one it never aimed at. Nothing here
     # grants a package the engineer's `answered_held` exemption - a package is authored, and an
     # answer to a hold is a person's (session.try_package).
+    # `auto_accept_mm` REACHES A SESSION THIS FUNCTION CONSTRUCTS, exactly as `reserved` does: an
+    # INJECTED session keeps the threshold it was built with, so a test that injects one is testing
+    # the walk and not the tier. None - the default - is today's session: the auto-accept tier is
+    # inert without a threshold, so a caller that declares none gets the reviewer on every package.
     work = session if session is not None else RepairSession(
-        shape, remaining_s=remaining, reserved=reserved, clock=clock)
+        shape, remaining_s=remaining, reserved=reserved, clock=clock,
+        auto_accept_mm=auto_accept_mm)
     if work.remaining_s is None:
         work.remaining_s = remaining
     # WHAT THE SESSION ITSELF COUNTED, not arithmetic over the verdicts. Every scan a package
@@ -428,6 +668,12 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
     # operation the caps refused before its re-inspection took none at all, so only the session
     # knows. Read as a delta because a caller may inject a session that has already scanned.
     scoped_at_start = work.scoped_scan_count
+
+    # WHETHER THIS RUN KEEPS A PACKAGE LOG AT ALL, decided ONCE at entry rather than per package,
+    # so a posture that changed mid-run cannot produce a half-written record.
+    record_replay = (str(getattr(rcfg, "CAD_REPAIR_REGION_LOOP", "off") or "off") == "live"
+                     and agent_posture_live())
+    replays: list[dict] = []
 
     # THE FIRST SCAN, and its completeness read AFTER it: `complete_scan` starts out True, so
     # asking before any scan has run reports a truncated walk as exhaustive.
@@ -442,16 +688,27 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
             timings=_timings(started, clock, work, (), verification_scans,
                              work.scoped_scan_count - scoped_at_start),
             defects_before=before, defects_after=before,
+            # NO FOCUS REFUSAL HERE: the scan never completed, so the part was never decomposed
+            # and there are no regions a focus could have excluded.
             refusals=_refusals_of(author))
 
     # WHAT THE PART AS A WHOLE LOOKS LIKE, SAID ONCE, BEFORE IT IS CUT INTO REGIONS. The only
     # thing an author needs that a region cannot carry: the paired-rim guard (see `_observe_part`).
+    # WHAT THIS PART IS WORTH SPENDING, FIXED HERE: after the one scan that can say what the part's
+    # trouble is and before any region has been authored for. `{}` with the posture off, and then
+    # `per_region` above - the deployment's flat `CAD_REPAIR_REGION_ATTEMPTS` - stands untouched.
+    budget_record = attempt_budget(before, solids=work.original.solids,
+                                   faces=work.original.faces, attempts=attempts)
+    if budget_record:
+        per_region = int(budget_record["attempts"])
     _observe_part(author, before)
     regions = decompose(before, diagonal_mm=work.original.diagonal_mm)
     # THE ORDER THE BUDGET IS SPENT IN, which is not the order the regions were found in. The
     # REPORT keeps `decompose`'s spatial order (it is the record of the decomposition, and a
     # region carries its own index, so nothing is lost); the WALK goes worst-first.
-    walk = _walk_order(regions, work.defects())
+    # SCOPED TO THE FACES SOMETHING ELSE ALREADY NAMED, when a caller named any. `()` - every
+    # caller but the mesher handback - is the walk `_walk_order` just produced, unchanged.
+    walk, not_in_focus = focus_filter(_walk_order(regions, work.defects()), focus_faces)
     packages: list[PackageVerdict] = []
     escalated: list[int] = []
     committed = False
@@ -536,7 +793,8 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
                 # locus needs and what the baseline got for free from its whole-shape walk.
                 break
 
-            _observe_shape(author, work.shape)
+            _observe_shape(author, work.shape, getattr(work, "accounting", None),
+                           work.defects())
             package = author(region, mine, tuple(tried))
             if package is None:
                 # NOT A FAILURE AND NOT AN ESCALATION. The author has nothing further to propose,
@@ -556,7 +814,8 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
                 stopped, out_of_budget = OP_BUDGET, True
                 break
 
-            verdict = work.try_package(_with_tolerance(package, tolerance_mm))
+            offered = _with_tolerance(package, tolerance_mm)
+            verdict = work.try_package(offered)
             packages.append(verdict)
             tried.append(verdict)
             if any(v.kept for v in verdict.verdicts):
@@ -569,6 +828,11 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
                 charged += len(verdict.verdicts)
             if verdict.committed:
                 committed = True
+                if record_replay:
+                    # THE PACKAGE AS IT WAS OFFERED, with the run's tolerance already filled in,
+                    # and only on a COMMIT: a reverted or escalated package left nothing behind,
+                    # so replaying it would reproduce a decision the run itself threw away.
+                    replays.append(replay_record(offered, verdict, tolerance_mm=tolerance_mm))
                 discharged |= set(package.predicate.cleared) | set(verdict.reclassified)
                 if not any(v.kept for v in verdict.verdicts):
                     # A PACKAGE THAT COMMITTED WITHOUT KEEPING ANYTHING ENDS THE REGION'S
@@ -626,8 +890,11 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
         timings=_timings(started, clock, work, tuple(packages), verification_scans,
                          work.scoped_scan_count - scoped_at_start),
         defects_before=before, defects_after=after,
-        # READ AT THE END, once the author has been asked everything it is going to be asked.
-        refusals=_refusals_of(author))
+        # READ AT THE END, once the author has been asked everything it is going to be asked,
+        # plus the regions a focus kept the author from being asked about at all - which a
+        # customer owed an account of a partial repair has to be told, not have inferred.
+        refusals=_refusals_of(author) + not_in_focus,
+        attempt_budget=budget_record, packages_replay=tuple(replays))
 
 
 def _timings(started: float, clock: Callable[[], float], session: RepairSession,

@@ -98,7 +98,7 @@ def test_off_never_calls_probe(monkeypatch):
     session._rescan(face_scan=False, within=_REGION)
     session._region_scan(_REGION)
     # The whole-shape call is still exactly the call it always was.
-    assert calls[0] == {"face_scan_s": 0.0}
+    assert calls[0] == {"face_scan_s": 0.0, "quantum_diagonal_mm": MEASURE.diagonal_mm}
 
 
 @pytest.mark.parametrize("raw,expected", [
@@ -144,7 +144,7 @@ def test_live_appends_after_localize(monkeypatch):
     session = RepairSession("shape", measurer=lambda s: MEASURE, remaining_s=lambda: 300.0)
     assert session.defects() == (_OPENING, _OVERLAP)
     # localize is called exactly as it always was: mesh defects are never passed INTO it.
-    assert calls == [{"face_scan_s": 0.0}]
+    assert calls == [{"face_scan_s": 0.0, "quantum_diagonal_mm": MEASURE.diagonal_mm}]
     assert probes == [{"diagonal_mm": 200.0, "budget_s": 120.0, "within": None}]
 
 
@@ -266,7 +266,8 @@ def test_scoped_scan_passes_region(monkeypatch):
 
     found, complete = session._region_scan(_REGION)
     assert found == (_OPENING, _OVERLAP) and complete
-    assert calls[-1] == {"face_scan_s": 0.0, "within": _REGION, "scope_diagonal_mm": 200.0}
+    assert calls[-1] == {"face_scan_s": 0.0, "within": _REGION, "scope_diagonal_mm": 200.0,
+                         "quantum_diagonal_mm": 200.0}
     assert probes[-1] == {"diagonal_mm": 200.0, "budget_s": 120.0, "within": _REGION}
 
     found = session._rescan(face_scan=False, within=_REGION)
@@ -566,12 +567,16 @@ def test_a_scoped_operation_aimed_at_a_volume_stage_mesh_defect_is_not_kept(monk
                                                                             volume_defect):
     monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
     _scan(monkeypatch, ((), True))
-    _probe(monkeypatch, (volume_defect,), ())
+    # The scoped (2D-only) probe sees nothing; the WHOLE-shape probe the mesh cure pays for still
+    # sees the volume failure, so nothing has proved it gone (ruling R11a).
+    monkeypatch.setattr(session_mod, "_as_delivered", lambda shape: shape)
+    probes = _probe(monkeypatch, (volume_defect,), (), (volume_defect,))
     session = RepairSession("shape", measurer=lambda s: MEASURE)
     target = session.defects()[0]
     verdict = session.try_op(_Remesh(), _Remesh().targets_for(target), target.code,
                              tolerance_mm=0.01, within=_REGION)
     assert not verdict.kept and verdict.reason == "target_remains"
+    assert len(probes) == 3 and probes[2].get("within") is None
 
 
 # REVEALED, NOT DAMAGE (P2 Task 3 fix round 1; applies to EVERY mesh operation). gmsh reports only

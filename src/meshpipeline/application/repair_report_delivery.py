@@ -26,6 +26,7 @@ REPAIR_REPORT_LOGICAL_KEY = "repair_report"
 async def deliver_repair_report(session_factory, *, job_id: str, report: dict,
                                 repair_status: str = "",
                                 repair_attempt: dict | None = None,
+                                repair_handback: dict | None = None,
                                 owner_id: str = "",
                                 delivery_attempt: int = 0,
                                 execution_generation: int = 0,
@@ -60,6 +61,10 @@ async def deliver_repair_report(session_factory, *, job_id: str, report: dict,
     # the inspection above stays the upload's own, unchanged.
     if repair_attempt:
         payload["repair_attempt"] = dict(repair_attempt)
+    # THE MESHER HANDBACK'S OWN REPAIR, when there was one: its record (outcome, faces, headline
+    # summary and - with CAD_REPAIR_INVESTIGATION_TRACE - its investigation trace's location).
+    if repair_handback:
+        payload["repair_handback"] = dict(repair_handback)
     body = json.dumps(payload, sort_keys=True, default=str)
     # CONTENT-ADDRESSED. Two writers can race for one job - a retry, or a worker whose lease was
     # taken over - and a shared key let the loser overwrite bytes a COMMITTED row already pointed

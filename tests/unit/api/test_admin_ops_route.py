@@ -390,3 +390,100 @@ def test_job_why_is_a_404_with_a_reason_when_the_run_kept_none(monkeypatch):
         assert res.status_code == 404
         assert res.json()["detail"] == "no why record for this run"
     assert client.get(f"/api/v1/admin/ops/jobs/{uuid.uuid4()}/why").status_code in (401, 403, 404)
+
+
+# THE REPAIR INVESTIGATION TRACE (lane D): per-region "why no package" and the per-turn trace,
+# read from the job's repair_report artifact and the JSONL the repair node parked beside it.
+
+class _Objects:
+    def __init__(self, objects):
+        self.objects = objects
+
+    def get_bytes(self, *, object_key):
+        return self.objects[object_key]
+
+
+def _trace_client(monkeypatch, report_key, objects):
+    import json as _json
+
+    from meshpipeline.contracts import object_storage
+    orgs = _OrgRepo()
+
+    async def _report(db, job_id):
+        return report_key
+
+    monkeypatch.setattr(admin_ops, "_repair_report_key", _report)
+    monkeypatch.setattr(object_storage, "_store", _Objects(
+        {k: (_json.dumps(v).encode() if isinstance(v, dict) else v) for k, v in objects.items()}))
+    return _client(monkeypatch, orgs, _JobRepo(orgs.organization.id), _LedgerRepo())
+
+
+def _report_with(trace, *, refused=False):
+    measurements = {"investigation_trace": trace}
+    attempt = ({"attempted": False, "detail": {"measurements": measurements}} if refused
+               else {"attempted": True, "measurements": measurements})
+    return {"repair_status": "repairable", "report": {}, "repair_attempt": attempt}
+
+
+def test_repair_trace_returns_the_outcomes_and_the_parked_lines(monkeypatch):
+    trace = {"outcomes": [{"region": 0, "end": "runaway", "why_no_package": "runaway; no edit kept"}],
+             "truncated": False,
+             "transcript": {"object_key": "jobs/j/investigation-trace-ab.jsonl", "lines": 2}}
+    lines = b'{"kind": "call", "tool": "edit"}\n{"kind": "end", "end": "runaway"}\n'
+    client = _trace_client(monkeypatch, "jobs/j/repair_report-1.json", {
+        "jobs/j/repair_report-1.json": _report_with(trace, refused=True),
+        "jobs/j/investigation-trace-ab.jsonl": lines})
+    body = client.get(f"/api/v1/admin/ops/jobs/{uuid.uuid4()}/repair-trace",
+                      headers=HEADERS).json()
+    assert body["outcomes"][0]["why_no_package"] == "runaway; no edit kept"
+    assert [ln["kind"] for ln in body["lines"]] == ["call", "end"]
+    assert body["transcript"]["object_key"].endswith(".jsonl")
+
+
+def test_repair_trace_without_lines_omits_them(monkeypatch):
+    trace = {"outcomes": [], "truncated": False, "transcript": {"error": "OSError: no"}}
+    client = _trace_client(monkeypatch, "k", {"k": _report_with(trace)})
+    body = client.get(f"/api/v1/admin/ops/jobs/{uuid.uuid4()}/repair-trace",
+                      headers=HEADERS).json()
+    assert body["lines"] == []
+    assert body["transcript"]["error"] == "OSError: no"
+
+
+def test_repair_trace_is_a_404_when_the_run_traced_nothing(monkeypatch):
+    client = _trace_client(monkeypatch, "k", {"k": {"repair_attempt": {"measurements": {}}}})
+    res = client.get(f"/api/v1/admin/ops/jobs/{uuid.uuid4()}/repair-trace", headers=HEADERS)
+    assert res.status_code == 404
+    assert res.json()["detail"] == "no investigation trace for this run"
+    none = _trace_client(monkeypatch, None, {})
+    res = none.get(f"/api/v1/admin/ops/jobs/{uuid.uuid4()}/repair-trace", headers=HEADERS)
+    assert res.status_code == 404
+
+
+def test_repair_trace_returns_the_handbacks_trace_too(monkeypatch):
+    first = {"outcomes": [{"region": 0, "end": "runaway"}], "truncated": False,
+             "transcript": {"object_key": "jobs/j/investigation-trace-aa.jsonl"}}
+    handback = {"outcomes": [{"region": 4, "end": "budget_spent"}], "truncated": False,
+                "transcript": {"object_key": "jobs/j/investigation-trace-bb.jsonl"}}
+    report = {**_report_with(first),
+              "repair_handback": {"outcome": "refused", "report": {"investigation_trace": handback}}}
+    client = _trace_client(monkeypatch, "k", {
+        "k": report,
+        "jobs/j/investigation-trace-aa.jsonl": b'{"kind": "end", "region": 0}\n',
+        "jobs/j/investigation-trace-bb.jsonl": b'{"kind": "end", "region": 4}\n'})
+    body = client.get(f"/api/v1/admin/ops/jobs/{uuid.uuid4()}/repair-trace",
+                      headers=HEADERS).json()
+    assert body["outcomes"][0]["region"] == 0
+    assert body["handback"]["outcomes"][0]["region"] == 4
+    assert [ln["region"] for ln in body["handback"]["lines"]] == [4]
+
+
+def test_repair_trace_answers_with_only_a_handback_trace(monkeypatch):
+    handback = {"outcomes": [{"region": 4, "end": "runaway"}], "truncated": False,
+                "transcript": {}}
+    report = {"repair_attempt": {"measurements": {}},
+              "repair_handback": {"report": {"investigation_trace": handback}}}
+    client = _trace_client(monkeypatch, "k", {"k": report})
+    body = client.get(f"/api/v1/admin/ops/jobs/{uuid.uuid4()}/repair-trace",
+                      headers=HEADERS).json()
+    assert body["outcomes"] == []
+    assert body["handback"]["outcomes"][0]["end"] == "runaway"

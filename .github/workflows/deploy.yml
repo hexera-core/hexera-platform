@@ -173,6 +173,22 @@ on:
           - "off"
           - shadow
           - live
+      # THE CRS v3 REPAIR POSTURES, ONE SWITCH, PERSONAL ENVIRONMENTS ONLY. The target job turns it
+      # into the `crs_v3` output, and the provision job derives every v3 posture from that one
+      # output (see its env): "shadow" turns on the region loop, the mesh probe and the package
+      # reviewer; "live" adds the four new operations, of which rebuild_face and close_wire_gaps
+      # move vertices and so only ever ride with the reviewer live. Shared dev and production
+      # state it EMPTY whatever is chosen here. "off" exports nothing, and a redeploy left at "off"
+      # drops the postures from an environment that had them. Only meaningful with cad_repair.
+      crs_v3:
+        description: "crs_v3 - CRS v3 repair postures on a personal slug: off, shadow (region loop, probe, reviewer) or live (plus the new ops); empty on shared dev and production"
+        required: false
+        default: "off"
+        type: choice
+        options:
+          - "off"
+          - shadow
+          - live
 
 # A deploy MUTATES a cloud project through an 18-stage provisioner. Cancelling one mid-flight
 # leaves the project half-reconciled - the stages are individually idempotent, the sequence is
@@ -250,6 +266,10 @@ jobs:
       # environment, unstated on prod (its shipped default, off, stays in force) until dev has run
       # with it. It reaches the workers as template metadata, so a fleet deploy applies it.
       verdict_by_limits: ${{ steps.pick.outputs.verdict_by_limits }}
+      # THE CRS v3 POSTURE: the `crs_v3` input on a personal environment, stated EMPTY on shared
+      # dev (until Task 28 of the CRS v3 plan) and on prod, permanently. The provision job derives
+      # every v3 repair posture from this one value.
+      crs_v3: ${{ steps.pick.outputs.crs_v3 }}
       # THE IN-PROGRESS MESH FRAME: 'true' on shared dev and every personal environment, unstated
       # on prod (its shipped default, off, stays in force) until it is cut there deliberately. The
       # rank pin travels beside it because the feature is unreachable without both.
@@ -327,6 +347,8 @@ jobs:
           DISPATCH_OUTREACH: ${{ github.event.inputs.outreach }}
           DISPATCH_EDGE: ${{ github.event.inputs.edge }}
           DISPATCH_SLUG: ${{ github.event.inputs.slug }}
+          # Empty unless a dispatch chose a posture; only the personal branch below reads it.
+          DISPATCH_CRS_V3: ${{ inputs.crs_v3 != 'off' && inputs.crs_v3 || '' }}
         # Every target is a LITERAL here rather than a repository variable. deploy.sh under
         # DEPLOY_NONINTERACTIVE=1 refuses to mutate a project on ambient configuration, and a
         # value editable in the GitHub settings UI without a review IS ambient configuration -
@@ -588,6 +610,13 @@ jobs:
               echo "worker_env_uri=gs://${_did}-transfer-${_num}/worker.env"
               # the measured limits decide pass, concerns or fail; the AI review only adds notes
               echo "verdict_by_limits=true"
+              # THE CRS v3 POSTURE the dispatch chose. Fail-closed: only the two exact postures
+              # pass, anything else (including "off" and unset) is stated empty.
+              _crs_v3=""
+              case "${DISPATCH_CRS_V3:-}" in
+                shadow|live) _crs_v3="${DISPATCH_CRS_V3}" ;;
+              esac
+              echo "crs_v3=${_crs_v3}"
               # THE IN-PROGRESS MESH FRAME is OFF (2026-11-14, the founder): the viewer holds the part
               # until the mesh is finished and checked, as FEA does, and snappyHexMesh runs on every
               # core of the mesh job (rank count from its CPU quota). The frame only ever worked on a
@@ -753,6 +782,20 @@ jobs:
               echo "worker_env_uri=gs://dev-transfer-224734058693/worker.env"
               # the measured limits decide pass, concerns or fail; the AI review only adds notes
               echo "verdict_by_limits=true"
+              # THE CRS v3 POSTURE, committed config: shared dev runs the v3 flag set as ONE unit.
+              # Every v3 flag in the provision job derives from this single value, so the set turns
+              # on together or not at all - there is no half-on shared dev to reason about. A flag
+              # whose row does not exist yet simply is not exported; it joins the set the moment its
+              # row lands, with no change here.
+              #
+              # What `live` commands today: the region loop, the mesh probe, the package reviewer,
+              # tier 2b's tolerant routing probe, and the four opt-in operations. REBUILD_FACE and
+              # CLOSE_WIRE_GAPS MOVE VERTICES and are reviewer-gated - they ride with
+              # PACKAGE_REVIEW=live and must never be exported without it.
+              #
+              # Production stays empty, permanently, until the owner ungates it as a separate
+              # decision. To turn shared dev off again, revert this one line to `crs_v3=`.
+              echo "crs_v3=live"
               # the in-progress mesh frame is off here too, and snappyHexMesh runs on every core
               echo "mesh_snapshots=false"
               echo "mesh_snappy_ranks="
@@ -901,6 +944,8 @@ jobs:
             echo "worker_mig=prod-workers"
             echo "worker_mig_zone=us-central1-a"
             echo "worker_env_uri=gs://prod-artifacts-688073002171/deploy/worker.env"
+            # THE CRS v3 POSTURE: empty on production, permanently.
+            echo "crs_v3="
             # OUTREACH IS PROD-ONLY: one partner list, one mailbox. Named here and nowhere else.
             echo "outreach_enabled=1"
             echo "outreach_worker_job=prod-outreach"
@@ -1587,6 +1632,59 @@ jobs:
       CAD_REPAIR_LLM_PLANNER: ${{ inputs.llm_planner != 'off' && inputs.llm_planner || needs.target.outputs.deployment_id == 'dev' && 'live' || '' }}
       # The verdict by measured limits, per target (the `target` job): 'true' on dev, empty on prod.
       VERDICT_BY_LIMITS: ${{ needs.target.outputs.verdict_by_limits }}
+      # THE CRS v3 POSTURES, every one derived from the target's single `crs_v3` output, which is
+      # empty on shared dev and prod - so these reach personal environments only, and an empty
+      # value states nothing (create-api-service.sh names it droppable, the worker keeps its
+      # shipped default, off). The region loop, the mesh probe and the package reviewer are live
+      # in BOTH shadow and live: a v3 run is never unreviewed. The four new operations need
+      # `live`; rebuild_face and close_wire_gaps move vertices, which is why they can only ever
+      # be on while CAD_REPAIR_PACKAGE_REVIEW is.
+      CAD_REPAIR_REGION_LOOP: ${{ needs.target.outputs.crs_v3 != '' && 'live' || '' }}
+      CAD_REPAIR_MESH_PROBE: ${{ needs.target.outputs.crs_v3 != '' && 'live' || '' }}
+      CAD_REPAIR_PACKAGE_REVIEW: ${{ needs.target.outputs.crs_v3 != '' && 'live' || '' }}
+      CAD_REPAIR_SPLIT_CLOSED_FACES: ${{ needs.target.outputs.crs_v3 == 'live' && 'true' || '' }}
+      CAD_REPAIR_FRAGMENT_BODIES: ${{ needs.target.outputs.crs_v3 == 'live' && 'true' || '' }}
+      CAD_REPAIR_REBUILD_FACE: ${{ needs.target.outputs.crs_v3 == 'live' && 'true' || '' }}
+      CAD_REPAIR_CLOSE_WIRE_GAPS: ${{ needs.target.outputs.crs_v3 == 'live' && 'true' || '' }}
+      # Tier 2b runs fTetWild on a customer's part, so it needs `live` and not merely a v3 run:
+      # a shadow run records the ladder's questions, it does not start the tolerant mesher.
+      CAD_REPAIR_TOLERANT_PROBE: ${{ needs.target.outputs.crs_v3 == 'live' && 'live' || '' }}
+      # THE POSTURE CARRIED THROUGH rather than mapped: the investigator reads
+      # shadow/live/off, so a shadow slug gets a shadow investigation - recorded, executing
+      # nothing - and a live slug a live one. Empty on shared dev and prod like the rest.
+      CAD_REPAIR_INVESTIGATOR: ${{ needs.target.outputs.crs_v3 != '' && needs.target.outputs.crs_v3 || '' }}
+      # THE AUTO-ACCEPT TIER: on wherever the reviewer is on, because it is a TIER OF the
+      # review and not a replacement for it - and inert anyway until a run carries a customer
+      # deviation threshold. The vertex-moving ops above stay on the exact `live`, so they
+      # cannot exist on a slug without the reviewer that the tier always sends them to.
+      CAD_REPAIR_AUTO_ACCEPT: ${{ needs.target.outputs.crs_v3 != '' && 'live' || '' }}
+      # THE PER-PART ATTEMPT ALLOWANCE: on wherever the region-scoped driver is, because it
+      # only changes how many PACKAGES a region may be offered and every outer bound - the
+      # run's operation allowance, its deadline, each package's own budget and the
+      # two-rejections escalation - is unchanged by it. Inert without the driver.
+      CAD_REPAIR_BUDGET_ATTEMPTS: ${{ needs.target.outputs.crs_v3 != '' && 'live' || '' }}
+      # THE TOURNAMENT, CARRIED THROUGH like the investigator: it reads shadow/live/off, and in
+      # shadow the rules package is returned unchanged whatever the tournament found (a round runs
+      # only when it fits the run's clock), so a shadow slug records rounds and a live slug
+      # nominates winners - which the region loop still hands to the reviewer.
+      CAD_REPAIR_TOURNAMENT: ${{ needs.target.outputs.crs_v3 != '' && needs.target.outputs.crs_v3 || '' }}
+      # ITS K, stated where the tournament is live: K=1 rehearses a single candidate, which is a
+      # tournament in name only, and 3 is the K the v3 eval measured. Unstated elsewhere (shadow
+      # slugs, production), so the code default (1) stands there.
+      CAD_REPAIR_TOURNAMENT_K: ${{ needs.target.outputs.crs_v3 == 'live' && '3' || '' }}
+      # THE LIVE-ONLY POSTURES: each reads only the exact `live` (anything else is off) and has
+      # no shadow meaning, so a shadow slug leaves them at their shipped default. The repair
+      # memory (fix-candidate retrieval), the reviewer's measured objection back to the author,
+      # the mesh refusal handed back to repair, and standalone repair jobs.
+      CAD_REPAIR_MEMORY: ${{ needs.target.outputs.crs_v3 == 'live' && 'live' || '' }}
+      CAD_REPAIR_REVIEW_OBJECTION: ${{ needs.target.outputs.crs_v3 == 'live' && 'live' || '' }}
+      # The investigator may not escalate a region until it has tried an edit there. Live-only,
+      # and inert wherever the investigator is off.
+      CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS: ${{ needs.target.outputs.crs_v3 == 'live' && 'live' || '' }}
+      CAD_REPAIR_MESH_HANDBACK: ${{ needs.target.outputs.crs_v3 == 'live' && 'live' || '' }}
+      CAD_REPAIR_STANDALONE_JOBS: ${{ needs.target.outputs.crs_v3 == 'live' && 'live' || '' }}
+      # Dev diagnostics: the investigation trace (per-turn JSONL + "why no package" table).
+      CAD_REPAIR_INVESTIGATION_TRACE: ${{ needs.target.outputs.crs_v3 == 'live' && 'true' || '' }}
     steps:
       # A SHALLOW CHECKOUT IS ENOUGH HERE, unlike release's. Nothing in this job reads history:
       # lib.sh derives the image tag from `rev-parse --short=12 HEAD` plus a `diff --quiet HEAD`

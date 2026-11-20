@@ -85,6 +85,25 @@ for pair in "deployment-id:DEPLOYMENT_ID" \
             "cad-repair-stall-limit:CAD_REPAIR_STALL_LIMIT" \
             "cad-inspect-timeout-s:CAD_INSPECT_TIMEOUT_S" \
             "cad-repair-llm-planner:CAD_REPAIR_LLM_PLANNER" \
+            "cad-repair-region-loop:CAD_REPAIR_REGION_LOOP" \
+            "cad-repair-mesh-probe:CAD_REPAIR_MESH_PROBE" \
+            "cad-repair-package-review:CAD_REPAIR_PACKAGE_REVIEW" \
+            "cad-repair-split-closed-faces:CAD_REPAIR_SPLIT_CLOSED_FACES" \
+            "cad-repair-fragment-bodies:CAD_REPAIR_FRAGMENT_BODIES" \
+            "cad-repair-rebuild-face:CAD_REPAIR_REBUILD_FACE" \
+            "cad-repair-close-wire-gaps:CAD_REPAIR_CLOSE_WIRE_GAPS" \
+            "cad-repair-tolerant-probe:CAD_REPAIR_TOLERANT_PROBE" \
+            "cad-repair-investigator:CAD_REPAIR_INVESTIGATOR" \
+            "cad-repair-auto-accept:CAD_REPAIR_AUTO_ACCEPT" \
+            "cad-repair-budget-attempts:CAD_REPAIR_BUDGET_ATTEMPTS" \
+            "cad-repair-tournament:CAD_REPAIR_TOURNAMENT" \
+            "cad-repair-tournament-k:CAD_REPAIR_TOURNAMENT_K" \
+            "cad-repair-memory:CAD_REPAIR_MEMORY" \
+            "cad-repair-review-objection:CAD_REPAIR_REVIEW_OBJECTION" \
+            "cad-repair-escalate-requires-attempts:CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS" \
+            "cad-repair-mesh-handback:CAD_REPAIR_MESH_HANDBACK" \
+            "cad-repair-standalone-jobs:CAD_REPAIR_STANDALONE_JOBS" \
+            "cad-repair-investigation-trace:CAD_REPAIR_INVESTIGATION_TRACE" \
             "verdict-by-limits:VERDICT_BY_LIMITS" \
             "mesh-progressive-snapshot-enabled:MESH_PROGRESSIVE_SNAPSHOT_ENABLED" \
             "mesh-snappy-ranks:MESH_SNAPPY_RANKS"; do
