@@ -354,7 +354,7 @@ def _gap_op_name() -> str | None:
     return _GAP_OP if _GAP_OP in names else None
 
 
-def _gap_advice() -> str:
+def _gap_advice(*, offered: bool = False) -> str:
     """What to do about a gap wider than the touching margin.
 
     IT DEPENDS ON WHETHER ANYTHING CAN FIX ONE. With a splitting operation in the catalogue a gap
@@ -364,7 +364,10 @@ def _gap_advice() -> str:
     meshing). With no such operation the gap really is the mesher's own tolerance, and
     `mesher_side` is the honest answer.
     """
-    name = _gap_op_name()
+    # `offered`: the prompt's catalogue lists the op regardless of the deployment's consent (the
+    # freed clone renders the whole catalogue), so the advice must name it too, or the prompt
+    # lists an operation while telling the model to give up on the defect it exists for.
+    name = _GAP_OP if offered else _gap_op_name()
     if name:
         return (f"TRY `{name}` THERE: it splits the two faces along their own iso-curves so the "
                 "mesher can fit between them, and it closes nothing and moves no surface. Only "
@@ -407,7 +410,7 @@ def system_prompt(*, prose: str = "", shadow: bool = False,
                  if free else catalogue_text())
     text = template.format(catalogue=catalogue, roster=_roster(shadow))
     if free:
-        text = f"{text}\n{AGGRESSIVE_RULE.format(touching=float(touching_mm), gap_advice=_gap_advice())}"
+        text = f"{text}\n{AGGRESSIVE_RULE.format(touching=float(touching_mm), gap_advice=_gap_advice(offered=True))}"
     return f"{text}\n{prose}" if prose else text
 
 

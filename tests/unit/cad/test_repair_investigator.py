@@ -897,7 +897,7 @@ def test_the_live_prompt_tells_the_model_to_try_things_and_aim_at_the_mesh_failu
     import meshpipeline.settings.cad_repair as settings
 
     def rule(touching: float) -> str:
-        return inv.AGGRESSIVE_RULE.format(touching=touching, gap_advice=inv._gap_advice())
+        return inv.AGGRESSIVE_RULE.format(touching=touching, gap_advice=inv._gap_advice(offered=True))
 
     from meshpipeline.cad.repair.region_loop import _touching_margin_mm
 
@@ -1037,15 +1037,6 @@ def test_the_investigation_is_told_this_part_s_threshold(wired, monkeypatch):
 
 # --- a region may not give up before it has tried anything -------------------------------------
 def _live(monkeypatch):
-
-
-# --- a region with less than its proof reserve left is NEVER ENTERED ---------------------------
-# Wave 5, t19 arm: 417 of 732 regions ended `budget_spent` with ZERO tool calls and ONE model
-# call - a call bought to be told there was no time to act, 57% of the arm's region calls. 416 of
-# the 417 were in files with more than three regions, they started at a median 58% of the run's
-# wall, and only 8 of them (2%) held a gmsh-located defect. So nothing is lost by not entering
-# them, and `budget_spent` is the wrong word: it says a region spent a budget it was never given.
-def _posture_live(monkeypatch):
     import meshpipeline.settings.cad_repair as settings
 
     monkeypatch.setattr(settings, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "live", raising=False)
@@ -1200,6 +1191,19 @@ def test_the_prompt_sends_a_gap_to_the_op_that_splits_it_when_there_is_one(monke
 def test_the_prompt_still_says_mesher_side_when_no_op_can_split_a_gap(monkeypatch):
     """With the op absent - its flag off, or the deployment without it - a gap really is the
     mesher's problem, and the advice has to go back to what it was."""
+
+    monkeypatch.setattr(inv, "_gap_op_name", lambda: None, raising=False)
+
+    # The freed clone (live posture) renders the WHOLE catalogue, so the op is always offered
+    # there; "no op can split a gap" is the deployment's own catalogue, which is what the advice
+    # reads when the prompt does not offer the op.
+    advice = inv._gap_advice()
+
+    assert "resolve_sub_mesh_gap" not in advice
+    assert "mesher_side" in advice
+
+
+def test_the_freed_prompt_names_the_gap_op_it_lists(monkeypatch):
     import meshpipeline.settings.cad_repair as settings
 
     monkeypatch.setattr(settings, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "live", raising=False)
@@ -1207,8 +1211,8 @@ def test_the_prompt_still_says_mesher_side_when_no_op_can_split_a_gap(monkeypatc
 
     prompt = inv.system_prompt()
 
-    assert "resolve_sub_mesh_gap" not in prompt
-    assert "mesher_side" in prompt
+    assert "resolve_sub_mesh_gap" in prompt
+    assert "prefer `mesher_side` over spending turns" not in prompt.lower()
 
 
 def test_the_gap_op_is_named_from_the_active_catalogue():
@@ -1219,6 +1223,18 @@ def test_the_gap_op_is_named_from_the_active_catalogue():
     names = {op.name for op in operations.catalogue()}
     found = inv._gap_op_name()
     assert found is None or found in names
+
+
+# --- a region with less than its proof reserve left is NEVER ENTERED ---------------------------
+# Wave 5, t19 arm: 417 of 732 regions ended `budget_spent` with ZERO tool calls and ONE model
+# call - a call bought to be told there was no time to act, 57% of the arm's region calls. 416 of
+# the 417 were in files with more than three regions, they started at a median 58% of the run's
+# wall, and only 8 of them (2%) held a gmsh-located defect. So nothing is lost by not entering
+# them, and `budget_spent` is the wrong word: it says a region spent a budget it was never given.
+def _posture_live(monkeypatch):
+    import meshpipeline.settings.cad_repair as settings
+
+    monkeypatch.setattr(settings, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "live", raising=False)
 
 
 def test_a_region_under_the_proof_reserve_is_not_entered_at_all(wired, monkeypatch):
