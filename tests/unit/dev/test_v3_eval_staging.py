@@ -500,3 +500,31 @@ def test_write_access_is_checked_on_the_results_bucket_not_the_input_prefix(monk
     launch.live_checks(args, 8)
     buckets = [c[-1] for c in asked if c[:4] == ["gcloud", "storage", "buckets", "get-iam-policy"]]
     assert buckets == [launch.BUCKET]
+
+
+# ------------------------------------------------------------------ lane D: transcripts per shard
+
+def test_collector_gathers_each_shards_transcripts_and_a_per_file_outcome_table(tmp_path):
+    collect = _load("v3_collect_under_test_transcripts", V3 / "collect.py")
+    src, out = tmp_path / "src", tmp_path / "out"
+    why = {"region": 0, "end": "runaway", "why_no_package": "runaway; no edit kept"}
+    d1 = _shard(src, "v3_full", "failing", 1, 2, rows=[
+        {"file": "a.step", "outcome": "repair_refused", "meshes_before": False,
+         "meshes_after": False, "investigator": {"ends": {"runaway": 1}, "outcomes": [why]}}])
+    _shard(src, "v3_full", "failing", 2, 2)  # no transcripts: an arm shard that never asked
+    (d1 / "transcripts.jsonl").write_text(
+        json.dumps({"file": "a.step", "region": 0, "end": "runaway"}) + "\n"
+        + json.dumps({"file": "a.step", "region": 1, "end": "budget_spent"}) + "\n")
+    runs = collect.load_runs(src)
+    out.mkdir()
+    got = collect.gather_transcripts(runs["arms"][("v3_full", "failing")], "v3_full",
+                                     "failing", out)
+    assert got == {"records": 2, "shards_with_transcripts": 1, "files": 2}
+    lines = [json.loads(ln) for ln in
+             (out / "transcripts-v3_full-failing.jsonl").read_text().splitlines()]
+    assert [(ln["file"], ln["shard"]) for ln in lines] == [("a.step", "1/2"), ("a.step", "1/2")]
+    table = json.loads((out / "outcomes-v3_full-failing.json").read_text())
+    by_file = {r["file"]: r for r in table}
+    assert by_file["a.step"]["regions"] == [why]
+    assert by_file["a.step"]["meshes_after"] is False
+    assert by_file["v3_full-failing-2.step"]["regions"] == []

@@ -1110,14 +1110,23 @@ class TranscriptSink:
 
     def __init__(self, path=None) -> None:
         self.records: list[dict] = []
+        #: The file the records now arriving belong to; every line carries it, so a shard's
+        #: transcripts read file by file (lane D). Set by `begin`, which `_repair_row` calls.
+        self.file = ""
         self.path = Path(path) if path else None
         self._handle = None
         if self.path is not None:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             self._handle = self.path.open("w", encoding="utf-8")
 
+    def begin(self, file: str) -> None:
+        """Tag the records that arrive from now on with `file`."""
+        self.file = str(file)
+
     def __call__(self, record: dict) -> dict:
         clean = scrub_record(record)
+        if self.file and "file" not in clean:
+            clean["file"] = self.file
         self.records.append(clean)
         if self._handle is not None:
             self._handle.write(json.dumps(clean, allow_nan=False) + "\n")
@@ -1212,7 +1221,21 @@ def investigator_row(records) -> dict:
             "seconds": round(totals["seconds"], 2),
             "input_tokens": int(totals["input_tokens"]),
             "output_tokens": int(totals["output_tokens"]),
-            "ends": dict(sorted(ends.items()))}
+            "ends": dict(sorted(ends.items())),
+            # ONE ROW PER AUTHOR CALL: how the region ended and why no package, so a shard's
+            # results read file by file and region by region without the transcripts.
+            "outcomes": [_outcome_of(r) for r in records]}
+
+
+def _outcome_of(record: dict) -> dict:
+    from meshpipeline.cad.repair import investigation_trace
+
+    row = investigation_trace.outcome(record)
+    verdict = record.get("verdict")
+    if isinstance(verdict, dict):
+        row["package"] = {"status": str(verdict.get("status") or ""),
+                          "reason": str(verdict.get("reason") or "")}
+    return row
 
 
 def investigator_summary(rows: list[dict]) -> dict:
@@ -1383,6 +1406,8 @@ def _repair_row(path: Path, scratch: Path, *, mode: str = "off", force: bool = F
     # THE OFFSET BEFORE ANYTHING RAN, so the records this file produced can be told from the ones
     # the files before it produced. `sink=None` is today's behaviour exactly: no key, no join.
     transcripts_from = len(sink.records) if sink is not None else 0
+    if sink is not None and callable(getattr(sink, "begin", None)):
+        sink.begin(path.name)
 
     def scored(verdict: dict | None = None) -> dict:
         """The goal columns for this row, and nothing at all when no profile was asked for."""

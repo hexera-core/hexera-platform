@@ -409,3 +409,50 @@ def test_a_real_investigator_record_joins_and_aggregates(kernel, tmp_path):
     assert row["investigator"]["ends"] == {"budget_spent": 1, "concluded": 1, "skipped": 1}
     assert [r["verdict"]["status"] for r in sink.records] == ["reverted", "committed",
                                                                "committed"]
+
+
+# ---------------------------------------------------------------- lane D: file by file
+
+def test_sink_tags_each_line_with_the_file_it_began(tmp_path):
+    out = tmp_path / "t.jsonl"
+    sink = rc.TranscriptSink(out)
+    sink.begin("a.step")
+    sink(_record(index=0))
+    sink.begin("b.step")
+    sink(_record(index=1))
+    sink.close()
+    lines = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+    assert [ln["file"] for ln in lines] == ["a.step", "b.step"]
+
+
+def test_repair_row_begins_the_sink_with_the_file_name(kernel, tmp_path):
+    out = tmp_path / "t.jsonl"
+    sink = rc.TranscriptSink(out)
+    import meshpipeline.cad.repair.conservative as cons
+    _ORIGINAL = cons.repair_step_file
+
+    def repair(source, destination, **kwargs):
+        sink(_producer_record(0, end="runaway"))
+        return _ORIGINAL(source, destination, **kwargs)
+
+    cons.repair_step_file = repair
+    try:
+        rc._repair_row(kernel.part, tmp_path, sink=sink)
+    finally:
+        cons.repair_step_file = _ORIGINAL
+    sink.close()
+    line = json.loads(out.read_text(encoding="utf-8").splitlines()[0])
+    assert line["file"] == "part.step"
+
+
+def test_row_block_carries_one_outcome_per_record_with_its_verdict():
+    joined = [{**_producer_record(0, end="runaway"),
+               "verdict": {"status": "reverted", "reason": "target_remains"}},
+              _producer_record(1, end="budget_spent")]
+    block = rc.investigator_row(joined)
+    outcomes = block["outcomes"]
+    assert [o["region"] for o in outcomes] == [0, 1]
+    assert [o["end"] for o in outcomes] == ["runaway", "budget_spent"]
+    assert outcomes[0]["package"] == {"status": "reverted", "reason": "target_remains"}
+    assert "package" not in outcomes[1]
+    assert "no edit tried" in outcomes[1]["why_no_package"]

@@ -227,6 +227,40 @@ def seal(entry: dict, arm: str, kind: str, checked: dict, out: Path) -> Path:
         hardware_class=f"gce-{first.get('machine_type') or 'unknown'}")
 
 
+def gather_transcripts(entry: dict, arm: str, kind: str, out: Path) -> dict:
+    """The arm's investigator transcripts, file by file. Every shard's `transcripts.jsonl` is
+    concatenated into `transcripts-<arm>-<kind>.jsonl` (each line tagged with its shard), and the
+    rows' per-region outcomes become `outcomes-<arm>-<kind>.json`: one entry per file with how it
+    meshed and, per region, how the investigation ended and why no package. A shard with no
+    transcript (a rules-only arm, or a file nothing investigated) contributes no lines."""
+    records = with_transcripts = 0
+    with (out / f"transcripts-{arm}-{kind}.jsonl").open("w", encoding="utf-8") as sink:
+        for prov in entry["provenances"]:
+            path = Path(prov["_dir"]) / "transcripts.jsonl"
+            if not path.is_file():
+                continue
+            with_transcripts += 1
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue  # a line cut off when a shard died mid-write
+                record["shard"] = prov.get("shard", "")
+                sink.write(json.dumps(record, sort_keys=True, default=str) + "\n")
+                records += 1
+    table = [{"file": r.get("file"), "outcome": r.get("outcome"),
+              "meshes_before": r.get("meshes_before"), "meshes_after": r.get("meshes_after"),
+              "ends": (r.get("investigator") or {}).get("ends", {}),
+              "regions": list((r.get("investigator") or {}).get("outcomes") or [])}
+             for r in entry["rows"]]
+    (out / f"outcomes-{arm}-{kind}.json").write_text(
+        json.dumps(table, indent=1, sort_keys=True, default=str) + "\n")
+    return {"records": records, "shards_with_transcripts": with_transcripts,
+            "files": len(table)}
+
+
 def _fmt(value) -> str:
     if value is None:
         return "n/a"
@@ -512,6 +546,7 @@ def main(argv: list[str] | None = None) -> int:
     for (arm, kind), entry in sorted(runs["arms"].items()):
         sealed = seal(entry, arm, kind, checked, out)
         print(f"sealed {sealed}")
+        print(f"  transcripts {arm}/{kind}: {gather_transcripts(entry, arm, kind, out)}")
     t6_rows = None
     if args.t6:
         t6_dir = Path(tempfile.gettempdir()) / "v3-eval-t6"
