@@ -8,8 +8,11 @@
 #                    cad/repair/session.py (which carries the table forward across an operation).
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import hashlib
 import math
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 
 # WHY AN ENTITY NEEDS A NAME AT ALL.
@@ -54,6 +57,30 @@ MIN_QUANTUM_MM = 1e-7
 GONE = "gone"
 
 
+#: The RUN's naming diagonal, when a repair session is naming (`run_grid`). None outside a run.
+_RUN_DIAGONAL: contextvars.ContextVar[float | None] = contextvars.ContextVar(
+    "repair_run_diagonal", default=None)
+
+
+@contextlib.contextmanager
+def run_grid(diagonal_mm: float | None) -> Iterator[None]:
+    """Name EVERY entity inside this block on the grid of `diagonal_mm` - the upload's.
+
+    The session already hands the upload's diagonal to every scan (`quantum_diagonal_mm`), but the
+    operations name what they create at `_diagonal_of(their input shape)`, which after a kept
+    repair is the CURRENT shape's. Across a power of two those are two grids, so an operation's
+    `added`/`rebuilt` names and the next scan's names for the same faces diverge and an allowed
+    warning on a fresh patch reads as `new_defect`. Pinning the grid here, where every name is
+    rounded, puts operations, scans and the session's own bookkeeping on ONE grid without
+    threading a number through every operation. `None` leaves naming exactly as it was.
+    """
+    token = _RUN_DIAGONAL.set(diagonal_mm if diagonal_mm else None)
+    try:
+        yield
+    finally:
+        _RUN_DIAGONAL.reset(token)
+
+
 def quantum_for(diagonal_mm: float) -> float:
     """The grid an entity's box is rounded onto, scaled to the part.
 
@@ -75,6 +102,10 @@ def quantum_for(diagonal_mm: float) -> float:
     of the part either way - and the honest residual limit is a part whose diagonal straddles a
     power of two, where the grid still moves.
     """
+    pinned = _RUN_DIAGONAL.get()
+    if pinned is not None:
+        # INSIDE A RUN THE GRID IS THE RUN'S (`run_grid`), whatever shape is being named.
+        diagonal_mm = pinned
     if not diagonal_mm or not math.isfinite(diagonal_mm) or diagonal_mm <= 0:
         return MIN_QUANTUM_MM
     _mantissa, exponent = math.frexp(float(diagonal_mm))

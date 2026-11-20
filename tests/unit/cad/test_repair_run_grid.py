@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import meshpipeline.cad.repair.session as session_module
 from meshpipeline.cad.repair.caps import Measure
+from meshpipeline.cad.repair.identity import EntityRef
 from meshpipeline.cad.repair.localize import _diagonal, localize_scan
 from meshpipeline.cad.repair.session import RepairSession
 
@@ -117,3 +118,44 @@ def test_the_session_names_every_scan_in_the_run_at_the_uploads_diagonal(monkeyp
 
     assert seen, "the session never scanned"
     assert [kw.get("quantum_diagonal_mm") for kw in seen] == [upload.diagonal_mm] * len(seen)
+
+
+def test_an_operation_inside_the_session_names_on_the_runs_grid_not_its_own_inputs():
+    """OPERATIONS NAME ON THE RUN'S GRID TOO, not only scans (PR #494 review, session.py:611).
+
+    Every rebuilding operation names what it made at `_diagonal_of(its input shape)` - which after
+    a kept repair is the CURRENT shape's, not the upload's. Across an octave those are two grids,
+    so a patch's `outcome.added` name and the next scan's name for that patch diverge and the
+    scan's allowed warning on it reads as `new_defect`. Here the op runs on a shape whose extent
+    already crossed an octave (as after an earlier kept repair) and names its own faces exactly as
+    the real operations do; inside the session those names must be the scan's names.
+    """
+    from meshpipeline.cad.repair.operations import OpOutcome, _diagonal_of, _face_names
+
+    part = _face(0.0, 0.0, 1.0, 1.0)
+    grown = _grown(part)
+    upload_diagonal = _diagonal(part)
+    assert _diagonal(part) < 2.0 <= 8.0 < _diagonal(grown), "the extents must cross an octave"
+    seen: list[tuple[str, ...]] = []
+
+    class NamesItsOwnFaces:
+        name = "names_its_own_faces"
+        answers = ()
+        whole_shape = False
+
+        def apply(self, shape, targets, *, tolerance_mm):
+            names = _face_names(shape, diagonal_mm=_diagonal_of(shape))
+            seen.append(names)
+            return OpOutcome(shape=shape, added=names)
+
+    upload = Measure(valid=True, solids=0, shells=0, faces=1, edges=4, vertices=4,
+                     diagonal_mm=upload_diagonal, max_tolerance_mm=1e-7,
+                     surface_area_mm2=1.0, volume_mm3=0.0)
+    work = RepairSession(grown, measurer=lambda _s: upload)
+    defect = next(d for d in work.defects())
+    ref = EntityRef(defect.entity_type, defect.fingerprint)
+    work.try_op(NamesItsOwnFaces(), (ref,), defect.code, tolerance_mm=1e-3)
+
+    assert seen, "the operation never ran"
+    assert seen[0] == _face_names(grown, diagonal_mm=upload_diagonal), (
+        "an operation named its faces on its input shape's grid, not the run's")
