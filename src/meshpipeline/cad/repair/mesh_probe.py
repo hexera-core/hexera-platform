@@ -842,13 +842,14 @@ def _clash_gap(faces, mapping: dict[int, int], clash: Clash, *,
         return None
 
 
-#: The face-sizing diagnostic's element sizes on the clashing surfaces, finest of two rules per
-#: attempt, coarsest attempt first: diagonal / DIVISOR (the probe meshes at diagonal / 40, so 5x and
-#: 25x finer), or the smallest measured gap times GAP_FRACTION - a chord must be shorter than the
-#: gap it would otherwise cut across. Floored at diagonal / FACE_SIZING_FLOOR_DIVISOR so one hair-
-#: thin gap cannot ask for a mesh no probe budget could finish.
+#: The face-sizing diagnostic's element sizes on the clashing surfaces, coarsest attempt first:
+#: diagonal / 200 alone (5x the probe's diagonal / 40), then the finer of diagonal / 1000 and the
+#: smallest measured gap times FACE_SIZING_GAP_FRACTION - a chord shorter than the gap it would
+#: otherwise cut across. COARSE FIRST, MEASURED (abc/0051_00519054, gaps 0.01 mm): diagonal / 200
+#: meshed it, while a gap-driven size hit the floor and spent the whole budget. Floored at
+#: diagonal / FACE_SIZING_FLOOR_DIVISOR so one hair-thin gap cannot ask for an unfinishable mesh.
 FACE_SIZING_DIVISORS = (200.0, 1000.0)
-FACE_SIZING_GAP_FRACTIONS = (0.5, 0.2)
+FACE_SIZING_GAP_FRACTION = 0.2
 FACE_SIZING_FLOOR_DIVISOR = 5000.0
 
 #: A clash pair, classified: apart in the B-rep (sizing may answer), touching only along a shared
@@ -925,14 +926,13 @@ def face_sizing(shape, *, diagonal_mm: float, budget_s: float) -> dict:
             gaps = [p["gap_mm"] for p in out["pairs"] if p["gap_mm"] is not None
                     and p["gap_mm"] > tol]
             floor = diagonal / FACE_SIZING_FLOOR_DIVISOR
-            for divisor, fraction in zip(FACE_SIZING_DIVISORS, FACE_SIZING_GAP_FRACTIONS,
-                                         strict=True):
+            for attempt, divisor in enumerate(FACE_SIZING_DIVISORS):
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     return done(meshes=False, reason="budget_spent")
                 size = diagonal / divisor
-                if gaps:
-                    size = min(size, min(gaps) * fraction)
+                if attempt > 0 and gaps:
+                    size = min(size, min(gaps) * FACE_SIZING_GAP_FRACTION)
                 size = max(size, floor)
                 sized = probe_file(path, diagonal_mm=diagonal, budget_s=remaining,
                                    sizing={"surfaces": out["surfaces"], "size": size})

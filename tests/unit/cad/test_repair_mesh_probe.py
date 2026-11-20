@@ -464,7 +464,7 @@ def test_gap_only_clashes_are_retried_with_face_sizing(monkeypatch):
     assert found["surfaces"] == [1, 8]
     assert found["pairs"] == [{"surfaces": [1, 8], "gap_mm": pytest.approx(15.0),
                                "adjacent": False}]
-    # The first size is the finer of diagonal / 200 and half the smallest gap.
+    # The first size is the coarse one: diagonal / 200.
     assert found["size_mm"] == pytest.approx(0.1)
     assert calls[1] == {"surfaces": [1, 8], "size": pytest.approx(0.1)}
 
@@ -524,19 +524,22 @@ def test_faces_that_share_an_edge_are_adjacent_not_intersecting(monkeypatch):
                                  "adjacent": True}
 
 
-def test_the_sizing_is_set_by_the_smallest_gap(monkeypatch):
+def test_the_first_sizing_is_coarse_and_the_second_is_set_by_the_smallest_gap(monkeypatch):
     from meshpipeline.cad.repair.mesh_clash import Clash
 
-    # Face 2 (x=10) and face 7 (x=5) are 5 mm apart; face 1/8 15 mm. Half the smallest is 2.5;
-    # diagonal / 200 on a 2000 mm part is 10, so the gap sets the size.
+    # MEASURED, abc/0051_00519054 (gaps 0.01 mm): diagonal / 200 meshed it, and a gap-driven size
+    # hit the floor and spent the budget. So the coarse size is tried first, the gap's second.
+    # Face 2 (x=10) / face 7 (x=5) are 5 mm apart, face 1/8 15 mm: a fifth of the smallest is 1.0,
+    # finer than diagonal / 1000 = 2 on a 2000 mm part, so the gap sets the second size.
     mesh_probe, shape, calls = _sizing_probe(
         monkeypatch, clashes=(Clash((1, 8), 3, (5.0, 5.0, 5.0), "crossing"),
                               Clash((2, 7), 3, (7.0, 5.0, 5.0), "crossing")),
-        sized_meshes=[True])
+        sized_meshes=[False, True])
 
     found = mesh_probe.face_sizing(shape, diagonal_mm=2000.0, budget_s=60.0)
 
-    assert found["size_mm"] == pytest.approx(2.5)
+    assert [a["size_mm"] for a in found["attempts"]] == [pytest.approx(10.0), pytest.approx(1.0)]
+    assert found["size_mm"] == pytest.approx(1.0)
 
 
 def test_a_clash_defect_says_whether_its_faces_are_adjacent(monkeypatch):
