@@ -54,6 +54,10 @@ FLAGS: dict[str, tuple[str, str]] = {
     # LIVE-ONLY: each reads the exact `live` and nothing else, so it has no shadow meaning.
     "CAD_REPAIR_MEMORY": ("cad-repair-memory", LIVE_POSTURE),
     "CAD_REPAIR_REVIEW_OBJECTION": ("cad-repair-review-objection", LIVE_POSTURE),
+    # The investigator may not escalate a region before it has tried an edit there. A live-only
+    # posture (live/off), inert wherever the investigator is off.
+    "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS": ("cad-repair-escalate-requires-attempts",
+                                              LIVE_POSTURE),
     "CAD_REPAIR_MESH_HANDBACK": ("cad-repair-mesh-handback", LIVE_POSTURE),
     "CAD_REPAIR_STANDALONE_JOBS": ("cad-repair-standalone-jobs", LIVE_POSTURE),
     # DEV DIAGNOSTICS (lane D): the investigation trace - per-turn JSONL beside the job's
@@ -197,7 +201,8 @@ def test_the_postures_the_set_takes_on_each_target(tmp_path):
     shadow_on = {env for env, (_, expr) in FLAGS.items() if _VALUE[expr]("shadow")}
     assert "CAD_REPAIR_TOURNAMENT" in shadow_on
     assert not shadow_on & {"CAD_REPAIR_MEMORY", "CAD_REPAIR_REVIEW_OBJECTION",
-                            "CAD_REPAIR_MESH_HANDBACK", "CAD_REPAIR_STANDALONE_JOBS"}
+                            "CAD_REPAIR_MESH_HANDBACK", "CAD_REPAIR_STANDALONE_JOBS",
+                            "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS"}
     assert not shadow_on & set(VERTEX_MOVING)
     # wherever anything is on, the reviewer is on
     for crs in ("shadow", "live"):
@@ -244,7 +249,8 @@ def test_the_v3_flags_derive_only_from_the_one_switch():
 
 
 V3_RAW_ROWS = ("CAD_REPAIR_TOURNAMENT", "CAD_REPAIR_MEMORY", "CAD_REPAIR_REVIEW_OBJECTION",
-               "CAD_REPAIR_MESH_HANDBACK", "CAD_REPAIR_STANDALONE_JOBS")
+               "CAD_REPAIR_MESH_HANDBACK", "CAD_REPAIR_STANDALONE_JOBS",
+               "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS")
 
 
 @pytest.mark.parametrize("name", V3_RAW_ROWS)

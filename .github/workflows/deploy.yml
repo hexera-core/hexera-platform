@@ -1678,6 +1678,9 @@ jobs:
       # the mesh refusal handed back to repair, and standalone repair jobs.
       CAD_REPAIR_MEMORY: ${{ needs.target.outputs.crs_v3 == 'live' && 'live' || '' }}
       CAD_REPAIR_REVIEW_OBJECTION: ${{ needs.target.outputs.crs_v3 == 'live' && 'live' || '' }}
+      # The investigator may not escalate a region until it has tried an edit there. Live-only,
+      # and inert wherever the investigator is off.
+      CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS: ${{ needs.target.outputs.crs_v3 == 'live' && 'live' || '' }}
       CAD_REPAIR_MESH_HANDBACK: ${{ needs.target.outputs.crs_v3 == 'live' && 'live' || '' }}
       CAD_REPAIR_STANDALONE_JOBS: ${{ needs.target.outputs.crs_v3 == 'live' && 'live' || '' }}
       # Dev diagnostics: the investigation trace (per-turn JSONL + "why no package" table).

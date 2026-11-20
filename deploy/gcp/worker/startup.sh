@@ -100,6 +100,7 @@ for pair in "deployment-id:DEPLOYMENT_ID" \
             "cad-repair-tournament-k:CAD_REPAIR_TOURNAMENT_K" \
             "cad-repair-memory:CAD_REPAIR_MEMORY" \
             "cad-repair-review-objection:CAD_REPAIR_REVIEW_OBJECTION" \
+            "cad-repair-escalate-requires-attempts:CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS" \
             "cad-repair-mesh-handback:CAD_REPAIR_MESH_HANDBACK" \
             "cad-repair-standalone-jobs:CAD_REPAIR_STANDALONE_JOBS" \
             "cad-repair-investigation-trace:CAD_REPAIR_INVESTIGATION_TRACE" \

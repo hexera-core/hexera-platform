@@ -768,6 +768,8 @@ WORKER_METADATA=(
   || WORKER_METADATA+=("cad-repair-memory=${CAD_REPAIR_MEMORY}")
 [ -z "${CAD_REPAIR_REVIEW_OBJECTION:-}" ] \
   || WORKER_METADATA+=("cad-repair-review-objection=${CAD_REPAIR_REVIEW_OBJECTION}")
+[ -z "${CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS:-}" ] \
+  || WORKER_METADATA+=("cad-repair-escalate-requires-attempts=${CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS}")
 [ -z "${CAD_REPAIR_MESH_HANDBACK:-}" ] \
   || WORKER_METADATA+=("cad-repair-mesh-handback=${CAD_REPAIR_MESH_HANDBACK}")
 [ -z "${CAD_REPAIR_STANDALONE_JOBS:-}" ] \
