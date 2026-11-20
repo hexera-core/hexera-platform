@@ -191,3 +191,114 @@ def test_a_dispatcher_that_gives_no_answer_is_unmeasured(monkeypatch):
     monkeypatch.setattr(operations.bounded_child, "run", lambda fn, args, budget_s: None)
 
     assert operations._bounded_common_volume("a", "b") is None
+
+
+# --- row 6: the fuse itself runs in the child, and its history is re-expressed ------------------
+
+
+def _faces():
+    """Two REAL faces. The history is a real `ShapeBuild_ReShape`, which records TopoDS_Shapes
+    and nothing else, so a double cannot stand in for one here."""
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCP.TopAbs import TopAbs_FACE
+
+    from meshpipeline.cad.repair.localize import _indexed
+
+    box = _indexed(BRepPrimAPI_MakeBox(10.0, 10.0, 10.0).Shape(), TopAbs_FACE)
+    return box.FindKey(1), box.FindKey(2)
+
+
+def _fate(monkeypatch, answer):
+    seen: dict = {}
+
+    def _run(fn, args, budget_s):
+        seen.update(fn=fn, args=args, budget_s=budget_s)
+        return answer
+
+    monkeypatch.setattr(operations.bounded_child, "run", _run)
+    return seen
+
+
+def test_the_fuse_runs_in_the_child_and_its_history_is_rebuilt_here(monkeypatch):
+    """ROW 6. `BOPAlgo_Builder` is uninterruptible and ran in the parent. The blocker was never
+    the Boolean: it was the ANSWER. `_general_fuse` returns a `ShapeBuild_ReShape`, which no wire
+    can carry - so the child answers with the facts that history holds (recorded, gone, or the
+    image shape) and the parent builds an equivalent history from them. `mapping_from_context`
+    then reads it exactly as it reads any operation's own context, unchanged."""
+    face, image = _faces()
+    seen = _fate(monkeypatch, {"a": ["owner_piece"], "b": ["partner_piece"],
+                               "a_pieces": 1, "b_pieces": 1,
+                               "fate": [{"state": "image", "image": image}]})
+
+    images, counts, history = operations._fuse_in_child("owner", "partner", (face,),
+                                                        budget_s=9.0)
+
+    assert seen["fn"] is operations._fuse_kernel
+    assert seen["args"] == ("owner", "partner", face)
+    assert images == (("owner_piece",), ("partner_piece",))
+    assert counts == (1, 1)
+    assert history.IsRecorded(face)
+    assert history.Value(face).IsSame(image), "the child's image is what the history now names"
+
+
+def test_a_face_the_fuse_deleted_reads_as_gone(monkeypatch):
+    """`mapping_from_context` reads a recorded-but-null value as the kernel saying the entity is
+    gone, so that is what a deleted face has to come back as."""
+    face, _other = _faces()
+    _fate(monkeypatch, {"a": ["o"], "b": ["p"], "a_pieces": 1, "b_pieces": 0,
+                        "fate": [{"state": "gone"}]})
+
+    _images, _counts, history = operations._fuse_in_child("owner", "partner", (face,), budget_s=9.0)
+
+    assert history.IsRecorded(face)
+    assert history.Value(face).IsNull(), "gone, not merely unrecorded"
+
+
+def test_a_face_the_fuse_never_touched_is_not_recorded(monkeypatch):
+    """Untouched is a third answer, and it is not "gone": `fate_of` calls it unknown and the
+    geometric comparison decides instead."""
+    face, _other = _faces()
+    _fate(monkeypatch, {"a": ["o"], "b": ["p"], "a_pieces": 1, "b_pieces": 0,
+                        "fate": [{"state": "absent"}]})
+
+    _images, _counts, history = operations._fuse_in_child("owner", "partner", (face,), budget_s=9.0)
+
+    assert not history.IsRecorded(face)
+
+
+def test_a_fuse_the_child_could_not_finish_is_no_answer(monkeypatch):
+    """The row 4-6 contract again: the operation DECLINES rather than splice a half-built fuse."""
+    _fate(monkeypatch, None)
+
+    assert operations._fuse_in_child("owner", "partner", (_faces()[0],), budget_s=9.0) is None
+
+
+def test_a_body_the_fuse_left_alone_still_comes_back(monkeypatch):
+    """THE BUG THE NATIVE TIER CAUGHT, as a unit. A small box pressed into a big box's side is
+    not cut, and the shared face is then an object of THAT UNTOUCHED BODY - an identity no process
+    boundary can carry. So the child sends its own copy of both bodies, from the one builder, and
+    the caller splices both; a count of 0 is what says the fuse left that one alone."""
+    _fate(monkeypatch, {"a": ["cut_owner"], "b": ["the child's own partner"],
+                        "a_pieces": 1, "b_pieces": 0, "fate": [{"state": "absent"}]})
+
+    images, counts, _history = operations._fuse_in_child("owner", "partner", (_faces()[0],),
+                                                         budget_s=9.0)
+
+    assert images == (("cut_owner",), ("the child's own partner",))
+    assert counts == (1, 0), "the untouched body is named by its COUNT, not by its absence"
+
+
+def test_an_answer_without_the_piece_counts_is_no_answer(monkeypatch):
+    """The counts are what `nothing_fragmented` and `body_split` are judged on, so an answer
+    missing them is not something to splice."""
+    _fate(monkeypatch, {"a": ["o"], "b": ["p"], "fate": [{"state": "absent"}]})
+
+    assert operations._fuse_in_child("owner", "partner", (_faces()[0],), budget_s=9.0) is None
+
+
+def test_an_answer_that_does_not_cover_the_faces_is_no_answer(monkeypatch):
+    """A short or long fate list means the child and the parent disagree about what was asked."""
+    _fate(monkeypatch, {"a": ["o"], "b": ["p"], "a_pieces": 1, "b_pieces": 1,
+                        "fate": []})
+
+    assert operations._fuse_in_child("owner", "partner", (_faces()[0],), budget_s=9.0) is None

@@ -240,11 +240,11 @@ def touching(monkeypatch):
     monkeypatch.setattr(operations, "_solid_owners", lambda shape, face: ("A",))
     monkeypatch.setattr(operations, "_meeting_partner", lambda shape, body, face: "B")
     monkeypatch.setattr(operations, "_face_owner_sets", lambda shape: [("A",), ("B",)])
-    # THE BOUNDED SEAM. `apply` asks for the common volume through the dispatcher's child now,
-    # so patching the kernel function would patch something it never calls and the operation
-    # would decline `unmeasured` on every one of these fixtures.
+    # THE BOUNDED SEAMS (rows 5 and 6): `apply` asks for the common volume and the fuse through
+    # the dispatcher's child, so patching the kernel functions would patch what it never calls.
     monkeypatch.setattr(operations, "_bounded_common_volume", lambda a, b: 0.0)
-    monkeypatch.setattr(operations, "_general_fuse", lambda a, b, faces: ((("A2",), ("B2",)), "H"))
+    monkeypatch.setattr(operations, "_fuse_in_child",
+                        lambda a, b, faces: ((("A2",), ("B2",)), (1, 1), "H"))
     monkeypatch.setattr(operations, "splice", lambda shape, pairs: ("SPLICED", "CTX"))
     tallies = {"shape": (2, 307, 750.0), "SPLICED": (2, 319, 750.0)}
     monkeypatch.setattr(operations, "_tally", lambda shape: tallies[shape])

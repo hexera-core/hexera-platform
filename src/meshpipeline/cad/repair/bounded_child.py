@@ -60,9 +60,12 @@ KERNELS: dict[str, tuple[str, str]] = {
     "operations.crossing_pairs": ("meshpipeline.cad.repair.operations", "_crossing_pairs"),
     "operations.common_volume": ("meshpipeline.cad.repair.operations", "_common_volume"),
     "operations.face_distances": ("meshpipeline.cad.repair.operations", "_distances_to"),
+    "operations.general_fuse": ("meshpipeline.cad.repair.operations", "_fuse_kernel"),
     "investigator.thickness": ("meshpipeline.cad.repair.investigator_tools", "_thickness_kernel"),
     "investigator.render": ("meshpipeline.cad.repair.investigator_tools", "_render_kernel"),
     "probe.echo": (_MODULE, "_probe_echo"),
+    "probe.wrap": (_MODULE, "_probe_wrap"),
+    "probe.slow_shape": (_MODULE, "_probe_slow_shape"),
     "probe.sleep": (_MODULE, "_probe_sleep"),
     "probe.raise": (_MODULE, "_probe_raise"),
     "probe.die": (_MODULE, "_probe_die"),
@@ -79,31 +82,55 @@ class _NotEncodable(TypeError):
 
 # --- the wire ----------------------------------------------------------------------------------
 
-def _encode(value: Any) -> Any:
+#: A shape in an ANSWER, as a reference into the answer's own BREP compound. Geometry cannot be
+#: JSON, and a kernel that BUILDS geometry - the general fuse's pieces - had no way home at all
+#: while the wire was JSON only. Operands already cross as a compound; answers cross the same way.
+_SHAPE_KEY = "__shape__"
+
+
+def _encode(value: Any, shapes: list | None = None) -> Any:
+    """`value` as JSON. With `shapes`, a shape is appended there and replaced by a reference.
+
+    WITHOUT `shapes` A SHAPE IS STILL REFUSED, which is deliberate: on the ARGUMENT side the
+    operands are collected by `_run_in` and a shape nested somewhere it cannot reach must fail
+    loudly rather than be dropped.
+    """
     if value is None or isinstance(value, (bool, int, str)):
         return value
     if isinstance(value, float):
         return value if math.isfinite(value) else {"__float__": repr(value)}
     if isinstance(value, (bytes, bytearray, memoryview)):
         return {"__b64__": base64.b64encode(bytes(value)).decode("ascii")}
+    if shapes is not None and _is_shape(value):
+        shapes.append(value)
+        return {_SHAPE_KEY: len(shapes) - 1}
     if isinstance(value, (list, tuple)):
-        return [_encode(v) for v in value]
+        return [_encode(v, shapes) for v in value]
     if isinstance(value, dict):
         if not all(isinstance(k, str) for k in value):
             raise _NotEncodable("a dict key that is not a string")
-        return {k: _encode(v) for k, v in value.items()}
+        return {k: _encode(v, shapes) for k, v in value.items()}
     raise _NotEncodable(f"{type(value).__name__} cannot cross to the child as JSON")
 
 
-def _decode(value: Any) -> Any:
+def _decode(value: Any, shapes: list | None = None) -> Any:
+    """The child's JSON back as Python. A shape reference resolves against `shapes`; one that
+    names a shape the answer did not carry RAISES, because a corrupt or truncated answer must
+    read as no answer rather than as some other index's geometry."""
     if isinstance(value, list):
-        return [_decode(v) for v in value]
+        return [_decode(v, shapes) for v in value]
     if isinstance(value, dict):
         if set(value) == {"__b64__"}:
             return base64.b64decode(value["__b64__"])
         if set(value) == {"__float__"}:
             return float(value["__float__"])
-        return {k: _decode(v) for k, v in value.items()}
+        if set(value) == {_SHAPE_KEY}:
+            index = int(value[_SHAPE_KEY])
+            if shapes is None or not 0 <= index < len(shapes):
+                raise _NotEncodable(
+                    f"the answer names shape {index}, which it did not carry")
+            return shapes[index]
+        return {k: _decode(v, shapes) for k, v in value.items()}
     return value
 
 
@@ -263,7 +290,8 @@ def _run_in(tmp: Path, key: str, args: tuple, deadline: float, budget: float) ->
     if not answer.get("ok"):
         logger.info("bounded kernel %s raised (%s)", key, answer.get("error"))
         return None
-    return _decode(answer.get("value"))
+    carried = _read_operands(tmp / str(answer["shapes"])) if answer.get("shapes") else []
+    return _decode(answer.get("value"), carried)
 
 
 # --- the child ---------------------------------------------------------------------------------
@@ -295,7 +323,16 @@ def _child_main(argv: list[str]) -> int:
         args = [shapes[int(a["shape"])] if "shape" in a else _decode(a["value"])
                 for a in job.get("args") or []]
         value = fn(*args)
-        _write_result(result, {"ok": True, "value": _encode(value)})
+        built: list = []
+        encoded = _encode(value, built)
+        answer: dict = {"ok": True, "value": encoded}
+        if built:
+            # THE GEOMETRY FIRST, THE ANSWER SECOND. `_write_result` renames the JSON into place,
+            # so a child killed while writing the compound leaves no result at all - never a
+            # result whose shapes are missing or half-written.
+            _write_operands(built, job_path.parent / "answer.brep")
+            answer["shapes"] = "answer.brep"
+        _write_result(result, answer)
         return 0
     except Exception as exc:  # noqa: BLE001 - reported to the parent, never raised past here
         _write_result(result, {"ok": False, "error": f"{type(exc).__name__}: {exc}"})
@@ -311,6 +348,19 @@ def _probe_echo(*args):
 def _probe_sleep(seconds: float):
     time.sleep(float(seconds))
     return "woke"
+
+
+def _probe_wrap(shape):
+    """An answer with shapes NESTED in it, which is the shape of the fuse's own answer."""
+    return {"piece": shape, "faces": 6, "both": (shape, shape)}
+
+
+def _probe_slow_shape(seconds: float):
+    """Slow, and only then answers with geometry: the window a kill has to land in."""
+    time.sleep(float(seconds))
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+
+    return BRepPrimAPI_MakeBox(1.0, 1.0, 1.0).Shape()
 
 
 def _probe_raise():

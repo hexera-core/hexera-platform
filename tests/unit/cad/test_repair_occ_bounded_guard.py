@@ -151,10 +151,16 @@ KNOWN_UNBOUNDED = {
     ("mesh_probe.py", "_clash_gap", "BRepExtrema_DistShapeShape"),
     # --- rows 4-6: inside fragment_bodies.apply ------------------------------------------------
     # On expiry the OPERATION must DECLINE, which is a different contract from reporting an
-    # unmeasured value, so these are their own change. Rows 4 and 5 are done: the partner search
-    # measures in `_distances_to` inside the dispatcher's child, and `apply` asks for the common
-    # volume through it - which is why `_meeting_partner` is no longer named here and
-    # `_common_volume` is listed only as the child-side function it now is.
+    # unmeasured value, so these were their own change. ALL THREE ARE NOW DONE: the partner search
+    # measures in `_distances_to`, `apply` asks for the common volume through the dispatcher, and
+    # the fuse runs as `_fuse_kernel` - which is why `_meeting_partner` is no longer named here at
+    # all, its call having moved into a new function.
+    #
+    # THE TWO BELOW STAY, and are no longer a debt. They are the CHILD-SIDE functions themselves:
+    # the call still exists, so the shrink-only test keeps the entry honest, and
+    # `test_no_new_uninterruptible_kernel_call_is_added` already excludes them because the
+    # dispatcher's registry reaches them. On a branch WITHOUT the dispatcher the same two rows are
+    # the truth about an in-parent call, which is why they are written once and not per branch.
     ("operations.py", "_common_volume", "BRepAlgoAPI_Common"),
     ("operations.py", "_general_fuse", "BOPAlgo_Builder"),
     # --- found by THIS GUARD, not by the manual audit -----------------------------------------
