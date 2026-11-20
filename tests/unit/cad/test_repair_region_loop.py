@@ -3,6 +3,8 @@
 #                 whole-shape scan after the merge deciding the run's verdict.
 from __future__ import annotations
 
+import pytest
+
 from meshpipeline.cad.repair.caps import Measure
 from meshpipeline.cad.repair.contracts import DefectCode, DefectSeverity
 from meshpipeline.cad.repair.identity import EntityRef
@@ -1213,3 +1215,51 @@ def test_an_unlocated_mesh_defect_does_not_promote_a_region(monkeypatch):
                _any_defect("", code=DefectCode.mesh_edge_through_face))
 
     assert _order(regions, defects, "live", monkeypatch) == [0, 1]
+
+
+# --- a REAL intersection outranks everything (lane G's clash fields) ---------------------------
+# Of the clash-located pairs, only the ones genuinely meeting (clash_gap_mm == 0) are something an
+# operation can heal; a sub-element GAP is the mesher's own tolerance problem. Lane G's contract:
+# the key is PRESENT only on a clash-located defect, is None when unmeasured, and absent
+# everywhere else - so absent or None must never promote a region.
+
+_ABSENT = object()
+
+
+def _clash(fingerprint: str, gap, *, located_by="surface-mesh-clash") -> EntityDefect:
+    measurements = {"located_by": located_by}
+    if gap is not _ABSENT:
+        measurements["clash_gap_mm"] = gap
+    return EntityDefect(code=DefectCode.mesh_overlapping_facets, severity=DefectSeverity.error,
+                        entity_type="face", entity_index=1, message="",
+                        fingerprint=fingerprint, measurements=measurements)
+
+
+def test_a_real_intersection_is_walked_before_any_other_mesh_region(monkeypatch):
+    regions = _mesh_regions("face:gap", "face:touching", "edge:warn")
+    defects = (_clash("face:gap", 0.004), _clash("face:touching", 0.0),
+               _any_defect("edge:warn", severity=DefectSeverity.fatal))
+
+    # The real intersection first, then the gap clash (still mesh-located), then the warning.
+    assert _order(regions, defects, "live", monkeypatch) == [1, 0, 2]
+
+
+@pytest.mark.parametrize("gap", [_ABSENT, None], ids=["absent", "unmeasured"])
+def test_an_unmeasured_gap_never_promotes_a_region(monkeypatch, gap):
+    """THE SILENT FAILURE THIS GUARDS. Reading the key with a default of 0 would make every
+    region a "real intersection", which is the same as no ordering at all and invisible in the
+    numbers."""
+    regions = _mesh_regions("face:unknown", "face:touching")
+    defects = (_clash("face:unknown", gap), _clash("face:touching", 0.0))
+
+    assert _order(regions, defects, "live", monkeypatch) == [1, 0]
+
+
+def test_a_zero_gap_only_counts_on_a_clash_located_defect(monkeypatch):
+    """Belt and braces, as lane G asked: a 0.0 that did not come from the clash search is not a
+    measured intersection."""
+    regions = _mesh_regions("face:other", "face:touching")
+    defects = (_clash("face:other", 0.0, located_by="contact-pair"),
+               _clash("face:touching", 0.0))
+
+    assert _order(regions, defects, "live", monkeypatch) == [1, 0]

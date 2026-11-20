@@ -56,6 +56,12 @@ BUDGETS: dict[str, InvestigationBudget] = {
 #: cannot spend its successors' clock or the proof reserve.
 CLONE_FREEDOM_TURNS = 4
 
+#: Added to a tier's TOOL CALLS on top of `CLONE_FREEDOM_TURNS`, because the freed clone changed
+#: what the limit means. Wave 3: edits tried went 303 -> 703 and "the region's tool calls are
+#: spent" went from 3 regions to 22, so the cap - not the model - is now what ends an
+#: investigation. Model calls do not get this: a turn that spends a tool call is the cheap half.
+CLONE_FREEDOM_TOOL_CALLS = 8
+
 
 def budget_for(tier: object) -> InvestigationBudget:
     """The budget for a tier. FAILS CLOSED: `grind.UNKNOWN`, an unrecognised name, a non-string
@@ -77,7 +83,8 @@ def _clone_freedom() -> bool:
 def _with_more_turns(budget: InvestigationBudget) -> InvestigationBudget:
     """`budget` with more TURNS and the same wall: a policy that asks for many attempts has to pay
     for the calls they cost, and the wall is the clock everyone else shares."""
-    return replace(budget, tool_calls=budget.tool_calls + CLONE_FREEDOM_TURNS,
+    return replace(budget,
+                   tool_calls=budget.tool_calls + CLONE_FREEDOM_TURNS + CLONE_FREEDOM_TOOL_CALLS,
                    model_calls=budget.model_calls + CLONE_FREEDOM_TURNS)
 
 

@@ -904,13 +904,65 @@ def test_the_live_prompt_tells_the_model_to_try_things_and_aim_at_the_mesh_failu
     assert inv.AGGRESSIVE_RULE not in inv.system_prompt(shadow=True)
 
 
-def test_an_escalate_sent_anyway_is_still_handled(wired, monkeypatch):
-    """NOT OFFERED, STILL HANDLED: a model that sends the form from memory gets its conclusion
-    recorded rather than a refusal loop, and the type stays in `_CONCLUSIONS`."""
+def test_the_escalate_type_survives_internally(monkeypatch):
+    """SUPERSEDED BY THE OWNER'S POLICY, and kept as the record of what replaced it: taking the
+    form out of the schema was not enough, because 379 regions on wave 3 sent it from memory and
+    were accepted. It is now REFUSED under the live posture (see
+    `test_an_escalate_is_refused_under_the_live_posture_and_the_region_continues`), while the type
+    itself stays - the shadow posture and a flag-off run still conclude with it."""
+    assert "escalate" in inv._CONCLUSIONS
+
+
+def test_an_escalate_is_refused_under_the_live_posture_and_the_region_continues(wired,
+                                                                               monkeypatch):
+    """Measured on wave 3: 379 regions still concluded `escalate`, sending the form from memory
+    after it left the schema, and the driver accepted it. Under the owner's policy a per-region
+    escalation is not a conclusion at all - it is refused like any invalid one, it costs the turn,
+    and the region goes on working."""
     import meshpipeline.settings.cad_repair as settings
 
     monkeypatch.setattr(settings, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "live", raising=False)
-    author, _, _, _ = wired(native("conclude", escalate={"reason": "a person is needed"}),
+    clone = FakeScratch()
+    clone.kept_log.extend(KEPT)
+    author, model, _, _ = wired(native("conclude", escalate={"reason": "a person is needed"}),
+                                native("look"),
+                                native("conclude", package=package_body()),
+                                scratch=clone, budget=Budget(tool_calls=9, model_calls=9))
+
+    package = author(REGION, DEFECTS, ())
+
+    assert isinstance(package, TargetPackage), "the region should have gone on to its package"
+    record = author.investigations[-1]
+    refused = [t for t in record["turns"] if t["tool"] == "conclude" and t["ok"] is False]
+    assert refused and "escalate" in refused[0]["error"]
+    assert record["conclusion"]["form"] == "package"
+    assert author.escalations == [], "nothing may reach the escalation queue per region"
+
+
+def test_an_escalate_is_still_a_conclusion_with_the_posture_off(wired, monkeypatch):
+    import meshpipeline.settings.cad_repair as settings
+
+    monkeypatch.setattr(settings, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "off", raising=False)
+    author, _, _, _ = wired(native("conclude", escalate={"reason": "needs a person"}),
                             budget=Budget(tool_calls=9, model_calls=9))
+
     assert author(REGION, DEFECTS, ()) is None
     assert author.investigations[-1]["conclusion"]["form"] == "escalate"
+    assert author.escalations == [{"region": 0, "reason": "needs a person"}]
+
+
+def test_the_live_prompt_names_the_clash_fields_and_what_to_do_with_them(monkeypatch):
+    """Lane G measures which pairs genuinely meet. The model has to know what the two cases mean:
+    a measured 0 gap is something heal_self_intersections or rebuild_face can answer, and a
+    sub-element gap is the mesher's tolerance against geometry that never touches - a
+    `mesher_side` candidate, not somewhere to spend the budget."""
+    import meshpipeline.settings.cad_repair as settings
+
+    monkeypatch.setattr(settings, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "live", raising=False)
+    prompt = inv.system_prompt()
+
+    assert "clash_gap_mm" in prompt
+    assert "heal_self_intersections" in prompt and "rebuild_face" in prompt
+    assert "mesher_side" in prompt
+    monkeypatch.setattr(settings, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "off", raising=False)
+    assert "clash_gap_mm" not in inv.system_prompt()
