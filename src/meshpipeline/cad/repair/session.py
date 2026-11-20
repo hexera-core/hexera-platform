@@ -525,11 +525,19 @@ class RepairSession:
                  clock: Callable[[], float] = time.monotonic,
                  original: Measure | None = None, defects: tuple | None = None,
                  is_scratch: bool = False,
-                 auto_accept_mm: float | None = None) -> None:
+                 auto_accept_mm: float | None = None,
+                 standing_mesh: frozenset = frozenset()) -> None:
         #: Defect codes per-defect review holds for a PERSON, as the planner has them. The planner
         #: will not aim at a held entity; this is the other half - an operation that removes one
         #: without aiming at it (a whole-shape sweep) is rolled back below.
         self._reserved = frozenset(reserved)
+        #: THE WHOLE PART'S MESH FAILURES WHEN THIS SESSION OPENED (codes), for a session seeded
+        #: with less than the whole list - a scratch clone opened over ONE REGION's defects
+        #: (`investigator_tools.Scratch`). Its own list then holds no unlocated `mesh_other`, so
+        #: `_mesh_cure` could never see that the part failed and would roll back an edit that made
+        #: the delivered part mesh (Greptile PRRT_kwDOUFq_Ps656SQJ). Evidence only: nothing is
+        #: targetable through it, and the cure still needs its own whole-shape delivered proof.
+        self._standing_mesh = frozenset(str(c) for c in standing_mesh)
         self._measure = measurer
         # AN INJECTED SCANNER IS CALLED AS IT ALWAYS WAS, `scanner(shape)`, and is never told
         # about the face scan: that budget is the default scanner's business. What it returns in
@@ -607,7 +615,8 @@ class RepairSession:
                 reserved: frozenset = frozenset(),
                 remaining_s: Callable[[], float] | None = None,
                 clock: Callable[[], float] = time.monotonic,
-                measurer=_measure, scanner=None) -> RepairSession:
+                measurer=_measure, scanner=None,
+                standing_mesh: frozenset = frozenset()) -> RepairSession:
         """A session over a THROWAWAY SHAPE, for rehearsing edits that must never ship.
 
         It is the real session - the same `try_op`, the same snapshot, the same caps, the same
@@ -630,7 +639,7 @@ class RepairSession:
         """
         return cls(shape, measurer=measurer, scanner=scanner, remaining_s=remaining_s,
                    reserved=reserved, clock=clock, original=original, defects=tuple(defects),
-                   is_scratch=True)
+                   is_scratch=True, standing_mesh=standing_mesh)
 
     def _default_scan(self, shape, *, face_scan: bool = True, within: Region | None = None,
                       final: bool = False):
@@ -784,8 +793,10 @@ class RepairSession:
         """
         if rcfg.CAD_REPAIR_MESH_PROBE != "live" or self._injected:
             return ()
+        no_answer = {c.value for c in mesh_probe.NO_ANSWER_CODES}
         failures = sorted({d.code.value for d in whole_before
-                           if _is_mesh(d) and d.code not in mesh_probe.NO_ANSWER_CODES})
+                           if _is_mesh(d) and d.code not in mesh_probe.NO_ANSWER_CODES}
+                          | {c for c in self._standing_mesh if c not in no_answer})
         if not failures:
             return ()
         if within is None and any(_is_mesh(d) and d.code not in mesh_probe.NO_ANSWER_CODES
@@ -812,8 +823,14 @@ class RepairSession:
             budget = min(budget, float(cap_s))
         if not (remaining > 0.0 and budget > 0.0):
             return False
+        exported = self.clock()
         delivered = _as_delivered(self.shape)
         if delivered is None:
+            return False
+        # THE ROUND-TRIP IS PAID OUT OF THE SAME BUDGET (Greptile PRRT_kwDOUFq_Ps656SQR): the probe
+        # gets what is left after the export, never the whole allowance again.
+        budget -= self.clock() - exported
+        if not budget > 0.0:
             return False
         self._mesh_probed = True
         probed = tuple(mesh_probe.mesh_defects(delivered, diagonal_mm=self.original.diagonal_mm,
@@ -1410,7 +1427,11 @@ class RepairSession:
         unmet: frozenset[str] = frozenset()
         cured = frozenset(name for v in verdicts if v.kept and v.delta.get("mesh_cured")
                           for name in v.targets) & frozenset(predicate.cleared)
-        if cured and self._meshes_now(cap_s=package.budget.timeout_s - spent):
+        # THE PACKAGE'S CLOCK IS RE-READ for this proof (Greptile PRRT_kwDOUFq_Ps656SQR): `spent`
+        # was taken before the region scan and the final measure, so it would grant time those
+        # already used.
+        if cured and self._meshes_now(
+                cap_s=package.budget.timeout_s - (self.clock() - started)):
             # A CLAIM TO HAVE CLEARED A TARGET WHOSE OPERATION CURED THE PART (`_mesh_cure`) is
             # held to the defect, not the finding: re-proved HERE by a whole-shape probe of the
             # package's own result, since a later operation of the plan could have undone it.

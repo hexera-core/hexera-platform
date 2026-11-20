@@ -352,3 +352,155 @@ def test_an_operation_that_changed_nothing_is_never_cured(monkeypatch):
     verdict = session.try_op(_Same(), _Same().targets_for(target), target.code,
                              tolerance_mm=0.01, within=_REGION)
     assert not verdict.kept and verdict.reason == "target_remains"
+
+
+# THE INVESTIGATOR'S CLONE SEES THE WHOLE PART'S MESH FAILURE (Greptile PRRT_kwDOUFq_Ps656SQJ).
+# A scratch clone is seeded with ONE REGION's defects - here only the short edge - so the part's
+# unlocated "Two facets intersect" is not on its list. Without the standing codes the cure cannot
+# see that the part failed, and the edit that makes it mesh is rolled back.
+
+
+def _clone(monkeypatch, standing=frozenset()):
+    from meshpipeline.cad.repair import investigator_tools
+
+    monkeypatch.setattr(investigator_tools, "_clone", lambda shape: shape)
+    _seq(monkeypatch, session_mod, "_localize_scan", [((_SHORT,), True)])
+    probes = _seq(monkeypatch, mesh_probe, "mesh_defects", [()])
+    scratch = investigator_tools.Scratch.of("shape", original=MEASURE, defects=(_SHORT,),
+                                            measurer=lambda s: MEASURE, standing_mesh=standing)
+    return scratch, probes
+
+
+def test_a_region_clone_with_the_parts_standing_failure_keeps_a_cure(monkeypatch):
+    scratch, probes = _clone(monkeypatch, frozenset({"mesh_other"}))
+    op = _FixEdges()
+    verdict = scratch.session.try_op(op, op.targets_for(_SHORT), _SHORT.code, tolerance_mm=0.01,
+                                     within=_REGION)
+    assert verdict.kept and verdict.reason == session_mod.MESHES_AFTER_TARGET_REMAINS
+    assert verdict.delta["mesh_cured"] == ["mesh_other"]
+    assert probes[-1] is None   # proved on the whole delivered shape
+
+
+def test_a_region_clone_without_it_still_rolls_back(monkeypatch):
+    scratch, _ = _clone(monkeypatch)
+    op = _FixEdges()
+    verdict = scratch.session.try_op(op, op.targets_for(_SHORT), _SHORT.code, tolerance_mm=0.01,
+                                     within=_REGION)
+    assert not verdict.kept and verdict.reason == "target_remains"
+
+
+def test_a_standing_no_answer_is_not_a_failure(monkeypatch):
+    scratch, _ = _clone(monkeypatch, frozenset({"mesh_timeout"}))
+    op = _FixEdges()
+    verdict = scratch.session.try_op(op, op.targets_for(_SHORT), _SHORT.code, tolerance_mm=0.01,
+                                     within=_REGION)
+    assert not verdict.kept
+
+
+def test_a_reset_clone_keeps_the_standing_failure(monkeypatch):
+    scratch, _ = _clone(monkeypatch, frozenset({"mesh_other"}))
+    scratch.reset()
+    assert scratch.session._standing_mesh == frozenset({"mesh_other"})
+
+
+def test_the_region_loop_tells_the_author_the_parts_mesh_failures(monkeypatch):
+    from meshpipeline.cad.repair import region_loop
+
+    told: list = []
+
+    class _Author:
+        def observe_mesh(self, codes):
+            told.append(codes)
+
+    region_loop._observe_shape(_Author(), "shape", None, (_SHORT, _FACETS, _TIMEOUT))
+    assert told == [frozenset({"mesh_other"})]
+
+
+def test_the_investigator_hands_its_clone_the_standing_failure():
+    from meshpipeline.cad.repair import investigator
+
+    seen: dict = {}
+
+    def factory(shape, **kwargs):
+        seen.update(kwargs)
+        return "clone"
+
+    assert investigator._scratch_of(factory, "shape", original=MEASURE, defects=(_SHORT,),
+                                    reserved=frozenset(), remaining_s=lambda: 10.0,
+                                    clock=lambda: 0.0, tolerance_mm=0.01,
+                                    standing_mesh=frozenset({"mesh_other"})) == "clone"
+    assert seen["standing_mesh"] == frozenset({"mesh_other"})
+
+
+# THE CURE PROOF SPENDS ONLY WHAT IS LEFT (Greptile PRRT_kwDOUFq_Ps656SQR): the package's proof
+# re-reads the clock after the region scan, and the STEP round-trip comes out of the probe's budget.
+
+
+class _Clock:
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self):
+        return self.now
+
+
+def _timed(monkeypatch, clock, *, apply_s=0.0, scan_s=0.0, export_s=0.0):
+    budgets: list = []
+
+    def scan(shape, **kw):
+        if scans:
+            clock.now += scan_s
+        scans.append(kw.get("within"))
+        return (_SHORT,), True
+    scans: list = []
+    monkeypatch.setattr(session_mod, "_localize_scan", scan)
+
+    def probe(shape, **kw):
+        budgets.append((kw.get("within"), kw.get("budget_s")))
+        return (_FACETS,) if len(budgets) == 1 else ()
+    monkeypatch.setattr(mesh_probe, "mesh_defects", probe)
+
+    def export(shape):
+        clock.now += export_s
+        return shape
+    monkeypatch.setattr(session_mod, "_as_delivered", export)
+
+    class _Slow(_FixEdges):
+        def apply(self, shape, targets, *, tolerance_mm):
+            clock.now += apply_s
+            return OpOutcome(shape="fixed")
+    return _Slow(), budgets
+
+
+def test_the_round_trip_is_paid_out_of_the_probes_budget(monkeypatch):
+    clock = _Clock()
+    op, budgets = _timed(monkeypatch, clock, export_s=3.0)
+    session = RepairSession("shape", measurer=lambda s: MEASURE, clock=clock,
+                            remaining_s=lambda: 100.0)
+    target = session.defects()[0]
+    assert session.try_op(op, op.targets_for(target), target.code, tolerance_mm=0.01,
+                          within=_REGION).kept
+    whole = [b for within, b in budgets if within is None][-1]
+    assert whole == pytest.approx(session_mod.mesh_probe_budget_s(100.0) - 3.0)
+
+
+def test_the_package_proof_rereads_the_clock_after_the_region_scan(monkeypatch):
+    # 60 s package: the op spends 40 and its rescan 15 (55 spent, 5 left) - then the package's
+    # region scan another 15. Nothing is left, so the package's cure proof must not run at all;
+    # read off the stale 55 it would have been granted 5 s. The export is free here, so only the
+    # clock re-read can stop it.
+    clock = _Clock()
+    op, budgets = _timed(monkeypatch, clock, apply_s=40.0, scan_s=15.0, export_s=0.0)
+    session = RepairSession("shape", measurer=lambda s: MEASURE, clock=clock)
+    session.defects()
+    package = _package(op, _SHORT, {"edge:short"})
+    package = TargetPackage(region=package.region, intent=package.intent, plan=package.plan,
+                            predicate=package.predicate,
+                            budget=PackageBudget(max_ops=1, timeout_s=60.0, model_calls=0,
+                                                 deviation_mm=0.0))
+    verdict = session.try_package(package)
+    whole_probes = [b for within, b in budgets if within is None]
+    # the first scan's probe, and the op's own cure proof - and NOT a package-level one
+    assert len(whole_probes) == 2, budgets
+    assert verdict.status != session_mod.COMMITTED
+    assert session.shape == "shape"

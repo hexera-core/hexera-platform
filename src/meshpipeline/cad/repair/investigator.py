@@ -485,7 +485,8 @@ def _tier_of(defects: tuple, original: Measure) -> str:
 
 
 def _scratch_of(factory, shape, *, original: Measure, defects: tuple, reserved: frozenset,
-                remaining_s, clock, tolerance_mm: float, accounting=None):
+                remaining_s, clock, tolerance_mm: float, accounting=None,
+                standing_mesh: frozenset = frozenset()):
     """A scratch clone of the SESSION'S CURRENT SHAPE, or None when this deployment has none.
 
     `accounting` is the REAL session's accumulated declarations, passed only when the region loop
@@ -505,6 +506,11 @@ def _scratch_of(factory, shape, *, original: Measure, defects: tuple, reserved: 
         def factory(source, *, tolerance_mm: float = 0.0, **kwargs):  # noqa: ARG001
             return investigator_tools.Scratch.of(source, **kwargs)
     extra = {} if accounting is None else {"accounting": accounting}
+    if standing_mesh:
+        # THE WHOLE PART'S MESH FAILURES (`observe_mesh`): the clone is seeded with this region's
+        # defects only, so without them it cannot see that the part failed gmsh, and an edit
+        # that made the delivered part mesh is rolled back `target_remains`.
+        extra["standing_mesh"] = frozenset(standing_mesh)
     try:
         return factory(shape, original=original, defects=tuple(defects), reserved=reserved,
                        remaining_s=remaining_s, clock=clock, tolerance_mm=float(tolerance_mm),
@@ -732,7 +738,8 @@ def investigator(shape, *, original: Measure, reserved: frozenset = frozenset(),
     escalations: list[dict] = []
     refusals: list[dict] = []
     live: dict[int, _Investigation] = {}
-    state: dict = {"part_rims": frozenset(), "shape": shape, "calls": 0, "accounting": None}
+    state: dict = {"part_rims": frozenset(), "shape": shape, "calls": 0, "accounting": None,
+                   "part_mesh": frozenset()}
     held_codes = frozenset(reserved)
     if policy is not None:
         timing: Policy = policy
@@ -748,6 +755,10 @@ def investigator(shape, *, original: Measure, reserved: frozenset = frozenset(),
 
     def observe_shape(current) -> None:
         state["shape"] = current
+
+    def observe_mesh(codes) -> None:
+        # THE WHOLE PART'S CURRENT MESH FAILURES (region_loop._observe_shape), for the clone.
+        state["part_mesh"] = frozenset(str(c) for c in codes)
 
     def observe_accounting(current) -> None:
         # THE REAL SESSION'S DECLARATIONS, so the next scratch clone of the partly repaired shape
@@ -858,7 +869,8 @@ def investigator(shape, *, original: Measure, reserved: frozenset = frozenset(),
             scratch_factory, state["shape"], original=original,
             defects=tuple(defects), reserved=held_codes,
             remaining_s=lambda: max(0.0, wall), clock=clock,
-            tolerance_mm=tolerance_mm, accounting=state["accounting"])
+            tolerance_mm=tolerance_mm, accounting=state["accounting"],
+            standing_mesh=state["part_mesh"])
         if attempts and scratch is not None:
             # REBUILT FROM THE SESSION'S CURRENT SHAPE: the edits of a reverted package are gone,
             # and the clone the model edits must be what the session actually holds now.
@@ -1067,6 +1079,7 @@ def investigator(shape, *, original: Measure, reserved: frozenset = frozenset(),
     author.observe_part = observe_part  # type: ignore[attr-defined]
     author.observe_shape = observe_shape  # type: ignore[attr-defined]
     author.observe_accounting = observe_accounting  # type: ignore[attr-defined]
+    author.observe_mesh = observe_mesh  # type: ignore[attr-defined]
     author.report = report  # type: ignore[attr-defined]
     author.label = LABEL  # type: ignore[attr-defined]
     author.clock = timing  # type: ignore[attr-defined]

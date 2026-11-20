@@ -531,7 +531,7 @@ def _plain_item(item: dict) -> dict:
             "defect_code": getattr(code, "value", code)}
 
 
-def _observe_shape(author: Author, shape, accounting=None) -> None:
+def _observe_shape(author: Author, shape, accounting=None, part_defects=None) -> None:
     """Tell the author the session's CURRENT shape before it is asked (final review M1).
 
     Read off the callable and optional, like `_observe_part`. An author that reads faces by index
@@ -549,6 +549,17 @@ def _observe_shape(author: Author, shape, accounting=None) -> None:
     seen = getattr(author, "observe_accounting", None)
     if seen is not None and accounting is not None:
         seen(accounting)
+    # AND THE WHOLE PART'S MESH FAILURES, as codes: an author whose clone is seeded with one
+    # region's defects cannot otherwise see that the part fails gmsh, and so cannot keep an edit
+    # whose delivered part newly meshes (session._mesh_cure; Greptile PRRT_kwDOUFq_Ps656SQJ).
+    # Read off the session's cached whole list - no scan is paid for it.
+    told = getattr(author, "observe_mesh", None)
+    if told is not None and part_defects is not None:
+        from meshpipeline.cad.repair import mesh_probe as _mesh_probe
+
+        told(frozenset(d.code.value for d in part_defects
+                       if str(getattr(d.code, "value", d.code)).startswith("mesh_")
+                       and d.code not in _mesh_probe.NO_ANSWER_CODES))
 
 
 def run_regions(shape, *, author: Author, tolerance_mm: float,
@@ -754,7 +765,8 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
                 # locus needs and what the baseline got for free from its whole-shape walk.
                 break
 
-            _observe_shape(author, work.shape, getattr(work, "accounting", None))
+            _observe_shape(author, work.shape, getattr(work, "accounting", None),
+                           work.defects())
             package = author(region, mine, tuple(tried))
             if package is None:
                 # NOT A FAILURE AND NOT AN ESCALATION. The author has nothing further to propose,

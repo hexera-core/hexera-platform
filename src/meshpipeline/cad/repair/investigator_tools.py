@@ -776,7 +776,7 @@ class Scratch:
 
     def __init__(self, source, session: RepairSession, *, original: Measure, defects: tuple,
                  reserved: frozenset, remaining_s, clock, measurer, scanner,
-                 accounting=None) -> None:
+                 accounting=None, standing_mesh: frozenset = frozenset()) -> None:
         #: THE SESSION'S SHAPE, HELD ONLY TO COPY IT AGAIN on `reset`. Nothing applies an
         #: operation to it: it is never passed to `try_op`, and it is not the session's shape.
         self._source = source
@@ -792,12 +792,16 @@ class Scratch:
         #: The REAL session's declarations when the clone was opened, kept so `reset` starts the
         #: rebuilt session from the same allowance rather than from an empty one.
         self.seed_accounting = accounting
+        #: The WHOLE part's standing mesh-failure codes, kept so `reset` reopens with them too
+        #: (`RepairSession(standing_mesh=...)`): this clone is seeded with one region's defects.
+        self.seed_standing_mesh = frozenset(standing_mesh)
         self.edits: list[EditRecord] = []
 
     @classmethod
     def of(cls, session_shape, *, original: Measure, defects: tuple,
            reserved: frozenset = frozenset(), remaining_s=None, clock=time.monotonic,
-           measurer=None, scanner=None, accounting=None) -> Scratch:
+           measurer=None, scanner=None, accounting=None,
+           standing_mesh: frozenset = frozenset()) -> Scratch:
         """A scratch clone of `session_shape`, ready to be edited and unable to commit.
 
         `original` is the UPLOAD's measure and `defects` the session's current list; neither the
@@ -814,23 +818,28 @@ class Scratch:
         """
         return cls._built(session_shape, original=original, defects=tuple(defects),
                           reserved=frozenset(reserved), remaining_s=remaining_s, clock=clock,
-                          measurer=measurer, scanner=scanner, accounting=accounting)
+                          measurer=measurer, scanner=scanner, accounting=accounting,
+                          standing_mesh=frozenset(standing_mesh))
 
     @classmethod
     def _built(cls, source, *, original, defects, reserved, remaining_s, clock, measurer,
-               scanner, accounting=None) -> Scratch:
+               scanner, accounting=None, standing_mesh: frozenset = frozenset()) -> Scratch:
         session = cls._session(source, original=original, defects=defects, reserved=reserved,
                                remaining_s=remaining_s, clock=clock, measurer=measurer,
-                               scanner=scanner, accounting=accounting)
+                               scanner=scanner, accounting=accounting,
+                               standing_mesh=standing_mesh)
         return cls(source, session, original=original, defects=defects, reserved=reserved,
                    remaining_s=remaining_s, clock=clock, measurer=measurer, scanner=scanner,
-                   accounting=accounting)
+                   accounting=accounting, standing_mesh=standing_mesh)
 
     @staticmethod
     def _session(source, *, original, defects, reserved, remaining_s, clock, measurer,
-                 scanner, accounting=None) -> RepairSession:
+                 scanner, accounting=None,
+                 standing_mesh: frozenset = frozenset()) -> RepairSession:
         kwargs: dict = {"original": original, "defects": defects, "reserved": reserved,
                         "remaining_s": remaining_s, "clock": clock}
+        if standing_mesh:
+            kwargs["standing_mesh"] = frozenset(standing_mesh)
         if measurer is not None:
             kwargs["measurer"] = measurer
         if scanner is not None:
@@ -886,7 +895,8 @@ class Scratch:
                                      defects=self.seed_defects, reserved=self.reserved,
                                      remaining_s=self.remaining_s, clock=self.clock,
                                      measurer=self._measurer, scanner=self._scanner,
-                                     accounting=self.seed_accounting)
+                                     accounting=self.seed_accounting,
+                                     standing_mesh=self.seed_standing_mesh)
         self.edits = []
 
 
