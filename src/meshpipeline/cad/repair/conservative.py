@@ -1133,7 +1133,10 @@ def repair_step_file(source: Path, destination: Path, *,
         if traced is not None:
             # `outcomes` stays in the report; `lines` (the per-turn trace) is moved to the job's
             # object storage by the pipeline node, which leaves its location here instead.
-            measurements["investigation_trace"] = traced
+            # EACH REGION'S JUDGED PACKAGES join its outcome row: the review verdict and its
+            # measured objection, for audit - never the reviewer's prose, never fed to an author.
+            measurements["investigation_trace"] = investigation_trace.with_reviews(
+                traced, measurements["regions"].get("packages") or [])
         tournaments = getattr(author, "tournaments", None)
         if tournaments is not None:
             # THE TOURNAMENTS, BESIDE THE INVESTIGATIONS by the same rule: one round per author

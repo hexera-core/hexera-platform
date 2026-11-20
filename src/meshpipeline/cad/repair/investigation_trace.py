@@ -326,3 +326,31 @@ def finish(collector: Collector | None, *, job_id: str = "") -> dict | None:
         return None
     stop(collector)
     return summary(collector.records, job_id=job_id)
+
+
+# --- the review, for audit -------------------------------------------------------------------
+#
+# STORED, NEVER FED BACK. What a judged package's review said, as MEASURED fields only: the
+# verdict, the tier that gave it, the session's fixed revert reason and the measured objection (a
+# field name from a closed tuple plus the session's own value). The reviewer's prose
+# (`review_reason`) is not copied: it is the reviewer's, and a report a customer or an author can
+# read must not carry it. Nothing here reaches an author's attempt log.
+
+def review_of(package: dict) -> dict:
+    """One judged package's review, prose-free."""
+    objection = package.get("review_objection")
+    return {"region": package.get("region_index"), "status": str(package.get("status") or ""),
+            "reason": str(package.get("reason") or ""),
+            "reviewed": str(package.get("reviewed") or ""),
+            "review_tier": str(package.get("review_tier") or ""),
+            "objection": dict(objection) if isinstance(objection, dict) else None}
+
+
+def with_reviews(traced: dict, packages: list) -> dict:
+    """`traced` with each outcome row carrying its region's judged packages (`review_of`)."""
+    by_region: dict = {}
+    for package in packages or ():
+        if isinstance(package, dict):
+            by_region.setdefault(package.get("region_index"), []).append(review_of(package))
+    return {**traced, "outcomes": [{**row, "packages": by_region.get(row.get("region"), [])}
+                                   for row in traced.get("outcomes") or ()]}

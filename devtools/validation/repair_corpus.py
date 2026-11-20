@@ -1234,9 +1234,23 @@ def _outcome_of(record: dict) -> dict:
     row = investigation_trace.outcome(record)
     verdict = record.get("verdict")
     if isinstance(verdict, dict):
-        row["package"] = {"status": str(verdict.get("status") or ""),
-                          "reason": str(verdict.get("reason") or "")}
+        # THE REVIEW AS MEASURED FIELDS (verdict, tier, objection), never the reviewer's prose.
+        review = investigation_trace.review_of(verdict)
+        row["package"] = {k: v for k, v in review.items() if k != "region"}
     return row
+
+
+def review_rows(measured: dict | None) -> dict:
+    """The row's `packages` block: every package the session judged, with its review verdict and
+    measured objection (investigation_trace.review_of: prose-free). EMPTY when no region run
+    judged a package, so a row gains no key it did not have."""
+    from meshpipeline.cad.repair import investigation_trace
+
+    packages = ((measured or {}).get("regions") or {}).get("packages") or []
+    if not packages:
+        return {}
+    return {"packages": [investigation_trace.review_of(p) for p in packages
+                         if isinstance(p, dict)]}
 
 
 def investigator_summary(rows: list[dict]) -> dict:
@@ -1506,7 +1520,7 @@ def _repair_row(path: Path, scratch: Path, *, mode: str = "off", force: bool = F
                    seconds=round(time.monotonic() - started, 2),
                    # THE VERDICT SURVIVES THE REFUSAL: goal.py records it before the after-check
                    # refuses, so a refused repair still says what it would have finished as.
-                   **scored(measured.get("goal")), **investigated(measured))
+                   **scored(measured.get("goal")), **investigated(measured), **review_rows(measured))
         return row
     except Exception as exc:  # noqa: BLE001
         row.update(outcome="repair_failed", error=f"{type(exc).__name__}: {exc}", **scored(),
@@ -1539,7 +1553,7 @@ def _repair_row(path: Path, scratch: Path, *, mode: str = "off", force: bool = F
         mesh_located_remaining=_mesh_located(measured),
         timings=dict(measured.get("timings") or {}),
         **scored(measured.get("goal")),
-        **investigated(measured),
+        **investigated(measured), **review_rows(measured),
     )
 
     after = _inspect(destination)

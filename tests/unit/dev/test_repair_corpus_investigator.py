@@ -453,6 +453,31 @@ def test_row_block_carries_one_outcome_per_record_with_its_verdict():
     outcomes = block["outcomes"]
     assert [o["region"] for o in outcomes] == [0, 1]
     assert [o["end"] for o in outcomes] == ["runaway", "budget_spent"]
-    assert outcomes[0]["package"] == {"status": "reverted", "reason": "target_remains"}
+    assert {k: outcomes[0]["package"][k] for k in ("status", "reason")} == \
+        {"status": "reverted", "reason": "target_remains"}
     assert "package" not in outcomes[1]
     assert "no edit tried" in outcomes[1]["why_no_package"]
+
+
+def test_outcome_package_carries_the_review_verdict_and_objection_but_not_its_prose():
+    joined = [{**_producer_record(0, end="concluded"), "verdict": {
+        "region_index": 0, "status": "reverted", "reason": "review: rejected by review",
+        "reviewed": "reject", "review_tier": "reviewer", "review_reason": "SECRET PROSE",
+        "review_objection": {"field": "deviation_mm", "measured": 0.42}}}]
+    [row] = rc.investigator_row(joined)["outcomes"]
+    assert row["package"]["reviewed"] == "reject"
+    assert row["package"]["objection"] == {"field": "deviation_mm", "measured": 0.42}
+    assert "SECRET PROSE" not in json.dumps(row)
+
+
+def test_review_rows_list_every_judged_package_without_prose():
+    regions = {"packages": [
+        {"region_index": 0, "status": "reverted", "reason": "review: rejected by review",
+         "reviewed": "reject", "review_tier": "reviewer", "review_reason": "SECRET PROSE",
+         "review_objection": {"field": "area_change", "measured": 3.0}},
+        {"region_index": 1, "status": "committed", "reason": ""}]}
+    block = rc.review_rows({"regions": regions})
+    assert [p["status"] for p in block["packages"]] == ["reverted", "committed"]
+    assert block["packages"][0]["objection"]["field"] == "area_change"
+    assert "SECRET PROSE" not in json.dumps(block)
+    assert rc.review_rows({}) == {}

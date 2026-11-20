@@ -304,3 +304,37 @@ def test_trace_marks_an_elided_result_rather_than_dropping_the_call():
     calls = [ln for ln in it.trace(rec) if ln["kind"] == "call"]
     assert [c["tool"] for c in calls] == ["look", "edit", "edit"]
     assert calls[1]["elided"] is True and "edit" not in calls[1]
+
+
+# ---------------------------------------------------------------- the review, for audit only
+
+_REJECTED = {"region_index": 0, "status": "reverted", "reason": "review: rejected by review",
+             "reviewed": "reject", "review_tier": "reviewer",
+             "review_reason": "REVIEWER PROSE the customer must never see",
+             "review_objection": {"field": "deviation_mm", "measured": 0.42},
+             "review_evidence": {"big": "blob"}}
+
+
+def test_review_of_keeps_the_measured_objection_and_drops_the_prose():
+    got = it.review_of(_REJECTED)
+    assert got == {"region": 0, "status": "reverted", "reason": "review: rejected by review",
+                   "reviewed": "reject", "review_tier": "reviewer",
+                   "objection": {"field": "deviation_mm", "measured": 0.42}}
+    assert "PROSE" not in json.dumps(got)
+
+
+def test_review_of_an_unreviewed_package_says_so_and_invents_nothing():
+    got = it.review_of({"region_index": 1, "status": "committed", "reason": ""})
+    assert got == {"region": 1, "status": "committed", "reason": "", "reviewed": "",
+                   "review_tier": "", "objection": None}
+
+
+def test_with_reviews_attaches_each_regions_packages_to_its_outcome_row():
+    traced = {"outcomes": [{"region": 0, "end": "concluded"}, {"region": 2, "end": "runaway"}],
+              "lines": [], "truncated": False}
+    out = it.with_reviews(traced, [_REJECTED, {"region_index": 0, "status": "committed",
+                                               "reason": ""}])
+    assert [p["status"] for p in out["outcomes"][0]["packages"]] == ["reverted", "committed"]
+    assert out["outcomes"][0]["packages"][0]["objection"]["field"] == "deviation_mm"
+    assert out["outcomes"][1]["packages"] == []
+    assert "PROSE" not in json.dumps(out)
