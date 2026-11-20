@@ -817,6 +817,21 @@ def _score_meshing(row: dict, path: Path, scratch: Path) -> None:
     if (row.get("ending") == repair_ending.REPAIRED and row["meshes_after"] is False
             and row["mesh_kind_after"] not in (mesh_probe.TIMEOUT, mesh_probe.PROBE_ERROR)):
         row["ending"] = repair_ending.UNMESHABLE
+    # AND THE OTHER DIRECTION: A PART THAT NEWLY MESHES AFTER KEPT OPERATIONS IS "REPAIRED"
+    # (eval wave 6, bfa7c9a3: every such part ended no_change, unmeshable or escalated). The
+    # re-inspection is geometry-only, so a mesh-only cure clears no located defect and `outcome`
+    # says no_change; and the loop's `unmeshable`/`escalated` come from its in-session scan or
+    # another region, not from the file delivered. The written STEP meshing where the input
+    # definitively did not is the truth. `meshes_after` True is always a real mesh (a timeout is
+    # False); the before verdict must be a real refusal too, not a timeout, a dead probe or an
+    # unreadable input. `outcome`, `loop_ending` and `stopped_because` are left as they were.
+    kept = int(row.get("operations_kept", 0) or 0)
+    if (kept > 0 and row["meshes_after"] is True and row.get("meshes_before") is False
+            and row.get("mesh_kind_before") not in (mesh_probe.TIMEOUT, mesh_probe.PROBE_ERROR,
+                                                     "unreadable")):
+        row["ending"] = repair_ending.ending_for(
+            kept=kept, attempted=int(row.get("operations_attempted", 0) or 0),
+            stopped_because=str(row.get("stopped_because", "")), newly_meshes=True)
 
 
 #: The hard ceiling on one delivery-settings tolerant pass (`_tolerant_delivery`), in seconds.
