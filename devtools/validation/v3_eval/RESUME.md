@@ -85,3 +85,10 @@ Clean fetch (finish it): `PYTHONPATH=$PWD/src .venv/bin/python devtools/validati
 - Greptile: 21 comments, 20 fixed, 1 deferred (images), all resolved. 0ff8db35 itself is a fix to a Greptile fix and has not been reviewed.
 - Unit suite: the 6 local shards died with the Mac. PR CI skips unit/integration by design; run `make test-fast` on a Linux box, or rely on post-merge main CI.
 - Pending crsv3 gate jobs 50da0655 / 81fd1b1a ran at 5d496416 (pre-fix); ignore their repair outcome.
+
+## LANE A status (0-packages), 2026-11-20
+- **Three causes, all fixed and pushed. Each fix has a test that failed before it.**
+  1. **99b5d4a2:** a region's wall was capped at the tier budget's bare wall. CHEAP's 60 s is less than the 80 s proof reserve (60 s scoped probe + 20 s review), so every cheap region concluded before its first tool call, at any timeout. Both clocks now add the proof reserve on top of the budget wall. The tournament now rehearses only the time above the proof reserve (Greptile P1 x2, resolved).
+  2. **dfbf024e:** the strict tool transport sends every declared field, so every `edit` arrived with `reset:false` and every reset with `""` fillers, and `_edit_form` refused all of them as a mixture. A local 420 s repro at 0ff8db35 showed 14 tool calls, all 4 edits refused, and a runaway. Fillers now count as unset.
+  3. **e6b24a6d:** evalspec gives every arm `CAD_REPAIR_TIMEOUT_S=420`, so t29_deterministic must relaunch at the new commit to stay comparable.
+- **In flight:** crsv3 redeploy at e6b24a6d (run 44691183384), then the 2-file gate repro. A local repro is also running. GO follows once a package is concluded.
