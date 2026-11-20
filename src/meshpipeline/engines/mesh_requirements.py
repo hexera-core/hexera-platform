@@ -1708,6 +1708,9 @@ def decided_asks(sec: Mapping | None, *, skip: tuple[str, ...] = ()) -> list[str
            if isinstance(r, Mapping) and r.get("asked") and not str(r.get("field") or "").startswith(skip)]
     out += [str(d) for d in sec.get("dropped") or [] if str(d).strip()]
     out += [f'"{_short(str(q))}" (no setting of ours matches it)' for q in sec.get("not_applied") or [] if str(q).strip()]
+    # NOTE-14: how strict the limits are is the rules' too - held on the limits it names, told with them
+    out += [f'"{_short(str(e["quote"]))}" (how strict the limits are: the rules hold the limits it names to it)'
+            for e in req.get("strictness") or [] if isinstance(e, Mapping) and str(e.get("quote") or "").strip()]
     return out[:40]
 
 
@@ -1735,9 +1738,32 @@ def ai_remark_kept(workspace) -> bool:
     (cfMesh beside "20 cells across the passage: 30 cells across the passage (cells of 8.613 mm at its walls)": "the
     internal passage sizing caps governed the rendered mesh", where the octree's step did; m483 round 7, 4e)."""
     try:
-        return not decided_asks(read(workspace))
+        return ai_remark_kept_for(read(workspace))
     except Exception:  # noqa: BLE001 - unread: the remark as before
         return True
+
+
+def ai_remark_kept_for(sec: Mapping | None, *, skip: tuple[str, ...] = ()) -> bool:
+    """ai_remark_kept on the reading itself (a route that holds it: the FEA AI step's, which reads an element count
+    itself - `skip`)."""
+    return not decided_asks(sec, skip=skip)
+
+
+#: NOTE-14: the one line for a note on how strict the limits are that names no limit the user set (A6: "These limits
+#: are flexible." and nothing else) - plain and fixed, never a model's sentence, never "not applied" or a count
+NO_LIMIT_WORDS = "From your notes: your note set no limit, so nothing in the mesh changed because of it."
+#: ...the step that keeps it among the result's remarks (contracts/user_notes.record_remark)
+STRICTNESS_REMARK = "notes_strictness"
+
+
+def strictness_unnamed(sec: Mapping | None) -> bool:
+    """NOTE-14: whether the notes say how strict the limits are in words that name no limit the user set."""
+    if not sec or sec.get("status") != "used":
+        return False
+    req = sec.get("requirements") or {}
+    by_id = {str(r.get("id")): r for r in req.get("rows") or [] if isinstance(r, Mapping)}
+    return any(not [i for i in e.get("rows") or [] if i in by_id and by_id[i].get("strictness_quote") == e.get("quote")]
+               for e in req.get("strictness") or [] if isinstance(e, Mapping) and e.get("from") != "settings")
 
 
 #: NOTE-12: how a line that is no mesh setting starts
@@ -1767,7 +1793,9 @@ def write(workspace, sec: Mapping | None) -> bool:
     path = Path(workspace) / FILE
     try:
         # (a pick on the stage, STD-4, is kept too: the result says which elements were made and why)
-        if requirements_of(sec) is None and not told_words(sec) and not (sec or {}).get("stage"):
+        # (and a strictness: every step reads it as the rules', so no AI step's remark speaks for it, NOTE-14)
+        if (requirements_of(sec) is None and not told_words(sec) and not (sec or {}).get("stage")
+                and not ((sec or {}).get("requirements") or {}).get("strictness")):
             path.unlink(missing_ok=True)
             return False
         path.write_text(json.dumps(sec, indent=1, sort_keys=True), encoding="utf-8")
@@ -1965,9 +1993,9 @@ def _strict_report(r: dict) -> None:
 
 
 def strictness_words(req: Mapping | None) -> list[str]:
-    """NOTE-14 before meshing, one line per strictness the user gave: the limits it is on and how strict, or - naming no
-    limit they set - told not applied, never silently lost."""
-    out = []
+    """NOTE-14 before meshing, one line per strictness the user gave: the limits it is on and how strict; a note naming
+    no limit they set gets one fixed plain line (NO_LIMIT_WORDS), never "not applied" and never counted."""
+    out: list[str] = []
     by_id = {str(r.get("id")): r for r in (req or {}).get("rows") or []}
     for e in (req or {}).get("strictness") or []:
         lead = "From your settings" if e.get("from") == "settings" else "From your notes"
@@ -1977,7 +2005,9 @@ def strictness_words(req: Mapping | None) -> list[str]:
             how = ("flexible - a target: the mesh may go past it in places, and the result says how many"
                    if e["strictness"] == "flexible" else "hard - held before anything else")
             out.append(f"{lead}: {', '.join(named)} - {how}.")
-        # (one that names no limit set says nothing: a strictness is no ask, so it is never told "not applied")
+        elif e.get("from") != "settings" and NO_LIMIT_WORDS not in out:
+            # (a strictness is no ask, so it is never told "not applied": said once, plainly)
+            out.append(NO_LIMIT_WORDS)
     return out
 
 
