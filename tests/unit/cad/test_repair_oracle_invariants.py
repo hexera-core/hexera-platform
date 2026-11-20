@@ -30,6 +30,7 @@ REPAIR = SRC / "cad" / "repair"
 #: concurrent ladder lane) - append them when that lane merges.
 V3_MODULES = [
     "cad/repair/oracle.py",
+    "cad/repair/mesh_clash.py",
     "cad/repair/goal.py",
     "cad/repair/grind.py",
     "cad/repair/tolerant_probe.py",
