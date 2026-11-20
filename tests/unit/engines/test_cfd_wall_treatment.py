@@ -240,3 +240,11 @@ def test_external_flow_uses_the_body_length_and_the_flat_plate():
     re_n = 20.0 * 4.0 / FC.NU["air"]
     assert how["friction"] == "flat-plate skin friction" and how["laminar"] is False
     assert h == pytest.approx(2 * 50 * FC.NU["air"] / (20.0 * math.sqrt(CR.skin_friction(re_n) / 2)), rel=1e-9)
+
+
+def test_a_resolved_wall_the_user_chose_is_built_on_a_laminar_flow_too():
+    tiny = [{"name": "inlet", "type": "inlet", "diameter_mm": 1.0}, {"name": "outlet", "type": "outlet"}]
+    ask = _ask(RESOLVED_INTERNAL, "snappy", patches=tiny)                # Re 1000: laminar, but the user chose it
+    h = ask.first_layer()
+    assert h is not None and not ask.laminar and ask.how["laminar"] is True
+    assert h == pytest.approx(ask.how["visc_m"], rel=1e-9)                # y+ 1 at the top, by the turbulent estimate

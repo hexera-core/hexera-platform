@@ -579,9 +579,11 @@ class Ask:
                                            "the layers keep our sizing")
             return None
         self.how = how
-        if self.treatment and how.get("laminar"):
+        if self.treatment == "functions" and how.get("laminar"):
             # CFDREQ-12: a laminar (or transitional) flow has no wall-function band and no buffer layer to avoid: the
-            # wall is resolved by the cells across the passage, with our own layers
+            # wall is resolved by the cells across the passage, with our own layers. A resolved wall the user CHOSE is
+            # still built at y+ 1 (the turbulent estimate: thinner than a laminar one, so never too thick) - a bluff body
+            # at Re 1e5 lost the resolved first layer it had before (the CFD board, 20 Nov)
             self.done("layers:y_plus", f"the flow is laminar at these conditions (Re {MR._g(how['reynolds'])} on "
                                        f"{how['length_from']}), so there is no wall-function target: the wall is "
                                        "resolved by the cells across the passage, with our own layers",
