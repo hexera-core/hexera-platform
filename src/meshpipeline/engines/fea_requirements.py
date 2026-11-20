@@ -58,6 +58,11 @@ def whole_sizes(sizes: Mapping[str, Mapping] | None, req: Mapping | None, part_i
             return out                      # a longest edge the rules' own sizes are already under: nothing to hold
     low = min(low, mid)
     entry = {"min_m": float(f"{low:.6g}"), "max_m": float(f"{2.0 * mid - low:.6g}"), "name": WHOLE, "whole": True}
+    if lo is not None and any(r.get("field") == "min_edge" and r.get("strictness") == "flexible"
+                              for r in (req or {}).get("rows") or []):
+        # NOTE-14: a shortest edge the user said is flexible is a target: the zones the accuracy rules make finer (a
+        # round's elements, a thin wall's) keep their size under it; the part's own size still follows it
+        entry["min_flexible"] = True
     for pid in part_ids:
         out.setdefault(str(pid), dict(entry))
     return out
@@ -197,7 +202,7 @@ def report(mesh, req: Mapping | None, *, mm_per_unit: float = 1000.0, order: int
         else:  # quads_only, triangles_only, max_triangle_percent
             got = {"applied": False, "met": None, "delivered": "not applied - a solid is meshed with tetrahedra"}
         rows.append({"id": row["id"], "field": field, "asked": row["asked"], **got,
-                     **({"from": row["from"]} if row.get("from") else {})})
+                     **({"from": row["from"]} if row.get("from") else {}), **MR.carried(row)})
     return MR.finish_report(rows, n, DEFINITIONS)
 
 

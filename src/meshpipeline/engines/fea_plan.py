@@ -608,6 +608,10 @@ def user_sized(zone_list: list[dict], sizes: Mapping[str, Mapping]) -> list[dict
         row = {**z, "user": key, "user_min_m": lo, "user_max_m": hi, "rule_size_m": size}
         if z.get("kind") == "part":
             new = mid
+        elif want.get("min_flexible") and size < lo:
+            # NOTE-14: under a flexible shortest edge a zone the rules make finer keeps its own size (the user said it
+            # may go below it in places); only past the middle of the range is it brought down
+            new = min(size, mid)
         elif on and want.get("scale"):
             # PLAN-fea-36 on an area ("finer at the fillets"): each zone on it its OWN size halved (a wall's through-
             # thickness size halved, not set to the fillet's 0.028 mm over the wall's 1.6 mm reach: 124 million

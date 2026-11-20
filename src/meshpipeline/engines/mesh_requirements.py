@@ -137,6 +137,19 @@ MEASURES: dict[str, tuple[tuple[str, ...], tuple[float, float], str, str]] = {
 _ENDS_SANE = ("jacobian", "taper", "min_volume", "determinant")
 #: the share of elements a limit may allow past its target, in percent, at most
 MAX_ALLOWED_PERCENT = 50.0
+
+#: NOTE-14: HOW STRICT A LIMIT IS, as the user's words say it - "hard" (a gate: the mesher gives structure up before it
+#: breaks it) or "flexible" (a target: it may go outside it where that keeps what the analyst wants more, and the
+#: result tells how many elements are outside and by how much, never "not met"). Unstated: STRICT_DEFAULT
+STRICTNESS = ("hard", "flexible")
+STRICT_RULE = "NOTE-14"
+#: what a strictness sentence may be about: one limit (a size field, a quality measure, the count) or a group of them
+STRICT_GROUPS = ("minimums", "maximums", "sizes", "quality", "angles", "counts", "all")
+#: the requirement rows a strictness can be on: the sizes that bound the elements, every quality limit, the counts
+STRICT_SIZES = ("global", "min_edge", "max_edge", "near_wall")
+#: the angle measures ("the angle limits are hard")
+STRICT_ANGLES = ("min_angle", "max_angle", "skew", "warpage")
+_STRICT_TARGETS = (*STRICT_SIZES, *MEASURES, "count", *STRICT_GROUPS)
 #: sizes: an element size anyone means (mm), a growth ratio, a multiple of the global size
 SIZE_RANGE_MM = (1e-4, 1e5)
 GROWTH_RANGE = (1.0, 3.0)
@@ -256,6 +269,16 @@ words for it, copied exactly (one line or phrase, as short as holds the whole re
   at download), the units or numbering of the files ("write it in mm", "node ids from 100001"), a time or cost limit,
   what to do with their files or data ("delete my CAD after"), greetings, thanks, "use your defaults", headings, a yes or a verdict on what was proposed ("looks
   good", "the rest is right", "yes that's right"), anything that asks nothing of the mesh.
+- strictness: how strict the user says a limit is, one entry per sentence or clause that says it. strictness "flexible"
+  when the words make it a target they can live without in places ("we're flexible around the minimum of 5 mm",
+  "roughly", "where possible", "ok to go below in places", "not a hard minimum", "prefer", "aim for", "these are
+  guidelines"); "hard" when they make it a gate ("must", "never", "no element under", "strictly", "hard limit", "at all
+  costs"). target: what it is about - ONE limit (global, min_edge, max_edge, near_wall, a quality measure from the
+  limits list, or count), or a group: minimums (every lower bound), maximums (every upper bound), sizes, quality
+  (every quality limit), angles, counts, all (everything the notes limit). The quote is the user's own words for it,
+  with its number when they gave one. Only how strict a limit is: "flexible hose", "hard anodised", "a hard material"
+  are no strictness. The same sentence may also give the limit itself: list it in its own field too. A later
+  sentence refines an earlier one: list both, in the order written.
 When the notes give the SAME thing twice ("5 layers. Actually 10 layers."), list BOTH entries, in the order written:
 the LATEST one is kept (the user changed their mind).
 A number the user names as the one being REPLACED ("3 prism layers instead of 8", "3 layers, not 8", "2 mm rather
@@ -278,7 +301,7 @@ def tool() -> dict:
         "parameters": {
             "type": "object", "additionalProperties": False,
             "required": ["stated_unit", "sizes", "counts", "layers", "local", "physics", "element_kind", "limits",
-                         "other", "controls"],
+                         "other", "controls", "strictness"],
             "properties": {
                 "stated_unit": {"type": "string", "enum": [*UNITS_MM, "none"]},
                 "sizes": {"type": "array", "items": {
@@ -330,6 +353,12 @@ def tool() -> dict:
                                                                                        for x in c.choices)})},
                                    "unit": {"type": "string", "enum": [*UNITS_MM, "none"]},
                                    "where": {"type": "string"}, "strict": {"type": "boolean"}, "quote": q}}},
+                # NOTE-14: how strict a limit, a group of them or all of them is, in the user's words
+                "strictness": {"type": "array", "items": {
+                    "type": "object", "additionalProperties": False,
+                    "required": ["target", "strictness", "quote"],
+                    "properties": {"target": {"type": "string", "enum": list(_STRICT_TARGETS)},
+                                   "strictness": {"type": "string", "enum": list(STRICTNESS)}, "quote": q}}},
             }}}}
 
 
@@ -1528,6 +1557,24 @@ def _check(arguments: str, notes: str, route: str = "") -> tuple[dict, list[str]
     if controls:
         out["controls"] = controls
 
+    # NOTE-14: how strict the user says a limit is - each checked as every field is (the quote is the user's), kept in
+    # the order written so a later sentence refines an earlier one, and put on the rows it names (apply_strictness)
+    strict: list[dict] = []
+    for e in order(list(_rows_of(raw, "strictness"))):
+        s_target, s_how = str(e.get("target") or ""), str(e.get("strictness") or "")
+        got = quoted(e)
+        if got is None:
+            continue
+        quote = got[0]
+        if s_target not in _STRICT_TARGETS or s_how not in STRICTNESS:
+            dropped.append(f'"{_short(quote)}": {s_target or "what it is about"} is not a limit or group a strictness '
+                           "can be on: not applied")
+            continue
+        strict.append({"target": s_target, "strictness": s_how, "quote": quote})
+    if strict:
+        out["strictness"] = strict
+        apply_strictness(out)
+
     # what fits no field (NOTE-8): told, never silently dropped
     not_applied: list[str] = []
     not_mesh: list[str] = []             # NOTE-12: asks that are no mesh setting, told with what to do instead
@@ -1712,6 +1759,7 @@ def words(sec: Mapping | None) -> list[str]:
     if sec.get("status") != "used":
         return [str(sec.get("note") or UNREAD_WORDS)]
     out = [f"From your notes: {r['asked']}." for r in (sec.get("requirements") or {}).get("rows") or []]
+    out += strictness_words(sec.get("requirements"))
     if sec.get("source") == "saved" and sec.get("note"):
         out.append(str(sec["note"]))
     out += [f"Not applied: {d}." for d in sec.get("dropped") or []]
@@ -1796,11 +1844,111 @@ def limit_row(lim: Mapping, values, n: int) -> dict:
     return out
 
 
+def _strict_members(target: str, req: Mapping) -> list[dict]:
+    """NOTE-14: the requirement rows a strictness target names - one limit, or a group of them."""
+    ops = {str(lim.get("id")): str(lim.get("op") or "") for lim in req.get("limits") or []}
+    out = []
+    for r in req.get("rows") or []:
+        f = str(r.get("field") or "")
+        lim = f.split(":", 1)[1] if f.startswith("limit:") else ""
+        if not (f in STRICT_SIZES or lim or f.startswith("cells:")):
+            continue
+        lower = f == "min_edge" or f == "cells:floor" or ops.get(str(r.get("id"))) == ">="
+        upper = f == "max_edge" or f == "cells:ceiling" or ops.get(str(r.get("id"))) == "<="
+        if (target == f or (lim and target == lim) or (target == "count" and f.startswith("cells:"))
+                or (target == "minimums" and lower) or (target == "maximums" and upper)
+                or (target == "sizes" and f in STRICT_SIZES) or (target == "quality" and lim)
+                or (target == "angles" and lim in STRICT_ANGLES) or (target == "counts" and f.startswith("cells:"))
+                or target == "all"):
+            out.append(r)
+    return out
+
+
+def apply_strictness(req: dict) -> list[dict]:
+    """NOTE-14: each strictness the user gave (req["strictness"], in the order written) on the rows it names: a later
+    one refines an earlier one. A quote with a number names only the rows whose own words hold that number ("flexible
+    around the 5 mm minimum" is the 5 mm minimum's, not a 15 mm maximum's). Returns the entries that named no row
+    (told, never silently lost); rows no entry names keep no strictness of their own (STRICT_DEFAULT)."""
+    for r in req.get("rows") or []:
+        r.pop("strictness", None)
+        r.pop("strictness_quote", None)
+    unmatched = []
+    for e in req.get("strictness") or []:
+        hits = _strict_members(str(e.get("target") or ""), req)
+        nums = _numbers(str(e.get("quote") or ""))
+        if nums:
+            hits = [r for r in hits if any(_in_quote(v, nums) for v in _numbers(str(r.get("quote") or "")))]
+        for r in hits:
+            r["strictness"] = str(e["strictness"])
+            r["strictness_quote"] = str(e["quote"])
+        e["rows"] = [str(r["id"]) for r in hits]
+        if not hits:
+            unmatched.append(e)
+    return unmatched
+
+
+#: NOTE-14: a limit the user did not say how strict it is - an edge length is a target (criteria lists state lengths
+#: as targets, the meshes made to them break them in places; every route already reports them with the share
+#: outside, never as missed), every other limit is held as written (a stated allowance is that limit's own
+#: flexibility: hard at the outer value, flexible inside the allowance), and a count is held
+STRICT_DEFAULT = {"global": "flexible", "min_edge": "flexible", "max_edge": "flexible", "near_wall": "flexible"}
+
+
+def strictness(row: Mapping) -> str:
+    """NOTE-14: how strict a requirement row is - the user's word ("hard" / "flexible", row["strictness"]) when they
+    gave one, else the default for its kind (STRICT_DEFAULT; "hard" for a quality limit or a count). '' for a row that
+    is no limit (an element kind, a control, a layer)."""
+    f = str(row.get("field") or "")
+    if row.get("strictness") in STRICTNESS:
+        return str(row["strictness"])
+    if f in STRICT_DEFAULT:
+        return STRICT_DEFAULT[f]
+    return "hard" if f.startswith(("limit:", "cells:")) else ""
+
+
+def _strict_report(r: dict) -> None:
+    """NOTE-14 on a measured row, from the strictness the user SAID (row "strictness"): a flexible limit outside is a
+    target told with how many and by how much - never "not met"; a hard edge length is judged (met only with no
+    element outside). A row with no strictness said is as every route reports it."""
+    said = r.get("strictness")
+    if said == "flexible" and r.get("met") is False:
+        r.update(met=None, target=True, flexible=True, delivered=f"flexible - {r.get('delivered')}")
+    elif said == "flexible" and r.get("target") and r.get("met") is None:
+        r.update(flexible=True, delivered=f"flexible - {r.get('delivered')}")
+    elif said == "hard" and r.get("met") is None and r.get("target") and r.get("outside") is not None:
+        r.update(met=int(r.get("outside") or 0) == 0, target=False, hard=True,
+                 delivered=f"hard - {r.get('delivered')}")
+
+
+def strictness_words(req: Mapping | None) -> list[str]:
+    """NOTE-14 before meshing, one line per strictness the user gave: the limits it is on and how strict, or - naming no
+    limit they set - told not applied, never silently lost."""
+    out = []
+    by_id = {str(r.get("id")): r for r in (req or {}).get("rows") or []}
+    for e in (req or {}).get("strictness") or []:
+        lead = "From your settings" if e.get("from") == "settings" else "From your notes"
+        named = [str(by_id[i]["asked"]) for i in e.get("rows") or [] if i in by_id
+                 and by_id[i].get("strictness_quote") == e.get("quote")]
+        if named:
+            how = ("flexible - a target: the mesh may go past it in places, and the result says how many"
+                   if e["strictness"] == "flexible" else "hard - held before anything else")
+            out.append(f"{lead}: {', '.join(named)} - {how}.")
+        elif not e.get("rows"):
+            out.append(f'Not applied: "{_short(str(e.get("quote") or ""))}" - it names no limit you set.')
+    return out
+
+
+def carried(row: Mapping) -> dict:
+    """NOTE-14: what a route's report row carries over from its requirement row: the strictness the user said."""
+    return {"strictness": row["strictness"]} if row.get("strictness") in STRICTNESS else {}
+
+
 def finish_report(rows: list[dict], n: int, definitions: str) -> dict:
     """The report every route gives: its rows, each with the elements outside what was asked (`excess`: 0 when
     met - what the result's row and the verdict read), how many were met and missed, and how the figures are
     measured."""
     for r in rows:
+        _strict_report(r)
         r["excess"] = 0 if r["met"] is not False else max(
             1, int(r.get("beyond") or 0),
             int(r.get("outside") or 0) - int(math.floor(float(r.get("share") or 0.0) * n + 1e-9)))
@@ -1870,7 +2018,8 @@ def asked_rows(quality: Mapping | None, *, source: str = "your notes") -> list[d
     rep = (quality or {}).get("requirements")
     out = []
     for r in (rep.get("rows") if isinstance(rep, Mapping) else None) or []:
-        if not isinstance(r, Mapping) or r.get("met") not in (True, False):
+        # NOTE-14: a limit the user said is flexible, outside in places, is a row too - information, never a miss
+        if not isinstance(r, Mapping) or (r.get("met") not in (True, False) and not r.get("flexible")):
             continue
         came = str(r.get("from") or "")
         label = (f"Chosen on the stage: {r.get('asked')}" if came == "stage"
@@ -1916,11 +2065,19 @@ def summary(rep: Mapping | None, *, kind: str = "mesh", limit: int = 380, not_ap
             out, shown = out + more, shown + 1
         if shown < len(missed):
             out += f"{'; and ' if shown else ': '}{len(missed) - shown} more, listed on the result"
-    if targets:
+    edges = [r for r in targets if r.get("field") in ("min_edge", "max_edge")]
+    if edges:
         shares = [f"{r.get('outside_pct'):g}% of elements have an edge "
                   f"{'shorter' if r.get('field') == 'min_edge' else 'longer'} than you asked"
-                  for r in targets if r.get("outside")]
-        out += (f"; {len(targets)} edge-length target{'' if len(targets) == 1 else 's'}"
+                  for r in edges if r.get("outside")]
+        out += (f"; {len(edges)} edge-length target{'' if len(edges) == 1 else 's'}"
+                + (": " + ", ".join(shares) if shares else ""))
+    flexible = [r for r in targets if r not in edges]
+    if flexible:
+        # NOTE-14: a limit the user said is flexible, told with the share outside it - information, never "not met"
+        shares = [f"{r.get('outside_pct'):g}% of elements outside {r['asked']}" for r in flexible
+                  if r.get("outside_pct") is not None and r.get("outside")]
+        out += (f"; {len(flexible)} flexible limit{'' if len(flexible) == 1 else 's'}"
                 + (": " + ", ".join(shares) if shares else ""))
     if settings:
         out += f"; {len(settings)} applied as {'a setting' if len(settings) == 1 else 'settings'}"

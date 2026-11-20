@@ -476,9 +476,9 @@ def merge(settings: Mapping | None, notes: Mapping, *, route: str = "") -> dict:
     _reid(S, "s")
     # NOTE-12 is the run's notes': the standard's words that are no mesh setting stay with STD-1's own lines
     S.pop("not_mesh", None)
-    for r in S.get("rows") or []:
+    for r in [*(S.get("rows") or []), *(S.get("strictness") or [])]:
         r["from"] = "settings"
-    for r in N.get("rows") or []:
+    for r in [*(N.get("rows") or []), *(N.get("strictness") or [])]:
         r["from"] = "notes"
 
     # field by field: a slot the notes set is theirs this run
@@ -498,6 +498,10 @@ def merge(settings: Mapping | None, notes: Mapping, *, route: str = "") -> dict:
         elif v is not None:
             out[k] = v
     out["rows"] = [*list(S.get("rows") or []), *copy.deepcopy(list(N.get("rows") or []))]
+    if out.get("strictness"):
+        # NOTE-14: how strict each limit is, the standard's words first and the notes' after (a later sentence refines
+        # an earlier one): "we're flexible around the 5 mm minimum" in the notes is the standard's 5 mm minimum's too
+        MR.apply_strictness(out)
 
     # a multiple of the global size follows the global size in force
     if N["sizes"].get("global_mm") is not None:
@@ -619,6 +623,7 @@ def lines(settings: Mapping, notes: Mapping, merged: Mapping, *, told_s=(), told
         for _quote, *files in settings.get("solver_files") or []:
             out.append(f"From your settings: {' and '.join(files)} files - every FEA run delivers them.")
     out += [f"From your notes: {r['asked']}." for r in rows if r.get("from") == "notes"]
+    out += MR.strictness_words(merged)
     for sec in (settings, notes):
         if sec.get("status") == "used" and sec.get("source") == "saved" and sec.get("note"):
             out.append(str(sec["note"]))

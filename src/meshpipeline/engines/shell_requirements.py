@@ -370,7 +370,7 @@ def report(mesh, req: Mapping | None, sizing: Mapping | None = None, *, places: 
             got = {"applied": False, "met": None, "delivered": "not applied - shell elements are made as 4-node quads "
                                                                "and 3-node triangles"}
         rows.append({"id": row["id"], "field": field, "asked": row["asked"], **got,
-                     **({"from": row["from"]} if row.get("from") else {})})
+                     **({"from": row["from"]} if row.get("from") else {}), **MR.carried(row)})
     return MR.finish_report(rows, n, DEFINITIONS)
 
 

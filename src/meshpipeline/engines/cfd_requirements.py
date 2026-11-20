@@ -1867,7 +1867,7 @@ def report(workspace, quality: Mapping, engine: str) -> dict | None:
                 got.update(measured=float(f"{big * 1e3:.4g}"), met=bool(big <= 1.05 * lim) and status != "nearest",
                            delivered=got["delivered"] + f"; the largest cell is {_mm(big)}")
         rows.append({"id": row["id"], "field": field, "asked": row["asked"], **got,
-                     **({"from": row["from"]} if row.get("from") else {})})
+                     **({"from": row["from"]} if row.get("from") else {}), **MR.carried(row)})
     for i, d in enumerate(aside, 1):
         # an ask the checks set aside: '"<the user's words>": <why>: not applied' (engines/mesh_requirements.check)
         asked, _sep, why = d.partition(": ")
@@ -2007,6 +2007,12 @@ def _limit_row(lim: Mapping, q: Mapping, figs: dict | None, n: int, p: Mapping) 
         return got
     worst = q.get(key)
     if not isinstance(worst, (int, float)) or isinstance(worst, bool):
+        if not lever:
+            # neither set by this mesher nor measured on its cells: never "set as asked" (an aspect ratio from a saved
+            # criteria list on VMTK and cfMesh read "Set as asked" over "was not measured", m483 with a standard)
+            return {"applied": False, "met": None,
+                    "delivered": f"not applied - this mesher has no setting for {name}, and it was not measured on "
+                                 "this mesh"}
         return {"applied": True, "met": None, "delivered": f"{name} was not measured on this mesh{lever}"}
     worst = float(worst)
     target, outer, share = float(lim["target"]), lim.get("outer"), float(lim.get("share") or 0.0)
