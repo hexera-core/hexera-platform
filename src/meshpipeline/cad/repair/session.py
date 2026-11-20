@@ -1124,8 +1124,22 @@ class RepairSession:
         judged_by_face_scan = (op.name == HEAL_OP
                                or code == DefectCode.self_intersection.value)
         scan_started = self.clock()
-        found = self._rescan(face_scan=judged_by_face_scan, within=within)
-        scan_s = self.clock() - scan_started
+        if not judged_by_face_scan and _same_shape(snapshot[0], self.shape):
+            # THE SCAN NOBODY NEEDED. The operation handed back the very shape it was given - a
+            # decline, or a measured no-op (lane F found fix_shape_global doing literally nothing
+            # 37 times) - and scanning one shape twice is the same answer twice. Measured across
+            # 16 files of a det-arm run: re-inspection takes a MEDIAN 58% of a run's wall, 75% at
+            # worst and 18 scans on one file, while applying operations takes 3%; two files never
+            # finished scanning at all. So the cheapest honest saving is this one, and it decides
+            # nothing differently: the cached list is what a rescan of the same bytes returns.
+            #
+            # ONLY WITH THE SAME SCAN KIND. A heal is judged on the FACE scan, which looks for
+            # more than the cached status walk holds, so that path always pays for its own look.
+            found = previous
+            scan_s = 0.0
+        else:
+            found = self._rescan(face_scan=judged_by_face_scan, within=within)
+            scan_s = self.clock() - scan_started
         if within is not None:
             # BOTH SIDES OF THE PROGRESS RULE MUST BE DRAWN FROM ONE SCOPE. `previous` is the
             # cached WHOLE-SHAPE list and `found` has just been scoped to this region, so left

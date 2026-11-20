@@ -684,3 +684,70 @@ def test_a_scratch_edit_is_capped_only_while_the_posture_is_off(monkeypatch, nam
     assert not live.reason.startswith("cap:"), (name, live.reason)
     # SAID OUT LOUD on the verdict, so a transcript never implies the caps passed.
     assert live.delta.get("caps_not_applied") == "scratch", name
+
+
+# --- an operation that changed nothing cannot change what a scan says --------------------------
+# Measured across 16 files of a det-arm run: RE-INSPECTION takes a median 58% of a run's wall
+# (max 75%, 18 scans on the worst file) while applying operations takes 3%. Two files never
+# finished scanning. The cheapest honest saving is the scan nobody needed: when an operation hands
+# back the very shape it was given - a decline, or a measured no-op like fix_shape_global, which
+# lane F found doing literally nothing 37 times - its re-inspection must return the cached list,
+# because scanning the same shape twice is the same answer twice.
+
+def _noop_session(outcome_shape):
+    """A session whose operation hands back `outcome_shape`, and which counts its scans."""
+    scans = {"n": 0}
+
+    def scanner(_shape, valid=None):
+        scans["n"] += 1
+        return (_defect(),), True
+
+    session = RepairSession("original", measurer=lambda _s: _SOUND, scanner=scanner)
+    return session, scans
+
+
+def _try(session, outcome_shape):
+    defect = session.defects()[0]
+    op = _Op(outcome=OpOutcome(shape=outcome_shape))
+    return session.try_op(op, op.targets_for(defect), defect.code, tolerance_mm=0.01)
+
+
+def test_an_unchanged_shape_costs_no_re_inspection():
+    session, scans = _noop_session("original")
+    assert scans["n"] == 0, "nothing is scanned until it is asked for"
+
+    verdict = _try(session, "original")          # the very shape it was given
+
+    # ONE scan: the opening look `defects()` takes. The re-inspection is the one that is saved.
+    assert scans["n"] == 1, "a second scan of the same shape buys nothing"
+    assert verdict.scan_s == 0.0
+    assert session.scan_count == 1
+
+
+def test_a_changed_shape_is_still_re_inspected():
+    session, scans = _noop_session("original")
+
+    _try(session, "edited")
+
+    assert scans["n"] == 2, "a changed shape must be looked at again"
+
+
+def test_the_verdict_is_identical_whether_the_scan_was_skipped_or_run(monkeypatch):
+    """THE PROOF THAT NO CHECK DECIDES DIFFERENTLY. The same operation on the same unchanged shape
+    is judged twice: once with the saving, once with `_same_shape` forced to False so the real
+    re-inspection runs. Every field of the verdict must match."""
+    from meshpipeline.cad.repair import session as sess
+
+    saved, scans_saved = _noop_session("original")
+    with_saving = _try(saved, "original")
+
+    monkeypatch.setattr(sess, "_same_shape", lambda before, after: False)
+    rescanned, scans_full = _noop_session("original")
+    without_saving = _try(rescanned, "original")
+
+    assert scans_saved["n"] == 1 and scans_full["n"] == 2       # the saving happened
+    assert with_saving.status == without_saving.status
+    assert with_saving.reason == without_saving.reason
+    assert with_saving.delta == without_saving.delta
+    assert with_saving.evidence == without_saving.evidence
+    assert with_saving.basis == without_saving.basis
