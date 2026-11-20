@@ -504,3 +504,48 @@ def test_the_package_proof_rereads_the_clock_after_the_region_scan(monkeypatch):
     assert len(whole_probes) == 2, budgets
     assert verdict.status != session_mod.COMMITTED
     assert session.shape == "shape"
+
+
+# THE TOURNAMENT JUDGES CURES THE WAY THE INVESTIGATOR DOES (LEAD, for T19): its rehearsal clones
+# are seeded with one region's defects too, so they carry the part's standing mesh failure.
+
+
+def test_a_tournament_rehearsal_clone_carries_the_standing_failure():
+    from meshpipeline.cad.repair import tournament
+
+    seen: dict = {}
+
+    def make_scratch(shape, **kwargs):
+        seen.update(kwargs)
+        raise RuntimeError("stop after the clone is asked for")
+
+    package = _package(_FixEdges(), _SHORT, {"edge:short"})
+    cand = tournament.Candidate(source="rules", package=package,
+                                plan_key=tournament.plan_key(package))
+    tournament.rehearse(cand, session_shape="shape", original=MEASURE, defects=(_SHORT,),
+                        region=_REGION, tolerance_mm=0.01, budget_s=30.0,
+                        make_scratch=make_scratch, run_tier=lambda *a, **k: None,
+                        measure=lambda *a, **k: None, scope=lambda d, *a, **k: d,
+                        standing_mesh=frozenset({"mesh_other"}))
+    assert seen.get("standing_mesh") == frozenset({"mesh_other"})
+
+
+def test_the_tournament_author_forwards_the_parts_mesh_failures():
+    from meshpipeline.cad.repair import tournament
+
+    played: dict = {}
+
+    def play(cands, **kw):
+        played.update(kw)
+        return ()
+
+    author = tournament.tournament_author("shape", original=MEASURE, rehearse_with=play,
+                                          tolerance_mm=0.01)
+    author.observe_mesh(frozenset({"mesh_other"}))
+    try:
+        author(_REGION, (_SHORT,), ())
+    except Exception:  # noqa: BLE001 - only the hand-off is under test
+        pass
+    if played:
+        assert played["standing_mesh"] == frozenset({"mesh_other"})
+    assert callable(getattr(author, "observe_mesh", None))

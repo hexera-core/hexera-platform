@@ -337,7 +337,7 @@ def _ended(cand: Candidate, status: str, *, seconds: float, reason: str = "", ke
 def rehearse(cand: Candidate, *, session_shape, original, defects, region, tolerance_mm: float,
              budget_s: float, clock=None, reserved: frozenset[str] = frozenset(),
              diagonal_mm: float | None = None, make_scratch=None, run_tier=None, measure=None,
-             scope=None, accounting=None) -> Rehearsal:
+             scope=None, accounting=None, standing_mesh: frozenset = frozenset()) -> Rehearsal:
     """Play `cand` on ITS OWN CLONE of `session_shape` and report what happened. NEVER RAISES.
 
     In order: open a clone; play the plan item by item through the clone's `try_op`, stopping at
@@ -385,6 +385,12 @@ def rehearse(cand: Candidate, *, session_shape, original, defects, region, toler
         # compare against the upload, so without them an earlier package's declared change reads
         # as unexplained and a candidate the real session would keep fails its rehearsal.
         extra = {} if accounting is None else {"accounting": accounting}
+        if standing_mesh:
+            # THE WHOLE PART'S MESH FAILURES, as the investigator's clone gets them: this clone is
+            # seeded with one region's defects, so without them it cannot keep an edit whose
+            # delivered part newly meshes (session._mesh_cure) - and the tournament would judge a
+            # cure differently from the investigator it is compared with (T19).
+            extra["standing_mesh"] = frozenset(standing_mesh)
         scratch = make_scratch(session_shape, original=original, defects=tuple(defects),
                                reserved=frozenset(reserved),
                                remaining_s=lambda: _left(clock, started, budget_s, now),
@@ -671,7 +677,7 @@ def tournament_author(shape, *, original, reserved: frozenset = frozenset(), job
     tick = clock if callable(clock) else _time.monotonic
     held_codes = frozenset(reserved)
     tournaments: list[dict] = []
-    state: dict = {"shape": shape, "accounting": None}
+    state: dict = {"shape": shape, "accounting": None, "part_mesh": frozenset()}
     #: region index -> the ranked candidates and the plan keys already offered for it.
     cache: dict[int, dict] = {}
     timing = policy if policy is not None else _clock_of(
@@ -707,6 +713,15 @@ def tournament_author(shape, *, original, reserved: frozenset = frozenset(), job
             seen = getattr(each, "observe_accounting", None)
             if callable(seen):
                 seen(current)
+
+    def observe_mesh(codes) -> None:
+        # The whole part's current mesh-failure codes (region_loop._observe_shape), for this
+        # author's rehearsal clones and for the investigator source's clone alike.
+        state["part_mesh"] = frozenset(str(c) for c in codes)
+        for _, each in sources:
+            seen = getattr(each, "observe_mesh", None)
+            if callable(seen):
+                seen(state["part_mesh"])
 
     def gather(entry: dict, region, defects: tuple, attempts: tuple,
                cap: int) -> tuple[Candidate, ...]:
@@ -804,7 +819,7 @@ def tournament_author(shape, *, original, reserved: frozenset = frozenset(), job
                           session_shape=state["shape"], original=original,
                           defects=tuple(defects), region=region,
                           tolerance_mm=float(tolerance_mm), reserved=held_codes,
-                          accounting=state["accounting"])
+                          accounting=state["accounting"], standing_mesh=state["part_mesh"])
         ordered = rank(rehearsals)
         entry["candidates"] = [_record(r.candidate, r) for r in ordered]
         entry["seconds"] = round(sum(float(r.seconds) for r in ordered), 6)
@@ -840,6 +855,7 @@ def tournament_author(shape, *, original, reserved: frozenset = frozenset(), job
     author.observe_part = observe_part  # type: ignore[attr-defined]
     author.observe_shape = observe_shape  # type: ignore[attr-defined]
     author.observe_accounting = observe_accounting  # type: ignore[attr-defined]
+    author.observe_mesh = observe_mesh  # type: ignore[attr-defined]
     author.refusals = getattr(dict(sources).get(RULES), "refusals", [])  # type: ignore[attr-defined]
     author.verdicts = getattr(dict(sources).get(ONE_SHOT), "verdicts", [])  # type: ignore[attr-defined]
     author.calls = getattr(dict(sources).get(ONE_SHOT), "calls", [])  # type: ignore[attr-defined]
