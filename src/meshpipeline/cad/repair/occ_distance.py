@@ -130,7 +130,105 @@ def _run_child(first: Path, second: Path, budget: float) -> dict:
             "distance_status": "measured"}
 
 
+def distances(shapes: list, pairs: list[tuple[int, int]], *, budget_s: float) -> list[dict]:
+    """One distance per pair of `shapes` (given as index pairs), measured in ONE bounded child.
+
+    A CHILD PER PAIR WOULD COST MORE THAN IT SAVES: `_nearest_faces` asks about every candidate
+    face and `deviation._distance_to` about every sample, so a batch is the unit. Each shape is
+    written once however many pairs name it.
+
+    WHAT THE CHILD FINISHED IS KEPT. These callers already act on partial answers - their old
+    deadline was checked BETWEEN calls, which at least preserved the ones already measured - so
+    the child prints one line per pair and the parent reads what arrived before the kill. A pair
+    that never answered is unmeasured, never 0.
+    """
+    wanted = list(pairs)
+    if not wanted:
+        return []
+    try:
+        budget = float(budget_s)
+    except (TypeError, ValueError):
+        budget = 0.0
+    if not budget > 0.0:
+        return [{**UNMEASURED, "distance_status": "unmeasured: no budget"} for _ in wanted]
+    try:
+        with tempfile.TemporaryDirectory(prefix="occ-distance-") as tmp:
+            root = Path(tmp)
+            needed = sorted({i for pair in wanted for i in pair})
+            for i in needed:
+                _write_brep(shapes[i], root / f"{i}.brep")
+            manifest = root / "pairs.json"
+            manifest.write_text(json.dumps([[int(a), int(b)] for a, b in wanted]))
+            return _run_batch(root, manifest, len(wanted), budget)
+    except Exception as exc:  # noqa: BLE001 - a measurement may never break the tool that asked
+        return [{**UNMEASURED, "distance_status": f"unmeasured: {type(exc).__name__}"}
+                for _ in wanted]
+
+
+def _run_batch(root: Path, manifest: Path, count: int, budget: float) -> list[dict]:
+    """The child's answers, one line per pair, with whatever arrived before the budget ran out."""
+    proc = subprocess.Popen([*_CHILD_CMD, "--batch", str(root), str(manifest)],
+                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL, start_new_session=True, text=True)
+    lines: list[str] = []
+    try:
+        out, _ = proc.communicate(timeout=max(budget, 0.0))
+        lines = [line for line in (out or "").splitlines() if line.strip()]
+    except subprocess.TimeoutExpired:
+        # READ WHAT IS THERE, THEN KILL. `communicate` discards the pipe on timeout, so the
+        # finished pairs are taken off the stream first - they are measurements already paid for.
+        _kill_group(proc)
+        try:
+            out, _ = proc.communicate(timeout=5)
+            lines = [line for line in (out or "").splitlines() if line.strip()]
+        except Exception:  # noqa: BLE001
+            lines = []
+    finally:
+        if proc.poll() is None:
+            _kill_group(proc)
+    answers: list[dict] = []
+    for i in range(count):
+        raw = lines[i] if i < len(lines) else ""
+        answers.append(_one_answer(raw))
+    return answers
+
+
+def _one_answer(raw: str) -> dict:
+    if not raw:
+        return {**UNMEASURED, "distance_status": "unmeasured: budget_spent"}
+    try:
+        answer = json.loads(raw)
+    except ValueError:
+        return {**UNMEASURED, "distance_status": "unmeasured: the answer was not JSON"}
+    if not isinstance(answer, dict) or answer.get("min_distance_mm") is None:
+        return {**UNMEASURED, "distance_status": "unmeasured: the kernel gave no distance"}
+    return {"min_distance_mm": float(answer["min_distance_mm"]),
+            "point_a": answer.get("point_a"), "point_b": answer.get("point_b"),
+            "distance_status": "measured"}
+
+
+def _batch_main(root: Path, manifest: Path) -> int:
+    """Measure each pair and print it AS IT IS FINISHED, so a kill keeps what came before."""
+    cache: dict[int, Any] = {}
+
+    def shape(i: int):
+        if i not in cache:
+            cache[i] = _read_brep(root / f"{i}.brep")
+        return cache[i]
+
+    for a, b in json.loads(manifest.read_text()):
+        try:
+            answer = _measure_here(shape(int(a)), shape(int(b)))
+        except Exception:  # noqa: BLE001 - one unmeasurable pair is not the batch's failure
+            answer = dict(UNMEASURED)
+        sys.stdout.write(json.dumps(answer) + "\n")
+        sys.stdout.flush()
+    return 0
+
+
 def _child_main(argv: list[str]) -> int:
+    if argv and argv[0] == "--batch":
+        return _batch_main(Path(argv[1]), Path(argv[2]))
     first, second = Path(argv[0]), Path(argv[1])
     sys.stdout.write(json.dumps(_measure_here(_read_brep(first), _read_brep(second))) + "\n")
     sys.stdout.flush()
