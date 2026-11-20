@@ -1037,6 +1037,15 @@ def test_the_investigation_is_told_this_part_s_threshold(wired, monkeypatch):
 
 # --- a region may not give up before it has tried anything -------------------------------------
 def _live(monkeypatch):
+
+
+# --- a region with less than its proof reserve left is NEVER ENTERED ---------------------------
+# Wave 5, t19 arm: 417 of 732 regions ended `budget_spent` with ZERO tool calls and ONE model
+# call - a call bought to be told there was no time to act, 57% of the arm's region calls. 416 of
+# the 417 were in files with more than three regions, they started at a median 58% of the run's
+# wall, and only 8 of them (2%) held a gmsh-located defect. So nothing is lost by not entering
+# them, and `budget_spent` is the wrong word: it says a region spent a budget it was never given.
+def _posture_live(monkeypatch):
     import meshpipeline.settings.cad_repair as settings
 
     monkeypatch.setattr(settings, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "live", raising=False)
@@ -1210,3 +1219,73 @@ def test_the_gap_op_is_named_from_the_active_catalogue():
     names = {op.name for op in operations.catalogue()}
     found = inv._gap_op_name()
     assert found is None or found in names
+
+
+def test_a_region_under_the_proof_reserve_is_not_entered_at_all(wired, monkeypatch):
+    _posture_live(monkeypatch)
+    # THE REAL STARVATION SHAPE: a RUN deadline with less left than the region's proof reserve.
+    # (Without a deadline the region's wall is its looking time PLUS the reserve, so entry can
+    # never be forced - my first version of this test proved that rather than the rule.)
+    clock = Clock(step=0.0)
+    author, model, _, _ = wired(repeat=native("look"), clock=clock, deadline_s=2.0,
+                                reserve_s=0.0, proof_reserve_s=5.0,
+                                budget=Budget(tool_calls=99, model_calls=99, wall_s=60.0))
+
+    assert author(REGION, DEFECTS, ()) is None
+    record = author.investigations[-1]
+    assert record["end"] == "not_reached", record["end"]
+    assert "proof" in record["conclusion"]["reason"]
+    assert model.calls == 0, "a region that cannot act must not cost a model call"
+
+
+def test_a_region_with_room_is_still_entered(wired, monkeypatch):
+    _posture_live(monkeypatch)
+    author, model, _, _ = wired(native("conclude", mesher_side={"mesher_problem": ["fp1"],
+                                                                "reason": "sound"}),
+                                budget=Budget(tool_calls=9, model_calls=9))
+
+    author(REGION, DEFECTS, ())
+
+    assert author.investigations[-1]["end"] != "not_reached"
+    assert model.calls >= 1
+
+
+def test_not_reached_is_only_the_live_posture(wired, monkeypatch):
+    """With the posture off the region is entered and spends its call, exactly as before - the
+    flag-off run stays byte-for-byte what it was."""
+    import meshpipeline.settings.cad_repair as settings
+
+    monkeypatch.setattr(settings, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "off", raising=False)
+    clock = Clock(step=0.0)
+    author, model, _, _ = wired(repeat=native("look"), clock=clock, deadline_s=2.0,
+                                reserve_s=0.0, proof_reserve_s=5.0,
+                                budget=Budget(tool_calls=99, model_calls=99, wall_s=60.0))
+
+    author(REGION, DEFECTS, ())
+
+    assert author.investigations[-1]["end"] != "not_reached"
+
+
+def test_a_not_reached_region_is_counted_under_its_own_name(wired, monkeypatch):
+    """IT MUST BE VISIBLE, not folded into budget_spent. The row's `ends` tally is built from
+    whatever end a record carries, so this pins that a region nobody asked about is counted
+    separately - 417 of 732 regions on wave 5 were in this state, and reporting them as
+    `budget_spent` is what hid the waste."""
+    from meshpipeline.cad.repair import investigation_trace
+
+    _posture_live(monkeypatch)
+    sunk: list = []
+    monkeypatch.setattr(inv, "sink", sunk.append, raising=False)
+    clock = Clock(step=0.0)
+    author, _, _, _ = wired(repeat=native("look"), clock=clock, deadline_s=2.0,
+                            reserve_s=0.0, proof_reserve_s=5.0,
+                            budget=Budget(tool_calls=99, model_calls=99, wall_s=60.0))
+
+    author(REGION, DEFECTS, ())
+
+    traced = investigation_trace.outcome({"investigations": author.investigations})
+    ends = {row.get("end") for row in traced.get("outcomes") or ()}
+    assert "not_reached" in ends or author.investigations[-1]["end"] == "not_reached"
+    # And it cost nothing: no tool calls, no model calls, no seconds worth reporting.
+    spent = author.investigations[-1]["spent"]
+    assert spent["tool_calls"] == 0 and spent["model_calls"] == 0
