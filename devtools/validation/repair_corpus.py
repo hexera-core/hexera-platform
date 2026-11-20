@@ -84,6 +84,16 @@ def _load_sibling(name: str):
 _SUFFIXES = {".step", ".stp"}
 
 
+def policy_fingerprint() -> str:
+    """gym.py's v3 policy fingerprint over the source this run executes. Loaded by path under a
+    private module name, so a third-party `gym` package can never stand in for the sibling."""
+    path = Path(__file__).resolve().with_name("gym.py")
+    spec = importlib.util.spec_from_file_location("repair_corpus_gym_sibling", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.policy_fingerprint()
+
+
 def repair_settings_of(rcfg) -> dict:
     """Every switch and cap the repair actually read, BY REFLECTION over the settings module.
 
@@ -1135,6 +1145,15 @@ def package_verdicts(measured: dict | None) -> dict:
     return out
 
 
+def _region_index(record: dict):
+    """The region a record is about. `_Investigation.to_dict()` writes it as a bare int; an older
+    record shape nested it as `{"index": ...}`. Both read; anything else is None."""
+    region = record.get("region")
+    if isinstance(region, dict):
+        return region.get("index")
+    return region if isinstance(region, int) and not isinstance(region, bool) else None
+
+
 def join_verdicts(records, verdicts: dict) -> list[dict]:
     """Each record with the verdict its package got, under `"verdict"`.
 
@@ -1143,8 +1162,15 @@ def join_verdicts(records, verdicts: dict) -> list[dict]:
     Returns new dicts; the caller's records are not mutated.
     """
     joined = []
+    seen: dict = {}
     for record in records:
-        key = (record.get("region", {}).get("index"), record.get("attempt"))
+        index = _region_index(record)
+        # THE PRODUCER WRITES NO `attempt` (cad/repair/investigator.py closes one region's
+        # investigation once per author call, so the n-th record for a region IS its n-th
+        # attempt - the same ordinal package_verdicts keys on). A stated one is kept.
+        ordinal = seen[index] = seen.get(index, 0) + 1
+        attempt = record.get("attempt")
+        key = (index, attempt if isinstance(attempt, int) else ordinal)
         verdict = verdicts.get(key)
         joined.append({**record, "verdict": verdict} if verdict is not None else dict(record))
     return joined
@@ -1174,7 +1200,7 @@ def investigator_row(records) -> dict:
         end = str(record.get("end") or "")
         if end:
             ends[end] = ends.get(end, 0) + 1
-    return {"regions": len({r.get("region", {}).get("index") for r in records}),
+    return {"regions": len({_region_index(r) for r in records}),
             "tool_calls": int(totals["tool_calls"]),
             "model_calls": int(totals["model_calls"]),
             "seconds": round(totals["seconds"], 2),
@@ -1255,29 +1281,46 @@ def _offer(module, name: str, value) -> str:
     return ""
 
 
-def install_investigator(posture: str, *, transcripts: str = "", replay: str = ""
+def _apply_investigator_posture(mode: str) -> None:
+    """Make `mode` the posture the repair READS. The settings module is already imported by the
+    time a flag is parsed (the `ending` import at the top of this file loads it), so writing the
+    environment alone changes nothing: the module's value is set too. The investigator and the
+    conservative seam read `rcfg.CAD_REPAIR_INVESTIGATOR` at call time."""
+    import meshpipeline.settings.cad_repair as rcfg
+
+    os.environ["CAD_REPAIR_INVESTIGATOR"] = mode
+    rcfg.CAD_REPAIR_INVESTIGATOR = mode
+
+
+def install_investigator(posture: str | None, *, transcripts: str = "", replay: str = ""
                          ) -> tuple[TranscriptSink | None, str]:
     """Switch the investigator on for this run and give it somewhere to write. Returns the sink
     (None when nothing was asked for) and a note the operator must read.
 
-    The POSTURE goes into the environment before the repair settings are read, which is how every
-    other switch in this tool is set (see the CAD_REPAIR_ defaults at the top of this file). The
-    SINK and the REPLAY RECORDS are offered to `cad/repair/investigator.py`; a build without one,
-    or without the name, gets a note rather than a crash.
+    A GIVEN POSTURE (`--investigator off|shadow|live`) is applied to the settings the repair reads
+    - including an explicit `off` over an inherited one. `None` (the flag not given) keeps the
+    posture the process was launched with, so an environment-driven run is never overridden by a
+    default. The SINK and the REPLAY RECORDS are offered to `cad/repair/investigator.py`; a build
+    without one, or without the name, gets a note rather than a crash.
+
+    A REPLAY IS REFUSED, before anything is set: nothing in cad/repair reads
+    `investigator.replay_records` yet, so an accepted replay would call the model (or, with the
+    investigator off, replay nothing) while its settings claimed a reproducible run.
     """
+    if replay:
+        raise ValueError("--investigator-replay is not implemented: nothing in cad/repair reads "
+                         "the recorded conclusions, so the run would call the model instead")
+    if posture is not None:
+        _apply_investigator_posture(investigator_posture(posture))
     mode = investigator_posture(posture)
     if mode == "off" and not transcripts and not replay:
         return None, ""
-    os.environ["CAD_REPAIR_INVESTIGATOR"] = mode
     sink = TranscriptSink(transcripts or None)
     module = _investigator_module()
     if module is None:
         return sink, ("seam: this build has no cad/repair/investigator.py, so nothing will write "
                       "an investigator transcript (Task 11)")
-    notes = [_offer(module, "sink", sink)]
-    if replay:
-        notes.append(_offer(module, "replay_records", load_replay(replay)))
-    return sink, "; ".join(n for n in notes if n)
+    return sink, _offer(module, "sink", sink)
 
 
 def _probe_before(path: Path) -> tuple[bool, str] | None:
@@ -1493,14 +1536,40 @@ def _repair_row(path: Path, scratch: Path, *, mode: str = "off", force: bool = F
     return row
 
 
+#: The manifest fields a row carries so its stratum can be re-derived (`stratum_of` reads these).
+_STRATUM_FIELDS = ("gmsh_error", "solids")
+
+
+def _input_stamp(path: Path, by_sha: dict) -> dict:
+    """`{"sha256": ...}` for the input as read, plus its manifest stratum fields when the run
+    selected it from a manifest. {} for a file that cannot be read - its row says why."""
+    try:
+        digest = hashlib.sha256()
+        with Path(path).open("rb") as handle:
+            for block in iter(lambda: handle.read(1 << 20), b""):
+                digest.update(block)
+    except OSError:
+        return {}
+    sha = digest.hexdigest()
+    entry = by_sha.get(sha) or {}
+    return {"sha256": sha, **{k: entry[k] for k in _STRATUM_FIELDS if k in entry}}
+
+
 def run_files(files: list[Path], scratch: Path, *, mode: str = "off", loop: bool = False,
               bundle=None, mesh_probe: bool = False, force_repair: bool = False,
-              goal=None, sink=None) -> list[dict]:
+              goal=None, sink=None, entries=None) -> list[dict]:
     """Run the repair loop over `files`, printing a line per file; returns the rows. When `bundle`
     is a BundleWriter every row is streamed into it AS IT IS PRODUCED, so a run that dies half way
-    leaves its evidence-so-far on disk rather than in a list that was never written."""
+    leaves its evidence-so-far on disk rather than in a list that was never written.
+
+    EVERY ROW NAMES ITS INPUT BY sha256, and a manifest run (`entries`, the selected manifest
+    entries) also carries the two fields its stratum is drawn on (`gmsh_error`, `solids`): the
+    gym keys arms by that hash and stratifies on those fields, and a row without them cannot be
+    matched to the same part in another arm."""
+    by_sha = {str(e.get("sha256")): e for e in (entries or []) if isinstance(e, dict)}
     rows: list[dict] = []
     for path in files:
+        stamp = _input_stamp(path, by_sha)
         if mode == "live":
             # The SAME surface run twice, deterministic-only first and into its own directory so
             # the second pass cannot overwrite it. Two passes to attribute a difference to the
@@ -1514,6 +1583,7 @@ def run_files(files: list[Path], scratch: Path, *, mode: str = "off", loop: bool
         else:
             row = _one(path, scratch, mode=mode, mesh_probe=mesh_probe,
                        force_repair=force_repair, goal=goal, sink=sink)
+        row.update(stamp)
         rows.append(row)
         if bundle is not None:
             bundle.write_row(row)
@@ -1581,15 +1651,17 @@ def main() -> int:
     parser.add_argument("--json", dest="json_out", default="", help="write the rows here")
     # THE INVESTIGATOR (cad/repair/investigator.py). Off is today's behaviour exactly: no record,
     # no row key, no summary block and no settings key. `shadow` investigates and keeps its
-    # packages out of the kernel; `live` authors with them.
-    parser.add_argument("--investigator", choices=INVESTIGATOR_POSTURES, default="off",
-                        help="bounded investigator author: shadow records only, live authors")
+    # packages out of the kernel; `live` authors with them. NOT GIVEN (None) keeps the
+    # CAD_REPAIR_INVESTIGATOR the process was launched with; given, it overrides it.
+    parser.add_argument("--investigator", choices=INVESTIGATOR_POSTURES, default=None,
+                        help="bounded investigator author: shadow records only, live authors "
+                             "(default: the CAD_REPAIR_INVESTIGATOR environment value)")
     parser.add_argument("--transcripts", default="",
                         help="write one gym record per author call here, as JSONL (names, hashes, "
                              "fingerprints, measurements and the conversation - never geometry)")
     parser.add_argument("--investigator-replay", dest="investigator_replay", default="",
-                        help="a previous run's --transcripts file: rebuild each region's package "
-                             "from the recorded conclusion instead of calling a model")
+                        help="NOT IMPLEMENTED - refused: nothing in cad/repair reads recorded "
+                             "conclusions yet, so a replay would still call the model")
     # THE GOAL PROFILE. Absent means the repair is not told what it is finishing for, which is
     # today's behaviour exactly: no kwarg, no row key, no summary block. `meshing` is not offered
     # here - its verdict is the product mesher, which this tool does not run.
@@ -1748,6 +1820,10 @@ def main() -> int:
         # settings digest - and a later verification recomputes against it instead of against
         # however many operations the engine has grown by then.
         "operations_catalogue": operation_catalogue(),
+        # THE V3 POLICY THIS RUN MEASURED (gym.py's fingerprint over the source it ran), sealed
+        # under the digest: `gym.py record` labels the evidence with THIS, never with whatever
+        # checkout records it later.
+        "policy_fingerprint": policy_fingerprint(),
     }
 
     if args.force_repair:
@@ -1783,7 +1859,7 @@ def main() -> int:
     writer = benchmark_bundle.BundleWriter(Path(args.bundle)) if args.bundle else None
     rows = run_files(files, scratch, mode=args.planner, loop=args.loop, bundle=writer,
                      mesh_probe=args.mesh_probe, force_repair=args.force_repair,
-                     goal=goal, sink=sink)
+                     goal=goal, sink=sink, entries=sample_entries)
     if sink is not None:
         sink.close()
 

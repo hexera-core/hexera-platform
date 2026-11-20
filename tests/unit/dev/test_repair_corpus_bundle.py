@@ -385,3 +385,34 @@ def test_rebundling_a_shadow_planner_run_seals_a_bundle_that_verifies(tmp_path, 
 
     monkeypatch.setattr(sys, "argv", ["repair_corpus.py", "--verify", str(bundle)])
     assert rc.main() == 0, capsys.readouterr().err
+
+
+# ---------------------------------------------------------------- the row's own key, for the gym
+
+def test_every_row_carries_its_inputs_hash_and_its_stratum(kernel, tmp_path, capsys):
+    # The gym (devtools/validation/gym.py) keys arms by sha256 and stratifies on gmsh_error and
+    # solids; a row with none of them collapses an arm to one compared file.
+    import hashlib
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    digest = hashlib.sha256(kernel.part.read_bytes()).hexdigest()
+    entry = {"name": "anything.step", "sha256": digest,
+             "gmsh_error": "PLC Error:  A facet of boundary (overlapping facets)", "solids": 2}
+    rows = rc.run_files([kernel.part], scratch, mode="off", entries=[entry])
+    assert rows[0]["sha256"] == digest
+    assert rows[0]["gmsh_error"] == entry["gmsh_error"] and rows[0]["solids"] == 2
+    # a directory run, with no manifest, still names its input by hash
+    plain = rc.run_files([kernel.part], scratch, mode="off")
+    assert plain[0]["sha256"] == digest and "solids" not in plain[0]
+
+
+def test_a_sealed_run_states_the_policy_it_ran_under(kernel, tmp_path, monkeypatch, capsys):
+    # The gym records evidence under the fingerprint the RUN measured (gym.record), so the run
+    # seals it into its settings - never inferred later from whatever checkout records it.
+    gym = rc._load_sibling("gym")  # the module the gym CLI runs
+    bundle = tmp_path / "bundle"
+    monkeypatch.setattr(sys, "argv", ["repair_corpus.py", str(kernel.corpus),
+                                      "--bundle", str(bundle)])
+    assert rc.main() == 0, capsys.readouterr().err
+    settings = json.loads((bundle / "settings.json").read_text(encoding="utf-8"))
+    assert settings["policy_fingerprint"] == gym.policy_fingerprint()

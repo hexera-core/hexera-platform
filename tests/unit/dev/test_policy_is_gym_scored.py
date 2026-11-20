@@ -171,6 +171,32 @@ def test_score_counts_the_fixes_the_regressions_and_the_clean_control(tmp_path):
     assert stratum["files"] == 4 and stratum["newly_meshed"]["arm"] == 2
 
 
+def _unkeyed(row: dict) -> dict:
+    """A row as repair_corpus wrote one before it stamped the input's hash: no sha256."""
+    return {k: v for k, v in row.items() if k != "sha256"}
+
+
+def test_rows_with_no_hash_are_refused_not_collapsed_into_one(tmp_path):
+    # Every real row before the fix had no sha256: keyed on "", each arm became ONE row and a
+    # large sample reported one compared file, hiding every earlier regression.
+    shas = [entry["sha256"] for entry in SAMPLE]
+    arm = _bundle(tmp_path / "arm", [_unkeyed(_row(s, before=True, after=False)) for s in shas],
+                  sample=SAMPLE)
+    baseline = _bundle(tmp_path / "baseline",
+                       [_unkeyed(_row(s, before=True, after=True)) for s in shas], sample=SAMPLE)
+    with pytest.raises(ValueError, match="sha256"):
+        gym.score(arm, baseline)
+
+
+def test_a_duplicated_hash_is_refused(tmp_path):
+    rows = [_row(SAMPLE[0]["sha256"], before=False, after=True),
+            _row(SAMPLE[0]["sha256"], before=True, after=False)]
+    arm = _bundle(tmp_path / "arm", rows, sample=SAMPLE)
+    baseline = _bundle(tmp_path / "baseline", rows[:1], sample=SAMPLE)
+    with pytest.raises(ValueError, match="more than once"):
+        gym.score(arm, baseline)
+
+
 def test_score_refuses_a_bundle_with_no_sample(tmp_path):
     """A corpus run that did not record its sample cannot be scored: provenance or nothing."""
     directory = tmp_path / "arm"
@@ -209,6 +235,49 @@ def test_record_is_append_only(tmp_path):
     gym.record(arm, baseline=None, db=db, fingerprint="a" * 64)
     gym.record(arm, baseline=None, db=db, fingerprint="b" * 64)
     assert gym.scored_fingerprints(db) == ["a" * 64, "b" * 64]
+
+
+# --- the policy the evidence measured, not the checkout recording it ------------------------------
+def _stating(directory: Path, fingerprint: str) -> Path:
+    """The run's sealed settings.json, stating the policy the run measured."""
+    (directory / "settings.json").write_text(json.dumps({"policy_fingerprint": fingerprint}),
+                                             encoding="utf-8")
+    return directory
+
+
+def _db(tmp_path: Path) -> Path:
+    db = tmp_path / "scored-policies.json"
+    db.write_text('{"records": []}', encoding="utf-8")
+    return db
+
+
+def test_old_evidence_is_recorded_under_the_policy_it_measured(tmp_path):
+    # A bundle run under policy "1..." recorded from a checkout whose policy has since moved must
+    # NOT certify the checkout's policy: the gate would then pass with nothing measured.
+    arm = _stating(_bundle(tmp_path / "arm", [_row(SAMPLE[0]["sha256"], before=False, after=True)],
+                           sample=SAMPLE), "1" * 64)
+    db = _db(tmp_path)
+    entry = gym.record(arm, baseline=None, db=db)
+    assert entry["policy"] == "1" * 64
+    assert gym.policy_fingerprint() not in gym.scored_fingerprints(db)
+
+
+def test_evidence_stating_no_policy_is_refused_without_an_explicit_fingerprint(tmp_path):
+    arm = _bundle(tmp_path / "arm", [_row(SAMPLE[0]["sha256"], before=False, after=True)],
+                  sample=SAMPLE)
+    db = _db(tmp_path)
+    with pytest.raises(ValueError, match="policy"):
+        gym.record(arm, baseline=None, db=db)
+    assert gym.scored_fingerprints(db) == []
+
+
+def test_an_override_that_contradicts_the_evidence_is_refused(tmp_path):
+    arm = _stating(_bundle(tmp_path / "arm", [_row(SAMPLE[0]["sha256"], before=False, after=True)],
+                           sample=SAMPLE), "1" * 64)
+    db = _db(tmp_path)
+    with pytest.raises(ValueError, match="policy"):
+        gym.record(arm, baseline=None, db=db, fingerprint="2" * 64)
+    assert gym.scored_fingerprints(db) == []
 
 
 # --- the gate itself ----------------------------------------------------------------------------

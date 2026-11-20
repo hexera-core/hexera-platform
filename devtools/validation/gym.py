@@ -222,6 +222,25 @@ def _pair(arm: dict, baseline: dict, key: str) -> dict:
     return {"arm": a, "baseline": b, "delta": a - b}
 
 
+def _by_sha256(rows: list[dict], which: str) -> dict[str, dict]:
+    """The arm's rows keyed by the input's sha256. REFUSES a row with no hash or a hash seen
+    twice: keyed on "" (or overwritten), a whole arm silently collapses to its last row and the
+    comparison reports one file while hiding every other part's regression."""
+    keyed: dict[str, dict] = {}
+    for row in rows:
+        sha = str(row.get("sha256") or "")
+        if not sha:
+            raise ValueError(
+                f"a {which} row ({row.get('file') or row.get('name') or '?'}) carries no sha256: "
+                f"it was written before repair_corpus stamped each row with its input's hash, so "
+                f"the rows cannot be matched across arms. Re-run the arm on this build.")
+        if sha in keyed:
+            raise ValueError(f"the {which} arm holds input {sha[:12]} more than once; one part "
+                             f"cannot be scored twice")
+        keyed[sha] = row
+    return keyed
+
+
 def compare(arm: list[dict], baseline: list[dict]) -> dict:
     """The two arms' numbers over the files BOTH ran, headline and per stratum. Pure.
 
@@ -229,8 +248,8 @@ def compare(arm: list[dict], baseline: list[dict]) -> dict:
     evidence about the policy, and silently averaging over different file sets is the classic way
     a gym reports a win that is really a missing row.
     """
-    arm_by_sha = {str(r.get("sha256", "")): r for r in arm}
-    base_by_sha = {str(r.get("sha256", "")): r for r in baseline}
+    arm_by_sha = _by_sha256(arm, "arm")
+    base_by_sha = _by_sha256(baseline, "baseline")
     shared = sorted(set(arm_by_sha) & set(base_by_sha))
     arm_rows = [arm_by_sha[s] for s in shared]
     base_rows = [base_by_sha[s] for s in shared]
@@ -327,6 +346,17 @@ def scored_fingerprints(db: Path = POLICY_DB) -> list[str]:
             if r.get("policy")]
 
 
+def bundle_policy_fingerprint(directory: Path) -> str:
+    """The policy fingerprint the run sealed into its settings.json (repair_corpus writes it at
+    run time), or "" when it states none."""
+    try:
+        settings = json.loads((Path(directory) / "settings.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    stated = settings.get("policy_fingerprint") if isinstance(settings, dict) else None
+    return str(stated) if isinstance(stated, str) else ""
+
+
 def record(evidence: Path, *, baseline: Path | None = None, db: Path = POLICY_DB,
            fingerprint: str = "") -> dict:
     """Append one scored policy to `db` and return the entry.
@@ -337,6 +367,20 @@ def record(evidence: Path, *, baseline: Path | None = None, db: Path = POLICY_DB
     how a geometry path leaks into git.
     """
     evidence = Path(evidence)
+    # THE POLICY THE EVIDENCE MEASURED, read from the run's own sealed settings - never the
+    # checkout doing the recording, which may have moved since: old bundles recorded under today's
+    # fingerprint would certify a policy nobody ran. `fingerprint` is only for a historical run
+    # that sealed none, and may never contradict one that did.
+    stated = bundle_policy_fingerprint(evidence)
+    if stated and fingerprint and fingerprint != stated:
+        raise ValueError(f"--fingerprint {fingerprint[:12]} contradicts the policy the evidence "
+                         f"states it ran under ({stated[:12]}, in {evidence}/settings.json)")
+    if not stated and not fingerprint:
+        raise ValueError(
+            f"{evidence} states no policy_fingerprint in its settings.json, so which policy it "
+            f"measured is unknown - and recording it under this checkout's would be a guess. "
+            f"Re-run the arm on a build that seals it, or pass --fingerprint for a historical run "
+            f"whose policy you can state.")
     summary = (score(evidence, baseline) if baseline is not None
                else {"sample_sha256": bundle_sample_sha256(evidence),
                      **{k: v for k, v in compare(read_rows(evidence), read_rows(evidence)).items()
@@ -346,7 +390,7 @@ def record(evidence: Path, *, baseline: Path | None = None, db: Path = POLICY_DB
     except ValueError:
         where = evidence.name
     entry = {
-        "policy": fingerprint or policy_fingerprint(),
+        "policy": stated or fingerprint,
         "evidence": where,
         "sample_sha256": summary["sample_sha256"],
         "summary": {k: summary[k] for k in
@@ -398,7 +442,8 @@ def main(argv: list[str] | None = None) -> int:
     recorder.add_argument("--baseline", default="", help="the baseline bundle, if there was one")
     recorder.add_argument("--db", default=str(POLICY_DB), help="the record to append to")
     recorder.add_argument("--fingerprint", default="",
-                          help="override the fingerprint (only for a replayed historical run)")
+                          help="the fingerprint of a historical run whose settings.json states "
+                               "none; refused if it contradicts one the run did state")
 
     args = parser.parse_args(argv)
 
