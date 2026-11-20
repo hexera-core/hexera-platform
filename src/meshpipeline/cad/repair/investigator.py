@@ -211,9 +211,18 @@ def _schemas(shadow: bool) -> tuple:
 #: native-tool model concludes by CALLING a tool: left undeclared, the only route to a conclusion
 #: was to abandon the tool transport and write the prose protocol's JSON instead, which a live run
 #: at e6b24a6d never did - 16 tool calls over 3 regions and not one conclusion.
-_CONCLUDE_PARAMETERS: dict = {
-    "type": "object",
-    "properties": {
+def _conclude_branches(properties: dict) -> list:
+    """One `oneOf` branch per form, each admitting its own key and nothing else.
+
+    Three optional properties with no constraint read as "send what you like": the live model
+    sent `escalate` and `mesher_side` together on 11 straight turns and every one was refused
+    (bc88c9f9). The exclusivity is declared, not left to the prose.
+    """
+    return [{"title": form, "required": [form], "properties": {form: properties[form]},
+             "additionalProperties": False} for form in _CONCLUSIONS]
+
+
+_CONCLUDE_PROPERTIES: dict = {
         "package": {
             "type": "object",
             "description": ("the repair to commit. the PLAN IS THE LOG of the edits you kept, so "
@@ -239,7 +248,6 @@ _CONCLUDE_PARAMETERS: dict = {
             "description": "this region needs a person",
             "properties": {"reason": {"type": "string"}},
         },
-    },
 }
 
 
@@ -248,8 +256,11 @@ def _conclude_schema():
 
     return ToolSchema(name="conclude",
                       description=("finish this region with EXACTLY ONE of package, mesher_side "
-                                   "or escalate. the only way to end an investigation"),
-                      parameters=dict(_CONCLUDE_PARAMETERS))
+                                   "or escalate - never two. the only way to end an "
+                                   "investigation"),
+                      parameters={"type": "object",
+                                  "properties": dict(_CONCLUDE_PROPERTIES),
+                                  "oneOf": _conclude_branches(_CONCLUDE_PROPERTIES)})
 
 
 def _native_schemas(shadow: bool, *, only_conclude: bool = False) -> tuple:
@@ -924,9 +935,14 @@ def investigator(shape, *, original: Measure, reserved: frozenset = frozenset(),
                           started)
                     break
                 continue
-            inv.refused_in_a_row = 0
 
             concluding = [ask for ask in asks if ask.tool == "conclude"]
+            # A PARSED REPLY IS NOT AN ACCEPTED ONE. Clearing the counter here cleared it before
+            # `_conclude` could refuse, so one refusal repeated until the model-call budget was
+            # gone (measured: 11 identical refusals). A conclusion clears it only once it is
+            # accepted; the tools below clear it when a call actually runs.
+            if not concluding:
+                inv.refused_in_a_row = 0
             if inv.told_to_conclude and not concluding:
                 inv.record(tool=asks[0].tool, args=asks[0].args, ok=False,
                            error="there was only proof time left, so only a conclusion was asked for")
@@ -961,6 +977,7 @@ def investigator(shape, *, original: Measure, reserved: frozenset = frozenset(),
                               f"{REFUSED_MAX} replies in a row were refused", started)
                         break
                     continue
+                inv.refused_in_a_row = 0
                 inv.record(tool="conclude", args=ask.args, ok=True)
                 # THE CONCLUSION STAYS IN THE CONVERSATION. A region whose package is reverted is
                 # asked again on this same transcript, and a model that cannot see what it just
@@ -1106,7 +1123,8 @@ def _conclude(args: object, inv: _Investigation, *, ctx, scratch, region: Region
     forms = [key for key in _CONCLUSIONS if key in args]
     if len(forms) != 1 or len(args) != 1:
         raise ma.Refusal("conclude takes exactly one of "
-                         f"{', '.join(_CONCLUSIONS)}, and nothing beside it")
+                         f"{', '.join(_CONCLUSIONS)}, and nothing beside it"
+                         + (f"; this one carried {', '.join(sorted(args))}" if args else ""))
     form, body = forms[0], args[forms[0]]
 
     if form == "escalate":

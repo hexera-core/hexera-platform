@@ -793,3 +793,40 @@ def test_a_native_conclusion_with_strict_fillers_is_one_conclusion(wired):
                mesher_side={"mesher_problem": [], "reason": ""}, escalate={"reason": ""}),
         scratch=clone, budget=Budget(tool_calls=9, model_calls=9))
     assert isinstance(author(REGION, DEFECTS, ()), TargetPackage)
+
+
+def test_the_conclude_schema_says_exactly_one_form():
+    """Three optional properties and no constraint invites a model to hedge: measured at
+    bc88c9f9, the live model sent `escalate` AND `mesher_side` together on 11 straight turns and
+    every one was refused. The schema itself has to say that the forms are exclusive."""
+    schema = inv._conclude_schema()
+    branches = schema.parameters["oneOf"]
+    assert [set(b["required"]) for b in branches] == [{f} for f in inv._CONCLUSIONS]
+    for branch in branches:
+        assert branch["additionalProperties"] is False
+        assert set(branch["properties"]) == set(branch["required"])
+
+
+def test_a_mixture_of_stated_forms_is_named_in_the_refusal(wired):
+    author, _, _, _ = wired(native("conclude",
+                                   escalate={"reason": "needs a person"},
+                                   mesher_side={"mesher_problem": ["fp1"], "reason": "sound"}),
+                            budget=Budget(tool_calls=9, model_calls=9))
+    author(REGION, DEFECTS, ())
+    turn = author.investigations[-1]["turns"][0]
+    assert (turn["tool"], turn["ok"]) == ("conclude", False)
+    assert "escalate" in turn["error"] and "mesher_side" in turn["error"]
+
+
+def test_conclusions_refused_in_a_row_end_the_region(wired):
+    """A refused CONCLUSION is a refused reply. The counter was reset by every round that parsed,
+    so the same refusal could repeat until the model-call budget was gone (measured: 11 turns)."""
+    author, model, _, _ = wired(repeat=native("conclude",
+                                              escalate={"reason": "a"},
+                                              mesher_side={"mesher_problem": ["fp1"],
+                                                           "reason": "b"}),
+                                budget=Budget(tool_calls=99, model_calls=99))
+    assert author(REGION, DEFECTS, ()) is None
+    record = author.investigations[-1]
+    assert record["end"] == "runaway"
+    assert model.calls == inv.REFUSED_MAX
