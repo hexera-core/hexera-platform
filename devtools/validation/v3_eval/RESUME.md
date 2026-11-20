@@ -25,6 +25,17 @@
 
 
 
+
+## LEAD: WAVE 2 LAUNCHED. These are the ARMS OF RECORD (2026-11-20 ~01:30 PT)
+- **Launch id 11200927:** 12× c2-standard-8, us-central1-a, 96 shards, all 5 units. Code **df7e1d7a**; image 00ce0156 (toolchain); CAD_REPAIR_TIMEOUT_S=420; REVIEW_OBJECTION=live.
+- **Contains:** lane E's keep rule (delivered STEP newly meshes, with a no-op guard, 9ae2e215); lane A's answered tool calls (97a9e216) and measured area/volume delta shown to the author (b8e57fa9); eval posture matching shared dev (d73dcdaa); lane D's role labels (822e4d03) and stored review verdicts (df7e1d7a).
+- **Postdates the wave:** 81c4adbf (typing narrow plus a packages-default-to-[] path, host-side safe); 303ae94a (deploy TOURNAMENT_K=3 for shared dev; the eval already runs K=3).
+- **Wave 1 (11200820 @ b04befe8) is PRELIMINARY:** 14 invalid_request calls from the unanswered-tool-call defect, the reviewer reachable, the objection posture off.
+- **Known open item, which goes to wave 3:** the reviewer rejects face-removing packages with the objection "deviation not measured: no faces" (lane A's hypothesis; lane E is verifying and fixing the evidence).
+- **Lane A single-part evidence (0053_00531146 @ 9ae2e215):** review OFF gives a DELIVERED repair (2 ops kept, meshes False→True). Review LIVE gives nothing delivered (1 real reviewer reject, 1 area-cap revert: 64.8 mm² measured vs 0.48 claimed, because the author was shown removed area, not measured delta; fixed in b8e57fa9).
+- **Paper statement from lane E:** with review live, the only delivered newly-meshing keep on T6 is rejected, so everything-on measures 0 where review-off measures 1. That is a cost of the reviewer.
+- **Lane rule:** run devtools/quality/mypy_ratchet.py plus ruff before every push.
+
 ## LEAD NOTE: lane E interim + lane A late fix (2026-11-20)
 - **Lane E:** the T29-det supporting run at 120 s attempted 0 operations on all 119 files, so its 0 is a BUDGET fact, not evidence about operations. The wave runs 420 s for every arm.
 - **Lane E, first real false rollback:** 0052_00525324 `fix_small_edges` was rolled back as `target_remains` (the kernel small_edge warning is still there), yet the WHOLE PART MESHES after the op.
