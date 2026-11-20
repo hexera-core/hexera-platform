@@ -125,7 +125,7 @@ def validate(parser: argparse.ArgumentParser, args) -> None:
         parser.error("--shards must be between 1 and 40")
     if not args.zone.startswith(f"{REGION}-"):
         parser.error(f"--zone must be in {REGION}")
-    if not args.prefix.startswith(f"gs://dev-crsv3-"):
+    if not args.prefix.startswith("gs://dev-crsv3-"):
         parser.error("--prefix must be a crsv3-owned bucket (gs://dev-crsv3-...)")
 
 

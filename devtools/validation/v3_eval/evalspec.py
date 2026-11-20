@@ -62,7 +62,7 @@ EVERYTHING_ON: dict[str, str] = {
 #: settings/inventory.py: INTAKE_PROVIDER, INTAKE_MODEL). The key arrives from Secret Manager on
 #: the VM, never through here.
 MODEL_ENV: dict[str, str] = {"INTAKE_PROVIDER": "openai", "INTAKE_MODEL": "gpt-5.6-luna"}
-MODEL_SECRET = "openai-api-key"
+MODEL_SECRET = "openai-api-key"  # noqa: S105 - a Secret Manager NAME, not a value
 MODEL_KEY_ENV = "OPENAI_API_KEY"
 
 #: The harness flags every arm shares. `--goal benchmark` is the T29 plan's; `--mesh-probe
