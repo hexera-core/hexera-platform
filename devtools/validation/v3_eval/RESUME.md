@@ -61,6 +61,8 @@
 - **23:15 PT, T29-det supporting data SEALED** (`t29_deterministic@0ff8db35/120s`, not the arm of record), under `devtools/validation/v3_eval/supporting/t29-det-0ff8db35-120s/` and `gs://.../eval/supporting/`. Failing: **0/119 newly meshed, 0 newly broken** (meshed 2→2), plus 1 crash. Clean: **100/100 with no kept operation**, 0 broken. 0 model calls; VM cost about $0.13.
 - **Segfault:** failing shard 15/21 exits 139 on both attempts (11200639 and 11200655), on `abc/0059_00597937_2e928f752b8806de5a85c14b_step_000.step` (sha256 fc4e4a440ffd…), after OCC FixShape `Geom_RectangularTrimmedSurface::U parameters out of range`. The process dies, so the file gets no row. LEAD routed per-file crash isolation (an outcome=crashed row) to lane C as a blocker for the AI wave. No sample change; shard 15 is not to be relaunched again.
 - No eval VMs are running. Lane B is waiting for LEAD's AI-wave launch ids.
+- **00:25 PT 11-20:** Lane B is babysitting the AI wave **11200820** (12x c2d-standard-8, us-central1-b, 96 shards, all 5 units, code b04befe8, 420 s). All 12 VMs are RUNNING. Lane B relaunches failed or stockout shards with `--only`, then runs `collect.py --pull --t6`.
+- **00:55 PT:** wave 11200820 is at 92/96 DONE, 0 FAILED. Reviewer reachable in every arm (all det calls ok). 14 `invalid_request` calls (9 v3_full, 5 t19_off) are the 97a9e216 defect. LEAD ruling: wave 1 is PRELIMINARY, sealed with the affected files named; the arms of record come from wave 2 at lane E's sha. Lane B seals wave 1 with `--out devtools/validation/v3_eval/supporting/wave1-b04befe8/`, not the evidence dir, so wave 2 fills that.
 
 ## Lane C status (PR #494 merge readiness), 2026-11-20
 
@@ -100,7 +102,7 @@
 - **A ShapeFix segfault kills the process.** `abc/0059_00597937_2e928f752b8806de5a85c14b_step_000.step` (sha256 fc4e4a440ffd...) segfaults (exit 139) right after OCC "FixShape failed with exception Geom_RectangularTrimmedSurface::U parameters out of range", on both attempts.
   - The eval harness now isolates it, but a production worker running the same repair would die with it.
   - The repair session needs the same out-of-process guard the mesher has (`engines/` native-crash isolation) before CRS repair runs on untrusted uploads.
-- **00:25 PT 11-20:** Lane B is babysitting the AI wave **11200820** (12x c2d-standard-8, us-central1-b, 96 shards, all 5 units, code b04befe8, 420 s). All 12 VMs are RUNNING. Lane B relaunches failed or stockout shards with `--only`, then runs `collect.py --pull --t6`.
+- **Model-call telemetry labels every call `role=intake`.** Reviewer, investigator and tournament calls cannot be split from `model-calls.jsonl` (wave 11200820: all 4,604 calls were `intake`). Per-role cost and reachability need a real role on each call.
 
 ## Earlier handoff (21:55 PT)
 
