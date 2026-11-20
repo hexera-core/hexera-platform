@@ -177,3 +177,33 @@ def test_a_spent_deadline_returns_promptly_with_no_clash():
     found = clashing_surfaces(coords, tris, np.array([1, 1, 2, 2]),
                               deadline=time.monotonic() - 1.0)
     assert found == ()
+
+
+def test_two_surfaces_folded_flat_across_a_shared_edge_are_a_fold():
+    # Measured on abc/0059_00595955 ("overlapping facets on surface 370 surface 376"): triangles of
+    # two surfaces share an edge and lie folded onto each other - dihedral 0. Sharing nodes, they
+    # were never compared; gmsh's boundary check calls them overlapping facets.
+    coords = np.array([[0, 0, 0], [1, 0, 0], [0.5, 1, 0], [0.4, 0.8, 0]], dtype=float)
+    tris = np.array([[0, 1, 2], [0, 1, 3]])          # shared edge 0-1, both apexes on +y
+    found = clashing_surfaces(coords, tris, np.array([370, 376]))
+    assert [(c.surfaces, c.kind) for c in found] == [((370, 376), "fold")]
+
+
+def test_a_sharp_but_open_edge_is_not_a_fold():
+    # 5 degrees between the two triangles across their edge: sharp, not folded.
+    import math
+
+    ang = math.radians(5.0)
+    coords = np.array([[0, 0, 0], [1, 0, 0], [0.5, 1, 0],
+                       [0.5, math.cos(ang), math.sin(ang)]], dtype=float)
+    tris = np.array([[0, 1, 2], [0, 1, 3]])
+    assert clashing_surfaces(coords, tris, np.array([1, 2])) == ()
+
+
+def test_one_facet_meshed_on_two_surfaces_is_a_duplicate():
+    # Measured on abc/0059_00595955 (370/376): the "overlapping facets" were three triangles that
+    # appear on BOTH surfaces - all three nodes shared. Never compared, because they share nodes.
+    coords = np.array([[0, 0, 0], [1, 0, 0], [0.5, 1, 0], [3, 3, 3]], dtype=float)
+    tris = np.array([[0, 1, 2], [2, 1, 0], [0, 1, 3]])
+    found = clashing_surfaces(coords, tris, np.array([370, 376, 376]))
+    assert [(c.surfaces, c.kind) for c in found] == [((370, 376), "duplicate")]

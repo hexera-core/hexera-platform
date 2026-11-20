@@ -548,3 +548,27 @@ def test_a_clash_defect_says_whether_its_faces_are_adjacent(monkeypatch):
                                      clashes=(Clash((1, 3), 2, (0.0, 0.0, 5.0), "crossing"),))
     found = mesh_probe.mesh_defects(shape, diagonal_mm=20.6, budget_s=60.0)
     assert {d.measurements["clash_adjacent"] for d in found} == {True}
+
+
+def test_a_face_gmsh_named_still_carries_its_clash_evidence(monkeypatch):
+    # Lane F's "clash not located" bucket: gmsh names the overlapping surfaces itself, so the face
+    # was located - but without the clash evidence (kind, gap, adjacency) that says what kind of
+    # failure it is. A gmsh-named face that is in a clash pair carries that pair's evidence.
+    from meshpipeline.cad.repair.mesh_clash import Clash
+    from meshpipeline.cad.repair.mesh_probe import MeshFailure
+
+    failure = MeshFailure(OVERLAPPING_FACETS, (1, 3), None,
+                          "Invalid boundary mesh (overlapping facets) on surface 1 surface 3",
+                          stage="3d")
+    mesh_probe, shape = _clash_probe(monkeypatch, failure=failure, contact_calls=[],
+                                     clashes=(Clash((1, 3), 3, (0.0, 0.0, 5.0), "fold"),))
+    found = {d.entity_index: d.measurements
+             for d in mesh_probe.mesh_defects(shape, diagonal_mm=20.6, budget_s=60.0)}
+
+    assert set(found) == {1, 3}
+    for face in (1, 3):
+        assert "located_by" not in found[face]          # gmsh named it; the clash only explains
+        assert found[face]["clash_kind"] == "fold"
+        assert found[face]["clash_pair"] == [1, 3]
+        assert found[face]["clash_adjacent"] is True
+        assert found[face]["clash_gap_mm"] == pytest.approx(0.0, abs=1e-9)

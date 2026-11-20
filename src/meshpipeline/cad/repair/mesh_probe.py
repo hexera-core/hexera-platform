@@ -757,20 +757,29 @@ def _mesh_defects(shape, *, diagonal_mm: float, budget_s: float,
     if not located:
         return (_unlocated(failure),)
     defects = [_face_defect(code, faces, index, failure) for index in sorted(located)]
-    if by_clash:
+    if result.clashes:
         # EACH FACE CARRIES ITS OWN PAIR'S EVIDENCE (Greptile #495): the leading clash - most hits
         # - that names this face, never the run's first pair, so a face whose pair really meets is
         # not read as another pair's sizing gap. One gap per pair, measured once.
-        tags_of = {face: tag for tag, face in (mapping or {}).items()}
+        # AND HOWEVER IT WAS LOCATED: a face gmsh named itself still carries the evidence of a
+        # clash pair it is in (kind, gap, adjacency), which is what says WHAT KIND of failure it
+        # is; only a face the clash LOCATED is marked `located_by`.
+        if mapping is None:
+            mapping = faces_for_tags(_face_boxes(faces), result.tag_boxes, tol=tol)
+        tags_of = {face: tag for tag, face in mapping.items()}
         gaps: dict[tuple[int, int], float | None] = {}
         adjacent: dict[tuple[int, int], bool | None] = {}
         for defect in defects:
             tag = tags_of.get(int(defect.entity_index))
-            own = next((c for c in result.clashes if tag in c.surfaces), result.clashes[0])
+            own = next((c for c in result.clashes if tag in c.surfaces),
+                       result.clashes[0] if by_clash else None)
+            if own is None:
+                continue
             if own.surfaces not in gaps:
-                gaps[own.surfaces] = _clash_gap(faces, mapping or {}, own, deadline=deadline)
-                adjacent[own.surfaces] = _clash_adjacent(faces, mapping or {}, own)
-            defect.measurements["located_by"] = LOCATED_BY_CLASH
+                gaps[own.surfaces] = _clash_gap(faces, mapping, own, deadline=deadline)
+                adjacent[own.surfaces] = _clash_adjacent(faces, mapping, own)
+            if by_clash:
+                defect.measurements["located_by"] = LOCATED_BY_CLASH
             defect.measurements["clash_pairs"] = [list(c.surfaces) for c in result.clashes]
             defect.measurements["clash_pair"] = list(own.surfaces)
             defect.measurements["clash_gap_mm"] = gaps[own.surfaces]
