@@ -581,3 +581,17 @@ def test_a_part_that_is_one_plate_offers_no_flat_face_as_a_piece_of_it(tmp_path)
     ws = _stage(sf.flat_plate(), tmp_path / "plate")
     rows, _faces = PF.features(*FD.measure_staged(ws)[:2])
     assert not [r for r in rows if r["kind"] in ("flat face", "thin wall")], rows
+
+
+def test_a_nearest_place_row_is_never_shown_as_met():
+    """6b, round 11: the tally said "1 applied to the whole part, the nearest there is" while its report row read
+    "Met". The row is told, not judged: "Nearest there is"."""
+    from meshpipeline.engines import shell_delivery as SD
+    from meshpipeline.render import mesh_report as RP
+    row = {"id": "r1", "field": "local", "asked": "elements of 1.5 mm at the vertical leg", "applied": True,
+           "met": None, "nearest": True, "delivered": "applied to the whole part, the nearest there is - Part_1: ..."}
+    got = SD.asked_rows({"requirements": {"rows": [row]}})
+    assert got[0]["told"] == "nearest"
+    html = RP._fea_limits({"check": {"rows": [{"label": got[0]["label"], "measured": 0, "op": "==", "limit": 0,
+                                               "ok": None, "told": "nearest"}]}})
+    assert "Nearest there is" in html and ">Met<" not in html

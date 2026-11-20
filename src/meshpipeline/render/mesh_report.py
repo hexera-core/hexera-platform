@@ -149,7 +149,8 @@ def _fea_limits(fea: Mapping) -> str:
         if isinstance(r.get("measured"), list):
             continue                       # a list of places: its own section below
         rows.append([_e(r.get("label") or r.get("key")), _e(_num(r.get("measured"))),
-                     _e(_limit(r.get("op"), r.get("limit"))), _ok(r.get("ok"))])
+                     _e(_limit(r.get("op"), r.get("limit"))),
+                     '<span class="na">Nearest there is</span>' if r.get("told") == "nearest" else _ok(r.get("ok"))])
     note = _m(fea.get("check")).get("solvers")
     return _table(("Check", "Measured", "Limit", "Result"), rows, "limits") + (f"<p class=\"hint\">{_e(note)}</p>" if note else "")
 

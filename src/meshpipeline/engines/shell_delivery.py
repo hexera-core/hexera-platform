@@ -156,7 +156,7 @@ def asked_rows(quality: Mapping) -> list[dict]:
         if isinstance(r, Mapping) and r.get("met") is None and r.get("nearest") and r.get("applied") is not False:
             out.append({"key": f"asked_{r.get('id')}", "label": f"You asked: {r.get('asked')}", "op": "==",
                         "limit": 0, "measured": 0, "said": line(r),
-                        "source": "your notes (engines/shell_places.py, the nearest there is)"})
+                        "source": "your notes (engines/shell_places.py, the nearest there is)", "told": "nearest"})
     return out
 
 
@@ -288,7 +288,9 @@ def results(workspace, q: Mapping, plan: Mapping) -> dict:
     rows = []
     for r in gating + limits(q):
         met = limit_met(r.get("measured"), str(r.get("op")), r.get("limit"))
-        rows.append({**{k: r.get(k) for k in ("key", "label", "op", "limit", "measured")}, "ok": met,
+        rows.append({**{k: r.get(k) for k in ("key", "label", "op", "limit", "measured")},
+                     # (a row told, not judged - the nearest there is - is never shown as met)
+                     "ok": None if r.get("told") else met, **({"told": r["told"]} if r.get("told") else {}),
                      "gating": r in gating, "words": words(r)})
     # SHMESH-26: the header's worst-quality figure is the user's Jacobian line when they set one (in place of its row,
     # so it is listed once)
