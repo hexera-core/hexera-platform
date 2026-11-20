@@ -178,8 +178,13 @@ def clean_untouched(rows: list[dict], summary: dict) -> dict:
     touched = sorted(r["file"] for r in rows
                      if any(op.get("status") == "kept" for op in r.get("operations") or []))
     broken = int((summary.get("meshing") or {}).get("newly_broken") or 0)
-    return {"untouched": not touched and broken == 0, "files_with_kept_ops": touched,
-            "newly_broken": broken}
+    # A clean part whose repair CRASHED was not shown untouched: nothing was delivered for it.
+    crashed = sorted(r["file"] for r in rows if r.get("outcome") == "crashed")
+    out = {"untouched": not touched and broken == 0 and not crashed,
+           "files_with_kept_ops": touched, "newly_broken": broken}
+    if crashed:
+        out["crashed_files"] = crashed
+    return out
 
 
 def arm_report(entry: dict) -> dict:
@@ -342,7 +347,11 @@ def result_arm(result_id: str, rep: dict, checked: dict, kind_sha: str) -> dict:
            "model_calls": rep["model"]["calls"], "cost_usd": rep["total_cost_usd"],
            "wall_s": rep["vm"]["shard_seconds"],
            "cost_per_fixed_part": rep["cost_per_fixed_part_usd"],
-           "notes": (f"run {run}; {evalspec.arm(run)['model_role']}; model "
+           "notes": (f"run {run}; {evalspec.arm(run)['model_role']}; "
+                     + (f"{meshing['crashed']} file(s) CRASHED (native; isolated, counted in "
+                        f"newly_broken only if they meshed before); "
+                        if meshing.get("crashed") else "")
+                     + "model "
                      f"${rep['model']['cost_usd']} + VM ${rep['vm']['container_cost_usd']}; "
                      f"code {checked['commit'][:12]} from the archive on an image built "
                      f"from {str(checked.get('image_commit') or '?')[:12]}; "

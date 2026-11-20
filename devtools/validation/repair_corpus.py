@@ -803,8 +803,14 @@ def meshing_summary(rows: list[dict]) -> dict:
                     else row.get("mesh_kind_after")) or "other"
             still[kind] = still.get(kind, 0) + 1
     forced = sum(1 for r in scored if r.get("forced_repair"))
+    # A CRASHED FILE (the isolated child died) is its own count. It enters newly_broken only when
+    # the input meshed before the crash (its row carries meshes_before=True, meshes_after=False);
+    # one that did not mesh before has meshes_after=None and is neither broken nor meshed. The key
+    # appears only when a crash happened, so a run without one summarises byte-identically.
+    crashed = sum(1 for r in rows if r.get("outcome") == CRASHED)
     return {
         **({"forced_repairs": forced} if forced else {}),
+        **({"crashed": crashed} if crashed else {}),
         "files": len(scored),
         "meshed_before": sum(1 for r in scored if r["meshes_before"]),
         "meshed_after": sum(1 for ok in after if ok),
@@ -1337,18 +1343,24 @@ def _probe_before(path: Path) -> tuple[bool, str] | None:
 
 
 def _one(path: Path, scratch: Path, *, mode: str = "off", mesh_probe: bool = False,
-         force_repair: bool = False, goal=None, sink=None) -> dict:
+         force_repair: bool = False, goal=None, sink=None, stage=None) -> dict:
+    # `stage(name, **facts)` is told where the file is, so a run that isolates files can say at
+    # which stage a crashed child died and whether the input meshed before it did.
+    stage = stage or (lambda *_a, **_k: None)
     # FORCE-REPAIR IS A BENCHMARK SWITCH, NOT A PRODUCT PATH. A file the before-probe says will not
     # mesh runs the repair session even where triage routed it away (a clean inspection goes to
     # mesh-as-is), so the in-session probe can locate what the inspector could not see.
     forced = False
+    stage("probe_before")
     taken = _probe_before(path) if (force_repair and mesh_probe) else None
     if taken is not None:
         forced = not taken[0]
+    stage("repair", **({"meshes_before": bool(taken[0])} if taken is not None else {}))
     row = _repair_row(path, scratch, mode=mode, force=forced, goal=goal, sink=sink)
     if taken is not None and row.get("outcome") != "unreadable":
         row["meshes_before"], row["mesh_kind_before"] = taken
     if mesh_probe and row.get("outcome") != "unreadable":
+        stage("mesh_probe")
         _score_meshing(row, path, scratch)
     elif mesh_probe:
         row.update(meshes_before=False, mesh_kind_before="unreadable",
@@ -1555,9 +1567,85 @@ def _input_stamp(path: Path, by_sha: dict) -> dict:
     return {"sha256": sha, **{k: entry[k] for k in _STRATUM_FIELDS if k in entry}}
 
 
+CRASHED = "crashed"
+
+
+def _isolated(path: Path, body, *, mesh_probe: bool) -> dict:
+    """Run `body(stage)` for one file in a FORKED CHILD and return its row. A child that dies (a
+    native segfault in OCC's ShapeFix took down a whole shard on a real ABC part) becomes a
+    `crashed` row naming the signal or exit code and the last stage it reported, and the run goes
+    on to the next file. In-memory state the child changes (counters, collected records) does not
+    reach the parent; anything that must survive is written to a file as it happens.
+
+    PRODUCT NOTE: this protects the benchmark only. The same crash in a worker is a product bug."""
+    import pickle
+
+    # A pending stdout/stderr buffer would be inherited and printed twice: empty it first.
+    sys.stdout.flush()
+    sys.stderr.flush()
+    read_fd, write_fd = os.pipe()
+    pid = os.fork()
+    if pid == 0:  # the child: report stages, send the row, never return into the parent's code
+        os.close(read_fd)
+        out = os.fdopen(write_fd, "wb")
+
+        def send(msg):
+            pickle.dump(msg, out)
+            out.flush()
+
+        code = 0
+        try:
+            send(("row", body(stage=lambda name, **facts: send(("stage", name, facts)))))
+        except BaseException as exc:  # noqa: BLE001 - a Python error is the parent's to record
+            try:
+                send(("error", f"{type(exc).__name__}: {exc}"))
+            except Exception:  # noqa: BLE001
+                code = 70
+        finally:
+            try:
+                out.close()
+                sys.stdout.flush()
+                sys.stderr.flush()
+            finally:
+                os._exit(code)
+    os.close(write_fd)
+    stage, facts, row, error = "start", {}, None, None
+    with os.fdopen(read_fd, "rb") as src:
+        while True:
+            try:
+                msg = pickle.load(src)  # noqa: S301 - our own forked child, a private pipe
+            except (EOFError, pickle.UnpicklingError):
+                break
+            if msg[0] == "stage":
+                stage = msg[1]
+                facts.update(msg[2])
+            elif msg[0] == "row":
+                row = msg[1]
+            elif msg[0] == "error":
+                error = msg[1]
+    _, status = os.waitpid(pid, 0)
+    if row is not None and os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0:
+        return row
+    if error is not None and os.WIFEXITED(status):
+        raise RuntimeError(f"{path.name}: {error}")  # a Python error, as an inline run raises it
+    sig = os.WTERMSIG(status) if os.WIFSIGNALED(status) else None
+    code = os.WEXITSTATUS(status) if os.WIFEXITED(status) else None
+    crash = {"signal": sig, "exit_code": code if sig is None else 128 + sig, "stage": stage}
+    out = {"file": path.name, "outcome": CRASHED, "crash": crash,
+           "error": f"child died ({'signal ' + str(sig) if sig else 'exit ' + str(code)}) "
+                    f"during {stage}"}
+    if mesh_probe and "meshes_before" in facts:
+        before = bool(facts["meshes_before"])
+        # meshed before and crashed: the repair broke it. Did not mesh: no after verdict.
+        out.update(meshes_before=before, mesh_kind_before="" if before else "other",
+                   meshes_after=False if before else None,
+                   mesh_kind_after=CRASHED if before else "")
+    return out
+
+
 def run_files(files: list[Path], scratch: Path, *, mode: str = "off", loop: bool = False,
               bundle=None, mesh_probe: bool = False, force_repair: bool = False,
-              goal=None, sink=None, entries=None) -> list[dict]:
+              goal=None, sink=None, entries=None, isolate: bool = False) -> list[dict]:
     """Run the repair loop over `files`, printing a line per file; returns the rows. When `bundle`
     is a BundleWriter every row is streamed into it AS IT IS PRODUCED, so a run that dies half way
     leaves its evidence-so-far on disk rather than in a list that was never written.
@@ -1570,19 +1658,25 @@ def run_files(files: list[Path], scratch: Path, *, mode: str = "off", loop: bool
     rows: list[dict] = []
     for path in files:
         stamp = _input_stamp(path, by_sha)
-        if mode == "live":
-            # The SAME surface run twice, deterministic-only first and into its own directory so
-            # the second pass cannot overwrite it. Two passes to attribute a difference to the
-            # model direction, not two engines competing.
-            rules_dir = scratch / "rules_only"
-            rules_dir.mkdir(parents=True, exist_ok=True)
-            rules_row = _one(path, rules_dir)
-            row = _one(path, scratch, mode="live", mesh_probe=mesh_probe,
-                       force_repair=force_repair, goal=goal, sink=sink)
-            row["rules_only"] = rules_row
-        else:
-            row = _one(path, scratch, mode=mode, mesh_probe=mesh_probe,
-                       force_repair=force_repair, goal=goal, sink=sink)
+
+        def body(stage=None, path=path):
+            if mode == "live":
+                # The SAME surface run twice, deterministic-only first and into its own directory
+                # so the second pass cannot overwrite it. Two passes to attribute a difference to
+                # the model direction, not two engines competing.
+                rules_dir = scratch / "rules_only"
+                rules_dir.mkdir(parents=True, exist_ok=True)
+                if stage:
+                    stage("rules_only")
+                rules_row = _one(path, rules_dir)
+                row = _one(path, scratch, mode="live", mesh_probe=mesh_probe,
+                           force_repair=force_repair, goal=goal, sink=sink, stage=stage)
+                row["rules_only"] = rules_row
+                return row
+            return _one(path, scratch, mode=mode, mesh_probe=mesh_probe,
+                        force_repair=force_repair, goal=goal, sink=sink, stage=stage)
+
+        row = _isolated(path, body, mesh_probe=mesh_probe) if isolate else body()
         row.update(stamp)
         rows.append(row)
         if bundle is not None:
@@ -1649,6 +1743,9 @@ def main() -> int:
                         help="with --mesh-probe: a file whose before-probe fails runs the repair "
                              "session even when triage routed it away (benchmark only)")
     parser.add_argument("--json", dest="json_out", default="", help="write the rows here")
+    parser.add_argument("--isolate-files", dest="isolate", action="store_true",
+                        help="repair each file in a forked child: a native crash becomes a "
+                             "`crashed` row and the run continues (POSIX; benchmark harness)")
     # THE INVESTIGATOR (cad/repair/investigator.py). Off is today's behaviour exactly: no record,
     # no row key, no summary block and no settings key. `shadow` investigates and keeps its
     # packages out of the kernel; `live` authors with them. NOT GIVEN (None) keeps the
@@ -1859,7 +1956,7 @@ def main() -> int:
     writer = benchmark_bundle.BundleWriter(Path(args.bundle)) if args.bundle else None
     rows = run_files(files, scratch, mode=args.planner, loop=args.loop, bundle=writer,
                      mesh_probe=args.mesh_probe, force_repair=args.force_repair,
-                     goal=goal, sink=sink, entries=sample_entries)
+                     goal=goal, sink=sink, entries=sample_entries, isolate=args.isolate)
     if sink is not None:
         sink.close()
 

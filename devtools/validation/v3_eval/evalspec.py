@@ -71,7 +71,10 @@ MODEL_KEY_ENV = "OPENAI_API_KEY"
 
 #: The harness flags every arm shares. `--goal benchmark` is the T29 plan's; `--mesh-probe
 #: --force-repair` is the coarse gmsh probe verdict (tier 2) T6 was scored on.
-HARNESS_FLAGS: tuple[str, ...] = ("--mesh-probe", "--force-repair", "--goal", "benchmark")
+#: --isolate-files: one part's native crash (a ShapeFix segfault on a real ABC part) must end that
+#: part's row as `crashed`, not the shard - a shard that can never finish blocks every arm's collect.
+HARNESS_FLAGS: tuple[str, ...] = ("--mesh-probe", "--force-repair", "--goal", "benchmark",
+                                  "--isolate-files")
 
 
 def _arm(investigator: str, tournament: str, k: str | None = None) -> dict[str, str]:

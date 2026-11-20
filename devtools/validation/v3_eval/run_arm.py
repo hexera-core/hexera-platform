@@ -65,6 +65,14 @@ class TelemetryFile:
         with self.path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(rec, default=str) + "\n")
 
+    def totals(self) -> tuple[int, float]:
+        """(calls, cost) as written to the file - every process's calls, the children's included."""
+        if not self.path.is_file():
+            return 0, 0.0
+        recs = [json.loads(line) for line in self.path.read_text(encoding="utf-8").splitlines()
+                if line.strip()]
+        return len(recs), sum(float(r.get("estimated_cost_usd") or 0.0) for r in recs)
+
 
 def env_drift(arm_env: dict[str, str]) -> list[str]:
     return [f"{k}: arm wants {v!r}, the process has {os.environ.get(k)!r}"
@@ -237,7 +245,10 @@ def main(argv: list[str] | None = None) -> int:
                                  if k.startswith(("CAD_REPAIR_", "CAD_INSPECT_"))}
         sys.argv = ["repair_corpus.py", *argv_rc]
         code = int(rc.main() or 0)
-        prov["model_calls"], prov["model_cost_usd"] = sink.calls, round(sink.cost, 4)
+        # Counted from the FILE, not the in-process counter: with --isolate-files each part runs in
+        # a forked child, whose calls are appended to the file but never reach this process.
+        calls, cost = sink.totals()
+        prov["model_calls"], prov["model_cost_usd"] = calls, round(cost, 4)
         return code
     except Exception:  # noqa: BLE001 - the provenance must still be written
         prov["error"] = traceback.format_exc()[-4000:]
