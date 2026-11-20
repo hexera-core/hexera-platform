@@ -282,3 +282,91 @@ def test_the_reviewer_is_shown_the_basis_and_a_measured_status():
     assert evidence["deviation_status"] == package_review.DEVIATION_MEASURED
     assert evidence["deviation_basis"] == deviation.BASIS_ADJACENT
     assert evidence["deviation_mm"] == 0.004
+
+
+# --- the samples are measured in a bounded child (audit row 3) --------------------------------
+
+
+def _vertices(monkeypatch):
+    """The one kernel call deviation still makes in the parent is making a vertex; stub it."""
+    monkeypatch.setattr(deviation, "_vertex", lambda point: f"vertex{point}")
+
+
+def _batch(monkeypatch, answers):
+    seen: dict = {}
+
+    def _distances(shapes, pairs, *, budget_s, bounds=None, tol=0.0):
+        seen.setdefault("calls", 0)
+        seen["calls"] += 1
+        seen.update(shapes=shapes, pairs=pairs, budget_s=budget_s)
+        return answers
+
+    monkeypatch.setattr(deviation.occ_distance, "distances", _distances)
+    return seen
+
+
+def _ok(value):
+    return {"min_distance_mm": value, "point_a": None, "point_b": None,
+            "distance_status": "measured"}
+
+
+def test_every_sample_is_measured_in_one_child(monkeypatch):
+    """THE K-FOLD COST IS WHY IT IS ONE CHILD. The deviation runs inside every tournament
+    rehearsal and measures up to `samples` points; a child per point would pay interpreter
+    start-up per sample. One child measures all of them against the before shape."""
+    _vertices(monkeypatch)
+    seen = _batch(monkeypatch, [_ok(0.5), _ok(2.5), _ok(1.0)])
+
+    got = deviation.measure_deviation("before", "after", sampler=lambda *a: (_POINTS, 2, 0),
+                                      budget_s=9.0)
+
+    assert seen["calls"] == 1
+    assert seen["shapes"][0] == "before", "every sample is measured against the BEFORE shape"
+    assert seen["pairs"] == [(0, 1), (0, 2), (0, 3)]
+    assert got.mm == 2.5 and got.samples == 3
+
+
+def test_a_sample_the_child_never_answered_is_not_a_deviation(monkeypatch):
+    """A MAXIMUM OVER PART OF THE SAMPLES IS A LOWER BOUND, NOT THE DEVIATION. Elsewhere a
+    partial batch is worth keeping; here it is not, because the answer is the WORST point and the
+    unmeasured one may be it. So an incomplete batch reads exactly as the spent budget did: not
+    measured, and the reviewer sees no number rather than a flattering one."""
+    from meshpipeline.cad.repair import occ_distance
+
+    _vertices(monkeypatch)
+    _batch(monkeypatch, [_ok(0.5),
+                         {**occ_distance.UNMEASURED, "distance_status": "unmeasured: "
+                          "budget_spent"},
+                         _ok(1.0)])
+
+    got = deviation.measure_deviation("before", "after", sampler=lambda *a: (_POINTS, 2, 0),
+                                      budget_s=9.0)
+
+    assert got.mm is None and got.faces is None
+
+
+def test_a_kernel_refusal_is_not_a_deviation_either(monkeypatch):
+    """`_distance_to` raised when the kernel did not finish, and the caller turned that into "not
+    measured". A refused pair keeps that meaning - it is not a measurement of zero."""
+    from meshpipeline.cad.repair import occ_distance
+
+    _vertices(monkeypatch)
+    _batch(monkeypatch, [_ok(0.5),
+                         {**occ_distance.UNMEASURED,
+                          "distance_status": "unmeasured: the kernel gave no distance"},
+                         _ok(1.0)])
+
+    assert deviation.measure_deviation("before", "after", sampler=lambda *a: (_POINTS, 2, 0),
+                                       budget_s=9.0).mm is None
+
+
+def test_the_batch_gets_what_is_left_of_the_budget_not_the_whole_of_it(monkeypatch):
+    """The budget covers the sampling too, so the child may only have what the selection left."""
+    _vertices(monkeypatch)
+    seen = _batch(monkeypatch, [_ok(1.0)] * 3)
+    ticks = iter([100.0, 104.0, 104.0, 104.0])
+
+    deviation.measure_deviation("before", "after", sampler=lambda *a: (_POINTS, 2, 0),
+                                budget_s=10.0, clock=lambda: next(ticks))
+
+    assert seen["budget_s"] == pytest.approx(6.0)
