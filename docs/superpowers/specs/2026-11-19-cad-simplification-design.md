@@ -195,6 +195,32 @@ switch, then the model-authored packages. Simplification does the same:
    keep or revert, promotion.
 3. `CAD_SIMPLIFY_LLM_AUTHOR` shadow, then live.
 
+**Slice 2 as built** (`cad/simplify/simplify.py`, `verify.py`, `pipeline/simplify_attempt.py`,
+`simplify_promote.py`; state v17, rulebook v74):
+
+- One driver solve of the fully simplified part, then two local solves per removed feature, cut
+  from the original. ccx runs at one thread in a child interpreter.
+- A feature is accepted when |estimate| <= 0.5 x budget.
+- Accepted features enter a ledger least-error-first while the summed estimate stays within the
+  budget; the rest are marked `over_budget`. Only the ledger's features are removed in the
+  promoted file.
+
+Departures from the CRS twin:
+
+- `cad_simplify` is a personal-environment opt-in. Shared dev and prod stay off until the check is
+  proven there.
+- A part that was repaired and then simplified still delivers its repaired CAD, read from
+  `simplify_lineage.replaced_geometry`, because `geometry` then names the simplified bytes.
+
+Not yet built (slice 2b):
+
+- A driver of its own for borderline features.
+- **The package-level re-check before promotion.** The bench measured a package at 1.16x its
+  member sum (KP08, wall-rule size), so the ledger alone is not a bound.
+- Calibrating the cut-mismatch limit (0.10 is a placeholder).
+- Delivery of the simplified STEP, console panels and lane text.
+- User-named fixed/load faces. They are authored after admission today; see the open questions.
+
 `devtools/simplify/` (the harness and `local.py`) stays the measurement bench throughout. It is how
 each slice's thresholds are chosen before the slice ships.
 

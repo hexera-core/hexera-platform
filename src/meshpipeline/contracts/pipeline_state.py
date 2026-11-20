@@ -16,7 +16,13 @@ from meshpipeline.contracts.geometry_source import GeometryState
 # (thread_id = "<job_id>:s<version>"), so a redelivery after a deploy that changed the
 # schema starts FRESH instead of resuming an incompatible checkpoint - the single biggest
 # production-incident source for agent systems (state management).
-STATE_SCHEMA_VERSION = 16  # v16: `simplify_status` + `simplify_report` - what CAD simplification
+STATE_SCHEMA_VERSION = 17  # v17: `simplify_attempt` + `simplify_lineage` - whether the run
+                           # defeatured its own geometry behind CAD_SIMPLIFY_ENABLED, what it kept
+                           # and what the simulation check estimated, or why it did not
+                           # (pipeline/simplify_attempt.py); and, when simplified geometry
+                           # REPLACED the geometry the run had, which bytes it replaced
+                           # (pipeline/simplify_promote.py). Carries every v16 field.
+                           # v16: `simplify_status` + `simplify_report` - what CAD simplification
                            # inspection found removable in the geometry on its way to admission
                            # (pipeline/simplify_inspect.py). Diagnostics: neither field moves
                            # geometry. Carries every v15 field.
@@ -134,6 +140,16 @@ class PipelineState(TypedDict):
     # customer sent, which is most of them. `geometry` is always what IS being meshed - no reader
     # has to choose between two candidates - and this is the record of what it was before.
     repair_lineage: dict
+    # WHETHER THE RUN SIMPLIFIED ITS OWN GEOMETRY (pipeline/simplify_attempt.py): `attempted: False`
+    # with the outcome and reason it declined (off is the ordinary case), or what it removed, each
+    # feature's estimated compliance change and verdict, and what the package spends of the budget.
+    # A decline leaves the run on the geometry it had.
+    simplify_attempt: dict
+    # SET ONLY WHEN A SIMPLIFICATION WAS PROMOTED (pipeline/simplify_promote.py): the identity of
+    # the geometry it replaced (the upload, or the repaired part - `repair_lineage` is then kept
+    # beside it, so the run carries both), the simplified bytes, the features removed and the
+    # estimated change.
+    simplify_lineage: dict
 
     domain:     str
     engine_params: dict   # engine-NATIVE declared params (ParamSpec answers; see data_contract)

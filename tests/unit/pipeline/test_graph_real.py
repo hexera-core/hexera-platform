@@ -50,6 +50,7 @@ def test_build_graph_calls_all_required_nodes():
         "node_intake", "node_builder", "node_executor",
         "node_classifier", "node_reviewer", "node_failure_handler",
         "node_repair_inspect", "node_repair_attempt", "node_simplify_inspect",
+        "node_simplify_attempt",
     }
     assert expected_nodes.issubset(recorder.nodes), (
         f"Missing nodes: {expected_nodes - recorder.nodes}"
@@ -59,12 +60,16 @@ def test_build_graph_calls_all_required_nodes():
     # whichever geometry they left in place.
     assert ("node_repair_inspect", "node_repair_attempt") in recorder.edges
     assert ("node_repair_attempt", "node_simplify_inspect") in recorder.edges
-    assert ("node_simplify_inspect", "node_geometry_admission") in recorder.edges
+    assert ("node_simplify_inspect", "node_simplify_attempt") in recorder.edges
+    assert ("node_simplify_attempt", "node_geometry_admission") in recorder.edges
+    assert ("node_simplify_inspect", "node_geometry_admission") not in recorder.edges
     assert "node_repair_inspect" not in recorder.cond_edges
     assert "node_repair_attempt" not in recorder.cond_edges
     # simplification inspection is evidence like repair inspection: one unconditional edge, so the
     # admission gate still judges whatever geometry reaches it
     assert "node_simplify_inspect" not in recorder.cond_edges
+    # and the attempt refuses rather than ending a run, as the repair attempt does
+    assert "node_simplify_attempt" not in recorder.cond_edges
 
 
 

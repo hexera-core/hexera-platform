@@ -543,6 +543,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # Xvfb - defensive fallback X server (DISPLAY is NOT exported; EGL is used); see worker_entrypoint.sh
     xvfb \
     && rm -rf /var/lib/apt/lists/*
+# CalculiX (`ccx`), the solver CAD simplification's verification runs (cad/simplify/verify.py):
+# a driver solve and two small local solves per removed feature, in a fresh child interpreter, on
+# ONE thread - ccx at 16 threads was measured giving wrong answers (docs/simplification/DEVLOG.md).
+# Only reached when CAD_SIMPLIFY_ENABLED is on; without it the attempt reports the check
+# unavailable and the run meshes the geometry it had. `ccx -v` exits non-zero by design, so the
+# build checks its banner instead of its status.
+RUN apt-get update && apt-get install -y --no-install-recommends calculix-ccx \
+    && rm -rf /var/lib/apt/lists/* \
+    && ccx -v | grep -q "This is Version"
 # REPEATABLE PLANS: Python salts its string hash per process, so code that walks a set of names
 # can write patches or regions in another order on the next run. The worker plans meshes; it
 # serves no untrusted request parsing (the api stage keeps hash randomisation).

@@ -211,14 +211,15 @@ def recording() -> Iterator[_RunRecord]:
         _CURRENT.reset(token)
 
 
-def note_time_limit(where: str, decision: str, **facts: Any) -> None:
+def note_time_limit(where: str, decision: str, *, rule: str = "", **facts: Any) -> None:
     """A wall-clock limit changed what this run did. Only the clocks that still DECIDE call this:
-    the CAD inspection and repair steps (docs/RULES.md TIME-6, left for the repair work, #201).
-    Every other clock is a guard (note_guard_trip). Facts are numbers or short words (budget_s,
-    left_s, ...)."""
+    the CAD inspection and repair steps and the CAD simplification steps (docs/RULES.md TIME-6,
+    left for the repair work, #201; `rule` names the constant the caller cites, TIME_REPAIR_CLOCK
+    by default). Every other clock is a guard (note_guard_trip). Facts are numbers or short words
+    (budget_s, left_s, ...)."""
     from meshpipeline.contracts.work_limits import TIME_REPAIR_CLOCK
     rec = _record()
-    entry = {"where": str(where), "decision": str(decision), "rule": TIME_REPAIR_CLOCK,
+    entry = {"where": str(where), "decision": str(decision), "rule": rule or TIME_REPAIR_CLOCK,
              **{k: (round(v, 1) if isinstance(v, float) else v) for k, v in facts.items()}}
     with rec.lock:
         if rec is _PROCESS and len(rec.time_limited) >= _PROCESS_MAX:

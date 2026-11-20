@@ -411,6 +411,10 @@ EVENT_TYPES: dict[str, str] = {
     "simplify_inspect":   "training+qa: what CAD simplification inspection found removable in "
                           "the geometry before admission judged it - the candidates a "
                           "simplification decision is later learned from; deterministic, no model",
+    "simplify_attempt":   "training+qa: what an automatic simplification removed, each feature's "
+                          "estimated compliance change and verdict from the local simulation "
+                          "check, and the lineage of the geometry it replaced - or why it was "
+                          "refused; deterministic, no model",
     "planner_run":        "training: the planner LLM's system, input, raw "
                           "response, parsed plan and usage",
     "builder_attempt":    "training: the builder's full trajectory per attempt",
@@ -469,6 +473,12 @@ STATE_FIELDS: dict[str, str] = {
     "repair_lineage":        "which upload a promoted repair replaced, and the engine the "
                              "replacement was proved to stage for; empty unless repaired "
                              "geometry became the geometry this run meshes",
+    "simplify_attempt":      "whether the run simplified its own geometry, which features it "
+                             "kept and what the simulation check estimated - or why it declined; "
+                             "a decline leaves the run on the geometry it had",
+    "simplify_lineage":      "which geometry a promoted simplification replaced (the upload or the "
+                             "repaired part), the features removed and the estimated change; "
+                             "empty unless simplified geometry became the geometry this run meshes",
     "domain":                "descriptive task label (see contract)",
     "engine_params":         "engine-native declared parameters (see contract)",
     "openfoam_workspace":    "the attempt workspace directory the builder/executor share",

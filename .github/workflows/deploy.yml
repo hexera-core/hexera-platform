@@ -130,6 +130,20 @@ on:
         required: false
         default: false
         type: boolean
+      # SIMPLIFICATION IS A SETTING TOO, chosen here the way cad_repair is. Ticking it exports
+      # CAD_SIMPLIFY_ENABLED for the run: the API service gets it as environment and the worker
+      # fleet as template metadata (cad-simplify-enabled) its startup script appends to the worker
+      # env. Unticked exports NOTHING, so the setting stays at its shipped default (off). Unlike
+      # cad_repair, neither shared dev nor production turns it on by itself: it defeatures customer
+      # geometry, judged by a simulation check that is still being proven, so it is a personal
+      # environment's opt-in until a release decides otherwise. Declarative, like cad_repair: an
+      # unticked redeploy drops it from an environment that had it, and the fleet picks the change
+      # up only when `fleet` is ticked too.
+      cad_simplify:
+        description: "cad_simplify - in a personal environment, let runs defeature their geometry (fill holes, remove blends) when a local CalculiX check says the answer moves by under the budget (off everywhere else)"
+        required: false
+        default: false
+        type: boolean
       # A MESH THAT SHOWS ITSELF WHILE IT BUILDS. Snappy's serial path publishes one decimated
       # frame of the castellated mesh, which the viewer draws instead of holding the CAD part. It
       # changes how snappy is invoked (the phase meshes are kept rather than overwritten), so tick
@@ -1513,6 +1527,8 @@ jobs:
       # be dropped by the next merge. Personal environments retain the explicit cad_repair opt-in,
       # and production keeps the geometry-invention flags off.
       CAD_REPAIR_ENABLED: ${{ (needs.target.outputs.deployment_id == 'prod' || needs.target.outputs.deployment_id == 'dev' || inputs.cad_repair) && 'true' || '' }}
+      # Personal environments only, on the cad_simplify tick; empty (not stated) everywhere else.
+      CAD_SIMPLIFY_ENABLED: ${{ inputs.cad_simplify && 'true' || '' }}
       # THE IN-PROGRESS MESH FRAME. A repository variable rather than a dispatch tick: the input
       # budget is a hard ceiling GitHub enforces by refusing the whole workflow, and this feature
       # needs TWO levers set together (MESH_SNAPPY_RANKS=1 beside it, or a frame is never read),

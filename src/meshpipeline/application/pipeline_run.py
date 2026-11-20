@@ -1169,14 +1169,22 @@ async def _run_async(req: JobRequest) -> dict:
                     # the repaired bytes from that moment on, and repair_lineage is the record
                     # that they ARE repaired rather than the upload. A customer whose CAD we fixed
                     # paid for the fixed CAD as much as for the mesh built from it.
+                    # WHEN A SIMPLIFICATION FOLLOWED, `geometry` names the SIMPLIFIED bytes,
+                    # which must not be delivered as the repaired file; the repaired file is the
+                    # geometry the simplification replaced, kept in its lineage.
                     if final_state.get("repair_lineage"):
                         from meshpipeline.application.repair_report_delivery import (
                             deliver_repaired_cad,
                         )
+                        from meshpipeline.contracts.geometry_source import (
+                            MaterializedGeometry as _MG,
+                        )
                         from meshpipeline.pipeline.geometry_state import (
                             materialized as _mat,
                         )
-                        _repaired = _mat(final_state)
+                        _simp = final_state.get("simplify_lineage") or {}
+                        _repaired = (_MG.from_state(_simp.get("replaced_geometry"))
+                                     if _simp else _mat(final_state))
                         if _repaired is not None:
                             await deliver_repaired_cad(
                                 AsyncSessionLocal, job_id=job_id,

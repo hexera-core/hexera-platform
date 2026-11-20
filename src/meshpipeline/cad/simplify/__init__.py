@@ -1,4 +1,5 @@
-"""Diagnostics-only CAD simplification core (the twin of cad/repair)."""
+"""CAD simplification core (the twin of cad/repair): inspection, and the verified defeaturing
+behind CAD_SIMPLIFY_ENABLED."""
 
 from meshpipeline.cad.simplify.contracts import (
     FeatureCandidate,
@@ -19,6 +20,12 @@ def inspect_features(*args, **kwargs):
     return _inspect_features(*args, **kwargs)
 
 
+def simplify_step_file(*args, **kwargs):
+    from meshpipeline.cad.simplify.simplify import simplify_step_file as _simplify_step_file
+
+    return _simplify_step_file(*args, **kwargs)
+
+
 __all__ = [
     "FeatureCandidate",
     "FeatureKind",
@@ -30,4 +37,5 @@ __all__ = [
     "SimplifyStatus",
     "SimplifyTarget",
     "inspect_features",
+    "simplify_step_file",
 ]

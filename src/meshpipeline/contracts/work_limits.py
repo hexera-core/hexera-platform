@@ -53,6 +53,9 @@ TIME_WAIT = "TIME-4"
 TIME_JOB_GUARD = "TIME-5"
 #: Clocks that still decide, left for the CAD repair work (#201): inspection and repair.
 TIME_REPAIR_CLOCK = "TIME-6"
+#: The same rule, named for the CAD simplification clocks it also covers (inspection and the
+#: attempt, pipeline/simplify_attempt.py): when one runs out, the run meshes the geometry it had.
+TIME_SIMPLIFY_CLOCK = TIME_REPAIR_CLOCK
 #: A repair step on a finished mesh (the cfMesh rescue's optimiser and re-mesh) is planned work
 #: too: its passes are planned from the mesh's cells, and its guard follows from them.
 TIME_REPAIR_WORK = "TIME-7"
@@ -237,5 +240,5 @@ def _num(v: Any) -> float | None:
 __all__ = ["CEILINGS_S", "FILL_RATES", "FLOORS_S", "GUARD_FACTOR", "GUARD_REPLAYS",
            "NOT_ATTEMPT_ENDING", "PlannedWork", "RAN_OUT_OF_TIME", "REPLAY", "TIME_GUARD",
            "TIME_JOB_GUARD", "TIME_KEEP_VALID", "TIME_PLANNED_WORK", "TIME_REPAIR_CLOCK",
-           "TIME_REPAIR_WORK", "TIME_RULES", "TIME_TRIP", "TIME_WAIT", "after_trip",
-           "ends_attempt", "guard_for", "guard_seconds", "trip_words", "work_limit"]
+           "TIME_REPAIR_WORK", "TIME_RULES", "TIME_SIMPLIFY_CLOCK", "TIME_TRIP", "TIME_WAIT",
+           "after_trip", "ends_attempt", "guard_for", "guard_seconds", "trip_words", "work_limit"]

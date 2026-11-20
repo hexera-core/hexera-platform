@@ -22,8 +22,11 @@ class SimplifyMode(str, Enum):
 
 
 class SimplifyProfile(str, Enum):
-    #: the only profile in the first slice: report candidates, change nothing
+    #: report candidates, change nothing (inspection)
     inspect_only = "inspect_only"
+    #: remove candidates, and keep only the ones a local simulation check accepts within the
+    #: error budget (cad/simplify/simplify.py, cad/simplify/verify.py)
+    verified = "verified"
 
 
 class SimplifyTarget(str, Enum):
@@ -34,8 +37,9 @@ class SimplifyTarget(str, Enum):
 class SimplifyStatus(str, Enum):
     #: no candidate features: nothing a simplification could remove
     none = "none"
-    #: candidates found; nothing was removed (the first slice never removes)
+    #: candidates found; nothing was removed (inspection never removes)
     candidates = "candidates"
+    #: features were removed and the simulation check accepted the result
     simplified = "simplified"
     #: inspection did not reach an answer (not a solid, too large, timed out, failed); says
     #: nothing about the part

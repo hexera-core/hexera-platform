@@ -736,6 +736,10 @@ WORKER_METADATA=(
   || WORKER_METADATA+=("cad-inspect-timeout-s=${CAD_INSPECT_TIMEOUT_S}")
 [ -z "${CAD_REPAIR_LLM_PLANNER:-}" ] \
   || WORKER_METADATA+=("cad-repair-llm-planner=${CAD_REPAIR_LLM_PLANNER}")
+# The CAD simplification switch (the workflow's cad_simplify input), by the same rule: the WORKER
+# is where node_simplify_attempt runs, so this is where it bites.
+[ -z "${CAD_SIMPLIFY_ENABLED:-}" ] \
+  || WORKER_METADATA+=("cad-simplify-enabled=${CAD_SIMPLIFY_ENABLED}")
 # The verdict by measured limits (docs/RULES.md VER), only when the target states it (dev does,
 # prod does not yet): the run decides pass, concerns or fail from the mesh's measured numbers and
 # the AI review only adds notes. Absent, the env object's value (the shipped default, off) stands.
