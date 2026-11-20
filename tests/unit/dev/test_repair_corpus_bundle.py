@@ -416,3 +416,30 @@ def test_a_sealed_run_states_the_policy_it_ran_under(kernel, tmp_path, monkeypat
     assert rc.main() == 0, capsys.readouterr().err
     settings = json.loads((bundle / "settings.json").read_text(encoding="utf-8"))
     assert settings["policy_fingerprint"] == gym.policy_fingerprint()
+
+
+def test_a_row_counts_the_keeps_that_came_through_the_mesh_cure_door(kernel, tmp_path,
+                                                                     monkeypatch, capsys):
+    import meshpipeline.cad.repair.conservative as cons
+    from meshpipeline.cad.repair.session import MESHES_AFTER_TARGET_REMAINS
+
+    def repair(source, destination, *, profile=None, directives=()):
+        Path(destination).write_bytes(b"repaired")
+        return SimpleNamespace(
+            operations=[{"name": "fix_small_edges", "status": "kept", "targets": ["fa"],
+                         "reason": MESHES_AFTER_TARGET_REMAINS},
+                        {"name": "fix_small_faces", "status": "kept", "targets": ["fb"]},
+                        {"name": "sew_faces", "status": "rolled_back", "targets": ["fc"],
+                         "reason": "target_remains"}],
+            measurements=[SimpleNamespace(name="operations_attempted", value=3),
+                          SimpleNamespace(name="operations_kept", value=2),
+                          SimpleNamespace(name="stopped_because", value="resolved"),
+                          SimpleNamespace(name="resolved", value=True)])
+
+    monkeypatch.setattr(cons, "repair_step_file", repair)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    rows = rc.run_files([kernel.part], scratch, mode="off")
+    assert rows[0]["operations_kept"] == 2
+    assert rows[0]["operations_kept_meshes_after_target_remains"] == 1
+    assert rows[0]["operations"][0]["reason"] == MESHES_AFTER_TARGET_REMAINS

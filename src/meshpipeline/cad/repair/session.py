@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import meshpipeline.settings.cad_repair as rcfg
@@ -106,6 +106,31 @@ def _judged_whole(package) -> bool:
     """
     return any(frozenset(getattr(item.get("op"), "answers", ())) & mesh_probe.VOLUME_CODES
                for item in package.plan)
+
+
+def _as_delivered(shape):
+    """`shape` as a customer receives it: written to STEP by the writer promotion uses
+    (`conservative._write_step`) and read back. None when either side fails - never a guess.
+    Looked up at call time so a test can patch it."""
+    import tempfile
+
+    try:
+        from OCP.IFSelect import IFSelect_RetDone
+        from OCP.STEPControl import STEPControl_Reader
+
+        from meshpipeline.cad.repair.conservative import _write_step
+
+        with tempfile.TemporaryDirectory(prefix="crs-delivered-") as tmp:
+            path = Path(tmp) / "delivered.step"
+            _write_step(shape, path)
+            reader = STEPControl_Reader()
+            if reader.ReadFile(str(path)) != IFSelect_RetDone or not reader.TransferRoots():
+                return None
+            delivered = reader.OneShape()
+            return None if delivered is None or delivered.IsNull() else delivered
+    except Exception as exc:  # noqa: BLE001 - an export that fails proves no cure
+        logger.info("session: delivered round-trip failed: %s: %s", type(exc).__name__, exc)
+        return None
 
 
 def _face_names_of(shape) -> frozenset[str]:
@@ -333,6 +358,11 @@ REVIEW_REJECTED = "review:"
 #: to `review_reason`, which reaches the report and the reviewer's next evidence, never the
 #: author (controller ruling, P3 Task 4 fix round 1).
 REVIEW_REJECTED_REASON = f"{REVIEW_REJECTED} rejected by review"
+#: THE REASON ON A KEPT VERDICT that came through the mesh-cure door (`RepairSession._mesh_cure`):
+#: the claimed target finding REMAINS, and the part - which gmsh refused before - meshes as
+#: delivered. Never empty, so a reader can count the keeps that came this way, and never
+#: rewritten as "cleared": the unmet claim stays on the verdict (`delta["unmet"]`).
+MESHES_AFTER_TARGET_REMAINS = "meshes_after_target_remains"
 #: A region's SECOND review reject escalates it to a person: no retry-until-accept.
 REVIEW_TWICE_REASON = f"{REVIEW_REJECTED} rejected by review twice"
 #: A region with one review reject gets ONE more authored attempt; a package after that is
@@ -366,6 +396,10 @@ class PackageVerdict:
     #: able to see how much of a package's success came from relabelling. Empty when no scoped
     #: scan was taken (an inadmissible package or an exhausted budget discharged nothing).
     reclassified: frozenset[str] = frozenset()
+    #: `cleared` claims this package did NOT meet, and committed anyway because the operation aimed
+    #: at them made the part mesh as delivered (`MESHES_AFTER_TARGET_REMAINS`). REPORTED, never
+    #: rewritten as cleared; absent from `to_dict` when empty, so every other verdict is unchanged.
+    unmet_cleared: frozenset[str] = frozenset()
     #: Seconds. AGGREGATED from the operations' own `OpVerdict` timings plus the package's
     #: boundary and scoped scans, so the same work is never timed twice.
     scan_s: float = 0.0
@@ -422,6 +456,7 @@ class PackageVerdict:
         return {"region_index": int(self.region_index), "status": self.status,
                 "reason": self.reason, "verdicts": [v.to_dict() for v in self.verdicts],
                 "reclassified": sorted(self.reclassified),
+                **({"unmet_cleared": sorted(self.unmet_cleared)} if self.unmet_cleared else {}),
                 "scan_s": self.scan_s, "apply_s": self.apply_s,
                 "measure_s": self.measure_s,
                 **{k: v for k, v in (
@@ -705,6 +740,68 @@ class RepairSession:
         return tuple(d for d in held if not _unlocated_mesh(d)
                      and in_region(d, within, diagonal_mm=self.original.diagonal_mm))
 
+    def _mesh_cure(self, whole_before, found, *, within: Region | None,
+                   cap_s: float | None = None) -> tuple[str, ...]:
+        """The mesh failures the part held before an operation and no longer holds, when the
+        operation made a part that gmsh REFUSED mesh. Empty otherwise. NEVER claims a cure unproved.
+
+        WHY THIS EXISTS (lane E, measured on the T6 corpus): the progress rule asks whether the
+        target's own finding is still at the target. A kernel WARNING aimed at - a short edge, a
+        small face - often survives the very operation that makes the part mesh: on abc
+        0052_00525324 `fix_small_edges` left its small_edge at the target's box and gmsh, which
+        refused the part before ("Two facets intersect"), meshed it after. That was rolled back
+        `target_remains`. The defect a repair exists to clear is the part not meshing, so a
+        whole-part probe that now meshes the part is the stronger evidence, not the weaker.
+
+        ALL OF THESE MUST HOLD, each one a safety property:
+          - the mesh probe is live and the scan is not injected (an injected scanner is the
+            whole truth for the test that injected it);
+          - the WHOLE pre-op list held a mesh failure that is an ANSWER (not a timeout or a dead
+            probe). A part that meshed before, or was never shown to fail, cannot be cured - so a
+            clean part is never altered by this route;
+          - a WHOLE-SHAPE probe of the current shape AS DELIVERED - written to STEP and read
+            back (`_meshes_now`) - found nothing at all, inside its budget. A scoped probe is
+            2D-only and proves nothing about the volume (ruling R11a); a timeout is no answer.
+        The caller still runs the rest of the progress rule, so new damage still rolls back.
+        """
+        if rcfg.CAD_REPAIR_MESH_PROBE != "live" or self._injected:
+            return ()
+        failures = sorted({d.code.value for d in whole_before
+                           if _is_mesh(d) and d.code not in mesh_probe.NO_ANSWER_CODES})
+        if not failures:
+            return ()
+        if within is None and any(_is_mesh(d) and d.code not in mesh_probe.NO_ANSWER_CODES
+                                  for d in found):
+            # The re-inspection was whole-shape and its probe still failed the part: no cure,
+            # and no second probe paid to learn it.
+            return ()
+        return tuple(failures) if self._meshes_now(cap_s=cap_s) else ()
+
+    def _meshes_now(self, *, cap_s: float | None = None) -> bool:
+        """Does a WHOLE-SHAPE gmsh probe of the current shape AS DELIVERED mesh it, in budget?
+
+        AS DELIVERED, NOT AS HELD (`_as_delivered`): the part a customer meshes is the repaired
+        STEP, and STEP carries no per-entity tolerance. Measured on abc 0052_00525324:
+        `fix_small_edges` cures the part by widening tolerances, so the in-memory shape and its
+        BREP round-trip mesh 3 times out of 3 and its STEP round-trip fails ("A segment and a
+        facet intersect"). A cure that does not survive the export is not a repair, and a keep
+        resting on the in-memory probe would promote a file that still does not mesh.
+        """
+        timeout = float(rcfg.CAD_REPAIR_MESH_PROBE_TIMEOUT_S)
+        remaining = float(self.remaining_s() if self.remaining_s is not None else timeout)
+        budget = mesh_probe_budget_s(remaining) if self.remaining_s is not None else timeout
+        if cap_s is not None:
+            budget = min(budget, float(cap_s))
+        if not (remaining > 0.0 and budget > 0.0):
+            return False
+        delivered = _as_delivered(self.shape)
+        if delivered is None:
+            return False
+        self._mesh_probed = True
+        probed = tuple(mesh_probe.mesh_defects(delivered, diagonal_mm=self.original.diagonal_mm,
+                                               budget_s=budget))
+        return not probed
+
     def defects(self) -> tuple:
         """The current shape's located defects. Scanned once per shape and cached."""
         if self._defects is None:
@@ -956,6 +1053,9 @@ class RepairSession:
                 apply_s=apply_s, measure_s=measure_s))
 
         previous = self.defects()
+        # THE WHOLE PRE-OP LIST, before a scope cuts it: whether the part failed gmsh at all is a
+        # fact about the part, read by `_mesh_cure` below.
+        whole_before = previous
         # THE UNLOCATED MESH EVIDENCE THE PART HELD BEFORE THE OPERATION, read off the WHOLE list
         # before a scope cuts it: a whole-part finding still there after the op is not news,
         # whichever scope the re-inspection walked (`_mesh_judged`).
@@ -998,6 +1098,17 @@ class RepairSession:
             outcome, targets, defect_code, previous, found, op_name=op.name,
             revealed=frozenset((d.fingerprint, d.code.value) for d in revealed),
             standing=standing, tolerance_mm=tolerance_mm)
+        cured: tuple[str, ...] = ()
+        if reason == "target_remains":
+            cured = self._mesh_cure(whole_before, found, within=within)
+            if cured:
+                # THE DEFECT WAS THE PART NOT MESHING, AND IT MESHES NOW. Everything else the rule
+                # polices is still asked: the same rule with no target to look for, so a new
+                # defect, an unlocated mesh failure of the aimed code, or damage still rolls back.
+                reason = self._progress_refusal(
+                    outcome, (), defect_code, previous, found, op_name=op.name,
+                    revealed=frozenset((d.fingerprint, d.code.value) for d in revealed),
+                    standing=standing, tolerance_mm=tolerance_mm)
         if reason:
             self.shape, self._defects, self.complete_scan = snapshot
             if reason == "target_remains":
@@ -1012,6 +1123,13 @@ class RepairSession:
                 op=op.name, targets=fingerprints, defect_code=code, status=ROLLED_BACK,
                 reason=reason, basis=basis, evidence=dict(outcome.evidence), delta=delta,
                 apply_s=apply_s, scan_s=scan_s, measure_s=measure_s))
+        if cured:
+            # KEPT BECAUSE THE PART NOW MESHES, not because the target's finding went: it stays on
+            # the list (it is still there), and the mesh failures the whole-shape probe just
+            # disproved leave it, so the run does not go on answering a failure that is gone.
+            delta["mesh_cured"] = list(cured)
+            delta["unmet"] = sorted(fingerprints)
+            self._defects = tuple(d for d in (self._defects or ()) if not _is_mesh(d))
         if revealed:
             # ONLY ON A KEPT VERDICT: a rolled-back one never put these on the list, and the
             # training log must not say it revealed what nobody now holds.
@@ -1041,6 +1159,7 @@ class RepairSession:
         self._kept_inputs.append(snapshot[0])
         return self._record(OpVerdict(
             op=op.name, targets=fingerprints, defect_code=code, status=KEPT, basis=basis,
+            reason=MESHES_AFTER_TARGET_REMAINS if cured else "",
             evidence=dict(outcome.evidence), delta=delta,
             apply_s=apply_s, scan_s=scan_s, measure_s=measure_s))
 
@@ -1263,7 +1382,18 @@ class RepairSession:
             if op_verdict.kept:
                 kept_ops += 1
                 declared = declared.plus(op_verdict.evidence)
-        reason = evaluate(predicate, before=before, after=after,
+        judged = predicate
+        unmet: frozenset[str] = frozenset()
+        cured = frozenset(name for v in verdicts if v.kept and v.delta.get("mesh_cured")
+                          for name in v.targets) & frozenset(predicate.cleared)
+        if cured and self._meshes_now(cap_s=package.budget.timeout_s - spent):
+            # A CLAIM TO HAVE CLEARED A TARGET WHOSE OPERATION CURED THE PART (`_mesh_cure`) is
+            # held to the defect, not the finding: re-proved HERE by a whole-shape probe of the
+            # package's own result, since a later operation of the plan could have undone it.
+            # Every other check `evaluate` makes - unchanged, area, volume, nothing kept - stands.
+            unmet = cured & frozenset(d.fingerprint for d in found)
+            judged = replace(predicate, cleared=frozenset(predicate.cleared) - cured)
+        reason = evaluate(judged, before=before, after=after,
                            defects_before=defects_before, defects_after=defects_after,
                            kept_ops=kept_ops,
                            declared_area_mm2=declared.declared_area_mm2,
@@ -1332,7 +1462,7 @@ class RepairSession:
 
         return self._record_package(PackageVerdict(
             region_index=region.index, status=COMMITTED, verdicts=tuple(verdicts),
-            reclassified=reclassified, scan_s=scan_s, apply_s=apply_s,
+            reclassified=reclassified, unmet_cleared=unmet, scan_s=scan_s, apply_s=apply_s,
             measure_s=_measure_total(measure_s, verdicts), **deviation, **review))
 
     def _review(self, package: TargetPackage, verdicts: list[OpVerdict], boundary: tuple,

@@ -45,6 +45,7 @@ os.environ.setdefault("CAD_REPAIR_AUTONOMOUS", "true")
 # would split the tally the moment either side was renamed.
 from meshpipeline.cad.repair import ending as repair_ending  # noqa: E402
 from meshpipeline.cad.repair.operations import OPERATIONS  # noqa: E402
+from meshpipeline.cad.repair.session import MESHES_AFTER_TARGET_REMAINS  # noqa: E402
 
 
 def _load_benchmark_bundle():
@@ -1520,6 +1521,11 @@ def _repair_row(path: Path, scratch: Path, *, mode: str = "off", force: bool = F
         operations=_operation_rows(repaired.operations),
         operations_attempted=int(measured.get("operations_attempted", 0) or 0),
         operations_kept=int(measured.get("operations_kept", 0) or 0),
+        # THE KEPT OPERATIONS THAT CAME THROUGH THE MESH-CURE DOOR: target finding still there,
+        # part meshes as delivered. Counted apart so the evidence can say how many keeps it bought.
+        operations_kept_meshes_after_target_remains=sum(
+            1 for op in repaired.operations if isinstance(op, dict)
+            and op.get("status") == "kept" and op.get("reason") == MESHES_AFTER_TARGET_REMAINS),
         # FINISHED OR OUT OF ROOM. The single most useful number from a corpus run: a corpus full
         # of `op_budget` says raise the budget, one full of `stalled` says the catalogue is missing
         # an operation, and one full of `no_candidate` says the planner cannot aim at what real

@@ -567,12 +567,16 @@ def test_a_scoped_operation_aimed_at_a_volume_stage_mesh_defect_is_not_kept(monk
                                                                             volume_defect):
     monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
     _scan(monkeypatch, ((), True))
-    _probe(monkeypatch, (volume_defect,), ())
+    # The scoped (2D-only) probe sees nothing; the WHOLE-shape probe the mesh cure pays for still
+    # sees the volume failure, so nothing has proved it gone (ruling R11a).
+    monkeypatch.setattr(session_mod, "_as_delivered", lambda shape: shape)
+    probes = _probe(monkeypatch, (volume_defect,), (), (volume_defect,))
     session = RepairSession("shape", measurer=lambda s: MEASURE)
     target = session.defects()[0]
     verdict = session.try_op(_Remesh(), _Remesh().targets_for(target), target.code,
                              tolerance_mm=0.01, within=_REGION)
     assert not verdict.kept and verdict.reason == "target_remains"
+    assert len(probes) == 3 and probes[2].get("within") is None
 
 
 # REVEALED, NOT DAMAGE (P2 Task 3 fix round 1; applies to EVERY mesh operation). gmsh reports only
