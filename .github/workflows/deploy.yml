@@ -789,7 +789,7 @@ jobs:
               # row lands, with no change here.
               #
               # What `live` commands today: the region loop, the mesh probe, the package reviewer,
-              # tier 2b's tolerant routing probe, and the four opt-in operations. REBUILD_FACE and
+              # tier 2b's tolerant routing probe, and the five opt-in operations. REBUILD_FACE and
               # CLOSE_WIRE_GAPS MOVE VERTICES and are reviewer-gated - they ride with
               # PACKAGE_REVIEW=live and must never be exported without it.
               #
@@ -1646,6 +1646,8 @@ jobs:
       CAD_REPAIR_FRAGMENT_BODIES: ${{ needs.target.outputs.crs_v3 == 'live' && 'true' || '' }}
       CAD_REPAIR_REBUILD_FACE: ${{ needs.target.outputs.crs_v3 == 'live' && 'true' || '' }}
       CAD_REPAIR_CLOSE_WIRE_GAPS: ${{ needs.target.outputs.crs_v3 == 'live' && 'true' || '' }}
+      # Re-partitions faces (moves no surface); never auto-accepted, so it rides with the reviewer.
+      CAD_REPAIR_RESOLVE_SUB_MESH_GAP: ${{ needs.target.outputs.crs_v3 == 'live' && 'true' || '' }}
       # Tier 2b runs fTetWild on a customer's part, so it needs `live` and not merely a v3 run:
       # a shadow run records the ladder's questions, it does not start the tolerant mesher.
       CAD_REPAIR_TOLERANT_PROBE: ${{ needs.target.outputs.crs_v3 == 'live' && 'live' || '' }}

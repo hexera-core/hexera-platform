@@ -64,6 +64,7 @@ output, and the provision job derives every posture from that one value:
 | `CAD_REPAIR_FRAGMENT_BODIES` | not stated | not stated | `true` |
 | `CAD_REPAIR_REBUILD_FACE` | not stated | not stated | `true` |
 | `CAD_REPAIR_CLOSE_WIRE_GAPS` | not stated | not stated | `true` |
+| `CAD_REPAIR_RESOLVE_SUB_MESH_GAP` | not stated | not stated | `true` |
 | `CAD_REPAIR_TOLERANT_PROBE` | not stated | not stated | `live` |
 | `CAD_REPAIR_INVESTIGATOR` | not stated | `shadow` | `live` |
 | `CAD_REPAIR_AUTO_ACCEPT` | not stated | `live` | `live` |
@@ -91,6 +92,8 @@ output, and the provision job derives every posture from that one value:
   postures with their own inputs.
 - **`REBUILD_FACE` and `CLOSE_WIRE_GAPS` are reviewer-gated.** They move vertices, so they turn
   on only at `live`, and `live` always sets `CAD_REPAIR_PACKAGE_REVIEW=live` beside them.
+- **`RESOLVE_SUB_MESH_GAP` is reviewer-only too.** It moves no surface but re-partitions the
+  customer's faces, so it is never auto-accepted and turns on only at `live`, beside the reviewer.
 - **Not stated means the shipped default, which is off.** The API names every one of these
   droppable, so a redeploy left at `off` removes them from an API that had them. The workers
   take them as instance-template metadata, so tick `fleet` for a change to reach them.
@@ -367,7 +370,7 @@ the caller. A merge to `main` gets the same answer as a manual run.
 
 What `live` commands today: the region loop, the mesh probe, the package reviewer, tier 2b's
 tolerant routing probe, the repair investigator, the auto-accept tier, the per-part attempt
-allowance, the four opt-in operations, and - plumbed ahead of their settings rows, so inert until
+allowance, the five opt-in operations, and - plumbed ahead of their settings rows, so inert until
 those land - the tournament, the repair memory, the reviewer's measured objection, the mesh
 handback and standalone repair jobs. The investigator's and the tournament's rows carry the posture
 rather than mapping it, so a `shadow` slug runs them in shadow and a `live` slug live.

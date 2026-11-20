@@ -92,6 +92,7 @@ for pair in "deployment-id:DEPLOYMENT_ID" \
             "cad-repair-fragment-bodies:CAD_REPAIR_FRAGMENT_BODIES" \
             "cad-repair-rebuild-face:CAD_REPAIR_REBUILD_FACE" \
             "cad-repair-close-wire-gaps:CAD_REPAIR_CLOSE_WIRE_GAPS" \
+            "cad-repair-resolve-sub-mesh-gap:CAD_REPAIR_RESOLVE_SUB_MESH_GAP" \
             "cad-repair-tolerant-probe:CAD_REPAIR_TOLERANT_PROBE" \
             "cad-repair-investigator:CAD_REPAIR_INVESTIGATOR" \
             "cad-repair-auto-accept:CAD_REPAIR_AUTO_ACCEPT" \
