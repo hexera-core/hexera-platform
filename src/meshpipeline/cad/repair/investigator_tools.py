@@ -167,7 +167,14 @@ EDIT = ToolSpec(
     "here reaches the part, and a kept edit is a RECORD of what worked, not a repair that "
     'shipped. Send {"reset": true} on its own to throw the copy away and start again from the '
     "part as it is. The answer says whether the edit was kept or rolled back and why, what it "
-    "declared, which defects of the region cleared, remain or are new, and the copy's counts.")
+    "declared, which defects of the region cleared, remain or are new, and the copy's counts. "
+    "CLAIM THE MEASURED MOVEMENT, NOT THE DECLARED ONE: the answer's "
+    "'measured_area_delta_mm2' and 'measured_volume_delta_mm3' are what the copy actually "
+    "moved, and a package is judged on those. An operation's own figure may be a different "
+    "quantity - 'area_removed_mm2' is the removed faces' area alone, and removing a sliver can "
+    "move the surface far more than that by rebuilding its neighbours - so a package whose "
+    "max_area_delta_mm2 or max_volume_delta_mm3 is copied from the declaration rather than "
+    "from the measured movement is reverted.")
 
 #: The tools that may change the SCRATCH clone - a sibling of `READ_ONLY`, never a member of it.
 EDITING: tuple[ToolSpec, ...] = (EDIT,)
@@ -1056,12 +1063,44 @@ def _edit(ws: Workspace, args: dict, *, budget_s: float) -> dict:
             # THE DECLARATIONS, which is what the accounting and a package's predicate are judged
             # on - reported so the model sees what its edit CLAIMED, not only what happened.
             "declared": dict(verdict.evidence),
+            # AND WHAT THE CLONE ACTUALLY MOVED, which is the quantity `package.evaluate` judges
+            # a claim against (after - before - declared). An operation may report a figure that
+            # is NOT this one: FixSmallFaces declares `area_removed_mm2`, the removed faces' own
+            # area, which the accounting deliberately does not read - so removing one sliver let
+            # its neighbours be rebuilt and moved the surface 64.8064 mm2 while the author was
+            # handed 0.48387, claimed exactly that, and had its package reverted (0053_00531146).
+            # The author is told the number it is judged on. Absent, not guessed, when the
+            # session recorded no measurement either side.
+            **_measured_delta(verdict),
             "cleared": [fp for fp in before if fp not in set(after)],
             "remaining": [fp for fp in after if fp in set(before)],
             "new": [fp for fp in after if fp not in set(before)],
             "counts": scratch.counts(),
             "kept_edits": len(scratch.kept()), "edits": len(scratch.edits),
             "kept_edits_max": cap}
+
+
+def _measured_delta(verdict) -> dict:
+    """`measured_area_delta_mm2` / `measured_volume_delta_mm3` from the session's OWN before and
+    after measurements of the clone (`OpVerdict.delta`), signed as the predicate reads them.
+
+    NO NEW MEASUREMENT: the session already measures the clone either side of an operation, so
+    this is a subtraction, not a kernel call. Both keys are absent when either side is missing -
+    a reported 0.0 would read as "nothing moved", which is a different claim from "not measured".
+    """
+    delta = getattr(verdict, "delta", None) or {}
+    before, after = delta.get("before"), delta.get("after")
+    if not isinstance(before, dict) or not isinstance(after, dict):
+        return {}
+    out: dict = {}
+    for key, name in (("surface_area_mm2", "measured_area_delta_mm2"),
+                      ("volume_mm3", "measured_volume_delta_mm3")):
+        if key in before and key in after:
+            try:
+                out[name] = round(float(after[key]) - float(before[key]), 6)
+            except (TypeError, ValueError):
+                continue
+    return out
 
 
 _HANDLERS = {"look": _look, "measure": _measure, "probe": _probe, "edit": _edit}

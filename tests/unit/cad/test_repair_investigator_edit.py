@@ -5,6 +5,8 @@
 double, and the session's scanner and measurer are scripted - so what is tested is the RULES."""
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 import meshpipeline.settings.cad_repair as rcfg
@@ -74,10 +76,11 @@ def _region(fingerprints=("edge:aaaa",)) -> Region:
                   bbox_max=(2.0, 2.0, 2.0), face_indices=frozenset({1, 2}))
 
 
-def _cleared_outcome(fingerprint="edge:aaaa", shape_name="edited") -> OpOutcome:
+def _cleared_outcome(fingerprint="edge:aaaa", shape_name="edited", evidence=None) -> OpOutcome:
     return OpOutcome(shape=_Shape(shape_name),
                      mapping=EntityMapping(moved={}, gone=frozenset({fingerprint}),
-                                           basis="kernel"))
+                                           basis="kernel"),
+                     evidence=dict(evidence or {}))
 
 
 @pytest.fixture(autouse=True)
@@ -526,3 +529,53 @@ def test_a_real_mixture_is_still_refused(monkeypatch):
     out = it.run_tool(ws, "edit", {"op": "fix_small_edges", "fingerprint": "edge:aaaa",
                                    "reset": True}, budget_s=1.0)
     assert out.ok is False and "reset" in out.error
+
+
+# --- the author is judged on the MEASURED delta, so it is told the measured delta ---------------
+# FixSmallFaces reports `area_removed_mm2` (the removed faces' own area) and deliberately no
+# `area_delta_mm2`, so the accounting declares 0 and `package.evaluate` judges the WHOLE movement.
+# Measured live on 0053_00531146: the tool said 0.48387, the model claimed exactly that, the shape
+# moved 64.8064, and the package was reverted. The author was judged on a number it never saw.
+def test_an_edit_reports_the_measured_area_and_volume_delta(monkeypatch):
+    defect = _defect()
+    before = ORIGINAL
+    after = replace(before, surface_area_mm2=before.surface_area_mm2 + 64.8064,
+                    volume_mm3=before.volume_mm3 + 3.5)
+    _catalogue(monkeypatch, _Op(outcomes=[_cleared_outcome(evidence={
+        "faces_removed": 1, "area_removed_mm2": 0.48387})]))
+    scratch, _ = _scratch(defects=(defect,), scans=[((), True)], measures=[before, after])
+    ws = _workspace(scratch, defects=(defect,))
+
+    out = it.run_tool(ws, "edit", {"op": "fix_small_edges", "fingerprint": "edge:aaaa"},
+                      budget_s=1.0)
+
+    assert out.ok is True, out.error
+    # The op's own figure is KEPT - the reviewer reads it - and the measured movement is beside it.
+    assert out.data["declared"]["area_removed_mm2"] == 0.48387
+    assert out.data["measured_area_delta_mm2"] == pytest.approx(64.8064)
+    assert out.data["measured_volume_delta_mm3"] == pytest.approx(3.5)
+
+
+def test_the_edit_prose_tells_the_author_to_claim_the_measured_delta():
+    prose = it.tool_prose()
+    assert "measured_area_delta_mm2" in prose
+    assert "measured_volume_delta_mm3" in prose
+
+
+def test_a_package_claiming_the_measured_delta_is_accepted_by_the_predicate():
+    """THE POINT OF REPORTING IT. The same movement that reverted the live package passes once the
+    claim is the measured delta rather than the operation's `area_removed_mm2`."""
+    from meshpipeline.cad.repair import package as pkg
+
+    before = ORIGINAL
+    after = replace(before, surface_area_mm2=before.surface_area_mm2 + 64.8064)
+    copied = Predicate(cleared=frozenset({"edge:aaaa"}), unchanged=frozenset(),
+                       reclassified=frozenset(),
+                       max_area_delta_mm2=0.48387, max_volume_delta_mm3=0.0)
+    measured = replace(copied, max_area_delta_mm2=64.8064)
+
+    for predicate, accepted in ((copied, False), (measured, True)):
+        refusal = pkg.evaluate(predicate, before=before, after=after,
+                               defects_before=("edge:aaaa",), defects_after=(),
+                               declared_area_mm2=0.0, declared_volume_mm3=0.0)
+        assert (refusal == "") is accepted, refusal
