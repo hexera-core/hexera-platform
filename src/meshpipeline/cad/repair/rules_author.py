@@ -213,6 +213,55 @@ def _gap_op(tries: GapTries, fingerprint: str):
                                                       len(SAG_LADDER) - 1)])
 
 
+def gap_defects(defects) -> tuple:
+    """The defects the GAP PRE-PASS aims at (`region_loop._gap_prepass`): a 3D-stage clash the
+    probe measured APART (`clash_kind` GAP) that the gap operation claims, in a stable order. Empty
+    when the operation is not in the catalogue."""
+    op = _OPS_BY_NAME.get(GAP_OP)
+    if op is None:
+        return ()
+    return tuple(sorted((d for d in defects if _sub_element_gap(d) and _volume_stage_recorded(d)
+                         and d.code in op.answers and d.fingerprint and op.targets_for(d)),
+                        key=lambda d: (d.entity_index, d.code.value, d.fingerprint)))
+
+
+def gap_package(region: Region, defect, tries: GapTries, *, original: Measure) -> TargetPackage:
+    """The gap operation's package for one defect, at that face's rung of the ladder - built
+    exactly as `rules_author` builds every package (one operation, the deployment's residual caps
+    as the predicate's allowance), so the pre-pass's packages pass the same gates."""
+    candidate = Candidate(op=_gap_op(tries, defect.fingerprint),
+                          targets=(EntityRef(entity_type=str(defect.entity_type),
+                                             fingerprint=defect.fingerprint,
+                                             entity_index=int(defect.entity_index),
+                                             ambiguous=bool(getattr(defect, "ambiguous", False))),),
+                          defect_code=defect.code, defect_fingerprint=defect.fingerprint)
+    return _package(candidate, region, original=original,
+                    rationale=(f"{LABEL}: gap pre-pass - {GAP_OP} at sag share "
+                               f"{getattr(candidate.op, 'sag_share', 0.0):g} on a {defect.code.value} the probe "
+                               "measured apart"))
+
+
+def _package(candidate: Candidate, region: Region, *, original: Measure, rationale: str,
+             max_area_delta_mm2: float | None = None, max_volume_delta_mm3: float | None = None,
+             budget: PackageBudget | None = None) -> TargetPackage:
+    area = (max_area_delta_mm2 if max_area_delta_mm2 is not None
+            else float(rcfg.CAD_REPAIR_MAX_AREA_CHANGE_RATIO) * original.surface_area_mm2)
+    volume = (max_volume_delta_mm3 if max_volume_delta_mm3 is not None
+              else float(rcfg.CAD_REPAIR_MAX_VOLUME_CHANGE_RATIO) * original.volume_mm3)
+    allowance = budget if budget is not None else PackageBudget(
+        max_ops=1, timeout_s=float(rcfg.CAD_REPAIR_TIMEOUT_S), model_calls=0, deviation_mm=0.0)
+    predicate = Predicate(cleared=frozenset({candidate.defect_fingerprint}),
+                          reclassified=frozenset(), unchanged=frozenset(),
+                          max_area_delta_mm2=float(area), max_volume_delta_mm3=float(volume))
+    plan = ({"op": candidate.op, "targets": candidate.targets,
+             "defect_code": candidate.defect_code},)
+    return TargetPackage(
+        region=region, plan=plan, predicate=predicate, budget=allowance,
+        intent=(f"clear the {candidate.defect_code.value} on "
+                f"{candidate.defect_fingerprint} in region {region.index}"),
+        rationale=rationale)
+
+
 def _gap_lead(defects, tries: GapTries, region: Region, *,
               reserved: frozenset) -> Candidate | None:
     """THE GAP OPERATION FIRST (lead, wave 6: it ran on only 5 of 14 gap files because the kernel's

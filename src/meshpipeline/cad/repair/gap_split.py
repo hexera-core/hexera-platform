@@ -416,7 +416,6 @@ class ResolveSubMeshGap:
             OpOutcome,
             _diagonal_of,
             _face_count,
-            _face_names,
             _owners_of,
             _split_fingerprints,
             splice,
@@ -468,9 +467,14 @@ class ResolveSubMeshGap:
         d_volume = float(after["volume_mm3"]) - float(before["volume_mm3"])
         # NO KERNEL HISTORY CROSSES THE PROCESS BOUNDARY, so the mapping is the session's
         # geometric one (box comparison), said as such rather than claimed as a kernel fact.
+        patches = _split_fingerprints(owner, divided, diagonal_mm=diagonal)
+        # `rebuilt` IS THE PATCHES, NOT THE WHOLE SOLID. The session samples the package's
+        # deviation on `added + rebuilt`; naming every face of a 600-face solid ran the 10 s
+        # deviation budget out, and the reviewer rejected "deviation not measured" a split whose
+        # delivered STEP meshed (wave 6/8: 0060_00608235). Only the patches have new geometry;
+        # a neighbour whose boundary edge was split keeps its surface and its box.
         return OpOutcome(shape=spliced, mapping=EntityMapping.empty(),
-                         added=_split_fingerprints(owner, divided, diagonal_mm=diagonal),
-                         rebuilt=_face_names(divided, diagonal_mm=diagonal),
+                         added=patches, rebuilt=patches,
                          evidence={**measured, "faces_added": int(added),
                                    AREA_DELTA: _rounded_up(d_area),
                                    VOLUME_DELTA: _rounded_up(d_volume),

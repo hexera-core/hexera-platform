@@ -125,11 +125,61 @@ def test_the_baseline_prefers_the_gap_operation_for_a_gap(baseline_on):
     assert "do not touch" in package.rationale
 
 
-@pytest.mark.parametrize("declined", [False, True], ids=["ineffective", "declined"])
-def test_once_spent_the_code_gets_its_own_choice_next(baseline_on, declined):
+def test_a_decline_spends_the_gap_operation_at_once(baseline_on):
     package = rules_author(None, original=MEASURE)(
-        _REGION, (_clash(),), (_tried(NAME, declined=declined),))
+        _REGION, (_clash(),), (_tried(NAME, declined=True),))
     assert package is not None and package.plan[0]["op"].name == "fragment_bodies"
+
+
+def test_a_failed_split_is_retried_finer_down_the_ladder(baseline_on):
+    from meshpipeline.cad.repair.gap_split import SAG_LADDER
+
+    author = rules_author(None, original=MEASURE)
+    tried: tuple = ()
+    for rung, share in enumerate(SAG_LADDER):
+        package = author(_REGION, (_clash(),), tried)
+        assert package is not None and package.plan[0]["op"].name == NAME, rung
+        assert package.plan[0]["op"].sag_share == share
+        tried = (*tried, _tried(NAME))
+    # THE LADDER SPENT, the code gets its own choice.
+    package = author(_REGION, (_clash(),), tried)
+    assert package is not None and package.plan[0]["op"].name == "fragment_bodies"
+
+
+def _gap_clash(**kwargs) -> EntityDefect:
+    defect = _clash(**kwargs)
+    defect.measurements["clash_kind"] = "gap"
+    return defect
+
+
+def _warning() -> EntityDefect:
+    return EntityDefect(code=DefectCode.small_face, severity=DefectSeverity.warning,
+                        entity_type="face", entity_index=2, message="sliver",
+                        fingerprint="face:sliver", location=dict(_BOX), measurements={})
+
+
+_REGION2 = Region(index=0, fingerprints=frozenset({"face:wall", "face:sliver"}),
+                  bbox_min=(0.0, 0.0, 0.0), bbox_max=(10.0, 10.0, 10.0),
+                  face_indices=frozenset({1, 2}))
+
+
+def test_a_measured_gap_goes_first_then_the_kernel_cure_gets_its_turn(baseline_on, monkeypatch):
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_FIX_SMALL_FACES", True)
+    author = rules_author(None, original=MEASURE)
+    first = author(_REGION2, (_gap_clash(), _warning()), ())
+    assert first is not None and first.plan[0]["op"].name == NAME
+    # THE GAP ATTEMPT FAILED: the kernel's cure is next (0060_00608290's fix_small_faces).
+    second = author(_REGION2, (_gap_clash(), _warning()), (_tried(NAME),))
+    assert second is not None and second.plan[0]["op"].name != NAME
+
+
+def test_gap_tries_counts_failures_declines_and_the_last_outcome():
+    from meshpipeline.cad.repair.rules_author import gap_tries
+
+    tries = gap_tries((_tried(NAME), _tried(NAME), _tried(NAME, declined=True)))
+    assert tries.rung("face:wall") == 2 and "face:wall" in tries.declined
+    assert tries.last_failed and tries.spent("face:wall")
+    assert not gap_tries(()).last_failed
 
 
 def test_a_volume_stage_overlap_on_a_gap_is_not_refused_for_its_stage(baseline_on):
@@ -157,3 +207,70 @@ def test_with_the_flag_off_the_baseline_is_unchanged(monkeypatch):
     (2.5, 2.5)])
 def test_a_measured_delta_is_rounded_away_from_zero(value, expected):
     assert _rounded_up(value) == pytest.approx(expected, abs=1e-12)
+
+
+# THE GAP PRE-PASS (region_loop._gap_prepass): before any author, every gap clash is offered the
+# operation through the ordinary try_package, down its ladder, inside its share of the clock.
+
+class _Work:
+    """Just enough of a RepairSession: a defect list, a log, the upload's measure, try_package."""
+
+    def __init__(self, defects, *, commit_on: int | None = None):
+        self._defects = list(defects)
+        self.log: list = []
+        self.original = MEASURE
+        self.offered: list = []
+        self.commit_on = commit_on
+
+    def defects(self):
+        return tuple(self._defects)
+
+    def try_package(self, package):
+        op = package.plan[0]["op"]
+        self.offered.append(op.sag_share)
+        commit = self.commit_on is not None and len(self.offered) == self.commit_on
+        self.log.append(op.name)
+        verdict = PackageVerdict(region_index=package.region.index,
+                                 status="committed" if commit else "reverted",
+                                 verdicts=(OpVerdict(op=op.name, targets=("face:wall",),
+                                                     defect_code="mesh_edge_through_face",
+                                                     status="kept" if commit else "rolled_back",
+                                                     reason="" if commit else "target_remains",
+                                                     evidence={}),))
+        if commit:
+            self._defects = []
+        return verdict
+
+
+def _prepass(work, *, left: float = 1000.0, max_ops: int = 6):
+    from meshpipeline.cad.repair import region_loop
+
+    return region_loop._gap_prepass(work, (_REGION,), remaining=lambda: left, reserve=10.0,
+                                    tolerance_mm=1e-4, max_ops=max_ops)
+
+
+def test_the_prepass_walks_the_ladder_until_a_split_holds(baseline_on):
+    work = _Work((_gap_clash(),), commit_on=2)
+    out = _prepass(work)
+    assert [v.status for _, v in out] == ["reverted", "committed"]
+    assert work.offered == [0.25, 0.125]
+
+
+def test_the_prepass_stops_when_the_ladder_is_spent(baseline_on):
+    from meshpipeline.cad.repair.gap_split import SAG_LADDER
+
+    work = _Work((_gap_clash(),))
+    out = _prepass(work)
+    assert len(out) == len(SAG_LADDER) and work.offered == list(SAG_LADDER)
+
+
+def test_the_prepass_ignores_what_is_not_a_measured_gap(baseline_on):
+    work = _Work((_clash(), _clash(gap=0.0), _warning()))
+    assert _prepass(work) == [] and work.offered == []
+
+
+def test_the_prepass_respects_its_clock_share_and_the_flag(baseline_on, monkeypatch):
+    work = _Work((_gap_clash(),))
+    assert _prepass(work, left=5.0) == []          # inside the final reserve
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_RESOLVE_SUB_MESH_GAP", False)
+    assert _prepass(_Work((_gap_clash(),))) == []

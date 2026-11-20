@@ -499,6 +499,49 @@ def _observe_part(author: Author, defects) -> None:
         observe(tuple(defects))
 
 
+#: The share of the run clock left at the pre-pass's start that it may spend, so the region walk
+#: (kernel cures, the investigator, the tournament) still gets the rest.
+GAP_PREPASS_SHARE = 0.4
+
+
+def _gap_prepass(work, regions, *, remaining: Callable[[], float], reserve: float,
+                 tolerance_mm: float, max_ops: int) -> list[tuple[int, PackageVerdict]]:
+    """Offer `resolve_sub_mesh_gap` to every 3D-stage gap clash, down its sag ladder, before any
+    author runs. Nothing here is a new gate: each package goes through `try_package` (predicate,
+    caps, solids, validity, the reviewer, the delivered-STEP keep rule) exactly as an authored one.
+
+    Off unless CAD_REPAIR_RESOLVE_SUB_MESH_GAP is on. Bounded by GAP_PREPASS_SHARE of the clock,
+    the final reserve and the run's operation allowance. A face is retried at the next rung only
+    while its earlier tries neither committed nor declined (`rules_author.GapTries`).
+    """
+    from meshpipeline.cad.repair import rules_author as ra
+
+    if not getattr(rcfg, "CAD_REPAIR_RESOLVE_SUB_MESH_GAP", False):
+        return []
+    start = remaining()
+    spend_until = start - GAP_PREPASS_SHARE * max(start - reserve, 0.0)
+    out: list[tuple[int, PackageVerdict]] = []
+    tried: list[PackageVerdict] = []
+    charged = len(work.log)
+    region_of = {fp: region for region in regions for fp in region.fingerprints}
+    while True:
+        if remaining() <= max(reserve, spend_until) or charged >= max_ops:
+            break
+        tries = ra.gap_tries(tuple(tried))
+        aim = next((d for d in ra.gap_defects(work.defects())
+                    if d.fingerprint in region_of and not tries.spent(d.fingerprint)), None)
+        if aim is None:
+            break
+        region = region_of[aim.fingerprint]
+        package = ra.gap_package(region, aim, tries, original=work.original)
+        verdict = work.try_package(_with_tolerance(package, tolerance_mm))
+        out.append((region.index, verdict))
+        tried.append(verdict)
+        if any(op.kept for op in verdict.verdicts):
+            charged += len(verdict.verdicts)
+    return out
+
+
 def _with_tolerance(package: TargetPackage, tolerance_mm: float) -> TargetPackage:
     """The package as its author wrote it, with the RUN'S tolerance filled into any plan item
     that did not ask for one.
@@ -803,6 +846,18 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
     packages: list[PackageVerdict] = []
     escalated: list[int] = []
     committed = False
+    # THE GAP PRE-PASS (lane H, wave 8), BEFORE ANY AUTHOR: every 3D-stage clash the probe
+    # measured apart gets `resolve_sub_mesh_gap` through the ordinary `try_package`, whatever the
+    # arm and whether or not its region is ever reached. Its verdicts are the run's packages and
+    # seed each region's `tried`, so the walk's author sees what the pre-pass already did.
+    prior: dict[int, list[PackageVerdict]] = {}
+    log_before_prepass = len(work.log)
+    gap_verdicts = _gap_prepass(work, regions, remaining=remaining, reserve=reserve,
+                                tolerance_mm=tolerance_mm, max_ops=limits.max_ops)
+    for region_index, verdict in gap_verdicts:
+        packages.append(verdict)
+        prior.setdefault(region_index, []).append(verdict)
+        committed = committed or verdict.committed
     # WHAT THE RUN'S OPERATION ALLOWANCE HAS BEEN SPENT ON, counted here rather than read off
     # `len(work.log)`, because the log counts every ATTEMPT and this budget bounds mutation work.
     # A PACKAGE THAT KEPT NOTHING DOES NOT CHARGE AGAINST IT. With per-operation proofs scoped,
@@ -812,7 +867,9 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
     # region that still has real defects. The run stays bounded regardless: `attempts` packages
     # per region, each package's own `PackageBudget` bounding the operations inside it, and this
     # allowance and the run's clock checked before every attempt.
-    charged = len(work.log)
+    # THE PRE-PASS IS CHARGED BY THE WALK'S OWN RULE: a package that kept nothing charges nothing.
+    charged = log_before_prepass + sum(len(v.verdicts) for _, v in gap_verdicts
+                                       if any(op.kept for op in v.verdicts))
     # WALKED EVERY REGION unless a budget says otherwise; the loop runs out of regions rather than
     # of ideas, because a region is offered packages until one of them holds.
     stopped = REGIONS_EXHAUSTED
@@ -826,7 +883,7 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
         # WHAT THIS REGION HAS ALREADY TRIED, which is the author's third argument. Per region and
         # not per run: a package that failed on this locus says nothing about the next one, and
         # regions are independent by construction (that is the point of them).
-        tried: list[PackageVerdict] = []
+        tried: list[PackageVerdict] = list(prior.get(region.index, ()))
         # WHAT THIS REGION'S OWN PROOF HAS ALREADY DISCHARGED. A committing package's predicate
         # was checked against the scoped re-inspection the commit rests on, so its `cleared` names
         # really are absent from the region - but that scoped list deliberately does NOT become
