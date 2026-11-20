@@ -23,6 +23,13 @@
 
 
 
+
+## LEAD: AI WAVE LAUNCHED (00:xx PT 2026-11-20). User decision: criterion (a), plus lane E in parallel
+- **Launch id 11200820:** 12× c2d-standard-8, us-central1-b, 96 shards, all 5 units. Code **b04befe8** contains lane A's c4774a2c (5 investigator fixes), lane C's 9e8db5d8 (per-file crash isolation) and lane D's transcripts plus per-region outcomes; image 00ce0156 (toolchain); CAD_REPAIR_TIMEOUT_S=420 for every arm. Results go to `gs://dev-crsv3-transfer-224734058693/eval/<arm>-b04befe8xxxx/`.
+- **Scope:** this measures classification and escalation, not repair. 0 repairs are expected, because no operation is ever kept on this corpus (lane A, 8 parts: 24/25 regions concluded, 22 escalate, 2 mesher_side, 0 packages).
+- **Lane B** babysits, relaunches failed shards and collects. **Lane E** (keep predicate / target_remains, incl. "unlocated after op read as still there") lands a fix, then LEAD reruns the wave at that commit.
+- Check progress from anywhere: `collect.py --commit $(git rev-parse b04befe8) --status`.
+
 ## LEAD RULING ~23:50 PT: AI wave HELD
 - Lane A fixed five investigator defects (through c4774a2c): the clock reserve, edit filler, the conclude tool, closing a region without asking, and the conclude schema plus refusal counter. The loop now runs end to end: tool calls happen, operations are tried on the clone, and a conclusion is reached.
 - **No package is reachable.** No operation is ever KEPT on this corpus. T6 rules-only had 0 keeps on 90 parts, and the supporting t29-det had 0/119 newly meshed. conclude(package) needs a kept edit.
