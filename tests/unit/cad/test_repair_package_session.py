@@ -4,6 +4,7 @@
 #                 whenever that claim does not hold.
 from __future__ import annotations
 
+import meshpipeline.settings.cad_repair as rcfg
 from meshpipeline.cad.repair import session as session_module
 from meshpipeline.cad.repair.caps import Measure
 from meshpipeline.cad.repair.contracts import DefectCode, DefectSeverity
@@ -54,6 +55,7 @@ class _Op:
     name = "fix"
     answers = frozenset({DefectCode.small_edge})
     scope = 1
+    whole_shape = False
 
     def __init__(self, clock: _Clock, *, name: str = "fix",
                  declared_area_mm2: float = 0.0) -> None:
@@ -258,6 +260,37 @@ def test_a_package_targeting_the_unlocated_region_is_refused():
     assert verdict.reason.startswith("refused:")
     assert "unlocated" in verdict.reason
     assert session.scan_count == 0
+
+
+def test_the_whole_shape_posture_still_refuses_a_scoped_operation_there(monkeypatch):
+    """THE EXCEPTION IS NARROW. Under `CAD_REPAIR_WHOLE_SHAPE_AIM` the unlocated region may be
+    repaired - but only by an operation that acts on the WHOLE SHAPE. A scoped operation aimed at
+    a defect that names no geometry could only decline `not_resolved`, so a plan carrying one is
+    malformed rather than unlucky, and the refusal says which operation."""
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_WHOLE_SHAPE_AIM", "live", raising=False)
+    session = _session()
+
+    verdict = session.try_package(_package(session, cleared={_EDGE}, located=False))
+
+    assert verdict.status == "reverted"
+    assert "only a whole-shape operation" in verdict.reason
+    assert "fix0" in verdict.reason, "it names the operation that cannot be aimed there"
+    assert session.scan_count == 0
+
+
+def test_the_whole_shape_posture_admits_a_whole_shape_plan(monkeypatch):
+    """And with every operation whole-shape, the package is EXECUTED rather than refused: the
+    scoped proof is replaced, not waived - whole-shape scans, a whole-part deviation, no
+    auto-accept, and success measured as the delivered STEP meshing."""
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_WHOLE_SHAPE_AIM", "live", raising=False)
+    session = _session()
+    for op in session.test_ops:
+        op.whole_shape = True
+
+    verdict = session.try_package(_package(session, cleared={_EDGE}, located=False))
+
+    assert not verdict.reason.startswith("refused:"), verdict.reason
+    assert session.scan_count > 0, "it got as far as a proof"
 
 
 def test_an_empty_plan_is_refused_rather_than_committed():

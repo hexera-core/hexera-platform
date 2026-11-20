@@ -15,7 +15,13 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import meshpipeline.settings.cad_repair as rcfg
-from meshpipeline.cad.repair import mesh_probe, oracle, package_review, review_tier
+from meshpipeline.cad.repair import (
+    directives,
+    mesh_probe,
+    oracle,
+    package_review,
+    review_tier,
+)
 from meshpipeline.cad.repair.caps import (
     Accounting,
     Measure,
@@ -93,6 +99,35 @@ def _scope_blind(defect) -> bool:
     but of the volume stage (`mesh_probe.volume_stage`), which a 2D-only scoped probe never
     builds. Either way only a WHOLE-SHAPE probe may clear it (controller ruling R11a)."""
     return _unlocated_mesh(defect) or (_is_mesh(defect) and mesh_probe.volume_stage(defect))
+
+
+def _whole_shape_aim(package) -> bool:
+    """Is this package aimed at a failure gmsh located NOWHERE?
+
+    The region with no box IS the definition: `regions.decompose` returns the unplaced defects as
+    that one trailing region. Such a package has no scoped proof, which is why every delivery
+    condition it meets is a replacement for one - always reviewed, whole-part deviation, and
+    success measured as the delivered STEP newly meshing.
+    """
+    return not getattr(package.region, "located", True)
+
+
+def _whole_shape_plan(package) -> list[str]:
+    """The plan's operations that are NOT whole-shape. Empty means every one of them is.
+
+    An operation aimed at a face cannot repair a defect that names none: it would be given the
+    synthetic `shape:<code>@<stage>` target, fail to resolve it, and decline `not_resolved` - so a
+    plan carrying one is malformed rather than unlucky, and saying which operation is the useful
+    half of the refusal.
+    """
+    out: list[str] = []
+    for item in package.plan:
+        op = item.get("op")
+        whole = (bool(getattr(op, "whole_shape", False))
+                 or int(getattr(op, "scope", 0)) >= directives.WHOLE_SHAPE_SCOPE)
+        if not whole:
+            out.append(str(getattr(op, "name", "") or "?"))
+    return out
 
 
 def _judged_whole(package) -> bool:
@@ -1513,6 +1548,7 @@ class RepairSession:
                             str(entry.get("fingerprint", ""))
                             for entry in kept_verdict.delta.get("revealed", ()))
                 tier, tier_reason = review_tier.decide(
+                    whole_shape_aim=_whole_shape_aim(package),
                     verdicts=verdicts, reclassified=reclassified, revealed=revealed,
                     declared_matches=review_tier.declaration_covers(
                         before=before, after=after,
@@ -1715,7 +1751,21 @@ class RepairSession:
             # `_Scope` rejects nothing it cannot place. So there is nothing scoped about the
             # proof and nothing targetable in the region: those defects are a person's question,
             # not a package's.
-            return f"region {package.region.index} is unlocated: it has no box to scope a proof to"
+            #
+            # UNLESS THE WHOLE-SHAPE POSTURE SAYS OTHERWISE, which does not waive that argument -
+            # it replaces the scoped proof with a whole-part one. `_judged_whole` already forces
+            # whole-shape scans for the volume-stage codes these failures carry, the deviation is
+            # measured on the whole part, `review_tier` refuses to auto-accept the package, and
+            # success is the delivered STEP newly meshing rather than a name disappearing. What
+            # stays refused either way is a plan that aims a SCOPED operation at a defect naming
+            # no geometry: it could only decline `not_resolved`.
+            if rcfg.CAD_REPAIR_WHOLE_SHAPE_AIM != "live":
+                return (f"region {package.region.index} is unlocated: it has no box to scope a "
+                        "proof to")
+            scoped = _whole_shape_plan(package)
+            if scoped:
+                return (f"region {package.region.index} is unlocated, so only a whole-shape "
+                        f"operation can repair it; the plan names {', '.join(sorted(scoped))}")
 
         if not package.plan:
             # AN EMPTY PLAN HAS NOTHING TO PROVE. A predicate naming only `unchanged` entities

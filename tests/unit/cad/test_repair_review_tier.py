@@ -42,11 +42,13 @@ def _measured(mm: float) -> dict:
 def _decide(monkeypatch, *, posture: str = "live", verdicts=(_V(),),
             reclassified=frozenset(), revealed=frozenset(), declared_matches: bool = True,
             deviation_mm: float = 0.01, status: str = pr.DEVIATION_MEASURED,
-            threshold_mm: float | None = 0.05) -> tuple[str, str]:
+            threshold_mm: float | None = 0.05,
+            whole_shape_aim: bool = False) -> tuple[str, str]:
     monkeypatch.setattr(rcfg, "CAD_REPAIR_AUTO_ACCEPT", posture, raising=False)
     return rt.decide(verdicts=list(verdicts), reclassified=reclassified, revealed=revealed,
                      declared_matches=declared_matches, deviation=_measured(deviation_mm),
-                     deviation_status=status, threshold_mm=threshold_mm)
+                     deviation_status=status, threshold_mm=threshold_mm,
+                     whole_shape_aim=whole_shape_aim)
 
 
 # THE HAPPY PATH, AND THE THRESHOLD AS A TABLE
@@ -285,3 +287,31 @@ def test_a_measured_basis_still_auto_accepts(monkeypatch, basis):
                              deviation={**_measured(0.01), "deviation_basis": basis},
                              deviation_status=pr.DEVIATION_MEASURED, threshold_mm=0.05)
     assert tier == "auto", reason
+
+
+# --- a whole-shape aim is never auto-accepted --------------------------------------------------
+
+def test_a_whole_shape_aim_always_goes_to_a_person(monkeypatch):
+    """THE CONDITION, NAMED RATHER THAN EMERGENT. A package aimed at a failure gmsh located
+    NOWHERE has no scoped proof - its region has no box - so the reviewer's seat is what stands in
+    for one, and it may never be skipped.
+
+    A whole-part deviation basis is already outside `_TIER_BASES`, so today such a package would
+    reach a person anyway. That is emergent, not stated: it would quietly stop holding the moment
+    someone added the whole-part basis to that set, and the thing lost would be the only judgement
+    standing between an unscoped claim and a customer's geometry. So it is a veto of its own, and
+    the FIRST one, so the reason a reader gets says which rule sent it to a person.
+    """
+    tier, reason = _decide(monkeypatch, whole_shape_aim=True, deviation_mm=0.001,
+                           threshold_mm=10.0)
+
+    assert tier == "reviewer", reason
+    assert "whole" in reason.lower()
+
+
+def test_an_ordinary_package_still_auto_accepts_beside_it(monkeypatch):
+    """The veto is about the aim, not about the posture: everything else is unchanged."""
+    tier, _reason = _decide(monkeypatch, whole_shape_aim=False, deviation_mm=0.001,
+                            threshold_mm=10.0)
+
+    assert tier == "auto"

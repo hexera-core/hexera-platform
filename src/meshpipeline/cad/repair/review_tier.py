@@ -92,12 +92,15 @@ def _kept_removals(verdicts: Iterable[Any]) -> list[str]:
 
 def decide(*, verdicts: Iterable[Any], reclassified: frozenset, revealed: frozenset,
            declared_matches: bool, deviation: dict, deviation_status: str,
-           threshold_mm: float | None) -> tuple[str, str]:
+           threshold_mm: float | None,
+           whole_shape_aim: bool = False) -> tuple[str, str]:
     """`("auto", reason)` or `("reviewer", reason)` for one package that passed its predicate.
 
     EVERY CONDITION IS A VETO and they are checked in a fixed order, so the reason a reader gets
     is the FIRST thing that sent the package to a person. `auto` needs ALL of:
 
+    - the package is not a WHOLE-SHAPE AIM (`CAD_REPAIR_WHOLE_SHAPE_AIM`): a failure gmsh located
+      nowhere has no box to scope a proof to, and the reviewer's seat is what stands in for one;
     - the posture is live;
     - the deployment carries a customer threshold above zero;
     - no kept operation moves vertices (`VERTEX_MOVING_OPS`);
@@ -115,6 +118,14 @@ def decide(*, verdicts: Iterable[Any], reclassified: frozenset, revealed: frozen
     """
     try:
         verdicts = list(verdicts)
+        if whole_shape_aim:
+            # FIRST, AND STATED RATHER THAN EMERGENT. A whole-part deviation basis is already
+            # outside `_TIER_BASES`, so such a package reaches a person today anyway - but that is
+            # a side effect, and it would stop holding the moment someone added that basis to the
+            # set. What would be lost is the only judgement standing between an UNSCOPED claim and
+            # a customer's geometry, so it is a veto of its own.
+            return REVIEWER, ("the package is aimed at the whole shape, so there is no scoped "
+                              "proof and the judgement is a person's")
         if posture() != "live":
             return REVIEWER, "the auto-accept posture is off"
         if threshold_mm is None:
