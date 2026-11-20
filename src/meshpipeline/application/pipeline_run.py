@@ -596,7 +596,7 @@ async def _run_async(req: JobRequest) -> dict:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
     from meshpipeline.contracts.pipeline_state import STATE_SCHEMA_VERSION, PipelineState
-    from meshpipeline.persistence.models import JobStatus
+    from meshpipeline.persistence.models import FailedReason, JobStatus
     from meshpipeline.persistence.repositories.job_repository import JobRepository
     from meshpipeline.pipeline.graph import build_graph
 
@@ -1170,6 +1170,7 @@ async def _run_async(req: JobRequest) -> dict:
         # so it cannot change `final_status` and its own failures are swallowed (see
         # application/repair_report_delivery.py); only being FENCED stops this worker, for the
         # same reason it stops artifact registration.
+        _standalone_handed_back = ""   # the repaired-CAD delivery's outcome on a standalone run
         if final_state.get("repair_report"):
             from meshpipeline.application.execution_fence import (
                 StaleWorkerFenced as _StaleFenced,
@@ -1206,7 +1207,7 @@ async def _run_async(req: JobRequest) -> dict:
                         from meshpipeline.application.repair_report_delivery import (
                             deliver_repaired_cad as _deliver_cad,
                         )
-                        await _deliver_cad(
+                        _standalone_handed_back = await _deliver_cad(
                             AsyncSessionLocal, job_id=job_id,
                             local_path=_standalone["path"],
                             suffix=str(_standalone.get("suffix") or ".step"),
@@ -1246,7 +1247,15 @@ async def _run_async(req: JobRequest) -> dict:
         # visual review). DELIVER FIRST - a delivery failure downgrades the job to a
         # system failure, recorded by the single status commit below.
         _delivery = None   # the artifact delivery's outcome, when there was one to make
-        if final_status == JobStatus.succeeded:
+        if final_status == JobStatus.succeeded and _run_outcome.standalone_delivery is not None:
+            # A STANDALONE REPAIR JOB's deliverable is the repaired file handed back above - there
+            # is no mesh workspace to deliver. A repaired file that did not reach the store is no
+            # success: the customer would be told "repaired" with nothing to download.
+            if not _standalone_handed_back:
+                jlog.error("standalone repair: the repaired file was not delivered - the run "
+                           "fails (job_id=%s)", job_id)
+                final_status, _failed_reason = JobStatus.failed, FailedReason.api_failure
+        elif final_status == JobStatus.succeeded:
             # Deliver FIRST, commit status ONCE afterwards: a client must never see `succeeded`
             # before the mesh is fetchable. A run whose mesh cannot reach the user did not succeed,
             # so the downgrade travels back with the delivery outcome rather than being re-derived

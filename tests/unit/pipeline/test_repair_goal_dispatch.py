@@ -305,3 +305,62 @@ def test_the_route_is_todays_edge_with_the_posture_off(monkeypatch):
     monkeypatch.setattr(rcfg, "CAD_REPAIR_STANDALONE_JOBS", "off", raising=False)
     assert route_after_repair_attempt(
         {"repair_goal": {"goal": "standalone"}}) == "node_geometry_admission"
+
+
+# ---------------------------------------------------------------- the terminal status
+#
+# The standalone branch ends at node_repair_deliver: no builder, no executor, no reviewer. The
+# terminal status must be read off THAT ending, not off the mesher's fields it never set - else
+# every repaired standalone job ends `failed / mesh_generation`.
+
+
+def _terminal(state):
+    import logging
+
+    from meshpipeline.application.final_result import RunOutcome, derive_terminal_status
+    return derive_terminal_status(RunOutcome.from_graph_state(state), job_id="j",
+                                  jlog=logging.getLogger("t"))
+
+
+def _standalone_ended(node_output: dict) -> dict:
+    return {"repair_goal": {"goal": "standalone"}, **node_output}
+
+
+def test_a_repaired_standalone_job_ends_succeeded(live, tmp_path):
+    from meshpipeline.pipeline.repair_deliver import node_repair_deliver
+    fixed = tmp_path / "fixed.step"
+    fixed.write_text("ISO-10303-21;")
+    ended = asyncio.run(node_repair_deliver({"repair_attempt": {
+        "attempted": True, "resolved": True, "repaired_path": str(fixed)}}))
+    assert ended["repair_delivery"]["outcome"] == "repaired"
+    decision = _terminal(_standalone_ended(ended))
+    assert decision.succeeded, decision
+
+
+def test_an_unrepairable_standalone_job_still_fails(live):
+    from meshpipeline.pipeline.repair_deliver import node_repair_deliver
+    ended = asyncio.run(node_repair_deliver({"repair_attempt": {
+        "attempted": True, "resolved": False, "stopped_because": "budget"}}))
+    assert not _terminal(_standalone_ended(ended)).succeeded
+
+
+def test_a_repaired_ending_with_no_file_is_no_success(live):
+    assert not _terminal(_standalone_ended({"repair_delivery": {
+        "outcome": "repaired", "goal": {}, "path": "", "suffix": ""}})).succeeded
+
+
+def test_a_system_failure_still_wins_over_a_standalone_ending(live, tmp_path):
+    fixed = tmp_path / "fixed.step"
+    fixed.write_text("x")
+    assert not _terminal(_standalone_ended({
+        "api_failure": "storage: unavailable",
+        "repair_delivery": {"outcome": "repaired", "path": str(fixed), "suffix": ".step"}},
+    )).succeeded
+
+
+def test_a_meshing_run_ignores_a_stray_repair_delivery(live, tmp_path):
+    # only the standalone ending speaks for the status: a meshing run with no validated mesh fails
+    fixed = tmp_path / "fixed.step"
+    fixed.write_text("x")
+    assert not _terminal({"repair_goal": {"goal": "meshing"}, "repair_delivery": {
+        "outcome": "repaired", "path": str(fixed), "suffix": ".step"}}).succeeded
