@@ -333,7 +333,8 @@ def result_arm(result_id: str, rep: dict, checked: dict, kind_sha: str) -> dict:
            "cost_per_fixed_part": rep["cost_per_fixed_part_usd"],
            "notes": (f"run {run}; {evalspec.arm(run)['model_role']}; model "
                      f"${rep['model']['cost_usd']} + VM ${rep['vm']['container_cost_usd']}; "
-                     f"harness {str(checked.get('harness_commit') or '')[:12]}; "
+                     f"code {checked['commit'][:12]} from the archive on an image built "
+                     f"from {str(checked.get('image_commit') or '?')[:12]}; "
                      + "; ".join(evalspec.KNOWN_NOOPS.values()))}
     if result_id == "t19_tournament_on":
         out["same_run_as"] = "t29_v3"

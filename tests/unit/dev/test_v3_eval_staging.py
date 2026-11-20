@@ -56,44 +56,65 @@ def _launch(*argv: str, tmp_path: Path):
 
 
 COMMIT = "812ae022" + "0" * 32
-IMAGE = "us-central1-docker.pkg.dev/hexera-dev/mesh/mesh@sha256:" + "a" * 64
+IMAGE = "us-central1-docker.pkg.dev/hexera-dev/mesh/app@sha256:" + "a" * 64
+#: A real commit, so the dry run's local `git diff` (toolchain drift) has something to read.
+HEAD = subprocess.run(["git", "-C", str(REPO), "rev-parse", "HEAD"], capture_output=True,
+                      text=True).stdout.strip()
 
 
 def test_launcher_cli_refuses_n2_before_planning_anything(tmp_path):
-    r = _launch("--arm", "deterministic", "--kind", "failing", "--image", IMAGE,
-                "--commit", COMMIT, "--shards", "4", "--machine-type", "n2-highcpu-8",
-                "--dry-run", tmp_path=tmp_path)
+    r = _launch("--image", IMAGE, "--commit", HEAD, "--image-commit", HEAD,
+                "--machine-type", "n2-highcpu-8", "--dry-run", tmp_path=tmp_path)
     assert r.returncode == 2, r.stdout + r.stderr
     assert "n2" in r.stderr and "gcloud compute instances create" not in r.stdout
 
 
 def test_launcher_refuses_an_unpinned_image_and_a_short_commit(tmp_path):
-    r = _launch("--arm", "deterministic", "--kind", "failing", "--image", "repo/mesh:latest",
-                "--commit", COMMIT, "--shards", "2", "--dry-run", tmp_path=tmp_path)
+    r = _launch("--image", "repo/app:latest", "--commit", HEAD, "--image-commit", HEAD,
+                "--dry-run", tmp_path=tmp_path)
     assert r.returncode == 2 and "digest" in r.stderr
-    r = _launch("--arm", "deterministic", "--kind", "failing", "--image", IMAGE,
-                "--commit", "812ae022", "--shards", "2", "--dry-run", tmp_path=tmp_path)
+    r = _launch("--image", IMAGE, "--commit", "812ae022", "--image-commit", HEAD,
+                "--dry-run", tmp_path=tmp_path)
     assert r.returncode == 2 and "40" in r.stderr
 
 
-def test_launcher_dry_run_prints_labelled_self_deleting_vms(tmp_path):
-    r = _launch("--arm", "v3-full", "--kind", "failing", "--image", IMAGE, "--commit", COMMIT,
-                "--shards", "3", "--dry-run", "--skip-preflight", tmp_path=tmp_path)
+def test_launcher_refuses_more_than_100_vcpu(tmp_path):
+    r = _launch("--image", IMAGE, "--commit", HEAD, "--image-commit", HEAD,
+                "--shards-total", "120", "--dry-run", tmp_path=tmp_path)
+    assert r.returncode == 2 and "100-vCPU" in r.stderr
+
+
+def test_launcher_dry_run_is_one_wave_of_labelled_self_deleting_vms(tmp_path):
+    r = _launch("--image", IMAGE, "--commit", HEAD, "--image-commit", HEAD, "--dry-run",
+                "--skip-preflight", tmp_path=tmp_path)
     assert r.returncode == 0, r.stdout + r.stderr
     creates = [ln for ln in r.stdout.splitlines() if "gcloud compute instances create" in ln]
-    assert len(creates) == 3
-    for i, line in enumerate(creates, start=1):
-        assert f"{i}of3" in line
+    assert len(creates) == 12        # 96 shards, 8 per c2d-standard-8: 96 vCPU <= 100
+    units = []
+    for j, line in enumerate(creates, start=1):
+        assert f"{j}of12" in line
         assert "deployment-id=dev-crsv3" in line and "purpose=v3-eval" in line
-        assert "arm=v3-full" in line
-        assert "--instance-termination-action=DELETE" in line
-        assert "--max-run-duration=" in line
-        assert "--machine-type=c2d-highcpu-4" in line
-        assert "n2-" not in line
-        # results land under the detached root eval/<arm>-<commit12>/ (collectable from GCS alone)
-        assert "v3-results=gs://dev-crsv3-transfer-224734058693/eval/v3-full-812ae0220000" in line
+        assert "--instance-termination-action=DELETE" in line and "--max-run-duration=" in line
+        assert "--machine-type=c2d-standard-8" in line and "n2-" not in line
+        assert f"v3-code=gs://dev-crsv3-transfer-224734058693/eval/v3-verdict/code-{HEAD[:12]}/" \
+            in line
+        units += line.split("v3-units=")[1].split("|")[0].split(",")
+    plan = spec.shard_plan(96)
+    assert sorted(units) == sorted(spec.work_units(plan))     # every shard once, across VMs
+    assert {u.split(":")[0] for u in units} == set(spec.ARMS)
+    assert {(u.split(":")[0], u.split(":")[1]) for u in units} == set(spec.UNITS)
     # the secret is named, never valued
     assert "openai-api-key" in r.stdout and "OPENAI_API_KEY=" not in r.stdout
+
+
+def test_the_shard_plan_partitions_every_unit_and_balances_wall():
+    plan = spec.shard_plan(96)
+    assert sum(plan.values()) == 96 and set(plan) == set(spec.UNITS)
+    minutes = spec.plan_minutes(plan)
+    assert max(minutes.values()) <= 30 and min(minutes.values()) >= 15
+    assert spec.shard_plan(96) == plan                         # a resume recomputes the same N
+    vms = spec.pack(spec.work_units(plan), 8)
+    assert len(vms) == 12 and all(len(v) == 8 for v in vms)
 
 
 # ------------------------------------------------------------------ the sample
@@ -158,27 +179,27 @@ def _shard(root: Path, arm: str, kind: str, i: int, n: int, *, commit=COMMIT, ro
 
 def test_collector_refuses_mixed_commits(tmp_path):
     collect = _load("v3_collect_under_test", V3 / "collect.py")
-    _shard(tmp_path, "deterministic", "failing", 1, 1)
-    _shard(tmp_path, "v3-full", "failing", 1, 1, commit="f" * 40)
+    _shard(tmp_path, "t29_deterministic", "failing", 1, 1)
+    _shard(tmp_path, "v3_full", "failing", 1, 1, commit="f" * 40)
     with pytest.raises(ValueError, match="commit"):
         collect.load_runs(tmp_path)
 
 
 def test_collector_refuses_a_missing_shard(tmp_path):
     collect = _load("v3_collect_under_test2", V3 / "collect.py")
-    _shard(tmp_path, "deterministic", "failing", 1, 2)
+    _shard(tmp_path, "t29_deterministic", "failing", 1, 2)
     with pytest.raises(ValueError, match="2/2"):
         collect.load_runs(tmp_path)
 
 
 def test_collector_merges_shards_through_repair_corpus_aggregate(tmp_path):
     collect = _load("v3_collect_under_test3", V3 / "collect.py")
-    _shard(tmp_path, "deterministic", "failing", 1, 2)
-    _shard(tmp_path, "deterministic", "failing", 2, 2)
+    _shard(tmp_path, "t29_deterministic", "failing", 1, 2)
+    _shard(tmp_path, "t29_deterministic", "failing", 2, 2)
     runs = collect.load_runs(tmp_path)
     merged = runs["checked"]
     assert merged["commit"] == COMMIT
-    rows = runs["arms"][("deterministic", "failing")]["rows"]
+    rows = runs["arms"][("t29_deterministic", "failing")]["rows"]
     assert len(rows) == 2
     summary = collect.summarise(rows)
     assert summary["meshing"]["files"] == 2 and summary["meshing"]["newly_broken"] == 0
@@ -187,7 +208,7 @@ def test_collector_merges_shards_through_repair_corpus_aggregate(tmp_path):
 # ------------------------------------------------------------------ the posture and the verdict
 
 def test_preflight_catches_a_flag_the_build_does_not_read():
-    env = spec.ARMS["v3-full"]["env"]
+    env = spec.ARMS["v3_full"]["env"]
     settings = {k: v for k, v in env.items() if k.startswith("CAD_REPAIR_")}
     settings["CAD_REPAIR_ENABLED"] = True
     assert spec.preflight(settings, env) == []
@@ -196,7 +217,7 @@ def test_preflight_catches_a_flag_the_build_does_not_read():
     problems = spec.preflight(missing, env)
     assert any("INERT CAD_REPAIR_TOURNAMENT=live" in p for p in problems)
     # asking for exactly what the code falls back to is harmless when the row is absent
-    det = spec.ARMS["deterministic"]["env"]
+    det = spec.ARMS["t29_deterministic"]["env"]
     det_settings = {k: v for k, v in det.items()
                     if k.startswith("CAD_REPAIR_") and k not in ("CAD_REPAIR_TOURNAMENT",
                                                                  "CAD_REPAIR_MEMORY")}
@@ -207,13 +228,13 @@ def test_preflight_catches_a_flag_the_build_does_not_read():
 
 
 def test_arms_differ_only_by_investigator_and_tournament():
-    base = {k: v for k, v in spec.ARMS["deterministic"]["env"].items()
+    base = {k: v for k, v in spec.ARMS["t29_deterministic"]["env"].items()
             if not k.startswith("CAD_REPAIR_TOURNAMENT") and k != "CAD_REPAIR_INVESTIGATOR"}
     for name, a in spec.ARMS.items():
         rest = {k: v for k, v in a["env"].items()
                 if not k.startswith("CAD_REPAIR_TOURNAMENT") and k != "CAD_REPAIR_INVESTIGATOR"}
         assert rest == base, name
-    assert spec.ARMS["v3-full"]["env"]["CAD_REPAIR_TOURNAMENT_K"] == "3"
+    assert spec.ARMS["v3_full"]["env"]["CAD_REPAIR_TOURNAMENT_K"] == "3"
 
 
 def test_t29_degenerate_ratio_is_undefined_not_met():
@@ -255,3 +276,52 @@ def test_clean_control_manifest_is_100_seeded_passing_parts_with_sources():
         assert f["archive_url"].startswith("https://archive.nyu.edu/retrieve/")
         assert len(f["archive_sha256"]) == 64
     assert not any(k in f for f in files for k in ("step", "brep", "bytes_b64"))
+
+
+# ------------------------------------------------------------------ results.json (evidence lane)
+
+#: The required keys of the evidence lane's results.schema.json (schema_version 1). Restated here
+#: because that file lives on another lane; a schema change there must be mirrored here.
+SCHEMA_ARMS = ("t6_rules_only_local", "t29_deterministic", "t29_v3", "t19_tournament_off",
+               "t19_tournament_on", "clean_control")
+SCHEMA_ARM_KEYS = {"arm", "label", "commit", "image_digest", "sample_sha256", "n_files",
+                   "newly_meshed", "newly_broken", "meshes_before", "meshes_after", "endings",
+                   "ops_kept", "ops_rolled_back", "model_calls", "cost_usd", "wall_s",
+                   "cost_per_fixed_part"}
+SCHEMA_ARM_OPTIONAL = {"same_run_as", "notes"}
+SCHEMA_CLEAN_KEYS = {"arm", "label", "commit", "image_digest", "sample_sha256", "n_files",
+                     "byte_unchanged", "newly_broken"}
+SCHEMA_CLEAN_OPTIONAL = {"arms_covered", "basis", "notes"}
+
+
+def test_results_json_has_the_evidence_lane_shape(tmp_path):
+    collect = _load("v3_collect_under_test4", V3 / "collect.py")
+    for arm in spec.ARMS:
+        _shard(tmp_path, arm, "failing", 1, 1)
+    _shard(tmp_path, "v3_full", "clean", 1, 1)
+    runs = collect.load_runs(tmp_path)
+    reports = {}
+    for key, entry in runs["arms"].items():
+        rep = collect.arm_report(entry)
+        if key[1] == "clean":
+            rep["clean"] = collect.clean_untouched(entry["rows"], rep["summary"])
+        reports[key] = rep
+    out = collect.results_json(reports, runs["checked"], collect.build_verdicts(reports),
+                               source="test")
+    assert out["schema_version"] == 1 and set(out) <= {"schema_version", "generated_at",
+                                                        "source", "arms", "verdict"}
+    assert set(out["arms"]) == set(SCHEMA_ARMS)
+    for name in SCHEMA_ARMS[:-1]:
+        arm = out["arms"][name]
+        assert arm["arm"] == name
+        assert SCHEMA_ARM_KEYS <= set(arm) <= SCHEMA_ARM_KEYS | SCHEMA_ARM_OPTIONAL, name
+    assert out["arms"]["t6_rules_only_local"]["label"] == "rules-only baseline"
+    assert out["arms"]["t19_tournament_on"]["same_run_as"] == "t29_v3"
+    assert out["arms"]["t19_tournament_on"]["newly_meshed"] == \
+        out["arms"]["t29_v3"]["newly_meshed"]
+    clean = out["arms"]["clean_control"]
+    assert SCHEMA_CLEAN_KEYS <= set(clean) <= SCHEMA_CLEAN_KEYS | SCHEMA_CLEAN_OPTIONAL
+    assert clean["arms_covered"] == ["v3_full"] and clean["byte_unchanged"] == 1
+    # nothing measured reads null, never 0
+    assert out["arms"]["t6_rules_only_local"]["newly_meshed"] is None
+    json.dumps(out, allow_nan=False)

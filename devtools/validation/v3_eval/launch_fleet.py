@@ -3,24 +3,27 @@
 #                 labelled, self-deleting GCE VMs in hexera-dev / us-central1, one shard process per
 #                 vCPU.
 # Owns: argument validation (machine family, the 100-vCPU ceiling, pinned image, full commits, the
-#       harness-only diff), the shard plan and its packing onto VMs, VM names/labels/metadata, and
+#       toolchain-drift rule), the shard plan and its packing onto VMs, VM names/labels/metadata, and
 #       the resume rule (skip shards that are DONE or already running).
 # Boundaries: --dry-run prints every gcloud command and runs NONE (only local `git` reads). A live
 #             run reads state (image tags, staged objects, quota, running VMs, DONE markers) before
 #             it creates anything, and creates only VMs.
 """Launch everything: three arms on the 120-file sample plus two clean controls, in one wave.
 
-    launch_fleet.py --image <ref@sha256:...> --commit <engine 40-hex> \\
-        --harness-commit <40-hex> [--machine-type c2d-standard-8] [--shards-total 96] --dry-run
+    launch_fleet.py --image <ref@sha256:...> --commit <code 40-hex> \\
+        --image-commit <the image's commit> [--machine-type c2d-standard-8] [--shards-total 96] --dry-run
 
 THE SHARDS. evalspec.shard_plan shares --shards-total out across the five units (arm x kind) by
 estimated file-minutes, so every shard takes about the same wall. Shards are packed onto VMs with
 one shard process per vCPU (--cpus=1, OMP_NUM_THREADS=1 each). Total vCPU <= 100.
 
-THE COMMITS. --commit is the engine: the commit the image was built from (its tag). The harness
-(devtools/validation at --harness-commit) is shipped to the VMs as code.tgz and must differ from
-the engine commit ONLY under devtools/validation/ and tests/: the code that measures may be newer
-than the engine, the engine may not be.
+THE COMMITS. --commit is the CODE that runs: stage.py git-archives its src/ and
+devtools/validation/ into code.tgz, and every container runs with PYTHONPATH=/eval/code/src, so the
+image's installed wheel is shadowed and the image supplies only the toolchain (OCP, gmsh, fTetWild,
+the Python dependencies). A newer commit can therefore be measured without an image redeploy.
+--image-commit is the commit the image was built from: a tag mismatch with it is a WARNING, and a
+dependency/toolchain change between it and --commit (requirements/, pyproject.toml, Dockerfile,
+deploy/docker/) is REFUSED unless --allow-dep-drift, because the image would not carry it.
 
 RESULTS land under gs://dev-crsv3-transfer-<n>/eval/<arm>-<commit12>/<kind>/shard-I-of-N/ (rows
 stream per file into bundle/rows.jsonl, synced every 4 min), so the fleet is detached: nothing
@@ -57,8 +60,8 @@ SERVICE_ACCOUNT = f"{PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
 DIGEST_RE = re.compile(r"^[a-z0-9.-]+-docker\.pkg\.dev/[^@\s]+@sha256:[0-9a-f]{64}$")
 #: The quota metric that bounds each allowed family in us-central1.
 QUOTA_METRIC = {"c2d": "C2D_CPUS", "c3": "C3_CPUS", "c3d": "C3D_CPUS", "c2": "C2_CPUS"}
-#: Paths the harness commit may change relative to the engine commit.
-HARNESS_PATHS = ("devtools/validation/", "tests/")
+#: Paths whose change between the image's commit and the code commit the image cannot absorb.
+TOOLCHAIN_PATHS = ("requirements/", "pyproject.toml", "Dockerfile", "deploy/docker/")
 
 
 def _load(name: str, path: Path):
@@ -84,8 +87,8 @@ def out_uri(arm: str, commit: str, kind: str, i: int, n: int, bucket: str = BUCK
     return f"{results_root(arm, commit, bucket)}/{kind}/shard-{i}-of-{n}"
 
 
-def code_uri(harness: str, prefix: str = PREFIX) -> str:
-    return f"{prefix}/harness-{harness[:12]}/code.tgz"
+def code_uri(commit: str, prefix: str = PREFIX) -> str:
+    return f"{prefix}/code-{commit[:12]}/code.tgz"
 
 
 def vm_name(launch_id: str, j: int, m: int) -> str:
@@ -106,9 +109,9 @@ def labels(commit: str, launch_id: str, units: list[str]) -> str:
 def create_command(args, launch_id: str, j: int, m: int, units: list[str]) -> list[str]:
     metadata = "|".join([
         f"v3-image={args.image}", f"v3-commit={args.commit}",
-        f"v3-harness={args.harness_commit}", f"v3-units={','.join(units)}",
+        f"v3-image-commit={args.image_commit}", f"v3-units={','.join(units)}",
         f"v3-bucket={BUCKET}", f"v3-prefix={args.prefix}",
-        f"v3-code={code_uri(args.harness_commit, args.prefix)}",
+        f"v3-code={code_uri(args.commit, args.prefix)}",
         f"v3-machine-type={args.machine_type}", f"v3-model-secret={evalspec.MODEL_SECRET}",
     ])
     return [
@@ -136,9 +139,10 @@ def validate(parser: argparse.ArgumentParser, args) -> None:
     if not DIGEST_RE.match(args.image or ""):
         parser.error(f"--image must be pinned by digest in Artifact Registry "
                      f"(<region>-docker.pkg.dev/...@sha256:<64 hex>), not {args.image!r}")
-    for name in ("commit", "harness_commit"):
-        if not re.fullmatch(r"[0-9a-f]{40}", getattr(args, name) or ""):
-            parser.error(f"--{name.replace('_', '-')} must be a full 40-hex sha")
+    if not re.fullmatch(r"[0-9a-f]{40}", args.commit or ""):
+        parser.error("--commit must be the full 40-hex sha of the code to run")
+    if not re.fullmatch(r"[0-9a-f]{7,40}", args.image_commit or ""):
+        parser.error("--image-commit must be the (abbreviated) sha the image was built from")
     if not args.zone.startswith(f"{REGION}-"):
         parser.error(f"--zone must be in {REGION}")
     if not args.prefix.startswith("gs://dev-crsv3-"):
@@ -154,20 +158,24 @@ def validate(parser: argparse.ArgumentParser, args) -> None:
                      f"{vms * slots} vCPU, over the {evalspec.MAX_TOTAL_VCPU}-vCPU ceiling")
 
 
-def harness_problems(commit: str, harness: str) -> list[str]:
-    """The harness commit must descend from the engine commit and change only harness paths."""
+def drift_problems(image_commit: str, commit: str) -> tuple[list[str], list[str]]:
+    """(problems, warnings) for running `commit`'s src/ on an image built from `image_commit`.
+    A toolchain/dependency change between them is a problem; any other src/ change is the point
+    of running from the archive and is only reported."""
     git = ["git", "-C", str(REPO)]
-    if subprocess.run(git + ["cat-file", "-e", f"{harness}^{{commit}}"],
-                      capture_output=True).returncode:
-        return [f"harness commit {harness[:12]} is not in this checkout"]
-    if subprocess.run(git + ["merge-base", "--is-ancestor", commit, harness],
-                      capture_output=True).returncode:
-        return [f"harness {harness[:12]} does not descend from engine {commit[:12]}"]
-    changed = subprocess.run(git + ["diff", "--name-only", commit, harness],
+    for sha in (image_commit, commit):
+        if subprocess.run(git + ["cat-file", "-e", f"{sha}^{{commit}}"],
+                          capture_output=True).returncode:
+            return [f"commit {sha[:12]} is not in this checkout (git fetch)"], []
+    changed = subprocess.run(git + ["diff", "--name-only", image_commit, commit],
                              capture_output=True, text=True).stdout.split()
-    outside = [p for p in changed if not p.startswith(HARNESS_PATHS)]
-    return [f"harness {harness[:12]} changes engine paths vs {commit[:12]}: {outside[:5]}"] \
-        if outside else []
+    toolchain = [p for p in changed if p.startswith(TOOLCHAIN_PATHS)]
+    src = [p for p in changed if p.startswith("src/")]
+    warnings = [f"code {commit[:12]} differs from the image's {image_commit[:12]} in {len(src)} "
+                f"src/ file(s); they run from the archive"] if src else []
+    return ([f"toolchain/dependency files changed since the image's commit {image_commit[:12]}: "
+             f"{toolchain[:6]} - the image does not carry them (--allow-dep-drift to override)"]
+            if toolchain else []), warnings
 
 
 def _gcloud_json(cmd: list[str]):
@@ -177,18 +185,18 @@ def _gcloud_json(cmd: list[str]):
     return json.loads(out.stdout or "null")
 
 
-def live_checks(args, vcpus: int) -> list[str]:
-    """Read-only state checks before anything is created. Returns problems."""
-    problems = []
+def live_checks(args, vcpus: int) -> tuple[list[str], list[str]]:
+    """Read-only state checks before anything is created. Returns (problems, warnings)."""
+    problems, warnings = [], []
     try:
         desc = _gcloud_json(["gcloud", "artifacts", "docker", "images", "describe", args.image])
         tags = (desc.get("image_summary") or {}).get("tags") or []
-        if args.commit[:12] not in tags and not args.allow_untagged_image:
-            problems.append(f"the image carries tags {tags}, not {args.commit[:12]}: it may not be "
-                            f"built from the engine commit (--allow-untagged-image to override)")
+        if args.image_commit[:12] not in tags:
+            # A WARNING, not a refusal: the code runs from the archive, the image is the toolchain.
+            warnings.append(f"the image carries tags {tags}, not {args.image_commit[:12]}")
     except RuntimeError as exc:
-        problems.append(f"cannot describe the image: {exc}")
-    for obj in (code_uri(args.harness_commit, args.prefix), f"{args.prefix}/sample.json",
+        warnings.append(f"cannot describe the image: {exc}")
+    for obj in (code_uri(args.commit, args.prefix), f"{args.prefix}/sample.json",
                 f"{args.prefix}/clean-control-100.json"):
         if subprocess.run(["gcloud", "storage", "ls", obj], capture_output=True).returncode:
             problems.append(f"{obj} is not staged (run stage.py)")
@@ -207,7 +215,7 @@ def live_checks(args, vcpus: int) -> list[str]:
                             f"{vcpus} more needed")
     except RuntimeError as exc:
         problems.append(f"cannot read quota: {exc}")
-    return problems
+    return problems, warnings
 
 
 def done_units(commit: str) -> set[str]:
@@ -255,9 +263,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--image", required=True)
-    parser.add_argument("--commit", required=True, help="engine: the commit the image was built from")
-    parser.add_argument("--harness-commit", required=True,
-                        help="the commit whose devtools/validation the VMs run (code.tgz)")
+    parser.add_argument("--commit", required=True,
+                        help="the code that runs: its src/ and devtools/validation (code.tgz)")
+    parser.add_argument("--image-commit", required=True,
+                        help="the commit the image was built from (its tag); toolchain only")
+    parser.add_argument("--allow-dep-drift", action="store_true")
     parser.add_argument("--machine-type", default=evalspec.DEFAULT_MACHINE)
     parser.add_argument("--shards-total", type=int, default=96)
     parser.add_argument("--zone", default=f"{REGION}-a")
@@ -265,7 +275,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--prefix", default=PREFIX)
     parser.add_argument("--only", default="",
                         help="resume: launch only these unit ids (arm:kind:I/N, comma-separated)")
-    parser.add_argument("--allow-untagged-image", action="store_true")
     parser.add_argument("--skip-preflight", action="store_true",
                         help="skip the host settings preflight (the container still runs it)")
     parser.add_argument("--dry-run", action="store_true")
@@ -283,7 +292,10 @@ def main(argv: list[str] | None = None) -> int:
                          f"{args.shards_total}: {unknown[:5]}")
         units = [u for u in units if u in wanted]
 
-    problems = harness_problems(args.commit, args.harness_commit)
+    problems, warnings = drift_problems(args.image_commit, args.commit)
+    if args.allow_dep_drift:
+        warnings += problems
+        problems = []
     if not args.skip_preflight:
         for arm in evalspec.ARMS:
             problems += preflight_settings(arm)
@@ -301,7 +313,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{len(live_vms)} eval VM(s) still exist: {', '.join(live_vms)}")
     vms = evalspec.pack(units, slots) if units else []
     if not args.dry_run and units:
-        problems += live_checks(args, len(vms) * slots)
+        more, warned = live_checks(args, len(vms) * slots)
+        problems += more
+        warnings += warned
 
     minutes = evalspec.plan_minutes(plan)
     print(f"plan ({args.shards_total} shards, one per vCPU, {slots} per {args.machine_type}):")
@@ -309,9 +323,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  {arm:<20} {kind:<8} {n:>3} shard(s) x <= {-(-evalspec.files_of(kind) // n)} "
               f"file(s)  ~{minutes[(arm, kind)]:.0f} min  [{evalspec.arm(arm)['model_role']}]")
     print(f"launch: {len(units)} shard(s) on {len(vms)} VM(s) = {len(vms) * slots} vCPU "
-          f"(ceiling {evalspec.MAX_TOTAL_VCPU}); skipped {len(skipped)} done/running; engine "
-          f"{args.commit[:12]}, harness {args.harness_commit[:12]}; model key from secret "
+          f"(ceiling {evalspec.MAX_TOTAL_VCPU}); skipped {len(skipped)} done/running; code "
+          f"{args.commit[:12]} (src/ from the archive), image built from "
+          f"{args.image_commit[:12]} (toolchain); model key from secret "
           f"{evalspec.MODEL_SECRET}; known no-ops: {evalspec.KNOWN_NOOPS}")
+    for w in warnings:
+        print(f"WARN    {w}", file=sys.stderr)
     for p in problems:
         print(f"REFUSE  {p}", file=sys.stderr)
 

@@ -141,9 +141,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--code-root", default=str(CODE_ROOT_DEFAULT))
     parser.add_argument("--sample-json", default="",
                         help="the STAGED sample.json; its sha256 must equal the sampler's")
-    parser.add_argument("--commit", default="", help="engine: the commit the image was built from")
-    parser.add_argument("--harness-commit", default="",
-                        help="the commit of the devtools/validation code under --code-root")
+    parser.add_argument("--commit", default="",
+                        help="the code commit: --code-root holds its src/ and devtools/validation")
+    parser.add_argument("--image-commit", default="",
+                        help="the commit the image was built from (toolchain only)")
     parser.add_argument("--image", default="")
     parser.add_argument("--machine-type", default="")
     parser.add_argument("--accept-inert", action="append", default=[],
@@ -159,7 +160,7 @@ def main(argv: list[str] | None = None) -> int:
     started, t0 = _now(), time.monotonic()
     prov: dict = {
         "label": f"{args.arm}/{args.kind}/{args.shard}", "arm": args.arm, "kind": args.kind,
-        "shard": args.shard, "commit": args.commit, "harness_commit": args.harness_commit,
+        "shard": args.shard, "commit": args.commit, "image_commit": args.image_commit,
         "image": args.image,
         "machine_type": args.machine_type, "host": socket.gethostname(),
         "hardware_class": f"{platform.system().lower()}-{platform.machine().lower()}",
@@ -169,6 +170,16 @@ def main(argv: list[str] | None = None) -> int:
         "harness_flags": list(evalspec.HARNESS_FLAGS), "started_at": started,
     }
     problems: list[str] = []
+    # THE CODE UNDER TEST IS THE ARCHIVE'S: meshpipeline must import from <code-root>/src, not
+    # from the image's installed wheel (PYTHONPATH=/eval/code/src on the VM).
+    import meshpipeline
+
+    prov["meshpipeline_from"] = str(Path(meshpipeline.__file__).resolve())
+    if args.commit and not prov["meshpipeline_from"].startswith(
+            str((code_root / "src").resolve())):
+        problems.append(f"CODE: meshpipeline imports from {prov['meshpipeline_from']}, not "
+                        f"{code_root / 'src'} - the image's wheel would be measured instead of "
+                        f"{args.commit[:12]}")
     drift = env_drift(spec["env"])
     if drift:
         problems += [f"ENV {d}" for d in drift]

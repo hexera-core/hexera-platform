@@ -15,7 +15,7 @@ log()  { echo "$(date -u +%FT%TZ) v3-eval: $*"; }
 NAME="$(md instance/name)"
 ZONE="$(md instance/zone | awk -F/ '{print $NF}')"
 PROJECT="$(md project/project-id)"
-IMAGE="$(attr v3-image)"; COMMIT="$(attr v3-commit)"; HARNESS="$(attr v3-harness)"
+IMAGE="$(attr v3-image)"; COMMIT="$(attr v3-commit)"; IMAGE_COMMIT="$(attr v3-image-commit)"
 UNITS="$(attr v3-units)"; BUCKET="$(attr v3-bucket)"; PREFIX="$(attr v3-prefix)"
 CODE="$(attr v3-code)"; MACHINE="$(attr v3-machine-type)"; SECRET="$(attr v3-model-secret)"
 W=/var/lib/v3eval
@@ -69,7 +69,7 @@ fail_all() {
   self_delete; exit 1
 }
 
-log "staging harness ${HARNESS:0:12}, sample and inputs for ${#TODO[@]} shard(s)"
+log "staging code ${COMMIT:0:12}, sample and inputs for ${#TODO[@]} shard(s)"
 gcloud storage cp "${CODE}" "${W}/code.tgz" || fail_all "no code.tgz at ${CODE}"
 tar -xzf "${W}/code.tgz" -C "${W}/code" || fail_all "code.tgz does not extract"
 gcloud storage cp "${PREFIX}/sample.json" "${W}/sample.json" || fail_all "no staged sample.json"
@@ -106,14 +106,16 @@ run_unit() {
     done ) &
   local sync=$!
   log "start ${u}"
-  docker run --rm --name "v3eval-${k}" --cpus=1 \
+  # PYTHONPATH=/eval/code/src: the archived commit's src/ shadows the image's installed wheel;
+  # the image supplies the toolchain only. run_arm.py refuses if meshpipeline resolves elsewhere.
+  docker run --rm --name "v3eval-${k}" --cpus=1 -e PYTHONPATH=/eval/code/src \
     --env-file "${dir}.env" --env-file "${W}/secret.env" \
     -v "${W}/code:/eval/code:ro" -v "${W}/inputs/${kind}:/eval/inputs:ro" -v "${dir}:/eval/out" \
     -v "${W}/sample.json:/eval/sample.json:ro" \
     --entrypoint python "${IMAGE}" /eval/code/devtools/validation/v3_eval/run_arm.py \
     --arm "${arm}" --kind "${kind}" --shard "${shard}" --inputs /eval/inputs --out /eval/out \
     --code-root /eval/code --sample-json /eval/sample.json --commit "${COMMIT}" \
-    --harness-commit "${HARNESS}" --image "${IMAGE}" --machine-type "${MACHINE}" \
+    --image-commit "${IMAGE_COMMIT}" --image "${IMAGE}" --machine-type "${MACHINE}" \
     > "${dir}.log" 2>&1
   rc=$?
   kill "${sync}" 2>/dev/null || true

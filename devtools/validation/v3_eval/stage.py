@@ -18,7 +18,7 @@ Layout (prefix defaults to gs://dev-crsv3-transfer-<projectnumber>/eval/v3-verdi
     <prefix>/inputs/clean/<sha256>/<basename>     the 100 clean parts (clean_control.py fetch)
     <prefix>/sample.json                          name + sha256, sorted - identical for every arm
     <prefix>/clean-control-100.json               the clean manifest
-    <prefix>/harness-<commit12>/code.tgz          `git archive <harness commit> devtools/validation`
+    <prefix>/code-<commit12>/code.tgz             `git archive <commit> src devtools/validation`
     <bucket>/eval/<arm>-<commit12>/<kind>/shard-I-of-N/  what each VM writes back (results root)
 
 The inputs do not depend on the commit, so they are staged once; the code and the outputs are
@@ -86,8 +86,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--commit", required=True,
-                        help="the HARNESS commit (full 40-hex): its devtools/validation is archived "
-                             "into code.tgz; it must contain devtools/validation/v3_eval")
+                        help="the CODE commit (full 40-hex): its src/ and devtools/validation are "
+                             "archived into code.tgz and run on the VMs (PYTHONPATH=src)")
     parser.add_argument("--prefix", default=PREFIX)
     parser.add_argument("--corpus", default=str(CORPUS))
     parser.add_argument("--dry-run", action="store_true")
@@ -123,8 +123,8 @@ def main(argv: list[str] | None = None) -> int:
     # commit, and the devtools it runs must be the same commit's or the arm measured a hybrid.
     code = Path(tempfile.gettempdir()) / f"v3-eval-code-{args.commit[:12]}.tgz"
     _run(["git", "-C", str(REPO), "archive", "--format=tar.gz", f"--output={code}", args.commit,
-          "devtools/validation"], dry=args.dry_run)
-    _run(["gcloud", "storage", "cp", str(code), f"{prefix}/harness-{args.commit[:12]}/code.tgz"],
+          "src", "devtools/validation"], dry=args.dry_run)
+    _run(["gcloud", "storage", "cp", str(code), f"{prefix}/code-{args.commit[:12]}/code.tgz"],
          dry=args.dry_run)
     print(f"\n{'would stage' if args.dry_run else 'staged'} {len(files)} failing part(s), the "
           f"sample (sha256 {digest[:16]}), the clean manifest and code.tgz at {args.commit[:12]} "
