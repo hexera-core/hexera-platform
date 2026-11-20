@@ -60,6 +60,7 @@ KERNELS: dict[str, tuple[str, str]] = {
     "operations.crossing_pairs": ("meshpipeline.cad.repair.operations", "_crossing_pairs"),
     "operations.common_volume": ("meshpipeline.cad.repair.operations", "_common_volume"),
     "operations.face_distances": ("meshpipeline.cad.repair.operations", "_distances_to"),
+    "operations.general_fuse": ("meshpipeline.cad.repair.operations", "_fuse_kernel"),
     "investigator.thickness": ("meshpipeline.cad.repair.investigator_tools", "_thickness_kernel"),
     "investigator.render": ("meshpipeline.cad.repair.investigator_tools", "_render_kernel"),
     "probe.echo": (_MODULE, "_probe_echo"),

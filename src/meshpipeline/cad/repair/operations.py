@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from meshpipeline.cad.repair import bounded_child
 from meshpipeline.cad.repair.contracts import DefectCode
@@ -2385,7 +2385,7 @@ def _common_volume(a, b) -> float | None:
         return None
 
 
-def _general_fuse(a, b, faces) -> tuple[tuple[tuple, tuple], object]:
+def _general_fuse(a, b, faces) -> tuple[tuple[tuple, tuple], Any]:
     """Run the general fuse (`BOPAlgo_Builder`) over the TWO bodies only.
 
     Returns `((pieces of a, pieces of b), history)`: each body's images (empty when the fuse left
@@ -2428,6 +2428,71 @@ def _general_fuse(a, b, faces) -> tuple[tuple[tuple, tuple], object]:
             assembler.Add(compound, image)
         history.Replace(face, compound)
     return (pieces(a), pieces(b)), history
+
+
+#: What the child reports about one targeted face, in the three answers
+#: `operations.mapping_from_context` actually reads off a history: it was replaced by an image, it
+#: is gone (recorded, null value), or it was never recorded at all.
+_FUSE_IMAGE = "image"
+_FUSE_GONE = "gone"
+_FUSE_ABSENT = "absent"
+
+
+def _fuse_kernel(a, b, *faces) -> dict:
+    """`_general_fuse`, with its history flattened into facts a wire can carry.
+
+    ONLY EVER RUN IN THE CHILD (registered as `operations.general_fuse`). Row 6 of the audit, and
+    the blocker was never the Boolean: `BOPAlgo_Builder` is uninterruptible, but the ANSWER is a
+    `ShapeBuild_ReShape`, and no JSON and no BREP file can carry a kernel object. So the child
+    QUERIES the history it built - exactly the three questions `mapping_from_context` asks - and
+    sends the answers, with the image shapes riding the dispatcher's BREP answer file.
+    """
+    (a_pieces, b_pieces), history = _general_fuse(a, b, faces)
+    fate: list[dict] = []
+    for face in faces:
+        if not history.IsRecorded(face):
+            fate.append({"state": _FUSE_ABSENT})
+            continue
+        value = history.Value(face)
+        if value is None or value.IsNull():
+            fate.append({"state": _FUSE_GONE})
+            continue
+        fate.append({"state": _FUSE_IMAGE, "image": value})
+    return {"a": list(a_pieces), "b": list(b_pieces), "fate": fate}
+
+
+def _fuse_in_child(a, b, faces, *, budget_s: float = FRAGMENT_KERNEL_BUDGET_S):
+    """`((pieces of a, pieces of b), history)` with the fuse run in a bounded child, or None.
+
+    The history is REBUILT HERE from the child's facts, so `mapping_from_context` reads it like
+    any operation's own context and nothing downstream learns that the Boolean happened
+    elsewhere. Rebuilding is bookkeeping - `ShapeBuild_ReShape` records what it is told - and not
+    a second Boolean.
+
+    None when the child was killed, failed, or answered about a different number of faces: the
+    operation declines rather than splice a fuse it cannot account for.
+    """
+    from OCP.ShapeBuild import ShapeBuild_ReShape
+
+    answer = bounded_child.run(_fuse_kernel, (a, b, *faces), budget_s=budget_s)
+    if not isinstance(answer, dict):
+        return None
+    fate = answer.get("fate")
+    if not isinstance(fate, list) or len(fate) != len(faces):
+        return None
+    history = ShapeBuild_ReShape()
+    for face, recorded in zip(faces, fate, strict=True):
+        state = str((recorded or {}).get("state", _FUSE_ABSENT))
+        if state == _FUSE_GONE:
+            # RECORDED WITH A NULL VALUE is how the kernel says "gone", and how
+            # `mapping_from_context` reads it. `Remove` is what produces that pair.
+            history.Remove(face)
+        elif state == _FUSE_IMAGE:
+            image = (recorded or {}).get("image")
+            if image is None:
+                return None
+            history.Replace(face, image)
+    return (tuple(answer.get("a") or ()), tuple(answer.get("b") or ())), history
 
 
 def _tally(shape) -> tuple[int, int, float]:
@@ -2570,7 +2635,12 @@ class FragmentBodies:
             return declined(f"interpenetrating (common volume {common:.6g} mm3): "
                             f"{INTERPENETRATION_REASON}", common_volume_mm3=float(common))
 
-        (owner_pieces, partner_pieces), history = _general_fuse(owner, partner, (face,))
+        fused = _fuse_in_child(owner, partner, (face,))
+        if fused is None:
+            return declined("unmeasured (the general fuse did not finish in its budget, so what "
+                            "it did to the pair cannot be accounted for)",
+                            common_volume_mm3=float(common))
+        (owner_pieces, partner_pieces), history = fused
         if not owner_pieces and not partner_pieces:
             return declined("nothing_fragmented (the fuse modified neither body: there is no "
                             "contact to share)", common_volume_mm3=float(common))
