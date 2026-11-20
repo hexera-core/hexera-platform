@@ -906,6 +906,19 @@ def _disposition(regions_run) -> dict:
     return ledger(regions_run.defects_before, regions_run.defects_after, reclassified)
 
 
+def _delivering_in(source: Path):
+    """`gap_split.delivering_in` the unit `_write_step` will be handed for `source`."""
+    from meshpipeline.cad.repair.gap_split import delivering_in
+    from meshpipeline.cad.unit_evidence import parser_applied_unit
+
+    try:
+        unit = parser_applied_unit(source)
+    except Exception as exc:  # noqa: BLE001 - an unknown unit is the writer's to refuse later
+        logger.debug("conservative: no delivery unit for %s (%s)", source.name, exc)
+        unit = None
+    return delivering_in(unit)
+
+
 def repair_step_file(source: Path, destination: Path, *,
                      profile: RepairProfile = RepairProfile.conservative,
                      directives: tuple[dict, ...] = (),
@@ -1056,10 +1069,13 @@ def repair_step_file(source: Path, destination: Path, *,
 
         trace = investigation_trace.begin_if_enabled()
         try:
-            regions_run = run_regions(
-                before_shape, tolerance_mm=tolerance, reserved=reserved, author=author,
-                deadline_s=driver_deadline, focus_faces=focus_faces,
-                auto_accept_mm=auto_accept_mm)
+            # THE DELIVERY UNIT, SAID TO THE ONE OPERATION THAT CHECKS ITS OWN EXPORT
+            # (gap_split.DELIVERY_UNIT): the file below is written in the upload's unit.
+            with _delivering_in(source):
+                regions_run = run_regions(
+                    before_shape, tolerance_mm=tolerance, reserved=reserved, author=author,
+                    deadline_s=driver_deadline, focus_faces=focus_faces,
+                    auto_accept_mm=auto_accept_mm)
         finally:
             traced = investigation_trace.finish(trace)
         final = measure(regions_run.shape)
@@ -1071,8 +1087,9 @@ def repair_step_file(source: Path, destination: Path, *,
                  "directive": dict(item)} for item in directives))
     else:
         planner = RepairPlanner(directives or (), reserved=reserved)
-        result = run_loop(before_shape, planner=planner, tolerance_mm=tolerance,
-                          reserved=reserved, deadline_s=driver_deadline)
+        with _delivering_in(source):
+            result = run_loop(before_shape, planner=planner, tolerance_mm=tolerance,
+                              reserved=reserved, deadline_s=driver_deadline)
         final = measure(result.shape)
 
     # COUNTED ONCE, as ints, because both the report and `ending_for` read them: a `measurements`

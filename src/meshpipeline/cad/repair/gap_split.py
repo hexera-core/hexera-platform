@@ -19,8 +19,11 @@ import signal
 import subprocess
 import sys
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from meshpipeline.cad.repair.contracts import DefectCode
 from meshpipeline.cad.repair.identity import EntityRef
@@ -89,6 +92,22 @@ MAX_VOLUME_NOISE_RATIO = 1e-3
 MAX_AREA_NOISE_RATIO = 1e-4
 
 NAME = "resolve_sub_mesh_gap"
+
+#: THE UNIT THE REPAIRED PART WILL BE DELIVERED IN - the upload's own (`conservative._write_step`
+#: is handed `parser_applied_unit(source)`). Set by `conservative.repair_step_file` around the
+#: drivers; millimetres when nobody said. The export check writes in it, because a split that reads
+#: back valid in millimetres can read back invalid in metres (0060_00600919, a metre upload).
+DELIVERY_UNIT: ContextVar[Any] = ContextVar("gap_split_delivery_unit", default="mm")
+
+
+@contextmanager
+def delivering_in(unit) -> Iterator[None]:
+    """Run the block with `unit` as the unit the repaired part will be written in."""
+    token = DELIVERY_UNIT.set(unit if unit is not None else "mm")
+    try:
+        yield
+    finally:
+        DELIVERY_UNIT.reset(token)
 
 
 def _mesh_size(diagonal_mm: float) -> float:
@@ -470,6 +489,13 @@ class ResolveSubMeshGap:
             return declined("split_failed (no face was split)", **measured)
 
         spliced, _ = splice(shape, [(owner, divided)])
+        # VALID IN MEMORY IS NOT VALID DELIVERED. The customer receives a STEP of the WHOLE part:
+        # on 0060_00600919 a split cone face read back UnorientableShape from the written part,
+        # while the same solid alone - and the upload - survive the round trip valid. So the
+        # check is the whole spliced part, written and read as STEP, in a bounded child.
+        verdict = _export_check(shape, spliced, budget_s=KERNEL_BUDGET_S)
+        if verdict:
+            return declined(verdict, **measured)
         before = _area_and_volume(shape)
         after = _area_and_volume(spliced)
         d_area = float(after["surface_area_mm2"]) - float(before["surface_area_mm2"])
@@ -539,6 +565,58 @@ def _kill_group(proc: subprocess.Popen) -> None:
         os.killpg(proc.pid, signal.SIGKILL)
     except (ProcessLookupError, PermissionError, OSError):
         proc.kill()
+
+
+def _run_child(args: list[str], budget_s: float) -> tuple[dict | None, str]:
+    """Run the child with `args`; `(answer, "")`, or `(None, reason)` on a timeout or no answer."""
+    proc = subprocess.Popen([*_CHILD_CMD, *args], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL, start_new_session=True, text=True)
+    try:
+        out, _ = proc.communicate(timeout=max(float(budget_s), 0.0))
+    except subprocess.TimeoutExpired:
+        _kill_group(proc)
+        try:
+            proc.communicate(timeout=5)
+        except Exception:  # noqa: BLE001 - the group is already gone
+            pass
+        return None, f"kernel_timeout (the child did not finish in {float(budget_s):g} s)"
+    finally:
+        if proc.poll() is None:
+            _kill_group(proc)
+    lines = [line for line in (out or "").splitlines() if line.strip()]
+    if proc.returncode != 0 or not lines:
+        return None, f"split_failed (the kernel child exited {proc.returncode} without an answer)"
+    answer = json.loads(lines[-1])
+    return (answer, "") if isinstance(answer, dict) else (None, "split_failed (bad answer)")
+
+
+def _export_check(before, after, *, budget_s: float) -> str:
+    """"" when the delivered form of `after` (STEP, read back) is as valid as `before`'s; else the
+    decline reason. A part that arrived invalid cannot be made worse by this measure, so it is
+    only checked when `before` is valid. Bounded like every kernel call of this operation."""
+    from meshpipeline.cad.repair.operations import _is_valid
+
+    if not _is_valid(before):
+        return ""
+    from meshpipeline.cad.repair.conservative import _write_step
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="gap-split-export-") as tmp:
+            # WRITTEN HERE, FROM THE IN-MEMORY SHAPE, EXACTLY AS DELIVERY WRITES IT. A BREP hand-off
+            # first normalised away the very defect this check exists for (0060_00600919 passed
+            # through BREP and failed as delivered). Writing is linear; the READ and the BRepCheck
+            # are the kernel work, and they run in the bounded child.
+            source = Path(tmp) / "part.step"
+            _write_step(after, source, unit=DELIVERY_UNIT.get())
+            answer, failure = _run_child(["--export-check", str(source)], budget_s)
+    except Exception as exc:  # noqa: BLE001 - unmeasured is never read as valid
+        return f"export_unchecked ({type(exc).__name__})"
+    if answer is None:
+        return failure
+    if not answer.get("valid"):
+        return ("export_invalidates (the repaired part reads back from STEP BRepCheck-invalid; "
+                "the upload does not)")
+    return ""
 
 
 def _bounded(owner, face, *, diagonal_mm: float, part_area_mm2: float,
@@ -646,7 +724,13 @@ def _work(owner, face, *, diagonal_mm: float, part_area_mm2: float,
 
 
 def _child_main(argv: list[str]) -> int:
-    """`python -m meshpipeline.cad.repair.gap_split <owner.brep> <request json> <out.brep>`."""
+    """`python -m meshpipeline.cad.repair.gap_split <owner.brep> <request json> <out.brep>`, or
+    `... --export-check <part.brep>`."""
+    if argv and argv[0] == "--export-check":
+        valid = _delivered_valid(Path(argv[1]))
+        sys.stdout.write(json.dumps({"valid": bool(valid)}) + "\n")
+        sys.stdout.flush()
+        return 0
     from OCP.TopAbs import TopAbs_FACE
 
     from meshpipeline.cad.repair.localize import _indexed
@@ -669,6 +753,15 @@ def _child_main(argv: list[str]) -> int:
     sys.stdout.write(json.dumps(answer) + "\n")
     sys.stdout.flush()
     return 0
+
+
+def _delivered_valid(path: Path) -> bool:
+    """Does the written STEP read back BRepCheck-valid through the pipeline's own reader
+    (`brep._read_shape`)? ONLY EVER RUN IN THE CHILD."""
+    from meshpipeline.cad.repair.brep import _read_shape
+    from meshpipeline.cad.repair.operations import _is_valid
+
+    return bool(_is_valid(_read_shape(path)))
 
 
 def _precise(shape) -> tuple[float, float]:
