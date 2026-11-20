@@ -1663,6 +1663,20 @@ jobs:
       # run's operation allowance, its deadline, each package's own budget and the
       # two-rejections escalation - is unchanged by it. Inert without the driver.
       CAD_REPAIR_BUDGET_ATTEMPTS: ${{ needs.target.outputs.crs_v3 != '' && 'live' || '' }}
+      # THE TOURNAMENT, CARRIED THROUGH like the investigator: it reads shadow/live/off, and in
+      # shadow the rules package is returned unchanged whatever the tournament found (a round runs
+      # only when it fits the run's clock), so a shadow slug records rounds and a live slug
+      # nominates winners - which the region loop still hands to the reviewer. K is NOT stated:
+      # CAD_REPAIR_TOURNAMENT_K has no settings row, so the code default (K=1) stands.
+      CAD_REPAIR_TOURNAMENT: ${{ needs.target.outputs.crs_v3 != '' && needs.target.outputs.crs_v3 || '' }}
+      # THE LIVE-ONLY POSTURES: each reads only the exact `live` (anything else is off) and has
+      # no shadow meaning, so a shadow slug leaves them at their shipped default. The repair
+      # memory (fix-candidate retrieval), the reviewer's measured objection back to the author,
+      # the mesh refusal handed back to repair, and standalone repair jobs.
+      CAD_REPAIR_MEMORY: ${{ needs.target.outputs.crs_v3 == 'live' && 'live' || '' }}
+      CAD_REPAIR_REVIEW_OBJECTION: ${{ needs.target.outputs.crs_v3 == 'live' && 'live' || '' }}
+      CAD_REPAIR_MESH_HANDBACK: ${{ needs.target.outputs.crs_v3 == 'live' && 'live' || '' }}
+      CAD_REPAIR_STANDALONE_JOBS: ${{ needs.target.outputs.crs_v3 == 'live' && 'live' || '' }}
     steps:
       # A SHALLOW CHECKOUT IS ENOUGH HERE, unlike release's. Nothing in this job reads history:
       # lib.sh derives the image tag from `rev-parse --short=12 HEAD` plus a `diff --quiet HEAD`

@@ -40,6 +40,38 @@ FLAGS: dict[str, tuple[str, str]] = {
     # run's operation allowance, its deadline, the per-package budget and the two-rejections
     # escalation - is untouched by it.
     "CAD_REPAIR_BUDGET_ATTEMPTS": ("cad-repair-budget-attempts", ON),
+    # THE TOURNAMENT has a real shadow (the rules package returned unchanged, the round recorded),
+    # so the posture is carried through like the investigator's. K is deliberately NOT plumbed:
+    # CAD_REPAIR_TOURNAMENT_K has no settings row, and its code default (1) is today's behaviour.
+    "CAD_REPAIR_TOURNAMENT": ("cad-repair-tournament", CARRIED),
+    # LIVE-ONLY: each reads the exact `live` and nothing else, so it has no shadow meaning.
+    "CAD_REPAIR_MEMORY": ("cad-repair-memory", LIVE_POSTURE),
+    "CAD_REPAIR_REVIEW_OBJECTION": ("cad-repair-review-objection", LIVE_POSTURE),
+    "CAD_REPAIR_MESH_HANDBACK": ("cad-repair-mesh-handback", LIVE_POSTURE),
+    "CAD_REPAIR_STANDALONE_JOBS": ("cad-repair-standalone-jobs", LIVE_POSTURE),
+}
+
+# PLUMBED AHEAD OF THEIR SETTINGS ROW. The code reads each of these with `getattr(rcfg, NAME,
+# "off")` from meshpipeline.settings.cad_repair, which does not declare them yet, so until a row is
+# added there (and in settings/inventory.py) the exported value is inert and the in-code default
+# stands. When a row lands, delete the name from this set - the test below then holds it to the
+# inventory like every other flag.
+AWAITING_SETTINGS_ROW = frozenset({
+    "CAD_REPAIR_TOURNAMENT", "CAD_REPAIR_MEMORY", "CAD_REPAIR_REVIEW_OBJECTION",
+    "CAD_REPAIR_MESH_HANDBACK", "CAD_REPAIR_STANDALONE_JOBS",
+})
+
+# DELIBERATELY NOT PLUMBED from crs_v3: the router's image acceptance is unmeasured
+# (INVESTIGATOR_IMAGES), and the one-shot author and the LLM planner are older postures with their
+# own inputs. crs_v3 must not grow them by accident.
+NOT_FROM_CRS_V3 = ("CAD_REPAIR_INVESTIGATOR_IMAGES", "CAD_REPAIR_LLM_AUTHOR", "CAD_REPAIR_LLM_PLANNER")
+
+# What each expression evaluates to for each crs_v3 output, as GitHub's `&&`/`||` would.
+_VALUE = {
+    ON: lambda c: "live" if c != "" else "",
+    LIVE_ONLY: lambda c: "true" if c == "live" else "",
+    LIVE_POSTURE: lambda c: "live" if c == "live" else "",
+    CARRIED: lambda c: c if c != "" else "",
 }
 
 VERTEX_MOVING = ("CAD_REPAIR_REBUILD_FACE", "CAD_REPAIR_CLOSE_WIRE_GAPS")
@@ -136,7 +168,41 @@ def test_each_flag_follows_the_four_file_path():
 def test_every_flag_is_a_registered_setting():
     inventory = _text("src/meshpipeline/settings/inventory.py")
     for env in FLAGS:
+        if env in AWAITING_SETTINGS_ROW:
+            continue
         assert f'EnvVar("{env}"' in inventory, env
+    assert AWAITING_SETTINGS_ROW <= FLAGS.keys()
+
+
+def test_the_postures_the_set_takes_on_each_target(tmp_path):
+    """Production (crs_v3 empty) states NOTHING, so every flag reads its in-code default (off);
+    shared dev's committed `live` turns the whole set on together; shadow turns on only the flags
+    that have a shadow meaning."""
+    prod = _pick(tmp_path, GITHUB_REF="refs/tags/v9.9.9", GITHUB_EVENT_NAME="push",
+                 DISPATCH_CRS_V3="live")["crs_v3"]
+    dev = _pick(tmp_path, DISPATCH_SLUG="", DISPATCH_CRS_V3="off")["crs_v3"]
+    for env, (_, expr) in FLAGS.items():
+        assert _VALUE[expr](prod) == "", f"{env} would be stated on production"
+        assert _VALUE[expr](dev) in ("live", "true"), f"{env} is not on in shared dev"
+    shadow_on = {env for env, (_, expr) in FLAGS.items() if _VALUE[expr]("shadow")}
+    assert "CAD_REPAIR_TOURNAMENT" in shadow_on
+    assert not shadow_on & {"CAD_REPAIR_MEMORY", "CAD_REPAIR_REVIEW_OBJECTION",
+                            "CAD_REPAIR_MESH_HANDBACK", "CAD_REPAIR_STANDALONE_JOBS"}
+    assert not shadow_on & set(VERTEX_MOVING)
+    # wherever anything is on, the reviewer is on
+    for crs in ("shadow", "live"):
+        assert _VALUE[FLAGS["CAD_REPAIR_PACKAGE_REVIEW"][1]](crs) == "live", crs
+
+
+def test_parked_postures_are_not_derived_from_crs_v3():
+    wf = _text(".github/workflows/deploy.yml")
+    boot = _text("deploy/gcp/worker/startup.sh")
+    for env in NOT_FROM_CRS_V3:
+        assert env not in FLAGS, env
+        for line in wf.splitlines():
+            if line.strip().startswith(f"{env}:"):
+                assert "crs_v3" not in line, f"{env} is parked and must not derive from crs_v3"
+    assert "CAD_REPAIR_INVESTIGATOR_IMAGES" not in boot
 
 
 def test_vertex_moving_ops_ride_with_the_reviewer():

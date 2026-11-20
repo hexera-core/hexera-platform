@@ -760,6 +760,16 @@ WORKER_METADATA=(
   || WORKER_METADATA+=("cad-repair-auto-accept=${CAD_REPAIR_AUTO_ACCEPT}")
 [ -z "${CAD_REPAIR_BUDGET_ATTEMPTS:-}" ] \
   || WORKER_METADATA+=("cad-repair-budget-attempts=${CAD_REPAIR_BUDGET_ATTEMPTS}")
+[ -z "${CAD_REPAIR_TOURNAMENT:-}" ] \
+  || WORKER_METADATA+=("cad-repair-tournament=${CAD_REPAIR_TOURNAMENT}")
+[ -z "${CAD_REPAIR_MEMORY:-}" ] \
+  || WORKER_METADATA+=("cad-repair-memory=${CAD_REPAIR_MEMORY}")
+[ -z "${CAD_REPAIR_REVIEW_OBJECTION:-}" ] \
+  || WORKER_METADATA+=("cad-repair-review-objection=${CAD_REPAIR_REVIEW_OBJECTION}")
+[ -z "${CAD_REPAIR_MESH_HANDBACK:-}" ] \
+  || WORKER_METADATA+=("cad-repair-mesh-handback=${CAD_REPAIR_MESH_HANDBACK}")
+[ -z "${CAD_REPAIR_STANDALONE_JOBS:-}" ] \
+  || WORKER_METADATA+=("cad-repair-standalone-jobs=${CAD_REPAIR_STANDALONE_JOBS}")
 # The verdict by measured limits (docs/RULES.md VER), only when the target states it (dev does,
 # prod does not yet): the run decides pass, concerns or fail from the mesh's measured numbers and
 # the AI review only adds notes. Absent, the env object's value (the shipped default, off) stands.
