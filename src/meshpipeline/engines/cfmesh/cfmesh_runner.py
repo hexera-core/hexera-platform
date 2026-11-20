@@ -695,7 +695,7 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
     if _ask is not None:
         wall_cell = CR.cfmesh_fit_count(_ask, volume=vol, max_cell=max_cell, wall_cell=wall_cell,
                                         wall_area=wall_area, n_layers=max(0, int(strategy.get("n_layers", 0))))
-        # CFDREQ-12: the wall treatment's first layer fitted to the wall cell cfMesh lands on
+        # CFDREQ-13: the wall treatment's first layer fitted to the wall cell cfMesh lands on
         strategy = CR.cfmesh_layer_fit(_ask, strategy, wall_cell)
         if _asked_across:
             # the cells across the passage the octree really builds (cfMesh lands on max / 2^n), against the ask

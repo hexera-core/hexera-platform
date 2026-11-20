@@ -82,7 +82,7 @@ def test_cfmesh_and_netgen_take_it_and_the_engines_without_layers_say_so():
     assert out["first_layer_thickness"] > 0 and a.rows["c1"]["status"] == "applied"
     a = CR.Ask(req, "netgen")
     out = CR.netgen_inputs(a, layers=3, port_diameters=[0.05], soft_budget=1_000_000, cell_limit=8_000_000)
-    # CFDREQ-12: Netgen's length here is the 50 mm port - Re 3.3e4 round a body is laminar: no wall-function target,
+    # CFDREQ-13: Netgen's length here is the 50 mm port - Re 3.3e4 round a body is laminar: no wall-function target,
     # said on the row, and the layers keep Netgen's own sizing
     assert "first_layer" not in out and a.rows["c1"]["status"] == "applied"
     assert "laminar at these conditions" in a.rows["c1"]["built"]
@@ -216,7 +216,7 @@ ACCEPTED_FUNCTIONS = ("Internal flow through the diffuser, confirmed by the user
     ("c0b45ad1", 2.352, 0.989, "functions"),    # diffuser plenum: 4.18%
 ])
 def test_proposed_wall_functions_accepted_are_fitted_to_the_wall_cells(job, wall_cell_mm, y50_first_mm, built):
-    """CFDREQ-12 (was round 4, F): pressing OK on the proposed wall functions made an absolute y+ 50 first layer about
+    """CFDREQ-13 (was round 4, F): pressing OK on the proposed wall functions made an absolute y+ 50 first layer about
     as thick as the wall cells, which snappyHexMesh grew on 4-6% of the wall; keeping the mesher's relative layers
     instead put the first cell at y+ 3-14 (the CFD board, 20 Nov). Now the accepted wall functions are an ask, fitted
     to the wall cells: a first layer that fits stays (one layer at most 0.6 of the cell, its centre at y+ 30 or more);

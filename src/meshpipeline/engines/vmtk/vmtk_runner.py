@@ -443,7 +443,7 @@ def configure_mesh(workspace, *, strategy: dict, wall_patch: str = "",
     from meshpipeline.engines import cfd_requirements as CR
     _ask = CR.Ask.of(ws, "vmtk")
     if _ask is not None:
-        # CFDREQ-12: the vessel's median radius is the reference its layer stack is a share of
+        # CFDREQ-13: the vessel's median radius is the reference its layer stack is a share of
         _staged = read_staging(ws) or {}
         _r = (_staged.get("radius_m") or {}).get("median") if isinstance(_staged.get("radius_m"), dict) else None
         s = CR.vmtk_spec(_ask, s, radius_m=float(_r) if _r else None)

@@ -127,7 +127,7 @@ def sizing_words(c: Mapping) -> str:
     return f"the first layer is sized for y⁺ ≈ {c['y_plus']:g}, inside 30–300, at that speed"
 
 
-#: what the plan says of a wall treatment the user only accepted (the proposal's wall functions): CFDREQ-12 sizes the
+#: what the plan says of a wall treatment the user only accepted (the proposal's wall functions): CFDREQ-13 sizes the
 #: first layer for them as for a chosen one, fitted to the wall cells (engines/cfd_requirements.wall_fit)
 PROPOSED_WORDS = ("the first layer is sized for wall functions (its cell centre at y⁺ about 50) at that speed; where "
                   "the cells a passage needs at the wall are too fine for that, the wall is resolved instead (y⁺ about "

@@ -1,4 +1,4 @@
-# Responsibility: Verify CFDREQ-12 - the wall treatment the user accepted ("OK": wall functions) or chose ("resolve": y+ about 1) sizes the first layer from the run's own conditions on snappyHexMesh, cfMesh and VMTK, fitted to the wall cells: in the wall-function band, else the nearest that fits, else a resolved wall; laminar flow has no target; a typed y+, first height or layer count still wins; the y+ said is the one the same estimate gives.
+# Responsibility: Verify CFDREQ-13 - the wall treatment the user accepted ("OK": wall functions) or chose ("resolve": y+ about 1) sizes the first layer from the run's own conditions on snappyHexMesh, cfMesh and VMTK, fitted to the wall cells: in the wall-function band, else the nearest that fits, else a resolved wall; laminar flow has no target; a typed y+, first height or layer count still wins; the y+ said is the one the same estimate gives.
 # Boundaries: pure over plain data and dictionary text; no model, no mesher is run.
 from __future__ import annotations
 
