@@ -32,6 +32,7 @@ from meshpipeline.cad.repair.localize import (
     _stamped,
     in_region,
 )
+from meshpipeline.cad.repair.mesh_clash import Clash
 
 if TYPE_CHECKING:
     from meshpipeline.cad.repair.regions import Region
@@ -81,6 +82,49 @@ class ProbeResult:
     volume_elements: int
     failure: MeshFailure | None
     tag_boxes: dict[int, Box] = field(default_factory=dict)
+    #: Surface pairs whose 2D triangles cross or coincide, found on the surface mesh after the
+    #: VOLUME stage refused it (`mesh_clash`). Empty when it meshed or failed earlier.
+    clashes: tuple[Clash, ...] = ()
+
+
+#: Volume-stage failures whose cause is the surface mesh crossing itself: worth searching the
+#: surface mesh for the clashing triangles. Kinds about the whole part (no volume, a timeout) are not.
+_CLASH_KINDS = frozenset({OVERLAPPING_FACETS, EDGE_THROUGH_FACE, OTHER})
+
+
+def _surface_clashes(gmsh) -> tuple[Clash, ...]:
+    """The clashing surface pairs of the 2D mesh gmsh holds now. Never raises."""
+    try:
+        import numpy as np
+
+        from meshpipeline.cad.repair.mesh_clash import clashing_surfaces, surface_components
+
+        node_tags, xyz, _param = gmsh.model.mesh.getNodes()
+        index = {int(t): i for i, t in enumerate(node_tags)}
+        coords = np.asarray(xyz, dtype=float).reshape(-1, 3)
+        component = surface_components({
+            int(t): [int(v) for v in gmsh.model.getAdjacencies(2, t)[0]]
+            for _dim, t in gmsh.model.getEntities(2)})
+        tris: list = []
+        tags: list = []
+        groups: list = []
+        for _dim, surface in gmsh.model.getEntities(2):
+            types, _elements, nodes = gmsh.model.mesh.getElements(2, surface)
+            for kind, flat in zip(types, nodes, strict=True):
+                if int(kind) != 2:          # linear triangles; the probe meshes order 1
+                    continue
+                rows = np.array([index[int(n)] for n in flat], dtype=np.int64).reshape(-1, 3)
+                tris.append(rows)
+                tags.append(np.full(len(rows), int(surface), dtype=np.int64))
+                groups.append(np.full(len(rows), component.get(int(surface), -1),
+                                      dtype=np.int64))
+        if not tris:
+            return ()
+        return clashing_surfaces(coords, np.vstack(tris), np.concatenate(tags),
+                                 groups=np.concatenate(groups))
+    except Exception as exc:  # noqa: BLE001 - a failed search is "no clash found", not an error
+        logger.info("mesh_probe: clash search: %s: %s", type(exc).__name__, exc)
+        return ()
 
 
 _NUM = r"[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?"
@@ -148,8 +192,8 @@ def locating_surfaces(failure: MeshFailure) -> tuple[int, ...]:
 
 
 def _probe_child(path: str, diagonal_mm: float, surfaces: tuple[int, ...] | None,
-                 volume: bool) -> tuple[int, MeshFailure | None, dict[int, Box]]:
-    """Runs in the forked child. Returns (volume_elements, failure, tag_boxes); picklable."""
+                 volume: bool) -> tuple[int, MeshFailure | None, dict[int, Box], tuple[Clash, ...]]:
+    """Runs in the child. Returns (volume_elements, failure, tag_boxes, clashes)."""
     import gmsh
 
     boxes: dict[int, Box] = {}
@@ -168,7 +212,7 @@ def _probe_child(path: str, diagonal_mm: float, surfaces: tuple[int, ...] | None
                 boxes[int(tag)] = (float(x0), float(y0), float(z0),
                                    float(x1), float(y1), float(z1))
             if surfaces is not None and not surfaces:
-                return 0, None, boxes
+                return 0, None, boxes, ()
             if surfaces is not None:
                 keep = set(surfaces)
                 gmsh.model.removeEntities(
@@ -176,17 +220,21 @@ def _probe_child(path: str, diagonal_mm: float, surfaces: tuple[int, ...] | None
             stage = STAGE_2D
             gmsh.model.mesh.generate(2)
             if surfaces is not None or not volume:
-                return 0, None, boxes
+                return 0, None, boxes, ()
             stage = STAGE_3D
             gmsh.model.mesh.generate(3)
             _types, tags, _nodes = gmsh.model.mesh.getElements(3)
             count = sum(len(t) for t in tags)
             if count == 0:
                 return 0, MeshFailure(NO_VOLUME, (), None,
-                                      "gmsh produced no volume elements", stage=STAGE_3D), boxes
-            return count, None, boxes
+                                      "gmsh produced no volume elements", stage=STAGE_3D), boxes, ()
+            return count, None, boxes, ()
         except Exception as exc:  # noqa: BLE001 - a gmsh failure is the answer, not an error
-            return 0, classify(str(exc), gmsh.logger.get(), stage=stage), boxes
+            failure = classify(str(exc), gmsh.logger.get(), stage=stage)
+            clashes: tuple[Clash, ...] = ()
+            if stage == STAGE_3D and failure.kind in _CLASH_KINDS:
+                clashes = _surface_clashes(gmsh)
+            return 0, failure, boxes, clashes
     finally:
         try:
             gmsh.finalize()
@@ -198,7 +246,7 @@ def _child_main(argv: Sequence[str]) -> int:
     """`python -m meshpipeline.cad.repair.mesh_probe PATH DIAGONAL SURFACES VOLUME`: one JSON line."""
     path, diagonal, surfaces, volume = argv
     wanted = json.loads(surfaces)
-    count, failure, boxes = _probe_child(
+    count, failure, boxes, clashes = _probe_child(
         path, float(diagonal), None if wanted is None else tuple(wanted), volume == "1")
     sys.stdout.write("\n" + json.dumps({
         "volume_elements": count,
@@ -207,7 +255,9 @@ def _child_main(argv: Sequence[str]) -> int:
             "point": None if failure.point is None else list(failure.point),
             "message": failure.message, "stage": failure.stage,
             "surfaces_from_log": failure.surfaces_from_log},
-        "tag_boxes": {str(k): list(v) for k, v in boxes.items()}}) + "\n")
+        "tag_boxes": {str(k): list(v) for k, v in boxes.items()},
+        "clashes": [{"surfaces": list(c.surfaces), "hits": c.hits, "point": list(c.point),
+                     "kind": c.kind} for c in clashes]}) + "\n")
     sys.stdout.flush()
     return 0
 
@@ -281,11 +331,16 @@ def probe_file(path: Path, *, diagonal_mm: float, surfaces: Sequence[int] | None
         boxes = {int(k): (float(v[0]), float(v[1]), float(v[2]), float(v[3]), float(v[4]),
                           float(v[5])) for k, v in answer["tag_boxes"].items()}
         count = int(answer["volume_elements"])
-    except (KeyError, TypeError, ValueError):
+        clashes = tuple(Clash(surfaces=(int(c["surfaces"][0]), int(c["surfaces"][1])),
+                              hits=int(c["hits"]),
+                              point=(float(c["point"][0]), float(c["point"][1]),
+                                     float(c["point"][2])),
+                              kind=str(c["kind"])) for c in answer.get("clashes") or ())
+    except (KeyError, TypeError, ValueError, IndexError):
         return ProbeResult(False, 0, MeshFailure(
             PROBE_ERROR, (), None, "the mesh probe answered in a form that could not be read"), {})
     if failure is not None:
-        return ProbeResult(False, 0, failure, boxes)
+        return ProbeResult(False, 0, failure, boxes, clashes)
     return ProbeResult(True, count, None, boxes)
 
 
@@ -442,6 +497,10 @@ CONTACT_PAIR_CAP = 8
 #: `measurements["located_by"]` on a defect placed by `_contact_support_faces`: the failure named no
 #: point and no surface, so WE inferred the faces from the geometry. Never gmsh's own word.
 LOCATED_BY_CONTACT = "contact-pair"
+
+#: `measurements["located_by"]` on a defect placed by the surface-mesh clash search: gmsh's own
+#: triangles of these faces cross (or coincide) - measured on the mesh it refused, not inferred.
+LOCATED_BY_CLASH = "surface-mesh-clash"
 
 
 @dataclass(frozen=True, slots=True)
@@ -654,6 +713,15 @@ def _mesh_defects(shape, *, diagonal_mm: float, budget_s: float,
         if mapping is None:
             mapping = faces_for_tags(_face_boxes(faces), result.tag_boxes, tol=tol)
         located = list(dict.fromkeys(mapping[t] for t in trusted if t in mapping))
+    by_clash = False
+    if not located and result.clashes:
+        # gmsh named no point and no surface that maps to one face (its PLC error names nothing
+        # at all in 4.15): the surface pairs whose triangles actually cross are the place.
+        if mapping is None:
+            mapping = faces_for_tags(_face_boxes(faces), result.tag_boxes, tol=tol)
+        located = list(dict.fromkeys(mapping[t] for c in result.clashes for t in c.surfaces
+                                     if t in mapping))
+        by_clash = bool(located)
     by_contact = False
     contact: Contact | None = None
     if (not located and failure.kind == EDGE_THROUGH_FACE and failure.point is None
@@ -665,6 +733,12 @@ def _mesh_defects(shape, *, diagonal_mm: float, budget_s: float,
     if not located:
         return (_unlocated(failure),)
     defects = [_face_defect(code, faces, index, failure) for index in sorted(located)]
+    if by_clash:
+        for defect in defects:
+            defect.measurements["located_by"] = LOCATED_BY_CLASH
+            defect.measurements["clash_pairs"] = [list(c.surfaces) for c in result.clashes]
+            defect.measurements["clash_kind"] = result.clashes[0].kind
+            defect.measurements["clash_point"] = list(result.clashes[0].point)
     if by_contact and contact is not None:
         for defect in defects:
             defect.measurements["located_by"] = LOCATED_BY_CONTACT
