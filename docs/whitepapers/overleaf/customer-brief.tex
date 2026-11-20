@@ -395,17 +395,19 @@ We ran the extended system once against the deterministic one, on the same 120 r
 to mesh, plus 100 parts that already mesh. A value printed as \textbf{[PENDING]} has not been
 measured yet and is not a zero.
 
-\topic{What it fixed and what it broke} The extended system newly meshed \vThreeNewlyMeshed{} of
-\vThreeNFiles{} failing parts and newly broke \vThreeNewlyBroken. The deterministic system newly
-meshed \vThreeDetNewlyMeshed. Of the \vThreeCleanNFiles{} parts that already meshed,
-\vThreeCleanByteUnchanged{} came back unchanged. Each part the extended system newly meshed cost
-\vThreeCostPerFixed{} in model calls and machine time. Against our own acceptance rule, which asks
-for four times the deterministic count with nothing broken, the result is \vThreeVerdict.
+\topic{What it fixed and what it broke} We count a part as fixed when the repaired CAD, exported
+as STEP, newly meshes. The extended system fixed \vThreeFilesFixed{} of \vThreeNFiles{} failing
+parts and newly broke \vThreeNewlyBroken. The deterministic system fixed \vThreeDetFilesFixed. Of
+the \vThreeCleanNFiles{} parts that already meshed, \vThreeCleanStillGood{} still meshed with no new
+defect; repair changed \vThreeCleanChanged{} of them, which we report as information rather than as a
+failure. Each part the extended system fixed cost \vThreeCostPerFixed{} in model calls and machine
+time. We set no pass mark: these are the counts as measured. A tolerant mesher can mesh some parts
+that still fail, but that is not a repair of your CAD and is not counted here.
 
 \topic{How far to read it} This is one run on a small sample, so a difference of one or two parts
 is noise. ``Meshes'' here means a quick gmsh check at one mesh size, which is stricter on some
 parts and looser on others than your production mesher. Where the deterministic system meshes very few
-of these parts a ratio says little, so we print the counts beside it. Your own parts, meshed in your own
+of these parts a ratio says little, so we report the counts rather than a ratio. Your own parts, meshed in your own
 environment, are the test that settles it.
 
 % =============================================================== 8 ==========

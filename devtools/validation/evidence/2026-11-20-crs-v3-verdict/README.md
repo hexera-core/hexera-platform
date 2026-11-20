@@ -1,8 +1,9 @@
-# CRS v3 verdict: T19 (tournament off vs on) and T29 (deterministic vs v3) — TEMPLATE
+# CRS v3 measurement: T19 (tournament off vs on) and T29 (deterministic vs v3) — TEMPLATE
 
 > Placeholders `{{...}}` are filled by `devtools/validation/v3_eval/collect.py` from the sealed
 > bundles. Anything still in braces after a collect is for a human to write. Until then this file
-> states the method and the acceptance rule, and claims no result.
+> states the method and claims no result. There is no pass/fail bar: the numbers are reported as
+> measured. (The directory name `crs-v3-verdict` is historical; nothing here is a verdict.)
 
 ## What this does not show (read first)
 
@@ -13,7 +14,7 @@
   (rule of three, 95%), and about **1.4%** only when both arms' 100 + the 120 failing files are
   pooled (3 / 220). "newly_broken == 0" is a bound, not a proof of safety.
 - **Probe vs product mesher.** `meshes_before/after` is the coarse gmsh probe (tier 2,
-  `repair_corpus --mesh-probe`, one mesh size = the input's diagonal), the same verdict T6 used.
+  `repair_corpus --mesh-probe`, one mesh size = the input's diagonal), the same probe T6 used.
   The product mesher (escalation, big machines, FEA ladder) is not run; a part the probe meshes
   can still fail the product, and the reverse.
 - **Memory flag inert: no consumer wired.** `CAD_REPAIR_MEMORY=live` is set in every arm and has
@@ -55,7 +56,7 @@ missing/failed shard, or a row count that is not the sample's.
 | | t29_deterministic | t19_tournament_off | v3_full |
 |---|---|---|---|
 | meshes before → after | {{T29_DETERMINISTIC.FAILING.MESHED_BEFORE}} → {{T29_DETERMINISTIC.FAILING.MESHED_AFTER}} | {{T19_TOURNAMENT_OFF.FAILING.MESHED_BEFORE}} → {{T19_TOURNAMENT_OFF.FAILING.MESHED_AFTER}} | {{V3_FULL.FAILING.MESHED_BEFORE}} → {{V3_FULL.FAILING.MESHED_AFTER}} |
-| newly_meshed | {{T29_DETERMINISTIC.FAILING.NEWLY_MESHED}} | {{T19_TOURNAMENT_OFF.FAILING.NEWLY_MESHED}} | {{V3_FULL.FAILING.NEWLY_MESHED}} |
+| **files fixed** (CAD-repaired STEP newly meshes in gmsh) | {{T29_DETERMINISTIC.FAILING.FILES_FIXED}} | {{T19_TOURNAMENT_OFF.FAILING.FILES_FIXED}} | {{V3_FULL.FAILING.FILES_FIXED}} |
 | newly_broken | {{T29_DETERMINISTIC.FAILING.NEWLY_BROKEN}} | {{T19_TOURNAMENT_OFF.FAILING.NEWLY_BROKEN}} | {{V3_FULL.FAILING.NEWLY_BROKEN}} |
 | model calls (all / investigator) | {{T29_DETERMINISTIC.FAILING.MODEL_CALLS}} / {{T29_DETERMINISTIC.FAILING.INVESTIGATOR_CALLS}} | {{T19_TOURNAMENT_OFF.FAILING.MODEL_CALLS}} / {{T19_TOURNAMENT_OFF.FAILING.INVESTIGATOR_CALLS}} | {{V3_FULL.FAILING.MODEL_CALLS}} / {{V3_FULL.FAILING.INVESTIGATOR_CALLS}} |
 | tokens | {{T29_DETERMINISTIC.FAILING.TOKENS}} | {{T19_TOURNAMENT_OFF.FAILING.TOKENS}} | {{V3_FULL.FAILING.TOKENS}} |
@@ -89,17 +90,19 @@ Still failing, by kind:
 |---|---|---|
 | meshes before → after | {{T29_DETERMINISTIC.CLEAN.MESHED_BEFORE}} → {{T29_DETERMINISTIC.CLEAN.MESHED_AFTER}} | {{V3_FULL.CLEAN.MESHED_BEFORE}} → {{V3_FULL.CLEAN.MESHED_AFTER}} |
 | newly_broken | {{T29_DETERMINISTIC.CLEAN.NEWLY_BROKEN}} | {{V3_FULL.CLEAN.NEWLY_BROKEN}} |
-| untouched (no kept op on any part, nothing newly broken) | {{T29_DETERMINISTIC.CLEAN.UNTOUCHED}} | {{V3_FULL.CLEAN.UNTOUCHED}} |
+| **still good** (meshed before, still meshes, no new defect) | {{T29_DETERMINISTIC.CLEAN.STILL_GOOD}} | {{V3_FULL.CLEAN.STILL_GOOD}} |
+| changed (a kept operation or a crash) — information | {{T29_DETERMINISTIC.CLEAN.CHANGED}} | {{V3_FULL.CLEAN.CHANGED}} |
 
-"Untouched" is checked per part: no operation was kept, so the geometry delivered is the input's.
-(A `no_change` run still writes a re-serialised STEP, so a raw byte comparison of written files is
-not the test; the kept-operation count is.)
+A clean part is good when it meshed before, still meshes after repair, and gained no new defect
+(its located-defect count did not rise); a crashed part is never good. "Changed" counts clean parts
+where repair kept an operation or crashed. It is information about how often repair acts on a
+healthy part, not a failure.
 
 ## T19: tournament off vs on (same 120)
 
 | | off (`t19_tournament_off`) | on (`v3_full`, K=3) |
 |---|---|---|
-| newly_meshed | {{T19.OFF_NEWLY_MESHED}} | {{T19.ON_NEWLY_MESHED}} |
+| files fixed | {{T19.OFF_NEWLY_MESHED}} | {{T19.ON_NEWLY_MESHED}} |
 | newly_broken | {{T19.OFF_NEWLY_BROKEN}} | {{T19.ON_NEWLY_BROKEN}} |
 | $ per fixed part | {{T19.OFF_USD_PER_FIXED}} | {{T19.ON_USD_PER_FIXED}} |
 | fixed by on, not off / by off, not on | {{T19_DIFF_FILES}} | |
@@ -107,28 +110,29 @@ not the test; the kept-operation count is.)
 
 If "on" fixes no more than "off" at a higher cost, that is the result, stated plainly.
 
-## T29 verdict
+## T29: deterministic vs v3 (same 120)
 
-**Acceptance rule.** v3 `newly_meshed` ≥ 4 × deterministic `newly_meshed` on the same 120,
-`newly_broken == 0` in both arms, the clean control untouched in both arms, and the cost per fixed
-part printed.
+No acceptance rule and no ratio: the two arms' counts are reported side by side.
 
-**Fallback.** If the deterministic arm newly meshes 0, the 4× ratio is degenerate (anything ≥ 0):
-the verdict reads "4x goal: undefined (deterministic ceiling 0)" and is judged on v3's absolute
-`newly_meshed`, with its count stated plainly. The goal is never claimed as met in that case.
-
-| | |
-|---|---|
-| deterministic newly_meshed | {{T29.DETERMINISTIC_NEWLY_MESHED}} |
-| v3 newly_meshed | {{T29.V3_NEWLY_MESHED}} |
-| ratio | {{T29.RATIO}} — {{T29.RATIO_RULE}} |
-| newly_broken (both arms) | {{T29.NEWLY_BROKEN_TOTAL}} |
-| clean control untouched (both arms) | {{T29.CLEAN_UNTOUCHED}} |
-| v3 $ per fixed part | {{T29.COST_PER_FIXED_PART_USD}} |
-| **accepted** | **{{T29.ACCEPTED}}** |
+| | t29_deterministic | v3_full |
+|---|---|---|
+| **files fixed** | {{T29_DETERMINISTIC.FAILING.FILES_FIXED}} | {{V3_FULL.FAILING.FILES_FIXED}} |
+| newly_broken | {{T29_DETERMINISTIC.FAILING.NEWLY_BROKEN}} | {{V3_FULL.FAILING.NEWLY_BROKEN}} |
+| clean control still good | {{T29_DETERMINISTIC.CLEAN.STILL_GOOD}} | {{V3_FULL.CLEAN.STILL_GOOD}} |
+| $ per fixed part | {{T29_DETERMINISTIC.FAILING.USD_PER_FIXED}} | {{V3_FULL.FAILING.USD_PER_FIXED}} |
 
 If `newly_broken > 0` anywhere: stop, list the files, and propose turning `crs_v3` off in shared
 dev (a one-line revert for a human to approve) before anything else.
+
+## Diagnostic only: tolerant mesher (not counted as CAD repair)
+
+Filled only when the runs were launched with the opt-in `--tolerant-delivery` diagnostic; otherwise
+`n/a`. A part here is one gmsh still refuses after repair that fTetWild meshes as delivered. It is
+not a fix, not a product fallback, and never part of files fixed.
+
+| | t29_deterministic | t19_tournament_off | v3_full |
+|---|---|---|---|
+| tolerant-mesher meshable (not counted as CAD repair) | {{T29_DETERMINISTIC.FAILING.DIAG_TOLERANT_MESHER}} | {{T19_TOURNAMENT_OFF.FAILING.DIAG_TOLERANT_MESHER}} | {{V3_FULL.FAILING.DIAG_TOLERANT_MESHER}} |
 
 ## Caveats
 
@@ -140,7 +144,7 @@ dev (a one-line revert for a human to approve) before anything else.
 
 ## Files
 
-`sample.json`, `results.json` (the evidence lane's `results.schema.json`, schema_version 1), `verdict.json`, `rows-<arm>-<kind>.json`, `bundle-<arm>-<kind>/` (sealed; verify
+`sample.json`, `results.json` (the evidence lane's `results.schema.json`, schema_version 2), `verdict.json` (name historical; it holds the checked inputs and per-arm reports, no verdict), `rows-<arm>-<kind>.json`, `bundle-<arm>-<kind>/` (sealed; verify
 with `repair_corpus.py --verify <dir>`). Raw shard outputs (rows, PROVENANCE, run logs, model-call
 telemetry, investigator transcripts) stay in
 `gs://dev-crsv3-transfer-224734058693/eval/<arm>-<commit12>/` and are not committed.

@@ -1,4 +1,11 @@
-# CRS v3 verdict runs (T19 + T29): runbook
+# CRS v3 evaluation runs (T19 + T29): runbook
+
+There is no pass/fail bar. The headline per arm is **files fixed**: failing parts whose
+CAD-repaired STEP export newly meshes in the gmsh probe. The clean control counts a part **good**
+when it meshed before, still meshes after repair and gained no new defect; the count of clean parts
+repair **changed** (a kept operation or a crash) is information, not a failure. The tolerant mesher
+(fTetWild) is never a fix and never a product fallback; it is an opt-in diagnostic only (see
+"Tolerant-mesher diagnostic" below). The `v3-verdict` / `crs-v3-verdict` path names are historical.
 
 One wave launches everything: three arms on the 120-file sample and the 100-part clean control
 under two of them. Run from a checkout that contains `devtools/validation/v3_eval/`:
@@ -77,19 +84,24 @@ Each container repeats the preflight against the archived `src/`:
 
 ```bash
 $PY $V/collect.py --commit $COMMIT --status               # per shard: DONE / FAILED / running
-$PY $V/collect.py --commit $COMMIT --pull --t6 --dry-run  # pulls, checks, prints the verdict
+$PY $V/collect.py --commit $COMMIT --pull --t6 --dry-run  # pulls, checks, prints the per-arm counts
 $PY $V/collect.py --commit $COMMIT --pull --t6            # seals bundles, writes results.json + README
 for d in devtools/validation/evidence/2026-11-20-crs-v3-verdict/bundle-*; do
   $PY devtools/validation/repair_corpus.py --verify "$d"; done
 ```
 
 `results.json` follows the evidence lane's `devtools/validation/v3_eval/results.schema.json`
-(schema_version 1):
+(schema_version 2; no verdict, ratio or acceptance field):
 - `t29_v3` and `t19_tournament_on` are both filled from `v3_full`, and the latter has
   `same_run_as: t29_v3`.
 - `t6_rules_only_local` is filled from `$B/eval/t6-rules-only-0bf78625/` (90 files, shards 1–3).
-- `clean_control.byte_unchanged` is the minimum, over the arms covered, of the clean parts with no
-  kept operation.
+- each arm's `newly_meshed` is its files fixed (the repaired STEP's gmsh probe only; never the
+  tolerant mesher).
+- `clean_control.still_meshes_no_new_defects` is the minimum, over the arms covered, of the clean
+  parts that meshed before, still mesh after and gained no new defect (a crash is never good).
+- `clean_control.changed` is the maximum, over the arms covered, of clean parts with a kept
+  operation or a crash. Information, not a failure.
+- `delivered_via_tolerant_mesher` is present only for a diagnostic run; otherwise null.
 - Anything unmeasured is null.
 
 Collect refuses any of the following:
@@ -101,7 +113,7 @@ Collect refuses any of the following:
 
 ### 3b. Numbers into the papers, the PR and the PDFs
 
-`collect.py` already writes a schema-v1 `results.json`; `render` can read it directly. The
+`collect.py` already writes a schema-v2 `results.json`; `render` can read it directly. The
 `from-collect` adapter is the same mapping (it adds `--t6-rows`), and both take the clean
 control's `newly_broken` as the worst arm.
 
@@ -118,6 +130,19 @@ and `render_pr_section.py`, and the evidence README's `CAVEAT_*` / `T19_DIFF_FIL
 `T19_TOURNAMENT_DETAIL` placeholders.
 
 Collect BEFORE `make destroy-env SLUG=crsv3`: destroy-env deletes the transfer bucket.
+
+### 3c. Tolerant-mesher diagnostic (opt-in, off by default)
+
+No default run takes the tolerant route. To measure it, ask for it explicitly:
+- locally: add `--tolerant-delivery` to `repair_corpus.py` (failing kind only);
+- on the fleet: `evalspec.harness_argv(..., tolerant_diagnostic=True)`. `run_arm.py` does not pass
+  it today, so this is a code change committed into `$COMMIT` for the diagnostic run.
+
+A file gmsh still refuses after repair whose tier-2b reading is `tolerant_rung_eats_it` then gets
+one fTetWild pass on what would be delivered. The count lands in `delivered_via_tolerant_mesher`
+and renders only in `\vThreeDiagnosticTable`, the PR's diagnostic appendix and the evidence
+README's diagnostic table, labelled "tolerant-mesher meshable (not counted as CAD repair)". It is
+never in a headline and never summed into files fixed.
 
 ## 4. Resume (after a laptop restart, a lost session, or a failed shard)
 
@@ -155,7 +180,7 @@ Every VM deletes itself once all its shards finish. `--max-run-duration=3h` with
 ## Estimates
 
 **Per-file times.** T6 (0bf78625) measured ~3.5 min per file rules-only, including both probes and
-the goal verdict. The model arms are estimated at 5.0–5.5 min per file, and the clean parts at
+the goal profile's finishing check. The model arms are estimated at 5.0–5.5 min per file, and the clean parts at
 1.5 min per file because most mesh before repair.
 
 **Wall clock.** About 25 minutes for the slowest shard, plus 5–10 minutes per VM for boot, docker

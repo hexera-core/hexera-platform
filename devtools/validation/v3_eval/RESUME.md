@@ -246,3 +246,21 @@ Measured at 9ae2e215, agentic loop, 420 s, one part. The fix for the third point
 **The cap revert, cause (fixed in b8e57fa9).** `FixSmallFaces` reports `area_removed_mm2` - the removed faces' own area - and deliberately no `area_delta_mm2`, which is the only key `caps.Accounting` sums. So the declaration is 0 and `package.evaluate` judges the WHOLE movement against the author's claim. The tool handed the model 0.48387, the model claimed exactly that, and the surface moved 64.8064 by rebuilding the sliver's neighbours: **the author was judged on a number it was never shown.** It is target-dependent, which is why the same op with the same claim was kept in the review-off run and reverted here. The edit result now also carries `measured_area_delta_mm2` and `measured_volume_delta_mm3`, taken from the session's own before/after measures of the clone (no new kernel call), with the prose and the catalogue line saying to claim the measured movement.
 
 **Open, routed to the reviewer-evidence lane.** With the objection posture live the measured objection handed back is `{"field": "deviation_status", "measured": "not measured: no faces"}`. `package_review` reads `deviation_faces == 0` as "no faces", and `fix_small_faces` REMOVES faces - so the reviewer may be rejecting for missing evidence rather than on merit, with an objection naming a field a face-removing package can never satisfy. Hypothesis, mechanism unconfirmed.
+
+## Lane C: owner reporting decisions applied (2026-11-20)
+
+Commits a9530a28, 195a4251, 2763d3a8 plus the prose pass on the papers, evidence README and
+RUNBOOK. Four rules, now stated the same way everywhere:
+
+1. **No pass/fail bar.** The T29 "v3 newly meshes >= 4x the deterministic arm" target is dropped,
+   not missed and not undefined. No verdict, ratio or acceptance field is computed or rendered.
+2. **Headline per arm = files fixed:** failing parts whose CAD-repaired, exported STEP newly meshes
+   in the gmsh probe (`\vThree<Prefix>FilesFixed`).
+3. **Clean control:** a part is good if it still meshes and gained no new defect
+   (`\vThreeCleanStillGood`). Clean parts repair changed (kept op or crash) are information, not a
+   failure (`\vThreeCleanChanged`). "Byte-unchanged" is gone.
+4. **Tolerant mesher (fTetWild)** is not a fix and not a product fallback: an opt-in diagnostic
+   (`--tolerant-delivery`, `harness_argv(tolerant_diagnostic=True)`), shown only in the appendix
+   diagnostic table labelled "tolerant-mesher meshable (not counted as CAD repair)".
+
+`results.json` is now **schema_version 2**.

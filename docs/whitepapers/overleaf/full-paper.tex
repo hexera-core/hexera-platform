@@ -1220,11 +1220,9 @@ The 11-operation catalogue measured a \textbf{8--12\%}
 ceiling on the original 80-file track. On real failures the ceiling is lower. A rules-only run
 over 90 files of this corpus newly meshed \textbf{0}, and an earlier count of repaired small edges
 from that run was largely false credit from a naming bug, since fixed
-(Section~\ref{sec:v3results}). The programme's target is newly meshed at or above four times the
-deterministic arm's on the same sample, with newly broken held at zero and the clean control
-untouched. \textbf{That target is not a result.} Section~\ref{sec:v3results} reports the
-measurement, and where the deterministic arm meshes nothing the ratio is undefined and is not
-claimed.
+(Section~\ref{sec:v3results}). The agentic loop is measured against this arm on the same sample.
+There is no pass mark: Section~\ref{sec:v3results} reports the files each arm fixed, the parts it
+newly broke and what the clean control did, as measured.
 
 % ============================================================ v3 results ====
 \section{Measured Results (CRS v3)}\label{sec:v3results}
@@ -1243,29 +1241,34 @@ off. The \emph{v3} run has the investigator live and the tournament live with th
 third run has the investigator live and the tournament off, so that the tournament can be judged
 against the v3 run as its ``on'' side. A 100-part clean control, of parts that already mesh, went
 through both of the first two configurations. The first column of Table~\ref{tab:v3results} is the
-\emph{\vThreeRulesOnlyLabel} (T6), run on a laptop before the release fixes. It is context only and
-takes no part in the verdict.
+\emph{\vThreeRulesOnlyLabel} (T6), run on a laptop before the release fixes. It is context only.
 
 \vThreeResultsTable
 
 \paragraph{The headline.}
-The v3 arm newly meshed \vThreeNewlyMeshed{} of \vThreeNFiles{} failing parts
-and newly broke \vThreeNewlyBroken. The deterministic arm newly meshed \vThreeDetNewlyMeshed{} and
-newly broke \vThreeDetNewlyBroken. The clean control came back with \vThreeCleanByteUnchanged{} of
-\vThreeCleanNFiles{} parts unchanged. The v3 arm cost \vThreeCostUsd{} in model calls and machine
-time, which is \vThreeCostPerFixed{} per part it newly meshed.
+The headline for each arm is \emph{files fixed}: failing parts whose CAD-repaired STEP export newly
+meshes in the gmsh probe. The v3 arm fixed \vThreeFilesFixed{} of \vThreeNFiles{} failing parts and
+newly broke \vThreeNewlyBroken. The deterministic arm fixed \vThreeDetFilesFixed{} and newly broke
+\vThreeDetNewlyBroken. The v3 arm cost \vThreeCostUsd{} in model calls and machine time, which is
+\vThreeCostPerFixed{} per file fixed. There is no pass or fail bar; the counts are reported as
+measured.
 
-\paragraph{The verdict.}
-The acceptance rule is: \vThreeVerdictRule. If the deterministic arm newly
-meshes nothing, the ratio is undefined and the verdict is judged on the v3 arm's absolute count. The
-four-times goal is then reported as undefined and is never counted as met. Result: \vThreeVerdict.
-Ratio: \vThreeVerdictRatio. \vThreeVerdictStatement
+\paragraph{The clean control.}
+A clean part counts as good when it still meshes after repair and has gained no new defect.
+\vThreeCleanStillGood{} of \vThreeCleanNFiles{} clean parts were good, and \vThreeCleanNewlyBroken{}
+newly broke. Repair changed \vThreeCleanChanged{} clean parts, by a kept operation or a crash. That
+count is information about how often repair acts on a healthy part, not a failure.
+
+\paragraph{The tolerant mesher is not a fix.}
+A tolerant mesher (fTetWild) will often mesh a part gmsh still refuses. That is not a repair of the
+CAD, it is not a product fallback, and it is never counted in files fixed. It is an opt-in
+diagnostic, reported only in Appendix~\ref{app:v3diagnostic}.
 
 \vThreeOpsTable
 
 \paragraph{The tournament.}
-With the investigator live, turning the tournament on moved newly meshed from
-\vThreeTourOffNewlyMeshed{} to \vThreeTourOnNewlyMeshed{}, at \vThreeTourOffCostPerFixed{} and
+With the investigator live, turning the tournament on moved files fixed from
+\vThreeTourOffFilesFixed{} to \vThreeTourOnFilesFixed{}, at \vThreeTourOffCostPerFixed{} and
 \vThreeTourOnCostPerFixed{} per fixed part. If the tournament fixes no more parts at a higher cost,
 that is the result we report.
 
@@ -1278,8 +1281,8 @@ These caveats bound every number above.
   the extent renamed every entity, and the progress rule read a renamed defect as a removed one.
   Four of four keeps that were probed turned out false. The grid is now fixed per run.
 \item \textbf{The deterministic baseline is near zero.} The rules-only baseline newly meshed 0 of
-  its first 90 files. A ratio over a baseline that small says little, so the absolute counts are
-  printed beside it.
+  its first 90 files. A ratio over a baseline that small says little, so only absolute counts are
+  reported.
 \item \textbf{The agentic arm had never been measured before this run.} There is no earlier number
   to compare against, one run per arm says nothing about run-to-run variation, and the model arms
   are nondeterministic.
@@ -1349,10 +1352,9 @@ discipline matters more to the credibility of automated CAD repair than any sing
         Section~\ref{sec:v3results}. Byte-identical replay is retired for agent-driven runs --- a tool
         conversation is not reproducible turn by turn --- and replay now means re-applying the
         recorded packages.
-  \item \textbf{The 4x goal is a target.} The programme aims at newly meshed at or above four
-        times the deterministic arm's on the same sample, with newly broken zero and the clean
-        control untouched. Section~\ref{sec:v3results} states whether one 120-part pass met it. If
-        the deterministic arm meshed nothing, the ratio is undefined and the goal is not claimed.
+  \item \textbf{There is no pass mark.} The evaluation sets no target ratio against the
+        deterministic arm. Section~\ref{sec:v3results} reports files fixed, newly broken and the
+        clean control from one 120-part pass, and those counts carry no verdict.
   \item \textbf{Parts of the agentic loop are untested in a run.} The tournament's winner now
         goes to the real session's package review, but only the pass of
         Section~\ref{sec:v3results} has exercised it. Tiered review is inert in that pass: the
@@ -1500,8 +1502,17 @@ README that states what the evidence does not show. The mesh-failure track's man
 source URL, and the probe-calibration README gives the download and verification steps. Corpus runs
 use \lcode{devtools/validation/repair\_corpus.py} with \code{-{}-bundle}. One-shot model-directed
 runs replay byte-identically from a recorded-reply cache, and agent-driven runs replay as their
-recorded packages. The CRS v3 verdict of Section~\ref{sec:v3results} is sealed under
+recorded packages. The CRS v3 measurement of Section~\ref{sec:v3results} is sealed under
 \lcode{devtools/validation/evidence/2026-11-20-crs-v3-verdict/}, and its macros are generated by
 \lcode{devtools/validation/v3\_eval/results\_to\_tex.py}.
+
+\section{Tolerant-Mesher Diagnostic (CRS v3)}\label{app:v3diagnostic}
+This table is a diagnostic, not a result. With the evaluation's opt-in
+\lcode{-{}-tolerant-delivery} flag, each part gmsh still refuses after repair is handed to the
+tolerant mesher (fTetWild) as delivered. A part it meshes is \vThreeDiagTolerantMesherLabel{}. It is
+not a fix, not a product fallback, and never part of files fixed. A \textbf{[PENDING]} cell means the
+diagnostic was not run.
+
+\vThreeDiagnosticTable
 
 \end{document}
