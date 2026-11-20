@@ -188,3 +188,21 @@ Loop proof at c4774a2c, 8 corpus parts: 18 region investigations, 17 concluded (
 - **Product (ce4a4478), behind `CAD_REPAIR_INVESTIGATION_TRACE`:** true where crs_v3=live, unset in prod. The repair report gets `measurements.investigation_trace.outcomes`. The redacted, size-capped per-turn JSONL goes to `jobs/<id>/investigation-trace-<sha16>.jsonl`, and its location or upload error stays in the report. `investigator.py` is untouched.
 - **Admin (5a68c1ec):** `GET /admin/ops/jobs/{id}/repair-trace`, plus a "Repair investigation" panel on the admin console run page (`/jobs/<id>/why`): an outcome table, with the trace in an expander.
 - **Not yet verified deployed.** That needs a crsv3 redeploy (`app` + `fleet`, for worker metadata) at ecf6d72d or later, then one crsv3 job, then reading `/admin/ops/jobs/<id>/repair-trace`.
+
+## LANE E status (keep predicate / target_remains), 2026-11-20
+- **Fix 2223beb4 (rebased; see `git log --grep "delivered part newly meshes"`):** an op that the progress rule rolls back as `target_remains` is KEPT, with reason `meshes_after_target_remains`, only when ALL of these hold:
+  - the whole pre-op list held a real gmsh failure (an answer, not a timeout or a no-answer);
+  - a whole-shape probe of the part AS DELIVERED (STEP written by the promotion writer, then read back) meshes;
+  - the rest of the progress rule still passes (new_defect, revealed, an unlocated failure of the aimed code).
+  Caps, declines and review are untouched. The unmet claim is reported in `delta.unmet` and `PackageVerdict.unmet_cleared`, never rewritten as cleared. Rows count these keeps as `operations_kept_meshes_after_target_remains`. The package predicate gets the same rule and re-proves the cure at its own boundary. Six guard mutations are each killed.
+- **Why STEP:** abc 0052_00525324. `fix_small_edges` cures it by widening tolerances. In memory it meshes 3 times out of 3 and its BREP round-trip meshes, but its STEP round-trip fails again ("segment and facet intersect"). An in-memory proof would promote a file that still does not mesh.
+- **Full count. Oracle:** a whole-part gmsh probe after every op. Rules-only, 900 s, review off, all 28 T6 files that attempted ops, 82 op verdicts:
+  - 66 `target_remains` where the part still fails. Honest; the 11-19 spec holds.
+  - 5 `target_remains` where the part meshes in memory. One is 0052, which the STEP round-trip loses. The other 4 are 0060_00608308, which ALREADY meshed before, so the guard correctly refuses it.
+  - 11 kept by the existing predicate.
+  - **Result: the corrected predicate adds 0 delivered keeps on this sample.** The door is right, but it is rarely the bottleneck.
+- **What review costs.** With review off, 6 of the 28 files end with kept ops: 5 `repaired`, 1 `changed_without_fixing`. Only **1 newly meshes: 0053_00531146** (fix_small_faces + fix_small_edges, overlapping_facets -> meshes; the re-read STEP meshes). In T6, with review live and no reviewer model, that file and 2 others (0052_00523209, 0056_00563150) were lost to "rejected by review". **So the review cost on T6 is 1 newly meshing part, out of 3 files whose kept ops it rejected.** Caveat: the oracle ran at 900 s, against T6's 120 s.
+- **Not mine, flagged:** two unit tests fail identically at b04befe8 base:
+  - `test_repair_oracle_invariants::test_every_v3_module_is_listed`, because `investigation_trace.py` is unlisted (lane D);
+  - `test_repair_whole_shape_declares::test_fix_shape_global_declares_a_rebuild...`, which fails in the full-suite order only.
+- **Tools:** `/tmp/laneE/tools/{oracle.py,run_one.sh,roundtrip.py}`; output in `/tmp/laneE/out`.
