@@ -1135,8 +1135,10 @@ def repair_step_file(source: Path, destination: Path, *,
             # object storage by the pipeline node, which leaves its location here instead.
             # EACH REGION'S JUDGED PACKAGES join its outcome row: the review verdict and its
             # measured objection, for audit - never the reviewer's prose, never fed to an author.
+            regions_doc = measurements.get("regions")
             measurements["investigation_trace"] = investigation_trace.with_reviews(
-                traced, measurements["regions"].get("packages") or [])
+                traced, (regions_doc.get("packages") if isinstance(regions_doc, dict) else None)
+                or [])
         tournaments = getattr(author, "tournaments", None)
         if tournaments is not None:
             # THE TOURNAMENTS, BESIDE THE INVESTIGATIONS by the same rule: one round per author
