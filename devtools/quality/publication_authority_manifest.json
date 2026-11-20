@@ -3664,6 +3664,32 @@
   ]
  },
  {
+  "context": "cad/repair/ending.py::backfill_ending::search#1|NotAPublisher|not-a-publisher|",
+  "path": "cad/repair/ending.py",
+  "qualname": "backfill_ending",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_STOPPED_RE",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "cad/repair/ending.py::backfill_ending::search#2|NotAPublisher|not-a-publisher|",
+  "path": "cad/repair/ending.py",
+  "qualname": "backfill_ending",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "_ATTEMPTED_RE",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "cad/repair/investigator_tools.py::_planned::plan#1|NotAPublisher|not-a-publisher|",
   "path": "cad/repair/investigator_tools.py",
   "qualname": "_planned",
