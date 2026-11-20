@@ -12,6 +12,15 @@
 - **Clean-part fetch is COMPLETE:** all 100 parts are under `eval/v3-verdict/inputs/clean`.
 - **LEAD decision, lane B: HOLD the deterministic relaunch** until lane A reports the 420 s repro, about 15 min. If the fix is "set CAD_REPAIR_TIMEOUT_S=420 in evalspec for all arms", the deterministic arm must run at the new commit too, so arms stay comparable, and relaunching at 0ff8db35 now would be wasted. If lane A needs longer than about 20 min, relaunch the deterministic arm at 0ff8db35 anyway (`launch_fleet.py ... --only <every t29_deterministic unit not DONE>`), with the 120 s caveat recorded.
 
+
+## LEAD 420 s REPRO RESULT, for lane A (22:50 PT, at a0d4372b, transcripts in /tmp/diag3 on the Mac)
+- **The 420 s timeout fixes the time budget:** regions get 150 s walls, and look, measure and probe succeed.
+- **Still 0 packages:** every `edit` is refused. The model always sends all edit keys, e.g. `{"defect_code":"mesh_edge_through_face","fingerprint":"face:00c7…","op":"fragment_bodies","reset":false}`. `_edit_form` (`investigator_tools.py:947-951`) refuses `reset` alongside other keys, so the model retries until the runaway check (3 identical calls) ends the region.
+- **Suggested fix:** drop a falsy `reset` (false or null) and empty-string keys before that check; keep refusing `reset:true` combined with a non-empty op or fingerprint; add a test for the `reset:false` + op + fingerprint form.
+- **Also needed:** `CAD_REPAIR_TIMEOUT_S=420` for every arm in `evalspec.py`. At 120 s, region 1 still got "only proof time left".
+- **Numbers:** region 0 had 8 tool calls (3 edits refused, ended runaway); region 1 had 0 (ended budget_spent); region 2 had 8 (4 edits refused, ended runaway). 12 investigator model calls, 118 s wall.
+- **Lane A next:** apply the `_edit_form` fix and the 420 s evalspec change, rerun this repro, and send GO once at least one package is concluded.
+
 ## Earlier handoff (21:55 PT)
 
 PR #494, branch `crs/v3-agentic`, HEAD **0ff8db35** (pushed). Personal env `crsv3` (GCP hexera-dev). Bucket: `gs://dev-crsv3-transfer-224734058693/eval/`. This file is also at `gs://.../eval/RESUME.md`.
