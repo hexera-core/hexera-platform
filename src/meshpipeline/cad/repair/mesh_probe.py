@@ -198,8 +198,12 @@ def locating_surfaces(failure: MeshFailure) -> tuple[int, ...]:
 
 
 def _probe_child(path: str, diagonal_mm: float, surfaces: tuple[int, ...] | None,
-                 volume: bool) -> tuple[int, MeshFailure | None, dict[int, Box], tuple[Clash, ...]]:
-    """Runs in the child. Returns (volume_elements, failure, tag_boxes, clashes)."""
+                 volume: bool, sizing: dict | None = None
+                 ) -> tuple[int, MeshFailure | None, dict[int, Box], tuple[Clash, ...]]:
+    """Runs in the child. Returns (volume_elements, failure, tag_boxes, clashes).
+
+    `sizing` ({"surfaces": [...], "size": mm}) caps the element size on those surfaces with a
+    constant background field - the face-sizing DIAGNOSTIC, never the product's mesh."""
     import gmsh
 
     boxes: dict[int, Box] = {}
@@ -213,6 +217,13 @@ def _probe_child(path: str, diagonal_mm: float, surfaces: tuple[int, ...] | None
             gmsh.model.occ.importShapes(path)
             gmsh.model.occ.synchronize()
             gmsh.option.setNumber("Mesh.MeshSizeMax", diagonal_mm / _SIZE_DIVISOR)
+            if sizing:
+                field = gmsh.model.mesh.field.add("Constant")
+                gmsh.model.mesh.field.setNumbers(field, "SurfacesList",
+                                                 [int(t) for t in sizing["surfaces"]])
+                gmsh.model.mesh.field.setNumber(field, "VIn", float(sizing["size"]))
+                gmsh.model.mesh.field.setNumber(field, "VOut", diagonal_mm / _SIZE_DIVISOR)
+                gmsh.model.mesh.field.setAsBackgroundMesh(field)
             for _dim, tag in gmsh.model.getEntities(2):
                 x0, y0, z0, x1, y1, z1 = gmsh.model.getBoundingBox(2, tag)
                 boxes[int(tag)] = (float(x0), float(y0), float(z0),
@@ -249,11 +260,13 @@ def _probe_child(path: str, diagonal_mm: float, surfaces: tuple[int, ...] | None
 
 
 def _child_main(argv: Sequence[str]) -> int:
-    """`python -m meshpipeline.cad.repair.mesh_probe PATH DIAGONAL SURFACES VOLUME`: one JSON line."""
-    path, diagonal, surfaces, volume = argv
+    """`python -m meshpipeline.cad.repair.mesh_probe PATH DIAGONAL SURFACES VOLUME [SIZING]`:
+    one JSON line."""
+    path, diagonal, surfaces, volume, *rest = argv
     wanted = json.loads(surfaces)
+    sizing = json.loads(rest[0]) if rest else None
     count, failure, boxes, clashes = _probe_child(
-        path, float(diagonal), None if wanted is None else tuple(wanted), volume == "1")
+        path, float(diagonal), None if wanted is None else tuple(wanted), volume == "1", sizing)
     sys.stdout.write("\n" + json.dumps({
         "volume_elements": count,
         "failure": None if failure is None else {
@@ -276,11 +289,14 @@ def _kill_group(proc: subprocess.Popen) -> None:
 
 
 def _run_child(path: str, diagonal_mm: float, surfaces: tuple[int, ...] | None, volume: bool,
-               budget_s: float) -> dict[str, Any] | None | Literal["error"]:
+               budget_s: float, sizing: dict | None = None
+               ) -> dict[str, Any] | None | Literal["error"]:
     """The child's JSON answer; None when it ran out of budget; "error" when it died unanswering."""
     cmd = [sys.executable, "-W", "ignore", "-m", "meshpipeline.cad.repair.mesh_probe", path,
            repr(float(diagonal_mm)), json.dumps(None if surfaces is None else list(surfaces)),
            "1" if volume else "0"]
+    if sizing:
+        cmd.append(json.dumps(sizing))
     proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                             stderr=subprocess.DEVNULL, start_new_session=True, text=True)
     try:
@@ -306,7 +322,8 @@ def _run_child(path: str, diagonal_mm: float, surfaces: tuple[int, ...] | None, 
 
 
 def probe_file(path: Path, *, diagonal_mm: float, surfaces: Sequence[int] | None = None,
-               volume: bool = True, budget_s: float = 120.0) -> ProbeResult:
+               volume: bool = True, budget_s: float = 120.0,
+               sizing: dict | None = None) -> ProbeResult:
     """Mesh `path` in a bounded fresh interpreter and report. NEVER raises, never blocks past
     `budget_s` (plus a few seconds to reap the child).
 
@@ -316,7 +333,8 @@ def probe_file(path: Path, *, diagonal_mm: float, surfaces: Sequence[int] | None
     """
     wanted = None if surfaces is None else tuple(int(s) for s in surfaces)
     try:
-        answer = _run_child(str(path), float(diagonal_mm), wanted, bool(volume), budget_s)
+        answer = _run_child(str(path), float(diagonal_mm), wanted, bool(volume), budget_s,
+                            sizing)
     except Exception as exc:  # noqa: BLE001 - the probe never raises
         logger.info("mesh_probe: %s: %s", type(exc).__name__, exc)
         answer = "error"
@@ -745,15 +763,18 @@ def _mesh_defects(shape, *, diagonal_mm: float, budget_s: float,
         # not read as another pair's sizing gap. One gap per pair, measured once.
         tags_of = {face: tag for tag, face in (mapping or {}).items()}
         gaps: dict[tuple[int, int], float | None] = {}
+        adjacent: dict[tuple[int, int], bool | None] = {}
         for defect in defects:
             tag = tags_of.get(int(defect.entity_index))
             own = next((c for c in result.clashes if tag in c.surfaces), result.clashes[0])
             if own.surfaces not in gaps:
                 gaps[own.surfaces] = _clash_gap(faces, mapping or {}, own, deadline=deadline)
+                adjacent[own.surfaces] = _clash_adjacent(faces, mapping or {}, own)
             defect.measurements["located_by"] = LOCATED_BY_CLASH
             defect.measurements["clash_pairs"] = [list(c.surfaces) for c in result.clashes]
             defect.measurements["clash_pair"] = list(own.surfaces)
             defect.measurements["clash_gap_mm"] = gaps[own.surfaces]
+            defect.measurements["clash_adjacent"] = adjacent[own.surfaces]
             defect.measurements["clash_kind"] = own.kind
             defect.measurements["clash_point"] = list(own.point)
     if by_contact and contact is not None:
@@ -767,6 +788,30 @@ def _mesh_defects(shape, *, diagonal_mm: float, budget_s: float,
         # defect would make it read as in-region (unplaceable is admitted), so it is dropped.
         defects = [d for d in defects if in_region(d, within, diagonal_mm=diagonal_mm)]
     return tuple(defects)
+
+
+def _clash_adjacent(faces, mapping: dict[int, int], clash: Clash) -> bool | None:
+    """Do the clash's two faces share a vertex (and so possibly an edge)? None when either is
+    unmapped or the kernel cannot say. WHY IT MATTERS: two faces that share an edge are 0 mm apart
+    in the B-rep however they meet, so a 0 gap between them is their common boundary, not a
+    crossing - triangles of adjacent faces clashing is a fold at a sharp edge, which the mesher's
+    sizing answers. A real intersection is a 0 gap between faces that are NOT adjacent."""
+    a, b = (mapping.get(t) for t in clash.surfaces)
+    if not a or not b:
+        return None
+    try:
+        from OCP.TopAbs import TopAbs_VERTEX
+        from OCP.TopExp import TopExp
+        from OCP.TopTools import TopTools_IndexedMapOfShape
+
+        mine = TopTools_IndexedMapOfShape()
+        TopExp.MapShapes_s(faces.FindKey(a), TopAbs_VERTEX, mine)
+        theirs = TopTools_IndexedMapOfShape()
+        TopExp.MapShapes_s(faces.FindKey(b), TopAbs_VERTEX, theirs)
+        return any(mine.Contains(theirs.FindKey(i)) for i in range(1, theirs.Extent() + 1))
+    except Exception as exc:  # noqa: BLE001 - unknown, never guessed
+        logger.debug("mesh_probe: clash adjacency %d/%d: %s", a, b, exc)
+        return None
 
 
 def _clash_gap(faces, mapping: dict[int, int], clash: Clash, *,
@@ -786,6 +831,111 @@ def _clash_gap(faces, mapping: dict[int, int], clash: Clash, *,
     except Exception as exc:  # noqa: BLE001 - an unmeasured gap is reported as unknown
         logger.debug("mesh_probe: clash gap %d/%d: %s", a, b, exc)
         return None
+
+
+#: The face-sizing diagnostic's element sizes on the clashing surfaces, finest of two rules per
+#: attempt, coarsest attempt first: diagonal / DIVISOR (the probe meshes at diagonal / 40, so 5x and
+#: 25x finer), or the smallest measured gap times GAP_FRACTION - a chord must be shorter than the
+#: gap it would otherwise cut across. Floored at diagonal / FACE_SIZING_FLOOR_DIVISOR so one hair-
+#: thin gap cannot ask for a mesh no probe budget could finish.
+FACE_SIZING_DIVISORS = (200.0, 1000.0)
+FACE_SIZING_GAP_FRACTIONS = (0.5, 0.2)
+FACE_SIZING_FLOOR_DIVISOR = 5000.0
+
+#: A clash pair, classified: apart in the B-rep (sizing may answer), touching only along a shared
+#: edge or vertex (a fold at a sharp edge; sizing may answer), or crossing (geometry; it may not).
+PAIR_GAP = "gap"
+PAIR_ADJACENT = "adjacent"
+PAIR_INTERSECTING = "intersecting"
+
+
+def classify_pair(gap_mm: float | None, adjacent: bool | None, *, tol: float) -> str | None:
+    """A clash pair's class from its measured gap and adjacency, or None when unmeasured. Pure."""
+    if gap_mm is None:
+        return None
+    if gap_mm > tol:
+        return PAIR_GAP
+    if adjacent is None:
+        return None
+    return PAIR_ADJACENT if adjacent else PAIR_INTERSECTING
+
+
+def face_sizing(shape, *, diagonal_mm: float, budget_s: float) -> dict:
+    """Would gmsh mesh `shape` if only its clashing surfaces were meshed finer? A DIAGNOSTIC for
+    the owner's "CAD sound, meshes with per-face sizing" category: never a repair, never the
+    product's mesh. NEVER RAISES; every answer is a dict.
+
+    APPLICABLE ONLY WHEN NO REMAINING CLASH IS GEOMETRY: the unsized probe fails, the surface mesh
+    shows clashes, and every clashing pair is a `gap` (apart in the B-rep) or `adjacent` (0 apart
+    only because the faces share an edge or vertex - a fold, not a crossing). One `intersecting`
+    pair makes it `real_intersection`, and sizing is not asked; an unmeasured pair is
+    `pair_unmeasured`, never assumed either way. Then the clashing surfaces are re-meshed finer
+    (FACE_SIZING_* above), coarsest attempt first, until one meshes or the budget ends. All of it on
+    ONE BREP, so gmsh's surface tags mean the same thing every time.
+    """
+    started = time.monotonic()
+    out: dict = {"applicable": False, "reason": "", "meshes": None, "size_mm": None,
+                 "surfaces": [], "pairs": [], "attempts": [], "seconds": 0.0}
+
+    def done(**update) -> dict:
+        out.update(update)
+        out["seconds"] = round(time.monotonic() - started, 3)
+        return out
+
+    try:
+        from OCP.BRepTools import BRepTools
+        from OCP.TopAbs import TopAbs_FACE
+
+        deadline = started + float(budget_s)
+        diagonal = float(diagonal_mm)
+        tol = diagonal * TAG_MATCH_FRACTION
+        faces = _indexed(shape, TopAbs_FACE)
+        with tempfile.TemporaryDirectory(prefix="mesh-sizing-") as tmp:
+            path = Path(tmp) / "shape.brep"
+            if not BRepTools.Write_s(shape, str(path)):
+                return done(reason="unwritable")
+            base = probe_file(path, diagonal_mm=diagonal, budget_s=budget_s)
+            if base.failure is None:
+                return done(reason="meshes_unsized")
+            if not base.clashes:
+                return done(reason="no_clash")
+            mapping = faces_for_tags(_face_boxes(faces), base.tag_boxes, tol=tol)
+            classes = []
+            for clash in base.clashes:
+                gap = _clash_gap(faces, mapping, clash, deadline=deadline)
+                adjacent = _clash_adjacent(faces, mapping, clash)
+                out["pairs"].append({"surfaces": list(clash.surfaces), "gap_mm": gap,
+                                     "adjacent": adjacent})
+                classes.append(classify_pair(gap, adjacent, tol=tol))
+            out["surfaces"] = sorted({t for c in base.clashes for t in c.surfaces})
+            if PAIR_INTERSECTING in classes:
+                return done(reason="real_intersection")
+            if None in classes:
+                return done(reason="pair_unmeasured")
+            out["applicable"] = True
+            gaps = [p["gap_mm"] for p in out["pairs"] if p["gap_mm"] is not None
+                    and p["gap_mm"] > tol]
+            floor = diagonal / FACE_SIZING_FLOOR_DIVISOR
+            for divisor, fraction in zip(FACE_SIZING_DIVISORS, FACE_SIZING_GAP_FRACTIONS,
+                                         strict=True):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return done(meshes=False, reason="budget_spent")
+                size = diagonal / divisor
+                if gaps:
+                    size = min(size, min(gaps) * fraction)
+                size = max(size, floor)
+                sized = probe_file(path, diagonal_mm=diagonal, budget_s=remaining,
+                                   sizing={"surfaces": out["surfaces"], "size": size})
+                out["attempts"].append({
+                    "size_mm": size, "meshes": sized.failure is None,
+                    "failure": "" if sized.failure is None else sized.failure.message[:160]})
+                if sized.failure is None:
+                    return done(meshes=True, size_mm=size, reason="meshes_with_face_sizing")
+            return done(meshes=False, reason="sizing_did_not_mesh")
+    except Exception as exc:  # noqa: BLE001 - a diagnostic never raises
+        logger.info("mesh_probe: face sizing: %s: %s", type(exc).__name__, exc)
+        return done(reason=f"error: {type(exc).__name__}")
 
 
 def _tag_in_region(tag: int, box: Box, mapping: dict[int, int], faces, within: Region, *,
