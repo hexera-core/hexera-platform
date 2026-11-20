@@ -404,15 +404,20 @@ def _resolve(shape, kind: str, index: int) -> tuple[Any, int]:
     return found.FindKey(index), bound
 
 
-def _distance_between(a, b) -> dict:
-    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+def _distance_between(a, b, *, budget_s: float) -> dict:
+    """The distance between two sub-shapes, measured IN A BOUNDED CHILD.
 
-    measured = BRepExtrema_DistShapeShape(a, b)
-    if not measured.IsDone() or measured.NbSolution() < 1:
-        return {"min_distance_mm": None, "point_a": None, "point_b": None}
-    return {"min_distance_mm": float(measured.Value()),
-            "point_a": _point(measured.PointOnShape1(1)),
-            "point_b": _point(measured.PointOnShape2(1))}
+    `BRepExtrema_DistShapeShape` used to run here, in the parent, holding the GIL - so a wave-5
+    shard sat inside it with neither the tool's clock nor the region's wall able to interrupt it
+    (lane B's py-spy found MainThread here, reached through `_measure`, the investigator and the
+    tournament). On a worker that hangs the job, not one tool call. `occ_distance` runs it in a
+    fresh interpreter, kills the group when the budget is spent, and reports UNMEASURED rather
+    than a distance of 0 - a zero means "they touch", which is the opposite conclusion and one
+    the investigator acts on.
+    """
+    from meshpipeline.cad.repair import occ_distance
+
+    return occ_distance.distance_between(a, b, budget_s=float(budget_s))
 
 
 def _point(value) -> list[float]:
@@ -650,7 +655,7 @@ def _measure(ws: Workspace, args: dict, *, budget_s: float) -> dict:
     if what == "distance":
         (_, _, a), (_, _, b) = _targets(ws, args, count=(2, 2))
         return {"what": what, "targets": list(args.get("targets") or []),
-                **_distance_between(a, b)}
+                **_distance_between(a, b, budget_s=float(budget_s))}
     if what == "thickness":
         ((_, _, face),) = _targets(ws, args, kinds=("face",), count=(1, 1))
         # LABELLED AN ESTIMATE because it is one: a sampled lower bound from one face's points to
