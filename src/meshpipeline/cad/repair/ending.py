@@ -63,8 +63,12 @@ REFUSED = "refused"
 #: claimed from a walk that stopped, so this is neither a pass nor a failure but its own answer.
 SCAN_INCOMPLETE = STOP_SCAN_INCOMPLETE
 
-#: Every error left is a mesher one: the geometry checks pass and the part still will not mesh.
-#: A first-class honest ending per the spec's "What stays sacred".
+#: THE PART STILL WILL NOT MESH, on a real mesher answer. Either every error left is a mesher one
+#: (the loop's own `unmeshable` stop: the geometry checks pass and gmsh still refuses), or
+#: operations were KEPT and the final whole-part probe answered and still refused - geometry
+#: errors may remain beside it, and `stopped_because` / `operations_kept` still say so. A
+#: first-class honest ending per the spec's "What stays sacred". A probe that was skipped, timed
+#: out or died is NOT a mesher answer and never earns this word.
 UNMESHABLE = STOP_UNMESHABLE
 
 #: At least one region is queued for a person, whatever else was committed. The spec's second
@@ -101,8 +105,12 @@ LEGACY_OUTCOME = {
 
 
 def ending_for(*, kept: int, attempted: int, stopped_because: str,
-               gate_refusal: bool = False) -> str:
+               gate_refusal: bool = False, mesh_failed: bool = False) -> str:
     """The one word for how a run ended. ONE place, so no caller can disagree with another.
+
+    `mesh_failed` is True only when the run's FINAL whole-part mesh probe ran, answered, and
+    still refused the part (`loop.definitive_mesh_failure`). A skipped or timed-out probe, or the
+    probe being off, is False - and then nothing here changes.
 
     THE PRECEDENCE IS NOT ARBITRARY and mirrors `region_loop._terminal`:
 
@@ -114,7 +122,14 @@ def ending_for(*, kept: int, attempted: int, stopped_because: str,
     3. `escalated` and `unmeshable` beat `repaired`, deliberately. A run that committed three
        regions and queued a fourth is a PARTIAL repair, and a part whose geometry is clean and
        which gmsh still refuses is not a delivery.
-    4. Only then does "something was kept" mean `repaired`.
+    4. Something kept over a part the final probe still refuses is `unmeshable` too, NOT
+       `repaired` (eval wave 4, abc/0051_00513292: a committed package, `regions_exhausted`,
+       `repaired`, and the exported STEP still failed gmsh with edge_through_face). The word is
+       reused rather than a new `repaired_*` one coined, because the honest answer is the same
+       one - the part does not mesh - and every reader already treats it as not a delivery
+       (`NOT_REPAIRED`, the legacy map); a word starting `repaired` would invite exactly the
+       prefix-match misreading this ruling exists to stop.
+    5. Only then does "something was kept" mean `repaired`.
     """
     if gate_refusal:
         return REFUSED
@@ -123,6 +138,8 @@ def ending_for(*, kept: int, attempted: int, stopped_because: str,
     if stopped_because == ESCALATED:
         return ESCALATED
     if stopped_because == UNMESHABLE:
+        return UNMESHABLE
+    if int(kept) > 0 and mesh_failed:
         return UNMESHABLE
     if int(kept) > 0:
         return REPAIRED

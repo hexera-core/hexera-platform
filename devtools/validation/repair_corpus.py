@@ -808,6 +808,15 @@ def _score_meshing(row: dict, path: Path, scratch: Path) -> None:
             row["meshes_after"], row["mesh_kind_after"] = _verdict(
                 mesh_probe.probe_file(written, diagonal_mm=diagonal,
                                       budget_s=MESH_PROBE_BUDGET_S))
+    # A FILE THAT STILL WILL NOT MESH IS NOT "REPAIRED". The re-inspection credits defects
+    # cleared, but the headline is parts that newly mesh from the exported STEP: a `repaired`
+    # row whose written file gmsh ANSWERED and refused ends `unmeshable` (the loop's own word for
+    # it, cad/repair/ending.py). `outcome` is left as the re-inspection's legacy word and
+    # `loop_ending` as the loop's, so the change is additive. A timeout or a dead probe is no
+    # answer and relabels nothing; with --mesh-probe off this function never runs.
+    if (row.get("ending") == repair_ending.REPAIRED and row["meshes_after"] is False
+            and row["mesh_kind_after"] not in (mesh_probe.TIMEOUT, mesh_probe.PROBE_ERROR)):
+        row["ending"] = repair_ending.UNMESHABLE
 
 
 #: The hard ceiling on one delivery-settings tolerant pass (`_tolerant_delivery`), in seconds.

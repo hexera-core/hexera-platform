@@ -1249,9 +1249,16 @@ def repair_step_file(source: Path, destination: Path, *,
     # once both refusal paths above are past, so the word here can only ever be one that comes
     # with a written file - `repaired`, or one of the honest partials (`escalated`, `unmeshable`,
     # `scan_incomplete`) that must never read as a delivery.
+    #
+    # A KEPT REPAIR THE FINAL WHOLE-PART PROBE STILL REFUSES IS `unmeshable`, not `repaired`.
+    # `result.defects` is the run's final scan in both drivers; a mesher answer on it (not a
+    # skipped or timed-out probe, see `definitive_mesh_failure`) outranks "something was kept".
+    from meshpipeline.cad.repair.loop import definitive_mesh_failure
+
     measurements["ending"] = ending_for(
         kept=kept_count, attempted=attempted_count,
-        stopped_because=result.stopped_because)
+        stopped_because=result.stopped_because,
+        mesh_failed=definitive_mesh_failure(result.defects))
 
     from meshpipeline.cad.unit_evidence import parser_applied_unit
 
