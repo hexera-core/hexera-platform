@@ -190,7 +190,7 @@ Loop proof at c4774a2c, 8 corpus parts: 18 region investigations, 17 concluded (
 - **Not yet verified deployed.** That needs a crsv3 redeploy (`app` + `fleet`, for worker metadata) at ecf6d72d or later, then one crsv3 job, then reading `/admin/ops/jobs/<id>/repair-trace`.
 
 ## LANE E status (keep predicate / target_remains), 2026-11-20
-- **Fix 2223beb4 (rebased; see `git log --grep "delivered part newly meshes"`):** an op that the progress rule rolls back as `target_remains` is KEPT, with reason `meshes_after_target_remains`, only when ALL of these hold:
+- **Fix 213a7a0c:** an op that the progress rule rolls back as `target_remains` is KEPT, with reason `meshes_after_target_remains`, only when ALL of these hold:
   - the whole pre-op list held a real gmsh failure (an answer, not a timeout or a no-answer);
   - a whole-shape probe of the part AS DELIVERED (STEP written by the promotion writer, then read back) meshes;
   - the rest of the progress rule still passes (new_defect, revealed, an unlocated failure of the aimed code).
