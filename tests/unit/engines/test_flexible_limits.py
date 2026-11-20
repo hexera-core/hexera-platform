@@ -5,6 +5,8 @@ from __future__ import annotations
 import copy
 import json
 
+import pytest
+
 from meshpipeline.engines import fea_plan as P
 from meshpipeline.engines import fea_requirements as FR
 from meshpipeline.engines import mesh_requirements as MR
@@ -88,15 +90,39 @@ def test_groups_all_and_a_later_sentence_that_refines_an_earlier_one():
     assert "strictness" not in rows["limit:warpage"] and MR.strictness(rows["limit:warpage"]) == "hard"
 
 
-def test_words_not_the_users_or_naming_no_limit_change_nothing_and_are_told():
+def test_a_strictness_that_does_not_hold_changes_nothing_and_is_never_an_ask():
+    """A strictness is no ask: words not the user's (the notes block's own "Use them as GUIDANCE" read as flexible) or
+    naming no limit they set are set aside silently - never told "not applied", never counted (round 11: 8c and 2c
+    each read "1 other thing your notes say about the mesh could not be applied")."""
     notes = "Min. element length 5 mm. We are flexible around the 8 mm minimum."
-    req, dropped, _na = _read(notes, sizes=[_size("min_edge", 5, "Min. element length 5 mm")],
-                              strictness=[_strict("min_edge", "flexible", "the minimum is a soft limit"),
-                                          _strict("min_edge", "flexible", "We are flexible around the 8 mm minimum.")])
-    assert any("not in your words" in d for d in dropped)
-    assert "strictness" not in _rows(req)["min_edge"]
-    said = " ".join(MR.words(MR.section("used", requirements=req)))
-    assert 'Not applied: "We are flexible around the 8 mm minimum." - it names no limit you set.' in said
+    req, dropped, na = _read(notes, sizes=[_size("min_edge", 5, "Min. element length 5 mm")],
+                             strictness=[_strict("all", "flexible", "Use them as GUIDANCE for how to mesh"),
+                                         _strict("min_edge", "flexible", "We are flexible around the 8 mm minimum.")])
+    assert dropped == [] and na == [] and "strictness" not in _rows(req)["min_edge"]
+    sec = MR.section("used", requirements=req, dropped=dropped, not_applied=na)
+    assert MR.not_applied_words(sec) == [] and "Not applied" not in " ".join(MR.words(sec))
+
+
+def test_soft_words_on_a_settings_own_line_make_that_row_flexible():
+    """2c: "aim for y+ around 1 on the walls" - the y+ row is flexible; no orphan entry, nothing told not applied."""
+    quote = "aim for y+ around 1 on the walls"
+    req, dropped, na = MR.check(json.dumps(_answer(
+        layers=[{"what": "y_plus", "value": 1, "unit": "none", "quote": quote}],
+        strictness=[_strict("near_wall", "flexible", quote)])), quote, route="flow")
+    row = next(r for r in req["rows"] if r["field"] == "layers:y_plus")
+    assert row["strictness"] == "flexible" and dropped == [] and na == []
+    assert MR.not_applied_words(MR.section("used", requirements=req)) == []
+
+
+@pytest.mark.parametrize("quote,lo,hi", [("element size 1-2 mm", 1, 2), ("2 to 5 mm elements", 2, 5),
+                                         ("elements between 1 and 3 mm", 1, 3)])
+def test_a_size_range_for_the_whole_mesh_reads_as_its_two_ends(quote, lo, hi):
+    """8c read "element size 1-2 mm" as one global size of 2 mm in round 11: a range is the shortest and the longest
+    edge, both from the same quote (the prompt says so; the check keeps both ends as the user's own numbers)."""
+    assert "A RANGE of sizes for the whole mesh" in MR.SYSTEM
+    req, dropped, _na = _read(quote, sizes=[_size("min_edge", lo, quote), _size("max_edge", hi, quote)])
+    assert dropped == [] and req["sizes"]["min_edge_mm"] == lo and req["sizes"]["max_edge_mm"] == hi
+    assert req["sizes"]["global_mm"] is None
 
 
 def _limit_row(met=False, outside=12, n=1000, **extra):

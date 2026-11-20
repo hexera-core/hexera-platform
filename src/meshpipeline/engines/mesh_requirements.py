@@ -206,7 +206,9 @@ words for it, copied exactly (one line or phrase, as short as holds the whole re
   "mesh at 0.2 in", "element size 3", "base cell size 20 mm", "background cells 50 mm", "cells around 5 mm").
   min_edge = the shortest element edge / smallest element or cell size allowed ("min cell size 0.5 mm"); max_edge =
   the longest / largest allowed ("max cell size 100 mm", "no cell bigger than 0.1 m", "far-field cells max 0.5 m":
-  the cells far from the body are the largest).
+  the cells far from the body are the largest). A RANGE of sizes for the whole mesh ("element size 1-2 mm", "2 to
+  5 mm elements", "elements between 1 and 3 mm") is TWO entries from the same quote: min_edge the low end and
+  max_edge the high end - never one global size.
   near_wall = the cell or element size AT THE WALLS / on the body's surface, for the whole mesh ("surface cells 2 mm",
   "wall cell size 1 mm", "2 mm cells on the surface"). A first LAYER height is a layer, not this.
   growth = how fast cell or element sizes may grow from one to the next through the volume ("growth rate 1.2", "cell
@@ -279,8 +281,10 @@ words for it, copied exactly (one line or phrase, as short as holds the whole re
   limits list, or count), or a group: minimums (every lower bound), maximums (every upper bound), sizes, quality
   (every quality limit), angles, counts, all (everything the notes limit). The quote is the user's own words for it,
   with its number when they gave one. Only how strict a limit is: "flexible hose", "hard anodised", "a hard material"
-  are no strictness. The same sentence may also give the limit itself: list it in its own field too. A later
-  sentence refines an earlier one: list both, in the order written.
+  are no strictness. "Around", "about" or "aim for" on a value of theirs makes that value flexible: give its own
+  limit as the target. The quote is the user's own words - never the lines around their notes. The same sentence may also give
+  the limit itself: list it in its own field too. A later sentence refines an earlier one: list both, in the order
+  written.
 - applies_to: which kinds of mesh the words speak to - shell, solid, cfd, or any. whole: the list as a whole (a
   structural quality list - warpage, quad and tria angles, Jacobian, element lengths - is shell and solid, its global
   size too; one of cells, y+, prism layers, non-orthogonality is cfd; a note of one or two asks is any). lines: only
@@ -1579,15 +1583,19 @@ def _check(arguments: str, notes: str, route: str = "") -> tuple[dict, list[str]
     strict: list[dict] = []
     for e in order(list(_rows_of(raw, "strictness"))):
         s_target, s_how = str(e.get("target") or ""), str(e.get("strictness") or "")
-        got = quoted(e)
-        if got is None:
-            continue
-        quote = got[0]
+        # A STRICTNESS IS NO ASK: one that does not hold (words not the user's - the notes block's own "Use them as
+        # GUIDANCE" read as "flexible" - or no limit or group) is set aside silently, never told as a thing not applied
+        # nor counted in the tally (m483 round 11: 8c and 2c each read "1 other thing ... could not be applied")
+        s_quote = " ".join(str(e.get("quote") or "").split())[:400]
+        if not s_quote or not _quoted(s_quote, said, squashed):
+            near = _locate(s_quote, notes) if s_quote else None
+            if near is None:
+                continue
+            s_quote = near[:400]
+        covered.append(s_quote)
         if s_target not in _STRICT_TARGETS or s_how not in STRICTNESS:
-            dropped.append(f'"{_short(quote)}": {s_target or "what it is about"} is not a limit or group a strictness '
-                           "can be on: not applied")
             continue
-        strict.append({"target": s_target, "strictness": s_how, "quote": quote})
+        strict.append({"target": s_target, "strictness": s_how, "quote": s_quote})
     if strict:
         out["strictness"] = strict
         apply_strictness(out)
@@ -1909,6 +1917,11 @@ def apply_strictness(req: dict) -> list[dict]:
         nums = _numbers(str(e.get("quote") or ""))
         if nums:
             hits = [r for r in hits if any(_in_quote(v, nums) for v in _numbers(str(r.get("quote") or "")))]
+        if not hits:
+            # SOFT WORDS ON A SETTING'S OWN LINE ("aim for y+ around 1"): the row read from the same words takes it
+            q = _squash(str(e.get("quote") or ""))
+            hits = [r for r in req.get("rows") or [] if q and _squash(str(r.get("quote") or ""))
+                    and (_squash(str(r.get("quote"))) in q or q in _squash(str(r.get("quote"))))]
         for r in hits:
             r["strictness"] = str(e["strictness"])
             r["strictness_quote"] = str(e["quote"])
@@ -1964,8 +1977,7 @@ def strictness_words(req: Mapping | None) -> list[str]:
             how = ("flexible - a target: the mesh may go past it in places, and the result says how many"
                    if e["strictness"] == "flexible" else "hard - held before anything else")
             out.append(f"{lead}: {', '.join(named)} - {how}.")
-        elif not e.get("rows"):
-            out.append(f'Not applied: "{_short(str(e.get("quote") or ""))}" - it names no limit you set.')
+        # (one that names no limit set says nothing: a strictness is no ask, so it is never told "not applied")
     return out
 
 
