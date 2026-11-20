@@ -1871,6 +1871,7 @@ def build(workspace, *, block_stl: str = "constant/triSurface/block.stl",
           patch_names: dict | None = None, fine_zones: list | None = None,
           fine_surfaces: list | None = None, stretch_zones: list | None = None,
           port_patches: list | None = None, ranks: int = 1, layers: int = 0,
+          merge: bool = True,
           bashrc: str = _DEFAULT_BASHRC, timeout: int = 3600) -> ConjugateReport:
     """Mesh the block, split it in two, and report what was actually produced."""
     ws = Path(workspace)
@@ -2055,8 +2056,11 @@ def build(workspace, *, block_stl: str = "constant/triSurface/block.stl",
             # was last in the chain; it still is.
             ("regionDicts", REGION_DICTS),
             *port_stages,
-            # THE MERGE IS LAST, with nothing of the mesh left to do after it.
-            ("reconstructParMesh", RECONSTRUCT_REGIONS),
+            # THE MERGE IS LAST, with nothing of the mesh left to do after it - and it is the
+            # one stage the chain can be asked to leave out. 4,857 s and 41% of the customer
+            # plate's run, on one core of sixty-four, producing nothing a solver needs. See
+            # determinism.conjugate_merge_regions.
+            *([("reconstructParMesh", RECONSTRUCT_REGIONS)] if merge else []),
         ]
     else:
         chain = [("cartesianMesh", "cartesianMesh"),
@@ -2153,12 +2157,17 @@ def build(workspace, *, block_stl: str = "constant/triSurface/block.stl",
     # the mesh: at the sizes that need ranks at all that is hundreds of gigabytes of scratch, and
     # the workspace is archived and returned whole. Removed only after reconstructParMesh has
     # exited 0, which the chain above guarantees by raising on any other code.
-    if int(ranks) > 1:
+    if int(ranks) > 1 and merge:
         import shutil
 
         for d in sorted(ws.glob("processor*")):
             if d.is_dir():
                 shutil.rmtree(d, ignore_errors=True)
+    elif int(ranks) > 1:
+        # THE PER-RANK COPIES ARE THE DELIVERY when nothing merged them, so deleting them here
+        # would delete the mesh. Everything after this point reads the regions through the patch
+        # table `_publish_decomposed_boundaries` writes from them.
+        logger.info("conjugate: keeping the per-rank meshes - they are what is delivered")
 
     # THE REGIONS ARE MADE FINDABLE WITHOUT A MERGED MESH, and this one ~1 KB file per region is
     # the whole of what four of the five readers at home needed the 4,857 s reconstruct for.

@@ -889,7 +889,15 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         why = "the mesh fits in one"
     # CARRIED, not re-derived in the container: the two demands above are both the host's
     # arithmetic, and the stamp used to pick between them by guessing from the count.
-    plan = dataclasses.replace(plan, ranks=_want, ranks_basis=why, sizing_basis=said)
+    # THE MERGE IS A DEPLOYMENT'S DECISION AND IT ONLY APPLIES TO A PARALLEL MESH. A part that
+    # fits one process has no per-rank copies to deliver, so there is nothing to not-merge and
+    # every part in the corpus keeps exactly the chain it was measured with.
+    _merge = True if _want <= 1 else det.conjugate_merge_regions()
+    plan = dataclasses.replace(plan, ranks=_want, ranks_basis=why, sizing_basis=said,
+                               merge_regions=_merge)
+    if not _merge:
+        logger.info("conjugate: the regions will be delivered decomposed across %d ranks - "
+                    "no reconstructParMesh - job_id=%s", _want, job_id)
     # BOUNDARY LAYERS, ASKED FOR HERE AND REFUSED HERE. `build` checks the same two things, but it
     # runs in the container - and for this engine the container is a self-deleting VM with
     # hundreds of gigabytes of memory, so a refusal that reaches it has already cost a machine.

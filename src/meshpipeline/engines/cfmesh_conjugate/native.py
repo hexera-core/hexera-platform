@@ -160,6 +160,7 @@ def _run_conjugate_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
             port_patches=[dict(p) for p in (plan.port_patches or ())],
             ranks=int(getattr(plan, "ranks", 1) or 1),
             layers=int(getattr(plan, "layers", 0) or 0),
+            merge=bool(getattr(plan, "merge_regions", True)),
             bashrc=bashrc, timeout=int(timeout))
     except ConjugateError as exc:
         # A REFUSAL IS NOT A CRASH. The mesher refuses a case it can see is wrong - more than two

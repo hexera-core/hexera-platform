@@ -108,6 +108,11 @@ class ConjugatePlan:
     #: plate asks for is more of them. The sizing step works it out (budget.plan_two_scales) and
     #: this carries it, because the container is handed a workspace and nothing else.
     ranks: int = 1
+    #: Whether the chain puts the regions back together before delivering them. Carried rather
+    #: than re-read in the container for the same reason `ranks` is: it is the host's decision
+    #: and the container is handed a workspace and nothing else. See
+    #: `determinism.conjugate_merge_regions` for what turning it off buys and what it costs.
+    merge_regions: bool = True
     #: WHY that many, in one phrase, so the reproducibility stamp can say it. Two different
     #: demands land on the same number and they are not interchangeable: the octree label ceiling
     #: above, and `conjugate.BACKSCALE_PROJECTION_RANKS` - the floor the back-scale projection has

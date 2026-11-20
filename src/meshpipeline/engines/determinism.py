@@ -202,6 +202,31 @@ def conjugate_layers() -> int:
     return _layer_count(CONJUGATE_LAYERS)
 
 
+#: WHETHER THE DELIVERED MESH IS PUT BACK TOGETHER. Default on, because that is what every
+#: already-delivered mesh was built as and nothing about a measured part may change under it.
+#:
+#: WHAT TURNING IT OFF BUYS, measured on the first customer cold plate: `reconstructParMesh` is
+#: 1,351 s for the fluid and chip and 3,506 s for the solid, 4,857 s and 41% of a 3.00 h run,
+#: on ONE core of sixty-four. It produces nothing a solver needs - an OpenFOAM solver runs
+#: `processor*/` directly, and a customer handed a merged mesh decomposes it again before
+#: solving. The chain stays decomposed to the end and the per-rank copies ARE the delivery.
+#:
+#: WHAT IT COSTS, said plainly rather than buried: the decomposition is baked in. A customer who
+#: wants a different rank count has to reconstruct it themselves, which is the work this skips
+#: rather than work it destroys. The viewer's detail window also needs an index built from the
+#: per-rank meshes; without one it refuses by name rather than showing an empty window.
+CONJUGATE_MERGE_REGIONS: str = optional_env("CONJUGATE_MERGE_REGIONS", "1")
+
+
+def conjugate_merge_regions() -> bool:
+    """True when the chain reconstructs the regions into one mesh per region.
+
+    Anything but a recognised falsehood is True, deliberately: a typo must not quietly stop a
+    delivery being merged, because the merged mesh is what every delivered mesh has been.
+    """
+    return str(CONJUGATE_MERGE_REGIONS or "").strip().lower() not in {"0", "false", "no", "off"}
+
+
 #: Fail the container at startup on a count that can never build, rather than once per job.
 #: It sits here rather than beside the pinned cell's own check because it needs the parser
 #: above, and that parser needs the layers module.
