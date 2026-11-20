@@ -66,6 +66,19 @@ def test_the_delivery_cannot_change_the_runs_status():
     assert "apply_delivery" not in block
 
 
+def test_a_standalone_run_whose_repaired_file_was_not_stored_is_not_succeeded():
+    body = _finalize_body()
+    success = body[body.index("if final_status == JobStatus.succeeded:"):]
+    standalone = success[success.index("if _run_outcome.standalone_delivery is not None:"):]
+    standalone = standalone[:standalone.index("else:")]
+    # the repaired file IS a standalone job's deliverable: decided in the delivery branch (not the
+    # evidence block above it), failing the run, and through _decision so the two cannot disagree
+    assert "if not _standalone_handed_back:" in standalone
+    assert "StatusDecision(JobStatus.failed, FailedReason.api_failure)" in standalone
+    assert "final_status, _failed_reason = _decision.status, _decision.failed_reason" in standalone
+    # and a standalone run never falls through to the mesh workspace delivery
+    assert "deliver_succeeded_run" not in standalone
+
 def test_the_orchestrator_module_still_parses():
     # the edits above are asserted as source text, so prove the file is valid Python
     ast.parse(SOURCE)

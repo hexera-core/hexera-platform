@@ -1247,73 +1247,78 @@ async def _run_async(req: JobRequest) -> dict:
         # visual review). DELIVER FIRST - a delivery failure downgrades the job to a
         # system failure, recorded by the single status commit below.
         _delivery = None   # the artifact delivery's outcome, when there was one to make
-        if final_status == JobStatus.succeeded and _run_outcome.standalone_delivery is not None:
-            # A STANDALONE REPAIR JOB's deliverable is the repaired file handed back above - there
-            # is no mesh workspace to deliver. A repaired file that did not reach the store is no
-            # success: the customer would be told "repaired" with nothing to download.
-            if not _standalone_handed_back:
-                jlog.error("standalone repair: the repaired file was not delivered - the run "
-                           "fails (job_id=%s)", job_id)
-                final_status, _failed_reason = JobStatus.failed, FailedReason.api_failure
-        elif final_status == JobStatus.succeeded:
-            # Deliver FIRST, commit status ONCE afterwards: a client must never see `succeeded`
-            # before the mesh is fetchable. A run whose mesh cannot reach the user did not succeed,
-            # so the downgrade travels back with the delivery outcome rather than being re-derived
-            # here. The retry policy and the failure classification belong to the uploader.
-            from meshpipeline.application.artifact_uploader import deliver_succeeded_run
+        if final_status == JobStatus.succeeded:
+            if _run_outcome.standalone_delivery is not None:
+                # A STANDALONE REPAIR JOB's deliverable is the repaired file handed back above -
+                # there is no mesh workspace to deliver. A repaired file that did not reach the
+                # store is no success: the customer would be told "repaired" with nothing to
+                # download. Decided HERE, in the delivery branch, never in the report block above:
+                # that block is evidence and cannot move the status.
+                if not _standalone_handed_back:
+                    jlog.error("standalone repair: the repaired file was not delivered - the run "
+                               "fails (job_id=%s)", job_id)
+                    from meshpipeline.application.final_result import StatusDecision
+                    _decision = StatusDecision(JobStatus.failed, FailedReason.api_failure)
+                    final_status, _failed_reason = _decision.status, _decision.failed_reason
+            else:
+                # Deliver FIRST, commit status ONCE afterwards: a client must never see `succeeded`
+                # before the mesh is fetchable. A run whose mesh cannot reach the user did not succeed,
+                # so the downgrade travels back with the delivery outcome rather than being re-derived
+                # here. The retry policy and the failure classification belong to the uploader.
+                from meshpipeline.application.artifact_uploader import deliver_succeeded_run
 
-            # BIND execution ownership for artifact delivery. The graph span closed above, so the
-            # uploader's own progress and failure events would otherwise be published by a worker
-            # that cannot say which execution it speaks for - a superseded one included.
-            #
-            # This is context PROPAGATION, not authorization: the authorization is the
-            # `is_current_owner` check above, which a stale worker fails before reaching here. The
-            # binding only carries the identity that check just confirmed into the delivery call.
-            #
-            # It covers the awaited delivery and nothing else. `apply_delivery`, the status commit
-            # and the terminal/outbox path stay outside it: terminal authority must be able to
-            # speak when the execution no longer owns the job, which is the whole point of it
-            # being a separate authority.
-            #
-            # KNOWN LIMIT, unchanged by this: a takeover that lands between the PostgreSQL check
-            # and a Redis event is still possible. Closing that needs the central atomic Redis
-            # fence, which is a later batch.
-            from meshpipeline.application.execution_fence import (
-                StaleWorkerFenced,
-                execution_ownership,
-                lock_ownership_for_commit,
-            )
+                # BIND execution ownership for artifact delivery. The graph span closed above, so the
+                # uploader's own progress and failure events would otherwise be published by a worker
+                # that cannot say which execution it speaks for - a superseded one included.
+                #
+                # This is context PROPAGATION, not authorization: the authorization is the
+                # `is_current_owner` check above, which a stale worker fails before reaching here. The
+                # binding only carries the identity that check just confirmed into the delivery call.
+                #
+                # It covers the awaited delivery and nothing else. `apply_delivery`, the status commit
+                # and the terminal/outbox path stay outside it: terminal authority must be able to
+                # speak when the execution no longer owns the job, which is the whole point of it
+                # being a separate authority.
+                #
+                # KNOWN LIMIT, unchanged by this: a takeover that lands between the PostgreSQL check
+                # and a Redis event is still possible. Closing that needs the central atomic Redis
+                # fence, which is a later batch.
+                from meshpipeline.application.execution_fence import (
+                    StaleWorkerFenced,
+                    execution_ownership,
+                    lock_ownership_for_commit,
+                )
 
-            async def _fence_registration(db):
-                await lock_ownership_for_commit(db, "artifact registration")
+                async def _fence_registration(db):
+                    await lock_ownership_for_commit(db, "artifact registration")
 
-            try:
-                with execution_ownership(ownership, session_factory=AsyncSessionLocal):
-                    _delivery = await deliver_succeeded_run(
-                        AsyncSessionLocal,
-                        job_id=job_id, owner_id=owner_id,
-                        workspace=final_state.get("openfoam_workspace", ""),
-                        engine=str(final_state.get("engine", "") or ""),
-                        delivery_attempt=int(final_state.get("retry_count", 0) or 0),
-                        execution_generation=_generation,
-                        jlog=jlog, publish=_pub, persist_orphans=_persist_orphans,
-                        fence_commit=_fence_registration)
-            except StaleWorkerFenced:
-                # The same ending as the ownership pre-check above, reached one step later: the
-                # owner cancelled (or a newer generation took over) while this worker uploaded,
-                # and the registration's own fence refused it. No rows, no terminal record, no
-                # charge, no announcement - the job's current authority has already spoken.
-                jlog.warning("Worker FENCED at artifact registration (the job was cancelled or "
-                             "taken over during delivery) - producing no terminal side effects. "
-                             "job_id=%s", job_id)
-                await _worker_engine.dispose()
-                return {"job_id": job_id, "status": "fenced", "skipped": "not_owner"}
-            _uploaded_artifacts = _delivery.delivered
-            # A run whose mesh could not be delivered did not succeed - the downgrade is a status
-            # rule owned by final_result, not two lines of orchestration.
-            from meshpipeline.application.final_result import apply_delivery
-            _decision = apply_delivery(_decision, _delivery)
-            final_status, _failed_reason = _decision.status, _decision.failed_reason
+                try:
+                    with execution_ownership(ownership, session_factory=AsyncSessionLocal):
+                        _delivery = await deliver_succeeded_run(
+                            AsyncSessionLocal,
+                            job_id=job_id, owner_id=owner_id,
+                            workspace=final_state.get("openfoam_workspace", ""),
+                            engine=str(final_state.get("engine", "") or ""),
+                            delivery_attempt=int(final_state.get("retry_count", 0) or 0),
+                            execution_generation=_generation,
+                            jlog=jlog, publish=_pub, persist_orphans=_persist_orphans,
+                            fence_commit=_fence_registration)
+                except StaleWorkerFenced:
+                    # The same ending as the ownership pre-check above, reached one step later: the
+                    # owner cancelled (or a newer generation took over) while this worker uploaded,
+                    # and the registration's own fence refused it. No rows, no terminal record, no
+                    # charge, no announcement - the job's current authority has already spoken.
+                    jlog.warning("Worker FENCED at artifact registration (the job was cancelled or "
+                                 "taken over during delivery) - producing no terminal side effects. "
+                                 "job_id=%s", job_id)
+                    await _worker_engine.dispose()
+                    return {"job_id": job_id, "status": "fenced", "skipped": "not_owner"}
+                _uploaded_artifacts = _delivery.delivered
+                # A run whose mesh could not be delivered did not succeed - the downgrade is a status
+                # rule owned by final_result, not two lines of orchestration.
+                from meshpipeline.application.final_result import apply_delivery
+                _decision = apply_delivery(_decision, _delivery)
+                final_status, _failed_reason = _decision.status, _decision.failed_reason
 
         # THE REPAIR REVIEW. A failed run whose repair left things for a person PARKS in
         # pending_review instead of failing; a delivered run only records its items. The decision
