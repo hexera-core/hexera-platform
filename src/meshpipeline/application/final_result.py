@@ -514,21 +514,34 @@ CANCELLED_MESSAGE = "Cancelled by you."
 
 def build_cancelled_result(*, job_id: str, owner_id: str, engine: str = "", purpose: str = "",
                            dimensionality: str = "", approved_snapshot_id: str = "",
-                           attempts: int = 0) -> FinalResult:
+                           attempts: int = 0, failed_gate: str = "",
+                           failure_cause: str = "") -> FinalResult:
     """The terminal record of a job its owner cancelled.
 
-    Built from DURABLE facts only (the approved intent and the row's attempt counter), by the
-    cancel authority and never by a worker. `executor_success` stays False and nothing is
-    delivered: a cancelled run's mesh, finished or not, is never handed over. Not a failure -
-    `failure_category` is None and `outcome_code` says `cancelled` - so metering and the message
-    never treat it as one.
+    Built from DURABLE facts only (the approved intent, the row's attempt counter, and whatever
+    this generation's own checkpoint had already recorded), by the cancel authority and never by
+    a worker. `executor_success` stays False and nothing is delivered: a cancelled run's mesh,
+    finished or not, is never handed over. Not a failure - `failure_category` is None and
+    `outcome_code` says `cancelled` - so metering and the message never treat it as one.
+
+    `failed_gate` AND `failure_cause` ARE CARRIED, AND CARRYING THEM IS NOT A FAILURE REPORT.
+    Job 6ddb58aa built a 283,410,955-cell mesh, had it refused by `quality_floor` on four
+    measured problems, and was then cancelled by its owner. Its durable checkpoint held
+    `executor_failed_gate` = `quality_floor` in each of its last three rows while
+    `final_result ->> 'failed_gate'` read "": the fact was written down, survived, and was
+    dropped on the way into the one record anybody reads afterwards. These two parameters are
+    what let the cancel authority pass it through. What they must NOT do is change the kind of
+    the record - a cancel stays a cancel, `failure_category` is None and `render_message`
+    returns at the cancelled branch without ever reading the gate - so the record stops lying
+    about what the run knew without acquiring a failure it did not have.
     """
     return FinalResult(
         schema_version=FINAL_RESULT_SCHEMA_VERSION, job_id=job_id, owner_id=owner_id,
         status=TerminalStatus.cancelled, engine=engine, purpose=purpose,
         dimensionality=dimensionality, approved_snapshot_id=approved_snapshot_id,
         executor_success=False, reviewer_verdict=None,
-        review_execution=ReviewExecution.not_reached, failed_gate="", patch_contract_ok=None,
+        review_execution=ReviewExecution.not_reached, failed_gate=failed_gate,
+        failure_cause=failure_cause, patch_contract_ok=None,
         outcome_code=TerminalStatus.cancelled.value, failure_category=None,
         attempts=max(int(attempts or 0), 0), attempts_max=0, required_ready=False,
         delivered_types=[], optional_warnings=[],

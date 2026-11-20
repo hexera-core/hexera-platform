@@ -556,7 +556,11 @@ async def _run_async(req: JobRequest) -> dict:
     from langgraph.checkpoint.memory import MemorySaver
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-    from meshpipeline.contracts.pipeline_state import STATE_SCHEMA_VERSION, PipelineState
+    from meshpipeline.contracts.pipeline_state import (
+        STATE_SCHEMA_VERSION,
+        PipelineState,
+        checkpoint_thread,
+    )
     from meshpipeline.persistence.models import JobStatus
     from meshpipeline.persistence.repositories.job_repository import JobRepository
     from meshpipeline.pipeline.graph import build_graph
@@ -657,7 +661,7 @@ async def _run_async(req: JobRequest) -> dict:
         # mean a completed computation becomes unrecoverable the moment its input is deleted.
         # A checkpoint we cannot read is likewise no reason to pull bytes we will never use.
         _ckpt_generation = ownership.execution_generation if ownership is not None else 0
-        _ckpt_thread = f"{job_id}:s{STATE_SCHEMA_VERSION}:g{_ckpt_generation}"
+        _ckpt_thread = checkpoint_thread(job_id, _ckpt_generation)
         # EXECUTION PREPARATION: resolve the checkpoint disposition and materialize the geometry.
         # Both failures - an unreadable checkpoint and unmaterializable geometry - are terminal
         # BEFORE execution and share one classified shape, so geometry_materializer owns them.
@@ -812,7 +816,7 @@ async def _run_async(req: JobRequest) -> dict:
         # checkpoint. A SAME-execution restart keeps its generation, so it resumes its own thread
         # exactly (no duplicated native/model work).
         _generation = ownership.execution_generation if ownership is not None else 0
-        _thread_id = f"{job_id}:s{STATE_SCHEMA_VERSION}:g{_generation}"
+        _thread_id = checkpoint_thread(job_id, _generation)
         graph_config = {"configurable": {"thread_id": _thread_id}}
         _using_memory_saver = False
         _checkpointer_ok = False

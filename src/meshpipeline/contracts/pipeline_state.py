@@ -13,7 +13,7 @@ from meshpipeline.contracts.geometry_source import GeometryState
 
 # Bump whenever PipelineState's SHAPE changes (a field added/removed/repurposed). The
 # worker namespaces each job's LangGraph checkpoint by this version
-# (thread_id = "<job_id>:s<version>"), so a redelivery after a deploy that changed the
+# (thread_id: see `checkpoint_thread` below), so a redelivery after a deploy that changed the
 # schema starts FRESH instead of resuming an incompatible checkpoint - the single biggest
 # production-incident source for agent systems (state management).
 STATE_SCHEMA_VERSION = 15  # v15: `repair_attempt` - whether the run repaired its own geometry,
@@ -45,6 +45,25 @@ STATE_SCHEMA_VERSION = 15  # v15: `repair_attempt` - whether the run repaired it
                            # history, one sanitized record per agent invocation. There is no v7
                            # reader and no migration: a redelivery after this deploy finds no
                            # checkpoint at :s8 and starts fresh, which is the designed behaviour.
+
+
+def checkpoint_thread(job_id: str, generation: int | None = 0) -> str:
+    """The checkpoint thread ONE execution of a job writes to.
+
+    Namespaced by state schema version AND execution generation. The schema version keeps a
+    redelivery under a changed PipelineState shape from resuming an incompatible checkpoint; the
+    generation fences a takeover, so a stale generation's worker can neither resume from nor
+    write into the current generation's thread.
+
+    THE ONE PRODUCER OF THIS STRING, which is the whole reason it is a function. It was written
+    inline in two places in `application/pipeline_run` and a third reader was about to build it
+    again in `application/job_cancel`. A copy that drifts by one character does not raise: it
+    names a thread nobody ever wrote, the read comes back empty, and an empty checkpoint is
+    indistinguishable from a run that recorded nothing. That is precisely the defect the cancel
+    path already had - job 6ddb58aa recorded `failed_gate` as "" for a run whose checkpoint held
+    `quality_floor` - so a second way to produce the same symptom is not worth the saved line.
+    """
+    return f"{job_id}:s{STATE_SCHEMA_VERSION}:g{int(generation or 0)}"
 
 
 class PipelineState(TypedDict):

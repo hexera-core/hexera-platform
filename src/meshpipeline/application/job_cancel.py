@@ -8,12 +8,14 @@
 #             minute and cancels that execution itself (application/native_submission).
 from __future__ import annotations
 
+import asyncio
 import enum
 import logging
 import uuid
 from dataclasses import dataclass
 
 from meshpipeline.application import final_result as _fr
+from meshpipeline.contracts.pipeline_state import checkpoint_thread
 from meshpipeline.persistence.job_state import TERMINAL_STATES, TransitionResult
 from meshpipeline.persistence.lease import LeaseRepository
 from meshpipeline.persistence.models import JobStatus
@@ -25,6 +27,34 @@ log = logging.getLogger(__name__)
 #: How much of the owner's reason is kept. The route's schema refuses more; this is the durable
 #: bound the column was sized for, applied again here so no caller can exceed it.
 REASON_MAX = 500
+
+#: How long the checkpoint read below may take, and WHY IT IS BOUNDED AT ALL. It runs inside
+#: the cancel's own transaction, while this job's row is locked - that placement is forced,
+#: because the generation it must read comes off the locked row and the record it feeds is
+#: written in the same commit. So an unreachable checkpoint store must not be able to hold a
+#: user's row lock for as long as its own connect timeout: the gate's name is worth a few
+#: seconds and never worth the cancel.
+CHECKPOINT_READ_TIMEOUT_S = 5.0
+
+
+async def read_checkpoint_state(job_id, *, generation: int = 0) -> dict:
+    """What this generation's durable checkpoint holds, as a plain dict.
+
+    A SEPARATE SAVER AND NOT THE RUN'S OWN GRAPH. The worker that wrote this checkpoint is
+    another process - being evicted by the caller - so there is no live binding to borrow;
+    the facts are in PostgreSQL and this opens its own reader for them. No `cp.setup()`: a
+    cancel is no time for migration DDL, and absent tables simply read as nothing.
+    """
+    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+
+    import meshpipeline.settings.providers as provcfg
+    from meshpipeline.pipeline.graph import build_graph
+
+    dsn = provcfg.POSTGRES_DSN.replace("+asyncpg", "").replace("+psycopg", "")
+    config = {"configurable": {"thread_id": checkpoint_thread(str(job_id), generation)}}
+    async with AsyncPostgresSaver.from_conn_string(dsn) as cp:
+        snap = await build_graph(checkpointer=cp).aget_state(config)
+    return dict(getattr(snap, "values", None) or {})
 
 
 class CancelResult(str, enum.Enum):
@@ -95,15 +125,39 @@ async def cancel_job(job_id: uuid.UUID, *, owner_id: str, organization_id: str =
             if park is not None:
                 await _reviews.close_park(db, park.id, "cancel")
 
-        # 3. THE DURABLE VERDICT, from what is durable: the approved intent on the dispatch
-        #    payload and the row's own attempt counter. Rendered by the same vocabulary the
-        #    worker's terminal record uses, so the status page and the socket read one truth.
+        # 3. THE DURABLE VERDICT, from everything that is durable: the approved intent on the
+        #    dispatch payload, the row's own attempt counter, AND this generation's
+        #    checkpoint. Rendered by the same vocabulary the worker's terminal record uses,
+        #    so the status page and the socket read one truth.
+        #
+        #    THE CHECKPOINT IS READ BECAUSE THE RUN MAY ALREADY HAVE ESTABLISHED SOMETHING.
+        #    Job 6ddb58aa's mesh was refused by `quality_floor` and the owner then cancelled;
+        #    the checkpoint held the gate and the record said "". A cancel is not a failure
+        #    and this does not make it one (build_cancelled_result keeps `failure_category`
+        #    None and the closing line never reads the gate) - it stops the record claiming
+        #    the run knew nothing when it knew exactly why it had stopped.
+        #
+        #    AND IT NEVER DECIDES THE CANCEL. The owner asked; a store we cannot reach costs
+        #    the gate's name and nothing else, so every failure here is logged and carried as
+        #    an absent fact. `generation` comes off the locked row, so the thread read is this
+        #    execution's and never a previous one's (contracts/pipeline_state.checkpoint_thread).
+        ckpt: dict = {}
+        try:
+            ckpt = await asyncio.wait_for(
+                read_checkpoint_state(str(row_id),
+                                      generation=int(row.execution_generation or 0)),
+                timeout=CHECKPOINT_READ_TIMEOUT_S)
+        except Exception as exc:            # noqa: BLE001 - a cancel never depends on a read
+            log.warning("cancel of job %s: this generation's checkpoint was unreadable (%s) - "
+                        "recording the approved intent without the gate", row_id, exc)
         facts = _fr.merge_durable_facts(approved=row.dispatch_payload or {},
+                                        checkpoint_state=ckpt,
                                         db_attempt=row.current_attempt)
         result = _fr.build_cancelled_result(
             job_id=str(row_id), owner_id=str(row.owner_id), engine=facts["engine"],
             purpose=facts["purpose"], dimensionality=facts["dimensionality"],
-            approved_snapshot_id=facts["approved_snapshot_id"], attempts=facts["attempts"])
+            approved_snapshot_id=facts["approved_snapshot_id"], attempts=facts["attempts"],
+            failed_gate=facts["failed_gate"], failure_cause=facts["failure_cause"])
         result_dict = result.to_dict()
         await job_repo.set_final_result(db, row_id, result_dict)
 
