@@ -56,6 +56,33 @@ def test_the_whole_shape_fallback_names_what_it_aimed_at_even_though_it_runs_who
            [("shell", "shell:abc")]
 
 
+def test_the_whole_shape_fallback_does_not_claim_a_small_edge_it_provably_cannot_move():
+    # MEASURED, NOT ARGUED (docs/superpowers/specs/2026-11-19-target-remains-diagnosis.md). Over a
+    # 90-part run of the real-failure corpus `fix_shape_global` was attempted 40 times and kept
+    # ZERO; 34 of those attempts answered a `small_edge`. Probed on three of the named parts,
+    # `ShapeFix_Shape` with this operation's modes returns a shape for which `IsSame` is TRUE and
+    # whose `ShapeBuild_ReShape` context records not one replacement - at the run's precision and
+    # at ten and a hundred times it. It is not a weak repair of a small edge, it is no repair at
+    # all, and the attempt cost a re-inspection and a stall-limit slot each time.
+    #
+    # NOTHING GOES UNCLAIMED BY DROPPING IT: `small_edge` is produced in exactly one place
+    # (`localize._size_defects`) and always on an edge, so `fix_small_edges` - which runs the
+    # kernel's actual tool for it, `ShapeFix_Wireframe` - always claims it, and `fix_small_faces`
+    # claims it too.
+    from meshpipeline.cad.repair.contracts import DefectSeverity
+    from meshpipeline.cad.repair.localize import EntityDefect
+
+    glob = next(op for op in OPERATIONS if op.name == "fix_shape_global")
+    assert DefectCode.small_edge not in glob.answers
+
+    sliver = EntityDefect(code=DefectCode.small_edge, severity=DefectSeverity.warning,
+                          entity_type="edge", entity_index=4, message="x",
+                          fingerprint="edge:abc")
+    assert glob.targets_for(sliver) == ()
+    claimants = {op.name for op in OPERATIONS if op.targets_for(sliver)}
+    assert "fix_small_edges" in claimants, "a small edge must still have an operation that aims"
+
+
 def test_an_outcome_defaults_to_an_empty_geometric_mapping():
     # An operation that offers no history must not have one inferred for it. "Geometric" is the
     # honest default, and it is what makes the verdict's basis meaningful.

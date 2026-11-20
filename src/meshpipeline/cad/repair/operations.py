@@ -257,6 +257,16 @@ class FixSmallEdges:
     So the targets state what we AIMED at, the session's progress rule judges whether we ACHIEVED
     it, and the caps bound the damage. An honest outcome on a solid is often "no progress".
 
+    AND BECAUSE IT IS WHOLE-SHAPE, A SECOND AIM IS THE SAME CALL. One invocation merges every
+    small edge `ShapeFix_Wireframe` is willing to merge on the part, so once it has run, every
+    small edge still on the list is one the fixer has already declined - and re-aiming the
+    operation at another of them repeats that identical call with an identical result. Measured
+    over 90 parts of the real-failure corpus: of the 19 attempts kept, every single one was the
+    FIRST attempt on its file, and all 17 second-and-later attempts were rolled back
+    (docs/superpowers/specs/2026-11-19-target-remains-diagnosis.md). Suppressing the retry is the
+    planner's business, not this operation's - `targets_for` is handed one defect and knows
+    nothing of the run's history - so it is recorded here and reported as a seam.
+
     `ModeDropSmallEdges = False` DELIBERATELY: dropping an edge rather than merging it removes
     geometry, and removing geometry is an operator's decision.
 
@@ -1000,6 +1010,17 @@ class SewFaces:
     The judgement is PER BODY, as `conservative._sew_loose_bodies` established: a STEP assembly is
     a compound of independent bodies, and a loose body beside a solid must be repairable without
     costing the solid.
+
+    WHAT IT CANNOT DO, MEASURED. Sewing joins boundaries that ALREADY COINCIDE; it invents no
+    surface. So for the commonest `open_shell` on the real-failure corpus - a shell missing a
+    face, whose free boundary is a closed loop with nothing on the other side of it - this
+    operation changes the topology and leaves the opening exactly where it was. On
+    0052_00523121_d60ba5a2d4967a56c0268417_step_002.step (a 22.5 mm tube, both ends open) it sewed
+    both bodies, took shells from 2 to 1, and left both circular rims free, to the micrometre.
+    That is an honest `target_remains`: the tool for a missing cap is `fill_planar_hole`, which
+    runs next. 14 of the corpus run's 81 `target_remains` are this
+    (docs/superpowers/specs/2026-11-19-target-remains-diagnosis.md), and they are not recoverable
+    by any change here - they are an argument about CAD_REPAIR_FILL_PLANAR_HOLES.
     """
 
     name = "sew_faces"
@@ -3011,12 +3032,24 @@ class FixShapeGlobal:
     `curve_inconsistency` / `duplicate_surface_data` / `wire_gap` / `degenerate_edge` the status
     walk attributed to an edge, wire or shell) got zero attempts. Those are the files the
     whole-shape pass used to repair, which is exactly what this operation exists to preserve.
+
+    WHAT IT NO LONGER CLAIMS, AND WHY (`small_edge`; see
+    docs/superpowers/specs/2026-11-19-target-remains-diagnosis.md). Over a 90-part run of the
+    real-failure corpus this operation was attempted 40 times and kept NOTHING, and 34 of those
+    attempts answered a `small_edge`. Probed on three of the named parts, the call below returns a
+    shape whose `IsSame` is TRUE and whose `ShapeBuild_ReShape` context records not one
+    replacement - at the run's precision, and at ten and at a hundred times it. `ShapeFix_Shape`
+    is not the kernel's tool for a short edge; `ShapeFix_Wireframe` is, `fix_small_edges` runs it,
+    and at scope 1 it has always run first and already failed on that very edge. So the claim
+    bought 34 wasted re-inspections and 34 stall-limit slots and could never have bought a
+    repair. It is also why those 34 are NOT evidence against the progress rule: an operation that
+    changes nothing is correctly reported as having changed nothing.
     """
 
     name = "fix_shape_global"
     answers = frozenset({
         DefectCode.invalid_brep, DefectCode.curve_inconsistency,
-        DefectCode.degenerate_edge, DefectCode.small_edge, DefectCode.wire_gap,
+        DefectCode.degenerate_edge, DefectCode.wire_gap,
         DefectCode.duplicate_surface_data,
     })
     scope = 99
