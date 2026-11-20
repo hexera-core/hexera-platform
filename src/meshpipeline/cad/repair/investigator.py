@@ -326,7 +326,15 @@ def _roster(shadow: bool = False) -> str:
     return "\n".join(lines)
 
 
-def system_prompt(*, prose: str = "", shadow: bool = False) -> str:
+def _touching_mm(original: Measure) -> float:
+    """The gap THIS PART's faces count as meeting at, from the walk's own rule."""
+    from meshpipeline.cad.repair.region_loop import _touching_margin_mm
+
+    return _touching_margin_mm(getattr(original, "diagonal_mm", None))
+
+
+def system_prompt(*, prose: str = "", shadow: bool = False,
+                  touching_mm: float | None = None) -> str:
     """The system prompt for the deployment's ACTIVE catalogue and tool registry, read per call.
 
     `prose` is the JSON-protocol tool description (`investigator_tools.tool_prose()`), appended
@@ -341,11 +349,18 @@ def system_prompt(*, prose: str = "", shadow: bool = False) -> str:
     # never told about is one it can only reach by guessing the name. A SHADOW has no clone, so it
     # keeps the deployment's own catalogue.
     free = clone_freedom() and not shadow
+    # THE SAME THRESHOLD THE WALK USES. The walk promotes a region whose clash sits at or under
+    # this gap; a prompt that called anything above ZERO the mesher's problem told the model to
+    # skip exactly the regions the walk had just put first. One number, computed once, for both.
+    if touching_mm is None:
+        from meshpipeline.cad.repair.region_loop import _touching_margin_mm
+
+        touching_mm = _touching_margin_mm(None)
     catalogue = (catalogue_text(split_closed_faces=True, fragment_bodies=True, rebuild_face=True,
                                 close_wire_gaps=True) if free else catalogue_text())
     text = template.format(catalogue=catalogue, roster=_roster(shadow))
-    if not shadow and clone_freedom():
-        text = f"{text}\n{AGGRESSIVE_RULE}"
+    if free:
+        text = f"{text}\n{AGGRESSIVE_RULE.format(touching=float(touching_mm))}"
     return f"{text}\n{prose}" if prose else text
 
 
@@ -364,13 +379,14 @@ AGGRESSIVE_RULE = (
     "- you may aim any operation at any defect of this region. the catalogue's notes say what an "
     "operation is FOR, not what you are allowed to try on a copy.\n"
     "- WHEN A DEFECT SAYS HOW CLOSE THE SURFACES ARE, there are THREE cases and they want "
-    "different answers. `clash_gap_mm` 0 with `clash_adjacent` false means the kernel measured "
-    "the two faces as GENUINELY MEETING: real geometry to repair, and heal_self_intersections or "
-    "rebuild_face are the first things to try. `clash_gap_mm` 0 with `clash_adjacent` TRUE means "
-    "they only share an edge - their distance is trivially 0 - which is a sizing or fold problem "
-    "and not something an edit heals. `clash_gap_mm` above 0 means they never touch and the "
-    "mesher's own tolerance crossed them. In those last two, prefer `mesher_side` over spending "
-    "turns. A missing or null value means nobody measured it: unknown, not zero and not false.\n"
+    "different answers. `clash_gap_mm` AT OR UNDER {touching:g} mm with `clash_adjacent` false "
+    "means the kernel measured the two faces as GENUINELY MEETING on this part: real geometry to "
+    "repair, and heal_self_intersections or rebuild_face are the first things to try. The same "
+    "reading with `clash_adjacent` TRUE means they only share an edge - their distance is "
+    "trivially small - which is a sizing or fold problem and not something an edit heals. A "
+    "`clash_gap_mm` ABOVE {touching:g} mm means they never touch and the mesher's own tolerance "
+    "crossed them. In those last two, prefer `mesher_side` over spending turns. A missing or null "
+    "value means nobody measured it: unknown, not zero and not false.\n"
     "- SPEND THE BUDGET. a region that ends with turns left and nothing tried has told us "
     "nothing. there is no 'escalate' to reach for: if you cannot support a package, say so with "
     "`mesher_side` when the geometry is sound, and otherwise keep working until the budget ends.")
@@ -896,7 +912,8 @@ def investigator(shape, *, original: Measure, reserved: frozenset = frozenset(),
             inv = _Investigation(region, tuple(defects),
                                  budget if budget is not None
                                  else _budget_of(_tier_of(tuple(defects), original)),
-                                 system=system_prompt(shadow=shadow))
+                                 system=system_prompt(shadow=shadow,
+                                                      touching_mm=_touching_mm(original)))
             live[region.index] = inv
         else:
             # A RE-CALL CONTINUES THIS INVESTIGATION: the conversation, the spend and the record
@@ -1004,7 +1021,8 @@ def investigator(shape, *, original: Measure, reserved: frozenset = frozenset(),
                     inv.messages[0] = {"role": "system",
                                        "content": system_prompt(
                                            prose=investigator_tools.tool_prose(),
-                                           shadow=shadow)}
+                                           shadow=shadow,
+                                           touching_mm=_touching_mm(original))}
                     continue
             else:
                 text, _ = ma.converse_sync(inv.messages, job_id=job_id, timeout_s=timeout,

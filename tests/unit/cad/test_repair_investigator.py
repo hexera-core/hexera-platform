@@ -893,15 +893,21 @@ def test_escalate_is_not_offered_under_the_live_posture(monkeypatch):
 def test_the_live_prompt_tells_the_model_to_try_things_and_aim_at_the_mesh_failure(monkeypatch):
     import meshpipeline.settings.cad_repair as settings
 
+    def rule(touching: float) -> str:
+        return inv.AGGRESSIVE_RULE.format(touching=touching)
+
+    from meshpipeline.cad.repair.region_loop import _touching_margin_mm
+
+    floor = _touching_margin_mm(None)
     monkeypatch.setattr(settings, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "off", raising=False)
-    assert inv.AGGRESSIVE_RULE not in inv.system_prompt()
+    assert rule(floor) not in inv.system_prompt()
 
     monkeypatch.setattr(settings, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "live", raising=False)
     live = inv.system_prompt()
-    assert inv.AGGRESSIVE_RULE in live
+    assert rule(floor) in live
     assert "DISPOSABLE" in live and "WHOLE PART MESHES" in live
     # The shadow posture is untouched: it has no copy to be aggressive with.
-    assert inv.AGGRESSIVE_RULE not in inv.system_prompt(shadow=True)
+    assert rule(floor) not in inv.system_prompt(shadow=True)
 
 
 def test_the_escalate_type_survives_internally(monkeypatch):
@@ -988,3 +994,39 @@ def test_the_live_prompt_names_the_clash_fields_and_what_to_do_with_them(monkeyp
     assert "mesher_side" in prompt
     monkeypatch.setattr(settings, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "off", raising=False)
     assert "clash_gap_mm" not in inv.system_prompt()
+
+
+def test_the_prompt_and_the_walk_agree_on_what_touching_means(monkeypatch):
+    """TOUCHING FACES MUST NOT GO UNREPAIRED. The walk counts a gap at or under 1e-6 of the
+    diagonal as contact and puts that region FIRST; a prompt that says "any clash_gap_mm above 0
+    is the mesher's problem, prefer mesher_side" tells the model to skip exactly those regions.
+    Two rules for one word, pulling opposite ways. The prompt is given the part's own threshold."""
+    import meshpipeline.settings.cad_repair as settings
+    from meshpipeline.cad.repair.region_loop import _touching_margin_mm
+
+    monkeypatch.setattr(settings, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "live", raising=False)
+    margin = _touching_margin_mm(200.0)                      # 2e-4 mm on a 200 mm part
+
+    prompt = inv.system_prompt(touching_mm=margin)
+    assert f"{margin:g}" in prompt
+    assert "above 0" not in prompt                            # the stale, contradictory wording
+
+    # With no part to scale by, the prompt states the floor rather than inventing a number.
+    bare = inv.system_prompt()
+    assert f"{_touching_margin_mm(None):g}" in bare
+
+
+def test_the_investigation_is_told_this_part_s_threshold(wired, monkeypatch):
+    """Not the floor: the number for the part in hand, so the model's rule and the walk's are the
+    same on every part."""
+    import meshpipeline.settings.cad_repair as settings
+    from meshpipeline.cad.repair.region_loop import _touching_margin_mm
+
+    monkeypatch.setattr(settings, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "live", raising=False)
+    author, model, _, _ = wired(native("conclude", mesher_side={"mesher_problem": ["fp1"],
+                                                               "reason": "sound"}),
+                                budget=Budget(tool_calls=9, model_calls=9))
+    author(REGION, DEFECTS, ())
+
+    system = model.rounds[0]["messages"][0]["content"]
+    assert f"{_touching_margin_mm(ORIGINAL.diagonal_mm):g} mm" in system
