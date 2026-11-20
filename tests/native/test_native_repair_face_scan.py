@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import time
 from pathlib import Path
 
 import pytest
@@ -46,14 +45,20 @@ def test_flag_off_scans_are_identical_to_todays(tmp_path):   # every committed r
 
 def test_a_timed_out_face_scan_keeps_the_status_walks_completeness(tmp_path, monkeypatch):
     shape = _read(write_open_shell_step(tmp_path / "o.step"))
-    monkeypatch.setattr(localize, "_kernel_face_pairs", lambda s: time.sleep(1) or [(1, 2)])
+    # The analysis runs in a fresh interpreter, which a monkeypatched kernel does not reach: the
+    # real bounded child is handed the allow-listed sleeping probe instead.
+    from meshpipeline.cad.repair.bounded_child import _probe_sleep
+
+    real = localize._bounded
+    monkeypatch.setattr(localize, "_bounded",
+                        lambda fn, *a, budget_s: real(_probe_sleep, 1.0, budget_s=budget_s))
     found, complete = localize_scan(shape, face_scan_s=0.05)
     assert complete is True and not [d for d in found if d.kernel_status == "SelfInterference"]
 
 
 def test_the_analyzer_record_wins_dedupe_over_a_status_walk_record(tmp_path, monkeypatch):
     shape = _read(write_open_shell_step(tmp_path / "o.step"))
-    monkeypatch.setattr(localize, "_kernel_face_pairs", lambda s: [(1, 2)])
+    monkeypatch.setattr(localize, "_bounded", lambda fn, *a, budget_s: [[1, 2]])
     walk = EntityDefect(code=DefectCode.self_intersection, severity=DefectSeverity.error,
                         entity_type="face", entity_index=1, message="walk",
                         kernel_status="SelfIntersectingWire")
