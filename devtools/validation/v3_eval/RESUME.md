@@ -78,3 +78,9 @@ Clean fetch (finish it): `PYTHONPATH=$PWD/src .venv/bin/python devtools/validati
 - Greptile: 21 comments, 20 fixed, 1 deferred (images), all resolved. 0ff8db35 itself is a fix to a Greptile fix and has not been reviewed.
 - Unit suite: the 6 local shards died with the Mac. PR CI skips unit/integration by design; run `make test-fast` on a Linux box, or rely on post-merge main CI.
 - Pending crsv3 gate jobs 50da0655 / 81fd1b1a ran at 5d496416 (pre-fix); ignore their repair outcome.
+
+## Lane B (eval ops) status, 2026-11-19 22:50 PT
+- Clean-control inputs: 100/100 `.step` present under `eval/v3-verdict/inputs/clean/` (fetch finished; nothing to rerun).
+- Launches 11200547/11200548 lost 24 of 28 T29-det shards. Cause: the VMs' compute default SA had only `objectViewer` on the transfer bucket, so every upload (rows sync, rows.json, PROVENANCE, DONE, FAILED) was refused. `objectAdmin` was granted by hand at 22:35 PT; only the last VM alive uploaded after that. Deploy IAM scripts use additive `add-iam-policy-binding`, so a redeploy should not remove the grant. Check the bucket policy before any new launch.
+- DONE at 0ff8db35: failing 12/21, 16/21; clean 3/7, 7/7. failing 20/21 has rows.json but no DONE (rerun).
+- Relaunched the other 24 as **11200639** (3 x c2d-standard-8, us-central1-b), same commit, image and 120 s timeout.
