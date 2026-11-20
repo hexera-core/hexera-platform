@@ -5,6 +5,8 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 from meshpipeline.cad.repair import mesh_probe
 
 REPO = Path(__file__).resolve().parents[3]
@@ -165,3 +167,51 @@ def test_without_the_flag_rows_are_unchanged(monkeypatch, tmp_path):
     row = corpus._one(src, tmp_path, mesh_probe=True)
     assert sessions == [] and row["outcome"] == "nothing_to_repair"
     assert "forced_repair" not in row and "triage_route" not in row
+
+
+# A ROW THE RE-INSPECTION CREDITED IS STILL NOT "REPAIRED" WHEN THE EXPORTED STEP WILL NOT MESH
+# (eval wave 4, abc/0051_00513292: ending `repaired`, meshes_after False, edge_through_face).
+
+def _scored_after(monkeypatch, tmp_path, kind_after, ending="repaired"):
+    def fake_probe(path, **_):
+        written = path.name.endswith("-repaired.step")
+        if written and kind_after:
+            return mesh_probe.ProbeResult(
+                False, 0, mesh_probe.MeshFailure(kind_after, (), None, ""), {})
+        failure = None if written else mesh_probe.MeshFailure("edge_through_face", (), None, "")
+        return mesh_probe.ProbeResult(written, int(written), failure, {})
+
+    monkeypatch.setattr(mesh_probe, "probe_file", fake_probe)
+    monkeypatch.setattr(corpus, "_diagonal_of", lambda path: 10.0)
+    (tmp_path / "p-repaired.step").write_text("x")
+    row = {"outcome": "repaired", "ending": ending, "loop_ending": "repaired"}
+    corpus._score_meshing(row, tmp_path / "p.step", tmp_path)
+    return row
+
+
+def test_a_repaired_row_whose_written_file_still_fails_to_mesh_is_unmeshable(monkeypatch,
+                                                                              tmp_path):
+    row = _scored_after(monkeypatch, tmp_path, "edge_through_face")
+    assert row["meshes_after"] is False
+    assert row["ending"] == "unmeshable"
+    # ADDITIVE: the legacy re-inspection word and the loop's own word are untouched.
+    assert row["outcome"] == "repaired" and row["loop_ending"] == "repaired"
+    assert corpus.corpus_summary([row])["endings"] == {"unmeshable": 1}
+
+
+@pytest.mark.parametrize("kind", ["timeout", "probe_error"])
+def test_a_final_probe_that_never_answered_does_not_make_a_row_unmeshable(monkeypatch, tmp_path,
+                                                                           kind):
+    row = _scored_after(monkeypatch, tmp_path, kind)
+    assert row["meshes_after"] is False
+    assert row["ending"] == "repaired"
+
+
+def test_a_repaired_row_that_meshes_after_stays_repaired(monkeypatch, tmp_path):
+    row = _scored_after(monkeypatch, tmp_path, "")
+    assert row["meshes_after"] is True and row["ending"] == "repaired"
+
+
+def test_only_a_repaired_ending_is_relabelled(monkeypatch, tmp_path):
+    row = _scored_after(monkeypatch, tmp_path, "edge_through_face", ending="no_change")
+    assert row["ending"] == "no_change"
