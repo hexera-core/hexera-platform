@@ -1831,8 +1831,9 @@ def _analyze_faces(shape, faces) -> list[tuple[int, int]] | None:
 
     NONE MEANS NO ANSWER - the bounded analysis timed out, crashed, or could not run - and is
     never read as "no crossing". Before the fix it proves no crossing worth healing; after it, it
-    proves nothing healed. In a forked child (`localize._bounded`), like the face scan, so a
-    kernel that runs away or writes into the faces it analyses does it to the child's copy.
+    proves nothing healed. In a bounded child (`localize._bounded`: a fresh interpreter, never a
+    fork), like the face scan, so a kernel that runs away or writes into the faces it analyses
+    does it to the child's copy, read back from BREP.
     """
     from OCP.BRep import BRep_Builder
     from OCP.TopAbs import TopAbs_FACE
