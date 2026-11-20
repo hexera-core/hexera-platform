@@ -351,11 +351,13 @@ def check_comparable(provenances: list[Mapping]) -> dict:
         raise ValueError("no shard provenance to check")
     commit = check_same(provenances, "commit", what="commit")
     image = check_same(provenances, "image", what="image digest")
+    harness = (check_same(provenances, "harness_commit", what="harness commit")
+               if any(p.get("harness_commit") for p in provenances) else "")
     samples = {}
     for kind in sorted({str(p.get("kind")) for p in provenances}):
         samples[kind] = check_same([p for p in provenances if p.get("kind") == kind],
                                    "sample_sha256", what=f"{kind} sample")
-    return {"commit": commit, "image": image, "samples": samples}
+    return {"commit": commit, "harness_commit": harness, "image": image, "samples": samples}
 
 
 # --------------------------------------------------------------------------- the verdicts

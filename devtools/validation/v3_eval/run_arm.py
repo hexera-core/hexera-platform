@@ -141,7 +141,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--code-root", default=str(CODE_ROOT_DEFAULT))
     parser.add_argument("--sample-json", default="",
                         help="the STAGED sample.json; its sha256 must equal the sampler's")
-    parser.add_argument("--commit", default="")
+    parser.add_argument("--commit", default="", help="engine: the commit the image was built from")
+    parser.add_argument("--harness-commit", default="",
+                        help="the commit of the devtools/validation code under --code-root")
     parser.add_argument("--image", default="")
     parser.add_argument("--machine-type", default="")
     parser.add_argument("--accept-inert", action="append", default=[],
@@ -157,10 +159,13 @@ def main(argv: list[str] | None = None) -> int:
     started, t0 = _now(), time.monotonic()
     prov: dict = {
         "label": f"{args.arm}/{args.kind}/{args.shard}", "arm": args.arm, "kind": args.kind,
-        "shard": args.shard, "commit": args.commit, "image": args.image,
+        "shard": args.shard, "commit": args.commit, "harness_commit": args.harness_commit,
+        "image": args.image,
         "machine_type": args.machine_type, "host": socket.gethostname(),
         "hardware_class": f"{platform.system().lower()}-{platform.machine().lower()}",
         "arm_env": dict(sorted(spec["env"].items())), "accepted_inert": sorted(accept),
+        "model_role": spec["model_role"],
+        "known_noops": {k: v for k, v in evalspec.KNOWN_NOOPS.items() if k in spec["env"]},
         "harness_flags": list(evalspec.HARNESS_FLAGS), "started_at": started,
     }
     problems: list[str] = []

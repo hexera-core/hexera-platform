@@ -265,16 +265,18 @@ def fill(template: str, values: dict[str, str]) -> str:
 
 def build_verdicts(reports: dict) -> dict:
     verdicts = {}
-    det = reports.get(("deterministic", "failing"))
-    v3 = reports.get(("v3-full", "failing"))
+    det = reports.get(("t29_deterministic", "failing"))
+    v3 = reports.get(("v3_full", "failing"))
     if det and v3:
+        # The clean control must have run under v3_full; the deterministic clean run, when present,
+        # must be untouched too.
         cleans = [reports[k]["clean"]["untouched"] for k in
-                  (("deterministic", "clean"), ("v3-full", "clean")) if k in reports]
+                  (("t29_deterministic", "clean"), ("v3_full", "clean")) if k in reports]
         verdicts["T29"] = evalspec.t29_verdict(
             det["summary"].get("meshing") or {}, v3["summary"].get("meshing") or {},
-            clean_untouched=bool(cleans) and all(cleans) and len(cleans) == 2,
+            clean_untouched=("v3_full", "clean") in reports and all(cleans),
             cost_per_fixed_part=v3["cost_per_fixed_part_usd"])
-    off = reports.get(("v3-no-tournament", "failing"))
+    off = reports.get(("t19_tournament_off", "failing"))
     if off and v3:
         a, b = (off["summary"].get("meshing") or {}), (v3["summary"].get("meshing") or {})
         verdicts["T19"] = {"off_newly_meshed": a.get("newly_meshed"),
@@ -284,6 +286,112 @@ def build_verdicts(reports: dict) -> dict:
                            "off_usd_per_fixed": off["cost_per_fixed_part_usd"],
                            "on_usd_per_fixed": v3["cost_per_fixed_part_usd"]}
     return verdicts
+
+
+# --------------------------------------------------------------------------- results.json
+
+#: Arm ids of the evidence lane's results.schema.json (schema_version 1) -> the run that fills it.
+#: t19_tournament_on IS t29_v3: one run (v3_full), referenced twice.
+RESULT_ARMS = {"t29_deterministic": "t29_deterministic", "t29_v3": "v3_full",
+               "t19_tournament_off": "t19_tournament_off", "t19_tournament_on": "v3_full"}
+RESULT_LABELS = {
+    "t6_rules_only_local": "rules-only baseline",
+    "t29_deterministic": "deterministic (everything-on, investigator/tournament off; reviewer live)",
+    "t29_v3": "v3 full (investigator live, tournament live K=3)",
+    "t19_tournament_off": "tournament off (investigator live)",
+    "t19_tournament_on": "tournament on, K=3 (same run as t29_v3)",
+}
+T6_URI = "gs://dev-crsv3-transfer-224734058693/eval/t6-rules-only-0bf78625"
+
+
+def _tallies(summary: dict) -> tuple[dict, dict]:
+    tally = (summary.get("catalogue") or {}).get("tally") or {}
+    return ({op: int(c.get("kept", 0)) for op, c in tally.items()},
+            {op: int(c.get("rolled_back", 0)) for op, c in tally.items()})
+
+
+def _pending(result_id: str) -> dict:
+    """An arm with nothing measured: every number null (renders [PENDING], never 0)."""
+    return {"arm": result_id, "label": RESULT_LABELS[result_id], "commit": None,
+            "image_digest": None, "sample_sha256": None, "n_files": None, "newly_meshed": None,
+            "newly_broken": None, "meshes_before": None, "meshes_after": None, "endings": None,
+            "ops_kept": None, "ops_rolled_back": None, "model_calls": None, "cost_usd": None,
+            "wall_s": None, "cost_per_fixed_part": None, "notes": "not measured"}
+
+
+def result_arm(result_id: str, rep: dict, checked: dict, kind_sha: str) -> dict:
+    meshing = rep["summary"].get("meshing") or {}
+    kept, rolled = _tallies(rep["summary"])
+    run = RESULT_ARMS[result_id]
+    out = {"arm": result_id, "label": RESULT_LABELS[result_id], "commit": checked["commit"],
+           "image_digest": checked["image"], "sample_sha256": kind_sha, "n_files": rep["files"],
+           "newly_meshed": meshing.get("newly_meshed"), "newly_broken": meshing.get("newly_broken"),
+           "meshes_before": meshing.get("meshed_before"), "meshes_after": meshing.get("meshed_after"),
+           "endings": rep["summary"].get("endings"), "ops_kept": kept, "ops_rolled_back": rolled,
+           "model_calls": rep["model"]["calls"], "cost_usd": rep["total_cost_usd"],
+           "wall_s": rep["vm"]["shard_seconds"],
+           "cost_per_fixed_part": rep["cost_per_fixed_part_usd"],
+           "notes": (f"run {run}; {evalspec.arm(run)['model_role']}; model "
+                     f"${rep['model']['cost_usd']} + VM ${rep['vm']['container_cost_usd']}; "
+                     f"harness {str(checked.get('harness_commit') or '')[:12]}; "
+                     + "; ".join(evalspec.KNOWN_NOOPS.values()))}
+    if result_id == "t19_tournament_on":
+        out["same_run_as"] = "t29_v3"
+    return out
+
+
+def t6_arm(rows: list[dict] | None, sample_sha: str | None) -> dict:
+    """The local rules-only T6 run (0bf78625, shards 1-3 of 4 on a laptop): no image, no model."""
+    base = {**_pending("t6_rules_only_local"), "commit": "0bf78625", "image_digest": "n/a",
+            "model_calls": "n/a", "cost_usd": "n/a", "cost_per_fixed_part": "n/a"}
+    if not rows:
+        return base
+    summary = summarise(rows)
+    meshing = summary.get("meshing") or {}
+    kept, rolled = _tallies(summary)
+    base.update(n_files=len(rows), newly_meshed=meshing.get("newly_meshed"),
+                newly_broken=meshing.get("newly_broken"),
+                meshes_before=meshing.get("meshed_before"),
+                meshes_after=meshing.get("meshed_after"), endings=summary.get("endings"),
+                ops_kept=kept, ops_rolled_back=rolled,
+                wall_s=round(sum(float(r.get("seconds") or 0) for r in rows), 1),
+                sample_sha256=sample_sha,
+                notes=(f"{T6_URI}: shards 1-3 of 4 ({len(rows)} of the same 120-file sample; "
+                       f"shard 4 never ran); macOS host, no model router (investigator and "
+                       f"reviewer had no model); wall_s is summed per-file repair seconds"))
+    return base
+
+
+def results_json(reports: dict, checked: dict, verdicts: dict, *, source: str,
+                 t6_rows: list[dict] | None = None) -> dict:
+    """The evidence lane's results.schema.json (schema_version 1). A null is NOT MEASURED YET."""
+    import datetime as dt
+
+    failing_sha = checked["samples"].get("failing")
+    arms: dict = {"t6_rules_only_local": t6_arm(t6_rows, failing_sha)}
+    for result_id, run in RESULT_ARMS.items():
+        rep = reports.get((run, "failing"))
+        arms[result_id] = (result_arm(result_id, rep, checked, failing_sha) if rep is not None
+                           else _pending(result_id))
+    cleans = {run: rep for (run, kind), rep in reports.items() if kind == "clean"}
+    arms["clean_control"] = {
+        "arm": "clean_control", "label": "100-part clean control",
+        "commit": checked["commit"], "image_digest": checked["image"],
+        "sample_sha256": checked["samples"].get("clean"),
+        "n_files": min((rep["files"] for rep in cleans.values()), default=None),
+        "byte_unchanged": min((rep["files"] - len(rep["clean"]["files_with_kept_ops"])
+                               for rep in cleans.values()), default=None),
+        "newly_broken": max((rep["clean"]["newly_broken"] for rep in cleans.values()),
+                            default=None),
+        "arms_covered": sorted(cleans) or None,
+        "basis": ("a part counts as unchanged when no repair operation was kept on it (the "
+                  "delivered geometry is the input's); repair_corpus re-serialises a no_change "
+                  "STEP, so written-file bytes are not compared. Minimum over the arms covered."),
+        "notes": None,
+    }
+    return {"schema_version": 1,
+            "generated_at": dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "source": source, "arms": arms, "verdict": verdicts.get("T29")}
 
 
 def status(bucket: str, commit: str) -> int:
@@ -320,6 +428,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="an already-pulled out/ directory (<arm>/<kind>/shard-I-of-N)")
     parser.add_argument("--pull", action="store_true", help="gcloud storage cp the outputs first")
     parser.add_argument("--out", default=str(VERDICT_DIR))
+    parser.add_argument("--t6", action="store_true",
+                        help="also pull the local T6 rules-only rows into results.json")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
     if not re.fullmatch(r"[0-9a-f]{40}", args.commit):
@@ -376,6 +486,17 @@ def main(argv: list[str] | None = None) -> int:
     for (arm, kind), entry in sorted(runs["arms"].items()):
         sealed = seal(entry, arm, kind, checked, out)
         print(f"sealed {sealed}")
+    t6_rows = None
+    if args.t6:
+        t6_dir = Path(tempfile.gettempdir()) / "v3-eval-t6"
+        t6_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["gcloud", "storage", "cp", f"{T6_URI}/rows-*.json", str(t6_dir)],
+                       check=False)
+        t6_rows = [r for f in sorted(t6_dir.glob("rows-*.json"))
+                   for r in json.loads(f.read_text())] or None
+    (out / "results.json").write_text(json.dumps(
+        results_json(reports, checked, verdicts, source=f"collect.py from {source}",
+                     t6_rows=t6_rows), indent=1, sort_keys=True, default=str) + "\n")
     (out / "verdict.json").write_text(json.dumps({
         "checked": checked, "verdicts": verdicts,
         "arms": {f"{a}/{k}": {key: val for key, val in rep.items() if key != "summary"}
