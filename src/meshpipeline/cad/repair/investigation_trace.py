@@ -349,6 +349,10 @@ _EVIDENCE_MEASURED = (
     # the authoritative number would hide exactly the disagreement these keys exist to show.
     "mesh_after_source", "mesh_after_in_memory",
     "defects_cleared", "defects_revealed", "defects_remaining",
+    # WHICH BODIES CHANGED. The counts and the aggregate volume cannot separate a shell CLOSING
+    # into a new body from a body being CUT IN TWO - on 0051_00513292 the aggregate understated a
+    # 3601 mm3 body closing as +0.942 mm3 - so every wave counts these instead of inferring them.
+    "solids_appeared_mm3", "solids_disappeared_mm3", "solids_split",
 )
 #: Evidence keys that are PROSE and never travel: the author's own words for what it meant to do,
 #: and the words of this region's earlier review rejects.

@@ -228,6 +228,52 @@ def clean_report(rows: list[dict], summary: dict) -> dict:
             "newly_broken": int((summary.get("meshing") or {}).get("newly_broken") or 0)}
 
 
+def body_changes(rows: list[dict]) -> dict:
+    """How many COMMITTED packages gained a body, lost one, or split one, and the volume that
+    appeared. EMPTY when no package carries the per-body measurement, so a run from before the
+    channel existed gains no key.
+
+    WHY A WAVE COUNTS THIS. On 0051_00513292 a committed `sew_faces` took solids 7 -> 8 while the
+    aggregate volume moved +0.942 mm3, and the real event was a 3601 mm3 body becoming closed: an
+    open shell's faces already contributed a NUMBER to the volume integral rather than a volume,
+    so the aggregate understated it about 3800-fold. Two readers of that row reached opposite
+    conclusions - one "a split", one "ambiguous" - and both were wrong. These are the facts that
+    separate a shell closing (the repair working) from a body being cut (damage).
+
+    A SPLIT HAS NEVER BEEN OBSERVED on a committed package, and nothing refuses one. This is the
+    count that would tell us if one ever happened, which is the condition for adding the gate.
+    """
+    measured = 0
+    appeared = 0
+    appeared_mm3 = 0.0
+    disappeared = 0
+    split = 0
+    files: list[str] = []
+    for row in rows:
+        for package in row.get("packages") or []:
+            if not isinstance(package, dict) or package.get("status") != "committed":
+                continue
+            evidence = package.get("evidence") or {}
+            if "solids_split" not in evidence:
+                continue                    # not measured: counted nowhere, never as zero
+            measured += 1
+            volume = evidence.get("solids_appeared_mm3")
+            if isinstance(volume, (int, float)) and volume > 0:
+                appeared += 1
+                appeared_mm3 += float(volume)
+            lost = evidence.get("solids_disappeared_mm3")
+            if isinstance(lost, (int, float)) and lost > 0:
+                disappeared += 1
+            if int(evidence.get("solids_split") or 0) > 0:
+                split += 1
+                files.append(str(row.get("file", "")))
+    if not measured:
+        return {}
+    return {"measured_packages": measured, "appeared": appeared,
+            "appeared_mm3": round(appeared_mm3, 4), "disappeared": disappeared,
+            "split": split, "files_with_split": sorted(set(files))}
+
+
 def arm_report(entry: dict) -> dict:
     provs = entry["provenances"]
     catalogue = next((p.get("operations_catalogue") for p in provs
@@ -238,7 +284,9 @@ def arm_report(entry: dict) -> dict:
     meshing = summary.get("meshing") or {}
     fixed = int(meshing.get("newly_meshed") or 0)
     total = usage["cost_usd"] + vm["container_cost_usd"]
+    bodies = body_changes(entry["rows"])
     return {"files": len(entry["rows"]), "shards": entry["n"], "summary": summary,
+            **({"bodies": bodies} if bodies else {}),
             "model": usage, "vm": vm, "total_cost_usd": round(total, 4),
             "cost_per_fixed_part_usd": round(total / fixed, 4) if fixed else None,
             "wall_per_fixed_part_s": round(vm["shard_seconds"] / fixed, 1) if fixed else None}

@@ -678,3 +678,48 @@ def test_files_fixed_is_newly_meshed_from_the_repaired_steps_gmsh_probe_only(tmp
     assert d.is_dir()
 
 
+
+
+# --- every wave counts WHICH bodies changed, not just how many ---------------------------------
+
+def test_the_arm_report_counts_bodies_that_appeared_and_split():
+    """0051_00513292's lesson, as a wave-level number. A committed `sew_faces` took solids 7 -> 8
+    with the aggregate volume moving +0.942 mm3, while the real event was a 3601 mm3 body
+    becoming closed - an open shell's faces already contributed a NUMBER to the volume integral
+    rather than a volume. The aggregate understated it about 3800-fold, so two lanes read the
+    same row and reached opposite conclusions. A wave counts the per-body facts instead.
+    """
+    collect = _load("collect_bodies", V3 / "collect.py")
+
+    rows = [
+        {"file": "a", "packages": [
+            {"status": "committed", "evidence": {"solids_appeared_mm3": 3601.17,
+                                                 "solids_disappeared_mm3": 0.0,
+                                                 "solids_split": 0}}]},
+        {"file": "b", "packages": [
+            {"status": "committed", "evidence": {"solids_appeared_mm3": 0.0,
+                                                 "solids_disappeared_mm3": 0.0,
+                                                 "solids_split": 1}},
+            {"status": "reverted", "evidence": {"solids_split": 1}}]},
+        # No per-solid measurement at all: counted nowhere rather than counted as zero.
+        {"file": "c", "packages": [{"status": "committed", "evidence": {}}]},
+    ]
+
+    tally = collect.body_changes(rows)
+
+    assert tally["measured_packages"] == 2
+    assert tally["appeared"] == 1
+    assert tally["appeared_mm3"] == pytest.approx(3601.17)
+    # ONLY COMMITTED PACKAGES: a reverted one did not happen to the part.
+    assert tally["split"] == 1
+    assert tally["files_with_split"] == ["b"]
+
+
+def test_a_wave_with_no_per_body_measurement_reports_nothing():
+    """A run from before the channel existed gains no key, so a report cannot show zeroes that
+    would read as "no body ever appeared"."""
+    collect = _load("collect_bodies_empty", V3 / "collect.py")
+
+    assert collect.body_changes([{"file": "a", "packages": [{"status": "committed",
+                                                             "evidence": {}}]}]) == {}
+    assert collect.body_changes([]) == {}

@@ -371,3 +371,69 @@ def test_accountability_says_volume_was_not_compared_and_why():
 
 def test_accountability_says_volume_was_compared_for_an_ordinary_run():
     assert volume_accountability(_SOUND, _changed(volume_mm3=8100.0))["compared"] is True
+
+
+# --- WHICH SOLIDS THESE ARE, not just how many -------------------------------------------------
+# An aggregate count and an aggregate volume cannot tell a loose shell CLOSING into a new body
+# from an existing body being SPLIT in two. Measured on 0051_00513292 (wave 8): a committed,
+# reviewer-accepted `sew_faces` took solids 7 -> 8 and volume +0.941 mm3 against a declared 0.
+# A pure split conserves volume, so +0.941 reads as a split that moved a little - and a 0.94 mm3
+# shell closing reads exactly the same way in the aggregate. Per-solid volumes decide it.
+
+
+def _with_solids(volumes, **fields) -> Measure:
+    return _changed(solids=len(volumes), solid_volumes=tuple(volumes),
+                    volume_mm3=float(sum(volumes)), **fields)
+
+
+def test_a_new_body_is_told_from_a_split_body():
+    from meshpipeline.cad.repair.caps import solid_change
+
+    closed = solid_change(_with_solids([8000.0]), _with_solids([8000.0, 0.94]))
+    assert closed["appeared_mm3"] == pytest.approx(0.94)
+    assert closed["split"] == () and closed["disappeared_mm3"] == pytest.approx(0.0)
+
+    split = solid_change(_with_solids([8000.0]), _with_solids([5000.0, 3000.0]))
+    assert split["split"], "one body became two whose volumes sum to its own"
+    assert split["appeared_mm3"] == pytest.approx(0.0), (
+        "a split body's pieces are not NEW volume - they are the old body, cut")
+
+
+def test_a_split_that_also_moved_a_little_is_still_a_split():
+    """THE 0051 CASE, as a rule rather than a guess: the sum need only be within the volume cap of
+    the original, because an operation may legitimately move a touch while it cuts."""
+    from meshpipeline.cad.repair.caps import solid_change
+
+    change = solid_change(_with_solids([8000.0]), _with_solids([5000.0, 3000.9]))
+
+    assert change["split"], change
+
+
+def test_a_body_that_only_grew_is_not_a_split_or_an_appearance():
+    from meshpipeline.cad.repair.caps import solid_change
+
+    change = solid_change(_with_solids([8000.0]), _with_solids([8000.5]))
+
+    assert change["split"] == ()
+    assert change["appeared_mm3"] == pytest.approx(0.0)
+    assert change["disappeared_mm3"] == pytest.approx(0.0)
+
+
+def test_a_lost_body_is_named_as_lost():
+    from meshpipeline.cad.repair.caps import solid_change
+
+    change = solid_change(_with_solids([8000.0, 12.0]), _with_solids([8000.0]))
+
+    assert change["disappeared_mm3"] == pytest.approx(12.0)
+
+
+def test_without_per_solid_volumes_nothing_is_claimed():
+    """A Measure from an older construction, a tolerant rebuild or a stubbed test carries no
+    per-solid volumes. The classifier says UNKNOWN rather than inventing a classification - the
+    same rule the rest of this module follows for a measurement nobody took."""
+    from meshpipeline.cad.repair.caps import solid_change
+
+    change = solid_change(_SOUND, _changed(solids=2, volume_mm3=8000.9))
+
+    assert change["known"] is False
+    assert change["split"] == () and change["appeared_mm3"] is None

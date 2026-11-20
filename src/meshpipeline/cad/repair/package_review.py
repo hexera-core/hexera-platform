@@ -24,6 +24,7 @@ from collections import Counter
 from collections.abc import Callable, Iterable
 
 import meshpipeline.settings.cad_repair as rcfg
+from meshpipeline.cad.repair import caps
 
 logger = logging.getLogger(__name__)
 
@@ -343,10 +344,21 @@ def evidence_of(package, verdict_delta: dict, deviation: dict, probe_before: dic
     """
     before = verdict_delta.get("before") or {}
     after = verdict_delta.get("after") or {}
+    # WHICH BODIES CHANGED, not how many. On 0051_00513292 a committed `sew_faces` took solids
+    # 7 -> 8 with the aggregate volume moving +0.942 mm3, while the real event was a 3601 mm3
+    # body becoming closed: an open shell's faces already contributed a NUMBER to the volume
+    # integral rather than a volume, so the aggregate understated it about 3800-fold. A reviewer
+    # shown only the count and the aggregate cannot tell that from a body cut in two.
+    bodies = caps.solid_change_of(before.get("solid_volumes") or (),
+                                  after.get("solid_volumes") or ())
     ops = [{"op": str(v.get("op", "")), "status": str(v.get("status", "")),
             "reason": str(v.get("reason", ""))} for v in verdict_delta.get("verdicts") or ()]
     upload = original or {}
     evidence: dict = {
+        **({"solids_appeared_mm3": _number(bodies["appeared_mm3"]),
+            "solids_disappeared_mm3": _number(bodies["disappeared_mm3"]),
+            # A COUNT, because what a reviewer does with it is notice that it is not zero.
+            "solids_split": len(bodies["split"])} if bodies["known"] else {}),
         "ops": ops,
         "area_mm2": {"declared": _number(verdict_delta.get("declared_area_mm2")),
                      "measured": _change(before.get("surface_area_mm2"),

@@ -55,6 +55,16 @@ class Measure:
     max_tolerance_mm: float
     surface_area_mm2: float
     volume_mm3: float
+    #: Each closed body's own volume, largest first. EMPTY MEANS NOT MEASURED, which is why
+    #: `solid_change` reports `known: False` rather than guessing: an older construction, a
+    #: tolerant rebuild and a stubbed measurement all arrive without it.
+    #:
+    #: WHY PER BODY. An aggregate count plus an aggregate volume cannot tell a loose shell
+    #: CLOSING into a new body from an existing body being SPLIT in two. On 0051_00513292 a
+    #: committed `sew_faces` took solids 7 -> 8 and volume +0.941 mm3 against a declared 0 - which
+    #: is what a 0.94 mm3 shell closing looks like, and also what a split that moved a little
+    #: looks like. One is the repair working and the other is damage.
+    solid_volumes: tuple[float, ...] = ()
 
     def to_dict(self) -> dict:
         return {"valid": bool(self.valid), "solids": int(self.solids), "shells": int(self.shells),
@@ -62,7 +72,11 @@ class Measure:
                 "vertices": int(self.vertices), "diagonal_mm": float(self.diagonal_mm),
                 "max_tolerance_mm": float(self.max_tolerance_mm),
                 "surface_area_mm2": float(self.surface_area_mm2),
-                "volume_mm3": float(self.volume_mm3)}
+                "volume_mm3": float(self.volume_mm3),
+                # ONLY WHEN MEASURED, so a reader can tell "one body of 8000 mm3" from "nobody
+                # looked", and a `Measure(**m.to_dict())` round trip keeps whichever it was.
+                **({"solid_volumes": [float(v) for v in self.solid_volumes]}
+                   if self.solid_volumes else {})}
 
     @classmethod
     def from_dict(cls, payload: dict) -> Measure:
@@ -92,6 +106,7 @@ def measure(shape) -> Measure:
 
     counts = _counts(shape)
     extent = _area_and_volume(shape)
+    solid_volumes = _solid_volumes(shape)
     return Measure(
         valid=_is_valid(shape),
         solids=int(counts.get("solids", 0)), shells=int(counts.get("shells", 0)),
@@ -100,7 +115,98 @@ def measure(shape) -> Measure:
         diagonal_mm=float(_diagonal_mm(shape)),
         max_tolerance_mm=float(_max_tolerance_mm(shape)),
         surface_area_mm2=float(extent.get("surface_area_mm2") or 0.0),
-        volume_mm3=float(extent.get("volume_mm3") or 0.0))
+        volume_mm3=float(extent.get("volume_mm3") or 0.0),
+        solid_volumes=solid_volumes)
+
+
+def _solid_volumes(shape) -> tuple[float, ...]:
+    """Each solid's own volume, largest first, or () when there is nothing to measure.
+
+    ONE INTEGRAL PER BODY, on top of the whole-shape one `measure` already takes. A part with
+    seven bodies pays seven cheap integrations against a `BRepCheck_Analyzer` that dominates this
+    function; a shape the kernel cannot walk reports () and every reader treats that as unknown.
+    """
+    try:
+        from OCP.BRepGProp import BRepGProp
+        from OCP.GProp import GProp_GProps
+        from OCP.TopAbs import TopAbs_SOLID
+        from OCP.TopExp import TopExp_Explorer
+
+        found: list[float] = []
+        walk = TopExp_Explorer(shape, TopAbs_SOLID)
+        while walk.More():
+            props = GProp_GProps()
+            BRepGProp.VolumeProperties_s(walk.Current(), props)
+            found.append(abs(float(props.Mass())))
+            walk.Next()
+        return tuple(sorted(found, reverse=True))
+    except Exception as exc:  # noqa: BLE001 - an unmeasurable shape is unknown, never zero bodies
+        logger.debug("caps: per-solid volumes not measured (%s)", exc)
+        return ()
+
+
+#: How close two volumes must be to be the same body. The run's own volume ratio, so what counts
+#: as "conserved" here is what counts as conserved everywhere else.
+def _volume_tolerance(volume: float) -> float:
+    return abs(float(volume)) * float(rcfg.CAD_REPAIR_MAX_VOLUME_CHANGE_RATIO)
+
+
+def solid_change(before: Measure, after: Measure) -> dict:
+    """WHICH bodies changed, not how many. Pure.
+
+    `{known, appeared_mm3, disappeared_mm3, split}`. Bodies are matched by volume, largest first,
+    within the run's own volume ratio - the only identity an aggregate measurement can offer, and
+    enough to separate the three cases that matter:
+
+      - a body that APPEARED carries volume no operation could have declared (a shell closed),
+      - a body that DISAPPEARED is the loss `sanity_refusal` already refuses,
+      - a body that SPLIT is one before-body whose volume is the sum of several after-bodies: its
+        pieces are not new volume, they are the old body cut, and that is damage rather than
+        repair (`fragment_bodies` declines its own version of this as `body_split`).
+
+    `known: False` when either side carries no per-solid volumes. Nothing is claimed from a
+    measurement nobody took.
+    """
+    return solid_change_of(before.solid_volumes, after.solid_volumes)
+
+
+def solid_change_of(before_volumes, after_volumes) -> dict:
+    """`solid_change` over the two volume lists themselves, for a reader that holds the measured
+    dicts rather than the `Measure`s - `package_review.evidence_of` is handed both as JSON."""
+    if not before_volumes or not after_volumes:
+        return {"known": False, "appeared_mm3": None, "disappeared_mm3": None, "split": ()}
+    left = sorted((float(v) for v in before_volumes), reverse=True)
+    right = sorted((float(v) for v in after_volumes), reverse=True)
+    split: list[tuple[float, tuple[float, ...]]] = []
+
+    # MATCHED FIRST, biggest to smallest: a body whose volume survived is the same body.
+    for volume in list(left):
+        match = next((v for v in right if abs(v - volume) <= _volume_tolerance(volume)), None)
+        if match is not None:
+            left.remove(volume)
+            right.remove(match)
+
+    # THEN THE SPLITS: an unmatched before-body whose volume is the sum of the smallest
+    # unmatched after-bodies that reach it. Greedy, largest before-body first, which is the same
+    # order the matching used.
+    for volume in list(left):
+        taken: list[float] = []
+        running = 0.0
+        for piece in sorted(right, reverse=True):
+            if running >= volume - _volume_tolerance(volume):
+                break
+            taken.append(piece)
+            running += piece
+        if len(taken) > 1 and abs(running - volume) <= _volume_tolerance(volume):
+            split.append((volume, tuple(taken)))
+            left.remove(volume)
+            for piece in taken:
+                right.remove(piece)
+
+    return {"known": True,
+            "appeared_mm3": float(sum(right)),
+            "disappeared_mm3": float(sum(left)),
+            "split": tuple(split)}
 
 
 def sanity_refusal(before: Measure, after: Measure, *,

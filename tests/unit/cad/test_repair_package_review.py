@@ -542,3 +542,51 @@ def test_the_delivered_case_pins_its_own_key_set():
                               delivered=pr.probe_of((), mesh_probed=True))
 
     assert set(evidence) == EXPECTED_KEYS | {"mesh_after_in_memory"}
+
+
+# --- WHICH bodies changed, as evidence the reviewer reads --------------------------------------
+
+def test_the_reviewer_is_told_which_bodies_appeared_or_split():
+    """MEASURED ON 0051_00513292. A committed `sew_faces` took solids 7 -> 8 while the aggregate
+    volume moved +0.942 mm3, and the real event was a 3601 mm3 body becoming closed - the
+    aggregate understated it by a factor of about 3800, because an open shell's faces already
+    contributed a NUMBER to the volume integral rather than a volume. A reviewer shown only the
+    count and the aggregate cannot tell that from a body being cut in two.
+    """
+    before = {**_BEFORE, "solids": 1, "solid_volumes": [8000.0]}
+    after = {**_AFTER, "solids": 2, "solid_volumes": [8000.0, 3601.17]}
+    probe_before, probe_after = _probes()
+
+    evidence = pr.evidence_of(_package(), {**_delta(), "before": before, "after": after},
+                              _DEVIATION, probe_before, probe_after, original=_ORIGINAL)
+
+    assert set(evidence) == EXPECTED_KEYS | {
+        "solids_appeared_mm3", "solids_disappeared_mm3", "solids_split"}
+    assert evidence["solids_appeared_mm3"] == pytest.approx(3601.17)
+    assert evidence["solids_disappeared_mm3"] == pytest.approx(0.0)
+    assert evidence["solids_split"] == 0
+
+
+def test_a_split_body_is_named_to_the_reviewer_as_one():
+    before = {**_BEFORE, "solids": 1, "solid_volumes": [8000.0]}
+    after = {**_AFTER, "solids": 2, "solid_volumes": [5000.0, 3000.0]}
+    probe_before, probe_after = _probes()
+
+    evidence = pr.evidence_of(_package(), {**_delta(), "before": before, "after": after},
+                              _DEVIATION, probe_before, probe_after, original=_ORIGINAL)
+
+    assert evidence["solids_split"] == 1
+    assert evidence["solids_appeared_mm3"] == pytest.approx(0.0), (
+        "a split body's pieces are the old body cut, not new volume")
+
+
+def test_without_per_solid_volumes_the_reviewer_is_told_nothing_about_bodies():
+    """The module's own rule: a measurement nobody took is absent, never 0 - which here would
+    read as "no body appeared and none split"."""
+    probe_before, probe_after = _probes()
+
+    evidence = pr.evidence_of(_package(), _delta(), _DEVIATION, probe_before, probe_after,
+                              original=_ORIGINAL)
+
+    assert "solids_appeared_mm3" not in evidence
+    assert "solids_split" not in evidence
