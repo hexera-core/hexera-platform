@@ -503,3 +503,145 @@ def test_the_gap_child_is_a_fresh_interpreter_not_a_fork(monkeypatch):
     monkeypatch.setattr(os, "fork", no_fork)
     argv = mesh_probe._gap_child_argv("/tmp/x.brep", [[1, 2]])
     assert argv[1:4] == ["-W", "ignore", "-m"] and "--gaps" in argv
+
+
+# --- row 1: the contact search measures its pairs in a bounded child ---------------------------
+
+
+class _Solids:
+    """The indexed solid map the contact search walks."""
+
+    def __init__(self, n: int) -> None:
+        self._n = n
+
+    def Extent(self) -> int:                                       # noqa: N802 - OCC's name
+        return self._n
+
+    def FindKey(self, index: int):                                 # noqa: N802 - OCC's name
+        return f"solid-{index}"
+
+
+class _FaceMap(_Solids):
+    """Same shape of map, for the faces the parent resolves supports against."""
+
+
+def _geometry(monkeypatch, bodies: int = 2):
+    """Two bodies whose boxes meet and share no face, so the prefilter keeps the pair."""
+    from meshpipeline.cad.repair import localize
+    from meshpipeline.cad.repair import mesh_probe as mp
+
+    monkeypatch.setattr(localize, "_indexed", lambda shape, kind: _Solids(bodies))
+    monkeypatch.setattr(mp, "_bounds_of", lambda shape: ((0.0, 0.0, 0.0), (1.0, 1.0, 1.0)))
+    monkeypatch.setattr(mp, "_shared_pairs", lambda shape, solids: set())
+
+
+def _contact(monkeypatch, answer, *, near=(7,)):
+    """The dispatcher and the nearest-face search, both stubbed. What is tested is the parent's
+    half: which pair wins, and how a support becomes a face index."""
+    from meshpipeline.cad.repair import mesh_probe as mp
+
+    seen: dict = {}
+
+    def _run(fn, args, budget_s):
+        seen.update(fn=fn, args=args, budget_s=budget_s)
+        return answer
+
+    monkeypatch.setattr(mp.bounded_child, "run", _run)
+    monkeypatch.setattr(mp, "_nearest_faces",
+                        lambda faces, point, *, tol, deadline: seen.setdefault(
+                            "points", []).append(point) or list(near))
+    return seen
+
+
+def _solution(in_face=(True, False), p1=(1.0, 2.0, 3.0), p2=(1.0, 2.0, 3.0), gap=0.0):
+    return {"in_face": list(in_face), "p1": list(p1), "p2": list(p2), "gap": gap}
+
+
+def test_every_candidate_pair_is_measured_in_one_child(monkeypatch):
+    """ROW 1. The loop made one uninterruptible `BRepExtrema_DistShapeShape` per pair in the
+    parent, with the deadline checked only BETWEEN pairs. The pairs go to one child, and the
+    bodies cross AS SHAPES so a position means the same body on both sides - no index walk of a
+    round-tripped shape has to agree with the parent's."""
+    import time
+
+    from meshpipeline.cad.repair import mesh_probe as mp
+
+    # THREE bodies, so three candidate pairs and three answers: the answer list must cover
+    # exactly the pairs that were asked about, or the parent cannot say which one won.
+    seen = _contact(monkeypatch, [{"distance": 5.0, "solutions": []},
+                                  {"distance": 0.0, "solutions": [_solution()]},
+                                  {"distance": 9.0, "solutions": []}])
+    _geometry(monkeypatch, bodies=3)
+
+    found = mp._contact_support_faces("shape", _FaceMap(9), tol=1e-6,
+                                      deadline=time.monotonic() + 30.0)
+
+    assert seen["fn"] is mp._contact_extrema
+    assert seen["args"][0] == [[0, 1], [0, 2], [1, 2]], (
+        "the pairs index the operands BY POSITION, which is the same body on both sides")
+    assert found is not None and found.faces == (7,)
+    assert found.pairs_considered == 3
+
+
+def test_a_support_inside_a_face_is_resolved_by_the_parents_own_map(monkeypatch):
+    """THE DESIGN. A face is identified by `faces.FindIndex(support)` - identity against the
+    PARENT'S map - and a shape that crossed a process boundary is a different object. So the
+    child says WHERE the support is and whether it is in a face, and the parent resolves that
+    point with its own bounded nearest-face search. For a support inside a face that is the same
+    face, uniquely."""
+    import time
+
+    from meshpipeline.cad.repair import mesh_probe as mp
+
+    seen = _contact(monkeypatch, [{"distance": 0.0, "solutions": [
+        _solution(in_face=(True, True), p1=(1.0, 0.0, 0.0), p2=(2.0, 0.0, 0.0))]}], near=(4,))
+    _geometry(monkeypatch)
+
+    found = mp._contact_support_faces("shape", _FaceMap(9), tol=1e-6,
+                                      deadline=time.monotonic() + 30.0)
+
+    assert found is not None and found.faces == (4,)
+    # BOTH SIDES' POINTS are resolved, because each names a face of its own body.
+    assert seen["points"] == [(1.0, 0.0, 0.0), (2.0, 0.0, 0.0)]
+
+
+def test_a_child_that_did_not_finish_is_not_a_contact(monkeypatch):
+    """What a spent deadline used to mean here: which pair is nearest is undetermined, so the
+    search reports nothing rather than the best of what answered."""
+    import time
+
+    from meshpipeline.cad.repair import mesh_probe as mp
+
+    _contact(monkeypatch, None)
+    _geometry(monkeypatch)
+
+    assert mp._contact_support_faces("shape", _FaceMap(9), tol=1e-6,
+                                     deadline=time.monotonic() + 30.0) is None
+
+
+def test_a_pair_the_kernel_could_not_measure_is_merely_not_nearest(monkeypatch):
+    """A null distance is geometry the kernel refused, not an unfinished search, so the next pair
+    still wins."""
+    import time
+
+    from meshpipeline.cad.repair import mesh_probe as mp
+
+    _contact(monkeypatch, [{"distance": None, "solutions": []},
+                           {"distance": 1.0, "solutions": [_solution()]},
+                           {"distance": 4.0, "solutions": []}], near=(2,))
+    _geometry(monkeypatch, bodies=3)
+
+    found = mp._contact_support_faces("shape", _FaceMap(9), tol=1e-6,
+                                      deadline=time.monotonic() + 30.0)
+
+    assert found is not None and found.faces == (2,)
+
+
+class _Meets:
+    """A bounding box that meets every other: the prefilter keeps every pair."""
+
+    def IsOut(self, other) -> bool:                                # noqa: N802 - OCC's name
+        return False
+
+    def CornerMin(self):                                           # noqa: N802 - OCC's name
+        raise AssertionError("the overlap ranking must not need corners in these fixtures")
