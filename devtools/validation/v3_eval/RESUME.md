@@ -356,3 +356,62 @@ Agents neither submit jobs to shared dev nor read its `admin-api-key`. Steps 1, 
    - a "Per-turn trace (N lines, jobs/$J/investigation-trace-….jsonl)" expander holding the JSONL.
 
    A second panel, "Repair investigation after the mesh failed", appears only if a handback ran. For comparison, on crsv3 this part gave one row: region 15, `concluded (escalate)`, 0 / 0 edits.
+
+## Lane A: every uninterruptible kernel call is bounded (2026-11-20)
+
+Three worker hangs in one night - the clash gap, the investigator's distance, lane H's
+`gap_split` - were one bug with three faces: an OCC call that cannot be interrupted, running in
+the parent. **A deadline checked BETWEEN calls does not bound the call.** The clock written around
+such a call is decoration; on a worker it hangs the job rather than one tool call.
+
+**The standing guard** (`tests/unit/cad/test_repair_occ_bounded_guard.py`) AST-scans
+`cad/repair/` for the uninterruptible families and fails on a new call site. Nothing is declared
+to it: a module says which function is a child interpreter in its `if __name__ == "__main__"`
+block, `bounded_child.KERNELS` is read from source, and child-side is the TRANSITIVE closure over
+module-local calls - because the kernel call is rarely in the entry point (lane H's chain is
+`_child_main` -> `_work` -> `partners` -> `_distance`). A lane that writes a new child or
+registers a new kernel needs no edit here.
+
+It earned its keep three times. Two sites the manual audit missed (`investigator_tools.
+_thickness_kernel`, bounded only by `localize._bounded`'s FORK, and `spotlight._normal_of_face`);
+and `operations.apply` calling `_common_volume` DIRECTLY while the registry said it was bounded -
+**registering a kernel is not bounding it, the call site is.** `KNOWN_UNBOUNDED` and
+`KNOWN_DIRECT_CALLS` may only SHRINK; bounding a call means deleting its entry.
+
+**Two rules for whoever bounds the next one.**
+
+1. *A measurement reports "unmeasured" and the caller carries on; an OPERATION must DECLINE.*
+   `fragment_bodies` rebuilds two solids on the strength of its answers, so a child that was
+   killed gives None and the operation declines - never the best of a partial measurement.
+   `PARTNER_UNMEASURED` is deliberately not `None`: no candidate is geometry (`no_partner`), an
+   unfinished search is ignorance, and only the second is a reason to stop.
+2. *An answer that is only correct by SHARING TOPOLOGY WITH SHAPES THAT STAYED IN THE PARENT
+   cannot be computed elsewhere and spliced back by identity.* When the fuse cuts one body and
+   leaves the other alone, the conformal face belongs to the UNTOUCHED body - free in-process,
+   impossible across a boundary, and splicing only the modified body left ZERO shared faces. Both
+   bodies now come back from the child's one builder. Either everything that must share returns
+   together, or the operation is not a candidate for bounding.
+
+**Two fixtures too simple to hold the bug.** The symmetric two-box fuse (both bodies cut, images
+interchangeable) hid the sharing loss completely, and a single-op equivalence test hid a defect
+that only appears across a SEQUENCE (the scan-guard revert, PR #512). A new test that passes
+immediately is wrong until it has been seen to fail.
+
+**Measured cost of bounding.** 32 deviation samples on a 2.7 MB part: 0.58 s in the parent
+against 2.09 s through a child, of which 0.74 s is interpreter start-up. Paid per tournament fold.
+A kept child would take most of it back, which is where `bounded_child`'s dispatcher points.
+
+**Per-body volumes, and why the aggregate lies.** `Measure.solid_volumes` plus `caps.solid_change`
+(appeared / disappeared / split, `known: False` when unmeasured), shown to the reviewer and
+counted per wave by `collect.body_changes`. It settled 0051_00513292, where a committed
+`sew_faces` took solids 7 -> 8 with the volume moving +0.942 mm3: all seven original bodies
+survive to four decimal places and a NEW 3601.17 mm3 body appeared. **The aggregate understated
+the event about 3800-fold**, because an open shell's faces already contribute a NUMBER to the
+volume integral rather than a volume - so the volume-comparison waiver on a solid gain is
+load-bearing, not tolerated. No refusal was added: a split has never been observed, and the wave
+count is the condition for adding one.
+
+**Open.** Row 1, the contact search, is the last uninterruptible call outside the four
+`BRepCheck_Analyzer` sites, which every repair path runs and which is a larger change than any
+single distance call. Better location of unplaced defects (`regions_before {'unknown': 628}`) is
+the scan-cost lever and has no owner.
