@@ -269,7 +269,9 @@ def macros(results: dict) -> dict[str, str]:
                                  else "undefined (deterministic ceiling 0)")
     out["vThreeVerdictStatement"] = (PENDING_TEX if verdict["status"] == "PENDING"
                                      else tex_escape(verdict["statement"]))
-    out["vThreeVerdictRule"] = tex_escape(verdict["rule"])
+    out["vThreeVerdictRule"] = ("the v3 arm newly meshes at least four times as many parts as the "
+                                "deterministic arm, neither arm newly breaks a part, and every "
+                                "clean-control part comes back unchanged")
     out["vThreeZeroBreakBound"] = fmt(zero_break_bound(results), "pct")
     return out
 
