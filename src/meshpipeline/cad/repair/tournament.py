@@ -771,8 +771,10 @@ def tournament_author(shape, *, original, reserved: frozenset = frozenset(), job
             cands = tuple(c for c in fresh if c.plan_key not in offered)
             held = {"candidates": fresh, "offered": offered, "defects": asked_about}
             cache[int(region.index)] = held
+        # Either the cache answered (held was not None) or the branch above just set it.
+        assert held is not None
 
-        driven = next((c.package for c in held["candidates"] if c.source == RULES), None)
+        driven =next((c.package for c in held["candidates"] if c.source == RULES), None)
         fallback = driven if shadow else None
         if not cands:
             entry["end"] = NO_CANDIDATE
