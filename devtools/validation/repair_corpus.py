@@ -84,6 +84,16 @@ def _load_sibling(name: str):
 _SUFFIXES = {".step", ".stp"}
 
 
+def policy_fingerprint() -> str:
+    """gym.py's v3 policy fingerprint over the source this run executes. Loaded by path under a
+    private module name, so a third-party `gym` package can never stand in for the sibling."""
+    path = Path(__file__).resolve().with_name("gym.py")
+    spec = importlib.util.spec_from_file_location("repair_corpus_gym_sibling", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.policy_fingerprint()
+
+
 def repair_settings_of(rcfg) -> dict:
     """Every switch and cap the repair actually read, BY REFLECTION over the settings module.
 
@@ -1810,6 +1820,10 @@ def main() -> int:
         # settings digest - and a later verification recomputes against it instead of against
         # however many operations the engine has grown by then.
         "operations_catalogue": operation_catalogue(),
+        # THE V3 POLICY THIS RUN MEASURED (gym.py's fingerprint over the source it ran), sealed
+        # under the digest: `gym.py record` labels the evidence with THIS, never with whatever
+        # checkout records it later.
+        "policy_fingerprint": policy_fingerprint(),
     }
 
     if args.force_repair:

@@ -237,6 +237,49 @@ def test_record_is_append_only(tmp_path):
     assert gym.scored_fingerprints(db) == ["a" * 64, "b" * 64]
 
 
+# --- the policy the evidence measured, not the checkout recording it ------------------------------
+def _stating(directory: Path, fingerprint: str) -> Path:
+    """The run's sealed settings.json, stating the policy the run measured."""
+    (directory / "settings.json").write_text(json.dumps({"policy_fingerprint": fingerprint}),
+                                             encoding="utf-8")
+    return directory
+
+
+def _db(tmp_path: Path) -> Path:
+    db = tmp_path / "scored-policies.json"
+    db.write_text('{"records": []}', encoding="utf-8")
+    return db
+
+
+def test_old_evidence_is_recorded_under_the_policy_it_measured(tmp_path):
+    # A bundle run under policy "1..." recorded from a checkout whose policy has since moved must
+    # NOT certify the checkout's policy: the gate would then pass with nothing measured.
+    arm = _stating(_bundle(tmp_path / "arm", [_row(SAMPLE[0]["sha256"], before=False, after=True)],
+                           sample=SAMPLE), "1" * 64)
+    db = _db(tmp_path)
+    entry = gym.record(arm, baseline=None, db=db)
+    assert entry["policy"] == "1" * 64
+    assert gym.policy_fingerprint() not in gym.scored_fingerprints(db)
+
+
+def test_evidence_stating_no_policy_is_refused_without_an_explicit_fingerprint(tmp_path):
+    arm = _bundle(tmp_path / "arm", [_row(SAMPLE[0]["sha256"], before=False, after=True)],
+                  sample=SAMPLE)
+    db = _db(tmp_path)
+    with pytest.raises(ValueError, match="policy"):
+        gym.record(arm, baseline=None, db=db)
+    assert gym.scored_fingerprints(db) == []
+
+
+def test_an_override_that_contradicts_the_evidence_is_refused(tmp_path):
+    arm = _stating(_bundle(tmp_path / "arm", [_row(SAMPLE[0]["sha256"], before=False, after=True)],
+                           sample=SAMPLE), "1" * 64)
+    db = _db(tmp_path)
+    with pytest.raises(ValueError, match="policy"):
+        gym.record(arm, baseline=None, db=db, fingerprint="2" * 64)
+    assert gym.scored_fingerprints(db) == []
+
+
 # --- the gate itself ----------------------------------------------------------------------------
 def test_an_unscored_policy_fails_the_guard_and_says_what_to_run(tmp_path):
     """THE POINT OF THE TASK. A policy nobody scored is named, loudly, with the command."""
