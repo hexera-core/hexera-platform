@@ -35,6 +35,9 @@
 - DONE at 0ff8db35: failing 12/21, 16/21; clean 3/7, 7/7. failing 20/21 has rows.json but no DONE (rerun).
 - Relaunched the other 24 as **11200639** (3 x c2d-standard-8, us-central1-b), same commit, image and 120 s timeout.
 - Per LEAD ruling 22:55: 11200639 results are `t29_deterministic@0ff8db35/120s`, supporting data only. Lane B monitors and collects them, then babysits the AI wave on GO.
+- **23:15 PT, T29-det supporting data SEALED** (`t29_deterministic@0ff8db35/120s`, not the arm of record), under `devtools/validation/v3_eval/supporting/t29-det-0ff8db35-120s/` and `gs://.../eval/supporting/`. Failing: **0/119 newly meshed, 0 newly broken** (meshed 2→2), plus 1 crash. Clean: **100/100 with no kept operation**, 0 broken. 0 model calls; VM cost about $0.13.
+- **Segfault:** failing shard 15/21 exits 139 on both attempts (11200639 and 11200655), on `abc/0059_00597937_2e928f752b8806de5a85c14b_step_000.step` (sha256 fc4e4a440ffd…), after OCC FixShape `Geom_RectangularTrimmedSurface::U parameters out of range`. The process dies, so the file gets no row. LEAD routed per-file crash isolation (an outcome=crashed row) to lane C as a blocker for the AI wave. No sample change; shard 15 is not to be relaunched again.
+- No eval VMs are running. Lane B is waiting for LEAD's AI-wave launch ids.
 
 ## Earlier handoff (21:55 PT)
 
