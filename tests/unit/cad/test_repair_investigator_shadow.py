@@ -385,16 +385,17 @@ def test_the_fit_tables_arithmetic_is_the_arithmetic_it_claims():
 
 @pytest.mark.parametrize("left, wall, fits", [
     # LITERAL seconds, with the arithmetic spelled out. `region_wall` is
-    # min(budget wall, share * left) with share = 0.5, and `fits_shadow` needs
-    # left >= region_wall + _GRACE_S (5.0). So with a wall the share binds, a shadow fits only
-    # from left = 2 * 5.0 = 10.0 upwards - and BOTH SIDES of that boundary are here, because a
-    # one-sided table passes a flipped comparison.
+    # min(budget wall, proof + share * (left - proof)) with proof = 1.0 and share = 0.5 (the proof
+    # reserve PLUS the share above it - `share * left` alone sat below the reserve and forced a
+    # conclusion before the first tool call), and `fits_shadow` needs left >= region_wall +
+    # _GRACE_S (5.0). So a shadow fits from left = 11.0 upwards - BOTH SIDES of that boundary are
+    # here, because a one-sided table passes a flipped comparison.
     (0.0, 100.0, False),        # wall 0.0: do not start at all, before the fit is asked
-    (4.0, 100.0, False),        # wall 2.0, needs 7.0
-    (9.0, 100.0, False),        # wall 4.5, needs 9.5 - one half-second short
-    (9.999, 100.0, False),      # wall 4.9995, needs 9.9995
-    (10.0, 100.0, True),        # wall 5.0, needs exactly 10.0
-    (11.0, 100.0, True),        # wall 5.5, needs 10.5
+    (4.0, 100.0, False),        # wall 2.5, needs 7.5
+    (10.0, 100.0, False),       # wall 5.5, needs 10.5 - one half-second short
+    (10.999, 100.0, False),     # wall 5.9995, needs 10.9995
+    (11.0, 100.0, True),        # wall 6.0, needs exactly 11.0
+    (12.0, 100.0, True),        # wall 6.5, needs 11.5
     (20.0, 100.0, True),
     (10_000.0, 100.0, True),    # the BUDGET'S wall binds now: 100.0, needs 105.0
     (10_000.0, 0.0, False),     # a zero wall is "do not start", whatever the clock says

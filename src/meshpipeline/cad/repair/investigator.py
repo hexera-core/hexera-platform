@@ -287,6 +287,21 @@ class _Budget:
     wall_s: float = 60.0
 
 
+def _share_wall(run_left: float, proof_reserve_s: float, share: float) -> float:
+    """A region's wall: its PROOF RESERVE plus its share of what lies ABOVE that reserve.
+
+    `share * run_left` alone sits below `proof_reserve_s` whenever the reserve is a large part of
+    what is left - with the configured share 0.5 and a reserve of min(60, L/2) + 20 that is EVERY
+    run length - so `must_conclude` fired before the first tool call and no region ever looked
+    (measured: 0 tool calls on every region at 859cbf7c). A run with no time above the reserve
+    gets what it has, which `must_conclude` reads as "conclude now".
+    """
+    above = run_left - proof_reserve_s
+    if above <= 0.0:
+        return max(0.0, run_left)
+    return proof_reserve_s + share * above
+
+
 class _Clock:
     """What `investigator_budget.InvestigationClock` is to this driver: a region's wall, the time
     left, and whether it is time to force a conclusion. SEAM, as above."""
@@ -309,7 +324,8 @@ class _Clock:
         above the reserve. Never negative: a region with no time gets no call, not a tiny one."""
         if self.deadline_s is None:
             return max(0.0, float(budget.wall_s))
-        return max(0.0, min(float(budget.wall_s), self.share * self._run_left()))
+        return max(0.0, min(float(budget.wall_s), _share_wall(self._run_left(),
+                                                               self.proof_reserve_s, self.share)))
 
     def left(self, started: float) -> float:
         return self._run_left() if self.deadline_s is not None else float("inf")

@@ -133,7 +133,11 @@ class InvestigationClock:
         left = self.run_left()
         if left == float("inf"):
             return wall
-        return max(0.0, min(wall, self.share * left))
+        # Proof reserve PLUS the share of what lies above it: `share * left` alone sat below the
+        # reserve for every run length, forcing a conclusion before the first tool call.
+        above = left - self.proof_reserve_s
+        return max(0.0, min(wall, max(0.0, left) if above <= 0.0
+                            else self.proof_reserve_s + self.share * above))
 
     def left(self, started: float, wall: float | None = None) -> float:
         """Seconds left to an investigation that began at `started`: the lesser of what is left of

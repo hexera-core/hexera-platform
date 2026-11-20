@@ -697,7 +697,12 @@ def test_an_unstated_clock_keeps_the_final_reserve_and_the_configured_share(
     assert timing.reserve_s == reserve
     assert timing.share == 0.25
     assert timing.proof_reserve_s == ib.proof_reserve_s(100.0 - reserve)
-    assert timing.region_wall(_Wide()) == pytest.approx(0.25 * (100.0 - reserve))
+    left, proof = 100.0 - reserve, timing.proof_reserve_s
+    # The proof reserve PLUS the share of what lies above it (see
+    # test_repair_investigator_region_wall.py: `share * left` alone sat below the reserve).
+    expected = proof + 0.25 * (left - proof) if left > proof else left
+    assert timing.region_wall(_Wide()) == pytest.approx(expected)
+    assert timing.region_wall(_Wide()) <= left
 
 
 def test_stated_reserves_still_win(monkeypatch):
