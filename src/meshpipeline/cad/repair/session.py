@@ -1167,6 +1167,13 @@ class RepairSession:
             delta["mesh_cured"] = list(cured)
             delta["unmet"] = sorted(fingerprints)
             self._defects = tuple(d for d in (self._defects or ()) if not _is_mesh(d))
+            # AND THE STANDING FAILURE IS CONSUMED WITH THEM (Greptile PRRT_kwDOUFq_Ps6574yk): it
+            # was evidence about a shape that no longer exists, and the part now meshes. Left in
+            # place, a clone would "cure" a later edit against it, while the real session - whose
+            # list was just stripped the same way - rolls that edit back, and a package claiming
+            # both fails and loses this working repair. A `reset` reopens on the session's shape
+            # and restores the seed (`Scratch.seed_standing_mesh`).
+            self._standing_mesh = frozenset()
         if revealed:
             # ONLY ON A KEPT VERDICT: a rolled-back one never put these on the list, and the
             # training log must not say it revealed what nobody now holds.

@@ -549,3 +549,80 @@ def test_the_tournament_author_forwards_the_parts_mesh_failures():
     if played:
         assert played["standing_mesh"] == frozenset({"mesh_other"})
     assert callable(getattr(author, "observe_mesh", None))
+
+
+# A CURE CONSUMES THE STANDING FAILURE (Greptile PRRT_kwDOUFq_Ps6574yk, "Working repairs fail on
+# replay"). After the clone keeps a cure, the part meshes: the real session strips its mesh
+# failures then, so the clone must too. Otherwise a second edit is "cured" against a stale failure
+# on the clone, the real session rolls it back, and a package claiming both targets fails - losing
+# the first, working repair.
+
+_SHORT2 = EntityDefect(code=DefectCode.small_edge, severity=DefectSeverity.warning,
+                       entity_type="edge", entity_index=2, message="short",
+                       fingerprint="edge:short2", location=dict(_BOX))
+_REGION2 = Region(index=0, fingerprints=frozenset({"edge:short", "edge:short2"}),
+                  bbox_min=(0.0, 0.0, 0.0), bbox_max=(10.0, 10.0, 10.0))
+
+
+class _FixEdgesAgain(_FixEdges):
+    def apply(self, shape, targets, *, tolerance_mm):
+        return OpOutcome(shape=f"{shape}+")
+
+
+def test_a_second_edit_after_a_cure_is_not_cured_on_a_stale_failure(monkeypatch):
+    from meshpipeline.cad.repair import investigator_tools
+
+    monkeypatch.setattr(investigator_tools, "_clone", lambda shape: shape)
+    _seq(monkeypatch, session_mod, "_localize_scan", [((_SHORT, _SHORT2), True)])
+    _seq(monkeypatch, mesh_probe, "mesh_defects", [()])
+    scratch = investigator_tools.Scratch.of(
+        "shape", original=MEASURE, defects=(_SHORT, _SHORT2), measurer=lambda s: MEASURE,
+        standing_mesh=frozenset({"mesh_other"}))
+    op = _FixEdgesAgain()
+    first = scratch.session.try_op(op, op.targets_for(_SHORT), _SHORT.code, tolerance_mm=0.01,
+                                   within=_REGION2)
+    second = scratch.session.try_op(op, op.targets_for(_SHORT2), _SHORT2.code,
+                                    tolerance_mm=0.01, within=_REGION2)
+    assert first.kept and first.reason == session_mod.MESHES_AFTER_TARGET_REMAINS
+    # The part already meshed before the second edit: nothing for it to cure.
+    assert not second.kept and second.reason == "target_remains"
+    # A reset reopens on the session's shape, where the part still failed: the seed comes back.
+    scratch.reset()
+    assert scratch.session._standing_mesh == frozenset({"mesh_other"})
+
+
+def test_replay_of_what_the_clone_kept_commits_the_first_working_repair(monkeypatch):
+    # The real session holds the whole list, so it sees the part's failure directly.
+    _seq(monkeypatch, session_mod, "_localize_scan", [((_SHORT, _SHORT2), True)])
+    _seq(monkeypatch, mesh_probe, "mesh_defects", [(_FACETS,), ()])
+    real = RepairSession("shape", measurer=lambda s: MEASURE)
+    real.defects()
+    op = _FixEdgesAgain()
+    # What a clone with the fix concludes: the first edit only (the second was not kept there).
+    package = TargetPackage(
+        region=_REGION2, intent="the working repair",
+        plan=({"op": op, "targets": op.targets_for(_SHORT), "defect_code": _SHORT.code},),
+        predicate=Predicate(cleared=frozenset({"edge:short"}), reclassified=frozenset(),
+                            unchanged=frozenset(), max_area_delta_mm2=10.0,
+                            max_volume_delta_mm3=10.0),
+        budget=PackageBudget(max_ops=2, timeout_s=60.0, model_calls=0, deviation_mm=0.0))
+    verdict = real.try_package(package)
+    assert verdict.status == session_mod.COMMITTED, verdict.reason
+    assert verdict.verdicts[0].reason == session_mod.MESHES_AFTER_TARGET_REMAINS
+    assert real.shape == "shape+"
+    # And the stale-cure plan the bug produced - both edits - is what the real session refuses.
+    both = TargetPackage(
+        region=_REGION2, intent="both", plan=(
+            {"op": op, "targets": op.targets_for(_SHORT), "defect_code": _SHORT.code},
+            {"op": op, "targets": op.targets_for(_SHORT2), "defect_code": _SHORT2.code}),
+        predicate=Predicate(cleared=frozenset({"edge:short", "edge:short2"}),
+                            reclassified=frozenset(), unchanged=frozenset(),
+                            max_area_delta_mm2=10.0, max_volume_delta_mm3=10.0),
+        budget=PackageBudget(max_ops=2, timeout_s=60.0, model_calls=0, deviation_mm=0.0))
+    _seq(monkeypatch, session_mod, "_localize_scan", [((_SHORT, _SHORT2), True)])
+    _seq(monkeypatch, mesh_probe, "mesh_defects", [(_FACETS,), ()])
+    fresh = RepairSession("shape", measurer=lambda s: MEASURE)
+    fresh.defects()
+    refused = fresh.try_package(both)
+    assert refused.verdicts[1].reason == "target_remains"
+    assert refused.status != session_mod.COMMITTED
