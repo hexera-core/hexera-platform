@@ -1786,6 +1786,35 @@ def _layer_chain(ranks: int, layers: int) -> tuple:
         mpi=mpi_command("snappyHexMesh -overwrite", int(ranks)))),)
 
 
+def _port_chain(ranks: int) -> list[tuple[str, str]]:
+    """The two stages that cut the named port patches out of the coolant's block face.
+
+    CUT ON THE DECOMPOSED MESH WHEN THERE IS ONE, WHICH IS WHY `-noZero` IS HERE AND IS NOT A
+    TIDY-UP. `topoSet -parallel -constant` DEADLOCKS on this case, measured twice on independent
+    cases - rc=124 at 300 s on one, killed at 150 s on the other. Both `preparePar` and
+    `splitMeshRegions -parallel` create `processorN/0`, so topoSet walks `Time = constant`, then
+    walks `Time = 0`, and hangs on the second. `-noZero` excludes that directory and the command
+    completes. The 65-minute hand-built chain used exactly this - `topoSet -noZero` for the
+    ports, 15 s - and nobody wrote down why.
+
+    AND IT TAKES THE CUT OFF THE SERIAL TAIL. Cut after the merge these two run on one core of
+    sixty-four; cut here they run on all the ranks, and the merge then produces a mesh that
+    already carries its ports, so `checkMesh` measures the patch table the customer is given
+    rather than the one before the cut.
+
+    `-constant` on createPatch is not an option and it exits on it, the same way splitMeshRegions
+    does. topoSet takes it; createPatch does not. Both were written from the same habit and only
+    one of them was right.
+    """
+    if int(ranks) > 1:
+        return [("topoSetPorts",
+                 mpi_command(f"topoSet -constant -noZero -region {FLUID_REGION}", int(ranks))),
+                ("createPatch",
+                 mpi_command(f"createPatch -overwrite -region {FLUID_REGION}", int(ranks)))]
+    return [("topoSetPorts", f"topoSet -constant -region {FLUID_REGION}"),
+            ("createPatch", f"createPatch -overwrite -region {FLUID_REGION}")]
+
+
 def _publish_decomposed_boundaries(ws) -> list[str]:
     """Write `constant/<region>/polyMesh/boundary` for every region that exists only per-rank.
 
@@ -1987,26 +2016,10 @@ def build(workspace, *, block_stl: str = "constant/triSurface/block.stl",
     # differently from how it classifies it with the mesh whole. That is a real difference and not
     # a rounding - the parallel chain is not bit-identical - and it is one cell in 59,074 on the
     # boundary between two regions that share 22,534 faces exactly.
-    if int(ranks) > 1:
-        chain: list[tuple[str, str]] = [
-            (PREPARE_PAR, PREPARE_PAR),
-            ("cartesianMesh", mpi_command("cartesianMesh", int(ranks))),
-            ("topoSet", mpi_command("topoSet", int(ranks))),
-            ("splitMeshRegions", mpi_command(" ".join(SPLIT_ARGS), int(ranks))),
-            # THE LAYER PASS, after the split and before the reconstruct. It extrudes from
-            # `fluid_to_solid`, which does not exist until the split has cut it, and the ordering
-            # is the whole economy of it: 2,624 s on eight ranks against 10,038 s once the mesh is
-            # whole again, with the reconstruct costing 1,105 s whichever side of it you pay.
-            # Empty when no layers were asked for, and it is only ever in THIS branch because the
-            # pass is parallel-only (layers.serial_complaint).
-            *_layer_chain(int(ranks), layers),
-            ("reconstructParMesh", RECONSTRUCT_REGIONS),
-            ("regionDicts", REGION_DICTS),
-        ]
-    else:
-        chain = [("cartesianMesh", "cartesianMesh"),
-                 ("topoSet", "topoSet"),
-                 ("splitMeshRegions", " ".join(SPLIT_ARGS))]
+    # THE PORT STAGES ARE BUILT BEFORE THE CHAIN so the cut can be PLACED in it rather than
+    # appended after it. It used to be appended, which put it after the merge and made it the
+    # last two serial commands of the run.
+    port_stages: list[tuple[str, str]] = []
     if port_patches:
         topo_ports, create_ports = render_port_patch_dicts(list(port_patches))
         # UNDER THE REGION'S OWN system/, AND UNDER THE DEFAULT NAME, so neither command needs
@@ -2020,11 +2033,36 @@ def build(workspace, *, block_stl: str = "constant/triSurface/block.stl",
         sysdir.mkdir(parents=True, exist_ok=True)
         (sysdir / "topoSetDict").write_text(topo_ports)
         (sysdir / "createPatchDict").write_text(create_ports)
-        # `-constant` on createPatch is not an option and it exits on it, the same way
-        # splitMeshRegions does. topoSet takes it; createPatch does not. Both were written from
-        # the same habit and only one of them was right.
-        chain += [("topoSetPorts", f"topoSet -constant -region {FLUID_REGION}"),
-                  ("createPatch", f"createPatch -overwrite -region {FLUID_REGION}")]
+        port_stages = _port_chain(int(ranks))
+
+    if int(ranks) > 1:
+        chain: list[tuple[str, str]] = [
+            (PREPARE_PAR, PREPARE_PAR),
+            ("cartesianMesh", mpi_command("cartesianMesh", int(ranks))),
+            ("topoSet", mpi_command("topoSet", int(ranks))),
+            ("splitMeshRegions", mpi_command(" ".join(SPLIT_ARGS), int(ranks))),
+            # THE LAYER PASS, after the split and before the reconstruct. It extrudes from
+            # `fluid_to_solid`, which does not exist until the split has cut it, and the ordering
+            # is the whole economy of it: 2,624 s on eight ranks against 10,038 s once the mesh is
+            # whole again, with the reconstruct costing 1,105 s whichever side of it you pay.
+            # Empty when no layers were asked for, and it is only ever in THIS branch because the
+            # pass is parallel-only (layers.serial_complaint).
+            *_layer_chain(int(ranks), layers),
+            # REGION DICTS BEFORE THE PORT CUT, and that order is load-bearing rather than tidy:
+            # splitMeshRegions leaves `system/<region>` inside processor0, so until this copy is
+            # made the root case has no `system/fluid/fvSchemes` and the next command to open
+            # that region exits on the missing file. It was already ahead of the cut when the cut
+            # was last in the chain; it still is.
+            ("regionDicts", REGION_DICTS),
+            *port_stages,
+            # THE MERGE IS LAST, with nothing of the mesh left to do after it.
+            ("reconstructParMesh", RECONSTRUCT_REGIONS),
+        ]
+    else:
+        chain = [("cartesianMesh", "cartesianMesh"),
+                 ("topoSet", "topoSet"),
+                 ("splitMeshRegions", " ".join(SPLIT_ARGS)),
+                 *port_stages]
 
     # ONE BUDGET FOR THE WHOLE CHAIN, SPENT AS A DEADLINE - not a per-stage cap handed out as
     # many times as there are stages.

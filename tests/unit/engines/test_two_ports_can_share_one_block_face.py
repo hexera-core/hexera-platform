@@ -202,12 +202,42 @@ def test_the_runner_actually_cuts_them():
     `build` passed none, and a 78-minute run rebuilt an identical mesh and exited 0."""
     import inspect
 
-    from meshpipeline.engines.cfmesh_conjugate.conjugate import build
+    from meshpipeline.engines.cfmesh_conjugate.conjugate import _port_chain, build
 
     assert "port_patches" in inspect.signature(build).parameters
     src = inspect.getsource(build)
     assert "render_port_patch_dicts" in src, "build has to render the dictionaries"
-    assert "createPatch -overwrite -region" in src, "and run createPatch on the coolant"
+    # THE COMMANDS MOVED INTO `_port_chain`, because they now differ between a serial and a
+    # decomposed case and a chain entry is no place for that branch. The seam is still checked
+    # from the caller's side: build must call it, and splice what it returns.
+    assert "_port_chain(" in src, "build has to ask for the stages"
+    assert "*port_stages" in src, "...and splice them into the chain it runs"
+    cut = inspect.getsource(_port_chain)
+    assert "createPatch -overwrite -region" in cut, "and run createPatch on the coolant"
     # after the split, not before it: the order is the finding, not an implementation detail
-    assert src.index("splitMeshRegions") < src.index("createPatch -overwrite"), (
+    assert src.index("splitMeshRegions") < src.index("*port_stages"), (
         "cutting before the split gives the metal patches named after the coolant's ports")
+
+
+def test_a_decomposed_cut_excludes_the_zero_directory_or_it_deadlocks():
+    """`-noZero` is a correctness flag here, not tidiness, and it cost two hung runs to find.
+
+    Both `preparePar` and `splitMeshRegions -parallel` create `processorN/0`. So
+    `topoSet -parallel -constant` walks `Time = constant`, then walks `Time = 0`, and hangs on
+    the second - measured twice on independent cases, rc=124 at 300 s on one and killed at 150 s
+    on the other. The same command without the zero directory in scope exits 0 and produces a
+    byte-identical merged boundary. The 65-minute hand-built chain used `topoSet -noZero` for
+    its ports and never recorded why.
+    """
+    from meshpipeline.engines.cfmesh_conjugate.conjugate import _port_chain
+
+    (_, topo), (_, patch) = _port_chain(8)
+    assert "-noZero" in topo, "a parallel topoSet that can see 0/ deadlocks on this case"
+    assert "-parallel" in topo and "-parallel" in patch, "both halves run on the ranks"
+
+    serial_topo, serial_patch = _port_chain(1)[0][1], _port_chain(1)[1][1]
+    assert "-parallel" not in serial_topo and "mpirun" not in serial_topo
+    assert "-noZero" not in serial_topo, (
+        "a serial case has no processorN/0 to trip over, and every already-measured part keeps "
+        "the exact command it was measured with")
+    assert "-constant" not in serial_patch, "createPatch exits on -constant"

@@ -163,8 +163,9 @@ def test_a_window_over_a_described_only_region_says_why_it_cannot_be_drawn(tmp_p
 def test_a_stored_region_is_still_drawn_from_its_own_mesh(tmp_path):
     """The fall-through it replaces is deliberate and must survive: a mesh with faces and points
     beside its boundary and no index is read by parsing it, as it was before indexes existed."""
-    from meshpipeline.render.detail_window import detail_at
     from tests.foam_fixtures import write_row_of_hexes
+
+    from meshpipeline.render.detail_window import detail_at
 
     polymesh = tmp_path / "constant" / "polyMesh"
     write_row_of_hexes(polymesh)

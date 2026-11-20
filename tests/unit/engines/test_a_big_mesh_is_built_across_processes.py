@@ -206,8 +206,7 @@ def test_the_merge_takes_the_regions_and_not_the_block():
     build delivered; both spent the block's time first, and in processor0 the block is 5.7 GB
     against fluid's 2.4 and solid's 2.9.
     """
-    from meshpipeline.engines.cfmesh_conjugate.conjugate import (
-        FLUID_REGION, RECONSTRUCT_REGIONS, SOLID_REGION)
+    from meshpipeline.engines.cfmesh_conjugate.conjugate import FLUID_REGION, RECONSTRUCT_REGIONS, SOLID_REGION
 
     assert RECONSTRUCT_REGIONS.startswith("reconstructParMesh")
     assert RECONSTRUCT_REGIONS.count("-constant") == 2
@@ -266,8 +265,19 @@ def test_the_regions_dictionaries_are_brought_up_from_the_ranks():
         "no-clobber, or this overwrites the port cut's own topoSetDict in the same directory")
     src = inspect.getsource(build)
     par = src.split("if int(ranks) > 1:", 1)[1].split("else:", 1)[0]
-    assert par.index("RECONSTRUCT_REGIONS") < par.index("REGION_DICTS"), (
-        "there is nothing to copy into until the regions exist")
+    # THIS ORDER IS THE OPPOSITE OF WHAT IT WAS, and the reason it used to give was wrong. It
+    # said "there is nothing to copy into until the regions exist", but the copy's SOURCE is
+    # `processor0/system`, which `splitMeshRegions -parallel` writes, and its DESTINATION is the
+    # case's own `system/`, which has always existed. Nothing about it needs the merge.
+    #
+    # And it has to come first now: the port cut runs on the decomposed mesh, `topoSet -region
+    # fluid` cannot open a region whose `system/fluid/fvSchemes` is still inside processor0, and
+    # that file is exactly what this copy brings up. The measured failure is this test's own
+    # docstring - "cannot find file system/fluid/fvSchemes".
+    assert par.index("REGION_DICTS") < par.index("RECONSTRUCT_REGIONS"), (
+        "the region dictionaries have to be up before anything opens a region")
+    assert par.index("REGION_DICTS") < par.index("*port_stages"), (
+        "and before the port cut in particular, which opens the coolant by name")
 
 
 def test_one_cell_may_move_and_the_interface_may_not():
