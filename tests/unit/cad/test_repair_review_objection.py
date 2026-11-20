@@ -231,19 +231,20 @@ def test_objection_fields_is_a_closed_tuple_of_measured_evidence_keys():
     assert pr.OBJECTION_UNSPECIFIED not in pr.OBJECTION_FIELDS
     assert set(pr.OBJECTION_FIELDS) == {
         "area_mm2", "volume_mm3", "faces", "solids", "deviation_mm", "deviation_samples",
-        "deviation_faces", "deviation_faces_skipped", "deviation_status", "mesh_before",
-        "mesh_after", "defects_cleared", "defects_revealed", "defects_remaining"}
+        "deviation_faces", "deviation_faces_skipped", "deviation_status", "deviation_basis",
+        "removed", "mesh_before", "mesh_after", "defects_cleared", "defects_revealed",
+        "defects_remaining"}
 
 
 def test_every_objection_field_is_a_key_evidence_of_can_produce(monkeypatch):
     """OBJECTION_FIELDS is read off `evidence_of`'s own output, not written beside it."""
-    from tests.unit.cad.test_repair_package_review import _BEFORE, _delta, _package
+    from tests.unit.cad.test_repair_package_review import _BEFORE, _package, _removing_delta
 
     monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live", raising=False)
     evidence = pr.evidence_of(
-        _package(), _delta(),
+        _package(), _removing_delta(),
         {"deviation_mm": 0.5, "deviation_samples": 9, "deviation_faces": 2,
-         "deviation_faces_skipped": 0},
+         "deviation_faces_skipped": 0, "deviation_basis": "adjacent_to_removed"},
         {"codes": ["mesh_edge_through_face"], "mesh_kinds": ["mesh_edge_through_face"]},
         {"codes": ["mesh_overlapping_facets"], "mesh_kinds": ["mesh_overlapping_facets"]},
         original=_BEFORE)

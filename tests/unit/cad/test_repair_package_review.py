@@ -364,3 +364,68 @@ def test_live_review_a_region_rejected_twice_is_escalated_and_not_authored_again
     assert asked == [0, 0, 1, 1] and len(fake.calls) == 4
     assert [p.reason for p in run.packages] == [
         "review: rejected by review", "review: rejected by review twice"] * 2
+
+
+# DEBRIS VERSUS REAL GEOMETRY (LEAD ruling 2026-11-20, under the owner-approved design: "only
+# sliver debris may be removed, counted and capped; never delete real geometry to get past the
+# mesher"). The reviewer keeps the rule, is told the permitted case, and is shown the facts that
+# tell the two apart.
+
+
+def test_the_prompt_keeps_the_rule_and_states_the_permitted_debris_case():
+    text = pr.REVIEW_SYSTEM
+    # (1) the rule, about REAL geometry
+    assert "reject a repair that deletes or collapses REAL geometry" in text
+    assert "a feature, a wall, a body" in text
+    # (2) the permitted case and every condition on it
+    assert "removing sliver or degenerate DEBRIS faces is acceptable when ALL of these hold" in text
+    for condition in ("the removal is declared (removed)", "area_fraction is negligible",
+                      "deviation_mm is negligible relative to diagonal_mm", "deviation_basis",
+                      "solids after equal solids before"):
+        assert condition in text, condition
+    # unsure stays reject
+    assert "if you are unsure, reject" in text
+
+
+def _removing_delta(*, faces=4, area=0.48387, status="kept"):
+    delta = _delta()
+    delta["verdicts"].append(
+        {"op": "fix_small_faces", "targets": ["f2"], "defect_code": "small_face",
+         "status": status, "reason": "", "basis": "geometric",
+         "evidence": {"faces_removed": faces, "area_removed_mm2": area,
+                      "removed_fingerprints": ["face:x"]},
+         "delta": {}, "apply_s": 0.1, "scan_s": 0.1, "measure_s": 0.1})
+    return delta
+
+
+def test_the_reviewer_is_shown_the_facts_that_tell_debris_from_real_geometry():
+    before, after = _probes()
+    deviation = {**_DEVIATION, "deviation_basis": "adjacent_to_removed"}
+    evidence = pr.evidence_of(_package(), _removing_delta(), deviation, before, after,
+                              original=_ORIGINAL)
+    assert evidence["removed"] == {"faces": 4, "area_mm2": pytest.approx(0.48387),
+                                   "area_fraction": pytest.approx(0.48387 / 1000.0)}
+    assert evidence["deviation_basis"] == "adjacent_to_removed"
+    assert evidence["deviation_mm"] == 0.02
+    assert evidence["solids"] == {"before": 2, "after": 2}
+    assert evidence["diagonal_mm"] == 200.0
+    json.dumps(evidence, allow_nan=False)
+    # Both are fields an objection may name, so a reject can point at them.
+    assert {"removed", "deviation_basis"} <= set(pr.OBJECTION_FIELDS)
+
+
+def test_a_rolled_back_removal_or_none_is_not_shown_as_removed():
+    before, after = _probes()
+    assert "removed" not in pr.evidence_of(_package(), _delta(), _DEVIATION, before, after)
+    rolled = _removing_delta(status="rolled_back")
+    assert "removed" not in pr.evidence_of(_package(), rolled, _DEVIATION, before, after)
+
+
+def test_an_undeclared_area_or_scale_reads_unmeasured_never_zero():
+    before, after = _probes()
+    evidence = pr.evidence_of(_package(), _removing_delta(area=None), _DEVIATION, before, after,
+                              original=_ORIGINAL)
+    assert evidence["removed"] == {"faces": 4, "area_mm2": "unmeasured",
+                                   "area_fraction": "unmeasured"}
+    no_scale = pr.evidence_of(_package(), _removing_delta(), _DEVIATION, before, after)
+    assert no_scale["removed"]["area_fraction"] == "unmeasured"

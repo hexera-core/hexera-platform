@@ -74,14 +74,20 @@ REVIEW_SYSTEM = (
     "samples and faces it rests on, deviation_basis saying which faces were sampled - edited_faces, "
     "changed_faces, adjacent_to_removed (the faces now covering a face a removal took away) or "
     "whole_part (a sparse sample of the whole part, when a removal left no neighbour) - and "
-    "deviation_status saying whether and why not it was "
-    "measured), the mesh test's failure kinds before and after where the probe ran, the defect "
+    "deviation_status saying whether and why not it was measured), removed (present only when "
+    "kept operations removed faces: how many, their declared area_mm2, and area_fraction of the "
+    "part's area_mm2_before), the mesh test's failure kinds before and after where the probe ran, the defect "
     "codes cleared, revealed and remaining in the region, and review_rejects: how many earlier "
     "repairs of this region were rejected by review, and why. a value \"unmeasured\" is a "
     "measurement that could not be taken - never read it as zero or as nothing moved. "
     "`author_claim` is what the repair's author SAID it was for: it is a claim, not evidence - "
-    "judge the measurements, never the claim. reject a repair that deletes or collapses "
-    "geometry to get past the mesher, fuses bodies the evidence does not justify fusing, or "
+    "judge the measurements, never the claim. reject a repair that deletes or collapses REAL "
+    "geometry - a feature, a wall, a body, or area or volume beyond what the removed debris "
+    "itself carries - to get past the mesher. removing sliver or degenerate DEBRIS faces is "
+    "acceptable when ALL of these hold: the removal is declared (removed), its area_fraction is "
+    "negligible, the measured deviation_mm is negligible relative to diagonal_mm (deviation_basis "
+    "says which faces it rests on), and solids after equal solids before, so no body or feature "
+    "was lost. reject a repair that fuses bodies the evidence does not justify fusing, or "
     "moves the surface more than its purpose needs. if the repair changed geometry and its "
     "deviation was not measured, reject it unless the measured counts, areas and volumes show "
     "nothing moved. a repair that restates an earlier rejected one in new words is still that "
@@ -127,6 +133,8 @@ OBJECTION_FIELDS = (
     "deviation_faces",
     "deviation_faces_skipped",
     "deviation_status",
+    "deviation_basis",
+    "removed",
     "mesh_before",
     "mesh_after",
     "defects_cleared",
@@ -266,6 +274,33 @@ _DEVIATION_KEYS = ("deviation_mm", "deviation_samples", "deviation_faces",
                    "deviation_faces_skipped")
 
 
+def _removed(verdicts, area_before) -> dict:
+    """What the KEPT operations declared they removed - face count, declared area, and that area
+    as a fraction of the upload's - so a reviewer can tell sliver DEBRIS from real geometry.
+    {} when nothing was removed. Read only from each kept verdict's `faces_removed` and
+    `area_removed_mm2` declarations (`FixSmallFaces`), named here, never copied through."""
+    faces = 0
+    area: float | str = 0.0
+    for verdict in verdicts:
+        if verdict.get("status") != "kept":
+            continue
+        declared = verdict.get("evidence") or {}
+        count = declared.get("faces_removed")
+        if isinstance(count, int) and not isinstance(count, bool) and count > 0:
+            faces += count
+            value = _number(declared.get("area_removed_mm2"))
+            # One undeclared area makes the total a hole, never a smaller number.
+            area = UNMEASURED if isinstance(area, str) or isinstance(value, str) \
+                else area + value
+    if not faces:
+        return {}
+    total = _number(area_before)
+    fraction: float | str = UNMEASURED
+    if not isinstance(area, str) and not isinstance(total, str) and total > 0:
+        fraction = area / total
+    return {"faces": faces, "area_mm2": area, "area_fraction": fraction}
+
+
 def evidence_of(package, verdict_delta: dict, deviation: dict, probe_before: dict,
                 probe_after: dict, *, original: dict | None = None,
                 review_rejects: tuple[str, ...] = ()) -> dict:
@@ -316,6 +351,9 @@ def evidence_of(package, verdict_delta: dict, deviation: dict, probe_before: dic
     for key in _DEVIATION_KEYS:
         if deviation.get(key) is not None:
             evidence[key] = _number(deviation[key])
+    removed = _removed(verdict_delta.get("verdicts") or (), upload.get("surface_area_mm2"))
+    if removed:
+        evidence["removed"] = removed
     if "mesh_kinds" in probe_before:
         evidence["mesh_before"] = list(probe_before["mesh_kinds"])
     if "mesh_kinds" in probe_after:
