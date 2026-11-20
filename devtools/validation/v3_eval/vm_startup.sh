@@ -12,6 +12,46 @@ md()   { curl -sf -H 'Metadata-Flavor: Google' "http://metadata.google.internal/
 attr() { md "instance/attributes/$1"; }
 log()  { echo "$(date -u +%FT%TZ) v3-eval: $*"; }
 
+# retry <cmd...>: up to 4 attempts, backing off V3EVAL_RETRY_SLEEP x 1, 2, 4 seconds.
+retry() {
+  local attempt delay="${V3EVAL_RETRY_SLEEP:-5}"
+  for attempt in 1 2 3 4; do
+    "$@" && return 0
+    [ "${attempt}" -lt 4 ] && sleep $((delay * (1 << (attempt - 1))))
+  done
+  return 1
+}
+
+# publish_unit <dir> <uri> <exit code>: write one finished shard back, THEN its marker. DONE is
+# written only when the container exited 0 AND rows.json and PROVENANCE.json are confirmed in GCS;
+# anything else gets FAILED, which the resume (launch_fleet done_units) and collect.py treat as
+# not done, so the shard is relaunched rather than collected with its rows missing.
+publish_unit() {
+  local dir="$1" uri="$2" rc="$3" f why=""
+  retry gcloud storage rsync -r "${dir}" "${uri}" || why="write-back rsync failed"
+  for f in rows.json PROVENANCE.json; do
+    if [ ! -f "${dir}/${f}" ]; then
+      [ "${rc}" = "0" ] && why="${why:+${why}; }no ${f} written"
+    elif ! retry gcloud storage cp "${dir}/${f}" "${uri}/${f}"; then
+      why="${why:+${why}; }upload of ${f} failed"
+    fi
+  done
+  # markers go up from a local file, so every retry re-reads the same bytes
+  if [ "${rc}" = "0" ] && [ -z "${why}" ]; then
+    echo "${rc}" > "${dir}.DONE"
+    retry gcloud storage cp "${dir}.DONE" "${uri}/DONE" && return 0
+    why="DONE upload failed"
+  fi
+  [ "${rc}" = "0" ] && log "${uri}: exit 0 but ${why}; marking FAILED (retry-eligible)"
+  echo "exit ${rc}${why:+; ${why}}" > "${dir}.FAILED"
+  retry gcloud storage cp "${dir}.FAILED" "${uri}/FAILED" \
+    || log "${uri}: FAILED marker upload failed too"
+  return 1
+}
+
+# Tests source this file for the functions above and stop here.
+[ "${V3EVAL_SOURCE_ONLY:-}" = "1" ] && return 0
+
 NAME="$(md instance/name)"
 ZONE="$(md instance/zone | awk -F/ '{print $NF}')"
 PROJECT="$(md project/project-id)"
@@ -121,12 +161,7 @@ run_unit() {
   kill "${sync}" 2>/dev/null || true
   cp "${dir}.log" "${dir}/run.log" 2>/dev/null || true
   rm -rf "${dir}/clean-inputs"   # symlinks into the inputs: CAD, never written back
-  gcloud storage rsync -r "${dir}" "${uri}" || log "${u}: write-back failed"
-  if [ "${rc}" = "0" ]; then
-    echo "${rc}" | gcloud storage cp - "${uri}/DONE"
-  else
-    echo "${rc}" | gcloud storage cp - "${uri}/FAILED"
-  fi
+  publish_unit "${dir}" "${uri}" "${rc}" || log "${u}: not DONE (exit ${rc}); relaunch to retry"
   log "end ${u}: exit ${rc}"
 }
 

@@ -113,6 +113,13 @@ def load_runs(root: Path) -> dict:
     return {"checked": checked, "arms": arms}
 
 
+def missing_units(present) -> list[str]:
+    """Every (arm, kind) unit of the launch plan (evalspec.UNITS) with no output, as "arm/kind".
+    load_runs only sees directories that exist, so a unit that never ran at all - a whole clean
+    control, say - is invisible to it; this is the check that it is there."""
+    return [f"{a}/{k}" for a, k in evalspec.UNITS if (a, k) not in present]
+
+
 # --------------------------------------------------------------------------- numbers
 
 def summarise(rows: list[dict], catalogue: list[str] | None = None) -> dict:
@@ -145,6 +152,9 @@ def model_usage(provenances: list[dict]) -> dict:
 
 
 def vm_cost(provenances: list[dict]) -> dict:
+    """Each shard is charged ITS SHARE of the VM it ran on, not the whole VM: launch_fleet packs
+    one shard process per vCPU (evalspec.vcpus_of), so a shard costs hourly / shards-per-VM. A
+    PROVENANCE `shards_per_vm`, when present, overrides the launch plan's vCPU count."""
     seconds = sum(float(p.get("wall_seconds") or 0) for p in provenances)
     dollars = 0.0
     for p in provenances:
@@ -154,7 +164,8 @@ def vm_cost(provenances: list[dict]) -> dict:
             vcpu = int(parts[2])
             per_cpu, per_gb = VM_PRICE[parts[0]]
             hourly = vcpu * per_cpu + vcpu * GB_PER_VCPU[parts[1]] * per_gb
-            dollars += hourly * float(p.get("wall_seconds") or 0) / 3600.0
+            per_vm = max(1, int(p.get("shards_per_vm") or vcpu))
+            dollars += hourly / per_vm * float(p.get("wall_seconds") or 0) / 3600.0
     return {"shard_seconds": round(seconds, 1), "longest_shard_s": max(
         (float(p.get("wall_seconds") or 0) for p in provenances), default=0.0),
         "container_cost_usd": round(dollars, 4),
@@ -269,13 +280,12 @@ def build_verdicts(reports: dict) -> dict:
     det = reports.get(("t29_deterministic", "failing"))
     v3 = reports.get(("v3_full", "failing"))
     if det and v3:
-        # The clean control must have run under v3_full; the deterministic clean run, when present,
-        # must be untouched too.
-        cleans = [reports[k]["clean"]["untouched"] for k in
-                  (("t29_deterministic", "clean"), ("v3_full", "clean")) if k in reports]
+        # BOTH clean controls must be present and untouched: a missing one is not a pass.
+        controls = (("t29_deterministic", "clean"), ("v3_full", "clean"))
         verdicts["T29"] = evalspec.t29_verdict(
             det["summary"].get("meshing") or {}, v3["summary"].get("meshing") or {},
-            clean_untouched=("v3_full", "clean") in reports and all(cleans),
+            clean_untouched=all(k in reports and reports[k]["clean"]["untouched"]
+                                for k in controls),
             cost_per_fixed_part=v3["cost_per_fixed_part_usd"])
     off = reports.get(("t19_tournament_off", "failing"))
     if off and v3:
@@ -462,6 +472,11 @@ def main(argv: list[str] | None = None) -> int:
         runs = load_runs(source)
     except ValueError as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
+        return 2
+    missing = missing_units(runs["arms"])
+    if missing:
+        print(f"REFUSED: planned unit(s) with no output: {', '.join(missing)} - every arm x kind "
+              f"of the launch plan must be present before a verdict or a seal", file=sys.stderr)
         return 2
     checked = runs["checked"]
     if checked["commit"] != args.commit:

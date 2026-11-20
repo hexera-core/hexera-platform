@@ -325,3 +325,108 @@ def test_results_json_has_the_evidence_lane_shape(tmp_path):
     # nothing measured reads null, never 0
     assert out["arms"]["t6_rules_only_local"]["newly_meshed"] is None
     json.dumps(out, allow_nan=False)
+
+
+# ------------------------------------------------------------------ review fixes (PR #494)
+
+def _all_units_but(tmp_path: Path, *skip: tuple[str, str]) -> None:
+    for arm_name, kind in spec.UNITS:
+        if (arm_name, kind) not in skip:
+            _shard(tmp_path, arm_name, kind, 1, 1)
+
+
+def test_collector_refuses_when_a_whole_planned_unit_is_missing(tmp_path, capsys):
+    collect = _load("v3_collect_under_test_missing_unit", V3 / "collect.py")
+    _all_units_but(tmp_path, ("t29_deterministic", "clean"))
+    assert collect.missing_units(collect.load_runs(tmp_path)["arms"]) == \
+        ["t29_deterministic/clean"]
+    assert collect.main(["--commit", COMMIT, "--from", str(tmp_path), "--dry-run"]) == 2
+    err = capsys.readouterr().err
+    assert "REFUSED" in err and "t29_deterministic/clean" in err
+
+
+def test_t29_is_not_accepted_without_the_deterministic_clean_control(tmp_path):
+    collect = _load("v3_collect_under_test_t29_clean", V3 / "collect.py")
+    _all_units_but(tmp_path, ("t29_deterministic", "clean"))
+    runs = collect.load_runs(tmp_path)
+    reports = {}
+    for key, entry in runs["arms"].items():
+        rep = collect.arm_report(entry)
+        if key[1] == "clean":
+            rep["clean"] = collect.clean_untouched(entry["rows"], rep["summary"])
+        reports[key] = rep
+    # force the v3 arm to "win" so only the missing control can block acceptance
+    reports[("v3_full", "failing")]["summary"]["meshing"]["newly_meshed"] = 5
+    reports[("v3_full", "failing")]["cost_per_fixed_part_usd"] = 0.1
+    assert collect.build_verdicts(reports)["T29"]["accepted"] is False
+
+
+def test_vm_cost_charges_each_shard_its_vcpu_share_not_the_whole_vm():
+    collect = _load("v3_collect_under_test_vm_cost", V3 / "collect.py")
+    # 8 one-hour shards packed onto ONE c2d-standard-8 (one shard per vCPU) cost one VM-hour
+    provs = [{"machine_type": "c2d-standard-8", "wall_seconds": 3600.0} for _ in range(8)]
+    hourly = 8 * 0.029563 + 8 * 4 * 0.003959
+    assert collect.vm_cost(provs)["container_cost_usd"] == pytest.approx(hourly, abs=1e-4)
+
+
+def test_a_running_vm_of_another_commit_does_not_block_this_launch(monkeypatch):
+    launch = _load("v3_launch_under_test_running", V3 / "launch_fleet.py")
+    unit = "v3_full:failing:1/30"
+
+    def vm(name, commit):
+        return {"name": name, "metadata": {"items": [
+            {"key": "v3-commit", "value": commit}, {"key": "v3-units", "value": unit}]}}
+
+    monkeypatch.setattr(launch, "_gcloud_json", lambda cmd: [vm("old", "a" * 40)])
+    claimed, live = launch.running_units(COMMIT)
+    assert unit not in claimed and live == ["old"]
+    monkeypatch.setattr(launch, "_gcloud_json", lambda cmd: [vm("same", COMMIT)])
+    assert unit in launch.running_units(COMMIT)[0]
+
+
+#: A gcloud stand-in: logs every call, swallows stdin, and fails any call naming $FAIL_ON.
+FAKE_GCLOUD = """#!/bin/bash
+[ "$3" = "-" ] && cat >/dev/null
+echo "$*" >> "$GCLOUD_LOG"
+if [ -n "${FAIL_ON:-}" ] && [[ "$*" == *"$FAIL_ON"* ]]; then exit 1; fi
+exit 0
+"""
+
+
+def _publish(tmp_path: Path, rc: int, fail_on: str = "") -> tuple[int, list[str]]:
+    """Run vm_startup.sh's publish_unit for one finished shard against a stub gcloud."""
+    bin_dir, shard = tmp_path / "bin", tmp_path / "shard"
+    bin_dir.mkdir()
+    shard.mkdir()
+    (bin_dir / "gcloud").write_text(FAKE_GCLOUD)
+    (bin_dir / "gcloud").chmod(0o755)
+    for name in ("rows.json", "PROVENANCE.json"):
+        (shard / name).write_text("{}")
+    log = tmp_path / "gcloud.log"
+    log.touch()
+    env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "GCLOUD_LOG": str(log), "FAIL_ON": fail_on,
+           "V3EVAL_SOURCE_ONLY": "1", "V3EVAL_RETRY_SLEEP": "0"}
+    out = subprocess.run(["bash", "-c", f'source "{V3 / "vm_startup.sh"}" && '
+                          f'publish_unit "{shard}" gs://b/eval/x/failing/shard-1-of-2 {rc}'],
+                         env=env, capture_output=True, text=True, timeout=60)
+    return out.returncode, log.read_text().splitlines()
+
+
+def _wrote(calls: list[str], marker: str) -> bool:
+    return any(c.startswith("storage cp ") and c.endswith(f"/{marker}") for c in calls)
+
+
+def test_vm_startup_publishes_done_only_after_rows_and_provenance_upload(tmp_path):
+    status, calls = _publish(tmp_path, 0)
+    assert status == 0 and _wrote(calls, "DONE") and not _wrote(calls, "FAILED")
+    uploads = [c for c in calls if "rows.json" in c or "PROVENANCE.json" in c]
+    assert uploads and calls.index(uploads[-1]) < next(
+        i for i, c in enumerate(calls) if c.endswith("/DONE"))
+
+
+@pytest.mark.parametrize("fail_on", ["rows.json", "PROVENANCE.json"])
+def test_vm_startup_a_failed_upload_leaves_the_shard_retry_eligible(tmp_path, fail_on):
+    status, calls = _publish(tmp_path, 0, fail_on=fail_on)
+    assert status == 1 and not _wrote(calls, "DONE"), calls
+    assert _wrote(calls, "FAILED")
+    assert sum(fail_on in c for c in calls) >= 3   # retried, not given up on the first error

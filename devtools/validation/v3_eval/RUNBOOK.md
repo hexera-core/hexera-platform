@@ -24,7 +24,7 @@ Every stager, launcher and collector command has `--dry-run`. Run it first and r
 | arms | `t29_deterministic` (investigator + tournament off; reviewer live, so it calls the model as a reviewer only), `v3_full` (investigator live, tournament live K=3: T29's v3 arm AND T19's "on" arm, run once), `t19_tournament_off` (`v3_full` with tournament off) |
 | clean control | 100 parts under `v3_full` and under `t29_deterministic` |
 | shards | 96, one per vCPU (`docker --cpus=1`, `OMP_NUM_THREADS=1`), 8 per c2d-standard-8 (4 GB RAM per shard), 12 VMs = 96 vCPU ≤ 100. Shard counts per unit come from `evalspec.shard_plan` (estimated minutes per file × files), so every shard takes about the same wall. |
-| results | `$B/eval/<arm>-<c12>/<kind>/shard-I-of-N/`: `bundle/rows.jsonl` streamed per file and synced every 4 min, then `rows.json`, `PROVENANCE.json`, `model-calls.jsonl`, `transcripts.jsonl` (investigator arms), `run.log`, `DONE` (or `FAILED` / `INCOMPLETE` + `run.partial.log`) |
+| results | `$B/eval/<arm>-<c12>/<kind>/shard-I-of-N/`: `bundle/rows.jsonl` streamed per file and synced every 4 min, then `rows.json`, `PROVENANCE.json`, `model-calls.jsonl`, `transcripts.jsonl` (investigator arms), `run.log`, `DONE` (written only after `rows.json` and `PROVENANCE.json` uploaded, with retries; else `FAILED`) or `INCOMPLETE` + `run.partial.log` |
 
 The plan for `--shards-total 96`:
 
@@ -155,7 +155,7 @@ estimated, it is about 60 minutes, still inside the 3 h backstop.
 
 Model prices are gpt-5.6-luna list: $0.20 per million input tokens, $1.20 per million output
 tokens. `collect.py` reports the measured figures: model spend from per-call telemetry, VM spend
-from shard wall time.
+from shard wall time, each shard charged 1/shards-per-VM (one per vCPU) of its VM's hourly price.
 
 **RAM.** 4 GB per shard. If a shard dies of OOM on a >100k-entity part, relaunch with
 `--machine-type c2d-highmem-8` (8 GB per shard, ~$0.49/h). The plan and the 96 vCPU total stay
