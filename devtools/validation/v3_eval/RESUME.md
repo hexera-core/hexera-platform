@@ -22,6 +22,15 @@
 - **Lane A next:** apply the `_edit_form` fix and the 420 s evalspec change, rerun this repro, and send GO once at least one package is concluded.
 
 
+
+## LEAD RULING ~23:50 PT: AI wave HELD
+- Lane A fixed five investigator defects (through c4774a2c): the clock reserve, edit filler, the conclude tool, closing a region without asking, and the conclude schema plus refusal counter. The loop now runs end to end: tool calls happen, operations are tried on the clone, and a conclusion is reached.
+- **No package is reachable.** No operation is ever KEPT on this corpus. T6 rules-only had 0 keeps on 90 parts, and the supporting t29-det had 0/119 newly meshed. conclude(package) needs a kept edit.
+- **Concrete case:** on a touch-only part the model tried fragment_bodies unprompted. It added 12 faces with common_volume 0, then rolled back as `target_remains` with the same face fingerprints.
+- **Ruling:** HOLD the AI wave, per the owner's rule to launch only on a concluded package. A wave would measure 0 repairs in every arm.
+- **Lane A next (30 min box):** is the remaining defect a real gmsh failure after fragment (the op doesn't cure it), or only the contact locator re-inferring edge_through_face from bodies that still touch (fix the locator's conformal-pair exclusion)? GO if fixed and a package concludes.
+- **Staging:** the branch HEAD is staged (code archive); it will be restaged at the GO sha.
+
 ## LEAD RULING 22:55 PT, on lane B's relaunch 11200639
 - Lane B relaunched the 24 lost t29_deterministic shards at 0ff8db35 (120 s default timeout) as **11200639** (3× c2d, us-central1-b). This crossed LEAD's hold; neither side is at fault.
 - **Ruling: let it run.** It costs about $1. Label its results `t29_deterministic@0ff8db35/120s`: supporting data only, NOT the arm of record.
