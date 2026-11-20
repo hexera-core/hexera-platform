@@ -209,16 +209,19 @@ def _one_plate(flats: list[str], faces: Mapping, area: float, normal_of) -> bool
     """NOTE-6: whether the part is one plate - exactly two large flat faces, parallel and a wall apart (each other's
     other side: their centroids lie their measured thickness apart along the normal), that together are most of its
     area: neither is a piece of the part, each is the part's own side."""
-    if len(flats) != 2:
+    if len(flats) != 2 or any(faces[f].get("kind") != "plane" for f in flats):
         return False
     a, b = (normal_of(f) for f in flats)
-    if a is None or b is None or abs(float(np.dot(a, b))) < 0.99:
+    if a is not None and b is not None and abs(float(np.dot(a, b))) < 0.99:
         return False
     c1, c2 = (faces[f].get("centroid_mm") for f in flats)
     t = float(faces[flats[0]].get("thickness_median_mm") or 0.0)
     if not (isinstance(c1, (list, tuple)) and isinstance(c2, (list, tuple)) and len(c1) == len(c2) == 3 and t > 0):
         return False
-    apart = abs(float(np.dot(np.asarray(c1, dtype=float) - np.asarray(c2, dtype=float), a)))
+    d = np.asarray(c1, dtype=float) - np.asarray(c2, dtype=float)
+    # (along the normal; with no surface to read it from - the stage's checklist reads the record alone, and the L
+    # plate's two sides were offered there in round 10 - the centroids of two sides of one outline lie a wall apart)
+    apart = abs(float(np.dot(d, a))) if a is not None and b is not None else float(np.linalg.norm(d))
     if abs(apart - t) > 0.25 * t:
         return False
     return sum(float(faces[f].get("area_mm2") or 0.0) for f in flats) >= ONE_PLATE_SHARE * float(area)
