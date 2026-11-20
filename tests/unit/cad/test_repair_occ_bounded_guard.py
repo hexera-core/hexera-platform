@@ -151,8 +151,10 @@ KNOWN_UNBOUNDED = {
     ("mesh_probe.py", "_clash_gap", "BRepExtrema_DistShapeShape"),
     # --- rows 4-6: inside fragment_bodies.apply ------------------------------------------------
     # On expiry the OPERATION must DECLINE, which is a different contract from reporting an
-    # unmeasured value, so these are their own change.
-    ("operations.py", "_meeting_partner", "BRepExtrema_DistShapeShape"),
+    # unmeasured value, so these are their own change. Rows 4 and 5 are done: the partner search
+    # measures in `_distances_to` inside the dispatcher's child, and `apply` asks for the common
+    # volume through it - which is why `_meeting_partner` is no longer named here and
+    # `_common_volume` is listed only as the child-side function it now is.
     ("operations.py", "_common_volume", "BRepAlgoAPI_Common"),
     ("operations.py", "_general_fuse", "BOPAlgo_Builder"),
     # --- found by THIS GUARD, not by the manual audit -----------------------------------------
@@ -175,13 +177,7 @@ KNOWN_UNBOUNDED = {
 #: Registered kernels that are STILL called straight from the parent at a named call site, with
 #: why. Registering a kernel says it MAY run in a child; these call sites do not, so on these
 #: paths the kernel is unbounded. SHRINK-ONLY, like KNOWN_UNBOUNDED.
-KNOWN_DIRECT_CALLS = {
-    # `fragment_bodies` - row 5 of the audit. #515 registered `_common_volume` so it CAN run in a
-    # child, and `investigator_tools` takes that route, but `apply` still calls it here. Bounding
-    # it is the row 4-6 change: on expiry the OPERATION must DECLINE, which is a different
-    # contract from reporting an unmeasured value, so it is its own PR rather than a swap.
-    ("operations.py", "apply", "_common_volume"),
-}
+KNOWN_DIRECT_CALLS: set[tuple[str, str, str]] = set()
 
 
 def _enclosing(tree: ast.AST) -> dict[ast.AST, str]:
@@ -234,6 +230,38 @@ def test_no_new_uninterruptible_kernel_call_is_added():
         + "\n\nRun it in a bounded child (see cad/repair/occ_distance.py: shapes to BREP, a fresh "
           "interpreter in its own session, group-killed at the budget) or, if it genuinely cannot "
           "be bounded yet, add it to KNOWN_UNBOUNDED with the reason and a follow-up.")
+
+
+def test_the_direct_call_list_does_not_name_calls_that_are_already_routed():
+    """SHRINK-ONLY, like KNOWN_UNBOUNDED and for the same reason: an entry for a call site that
+    now goes through the dispatcher is decoration, and the next reader cannot tell which entries
+    are real."""
+    registered = {name for names in _registered_kernels().values() for name in names}
+    if not registered:
+        pytest.skip(f"{DISPATCHER} is not on this branch, so nothing is registered")
+
+    live: set[tuple[str, str, str]] = set()
+    for path in sorted(REPAIR.glob("*.py")):
+        if path.name == DISPATCHER:
+            continue
+        tree = ast.parse(path.read_text(), filename=str(path))
+        where = _enclosing(tree)
+        bounded = _child_side(path.name, tree, where)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = (func.id if isinstance(func, ast.Name)
+                    else func.attr if isinstance(func, ast.Attribute) else "")
+            enclosing = where.get(node, "<module>")
+            if name in registered and enclosing not in bounded:
+                live.add((path.name, enclosing, name))
+
+    stale = sorted(KNOWN_DIRECT_CALLS - live)
+
+    assert not stale, (
+        "KNOWN_DIRECT_CALLS names call sites that no longer call a registered kernel in the "
+        "parent - delete them:\n  " + "\n  ".join(f"{m}:{fn} -> {sym}" for m, fn, sym in stale))
 
 
 def test_the_known_list_does_not_name_calls_that_are_already_gone():
