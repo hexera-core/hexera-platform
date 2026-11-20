@@ -292,9 +292,52 @@ def _walk_order(regions: tuple[Region, ...], defects) -> tuple[Region, ...]:
             if defect.fingerprint in region.fingerprints:
                 worst[region.index] = min(worst.get(region.index, rank), rank)
     stops_the_mesh = _mesh_located_regions(regions, defects)
-    return tuple(sorted(regions,
-                        key=lambda r: (0 if r.index in stops_the_mesh else 1,
-                                       worst.get(r.index, len(_SEVERITY_RANK)), r.index)))
+    really_meets = _real_intersection_regions(regions, defects)
+
+    def rank(region: Region) -> tuple:
+        if region.index in really_meets:
+            group = 0
+        elif region.index in stops_the_mesh:
+            group = 1
+        else:
+            group = 2
+        return (group, worst.get(region.index, len(_SEVERITY_RANK)), region.index)
+
+    return tuple(sorted(regions, key=rank))
+
+
+#: What `measurements["located_by"]` says on a defect the surface-mesh clash search placed
+#: (lane G, mesh_clash). Only those defects carry `clash_gap_mm`.
+CLASH_LOCATED = "surface-mesh-clash"
+
+
+def _real_intersection_regions(regions: tuple[Region, ...], defects) -> frozenset[int]:
+    """The regions holding a clash the kernel measured as GENUINELY MEETING - `clash_gap_mm` 0.
+
+    Of the pairs gmsh complains about, only these are something an operation can heal: a
+    sub-element GAP is the mesher's own tolerance against geometry that never touches, and no
+    heal or re-trim will close it. So the walk reaches the real ones first.
+
+    ABSENT AND NONE ARE UNKNOWN, AND NEVER PROMOTE. The key is present only on a clash-located
+    defect and is None when the kernel could not measure it, so reading it with a default of 0
+    would rank EVERY region as a real intersection - the same as no ordering at all, and
+    invisible in the numbers. `located_by` is checked too, so a 0.0 that came from somewhere
+    else is not mistaken for a measured one.
+    """
+    import meshpipeline.settings.cad_repair as rcfg
+
+    if getattr(rcfg, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "off") != "live":
+        return frozenset()
+    meeting = set()
+    for defect in defects:
+        measurements = getattr(defect, "measurements", None) or {}
+        if measurements.get("located_by") != CLASH_LOCATED:
+            continue
+        gap = measurements.get("clash_gap_mm")
+        if isinstance(gap, (int, float)) and not isinstance(gap, bool) and float(gap) == 0.0:
+            if defect.fingerprint:
+                meeting.add(defect.fingerprint)
+    return frozenset(r.index for r in regions if meeting & set(r.fingerprints))
 
 
 def _mesh_located_regions(regions: tuple[Region, ...], defects) -> frozenset[int]:
