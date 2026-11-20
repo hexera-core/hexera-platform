@@ -721,7 +721,9 @@ def _native_payload_members(workspace) -> list[str]:
 
 #: Workspace fact files the REMOTE side of a native snappy run reads (engines/snappy/native.py).
 #: Each must travel in the submission payload, or the remote reads a workspace without it.
-REMOTE_WORKSPACE_FACTS: tuple[str, ...] = ("flow_topology",)
+#: port_declaration.json and request.txt: the confirmed boundaries and the flow conditions, which the Fluent export
+#: types its zones from (engines/cfd_exports.fluent_types)
+REMOTE_WORKSPACE_FACTS: tuple[str, ...] = ("flow_topology", "port_declaration.json", "request.txt")
 
 
 def plan_refinements(*, surface_level=None, wake: bool = False, boxes: int = 0,

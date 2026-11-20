@@ -272,6 +272,60 @@ def _zip(dest: Path, entries: list[tuple[Path, str]], *, deadline: float | None 
     return dest.stat().st_size
 
 
+#: THE CONFIRMED BOUNDARIES as the builder kept them (agents/builder/workspace: the intake's patches, word for word)
+#: and the plan's request with its flow-conditions sentence - both travel with every flow engine's payload
+PORTS_FILE = "port_declaration.json"
+REQUEST_FILE = "request.txt"
+#: Fluent's boundary types and their face-section codes (Fluent's mesh file format: the code is the bc-type field of
+#: each face section header, in hex; the type is the zone section's word)
+FLUENT_CODES = {"interior": 2, "wall": 3, "pressure-inlet": 4, "pressure-outlet": 5, "symmetry": 7,
+                "pressure-far-field": 9, "velocity-inlet": 10, "periodic": 12, "mass-flow-inlet": 20}
+#: the units of the conditions' speed that are a mass flow (contracts/flow_conditions.MASS_FLOWS)
+_MASS_FLOW = re.compile(r"\b(?:kg/s|kg/h|g/s)\b", re.I)
+
+
+def fluent_types(workspace) -> tuple[dict[str, str], dict[str, str]]:
+    """({patch name: Fluent type} for every boundary whose role the user confirmed, {patch name: why it is left as
+    the converter wrote it}). From the confirmed role, never the name: an inlet with a speed (or a volume flow) is a
+    velocity-inlet, one given as a mass flow a mass-flow-inlet; an outlet a pressure-outlet; a wall a wall; a
+    symmetry plane a symmetry. An inlet whose flow the conditions do not state, and any other role (the far field),
+    is left as foamMeshToFluent wrote it, and said."""
+    import json as _json
+
+    from meshpipeline.contracts import flow_conditions as FC
+    ws = Path(workspace)
+    try:
+        ports = _json.loads((ws / PORTS_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}, {}
+    try:
+        request = (ws / REQUEST_FILE).read_text(encoding="utf-8")
+    except OSError:
+        request = ""
+    c = FC.read(request, [p for p in ports if isinstance(p, dict)]) if request else None
+    speed = str((c or {}).get("speed_words") or "")
+    types: dict[str, str] = {}
+    left: dict[str, str] = {}
+    for p in ports if isinstance(ports, list) else []:
+        if not isinstance(p, dict) or not p.get("name"):
+            continue
+        name, role = str(p["name"]), str(p.get("type") or "").lower()
+        if role == "inlet":
+            if c is None or c.get("velocity_ms") is None and not _MASS_FLOW.search(speed):
+                left[name] = "an inlet whose flow the conditions do not state: left as the converter wrote it"
+            else:
+                types[name] = "mass-flow-inlet" if _MASS_FLOW.search(speed) else "velocity-inlet"
+        elif role == "outlet":
+            types[name] = "pressure-outlet"
+        elif role in ("wall", "ground"):
+            types[name] = "wall"
+        elif role == "symmetry":
+            types[name] = "symmetry"
+        elif role:
+            left[name] = f"no Fluent type is confirmed for a {role}: left as the converter wrote it"
+    return types, left
+
+
 _ZONE_UNSAFE = re.compile(r"[^A-Za-z0-9_.:\-]")
 _ZONE_LINE = re.compile(rb"^\((39|45) \((\d+) (\S+) (\S+)\)\(\)\)$")
 #: How far from its end a Fluent mesh's zone names start: foamMeshToFluent writes them last, one
@@ -287,10 +341,18 @@ def fluent_zone_name(name: str) -> str:
     return _ZONE_UNSAFE.sub("_", str(name)) or "zone"
 
 
-def _zip_fluent(msh: Path, dest: Path, arcname: str, *, deadline: float | None = None) -> tuple[int, dict]:
+#: a face section's header: (13 (zone-id first last bc-type face-type), every number in hex
+_FACE_HEADER = re.compile(rb"(?m)^\(13 \(([0-9a-fA-F]+) ([0-9a-fA-F]+) ([0-9a-fA-F]+) ([0-9a-fA-F]+) ([0-9a-fA-F]+)\)")
+
+
+def _zip_fluent(msh: Path, dest: Path, arcname: str, *, deadline: float | None = None,
+                types: dict[str, str] | None = None) -> tuple[int, dict, dict]:
     """The Fluent mesh into its zip, streamed, with every zone name made safe (fluent_zone_name) and
-    kept unique. Returns (zip bytes, {old name: new name} for each one changed). Past `deadline` it
-    is abandoned whole (OutOfTime), as _zip is."""
+    kept unique, and every boundary zone of a confirmed role (`types`, by patch name) given its Fluent type in BOTH
+    places the file states one - the zone section's word and the face section's bc code - so the two agree; a zone
+    of no confirmed role keeps the converter's word, and its face code is made to match it (foamMeshToFluent wrote
+    "pressure-outlet" beside code 4, pressure-inlet). Returns (zip bytes, {old name: new name} for each one
+    changed, {patch name: Fluent type written}). Past `deadline` it is abandoned whole (OutOfTime), as _zip is."""
     _in_time(deadline)
     size = msh.stat().st_size
     start = max(0, size - _TAIL_BYTES)
@@ -308,11 +370,22 @@ def _zip_fluent(msh: Path, dest: Path, arcname: str, *, deadline: float | None =
     taken = {m.group(4).decode("utf-8", "replace") for m in zone_lines if m} & {
         fluent_zone_name(m.group(4).decode("utf-8", "replace")) for m in zone_lines if m}
     fixed = []
+    codes: dict[int, int] = {}              # zone id (the zone section's, decimal) -> the bc code its faces carry
+    written: dict[str, str] = {}
     for ln, m in zip(lines[k:], zone_lines, strict=True):
         if not m:
             fixed.append(ln)
             continue
         old = m.group(4).decode("utf-8", "replace")
+        kind = m.group(3).decode("utf-8", "replace")
+        if (types or {}).get(old) and kind not in ("fluid", "interior"):
+            kind = str((types or {})[old])
+            written[old] = kind
+        if types and kind in FLUENT_CODES and kind not in ("fluid", "interior"):
+            try:
+                codes[int(m.group(2))] = FLUENT_CODES[kind]
+            except ValueError:
+                pass
         new = fluent_zone_name(old)
         if new != old:
             base, n = new, 1
@@ -321,27 +394,43 @@ def _zip_fluent(msh: Path, dest: Path, arcname: str, *, deadline: float | None =
                 new = f"{base}_{n}"
             taken.add(new)
             renamed[old] = new
-        fixed.append(b"(%s (%s %s %s)())" % (m.group(1), m.group(2), m.group(3), new.encode()))
+        fixed.append(b"(%s (%s %s %s)())" % (m.group(1), m.group(2), kind.encode(), new.encode()))
     keep = start + len(b"\n".join(lines[:k])) + (1 if k else 0)
+
+    def header(mh: re.Match) -> bytes:
+        zone = int(mh.group(1), 16)
+        if zone not in codes:
+            return mh.group(0)
+        return b"(13 (%s %s %s %x %s)" % (mh.group(1), mh.group(2), mh.group(3), codes[zone], mh.group(5))
     tmp = dest.with_name(dest.name + ".part")
     try:
         with zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=ZIP_LEVEL,
                              allowZip64=True) as zf, msh.open("rb") as src, \
                 zf.open(arcname, "w", force_zip64=True) as out:
             left = keep
+            carry = b""
             while left > 0:
                 _in_time(deadline)
                 chunk = src.read(min(_ZIP_CHUNK, left))
                 if not chunk:
                     break
-                out.write(chunk)
                 left -= len(chunk)
+                text = carry + chunk
+                if left > 0:
+                    # a face header never spans a line: hold back the last, possibly partial, line
+                    cut = text.rfind(b"\n") + 1
+                    text, carry = text[:cut], text[cut:]
+                else:
+                    carry = b""
+                out.write(_FACE_HEADER.sub(header, text) if codes else text)
+            if carry:
+                out.write(_FACE_HEADER.sub(header, carry) if codes else carry)
             out.write(b"\n".join(fixed))
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
     os.replace(tmp, dest)
-    return dest.stat().st_size, renamed
+    return dest.stat().st_size, renamed, written
 
 
 def _tree(root: Path, top: str, prefix: str) -> list[tuple[Path, str]]:
@@ -485,11 +574,17 @@ def write_exports(workspace, *, bashrc: str, guard_s: float = GUARD_S) -> dict:
         want = {k: counts[k] for k in ("points", "faces", "cells") if k in counts}
         if not want or any(got.get(k) != v for k, v in want.items()):
             raise RuntimeError(f"the Fluent header declares {got}, the polyMesh has {want}")
-        n, renamed = _zip_fluent(msh, ws / FLUENT_ZIP, f"{_SCRATCH_CASE}.msh", deadline=deadline)
+        types, left_as_is = fluent_types(ws)
+        n, renamed, written = _zip_fluent(msh, ws / FLUENT_ZIP, f"{_SCRATCH_CASE}.msh", deadline=deadline,
+                                          types=types)
         record["files"][FLUENT_ZIP] = {"bytes": n, "msh_bytes": msh.stat().st_size,
                                        "seconds": round(time.monotonic() - t, 1)}
         if renamed:
             record["files"][FLUENT_ZIP]["renamed_zones"] = renamed
+        if written:
+            record["files"][FLUENT_ZIP]["zone_types"] = written
+        if left_as_is:
+            record["files"][FLUENT_ZIP]["zone_types_left"] = left_as_is
         msh.unlink(missing_ok=True)
     except Exception as exc:  # noqa: BLE001
         logger.warning("cfd exports: the Fluent mesh was not written: %s", exc)
