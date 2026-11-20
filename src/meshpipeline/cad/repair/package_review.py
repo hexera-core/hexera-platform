@@ -321,7 +321,8 @@ def _removed(verdicts, area_before) -> dict:
 
 def evidence_of(package, verdict_delta: dict, deviation: dict, probe_before: dict,
                 probe_after: dict, *, original: dict | None = None,
-                review_rejects: tuple[str, ...] = ()) -> dict:
+                review_rejects: tuple[str, ...] = (),
+                delivered: dict | None = None) -> dict:
     """What the reviewer is shown: MEASURED FACTS ONLY, and the author's intent as a claim. PURE.
 
     `verdict_delta` is the session's record of the package: `verdicts` (each operation's
@@ -374,8 +375,24 @@ def evidence_of(package, verdict_delta: dict, deviation: dict, probe_before: dic
         evidence["removed"] = removed
     if "mesh_kinds" in probe_before:
         evidence["mesh_before"] = list(probe_before["mesh_kinds"])
-    if "mesh_kinds" in probe_after:
+    # `mesh_after` IS THE DELIVERED ARTEFACT'S READING when there is one. Measured in the pipeline
+    # image on abc 0060_00608290, three probes each and every one identical: the repaired shape IN
+    # MEMORY fails with 5 x mesh_edge_through_face, and the same geometry written to STEP and read
+    # back MESHES. A reviewer shown the in-memory probe refuses repairs whose delivered file
+    # meshes - correct on its evidence, wrong about the product. The owner's headline is a
+    # repaired STEP that gmsh meshes, and the keep rule already judges cures on the delivered
+    # STEP, so review may not judge a different object. The in-memory reading is KEPT BESIDE IT,
+    # labelled, so the disagreement stays visible instead of being silently replaced.
+    if delivered is not None and "mesh_kinds" in delivered:
+        evidence["mesh_after"] = list(delivered["mesh_kinds"])
+        evidence["mesh_after_source"] = "delivered"
+        if "mesh_kinds" in probe_after:
+            evidence["mesh_after_in_memory"] = list(probe_after["mesh_kinds"])
+    elif "mesh_kinds" in probe_after:
+        # NO DELIVERED READING: no time left, or an export that failed. Say which reading this is,
+        # so an unmeasured delivered probe can never be mistaken for a passing one.
         evidence["mesh_after"] = list(probe_after["mesh_kinds"])
+        evidence["mesh_after_source"] = "in_memory_only"
     was = Counter(probe_before.get("codes") or ())
     now = Counter(probe_after.get("codes") or ())
     evidence["defects_cleared"] = sorted((was - now).elements())
