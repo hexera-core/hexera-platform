@@ -628,9 +628,12 @@ def tournament_author(shape, *, original, reserved: frozenset = frozenset(), job
          shape, and a stale one would resolve them against faces a commit has since renumbered.
       3. **Offers the WINNER**, which is `winner()`: the best ELIGIBLE rehearsal. `winner()`
          returning None offers NOTHING and ends the round `no_eligible_candidate`.
-      4. **On a re-call** for the same region (the offered package was reverted), replays the
-         CACHED candidates it has not yet offered, RE-REHEARSED against the current shape, and
-         SPENDS NO NEW SOURCE CALL - which is what makes a second attempt affordable.
+      4. **On a re-call** for the same region and the SAME defects (the offered package was
+         reverted), replays the CACHED candidates it has not yet offered, RE-REHEARSED against
+         the current shape, and SPENDS NO NEW SOURCE CALL - which is what makes a second attempt
+         affordable. Once the cache is exhausted, or the region's defects changed, the sources
+         are asked AGAIN with the current defects and the attempt history; a plan already offered
+         for the region is never offered twice.
 
     IN SHADOW the rules package is returned UNCHANGED, whatever the tournament found; the round
     still runs on clones and records `would_offer`. It is skipped unless the whole wall fits
@@ -726,17 +729,28 @@ def tournament_author(shape, *, original, reserved: frozenset = frozenset(), job
             entry["end"] = NOT_LOCATED
             return None
 
+        asked_about = frozenset(getattr(d, "fingerprint", "") for d in defects)
         held = cache.get(int(region.index))
-        if held is None:
-            cands = gather(entry, region, tuple(defects), tuple(attempts), cap)
-            held = {"candidates": cands, "offered": []}
-            cache[int(region.index)] = held
-        else:
-            # A RE-CALL SPENDS NO SOURCE CALL. The ranking is this region's own cache; only the
-            # candidates it has not yet offered are left, and they are re-rehearsed below.
+        cands: tuple[Candidate, ...] = ()
+        if held is not None and held["defects"] == asked_about:
+            # A RE-CALL ON THE SAME QUESTION SPENDS NO SOURCE CALL. The ranking is this region's
+            # own cache; only the candidates it has not yet offered are left, re-rehearsed below.
             cands = tuple(c for c in held["candidates"] if c.plan_key not in held["offered"])
             entry["sources"].append({"source": "cache", "outcome": "reused",
                                      "reason": f"{len(cands)} candidate(s) not yet offered"})
+        if not cands:
+            # FIRST CALL, CHANGED DEFECTS, OR AN EXHAUSTED CACHE: ask the sources again with the
+            # region's CURRENT defects and its attempt history. The first candidate set is not the
+            # region's whole repair allowance - the rules author's fallback (`sew_faces` ->
+            # `fill_planar_hole`) exists only once it has seen the failed attempt, and a commit
+            # that leaves a second defect asks a new question. Bounded by the loop's per-region
+            # attempts and by each source's own run-wide caps; a plan already offered for this
+            # region is never offered twice.
+            offered = list(held["offered"]) if held is not None else []
+            fresh = gather(entry, region, tuple(defects), tuple(attempts), cap)
+            cands = tuple(c for c in fresh if c.plan_key not in offered)
+            held = {"candidates": fresh, "offered": offered, "defects": asked_about}
+            cache[int(region.index)] = held
 
         driven = next((c.package for c in held["candidates"] if c.source == RULES), None)
         fallback = driven if shadow else None

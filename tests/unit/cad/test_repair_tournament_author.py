@@ -315,12 +315,14 @@ def test_recall_offers_the_runner_up_rerehearsed():
 
 
 def test_a_recall_with_nothing_left_to_offer_is_an_honest_ending():
+    """The exhausted cache asks the sources again; when they can only re-propose the plan already
+    offered here, nothing is offered twice and the round ends honestly."""
     author, srcs, plays = build(k=1)
     author(REGION, DEFECTS)
     author(REGION, DEFECTS, (types.SimpleNamespace(region_index=0, status=REVERTED),))
     entry = author.tournaments[-1]
     assert (entry["end"], entry["offered"]) == (T.NO_CANDIDATE, None)
-    assert srcs[T.RULES].asked == 1
+    assert srcs[T.RULES].asked == 2
     assert len(plays.calls) == 1
 
 
@@ -616,3 +618,45 @@ def test_a_tournament_with_no_winner_offers_the_loop_nothing():
     assert author.tournament_report(run.packages) == {
         "regions": 1, "candidates": 1, "rehearsed": 1, "winners_by_source": {},
         "offered": 0, "committed": 0, "seconds": pytest.approx(1.0)}
+
+
+class Fallback(Source):
+    """The rules author's real shape: a first answer, then a DIFFERENT one once the first has
+    failed (`sew_faces` -> `fill_planar_hole`), which it can only give if it is asked again WITH
+    the attempt history."""
+
+    def __init__(self, first: str, then: str) -> None:
+        super().__init__(first)
+        self.then = then
+        self.seen: list[int] = []
+
+    def __call__(self, region, defects, attempts=()):
+        self.asked += 1
+        self.seen.append(len(attempts))
+        return package(self.then if attempts else self.op)
+
+
+def test_an_exhausted_cache_asks_the_sources_again_with_the_attempts():
+    """K=1: the cache holds ONE candidate. Once it is offered and reverted, the region is NOT over:
+    the sources are asked again with the attempt history, which is what the rules author's
+    `sew_faces` -> `fill_planar_hole` fallback needs."""
+    rules = Fallback("sew", "fill")
+    plays = Rehearsals()
+    author = T.tournament_author(
+        "upload", original=ORIGINAL, k=1, clock=lambda: 1000.0, rules=rules, one_shot=None,
+        investigate=None, rehearse_with=plays)
+    first = author(REGION, DEFECTS)
+    second = author(REGION, DEFECTS, (types.SimpleNamespace(region_index=0, status=REVERTED),))
+    assert T.plan_key(first) == T.plan_key(package("sew"))
+    assert second is not None and T.plan_key(second) == T.plan_key(package("fill"))
+    assert rules.seen == [0, 1]
+    assert author.tournaments[-1]["end"] == T.OFFERED
+
+
+def test_changed_defects_are_authored_for_again_not_served_from_the_cache():
+    """A COMMIT that leaves another defect in the region changes the question. The cached
+    candidates were authored for the old defects, so the sources are asked about the new ones."""
+    author, srcs, plays = build(k=3)
+    author(REGION, DEFECTS)
+    author(REGION, (defect("f2"),), (types.SimpleNamespace(region_index=0, status=COMMITTED),))
+    assert srcs[T.RULES].asked == 2
