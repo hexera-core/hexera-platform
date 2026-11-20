@@ -1515,6 +1515,19 @@
   "roots": []
  },
  {
+  "context": "api/v1/chat.py::_confirm_pending_approval::error#1|NotAPublisher|not-a-publisher|",
+  "path": "api/v1/chat.py",
+  "qualname": "_confirm_pending_approval",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "api/v1/repair_review.py::_compensate::error#1|NotAPublisher|not-a-publisher|",
   "path": "api/v1/repair_review.py",
   "qualname": "_compensate",
@@ -3662,6 +3675,19 @@
   "roots": [
    "cad/midsurface.py::instance of meshpipeline.cad.midsurface._Clock"
   ]
+ },
+ {
+  "context": "cad/part_words.py::_holes_named::search#1|NotAPublisher|not-a-publisher|",
+  "path": "cad/part_words.py",
+  "qualname": "_holes_named",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_HOLE_WORDS",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
  },
  {
   "context": "cad/repair/mesh_probe.py::classify::search#1|NotAPublisher|not-a-publisher|",
