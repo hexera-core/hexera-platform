@@ -26,7 +26,7 @@ from meshpipeline.cad.repair.caps import (
     measure as _measure,
 )
 from meshpipeline.cad.repair.contracts import DefectCode, DefectSeverity
-from meshpipeline.cad.repair.identity import GONE, EntityRef
+from meshpipeline.cad.repair.identity import GONE, EntityRef, run_grid
 from meshpipeline.cad.repair.localize import (
     analyzer_only,
     face_scan_budget_s,
@@ -818,6 +818,20 @@ class RepairSession:
     def try_op(self, op, targets: tuple[EntityRef, ...], defect_code, *,
                tolerance_mm: float, answered_held: frozenset[str] = frozenset(),
                within: Region | None = None) -> OpVerdict:
+        """`_try_op` with every name it makes - the operation's own included - on the RUN's grid.
+
+        Scans already name at the upload's diagonal; this pins the operation's `added`/`rebuilt`
+        names and the pre-op face names to the same grid (`identity.run_grid`), so a repair that
+        moved the part across a power of two cannot make an op's name and a scan's name for one
+        face disagree (PR #494 review, session.py:611).
+        """
+        with run_grid(self.original.diagonal_mm):
+            return self._try_op(op, targets, defect_code, tolerance_mm=tolerance_mm,
+                                answered_held=answered_held, within=within)
+
+    def _try_op(self, op, targets: tuple[EntityRef, ...], defect_code, *,
+                tolerance_mm: float, answered_held: frozenset[str] = frozenset(),
+                within: Region | None = None) -> OpVerdict:
         """Apply one operation and keep it only if it repaired what it aimed at.
 
         `within` IS WHERE "LOCAL EDIT, LOCAL PROOF" IS ACTUALLY PAID FOR. Step 5 is the expensive
@@ -986,6 +1000,14 @@ class RepairSession:
             standing=standing, tolerance_mm=tolerance_mm)
         if reason:
             self.shape, self._defects, self.complete_scan = snapshot
+            if reason == "target_remains":
+                # WHAT THE ROLLED-BACK RESULT DID CLEAR. `target_remains` is a verdict on the AIM,
+                # not on the call: a whole-shape operation re-aimed at one of these makes the
+                # identical call and would pass, so the planner must not suppress that aim
+                # (`plan.RunHistory.mark_whole_shape_cleared`, PR #494 review, plan.py:401).
+                still = {(d.fingerprint, d.code.value) for d in found}
+                delta["cleared"] = sorted({d.fingerprint for d in previous if d.fingerprint
+                                           and (d.fingerprint, d.code.value) not in still})
             return self._record(OpVerdict(
                 op=op.name, targets=fingerprints, defect_code=code, status=ROLLED_BACK,
                 reason=reason, basis=basis, evidence=dict(outcome.evidence), delta=delta,
@@ -1405,9 +1427,11 @@ class RepairSession:
             diagonals = tuple(dict.fromkeys(_diagonal_of(shape) for shape in self._kept_inputs))
         except Exception:  # noqa: BLE001 - evidence only
             diagonals = ()
-        result = deviation.measure_deviation(
-            self._upload, self.shape, tuple(dict.fromkeys(self._kept_faces)),
-            budget_s=budget, diagonals=diagonals)
+        # The kept faces were named on the run's grid (`try_op`), so they are looked up on it.
+        with run_grid(self.original.diagonal_mm):
+            result = deviation.measure_deviation(
+                self._upload, self.shape, tuple(dict.fromkeys(self._kept_faces)),
+                budget_s=budget, diagonals=diagonals)
         out: dict = {"deviation_s": result.seconds}
         if result.faces is not None:
             out.update(deviation_samples=result.samples, deviation_faces=result.faces,

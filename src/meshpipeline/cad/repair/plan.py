@@ -147,6 +147,11 @@ class RunHistory:
     #: rather than a set because a kernel shape is compared with `IsSame`, not hashed, and a run
     #: holds at most `max_ops` entries.
     tried_whole_shape: list[tuple[str, object]] = field(default_factory=list)
+    #: AIMS A WHOLE-SHAPE RUN PROVED IT CAN CLEAR: `(op_name, shape, fingerprints)`. A call that
+    #: changed the part but left its own target is rolled back `target_remains` - a verdict on the
+    #: AIM. The defects its result did clear are exactly the aims for which the identical call
+    #: would pass, so they stay proposable on the same shape (PR #494 review, plan.py:401).
+    whole_shape_cleared: list[tuple[str, object, frozenset[str]]] = field(default_factory=list)
     refusals: list[dict] = field(default_factory=list)
     #: Run-level policy, NOT a trial outcome: why planar filling is off for the rest of this run
     #: (empty when it is not). Kept apart from `ineffective` because that set means "tried and
@@ -182,9 +187,20 @@ class RunHistory:
             return
         self.tried_whole_shape.append((op_name, shape))
 
-    def was_whole_shape_tried(self, op_name: str, shape) -> bool:
-        """Has this whole-shape operation already run on this exact shape?"""
+    def mark_whole_shape_cleared(self, op_name: str, shape, fingerprints) -> None:
+        """Record which defects this whole-shape operation's rolled-back result cleared."""
+        cleared = frozenset(f for f in fingerprints if f)
+        if shape is None or not cleared:
+            return
+        self.whole_shape_cleared.append((op_name, shape, cleared))
+
+    def was_whole_shape_tried(self, op_name: str, shape, target: str = "") -> bool:
+        """Has this whole-shape operation already run on this exact shape - and, for `target`,
+        is there no evidence that the identical call would clear it?"""
         if shape is None:
+            return False
+        if target and any(name == op_name and target in cleared and _same_shape(shape, tried)
+                          for name, tried, cleared in self.whole_shape_cleared):
             return False
         return any(name == op_name and _same_shape(shape, tried)
                    for name, tried in self.tried_whole_shape)
@@ -398,7 +414,8 @@ class RulesPlanner:
                     claimed = True
                     continue
                 if (getattr(op, "whole_shape", False)
-                        and history.was_whole_shape_tried(op.name, shape)):
+                        and history.was_whole_shape_tried(op.name, shape,
+                                                          defect.fingerprint)):
                     # THIS OPERATION HAS ALREADY RUN ON THIS SHAPE, and it is whole-shape: it does
                     # not look at where its targets are, so a second aim is the SAME CALL and can
                     # only get the same answer. Measured: 17 of the corpus run's 81

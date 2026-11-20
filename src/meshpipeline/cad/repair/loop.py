@@ -304,6 +304,10 @@ def run(shape, *, planner=None, budget: LoopBudget | None = None, tolerance_mm: 
         # and nothing in the run has learned anything. Consumed only within this run: model
         # guidance is prepared ahead of the loop and never sees this ledger fill.
         history.mark_ineffective(candidate.defect_fingerprint, candidate.op.name)
+        if getattr(candidate.op, "whole_shape", False) and verdict.reason == "target_remains":
+            # A rollback restores the very shape the planner keyed this attempt on.
+            history.mark_whole_shape_cleared(candidate.op.name, work.shape,
+                                             verdict.delta.get("cleared", ()))
         consecutive_misses += 1
         if consecutive_misses >= limits.stall_limit:
             stopped = _terminal(work, STALLED)
