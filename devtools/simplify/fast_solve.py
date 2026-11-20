@@ -581,6 +581,10 @@ def _solve_petsc(shm: Path, b, x0, xyz, rtol, maxiter, nproc, cn=None):
            str(Path(__file__).resolve()), "--petsc-worker", str(shm)]
     if nproc > (len(os.sched_getaffinity(0)) // 2 or 1):
         cmd[3:3] = ["--use-hwthread-cpus", "--oversubscribe"]
+    elif nproc < _physical_cores():
+        # a SHARE of the machine (the harness runs several jobs side by side): pinned, every job's rank 0
+        # would land on core 0, rank 1 on core 1, ... and the jobs would queue on the first cores
+        cmd[3:7] = ["--bind-to", "none"]
     t0 = time.perf_counter()
     p = subprocess.run(cmd, env=env, capture_output=True, text=True)
     wall = time.perf_counter() - t0

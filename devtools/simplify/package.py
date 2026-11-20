@@ -51,6 +51,7 @@ def main(argv=None) -> int:
     ap.add_argument("--budget", type=float, default=0.001)
     ap.add_argument("--jobs", type=int, default=2)
     a = ap.parse_args(argv)
+    H._set_solver(H.SOLVER, a.jobs)   # the two package solves split the machine
     hd = Path(a.harness)
     r = json.loads((hd / "result.json").read_text())
     ref = r["original"]
