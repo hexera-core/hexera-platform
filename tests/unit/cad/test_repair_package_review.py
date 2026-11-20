@@ -50,6 +50,13 @@ def _package() -> TargetPackage:
         rationale=f"regions-model-v1: {_INTENT} {_RAW_REPLY}")
 
 
+def _defects(*codes):
+    """Defect doubles carrying just the code `probe_of` reads."""
+    from types import SimpleNamespace
+
+    return tuple(SimpleNamespace(code=c) for c in codes)
+
+
 def _delta() -> dict:
     return {
         "verdicts": [
@@ -89,6 +96,9 @@ EXPECTED_KEYS = {
     "deviation_status", "review_rejects",
     "deviation_mm", "deviation_samples", "deviation_faces", "deviation_faces_skipped",
     "mesh_before", "mesh_after",
+    # WHICH ARTEFACT `mesh_after` IS. Stated whenever there is a mesh reading at all;
+    # `mesh_after_in_memory` joins it only when a delivered reading exists to disagree with.
+    "mesh_after_source",
     "defects_cleared", "defects_revealed", "defects_remaining",
     "author_claim",
 }
@@ -99,6 +109,7 @@ def test_reviewer_evidence_is_measured_only():
     evidence = pr.evidence_of(_package(), _delta(), _DEVIATION, before, after,
                               original=_ORIGINAL, review_rejects=("a fillet face was removed",))
     assert set(evidence) == EXPECTED_KEYS
+    assert evidence["mesh_after_source"] == "in_memory_only"   # no delivered probe handed in
     assert (evidence["diagonal_mm"], evidence["area_mm2_before"],
             evidence["volume_mm3_before"]) == (200.0, 1000.0, 8000.0)
     assert evidence["deviation_status"] == "measured"
@@ -131,9 +142,11 @@ def test_evidence_without_the_probe_lacks_mesh_and_deviation_fields():
     assert evidence["review_rejects"] == {"count": 0, "reasons": []}
     # No upload measure handed in: the scale reads as the hole it is.
     assert evidence["diagonal_mm"] == "unmeasured"
+    # WITH THE PROBE OFF there is no mesh reading of either artefact, so neither `mesh_after` nor
+    # the label that says which one it is may appear.
     assert set(evidence) == EXPECTED_KEYS - {
         "deviation_mm", "deviation_samples", "deviation_faces", "deviation_faces_skipped",
-        "mesh_before", "mesh_after"}
+        "mesh_before", "mesh_after", "mesh_after_source"}
 
 
 def test_measured_empty_deviation_is_kept_as_recorded():
@@ -470,3 +483,62 @@ def test_the_real_rebuild_declaration_is_a_swap():
     assert '"faces_removed": 1, "faces_added": 1' in source
     assert pr.net_faces_removed({"faces_removed": 1, "faces_added": 1}) == 0
     assert not pr.removes_surface({"faces_removed": 1, "faces_added": 1})
+
+
+# --- mesh_after is the DELIVERED artefact; the in-memory reading is kept beside it -------------
+# Measured in the pipeline image on abc 0060_00608290, three probes each and every one identical:
+# the repaired shape IN MEMORY fails with 5 x mesh_edge_through_face, and the SAME geometry written
+# to STEP and read back MESHES. So a reviewer shown the in-memory probe refuses repairs whose
+# delivered file meshes - correct on its evidence, wrong about the product. The owner's headline is
+# a repaired STEP that gmsh meshes, and lane E's keep rule already judges cures on the delivered
+# STEP, so review must not judge a different object.
+
+def test_mesh_after_is_the_delivered_probe_and_the_in_memory_one_is_labelled():
+    evidence = pr.evidence_of(
+        _package(), _delta(), {},
+        pr.probe_of(_defects("mesh_edge_through_face"), mesh_probed=True),
+        pr.probe_of(_defects("mesh_edge_through_face"), mesh_probed=True),
+        delivered=pr.probe_of((), mesh_probed=True))
+
+    assert evidence["mesh_after"] == []                        # the delivered file meshes
+    assert evidence["mesh_after_in_memory"] == ["mesh_edge_through_face"]
+    assert evidence["mesh_after_source"] == "delivered"
+
+
+def test_the_in_memory_reading_stands_alone_when_the_delivered_probe_could_not_run():
+    """No time left, or an export that failed: the evidence says which reading it is, so an
+    unmeasured delivered probe can never be mistaken for a passing one."""
+    evidence = pr.evidence_of(
+        _package(), _delta(), {},
+        pr.probe_of(_defects("mesh_edge_through_face"), mesh_probed=True),
+        pr.probe_of(_defects("mesh_edge_through_face"), mesh_probed=True),
+        delivered=None)
+
+    assert evidence["mesh_after"] == ["mesh_edge_through_face"]
+    assert evidence["mesh_after_source"] == "in_memory_only"
+    assert "mesh_after_in_memory" not in evidence
+
+
+def test_a_delivered_failure_is_reported_even_when_the_memory_shape_passed():
+    """THE REVERSE, which matters more: a repair that meshes in memory and FAILS as delivered is
+    not a repair, and the authoritative reading must say so."""
+    evidence = pr.evidence_of(
+        _package(), _delta(), {},
+        pr.probe_of(_defects("mesh_edge_through_face"), mesh_probed=True),
+        pr.probe_of((), mesh_probed=True),
+        delivered=pr.probe_of(_defects("mesh_edge_through_face"), mesh_probed=True))
+
+    assert evidence["mesh_after"] == ["mesh_edge_through_face"]
+    assert evidence["mesh_after_in_memory"] == []
+    assert evidence["mesh_after_source"] == "delivered"
+
+
+def test_the_delivered_case_pins_its_own_key_set():
+    """The same guard as `test_reviewer_evidence_is_measured_only`, for the path that HAS a
+    delivered reading: exactly one extra key, and nothing else arrives with it."""
+    before, after = _probes()
+    evidence = pr.evidence_of(_package(), _delta(), _DEVIATION, before, after,
+                              original=_ORIGINAL, review_rejects=("a fillet face was removed",),
+                              delivered=pr.probe_of((), mesh_probed=True))
+
+    assert set(evidence) == EXPECTED_KEYS | {"mesh_after_in_memory"}

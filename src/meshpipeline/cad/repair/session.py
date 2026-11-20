@@ -819,8 +819,38 @@ class RepairSession:
             return ()
         return tuple(failures) if self._meshes_now(cap_s=cap_s) else ()
 
+    def _delivered_defects(self, *, cap_s: float | None = None) -> tuple | None:
+        """What a WHOLE-SHAPE gmsh probe finds in the current shape AS DELIVERED, or None when it
+        could not be measured (no time, or an export that failed).
+
+        `_meshes_now` is this question's boolean; review asks for the findings themselves, because
+        `mesh_after` has to name the kinds. ONE round-trip, one probe, one budget: the export and
+        the probe come out of the same allowance, exactly as the cure door pays for them.
+        """
+        timeout = float(rcfg.CAD_REPAIR_MESH_PROBE_TIMEOUT_S)
+        remaining = float(self.remaining_s() if self.remaining_s is not None else timeout)
+        budget = mesh_probe_budget_s(remaining) if self.remaining_s is not None else timeout
+        if cap_s is not None:
+            budget = min(budget, float(cap_s))
+        if not (remaining > 0.0 and budget > 0.0):
+            return None
+        exported = self.clock()
+        delivered = _as_delivered(self.shape)
+        if delivered is None:
+            return None
+        budget -= self.clock() - exported
+        if not budget > 0.0:
+            return None
+        self._mesh_probed = True
+        return tuple(mesh_probe.mesh_defects(delivered, diagonal_mm=self.original.diagonal_mm,
+                                             budget_s=budget))
+
     def _meshes_now(self, *, cap_s: float | None = None) -> bool:
         """Does a WHOLE-SHAPE gmsh probe of the current shape AS DELIVERED mesh it, in budget?
+
+        ONE QUESTION, ONE MEASUREMENT: this is `_delivered_defects` read as a boolean, so the keep
+        rule and the package reviewer can never judge different objects. An unmeasurable delivered
+        probe is False here - a cure may not rest on a reading nobody took.
 
         AS DELIVERED, NOT AS HELD (`_as_delivered`): the part a customer meshes is the repaired
         STEP, and STEP carries no per-entity tolerance. Measured on abc 0052_00525324:
@@ -829,26 +859,8 @@ class RepairSession:
         facet intersect"). A cure that does not survive the export is not a repair, and a keep
         resting on the in-memory probe would promote a file that still does not mesh.
         """
-        timeout = float(rcfg.CAD_REPAIR_MESH_PROBE_TIMEOUT_S)
-        remaining = float(self.remaining_s() if self.remaining_s is not None else timeout)
-        budget = mesh_probe_budget_s(remaining) if self.remaining_s is not None else timeout
-        if cap_s is not None:
-            budget = min(budget, float(cap_s))
-        if not (remaining > 0.0 and budget > 0.0):
-            return False
-        exported = self.clock()
-        delivered = _as_delivered(self.shape)
-        if delivered is None:
-            return False
-        # THE ROUND-TRIP IS PAID OUT OF THE SAME BUDGET (Greptile PRRT_kwDOUFq_Ps656SQR): the probe
-        # gets what is left after the export, never the whole allowance again.
-        budget -= self.clock() - exported
-        if not budget > 0.0:
-            return False
-        self._mesh_probed = True
-        probed = tuple(mesh_probe.mesh_defects(delivered, diagonal_mm=self.original.diagonal_mm,
-                                               budget_s=budget))
-        return not probed
+        found = self._delivered_defects(cap_s=cap_s)
+        return found is not None and not found
 
     def defects(self) -> tuple:
         """The current shape's located defects. Scanned once per shape and cached."""
@@ -1579,12 +1591,25 @@ class RepairSession:
                  "declared_area_mm2": declared.declared_area_mm2,
                  "declared_volume_mm3": declared.declared_volume_mm3}
         started = self.clock()
+        # THE ARTEFACT THE CUSTOMER RECEIVES. Measured in the pipeline image on abc 0060_00608290,
+        # three probes each and every one identical: the repaired shape IN MEMORY fails with 5 x
+        # mesh_edge_through_face and the same geometry written to STEP and read back MESHES. A
+        # reviewer shown only the in-memory probe refuses repairs whose delivered file meshes. No
+        # time left, or a failed export, leaves this None and the evidence says the reading is
+        # in-memory only - never a silent pass.
+        delivered_probe = None
+        if mesh_probed:
+            found_delivered = self._delivered_defects()
+            if found_delivered is not None:
+                delivered_probe = package_review.probe_of(found_delivered,
+                                                          mesh_probed=True)
         evidence = package_review.evidence_of(
             package, delta, deviation,
             package_review.probe_of(was, mesh_probed=mesh_probed),
             package_review.probe_of(now, mesh_probed=mesh_probed),
             original=self.original.to_dict(),
-            review_rejects=tuple(self._review_rejects.get(package.region.index, ())))
+            review_rejects=tuple(self._review_rejects.get(package.region.index, ())),
+            delivered=delivered_probe)
         deadline = (started + float(self.remaining_s()) - package_review.DEADLINE_MARGIN_S
                     if self.remaining_s is not None else None)
         if tier == review_tier.AUTO:
