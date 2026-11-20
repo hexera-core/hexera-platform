@@ -127,3 +127,55 @@ def test_the_flag_off_declines_without_touching_the_part(monkeypatch):
     outcome = ResolveSubMeshGap().apply(tube, (_ref(tube, 1),), tolerance_mm=1e-4)
     assert outcome.evidence["declined"].startswith("resolving_disabled")
     assert outcome.shape is tube
+
+
+# THE KERNEL HALF IS BOUNDED (wave 6: BRepExtrema held the GIL in the parent for an hour on
+# 0054_00540003). It runs in a fresh interpreter, never a fork, and an expiry is a DECLINE.
+
+def _no_fork(*_args, **_kwargs):
+    raise AssertionError("gap_split must never fork the parent")
+
+
+def test_a_hanging_kernel_child_is_killed_and_the_op_declines(gap_on, monkeypatch):
+    import os
+    import sys
+    import time
+
+    import meshpipeline.cad.repair.gap_split as gap_split
+
+    monkeypatch.setattr(os, "fork", _no_fork)
+    monkeypatch.setattr(gap_split, "_CHILD_CMD",
+                        [sys.executable, "-c", "import time; time.sleep(120)"])
+    monkeypatch.setattr(gap_split, "KERNEL_BUDGET_S", 1.0)
+    tube = _tube()
+    started = time.monotonic()
+    outcome = ResolveSubMeshGap().apply(tube, (_ref(tube, 1),), tolerance_mm=1e-4)
+    elapsed = time.monotonic() - started
+    assert outcome.evidence["declined"].startswith("kernel_timeout"), outcome.evidence
+    assert outcome.shape is tube
+    # NEVER A PARTNER FROM AN UNMEASURED DISTANCE, never a declared delta on a decline.
+    assert "gap_mm" not in outcome.evidence and AREA_DELTA not in outcome.evidence
+    assert elapsed < 10.0, elapsed
+
+
+def test_a_child_that_dies_without_an_answer_is_a_decline(gap_on, monkeypatch):
+    import sys
+
+    import meshpipeline.cad.repair.gap_split as gap_split
+
+    monkeypatch.setattr(gap_split, "_CHILD_CMD", [sys.executable, "-c", "raise SystemExit(139)"])
+    tube = _tube()
+    outcome = ResolveSubMeshGap().apply(tube, (_ref(tube, 1),), tolerance_mm=1e-4)
+    assert outcome.evidence["declined"].startswith("split_failed"), outcome.evidence
+    assert outcome.shape is tube
+
+
+def test_the_real_child_runs_in_a_fresh_interpreter_without_forking(gap_on, monkeypatch, tmp_path):
+    import os
+
+    monkeypatch.setattr(os, "fork", _no_fork)
+    tube = _tube()
+    diagonal = _diagonal(tube)
+    outcome = ResolveSubMeshGap().apply(tube, (_ref(tube, 1),), tolerance_mm=1e-4)
+    assert "declined" not in outcome.evidence, outcome.evidence
+    assert _meshes(outcome.shape, tmp_path, diagonal) == (True, "")

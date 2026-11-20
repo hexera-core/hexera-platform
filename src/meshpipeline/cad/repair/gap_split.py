@@ -11,8 +11,15 @@
 #                    caps use, so the declaration and the cap read identical numbers).
 from __future__ import annotations
 
+import json
 import logging
 import math
+import os
+import signal
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from meshpipeline.cad.repair.contracts import DefectCode
@@ -322,29 +329,6 @@ def _only_solid(shape):
     return solids.FindKey(1) if solids.Extent() == 1 else None
 
 
-def _history(splitter, faces):
-    """What became of each split face, as a ShapeBuild_ReShape `mapping_from_context` reads."""
-    from OCP.BRep import BRep_Builder
-    from OCP.ShapeBuild import ShapeBuild_ReShape
-    from OCP.TopoDS import TopoDS_Compound
-
-    history = ShapeBuild_ReShape()
-    for face in faces:
-        images = list(splitter.Modified(face))
-        if not images:
-            continue
-        if len(images) == 1:
-            history.Replace(face, images[0])
-            continue
-        compound = TopoDS_Compound()
-        builder = BRep_Builder()
-        builder.MakeCompound(compound)
-        for image in images:
-            builder.Add(compound, image)
-        history.Replace(face, compound)
-    return history
-
-
 class ResolveSubMeshGap:
     """Split the two sides of a SUB-MESH-SIZE GAP along their own iso-curves, so the default
     surface mesh resolves the wall instead of passing through it. See the module comment for the
@@ -416,6 +400,7 @@ class ResolveSubMeshGap:
               tolerance_mm: float) -> OpOutcome:
         import meshpipeline.settings.cad_repair as rcfg
         from meshpipeline.cad.repair.conservative import _area_and_volume
+        from meshpipeline.cad.repair.identity import EntityMapping
         from meshpipeline.cad.repair.operations import (
             AREA_DELTA,
             VOLUME_DELTA,
@@ -423,10 +408,8 @@ class ResolveSubMeshGap:
             _diagonal_of,
             _face_count,
             _face_names,
-            _is_valid,
             _owners_of,
             _split_fingerprints,
-            mapping_from_context,
             splice,
             sub_shape,
         )
@@ -452,77 +435,215 @@ class ResolveSubMeshGap:
         if len(owners) > 1:
             return declined(f"non_manifold ({len(owners)} solids share the face)")
         owner = owners[0]
-
         diagonal = _diagonal_of(shape)
-        size = _mesh_size(diagonal)
-        across = partners(owner, face, mesh_size=size)
-        if not across:
-            return declined(f"no_sub_mesh_gap (no face of the solid lies apart from the target "
-                            f"but within the {size:.4g} mm mesh size)",
-                            mesh_size_mm=round(size, 6))
-        gap = min(distance for _, distance in across)
-        measured = {"gap_mm": round(gap, 6), "mesh_size_mm": round(size, 6),
-                    "gap_ratio": round(gap / size, 6), "partners": len(across)}
-
-        edges: list = []
-        split: list = []
         part_area = float(_area_and_volume(shape)["surface_area_mm2"])
-        for each in (face, *(other for other, _ in across)):
-            plan = split_plan(each, gap_mm=gap, mesh_size=size, part_area_mm2=part_area,
-                              diagonal_mm=diagonal)
-            if not (plan["u"] or plan["v"]):
-                continue
-            pieces = iso_edges(each, plan)
-            if pieces:
-                edges.extend(pieces)
-                split.append(each)
-            if len(edges) > MAX_ISO_EDGES:
-                return declined(f"too_fine (more than {MAX_ISO_EDGES} iso-curves needed)",
-                                **measured)
-        if not edges:
-            return declined("flat (no face of the gap is curved enough to sag across it)",
-                            **measured)
 
-        try:
-            result, splitter = _split_body(owner, edges)
-        except Exception as exc:  # noqa: BLE001 - a kernel refusal is a decline, not a crash
-            return declined(f"split_failed ({type(exc).__name__})", **measured)
-        divided = _only_solid(result)
-        if divided is None:
-            return declined("split_failed (the splitter left other than one solid)", **measured)
+        # EVERY KERNEL ALGORITHM RUNS IN A BOUNDED FRESH INTERPRETER (`_bounded`): the distances,
+        # the trims, the split and the guard. In the parent, BRepExtrema held the GIL for an hour
+        # on wave 6 (0054_00540003) and no clock could interrupt it.
+        answer, divided = _bounded(owner, face, diagonal_mm=diagonal, part_area_mm2=part_area,
+                                   budget_s=KERNEL_BUDGET_S)
+        measured = {k: answer[k] for k in _MEASURED_KEYS if k in answer}
+        if answer.get("declined") or divided is None:
+            return declined(str(answer.get("declined") or "split_failed (no result came back)"),
+                            **measured)
         added = _face_count(divided) - _face_count(owner)
         if added <= 0:
             return declined("split_failed (no face was split)", **measured)
-        if _is_valid(owner) and not _is_valid(divided):
-            return declined("invalidated (the split solid is not BRepCheck-valid)", **measured)
 
         spliced, _ = splice(shape, [(owner, divided)])
         before = _area_and_volume(shape)
         after = _area_and_volume(spliced)
         d_area = float(after["surface_area_mm2"]) - float(before["surface_area_mm2"])
         d_volume = float(after["volume_mm3"]) - float(before["volume_mm3"])
-        # THE GUARD IS JUDGED AT ADAPTIVE PRECISION, on the owner alone: the default integration
-        # moved a 2.8e7 mm3 part by 204 mm3 on a split that moved nothing (0056_00563150). The
-        # DECLARATION above stays at the caps' own default precision, so it is what they measure.
-        owner_area, owner_volume = _precise(owner)
-        split_area, split_volume = _precise(divided)
-        if (abs(split_volume - owner_volume) > MAX_VOLUME_NOISE_RATIO * max(owner_volume, 1e-12)
-                or abs(split_area - owner_area) > MAX_AREA_NOISE_RATIO * max(owner_area, 1e-12)):
-            return declined(f"geometry_moved (area {d_area:.6g} mm2, volume {d_volume:.6g} mm3 "
-                            "after a split that should move neither)", **measured,
-                            area_delta_measured_mm2=_rounded_up(d_area),
-                            volume_delta_measured_mm3=_rounded_up(d_volume))
-
-        history = _history(splitter, split)
-        mapping = mapping_from_context(history, targets, shape_before=shape, diagonal_mm=diagonal)
-        return OpOutcome(shape=spliced, mapping=mapping,
+        # NO KERNEL HISTORY CROSSES THE PROCESS BOUNDARY, so the mapping is the session's
+        # geometric one (box comparison), said as such rather than claimed as a kernel fact.
+        return OpOutcome(shape=spliced, mapping=EntityMapping.empty(),
                          added=_split_fingerprints(owner, divided, diagonal_mm=diagonal),
                          rebuilt=_face_names(divided, diagonal_mm=diagonal),
-                         evidence={**measured, "faces_split": len(split),
-                                   "iso_edges": len(edges), "faces_added": int(added),
+                         evidence={**measured, "faces_added": int(added),
                                    AREA_DELTA: _rounded_up(d_area),
                                    VOLUME_DELTA: _rounded_up(d_volume),
                                    "faces_targeted": 1, "precision_mm": float(tolerance_mm)})
+
+
+#: The wall-clock budget, in seconds, for the bounded kernel half of one application. Past it the
+#: child is killed as a process group and the operation DECLINES `kernel_timeout` - never treats an
+#: unmeasured distance as a partner, nor a half-finished split as a result.
+KERNEL_BUDGET_S = 90.0
+
+#: The child, as a list so a test can replace it. `-W ignore` keeps warnings off the JSON line.
+_CHILD_CMD = [sys.executable, "-W", "ignore", "-m", "meshpipeline.cad.repair.gap_split"]
+
+#: The evidence keys the child measures and the parent passes through.
+_MEASURED_KEYS = ("gap_mm", "mesh_size_mm", "gap_ratio", "partners", "faces_split", "iso_edges",
+                  "area_delta_measured_mm2", "volume_delta_measured_mm3")
+
+
+def write_brep(shape, path: Path) -> None:
+    from OCP.BRepTools import BRepTools
+
+    if not BRepTools.Write_s(shape, str(path)):
+        raise OSError(f"could not write {path}")
+
+
+def read_brep(path: Path):
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepTools import BRepTools
+    from OCP.TopoDS import TopoDS_Shape
+
+    shape, builder = TopoDS_Shape(), BRep_Builder()
+    if not BRepTools.Read_s(shape, str(path), builder) or shape.IsNull():
+        raise OSError(f"could not read {path}")
+    return shape
+
+
+def _face_index(owner, face) -> int:
+    from OCP.TopAbs import TopAbs_FACE
+
+    from meshpipeline.cad.repair.localize import _indexed
+
+    faces = _indexed(owner, TopAbs_FACE)
+    return next((i for i in range(1, faces.Extent() + 1) if faces.FindKey(i).IsSame(face)), 0)
+
+
+def _box_of(shape) -> list[float]:
+    return [round(float(v), 6) for v in _bbox(shape).Get()]
+
+
+def _kill_group(proc: subprocess.Popen) -> None:
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        proc.kill()
+
+
+def _bounded(owner, face, *, diagonal_mm: float, part_area_mm2: float,
+             budget_s: float) -> tuple[dict, object | None]:
+    """Run `_work` on `owner` in a FRESH INTERPRETER (never a fork: a forked child inherits the
+    parent's OCC state and locks), in its own session, killed as a group past `budget_s`.
+
+    Returns `(answer, divided solid or None)`. NEVER raises: every failure is an answer with a
+    `declined` reason, and a timeout is `kernel_timeout`."""
+    index = _face_index(owner, face)
+    if not index:
+        return {"declined": "not_resolved (the target face is not in its owner)"}, None
+    try:
+        with tempfile.TemporaryDirectory(prefix="gap-split-") as tmp:
+            source, result = Path(tmp) / "owner.brep", Path(tmp) / "divided.brep"
+            write_brep(owner, source)
+            request = json.dumps({"face": index, "box": _box_of(face), "diagonal_mm": diagonal_mm,
+                                  "part_area_mm2": part_area_mm2})
+            proc = subprocess.Popen([*_CHILD_CMD, str(source), request, str(result)],
+                                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                    stderr=subprocess.DEVNULL, start_new_session=True, text=True)
+            try:
+                out, _ = proc.communicate(timeout=max(float(budget_s), 0.0))
+            except subprocess.TimeoutExpired:
+                _kill_group(proc)
+                try:
+                    proc.communicate(timeout=5)
+                except Exception:  # noqa: BLE001 - the group is already gone
+                    pass
+                return {"declined": f"kernel_timeout (the split did not finish in "
+                                    f"{float(budget_s):g} s)"}, None
+            finally:
+                if proc.poll() is None:
+                    _kill_group(proc)
+            lines = [line for line in (out or "").splitlines() if line.strip()]
+            if proc.returncode != 0 or not lines:
+                return {"declined": f"split_failed (the kernel child exited "
+                                    f"{proc.returncode} without an answer)"}, None
+            answer = json.loads(lines[-1])
+            if not isinstance(answer, dict):
+                return {"declined": "split_failed (the kernel child's answer was not an object)"}, None
+            if answer.get("declined"):
+                return answer, None
+            return answer, _only_solid(read_brep(result))
+    except Exception as exc:  # noqa: BLE001 - an operation declines, it never crashes the session
+        return {"declined": f"split_failed ({type(exc).__name__})"}, None
+
+
+def _work(owner, face, *, diagonal_mm: float, part_area_mm2: float) -> tuple[dict, object | None]:
+    """The kernel half of the operation. ONLY EVER RUN IN THE CHILD (`_bounded`)."""
+    size = _mesh_size(diagonal_mm)
+    across = partners(owner, face, mesh_size=size)
+    if not across:
+        return {"declined": f"no_sub_mesh_gap (no face of the solid lies apart from the target "
+                            f"but within the {size:.4g} mm mesh size)",
+                "mesh_size_mm": round(size, 6)}, None
+    gap = min(distance for _, distance in across)
+    measured = {"gap_mm": round(gap, 6), "mesh_size_mm": round(size, 6),
+                "gap_ratio": round(gap / size, 6), "partners": len(across)}
+    edges: list = []
+    split: list = []
+    for each in (face, *(other for other, _ in across)):
+        plan = split_plan(each, gap_mm=gap, mesh_size=size, part_area_mm2=part_area_mm2,
+                          diagonal_mm=diagonal_mm)
+        if not (plan["u"] or plan["v"]):
+            continue
+        pieces = iso_edges(each, plan)
+        if pieces:
+            edges.extend(pieces)
+            split.append(each)
+        if len(edges) > MAX_ISO_EDGES:
+            return {"declined": f"too_fine (more than {MAX_ISO_EDGES} iso-curves needed)",
+                    **measured}, None
+    if not edges:
+        return {"declined": "flat (no face of the gap is curved enough to sag across it)",
+                **measured}, None
+    measured.update(faces_split=len(split), iso_edges=len(edges))
+    try:
+        result, _splitter = _split_body(owner, edges)
+    except Exception as exc:  # noqa: BLE001 - a kernel refusal is a decline, not a crash
+        return {"declined": f"split_failed ({type(exc).__name__})", **measured}, None
+    divided = _only_solid(result)
+    if divided is None:
+        return {"declined": "split_failed (the splitter left other than one solid)",
+                **measured}, None
+    from meshpipeline.cad.repair.operations import _is_valid
+
+    if _is_valid(owner) and not _is_valid(divided):
+        return {"declined": "invalidated (the split solid is not BRepCheck-valid)",
+                **measured}, None
+    # THE GUARD IS JUDGED AT ADAPTIVE PRECISION, on the owner alone: the default integration
+    # moved a 2.8e7 mm3 part by 204 mm3 on a split that moved nothing (0056_00563150). The
+    # DECLARATION is the parent's, at the caps' own default precision, so it is what they measure.
+    owner_area, owner_volume = _precise(owner)
+    split_area, split_volume = _precise(divided)
+    d_area, d_volume = split_area - owner_area, split_volume - owner_volume
+    if (abs(d_volume) > MAX_VOLUME_NOISE_RATIO * max(owner_volume, 1e-12)
+            or abs(d_area) > MAX_AREA_NOISE_RATIO * max(owner_area, 1e-12)):
+        return {"declined": f"geometry_moved (area {d_area:.6g} mm2, volume {d_volume:.6g} mm3 "
+                            "after a split that should move neither)", **measured,
+                "area_delta_measured_mm2": _rounded_up(d_area),
+                "volume_delta_measured_mm3": _rounded_up(d_volume)}, None
+    return measured, divided
+
+
+def _child_main(argv: list[str]) -> int:
+    """`python -m meshpipeline.cad.repair.gap_split <owner.brep> <request json> <out.brep>`."""
+    from OCP.TopAbs import TopAbs_FACE
+
+    from meshpipeline.cad.repair.localize import _indexed
+    source, request, result = Path(argv[0]), json.loads(argv[1]), Path(argv[2])
+    owner = read_brep(source)
+    faces = _indexed(owner, TopAbs_FACE)
+    index = int(request["face"])
+    face = faces.FindKey(index) if 1 <= index <= faces.Extent() else None
+    # THE SAME FACE OR NOTHING: the index is read on a BREP round-trip of the owner, so the face it
+    # names is checked against the box the parent sent before anything is split.
+    if face is None or any(abs(a - b) > 1e-6 * max(1.0, float(request["diagonal_mm"]))
+                           for a, b in zip(_box_of(face), request["box"])):
+        answer: dict = {"declined": "not_resolved (the target face did not survive the hand-off)"}
+    else:
+        answer, divided = _work(owner, face, diagonal_mm=float(request["diagonal_mm"]),
+                                part_area_mm2=float(request["part_area_mm2"]))
+        if divided is not None:
+            write_brep(divided, result)
+    sys.stdout.write(json.dumps(answer) + "\n")
+    sys.stdout.flush()
+    return 0
 
 
 def _precise(shape) -> tuple[float, float]:
@@ -541,3 +662,6 @@ def _is_solid(shape) -> bool:
 
     return shape.ShapeType() == TopAbs_SOLID
 
+
+if __name__ == "__main__":  # pragma: no cover - the child's own entry point
+    raise SystemExit(_child_main(sys.argv[1:]))
