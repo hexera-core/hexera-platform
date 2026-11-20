@@ -385,3 +385,29 @@ def test_a_clash_records_the_kernel_gap_between_its_faces(monkeypatch):
     assert len(gaps) == 1
     (gap,) = gaps
     assert gap is not None and abs(gap - 15.0) < 1e-6
+
+
+def test_each_face_carries_its_own_clash_measurements(monkeypatch):
+    # Greptile #495: every face took the FIRST pair's gap, kind and point, so a face whose pair
+    # really meets could read as another pair's sizing gap.
+    from meshpipeline.cad.repair.mesh_clash import Clash
+    from meshpipeline.cad.repair.mesh_probe import MeshFailure
+
+    failure = MeshFailure(EDGE_THROUGH_FACE, (), None, _PLC_BARE, stage="3d")
+    # Pair (1, 8): 15 mm apart. Pair (2, 9): box 1's x=10 wall crosses box 2's y=0 floor, gap 0.
+    mesh_probe, shape = _clash_probe(monkeypatch, failure=failure, contact_calls=[],
+                                     clashes=(Clash((1, 8), 5, (5.0, 5.0, 5.0), "crossing"),
+                                              Clash((2, 9), 2, (10.0, 0.0, 5.0), "coplanar")))
+    by_face = {d.entity_index: d.measurements
+               for d in mesh_probe.mesh_defects(shape, diagonal_mm=20.6, budget_s=60.0)}
+
+    assert set(by_face) == {1, 2, 8, 9}
+    for face in (1, 8):
+        assert by_face[face]["clash_gap_mm"] == pytest.approx(15.0)
+        assert by_face[face]["clash_kind"] == "crossing"
+        assert by_face[face]["clash_pair"] == [1, 8]
+    for face in (2, 9):
+        assert by_face[face]["clash_gap_mm"] == pytest.approx(0.0, abs=1e-9)
+        assert by_face[face]["clash_kind"] == "coplanar"
+        assert by_face[face]["clash_point"] == [10.0, 0.0, 5.0]
+        assert by_face[face]["clash_pair"] == [2, 9]

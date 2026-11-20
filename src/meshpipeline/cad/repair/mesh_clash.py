@@ -35,6 +35,11 @@ _PARALLEL_COS = 1.0 - 1e-9
 _SPAN_CAP = 4
 #: Larger surface meshes are not searched: the probe's budget belongs to the mesher.
 MAX_TRIANGLES = 400_000
+#: At most this many candidate triangle pairs are built and tested (Greptile #495: one crowded
+#: cell could build tens of millions). A search that hits the cap reports what it found in them.
+MAX_CANDIDATE_PAIRS = 2_000_000
+#: Candidate pairs are tested this many at a time, and the deadline is checked between chunks.
+_CHUNK = 200_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,19 +52,51 @@ class Clash:
     kind: str
 
 
-def _candidate_pairs(lo: np.ndarray, hi: np.ndarray) -> np.ndarray:
-    """Triangle index pairs (i < j) whose boxes may meet, via a uniform grid. Superset, never miss."""
+def _pairs_across_tags(members: np.ndarray, tags: np.ndarray, room: int) -> np.ndarray:
+    """Pairs (i, j) of `members` whose surface tags DIFFER, at most `room` of them. Built per tag
+    run, so a crowd of one surface's triangles costs nothing (Greptile #495)."""
+    order = np.argsort(tags[members], kind="stable")
+    members = members[order]
+    run_tags = tags[members]
+    starts = np.flatnonzero(np.r_[True, run_tags[1:] != run_tags[:-1]])
+    ends = np.r_[starts[1:], len(members)]
+    out: list[np.ndarray] = []
+    made = 0
+    for start, end in zip(starts, ends, strict=True):
+        if end >= len(members) or made >= room:
+            break
+        here, later = members[start:end], members[end:]
+        take = min(len(here) * len(later), room - made)
+        a = np.repeat(here, len(later))[:take]
+        b = np.tile(later, len(here))[:take]
+        out.append(np.stack([a, b], axis=1))
+        made += take
+    if not out:
+        return np.zeros((0, 2), dtype=np.int64)
+    return np.concatenate(out)
+
+
+def _candidate_pairs(lo: np.ndarray, hi: np.ndarray, *, tags: np.ndarray,
+                     groups: np.ndarray, max_pairs: int = 0) -> np.ndarray:
+    """Triangle index pairs (i < j) whose boxes may meet, via a uniform grid - only pairs of
+    DIFFERENT surfaces in ONE volume component (>= 0), filtered while they are built and never
+    after, and at most `max_pairs` of them (MAX_CANDIDATE_PAIRS when 0). Below the cap a superset of
+    the meeting pairs; at the cap, the first `max_pairs` in grid order and no more."""
+    cap = int(max_pairs) or MAX_CANDIDATE_PAIRS
     count = len(lo)
+    if count < 2:
+        return np.zeros((0, 2), dtype=np.int64)
     extent = (hi - lo).max(axis=1)
-    cell = float(np.percentile(extent, 75)) if count else 0.0
+    cell = float(np.percentile(extent, 75))
     if cell <= 0.0:
         cell = max(float((hi.max(axis=0) - lo.min(axis=0)).max()), 1e-12)
     origin = lo.min(axis=0)
     first = np.floor((lo - origin) / cell).astype(np.int64)
     last = np.floor((hi - origin) / cell).astype(np.int64)
     span = last - first + 1
-    small = (span <= _SPAN_CAP).all(axis=1)
-    big = np.nonzero(~small)[0]
+    live = groups >= 0
+    small = live & (span <= _SPAN_CAP).all(axis=1)
+    big = np.nonzero(live & ~small)[0]
 
     keys: list[np.ndarray] = []
     owners: list[np.ndarray] = []
@@ -75,26 +112,35 @@ def _candidate_pairs(lo: np.ndarray, hi: np.ndarray) -> np.ndarray:
                 keys.append((c[:, 0] * dims[1] + c[:, 1]) * dims[2] + c[:, 2])
                 owners.append(np.nonzero(mask)[0])
     pairs: list[np.ndarray] = []
+    made = 0
     if keys:
         key = np.concatenate(keys)
         owner = np.concatenate(owners)
-        order = np.lexsort((owner, key))
-        key, owner = key[order], owner[order]
-        bounds = np.flatnonzero(np.diff(key)) + 1
-        for group in np.split(owner, bounds):
-            if len(group) < 2:
+        group = groups[owner]
+        order = np.lexsort((owner, group, key))
+        key, group, owner = key[order], group[order], owner[order]
+        bounds = np.flatnonzero((np.diff(key) != 0) | (np.diff(group) != 0)) + 1
+        for members in np.split(owner, bounds):
+            if made >= cap:
+                break
+            if len(members) < 2:
                 continue
-            a, b = np.triu_indices(len(group), k=1)
-            pairs.append(np.stack([group[a], group[b]], axis=1))
+            found = _pairs_across_tags(members, tags, cap - made)
+            if len(found):
+                pairs.append(found)
+                made += len(found)
     for i in big:
-        meets = np.nonzero((lo <= hi[i]).all(axis=1) & (hi >= lo[i]).all(axis=1))[0]
-        meets = meets[meets != i]
+        if made >= cap:
+            break
+        meets = np.nonzero((lo <= hi[i]).all(axis=1) & (hi >= lo[i]).all(axis=1)
+                           & (groups == groups[i]) & (tags != tags[i]))[0][:cap - made]
         if len(meets):
             pairs.append(np.stack([np.full(len(meets), i), meets], axis=1))
+            made += len(meets)
     if not pairs:
         return np.zeros((0, 2), dtype=np.int64)
     found = np.sort(np.concatenate(pairs), axis=1)
-    return np.unique(found, axis=0)
+    return np.unique(found, axis=0)[:cap]
 
 
 def _edge_hits(coords: np.ndarray, tris: np.ndarray, a: np.ndarray, b: np.ndarray
@@ -149,7 +195,10 @@ def _coplanar_overlap(ta: np.ndarray, tb: np.ndarray, normal: np.ndarray) -> boo
     """Two coplanar triangles (3x3 each) overlap in a region of positive area?"""
     axis = int(np.argmax(np.abs(normal)))
     keep = [k for k in range(3) if k != axis]
-    a2, b2 = ta[:, keep], tb[:, keep]
+    # RELATIVE TO THE TRIANGLE, so the tolerances below follow its size and not where the part
+    # sits (Greptile #495: the same overlap translated to x = 1e6 was missed).
+    local = ta[0]
+    a2, b2 = (ta - local)[:, keep], (tb - local)[:, keep]
     if _inside_2d(a2.mean(axis=0), b2) or _inside_2d(b2.mean(axis=0), a2):
         return True
     if any(_inside_2d(p, b2) for p in a2) or any(_inside_2d(p, a2) for p in b2):
@@ -159,47 +208,43 @@ def _coplanar_overlap(ta: np.ndarray, tb: np.ndarray, normal: np.ndarray) -> boo
 
 
 def clashing_surfaces(coords: np.ndarray, tris: np.ndarray, tags: np.ndarray, *,
-                      groups: np.ndarray | None = None,
-                      max_pairs: int = 8) -> tuple[Clash, ...]:
+                      groups: np.ndarray | None = None, max_pairs: int = 8,
+                      deadline: float | None = None) -> tuple[Clash, ...]:
     """The surface pairs whose triangles cross or overlap, most hits first, at most `max_pairs`.
 
     `coords` is (N, 3); `tris` (M, 3) indexes rows of `coords`; `tags` (M,) is each triangle's
     gmsh surface. Triangles that share a node are never compared (a conformal seam), nor two of one
     surface. `groups` (M,), when given, is each triangle's volume component: only triangles of ONE
     component (>= 0) are compared, because gmsh tetrahedralises each connected group of volumes on
-    its own and a crossing between two groups never reaches the same tetgen call. Empty for an empty mesh or one larger than MAX_TRIANGLES. Pure; never raises on a
-    well-formed input.
+    its own and a crossing between two groups never reaches the same tetgen call.
+
+    BOUNDED: at most MAX_CANDIDATE_PAIRS candidates are built, they are tested _CHUNK at a time,
+    and a `deadline` (time.monotonic()) that passes ends the search with what it has found so far -
+    so a crowded mesh can never cost the caller the gmsh failure it already holds (Greptile #495).
+    Empty for an empty mesh or one larger than MAX_TRIANGLES. Pure; never raises on a well-formed
+    input.
     """
+    import time
+
     coords = np.asarray(coords, dtype=float)
     tris = np.asarray(tris, dtype=np.int64)
     tags = np.asarray(tags, dtype=np.int64)
+    group = (np.zeros(len(tags), dtype=np.int64) if groups is None
+             else np.asarray(groups, dtype=np.int64))
     if len(tris) < 2 or len(tris) > MAX_TRIANGLES:
+        return ()
+    if deadline is not None and time.monotonic() >= deadline:
         return ()
     corners = coords[tris]                       # (M, 3, 3)
     lo, hi = corners.min(axis=1), corners.max(axis=1)
     diagonal = float(np.linalg.norm(coords.max(axis=0) - coords.min(axis=0))) or 1.0
     pad = diagonal * _PLANE_FRACTION
-    pairs = _candidate_pairs(lo - pad, hi + pad)
+    pairs = _candidate_pairs(lo - pad, hi + pad, tags=tags, groups=group)
     if not len(pairs):
         return ()
-    a, b = pairs[:, 0], pairs[:, 1]
-    keep = tags[a] != tags[b]
-    if groups is not None:
-        group = np.asarray(groups, dtype=np.int64)
-        keep &= (group[a] == group[b]) & (group[a] >= 0)
-    keep &= ((lo[a] <= hi[b] + pad) & (lo[b] <= hi[a] + pad)).all(axis=1)
-    shared = (tris[a][:, :, None] == tris[b][:, None, :]).any(axis=(1, 2))
-    keep &= ~shared
-    a, b = a[keep], b[keep]
-    if not len(a):
-        return ()
-
     normals = np.cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0])
     lengths = np.linalg.norm(normals, axis=1)
     unit = normals / np.where(lengths > 0, lengths, 1.0)[:, None]
-    cos = np.abs(np.einsum("ij,ij->i", unit[a], unit[b]))
-    offset = np.abs(np.einsum("ij,ij->i", corners[a, 0] - corners[b, 0], unit[b]))
-    coplanar = (cos >= _PARALLEL_COS) & (offset <= pad)
 
     found: dict[tuple[int, int], list] = {}
 
@@ -208,15 +253,26 @@ def clashing_surfaces(coords: np.ndarray, tris: np.ndarray, tags: np.ndarray, *,
         entry = found.setdefault(key, [0, tuple(float(x) for x in where), kind])
         entry[0] += 1
 
-    cross = ~coplanar
-    ca, cb = a[cross], b[cross]
-    hit_ab, point_ab = _edge_hits(coords, tris, ca, cb)
-    hit_ba, point_ba = _edge_hits(coords, tris, cb, ca)
-    for k in np.nonzero(hit_ab | hit_ba)[0]:
-        record(int(ca[k]), int(cb[k]), point_ab[k] if hit_ab[k] else point_ba[k], CROSSING)
-    for i, j in zip(a[coplanar], b[coplanar], strict=True):
-        if _coplanar_overlap(corners[i], corners[j], unit[i]):
-            record(int(i), int(j), corners[i].mean(axis=0), COPLANAR)
+    for start in range(0, len(pairs), _CHUNK):
+        if deadline is not None and time.monotonic() >= deadline:
+            break
+        a, b = pairs[start:start + _CHUNK, 0], pairs[start:start + _CHUNK, 1]
+        keep = ((lo[a] <= hi[b] + pad) & (lo[b] <= hi[a] + pad)).all(axis=1)
+        keep &= ~(tris[a][:, :, None] == tris[b][:, None, :]).any(axis=(1, 2))
+        a, b = a[keep], b[keep]
+        if not len(a):
+            continue
+        cos = np.abs(np.einsum("ij,ij->i", unit[a], unit[b]))
+        offset = np.abs(np.einsum("ij,ij->i", corners[a, 0] - corners[b, 0], unit[b]))
+        coplanar = (cos >= _PARALLEL_COS) & (offset <= pad)
+        ca, cb = a[~coplanar], b[~coplanar]
+        hit_ab, point_ab = _edge_hits(coords, tris, ca, cb)
+        hit_ba, point_ba = _edge_hits(coords, tris, cb, ca)
+        for k in np.nonzero(hit_ab | hit_ba)[0]:
+            record(int(ca[k]), int(cb[k]), point_ab[k] if hit_ab[k] else point_ba[k], CROSSING)
+        for i, j in zip(a[coplanar], b[coplanar], strict=True):
+            if _coplanar_overlap(corners[i], corners[j], unit[i]):
+                record(int(i), int(j), corners[i].mean(axis=0), COPLANAR)
 
     ranked = sorted(found.items(), key=lambda item: (-item[1][0], item[0]))[:max(0, max_pairs)]
     return tuple(Clash(surfaces=key, hits=int(v[0]),

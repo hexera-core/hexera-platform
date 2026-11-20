@@ -125,3 +125,55 @@ def test_surface_components_join_volumes_that_share_a_surface():
     assert groups[1] == groups[2] == groups[3]
     assert groups[4] != groups[1] and groups[4] >= 0
     assert groups[5] == -1
+
+
+def test_coincident_faces_far_from_the_origin_still_clash():
+    # Greptile #495: the 2D tolerance scaled with absolute coordinates, so the same overlap
+    # translated to x = 1e6 was missed.
+    a_nodes, a_tris = _square(0.0, base=0)
+    b_nodes, b_tris = _square(0.0, base=4, shift=(0.3, 0.3))
+    coords = np.vstack([a_nodes, b_nodes]) + np.array([1_000_000.0, 0.0, 0.0])
+    tris = np.vstack([a_tris, b_tris])
+
+    found = clashing_surfaces(coords, tris, np.array([7, 7, 9, 9]))
+
+    assert [(c.surfaces, c.kind) for c in found] == [((7, 9), "coplanar")]
+
+
+def test_a_dense_cell_of_one_surface_builds_no_candidate_pairs():
+    # Greptile #495: every pair in a cell was built before the surface/component filter, so one
+    # crowded cell could exhaust memory. Pairs of one surface, or of two components, are never built.
+    from meshpipeline.cad.repair.mesh_clash import _candidate_pairs
+
+    count = 3000
+    lo = np.zeros((count, 3))
+    hi = np.full((count, 3), 1e-3)
+    same_tag = _candidate_pairs(lo, hi, tags=np.ones(count, dtype=np.int64),
+                                groups=np.zeros(count, dtype=np.int64))
+    split = _candidate_pairs(lo, hi, tags=np.arange(count, dtype=np.int64),
+                             groups=np.arange(count, dtype=np.int64))
+    assert len(same_tag) == 0 and len(split) == 0
+
+
+def test_the_candidate_pairs_are_capped():
+    from meshpipeline.cad.repair.mesh_clash import _candidate_pairs
+
+    count = 400
+    lo = np.zeros((count, 3))
+    hi = np.full((count, 3), 1e-3)
+    pairs = _candidate_pairs(lo, hi, tags=np.arange(count, dtype=np.int64),
+                             groups=np.zeros(count, dtype=np.int64), max_pairs=1000)
+    assert len(pairs) <= 1000
+
+
+def test_a_spent_deadline_returns_promptly_with_no_clash():
+    import time
+
+    floor_nodes, floor_tris = _square(0.0, base=0)
+    wall_nodes, wall_tris = _wall(0.5, base=4)
+    coords = np.vstack([floor_nodes, wall_nodes])
+    tris = np.vstack([floor_tris, wall_tris])
+
+    found = clashing_surfaces(coords, tris, np.array([1, 1, 2, 2]),
+                              deadline=time.monotonic() - 1.0)
+    assert found == ()

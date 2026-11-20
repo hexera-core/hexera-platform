@@ -87,6 +87,11 @@ class ProbeResult:
     clashes: tuple[Clash, ...] = ()
 
 
+#: The clash search's own wall in the probe child, in seconds. Bounded so it can never spend the
+#: probe's budget and cost the parent the gmsh failure the child already holds (Greptile #495):
+#: past it the search answers with what it found, which may be nothing (an unlocated failure).
+CLASH_SEARCH_S = 20.0
+
 #: Volume-stage failures whose cause is the surface mesh crossing itself: worth searching the
 #: surface mesh for the clashing triangles. Kinds about the whole part (no volume, a timeout) are not.
 _CLASH_KINDS = frozenset({OVERLAPPING_FACETS, EDGE_THROUGH_FACE, OTHER})
@@ -121,7 +126,8 @@ def _surface_clashes(gmsh) -> tuple[Clash, ...]:
         if not tris:
             return ()
         return clashing_surfaces(coords, np.vstack(tris), np.concatenate(tags),
-                                 groups=np.concatenate(groups))
+                                 groups=np.concatenate(groups),
+                                 deadline=time.monotonic() + CLASH_SEARCH_S)
     except Exception as exc:  # noqa: BLE001 - a failed search is "no clash found", not an error
         logger.info("mesh_probe: clash search: %s: %s", type(exc).__name__, exc)
         return ()
@@ -734,13 +740,22 @@ def _mesh_defects(shape, *, diagonal_mm: float, budget_s: float,
         return (_unlocated(failure),)
     defects = [_face_defect(code, faces, index, failure) for index in sorted(located)]
     if by_clash:
-        gap = _clash_gap(faces, mapping or {}, result.clashes[0], deadline=deadline)
+        # EACH FACE CARRIES ITS OWN PAIR'S EVIDENCE (Greptile #495): the leading clash - most hits
+        # - that names this face, never the run's first pair, so a face whose pair really meets is
+        # not read as another pair's sizing gap. One gap per pair, measured once.
+        tags_of = {face: tag for tag, face in (mapping or {}).items()}
+        gaps: dict[tuple[int, int], float | None] = {}
         for defect in defects:
-            defect.measurements["clash_gap_mm"] = gap
+            tag = tags_of.get(int(defect.entity_index))
+            own = next((c for c in result.clashes if tag in c.surfaces), result.clashes[0])
+            if own.surfaces not in gaps:
+                gaps[own.surfaces] = _clash_gap(faces, mapping or {}, own, deadline=deadline)
             defect.measurements["located_by"] = LOCATED_BY_CLASH
             defect.measurements["clash_pairs"] = [list(c.surfaces) for c in result.clashes]
-            defect.measurements["clash_kind"] = result.clashes[0].kind
-            defect.measurements["clash_point"] = list(result.clashes[0].point)
+            defect.measurements["clash_pair"] = list(own.surfaces)
+            defect.measurements["clash_gap_mm"] = gaps[own.surfaces]
+            defect.measurements["clash_kind"] = own.kind
+            defect.measurements["clash_point"] = list(own.point)
     if by_contact and contact is not None:
         for defect in defects:
             defect.measurements["located_by"] = LOCATED_BY_CONTACT
