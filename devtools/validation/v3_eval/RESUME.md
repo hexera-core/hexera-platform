@@ -93,6 +93,7 @@
 - **A ShapeFix segfault kills the process.** `abc/0059_00597937_2e928f752b8806de5a85c14b_step_000.step` (sha256 fc4e4a440ffd...) segfaults (exit 139) right after OCC "FixShape failed with exception Geom_RectangularTrimmedSurface::U parameters out of range", on both attempts.
   - The eval harness now isolates it, but a production worker running the same repair would die with it.
   - The repair session needs the same out-of-process guard the mesher has (`engines/` native-crash isolation) before CRS repair runs on untrusted uploads.
+- **00:25 PT 11-20:** Lane B is babysitting the AI wave **11200820** (12x c2d-standard-8, us-central1-b, 96 shards, all 5 units, code b04befe8, 420 s). All 12 VMs are RUNNING. Lane B relaunches failed or stockout shards with `--only`, then runs `collect.py --pull --t6`.
 
 ## Earlier handoff (21:55 PT)
 
