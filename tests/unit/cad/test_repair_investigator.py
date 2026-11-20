@@ -871,3 +871,46 @@ def test_calls_after_a_runaway_are_still_answered(wired, monkeypatch):
     record = sunk[-1]
     assert record["end"] == "runaway"
     assert _unanswered(record) == set()
+
+
+# --- the owner's policy: no per-region escalate, and work the copy hard ------------------------
+def test_escalate_is_not_offered_under_the_live_posture(monkeypatch):
+    """Escalation is what happens when the whole JOB fails. Offered per region - needing only a
+    sentence, while `package` needs a kept edit - it was the exit 538 of 623 regions took."""
+    import meshpipeline.settings.cad_repair as settings
+
+    monkeypatch.setattr(settings, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "off", raising=False)
+    off = inv._conclude_schema()
+    assert set(off.parameters["properties"]) == set(inv._CONCLUSIONS)
+    assert [set(b["required"]) for b in off.parameters["oneOf"]] == [{f} for f in inv._CONCLUSIONS]
+
+    monkeypatch.setattr(settings, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "live", raising=False)
+    live = inv._conclude_schema()
+    assert set(live.parameters["properties"]) == {"package", "mesher_side"}
+    assert all("escalate" not in b["required"] for b in live.parameters["oneOf"])
+
+
+def test_the_live_prompt_tells_the_model_to_try_things_and_aim_at_the_mesh_failure(monkeypatch):
+    import meshpipeline.settings.cad_repair as settings
+
+    monkeypatch.setattr(settings, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "off", raising=False)
+    assert inv.AGGRESSIVE_RULE not in inv.system_prompt()
+
+    monkeypatch.setattr(settings, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "live", raising=False)
+    live = inv.system_prompt()
+    assert inv.AGGRESSIVE_RULE in live
+    assert "DISPOSABLE" in live and "WHOLE PART MESHES" in live
+    # The shadow posture is untouched: it has no copy to be aggressive with.
+    assert inv.AGGRESSIVE_RULE not in inv.system_prompt(shadow=True)
+
+
+def test_an_escalate_sent_anyway_is_still_handled(wired, monkeypatch):
+    """NOT OFFERED, STILL HANDLED: a model that sends the form from memory gets its conclusion
+    recorded rather than a refusal loop, and the type stays in `_CONCLUSIONS`."""
+    import meshpipeline.settings.cad_repair as settings
+
+    monkeypatch.setattr(settings, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "live", raising=False)
+    author, _, _, _ = wired(native("conclude", escalate={"reason": "a person is needed"}),
+                            budget=Budget(tool_calls=9, model_calls=9))
+    assert author(REGION, DEFECTS, ()) is None
+    assert author.investigations[-1]["conclusion"]["form"] == "escalate"

@@ -368,3 +368,18 @@ def test_the_module_is_listed_in_v3_modules():
             listed = [e.value for e in node.value.elts  # type: ignore[attr-defined]
                       if isinstance(e, ast.Constant)]
     assert "cad/repair/investigator_budget.py" in listed, listed
+
+
+def test_the_live_posture_buys_more_turns_and_the_same_wall(monkeypatch):
+    """A policy that asks for many attempts pays for the calls, not for the clock: the wall is
+    what a region's successors and the proof reserve are measured against."""
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "live", raising=False)
+    for tier, base in ib.BUDGETS.items():
+        live = ib.budget_for(tier)
+        assert live.tool_calls == base.tool_calls + ib.CLONE_FREEDOM_TURNS
+        assert live.model_calls == base.model_calls + ib.CLONE_FREEDOM_TURNS
+        assert live.wall_s == base.wall_s
+
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "off", raising=False)
+    for tier, base in ib.BUDGETS.items():
+        assert ib.budget_for(tier) == base

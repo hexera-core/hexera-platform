@@ -449,6 +449,8 @@ INVENTORY: list[Group] = [
                help="seconds one model-author call may take before it counts as no proposal for that attempt"),
         EnvVar("CAD_REPAIR_LLM_AUTHOR_CALLS_MAX", "6", kind="int", exposure="internal",
                help="most model-author calls one repair run may make, shadow or live"),
+        EnvVar("CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "off", exposure="internal",
+               help="whether an investigation may try an operation on its scratch clone that the delivery path would refuse, and whether the walk puts the regions that actually stop the mesh first: off (byte-for-byte the prior behaviour) or live (the clone's guards drop the review-reserved codes and the paired-rim fill refusal, and regions holding a mesh-located defect are walked first with that defect as their primary target); it moves NO delivery gate - the caps, validity and solid-count checks, the paired-rim and held-for-review guards, the revealed rules, the delivered-STEP keep rule and package review judge a package exactly as today; only the exact string live turns it on, anything else reads as off"),
         EnvVar("CAD_REPAIR_PACKAGE_REVIEW", "off", exposure="internal",
                help="whether a separate model reviews every repair package that passed its predicate before it commits: off (byte-for-byte the prior behaviour, no call) or live (the reviewer reads measured evidence only, the author's intent labelled a claim; a reject or any no-answer undoes the package as a failed predicate does); only the exact string live turns it on, anything else reads as off"),
         EnvVar("CAD_REPAIR_PACKAGE_REVIEW_TIMEOUT_S", "20.0", kind="float", exposure="internal",

@@ -62,6 +62,10 @@ EVERYTHING_ON: dict[str, str] = {
     # reserve (60 s probe + 10 s slack) and the proof reserve leave no time to look, so the
     # investigator concluded before its first tool call. EVERY arm runs it, so they stay comparable.
     "CAD_REPAIR_TIMEOUT_S": "420",
+    # The owner's policy for wave 3: the scratch copy is disposable, so an investigation may try
+    # what delivery would refuse, and the regions that actually stop the mesh are walked first.
+    # Inert in the deterministic arm, which has no investigator.
+    "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS": "live",
     "OMP_NUM_THREADS": "1",
 }
 

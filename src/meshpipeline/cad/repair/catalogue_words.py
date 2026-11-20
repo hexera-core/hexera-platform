@@ -19,7 +19,7 @@ CLOSE_GAPS = "close_wire_gaps"
 
 _BASE = (
     "- fix_small_edges: merge edges too short to keep",
-    "- fix_small_faces: sweep away sliver faces too small to keep, if the deployment allows it "
+    "- fix_small_faces: sweep away sliver faces too small to keep "
     "(it reports the removed faces' own area; rebuilding their neighbours can move the surface "
     "much further, so claim the MEASURED delta)",
     "- fix_face_boundary: repair a face whose boundary is broken or open",

@@ -457,6 +457,34 @@ def _package_review_posture() -> str:
     return "live" if raw == "live" else "off"
 
 
+def _clone_freedom_posture() -> str:
+    """The scratch-clone freedom posture, FAILING CLOSED: only `live` turns it on."""
+    raw = optional_env("CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "off")
+    if raw not in ("live", "off"):
+        logger.warning("CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS=%r is neither 'live' nor 'off'; "
+                       "reading it as off", raw)
+    return "live" if raw == "live" else "off"
+
+
+#: Whether an investigation may TRY an operation on its scratch clone that the delivery path would
+#: refuse, and whether the walk puts the regions that actually stop the mesh first.
+#:
+#: Measured on wave 1: 538 of 623 regions escalated, 385 of those without a single tool call, and
+#: 73 of 153 stated escalation reasons said the scoped checks pass while the WHOLE PART still
+#: fails - the investigation was being stopped from trying things on a copy that cannot ship, and
+#: was spending its clock on regions that were never the reason the part failed.
+#:
+#: "off" is byte-for-byte the prior behaviour. "live" changes the CLONE and the WALK ORDER only:
+#: the clone's guards drop the review-reserved codes and the paired-rim fill refusal, and regions
+#: holding a mesh-located defect are walked first with that defect as their primary target.
+#:
+#: IT MOVES NO DELIVERY GATE. The real session's caps, validity and solid-count checks, the
+#: paired-rim guard, the held-for-review guard, the new-defect and revealed rules, the delivered
+#: STEP keep rule and package review all judge a package exactly as they do today - a clone is a
+#: copy, and nothing reaches a customer's geometry without passing them.
+CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS: str = _clone_freedom_posture()
+
+
 #: Whether a separate model reviews every package that passed its predicate BEFORE the commit
 #: becomes durable (cad/repair/package_review.py) - the owner's semantic review, in place of any
 #: numeric "barely moved" gate. "off" is byte-for-byte the prior behaviour: no call, no new key on

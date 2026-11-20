@@ -391,8 +391,18 @@ _PACKAGE_KEYS = frozenset({"intent", "plan", "cleared", "unchanged", "max_area_d
                            "max_volume_delta_mm3"})
 
 
-def plan_entry(item: object, ctx: RegionContext, guards: PackageGuards) -> tuple[dict, dict]:
-    """One plan entry as the session's plan item, and as recorded."""
+def plan_entry(item: object, ctx: RegionContext, guards: PackageGuards, *,
+               clone: bool = False) -> tuple[dict, dict]:
+    """One plan entry as the session's plan item, and as recorded.
+
+    `clone` says this entry will run on a DISPOSABLE SCRATCH COPY, never delivered. It drops the
+    two rules that exist to keep a PROPOSAL sensible rather than to keep a part safe: the
+    catalogue's "does this operation answer that code" table, and an operation's stage
+    precondition. Measured on wave 1, those two refused 74 and 27 clone edits - an investigation
+    was being argued out of trying things on a copy that cannot ship. Everything else still
+    holds, here and at delivery: a fingerprint must be a defect of this region, held geometry is
+    untouchable, and a paired rim may not be filled.
+    """
     if not isinstance(item, dict) or set(item) - {"op", "fingerprint", "defect_code"}:
         raise Refusal("a plan entry is not {op, fingerprint}")
     name, fp = item.get("op"), item.get("fingerprint")
@@ -416,14 +426,17 @@ def plan_entry(item: object, ctx: RegionContext, guards: PackageGuards) -> tuple
     # A fingerprint can carry several codes: aim at the ones THIS operation answers, and refuse
     # only when that leaves nothing (never because another code sorts first).
     answered = [d for d in on if d.code in op.answers]
-    if not answered:
+    if not answered and not clone:
         raise Refusal(f"op_does_not_answer: {name} does not answer a "
                        f"{on[0].code.value}", code="op_does_not_answer", defect=fp)
-    defect = answered[0]
+    # ON A CLONE an unanswered aim is still ATTEMPTED, against the code that sorts first: the
+    # answer table is the catalogue's advice about what is worth proposing, and a copy is where
+    # advice is allowed to be wrong.
+    defect = (answered or on)[0]
     if defect.code in guards.reserved:
         raise Refusal(f"plan aims at a {defect.code.value}, a code held for review")
     # OPERATION PRECONDITIONS, refused here so an invalid proposal costs no execution.
-    stage = _stage_required(name, defect.code.value)
+    stage = None if clone else _stage_required(name, defect.code.value)
     if stage is not None and (getattr(defect, "measurements", None) or {}).get("stage") != stage:
         raise Refusal(f"stage_precondition: {name} needs a {stage}-stage defect",
                        code="stage_precondition", defect=fp)

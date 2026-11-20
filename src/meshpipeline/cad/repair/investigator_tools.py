@@ -936,7 +936,11 @@ class Editor:
         guards = PackageGuards(defects, reserved=clone.reserved, rims=self.rims,
                                original=clone.original,
                                solids_of=lambda: _solids_of(clone.shape))
-        return plan_entry(dict(args), ctx, guards)
+        # CLONE=TRUE: this entry runs on `self.scratch`, which is a copy. `plan_entry` drops the
+        # proposal-shaped rules for it under the live posture and keeps every safety one.
+        from meshpipeline.cad.repair.investigator import clone_freedom
+
+        return plan_entry(dict(args), ctx, guards, clone=clone_freedom())
 
     def apply(self, item: dict, region: Region):
         """The plan item, through the SCRATCH session's `try_op`.

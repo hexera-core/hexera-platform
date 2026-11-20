@@ -10,6 +10,7 @@ from dataclasses import replace
 import pytest
 
 import meshpipeline.settings.cad_repair as rcfg
+from meshpipeline.cad.repair import investigator as inv
 from meshpipeline.cad.repair import investigator_tools as it
 from meshpipeline.cad.repair import model_author
 from meshpipeline.cad.repair import session as sess
@@ -579,3 +580,84 @@ def test_a_package_claiming_the_measured_delta_is_accepted_by_the_predicate():
                                defects_before=("edge:aaaa",), defects_after=(),
                                declared_area_mm2=0.0, declared_volume_mm3=0.0)
         assert (refusal == "") is accepted, refusal
+
+
+# --- the clone is free; delivery is not (CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS) -----------------
+# The owner's policy: aggressive, even destructive edits are fine on a disposable copy, because
+# nothing is delivered unless it passes the keep check, the mesh check and review. So the clone's
+# guards drop and every delivery gate stays exactly where it was. Wave 1 counts, for scale:
+# op_does_not_answer refused 74 clone edits and the stage precondition 27, all on a copy.
+
+def _plan(item, defect, *, reserved=frozenset(), rims=frozenset(), clone=False):
+    from meshpipeline.cad.repair.model_author import PackageGuards, RegionContext, plan_entry
+
+    region = _region((defect.fingerprint,))
+    guards = PackageGuards((defect,), reserved=reserved, rims=rims, original=ORIGINAL,
+                           solids_of=lambda: 2)
+    return plan_entry(dict(item), RegionContext(region, (defect,)), guards, clone=clone)
+
+
+def _mesh_defect(stage="3d"):
+    return EntityDefect(code=DefectCode.mesh_overlapping_facets, severity=DefectSeverity.error,
+                        entity_type="face", entity_index=3, message="",
+                        fingerprint="face:cccc", measurements={"stage": stage})
+
+
+def test_the_clone_drops_the_reserved_codes_and_the_rim_guard_when_live(monkeypatch):
+    held, rims = frozenset({"small_face"}), frozenset({"face:rim"})
+
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "off", raising=False)
+    assert inv._clone_guards(held, rims) == (held, rims)
+
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "live", raising=False)
+    assert inv._clone_guards(held, rims) == (frozenset(), frozenset())
+
+
+def test_an_op_may_target_any_defect_of_the_region_on_the_clone():
+    """`op_does_not_answer` stopped 74 clone edits, nearly all fix_shape_global. On a copy, let it
+    be tried: the catalogue's own answer table is a proposal rule, not a safety one."""
+    defect = _mesh_defect()
+
+    with pytest.raises(model_author.Refusal, match="op_does_not_answer"):
+        _plan({"op": "fix_small_edges", "fingerprint": "face:cccc"}, defect)
+    planned, _ = _plan({"op": "fix_small_edges", "fingerprint": "face:cccc"}, defect, clone=True)
+    assert planned["op"].name == "fix_small_edges"
+
+
+def test_a_stage_precondition_is_dropped_on_the_clone(monkeypatch):
+    """27 of 28 rebuild_face calls were refused with "needs a 2d-stage defect", on a clone."""
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_REBUILD_FACE", True, raising=False)
+    defect = _mesh_defect(stage="3d")
+
+    with pytest.raises(model_author.Refusal, match="stage_precondition"):
+        _plan({"op": "rebuild_face", "fingerprint": "face:cccc"}, defect)
+    planned, _ = _plan({"op": "rebuild_face", "fingerprint": "face:cccc"}, defect, clone=True)
+    assert planned["op"].name == "rebuild_face"
+
+
+def test_a_fingerprint_outside_the_region_is_refused_even_on_the_clone():
+    """NOT a conservatism: an edit aimed at something that is not a defect of this region is a
+    proposal about geometry the investigation was never given."""
+    defect = _mesh_defect()
+
+    with pytest.raises(model_author.Refusal, match="not a defect fingerprint"):
+        _plan({"op": "fix_small_edges", "fingerprint": "face:elsewhere"}, defect, clone=True)
+
+
+def test_delivery_still_refuses_a_fill_on_a_paired_rim_and_a_held_code():
+    """The gates the mesher cannot see: a sealed through-hole meshes fine, and held geometry is in
+    front of a person. Freeing the clone must not touch either, so the DELIVERY validator - the
+    same `plan_entry` with clone left false and the real guard sets - still refuses both."""
+    rim = EntityDefect(code=DefectCode.open_shell, severity=DefectSeverity.error,
+                       entity_type="face", entity_index=4, message="",
+                       fingerprint="face:rim", measurements={"stage": "2d"})
+    with pytest.raises(model_author.Refusal, match="paired rim"):
+        _plan({"op": "fill_planar_hole", "fingerprint": "face:rim"}, rim,
+              rims=frozenset({"face:rim"}))
+
+    small = EntityDefect(code=DefectCode.small_face, severity=DefectSeverity.warning,
+                         entity_type="face", entity_index=5, message="",
+                         fingerprint="face:held", measurements={"stage": "2d"})
+    with pytest.raises(model_author.Refusal, match="held for review"):
+        _plan({"op": "fix_small_faces", "fingerprint": "face:held"}, small,
+              reserved=frozenset({DefectCode.small_face}))

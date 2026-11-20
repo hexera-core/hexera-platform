@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from meshpipeline.cad.repair import grind, model_author, oracle
 from meshpipeline.cad.repair.grind import CHEAP, HEAVY, STANDARD
@@ -50,6 +50,13 @@ BUDGETS: dict[str, InvestigationBudget] = {
 }
 
 
+#: Added to a tier's turns under `CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS`. MODEST ON PURPOSE: the
+#: measured lever is which region is reached first, not how long it may sit there (lane F on wave
+#: 1: more region budget alone gives about no gain), and the walls are untouched so a region still
+#: cannot spend its successors' clock or the proof reserve.
+CLONE_FREEDOM_TURNS = 4
+
+
 def budget_for(tier: object) -> InvestigationBudget:
     """The budget for a tier. FAILS CLOSED: `grind.UNKNOWN`, an unrecognised name, a non-string
     and `None` all get the SMALLEST budget, never a guessed larger one.
@@ -58,6 +65,23 @@ def budget_for(tier: object) -> InvestigationBudget:
     common cause of an unrecognised tier is a part nobody has measured - exactly the part that
     should not be handed a heavy spend.
     """
+    if _clone_freedom():
+        return _with_more_turns(_base_budget_for(tier))
+    return _base_budget_for(tier)
+
+
+def _clone_freedom() -> bool:
+    return getattr(rcfg, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "off") == "live"
+
+
+def _with_more_turns(budget: InvestigationBudget) -> InvestigationBudget:
+    """`budget` with more TURNS and the same wall: a policy that asks for many attempts has to pay
+    for the calls they cost, and the wall is the clock everyone else shares."""
+    return replace(budget, tool_calls=budget.tool_calls + CLONE_FREEDOM_TURNS,
+                   model_calls=budget.model_calls + CLONE_FREEDOM_TURNS)
+
+
+def _base_budget_for(tier: object) -> InvestigationBudget:
     if isinstance(tier, str):
         found = BUDGETS.get(tier)
         if found is not None:

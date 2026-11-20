@@ -219,7 +219,7 @@ def _conclude_branches(properties: dict) -> list:
     (bc88c9f9). The exclusivity is declared, not left to the prose.
     """
     return [{"title": form, "required": [form], "properties": {form: properties[form]},
-             "additionalProperties": False} for form in _CONCLUSIONS]
+             "additionalProperties": False} for form in _CONCLUSIONS if form in properties]
 
 
 _CONCLUDE_PROPERTIES: dict = {
@@ -262,6 +262,13 @@ def _conclude_schema(shadow: bool = False):
     from meshpipeline.contracts.model_inference import ToolSchema
 
     properties = {**_CONCLUDE_PROPERTIES}
+    if clone_freedom():
+        # NOT OFFERED, STILL HANDLED. The owner's policy: escalation is what happens when the
+        # whole job fails, never a per-region exit - and a form that needs only a sentence, while
+        # `package` needs a kept edit, is the exit every region took (538 of 623 on wave 1). A
+        # region that genuinely cannot act now runs out of budget instead, which is what
+        # `region_loop._terminal`, the collector and the schema already mean by `budget_spent`.
+        properties = {k: v for k, v in properties.items() if k != "escalate"}
     if shadow:
         package = {**properties["package"]}
         package["properties"] = {
@@ -329,7 +336,28 @@ def system_prompt(*, prose: str = "", shadow: bool = False) -> str:
     """
     template = SHADOW_SYSTEM if shadow else INVESTIGATOR_SYSTEM
     text = template.format(catalogue=catalogue_text(), roster=_roster(shadow))
+    if not shadow and clone_freedom():
+        text = f"{text}\n{AGGRESSIVE_RULE}"
     return f"{text}\n{prose}" if prose else text
+
+
+#: Appended to the live prompt under `CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS`. The owner's policy in
+#: the model's own terms: the copy is disposable, so TRY things; escalation is not this region's to
+#: choose. Measured on wave 1: 538 of 623 regions escalated, 385 of them without one tool call.
+AGGRESSIVE_RULE = (
+    "HOW TO WORK THIS REGION, AND IT IS DIFFERENT FROM WHAT YOU MAY ASSUME:\n"
+    "- the scratch copy is DISPOSABLE and nothing on it reaches the part. an edit that fails, "
+    "removes too much or makes the copy worse costs you a turn and nothing else, and every "
+    "outcome is a measurement you did not have before. so TRY OPERATIONS, several of them, and "
+    "combinations of them - a rolled-back edit is a result, not a mistake.\n"
+    "- YOUR JOB IS THAT THE WHOLE PART MESHES. a defect the mesher located is the reason it does "
+    "not; a short edge or sliver face the analyzer merely warns about is secondary unless it sits "
+    "at the failure site. aim at the mesh failure first, and say what you measured.\n"
+    "- you may aim any operation at any defect of this region. the catalogue's notes say what an "
+    "operation is FOR, not what you are allowed to try on a copy.\n"
+    "- SPEND THE BUDGET. a region that ends with turns left and nothing tried has told us "
+    "nothing. there is no 'escalate' to reach for: if you cannot support a package, say so with "
+    "`mesher_side` when the geometry is sound, and otherwise keep working until the budget ends.")
 
 
 # --- the budget and the clock (Task 8's surface, with a fail-closed local fallback) ------------
@@ -460,6 +488,25 @@ def configured_reserves(deadline_s: float | None, clock: Callable[[], float], *,
                 else max(0.0, float(deadline_s) - clock() - float(reserve_s)))
         proof_reserve_s = _proof(left)
     return float(reserve_s), float(proof_reserve_s), float(share)
+
+
+def clone_freedom() -> bool:
+    """Is `CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS` live? Read per call, like every other posture."""
+    return getattr(rcfg, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "off") == "live"
+
+
+def _clone_guards(held_codes: frozenset, rims: frozenset) -> tuple[frozenset, frozenset]:
+    """`(reserved, rims)` FOR THE SCRATCH CLONE: both empty under the live posture.
+
+    THE SEAM THAT MAKES THE POLICY SAFE. These two sets reach the clone and the real session from
+    the same place (`conservative.py`), so narrowing them HERE frees the copy and leaves every
+    delivery gate standing: `_conclude` validates the package it proposes with the session's own
+    sets, and `session.try_package` judges the commit with them again. A clone that may remove a
+    held sliver or fill a paired rim still cannot deliver either.
+    """
+    if not clone_freedom():
+        return frozenset(held_codes), frozenset(rims)
+    return frozenset(), frozenset()
 
 
 def _budget_of(tier: str) -> Budget:
@@ -865,9 +912,11 @@ def investigator(shape, *, original: Measure, reserved: frozenset = frozenset(),
         # NO SCRATCH CLONE IN SHADOW, and the factory is not even called. The posture is
         # read-only by construction rather than by discipline: with no clone there is nothing a
         # shadow could mutate, and `edit` has nothing to run on.
+        clone_reserved, clone_rims = _clone_guards(
+            held_codes, ma.rim_guard(state["shape"], state["part_rims"], tuple(defects), []))
         scratch = None if shadow else _scratch_of(
             scratch_factory, state["shape"], original=original,
-            defects=tuple(defects), reserved=held_codes,
+            defects=tuple(defects), reserved=clone_reserved,
             remaining_s=lambda: max(0.0, wall), clock=clock,
             tolerance_mm=tolerance_mm, accounting=state["accounting"],
             standing_mesh=state["part_mesh"])
@@ -887,9 +936,7 @@ def investigator(shape, *, original: Measure, reserved: frozenset = frozenset(),
                         # THE ONLY ROUTE TO `edit`: an `Editor` over the CLONE, carrying the run's
                         # tolerance. None without a clone - always in shadow - so `edit` refuses.
                         editor=(investigator_tools.editor(
-                            scratch, tolerance_mm=float(tolerance_mm),
-                            rims=ma.rim_guard(state["shape"], state["part_rims"],
-                                              tuple(defects), []))
+                            scratch, tolerance_mm=float(tolerance_mm), rims=clone_rims)
                                 if scratch is not None else None))
         ctx = ma.RegionContext(region, tuple(defects))
         started = clock()

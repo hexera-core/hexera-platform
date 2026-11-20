@@ -291,8 +291,36 @@ def _walk_order(regions: tuple[Region, ...], defects) -> tuple[Region, ...]:
         for region in regions:
             if defect.fingerprint in region.fingerprints:
                 worst[region.index] = min(worst.get(region.index, rank), rank)
+    stops_the_mesh = _mesh_located_regions(regions, defects)
     return tuple(sorted(regions,
-                        key=lambda r: (worst.get(r.index, len(_SEVERITY_RANK)), r.index)))
+                        key=lambda r: (0 if r.index in stops_the_mesh else 1,
+                                       worst.get(r.index, len(_SEVERITY_RANK)), r.index)))
+
+
+def _mesh_located_regions(regions: tuple[Region, ...], defects) -> frozenset[int]:
+    """The regions holding a defect gmsh LOCATED, under `CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS`.
+    Empty with the posture off, which leaves the walk exactly as severity ordered it.
+
+    WHY THESE GO FIRST. A mesh-located defect IS the reason the part will not mesh; a sliver
+    warning elsewhere is not, however severe the analyzer calls it. Measured on wave 1: 84% of the
+    gmsh-located failure faces sat inside investigated regions, and yet 385 of 538 escalations
+    were reached with no time left to make a single tool call, because the run's clock was shared
+    across up to 35 regions in severity order. Severity still orders the two groups internally, so
+    this re-ranks WHICH region is reached first and nothing about what any of them may do.
+
+    AN UNLOCATED MESH FAILURE PROMOTES NOTHING: with no fingerprint it names no face, so it cannot
+    say which region is the one that matters (`mesh_probe.mesh_defects` reports exactly one such
+    defect for a failure it could not place).
+    """
+    import meshpipeline.settings.cad_repair as rcfg
+
+    if getattr(rcfg, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "off") != "live":
+        return frozenset()
+    from meshpipeline.cad.repair import mesh_probe
+
+    located = {d.fingerprint for d in defects
+               if getattr(d, "code", None) in mesh_probe.MESH_CODES and d.fingerprint}
+    return frozenset(r.index for r in regions if located & set(r.fingerprints))
 
 
 #: A REGION THE FOCUS DID NOT NAME. The mesher handback (pipeline/repair_handback.py) hands repair
