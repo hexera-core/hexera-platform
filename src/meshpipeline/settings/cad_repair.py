@@ -545,6 +545,23 @@ def _investigator_posture() -> str:
 #: Read only by the region-scoped driver (CAD_REPAIR_REGION_LOOP=live).
 CAD_REPAIR_INVESTIGATOR: str = _investigator_posture()
 
+#: CRS v3 postures read RAW here and validated by their ONE consumer, which fails closed (anything
+#: but the exact strings it accepts reads as off, out loud). Each defaults to "off", byte-for-byte
+#: the prior behaviour. Before these rows existed every consumer's `getattr(rcfg, NAME, "off")`
+#: default answered, so the deploy path's exports were silently inert.
+#: The tournament (cad/repair/tournament.py): off, shadow or live.
+CAD_REPAIR_TOURNAMENT: str = optional_env("CAD_REPAIR_TOURNAMENT", "off")
+#: Candidates the tournament rehearses per region; tournament.py clamps it and falls back to K=1.
+CAD_REPAIR_TOURNAMENT_K: str = optional_env("CAD_REPAIR_TOURNAMENT_K", "1")
+#: Fingerprint-keyed outcome memory (cad/repair/memory.py): off or live.
+CAD_REPAIR_MEMORY: str = optional_env("CAD_REPAIR_MEMORY", "off")
+#: Whether a review rejection returns its measured objection (cad/repair/package_review.py).
+CAD_REPAIR_REVIEW_OBJECTION: str = optional_env("CAD_REPAIR_REVIEW_OBJECTION", "off")
+#: Whether a mesher failure hands its failing faces back to repair (pipeline/repair_handback.py).
+CAD_REPAIR_MESH_HANDBACK: str = optional_env("CAD_REPAIR_MESH_HANDBACK", "off")
+#: Whether an operator may run a job as standalone repair (pipeline/repair_goal.py).
+CAD_REPAIR_STANDALONE_JOBS: str = optional_env("CAD_REPAIR_STANDALONE_JOBS", "off")
+
 #: Seconds ONE investigator model call may take. Cut further to what is left of the region's wall
 #: and of the run (cad/repair/investigator_budget.InvestigationClock.left), so a generous value
 #: here cannot outlive the run.

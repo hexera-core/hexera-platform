@@ -6,6 +6,7 @@ import re
 import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).parents[3]
@@ -56,10 +57,7 @@ FLAGS: dict[str, tuple[str, str]] = {
 # added there (and in settings/inventory.py) the exported value is inert and the in-code default
 # stands. When a row lands, delete the name from this set - the test below then holds it to the
 # inventory like every other flag.
-AWAITING_SETTINGS_ROW = frozenset({
-    "CAD_REPAIR_TOURNAMENT", "CAD_REPAIR_MEMORY", "CAD_REPAIR_REVIEW_OBJECTION",
-    "CAD_REPAIR_MESH_HANDBACK", "CAD_REPAIR_STANDALONE_JOBS",
-})
+AWAITING_SETTINGS_ROW: frozenset[str] = frozenset()
 
 # DELIBERATELY NOT PLUMBED from crs_v3: the router's image acceptance is unmeasured
 # (INVESTIGATOR_IMAGES), and the one-shot author and the LLM planner are older postures with their
@@ -231,3 +229,25 @@ def test_the_v3_flags_derive_only_from_the_one_switch():
         name = stripped.split(":", 1)[0]
         assert "deployment_id" not in stripped, f"{name} must derive from crs_v3 alone"
         assert "'prod'" not in stripped, f"{name} must not name production"
+
+
+V3_RAW_ROWS = ("CAD_REPAIR_TOURNAMENT", "CAD_REPAIR_MEMORY", "CAD_REPAIR_REVIEW_OBJECTION",
+               "CAD_REPAIR_MESH_HANDBACK", "CAD_REPAIR_STANDALONE_JOBS")
+
+
+@pytest.mark.parametrize("name", V3_RAW_ROWS)
+def test_an_exported_posture_actually_reaches_the_settings_module(monkeypatch, name):
+    """The deploy path writing NAME=live is worthless unless the settings module reads it: every
+    consumer asks `getattr(rcfg, NAME, "off")`, so a missing row reads off whatever the env says.
+    That is exactly how five v3 postures shipped inert on a live personal deploy."""
+    import importlib
+
+    import meshpipeline.settings.cad_repair as rcfg
+
+    monkeypatch.setenv(name, "live")
+    try:
+        assert getattr(importlib.reload(rcfg), name) == "live"
+    finally:
+        monkeypatch.delenv(name)
+        importlib.reload(rcfg)
+    assert getattr(rcfg, name) == "off"
