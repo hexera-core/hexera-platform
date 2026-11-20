@@ -31,6 +31,22 @@ from typing import Any
 #: touch", which is the opposite conclusion and one the investigator acts on.
 UNMEASURED: dict[str, Any] = {"min_distance_mm": None, "point_a": None, "point_b": None}
 
+#: A pair the batch did not need to measure: an earlier candidate is already nearer than this
+#: one's own LOWER BOUND, so nothing from here on can win. A PROOF, not ignorance - unlike
+#: `budget_spent`, which says the search did not finish and the caller must say so.
+PRUNED = "pruned"
+
+#: Statuses that mean THE BATCH ITSELF ANSWERED for this pair - it measured it, it proved nothing
+#: from there on could win, or the kernel refused this one piece of geometry. Anything else says
+#: the search did not finish, which a caller must report rather than read as "nothing is near".
+ANSWERED = ("measured", PRUNED, "unmeasured: the kernel gave no distance")
+
+
+def answered(result: dict) -> bool:
+    """Whether this pair's answer is the batch's word, rather than a search that stopped early."""
+    return result.get("distance_status") in ANSWERED
+
+
 #: The child, as a list so a test can replace it. `-W ignore` keeps a warning off the one JSON line.
 _CHILD_CMD = [sys.executable, "-W", "ignore", "-m", "meshpipeline.cad.repair.occ_distance"]
 
@@ -125,7 +141,8 @@ def _run_child(first: Path, second: Path, budget: float) -> dict:
             "distance_status": "measured"}
 
 
-def distances(shapes: list, pairs: list[tuple[int, int]], *, budget_s: float) -> list[dict]:
+def distances(shapes: list, pairs: list[tuple[int, int]], *, budget_s: float,
+              bounds: list[float] | None = None, tol: float = 0.0) -> list[dict]:
     """One distance per pair of `shapes` (given as index pairs), measured in ONE bounded child.
 
     A CHILD PER PAIR WOULD COST MORE THAN IT SAVES: `_nearest_faces` asks about every candidate
@@ -136,6 +153,13 @@ def distances(shapes: list, pairs: list[tuple[int, int]], *, budget_s: float) ->
     deadline was checked BETWEEN calls, which at least preserved the ones already measured - so
     the child prints one line per pair and the parent reads what arrived before the kill. A pair
     that never answered is unmeasured, never 0.
+
+    PRUNING TRAVELS WITH THE BATCH. `bounds[n]` is a LOWER BOUND on pair `n`'s distance and the
+    pairs are given in increasing order of it; with `bounds`, the child stops at the first pair
+    whose bound exceeds the least distance it has measured plus `tol`, and the rest come back
+    `PRUNED`. The rule cannot be applied by the parent because it needs the distances measured so
+    far, and a batch without it would measure every candidate - more than the in-parent loop it
+    replaces. Without `bounds`, every pair is measured.
     """
     wanted = list(pairs)
     if not wanted:
@@ -153,7 +177,11 @@ def distances(shapes: list, pairs: list[tuple[int, int]], *, budget_s: float) ->
             for i in needed:
                 _write_brep(shapes[i], root / f"{i}.brep")
             manifest = root / "pairs.json"
-            manifest.write_text(json.dumps([[int(a), int(b)] for a, b in wanted]))
+            spec: dict[str, Any] = {"pairs": [[int(a), int(b)] for a, b in wanted]}
+            if bounds is not None:
+                spec["bounds"] = [float(b) for b in bounds]
+                spec["tol"] = float(tol)
+            manifest.write_text(json.dumps(spec))
             return _run_batch(root, manifest, len(wanted), budget)
     except Exception as exc:  # noqa: BLE001 - a measurement may never break the tool that asked
         return [{**UNMEASURED, "distance_status": f"unmeasured: {type(exc).__name__}"}
@@ -181,10 +209,17 @@ def _run_batch(root: Path, manifest: Path, count: int, budget: float) -> list[di
     finally:
         if proc.poll() is None:
             _kill_group(proc)
+    stopped = count
+    for n, raw in enumerate(lines):
+        if '"pruned_after"' in raw:
+            stopped = min(stopped, n)
+            break
     answers: list[dict] = []
     for i in range(count):
-        raw = lines[i] if i < len(lines) else ""
-        answers.append(_one_answer(raw))
+        if i >= stopped:
+            answers.append({**UNMEASURED, "distance_status": PRUNED})
+            continue
+        answers.append(_one_answer(lines[i] if i < len(lines) else ""))
     return answers
 
 
@@ -203,7 +238,8 @@ def _one_answer(raw: str) -> dict:
 
 
 def _batch_main(root: Path, manifest: Path) -> int:
-    """Measure each pair and print it AS IT IS FINISHED, so a kill keeps what came before."""
+    """Measure each pair and print it AS IT IS FINISHED, so a kill keeps what came before. With
+    bounds, stop where the parent's own loop would have stopped and say so on the last line."""
     cache: dict[int, Any] = {}
 
     def shape(i: int):
@@ -211,11 +247,28 @@ def _batch_main(root: Path, manifest: Path) -> int:
             cache[i] = _read_brep(root / f"{i}.brep")
         return cache[i]
 
-    for a, b in json.loads(manifest.read_text()):
+    spec = json.loads(manifest.read_text())
+    if isinstance(spec, list):                       # the plain form: every pair, no pruning
+        pairs, bounds, tol = spec, None, 0.0
+    else:
+        pairs = spec.get("pairs") or []
+        bounds = spec.get("bounds")
+        tol = float(spec.get("tol") or 0.0)
+    least: float | None = None
+    for n, (a, b) in enumerate(pairs):
+        if bounds is not None and least is not None and float(bounds[n]) > least + tol:
+            # EXACTLY THE PARENT'S OLD BREAK: this candidate's lower bound is already further
+            # than a measured distance, and the pairs are ordered by that bound.
+            sys.stdout.write(json.dumps({"pruned_after": n}) + "\n")
+            sys.stdout.flush()
+            return 0
         try:
             answer = _measure_here(shape(int(a)), shape(int(b)))
         except Exception:  # noqa: BLE001 - one unmeasurable pair is not the batch's failure
             answer = dict(UNMEASURED)
+        if answer.get("min_distance_mm") is not None:
+            found = float(answer["min_distance_mm"])
+            least = found if least is None else min(least, found)
         sys.stdout.write(json.dumps(answer) + "\n")
         sys.stdout.flush()
     return 0
