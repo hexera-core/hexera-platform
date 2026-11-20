@@ -1587,7 +1587,7 @@ def render_internal_case(workspace, *, names: dict, features: dict, interior_poi
     if _ask is not None:
         from meshpipeline.engines import cfd_requirements as CR
         port_lvls = CR.snappy_port_levels(_ask, port_lvls, names, wall_key, base_m=base_actual,
-                                          hard_max=_HARD_MAX_LEVEL)
+                                          hard_max=_HARD_MAX_LEVEL, roles=CR.port_roles(ws))
     # The near-wall band exists to give the wall a few FINE cells of depth. Scaling it by
     # base_cell made it 3 base cells deep - with an inflated base_cell that was most of
     # the domain at max level (the same detonation). Scale by the actual WALL cell.

@@ -1712,6 +1712,9 @@ def decided_asks(sec: Mapping | None, *, skip: tuple[str, ...] = ()) -> list[str
     out += [f'"{_short(str(q))}" ({str(e["line"]).removeprefix("From your notes: ").rstrip(".")})'
             for e in sec.get("acted") or [] if isinstance(e, Mapping) and e.get("line")
             for q in (e.get("quotes") or [])[:1] if str(q).strip()]
+    # NOTE-14: how strict the limits are is the rules' too - held on the limits it names, told with them
+    out += [f'"{_short(str(e["quote"]))}" (how strict the limits are: the rules hold the limits it names to it)'
+            for e in req.get("strictness") or [] if isinstance(e, Mapping) and str(e.get("quote") or "").strip()]
     return out[:40]
 
 
@@ -1771,8 +1774,10 @@ def write(workspace, sec: Mapping | None) -> bool:
     path = Path(workspace) / FILE
     try:
         # (a pick on the stage, STD-4, is kept too: the result says which elements were made and why)
+        # (and a strictness: every step reads it as the rules', so no AI step's remark speaks for it, NOTE-14)
         if (requirements_of(sec) is None and not told_words(sec) and not (sec or {}).get("stage")
-                and not (sec or {}).get("acted")):
+                and not (sec or {}).get("acted")
+                and not ((sec or {}).get("requirements") or {}).get("strictness")):
             path.unlink(missing_ok=True)
             return False
         path.write_text(json.dumps(sec, indent=1, sort_keys=True), encoding="utf-8")
