@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-# Responsibility: Turn the CRS v3 verdict results JSON (results.schema.json) into the LaTeX macros
-#                 and tables the three whitepapers \input, and compute the T29 verdict from the
-#                 arms themselves. Also adapts collect.py's output (verdict.json plus the sealed
-#                 bundles' summary.json) and T6's local rows into that JSON.
-# Owns: the macro names, the PENDING rendering, the verdict rule as rendered.
+# Responsibility: Turn the CRS v3 results JSON (results.schema.json) into the LaTeX macros and
+#                 tables the three whitepapers \input. Also adapts collect.py's output
+#                 (verdict.json - a historical name, it holds no verdict - plus the sealed
+#                 bundles' summary.json) and T6's local rows into that JSON. There is NO pass/fail
+#                 bar: every number is reported as measured (owner decision, 2026-11-20).
+# Owns: the macro names, the PENDING rendering, the tolerant-mesher column's label.
 # Boundaries: no CAD, no cloud. A value that is missing, null, NaN or infinite is NOT MEASURED and
 #             renders as a visible \textbf{[PENDING]} - never as 0, because a zero in a results
 #             table is a claim. collect.py owns every metric; this file only moves numbers.
@@ -40,10 +41,14 @@ DEFAULT_TEX = REPO / "docs/whitepapers/overleaf/crs-v3-results.tex"
 PENDING_TEX = r"\textbf{[PENDING]}"
 PENDING_MD = "**[PENDING]**"
 NA = "n/a"
-RATIO = 4
+SCHEMA_VERSION = 2
+
+#: THE TOLERANT ROUTE'S LABEL, exactly, everywhere it is shown. Its count is never part of
+#: newly_meshed / files fixed: a part fTetWild meshes was meshed another way, not repaired.
+TOLERANT_LABEL = "tolerant-mesher meshable (not counted as CAD repair)"
 
 #: arm id -> (macro infix, column header). t29_v3's infix is empty so its macros read
-#: \vThreeNewlyMeshed - the headline number of the paper.
+#: \vThreeFilesFixed - the headline number of the paper (files fixed = newly meshed by CAD repair).
 ARMS: dict[str, tuple[str, str]] = {
     "t6_rules_only_local": ("RulesOnly", "T6 rules-only"),
     "t29_deterministic": ("Det", "T29 deterministic"),
@@ -68,7 +73,7 @@ ARM_FIELDS = ("arm", "label", "commit", "image_digest", "sample_sha256", "n_file
               "newly_broken", "meshes_before", "meshes_after", "endings", "ops_kept",
               "ops_rolled_back", "model_calls", "cost_usd", "wall_s", "cost_per_fixed_part")
 CLEAN_FIELDS = ("arm", "label", "commit", "image_digest", "sample_sha256", "n_files",
-                "byte_unchanged", "newly_broken")
+                "still_meshes_no_new_defects", "changed", "newly_broken")
 
 
 # --------------------------------------------------------------------------- values
@@ -143,74 +148,11 @@ def fmt_tally(tally, *, md: bool = False) -> str:
     return ", ".join(rf"\texttt{{{tex_escape(k)}}}~{_int_tex(v)}" for k, v in items)
 
 
-# --------------------------------------------------------------------------- the verdict
-
-def compute_verdict(results: dict) -> dict:
-    """THE T29 RULE, from the arms: v3.newly_meshed >= 4 x deterministic.newly_meshed AND
-    newly_broken == 0 (both arms) AND clean byte_unchanged == n. If the deterministic arm newly
-    meshed nothing the ratio is degenerate: the 4x goal is UNDEFINED, the verdict is judged on v3's
-    absolute count (> 0), and the statement says so. Anything missing makes the verdict PENDING."""
-    det = get(results, "t29_deterministic", "newly_meshed")
-    v3 = get(results, "t29_v3", "newly_meshed")
-    det_b = get(results, "t29_deterministic", "newly_broken")
-    v3_b = get(results, "t29_v3", "newly_broken")
-    c_n = get(results, CLEAN, "n_files")
-    c_u = get(results, CLEAN, "byte_unchanged")
-    c_b = get(results, CLEAN, "newly_broken")
-    out = {"rule": (f"v3 newly_meshed >= {RATIO} x deterministic newly_meshed, newly_broken == 0 "
-                    f"in both arms, and every clean-control part unchanged"),
-           "deterministic_newly_meshed": det if measured(det) else None,
-           "v3_newly_meshed": v3 if measured(v3) else None,
-           "ratio": None, "ratio_defined": None, "judged_on": None, "ratio_ok": None,
-           "newly_broken_zero": None, "clean_ok": None, "status": "PENDING",
-           "statement": "Pending: the T29 arms have not reported."}
-    needed = (det, v3, det_b, v3_b, c_n, c_u, c_b)
-    if not all(measured(x) for x in needed):
-        return out
-    det, v3, c_n, c_u = int(det), int(v3), int(c_n), int(c_u)
-    broken = int(det_b) + int(v3_b) + int(c_b)
-    out["newly_broken_zero"] = broken == 0
-    out["clean_ok"] = c_u == c_n
-    if det == 0:
-        out.update(ratio=None, ratio_defined=False, judged_on="absolute", ratio_ok=v3 > 0)
-        head = (f"4x goal: undefined (deterministic ceiling 0). Judged on v3's absolute count "
-                f"instead: v3 newly meshed {v3}.")
-    else:
-        ratio = v3 / det
-        out.update(ratio=round(ratio, 3), ratio_defined=True, judged_on="ratio",
-                   ratio_ok=v3 >= RATIO * det)
-        head = f"v3 newly meshed {v3} against {RATIO} x {det} = {RATIO * det} ({ratio:.2f}x)."
-    ok = bool(out["ratio_ok"] and out["newly_broken_zero"] and out["clean_ok"])
-    out["status"] = "PASS" if ok else "FAIL"
-    tail = []
-    if not out["newly_broken_zero"]:
-        tail.append(f"{broken} part(s) newly broken")
-    if not out["clean_ok"]:
-        tail.append(f"clean control {c_u} of {c_n} unchanged")
-    if not out["ratio_ok"]:
-        tail.append("the count rule is not met")
-    out["statement"] = (f"{out['status']}. {head}" + (f" Fails on: {'; '.join(tail)}." if tail else "")
-                        + (" The 4x goal is not claimed." if det == 0 else "")
-                        + _tolerant_sentence(results))
-    return out
-
-
-def _tolerant_sentence(results: dict) -> str:
-    """The tolerant route, STATED SEPARATELY and never part of the rule above: how many files
-    gmsh still refused were meshed by fTetWild as delivered. Empty until an arm measured it."""
-    det = get(results, "t29_deterministic", "delivered_via_tolerant_mesher")
-    v3 = get(results, "t29_v3", "delivered_via_tolerant_mesher")
-    if not (measured(det) or measured(v3)):
-        return ""
-    def word(x) -> str:
-        return str(int(x)) if measured(x) else "not measured"
-    return (f" Separately, and not counted as repaired or newly meshed: delivered via the "
-            f"tolerant mesher (fTetWild, plan-free production envelope) - deterministic "
-            f"{word(det)}, v3 {word(v3)}.")
-
+# --------------------------------------------------------------------------- information
 
 def zero_break_bound(results: dict):
-    """Rule of three: with zero breaks over n parts, the 95% upper bound on the break rate is 3/n.
+    """INFORMATION, not a pass condition. Rule of three: with zero breaks over n parts, the 95%
+    upper bound on the break rate is 3/n.
     n pools the v3 arm's failing sample with the clean control (120 + 100 = 220 -> 1.4%). None
     until both counts exist, and None unless both newly_broken counts are measured zeros."""
     n1, n2 = get(results, "t29_v3", "n_files"), get(results, CLEAN, "n_files")
@@ -227,8 +169,10 @@ def zero_break_bound(results: dict):
 def validate(results: dict) -> None:
     """The structural half of results.schema.json, enough to refuse a file the renderer would
     misread. (jsonschema is not a dependency of this repo.)"""
-    if results.get("schema_version") != 1:
-        raise ValueError("schema_version must be 1")
+    if results.get("schema_version") != SCHEMA_VERSION:
+        raise ValueError(f"schema_version must be {SCHEMA_VERSION}")
+    if "verdict" in results:
+        raise ValueError("results carry no verdict (schema_version 2 has no pass/fail)")
     arms = results.get("arms")
     if not isinstance(arms, dict):
         raise ValueError("arms must be an object")
@@ -255,7 +199,9 @@ def load(path: Path) -> dict:
 # --------------------------------------------------------------------------- LaTeX
 
 FIELD_MACROS = (  # (field, macro suffix, kind)
-    ("n_files", "NFiles", "int"), ("newly_meshed", "NewlyMeshed", "int"),
+    # FILES FIXED IS THE HEADLINE: newly meshed by CAD repair (the same value as NewlyMeshed).
+    ("n_files", "NFiles", "int"), ("newly_meshed", "FilesFixed", "int"),
+    ("newly_meshed", "NewlyMeshed", "int"),
     ("newly_broken", "NewlyBroken", "int"), ("meshes_before", "MeshesBefore", "int"),
     ("meshes_after", "MeshesAfter", "int"),
     ("delivered_via_tolerant_mesher", "TolerantMesher", "int"),
@@ -277,21 +223,15 @@ def macros(results: dict) -> dict[str, str]:
         out[f"vThree{infix}OpsKept"] = fmt_tally(arm.get("ops_kept"))
         out[f"vThree{infix}OpsRolledBack"] = fmt_tally(arm.get("ops_rolled_back"))
         out[f"vThree{infix}Label"] = tex_escape(arm.get("label") or LABELS[arm_id])
+    out["vThreeTolerantMesherLabel"] = tex_escape(TOLERANT_LABEL)
     clean = (results.get("arms") or {}).get(CLEAN) or {}
-    for field, suffix, kind in (("n_files", "NFiles", "int"), ("byte_unchanged", "ByteUnchanged", "int"),
+    for field, suffix, kind in (("n_files", "NFiles", "int"),
+                                ("still_meshes_no_new_defects", "StillGood", "int"),
+                                ("changed", "Changed", "int"),
                                 ("newly_broken", "NewlyBroken", "int"),
                                 ("commit", "Commit", "hash"), ("sample_sha256", "Sample", "hash")):
         out[f"vThreeClean{suffix}"] = fmt(clean.get(field), kind)
-    verdict = compute_verdict(results)
-    out["vThreeVerdict"] = PENDING_TEX if verdict["status"] == "PENDING" else rf"\textbf{{{verdict['status']}}}"
-    out["vThreeVerdictRatio"] = (PENDING_TEX if verdict["status"] == "PENDING" else
-                                 (f"{verdict['ratio']:.2f}" + r"$\times$") if verdict["ratio_defined"]
-                                 else "undefined (deterministic ceiling 0)")
-    out["vThreeVerdictStatement"] = (PENDING_TEX if verdict["status"] == "PENDING"
-                                     else tex_escape(verdict["statement"]))
-    out["vThreeVerdictRule"] = ("the v3 arm newly meshes at least four times as many parts as the "
-                                "deterministic arm, neither arm newly breaks a part, and every "
-                                "clean-control part comes back unchanged")
+    # INFORMATION: a bound on the break rate, never a pass condition.
     out["vThreeZeroBreakBound"] = fmt(zero_break_bound(results), "pct")
     return out
 
@@ -306,24 +246,31 @@ def results_table(results: dict, m: dict[str, str]) -> str:
     lines = [
         r"\begin{table}[h]", r"\centering",
         r"\caption{CRS v3 measured results. Columns are the five arms; T19 ``tournament on'' is the "
-        r"same run as T29 v3. Every count is a part count from the coarse gmsh probe. A "
-        r"\textbf{[PENDING]} cell has not been measured; it is not a zero.}",
+        r"same run as T29 v3. Every count is a part count from the coarse gmsh probe. Files "
+        r"fixed are parts newly meshed by CAD repair; the tolerant-mesher row is a separate "
+        r"count, never part of files fixed. No arm passes or fails: the numbers are reported "
+        r"as measured. A \textbf{[PENDING]} cell has not been measured; it is not a zero.}",
         r"\label{tab:v3results}", r"\footnotesize",
         r"\begin{tabular}{@{}l" + "r" * len(cols) + r"@{}}", r"\toprule",
         _row("", [r"\textbf{" + ARMS[a][1] + "}" for a in cols]), r"\midrule",
     ]
     for label, suffix in (("Files", "NFiles"), ("Meshed before", "MeshesBefore"),
-                          ("Meshed after", "MeshesAfter"), (r"\textbf{Newly meshed}", "NewlyMeshed"),
-                          (r"\textbf{Newly broken}", "NewlyBroken"), ("Model calls", "ModelCalls"),
+                          ("Meshed after", "MeshesAfter"),
+                          (r"\textbf{Files fixed} (newly meshed by CAD repair)", "FilesFixed"),
+                          (r"\textbf{Newly broken}", "NewlyBroken"),
+                          (tex_escape(TOLERANT_LABEL), "TolerantMesher"),
+                          ("Model calls", "ModelCalls"),
                           (r"Cost (model + VM)", "CostUsd"), ("Shard wall time", "WallS"),
                           ("Cost per fixed part", "CostPerFixed")):
         lines.append(_row(label, [m[f"vThree{infix[a]}{suffix}"] for a in cols]))
     lines += [r"\midrule",
               r"\multicolumn{" + str(len(cols) + 1) + r"}{@{}l}{Clean control: "
-              + m["vThreeCleanByteUnchanged"] + " of " + m["vThreeCleanNFiles"]
-              + " parts unchanged, " + m["vThreeCleanNewlyBroken"] + r" newly broken.} \\",
-              r"\multicolumn{" + str(len(cols) + 1) + r"}{@{}l}{T29 verdict: "
-              + m["vThreeVerdict"] + r"; ratio " + m["vThreeVerdictRatio"] + r".} \\",
+              + m["vThreeCleanStillGood"] + " of " + m["vThreeCleanNFiles"]
+              + " parts still mesh with no new defect; " + m["vThreeCleanNewlyBroken"]
+              + r" newly broken.} \\",
+              r"\multicolumn{" + str(len(cols) + 1) + r"}{@{}l}{For information: repair "
+              + "changed " + m["vThreeCleanChanged"] + r" clean parts (a kept operation or a "
+              r"crash).} \\",
               r"\bottomrule", r"\end{tabular}", r"\end{table}"]
     return "\n".join(lines)
 
@@ -378,8 +325,7 @@ def blank_results() -> dict:
     arms["t19_tournament_on"]["same_run_as"] = "t29_v3"
     arms[CLEAN] = {**dict.fromkeys(CLEAN_FIELDS), "arm": CLEAN, "label": LABELS[CLEAN],
                    "arms_covered": None, "basis": None, "notes": None}
-    return {"schema_version": 1, "generated_at": None, "source": None, "arms": arms,
-            "verdict": None}
+    return {"schema_version": SCHEMA_VERSION, "generated_at": None, "source": None, "arms": arms}
 
 
 def _from_summary(arm: dict, summary: dict) -> None:
@@ -436,20 +382,22 @@ def from_collect(verdict_dir: Path, results: dict | None = None) -> dict:
     if clean_runs:
         clean = results["arms"][CLEAN]
         ns = [int(rep.get("files") or 0) for _, rep, _ in clean_runs]
-        # Unchanged = no kept operation AND no crash, as collect.clean_unchanged counts it.
-        unchanged = [int(rep.get("files") or 0) - len(
-            set((rep.get("clean") or {}).get("files_with_kept_ops") or [])
-            | set((rep.get("clean") or {}).get("crashed_files") or []))
-            for _, rep, _ in clean_runs]
-        broken = [(rep.get("clean") or {}).get("newly_broken") for _, rep, _ in clean_runs]
+        # collect.clean_good decided each part; this only moves its counts (min good, max changed).
+        def counts(key: str) -> list:
+            return [(rep.get("clean") or {}).get(key) for _, rep, _ in clean_runs]
+
+        def worst(values: list, pick):
+            return pick(int(v) for v in values) if all(measured(v) for v in values) else None
+
         clean.update(commit=checked.get("commit"), image_digest=checked.get("image"),
                      sample_sha256=samples.get("clean"), n_files=min(ns),
-                     byte_unchanged=min(unchanged),
-                     newly_broken=(max(int(b) for b in broken) if all(measured(b) for b in broken)
-                                   else None),
+                     still_meshes_no_new_defects=worst(counts("still_meshes_no_new_defects"), min),
+                     changed=worst(counts("changed"), max),
+                     newly_broken=worst(counts("newly_broken"), max),
                      arms_covered=sorted(n for n, _, _ in clean_runs),
-                     basis=("collect.py clean_untouched: a part is unchanged when no operation was "
-                            "kept on it (the delivered geometry is the input's); minimum over arms"))
+                     basis=("collect.py clean_good: a part is good when it meshed before, still "
+                            "meshes after repair and gained no new defect; a crashed part is not "
+                            "good. Minimum over arms; `changed` (information) is the maximum."))
     results["source"] = str(verdict_dir / "verdict.json")
     return results
 
@@ -498,8 +446,7 @@ def main(argv: list[str] | None = None) -> int:
         src = Path(args.results).resolve()
         shown = str(src.relative_to(REPO)) if src.is_relative_to(REPO) else src.name
         Path(args.out).write_text(render_tex(results, source=shown), encoding="utf-8")
-        v = compute_verdict(results)
-        print(f"wrote {args.out}; verdict {v['status']}: {v['statement']}")
+        print(f"wrote {args.out}")
         return 0
     results = blank_results()
     if args.verdict_dir:
@@ -507,11 +454,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.t6_rows:
         results = from_t6_rows([Path(p) for p in args.t6_rows], results)
     results["generated_at"] = _dt.datetime.now(_dt.UTC).isoformat(timespec="seconds")
-    results["verdict"] = compute_verdict(results)
     validate(results)
     Path(args.out).write_text(json.dumps(results, indent=2, sort_keys=False) + "\n",
                               encoding="utf-8")
-    print(f"wrote {args.out}; verdict {results['verdict']['status']}")
+    print(f"wrote {args.out}")
     return 0
 
 

@@ -89,15 +89,17 @@ def test_isolation_returns_the_childs_row_unchanged(monkeypatch, tmp_path):
     assert isolated == inline
 
 
-def test_collect_does_not_call_a_clean_control_with_a_crash_untouched():
+def test_collect_never_counts_a_crashed_clean_part_good():
     spec = importlib.util.spec_from_file_location(
         "v3_collect_under_test_crash", REPO / "devtools" / "validation" / "v3_eval" / "collect.py")
     collect = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = collect
     spec.loader.exec_module(collect)
-    rows = [{"file": "a.step", "outcome": "crashed", "operations": []}]
-    out = collect.clean_untouched(rows, {"meshing": {"newly_broken": 0, "crashed": 1}})
-    assert out["untouched"] is False and out["crashed_files"] == ["a.step"]
+    rows = [{"file": "a.step", "outcome": "crashed", "operations": [], "meshes_before": True,
+             "meshes_after": False}]
+    out = collect.clean_report(rows, {"meshing": {"newly_broken": 1, "crashed": 1}})
+    assert out["still_meshes_no_new_defects"] == 0 and out["crashed_files"] == ["a.step"]
+    assert out["changed"] == 1
 
 
 def test_run_arm_counts_model_calls_from_the_file_children_append_to(tmp_path):
@@ -116,13 +118,14 @@ def test_run_arm_counts_model_calls_from_the_file_children_append_to(tmp_path):
     assert sink.totals() == (2, 0.75)
 
 
-def test_a_crashed_clean_part_is_not_counted_byte_unchanged_by_collect():
+def test_collect_counts_a_changed_clean_part_once_as_information():
     spec = importlib.util.spec_from_file_location(
         "v3_collect_under_test_unchanged",
         REPO / "devtools" / "validation" / "v3_eval" / "collect.py")
     collect = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = collect
     spec.loader.exec_module(collect)
-    rep = {"files": 100, "clean": {"files_with_kept_ops": ["a.step"],
-                                   "crashed_files": ["b.step", "a.step"]}}
-    assert collect.clean_unchanged(rep) == 98   # a and b; a counted once
+    rows = [{"file": "a.step", "outcome": "crashed", "operations": [{"status": "kept"}]},
+            {"file": "b.step", "outcome": "crashed", "operations": []}]
+    out = collect.clean_report(rows, {"meshing": {}})
+    assert out["changed"] == 2   # a and b; a (kept op AND crash) counted once

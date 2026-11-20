@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-# Responsibility: The CRS v3 verdict runs (T19, T29) as data: which arms exist, what environment
+# Responsibility: The CRS v3 evaluation runs (T19, T29) as data: which arms exist, what environment
 #                 each one runs under, which machines may carry them, and the refusals that keep
 #                 two arms comparable (one sample, one commit, one image).
-# Owns: ARMS, KINDS, the machine-family rule, the settings preflight, the cross-arm checks and the
-#       T29 acceptance rule.
+# Owns: ARMS, KINDS, the machine-family rule, the settings preflight and the cross-arm checks.
+#       There is NO acceptance rule: the runs report numbers, nothing passes or fails.
 # Boundaries: PURE. No gcloud, no docker, no CAD, no import of the repair stack: the launcher, the
 #             in-container runner and the collector all load this file, and the unit tests hold
 #             every refusal here without a cloud or a kernel.
-"""The v3 verdict runs, stated once.
+"""The v3 evaluation runs, stated once.
 
 Every arm runs `devtools/validation/repair_corpus.py` over the SAME frozen sample with the SAME
 harness flags; arms differ only by environment. The env is checked against the settings module
@@ -31,7 +31,8 @@ SEED = 20261120
 CLEAN_SIZE = 100
 
 #: The two input sets an arm is run over. `failing` is the stratified sample of the 9,956 real
-#: mesh failures; `clean` is the 100-part clean control, which must come out untouched.
+#: mesh failures; `clean` is the 100-part clean control: a part is good when it meshed before,
+#: still meshes after repair, and repair gave it no new defect (collect.clean_good).
 KINDS = ("failing", "clean")
 
 # --------------------------------------------------------------------------- the posture
@@ -95,7 +96,7 @@ def _arm(investigator: str, tournament: str, k: str | None = None) -> dict[str, 
 
 #: THE ARMS - three on the 120-file sample, deduplicated: T19's "tournament on" arm and T29's v3
 #: arm are the SAME configuration (everything on, investigator live, tournament live, K=3), so
-#: `v3_full` runs once and both verdicts reference it.
+#: `v3_full` runs once and both comparisons reference it.
 #:
 #: EVERY ARM MAKES MODEL CALLS. PACKAGE_REVIEW=live is the shipping posture and stays on in the
 #: deterministic arm, so `t29_deterministic` calls the model as a REVIEWER only - it never authors.
@@ -117,7 +118,7 @@ ARMS: dict[str, dict] = {
     },
 }
 
-#: Which arm pairs each verdict compares: (baseline, treatment).
+#: Which arm pairs each comparison reports side by side: (baseline, treatment).
 COMPARISONS = {"T19": ("t19_tournament_off", "v3_full"), "T29": ("t29_deterministic", "v3_full")}
 
 #: FLAGS THE BUILD READS BUT NOTHING CONSUMES: run as asked, recorded in every PROVENANCE and in
@@ -381,40 +382,7 @@ def check_comparable(provenances: list[Mapping]) -> dict:
     return {"commit": commit, "image_commit": image_commit, "image": image, "samples": samples}
 
 
-# --------------------------------------------------------------------------- the verdicts
-
-RATIO = 4
-
-
-def t29_verdict(det: Mapping, v3: Mapping, *, clean_untouched: bool,
-                cost_per_fixed_part: float | None) -> dict:
-    """The T29 acceptance rule over two meshing summaries (repair_corpus.meshing_summary).
-
-    v3 newly_meshed >= 4x deterministic newly_meshed, newly_broken == 0 in both, the clean control
-    untouched, and the cost per fixed part printed. If the deterministic arm newly meshed NOTHING
-    the ratio is degenerate (anything >= 0): the verdict is then judged on v3's absolute count,
-    which is stated plainly, and the 4x goal is reported as undefined - never as met.
-    """
-    d, v = int(det.get("newly_meshed") or 0), int(v3.get("newly_meshed") or 0)
-    broken = int(det.get("newly_broken") or 0) + int(v3.get("newly_broken") or 0)
-    out: dict = {"deterministic_newly_meshed": d, "v3_newly_meshed": v,
-                 "newly_broken_total": broken, "clean_untouched": bool(clean_untouched),
-                 "cost_per_fixed_part_usd": cost_per_fixed_part,
-                 "cost_printed": cost_per_fixed_part is not None}
-    if d == 0:
-        out["ratio"] = None
-        out["ratio_rule"] = (f"4x goal: undefined (deterministic ceiling 0); judged on v3's "
-                             f"absolute newly_meshed = {v}")
-        ratio_ok = v > 0
-    else:
-        out["ratio"] = round(v / d, 3)
-        out["ratio_rule"] = f"v3 {v} vs {RATIO}x deterministic {d} = {RATIO * d}"
-        ratio_ok = v >= RATIO * d
-    out["ratio_ok"] = ratio_ok
-    out["accepted"] = bool(ratio_ok and broken == 0 and clean_untouched
-                           and cost_per_fixed_part is not None)
-    return out
-
+# --------------------------------------------------------------------------- information
 
 def rule_of_three_upper(n: int) -> float:
     """95% upper bound on a rate after n trials with zero events (3/n)."""

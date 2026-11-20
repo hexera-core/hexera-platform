@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "devtools/validation/v3_eval/results.schema.json",
-  "title": "CRS v3 verdict results",
-  "description": "The numbers the CRS v3 whitepapers and the PR #494 evidence section are rendered from (results_to_tex.py, render_pr_section.py). A null value is NOT MEASURED YET and renders as a visible [PENDING], never as 0. The string \"n/a\" means the field does not apply to that arm (e.g. image digest of a local macOS run) and renders as n/a. Produced by `results_to_tex.py from-collect` out of collect.py's verdict.json and sealed bundles, or written by hand.",
+  "title": "CRS v3 evaluation results",
+  "description": "The numbers the CRS v3 whitepapers and the PR #494 evidence section are rendered from (results_to_tex.py, render_pr_section.py). A null value is NOT MEASURED YET and renders as a visible [PENDING], never as 0. The string \"n/a\" means the field does not apply to that arm (e.g. image digest of a local macOS run) and renders as n/a. Produced by `results_to_tex.py from-collect` out of collect.py's verdict.json and sealed bundles, or written by hand. schema_version 2 carries NO pass/fail: there is no verdict block, and the headline per arm is files fixed (newly_meshed: newly meshed by CAD repair).",
   "type": "object",
   "required": [
     "schema_version",
@@ -11,7 +11,7 @@
   "additionalProperties": false,
   "properties": {
     "schema_version": {
-      "const": 1
+      "const": 2
     },
     "generated_at": {
       "type": [
@@ -58,13 +58,6 @@
           "$ref": "#/$defs/clean"
         }
       }
-    },
-    "verdict": {
-      "description": "Informational copy of the T29 verdict. The renderers RECOMPUTE it from the arms (results_to_tex.compute_verdict) and never trust this block.",
-      "type": [
-        "object",
-        "null"
-      ]
     }
   },
   "$defs": {
@@ -153,7 +146,8 @@
           "$ref": "#/$defs/count"
         },
         "newly_meshed": {
-          "$ref": "#/$defs/count"
+          "$ref": "#/$defs/count",
+          "description": "files fixed: parts newly meshed by CAD repair (the headline). Never includes delivered_via_tolerant_mesher."
         },
         "newly_broken": {
           "$ref": "#/$defs/count"
@@ -166,7 +160,7 @@
         },
         "delivered_via_tolerant_mesher": {
           "$ref": "#/$defs/count",
-          "description": "files gmsh still refused that fTetWild meshed as delivered (repair_corpus --tolerant-delivery, plan-free production envelope/iterations). A SEPARATE success column, never part of newly_meshed or meshes_after. Optional: absent or null renders [PENDING]."
+          "description": "labelled exactly 'tolerant-mesher meshable (not counted as CAD repair)'. files gmsh still refused that fTetWild meshed as delivered (repair_corpus --tolerant-delivery, plan-free production envelope/iterations). A SEPARATE success column, never part of newly_meshed or meshes_after. Optional: absent or null renders [PENDING]."
         },
         "endings": {
           "$ref": "#/$defs/tally",
@@ -221,7 +215,8 @@
         "image_digest",
         "sample_sha256",
         "n_files",
-        "byte_unchanged",
+        "still_meshes_no_new_defects",
+        "changed",
         "newly_broken"
       ],
       "properties": {
@@ -243,9 +238,13 @@
         "n_files": {
           "$ref": "#/$defs/count"
         },
-        "byte_unchanged": {
+        "still_meshes_no_new_defects": {
           "$ref": "#/$defs/count",
-          "description": "clean parts delivered unchanged; the minimum over every arm that ran the control"
+          "description": "clean parts that meshed before, still mesh after repair and gained no new defect (collect.clean_good); a crashed part is not counted. The minimum over every arm that ran the control."
+        },
+        "changed": {
+          "$ref": "#/$defs/count",
+          "description": "INFORMATION, not a failure: clean parts repair changed (a kept operation or a crash). The maximum over every arm that ran the control."
         },
         "newly_broken": {
           "$ref": "#/$defs/count"
@@ -261,7 +260,7 @@
         },
         "basis": {
           "$ref": "#/$defs/text",
-          "description": "how byte_unchanged was decided"
+          "description": "how still_meshes_no_new_defects was decided"
         },
         "notes": {
           "$ref": "#/$defs/text"

@@ -237,20 +237,9 @@ def test_arms_differ_only_by_investigator_and_tournament():
     assert spec.ARMS["v3_full"]["env"]["CAD_REPAIR_TOURNAMENT_K"] == "3"
 
 
-def test_t29_degenerate_ratio_is_undefined_not_met():
-    zero = {"newly_meshed": 0, "newly_broken": 0}
-    out = spec.t29_verdict(zero, {"newly_meshed": 5, "newly_broken": 0},
-                           clean_untouched=True, cost_per_fixed_part=0.4)
-    assert out["ratio"] is None and "undefined" in out["ratio_rule"] and "= 5" in out["ratio_rule"]
-    assert out["accepted"] is True
-    out = spec.t29_verdict({"newly_meshed": 2, "newly_broken": 0},
-                           {"newly_meshed": 7, "newly_broken": 0},
-                           clean_untouched=True, cost_per_fixed_part=0.4)
-    assert out["ratio_ok"] is False and out["accepted"] is False
-    out = spec.t29_verdict({"newly_meshed": 2, "newly_broken": 0},
-                           {"newly_meshed": 8, "newly_broken": 1},
-                           clean_untouched=True, cost_per_fixed_part=0.4)
-    assert out["ratio_ok"] is True and out["accepted"] is False
+def test_there_is_no_t29_acceptance_rule():
+    # Owner decision: no pass/fail bar. The numbers are reported; nothing is "accepted".
+    assert not hasattr(spec, "t29_verdict") and not hasattr(spec, "RATIO")
 
 
 # ------------------------------------------------------------------ the clean control
@@ -280,7 +269,7 @@ def test_clean_control_manifest_is_100_seeded_passing_parts_with_sources():
 
 # ------------------------------------------------------------------ results.json (evidence lane)
 
-#: The required keys of the evidence lane's results.schema.json (schema_version 1). Restated here
+#: The required keys of the evidence lane's results.schema.json (schema_version 2). Restated here
 #: because that file lives on another lane; a schema change there must be mirrored here.
 SCHEMA_ARMS = ("t6_rules_only_local", "t29_deterministic", "t29_v3", "t19_tournament_off",
                "t19_tournament_on", "clean_control")
@@ -290,7 +279,7 @@ SCHEMA_ARM_KEYS = {"arm", "label", "commit", "image_digest", "sample_sha256", "n
                    "cost_per_fixed_part"}
 SCHEMA_ARM_OPTIONAL = {"same_run_as", "notes", "delivered_via_tolerant_mesher"}
 SCHEMA_CLEAN_KEYS = {"arm", "label", "commit", "image_digest", "sample_sha256", "n_files",
-                     "byte_unchanged", "newly_broken"}
+                     "still_meshes_no_new_defects", "changed", "newly_broken"}
 SCHEMA_CLEAN_OPTIONAL = {"arms_covered", "basis", "notes"}
 
 
@@ -304,12 +293,11 @@ def test_results_json_has_the_evidence_lane_shape(tmp_path):
     for key, entry in runs["arms"].items():
         rep = collect.arm_report(entry)
         if key[1] == "clean":
-            rep["clean"] = collect.clean_untouched(entry["rows"], rep["summary"])
+            rep["clean"] = collect.clean_report(entry["rows"], rep["summary"])
         reports[key] = rep
-    out = collect.results_json(reports, runs["checked"], collect.build_verdicts(reports),
-                               source="test")
-    assert out["schema_version"] == 1 and set(out) <= {"schema_version", "generated_at",
-                                                        "source", "arms", "verdict"}
+    out = collect.results_json(reports, runs["checked"], source="test")
+    assert out["schema_version"] == 2 and set(out) <= {"schema_version", "generated_at",
+                                                        "source", "arms"}
     assert set(out["arms"]) == set(SCHEMA_ARMS)
     for name in SCHEMA_ARMS[:-1]:
         arm = out["arms"][name]
@@ -321,7 +309,9 @@ def test_results_json_has_the_evidence_lane_shape(tmp_path):
         out["arms"]["t29_v3"]["newly_meshed"]
     clean = out["arms"]["clean_control"]
     assert SCHEMA_CLEAN_KEYS <= set(clean) <= SCHEMA_CLEAN_KEYS | SCHEMA_CLEAN_OPTIONAL
-    assert clean["arms_covered"] == ["v3_full"] and clean["byte_unchanged"] == 1
+    # the one clean row did not mesh before, so it is NOT good; nothing changed it
+    assert clean["arms_covered"] == ["v3_full"]
+    assert clean["still_meshes_no_new_defects"] == 0 and clean["changed"] == 0
     # nothing measured reads null, never 0
     assert out["arms"]["t6_rules_only_local"]["newly_meshed"] is None
     json.dumps(out, allow_nan=False)
@@ -345,20 +335,78 @@ def test_collector_refuses_when_a_whole_planned_unit_is_missing(tmp_path, capsys
     assert "REFUSED" in err and "t29_deterministic/clean" in err
 
 
-def test_t29_is_not_accepted_without_the_deterministic_clean_control(tmp_path):
-    collect = _load("v3_collect_under_test_t29_clean", V3 / "collect.py")
-    _all_units_but(tmp_path, ("t29_deterministic", "clean"))
-    runs = collect.load_runs(tmp_path)
-    reports = {}
-    for key, entry in runs["arms"].items():
-        rep = collect.arm_report(entry)
-        if key[1] == "clean":
-            rep["clean"] = collect.clean_untouched(entry["rows"], rep["summary"])
-        reports[key] = rep
-    # force the v3 arm to "win" so only the missing control can block acceptance
-    reports[("v3_full", "failing")]["summary"]["meshing"]["newly_meshed"] = 5
-    reports[("v3_full", "failing")]["cost_per_fixed_part_usd"] = 0.1
-    assert collect.build_verdicts(reports)["T29"]["accepted"] is False
+def test_collect_writes_no_verdict_anywhere(tmp_path, capsys, monkeypatch):
+    collect = _load("v3_collect_under_test_no_verdict", V3 / "collect.py")
+    assert not hasattr(collect, "build_verdicts")
+    src, out = tmp_path / "src", tmp_path / "out"
+    _all_units_but(src)
+    monkeypatch.setattr(collect.evalspec, "SAMPLE_SIZE", 1)
+    monkeypatch.setattr(collect.evalspec, "CLEAN_SIZE", 1)
+    monkeypatch.setattr(collect, "seal", lambda entry, arm, kind, checked, o: o / "sealed")
+    out.mkdir()
+    (out / "README.md").write_text("{{V3_FULL.CLEAN.STILL_GOOD}} {{V3_FULL.CLEAN.CHANGED}}\n")
+    assert collect.main(["--commit", COMMIT, "--from", str(src), "--out", str(out)]) == 0
+    printed = capsys.readouterr().out
+    assert '"verdicts"' not in printed and "accepted" not in printed and "ratio" not in printed
+    results = json.loads((out / "results.json").read_text())
+    assert "verdict" not in results and results["schema_version"] == 2
+    assert "verdicts" not in json.loads((out / "verdict.json").read_text())
+    # the shard's one clean row did not mesh before: not good, and nothing changed it
+    assert (out / "README.md").read_text() == "0 0\n"
+
+
+# ------------------------------------------------------------------ the clean-control rule
+
+def _clean_row(name, **over):
+    row = {"file": name, "outcome": "nothing_to_repair", "operations": [],
+           "meshes_before": True, "meshes_after": None, "mesh_kind_before": "",
+           "mesh_kind_after": ""}
+    row.update(over)
+    return row
+
+
+def test_clean_rule_good_is_meshed_before_still_meshes_and_no_new_defect():
+    collect = _load("v3_collect_under_test_clean_rule", V3 / "collect.py")
+    rows = [
+        _clean_row("untouched.step"),                                        # good
+        _clean_row("rewritten_ok.step", outcome="repaired", meshes_after=True,
+                   operations=[{"op": "sew_faces", "status": "kept"}],
+                   located_before={"small_edge": 2}, located_after={"small_edge": 1},
+                   defects_before=["small_edge"], defects_after=["small_edge"]),  # good, changed
+        _clean_row("broke.step", outcome="repaired", meshes_after=False,
+                   operations=[{"op": "sew_faces", "status": "kept"}]),        # stops meshing
+        _clean_row("new_defect.step", outcome="changed_without_fixing", meshes_after=True,
+                   operations=[{"op": "sew_faces", "status": "kept"}],
+                   located_before={"small_edge": 1}, located_after={"small_edge": 1,
+                                                                    "free_edge": 2},
+                   defects_before=["small_edge"], defects_after=["free_edge", "small_edge"]),
+        _clean_row("more_of_one.step", outcome="changed_without_fixing", meshes_after=True,
+                   located_before={"small_edge": 1}, located_after={"small_edge": 3}),
+        _clean_row("never_meshed.step", meshes_before=False),                 # not meshed before
+        {"file": "crashed.step", "outcome": "crashed", "crash": {"stage": "repair"},
+         "meshes_before": True, "meshes_after": False},                       # crash: never good
+        {"file": "crashed_early.step", "outcome": "crashed", "crash": {"stage": "probe_before"}},
+    ]
+    summary = collect.summarise(rows)
+    out = collect.clean_report(rows, summary)
+    assert collect.clean_good(rows[0]) and collect.clean_good(rows[1])
+    assert out["still_meshes_no_new_defects"] == 2
+    assert out["files_with_new_defects"] == ["more_of_one.step", "new_defect.step"]
+    assert out["new_defects"]["new_defect.step"] == {"free_edge": 2}
+    assert out["new_defects"]["more_of_one.step"] == {"small_edge": 2}
+    # CHANGED IS INFORMATION: a kept operation or a crash. It decides nothing.
+    assert out["changed"] == 5
+    assert out["crashed_files"] == ["crashed.step", "crashed_early.step"]
+    assert "untouched" not in out
+
+
+def test_a_part_with_a_kept_operation_that_still_meshes_cleanly_is_good():
+    collect = _load("v3_collect_under_test_clean_kept", V3 / "collect.py")
+    row = _clean_row("kept.step", outcome="repaired", meshes_after=True,
+                     operations=[{"op": "fix_small_edges", "status": "kept"}],
+                     located_before={"small_edge": 1}, located_after={})
+    out = collect.clean_report([row], collect.summarise([row]))
+    assert out["still_meshes_no_new_defects"] == 1 and out["changed"] == 1
 
 
 def test_vm_cost_charges_each_shard_its_vcpu_share_not_the_whole_vm():

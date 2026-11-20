@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # Responsibility: Render the "Evidence" section of PR #494 from the CRS v3 results JSON, with the
 #                 same PENDING rule as the whitepapers: a number nobody measured reads **[PENDING]**.
-# Owns: the PR section's wording. The numbers, the formatting and the verdict are results_to_tex's.
+# Owns: the PR section's wording. The numbers and the formatting are results_to_tex's. There is
+#       no pass/fail: the section reports what was measured.
 # Boundaries: writes a markdown file only. It never edits the live PR body; a human pastes it.
 """Render docs/superpowers/pr-494-evidence-section.md from a results JSON.
 
@@ -36,8 +37,11 @@ COLUMNS = (("t6_rules_only_local", "T6 rules-only baseline"),
            ("t19_tournament_on", "T19 tournament on (= T29 v3 run)"))
 
 ROWS = (("files", "n_files", "int"), ("meshed before", "meshes_before", "int"),
-        ("meshed after", "meshes_after", "int"), ("**newly meshed**", "newly_meshed", "int"),
-        ("**newly broken**", "newly_broken", "int"), ("model calls", "model_calls", "int"),
+        ("meshed after", "meshes_after", "int"),
+        ("**files fixed** (newly meshed by CAD repair)", "newly_meshed", "int"),
+        ("**newly broken**", "newly_broken", "int"),
+        ("delivered_via_tolerant_mesher", "delivered_via_tolerant_mesher", "int"),
+        ("model calls", "model_calls", "int"),
         ("cost (model + VM)", "cost_usd", "usd"), ("shard wall time", "wall_s", "seconds"),
         ("cost per fixed part", "cost_per_fixed_part", "usd"), ("commit", "commit", "hash"),
         ("image", "image_digest", "hash"), ("sample sha256", "sample_sha256", "hash"))
@@ -78,30 +82,37 @@ Found while landing or running the plan, each with its own commit and test:
 def render(results: dict) -> str:
     rt = _rt()
     md = True
-    verdict = rt.compute_verdict(results)
     arms = results.get("arms") or {}
     clean = arms.get(rt.CLEAN) or {}
-    lines = ["## Evidence (CRS v3 verdict)", "",
+    det, v3 = arms.get("t29_deterministic") or {}, arms.get("t29_v3") or {}
+    lines = ["## Evidence (CRS v3 evaluation)", "",
              "> Rendered by `devtools/validation/v3_eval/render_pr_section.py` from the results "
-             "JSON. **[PENDING]** means not measured yet; it is never a zero.", "",
-             "### Verdict (T29)", "",
-             f"- Rule: {verdict['rule']}. If the deterministic arm newly meshes nothing the ratio is "
-             "undefined, the verdict is judged on v3's absolute count, and the 4x goal is not "
-             "claimed.",
-             f"- Result: {rt.PENDING_MD if verdict['status'] == 'PENDING' else '**' + verdict['status'] + '**'}"
-             + ("" if verdict["status"] == "PENDING" else f". {verdict['statement']}"),
-             f"- Clean control: {rt.fmt(clean.get('byte_unchanged'), md=md)} of "
-             f"{rt.fmt(clean.get('n_files'), md=md)} parts unchanged, "
+             "JSON. **[PENDING]** means not measured yet; it is never a zero. No arm passes or "
+             "fails: the numbers are reported as measured.", "",
+             "### Files fixed", "",
+             f"- CRS v3 files fixed (newly meshed by CAD repair): "
+             f"{rt.fmt(v3.get('newly_meshed'), md=md)} of {rt.fmt(v3.get('n_files'), md=md)}; "
+             f"deterministic catalogue: {rt.fmt(det.get('newly_meshed'), md=md)} of "
+             f"{rt.fmt(det.get('n_files'), md=md)}.",
+             f"- {rt.TOLERANT_LABEL}: CRS v3 "
+             f"{rt.fmt(v3.get('delivered_via_tolerant_mesher'), md=md)}, deterministic "
+             f"{rt.fmt(det.get('delivered_via_tolerant_mesher'), md=md)}. A separate count, "
+             "never added to files fixed.",
+             f"- Clean control: {rt.fmt(clean.get('still_meshes_no_new_defects'), md=md)} of "
+             f"{rt.fmt(clean.get('n_files'), md=md)} parts still mesh with no new defect, "
              f"{rt.fmt(clean.get('newly_broken'), md=md)} newly broken"
-             + (f" ({clean['basis']})" if clean.get("basis") else "") + ".",
-             f"- Zero-break bound: with no break in the v3 arm's failing sample plus the clean "
-             f"control, the 95% upper bound on the break rate is "
+             + (f" ({clean['basis']})" if clean.get("basis") else "") + ". For information: "
+             f"repair changed {rt.fmt(clean.get('changed'), md=md)} clean parts (a kept "
+             "operation or a crash).",
+             f"- Zero-break bound (information): with no break in the v3 arm's failing sample plus "
+             f"the clean control, the 95% upper bound on the break rate is "
              f"{rt.fmt(rt.zero_break_bound(results), 'pct', md=md)} (rule of three over the pooled "
              "parts). It is a bound, not a proof of safety.", "",
              "### Per arm", "",
              "| | " + " | ".join(h for _, h in COLUMNS) + " |",
              "|---|" + "---|" * len(COLUMNS)]
     for label, field, kind in ROWS:
+        label = rt.TOLERANT_LABEL if field == "delivered_via_tolerant_mesher" else label
         lines.append(f"| {label} | " + " | ".join(
             rt.fmt((arms.get(a) or {}).get(field), kind, md=md) for a, _ in COLUMNS) + " |")
     lines += ["", "Endings, operations kept and rolled back:", ""]

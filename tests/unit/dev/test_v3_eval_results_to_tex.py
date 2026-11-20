@@ -1,7 +1,9 @@
 # Responsibility: Hold the CRS v3 results renderers to their one promise: a number nobody measured
 #                 renders as a visible [PENDING], never as 0, and a measured 0 renders as 0. Also
-#                 pin the T29 verdict rule (including the degenerate deterministic-ceiling-0 case),
-#                 the schema/example agreement, and the collect.py adapter.
+#                 pin that there is NO pass/fail anywhere (no verdict, no ratio), the headline
+#                 "files fixed", the clean-control rule (still meshes, no new defect), the
+#                 tolerant-mesher column kept apart, the schema/example agreement, and the
+#                 collect.py adapter.
 # Boundaries: hermetic. No CAD, no cloud, no LaTeX run; collect.py output is written here.
 from __future__ import annotations
 
@@ -9,6 +11,7 @@ import copy
 import importlib.util
 import json
 import math
+import re
 import sys
 from pathlib import Path
 
@@ -33,7 +36,7 @@ PENDING = r"\textbf{[PENDING]}"
 
 
 def _filled(over: dict | None = None) -> dict:
-    """A complete result: deterministic 3 newly meshed, v3 12, no breaks, clean 100/100."""
+    """A complete result: deterministic 3 newly meshed, v3 12, no breaks, clean 100/100 good."""
     r = rt.blank_results()
     for arm_id in rt.ARMS:
         r["arms"][arm_id].update(
@@ -43,7 +46,8 @@ def _filled(over: dict | None = None) -> dict:
             ops_rolled_back={"sew_faces": 5}, model_calls=0, cost_usd=1.5, wall_s=3600.0,
             cost_per_fixed_part=0.5)
     r["arms"]["t29_v3"].update(newly_meshed=12, meshes_after=12)
-    r["arms"]["clean_control"].update(n_files=100, byte_unchanged=100, newly_broken=0)
+    r["arms"]["clean_control"].update(n_files=100, still_meshes_no_new_defects=100, changed=0,
+                                      newly_broken=0)
     for (arm, field), value in (over or {}).items():
         r["arms"][arm][field] = value
     return r
@@ -84,9 +88,9 @@ def test_pending_example_renders_every_number_pending():
     results = rt.load(rt.PENDING_JSON)
     m = rt.macros(results)
     numeric = [k for k in m if k.endswith(("NewlyMeshed", "NewlyBroken", "NFiles", "CostUsd",
-                                           "CostPerFixed", "ByteUnchanged"))]
+                                           "CostPerFixed", "FilesFixed", "StillGood",
+                                           "CleanChanged", "TolerantMesher"))]
     assert numeric and all(m[k] == PENDING for k in numeric)
-    assert m["vThreeVerdict"] == PENDING
     tex = rt.render_tex(results)
     assert "{0}" not in tex  # no macro body is a bare zero
 
@@ -97,44 +101,89 @@ def test_null_tally_pending_and_empty_tally_none():
     assert rt.fmt_tally({"fix_small_edges": 0}) == r"\texttt{fix\_small\_edges}~0"
 
 
-# --------------------------------------------------------------------------- the verdict
+# --------------------------------------------------------------------------- no pass/fail
 
-def test_verdict_pass_on_ratio():
-    v = rt.compute_verdict(_filled())
-    assert v["status"] == "PASS" and v["ratio"] == 4.0 and v["judged_on"] == "ratio"
-
-
-def test_verdict_fails_below_4x():
-    v = rt.compute_verdict(_filled({("t29_v3", "newly_meshed"): 11}))
-    assert v["status"] == "FAIL" and not v["ratio_ok"]
+#: Words and macros of the withdrawn T29 4x rule. None may appear in anything rendered.
+VERDICT_WORDS = ("Verdict", "verdict", "PASS", "FAIL", "4x", "ratio", "Ratio", "ByteUnchanged",
+                 "unchanged")
 
 
-def test_verdict_fails_on_any_break_or_clean_change():
-    assert rt.compute_verdict(_filled({("t29_v3", "newly_broken"): 1}))["status"] == "FAIL"
-    assert rt.compute_verdict(_filled({("t29_deterministic", "newly_broken"): 1}))["status"] == "FAIL"
-    assert rt.compute_verdict(_filled({("clean_control", "byte_unchanged"): 99}))["status"] == "FAIL"
+def test_there_is_no_verdict_or_ratio_anywhere():
+    assert not hasattr(rt, "compute_verdict") and not hasattr(rt, "RATIO")
+    evalspec = _load("evalspec_no_verdict", V3 / "evalspec.py")
+    assert not hasattr(evalspec, "t29_verdict") and not hasattr(evalspec, "RATIO")
+    for r in (_filled(), rt.load(rt.PENDING_JSON),
+              _filled({("t29_deterministic", "newly_meshed"): 0})):
+        assert "verdict" not in r
+        m = rt.macros(r)
+        assert not [k for k in m if any(w in k for w in ("Verdict", "Ratio", "ByteUnchanged"))]
+        tex = rt.render_tex(r)
+        body = tex.split("\n", 5)[-1]  # past the generated-file header comments
+        md = pr.render(r).split("## What this PR fixes")[0]
+        for text in (body, md):
+            for word in VERDICT_WORDS:
+                assert not re.search(rf"\b{re.escape(word)}\b", text), word
 
 
-def test_verdict_degenerate_ceiling_judged_on_absolute_and_says_so():
-    v = rt.compute_verdict(_filled({("t29_deterministic", "newly_meshed"): 0}))
-    assert v["ratio"] is None and v["ratio_defined"] is False and v["judged_on"] == "absolute"
-    assert v["status"] == "PASS"
-    assert "undefined (deterministic ceiling 0)" in v["statement"]
-    assert "not claimed" in v["statement"]
-    both_zero = rt.compute_verdict(_filled({("t29_deterministic", "newly_meshed"): 0,
-                                              ("t29_v3", "newly_meshed"): 0}))
-    assert both_zero["status"] == "FAIL"
+def test_validate_refuses_a_verdict_block_and_schema_version_1():
+    r = _filled()
+    r["verdict"] = {"status": "PASS"}
+    with pytest.raises(ValueError, match="verdict"):
+        rt.validate(r)
+    r = _filled()
+    r["schema_version"] = 1
+    with pytest.raises(ValueError, match="schema_version"):
+        rt.validate(r)
+    rt.validate(_filled())
 
 
-def test_verdict_pending_when_clean_breaks_unmeasured():
-    v = rt.compute_verdict(_filled({("clean_control", "newly_broken"): None}))
-    assert v["status"] == "PENDING"
+def test_schema_has_no_verdict_and_is_version_2():
+    schema = json.loads((V3 / "results.schema.json").read_text())
+    assert schema["properties"]["schema_version"] == {"const": 2}
+    assert "verdict" not in schema["properties"]
+    assert json.loads(rt.PENDING_JSON.read_text())["schema_version"] == 2
+    assert "verdict" not in json.loads(rt.PENDING_JSON.read_text())
 
 
-def test_verdict_pending_when_any_input_missing():
-    assert rt.compute_verdict(_filled({("t29_v3", "newly_broken"): None}))["status"] == "PENDING"
-    assert rt.compute_verdict(_filled({("clean_control", "byte_unchanged"): float("nan")}))[
-        "status"] == "PENDING"
+def test_files_fixed_is_the_headline_per_arm_and_equals_newly_meshed():
+    m = rt.macros(_filled())
+    assert m["vThreeFilesFixed"] == "12" == m["vThreeNewlyMeshed"]
+    assert m["vThreeDetFilesFixed"] == "3"
+    for infix, _ in rt.ARMS.values():
+        assert f"vThree{infix}FilesFixed" in m
+    assert "Files fixed" in rt.render_tex(_filled())
+    assert "files fixed" in pr.render(_filled())
+
+
+def test_files_fixed_never_includes_tolerant_mesher_only_parts():
+    base = rt.macros(_filled())
+    m = rt.macros(_filled({("t29_deterministic", "delivered_via_tolerant_mesher"): 40,
+                           ("t29_v3", "delivered_via_tolerant_mesher"): 41}))
+    assert m["vThreeFilesFixed"] == base["vThreeFilesFixed"] == "12"
+    assert m["vThreeDetFilesFixed"] == base["vThreeDetFilesFixed"] == "3"
+    assert m["vThreeTolerantMesher"] == "41" and m["vThreeDetTolerantMesher"] == "40"
+
+
+def test_the_tolerant_column_carries_its_exact_label_everywhere():
+    label = "tolerant-mesher meshable (not counted as CAD repair)"
+    assert rt.TOLERANT_LABEL == label
+    r = _filled({("t29_v3", "delivered_via_tolerant_mesher"): 41})
+    assert rt.macros(r)["vThreeTolerantMesherLabel"] == rt.tex_escape(label)
+    assert rt.tex_escape(label) in rt.results_table(r, rt.macros(r))
+    assert f"| {label} |" in pr.render(r)
+    schema = json.loads((V3 / "results.schema.json").read_text())
+    assert label in schema["$defs"]["arm"]["properties"]["delivered_via_tolerant_mesher"][
+        "description"]
+
+
+def test_clean_control_reports_still_good_and_changed_as_information():
+    r = _filled({("clean_control", "still_meshes_no_new_defects"): 97,
+                 ("clean_control", "changed"): 5})
+    m = rt.macros(r)
+    assert m["vThreeCleanStillGood"] == "97" and m["vThreeCleanChanged"] == "5"
+    assert "vThreeCleanByteUnchanged" not in m
+    table = rt.results_table(r, m)
+    assert "97" in table and "still mesh" in table and "no new defect" in table
 
 
 def test_rule_of_three_bound():
@@ -203,14 +252,14 @@ def _collect_dir(tmp_path: Path) -> Path:
                                                   "failed": 0}}},
             "meshing": {"files": 120, "meshed_before": 0, "meshed_after": nm,
                         "newly_meshed": nm, "newly_broken": 0}}))
-    for name, kept in (("t29_deterministic", []), ("v3_full", ["x.step"])):
-        arms[f"{name}/clean"] = {"files": 100, "clean": {"untouched": not kept,
-                                                         "files_with_kept_ops": kept,
-                                                         "newly_broken": 0}}
+    for name, kept, good in (("t29_deterministic", [], 100), ("v3_full", ["x.step"], 98)):
+        arms[f"{name}/clean"] = {"files": 100, "clean": {
+            "still_meshes_no_new_defects": good, "changed": len(kept),
+            "files_with_kept_ops": kept, "newly_broken": 0}}
     (out / "verdict.json").write_text(json.dumps({
         "checked": {"commit": "d" * 40, "image": "sha256:" + "e" * 64,
                     "samples": {"failing": "f" * 64, "clean": "0" * 64}},
-        "verdicts": {}, "arms": arms}))
+        "comparisons": {}, "arms": arms}))
     return out
 
 
@@ -229,10 +278,10 @@ def test_from_collect_maps_arms_and_clean(tmp_path):
     assert a["t19_tournament_off"]["newly_meshed"] == 5
     assert a["t29_v3"]["ops_kept"] == {"sew_faces": 9}
     assert a["t29_v3"]["model_calls"] == 63 and a["t29_v3"]["cost_usd"] == 1.2
-    assert a["clean_control"]["byte_unchanged"] == 99  # the minimum over the two arms
+    assert a["clean_control"]["still_meshes_no_new_defects"] == 98  # min over the two arms
+    assert a["clean_control"]["changed"] == 1  # information: the most over the two arms
     assert a["t6_rules_only_local"]["newly_meshed"] is None  # not run by collect: stays pending
-    v = rt.compute_verdict(r)
-    assert v["status"] == "FAIL" and v["ratio"] == 4.5  # ratio met, clean control was touched
+    assert "verdict" not in r
 
 
 def test_from_collect_clean_breaks_are_the_worst_arm_as_collect_reports(tmp_path):
@@ -246,18 +295,17 @@ def test_from_collect_clean_breaks_are_the_worst_arm_as_collect_reports(tmp_path
     assert rt.from_collect(out)["arms"]["clean_control"]["newly_broken"] == 2
 
 
-def test_from_collect_never_counts_a_crashed_clean_part_unchanged(tmp_path):
-    # A clean part whose repair child crashed (before its probe, so no break is recorded either)
-    # was not shown unchanged: the verdict must not read PASS on it.
+def test_from_collect_takes_the_clean_count_collect_decided(tmp_path):
+    # collect.py decides per part (a crashed part is never good); the adapter only moves numbers.
     out = _collect_dir(tmp_path)
     v = json.loads((out / "verdict.json").read_text())
     for key in ("t29_deterministic/clean", "v3_full/clean"):
-        v["arms"][key]["clean"]["files_with_kept_ops"] = []
-        v["arms"][key]["clean"]["crashed_files"] = ["y.step"]
+        v["arms"][key]["clean"].update(still_meshes_no_new_defects=99, changed=1,
+                                       files_with_kept_ops=[], crashed_files=["y.step"])
     (out / "verdict.json").write_text(json.dumps(v))
     r = rt.from_collect(out)
-    assert r["arms"]["clean_control"]["byte_unchanged"] == 99
-    assert rt.compute_verdict(r)["status"] != "PASS"
+    assert r["arms"]["clean_control"]["still_meshes_no_new_defects"] == 99
+    assert r["arms"]["clean_control"]["changed"] == 1
 
 
 # --------------------------------------------------------------------------- PR section
@@ -265,10 +313,9 @@ def test_from_collect_never_counts_a_crashed_clean_part_unchanged(tmp_path):
 def test_pr_section_pending_and_filled():
     pending = pr.render(rt.load(rt.PENDING_JSON))
     assert "**[PENDING]**" in pending and "| 0 |" not in pending
-    filled = pr.render(_filled())
-    body = filled.split("### Verdict (T29)")[1].split("## What this PR fixes")[0]
+    filled = pr.render(_filled({(a, "delivered_via_tolerant_mesher"): 40 for a in rt.ARMS}))
+    body = filled.split("### Files fixed")[1].split("## What this PR fixes")[0]
     assert "**[PENDING]**" not in body
-    assert "PASS" in filled
 
 
 def test_blank_results_is_independent():
@@ -278,17 +325,7 @@ def test_blank_results_is_independent():
     assert copy.deepcopy(a) == a
 
 
-# THE TOLERANT ROUTE: its own column and its own sentence, never part of the T29 rule.
-
-def test_the_tolerant_route_is_stated_separately_and_does_not_move_the_rule():
-    base = rt.compute_verdict(_filled())
-    v = rt.compute_verdict(_filled({("t29_deterministic", "delivered_via_tolerant_mesher"): 40,
-                                    ("t29_v3", "delivered_via_tolerant_mesher"): 41}))
-    assert v["status"] == base["status"] and v["v3_newly_meshed"] == base["v3_newly_meshed"]
-    assert "Separately, and not counted as repaired or newly meshed" in v["statement"]
-    assert "deterministic 40, v3 41" in v["statement"]
-    assert "Separately" not in base["statement"]
-
+# THE TOLERANT ROUTE: its own column, never part of files fixed.
 
 def test_the_tolerant_column_renders_and_reads_pending_when_unmeasured():
     r = _filled({("t29_v3", "delivered_via_tolerant_mesher"): 41})

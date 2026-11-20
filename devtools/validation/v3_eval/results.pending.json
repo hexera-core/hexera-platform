@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "generated_at": null,
   "source": "pending: no arm has reported",
   "arms": {
@@ -115,12 +115,12 @@
       "image_digest": null,
       "sample_sha256": null,
       "n_files": null,
-      "byte_unchanged": null,
+      "still_meshes_no_new_defects": null,
+      "changed": null,
       "newly_broken": null,
       "arms_covered": null,
       "basis": null,
       "notes": null
     }
-  },
-  "verdict": null
+  }
 }

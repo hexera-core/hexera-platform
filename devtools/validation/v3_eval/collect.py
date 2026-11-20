@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-# Responsibility: Pull the CRS v3 verdict's shard outputs back from GCS, refuse anything that is not
+# Responsibility: Pull the CRS v3 evaluation's shard outputs back from GCS, refuse anything that is not
 #                 comparable (a missing shard, a failed shard, mixed commits, images or samples),
 #                 merge each arm's rows, seal one bundle per arm and kind through repair_corpus's own
-#                 packaging, and fill the verdict README's numbers.
-# Owns: shard discovery, the comparability gate, the merged-row and cost arithmetic, verdict.json.
+#                 packaging, and fill the evidence README's numbers. There is NO pass/fail: the
+#                 numbers are reported as measured (owner decision, 2026-11-20).
+# Owns: shard discovery, the comparability gate, the merged-row and cost arithmetic, the per-part
+#       clean-control rule (clean_good), verdict.json (the file name is historical; it holds no
+#       verdict).
 # Boundaries: EVERY METRIC IS repair_corpus's: corpus_summary (meshing, endings, catalogue tally,
 #             investigator block) and bundle_from_rows (the seal) are called, never re-derived. The
 #             only numbers computed here are sums the rows cannot hold: model spend from telemetry
 #             and VM time from PROVENANCE. No CAD is read or written.
-"""Collect, check, seal and report the v3 verdict.
+"""Collect, check, seal and report the v3 evaluation.
 
     collect.py --commit <40-hex> --status          # which shards have DONE / FAILED / partial rows
     collect.py --commit <40-hex> --pull            # gcloud storage cp the outputs, then seal
@@ -178,27 +181,51 @@ def vm_cost(provenances: list[dict]) -> dict:
         "note": "container wall only; VM boot, docker install and image pull add ~5-10 min/VM"}
 
 
-def clean_untouched(rows: list[dict], summary: dict) -> dict:
-    """The clean control is untouched when nothing it meshed stops meshing AND no operation was
-    kept on any clean part - the delivered geometry is the input's."""
-    touched = sorted(r["file"] for r in rows
-                     if any(op.get("status") == "kept" for op in r.get("operations") or []))
-    broken = int((summary.get("meshing") or {}).get("newly_broken") or 0)
-    # A clean part whose repair CRASHED was not shown untouched: nothing was delivered for it.
+def new_defects(row: dict) -> dict[str, int]:
+    """The defects repair GAVE this part, by code: every code whose located count after the
+    re-inspection exceeds its count before (a code absent before counts from 0), plus any code
+    the after inspection names that the before one did not (counted 1 when it was not located).
+
+    Read from the row's own before/after inspections of the WHOLE part (`located_before/after`,
+    `defects_before/after`, repair_corpus._repair_row). A part repair did not re-inspect (no
+    `located_after`: nothing written) gained nothing. Per-code counts compare totals, not
+    instances, so a repair that fixed one small edge and made another reads as no change; a rise
+    always reads as introduced - the direction that blames the repair, never excuses it."""
+    after = row.get("located_after")
+    if not isinstance(after, dict):
+        return {}
+    before = row.get("located_before") or {}
+    out = {code: int(n) - int(before.get(code, 0)) for code, n in after.items()
+           if int(n) > int(before.get(code, 0))}
+    for code in set(row.get("defects_after") or []) - set(row.get("defects_before") or []):
+        out.setdefault(code, 1)
+    return dict(sorted(out.items()))
+
+
+def clean_good(row: dict) -> bool:
+    """THE CLEAN-CONTROL RULE, per part: it meshed before, it still meshes after repair (a part
+    repair did not rewrite keeps its before verdict, as repair_corpus.meshing_summary reads it),
+    and repair introduced no new defect. A crashed part is never good: nothing was delivered."""
+    if row.get("outcome") == "crashed" or row.get("meshes_before") is not True:
+        return False
+    after = row.get("meshes_after")
+    still = row["meshes_before"] if after is None else after
+    return still is True and not new_defects(row)
+
+
+def clean_report(rows: list[dict], summary: dict) -> dict:
+    """One arm's clean control: how many parts are good (clean_good), and - AS INFORMATION ONLY,
+    nothing fails on it - how many parts repair changed (a kept operation or a crash)."""
+    kept = sorted(r["file"] for r in rows
+                  if any(op.get("status") == "kept" for op in r.get("operations") or []))
     crashed = sorted(r["file"] for r in rows if r.get("outcome") == "crashed")
-    out = {"untouched": not touched and broken == 0 and not crashed,
-           "files_with_kept_ops": touched, "newly_broken": broken}
-    if crashed:
-        out["crashed_files"] = crashed
-    return out
-
-
-def clean_unchanged(rep: dict) -> int:
-    """Clean parts shown unchanged: no kept operation AND no crash (a crashed part delivered
-    nothing, so it was never shown unchanged - even when it crashed before any break was seen)."""
-    clean = rep.get("clean") or {}
-    touched = set(clean.get("files_with_kept_ops") or []) | set(clean.get("crashed_files") or [])
-    return int(rep.get("files") or 0) - len(touched)
+    introduced = {r["file"]: new_defects(r) for r in rows if new_defects(r)}
+    return {"still_meshes_no_new_defects": sum(1 for r in rows if clean_good(r)),
+            "not_good": sorted(r["file"] for r in rows if not clean_good(r)),
+            "files_with_new_defects": sorted(introduced), "new_defects": introduced,
+            "changed": len(set(kept) | set(crashed)), "files_with_kept_ops": kept,
+            "crashed_files": crashed,
+            "newly_broken": int((summary.get("meshing") or {}).get("newly_broken") or 0)}
 
 
 def arm_report(entry: dict) -> dict:
@@ -309,7 +336,7 @@ def _fmt(value) -> str:
     return str(value)
 
 
-def placeholders(reports: dict, checked: dict, verdicts: dict) -> dict[str, str]:
+def placeholders(reports: dict, checked: dict, comparisons: dict) -> dict[str, str]:
     out = {"COMMIT": checked["commit"], "IMAGE": checked["image"],
            "IMAGE_COMMIT": str(checked.get("image_commit") or "n/a"),
            "SAMPLE_SHA256": checked["samples"].get("failing", "n/a"),
@@ -322,6 +349,7 @@ def placeholders(reports: dict, checked: dict, verdicts: dict) -> dict[str, str]
         out.update({
             f"{key}.FILES": str(rep["files"]),
             f"{key}.NEWLY_MESHED": str(meshing.get("newly_meshed", "n/a")),
+            f"{key}.FILES_FIXED": str(meshing.get("newly_meshed", "n/a")),
             f"{key}.NEWLY_BROKEN": str(meshing.get("newly_broken", "n/a")),
             f"{key}.MESHED_BEFORE": str(meshing.get("meshed_before", "n/a")),
             f"{key}.MESHED_AFTER": str(meshing.get("meshed_after", "n/a")),
@@ -341,10 +369,9 @@ def placeholders(reports: dict, checked: dict, verdicts: dict) -> dict[str, str]
             f"{key}.STILL_FAILING": _fmt(meshing.get("still_failing_by_kind")),
         })
         if "clean" in rep:
-            out[f"{key}.UNTOUCHED"] = "yes" if rep["clean"]["untouched"] else (
-                f"NO - kept ops on {rep['clean']['files_with_kept_ops']}, newly broken "
-                f"{rep['clean']['newly_broken']}")
-    for name, v in verdicts.items():
+            out[f"{key}.STILL_GOOD"] = str(rep["clean"]["still_meshes_no_new_defects"])
+            out[f"{key}.CHANGED"] = str(rep["clean"]["changed"])
+    for name, v in comparisons.items():
         for k, val in v.items():
             out[f"{name}.{k}".upper()] = _fmt(val)
     return out
@@ -354,33 +381,24 @@ def fill(template: str, values: dict[str, str]) -> str:
     return re.sub(r"\{\{([A-Z0-9_.]+)\}\}", lambda m: values.get(m.group(1), m.group(0)), template)
 
 
-def build_verdicts(reports: dict) -> dict:
-    verdicts = {}
-    det = reports.get(("t29_deterministic", "failing"))
-    v3 = reports.get(("v3_full", "failing"))
-    if det and v3:
-        # BOTH clean controls must be present and untouched: a missing one is not a pass.
-        controls = (("t29_deterministic", "clean"), ("v3_full", "clean"))
-        verdicts["T29"] = evalspec.t29_verdict(
-            det["summary"].get("meshing") or {}, v3["summary"].get("meshing") or {},
-            clean_untouched=all(k in reports and reports[k]["clean"]["untouched"]
-                                for k in controls),
-            cost_per_fixed_part=v3["cost_per_fixed_part_usd"])
-    off = reports.get(("t19_tournament_off", "failing"))
-    if off and v3:
-        a, b = (off["summary"].get("meshing") or {}), (v3["summary"].get("meshing") or {})
-        verdicts["T19"] = {"off_newly_meshed": a.get("newly_meshed"),
-                           "on_newly_meshed": b.get("newly_meshed"),
-                           "off_newly_broken": a.get("newly_broken"),
-                           "on_newly_broken": b.get("newly_broken"),
-                           "off_usd_per_fixed": off["cost_per_fixed_part_usd"],
-                           "on_usd_per_fixed": v3["cost_per_fixed_part_usd"]}
-    return verdicts
+def build_comparisons(reports: dict) -> dict:
+    """T19's two arms side by side: numbers only, no rule, nothing passes or fails."""
+    out = {}
+    off, on = reports.get(("t19_tournament_off", "failing")), reports.get(("v3_full", "failing"))
+    if off and on:
+        a, b = (off["summary"].get("meshing") or {}), (on["summary"].get("meshing") or {})
+        out["T19"] = {"off_newly_meshed": a.get("newly_meshed"),
+                      "on_newly_meshed": b.get("newly_meshed"),
+                      "off_newly_broken": a.get("newly_broken"),
+                      "on_newly_broken": b.get("newly_broken"),
+                      "off_usd_per_fixed": off["cost_per_fixed_part_usd"],
+                      "on_usd_per_fixed": on["cost_per_fixed_part_usd"]}
+    return out
 
 
 # --------------------------------------------------------------------------- results.json
 
-#: Arm ids of the evidence lane's results.schema.json (schema_version 1) -> the run that fills it.
+#: Arm ids of the evidence lane's results.schema.json (schema_version 2) -> the run that fills it.
 #: t19_tournament_on IS t29_v3: one run (v3_full), referenced twice.
 RESULT_ARMS = {"t29_deterministic": "t29_deterministic", "t29_v3": "v3_full",
                "t19_tournament_off": "t19_tournament_off", "t19_tournament_on": "v3_full"}
@@ -392,6 +410,15 @@ RESULT_LABELS = {
     "t19_tournament_on": "tournament on, K=3 (same run as t29_v3)",
 }
 T6_URI = "gs://dev-crsv3-transfer-224734058693/eval/t6-rules-only-0bf78625"
+
+
+#: How the clean-control count is decided - stated in results.json beside the number.
+CLEAN_BASIS = ("a clean part is good when it meshed before, still meshes after repair (a part "
+               "repair did not rewrite keeps its before verdict), and repair introduced no new "
+               "defect (no defect code's located count rose between the before and after "
+               "inspections); a crashed part is never good. Minimum over the arms covered. "
+               "`changed` (a kept operation or a crash; the most over the arms) is information, "
+               "not a failure.")
 
 
 def _tallies(summary: dict) -> tuple[dict, dict]:
@@ -459,9 +486,10 @@ def t6_arm(rows: list[dict] | None, sample_sha: str | None) -> dict:
     return base
 
 
-def results_json(reports: dict, checked: dict, verdicts: dict, *, source: str,
+def results_json(reports: dict, checked: dict, *, source: str,
                  t6_rows: list[dict] | None = None) -> dict:
-    """The evidence lane's results.schema.json (schema_version 1). A null is NOT MEASURED YET."""
+    """The evidence lane's results.schema.json (schema_version 2). A null is NOT MEASURED YET.
+    There is no verdict block: nothing in it passes or fails."""
     import datetime as dt
 
     failing_sha = checked["samples"].get("failing")
@@ -476,18 +504,19 @@ def results_json(reports: dict, checked: dict, verdicts: dict, *, source: str,
         "commit": checked["commit"], "image_digest": checked["image"],
         "sample_sha256": checked["samples"].get("clean"),
         "n_files": min((rep["files"] for rep in cleans.values()), default=None),
-        "byte_unchanged": min((clean_unchanged(rep) for rep in cleans.values()), default=None),
+        "still_meshes_no_new_defects": min(
+            (rep["clean"]["still_meshes_no_new_defects"] for rep in cleans.values()),
+            default=None),
+        "changed": max((rep["clean"]["changed"] for rep in cleans.values()), default=None),
         "newly_broken": max((rep["clean"]["newly_broken"] for rep in cleans.values()),
                             default=None),
         "arms_covered": sorted(cleans) or None,
-        "basis": ("a part counts as unchanged when no repair operation was kept on it (the "
-                  "delivered geometry is the input's); repair_corpus re-serialises a no_change "
-                  "STEP, so written-file bytes are not compared. Minimum over the arms covered."),
+        "basis": CLEAN_BASIS,
         "notes": None,
     }
-    return {"schema_version": 1,
+    return {"schema_version": 2,
             "generated_at": dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "source": source, "arms": arms, "verdict": verdicts.get("T29")}
+            "source": source, "arms": arms}
 
 
 def status(bucket: str, commit: str) -> int:
@@ -560,7 +589,7 @@ def main(argv: list[str] | None = None) -> int:
     missing = missing_units(runs["arms"])
     if missing:
         print(f"REFUSED: planned unit(s) with no output: {', '.join(missing)} - every arm x kind "
-              f"of the launch plan must be present before a verdict or a seal", file=sys.stderr)
+              f"of the launch plan must be present before a report or a seal", file=sys.stderr)
         return 2
     checked = runs["checked"]
     if checked["commit"] != args.commit:
@@ -575,10 +604,10 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         rep = arm_report(entry)
         if kind == "clean":
-            rep["clean"] = clean_untouched(entry["rows"], rep["summary"])
+            rep["clean"] = clean_report(entry["rows"], rep["summary"])
         reports[(arm, kind)] = rep
-    verdicts = build_verdicts(reports)
-    print(json.dumps({"checked": checked, "verdicts": verdicts}, indent=1, default=str))
+    comparisons = build_comparisons(reports)
+    print(json.dumps({"checked": checked, "comparisons": comparisons}, indent=1, default=str))
     if args.dry_run:
         return 0
 
@@ -597,16 +626,16 @@ def main(argv: list[str] | None = None) -> int:
         t6_rows = [r for f in sorted(t6_dir.glob("rows-*.json"))
                    for r in json.loads(f.read_text())] or None
     (out / "results.json").write_text(json.dumps(
-        results_json(reports, checked, verdicts, source=f"collect.py from {source}",
+        results_json(reports, checked, source=f"collect.py from {source}",
                      t6_rows=t6_rows), indent=1, sort_keys=True, default=str) + "\n")
     (out / "verdict.json").write_text(json.dumps({
-        "checked": checked, "verdicts": verdicts,
+        "checked": checked, "comparisons": comparisons,
         "arms": {f"{a}/{k}": {key: val for key, val in rep.items() if key != "summary"}
                  for (a, k), rep in reports.items()}}, indent=1, sort_keys=True, default=str) + "\n")
     readme = out / "README.md"
     if readme.is_file():
         readme.write_text(fill(readme.read_text(encoding="utf-8"),
-                               placeholders(reports, checked, verdicts)), encoding="utf-8")
+                               placeholders(reports, checked, comparisons)), encoding="utf-8")
         left = sorted(set(re.findall(r"\{\{([A-Z0-9_.]+)\}\}", readme.read_text())))
         print(f"README filled; {len(left)} placeholder(s) left for a human: {', '.join(left[:12])}")
     return 0
