@@ -167,6 +167,18 @@ def _record(*, faces, outcome: str, committed: bool, machine: dict, report_ref: 
     return out
 
 
+async def _parked_trace(job_id: str, measured: object) -> dict | None:
+    """The handback repair's investigation trace (CAD_REPAIR_INVESTIGATION_TRACE), its lines
+    moved to the job's storage exactly as the attempt node's are; None when it carries none. The
+    outcome table and the location are small, so they ride the record; the lines never do."""
+    if not isinstance(measured, dict) or not isinstance(measured.get("investigation_trace"), dict):
+        return None
+    from meshpipeline.pipeline.repair_attempt import _park_trace
+
+    await _park_trace(job_id, measured)
+    return dict(measured["investigation_trace"])
+
+
 async def _scoped_repair(state: PipelineState, *, focus_faces: tuple[int, ...]) -> dict:
     """Run the bounded repair on the CURRENT geometry, scoped to `focus_faces`, and promote it.
 
@@ -217,10 +229,15 @@ async def _scoped_repair(state: PipelineState, *, focus_faces: tuple[int, ...]) 
                     exc, job_id)
         return {"committed": False, "outcome": "unavailable", "report_ref": "", "state": {}}
     except RepairRefused as exc:
+        refused: dict = {"refused_because": str(exc)}
+        trace = await _parked_trace(job_id, exc.measurements)
+        if trace is not None:
+            refused["investigation_trace"] = trace
         return {"committed": False, "outcome": "refused", "report_ref": "",
-                "report": {"refused_because": str(exc)}, "state": {}}
+                "report": refused, "state": {}}
 
     measured: dict = {m.name: m.value for m in report.measurements}
+    parked = await _parked_trace(job_id, measured)
     _goal = measured.get("goal")
     _refusals = measured.get("refusals")
     # THE REPORT'S OWN HEADLINES, not the report: a full repair report carries entity lists and
@@ -232,6 +249,8 @@ async def _scoped_repair(state: PipelineState, *, focus_faces: tuple[int, ...]) 
                "goal": dict(_goal) if isinstance(_goal, dict) else {},
                "refusals": [dict(r) for r in _refusals if isinstance(r, dict)]
                            if isinstance(_refusals, list) else []}
+    if parked is not None:
+        summary["investigation_trace"] = parked
 
     from meshpipeline.pipeline.repair_promote import PromotionRefused, promote
     try:

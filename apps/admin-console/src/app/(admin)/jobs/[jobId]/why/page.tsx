@@ -1,5 +1,10 @@
 import { Alert, EmptyState, Panel, StatRow } from "@/app/_components/panel";
-import { compactDate, readJobRepairTrace, readJobWhy } from "@/lib/admin/read";
+import {
+  type AdminRepairTraceSection,
+  compactDate,
+  readJobRepairTrace,
+  readJobWhy,
+} from "@/lib/admin/read";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -16,8 +21,6 @@ function shown(value: unknown): string {
 export default async function JobWhyPage({ params }: { params: Promise<{ jobId: string }> }) {
   const { jobId } = await params;
   const [why, trace] = await Promise.all([readJobWhy(jobId), readJobRepairTrace(jobId)]);
-  const outcomes = trace.data?.outcomes ?? [];
-  const lines = trace.data?.lines ?? [];
   const decisions = why.data?.decisions ?? [];
 
   return (
@@ -97,61 +100,77 @@ export default async function JobWhyPage({ params }: { params: Promise<{ jobId: 
           Absent (a 404) when the run traced nothing, which is the production default. */}
       {trace.data ? (
         <Panel title="Repair investigation" heading="per region: how it ended, and why no package">
-          {outcomes.length ? (
-            <table className="admin-table">
-              <thead>
-                <tr>
-                  <th>Region</th>
-                  <th>Tier</th>
-                  <th>Ending</th>
-                  <th>Tool / model calls</th>
-                  <th>Seconds</th>
-                  <th>Edits tried / kept</th>
-                  <th>Rolled back</th>
-                  <th>Why no package</th>
-                </tr>
-              </thead>
-              <tbody>
-                {outcomes.map((row, index) => (
-                  <tr key={index}>
-                    <td>{shown(row.region)}</td>
-                    <td>{row.tier || "-"}</td>
-                    <td>
-                      {row.end || "-"}
-                      {row.form ? ` (${row.form})` : ""}
-                    </td>
-                    <td>
-                      {row.tool_calls} / {row.model_calls}
-                    </td>
-                    <td>{row.seconds.toFixed(1)}</td>
-                    <td>
-                      {row.edits.tried} / {row.edits.kept}
-                    </td>
-                    <td>{shown(row.edits.rolled_back)}</td>
-                    <td>{row.why_no_package || "a package was concluded"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          ) : (
-            <EmptyState note="The investigator ran on no region." />
-          )}
-          <details>
-            <summary>
-              Per-turn trace ({lines.length.toLocaleString("en-US")} lines
-              {trace.data.truncated ? ", truncated" : ""}
-              {trace.data.transcript.object_key
-                ? `, ${String(trace.data.transcript.object_key)}`
-                : ""}
-              )
-            </summary>
-            {trace.data.transcript.error ? (
-              <Alert>{`The trace was not stored: ${String(trace.data.transcript.error)}`}</Alert>
-            ) : null}
-            <pre>{lines.map((line) => JSON.stringify(line)).join("\n")}</pre>
-          </details>
+          <TraceSection section={trace.data} />
         </Panel>
       ) : null}
+      {trace.data?.handback ? (
+        <Panel
+          title="Repair investigation after the mesh failed"
+          heading="the mesher handback's scoped repair"
+        >
+          <TraceSection section={trace.data.handback} />
+        </Panel>
+      ) : null}
+    </>
+  );
+}
+
+// ONE TRACE: the per-region outcome table, then the per-turn lines behind an expander.
+function TraceSection({ section }: { section: AdminRepairTraceSection }) {
+  const outcomes = section.outcomes ?? [];
+  const lines = section.lines ?? [];
+  return (
+    <>
+      {outcomes.length ? (
+        <table className="admin-table">
+          <thead>
+            <tr>
+              <th>Region</th>
+              <th>Tier</th>
+              <th>Ending</th>
+              <th>Tool / model calls</th>
+              <th>Seconds</th>
+              <th>Edits tried / kept</th>
+              <th>Rolled back</th>
+              <th>Why no package</th>
+            </tr>
+          </thead>
+          <tbody>
+            {outcomes.map((row, index) => (
+              <tr key={index}>
+                <td>{shown(row.region)}</td>
+                <td>{row.tier || "-"}</td>
+                <td>
+                  {row.end || "-"}
+                  {row.form ? ` (${row.form})` : ""}
+                </td>
+                <td>
+                  {row.tool_calls} / {row.model_calls}
+                </td>
+                <td>{row.seconds.toFixed(1)}</td>
+                <td>
+                  {row.edits.tried} / {row.edits.kept}
+                </td>
+                <td>{shown(row.edits.rolled_back)}</td>
+                <td>{row.why_no_package || "a package was concluded"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : (
+        <EmptyState note="The investigator ran on no region." />
+      )}
+      <details>
+        <summary>
+          Per-turn trace ({lines.length.toLocaleString("en-US")} lines
+          {section.truncated ? ", truncated" : ""}
+          {section.transcript.object_key ? `, ${String(section.transcript.object_key)}` : ""})
+        </summary>
+        {section.transcript.error ? (
+          <Alert>{`The trace was not stored: ${String(section.transcript.error)}`}</Alert>
+        ) : null}
+        <pre>{lines.map((line) => JSON.stringify(line)).join("\n")}</pre>
+      </details>
     </>
   );
 }

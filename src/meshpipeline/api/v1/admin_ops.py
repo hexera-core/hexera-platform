@@ -192,15 +192,33 @@ async def read_job_repair_trace(job_id: str) -> dict:
         report = json.loads(await asyncio.to_thread(store.get_bytes, object_key=key))
     except Exception:  # noqa: BLE001 - an unreadable report traced nothing we can show
         raise missing from None
-    attempt = report.get("repair_attempt") if isinstance(report, dict) else None
-    attempt = attempt if isinstance(attempt, dict) else {}
-    measurements = attempt.get("measurements") or (attempt.get("detail") or {}).get(
-        "measurements") or {}
-    trace = measurements.get("investigation_trace") if isinstance(measurements, dict) else None
-    if not isinstance(trace, dict):
+    report = _as_dict(report)
+    attempt = _as_dict(report.get("repair_attempt"))
+    measurements = _as_dict(attempt.get("measurements")) or _as_dict(
+        _as_dict(attempt.get("detail")).get("measurements"))
+    trace = measurements.get("investigation_trace")
+    # THE MESHER HANDBACK'S REPAIR, when it ran: its own trace rides its record.
+    handback_trace = _as_dict(_as_dict(report.get("repair_handback")).get("report")).get(
+        "investigation_trace")
+    if not isinstance(trace, dict) and not isinstance(handback_trace, dict):
         raise missing
-    raw_transcript = trace.get("transcript")
-    transcript: dict = raw_transcript if isinstance(raw_transcript, dict) else {}
+    out = {"job_id": str(job), **await _trace_view(store, trace)}
+    if isinstance(handback_trace, dict):
+        out["handback"] = await _trace_view(store, handback_trace)
+    return out
+
+
+def _as_dict(value: object) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+async def _trace_view(store, trace: object) -> dict:
+    """One trace's outcome table, its location, and its parked lines (capped)."""
+    import asyncio
+    import json
+
+    trace = _as_dict(trace)
+    transcript = _as_dict(trace.get("transcript"))
     lines: list = []
     if transcript.get("object_key"):
         try:
@@ -212,7 +230,7 @@ async def read_job_repair_trace(job_id: str) -> dict:
                     continue
         except Exception as exc:  # noqa: BLE001 - the table still answers without the lines
             transcript = {**transcript, "read_error": type(exc).__name__}
-    return {"job_id": str(job), "outcomes": list(trace.get("outcomes") or []),
+    return {"outcomes": list(trace.get("outcomes") or []),
             "truncated": bool(trace.get("truncated")), "transcript": transcript,
             "lines": lines}
 

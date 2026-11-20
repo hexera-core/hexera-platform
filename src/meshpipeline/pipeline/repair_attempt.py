@@ -248,6 +248,41 @@ class _EmptyPlan:
     call_failures: tuple = ()
 
 
+#: How long the optional trace upload may hold the run. Dev diagnostics never sit on the critical
+#: path: past this the upload is abandoned (its thread may finish later) and the error recorded.
+TRACE_UPLOAD_TIMEOUT_S = 10.0
+
+
+def _detached(work) -> asyncio.Future:
+    """`work()` on a DAEMON thread, as a future of this loop. Unlike `asyncio.to_thread`, an
+    abandoned one holds nothing: neither the loop's executor shutdown nor the process's exit."""
+    import threading
+
+    loop = asyncio.get_running_loop()
+    done: asyncio.Future = loop.create_future()
+
+    def settle(error: BaseException | None) -> None:
+        if not done.done():
+            if error is None:
+                done.set_result(None)
+            else:
+                done.set_exception(error)
+
+    def run() -> None:
+        error: BaseException | None = None
+        try:
+            work()
+        except BaseException as exc:  # noqa: BLE001 - handed back to the awaiting loop
+            error = exc
+        try:
+            loop.call_soon_threadsafe(settle, error)
+        except RuntimeError:
+            pass  # the loop has closed: nobody is waiting any more
+
+    threading.Thread(target=run, name="trace-upload", daemon=True).start()
+    return done
+
+
 async def _park_trace(job_id: str, measured: dict) -> None:
     """Move the investigation trace's per-turn `lines` out of the report and into the job's object
     storage, leaving `transcript` (where it went, or why it did not) beside the outcome table.
@@ -277,7 +312,7 @@ async def _park_trace(job_id: str, measured: dict) -> None:
                                            content_type="application/x-ndjson")
 
     try:
-        await asyncio.to_thread(upload)
+        await asyncio.wait_for(_detached(upload), timeout=TRACE_UPLOAD_TIMEOUT_S)
         transcript["object_key"] = key
     except Exception as exc:  # noqa: BLE001 - a diagnostic that fails must not cost a repair
         logger.warning("node_repair_attempt: investigation trace upload failed (%s) - job_id=%s",

@@ -331,3 +331,23 @@ def test_the_delivered_report_carries_what_the_repair_did_beside_the_inspection(
     stored = json.loads(store.get_bytes(object_key=delivered["storage_key"]))
     assert stored["report"] == _REPORT
     assert stored["repair_attempt"] == attempt
+
+
+def test_the_delivered_report_carries_the_mesher_handbacks_record(store, delivered):
+    """The handback's own repair (and its investigation trace) must be readable after the run,
+    beside the first attempt's - or a no-repair after a mesh failure cannot be explained."""
+    handback = {"faces": [3], "outcome": "refused", "committed": False,
+                "report": {"investigation_trace": {"outcomes": [{"region": 0}]}}}
+    asyncio.run(deliver_repair_report(_session_factory({}), job_id=str(uuid.uuid4()),
+                                      report=_REPORT, repair_status="repairable",
+                                      repair_attempt={"attempted": True},
+                                      repair_handback=handback))
+    stored = json.loads(store.get_bytes(object_key=delivered["storage_key"]))
+    assert stored["repair_handback"] == handback
+
+
+def test_no_handback_adds_no_key(store, delivered):
+    asyncio.run(deliver_repair_report(_session_factory({}), job_id=str(uuid.uuid4()),
+                                      report=_REPORT, repair_status="repairable"))
+    stored = json.loads(store.get_bytes(object_key=delivered["storage_key"]))
+    assert "repair_handback" not in stored

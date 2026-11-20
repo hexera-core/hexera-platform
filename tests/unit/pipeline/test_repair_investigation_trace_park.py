@@ -111,3 +111,83 @@ def test_a_promoted_repair_parks_its_trace(tmp_path, monkeypatch):
 def repair_attempt_refused(message, *, measurements):
     from meshpipeline.cad.repair.conservative import RepairRefused
     return RepairRefused(message, measurements=measurements)
+
+
+# ---------------------------------------------------------------- never on the critical path
+
+class _SlowStore(_Store):
+    def upload_file(self, *, local_path, object_key, content_type=None, metadata=None):
+        import time
+        time.sleep(1.0)
+        return super().upload_file(local_path=local_path, object_key=object_key)
+
+
+def test_a_stalled_upload_is_abandoned_at_its_timeout_and_recorded(monkeypatch):
+    """Greptile: the upload sat outside the repair's wait_for with no timeout of its own, so a
+    stalled store held the job between repair and mesh."""
+    import time
+    monkeypatch.setattr(object_storage, "_store", _SlowStore())
+    monkeypatch.setattr(repair_attempt, "TRACE_UPLOAD_TIMEOUT_S", 0.05)
+    measured = {"investigation_trace": _trace()}
+    started = time.monotonic()
+    asyncio.run(repair_attempt._park_trace("j1", measured))
+    assert time.monotonic() - started < 0.9
+    parked = measured["investigation_trace"]
+    assert "lines" not in parked
+    assert "TimeoutError" in parked["transcript"]["error"]
+    assert "object_key" not in parked["transcript"]
+
+
+def test_the_upload_timeout_is_short():
+    assert 0 < repair_attempt.TRACE_UPLOAD_TIMEOUT_S <= 15
+
+
+# ---------------------------------------------------------------- the mesher handback's trace
+
+def _handback_state(tmp_path):
+    from tests._geometry_support import geometry_state
+    return {"job_id": "job-hb", "engine": "gmsh", "geometry": geometry_state(tmp_path)}
+
+
+def test_a_refused_handback_parks_its_trace_in_its_report(tmp_path, monkeypatch):
+    import meshpipeline.settings.cad_repair as rcfg
+    from meshpipeline.cad.repair.conservative import RepairRefused
+    from meshpipeline.pipeline import repair_handback as HB
+
+    store = _Store()
+    monkeypatch.setattr(object_storage, "_store", store)
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_ENABLED", True)
+
+    def _refuse(source, destination, **kw):
+        raise RepairRefused("nothing kept", measurements={"investigation_trace": _trace()})
+
+    monkeypatch.setattr("meshpipeline.cad.repair.conservative.repair_step_file", _refuse)
+    out = asyncio.run(HB._scoped_repair(_handback_state(tmp_path), focus_faces=(3,)))
+    parked = out["report"]["investigation_trace"]
+    assert "lines" not in parked
+    assert parked["outcomes"][0]["why_no_package"] == "runaway"
+    assert parked["transcript"]["object_key"] in store.objects
+
+
+def test_a_handback_that_repaired_keeps_its_trace_in_its_summary(tmp_path, monkeypatch):
+    import meshpipeline.settings.cad_repair as rcfg
+    from meshpipeline.cad.repair.contracts import RepairMeasurement, RepairReport
+    from meshpipeline.pipeline import repair_handback as HB
+
+    store = _Store()
+    monkeypatch.setattr(object_storage, "_store", store)
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_ENABLED", True)
+
+    def _repair(source, destination, **kw):
+        destination.write_bytes(source.read_bytes() + b"\n/* repaired */\n")
+        return RepairReport(defects=(), operations=(), summary="ok", entities=(),
+                            measurements=(RepairMeasurement(name="investigation_trace",
+                                                            value=_trace()),))
+
+    monkeypatch.setattr("meshpipeline.cad.repair.conservative.repair_step_file", _repair)
+    monkeypatch.setattr("meshpipeline.pipeline.repair_promote.stages_for",
+                        lambda geometry, engine="", budget_s=None: (True, ""))
+    out = asyncio.run(HB._scoped_repair(_handback_state(tmp_path), focus_faces=(3,)))
+    parked = out["report"]["investigation_trace"]
+    assert "lines" not in parked
+    assert parked["transcript"]["object_key"] in store.objects

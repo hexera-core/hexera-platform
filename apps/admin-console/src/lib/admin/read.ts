@@ -172,12 +172,17 @@ export type AdminRepairOutcome = {
   why_no_package: string;
 };
 
-export type AdminRepairTrace = {
-  job_id: string;
+export type AdminRepairTraceSection = {
   lines: Record<string, unknown>[];
   outcomes: AdminRepairOutcome[];
   transcript: Record<string, unknown>;
   truncated: boolean;
+};
+
+// The first repair's trace, and the mesher handback's own when one ran.
+export type AdminRepairTrace = AdminRepairTraceSection & {
+  handback?: AdminRepairTraceSection;
+  job_id: string;
 };
 
 // Dev diagnostics (CAD_REPAIR_INVESTIGATION_TRACE): a 404 means the run traced nothing.

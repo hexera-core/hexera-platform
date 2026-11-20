@@ -82,3 +82,10 @@ def test_a_standalone_run_whose_repaired_file_was_not_stored_is_not_succeeded():
 def test_the_orchestrator_module_still_parses():
     # the edits above are asserted as source text, so prove the file is valid Python
     ast.parse(SOURCE)
+
+
+def test_the_report_carries_the_handback_record():
+    body = _finalize_body()
+    call = body[body.index("deliver_repair_report("):]
+    call = call[:call.index(")\n")]
+    assert 'repair_handback=dict(final_state.get("repair_handback") or {})' in call
