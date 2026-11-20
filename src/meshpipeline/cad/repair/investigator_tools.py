@@ -269,12 +269,15 @@ def render_region(shape, cameras: list[dict], *, size: tuple[int, int] = VIEW_SI
                   budget_s: float) -> list[bytes]:
     """One PNG per camera, in order. NEVER RAISES: any failure at all gives `[]`.
 
-    The tessellation and the off-screen draw both happen in `localize._bounded`'s FORKED CHILD,
-    never here. Three reasons, all of them load-bearding: `BRepMesh` holds the GIL, so a slow
-    part would block the loop past its budget with no way to interrupt it; vtk initialises a GL
-    context and leaks it, which a long-lived worker cannot afford once per `look`; and a kernel
-    crash on a pathological shape kills the child rather than the worker, in which case the pipe
-    closes empty and the answer is the same silence as a timeout. gmsh is not involved and no
+    The tessellation and the off-screen draw both happen in `localize._bounded`'s child - a
+    FRESH INTERPRETER, never a fork of this threaded worker - never here. Three reasons, all of
+    them load-bearing: `BRepMesh` holds the GIL, so a slow part would block the loop past its
+    budget with no way to interrupt it; vtk initialises a GL context and leaks it, which a
+    long-lived worker cannot afford once per `look`; and a kernel crash on a pathological shape
+    kills the child rather than the worker, which leaves no answer - the same silence as a
+    timeout. A fresh interpreter also initialises its windowing stack from scratch (on darwin,
+    Cocoa refuses to initialise in a forked child at all). All cameras go to ONE child: the
+    start-up (Python plus `import OCP`) is paid once per `look`, not once per view. gmsh is not involved and no
     mesher runs: `BRepMesh` is OpenCascade's own display tessellation.
     """
     if not cameras:
@@ -293,9 +296,10 @@ def render_region(shape, cameras: list[dict], *, size: tuple[int, int] = VIEW_SI
 
 
 def _render_kernel(shape, cameras: list[dict], size: tuple[int, int]) -> list[bytes]:
-    """Tessellate once, then draw one PNG per camera. RUNS IN THE FORKED CHILD ONLY.
+    """Tessellate once, then draw one PNG per camera. RUNS IN THE BOUNDED CHILD ONLY.
 
-    Returns PNG bytes, which is what crosses `_bounded`'s pipe: a vtk or OCP object could not.
+    Returns PNG bytes, which is what crosses back from `_bounded`'s child (as base64 in its JSON
+    answer): a vtk or OCP object could not.
     """
     import io
 
@@ -426,7 +430,7 @@ def _point(value) -> list[float]:
 
 def _thickness_kernel(shape, face) -> dict:
     """The minimum distance from sample points on `face` to the NON-ADJACENT faces of the solid
-    that owns it. Runs in a forked child (see `_thickness_of`), so it returns plain numbers."""
+    that owns it. Runs in a bounded child (see `_thickness_of`), so it returns plain numbers."""
     from OCP.BRep import BRep_Builder
     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
     from OCP.BRepExtrema import BRepExtrema_DistShapeShape

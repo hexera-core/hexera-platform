@@ -7,6 +7,7 @@ import pytest
 
 import meshpipeline.cad.repair.session as session_mod
 import meshpipeline.settings.cad_repair as rcfg
+from meshpipeline.cad.repair.bounded_child import _probe_echo, _probe_raise, _probe_sleep
 from meshpipeline.cad.repair.caps import Measure
 from meshpipeline.cad.repair.localize import _bounded, _components, face_scan_budget_s
 from meshpipeline.cad.repair.session import RepairSession
@@ -23,55 +24,27 @@ def test_the_budget_is_a_quarter_of_what_remains_capped_at_thirty(remaining, exp
 
 
 def test_a_slow_analysis_is_abandoned_not_waited_for():
-    def slow():
-        time.sleep(0.5)
-        return [(1, 2)]
     started = time.monotonic()
-    assert _bounded(slow, budget_s=0.05) is None
-    assert time.monotonic() - started < 0.3
+    assert _bounded(_probe_sleep, 30.0, budget_s=0.05) is None
+    assert time.monotonic() - started < 1.0
 
 
 def test_a_raising_analysis_is_silence():
-    def boom():
-        raise RuntimeError("kernel")
-    assert _bounded(boom, budget_s=1.0) is None
+    assert _bounded(_probe_raise, budget_s=30.0) is None
 
 
-def test_a_non_positive_budget_never_calls_the_analysis():
-    called = []
-    assert _bounded(lambda: called.append(1), budget_s=0.0) is None and called == []
+def test_a_non_positive_budget_never_calls_the_analysis(monkeypatch):
+    from meshpipeline.cad.repair import bounded_child
+
+    monkeypatch.setattr(bounded_child, "run", lambda *a, **k: pytest.fail("a child was started"))
+    assert _bounded(_probe_echo, 1, budget_s=0.0) is None
 
 
 @pytest.mark.parametrize("budget", [float("nan"), float("inf")])
 def test_a_non_finite_budget_is_silence_without_waiting_for_the_analysis(budget):
-    def slow():
-        time.sleep(2.0)
-        return [(1, 2)]
     started = time.monotonic()
-    assert _bounded(slow, budget_s=budget) is None
+    assert _bounded(_probe_sleep, 30.0, budget_s=budget) is None
     assert time.monotonic() - started < 1.0
-
-
-def test_a_failed_fork_leaks_no_pipe(monkeypatch):
-    import os
-
-    opened = []
-    real_pipe = os.pipe
-
-    def pipe():
-        ends = real_pipe()
-        opened.extend(ends)
-        return ends
-
-    def no_fork():
-        raise BlockingIOError("EAGAIN")
-
-    monkeypatch.setattr(os, "pipe", pipe)
-    monkeypatch.setattr(os, "fork", no_fork)
-    assert _bounded(lambda: [(1, 2)], budget_s=1.0) is None
-    for fd in opened:
-        with pytest.raises(OSError):
-            os.fstat(fd)
 
 
 def test_pairs_close_into_components_and_each_face_lists_its_partners():
