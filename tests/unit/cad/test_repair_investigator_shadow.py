@@ -526,3 +526,16 @@ def test_the_shadow_never_returns_a_package_even_when_the_rules_do(monkeypatch):
     got = composite(REGION, DEFECTS, ())
     assert got is made[0]
     assert not isinstance(got, TargetPackage)
+
+
+def test_the_shadow_conclude_schema_requires_the_plan_it_handles():
+    """ONE schema for two postures described the LIVE one: it forbade `plan` while the shadow
+    handler refuses a package without it, so the schema and the handler disagreed."""
+    live = {s.name: s for s in inv._native_schemas(False)}["conclude"]
+    shadow = {s.name: s for s in inv._native_schemas(True)}["conclude"]
+    live_pkg = live.parameters["properties"]["package"]
+    shadow_pkg = shadow.parameters["properties"]["package"]
+    assert "plan" not in live_pkg["properties"]
+    assert "plan" in shadow_pkg["properties"]
+    assert "plan" in shadow_pkg.get("required", ())
+    assert "plan" in shadow_pkg["description"]

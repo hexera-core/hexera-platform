@@ -830,3 +830,44 @@ def test_conclusions_refused_in_a_row_end_the_region(wired):
     record = author.investigations[-1]
     assert record["end"] == "runaway"
     assert model.calls == inv.REFUSED_MAX
+
+
+# --- every native call is answered ------------------------------------------------------------
+# A provider that requires a result per tool call (OpenAI does) REJECTS a request whose history
+# holds an assistant turn with unanswered calls. The driver kept the whole assistant turn but
+# stopped adding results at the tool ceiling, so the next round - the one that asks for a
+# conclusion - could not be sent at all.
+
+def _unanswered(record) -> set:
+    asked, answered = set(), set()
+    for m in record["messages"]:
+        for call in (m.get("tool_calls") or ()):
+            asked.add(call["id"] if isinstance(call, dict) else call.id)
+        if m.get("role") == "tool":
+            answered.add(m["tool_call_id"])
+    return asked - answered
+
+
+def test_calls_past_the_tool_ceiling_are_still_answered(wired, monkeypatch):
+    sunk: list = []
+    monkeypatch.setattr(inv, "sink", sunk.append, raising=False)
+    many = FakeReply(tool_calls=[FakeCall("look", {"view": i}, id=f"c{i}") for i in range(3)])
+    author, _, _, seen = wired(many, native("conclude", escalate={"reason": "done"}),
+                               budget=Budget(tool_calls=1, model_calls=9))
+    author(REGION, DEFECTS, ())
+    record = sunk[-1]
+    assert len(seen) == 1                                   # only the allowance RAN
+    assert _unanswered(record) == set()                      # but every call was ANSWERED
+    refused = [t for t in record["turns"] if t["ok"] is False]
+    assert len(refused) == 2 and all("spent" in t["error"] for t in refused)
+
+
+def test_calls_after_a_runaway_are_still_answered(wired, monkeypatch):
+    sunk: list = []
+    monkeypatch.setattr(inv, "sink", sunk.append, raising=False)
+    same = FakeReply(tool_calls=[FakeCall("look", {}, id=f"c{i}") for i in range(4)])
+    author, _, _, _ = wired(same, budget=Budget(tool_calls=99, model_calls=9))
+    author(REGION, DEFECTS, ())
+    record = sunk[-1]
+    assert record["end"] == "runaway"
+    assert _unanswered(record) == set()

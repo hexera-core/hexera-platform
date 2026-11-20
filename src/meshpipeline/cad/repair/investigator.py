@@ -251,24 +251,47 @@ _CONCLUDE_PROPERTIES: dict = {
 }
 
 
-def _conclude_schema():
+def _conclude_schema(shadow: bool = False):
+    """`conclude`, as THIS POSTURE's handler will read it.
+
+    The package body differs by posture and the schema has to say so: live refuses a `plan` (the
+    plan IS the kept-edit log), shadow REQUIRES one (nothing was edited, so there is no log to
+    stand in for it). One schema for both described the live posture while the shadow handler
+    refused what it invited.
+    """
     from meshpipeline.contracts.model_inference import ToolSchema
 
+    properties = {**_CONCLUDE_PROPERTIES}
+    if shadow:
+        package = {**properties["package"]}
+        package["properties"] = {
+            **package["properties"],
+            "plan": {"type": "array",
+                     "description": "the operations this repair would run, in order",
+                     "items": {"type": "object",
+                               "properties": {"op": {"type": "string"},
+                                              "fingerprint": {"type": "string"}},
+                               "required": ["op", "fingerprint"]}},
+        }
+        package["required"] = ["plan"]
+        package["description"] = ("the repair you WOULD propose. nothing was edited in this "
+                                  "posture, so the package must state the plan it proposes")
+        properties["package"] = package
     return ToolSchema(name="conclude",
                       description=("finish this region with EXACTLY ONE of package, mesher_side "
                                    "or escalate - never two. the only way to end an "
                                    "investigation"),
                       parameters={"type": "object",
-                                  "properties": dict(_CONCLUDE_PROPERTIES),
-                                  "oneOf": _conclude_branches(_CONCLUDE_PROPERTIES)})
+                                  "properties": properties,
+                                  "oneOf": _conclude_branches(properties)})
 
 
 def _native_schemas(shadow: bool, *, only_conclude: bool = False) -> tuple:
     """What the NATIVE transport declares: the posture's tools plus `conclude`, or `conclude` alone
     on a turn where a conclusion is the only answer that can still be used."""
     if only_conclude:
-        return (_conclude_schema(),)
-    return (*_schemas(shadow), _conclude_schema())
+        return (_conclude_schema(shadow),)
+    return (*_schemas(shadow), _conclude_schema(shadow))
 
 
 def _roster(shadow: bool = False) -> str:
@@ -994,8 +1017,17 @@ def investigator(shape, *, original: Measure, reserved: frozenset = frozenset(),
             if inv.native and tuple(getattr(reply, "tool_calls", ()) or ()):
                 inv.say(_assistant_turn(reply))
             for ask in asks:
-                if inv.tool_calls >= int(inv.budget.tool_calls):
-                    break
+                if inv.tool_calls >= int(inv.budget.tool_calls) or runaway:
+                    # ANSWERED, NOT DROPPED. The assistant turn above carries EVERY call, and a
+                    # provider that requires a result per call rejects a history with one
+                    # missing - which would have killed the very round that asks for a
+                    # conclusion. The call is refused rather than run, and costs nothing.
+                    _answer(inv, ask, investigator_tools.ToolResult(
+                        str(ask.tool), False, {}, 0.0,
+                        "the region's tool calls are spent; this call was not run"
+                        if not runaway else f"the region ended first: {runaway}"),
+                        reply=reply)
+                    continue
                 key = f"{ask.tool}:{_args_text(ask.args)}"
                 inv.calls_seen[key] = inv.calls_seen.get(key, 0) + 1
                 if inv.calls_seen[key] >= REPEAT_MAX:
@@ -1014,19 +1046,7 @@ def investigator(shape, *, original: Measure, reserved: frozenset = frozenset(),
                 else:
                     result = investigator_tools.run_tool(ws, ask.tool, ask.args,
                                                          budget_s=max(0.0, left()))
-                payload = investigator_tools.envelope(len(inv.turns) + 1, result)
-                inv.record(tool=ask.tool, args=ask.args, ok=bool(result.ok),
-                           error=str(result.error or ""), payload=payload,
-                           seconds=float(result.seconds))
-                meta = {"call": len(inv.turns), "tool": str(ask.tool), "sha256": _sha(payload)}
-                if ask.call is not None:
-                    inv.result(_tool_result_turn(ask.call, payload), meta)
-                else:
-                    inv.say({"role": "assistant",
-                             "content": str(getattr(reply, "assistant_text", "") or "")})
-                    inv.result({"role": "user", "content": payload}, meta)
-                if runaway:
-                    break
+                _answer(inv, ask, result, reply=reply)
             if scratch is not None:
                 inv.edits = [dict(e) for e in scratch.kept()]
             if runaway:
@@ -1100,6 +1120,26 @@ def _one_form(args: dict) -> dict:
     if len(stated) != 1:
         return args
     return {key: value for key, value in args.items() if key not in _CONCLUSIONS or key in stated}
+
+
+def _answer(inv: _Investigation, ask: _Ask, result, *, reply) -> None:
+    """Record `result` for `ask` and put it in the conversation, native or prose.
+
+    EVERY CALL OF A ROUND GETS ONE. A native assistant turn carries all of its calls, and a
+    provider that requires a result per call rejects a history that is missing one, so a call the
+    driver declines to run is answered with a refusal rather than left hanging.
+    """
+    payload = investigator_tools.envelope(len(inv.turns) + 1, result)
+    inv.record(tool=ask.tool, args=ask.args, ok=bool(result.ok),
+               error=str(result.error or ""), payload=payload,
+               seconds=float(result.seconds))
+    meta = {"call": len(inv.turns), "tool": str(ask.tool), "sha256": _sha(payload)}
+    if ask.call is not None:
+        inv.result(_tool_result_turn(ask.call, payload), meta)
+    else:
+        inv.say({"role": "assistant",
+                 "content": str(getattr(reply, "assistant_text", "") or "")})
+        inv.result({"role": "user", "content": payload}, meta)
 
 
 def _conclude(args: object, inv: _Investigation, *, ctx, scratch, region: Region,
