@@ -1000,6 +1000,14 @@ class RepairSession:
             standing=standing, tolerance_mm=tolerance_mm)
         if reason:
             self.shape, self._defects, self.complete_scan = snapshot
+            if reason == "target_remains":
+                # WHAT THE ROLLED-BACK RESULT DID CLEAR. `target_remains` is a verdict on the AIM,
+                # not on the call: a whole-shape operation re-aimed at one of these makes the
+                # identical call and would pass, so the planner must not suppress that aim
+                # (`plan.RunHistory.mark_whole_shape_cleared`, PR #494 review, plan.py:401).
+                still = {(d.fingerprint, d.code.value) for d in found}
+                delta["cleared"] = sorted({d.fingerprint for d in previous if d.fingerprint
+                                           and (d.fingerprint, d.code.value) not in still})
             return self._record(OpVerdict(
                 op=op.name, targets=fingerprints, defect_code=code, status=ROLLED_BACK,
                 reason=reason, basis=basis, evidence=dict(outcome.evidence), delta=delta,

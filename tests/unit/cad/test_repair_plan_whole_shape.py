@@ -213,3 +213,26 @@ def test_a_sweep_that_changes_nothing_costs_one_attempt_instead_of_one_per_defec
     assert [v.status for v in outcome.verdicts] == ["rolled_back"]
     assert outcome.stopped_because == NO_CANDIDATE
     assert {d.fingerprint for d in outcome.defects} == {"edge:a", "edge:b", "edge:c"}
+
+
+def test_a_sweep_that_cleared_another_defect_but_not_its_target_is_re_aimed_at_what_it_cleared():
+    """PR #494 review (plan.py:401). A whole-shape call that CHANGED the part, cleared `edge:b`
+    and left its own target `edge:a`, is rolled back `target_remains` - for edge:a. That verdict is
+    about the aim, not the call: aimed at edge:b the identical call passes the progress rule. So
+    the suppression must not reach an aim the rolled-back result proved it could clear, or the
+    run ends `no_candidate` with a repair it had in hand.
+    """
+    sweep = _Op("fix_small_edges", whole_shape=True, repairs=True)
+    both = (_defect("edge:a", index=1), _defect("edge:b", index=2))
+    only_a = (_defect("edge:a", index=1),)
+
+    def scanner(shape, valid=None):
+        return (both if shape == "part" else only_a), True
+
+    work = RepairSession("part", measurer=lambda _s: _SOUND, scanner=scanner)
+    outcome = run("part", planner=RulesPlanner(ops=(sweep,)), session=work, tolerance_mm=0.01,
+                  budget=LoopBudget.from_settings())
+
+    assert [(v.targets, v.status) for v in outcome.verdicts] == [
+        (("edge:a",), "rolled_back"), (("edge:b",), "kept")]
+    assert sweep.calls == 2
