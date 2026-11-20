@@ -154,3 +154,46 @@ def test_live_investigator_edits_a_scratch_clone_and_concludes_a_package(live, m
     assert record["end"] == "concluded", record
     assert isinstance(package, TargetPackage)
     assert [item["op"].name for item in package.plan] == ["fix_small_edges"]
+
+
+def test_a_later_scratch_edit_keeps_the_real_sessions_declared_allowance(live, monkeypatch):
+    """PR #494 review: the scratch session compares against the UPLOAD, so it must carry the real
+    session's accumulated declarations. Here an earlier committed fill declared +50 mm^2 (5% of
+    the upload, over the 2% residual) and the part now measures 1050 mm^2. An edit that changes no
+    area is valid on the real session and must be kept on the clone too - not rolled back as an
+    unexplained change."""
+    import dataclasses
+
+    from meshpipeline.cad.repair.caps import Accounting
+
+    op, opened = live
+    grown = dataclasses.replace(ORIGINAL, surface_area_mm2=1050.0)
+
+    def scratch_of(source, *, original, defects, reserved=frozenset(), remaining_s=None,
+                   clock=None, accounting=None):
+        # The fixture already replaced `Scratch.of`; `_built` is the real construction under it.
+        scratch = it.Scratch._built(source, original=original, defects=tuple(defects),
+                                    reserved=frozenset(reserved), remaining_s=remaining_s,
+                                    clock=clock, measurer=lambda _shape: grown,
+                                    scanner=lambda _shape, valid=None: ((), True),
+                                    accounting=accounting)
+        opened.append(scratch)
+        return scratch
+
+    monkeypatch.setattr(it.Scratch, "of", scratch_of)
+    router = _Router(
+        _Reply(tool_calls=[_Call("edit", {"op": "fix_small_edges", "fingerprint": FP})]))
+    monkeypatch.setattr(ma, "converse_tools_sync", router)
+
+    author, _ = ma.select_author(_Shape("part"), original=ORIGINAL, job_id="job-live",
+                                 tolerance_mm=0.01)
+    author.observe_part((DEFECT,))
+    author.observe_accounting(Accounting(declared_area_mm2=50.0))
+    author(REGION, (DEFECT,), ())
+
+    assert opened, "no scratch clone was opened"
+    assert [e.status for e in opened[-1].edits] == [sess.KEPT], opened[-1].edits
+    assert opened[-1].session.accounting.declared_area_mm2 == 50.0
+    # A RESET STARTS AGAIN FROM THE SAME ALLOWANCE, not from an empty one.
+    opened[-1].reset()
+    assert opened[-1].session.accounting.declared_area_mm2 == 50.0

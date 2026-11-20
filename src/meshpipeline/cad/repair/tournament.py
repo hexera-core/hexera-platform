@@ -337,7 +337,7 @@ def _ended(cand: Candidate, status: str, *, seconds: float, reason: str = "", ke
 def rehearse(cand: Candidate, *, session_shape, original, defects, region, tolerance_mm: float,
              budget_s: float, clock=None, reserved: frozenset[str] = frozenset(),
              diagonal_mm: float | None = None, make_scratch=None, run_tier=None, measure=None,
-             scope=None) -> Rehearsal:
+             scope=None, accounting=None) -> Rehearsal:
     """Play `cand` on ITS OWN CLONE of `session_shape` and report what happened. NEVER RAISES.
 
     In order: open a clone; play the plan item by item through the clone's `try_op`, stopping at
@@ -381,10 +381,14 @@ def rehearse(cand: Candidate, *, session_shape, original, defects, region, toler
                          else diagonal_mm)
         before = _fingerprints(defects, region, diagonal, scope)
 
+        # THE REAL SESSION'S DECLARATIONS ride along when the loop reported them: the clone's caps
+        # compare against the upload, so without them an earlier package's declared change reads
+        # as unexplained and a candidate the real session would keep fails its rehearsal.
+        extra = {} if accounting is None else {"accounting": accounting}
         scratch = make_scratch(session_shape, original=original, defects=tuple(defects),
                                reserved=frozenset(reserved),
                                remaining_s=lambda: _left(clock, started, budget_s, now),
-                               clock=now)
+                               clock=now, **extra)
         keep = _kept_status()
 
         for index, entry in enumerate(cand.package.plan):
@@ -667,7 +671,7 @@ def tournament_author(shape, *, original, reserved: frozenset = frozenset(), job
     tick = clock if callable(clock) else _time.monotonic
     held_codes = frozenset(reserved)
     tournaments: list[dict] = []
-    state: dict = {"shape": shape}
+    state: dict = {"shape": shape, "accounting": None}
     #: region index -> the ranked candidates and the plan keys already offered for it.
     cache: dict[int, dict] = {}
     timing = policy if policy is not None else _clock_of(
@@ -692,6 +696,15 @@ def tournament_author(shape, *, original, reserved: frozenset = frozenset(), job
         state["shape"] = current
         for _, each in sources:
             seen = getattr(each, "observe_shape", None)
+            if callable(seen):
+                seen(current)
+
+    def observe_accounting(current) -> None:
+        # The real session's declarations, for this author's rehearsal clones and for the
+        # investigator source's scratch clone alike.
+        state["accounting"] = current
+        for _, each in sources:
+            seen = getattr(each, "observe_accounting", None)
             if callable(seen):
                 seen(current)
 
@@ -779,7 +792,8 @@ def tournament_author(shape, *, original, reserved: frozenset = frozenset(), job
         rehearsals = play(cands, wall_s=wall, clock=timing, limit=cap,
                           session_shape=state["shape"], original=original,
                           defects=tuple(defects), region=region,
-                          tolerance_mm=float(tolerance_mm), reserved=held_codes)
+                          tolerance_mm=float(tolerance_mm), reserved=held_codes,
+                          accounting=state["accounting"])
         ordered = rank(rehearsals)
         entry["candidates"] = [_record(r.candidate, r) for r in ordered]
         entry["seconds"] = round(sum(float(r.seconds) for r in ordered), 6)
@@ -814,6 +828,7 @@ def tournament_author(shape, *, original, reserved: frozenset = frozenset(), job
     author.report = report  # type: ignore[attr-defined]
     author.observe_part = observe_part  # type: ignore[attr-defined]
     author.observe_shape = observe_shape  # type: ignore[attr-defined]
+    author.observe_accounting = observe_accounting  # type: ignore[attr-defined]
     author.refusals = getattr(dict(sources).get(RULES), "refusals", [])  # type: ignore[attr-defined]
     author.verdicts = getattr(dict(sources).get(ONE_SHOT), "verdicts", [])  # type: ignore[attr-defined]
     author.calls = getattr(dict(sources).get(ONE_SHOT), "calls", [])  # type: ignore[attr-defined]

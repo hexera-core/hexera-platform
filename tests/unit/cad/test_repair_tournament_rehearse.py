@@ -325,3 +325,14 @@ def test_the_winner_of_a_real_tournament_is_the_one_that_cleared_without_reveali
     out.append(T.rehearse(cand(T.RULES, [item("fill", "f1")]), budget_s=60.0, **kwargs2))
     best = T.winner(out)
     assert best is not None and best.candidate.source == T.ONE_SHOT
+
+
+@pytest.mark.parametrize("given", [None, "the session's declarations"])
+def test_the_clone_carries_the_real_sessions_declarations(given):
+    """PR #494 review: a clone's caps compare against the UPLOAD, so a clone of a partly repaired
+    shape needs the real session's accumulated declarations, or a candidate the real session
+    would keep fails its rehearsal on an earlier package's declared change. None is "the loop
+    reported none", and then nothing is passed, so a factory that predates it still works."""
+    kwargs, scratches, _ = harness(statuses=["kept"])
+    T.rehearse(cand(plan=[item()]), budget_s=30.0, accounting=given, **kwargs)
+    assert scratches[0].kwargs.get("accounting") == given

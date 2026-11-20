@@ -675,3 +675,46 @@ def test_an_unstated_tournament_clock_keeps_the_final_reserve_and_the_share(monk
                                  investigate=None)
     assert (author.clock.reserve_s, author.clock.share) == (40.0, 0.25)
     assert author.clock.proof_reserve_s == ib.proof_reserve_s(60.0)
+
+
+def test_the_sessions_declarations_reach_the_rehearsal_and_every_source():
+    """The region loop reports the real session's accounting; the tournament hands it to its
+    rehearsal clones and to each source that rehearses on a clone of its own (the investigator)."""
+    seen: list = []
+    author, srcs, plays = build(k=1)
+    srcs[T.INVESTIGATOR].observe_accounting = seen.append
+    author.observe_accounting("declared")
+    author(REGION, DEFECTS)
+    assert plays.calls[-1]["accounting"] == "declared"
+    assert seen == ["declared"]
+
+
+def test_the_region_loop_reports_the_sessions_accounting_before_each_ask():
+    from meshpipeline.cad.repair.caps import Accounting
+    from meshpipeline.cad.repair.region_loop import _observe_shape
+
+    seen: list = []
+
+    def author(region, defects, attempts=()):
+        return None
+
+    author.observe_accounting = seen.append
+    _observe_shape(author, "shape", Accounting(declared_area_mm2=5.0))
+    assert seen == [Accounting(declared_area_mm2=5.0)]
+
+
+def test_run_regions_hands_the_authors_the_real_sessions_accounting():
+    """The call site, not just the hook: before every ask the loop reports the session's OWN
+    accounting object, so a scratch clone starts from what the real session has declared."""
+    part = _Part()
+    session = part.session()
+    seen: list = []
+
+    def author(region, defects, attempts=()):
+        return None
+
+    author.observe_accounting = seen.append
+    run_regions("original", author=author, tolerance_mm=0.1,
+                budget=LoopBudget(max_ops=9, stall_limit=9, timeout_s=1000.0),
+                session=session, clock=part.clock, attempts=1)
+    assert seen and all(each is session.accounting for each in seen)

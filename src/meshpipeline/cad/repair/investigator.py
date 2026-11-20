@@ -376,8 +376,13 @@ def _tier_of(defects: tuple, original: Measure) -> str:
 
 
 def _scratch_of(factory, shape, *, original: Measure, defects: tuple, reserved: frozenset,
-                remaining_s, clock, tolerance_mm: float):
+                remaining_s, clock, tolerance_mm: float, accounting=None):
     """A scratch clone of the SESSION'S CURRENT SHAPE, or None when this deployment has none.
+
+    `accounting` is the REAL session's accumulated declarations, passed only when the region loop
+    reported one (`observe_accounting`): the clone's caps compare against the upload, so a clone
+    of a partly repaired shape needs the earlier packages' declared changes to judge an edit the
+    way the real session would.
 
     SEAM (Task 10): `investigator_tools.Scratch.of`, which copies the shape and opens a
     `RepairSession.scratch` over the copy (a session that cannot commit). It is looked up AT CALL
@@ -390,9 +395,11 @@ def _scratch_of(factory, shape, *, original: Measure, defects: tuple, reserved: 
     if factory is None:
         def factory(source, *, tolerance_mm: float = 0.0, **kwargs):  # noqa: ARG001
             return investigator_tools.Scratch.of(source, **kwargs)
+    extra = {} if accounting is None else {"accounting": accounting}
     try:
         return factory(shape, original=original, defects=tuple(defects), reserved=reserved,
-                       remaining_s=remaining_s, clock=clock, tolerance_mm=float(tolerance_mm))
+                       remaining_s=remaining_s, clock=clock, tolerance_mm=float(tolerance_mm),
+                       **extra)
     except Exception as exc:  # noqa: BLE001 - total: no clone is no edits, never a failed repair
         logger.info("investigator: no scratch clone (%s: %s)", type(exc).__name__, exc)
         return None
@@ -616,7 +623,7 @@ def investigator(shape, *, original: Measure, reserved: frozenset = frozenset(),
     escalations: list[dict] = []
     refusals: list[dict] = []
     live: dict[int, _Investigation] = {}
-    state: dict = {"part_rims": frozenset(), "shape": shape, "calls": 0}
+    state: dict = {"part_rims": frozenset(), "shape": shape, "calls": 0, "accounting": None}
     held_codes = frozenset(reserved)
     if policy is not None:
         timing: Policy = policy
@@ -632,6 +639,11 @@ def investigator(shape, *, original: Measure, reserved: frozenset = frozenset(),
 
     def observe_shape(current) -> None:
         state["shape"] = current
+
+    def observe_accounting(current) -> None:
+        # THE REAL SESSION'S DECLARATIONS, so the next scratch clone of the partly repaired shape
+        # judges its edits against the same allowance the real session will.
+        state["accounting"] = current
 
     def calls_max() -> int:
         return max(0, int(getattr(rcfg, "CAD_REPAIR_INVESTIGATOR_MODEL_CALLS_MAX",
@@ -733,7 +745,7 @@ def investigator(shape, *, original: Measure, reserved: frozenset = frozenset(),
             scratch_factory, state["shape"], original=original,
             defects=tuple(defects), reserved=held_codes,
             remaining_s=lambda: max(0.0, wall), clock=clock,
-            tolerance_mm=tolerance_mm)
+            tolerance_mm=tolerance_mm, accounting=state["accounting"])
         if attempts and scratch is not None:
             # REBUILT FROM THE SESSION'S CURRENT SHAPE: the edits of a reverted package are gone,
             # and the clone the model edits must be what the session actually holds now.
@@ -929,6 +941,7 @@ def investigator(shape, *, original: Measure, reserved: frozenset = frozenset(),
     author.refusals = refusals  # type: ignore[attr-defined]
     author.observe_part = observe_part  # type: ignore[attr-defined]
     author.observe_shape = observe_shape  # type: ignore[attr-defined]
+    author.observe_accounting = observe_accounting  # type: ignore[attr-defined]
     author.report = report  # type: ignore[attr-defined]
     author.label = LABEL  # type: ignore[attr-defined]
     author.clock = timing  # type: ignore[attr-defined]
