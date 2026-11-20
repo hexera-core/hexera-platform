@@ -348,7 +348,7 @@ def render_tex(results: dict, *, source: str = "") -> str:
 # --------------------------------------------------------------------------- from collect.py
 
 def _blank_arm(arm_id: str) -> dict:
-    out = {f: None for f in ARM_FIELDS}
+    out = dict.fromkeys(ARM_FIELDS)
     out.update(arm=arm_id, label=LABELS[arm_id], same_run_as=None, notes=None)
     return out
 
@@ -356,7 +356,7 @@ def _blank_arm(arm_id: str) -> dict:
 def blank_results() -> dict:
     arms = {a: _blank_arm(a) for a in ARMS}
     arms["t19_tournament_on"]["same_run_as"] = "t29_v3"
-    arms[CLEAN] = {**{f: None for f in CLEAN_FIELDS}, "arm": CLEAN, "label": LABELS[CLEAN],
+    arms[CLEAN] = {**dict.fromkeys(CLEAN_FIELDS), "arm": CLEAN, "label": LABELS[CLEAN],
                    "arms_covered": None, "basis": None, "notes": None}
     return {"schema_version": 1, "generated_at": None, "source": None, "arms": arms,
             "verdict": None}
