@@ -125,6 +125,15 @@ CAD_REPAIR_REBUILD_FACE: bool = bool_env("CAD_REPAIR_REBUILD_FACE", "false")
 #: the coupling; deployment posture owns it, and `_warn_unreviewed_closure` says it out loud.
 CAD_REPAIR_CLOSE_WIRE_GAPS: bool = bool_env("CAD_REPAIR_CLOSE_WIRE_GAPS", "false")
 
+#: Resolve a SUB-MESH-SIZE GAP (`gap_split.ResolveSubMeshGap`): two faces of one solid that do not
+#: touch but sit closer than the default mesh's chord sag, so gmsh's triangles cross (edge through
+#: a face, overlapping facets). The faces are split along their own iso-curves until a chord across
+#: a patch sags less than half the gap; no surface moves, and the measured area/volume noise is
+#: declared. Off keeps the operation out of the catalogue and every mapping byte for byte; on, it is
+#: preferred for a clash-located gap and the code's previous choice is its fallback. It
+#: re-partitions the customer's faces, so it is never auto-accepted (review_tier.REVIEWER_ONLY_OPS).
+CAD_REPAIR_RESOLVE_SUB_MESH_GAP: bool = bool_env("CAD_REPAIR_RESOLVE_SUB_MESH_GAP", "false")
+
 #: Sweep away SLIVER FACES - the sub-tolerance strips and spots a Boolean that just missed leaves
 #: behind. Separate from CAD_REPAIR_ALLOW_FACE_REMOVAL on purpose: that knob waives the
 #: face-removal check for EVERY operation in a run, while this one consents to a single bounded

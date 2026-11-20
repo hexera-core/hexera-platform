@@ -35,6 +35,11 @@ REVIEWER = "reviewer"
 #: the tier decision is made, so a deploy change cannot quietly hand them to the auto tier.
 VERTEX_MOVING_OPS = frozenset({"close_wire_gaps", "rebuild_face"})
 
+#: OPERATIONS THAT ARE NEVER AUTO-ACCEPTED THOUGH THEY MOVE NO VERTEX. `resolve_sub_mesh_gap`
+#: re-partitions the customer's faces so a mesher at its default size can resolve a thin wall: the
+#: surface does not move, but a reviewer - not a threshold - decides whether that is acceptable.
+REVIEWER_ONLY_OPS = frozenset({"resolve_sub_mesh_gap"})
+
 
 def posture() -> str:
     """The auto-accept posture, FAILING CLOSED: only the exact string `live` turns it on."""
@@ -101,6 +106,7 @@ def decide(*, verdicts: Iterable[Any], reclassified: frozenset, revealed: frozen
     - the posture is live;
     - the deployment carries a customer threshold above zero;
     - no kept operation moves vertices (`VERTEX_MOVING_OPS`);
+    - no kept operation re-partitions faces (`REVIEWER_ONLY_OPS`);
     - no kept operation REMOVED surface (`package_review.removes_surface`): the deviation samples
       the result, never the surface that went, so no number can show a removal stayed in bounds;
     - nothing was discharged by relabelling (`reclassified`) and nothing new appeared
@@ -125,6 +131,10 @@ def decide(*, verdicts: Iterable[Any], reclassified: frozenset, revealed: frozen
         moving = sorted(set(_kept_op_names(verdicts)) & VERTEX_MOVING_OPS)
         if moving:
             return REVIEWER, f"the package moves vertices ({', '.join(moving)})"
+        repartitioning = sorted(set(_kept_op_names(verdicts)) & REVIEWER_ONLY_OPS)
+        if repartitioning:
+            return REVIEWER, (f"the package re-partitions faces ({', '.join(repartitioning)}); "
+                              "that is a reviewer's call, never a threshold's")
         removing = sorted(set(_kept_removals(verdicts)))
         if removing:
             return REVIEWER, (f"the package removed surface ({', '.join(removing)}); a removed "

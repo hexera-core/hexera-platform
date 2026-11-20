@@ -342,7 +342,8 @@ def system_prompt(*, prose: str = "", shadow: bool = False) -> str:
     # keeps the deployment's own catalogue.
     free = clone_freedom() and not shadow
     catalogue = (catalogue_text(split_closed_faces=True, fragment_bodies=True, rebuild_face=True,
-                                close_wire_gaps=True) if free else catalogue_text())
+                                close_wire_gaps=True, resolve_sub_mesh_gap=True)
+                 if free else catalogue_text())
     text = template.format(catalogue=catalogue, roster=_roster(shadow))
     if not shadow and clone_freedom():
         text = f"{text}\n{AGGRESSIVE_RULE}"

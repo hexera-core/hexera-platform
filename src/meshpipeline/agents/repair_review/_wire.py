@@ -23,12 +23,15 @@ REBUILD = "rebuild_face"
 #: The operation that closes a face's open wire by moving vertices, present ONLY when
 #: CAD_REPAIR_CLOSE_WIRE_GAPS admits it - the same rule as SPLIT_CLOSED.
 CLOSE_GAPS = "close_wire_gaps"
+#: CAD_REPAIR_RESOLVE_SUB_MESH_GAP admits it - the same rule as SPLIT_CLOSED.
+RESOLVE_GAP = "resolve_sub_mesh_gap"
 
 
 def catalogue(*, split_closed_faces: bool | None = None,
               fragment_bodies: bool | None = None,
               rebuild_face: bool | None = None,
-              close_wire_gaps: bool | None = None) -> tuple[str, ...]:
+              close_wire_gaps: bool | None = None,
+              resolve_sub_mesh_gap: bool | None = None) -> tuple[str, ...]:
     """The catalogue names for the given consent (the deployment's flags when not told). Pinned to
     `operations.catalogue` in every flag state by test_catalogue_pinned_to_operations.py."""
     import meshpipeline.settings.cad_repair as rcfg
@@ -41,12 +44,15 @@ def catalogue(*, split_closed_faces: bool | None = None,
         rebuild_face = bool(rcfg.CAD_REPAIR_REBUILD_FACE)
     if close_wire_gaps is None:
         close_wire_gaps = bool(rcfg.CAD_REPAIR_CLOSE_WIRE_GAPS)
+    if resolve_sub_mesh_gap is None:
+        resolve_sub_mesh_gap = bool(getattr(rcfg, "CAD_REPAIR_RESOLVE_SUB_MESH_GAP", False))
     return ("fix_small_edges", "fix_small_faces", "fix_face_boundary", "sew_faces",
             "fill_planar_hole", "fill_nonplanar_hole", "heal_self_intersections",
             "fix_shape_global", *((SPLIT_CLOSED,) if split_closed_faces else ()),
             *((FRAGMENT,) if fragment_bodies else ()),
             *((REBUILD,) if rebuild_face else ()),
-            *((CLOSE_GAPS,) if close_wire_gaps else ()))
+            *((CLOSE_GAPS,) if close_wire_gaps else ()),
+            *((RESOLVE_GAP,) if resolve_sub_mesh_gap else ()))
 
 
 CATALOGUE: tuple[str, ...] = catalogue()

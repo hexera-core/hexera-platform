@@ -285,3 +285,16 @@ def test_a_measured_basis_still_auto_accepts(monkeypatch, basis):
                              deviation={**_measured(0.01), "deviation_basis": basis},
                              deviation_status=pr.DEVIATION_MEASURED, threshold_mm=0.05)
     assert tier == "auto", reason
+
+
+def test_a_face_repartition_always_goes_to_the_reviewer(monkeypatch):
+    """`resolve_sub_mesh_gap` moves no vertex and declares only integration noise, so every
+    numeric veto would wave it through: the set is what sends it to a person."""
+    assert rt.REVIEWER_ONLY_OPS == frozenset({"resolve_sub_mesh_gap"})
+    for measured, threshold in ((0.0, 1e9), (0.001, 0.05)):
+        tier, reason = _decide(monkeypatch, verdicts=(_V(op="resolve_sub_mesh_gap"),),
+                               deviation_mm=measured, threshold_mm=threshold)
+        assert tier == "reviewer" and "resolve_sub_mesh_gap" in reason
+    # Rolled back, it left nothing behind and vetoes nothing.
+    assert _decide(monkeypatch, verdicts=(_V(), _V(op="resolve_sub_mesh_gap", kept=False)))[0] \
+        == "auto"

@@ -142,6 +142,20 @@ VOLUME_ONLY: frozenset[DefectCode] = frozenset({DefectCode.mesh_edge_through_fac
 
 _OPS_BY_NAME = {op.name: op for op in OPERATIONS}
 
+#: A CLASH THE PROBE MEASURED AS A GAP goes to the operation built for it first
+#: (`gap_split.ResolveSubMeshGap`, CAD_REPAIR_RESOLVE_SUB_MESH_GAP): two faces that do not touch
+#: but sit closer than the mesh's chord. The code's own MESH_OPS choice stays as its fallback, so a
+#: gap the split cannot resolve still gets today's idea next. Only when the operation's own
+#: `targets_for` takes the defect - a gap measured above 0, or none measured at all.
+GAP_OP = "resolve_sub_mesh_gap"
+
+
+def _gap_first(defect) -> tuple[str, ...]:
+    op = _OPS_BY_NAME.get(GAP_OP)
+    if op is None or defect.code not in op.answers or not op.targets_for(defect):
+        return ()
+    return (GAP_OP,)
+
 
 def _surface_stage(defect) -> bool:
     return (getattr(defect, "measurements", None) or {}).get("stage") == mesh_probe.STAGE_2D
@@ -204,12 +218,16 @@ def _mesh_candidate(defects, history: RunHistory, *, reserved: frozenset) -> Can
         # operation; an operation that CLAIMS the code but refuses this aim through its own
         # `targets_for` (rebuild_face on a non-2D overlap) is passed over, so the aim gets the
         # next name - for an unrecorded-stage overlap, exactly the flag-off choice.
-        chain = [n for n in (MESH_OPS.get(defect.code), *MESH_FALLBACKS.get(defect.code, ()))
+        chain = [n for n in (*_gap_first(defect), MESH_OPS.get(defect.code),
+                             *MESH_FALLBACKS.get(defect.code, ()))
                  if n is not None and n in _OPS_BY_NAME
                  and not (defect.code in _OPS_BY_NAME[n].answers
                           and not _OPS_BY_NAME[n].targets_for(defect))]
-        # A NAME THE CATALOGUE DOES NOT HOLD IS NO OPERATION: refused, never a KeyError.
-        if not chain or _stage_refused(defect):
+        # A NAME THE CATALOGUE DOES NOT HOLD IS NO OPERATION: refused, never a KeyError. A
+        # sub-mesh gap is exempt from the stage refusal: its operation answers a volume code, so
+        # its package is judged by whole-shape scans (`session`), whatever stage gmsh recorded.
+        gap_led = bool(chain) and chain[0] == GAP_OP
+        if not chain or (_stage_refused(defect) and not gap_led):
             history.refuse(defect.fingerprint, "no_operation_claims_it",
                            f"{defect.code.value} needs a judgement no bounded operation makes")
             continue
@@ -293,6 +311,9 @@ def _rationale(candidate: Candidate) -> str:
     rather than claiming to be the operation MESH_OPS aims at."""
     code = candidate.defect_code
     preferred = MESH_OPS.get(code)
+    if candidate.op.name == GAP_OP:
+        return (f"{LABEL}: {GAP_OP} is preferred for a {code.value} the probe located on two "
+                "faces that do not touch: a gap narrower than the mesh size")
     if preferred is None:
         return (f"{LABEL}: {candidate.op.name} is the narrowest catalogue operation that "
                 f"claims the worst defect this region reports")

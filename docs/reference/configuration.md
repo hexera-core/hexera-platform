@@ -489,6 +489,23 @@ is a changed part, and the reviewer is what replaces a numeric gate for an opera
 Startup logs a warning when `CAD_REPAIR_CLOSE_WIRE_GAPS` is on while `CAD_REPAIR_PACKAGE_REVIEW` is
 not `live`.
 
+`CAD_REPAIR_RESOLVE_SUB_MESH_GAP` (default `false`) admits `resolve_sub_mesh_gap`, the answer to a
+**sub-mesh-size gap**: two faces of one solid that do not touch, but sit closer together than the
+default surface mesh's chord sag, so gmsh's triangles on one pass through the other (an edge
+through a face, or overlapping facets). On the real-failure corpus these are almost all designed
+thin walls - coaxial cylinders, cones, tori and spheres at round offsets - so the gap is never
+closed. Instead the target face and the faces of its solid across the gap are split along their
+own iso-curves until a chord across a patch sags less than half the gap, which gives gmsh's default
+mesh vertices where the curvature needs them. No surface moves; the boundary edges an iso-curve
+ends on are split on their own curve in both faces sharing them. It declares the measured gap,
+the mesh size, the faces split, the iso-curves used and the whole part's measured area and volume
+change (integration noise, rounded away from zero), and declines `no_sub_mesh_gap`, `flat`,
+`too_fine`, `split_failed`, `invalidated` or `geometry_moved` (area or volume beyond noise). A clash
+measured at 0 mm is a real intersection and is not aimed at. With the flag on, the rules baseline
+prefers it for a gap-located failure and keeps the code's previous choice as its fallback. It
+re-partitions the customer's faces, so it is never auto-accepted. With the flag off, nothing
+changes.
+
 ## The auto-accept tier
 
 `CAD_REPAIR_AUTO_ACCEPT` (default `off`) decides whether a repair package that passed its
@@ -736,6 +753,7 @@ Every supported setting (314 entries). `template` settings are the ones `.env.ex
 | `CAD_REPAIR_REBUILD_FACE` | internal | app |  |
 | `CAD_REPAIR_REGION_ATTEMPTS` | internal | app |  |
 | `CAD_REPAIR_REGION_LOOP` | internal | app |  |
+| `CAD_REPAIR_RESOLVE_SUB_MESH_GAP` | internal | app |  |
 | `CAD_REPAIR_REVIEW_ENABLED` | template | app |  |
 | `CAD_REPAIR_REVIEW_LLM_CALLS_MAX` | internal | app |  |
 | `CAD_REPAIR_REVIEW_LLM_TIMEOUT_S` | internal | app |  |
