@@ -338,7 +338,10 @@ def test_plc_with_no_point_is_located_by_the_clashing_triangles(monkeypatch):
     assert all(d.measurements["located_by"] == mesh_probe.LOCATED_BY_CLASH
                == "surface-mesh-clash" for d in found)
     assert found[0].measurements["clash_pairs"] == [[2, 7]]
-    assert found[0].measurements["clash_kind"] == "crossing"
+    # Faces 2 and 7 are the two boxes' parallel x walls, 5 mm apart: the triangles crossed, the
+    # faces do not, so the defect says GAP (it said "crossing" before, which was the wave-4 bug).
+    assert found[0].measurements["clash_kind"] == "gap"
+    assert found[0].measurements["clash_mesh_kind"] == "crossing"
     assert calls == []            # evidence first: the contact inference was never needed
 
 
@@ -385,6 +388,7 @@ def test_a_clash_records_the_kernel_gap_between_its_faces(monkeypatch):
     assert len(gaps) == 1
     (gap,) = gaps
     assert gap is not None and abs(gap - 15.0) < 1e-6
+    assert {d.measurements["clash_kind"] for d in found} == {"gap"}
 
 
 def test_each_face_carries_its_own_clash_measurements(monkeypatch):
@@ -404,13 +408,59 @@ def test_each_face_carries_its_own_clash_measurements(monkeypatch):
     assert set(by_face) == {1, 2, 8, 9}
     for face in (1, 8):
         assert by_face[face]["clash_gap_mm"] == pytest.approx(15.0)
-        assert by_face[face]["clash_kind"] == "crossing"
+        # 15 mm apart is a GAP whatever the triangles did; their own word is kept beside it.
+        assert by_face[face]["clash_kind"] == "gap"
+        assert by_face[face]["clash_mesh_kind"] == "crossing"
         assert by_face[face]["clash_pair"] == [1, 8]
     for face in (2, 9):
         assert by_face[face]["clash_gap_mm"] == pytest.approx(0.0, abs=1e-9)
         assert by_face[face]["clash_kind"] == "coplanar"
         assert by_face[face]["clash_point"] == [10.0, 0.0, 5.0]
         assert by_face[face]["clash_pair"] == [2, 9]
+
+
+def test_a_crossing_whose_faces_really_meet_stays_a_crossing(monkeypatch):
+    # The other half of "kind agrees with gap": a gap at or under the touching margin keeps the
+    # triangle test's word. Face 2 (box 1's x=10 wall) crosses face 9 (box 2's y=0 floor): gap 0.
+    from meshpipeline.cad.repair.mesh_clash import Clash
+    from meshpipeline.cad.repair.mesh_probe import MeshFailure
+
+    failure = MeshFailure(EDGE_THROUGH_FACE, (), None, _PLC_BARE, stage="3d")
+    mesh_probe, shape = _clash_probe(monkeypatch, failure=failure, contact_calls=[],
+                                     clashes=(Clash((2, 9), 4, (10.0, 0.0, 5.0), "crossing"),))
+    found = mesh_probe.mesh_defects(shape, diagonal_mm=20.6, budget_s=60.0)
+
+    assert {d.entity_index for d in found} == {2, 9}
+    for defect in found:
+        assert defect.measurements["clash_gap_mm"] == pytest.approx(0.0, abs=1e-9)
+        assert defect.measurements["clash_kind"] == "crossing"
+
+
+def test_reported_kind_follows_the_part_relative_touching_margin():
+    from meshpipeline.cad.repair import region_loop
+    from meshpipeline.cad.repair.mesh_clash import (
+        COPLANAR,
+        CROSSING,
+        GAP,
+        TOUCHING_GAP_FLOOR_MM,
+        TOUCHING_GAP_FRACTION,
+        reported_kind,
+        touching_margin_mm,
+    )
+
+    # The wave-4 file: 1.46 mm apart on a 341 mm part is a gap, never a crossing.
+    assert reported_kind(CROSSING, 1.46, 340.79) == GAP
+    assert reported_kind(COPLANAR, 1.46, 340.79) == GAP
+    margin = touching_margin_mm(340.79)
+    assert margin == pytest.approx(340.79e-6)
+    assert reported_kind(CROSSING, margin, 340.79) == CROSSING
+    assert reported_kind(CROSSING, margin * 1.01, 340.79) == GAP
+    assert reported_kind(CROSSING, 0.0, 340.79) == CROSSING
+    # Unmeasured is unknown, not zero: the triangle kind stands.
+    assert reported_kind(CROSSING, None, 340.79) == CROSSING
+    # One rule for the word, here and in the region ordering.
+    assert TOUCHING_GAP_FRACTION == region_loop.REAL_INTERSECTION_GAP_FRACTION
+    assert TOUCHING_GAP_FLOOR_MM == region_loop.REAL_INTERSECTION_GAP_FLOOR_MM
 
 
 def test_a_gap_measurement_that_hangs_cannot_hang_the_probe(monkeypatch):

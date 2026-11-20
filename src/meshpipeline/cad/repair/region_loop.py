@@ -360,13 +360,24 @@ def _real_intersection_regions(regions: tuple[Region, ...], defects,
         measurements = getattr(defect, "measurements", None) or {}
         if measurements.get("located_by") != CLASH_LOCATED:
             continue
+        if measurements.get("clash_kind") != "crossing":
+            # LANE G'S CLASSIFICATION IS THE AUTHORITY. The triangle test alone called a 1.46 mm
+            # gap a crossing - coarse cylinder chords cut a plane the real surface never reaches -
+            # so the kind now accounts for the measured B-rep distance. Anything else, a gap or an
+            # unclassified finding, is not a real intersection.
+            continue
+        if measurements.get("clash_adjacent") is not False:
+            # STRICTLY FALSE, not merely "not true". Lane E measured 18 of 20 gap-0 pairs on this
+            # corpus to be faces sharing an edge, so an unmeasured adjacency is far more likely to
+            # be a fold than a crossing, and `clash_kind` does not subsume it: a fold's B-rep
+            # distance is 0, so the kind test leaves it a crossing. Until the flag is written this
+            # promotes nothing, which is the safe direction.
+            continue
         gap = measurements.get("clash_gap_mm")
         if not isinstance(gap, (int, float)) or isinstance(gap, bool):
-            continue                                    # absent or None: unknown
+            continue                                    # absent or None: nobody measured it
         if float(gap) > _touching_margin_mm(diagonal_mm):
-            continue                                    # a gap no operation closes
-        if measurements.get("clash_adjacent") is not False:
-            continue                                    # adjacent, or nobody measured it
+            continue                                    # measured apart, whatever it is called
         if defect.fingerprint:
             meeting.add(defect.fingerprint)
     return frozenset(r.index for r in regions if meeting & set(r.fingerprints))
@@ -394,7 +405,11 @@ def _mesh_located_regions(regions: tuple[Region, ...], defects) -> frozenset[int
     from meshpipeline.cad.repair import mesh_probe
 
     located = {d.fingerprint for d in defects
-               if getattr(d, "code", None) in mesh_probe.MESH_CODES and d.fingerprint}
+               if getattr(d, "code", None) in mesh_probe.MESH_CODES and d.fingerprint
+               # A GAP CLASH IS NOT SOMETHING TO REACH FIRST: the faces are measured apart and no
+               # operation closes the distance, so promoting its region spends the budget on the
+               # one class of mesh finding that cannot be repaired.
+               and (getattr(d, "measurements", None) or {}).get("clash_kind") != "gap"}
     return frozenset(r.index for r in regions if located & set(r.fingerprints))
 
 

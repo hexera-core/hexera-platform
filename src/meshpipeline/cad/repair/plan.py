@@ -68,6 +68,56 @@ def _same_shape(left, right) -> bool:
 
 #: Worse first. The loop exists to clear errors; warnings are worth attending to only once the
 #: errors are gone, because a sliver edge beside an open shell is not the part's problem.
+def _demote_mesh_findings() -> bool:
+    """Is `CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS` live? Only then is the order changed, so a
+    flag-off run proposes exactly what it proposed before."""
+    import meshpipeline.settings.cad_repair as rcfg
+
+    return getattr(rcfg, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "off") == "live"
+
+
+def _goes_after_the_cure(defect) -> bool:
+    """True for a mesh finding the kernel's own cure should be proposed before."""
+    from meshpipeline.cad.repair import mesh_probe
+
+    return (getattr(defect, "code", None) in mesh_probe.MESH_CODES
+            and not mesh_finding_outranks_kernel(defect))
+
+
+def mesh_finding_outranks_kernel(defect) -> bool:
+    """May this MESH finding be proposed before the kernel's own cure for the region?
+
+    ONE RULE, ONE PLACE, TWO CALLERS: `RulesPlanner.propose` orders a region's defects with it and
+    `rules_author` decides its severity promotion with it. There were two such tests before, one
+    per layer and written for different reasons, and two half-demotions could have pushed a
+    genuine crossing out of reach - the opposite of the bug each was fixing.
+
+    WHAT IS DEMOTED IS WHAT CANNOT BE REPAIRED, and only that: a clash-located finding whose
+    faces the kernel measured APART (`mesh_clash.GAP` - the mesher's own chord, which no heal or
+    fragment closes) or that merely SHARE AN EDGE (`clash_adjacent`, a fold). Those two were
+    jumping the queue on wave 4: the order replaced the `fix_small_faces` every earlier wave kept
+    with a clash operation that could not help, and every arm fixed nothing.
+
+    EVERY OTHER MESH FINDING STILL OUTRANKS THE CURE, and deliberately: a mapped failure like
+    `mesh_open_loop` with `fix_face_boundary` behind it IS why the part will not mesh, and a
+    sliver warning is not. Demoting those as well would trade one lost repair for another - the
+    reason this asks "is it a clash that cannot be repaired" rather than "is it a measured
+    crossing".
+
+    A non-mesh defect is not a mesh finding and gets False, so a caller may ask about any defect.
+    """
+    from meshpipeline.cad.repair import mesh_clash, mesh_probe
+
+    if getattr(defect, "code", None) not in mesh_probe.MESH_CODES:
+        return False
+    measurements = getattr(defect, "measurements", None) or {}
+    if measurements.get("located_by") != mesh_probe.LOCATED_BY_CLASH:
+        return True                      # not a clash at all: the mesher named it, aim at it
+    if measurements.get("clash_kind") == mesh_clash.GAP:
+        return False                     # measured apart: no operation closes it
+    return measurements.get("clash_adjacent") is not True
+
+
 _SEVERITY_RANK = {DefectSeverity.fatal: 0, DefectSeverity.error: 1,
                   DefectSeverity.warning: 2, DefectSeverity.info: 3}
 
@@ -374,9 +424,17 @@ class RulesPlanner:
         rims = paired_rim_fingerprints(shape, defects) if shape is not None else frozenset()
         refuse_paired_rims(history, rims)
 
+        # A MESH FINDING ADDS TO THE KERNEL'S, AND MUST NOT SPEND THE REGION'S BUDGET FIRST.
+        # A mesh code is an ERROR and a sliver a WARNING, so severity alone proposed the clash
+        # first and the kernel cure only after the clash operation had failed. On wave 4 that
+        # cost every arm its repairs, including the rules-only one, and lost a file
+        # fix_small_faces had cured in every earlier wave. The cheap cure that has actually
+        # repaired parts on this corpus goes first; the clash attempt still follows it.
+        mesh_last = _demote_mesh_findings()
         ordered = sorted(
             defects,
-            key=lambda d: (_SEVERITY_RANK.get(d.severity, 9),
+            key=lambda d: (1 if mesh_last and _goes_after_the_cure(d) else 0,
+                           _SEVERITY_RANK.get(d.severity, 9),
                            _CODE_RANK.get(d.code, 0),
                            _ENTITY_RANK.get(d.entity_type, 9), d.entity_index,
                            d.code.value))

@@ -32,7 +32,7 @@ from meshpipeline.cad.repair.localize import (
     _stamped,
     in_region,
 )
-from meshpipeline.cad.repair.mesh_clash import Clash
+from meshpipeline.cad.repair.mesh_clash import Clash, reported_kind
 
 if TYPE_CHECKING:
     from meshpipeline.cad.repair.regions import Region
@@ -758,8 +758,13 @@ def _mesh_defects(shape, *, diagonal_mm: float, budget_s: float,
             defect.measurements["located_by"] = LOCATED_BY_CLASH
             defect.measurements["clash_pairs"] = [list(c.surfaces) for c in result.clashes]
             defect.measurements["clash_pair"] = list(own.surfaces)
-            defect.measurements["clash_gap_mm"] = gaps.get(own.surfaces)
-            defect.measurements["clash_kind"] = own.kind
+            gap = gaps.get(own.surfaces)  # None when the bounded gap child ran out (#503)
+            defect.measurements["clash_gap_mm"] = gap
+            # THE KIND AGREES WITH THE GAP: triangles that crossed between faces the kernel
+            # measures apart are a GAP, and the triangle test's own word is kept beside it. An
+            # unmeasured gap keeps the triangle kind (#504).
+            defect.measurements["clash_kind"] = reported_kind(own.kind, gap, diagonal_mm)
+            defect.measurements["clash_mesh_kind"] = own.kind
             defect.measurements["clash_point"] = list(own.point)
     if by_contact and contact is not None:
         for defect in defects:

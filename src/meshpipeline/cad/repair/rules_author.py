@@ -21,6 +21,7 @@ from meshpipeline.cad.repair import mesh_probe
 from meshpipeline.cad.repair.caps import Measure
 from meshpipeline.cad.repair.contracts import DefectCode, DefectSeverity
 from meshpipeline.cad.repair.identity import EntityRef
+from meshpipeline.cad.repair.mesh_clash import GAP
 from meshpipeline.cad.repair.operations import OPERATIONS
 from meshpipeline.cad.repair.package import PackageBudget, Predicate, TargetPackage
 from meshpipeline.cad.repair.plan import (
@@ -29,6 +30,7 @@ from meshpipeline.cad.repair.plan import (
     RulesPlanner,
     RunHistory,
     held_fingerprints,
+    mesh_finding_outranks_kernel,
     paired_rim_fingerprints,
     refuse_paired_rims,
 )
@@ -164,6 +166,20 @@ def _is_mesh(defect) -> bool:
     return getattr(defect.code, "value", str(defect.code)).startswith("mesh_")
 
 
+def _sub_element_gap(defect) -> bool:
+    """A clash-located mesh failure whose two faces the kernel measured apart (mesh_clash.GAP).
+
+    NARROWER THAN `plan.mesh_finding_outranks_kernel`, and for a different question. This one asks
+    "is this particular finding the mesher's own chord", and `_mesh_candidate` uses it to decide
+    what to AIM at. Whether a mesh finding may be proposed BEFORE the kernel's cure is the other
+    question, and both layers now ask the shared helper for that - a finding with no clash
+    evidence must still be aimable, while it must not jump the queue.
+    """
+    measurements = getattr(defect, "measurements", None) or {}
+    return (measurements.get("located_by") == mesh_probe.LOCATED_BY_CLASH
+            and measurements.get("clash_kind") == GAP)
+
+
 def _spent(defect, name: str, ordered, history: RunHistory) -> bool:
     """Has the region already used up `name` on this defect - tried it, tried it on a sibling of
     the same contact, or had the aim declined?"""
@@ -179,17 +195,21 @@ def _spent(defect, name: str, ordered, history: RunHistory) -> bool:
     return history.was_declined(name, (defect.fingerprint,))
 
 
-def _mesh_candidate(defects, history: RunHistory, *, reserved: frozenset) -> Candidate | None:
+def _mesh_candidate(defects, history: RunHistory, *, reserved: frozenset,
+                    skip_gaps: bool = False) -> Candidate | None:
     """The MESH_OPS proposal for a region's mesh failures, or None - with the RulesPlanner's own
     bookkeeping, so the two halves of the baseline cannot disagree about what a refusal is.
 
     ORDERED BY ENTITY, then code, so identical runs propose identically. A failure with no
     fingerprint is `untargetable`; one MESH_OPS does not map (or a volume-stage one) is
     `no_operation_claims_it`; a pair the region already tried, an aim already declined, and a
-    target an engineer holds are skipped exactly as the planner skips them.
+    target an engineer holds are skipped exactly as the planner skips them. `skip_gaps` passes
+    over a sub-element gap (`_sub_element_gap`) - for the severity promotion, which must not put
+    the mesher's chord ahead of a kernel cure.
     """
     held = held_fingerprints(defects, reserved)
-    ordered = sorted((d for d in defects if _is_mesh(d)),
+    ordered = sorted((d for d in defects if _is_mesh(d)
+                      and not (skip_gaps and _sub_element_gap(d))),
                      key=lambda d: (d.entity_index, d.code.value, d.fingerprint))
     for defect in ordered:
         if defect.code in reserved:
@@ -418,12 +438,19 @@ def rules_author(shape, *, original: Measure, reserved: frozenset = frozenset(),
         # failure is an ERROR; when the kernel's pick is only a warning or info sweep, the
         # failure is reached first. Kernel errors keep their place ahead of it. With no mesh
         # defect present this branch never runs, so the flag-off proposal is unchanged.
-        if candidate is not None and any(_is_mesh(d) for d in defects):
+        # A SUB-ELEMENT GAP DOES NOT JUMP THE QUEUE (wave 4, abc 0060_00608290): a clash whose
+        # two faces the kernel measured APART (`clash_kind` GAP) is the mesher's chord, which no
+        # heal or fragment closes, and promoting it over the kernel's warning replaced the
+        # fix_small_faces every earlier wave kept with a fragment_bodies that could not help. It
+        # is still aimed at once the kernel has nothing (the `elif` below), as before.
+        jumping = tuple(d for d in defects if mesh_finding_outranks_kernel(d))
+        if candidate is not None and jumping:
             rank = min((_SEVERITY_RANK.get(d.severity, 9) for d in kernel
                         if d.fingerprint == candidate.defect_fingerprint), default=9)
             if rank > _SEVERITY_RANK[DefectSeverity.error]:
                 candidate = (_mesh_candidate(tuple(defects), history,
-                                             reserved=frozenset(reserved)) or candidate)
+                                             reserved=frozenset(reserved), skip_gaps=True)
+                             or candidate)
         elif candidate is None:
             candidate = _mesh_candidate(tuple(defects), history, reserved=frozenset(reserved))
         # WHAT THE RULES REFUSED TO AIM AT, KEPT INSTEAD OF DISCARDED WITH THE LEDGER. The
