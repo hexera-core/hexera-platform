@@ -155,6 +155,7 @@ def test_the_served_routes_are_exactly_the_supported_set():
         # console's Activity and Customers sections.
         ("GET", "/api/v1/admin/ops/activity"),
         ("GET", "/api/v1/admin/ops/jobs/{job_id}/why"),
+        ("GET", "/api/v1/admin/ops/jobs/{job_id}/repair-trace"),  # dev diagnostics (lane D)
         ("GET", "/api/v1/admin/ops/organizations"),
         ("GET", "/api/v1/admin/ops/organizations/{organization_id}"),
         ("POST", "/api/v1/admin/ops/organizations/{organization_id}/credit-grants"),

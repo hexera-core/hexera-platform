@@ -13,6 +13,7 @@ import meshpipeline.settings.plans as plancfg
 from meshpipeline.api.v1.admin_billing import admin_dep
 from meshpipeline.application import audit, credit_service
 from meshpipeline.persistence.models import (
+    Artifact,
     CaptureOperation,
     CreditLedgerEntry,
     Organization,
@@ -163,6 +164,65 @@ async def read_job_why(job_id: str) -> dict:
         "decisions": decisions,
         "sentences": sentences(decisions),
     }
+
+
+#: How many trace lines one read returns. The JSONL is already capped where it is written.
+_TRACE_LINES_MAX = 5_000
+
+
+@router.get("/jobs/{job_id}/repair-trace", dependencies=[Depends(admin_dep)])
+async def read_job_repair_trace(job_id: str) -> dict:
+    """THE REPAIR INVESTIGATION TRACE (CAD_REPAIR_INVESTIGATION_TRACE, dev diagnostics): per region,
+    how the investigation ended and why no package, and the per-turn trace the repair node parked
+    in object storage. Read from the run's repair_report artifact. 404 when the run traced nothing
+    (the flag was off, no investigator ran, or there is no report)."""
+    import asyncio
+    import json
+
+    from meshpipeline.contracts.object_storage import get_object_store
+
+    job = _parse_job(job_id)
+    async with get_db() as db:
+        key = await _repair_report_key(db, job)
+    missing = HTTPException(status_code=404, detail="no investigation trace for this run")
+    if not key:
+        raise missing
+    store = get_object_store()
+    try:
+        report = json.loads(await asyncio.to_thread(store.get_bytes, object_key=key))
+    except Exception:  # noqa: BLE001 - an unreadable report traced nothing we can show
+        raise missing from None
+    attempt = report.get("repair_attempt") if isinstance(report, dict) else None
+    attempt = attempt if isinstance(attempt, dict) else {}
+    measurements = attempt.get("measurements") or (attempt.get("detail") or {}).get(
+        "measurements") or {}
+    trace = measurements.get("investigation_trace") if isinstance(measurements, dict) else None
+    if not isinstance(trace, dict):
+        raise missing
+    transcript = trace.get("transcript") if isinstance(trace.get("transcript"), dict) else {}
+    lines: list = []
+    if transcript.get("object_key"):
+        try:
+            raw = await asyncio.to_thread(store.get_bytes, object_key=transcript["object_key"])
+            for text in raw.decode("utf-8", "replace").splitlines()[:_TRACE_LINES_MAX]:
+                try:
+                    lines.append(json.loads(text))
+                except ValueError:
+                    continue
+        except Exception as exc:  # noqa: BLE001 - the table still answers without the lines
+            transcript = {**transcript, "read_error": type(exc).__name__}
+    return {"job_id": str(job), "outcomes": list(trace.get("outcomes") or []),
+            "truncated": bool(trace.get("truncated")), "transcript": transcript,
+            "lines": lines}
+
+
+async def _repair_report_key(db, job_id: uuid.UUID) -> str | None:
+    result = await db.execute(
+        select(Artifact.storage_key)
+        .where(Artifact.job_id == job_id)
+        .where(Artifact.logical_key == "repair_report")
+        .limit(1))
+    return result.scalars().first()
 
 
 async def _terminal_record(db, job_id: uuid.UUID) -> CaptureOperation | None:
