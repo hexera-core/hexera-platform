@@ -164,11 +164,11 @@ def compute_verdict(results: dict) -> dict:
            "ratio": None, "ratio_defined": None, "judged_on": None, "ratio_ok": None,
            "newly_broken_zero": None, "clean_ok": None, "status": "PENDING",
            "statement": "Pending: the T29 arms have not reported."}
-    needed = (det, v3, det_b, v3_b, c_n, c_u)
+    needed = (det, v3, det_b, v3_b, c_n, c_u, c_b)
     if not all(measured(x) for x in needed):
         return out
     det, v3, c_n, c_u = int(det), int(v3), int(c_n), int(c_u)
-    broken = int(det_b) + int(v3_b) + (int(c_b) if measured(c_b) else 0)
+    broken = int(det_b) + int(v3_b) + int(c_b)
     out["newly_broken_zero"] = broken == 0
     out["clean_ok"] = c_u == c_n
     if det == 0:
@@ -197,10 +197,13 @@ def compute_verdict(results: dict) -> dict:
 def zero_break_bound(results: dict):
     """Rule of three: with zero breaks over n parts, the 95% upper bound on the break rate is 3/n.
     n pools the v3 arm's failing sample with the clean control (120 + 100 = 220 -> 1.4%). None
-    until both counts exist."""
+    until both counts exist, and None unless both newly_broken counts are measured zeros."""
     n1, n2 = get(results, "t29_v3", "n_files"), get(results, CLEAN, "n_files")
     if not (measured(n1) and measured(n2)) or int(n1) + int(n2) == 0:
         return None
+    breaks = (get(results, "t29_v3", "newly_broken"), get(results, CLEAN, "newly_broken"))
+    if not all(measured(b) and int(b) == 0 for b in breaks):
+        return None  # the rule of three bounds a zero-break observation, nothing else
     return 3.0 / (int(n1) + int(n2))
 
 
@@ -375,10 +378,10 @@ def _from_summary(arm: dict, summary: dict) -> None:
         arm["ops_rolled_back"] = {op: int(c.get("rolled_back") or 0) for op, c in tally.items()}
 
 
-#: collect.py's arm names (evalspec.ARMS) -> ours. v3-full is both T29's v3 arm and T19's "on".
-COLLECT_ARMS = {"deterministic": ("t29_deterministic",),
-                "v3-no-tournament": ("t19_tournament_off",),
-                "v3-full": ("t29_v3", "t19_tournament_on")}
+#: collect.py's arm names (evalspec.ARMS) -> ours. v3_full is both T29's v3 arm and T19's "on".
+COLLECT_ARMS = {"t29_deterministic": ("t29_deterministic",),
+                "t19_tournament_off": ("t19_tournament_off",),
+                "v3_full": ("t29_v3", "t19_tournament_on")}
 
 
 def from_collect(verdict_dir: Path, results: dict | None = None) -> dict:
@@ -416,10 +419,12 @@ def from_collect(verdict_dir: Path, results: dict | None = None) -> dict:
         ns = [int(rep.get("files") or 0) for _, rep, _ in clean_runs]
         unchanged = [int(rep.get("files") or 0) - len((rep.get("clean") or {}).get(
             "files_with_kept_ops") or []) for _, rep, _ in clean_runs]
-        broken = [int((rep.get("clean") or {}).get("newly_broken") or 0) for _, rep, _ in clean_runs]
+        broken = [(rep.get("clean") or {}).get("newly_broken") for _, rep, _ in clean_runs]
         clean.update(commit=checked.get("commit"), image_digest=checked.get("image"),
                      sample_sha256=samples.get("clean"), n_files=min(ns),
-                     byte_unchanged=min(unchanged), newly_broken=sum(broken),
+                     byte_unchanged=min(unchanged),
+                     newly_broken=(max(int(b) for b in broken) if all(measured(b) for b in broken)
+                                   else None),
                      arms_covered=sorted(n for n, _, _ in clean_runs),
                      basis=("collect.py clean_untouched: a part is unchanged when no operation was "
                             "kept on it (the delivered geometry is the input's); minimum over arms"))

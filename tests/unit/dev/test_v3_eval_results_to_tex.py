@@ -126,6 +126,11 @@ def test_verdict_degenerate_ceiling_judged_on_absolute_and_says_so():
     assert both_zero["status"] == "FAIL"
 
 
+def test_verdict_pending_when_clean_breaks_unmeasured():
+    v = rt.compute_verdict(_filled({("clean_control", "newly_broken"): None}))
+    assert v["status"] == "PENDING"
+
+
 def test_verdict_pending_when_any_input_missing():
     assert rt.compute_verdict(_filled({("t29_v3", "newly_broken"): None}))["status"] == "PENDING"
     assert rt.compute_verdict(_filled({("clean_control", "byte_unchanged"): float("nan")}))[
@@ -136,6 +141,12 @@ def test_rule_of_three_bound():
     assert rt.zero_break_bound(_filled()) == pytest.approx(3 / 220)
     assert rt.fmt(rt.zero_break_bound(_filled()), "pct") == r"1.4\%"
     assert rt.zero_break_bound(rt.blank_results()) is None
+
+
+@pytest.mark.parametrize("arm", ["t29_v3", "clean_control"])
+def test_rule_of_three_bound_refused_unless_breaks_measured_zero(arm):
+    assert rt.zero_break_bound(_filled({(arm, "newly_broken"): 5})) is None
+    assert rt.zero_break_bound(_filled({(arm, "newly_broken"): None})) is None
 
 
 # --------------------------------------------------------------------------- schema and labels
@@ -179,7 +190,7 @@ def _collect_dir(tmp_path: Path) -> Path:
     out = tmp_path / "verdict"
     out.mkdir()
     arms = {}
-    for name, nm in (("deterministic", 2), ("v3-full", 9), ("v3-no-tournament", 5)):
+    for name, nm in (("t29_deterministic", 2), ("v3_full", 9), ("t19_tournament_off", 5)):
         arms[f"{name}/failing"] = {"files": 120, "shards": 4,
                                    "model": {"calls": 7 * nm, "cost_usd": 1.0},
                                    "vm": {"shard_seconds": 1000.0, "container_cost_usd": 0.2},
@@ -192,7 +203,7 @@ def _collect_dir(tmp_path: Path) -> Path:
                                                   "failed": 0}}},
             "meshing": {"files": 120, "meshed_before": 0, "meshed_after": nm,
                         "newly_meshed": nm, "newly_broken": 0}}))
-    for name, kept in (("deterministic", []), ("v3-full", ["x.step"])):
+    for name, kept in (("t29_deterministic", []), ("v3_full", ["x.step"])):
         arms[f"{name}/clean"] = {"files": 100, "clean": {"untouched": not kept,
                                                          "files_with_kept_ops": kept,
                                                          "newly_broken": 0}}
@@ -201,6 +212,11 @@ def _collect_dir(tmp_path: Path) -> Path:
                     "samples": {"failing": "f" * 64, "clean": "0" * 64}},
         "verdicts": {}, "arms": arms}))
     return out
+
+
+def test_collect_arm_names_are_evalspecs():
+    evalspec = _load("evalspec_under_test", V3 / "evalspec.py")
+    assert set(rt.COLLECT_ARMS) == set(evalspec.ARMS)
 
 
 def test_from_collect_maps_arms_and_clean(tmp_path):
@@ -217,6 +233,17 @@ def test_from_collect_maps_arms_and_clean(tmp_path):
     assert a["t6_rules_only_local"]["newly_meshed"] is None  # not run by collect: stays pending
     v = rt.compute_verdict(r)
     assert v["status"] == "FAIL" and v["ratio"] == 4.5  # ratio met, clean control was touched
+
+
+def test_from_collect_clean_breaks_are_the_worst_arm_as_collect_reports(tmp_path):
+    # collect.py's own results.json takes the MAX over clean arms; the adapter must agree, or the
+    # two documented paths print different clean-break counts for the same run.
+    out = _collect_dir(tmp_path)
+    v = json.loads((out / "verdict.json").read_text())
+    v["arms"]["t29_deterministic/clean"]["clean"]["newly_broken"] = 1
+    v["arms"]["v3_full/clean"]["clean"]["newly_broken"] = 2
+    (out / "verdict.json").write_text(json.dumps(v))
+    assert rt.from_collect(out)["arms"]["clean_control"]["newly_broken"] == 2
 
 
 # --------------------------------------------------------------------------- PR section
