@@ -26,6 +26,14 @@
 
 
 
+
+## OWNER DECISIONS (via manager, 2026-11-20 ~02:10 PT). These supersede earlier acceptance rules
+1. **MERGE PR #494 "when stable":** CI green on a settled HEAD, no lane mid-push, flags off in prod. NOT gated on eval results. Lane C calls "stable" and runs the merge checklist; LEAD approves.
+2. **GOAL = maximise files fixed on the corpus.** The T29 "≥4× deterministic" bar is DROPPED everywhere. There is no pass/fail bar; numbers are reported honestly.
+3. **CLEAN RULE:** clean parts may change if they still mesh and gain no new defects. This replaces "byte-unchanged". The changed-part count is reported as information.
+4. **TOLERANT MESHER:** undecided whether it counts as fixed. Report CAD-repaired (the headline) and tolerant-mesher-meshable (a separate column) and NEVER sum them.
+**Owner policy (earlier):** no per-region escalate; aggressive ops allowed on the scratch clone; gates only at delivery; job-level escalation only. Lane A is implementing it, flag-gated, for wave 3.
+
 ## LEAD: WAVE 2 LAUNCHED. These are the ARMS OF RECORD (2026-11-20 ~01:30 PT)
 - **Launch id 11200927:** 12× c2-standard-8, us-central1-a, 96 shards, all 5 units. Code **df7e1d7a**; image 00ce0156 (toolchain); CAD_REPAIR_TIMEOUT_S=420; REVIEW_OBJECTION=live.
 - **Contains:** lane E's keep rule (delivered STEP newly meshes, with a no-op guard, 9ae2e215); lane A's answered tool calls (97a9e216) and measured area/volume delta shown to the author (b8e57fa9); eval posture matching shared dev (d73dcdaa); lane D's role labels (822e4d03) and stored review verdicts (df7e1d7a).
