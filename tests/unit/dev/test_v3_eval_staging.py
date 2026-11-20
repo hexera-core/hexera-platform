@@ -359,3 +359,11 @@ def test_t29_is_not_accepted_without_the_deterministic_clean_control(tmp_path):
     reports[("v3_full", "failing")]["summary"]["meshing"]["newly_meshed"] = 5
     reports[("v3_full", "failing")]["cost_per_fixed_part_usd"] = 0.1
     assert collect.build_verdicts(reports)["T29"]["accepted"] is False
+
+
+def test_vm_cost_charges_each_shard_its_vcpu_share_not_the_whole_vm():
+    collect = _load("v3_collect_under_test_vm_cost", V3 / "collect.py")
+    # 8 one-hour shards packed onto ONE c2d-standard-8 (one shard per vCPU) cost one VM-hour
+    provs = [{"machine_type": "c2d-standard-8", "wall_seconds": 3600.0} for _ in range(8)]
+    hourly = 8 * 0.029563 + 8 * 4 * 0.003959
+    assert collect.vm_cost(provs)["container_cost_usd"] == pytest.approx(hourly, abs=1e-4)

@@ -155,7 +155,7 @@ estimated, it is about 60 minutes, still inside the 3 h backstop.
 
 Model prices are gpt-5.6-luna list: $0.20 per million input tokens, $1.20 per million output
 tokens. `collect.py` reports the measured figures: model spend from per-call telemetry, VM spend
-from shard wall time.
+from shard wall time, each shard charged 1/shards-per-VM (one per vCPU) of its VM's hourly price.
 
 **RAM.** 4 GB per shard. If a shard dies of OOM on a >100k-entity part, relaunch with
 `--machine-type c2d-highmem-8` (8 GB per shard, ~$0.49/h). The plan and the 96 vCPU total stay

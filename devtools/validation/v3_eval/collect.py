@@ -152,6 +152,9 @@ def model_usage(provenances: list[dict]) -> dict:
 
 
 def vm_cost(provenances: list[dict]) -> dict:
+    """Each shard is charged ITS SHARE of the VM it ran on, not the whole VM: launch_fleet packs
+    one shard process per vCPU (evalspec.vcpus_of), so a shard costs hourly / shards-per-VM. A
+    PROVENANCE `shards_per_vm`, when present, overrides the launch plan's vCPU count."""
     seconds = sum(float(p.get("wall_seconds") or 0) for p in provenances)
     dollars = 0.0
     for p in provenances:
@@ -161,7 +164,8 @@ def vm_cost(provenances: list[dict]) -> dict:
             vcpu = int(parts[2])
             per_cpu, per_gb = VM_PRICE[parts[0]]
             hourly = vcpu * per_cpu + vcpu * GB_PER_VCPU[parts[1]] * per_gb
-            dollars += hourly * float(p.get("wall_seconds") or 0) / 3600.0
+            per_vm = max(1, int(p.get("shards_per_vm") or vcpu))
+            dollars += hourly / per_vm * float(p.get("wall_seconds") or 0) / 3600.0
     return {"shard_seconds": round(seconds, 1), "longest_shard_s": max(
         (float(p.get("wall_seconds") or 0) for p in provenances), default=0.0),
         "container_cost_usd": round(dollars, 4),
