@@ -82,7 +82,7 @@ def _render(tmp_path, **kw):
         tmp_path, surface_name="body", feature_file="body.eMesh",
         analysis={"bbox_min": [0, 0, 0], "bbox_max": [1, 1, 1], "L": 1.0},
         recommendation=RENDER_REC, domain_min=[-4.0, -3.0, -3.0], domain_max=[7.0, 4.0, 4.0],
-        strategy={"n_layers": 5, "first_layer_rel": 0.35, "max_cells": 2_000_000}, **kw)
+        strategy={"n_layers": 5, "last_layer_rel": 0.35, "max_cells": 2_000_000}, **kw)
 
 
 def test_sealed_points_become_leak_closure_targets(tmp_path):

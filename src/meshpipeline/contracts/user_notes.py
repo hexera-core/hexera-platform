@@ -221,14 +221,18 @@ def clicked(text: Any, asked: Any, offered: Callable[[str], Iterable[Mapping]] |
 
 
 def capture(messages: Iterable[Any], quotes: Sequence[Any] = (), *, consumer: str = "intake",
-            offered: Callable[[str], Iterable[Mapping]] | None = None) -> tuple[list[dict], list[str]]:
+            offered: Callable[[str], Iterable[Mapping]] | None = None,
+            route_question: Callable[[str], bool] | None = None) -> tuple[list[dict], list[str]]:
     """The conversation's notes, and the quotes that matched no message of the user's.
 
     Two ways in, both the user's WHOLE message verbatim: the answer to the question (unless it
     says no), and every message the intake quoted as saying something specific. A quote that
     matches nothing the user wrote is not the user's words, so it is not kept - it is returned.
     A CLICK ON A BUTTON WE OFFERED (`offered`, see clicked) is never a note: the founder's "Keep
-    8.0 M" was kept as one and read as his cell count over the 3 M he typed after it (14 Nov)."""
+    8.0 M" was kept as one and read as his cell count over the 3 M he typed after it (14 Nov).
+    NOR IS AN ANSWER TO A ROUTE QUESTION (`route_question`: what the mesh is for, the analysis, through or around)
+    with no number in it: "FEA shell mesh" was kept as a note and the solid AI remarked on it on a shell run with
+    nothing typed (round 4, L1)."""
     _reader(consumer)
     turns, turn, asked_before, clicks = [], 0, "", set()
     for m in _own(messages):
@@ -236,7 +240,9 @@ def capture(messages: Iterable[Any], quotes: Sequence[Any] = (), *, consumer: st
             turn += 1
             text = str(m.get("content") or "")
             turns.append((turn, text))
-            if clicked(text, asked_before, offered):
+            if clicked(text, asked_before, offered) or (
+                    route_question is not None and route_question(asked_before)
+                    and not any(ch.isdigit() for ch in text)):
                 clicks.add(turn)
         else:
             asked_before = str(m.get("content") or "")

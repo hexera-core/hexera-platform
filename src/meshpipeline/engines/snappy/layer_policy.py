@@ -80,7 +80,7 @@ def intended_surface_cell(rec: dict, strategy: dict | None) -> float:
     return float(rec["base_cell"]) / (2 ** lvl)
 
 
-def stack_thickness_m(surf_cell: float, n_layers: int, first_layer_rel: float,
+def stack_thickness_m(surf_cell: float, n_layers: int, last_layer_rel: float,
                       expansion: float = 1.2) -> float:
     """Total prism-stack thickness. finalLayerThickness is the OUTERMOST layer as a fraction of
     the local cell (relativeSizes true); each deeper layer shrinks by 1/expansion."""
@@ -88,7 +88,7 @@ def stack_thickness_m(surf_cell: float, n_layers: int, first_layer_rel: float,
     if n <= 0 or surf_cell <= 0:
         return 0.0
     r = 1.0 / float(expansion)
-    return float(first_layer_rel) * float(surf_cell) * (1.0 - r ** n) / (1.0 - r)
+    return float(last_layer_rel) * float(surf_cell) * (1.0 - r ** n) / (1.0 - r)
 
 
 def class_layer_counts(n_requested: int, stage: int) -> dict[str, int]:
@@ -308,9 +308,9 @@ def _plan_layer_policy(field_: ThinFeatureField | None, *, rec: dict, strategy: 
     n_layers = max(0, int((strategy or {}).get("n_layers", 3)))
     if n_layers <= 0:
         return None
-    first_rel = float((strategy or {}).get("first_layer_rel", 0.35))
+    last_rel = float((strategy or {}).get("last_layer_rel", 0.35))
     surf_cell = intended_surface_cell(rec, strategy)
-    stack = stack_thickness_m(surf_cell, n_layers, first_rel)
+    stack = stack_thickness_m(surf_cell, n_layers, last_rel)
     razor_below = scfg.SNAPPY_RAZOR_CELL_FACTOR * surf_cell
     thin_below = max(scfg.SNAPPY_THIN_STACK_FACTOR * 2.0 * stack, 2.0 * surf_cell)
     labels = classify_faces(field_, thin_below_m=thin_below, razor_below_m=razor_below)

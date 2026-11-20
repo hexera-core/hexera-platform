@@ -474,6 +474,8 @@ def merge(settings: Mapping | None, notes: Mapping, *, route: str = "") -> dict:
     if s_used and n_used and settings.get("stated_unit"):
         _in_unit(N, str(settings["stated_unit"]), told_n, cells=route == FLOW)
     _reid(S, "s")
+    # NOTE-12 is the run's notes': the standard's words that are no mesh setting stay with STD-1's own lines
+    S.pop("not_mesh", None)
     for r in S.get("rows") or []:
         r["from"] = "settings"
     for r in N.get("rows") or []:
@@ -624,6 +626,7 @@ def lines(settings: Mapping, notes: Mapping, merged: Mapping, *, told_s=(), told
         out += [f"Not applied: {d}." for d in notes.get("dropped") or []]
         out += [f'Not applied: "{MR._short(q)}" - no mesh setting of ours matches it yet.'
                 for q in notes.get("not_applied") or []]
+        out += MR.not_mesh_words((notes.get("requirements") or {}).get("not_mesh"))
     out += [f"Not applied: {d}." for d in told_n]
     if s_used:
         out += [f"Not applied (your settings): {d}." for d in settings.get("dropped") or []]

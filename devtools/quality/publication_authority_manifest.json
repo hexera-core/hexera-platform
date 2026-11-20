@@ -1515,6 +1515,19 @@
   "roots": []
  },
  {
+  "context": "api/v1/chat.py::_confirm_pending_approval::error#1|NotAPublisher|not-a-publisher|",
+  "path": "api/v1/chat.py",
+  "qualname": "_confirm_pending_approval",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "api/v1/repair_review.py::_compensate::error#1|NotAPublisher|not-a-publisher|",
   "path": "api/v1/repair_review.py",
   "qualname": "_compensate",
@@ -3664,6 +3677,19 @@
   ]
  },
  {
+  "context": "cad/part_words.py::_holes_named::search#1|NotAPublisher|not-a-publisher|",
+  "path": "cad/part_words.py",
+  "qualname": "_holes_named",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_HOLE_WORDS",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "cad/repair/mesh_probe.py::classify::search#1|NotAPublisher|not-a-publisher|",
   "path": "cad/repair/mesh_probe.py",
   "qualname": "classify",
@@ -3879,6 +3905,45 @@
   "method": "search",
   "ordinal": 1,
   "receiver": "_TRIGGER",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "contracts/flow_conditions.py::accepted::search#1|NotAPublisher|not-a-publisher|",
+  "path": "contracts/flow_conditions.py",
+  "qualname": "accepted",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_ACCEPTED",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "contracts/flow_conditions.py::fluid_key::search#1|NotAPublisher|not-a-publisher|",
+  "path": "contracts/flow_conditions.py",
+  "qualname": "fluid_key",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "FLUIDS",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "contracts/flow_conditions.py::read::search#1|NotAPublisher|not-a-publisher|",
+  "path": "contracts/flow_conditions.py",
+  "qualname": "read",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_SENTENCE",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
   "gated_required": false,
@@ -4259,6 +4324,58 @@
   "roots": []
  },
  {
+  "context": "engines/cfd_requirements.py::_layer_determinant::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/cfd_requirements.py",
+  "qualname": "_layer_determinant",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/cfd_requirements.py::_layer_determinant::search#2|NotAPublisher|not-a-publisher|",
+  "path": "engines/cfd_requirements.py",
+  "qualname": "_layer_determinant",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/cfd_requirements.py::_level_row::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/cfd_requirements.py",
+  "qualname": "_level_row",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_WALL_LEVEL",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/cfd_requirements.py::_level_row::search#2|NotAPublisher|not-a-publisher|",
+  "path": "engines/cfd_requirements.py",
+  "qualname": "_level_row",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "_BLOCKS",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "engines/cfd_requirements.py::_num::search#1|NotAPublisher|not-a-publisher|",
   "path": "engines/cfd_requirements.py",
   "qualname": "_num",
@@ -4480,6 +4597,19 @@
   "roots": []
  },
  {
+  "context": "engines/control_appliers.py::shell_place_sizes::plan#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/control_appliers.py",
+  "qualname": "shell_place_sizes",
+  "semantic": "plan",
+  "method": "plan",
+  "ordinal": 1,
+  "receiver": "SP",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "engines/domain_extent_gate.py::parse_requested_extents::search#1|NotAPublisher|not-a-publisher|",
   "path": "engines/domain_extent_gate.py",
   "qualname": "parse_requested_extents",
@@ -4688,6 +4818,19 @@
   "roots": []
  },
  {
+  "context": "engines/mesh_requirements.py::_check::search#3|NotAPublisher|not-a-publisher|",
+  "path": "engines/mesh_requirements.py",
+  "qualname": "_check",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 3,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "engines/mesh_requirements.py::_flow_fields::search#1|NotAPublisher|not-a-publisher|",
   "path": "engines/mesh_requirements.py",
   "qualname": "_flow_fields",
@@ -4714,17 +4857,19 @@
   "roots": []
  },
  {
-  "context": "engines/mesh_requirements.py::_left_over::search#1|NotAPublisher|not-a-publisher|",
+  "context": "engines/mesh_requirements.py::_left_over::search#1|NotAPublisher|not-a-publisher|engines/mesh_requirements.py::result of re.findall(\"[a-z][a-z']*\", c)",
   "path": "engines/mesh_requirements.py",
   "qualname": "_left_over",
   "semantic": "search",
   "method": "search",
   "ordinal": 1,
-  "receiver": "_MESH_WORDS",
+  "receiver": "words",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
   "gated_required": false,
-  "roots": []
+  "roots": [
+   "engines/mesh_requirements.py::result of re.findall(\"[a-z][a-z']*\", c)"
+  ]
  },
  {
   "context": "engines/mesh_requirements.py::_left_over::search#2|NotAPublisher|not-a-publisher|",
@@ -4753,6 +4898,32 @@
   "roots": []
  },
  {
+  "context": "engines/mesh_requirements.py::_notes_unit::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/mesh_requirements.py",
+  "qualname": "_notes_unit",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/mesh_requirements.py::_notes_unit::search#2|NotAPublisher|not-a-publisher|",
+  "path": "engines/mesh_requirements.py",
+  "qualname": "_notes_unit",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "engines/mesh_requirements.py::_numbers::search#1|NotAPublisher|not-a-publisher|",
   "path": "engines/mesh_requirements.py",
   "qualname": "_numbers",
@@ -4760,6 +4931,19 @@
   "method": "search",
   "ordinal": 1,
   "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/mesh_requirements.py::_percent_growth::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/mesh_requirements.py",
+  "qualname": "_percent_growth",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_PERCENT",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
   "gated_required": false,
@@ -4799,6 +4983,19 @@
   "method": "search",
   "ordinal": 3,
   "receiver": "_MESH_TERMS",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/mesh_requirements.py::instead_for::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/mesh_requirements.py",
+  "qualname": "instead_for",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "rx",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
   "gated_required": false,

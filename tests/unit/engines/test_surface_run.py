@@ -515,7 +515,7 @@ def test_the_notes_requirements_reader_is_called_for_a_surface_file_when_it_is_b
     async def decide(record, state, zones, **kw):
         return {"status": "off"}
 
-    async def reader(w, state, *, job_id, run=None, publish=None):
+    async def reader(w, state, *, job_id, run=None, publish=None, say=True):
         order.append("requirements")
         return {"status": "none"}
 

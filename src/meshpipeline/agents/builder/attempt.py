@@ -192,9 +192,15 @@ def user_notes_note(workspace: Path, state) -> str:
     block = un.prompt_block(state.get("user_notes") or [], consumer="builder_model")
     if not block:
         return ""
+    # NOTE-13: the asks the rules decide over this attempt's mesh (its reading of the notes, CFDREQ-1): the model does
+    # not set them in its own config a second time, and its remark never contradicts what the result says of them
+    # (a cfMesh run said "capped at 20+ cells across the bore" over 16.8 built; a VMTK run said y+ 1 "cannot be set
+    # without the flow properties" though the conditions gave them)
+    from meshpipeline.engines import mesh_requirements as MR
+    decided = MR.decided_block(MR.read(workspace))
     return (f"\n\n## The user's own notes - in {workspace}/{un.NOTES_FILE}; READ THEM TOO\n"
             + block + "\nWhen you call submit_mesh you may say in `notes_remark`, in one plain "
-            "line, what you did with them.")
+            "line, what you did with them." + (f"\n{decided}" if decided else ""))
 
 
 def _append_to_opening(messages: list, note: str) -> None:
