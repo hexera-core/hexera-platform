@@ -114,3 +114,15 @@ def test_run_arm_counts_model_calls_from_the_file_children_append_to(tmp_path):
     os.waitpid(pid, 0)
     assert sink.calls == 0
     assert sink.totals() == (2, 0.75)
+
+
+def test_a_crashed_clean_part_is_not_counted_byte_unchanged_by_collect():
+    spec = importlib.util.spec_from_file_location(
+        "v3_collect_under_test_unchanged",
+        REPO / "devtools" / "validation" / "v3_eval" / "collect.py")
+    collect = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = collect
+    spec.loader.exec_module(collect)
+    rep = {"files": 100, "clean": {"files_with_kept_ops": ["a.step"],
+                                   "crashed_files": ["b.step", "a.step"]}}
+    assert collect.clean_unchanged(rep) == 98   # a and b; a counted once

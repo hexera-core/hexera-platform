@@ -417,8 +417,11 @@ def from_collect(verdict_dir: Path, results: dict | None = None) -> dict:
     if clean_runs:
         clean = results["arms"][CLEAN]
         ns = [int(rep.get("files") or 0) for _, rep, _ in clean_runs]
-        unchanged = [int(rep.get("files") or 0) - len((rep.get("clean") or {}).get(
-            "files_with_kept_ops") or []) for _, rep, _ in clean_runs]
+        # Unchanged = no kept operation AND no crash, as collect.clean_unchanged counts it.
+        unchanged = [int(rep.get("files") or 0) - len(
+            set((rep.get("clean") or {}).get("files_with_kept_ops") or [])
+            | set((rep.get("clean") or {}).get("crashed_files") or []))
+            for _, rep, _ in clean_runs]
         broken = [(rep.get("clean") or {}).get("newly_broken") for _, rep, _ in clean_runs]
         clean.update(commit=checked.get("commit"), image_digest=checked.get("image"),
                      sample_sha256=samples.get("clean"), n_files=min(ns),

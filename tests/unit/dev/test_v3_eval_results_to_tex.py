@@ -246,6 +246,20 @@ def test_from_collect_clean_breaks_are_the_worst_arm_as_collect_reports(tmp_path
     assert rt.from_collect(out)["arms"]["clean_control"]["newly_broken"] == 2
 
 
+def test_from_collect_never_counts_a_crashed_clean_part_unchanged(tmp_path):
+    # A clean part whose repair child crashed (before its probe, so no break is recorded either)
+    # was not shown unchanged: the verdict must not read PASS on it.
+    out = _collect_dir(tmp_path)
+    v = json.loads((out / "verdict.json").read_text())
+    for key in ("t29_deterministic/clean", "v3_full/clean"):
+        v["arms"][key]["clean"]["files_with_kept_ops"] = []
+        v["arms"][key]["clean"]["crashed_files"] = ["y.step"]
+    (out / "verdict.json").write_text(json.dumps(v))
+    r = rt.from_collect(out)
+    assert r["arms"]["clean_control"]["byte_unchanged"] == 99
+    assert rt.compute_verdict(r)["status"] != "PASS"
+
+
 # --------------------------------------------------------------------------- PR section
 
 def test_pr_section_pending_and_filled():

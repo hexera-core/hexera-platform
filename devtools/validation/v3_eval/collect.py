@@ -187,6 +187,14 @@ def clean_untouched(rows: list[dict], summary: dict) -> dict:
     return out
 
 
+def clean_unchanged(rep: dict) -> int:
+    """Clean parts shown unchanged: no kept operation AND no crash (a crashed part delivered
+    nothing, so it was never shown unchanged - even when it crashed before any break was seen)."""
+    clean = rep.get("clean") or {}
+    touched = set(clean.get("files_with_kept_ops") or []) | set(clean.get("crashed_files") or [])
+    return int(rep.get("files") or 0) - len(touched)
+
+
 def arm_report(entry: dict) -> dict:
     provs = entry["provenances"]
     catalogue = next((p.get("operations_catalogue") for p in provs
@@ -434,8 +442,7 @@ def results_json(reports: dict, checked: dict, verdicts: dict, *, source: str,
         "commit": checked["commit"], "image_digest": checked["image"],
         "sample_sha256": checked["samples"].get("clean"),
         "n_files": min((rep["files"] for rep in cleans.values()), default=None),
-        "byte_unchanged": min((rep["files"] - len(rep["clean"]["files_with_kept_ops"])
-                               for rep in cleans.values()), default=None),
+        "byte_unchanged": min((clean_unchanged(rep) for rep in cleans.values()), default=None),
         "newly_broken": max((rep["clean"]["newly_broken"] for rep in cleans.values()),
                             default=None),
         "arms_covered": sorted(cleans) or None,
