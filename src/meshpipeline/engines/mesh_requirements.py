@@ -1622,7 +1622,7 @@ def decided_asks(sec: Mapping | None, *, skip: tuple[str, ...] = ()) -> list[str
            if isinstance(r, Mapping) and r.get("asked") and not str(r.get("field") or "").startswith(skip)]
     out += [str(d) for d in sec.get("dropped") or [] if str(d).strip()]
     out += [f'"{_short(str(q))}" (no setting of ours matches it)' for q in sec.get("not_applied") or [] if str(q).strip()]
-    # NOTE-14: an ask the product acted on outside the reading (the engine the notes name) is decided too
+    # NOTE-15: an ask the product acted on outside the reading (the engine the notes name) is decided too
     out += [f'"{_short(str(q))}" ({str(e["line"]).removeprefix("From your notes: ").rstrip(".")})'
             for e in sec.get("acted") or [] if isinstance(e, Mapping) and e.get("line")
             for q in (e.get("quotes") or [])[:1] if str(q).strip()]
@@ -1714,7 +1714,7 @@ def words(sec: Mapping | None) -> list[str]:
     if isinstance(sec.get("lines"), list):
         # merged with the team's meshing standard (engines/meshing_standard): said by where each came from
         return [str(w) for w in sec["lines"]]
-    # NOTE-14: what the product acted on outside the reading (the engine the notes name, ...), one line each
+    # NOTE-15: what the product acted on outside the reading (the engine the notes name, ...), one line each
     acted = [str(e["line"]) for e in sec.get("acted") or [] if isinstance(e, Mapping) and e.get("line")]
     if sec.get("status") != "used":
         return [str(sec.get("note") or UNREAD_WORDS), *acted]

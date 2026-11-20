@@ -1,4 +1,4 @@
-"""NOTE-14: what the notes say that the product acted on outside the requirements reading is never told or counted
+"""NOTE-15: what the notes say that the product acted on outside the requirements reading is never told or counted
 as not applied - the engine the notes name above all, whatever the model's reading made of that sentence.
 
 m483 round 12, 5a: "use snappyHexMesh" + "surface refinement level 3" meshed with snappyHexMesh, and the result said

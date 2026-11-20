@@ -1,7 +1,7 @@
 # Responsibility: Say what the user's notes asked that the product ACTED ON outside the requirements reading - the engine the notes name, the flow conditions the user confirmed, the kind of mesh, the unit of the notes' own numbers - so none of it is ever told back as "not applied" or counted as such, whatever the model's reading made of it.
 # Boundaries: rules only, no model call. It reads the notes word for word and the run's own facts (the engine this attempt meshes with, the ladder's attempts, the purpose, the conditions accepted at intake); it never changes what is meshed. Never raises.
 # Collaborates with: engines/mesh_requirements (the section it corrects; words() says its lines), engines/cfd_requirements (applies it once per attempt, reports the engine row), engines/fea_driver (applies it to the solid's reading), application/part_matches (the request card's lines), agents/intake/engine_selection (what "chooses an engine" means, the same rule the typed override acts on), contracts/flow_conditions.
-"""NOTE-14: WHAT THE NOTES SAID THAT THE PRODUCT ACTED ON (docs/RULES.md NOTE-14).
+"""NOTE-15: WHAT THE NOTES SAID THAT THE PRODUCT ACTED ON (docs/RULES.md NOTE-15).
 
 The notes' reader (NOTE-7..13) fills the mesh settings; whatever fits none of them it tells as "Not applied: ... no
 mesh setting of ours matches it yet" and counts in the closing tally. But some of what the notes say is acted on
@@ -28,7 +28,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-RULE = "NOTE-14"
+RULE = "NOTE-15"
 #: the section's key: one entry per act, {"act", "quotes", "line", ...}
 KEY = "acted"
 #: the report row's field for the engine the notes name

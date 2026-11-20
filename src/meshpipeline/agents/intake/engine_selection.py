@@ -585,7 +585,7 @@ def switch_by_words(sel: dict | None, *, session_id: str, owner_id: str, revisio
 
 
 #: "mesh it with VMTK", "using cfMesh", "via Gmsh": a sentence of the NOTES that names the engine to
-#: mesh WITH chooses it too (engines/notes_acted, NOTE-14) - a chat message keeps _chooses_in's own bar
+#: mesh WITH chooses it too (engines/notes_acted, NOTE-15) - a chat message keeps _chooses_in's own bar
 _MESH_WITH = re.compile(r"\b(?:with|using|via|by|prefer\w*|wants?|wanted|need\w*|please)\b", re.I)
 #: ...but never a sentence that tells of the engine instead ("VMTK failed with this part last time")
 _TELLS_OF = re.compile(r"\b(?:fail\w*|crash\w*|broke\w*|tried|last\s+time|before|earlier|previous\w*|worse|"

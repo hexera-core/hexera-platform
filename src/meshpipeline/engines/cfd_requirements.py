@@ -138,7 +138,7 @@ async def read_for_attempt(workspace, state, *, job_id: str = "", publish=None, 
         sec = MR.section("failed", note=MR.UNREAD_WORDS)
     # CFDREQ-8: the flow conditions the user confirmed size the first layer, as a y+ in their notes would
     sec = with_conditions(sec, state)
-    # NOTE-14: what the notes say that the product acted on outside the reading - the engine they name (this
+    # NOTE-15: what the notes say that the product acted on outside the reading - the engine they name (this
     # attempt's engine says whether it was used), the flow conditions confirmed, the kind of mesh, the unit - is
     # never told or counted as not applied, whatever the reading made of it
     from meshpipeline.engines import notes_acted as NA
@@ -1827,7 +1827,7 @@ def report(workspace, quality: Mapping, engine: str) -> dict | None:
     sec = MR.read(workspace) if workspace else {}
     req = requirements_for(workspace) or {}
     aside = [str(d) for d in (sec.get("dropped") or [])] if sec.get("status") == "used" else []
-    # NOTE-14: the engine the notes chose is an ask too, met when it built this mesh
+    # NOTE-15: the engine the notes chose is an ask too, met when it built this mesh
     from meshpipeline.engines import notes_acted as NA
     engine_row = NA.report_row(sec, engine)
     if not req.get("rows") and not aside and engine_row is None:

@@ -297,7 +297,7 @@ def flow_route(check: Mapping | None, session: Any) -> bool:
 def notes_lines(stored: Mapping | None, *, notes: str = "", facts: Mapping | None = None) -> list[str]:
     """NOTES-CFD-1: the CFD reader's lines for a reading - "From your notes: ..." for each requirement it read, then
     what it could not apply - as the run says them (engines/mesh_requirements.words); none when it read nothing.
-    `notes` and `facts` (engines/notes_acted, NOTE-14): what the product acts on outside the reading - the engine the
+    `notes` and `facts` (engines/notes_acted, NOTE-15): what the product acts on outside the reading - the engine the
     notes name, the conditions confirmed - is said as acted on, never "not applied"."""
     from meshpipeline.engines import mesh_requirements as MR
     sec = (stored or {}).get("notes")
@@ -310,7 +310,7 @@ def notes_lines(stored: Mapping | None, *, notes: str = "", facts: Mapping | Non
 
 
 def _acted_facts(session: Any) -> dict:
-    """NOTE-14 on the request card: the engine the session meshes with (the confirmed or proposed selection, else
+    """NOTE-15 on the request card: the engine the session meshes with (the confirmed or proposed selection, else
     the session's own), its purpose and the conditions its request carries. Never raises."""
     from meshpipeline.engines import notes_acted as NA
     try:
