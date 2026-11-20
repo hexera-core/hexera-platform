@@ -972,3 +972,19 @@ def test_the_prompt_lists_every_operation_the_clone_will_actually_accept(monkeyp
         assert name in live, name
     # The SHADOW prompt keeps the deployment's own catalogue: it has no clone to be free with.
     assert "fragment_bodies" not in inv.system_prompt(shadow=True)
+
+def test_the_live_prompt_names_the_clash_fields_and_what_to_do_with_them(monkeypatch):
+    """Lane G measures which pairs genuinely meet. The model has to know what the two cases mean:
+    a measured 0 gap is something heal_self_intersections or rebuild_face can answer, and a
+    sub-element gap is the mesher's tolerance against geometry that never touches - a
+    `mesher_side` candidate, not somewhere to spend the budget."""
+    import meshpipeline.settings.cad_repair as settings
+
+    monkeypatch.setattr(settings, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "live", raising=False)
+    prompt = inv.system_prompt()
+
+    assert "clash_gap_mm" in prompt
+    assert "heal_self_intersections" in prompt and "rebuild_face" in prompt
+    assert "mesher_side" in prompt
+    monkeypatch.setattr(settings, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "off", raising=False)
+    assert "clash_gap_mm" not in inv.system_prompt()

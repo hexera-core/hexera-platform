@@ -363,6 +363,12 @@ AGGRESSIVE_RULE = (
     "at the failure site. aim at the mesh failure first, and say what you measured.\n"
     "- you may aim any operation at any defect of this region. the catalogue's notes say what an "
     "operation is FOR, not what you are allowed to try on a copy.\n"
+    "- WHEN A DEFECT SAYS HOW CLOSE THE SURFACES ARE: `clash_gap_mm` 0 means the kernel "
+    "measured the two faces as GENUINELY MEETING - that is real geometry to repair, and "
+    "heal_self_intersections or rebuild_face are the first things to try there. A "
+    "`clash_gap_mm` ABOVE 0 means they never touch and the mesher's own tolerance crossed them: "
+    "no edit closes that, so prefer `mesher_side` over spending turns on it. No "
+    "`clash_gap_mm` at all means nobody measured it - treat it as unknown, not as zero.\n"
     "- SPEND THE BUDGET. a region that ends with turns left and nothing tried has told us "
     "nothing. there is no 'escalate' to reach for: if you cannot support a package, say so with "
     "`mesher_side` when the geometry is sound, and otherwise keep working until the budget ends.")
