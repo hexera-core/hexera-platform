@@ -256,10 +256,11 @@ def _flag_on_baseline(monkeypatch):
 
 
 def test_corpus_touch_only_file_under_the_region_loop(monkeypatch, fragment_on, capsys):
-    """THE END-TO-END OUTCOME (Task 3b + P2-R8): the failure is LOCATED by contact measurement
-    (`located_by: contact-pair`) and, because the author aims at error-severity mesh failures
-    before kernel warnings, `fragment_bodies` is PROPOSED. Outcome numbers are in the printed
-    line and the task report.
+    """THE END-TO-END OUTCOME (Task 3b + P2-R8): the failure is LOCATED by inference - by the
+    crossing surface pair since the clash search landed, by contact measurement before that, and
+    `located_by` says which - and, because the author aims at error-severity mesh failures before
+    kernel warnings, `fragment_bodies` is PROPOSED. Outcome numbers are in the printed line and
+    the task report.
     """
     from meshpipeline.cad.repair.brep import _read_shape
     from meshpipeline.cad.repair.contracts import DefectCode
@@ -332,8 +333,9 @@ def test_the_session_keeps_fragment_and_lists_the_revealed_overlap(monkeypatch, 
     """THE SESSION-LEVEL PROOF of the revealed rule, on the real file and the real probe.
 
     Everything is real: gmsh's PLC error carries no coordinates, so the probe locates the
-    edge-through-face by contact measurement (Task 3b) and the fragment is aimed at the first
-    face it names.
+    edge-through-face by inference (Task 3b) - today by the crossing surface pair, which places
+    it before the contact fallback is reached - and the fragment is aimed at the first face it
+    names.
 
     Measured 2026-11-14: after the fragment the edge through a face is gone and the real probe
     reports overlapping facets in the 3D stage on face 943. The file has two bodies, so `rebuilt`
@@ -353,7 +355,15 @@ def test_the_session_keeps_fragment_and_lists_the_revealed_overlap(monkeypatch, 
     through = [d for d in session.defects() if d.code is DefectCode.mesh_edge_through_face]
     # Task 3b: the REAL probe now locates the failure itself, by contact measurement.
     assert through and all(d.fingerprint for d in through), through
-    assert all(d.measurements["located_by"] == "contact-pair" for d in through), through
+    # EITHER LOCATED ROUTE, AND A ROUTE EITHER WAY. gmsh's PLC error on this file names no
+    # coordinates, so the defect has to be placed by inference - and since the clash search
+    # landed, the crossing SURFACE PAIR places it before the contact fallback is reached. Both
+    # are inferences we make rather than gmsh's own word, both carry `located_by` saying so, and
+    # which one wins is a question of which evidence this file happens to offer. What this test
+    # exists to prove is that a coordinate-less failure is still placed on a named face at all,
+    # so it requires a located, fingerprinted defect and accepts either route.
+    located = {"contact-pair", "surface-mesh-clash"}
+    assert all(d.measurements["located_by"] in located for d in through), through
     contact = _ref(shape, through[0].entity_index)
     # The aim and the progress rule must agree on names: the probe-located fingerprint IS the
     # one localize/identity gives that same face (the `_ref`-built target).
