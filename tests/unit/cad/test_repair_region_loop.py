@@ -1226,10 +1226,13 @@ def test_an_unlocated_mesh_defect_does_not_promote_a_region(monkeypatch):
 _ABSENT = object()
 
 
-def _clash(fingerprint: str, gap, *, located_by="surface-mesh-clash") -> EntityDefect:
+def _clash(fingerprint: str, gap, *, located_by="surface-mesh-clash",
+           adjacent=False) -> EntityDefect:
     measurements = {"located_by": located_by}
     if gap is not _ABSENT:
         measurements["clash_gap_mm"] = gap
+    if adjacent is not _ABSENT:
+        measurements["clash_adjacent"] = adjacent
     return EntityDefect(code=DefectCode.mesh_overlapping_facets, severity=DefectSeverity.error,
                         entity_type="face", entity_index=1, message="",
                         fingerprint=fingerprint, measurements=measurements)
@@ -1261,5 +1264,34 @@ def test_a_zero_gap_only_counts_on_a_clash_located_defect(monkeypatch):
     regions = _mesh_regions("face:other", "face:touching")
     defects = (_clash("face:other", 0.0, located_by="contact-pair"),
                _clash("face:touching", 0.0))
+
+    assert _order(regions, defects, "live", monkeypatch) == [1, 0]
+
+
+# Lane G measured on real gmsh that a gap of 0 ALSO fires for faces that merely share an edge -
+# their B-rep distance is trivially 0 - so "gap 0" over-counts. A shared edge is a sizing or fold
+# case, not geometry an operation can heal, and `clash_adjacent` is what tells them apart.
+@pytest.mark.parametrize("adjacent, promoted", [
+    (False, True),      # measured NOT adjacent: a real intersection
+    (True, False),      # a shared edge: an adjacent fold, nothing to heal
+    (None, False),      # unmeasured: unknown, and unknown never promotes
+    (_ABSENT, False),   # lane G has not shipped the key yet: still unknown
+])
+def test_only_a_measured_non_adjacent_clash_is_a_real_intersection(monkeypatch, adjacent,
+                                                                   promoted):
+    # The candidate sits at index 1 behind a plain mesh-located region, so ONLY promotion can
+    # move it: both are mesh-located, so without it the walk keeps index order.
+    regions = _mesh_regions("face:plain", "face:clash")
+    defects = (_clash("face:plain", 0.004, adjacent=False),
+               _clash("face:clash", 0.0, adjacent=adjacent))
+
+    order = _order(regions, defects, "live", monkeypatch)
+    assert (order == [1, 0]) is promoted, (adjacent, order)
+
+
+def test_a_gap_above_the_tolerance_is_not_a_real_intersection(monkeypatch):
+    regions = _mesh_regions("face:gap", "face:meeting")
+    defects = (_clash("face:gap", 0.004, adjacent=False),
+               _clash("face:meeting", 0.0, adjacent=False))
 
     assert _order(regions, defects, "live", monkeypatch) == [1, 0]

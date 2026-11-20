@@ -311,18 +311,31 @@ def _walk_order(regions: tuple[Region, ...], defects) -> tuple[Region, ...]:
 CLASH_LOCATED = "surface-mesh-clash"
 
 
+#: A clash at or under this distance (mm) counts as touching. Lane G measures the B-rep distance
+#: between the two faces, so the figure is a measurement rather than a tolerance choice; the
+#: margin is here only so an exact 0 is not required of floating point.
+REAL_INTERSECTION_GAP_MM = 1e-9
+
+
 def _real_intersection_regions(regions: tuple[Region, ...], defects) -> frozenset[int]:
-    """The regions holding a clash the kernel measured as GENUINELY MEETING - `clash_gap_mm` 0.
+    """The regions holding a clash the kernel measured as GENUINELY MEETING and NOT ADJACENT.
 
-    Of the pairs gmsh complains about, only these are something an operation can heal: a
-    sub-element GAP is the mesher's own tolerance against geometry that never touches, and no
-    heal or re-trim will close it. So the walk reaches the real ones first.
+    Of the pairs gmsh complains about, only these are something an operation can heal. The other
+    two cases are not:
 
-    ABSENT AND NONE ARE UNKNOWN, AND NEVER PROMOTE. The key is present only on a clash-located
-    defect and is None when the kernel could not measure it, so reading it with a default of 0
-    would rank EVERY region as a real intersection - the same as no ordering at all, and
-    invisible in the numbers. `located_by` is checked too, so a 0.0 that came from somewhere
-    else is not mistaken for a measured one.
+    - A sub-element GAP (`clash_gap_mm` above the margin) is the mesher's own tolerance against
+      geometry that never touches, and no heal or re-trim closes it.
+    - An ADJACENT pair - two faces that merely share an edge - has a B-rep distance of trivially
+      0, so a gap test alone counts it as an intersection. Lane G measured this on real gmsh
+      output: it is a sizing or fold case, not geometry to repair, and `clash_adjacent` is what
+      tells the two apart.
+
+    EVERY UNKNOWN FAILS CLOSED. The keys are present only on a clash-located defect and are None
+    when the kernel could not measure them, so a default would rank regions as real intersections
+    on no evidence - the same as no ordering at all, and invisible in the numbers. `clash_adjacent`
+    must be EXPLICITLY False, not merely falsy: None means nobody knows. `located_by` is checked
+    too, so a 0.0 from another locator is not mistaken for a measured one. While lane G has not
+    shipped `clash_adjacent` yet this promotes nothing, which is the safe direction.
     """
     import meshpipeline.settings.cad_repair as rcfg
 
@@ -334,9 +347,14 @@ def _real_intersection_regions(regions: tuple[Region, ...], defects) -> frozense
         if measurements.get("located_by") != CLASH_LOCATED:
             continue
         gap = measurements.get("clash_gap_mm")
-        if isinstance(gap, (int, float)) and not isinstance(gap, bool) and float(gap) == 0.0:
-            if defect.fingerprint:
-                meeting.add(defect.fingerprint)
+        if not isinstance(gap, (int, float)) or isinstance(gap, bool):
+            continue                                    # absent or None: unknown
+        if float(gap) > REAL_INTERSECTION_GAP_MM:
+            continue                                    # a gap no operation closes
+        if measurements.get("clash_adjacent") is not False:
+            continue                                    # adjacent, or nobody measured it
+        if defect.fingerprint:
+            meeting.add(defect.fingerprint)
     return frozenset(r.index for r in regions if meeting & set(r.fingerprints))
 
 
