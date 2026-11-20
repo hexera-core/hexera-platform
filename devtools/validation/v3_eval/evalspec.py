@@ -78,28 +78,103 @@ def _arm(investigator: str, tournament: str, k: str | None = None) -> dict[str, 
     return env
 
 
-#: THE ARMS. `v3-full` is BOTH T19's "tournament on" arm AND T29's v3 arm: same sample, same commit,
-#: same environment, so running it once serves both comparisons.
+#: THE ARMS - three on the 120-file sample, deduplicated: T19's "tournament on" arm and T29's v3
+#: arm are the SAME configuration (everything on, investigator live, tournament live, K=3), so
+#: `v3_full` runs once and both verdicts reference it.
+#:
+#: EVERY ARM MAKES MODEL CALLS. PACKAGE_REVIEW=live is the shipping posture and stays on in the
+#: deterministic arm, so `t29_deterministic` calls the model as a REVIEWER only - it never authors.
 ARMS: dict[str, dict] = {
-    "deterministic": {
+    "t29_deterministic": {
         "short": "det", "env": _arm("off", "off"), "investigator": "off",
-        "used_by": ("T29",),
-        "about": "everything-on, investigator and tournament off (T6's posture, Linux image)",
+        "used_by": ("T29",), "model_role": "reviewer calls only (PACKAGE_REVIEW=live)",
+        "about": "everything-on, investigator and tournament off; reviewer live (T6's posture)",
     },
-    "v3-no-tournament": {
-        "short": "v3nt", "env": _arm("live", "off"), "investigator": "live",
-        "used_by": ("T19",),
-        "about": "everything-on, investigator live, tournament off",
-    },
-    "v3-full": {
+    "v3_full": {
         "short": "v3full", "env": _arm("live", "live", "3"), "investigator": "live",
-        "used_by": ("T19", "T29"),
-        "about": "everything-on, investigator live, tournament live with K=3",
+        "used_by": ("T19", "T29"), "model_role": "reviewer + investigator + tournament sources",
+        "about": "everything-on, investigator live, tournament live with K=3 (= T29 v3 = T19 on)",
+    },
+    "t19_tournament_off": {
+        "short": "v3nt", "env": _arm("live", "off"), "investigator": "live",
+        "used_by": ("T19",), "model_role": "reviewer + investigator",
+        "about": "v3_full with CAD_REPAIR_TOURNAMENT=off",
     },
 }
 
 #: Which arm pairs each verdict compares: (baseline, treatment).
-COMPARISONS = {"T19": ("v3-no-tournament", "v3-full"), "T29": ("deterministic", "v3-full")}
+COMPARISONS = {"T19": ("t19_tournament_off", "v3_full"), "T29": ("t29_deterministic", "v3_full")}
+
+#: FLAGS THE BUILD READS BUT NOTHING CONSUMES: run as asked, recorded in every PROVENANCE and in
+#: the README, never refused. CAD_REPAIR_MEMORY has a settings row (5d496416) but no module under
+#: cad/repair/ imports memory.py.
+KNOWN_NOOPS = {"CAD_REPAIR_MEMORY": "memory flag inert: no consumer wired"}
+
+#: THE ONE WAVE: (arm, kind) units, all launched together. The clean control runs under v3_full
+#: (the arm that can break things) and under t29_deterministic (cheap: ~20 shard-minutes).
+UNITS: tuple[tuple[str, str], ...] = (
+    ("t29_deterministic", "failing"), ("v3_full", "failing"), ("t19_tournament_off", "failing"),
+    ("v3_full", "clean"), ("t29_deterministic", "clean"),
+)
+
+#: Minutes per file, for sizing only. Measured: ~3.5 min/file rules-only (T6 at 0bf78625 incl. the
+#: two probes, plus the goal verdict). The model arms add review/investigation time inside the same
+#: repair budget; the tournament's K=3 rehearsals add more. Clean parts mostly mesh before repair,
+#: so most never enter a session.
+MINUTES_PER_FILE = {("t29_deterministic", "failing"): 3.5, ("t19_tournament_off", "failing"): 5.0,
+                    ("v3_full", "failing"): 5.5, ("v3_full", "clean"): 1.5,
+                    ("t29_deterministic", "clean"): 1.5}
+
+
+def files_of(kind: str) -> int:
+    return SAMPLE_SIZE if kind == "failing" else CLEAN_SIZE
+
+
+def shard_plan(total_shards: int) -> dict[tuple[str, str], int]:
+    """Shards per unit, so every unit's shards take about the same wall: `total_shards` shared in
+    proportion to each unit's estimated file-minutes (largest remainder), at least one each, never
+    more shards than files. Pure and deterministic: a resume recomputes the same N per unit."""
+    if total_shards < len(UNITS):
+        raise ValueError(f"{total_shards} shards cannot cover {len(UNITS)} units")
+    work = {u: files_of(u[1]) * MINUTES_PER_FILE[u] for u in UNITS}
+    total = sum(work.values())
+    exact = {u: total_shards * w / total for u, w in work.items()}
+    plan = {u: max(1, min(files_of(u[1]), int(exact[u]))) for u in UNITS}
+    for u in sorted(UNITS, key=lambda u: (-(exact[u] - int(exact[u])), u)):
+        if sum(plan.values()) >= total_shards:
+            break
+        if plan[u] < files_of(u[1]):
+            plan[u] += 1
+    return plan
+
+
+def plan_minutes(plan: Mapping[tuple[str, str], int]) -> dict[tuple[str, str], float]:
+    """Estimated wall of each unit's slowest shard: ceil(files / N) files at its rate."""
+    return {u: -(-files_of(u[1]) // n) * MINUTES_PER_FILE[u] for u, n in plan.items()}
+
+
+def work_units(plan: Mapping[tuple[str, str], int]) -> list[str]:
+    """Every shard as a unit id `arm:kind:I/N`, in a stable order."""
+    return [f"{a}:{k}:{i}/{n}" for (a, k), n in plan.items() for i in range(1, n + 1)]
+
+
+def parse_unit(unit: str) -> tuple[str, str, int, int]:
+    arm_name, kind, shard = unit.split(":")
+    i, n = parse_shard(shard)
+    arm(arm_name)
+    if kind not in KINDS:
+        raise ValueError(f"unknown kind in {unit!r}")
+    return arm_name, kind, i, n
+
+
+def pack(units: list[str], slots: int) -> list[list[str]]:
+    """Units onto VMs of `slots` shard processes each, interleaving units so one VM does not carry
+    only the slowest arm (round-robin over the stable order)."""
+    vms = max(1, -(-len(units) // slots))
+    out: list[list[str]] = [[] for _ in range(vms)]
+    for idx, unit in enumerate(units):
+        out[idx % vms].append(unit)
+    return out
 
 
 def arm(name: str) -> dict:
@@ -143,7 +218,11 @@ def harness_argv(name: str, kind: str, *, shard: str, inputs: str, out: str,
 #: Families an eval VM may use. N2 is NOT here: its regional quota is shared with the product
 #: fleets and was exhausted by an earlier run. c2d and c3 have their own quotas in us-central1.
 ALLOWED_FAMILIES = ("c2d", "c3", "c3d", "c2")
-DEFAULT_MACHINE = "c2d-highcpu-4"
+#: ONE SHARD PER vCPU, so the shape is chosen for RAM per shard: c2d-standard-8 gives 4 GB to each
+#: of 8 shard processes (highcpu's 2 GB is too tight for parts with >100k topology entities).
+DEFAULT_MACHINE = "c2d-standard-8"
+#: The whole launch stays at or under this many vCPUs across families (global CPUS was 76/200).
+MAX_TOTAL_VCPU = 100
 
 
 def validate_machine_type(machine_type: str) -> str:
@@ -317,3 +396,19 @@ def t29_verdict(det: Mapping, v3: Mapping, *, clean_untouched: bool,
 def rule_of_three_upper(n: int) -> float:
     """95% upper bound on a rate after n trials with zero events (3/n)."""
     return 3.0 / n if n > 0 else 1.0
+
+
+def main(argv: list[str]) -> int:
+    """`evalspec.py env <arm>` prints the arm's env-file body (the VM host runs this with the
+    system python3 - this module has no dependencies)."""
+    if len(argv) == 2 and argv[0] == "env":
+        print(env_file_text(argv[1]), end="")
+        return 0
+    print("usage: evalspec.py env <arm>")
+    return 2
+
+
+if __name__ == "__main__":
+    import sys
+
+    raise SystemExit(main(sys.argv[1:]))
