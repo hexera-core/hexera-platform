@@ -63,6 +63,24 @@
 - **PR body:** has the merge checklist: what is measured, T6 shard 4 dropped, images deferred, and the fixes that postdate measured commits.
 - **Unit suite:** triage in progress, see the next lane C entry.
 
+## Lane C: unit-suite triage (full `tests/unit`, 6 local shards, macOS; HEAD vs main merge-base a20bc216)
+
+- **Shards:** 68 distinct failures. Each one was rerun at HEAD and at the merge-base.
+- **Real regressions, all fixed and pushed:**
+  - The settings roster was stale (578a14bd).
+  - The supported-route contract lacked the admin standalone route, and the passive-accounting pin still expected state schema 15 instead of 16 (62b9006b). Both contracts were stale; the branch change was intended.
+  - The standalone-delivery failure was decided inside the report block, which the wiring test forbids (9aa4be6d).
+  - `test_repair_observe` popped `OCP` from `sys.modules` without restoring it. That made `test_repair_whole_shape_declares` fail in suite order only (e16c981a).
+  - The publication manifest and the clone pin (earlier).
+- **Pre-existing, documented, not touched:** 52 failures that fail the same way at the merge-base. All are macOS/host artifacts:
+  - validation-runner and onboarding (`/tmp` workspace rule);
+  - idle-env sweep and compose isolation (host tools);
+  - assembly files, face names, FEA/CFD/radius-chords (OCP/gmsh on darwin);
+  - sandbox seccomp `prctl`, `sched_getaffinity` in the mypy ratchet.
+  CI (Linux) has never reported them.
+- **Host-load flakes, pass on rerun:** gate D idempotence, `test_mesh_vm_cleanup` (60 s limit at load average 145), the consolidated matrix.
+- **Not proved here:** the Linux run of the unit tier. PR CI skips it, so the main-push run is the first Linux proof.
+
 ## Product follow-ups (not for this PR)
 
 - **A ShapeFix segfault kills the process.** `abc/0059_00597937_2e928f752b8806de5a85c14b_step_000.step` (sha256 fc4e4a440ffd...) segfaults (exit 139) right after OCC "FixShape failed with exception Geom_RectangularTrimmedSurface::U parameters out of range", on both attempts.
