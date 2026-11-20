@@ -97,6 +97,7 @@ for pair in "deployment-id:DEPLOYMENT_ID" \
             "cad-repair-auto-accept:CAD_REPAIR_AUTO_ACCEPT" \
             "cad-repair-budget-attempts:CAD_REPAIR_BUDGET_ATTEMPTS" \
             "cad-repair-tournament:CAD_REPAIR_TOURNAMENT" \
+            "cad-repair-tournament-k:CAD_REPAIR_TOURNAMENT_K" \
             "cad-repair-memory:CAD_REPAIR_MEMORY" \
             "cad-repair-review-objection:CAD_REPAIR_REVIEW_OBJECTION" \
             "cad-repair-mesh-handback:CAD_REPAIR_MESH_HANDBACK" \

@@ -20,6 +20,11 @@ LIVE_POSTURE = "needs.target.outputs.crs_v3 == 'live' && 'live' || ''"
 # THE POSTURE CARRIED THROUGH, not mapped: the investigator reads `shadow`/`live`/`off`, so a
 # shadow slug gets a shadow investigation (recorded, executing nothing) and a live slug a live one.
 CARRIED = "needs.target.outputs.crs_v3 != '' && needs.target.outputs.crs_v3 || ''"
+# A COUNT, not a posture: the tournament's K. Shared dev (crs_v3=live) states 3 - the K the eval
+# measures - because K=1 rehearses one candidate and is a tournament in name only. Unstated
+# anywhere else, so shadow slugs and production keep the code default (1).
+K_LIVE = "needs.target.outputs.crs_v3 == 'live' && '3' || ''"
+TOURNAMENT_K_LIVE = "3"
 
 # THE TABLE every later flag-adding task appends to: env name -> (metadata name, on-value expression).
 FLAGS: dict[str, tuple[str, str]] = {
@@ -42,9 +47,10 @@ FLAGS: dict[str, tuple[str, str]] = {
     # escalation - is untouched by it.
     "CAD_REPAIR_BUDGET_ATTEMPTS": ("cad-repair-budget-attempts", ON),
     # THE TOURNAMENT has a real shadow (the rules package returned unchanged, the round recorded),
-    # so the posture is carried through like the investigator's. K is deliberately NOT plumbed:
-    # CAD_REPAIR_TOURNAMENT_K has no settings row, and its code default (1) is today's behaviour.
+    # so the posture is carried through like the investigator's.
     "CAD_REPAIR_TOURNAMENT": ("cad-repair-tournament", CARRIED),
+    # ... and its K, so the shipped live tournament is the one the eval measured (K=3), not K=1.
+    "CAD_REPAIR_TOURNAMENT_K": ("cad-repair-tournament-k", K_LIVE),
     # LIVE-ONLY: each reads the exact `live` and nothing else, so it has no shadow meaning.
     "CAD_REPAIR_MEMORY": ("cad-repair-memory", LIVE_POSTURE),
     "CAD_REPAIR_REVIEW_OBJECTION": ("cad-repair-review-objection", LIVE_POSTURE),
@@ -74,6 +80,7 @@ _VALUE = {
     LIVE_ONLY: lambda c: "true" if c == "live" else "",
     LIVE_POSTURE: lambda c: "live" if c == "live" else "",
     CARRIED: lambda c: c if c != "" else "",
+    K_LIVE: lambda c: TOURNAMENT_K_LIVE if c == "live" else "",
 }
 
 VERTEX_MOVING = ("CAD_REPAIR_REBUILD_FACE", "CAD_REPAIR_CLOSE_WIRE_GAPS")
@@ -185,7 +192,8 @@ def test_the_postures_the_set_takes_on_each_target(tmp_path):
     dev = _pick(tmp_path, DISPATCH_SLUG="", DISPATCH_CRS_V3="off")["crs_v3"]
     for env, (_, expr) in FLAGS.items():
         assert _VALUE[expr](prod) == "", f"{env} would be stated on production"
-        assert _VALUE[expr](dev) in ("live", "true"), f"{env} is not on in shared dev"
+        assert _VALUE[expr](dev) in ("live", "true", TOURNAMENT_K_LIVE), \
+            f"{env} is not on in shared dev"
     shadow_on = {env for env, (_, expr) in FLAGS.items() if _VALUE[expr]("shadow")}
     assert "CAD_REPAIR_TOURNAMENT" in shadow_on
     assert not shadow_on & {"CAD_REPAIR_MEMORY", "CAD_REPAIR_REVIEW_OBJECTION",
@@ -255,3 +263,37 @@ def test_an_exported_posture_actually_reaches_the_settings_module(monkeypatch, n
         monkeypatch.delenv(name)
         importlib.reload(rcfg)
     assert getattr(rcfg, name) == "off"
+
+
+def test_shared_dev_runs_the_tournament_the_eval_measured(tmp_path):
+    """K=1 rehearses one candidate: a live tournament with an unstated K is no tournament. Shared
+    dev states the eval's K; shadow slugs and production state nothing (the code default, 1)."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "evalspec_under_test_k", ROOT / "devtools" / "validation" / "v3_eval" / "evalspec.py")
+    evalspec = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(evalspec)
+    assert evalspec.arm("v3_full")["env"]["CAD_REPAIR_TOURNAMENT_K"] == TOURNAMENT_K_LIVE
+
+    expr = FLAGS["CAD_REPAIR_TOURNAMENT_K"][1]
+    dev = _pick(tmp_path, DISPATCH_SLUG="", DISPATCH_CRS_V3="off")["crs_v3"]
+    prod = _pick(tmp_path, GITHUB_REF="refs/tags/v9.9.9", GITHUB_EVENT_NAME="push",
+                 DISPATCH_CRS_V3="live")["crs_v3"]
+    assert _VALUE[expr](dev) == TOURNAMENT_K_LIVE
+    assert _VALUE[expr](prod) == ""
+    assert _VALUE[expr]("shadow") == ""
+
+
+def test_the_exported_k_reaches_the_settings_module(monkeypatch):
+    import importlib
+
+    import meshpipeline.settings.cad_repair as rcfg
+
+    monkeypatch.setenv("CAD_REPAIR_TOURNAMENT_K", TOURNAMENT_K_LIVE)
+    try:
+        assert importlib.reload(rcfg).CAD_REPAIR_TOURNAMENT_K == TOURNAMENT_K_LIVE
+    finally:
+        monkeypatch.delenv("CAD_REPAIR_TOURNAMENT_K")
+        importlib.reload(rcfg)
+    assert rcfg.CAD_REPAIR_TOURNAMENT_K == "1"

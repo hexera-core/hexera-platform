@@ -1666,9 +1666,12 @@ jobs:
       # THE TOURNAMENT, CARRIED THROUGH like the investigator: it reads shadow/live/off, and in
       # shadow the rules package is returned unchanged whatever the tournament found (a round runs
       # only when it fits the run's clock), so a shadow slug records rounds and a live slug
-      # nominates winners - which the region loop still hands to the reviewer. K is NOT stated:
-      # CAD_REPAIR_TOURNAMENT_K has no settings row, so the code default (K=1) stands.
+      # nominates winners - which the region loop still hands to the reviewer.
       CAD_REPAIR_TOURNAMENT: ${{ needs.target.outputs.crs_v3 != '' && needs.target.outputs.crs_v3 || '' }}
+      # ITS K, stated where the tournament is live: K=1 rehearses a single candidate, which is a
+      # tournament in name only, and 3 is the K the v3 eval measured. Unstated elsewhere (shadow
+      # slugs, production), so the code default (1) stands there.
+      CAD_REPAIR_TOURNAMENT_K: ${{ needs.target.outputs.crs_v3 == 'live' && '3' || '' }}
       # THE LIVE-ONLY POSTURES: each reads only the exact `live` (anything else is off) and has
       # no shadow meaning, so a shadow slug leaves them at their shipped default. The repair
       # memory (fix-candidate retrieval), the reviewer's measured objection back to the author,

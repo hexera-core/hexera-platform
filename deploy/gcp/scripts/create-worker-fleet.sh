@@ -762,6 +762,8 @@ WORKER_METADATA=(
   || WORKER_METADATA+=("cad-repair-budget-attempts=${CAD_REPAIR_BUDGET_ATTEMPTS}")
 [ -z "${CAD_REPAIR_TOURNAMENT:-}" ] \
   || WORKER_METADATA+=("cad-repair-tournament=${CAD_REPAIR_TOURNAMENT}")
+[ -z "${CAD_REPAIR_TOURNAMENT_K:-}" ] \
+  || WORKER_METADATA+=("cad-repair-tournament-k=${CAD_REPAIR_TOURNAMENT_K}")
 [ -z "${CAD_REPAIR_MEMORY:-}" ] \
   || WORKER_METADATA+=("cad-repair-memory=${CAD_REPAIR_MEMORY}")
 [ -z "${CAD_REPAIR_REVIEW_OBJECTION:-}" ] \
