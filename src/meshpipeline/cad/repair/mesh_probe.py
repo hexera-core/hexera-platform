@@ -787,6 +787,10 @@ def _clash_gaps(faces, mapping: dict[int, int], clashes: list[Clash], *,
     """Every distinct pair's gap, measured in one bounded child: (gaps by pair, "") or, when the
     child ran out of `budget_s` or died, ({}, "budget_spent") - every gap then reads None
     (unmeasured), never a guess. NEVER RAISES, NEVER BLOCKS PAST `budget_s` (plus the reap)."""
+    # IMPORTED HERE, IN THE PARENT, before the fork: the child then runs only kernel compute and a
+    # pipe write - no import, so no import lock another parent thread might hold at fork time.
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape  # noqa: F401
+
     from meshpipeline.cad.repair.localize import _bounded
 
     pairs = list(dict.fromkeys(c.surfaces for c in clashes))
