@@ -21,6 +21,14 @@
 - **Numbers:** region 0 had 8 tool calls (3 edits refused, ended runaway); region 1 had 0 (ended budget_spent); region 2 had 8 (4 edits refused, ended runaway). 12 investigator model calls, 118 s wall.
 - **Lane A next:** apply the `_edit_form` fix and the 420 s evalspec change, rerun this repro, and send GO once at least one package is concluded.
 
+
+## LEAD RULING 22:55 PT, on lane B's relaunch 11200639
+- Lane B relaunched the 24 lost t29_deterministic shards at 0ff8db35 (120 s default timeout) as **11200639** (3× c2d, us-central1-b). This crossed LEAD's hold; neither side is at fault.
+- **Ruling: let it run.** It costs about $1. Label its results `t29_deterministic@0ff8db35/120s`: supporting data only, NOT the arm of record.
+- **The arm of record** runs at lane A's fixed commit, with `CAD_REPAIR_TIMEOUT_S=420` for every arm, in the single AI wave LEAD launches on GO. A different commit gives a separate results prefix, so nothing collides.
+- **Quota:** 11200639 holds 24 C2D vCPU, and the full wave is 96 shards. If 11200639 is still running at GO, the wave goes on c2-standard-8 (C2 quota) or splits across both.
+- **Bucket write grant:** before the AI launch, LEAD re-checks that `224734058693-compute@` still has objectAdmin on the crsv3 bucket, because a crsv3 redeploy may reset it. Lane C: make `launch_fleet.py` preflight-check bucket WRITE access.
+
 ## Earlier handoff (21:55 PT)
 
 PR #494, branch `crs/v3-agentic`, HEAD **0ff8db35** (pushed). Personal env `crsv3` (GCP hexera-dev). Bucket: `gs://dev-crsv3-transfer-224734058693/eval/`. This file is also at `gs://.../eval/RESUME.md`.
