@@ -99,6 +99,9 @@ INVESTIGATOR_SYSTEM = (
     '2. {{"mesher_side": {{"mesher_problem": ["<defect fingerprints>"], "reason": "<why the '
     'geometry is sound and the mesher is at fault>"}}}}\n'
     '3. {{"escalate": {{"reason": "<why this region needs a person>"}}}}\n'
+    "these are the ARGS, never a whole reply: a conclusion is still one tool call, e.g. "
+    '{{"tool": "conclude", "args": {{"escalate": {{"reason": "..."}}}}}}. a bare package, '
+    "mesher_side or escalate object is refused.\n"
     "your claim is checked by measurement after the kept edits are replayed on the real part: a "
     "defect in cleared that remains, a defect in unchanged that changes, or area or volume moving "
     "past your numbers reverts the whole repair. stay inside the caps you are shown. never invent "
@@ -137,6 +140,9 @@ SHADOW_SYSTEM = (
     '2. {{"mesher_side": {{"mesher_problem": ["<defect fingerprints>"], "reason": "<why the '
     'geometry is sound and the mesher is at fault>"}}}}\n'
     '3. {{"escalate": {{"reason": "<why this region needs a person>"}}}}\n'
+    "these are the ARGS, never a whole reply: a conclusion is still one tool call, e.g. "
+    '{{"tool": "conclude", "args": {{"escalate": {{"reason": "..."}}}}}}. a bare package, '
+    "mesher_side or escalate object is refused.\n"
     "your claim is checked against the region's own scan and the run's caps: a plan naming an "
     "operation outside the catalogue, a fingerprint outside this region, or a number past a cap "
     "is refused. stay inside the caps you are shown. never invent an operation or a "
@@ -344,17 +350,17 @@ def _scratch_of(factory, shape, *, original: Measure, defects: tuple, reserved: 
                 remaining_s, clock, tolerance_mm: float):
     """A scratch clone of the SESSION'S CURRENT SHAPE, or None when this deployment has none.
 
-    SEAM (Task 10): `RepairSession.scratch` / `Scratch.of`. Without it the investigation is
-    read-only - which is honest: a conclusion needs a kept edit, so a read-only investigation can
-    only reach a mesher-side verdict, an escalation or "could not".
+    SEAM (Task 10): `investigator_tools.Scratch.of`, which copies the shape and opens a
+    `RepairSession.scratch` over the copy (a session that cannot commit). It is looked up AT CALL
+    TIME from `investigator_tools` - where `Scratch` lives; `session` has no `Scratch` - and it
+    takes no tolerance (the run's tolerance is the `Editor`'s), so the default factory drops it.
+    A factory that raises leaves the investigation read-only - which is honest: a conclusion
+    needs a kept edit, so a read-only investigation can only reach a mesher-side verdict, an
+    escalation or "could not".
     """
     if factory is None:
-        from meshpipeline.cad.repair import session as session_module
-
-        scratch_type = getattr(session_module, "Scratch", None)
-        factory = getattr(scratch_type, "of", None)
-        if factory is None:
-            return None
+        def factory(source, *, tolerance_mm: float = 0.0, **kwargs):  # noqa: ARG001
+            return investigator_tools.Scratch.of(source, **kwargs)
     try:
         return factory(shape, original=original, defects=tuple(defects), reserved=reserved,
                        remaining_s=remaining_s, clock=clock, tolerance_mm=float(tolerance_mm))
@@ -366,9 +372,10 @@ def _scratch_of(factory, shape, *, original: Measure, defects: tuple, reserved: 
 def _workspace(**fields):
     """A `Workspace` built from the fields THIS registry's dataclass actually declares.
 
-    Task 10 adds the scratch (and the run's tolerance) to `Workspace` for its `edit` tool; passing
-    by declared field means this driver hands them over the moment they exist, and does not pass
-    them before.
+    Task 10's `edit` tool reads the clone and the run's tolerance through `Workspace.editor`;
+    a field passed here that `Workspace` does not declare is DROPPED SILENTLY, so the driver
+    passes `editor=` itself (a `scratch=` here was once dropped, leaving every live `edit`
+    refused).
     """
     declared = set(getattr(investigator_tools.Workspace, "__dataclass_fields__", {}))
     return investigator_tools.Workspace(**{k: v for k, v in fields.items() if k in declared})
@@ -705,8 +712,14 @@ def investigator(shape, *, original: Measure, reserved: frozenset = frozenset(),
                         shape=(getattr(scratch, "shape", None) if scratch is not None
                                else state["shape"]),
                         original=original, baseline_shape=state["shape"],
-                        face_reader=face_reader, scratch=scratch,
-                        tolerance_mm=float(tolerance_mm))
+                        face_reader=face_reader,
+                        # THE ONLY ROUTE TO `edit`: an `Editor` over the CLONE, carrying the run's
+                        # tolerance. None without a clone - always in shadow - so `edit` refuses.
+                        editor=(investigator_tools.editor(
+                            scratch, tolerance_mm=float(tolerance_mm),
+                            rims=ma.rim_guard(state["shape"], state["part_rims"],
+                                              tuple(defects), []))
+                                if scratch is not None else None))
         ctx = ma.RegionContext(region, tuple(defects))
         started = clock()
         package: TargetPackage | None = None
