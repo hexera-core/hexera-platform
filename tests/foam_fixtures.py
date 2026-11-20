@@ -134,3 +134,143 @@ def write_quality_fields(region_dir, *, cells, per_face=None, uniform=None,
         out += ["}", "", "// *********************************************************** //"]
         (region_dir / name).write_text("\n".join(out) + "\n")
     return region_dir
+
+
+#: WHAT A DECOMPOSED CASE LOOKS LIKE, and these three properties are MEASURED rather than assumed.
+#: Read off a real 4-rank `decomposePar` + `splitMeshRegions` case
+#: (runs/unit_cell_100um-4across), which carries both the per-rank meshes and the reconstructed
+#: ones, so the two can be compared directly:
+#:
+#:   1. EVERY rank lists EVERY global real patch, with `nFaces 0` where that rank holds none of
+#:      it. So a reader may NOT take processor0's list as the complete set by luck - it is
+#:      complete by rule - but equally may not assume a listed patch has faces on this rank.
+#:   2. Each rank's real patches are CONTIGUOUS, and the processor patches come LAST.
+#:   3. Summing a real patch's `nFaces` across ranks reproduces the reconstructed mesh's count
+#:      exactly. On that case: fluid {fluid_to_solid 93600, ymax 128, ymin 128} with 840
+#:      processor faces excluded, and solid {solid_to_fluid 93600, xmax 67604, xmin 67604,
+#:      ymax 404, ymin 404, zmax 13000, zmin 3900} with 2,484 processor faces excluded.
+#:
+#: `type processor` is the ONLY thing that distinguishes a processor patch from a real one. The
+#: names happen to be `procBoundaryM_toN` today, and nothing may depend on that spelling.
+PROCESSOR_PATCH_TYPE = "processor"
+
+
+def write_decomposed_row_of_hexes(case, *, ranks: int = 2, n_cells: int = 6,
+                                  region: str | None = None) -> dict:
+    """`n_cells` unit hexes in a row along x, split over `ranks` processor directories.
+
+    The serial equivalent of this mesh is `write_row_of_hexes` generalised to n cells: the same
+    geometry, the same three real patches (`inlet` at x=0, `outlet` at x=n, `wall` around), cut
+    into contiguous chunks along x. Every cut introduces one processor face on each side, which
+    is exactly the duplication that makes a rank-summed face count larger than the mesh's.
+
+    Written under `case/processorN/constant/polyMesh`, or `.../constant/<region>/polyMesh` when
+    `region` is given, which is where `splitMeshRegions -parallel` leaves a multi-region case.
+
+    Returns what a reader should find: {"patches": {name: total real faces}, "processor_faces":
+    n, "cells": n_cells} - the totals being what summing across ranks must reproduce.
+    """
+    case = Path(case)
+    if int(ranks) < 1:
+        raise ValueError(f"a decomposed case needs at least one rank, got {ranks}")
+    if int(n_cells) < int(ranks):
+        raise ValueError(f"{n_cells} cells cannot be split over {ranks} ranks")
+    bounds = [(r * int(n_cells)) // int(ranks) for r in range(int(ranks) + 1)]
+    n_proc_faces = 0
+
+    for r in range(int(ranks)):
+        n_proc_faces += _write_one_rank(case, r, bounds[r], bounds[r + 1],
+                                        ranks=int(ranks), region=region)
+
+    return {"patches": {"inlet": 1, "outlet": 1, "wall": 4 * int(n_cells)},
+            "processor_faces": n_proc_faces, "cells": int(n_cells)}
+
+
+def _write_one_rank(case, r: int, c0: int, c1: int, *, ranks: int, region: str | None) -> int:
+    """One rank's polyMesh for cells [c0, c1) of the row. Returns its processor-face count.
+
+    A function of its own rather than a loop body, so the little `face` helper closes over THIS
+    rank's lists and no other - the bug ruff's B023 is named for, and one that would have been
+    silent here because every call happens inside the iteration that defined them.
+    """
+    nc = c1 - c0
+    polymesh = Path(case) / f"processor{r}" / "constant"
+    if region:
+        polymesh = polymesh / region
+    polymesh = polymesh / "polyMesh"
+    polymesh.mkdir(parents=True, exist_ok=True)
+
+    pts = [f"({c0 + ix} {iy} {iz})"
+           for ix in range(nc + 1) for iy in range(2) for iz in range(2)]
+
+    def lp(ix: int, iy: int, iz: int) -> int:
+        return ix * 4 + iy * 2 + iz
+
+    faces: list[str] = []
+    owner: list[int] = []
+    neighbour: list[int] = []
+    n_proc_faces = 0
+
+    def face(ids, own, nei=None):
+        faces.append(f"{len(ids)}(" + " ".join(str(i) for i in ids) + ")")
+        owner.append(own)
+        if nei is not None:
+            neighbour.append(nei)
+
+    if True:
+        # internal faces of this rank's own chunk, +x normal
+        for ix in range(1, nc):
+            face([lp(ix, 0, 0), lp(ix, 1, 0), lp(ix, 1, 1), lp(ix, 0, 1)], ix - 1, ix)
+
+        # THE REAL PATCHES, every one listed on every rank even at nFaces 0 (property 1).
+        inlet_start = len(faces)
+        if r == 0:
+            face([lp(0, 0, 0), lp(0, 0, 1), lp(0, 1, 1), lp(0, 1, 0)], 0)
+        n_inlet = len(faces) - inlet_start
+
+        outlet_start = len(faces)
+        if r == ranks - 1:
+            face([lp(nc, 0, 0), lp(nc, 1, 0), lp(nc, 1, 1), lp(nc, 0, 1)], nc - 1)
+        n_outlet = len(faces) - outlet_start
+
+        wall_start = len(faces)
+        for c in range(nc):
+            face([lp(c, 0, 0), lp(c + 1, 0, 0), lp(c + 1, 0, 1), lp(c, 0, 1)], c)
+            face([lp(c, 1, 0), lp(c, 1, 1), lp(c + 1, 1, 1), lp(c + 1, 1, 0)], c)
+            face([lp(c, 0, 0), lp(c, 1, 0), lp(c + 1, 1, 0), lp(c + 1, 0, 0)], c)
+            face([lp(c, 0, 1), lp(c + 1, 0, 1), lp(c + 1, 1, 1), lp(c, 1, 1)], c)
+        n_wall = len(faces) - wall_start
+
+        patches = [("inlet", "patch", inlet_start, n_inlet, None),
+                   ("outlet", "patch", outlet_start, n_outlet, None),
+                   ("wall", "wall", wall_start, n_wall, None)]
+
+        # ...AND THE PROCESSOR PATCHES LAST (property 2). One face each side of every cut.
+        if r > 0:
+            s = len(faces)
+            face([lp(0, 0, 0), lp(0, 0, 1), lp(0, 1, 1), lp(0, 1, 0)], 0)
+            patches.append((f"procBoundary{r}to{r - 1}", PROCESSOR_PATCH_TYPE, s, 1, r - 1))
+            n_proc_faces += 1
+        if r < ranks - 1:
+            s = len(faces)
+            face([lp(nc, 0, 0), lp(nc, 1, 0), lp(nc, 1, 1), lp(nc, 0, 1)], nc - 1)
+            patches.append((f"procBoundary{r}to{r + 1}", PROCESSOR_PATCH_TYPE, s, 1, r + 1))
+            n_proc_faces += 1
+
+        _foam(polymesh / "points", "vectorField", "points", len(pts), pts)
+        _foam(polymesh / "faces", "faceList", "faces", len(faces), faces)
+        _foam(polymesh / "owner", "labelList", "owner", len(owner), [str(o) for o in owner])
+        _foam(polymesh / "neighbour", "labelList", "neighbour", len(neighbour),
+              [str(n) for n in neighbour])
+
+        body = []
+        for name, ptype, start, n, nbr in patches:
+            lines = [f"    {name}", "    {", f"        type {ptype};",
+                     f"        nFaces {n};", f"        startFace {start};"]
+            if nbr is not None:
+                # the two keys an OpenFOAM processor patch always carries
+                lines += [f"        myProcNo {r};", f"        neighbProcNo {nbr};"]
+            lines.append("    }")
+            body.append("\n".join(lines))
+        _foam(polymesh / "boundary", "polyBoundaryMesh", "boundary", len(patches), body)
+    return n_proc_faces

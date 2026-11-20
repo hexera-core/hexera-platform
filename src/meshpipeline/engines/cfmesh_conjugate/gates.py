@@ -40,13 +40,32 @@ def meshed_regions(ws: Path) -> list[str]:
     `constant/<name>/polyMesh/owner` and not the directory: splitMeshRegions makes the directory
     before it writes into it, so a run killed between the two leaves a region that exists and
     holds nothing.
+
+    ...OR a region whose cells are on disk per-rank, which is the same test moved one level
+    down. When the chain stays decomposed there is no merged mesh to own an `owner` file, and
+    `conjugate._publish_decomposed_boundaries` writes only the patch table - deliberately, since
+    describing a mesh is not the same as having one. So the cells are looked for where they
+    actually are: EVERY rank must hold `processor*/constant/<name>/polyMesh/owner`.
+
+    EVERY rank, not any. The half-written-region failure this guards against is a run killed
+    part way through writing, and a parallel splitMeshRegions writes its ranks independently -
+    so "some rank has cells" is exactly the state that must not pass. Requiring all of them
+    restores the original guarantee rather than weakening it to fit the new shape.
     """
     base = ws / "constant"
     if not base.is_dir():
         return []
+    ranks = sorted((d for d in ws.glob("processor*") if d.is_dir() and d.name[9:].isdigit()),
+                   key=lambda d: int(d.name[9:]))
+
+    def _has_cells(name: str) -> bool:
+        if (base / name / "polyMesh" / "owner").is_file():
+            return True
+        return bool(ranks) and all(
+            (r / "constant" / name / "polyMesh" / "owner").is_file() for r in ranks)
+
     return sorted(d.name for d in base.iterdir()
-                  if d.is_dir() and (d / "polyMesh" / "owner").is_file()
-                  and d.name != "polyMesh")
+                  if d.is_dir() and d.name != "polyMesh" and _has_cells(d.name))
 
 
 def _gate_manifest_valid(ctx: GateCtx) -> tuple[bool, str]:

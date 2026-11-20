@@ -74,6 +74,99 @@ def read_boundary_patches(polymesh: Path) -> list[dict]:
     return patches
 
 
+#: The patch type OpenFOAM gives the faces that exist only because the mesh was cut up. It is the
+#: ONLY thing that tells a processor patch from a real one: the names are `procBoundaryM_toN`
+#: today and nothing may depend on that spelling.
+PROCESSOR_PATCH_TYPE = "processor"
+
+
+class DecomposedBoundaryError(ValueError):
+    """The per-rank boundary files do not agree on what the mesh's patches are."""
+
+
+def processor_dirs(case: Path) -> list[Path]:
+    """`case/processor0..N-1`, in RANK order rather than the lexical order glob gives.
+
+    `sorted(glob("processor*"))` puts processor10 before processor2, which silently reorders
+    every rank-major traversal built on it once a run uses ten or more ranks. The engine's
+    ceiling is eight today (determinism.CONJUGATE_RANKS_MAX), so this is a trap that is not yet
+    reachable and would be invisible when it became so.
+    """
+    out = []
+    for d in Path(case).glob("processor*"):
+        if d.is_dir() and d.name[9:].isdigit():
+            out.append((int(d.name[9:]), d))
+    return [d for _n, d in sorted(out)]
+
+
+def decomposed_region_boundary(case: Path, region: str = "") -> list[dict]:
+    """The REAL patches of a decomposed mesh, summed over its ranks, as read_boundary_patches
+    would have returned them from the reconstructed mesh.
+
+    Same shape as `read_boundary_patches` - {name, type, n_faces, start_face} - so it is a
+    drop-in for every reader that only wants the patch table. `start_face` is renumbered as a
+    running cursor over the summed counts, because the per-rank offsets mean nothing once the
+    patches are added together, and NO reader of this function may use it to seek into a file.
+
+    THREE THINGS THIS DOES THAT THE HAND-RUN SCRIPT IT REPLACES DOES NOT.
+
+    The patch list is the UNION over ranks, not processor0's. `par_boundary_index.py` takes the
+    order from processor0 alone, and a patch absent there is dropped with no error at all. A rank
+    is SUPPOSED to list every global patch at `nFaces 0` - measured on a real 4-rank case - but
+    "supposed to" is what a union costs nothing to stop depending on.
+
+    A disagreement RAISES. Two ranks giving one name two types means the files are not one mesh,
+    and summing them would produce a confident wrong answer.
+
+    Processor patches are dropped, and that is the whole reason the counts come out right: each
+    face on a cut was one internal face of the whole mesh and is a BOUNDARY face on both of the
+    ranks that share it. Summing the real patches alone reproduces the reconstructed mesh exactly
+    - measured on a real 4-rank case: fluid {fluid_to_solid 93600, ymax 128, ymin 128}, solid
+    {solid_to_fluid 93600, xmax 67604, xmin 67604, ymax 404, ymin 404, zmax 13000, zmin 3900},
+    with 840 and 2,484 processor faces excluded.
+    """
+    ranks = processor_dirs(Path(case))
+    if not ranks:
+        raise DecomposedBoundaryError(f"no processor* directories under {case}")
+    order: list[str] = []
+    types: dict[str, str] = {}
+    totals: dict[str, int] = {}
+    dropped = 0
+    seen_a_boundary = False
+    for d in ranks:
+        polymesh = (d / "constant" / region / "polyMesh") if region else (d / "constant" / "polyMesh")
+        if not (polymesh / "boundary").is_file():
+            continue
+        seen_a_boundary = True
+        for p in read_boundary_patches(polymesh):
+            if p["type"] == PROCESSOR_PATCH_TYPE:
+                dropped += int(p["n_faces"])
+                continue
+            name = p["name"]
+            if name not in types:
+                order.append(name)
+                types[name] = p["type"]
+                totals[name] = 0
+            elif types[name] != p["type"]:
+                raise DecomposedBoundaryError(
+                    f"{d.name} calls patch {name!r} a {p['type']!r} and an earlier rank calls it "
+                    f"a {types[name]!r}; these per-rank files are not one mesh")
+            totals[name] += int(p["n_faces"])
+    if not seen_a_boundary:
+        raise DecomposedBoundaryError(
+            f"none of the {len(ranks)} processor directories under {case} holds a "
+            f"{'constant/' + region if region else 'constant'}/polyMesh/boundary")
+    logger.info("decomposed boundary: %s patches over %d ranks%s, %d processor faces excluded",
+                len(order), len(ranks), f" for region {region}" if region else "", dropped)
+    out: list[dict] = []
+    cursor = 0
+    for name in order:
+        out.append({"name": name, "type": types[name], "n_faces": totals[name],
+                    "start_face": cursor})
+        cursor += totals[name]
+    return out
+
+
 def read_points(polymesh: Path):
     import numpy as np
     path = polymesh / "points"

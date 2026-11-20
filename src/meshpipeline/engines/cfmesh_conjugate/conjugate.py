@@ -1786,6 +1786,52 @@ def _layer_chain(ranks: int, layers: int) -> tuple:
         mpi=mpi_command("snappyHexMesh -overwrite", int(ranks)))),)
 
 
+def _publish_decomposed_boundaries(ws) -> list[str]:
+    """Write `constant/<region>/polyMesh/boundary` for every region that exists only per-rank.
+
+    Returns the region names it wrote, which is empty on every run that reconstructed - the
+    common case today, and the one this must not disturb. A region whose boundary file is
+    already there was written by the mesher and is left exactly alone.
+
+    Failure is non-fatal and said out loud. A region this cannot describe is one the gate below
+    will refuse by name a few lines later, which is a better error than an exception from a
+    helper, and a run that DID reconstruct cannot be harmed by this failing at all.
+    """
+    from meshpipeline.engines.cfmesh_conjugate import polymesh_surface as _ps
+
+    written: list[str] = []
+    ranks = _ps.processor_dirs(ws)
+    if not ranks:
+        return written
+    names = sorted({d.name for r in ranks for d in (r / "constant").iterdir()
+                    if d.is_dir() and (d / "polyMesh").is_dir()}) if (ranks[0] / "constant").is_dir() else []
+    for region in names:
+        out = ws / "constant" / region / "polyMesh"
+        if (out / "boundary").is_file():
+            continue
+        try:
+            rows = _ps.decomposed_region_boundary(ws, region)
+        except Exception as exc:                 # noqa: BLE001 - a reconstructed run never needs this
+            logger.warning("conjugate: could not describe decomposed region %s (%s); the region "
+                           "gate will report it", region, exc)
+            continue
+        out.mkdir(parents=True, exist_ok=True)
+        body = "\n".join(
+            f"    {r['name']}\n    {{\n        type {r['type']};\n"
+            f"        nFaces {r['n_faces']};\n        startFace {r['start_face']};\n    }}"
+            for r in rows)
+        (out / "boundary").write_text(
+            "FoamFile\n{\n    version     2.0;\n    format      ascii;\n"
+            "    class       polyBoundaryMesh;\n    object      boundary;\n}\n"
+            "// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //\n\n"
+            f"{len(rows)}\n(\n{body}\n)\n")
+        written.append(region)
+    if written:
+        logger.info("conjugate: described %s from the per-rank meshes; no merged mesh was made",
+                    ", ".join(written))
+    return written
+
+
 def build(workspace, *, block_stl: str = "constant/triSurface/block.stl",
           fluid_stl: str = "constant/triSurface/fluid.stl",
           background_cell_m: float, levels: int = DEFAULT_REFINEMENT_LEVELS,
@@ -2075,6 +2121,28 @@ def build(workspace, *, block_stl: str = "constant/triSurface/block.stl",
         for d in sorted(ws.glob("processor*")):
             if d.is_dir():
                 shutil.rmtree(d, ignore_errors=True)
+
+    # THE REGIONS ARE MADE FINDABLE WITHOUT A MERGED MESH, and this one ~1 KB file per region is
+    # the whole of what four of the five readers at home needed the 4,857 s reconstruct for.
+    #
+    # WHAT READS constant/<region>/polyMesh AND WHY EACH IS SATISFIED BY THE BOUNDARY FILE ALONE:
+    # the region gate immediately below enumerates constant/ for directories holding a polyMesh;
+    # `boundary_patches` reads the boundary file and every port and interface number in the
+    # verdict is built on it; `engines/manifest` reads it for the delivered patch table; and
+    # `render/detail_window.delivered_regions` globs constant/* and never looks at processor*.
+    # None of the four wants a cell, a point or a face - they want to know which regions exist
+    # and what patches each has, and that is a patch table.
+    #
+    # IT IS A SUM OVER THE RANKS' REAL PATCHES, which is exactly the reconstructed table and not
+    # an approximation of it: a face on a cut was ONE internal face of the whole mesh and is a
+    # BOUNDARY face on each of the two ranks sharing it, so the processor patches are dropped and
+    # what is left adds up. Measured against a real four-rank case that carries both forms
+    # (runs/unit_cell_100um-4across): identical for fluid and solid, interface 93,600 faces on
+    # both sides either way.
+    #
+    # NEVER OVER A REAL ONE. While the reconstruct still runs, these files are the mesher's own
+    # and are the truth; this only fills in what a decomposed-only run would otherwise lack.
+    _publish_decomposed_boundaries(ws)
 
     # Out of constant/ before anything scans it again. See CELL_TO_REGION.
     leftover = ws / "constant" / CELL_TO_REGION
