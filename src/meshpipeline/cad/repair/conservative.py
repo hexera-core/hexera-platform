@@ -1273,7 +1273,7 @@ def _summary(result, final) -> str:
     complete scan, no error defects, and nothing a failed attempt abandoned - so anything else
     has to read as partial, whatever the loop happened to stop on.
     """
-    from meshpipeline.cad.repair.loop import SCAN_INCOMPLETE
+    from meshpipeline.cad.repair.loop import NO_CANDIDATE, RESOLVED, SCAN_INCOMPLETE
 
     if result.resolved:
         base = ("Repaired within the conservative caps."
@@ -1301,7 +1301,18 @@ def _summary(result, final) -> str:
         return ("Repaired as far as the inspection could see; the defect scan was partial, so "
                 "this is not a clean bill of health.")
     if not any(v.kept for v in result.verdicts):
-        return "Nothing could be repaired safely; a person should look at this."
+        # FOUR DIFFERENT ANSWERS, NOT ONE. "Nothing was kept" was reported with the same
+        # sentence whether the part needed no work, whether the catalogue had no operation for
+        # it, or whether we tried and nothing held - and the sentence chosen was the one that
+        # reads like a failure. A part nobody needed to touch is not a part we failed on.
+        if result.stopped_because == RESOLVED and not result.verdicts:
+            return ("Nothing needed repairing - the inspection found no defect this catalogue "
+                    "acts on. The file is unchanged.")
+        if result.stopped_because == NO_CANDIDATE:
+            return ("No repair in this catalogue claims the defects found, so nothing was "
+                    "attempted. The file is unchanged and a person should look at it.")
+        return ("Repairs were attempted and none held, so nothing was kept; a person should "
+                "look at this. The file is unchanged.")
     return (f"Partially repaired - the run stopped at {result.stopped_because} with "
             f"{len(result.defects)} defect(s) left.")
 
