@@ -337,7 +337,7 @@ def _ended(cand: Candidate, status: str, *, seconds: float, reason: str = "", ke
 def rehearse(cand: Candidate, *, session_shape, original, defects, region, tolerance_mm: float,
              budget_s: float, clock=None, reserved: frozenset[str] = frozenset(),
              diagonal_mm: float | None = None, make_scratch=None, run_tier=None, measure=None,
-             scope=None) -> Rehearsal:
+             scope=None, accounting=None) -> Rehearsal:
     """Play `cand` on ITS OWN CLONE of `session_shape` and report what happened. NEVER RAISES.
 
     In order: open a clone; play the plan item by item through the clone's `try_op`, stopping at
@@ -381,10 +381,14 @@ def rehearse(cand: Candidate, *, session_shape, original, defects, region, toler
                          else diagonal_mm)
         before = _fingerprints(defects, region, diagonal, scope)
 
+        # THE REAL SESSION'S DECLARATIONS ride along when the loop reported them: the clone's caps
+        # compare against the upload, so without them an earlier package's declared change reads
+        # as unexplained and a candidate the real session would keep fails its rehearsal.
+        extra = {} if accounting is None else {"accounting": accounting}
         scratch = make_scratch(session_shape, original=original, defects=tuple(defects),
                                reserved=frozenset(reserved),
                                remaining_s=lambda: _left(clock, started, budget_s, now),
-                               clock=now)
+                               clock=now, **extra)
         keep = _kept_status()
 
         for index, entry in enumerate(cand.package.plan):
@@ -566,17 +570,23 @@ def tournament_summary(tournaments, packages=()) -> dict:
     }
 
 
-def _clock_of(deadline_s, *, reserve_s: float, proof_reserve_s: float, share: float, clock):
+def _clock_of(deadline_s, *, reserve_s: float | None, proof_reserve_s: float | None,
+              share: float | None, clock):
     """THE RUN'S ONE CLOCK, built ONCE per author and shared by every region and every rehearsal.
 
     Two clocks over one deadline is how a region starves its successors: each would think it had
     the whole remainder to itself. `InvestigationClock` is Task 8's and states the policy; this
-    author states none of its own. Imported lazily so the pure half's import stays cheap.
+    author states none of its own. An UNSTATED reserve or share is the configured one
+    (`investigator.configured_reserves`) - the final verification's reserve and the region share -
+    never 0 and 1. Imported lazily so the pure half's import stays cheap.
     """
+    from meshpipeline.cad.repair.investigator import configured_reserves
     from meshpipeline.cad.repair.investigator_budget import InvestigationClock
 
-    return InvestigationClock(deadline_s, reserve_s=reserve_s, proof_reserve_s=proof_reserve_s,
-                              share=share, clock=clock)
+    held_s, proof_s, part = configured_reserves(deadline_s, clock, reserve_s=reserve_s,
+                                                proof_reserve_s=proof_reserve_s, share=share)
+    return InvestigationClock(deadline_s, reserve_s=held_s, proof_reserve_s=proof_s,
+                              share=part, clock=clock)
 
 
 def _budget_of(defects, original):
@@ -610,8 +620,9 @@ def _record(cand: Candidate, r: Rehearsal) -> dict:
 def tournament_author(shape, *, original, reserved: frozenset = frozenset(), job_id: str = "",
                       tolerance_mm: float = 0.0, deadline_s: float | None = None,
                       clock=None, k: int | None = None, shadow: bool = False, sink=None,
-                      face_reader=None, reserve_s: float = 0.0, proof_reserve_s: float = 0.0,
-                      share: float = 1.0, policy=None, rules=_DEFAULT, one_shot=_DEFAULT,
+                      face_reader=None, reserve_s: float | None = None,
+                      proof_reserve_s: float | None = None, share: float | None = None,
+                      policy=None, rules=_DEFAULT, one_shot=_DEFAULT,
                       investigate=_DEFAULT, rehearse_with=None):
     """Build the tournament `author` the region loop calls: `(region, defects, attempts) -> package`.
 
@@ -628,9 +639,12 @@ def tournament_author(shape, *, original, reserved: frozenset = frozenset(), job
          shape, and a stale one would resolve them against faces a commit has since renumbered.
       3. **Offers the WINNER**, which is `winner()`: the best ELIGIBLE rehearsal. `winner()`
          returning None offers NOTHING and ends the round `no_eligible_candidate`.
-      4. **On a re-call** for the same region (the offered package was reverted), replays the
-         CACHED candidates it has not yet offered, RE-REHEARSED against the current shape, and
-         SPENDS NO NEW SOURCE CALL - which is what makes a second attempt affordable.
+      4. **On a re-call** for the same region and the SAME defects (the offered package was
+         reverted), replays the CACHED candidates it has not yet offered, RE-REHEARSED against
+         the current shape, and SPENDS NO NEW SOURCE CALL - which is what makes a second attempt
+         affordable. Once the cache is exhausted, or the region's defects changed, the sources
+         are asked AGAIN with the current defects and the attempt history; a plan already offered
+         for the region is never offered twice.
 
     IN SHADOW the rules package is returned UNCHANGED, whatever the tournament found; the round
     still runs on clones and records `would_offer`. It is skipped unless the whole wall fits
@@ -657,7 +671,7 @@ def tournament_author(shape, *, original, reserved: frozenset = frozenset(), job
     tick = clock if callable(clock) else _time.monotonic
     held_codes = frozenset(reserved)
     tournaments: list[dict] = []
-    state: dict = {"shape": shape}
+    state: dict = {"shape": shape, "accounting": None}
     #: region index -> the ranked candidates and the plan keys already offered for it.
     cache: dict[int, dict] = {}
     timing = policy if policy is not None else _clock_of(
@@ -682,6 +696,15 @@ def tournament_author(shape, *, original, reserved: frozenset = frozenset(), job
         state["shape"] = current
         for _, each in sources:
             seen = getattr(each, "observe_shape", None)
+            if callable(seen):
+                seen(current)
+
+    def observe_accounting(current) -> None:
+        # The real session's declarations, for this author's rehearsal clones and for the
+        # investigator source's scratch clone alike.
+        state["accounting"] = current
+        for _, each in sources:
+            seen = getattr(each, "observe_accounting", None)
             if callable(seen):
                 seen(current)
 
@@ -726,17 +749,28 @@ def tournament_author(shape, *, original, reserved: frozenset = frozenset(), job
             entry["end"] = NOT_LOCATED
             return None
 
+        asked_about = frozenset(getattr(d, "fingerprint", "") for d in defects)
         held = cache.get(int(region.index))
-        if held is None:
-            cands = gather(entry, region, tuple(defects), tuple(attempts), cap)
-            held = {"candidates": cands, "offered": []}
-            cache[int(region.index)] = held
-        else:
-            # A RE-CALL SPENDS NO SOURCE CALL. The ranking is this region's own cache; only the
-            # candidates it has not yet offered are left, and they are re-rehearsed below.
+        cands: tuple[Candidate, ...] = ()
+        if held is not None and held["defects"] == asked_about:
+            # A RE-CALL ON THE SAME QUESTION SPENDS NO SOURCE CALL. The ranking is this region's
+            # own cache; only the candidates it has not yet offered are left, re-rehearsed below.
             cands = tuple(c for c in held["candidates"] if c.plan_key not in held["offered"])
             entry["sources"].append({"source": "cache", "outcome": "reused",
                                      "reason": f"{len(cands)} candidate(s) not yet offered"})
+        if not cands:
+            # FIRST CALL, CHANGED DEFECTS, OR AN EXHAUSTED CACHE: ask the sources again with the
+            # region's CURRENT defects and its attempt history. The first candidate set is not the
+            # region's whole repair allowance - the rules author's fallback (`sew_faces` ->
+            # `fill_planar_hole`) exists only once it has seen the failed attempt, and a commit
+            # that leaves a second defect asks a new question. Bounded by the loop's per-region
+            # attempts and by each source's own run-wide caps; a plan already offered for this
+            # region is never offered twice.
+            offered = list(held["offered"]) if held is not None else []
+            fresh = gather(entry, region, tuple(defects), tuple(attempts), cap)
+            cands = tuple(c for c in fresh if c.plan_key not in offered)
+            held = {"candidates": fresh, "offered": offered, "defects": asked_about}
+            cache[int(region.index)] = held
 
         driven = next((c.package for c in held["candidates"] if c.source == RULES), None)
         fallback = driven if shadow else None
@@ -758,7 +792,8 @@ def tournament_author(shape, *, original, reserved: frozenset = frozenset(), job
         rehearsals = play(cands, wall_s=wall, clock=timing, limit=cap,
                           session_shape=state["shape"], original=original,
                           defects=tuple(defects), region=region,
-                          tolerance_mm=float(tolerance_mm), reserved=held_codes)
+                          tolerance_mm=float(tolerance_mm), reserved=held_codes,
+                          accounting=state["accounting"])
         ordered = rank(rehearsals)
         entry["candidates"] = [_record(r.candidate, r) for r in ordered]
         entry["seconds"] = round(sum(float(r.seconds) for r in ordered), 6)
@@ -793,6 +828,7 @@ def tournament_author(shape, *, original, reserved: frozenset = frozenset(), job
     author.report = report  # type: ignore[attr-defined]
     author.observe_part = observe_part  # type: ignore[attr-defined]
     author.observe_shape = observe_shape  # type: ignore[attr-defined]
+    author.observe_accounting = observe_accounting  # type: ignore[attr-defined]
     author.refusals = getattr(dict(sources).get(RULES), "refusals", [])  # type: ignore[attr-defined]
     author.verdicts = getattr(dict(sources).get(ONE_SHOT), "verdicts", [])  # type: ignore[attr-defined]
     author.calls = getattr(dict(sources).get(ONE_SHOT), "calls", [])  # type: ignore[attr-defined]

@@ -768,7 +768,8 @@ class Scratch:
     """
 
     def __init__(self, source, session: RepairSession, *, original: Measure, defects: tuple,
-                 reserved: frozenset, remaining_s, clock, measurer, scanner) -> None:
+                 reserved: frozenset, remaining_s, clock, measurer, scanner,
+                 accounting=None) -> None:
         #: THE SESSION'S SHAPE, HELD ONLY TO COPY IT AGAIN on `reset`. Nothing applies an
         #: operation to it: it is never passed to `try_op`, and it is not the session's shape.
         self._source = source
@@ -781,37 +782,46 @@ class Scratch:
         self.clock = clock
         self._measurer = measurer
         self._scanner = scanner
+        #: The REAL session's declarations when the clone was opened, kept so `reset` starts the
+        #: rebuilt session from the same allowance rather than from an empty one.
+        self.seed_accounting = accounting
         self.edits: list[EditRecord] = []
 
     @classmethod
     def of(cls, session_shape, *, original: Measure, defects: tuple,
            reserved: frozenset = frozenset(), remaining_s=None, clock=time.monotonic,
-           measurer=None, scanner=None) -> Scratch:
+           measurer=None, scanner=None, accounting=None) -> Scratch:
         """A scratch clone of `session_shape`, ready to be edited and unable to commit.
 
         `original` is the UPLOAD's measure and `defects` the session's current list; neither the
         measurer nor the scanner is called here, so opening a clone costs a copy and nothing more
         (`RepairSession.scratch` says why both are given rather than taken).
 
+        `accounting` is the REAL session's accumulated declarations (`caps.Accounting`). The
+        clone's caps compare against the UPLOAD, so a clone of a partly repaired shape opened with
+        an empty accounting would count every earlier committed package's declared area and
+        volume as unexplained change, and roll back an edit the real session would keep.
+
         `measurer` and `scanner` are the session's own defaults unless given - injectable for the
         same reason `RepairSession`'s are, so the bookkeeping can be tested without a kernel.
         """
         return cls._built(session_shape, original=original, defects=tuple(defects),
                           reserved=frozenset(reserved), remaining_s=remaining_s, clock=clock,
-                          measurer=measurer, scanner=scanner)
+                          measurer=measurer, scanner=scanner, accounting=accounting)
 
     @classmethod
     def _built(cls, source, *, original, defects, reserved, remaining_s, clock, measurer,
-               scanner) -> Scratch:
+               scanner, accounting=None) -> Scratch:
         session = cls._session(source, original=original, defects=defects, reserved=reserved,
                                remaining_s=remaining_s, clock=clock, measurer=measurer,
-                               scanner=scanner)
+                               scanner=scanner, accounting=accounting)
         return cls(source, session, original=original, defects=defects, reserved=reserved,
-                   remaining_s=remaining_s, clock=clock, measurer=measurer, scanner=scanner)
+                   remaining_s=remaining_s, clock=clock, measurer=measurer, scanner=scanner,
+                   accounting=accounting)
 
     @staticmethod
     def _session(source, *, original, defects, reserved, remaining_s, clock, measurer,
-                 scanner) -> RepairSession:
+                 scanner, accounting=None) -> RepairSession:
         kwargs: dict = {"original": original, "defects": defects, "reserved": reserved,
                         "remaining_s": remaining_s, "clock": clock}
         if measurer is not None:
@@ -820,7 +830,12 @@ class Scratch:
             kwargs["scanner"] = scanner
         # THE COPY IS MADE HERE AND NOWHERE ELSE, so there is exactly one line in the programme
         # at which a shape becomes editable, and it is a copy.
-        return RepairSession.scratch(_clone(source), **kwargs)
+        session = RepairSession.scratch(_clone(source), **kwargs)
+        if accounting is not None:
+            # Immutable (`caps.Accounting`), so the clone's own kept edits extend a copy and can
+            # never reach the real session's record.
+            session.accounting = accounting
+        return session
 
     @property
     def shape(self):
@@ -863,7 +878,8 @@ class Scratch:
         self.session = self._session(self._source, original=self.original,
                                      defects=self.seed_defects, reserved=self.reserved,
                                      remaining_s=self.remaining_s, clock=self.clock,
-                                     measurer=self._measurer, scanner=self._scanner)
+                                     measurer=self._measurer, scanner=self._scanner,
+                                     accounting=self.seed_accounting)
         self.edits = []
 
 

@@ -324,6 +324,35 @@ class _Clock:
         return self.left(0.0) >= wall + ma._GRACE_S
 
 
+def configured_reserves(deadline_s: float | None, clock: Callable[[], float], *,
+                        reserve_s: float | None, proof_reserve_s: float | None,
+                        share: float | None) -> tuple[float, float, float]:
+    """`(reserve_s, proof_reserve_s, share)` for an investigation clock, each the CONFIGURED value
+    unless the caller stated one.
+
+    The real callers (`select_author`) state none, and a clock built on zeros and a share of 1 let
+    one slow region spend the final whole-part verification's reserve and every later region's
+    time - the outer loop checks its reserve only BEFORE calling the author. So an unstated
+    reserve is the walk's own (`region_loop.final_reserve_s`), an unstated share is
+    `CAD_REPAIR_INVESTIGATOR_REGION_SHARE`, and an unstated proof reserve is
+    `investigator_budget.proof_reserve_s` over what the run has left above that reserve.
+    Imported lazily: `region_loop` sits above this module.
+    """
+    if reserve_s is None:
+        from meshpipeline.cad.repair.region_loop import final_reserve_s
+
+        reserve_s = final_reserve_s()
+    if share is None:
+        share = float(getattr(rcfg, "CAD_REPAIR_INVESTIGATOR_REGION_SHARE", 1.0))
+    if proof_reserve_s is None:
+        from meshpipeline.cad.repair.investigator_budget import proof_reserve_s as _proof
+
+        left = (float("inf") if deadline_s is None
+                else max(0.0, float(deadline_s) - clock() - float(reserve_s)))
+        proof_reserve_s = _proof(left)
+    return float(reserve_s), float(proof_reserve_s), float(share)
+
+
 def _budget_of(tier: str) -> Budget:
     """Task 8's budget for `tier`, or the local fallback. Reported as a seam, never reimplemented:
     the numbers are the gym's to tune, and they live in `investigator_budget`."""
@@ -347,8 +376,13 @@ def _tier_of(defects: tuple, original: Measure) -> str:
 
 
 def _scratch_of(factory, shape, *, original: Measure, defects: tuple, reserved: frozenset,
-                remaining_s, clock, tolerance_mm: float):
+                remaining_s, clock, tolerance_mm: float, accounting=None):
     """A scratch clone of the SESSION'S CURRENT SHAPE, or None when this deployment has none.
+
+    `accounting` is the REAL session's accumulated declarations, passed only when the region loop
+    reported one (`observe_accounting`): the clone's caps compare against the upload, so a clone
+    of a partly repaired shape needs the earlier packages' declared changes to judge an edit the
+    way the real session would.
 
     SEAM (Task 10): `investigator_tools.Scratch.of`, which copies the shape and opens a
     `RepairSession.scratch` over the copy (a session that cannot commit). It is looked up AT CALL
@@ -361,9 +395,11 @@ def _scratch_of(factory, shape, *, original: Measure, defects: tuple, reserved: 
     if factory is None:
         def factory(source, *, tolerance_mm: float = 0.0, **kwargs):  # noqa: ARG001
             return investigator_tools.Scratch.of(source, **kwargs)
+    extra = {} if accounting is None else {"accounting": accounting}
     try:
         return factory(shape, original=original, defects=tuple(defects), reserved=reserved,
-                       remaining_s=remaining_s, clock=clock, tolerance_mm=float(tolerance_mm))
+                       remaining_s=remaining_s, clock=clock, tolerance_mm=float(tolerance_mm),
+                       **extra)
     except Exception as exc:  # noqa: BLE001 - total: no clone is no edits, never a failed repair
         logger.info("investigator: no scratch clone (%s: %s)", type(exc).__name__, exc)
         return None
@@ -551,8 +587,8 @@ def investigator(shape, *, original: Measure, reserved: frozenset = frozenset(),
                  sink: Callable[[dict], None] | None = None,
                  budget: Budget | None = None, policy: Policy | None = None,
                  scratch_factory: Callable[..., object] | None = None,
-                 reserve_s: float = 0.0, proof_reserve_s: float = 0.0,
-                 share: float = 1.0) -> ma.Author:
+                 reserve_s: float | None = None, proof_reserve_s: float | None = None,
+                 share: float | None = None) -> ma.Author:
     """Build the investigating `author` the region loop calls: `(region, defects, attempts) -> package`.
 
     THE LOOP, per author call:
@@ -578,7 +614,8 @@ def investigator(shape, *, original: Measure, reserved: frozenset = frozenset(),
 
     `budget` and `policy` are Task 8's `InvestigationBudget` and `InvestigationClock`. Given, they
     are used as they are; absent, a fail-closed local fallback is built from `deadline_s`,
-    `reserve_s`, `proof_reserve_s` and `share`, so this driver never reimplements the policy.
+    `reserve_s`, `proof_reserve_s` and `share`, so this driver never reimplements the policy. Each
+    of those three left unstated is the CONFIGURED value (`configured_reserves`), never 0 or 1.
     `scratch_factory` is Task 10's `Scratch.of`; absent, the investigation is read-only.
     """
     investigations: list[dict] = []
@@ -586,11 +623,15 @@ def investigator(shape, *, original: Measure, reserved: frozenset = frozenset(),
     escalations: list[dict] = []
     refusals: list[dict] = []
     live: dict[int, _Investigation] = {}
-    state: dict = {"part_rims": frozenset(), "shape": shape, "calls": 0}
+    state: dict = {"part_rims": frozenset(), "shape": shape, "calls": 0, "accounting": None}
     held_codes = frozenset(reserved)
-    timing: Policy = policy if policy is not None else _Clock(
-        deadline_s, reserve_s=reserve_s, proof_reserve_s=proof_reserve_s, share=share,
-        clock=clock)
+    if policy is not None:
+        timing: Policy = policy
+    else:
+        held_s, proof_s, part = configured_reserves(deadline_s, clock, reserve_s=reserve_s,
+                                                    proof_reserve_s=proof_reserve_s, share=share)
+        timing = _Clock(deadline_s, reserve_s=held_s, proof_reserve_s=proof_s, share=part,
+                        clock=clock)
 
     def observe_part(part_defects: tuple) -> None:
         state["part_rims"] = (ma.paired_rim_fingerprints(shape, tuple(part_defects))
@@ -598,6 +639,11 @@ def investigator(shape, *, original: Measure, reserved: frozenset = frozenset(),
 
     def observe_shape(current) -> None:
         state["shape"] = current
+
+    def observe_accounting(current) -> None:
+        # THE REAL SESSION'S DECLARATIONS, so the next scratch clone of the partly repaired shape
+        # judges its edits against the same allowance the real session will.
+        state["accounting"] = current
 
     def calls_max() -> int:
         return max(0, int(getattr(rcfg, "CAD_REPAIR_INVESTIGATOR_MODEL_CALLS_MAX",
@@ -626,11 +672,15 @@ def investigator(shape, *, original: Measure, reserved: frozenset = frozenset(),
         else:
             inv.at = len(investigations)
             investigations.append(record)
-        if sink is not None:
+        # THE STATED SINK, ELSE THE ONE A HARNESS INSTALLED in this module's `sink` - read at
+        # write time, because `select_author` states none and the corpus runner installs its
+        # callback there. `None` in the product, so a product run still writes nothing.
+        out = sink if sink is not None else globals().get("sink")
+        if out is not None:
             try:
                 # THE FULL TRANSCRIPT GOES ONLY TO A DEVTOOLS SINK. The report carries the clipped
                 # record above; a conversation is customer-derived data.
-                sink({**record, "messages": [dict(m) for m in inv.messages]})
+                out({**record, "messages": [dict(m) for m in inv.messages]})
             except Exception as exc:  # noqa: BLE001 - a sink that breaks must not cost a repair
                 logger.warning("investigator sink failed: %s", type(exc).__name__)
 
@@ -699,7 +749,7 @@ def investigator(shape, *, original: Measure, reserved: frozenset = frozenset(),
             scratch_factory, state["shape"], original=original,
             defects=tuple(defects), reserved=held_codes,
             remaining_s=lambda: max(0.0, wall), clock=clock,
-            tolerance_mm=tolerance_mm)
+            tolerance_mm=tolerance_mm, accounting=state["accounting"])
         if attempts and scratch is not None:
             # REBUILT FROM THE SESSION'S CURRENT SHAPE: the edits of a reverted package are gone,
             # and the clone the model edits must be what the session actually holds now.
@@ -895,8 +945,10 @@ def investigator(shape, *, original: Measure, reserved: frozenset = frozenset(),
     author.refusals = refusals  # type: ignore[attr-defined]
     author.observe_part = observe_part  # type: ignore[attr-defined]
     author.observe_shape = observe_shape  # type: ignore[attr-defined]
+    author.observe_accounting = observe_accounting  # type: ignore[attr-defined]
     author.report = report  # type: ignore[attr-defined]
     author.label = LABEL  # type: ignore[attr-defined]
+    author.clock = timing  # type: ignore[attr-defined]
     return author
 
 

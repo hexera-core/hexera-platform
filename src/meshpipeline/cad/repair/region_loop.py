@@ -531,7 +531,7 @@ def _plain_item(item: dict) -> dict:
             "defect_code": getattr(code, "value", code)}
 
 
-def _observe_shape(author: Author, shape) -> None:
+def _observe_shape(author: Author, shape, accounting=None) -> None:
     """Tell the author the session's CURRENT shape before it is asked (final review M1).
 
     Read off the callable and optional, like `_observe_part`. An author that reads faces by index
@@ -541,6 +541,14 @@ def _observe_shape(author: Author, shape) -> None:
     observe = getattr(author, "observe_shape", None)
     if observe is not None:
         observe(shape)
+    # AND THE DECLARATIONS THAT SHAPE CARRIES. An author that rehearses on a scratch clone of it
+    # (the investigator, the tournament) opens a session whose caps compare against the UPLOAD,
+    # so it needs the real session's accumulated declarations or every earlier package's declared
+    # change reads as unexplained there. Immutable (`caps.Accounting`), so nothing an author does
+    # with it reaches this session.
+    seen = getattr(author, "observe_accounting", None)
+    if seen is not None and accounting is not None:
+        seen(accounting)
 
 
 def run_regions(shape, *, author: Author, tolerance_mm: float,
@@ -746,7 +754,7 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
                 # locus needs and what the baseline got for free from its whole-shape walk.
                 break
 
-            _observe_shape(author, work.shape)
+            _observe_shape(author, work.shape, getattr(work, "accounting", None))
             package = author(region, mine, tuple(tried))
             if package is None:
                 # NOT A FAILURE AND NOT AN ESCALATION. The author has nothing further to propose,
