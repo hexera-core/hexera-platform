@@ -192,10 +192,12 @@ and Section~\ref{sec:results} the results, including the negative ones.
 catalogue, the region driver, the probe and the caps. A second generation of the loop --- goal
 profiles, a ladder of cheap in-loop oracles, a bounded investigator that may look, measure, probe
 and edit on a throwaway copy, a tournament of candidate repairs rehearsed on clones, and a two-tier
-reviewer --- is built, tested and merged, and is described in Section~\ref{sec:v3}. It carries no
-measured result. Its evidence passes have not been run, every one of its posture flags defaults
-off, and Table~\ref{tab:v3status} states for each piece what is missing. Read Section~\ref{sec:v3}
-as design and as code that exists, and read nothing in it as a gain.
+reviewer --- is built, tested and merged, and is described in Section~\ref{sec:v3}. Its first
+measurement is Section~\ref{sec:v3results}, where any value not yet measured is printed as
+\textbf{[PENDING]} rather than as a number. Every one of its posture flags defaults off, and
+Table~\ref{tab:v3status} states for each piece what is missing. Read Section~\ref{sec:v3} as
+design and as code that exists. The only gains this paper reports for it are the ones
+Section~\ref{sec:v3results} prints.
 
 % =============================================================== 2 ==========
 \section{Context}
@@ -479,9 +481,9 @@ for later learning.
 \section{The Agentic Loop}\label{sec:v3}
 
 Section~\ref{sec:how} describes the loop that produced every measurement in this paper. This
-section describes what has been built on top of it since. None of it carries a result yet: the
-evidence passes are written and have not been run, so everything here is stated as design and as
-code that exists, with its status given plainly in Table~\ref{tab:v3status}. The reason for
+section describes what has been built on top of it since. It is stated as design and as code
+that exists, with its status given plainly in Table~\ref{tab:v3status}. Section~\ref{sec:v3results}
+holds its measured results and the caveats that bound them. The reason for
 building it is in Section~\ref{sec:predict} and Section~\ref{sec:corpus}: the deterministic
 catalogue's reach is bounded by the geometry it can name, and the families that dominate real
 mesh failure are not of that kind.
@@ -775,36 +777,36 @@ reports newly meshed, newly broken, the clean control, a mean score and cost per
 headline and per stratum, over the intersection of the two arms' rows only. The record ships
 \emph{empty} and the gate skips while it is, because seeding a fingerprint from a run nobody
 performed would be a fabrication; a test proves the gate turns hard the instant any score lands.
-Today no bundle writer records which sample it drew, so the gate refuses every real bundle --- the
-gym is built and not yet usable.
+A sealed bundle now records which sample it drew (names and SHA-256 only), so the gate can score
+a real run. No policy has been recorded against it yet.
 
 \subsection{What is built and what is not}\label{sec:v3status}
 
 \begin{table}[h]
 \centering
 \caption{Status of the agentic loop. ``Built'' means the module and its tests are merged, each
-mutation-proved. It does not mean measured: no evidence pass for any row below has been run, and
-every posture flag defaults off.}
+mutation-proved. It does not mean measured: Section~\ref{sec:v3results} holds the first evidence
+pass, and every posture flag defaults off in production.}
 \label{tab:v3status}
 \footnotesize
 \begin{tabularx}{\textwidth}{@{}L{42mm} l X@{}}
 \toprule
 \textbf{Piece} & \textbf{Built} & \textbf{What is missing}\\
 \midrule
-Goal profiles                  & yes & The standalone job surface is not wired to an entry point.\\
+Goal profiles                  & yes & The standalone job is reachable through the dispatch contract. Not exercised on a deployment.\\
 Oracle ladder, tiers 0--2      & yes & ---\\
-Tier 2b tolerant pass          & yes & Reads \code{unavailable} on the pipeline worker image, which carries no tolerant-mesh binary. No calibration.\\
+Tier 2b tolerant pass          & yes & fTetWild is now in the pipeline worker image. Not yet confirmed answering on a deployed worker. No calibration.\\
 Big-machine import blocklist   & yes & ---\\
-Grind predictor                & yes & Predictions are recorded; nothing branches on them yet.\\
+Grind predictor                & yes & Sets each region's attempt budget. Uncalibrated.\\
 Investigator tool loop         & yes & Native tool calling is untested against a real provider; the router test substitutes the transport.\\
-Rendered views for \code{look} & no  & The camera seam exists and is unwired.\\
-Scratch clone                  & yes & ---\\
-Tournament scoring, rehearsal  & yes & \textbf{The winner is not yet committed on the real session.} The nomination is computed and goes nowhere.\\
-Tiered review                  & yes & \textbf{Inert.} Nothing declares a deviation threshold, so no package can take the auto-accept tier.\\
+Rendered views for \code{look} & yes & \textbf{The rendered images are not yet attached to the model's message.} The forked renderer is untested on Linux.\\
+Scratch clone                  & yes & Wired to the live investigator only after a fix in this branch; before it, every \code{edit} was refused.\\
+Tournament scoring, rehearsal  & yes & The winner now goes to the real session's package review. Unmeasured before Section~\ref{sec:v3results}.\\
+Tiered review                  & yes & \textbf{Inert in the benchmark goal.} The customer's threshold now reaches the review tier, but a benchmark run declares none, so every package takes the reviewer.\\
 Measured review objection      & yes & ---\\
-Corpus gym                     & yes & No bundle written today states its sample, so scoring refuses every real bundle.\\
-Cross-run outcome memory       & no  & The content-addressed plan key exists as the intended key.\\
-Mesher handback into repair    & no  & The named-face refusal is already produced by the meshing ladder.\\
+Corpus gym                     & yes & No policy has been scored and recorded yet.\\
+Cross-run outcome memory       & yes & Reads nothing in production by construction (a null store).\\
+Mesher handback into repair    & yes & Records the mesh machine as evidence rather than pinning it.\\
 \bottomrule
 \end{tabularx}
 \end{table}
@@ -1080,45 +1082,110 @@ solid with a median of 21.5 faces --- are a tiny-shell family the harvest found,
 existing sewing and filling operations already repair them is a measurement nobody has taken.
 
 \topic{What the deterministic ceiling is} The 11-operation catalogue measured a \textbf{8--12\%}
-ceiling on the original 80-file track. The programme's target is meshes-after at or above four
-times that ceiling on the 9{,}956-file track, with newly-broken held at zero and the clean control
-untouched. \textbf{That target is not a result.} The evidence passes that would measure it ---
-a tournament evidence run and the held-out measurement pass --- have not been run, and until they
-are, this paper reports no agentic gain in either direction.
+ceiling on the original 80-file track. On real failures the ceiling is lower. A rules-only run
+over 90 files of this corpus newly meshed \textbf{0}, and an earlier count of repaired small edges
+from that run was largely false credit from a naming bug, since fixed
+(Section~\ref{sec:v3results}). The programme's target is newly meshed at or above four times the
+deterministic arm's on the same sample, with newly broken held at zero and the clean control
+untouched. \textbf{That target is not a result.} Section~\ref{sec:v3results} reports the
+measurement, and where the deterministic arm meshes nothing the ratio is undefined and is not
+claimed.
+
+% ============================================================ v3 results ====
+\section{Measured Results (CRS v3)}\label{sec:v3results}
+
+\input{crs-v3-results}
+
+This section reports the first measurement of the agentic loop. Every value in it is generated
+from the sealed evidence by \lcode{devtools/validation/v3\_eval/results\_to\_tex.py}. A value printed
+as \textbf{[PENDING]} has not been measured yet. It is never a zero.
+
+\topic{The arms} Three runs share one stratified sample of 120 files drawn from the 9{,}956 real
+mesh failures (seed 20261120), one commit (\vThreeCommit) and one worker image (\vThreeImage). The
+\emph{deterministic} run uses every catalogue operation with the investigator and the tournament
+off. The \emph{v3} run has the investigator live and the tournament live with three candidates. A
+third run has the investigator live and the tournament off, so that the tournament can be judged
+against the v3 run as its ``on'' side. A 100-part clean control, of parts that already mesh, went
+through both of the first two configurations. The first column of Table~\ref{tab:v3results} is the
+\emph{\vThreeRulesOnlyLabel} (T6), run on a laptop before the release fixes. It is context only and
+takes no part in the verdict.
+
+\vThreeResultsTable
+
+\topic{The headline} The v3 arm newly meshed \vThreeNewlyMeshed{} of \vThreeNFiles{} failing parts
+and newly broke \vThreeNewlyBroken. The deterministic arm newly meshed \vThreeDetNewlyMeshed{} and
+newly broke \vThreeDetNewlyBroken. The clean control came back with \vThreeCleanByteUnchanged{} of
+\vThreeCleanNFiles{} parts unchanged. The v3 arm cost \vThreeCostUsd{} in model calls and machine
+time, which is \vThreeCostPerFixed{} per part it newly meshed.
+
+\topic{The verdict} The acceptance rule is: \vThreeVerdictRule. If the deterministic arm newly
+meshes nothing, the ratio is undefined and the verdict is judged on the v3 arm's absolute count. The
+four-times goal is then reported as undefined and is never counted as met. Result: \vThreeVerdict.
+Ratio: \vThreeVerdictRatio. \vThreeVerdictStatement
+
+\vThreeOpsTable
+
+\topic{The tournament} With the investigator live, turning the tournament on moved newly meshed from
+\vThreeTourOffNewlyMeshed{} to \vThreeTourOnNewlyMeshed{}, at \vThreeTourOffCostPerFixed{} and
+\vThreeTourOnCostPerFixed{} per fixed part. If the tournament fixes no more parts at a higher cost,
+that is the result we report.
+
+\topic{What this does not show} These caveats bound every number above.
+\begin{itemize}
+\item \textbf{An earlier figure is withdrawn.} A previous internal report credited the catalogue's
+  default operations with 130 repaired small edges on 90 real failures. Most of that credit was
+  false. The entity-naming grid was scaled off the part's current diagonal, so a repair that moved
+  the extent renamed every entity, and the progress rule read a renamed defect as a removed one.
+  Four of four keeps that were probed turned out false. The grid is now fixed per run.
+\item \textbf{The deterministic baseline is near zero.} The rules-only baseline newly meshed 0 of
+  its first 90 files. A ratio over a baseline that small says little, so the absolute counts are
+  printed beside it.
+\item \textbf{The agentic arm had never been measured before this run.} There is no earlier number
+  to compare against, one run per arm says nothing about run-to-run variation, and the model arms
+  are nondeterministic.
+\item \textbf{The probe is not the product mesher.} ``Meshes'' means the coarse gmsh probe at one
+  mesh size. A part the probe meshes can still fail the product's meshing ladder, and the reverse
+  happens too.
+\item \textbf{The sample is small.} 120 failing parts and 100 clean ones. A difference of one or two
+  parts is noise. If no part breaks across the pooled 220, the rule of three bounds the break rate
+  at \vThreeZeroBreakBound{} (95\% upper bound). That bounds a rate and proves nothing about any
+  single part.
+\item \textbf{The rules-only baseline is not ``everything on''.} At its commit the tournament and the
+  memory had no settings rows, so they read off whatever the environment said, and no model was
+  configured. It ran on macOS without fTetWild.
+\end{itemize}
 
 % =============================================================== 7 ==========
 \section{Limitations}
 
-\topic{Nothing model-directed is yet evaluated} Every number in this paper comes from the
-deterministic baseline. That was true of the one-shot author and reviewer and it remains true of
-the whole agentic loop of Section~\ref{sec:v3}. The one live product run of the model author
-produced 34 proposals of which 0 survived execution; the safety machinery held, and that is the
-only model-directed result this paper has. Evaluating the agentic path needs two corpus passes that
-have not been run, on a deployment with a model router. Byte-identical replay is retired for
+\topic{Model-directed repair has one evaluation} Outside Section~\ref{sec:v3results}, every
+number in this paper comes from the deterministic path. The one live product run of the one-shot
+model author produced 34 proposals of which 0 survived execution, and the safety machinery held.
+The agentic loop's only evaluation is the single 120-part pass of Section~\ref{sec:v3results}. Byte-identical replay is retired for
 agent-driven runs --- a tool conversation is not reproducible turn by turn --- and replay now means
 re-applying the recorded packages.
 
-\topic{The 4x target is a target} The programme's stated goal is meshes-after at or above four
-times the deterministic 8--12\% ceiling on the 9{,}956-file track. No pass has measured it. We
-report the goal here so that the later measurement can be held against it, and we claim no part of
-it today.
+\topic{The 4x target is a target} The programme's stated goal is newly meshed at or above four
+times the deterministic arm's on the same sample. Section~\ref{sec:v3results} states whether one
+120-part pass met it. If the deterministic arm meshed nothing, the ratio is undefined and the goal
+is not claimed.
 
-\topic{The agentic loop is not joined end to end} Two gaps matter more than the rest.
-The tournament computes a winner and does not yet commit it on the real session, so the ranking is
-exercised by its tests and by nothing else. And tiered review is inert: no caller declares a
-per-part deviation threshold, so every package still takes the reviewer tier. Both fail safe --- the
-first offers nothing, the second spends a model call it could have saved --- but neither can be
-described as working in a run.
+\topic{Parts of the agentic loop are untested in a run} The tournament's winner now goes to the
+real session's package review, but only the pass of Section~\ref{sec:v3results} has exercised it.
+Tiered review is inert in that pass: the customer's threshold now reaches the review tier, a
+benchmark run declares none, and so every package takes the reviewer and spends a model call it
+might have saved. The rendered views the investigator can request are produced and are not yet
+attached to the model's message.
 
 \topic{Native tool calling has not met a provider} The investigator's tool transport is exercised
 against a substituted router. Whether the configured provider honours tool calls on short
 non-streaming replies is untested, and the first deployment that turns the flag on has to establish
 it. The JSON fallback exists for the case where it does not.
 
-\topic{Tier 2b cannot answer on the worker image} The tolerant-mesh pass needs a binary the
-pipeline worker image does not carry, so on that image every tier-2b question reads
-\code{unavailable}. That is the designed honest answer rather than a failure, but it means the
-routing answer for the corpus's largest family is unavailable exactly where the parts are.
+\topic{Tier 2b is unconfirmed on the worker image} The tolerant-mesh pass needs fTetWild, which
+the pipeline worker image now carries. Until a deployed worker is seen answering with it, a tier-2b
+question may still read \code{unavailable} there, which is the designed answer and leaves the
+routing for the corpus's largest family open exactly where the parts are.
 
 \topic{Production runs with the agentic loop off} The posture is committed configuration: shared
 development states the agentic flag live, production states it empty, permanently and by a test
@@ -1228,7 +1295,10 @@ input with its SHA-256 and source URL, and the probe-calibration README gives th
 verification steps.
 
 Corpus runs use \lcode{devtools/validation/repair\_corpus.py} with \code{-{}-bundle};
-model-directed runs replay byte-identically from a recorded-reply cache. The long-form version of
+one-shot model-directed runs replay byte-identically from a recorded-reply cache, and agent-driven
+runs replay as their recorded packages. The CRS v3 verdict of Section~\ref{sec:v3results} is sealed
+under \lcode{devtools/validation/evidence/2026-11-20-crs-v3-verdict/}, and its macros are generated
+by \lcode{devtools/validation/v3\_eval/results\_to\_tex.py}. The long-form version of
 this paper, adding the full methodology section, the Formula 1000 vehicle case study and a
 discussion of what the results mean, is \code{full-paper.tex}.
 

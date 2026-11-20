@@ -376,11 +376,37 @@ Section~\ref{sec:how} are unchanged by this work and are what bound it: every ca
 measured against your uploaded file, still rolled back unless it improves the part, and still
 reviewed before anything is released.
 
-\topic{What we will not do with it} We will not report a gain from this work until it has been
-measured on a corpus of real failures, scored against the deterministic baseline it has to beat,
-with the number of parts it broke reported beside the number it fixed. Until then the figures in
-Section~\ref{sec:results-anchor} are what CRS does, and they are measured on the deterministic
-system you would be evaluating.
+\topic{What we will not do with it} We report a gain from this work only as it is measured on real
+failing parts, scored against the deterministic baseline it has to beat, with the number of parts it
+broke reported beside the number it fixed. Section~\ref{sec:v3brief} holds that measurement. The
+figures in Section~\ref{sec:results-anchor} are measured on the deterministic system you would be
+evaluating.
+
+% ============================================================ v3 results ====
+% The values below are generated from sealed evidence by
+% devtools/validation/v3_eval/results_to_tex.py. A [PENDING] value has not been measured. Under this
+% brief's rule, do not send a customer a copy that still prints [PENDING]: either the runs have
+% landed and the numbers stand, or this section is cut from the copy that goes out.
+\section{Measured Results (CRS v3)}\label{sec:v3brief}
+
+\input{crs-v3-results}
+
+We ran the extended system once against the deterministic one, on the same 120 real parts that fail
+to mesh, plus 100 parts that already mesh. A value printed as \textbf{[PENDING]} has not been
+measured yet and is not a zero.
+
+\topic{What it fixed and what it broke} The extended system newly meshed \vThreeNewlyMeshed{} of
+\vThreeNFiles{} failing parts and newly broke \vThreeNewlyBroken. The deterministic system newly
+meshed \vThreeDetNewlyMeshed. Of the \vThreeCleanNFiles{} parts that already meshed,
+\vThreeCleanByteUnchanged{} came back unchanged. Each part the extended system newly meshed cost
+\vThreeCostPerFixed{} in model calls and machine time. Against our own acceptance rule, which asks
+for four times the deterministic count with nothing broken, the result is \vThreeVerdict.
+
+\topic{How far to read it} This is one run on a small sample, so a difference of one or two parts
+is noise. ``Meshes'' here means a quick gmsh check at one mesh size, which is stricter on some
+parts and looser on others than your production mesher. Where the deterministic system meshes very few
+of these parts a ratio says little, so we print the counts beside it. Your own parts, meshed in your own
+environment, are the test that settles it.
 
 % =============================================================== 8 ==========
 \section{Evaluation}
