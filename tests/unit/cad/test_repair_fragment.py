@@ -68,8 +68,11 @@ def doubles(monkeypatch, flag_on):
                             lambda shape, face: calls.append("owner") or owners)
         monkeypatch.setattr(operations, "_meeting_partner",
                             lambda shape, body, face: calls.append("partner") or partner)
+        # THE BOUNDED SEAM, not the kernel function: `apply` asks for the common volume through
+        # the dispatcher now (row 5), so patching `_common_volume` would be patching something
+        # `apply` never calls and every answer here would read as unmeasured.
         monkeypatch.setattr(operations, "_face_owner_sets", lambda shape: list(owner_sets))
-        monkeypatch.setattr(operations, "_common_volume",
+        monkeypatch.setattr(operations, "_bounded_common_volume",
                             lambda a, b: calls.append("common") or common)
         monkeypatch.setattr(operations, "_general_fuse",
                             lambda a, b, faces: calls.append("fuse") or (images, "HISTORY"))
