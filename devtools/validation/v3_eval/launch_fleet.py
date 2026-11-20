@@ -185,9 +185,11 @@ def _gcloud_json(cmd: list[str]):
     return json.loads(out.stdout or "null")
 
 
-#: Roles that let the compute SA create result objects (rows.json, DONE, ...). Unconditional only.
+#: Roles that let the compute SA create, REPLACE and DELETE result objects: publish_unit re-copies
+#: rows.json/PROVENANCE.json over the rsync'd copies, and a rerun shard removes its old FAILED
+#: marker. objectCreator (create-only) is deliberately absent. Unconditional grants only.
 WRITE_ROLES = frozenset({
-    "roles/storage.objectAdmin", "roles/storage.objectCreator", "roles/storage.objectUser",
+    "roles/storage.objectAdmin", "roles/storage.objectUser",
     "roles/storage.admin", "roles/storage.legacyBucketWriter", "roles/storage.legacyBucketOwner",
     "roles/editor", "roles/owner",
 })
@@ -230,7 +232,9 @@ def live_checks(args, vcpus: int) -> tuple[list[str], list[str]]:
         if subprocess.run(["gcloud", "storage", "ls", f"{args.prefix}/inputs/{kind}/"],
                           capture_output=True).returncode:
             problems.append(f"no {kind} inputs staged under {args.prefix}/inputs/{kind}/")
-    bucket = "gs://" + args.prefix.removeprefix("gs://").split("/", 1)[0]
+    # Workers upload results to BUCKET (create_command's v3-bucket), whatever --prefix the inputs
+    # are read from, so that is the bucket whose write access decides whether a launch can land.
+    bucket = BUCKET
     try:
         problem = sa_write_problem(
             _gcloud_json(["gcloud", "storage", "buckets", "get-iam-policy", bucket]),

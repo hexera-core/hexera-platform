@@ -448,8 +448,7 @@ def test_a_compute_sa_that_can_only_read_the_bucket_is_refused():
 
 
 @pytest.mark.parametrize("where,role", [
-    ("bucket", "roles/storage.objectAdmin"), ("bucket", "roles/storage.objectCreator"),
-    ("bucket", "roles/storage.objectUser"), ("bucket", "roles/storage.legacyBucketWriter"),
+    ("bucket", "roles/storage.objectAdmin"), ("bucket", "roles/storage.objectUser"), ("bucket", "roles/storage.legacyBucketWriter"),
     ("project", "roles/editor"), ("project", "roles/storage.admin"),
 ])
 def test_a_compute_sa_with_a_write_role_on_bucket_or_project_passes(where, role):
@@ -473,3 +472,31 @@ def test_every_arm_runs_the_shipping_repair_timeout():
     tool calls; shared dev runs 420. Every arm gets it, or the arms stop being comparable."""
     for name, arm in spec.ARMS.items():
         assert arm["env"].get("CAD_REPAIR_TIMEOUT_S") == "420", name
+
+
+def test_create_only_access_is_refused_because_workers_replace_and_delete_objects():
+    # publish_unit re-copies rows.json/PROVENANCE.json over the rsync'd copies and a rerun shard
+    # deletes its old FAILED marker: objectCreator can do neither, so every shard would end FAILED.
+    launch = _load("v3_launch_under_test_sa_creator", V3 / "launch_fleet.py")
+    sa = f"serviceAccount:{launch.SERVICE_ACCOUNT}"
+    bucket = _policy(("roles/storage.objectCreator", [sa]), ("roles/storage.objectViewer", [sa]))
+    assert launch.sa_write_problem(bucket, _policy())
+
+
+def test_write_access_is_checked_on_the_results_bucket_not_the_input_prefix(monkeypatch):
+    launch = _load("v3_launch_under_test_sa_bucket", V3 / "launch_fleet.py")
+    asked = []
+
+    def fake_json(cmd):
+        asked.append(cmd)
+        return {"quotas": []} if "regions" in cmd else {"bindings": []}
+
+    monkeypatch.setattr(launch, "_gcloud_json", fake_json)
+    monkeypatch.setattr(launch.subprocess, "run",
+                        lambda *a, **k: subprocess.CompletedProcess(a, 0, "", ""))
+    args = type("A", (), {"image": "img", "image_commit": "a" * 40, "commit": COMMIT,
+                          "prefix": "gs://dev-crsv3-other-inputs/eval/v3-verdict",
+                          "machine_type": "c2d-standard-8"})()
+    launch.live_checks(args, 8)
+    buckets = [c[-1] for c in asked if c[:4] == ["gcloud", "storage", "buckets", "get-iam-policy"]]
+    assert buckets == [launch.BUCKET]
