@@ -278,6 +278,97 @@ def test_the_whole_shape_posture_still_refuses_a_scoped_operation_there(monkeypa
     assert session.scan_count == 0
 
 
+def _whole_shape_session(monkeypatch, *, meshes: bool, deviation="measured",
+                         review: str = "live", accepts: bool = True):
+    """A session whose plan is all whole-shape, with the whole-shape conditions scripted."""
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_WHOLE_SHAPE_AIM", "live", raising=False)
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_PACKAGE_REVIEW", review, raising=False)
+    session = _session()
+    monkeypatch.setattr(session, "_review", lambda *a, **kw: (
+        {"reviewed": "accept", "review_reason": "sound", "review_s": 0.0}
+        if accepts else {"reviewed": "reject", "review_reason": "no", "review_s": 0.0}))
+    for op in session.test_ops:
+        op.whole_shape = True
+    monkeypatch.setattr(session, "_deviation_evidence",
+                        lambda *, cap_s: ({"deviation_mm": 0.001}, deviation))
+    monkeypatch.setattr(session, "_meshes_now", lambda **kw: meshes)
+    return session
+
+
+def test_a_whole_shape_aim_needs_the_reviewer_to_be_live(monkeypatch):
+    """"ALWAYS REVIEWED" IS NOT THE SAME AS "NEVER AUTO-ACCEPTED", and I had only built the
+    second. `review_tier` refuses to auto-accept this package - but with the review posture OFF
+    there is no reviewer to refuse it TO, and an unscoped claim would commit with no judgement of
+    any kind. That is the one outcome every condition on this aim exists to prevent."""
+    session = _whole_shape_session(monkeypatch, meshes=True, review="off")
+
+    verdict = session.try_package(_package(session, cleared={_EDGE}, located=False))
+
+    assert verdict.status == "reverted"
+    assert "CAD_REPAIR_PACKAGE_REVIEW is off" in verdict.reason
+
+
+def test_a_whole_shape_aim_is_reverted_unless_the_part_now_meshes(monkeypatch):
+    """SUCCESS IS ONLY THAT THE PART MESHES. Never that the named defect disappeared: the name is
+    coarse, and a whole-shape fix can change the failure's KIND - edge-through-face becoming
+    overlapping facets - so the old name vanishes from the after scan while the part is no better,
+    and the predicate reads that as the claim holding. The probe cannot be fooled by it."""
+    session = _whole_shape_session(monkeypatch, meshes=False)
+
+    verdict = session.try_package(_package(session, cleared={_EDGE}, located=False))
+
+    assert verdict.status == "reverted"
+    assert "still does not mesh" in verdict.reason
+
+
+def test_a_whole_shape_aim_commits_when_the_part_meshes(monkeypatch):
+    session = _whole_shape_session(monkeypatch, meshes=True)
+
+    verdict = session.try_package(_package(session, cleared={_EDGE}, located=False))
+
+    assert verdict.status == "committed", verdict.reason
+
+
+def test_an_unmeasured_deviation_reverts_a_whole_shape_aim(monkeypatch):
+    """A DEVIATION IS EVIDENCE EVERYWHERE ELSE AND A GATE HERE. Every other package is judged on a
+    scan scoped to its region, so an unmeasured deviation leaves that judgement intact; this one
+    has no scoped judgement at all, so an unmeasured deviation leaves NOTHING measuring how far
+    the part moved."""
+    session = _whole_shape_session(monkeypatch, meshes=True,
+                                   deviation="not measured: probe off")
+
+    verdict = session.try_package(_package(session, cleared={_EDGE}, located=False))
+
+    assert verdict.status == "reverted"
+    assert "not measured" in verdict.reason
+
+
+def test_the_mesh_is_not_asked_about_when_the_deviation_is_missing(monkeypatch):
+    """Order matters for cost: a package with no deviation is refused before the probe, and both
+    are refused before the reviewer."""
+    asked: list[int] = []
+    session = _whole_shape_session(monkeypatch, meshes=True,
+                                   deviation="not measured: probe off")
+    monkeypatch.setattr(session, "_meshes_now", lambda **kw: asked.append(1) or True)
+
+    session.try_package(_package(session, cleared={_EDGE}, located=False))
+
+    assert asked == []
+
+
+def test_an_ordinary_package_keeps_the_deviation_as_evidence(monkeypatch):
+    """The gate is about the AIM. A located package with no deviation measurement still commits -
+    its scoped scan is the judgement, and the deviation was only ever evidence beside it."""
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_WHOLE_SHAPE_AIM", "live", raising=False)
+    session = _session()
+    monkeypatch.setattr(session, "_deviation_evidence",
+                        lambda *, cap_s: ({}, "not measured: probe off"))
+
+    verdict = session.try_package(_package(session, cleared={_EDGE}))
+
+    assert verdict.status == "committed", verdict.reason
+
+
 def test_the_whole_shape_posture_admits_a_whole_shape_plan(monkeypatch):
     """And with every operation whole-shape, the package is EXECUTED rather than refused: the
     scoped proof is replaced, not waived - whole-shape scans, a whole-part deviation, no

@@ -1526,6 +1526,46 @@ class RepairSession:
 
         deviation, deviation_status = self._deviation_evidence(
             cap_s=package.budget.timeout_s - (self.clock() - started))
+        if _whole_shape_aim(package):
+            # THE WHOLE-SHAPE AIM'S OWN TWO CONDITIONS, and both REPLACE a scoped proof rather
+            # than add to one. They are read here, after the predicate and BEFORE the reviewer, so
+            # a part that still does not mesh costs no model call.
+            #
+            # SUCCESS IS ONLY THAT THE PART NOW MESHES. Never that the named defect disappeared:
+            # `shape:<code>@<stage>` is coarse, and a whole-shape fix can change the failure's
+            # KIND - edge-through-face becoming overlapping facets - so the old name vanishes from
+            # the after scan while the part is no better. The predicate would read that as the
+            # claim holding. The mesh probe cannot be fooled by it.
+            whole_reason = ""
+            if package_review.posture() != "live":
+                # "ALWAYS REVIEWED" IS NOT THE SAME AS "NEVER AUTO-ACCEPTED. `review_tier` refuses
+                # to auto-accept this package, but with the review posture OFF there is no
+                # reviewer to refuse it to - and then an unscoped claim would commit with no
+                # judgement of any kind, which is the one outcome every condition on this aim
+                # exists to prevent. So the aim requires the seat it depends on.
+                whole_reason = ("the package is aimed at the whole shape, which needs the "
+                                "reviewer's judgement in place of a scoped proof, and "
+                                "CAD_REPAIR_PACKAGE_REVIEW is off")
+            elif deviation_status != package_review.DEVIATION_MEASURED:
+                # A DEVIATION IS EVIDENCE EVERYWHERE ELSE AND A GATE HERE. Every other package is
+                # judged on a scan scoped to its region, so an unmeasured deviation leaves that
+                # judgement intact; this one has no scoped judgement at all, so an unmeasured
+                # deviation leaves NOTHING measuring how far the part moved.
+                whole_reason = ("the package is aimed at the whole shape and its deviation was "
+                                f"not measured ({deviation_status}), so nothing bounds how far "
+                                "the part moved")
+            elif not self._meshes_now(
+                    cap_s=package.budget.timeout_s - (self.clock() - started)):
+                whole_reason = ("the package is aimed at the whole shape and the delivered part "
+                                "still does not mesh, which is the only success this aim has")
+            if whole_reason:
+                (self.shape, self._defects, self.complete_scan, self.accounting,
+                     self._standing_mesh) = snapshot
+                return self._record_package(PackageVerdict(
+                    region_index=region.index, status=REVERTED, reason=whole_reason,
+                    verdicts=tuple(verdicts), reclassified=reclassified,
+                    scan_s=scan_s, apply_s=apply_s,
+                    measure_s=_measure_total(measure_s, verdicts)))
         review: dict = {}
         if package_review.posture() == "live":
             # 8. THE SEMANTIC REVIEW, AFTER THE CLAIM HELD AND BEFORE THE COMMIT IS DURABLE. A
