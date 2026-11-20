@@ -1,0 +1,506 @@
+[
+  {
+    "file": "trj4_k1_geo-ac-214.stp",
+    "size_bytes": 512993,
+    "valid_before": true,
+    "counts_before": {
+      "solids": 0,
+      "shells": 0,
+      "faces": 60,
+      "edges": 288,
+      "vertices": 576
+    },
+    "defects_before": [
+      "open_shell",
+      "small_edge"
+    ],
+    "located_before": {
+      "open_shell": 67,
+      "small_edge": 2
+    },
+    "regions_before": {
+      "unknown": 69
+    },
+    "status": "repairable",
+    "route": "conservative_repair",
+    "confidence": 0.7,
+    "targets": [
+      {
+        "entity": "edge:1",
+        "code": "open_shell",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:3",
+        "code": "open_shell",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:4",
+        "code": "open_shell",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:10",
+        "code": "open_shell",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:14",
+        "code": "open_shell",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:18",
+        "code": "open_shell",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:26",
+        "code": "open_shell",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:34",
+        "code": "open_shell",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:36",
+        "code": "open_shell",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:37",
+        "code": "open_shell",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:41",
+        "code": "open_shell",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:45",
+        "code": "open_shell",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:49",
+        "code": "open_shell",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:54",
+        "code": "open_shell",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:58",
+        "code": "open_shell",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:62",
+        "code": "open_shell",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:66",
+        "code": "open_shell",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:70",
+        "code": "open_shell",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:75",
+        "code": "open_shell",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:79",
+        "code": "open_shell",
+        "region": "unknown"
+      }
+    ],
+    "abstain_reason": "",
+    "operations": [
+      {
+        "op": "sew_faces",
+        "status": "kept",
+        "reason": "",
+        "basis": "kernel",
+        "defect_code": "open_shell",
+        "targets": [
+          "edge:432f34bbd62c7d16"
+        ]
+      }
+    ],
+    "operations_attempted": 1,
+    "operations_kept": 1,
+    "stopped_because": "resolved",
+    "resolved": true,
+    "complete_scan": true,
+    "planner": "repair-v1",
+    "refusals": [
+      {
+        "defect": "edge:014a46cc07542b5e",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:01933dbf30d75a1a",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:064edc3862270b4d",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:0c2966d055a95f34",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:0e6ad883fc32cd71",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:1058693d516446f3",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:123b296cd9c3e013",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:1df1f15bf0e14e6a",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:22f4bdddb592a16a",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:297eef17060a702b",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:34a36b2e73814780",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:3606bf8183d57286",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:3749567437b4831d",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:3760c1f946f61c52",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:38f22fe9a3709396",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:3d69143336089d00",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:43267967718a2116",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:432f34bbd62c7d16",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:4d4a234a424f805c",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:59ad3d2928180d54",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:59e3dbcbf71fe4f0",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:5f4b06605b4b15f9",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:6c9ee5575ce844b4",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:7308d8f1c1e6c9a6",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:734955c143754497",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:7367f57522544093",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:79d3df10e11ff018",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:8c108c6138c05847",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:938ea3377f1e2a4c",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:9712099dbb2af9c9",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:98ce0f43ff9323a4",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:996e2e1c63aacae1",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:9fc177a37a58e66e",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:a367ed096fae95eb",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:a698033f1d57f8be",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:acad9366dac187b4",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:b0548d0c52096748",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:b147475fbe073115",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:b163d12c8a43399d",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:b8f2ac7927d7e083",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:c436a4ac4b92b8b3",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:c59fe1098da97f73",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:c76af67e6cb835fa",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:c96c054ea3ede64a",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:ca51880c6febf61b",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:cc18704747d58de1",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:cdcd8d1bbfe694e1",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:ce516e27e619d3a4",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:ce5db8557a684808",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:d0ba902e1bd7808a",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:d113b183311b936f",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:d155ef63b214c00f",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:d51c18b8094b987a",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:d82311dd11e65793",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:d8d761bb9ec494db",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:d926934996f6ab8a",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:e0b83a0b11b86700",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:e21a499cc6cb2f47",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:e2d4476e206f7810",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:e84228d1e874ca22",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:ef436e85e6f4e994",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:f1acff1adaf62d8f",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:fc6073345048ad12",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:fc97ad0cfda8881d",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:fd93962f89540db5",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:ff77d7ca6c26d790",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      },
+      {
+        "defect": "edge:ff7f4395360be6e6",
+        "reason": "paired_rim",
+        "detail": "the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled"
+      }
+    ],
+    "declared_area_mm2": 0.0,
+    "valid_after": true,
+    "counts_after": {
+      "solids": 1,
+      "shells": 1,
+      "faces": 60,
+      "edges": 308,
+      "vertices": 616
+    },
+    "defects_after": [
+      "small_edge"
+    ],
+    "located_after": {
+      "small_edge": 2
+    },
+    "repaired_defects": {
+      "open_shell": 67
+    },
+    "outcome": "repaired",
+    "seconds": 8.76
+  }
+]
