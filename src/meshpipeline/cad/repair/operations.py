@@ -2449,6 +2449,15 @@ def _fuse_kernel(a, b, *faces) -> dict:
     """
     (a_pieces, b_pieces), history = _general_fuse(a, b, faces)
     fate: list[dict] = []
+    # BOTH BODIES COME BACK, MODIFIED OR NOT, AND THIS IS THE WHOLE POINT OF THE ANSWER'S SHAPE.
+    # The fuse's images share the new contact face WITH THE OTHER BODY - and when the kernel
+    # leaves one body alone (a small box pressed into a big box's side is not cut), the shared
+    # face is an object of THAT UNTOUCHED BODY. In-process that identity is what makes the
+    # interface conformal. It cannot cross a process boundary: the parent's untouched body is a
+    # different object from the child's. So the child sends ITS copy of each body - both from the
+    # one builder, so they share with each other - and the parent splices both. Sending only the
+    # modified body gave a result with ZERO shared faces, which is the opposite of what
+    # `fragment_bodies` exists to produce (native: two touching boxes).
     for face in faces:
         if not history.IsRecorded(face):
             fate.append({"state": _FUSE_ABSENT})
@@ -2458,11 +2467,20 @@ def _fuse_kernel(a, b, *faces) -> dict:
             fate.append({"state": _FUSE_GONE})
             continue
         fate.append({"state": _FUSE_IMAGE, "image": value})
-    return {"a": list(a_pieces), "b": list(b_pieces), "fate": fate}
+    return {"a": list(a_pieces) or [a], "b": list(b_pieces) or [b],
+            # WHAT THE KERNEL ACTUALLY DID, kept apart from what to splice: `nothing_fragmented`
+            # and `body_split` are judgements about the fuse, and a body sent back untouched must
+            # not read as a body the fuse rebuilt.
+            "a_pieces": len(a_pieces), "b_pieces": len(b_pieces), "fate": fate}
 
 
 def _fuse_in_child(a, b, faces, *, budget_s: float = FRAGMENT_KERNEL_BUDGET_S):
-    """`((pieces of a, pieces of b), history)` with the fuse run in a bounded child, or None.
+    """`((a's shape, b's shape), (a's piece count, b's piece count), history)`, or None.
+
+    EACH BODY'S SHAPE IS ALWAYS THERE and the COUNTS say what the fuse did: a count of 0 is a
+    body the kernel left alone, whose shape is the child's own copy rather than an image. The
+    caller splices both - see `_fuse_kernel` for why identity makes that necessary - and judges
+    `nothing_fragmented` and `body_split` on the counts.
 
     The history is REBUILT HERE from the child's facts, so `mapping_from_context` reads it like
     any operation's own context and nothing downstream learns that the Boolean happened
@@ -2480,6 +2498,9 @@ def _fuse_in_child(a, b, faces, *, budget_s: float = FRAGMENT_KERNEL_BUDGET_S):
     fate = answer.get("fate")
     if not isinstance(fate, list) or len(fate) != len(faces):
         return None
+    counts = (answer.get("a_pieces"), answer.get("b_pieces"))
+    if not all(isinstance(n, int) for n in counts):
+        return None
     history = ShapeBuild_ReShape()
     for face, recorded in zip(faces, fate, strict=True):
         state = str((recorded or {}).get("state", _FUSE_ABSENT))
@@ -2492,7 +2513,7 @@ def _fuse_in_child(a, b, faces, *, budget_s: float = FRAGMENT_KERNEL_BUDGET_S):
             if image is None:
                 return None
             history.Replace(face, image)
-    return (tuple(answer.get("a") or ()), tuple(answer.get("b") or ())), history
+    return (tuple(answer.get("a") or ()), tuple(answer.get("b") or ())), counts, history
 
 
 def _tally(shape) -> tuple[int, int, float]:
@@ -2640,15 +2661,22 @@ class FragmentBodies:
             return declined("unmeasured (the general fuse did not finish in its budget, so what "
                             "it did to the pair cannot be accounted for)",
                             common_volume_mm3=float(common))
-        (owner_pieces, partner_pieces), history = fused
-        if not owner_pieces and not partner_pieces:
+        (owner_images, partner_images), (owner_cut, partner_cut), history = fused
+        if not owner_cut and not partner_cut:
             return declined("nothing_fragmented (the fuse modified neither body: there is no "
                             "contact to share)", common_volume_mm3=float(common))
-        if len(owner_pieces) > 1 or len(partner_pieces) > 1:
-            return declined(f"body_split (the fuse cut the bodies into {len(owner_pieces)} and "
-                            f"{len(partner_pieces)} pieces)", common_volume_mm3=float(common))
-        replacements = [(body, pieces[0]) for body, pieces in
-                        ((owner, owner_pieces), (partner, partner_pieces)) if pieces]
+        if owner_cut > 1 or partner_cut > 1:
+            return declined(f"body_split (the fuse cut the bodies into {owner_cut} and "
+                            f"{partner_cut} pieces)", common_volume_mm3=float(common))
+        if not owner_images or not partner_images:
+            return declined("unmeasured (the fuse did not account for both bodies)",
+                            common_volume_mm3=float(common))
+        # BOTH BODIES ARE REPLACED, so the pair's shared face is ONE object (`_fuse_kernel`).
+        replacements = [(owner, owner_images[0]), (partner, partner_images[0])]
+        # ONLY WHAT THE FUSE ACTUALLY CUT IS "rebuilt". A body it left alone comes back as the
+        # child's identical copy, with the same fingerprints, and calling its faces rebuilt would
+        # hand the revealed and new-defect rules a part they would read as all-new geometry.
+        rebuilt_pairs = [pair for pair, cut in zip(replacements, (owner_cut, partner_cut)) if cut]
         spliced, _ = splice(shape, replacements)
 
         solids_before, faces_before, area_before = _tally(shape)
@@ -2664,7 +2692,7 @@ class FragmentBodies:
         return OpOutcome(shape=spliced, mapping=mapping,
                          added=_split_fingerprints(shape, spliced, diagonal_mm=diagonal),
                          rebuilt=tuple(dict.fromkeys(
-                             name for _body, image in replacements
+                             name for _body, image in rebuilt_pairs
                              for name in _face_names(image, diagonal_mm=diagonal))),
                          evidence={"solids_delta": int(solids_delta),
                                    "faces_added": int(faces_after - faces_before),

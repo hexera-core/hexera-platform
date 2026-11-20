@@ -244,7 +244,7 @@ def touching(monkeypatch):
     # the dispatcher's child, so patching the kernel functions would patch what it never calls.
     monkeypatch.setattr(operations, "_bounded_common_volume", lambda a, b: 0.0)
     monkeypatch.setattr(operations, "_fuse_in_child",
-                        lambda a, b, faces: ((("A2",), ("B2",)), "H"))
+                        lambda a, b, faces: ((("A2",), ("B2",)), (1, 1), "H"))
     monkeypatch.setattr(operations, "splice", lambda shape, pairs: ("SPLICED", "CTX"))
     tallies = {"shape": (2, 307, 750.0), "SPLICED": (2, 319, 750.0)}
     monkeypatch.setattr(operations, "_tally", lambda shape: tallies[shape])
