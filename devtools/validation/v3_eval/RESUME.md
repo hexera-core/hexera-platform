@@ -288,6 +288,11 @@ RUNBOOK. Four rules, now stated the same way everywhere:
 ### Post-merge shared-dev checklist (lane D). FOR THE OWNER: shared dev is human-run
 Agents neither submit jobs to shared dev nor read its `admin-api-key`. Steps 1, 3 and 4 are yours. Step 2 is read-only, and lane D can do it once you send the job id.
 
+-1. **Roll the worker fleet (owner runs this).** A merge to main deploys only `images,migrate,console,admin` (`deploy.yml`, the main branch). The worker fleet, which runs the repair node and carries `cad-repair-investigation-trace` in its instance metadata, stays on its previous build: on 2026-11-20 it was still the 11-17 template, with no v3 flags at all. Shared dev therefore runs no v3 repair, and writes no trace, until this runs:
+   ```
+   gh workflow run deploy.yml --ref main -f fleet=true      # empty slug = shared dev
+   gh run watch
+   ```
 0. **Pre-check that the flag reached the workers** (read-only). This must print `cad-repair-investigation-trace` = `true`:
    ```
    gcloud compute instance-templates list --project hexera-dev --filter="name~^dev-worker" --sort-by=~creationTimestamp --limit 1 --format=json \
