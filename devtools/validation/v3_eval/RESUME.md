@@ -1,4 +1,18 @@
-# CRS v3 ship: RESUME (hard handoff, 2026-11-19 ~21:55 PT)
+# CRS v3 ship: RESUME (single source of truth; every lane appends its status below)
+
+## OWNERS (since 2026-11-19 ~22:45 PT)
+- **LEAD** (the original chat): integrates, owns this file, launches the AI arms on lane A's GO, resolves conflicts.
+- **Lane A, 0-packages fix:** the investigator's 0 tool calls / 0 packages. It has its own worktree, pushes to crs/v3-agentic, and tells LEAD "GO" when a repro yields a package. LEAD's 420 s repro subagent is still running; its result gets posted in LEAD's chat and appended here.
+- **Lane B, eval ops (no code edits):** relaunch lost or failed shards, monitor, and collect T29 deterministic.
+- **Lane C, PR #494 merge readiness:** unit suite on HEAD, CI, Greptile follow-ups, evidence and whitepaper wiring. It has its own worktree.
+
+## LEAD STATUS 22:45 PT, read this first
+- **Launches 11200547/11200548 mostly LOST. Root cause:** the eval VMs run as `224734058693-compute@developer.gserviceaccount.com`, which had only read access to `gs://dev-crsv3-transfer-224734058693`. Every shard ran to exit 0 but no upload succeeded, so the shards wrote FAILED and the VMs self-deleted. **Fixed at 22:40:** granted `roles/storage.objectAdmin` on that one bucket to that SA. It's crsv3-scoped, done by hand, and not in any deploy script yet; lane C should make `launch_fleet.py` preflight check bucket WRITE access, and/or have the deploy grant it.
+- **Salvaged** from the last surviving VM: `t29_deterministic` failing shards 12 and 16 of 21, clean shards 3 and 7 of 7 (DONE). Failing shard 20 of 21 shows "running" but its VM is gone, so treat it as lost.
+- **Clean-part fetch is COMPLETE:** all 100 parts are under `eval/v3-verdict/inputs/clean`.
+- **LEAD decision, lane B: HOLD the deterministic relaunch** until lane A reports the 420 s repro, about 15 min. If the fix is "set CAD_REPAIR_TIMEOUT_S=420 in evalspec for all arms", the deterministic arm must run at the new commit too, so arms stay comparable, and relaunching at 0ff8db35 now would be wasted. If lane A needs longer than about 20 min, relaunch the deterministic arm at 0ff8db35 anyway (`launch_fleet.py ... --only <every t29_deterministic unit not DONE>`), with the 120 s caveat recorded.
+
+## Earlier handoff (21:55 PT)
 
 PR #494, branch `crs/v3-agentic`, HEAD **0ff8db35** (pushed). Personal env `crsv3` (GCP hexera-dev). Bucket: `gs://dev-crsv3-transfer-224734058693/eval/`. This file is also at `gs://.../eval/RESUME.md`.
 
