@@ -397,7 +397,7 @@ def test_apart_boxes_and_single_solid_have_no_contact_pair():
 _TOUCH_ONLY = "abc/00506275_541a2ce632275fed8964367a_step_000.step"
 
 
-def test_corpus_plc_without_coordinates_is_located_by_contact():
+def test_corpus_plc_without_coordinates_is_located_by_inference():
     from meshpipeline.cad.repair.brep import _read_shape
     from meshpipeline.cad.repair.contracts import DefectCode
     from meshpipeline.cad.repair.localize import (
@@ -412,7 +412,15 @@ def test_corpus_plc_without_coordinates_is_located_by_contact():
     found = mesh_probe.mesh_defects(shape, diagonal_mm=diagonal, budget_s=300.0)
     assert found and all(d.code is DefectCode.mesh_edge_through_face for d in found), found
     assert all(d.entity_type == "face" and d.entity_index >= 1 for d in found)
-    assert all(d.measurements["located_by"] == "contact-pair" for d in found)
+    # EITHER LOCATED ROUTE, AND A ROUTE EITHER WAY. gmsh's PLC error on this file names no
+    # coordinates, so the defect has to be placed by inference - and since the clash search
+    # landed, the crossing SURFACE PAIR places it before the contact fallback is reached. Both
+    # are inferences we make rather than gmsh's own word, both carry `located_by` saying so, and
+    # which one wins is a question of which evidence this file happens to offer. What this test
+    # exists to prove is that a coordinate-less failure is still placed on a named face at all,
+    # so it requires a located, fingerprinted defect and accepts either route.
+    located = {"contact-pair", "surface-mesh-clash"}
+    assert all(d.measurements["located_by"] in located for d in found), found
     faces = _faces(shape)
     for defect in found:
         (reference,) = _stamped((EntityDefect(
