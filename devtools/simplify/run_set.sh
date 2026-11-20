@@ -9,7 +9,8 @@ J=${JOBS:-16}             # parallel jobs; at the wall-rule size a big part need
 cd ~/bench
 # wait for any bench job already holding the cores
 while pgrep -f "bench/venv/bin/python .*(harness|local)[.]py" >/dev/null; do sleep 30; done
-while read -r rel; do
+# the list on fd 3: a solver subprocess reading stdin would otherwise swallow the remaining lines
+while read -r rel <&3; do
   [ -z "$rel" ] && continue
   n=$(basename "$rel"); n=${n%.*}
   d="$OUT/$n"
@@ -28,5 +29,5 @@ while read -r rel; do
     timeout $T $PY -I code/local.py "$CORPUS/$rel" --harness "$d" --k 3 --refine 2 --jobs $J \
       --driver-brep "$d/geom/package_all.brep" 2>&1 | grep -vE '^\*\*\*|^Warning|: ok$' | tail -2
   fi
-done < "$LIST"
+done 3< "$LIST"
 echo "=== done $(date -u +%H:%M:%S)"
