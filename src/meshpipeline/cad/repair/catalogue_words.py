@@ -16,6 +16,8 @@ FRAGMENT = "fragment_bodies"
 REBUILD = "rebuild_face"
 #: The operation that closes a face's open wire, moving vertices (CAD_REPAIR_CLOSE_WIRE_GAPS).
 CLOSE_GAPS = "close_wire_gaps"
+#: The operation that refines the faces of a sub-mesh-size gap (CAD_REPAIR_RESOLVE_SUB_MESH_GAP).
+RESOLVE_GAP = "resolve_sub_mesh_gap"
 
 _BASE = (
     "- fix_small_edges: merge edges too short to keep",
@@ -34,7 +36,8 @@ _BASE = (
 def catalogue_text(*, split_closed_faces: bool | None = None,
                    fragment_bodies: bool | None = None,
                    rebuild_face: bool | None = None,
-                   close_wire_gaps: bool | None = None) -> str:
+                   close_wire_gaps: bool | None = None,
+                   resolve_sub_mesh_gap: bool | None = None) -> str:
     """One line per catalogued operation, for the given consent (the deployment's flags when not
     told)."""
     import meshpipeline.settings.cad_repair as rcfg
@@ -47,6 +50,8 @@ def catalogue_text(*, split_closed_faces: bool | None = None,
         rebuild_face = bool(rcfg.CAD_REPAIR_REBUILD_FACE)
     if close_wire_gaps is None:
         close_wire_gaps = bool(rcfg.CAD_REPAIR_CLOSE_WIRE_GAPS)
+    if resolve_sub_mesh_gap is None:
+        resolve_sub_mesh_gap = bool(getattr(rcfg, "CAD_REPAIR_RESOLVE_SUB_MESH_GAP", False))
     lines = list(_BASE)
     if split_closed_faces:
         lines.append(f"- {SPLIT_CLOSED}: split a closed (periodic) face - a full cylinder, cone, "
@@ -65,4 +70,11 @@ def catalogue_text(*, split_closed_faces: bool | None = None,
         lines.append(f"- {CLOSE_GAPS}: close the gaps in one face's open boundary wire by merging "
                      "its loose vertices, moving each by at most the run's tolerance; only for a "
                      "2D-stage open-loop failure or a wire gap on a located face")
+    if resolve_sub_mesh_gap:
+        lines.append(f"- {RESOLVE_GAP}: when two faces of one solid do NOT touch but sit closer "
+                     "than the mesh size (a clash with clash_gap_mm above 0, usually a thin "
+                     "wall), split them along their own iso-curves so the default mesh follows "
+                     "the curvature; moves no surface and never closes the gap; for an "
+                     "edge-through-face or overlapping-facets failure on a located face, not "
+                     "for a clash measured at 0 mm (that is a real intersection)")
     return "\n".join(lines)

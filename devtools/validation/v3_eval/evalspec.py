@@ -59,6 +59,9 @@ EVERYTHING_ON: dict[str, str] = {
     "CAD_REPAIR_SPLIT_CLOSED_FACES": "true",
     "CAD_REPAIR_CLOSE_WIRE_GAPS": "true",
     "CAD_REPAIR_HEAL_SELF_INTERSECTIONS": "true",
+    # Lane H (wave 5): the sub-mesh gap bucket's operation. NOT in shared dev's posture yet (the
+    # deploy plumbing is a follow-up), so with it on the eval measures one op more than shared dev runs.
+    "CAD_REPAIR_RESOLVE_SUB_MESH_GAP": "true",
     # Shared dev's repair timeout (deploy.yml). At the settings default of 120 s the final
     # reserve (60 s probe + 10 s slack) and the proof reserve leave no time to look, so the
     # investigator concluded before its first tool call. EVERY arm runs it, so they stay comparable.

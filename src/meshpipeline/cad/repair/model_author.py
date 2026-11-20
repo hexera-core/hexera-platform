@@ -398,7 +398,8 @@ class PackageGuards:
         if not clone or getattr(rcfg, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "off") != "live":
             return tuple(op_catalogue())
         return tuple(op_catalogue(split_closed_faces=True, fragment_bodies=True,
-                                 rebuild_face=True, close_wire_gaps=True))
+                                 rebuild_face=True, close_wire_gaps=True,
+                                 resolve_sub_mesh_gap=True))
 
 
 #: Every key a package body may carry. Anything else is refused, so an attempt to smuggle a field
