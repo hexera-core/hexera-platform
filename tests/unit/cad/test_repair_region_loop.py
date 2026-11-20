@@ -1295,3 +1295,27 @@ def test_a_gap_above_the_tolerance_is_not_a_real_intersection(monkeypatch):
                _clash("face:meeting", 0.0, adjacent=False))
 
     assert _order(regions, defects, "live", monkeypatch) == [1, 0]
+
+
+def test_touching_is_a_fraction_of_the_part_not_an_absolute_nanometre(monkeypatch):
+    """ONE DEFINITION OF TOUCHING, shared with the lane that measures it. Lane G's rule is a gap
+    at or under 1e-6 of the diagonal; an absolute nanometre margin would have called a real
+    0.2 um contact on a 200 mm part "apart" - and lane G's own worked example reads
+    clash_gap_mm 4.8e-15 on a single solid, which both rules accept, so only the larger gaps
+    distinguish them."""
+    from meshpipeline.cad.repair import region_loop as rl
+
+    assert rl._touching_margin_mm(200.0) == pytest.approx(2e-4)
+    assert rl._touching_margin_mm(None) == rl.REAL_INTERSECTION_GAP_FLOOR_MM
+    assert rl._touching_margin_mm(0.0) == rl.REAL_INTERSECTION_GAP_FLOOR_MM
+
+    regions = _mesh_regions("face:plain", "face:contact")
+    defects = (_clash("face:plain", 0.004, adjacent=False),
+               _clash("face:contact", 1.5e-4, adjacent=False))      # 0.15 um on a 200 mm part
+
+    import meshpipeline.settings.cad_repair as settings
+    monkeypatch.setattr(settings, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "live", raising=False)
+    # Under the part-relative margin the contact is touching and is promoted...
+    assert [r.index for r in rl._walk_order(regions, defects, 200.0)] == [1, 0]
+    # ...and with no diagonal to scale by, the floor applies and it is not.
+    assert [r.index for r in rl._walk_order(regions, defects)] == [0, 1]

@@ -253,7 +253,8 @@ _SEVERITY_RANK = {DefectSeverity.fatal: 0, DefectSeverity.error: 1,
                   DefectSeverity.warning: 2, DefectSeverity.info: 3}
 
 
-def _walk_order(regions: tuple[Region, ...], defects) -> tuple[Region, ...]:
+def _walk_order(regions: tuple[Region, ...], defects,
+                diagonal_mm: float | None = None) -> tuple[Region, ...]:
     """The regions in the order they should be OFFERED PACKAGES: worst defect first.
 
     WHY NOT `decompose` ORDER. `decompose` sorts spatially (ascending `bbox_min`), which is the
@@ -292,7 +293,7 @@ def _walk_order(regions: tuple[Region, ...], defects) -> tuple[Region, ...]:
             if defect.fingerprint in region.fingerprints:
                 worst[region.index] = min(worst.get(region.index, severity), severity)
     stops_the_mesh = _mesh_located_regions(regions, defects)
-    really_meets = _real_intersection_regions(regions, defects)
+    really_meets = _real_intersection_regions(regions, defects, diagonal_mm)
 
     def rank(region: Region) -> tuple:
         if region.index in really_meets:
@@ -311,13 +312,26 @@ def _walk_order(regions: tuple[Region, ...], defects) -> tuple[Region, ...]:
 CLASH_LOCATED = "surface-mesh-clash"
 
 
-#: A clash at or under this distance (mm) counts as touching. Lane G measures the B-rep distance
-#: between the two faces, so the figure is a measurement rather than a tolerance choice; the
-#: margin is here only so an exact 0 is not required of floating point.
-REAL_INTERSECTION_GAP_MM = 1e-9
+#: What counts as touching, as a FRACTION OF THE PART'S DIAGONAL - the same rule lane G states
+#: for the measurement it ships, so the two cannot disagree about the word. An absolute margin
+#: was wrong in both directions: 1 nm called a 0.2 um contact on a 200 mm part "apart", while on
+#: a tiny part it would have been looser than the kernel's own tolerance.
+REAL_INTERSECTION_GAP_FRACTION = 1e-6
+#: The floor, for a part with no usable diagonal: floating point noise around an exact 0.
+REAL_INTERSECTION_GAP_FLOOR_MM = 1e-9
 
 
-def _real_intersection_regions(regions: tuple[Region, ...], defects) -> frozenset[int]:
+def _touching_margin_mm(diagonal_mm: float | None) -> float:
+    """The gap at or under which two faces count as meeting, for a part this big."""
+    try:
+        scaled = REAL_INTERSECTION_GAP_FRACTION * float(diagonal_mm or 0.0)
+    except (TypeError, ValueError):
+        scaled = 0.0
+    return max(REAL_INTERSECTION_GAP_FLOOR_MM, scaled)
+
+
+def _real_intersection_regions(regions: tuple[Region, ...], defects,
+                               diagonal_mm: float | None = None) -> frozenset[int]:
     """The regions holding a clash the kernel measured as GENUINELY MEETING and NOT ADJACENT.
 
     Of the pairs gmsh complains about, only these are something an operation can heal. The other
@@ -349,7 +363,7 @@ def _real_intersection_regions(regions: tuple[Region, ...], defects) -> frozense
         gap = measurements.get("clash_gap_mm")
         if not isinstance(gap, (int, float)) or isinstance(gap, bool):
             continue                                    # absent or None: unknown
-        if float(gap) > REAL_INTERSECTION_GAP_MM:
+        if float(gap) > _touching_margin_mm(diagonal_mm):
             continue                                    # a gap no operation closes
         if measurements.get("clash_adjacent") is not False:
             continue                                    # adjacent, or nobody measured it
@@ -769,7 +783,8 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
     # region carries its own index, so nothing is lost); the WALK goes worst-first.
     # SCOPED TO THE FACES SOMETHING ELSE ALREADY NAMED, when a caller named any. `()` - every
     # caller but the mesher handback - is the walk `_walk_order` just produced, unchanged.
-    walk, not_in_focus = focus_filter(_walk_order(regions, work.defects()), focus_faces)
+    walk, not_in_focus = focus_filter(
+        _walk_order(regions, work.defects(), work.original.diagonal_mm), focus_faces)
     packages: list[PackageVerdict] = []
     escalated: list[int] = []
     committed = False
