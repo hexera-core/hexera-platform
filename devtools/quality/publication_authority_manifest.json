@@ -950,6 +950,32 @@
   "roots": []
  },
  {
+  "context": "agents/intake/engine_selection.py::engine_chosen_in::search#1|NotAPublisher|not-a-publisher|",
+  "path": "agents/intake/engine_selection.py",
+  "qualname": "engine_chosen_in",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_MESH_WITH",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "agents/intake/engine_selection.py::engine_chosen_in::search#2|NotAPublisher|not-a-publisher|",
+  "path": "agents/intake/engine_selection.py",
+  "qualname": "engine_chosen_in",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "_TELLS_OF",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "agents/intake/garbled.py::flaw::search#1|NotAPublisher|not-a-publisher|",
   "path": "agents/intake/garbled.py",
   "qualname": "flaw",
@@ -5294,6 +5320,19 @@
   "semantic": "search",
   "method": "search",
   "ordinal": 3,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/notes_acted.py::_only_conditions::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/notes_acted.py",
+  "qualname": "_only_conditions",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
   "receiver": "re",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",

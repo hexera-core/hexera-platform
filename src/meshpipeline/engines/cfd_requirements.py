@@ -115,7 +115,7 @@ def flow_run(workspace, state=None) -> bool:
 
 
 async def read_for_attempt(workspace, state, *, job_id: str = "", publish=None, run=None,
-                           wait_s: float | None = None) -> dict:
+                           wait_s: float | None = None, engine: str = "") -> dict:
     """NOTE-10 / CFDREQ-1: the notes read once for this attempt on the flow route, kept in the workspace for every
     engine (and every process) that builds it, cited, and told before any mesh is made - one short line each, and
     what was not applied. No words: nothing asked, nothing written, nothing said. Never raises (but a fenced
@@ -138,6 +138,11 @@ async def read_for_attempt(workspace, state, *, job_id: str = "", publish=None, 
         sec = MR.section("failed", note=MR.UNREAD_WORDS)
     # CFDREQ-8: the flow conditions the user confirmed size the first layer, as a y+ in their notes would
     sec = with_conditions(sec, state)
+    # NOTE-14: what the notes say that the product acted on outside the reading - the engine they name (this
+    # attempt's engine says whether it was used), the flow conditions confirmed, the kind of mesh, the unit - is
+    # never told or counted as not applied, whatever the reading made of it
+    from meshpipeline.engines import notes_acted as NA
+    sec = NA.apply(sec, MR.notes_text(state or {}), NA.facts_of(state, engine))
     MR.write(ws, sec)
     (ws / PLAN_FILE).unlink(missing_ok=True)          # a carried plan never speaks for this attempt
     if sec.get("status") == "none":
@@ -1822,7 +1827,10 @@ def report(workspace, quality: Mapping, engine: str) -> dict | None:
     sec = MR.read(workspace) if workspace else {}
     req = requirements_for(workspace) or {}
     aside = [str(d) for d in (sec.get("dropped") or [])] if sec.get("status") == "used" else []
-    if not req.get("rows") and not aside:
+    # NOTE-14: the engine the notes chose is an ask too, met when it built this mesh
+    from meshpipeline.engines import notes_acted as NA
+    engine_row = NA.report_row(sec, engine)
+    if not req.get("rows") and not aside and engine_row is None:
         return None
     plan = (_plan(workspace).get("rows") or {})
     q = dict(quality or {})
@@ -1874,6 +1882,8 @@ def report(workspace, quality: Mapping, engine: str) -> dict | None:
         why = why.removesuffix(": not applied").removesuffix(" not applied").strip() or "it could not be read"
         rows.append({"id": f"x{i}", "field": "set_aside", "asked": asked.strip().strip('"'), "applied": False,
                      "met": None, "delivered": f"not applied - {why}"})
+    if engine_row is not None:
+        rows.insert(0, engine_row)
     return MR.finish_report(rows, n_meas or n, DEFINITIONS)
 
 
