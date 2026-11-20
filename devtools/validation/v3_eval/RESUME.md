@@ -24,6 +24,13 @@
 
 
 
+
+## LEAD NOTE: lane E interim + lane A late fix (2026-11-20)
+- **Lane E:** the T29-det supporting run at 120 s attempted 0 operations on all 119 files, so its 0 is a BUDGET fact, not evidence about operations. The wave runs 420 s for every arm.
+- **Lane E, first real false rollback:** 0052_00525324 `fix_small_edges` was rolled back as `target_remains` (the kernel small_edge warning is still there), yet the WHOLE PART MESHES after the op.
+- **Approved direction (LEAD):** keep it only if the pre-op part had a real gmsh failure AND a definitive post-op whole-part probe meshes. Every cap and check stays, and package review stays on. The keep is recorded honestly as `meshes_after_target_remains` with the unmet claim listed, and counted separately. The package predicate gets the same rule. LEAD reruns the wave at lane E's sha.
+- **Lane A 97a9e216** (after the wave commit b04befe8): every native tool call is now answered, so no provider rejects the final round. Evidence from the 8-part sweep says it did not bite, because the model sends one call per round. Lane B greps the collected rows for model-error endings to confirm. 97a9e216 is included in the lane-E rerun.
+
 ## LEAD: AI WAVE LAUNCHED (00:xx PT 2026-11-20). User decision: criterion (a), plus lane E in parallel
 - **Launch id 11200820:** 12× c2d-standard-8, us-central1-b, 96 shards, all 5 units. Code **b04befe8** contains lane A's c4774a2c (5 investigator fixes), lane C's 9e8db5d8 (per-file crash isolation) and lane D's transcripts plus per-region outcomes; image 00ce0156 (toolchain); CAD_REPAIR_TIMEOUT_S=420 for every arm. Results go to `gs://dev-crsv3-transfer-224734058693/eval/<arm>-b04befe8xxxx/`.
 - **Scope:** this measures classification and escalation, not repair. 0 repairs are expected, because no operation is ever kept on this corpus (lane A, 8 parts: 24/25 regions concluded, 22 escalate, 2 mesher_side, 0 packages).
