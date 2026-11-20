@@ -37,7 +37,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 import meshpipeline.settings.cad_repair as rcfg
-from meshpipeline.cad.repair import grind, investigator_tools, observe
+from meshpipeline.cad.repair import grind, investigator_tools, mesh_probe, observe
 from meshpipeline.cad.repair import model_author as ma
 from meshpipeline.cad.repair.caps import Measure
 from meshpipeline.cad.repair.catalogue_words import catalogue_text
@@ -435,6 +435,12 @@ AGGRESSIVE_RULE = (
     "`clash_gap_mm` ABOVE {touching:g} mm means they never touch and the mesher's own tolerance "
     "crossed them - usually a thin wall. {gap_advice} A fold, and a missing or null value, are "
     "different: a null means nobody measured it, which is unknown, not zero and not false.\n"
+    "- BEFORE YOU END THIS REGION, LOOK AT WHAT IS LEFT IN IT. `mesher_side` may be the right "
+    "answer for one defect, but it is a claim about the whole region: a merged region holds "
+    "several defects, and a clash you cannot repair says nothing about a small face sitting "
+    "beside it. aim at each defect the catalogue answers at least once - a decline is an "
+    "answer - and only then conclude. a conclusion reached over a defect nobody aimed at is "
+    "refused by name.\n"
     "- SPEND THE BUDGET. a region that ends with turns left and nothing tried has told us "
     "nothing. there is no 'escalate' to reach for. once you have TRIED at least one edit on the "
     "copy you have two honest endings besides a package: `mesher_side` when the geometry is "
@@ -722,6 +728,11 @@ class _Investigation:
         #: own log forgets on either, so a region that worked the copy and then reset would read
         #: as one that never tried anything.
         self.attempted = 0
+        #: Fingerprints this region has AIMED an edit at, whether the edit ran, was rolled back,
+        #: or was refused before the kernel. The bar for "tried" (see `_UNTRIED`), and the reason
+        #: it is collected here rather than read back off the clone: an aim the author refused at
+        #: plan time leaves no edit record, and it is still an aim.
+        self.aimed: set[str] = set()
 
     # -- the conversation ----------------------------------------------------------------------
 
@@ -1300,6 +1311,63 @@ def _tried_on(scratch) -> int:
     return len(getattr(scratch, "edits", ()) or ()) if scratch is not None else 0
 
 
+#: Refused when a region ends over a located kernel defect NOTHING WAS EVER AIMED AT. Names the
+#: defect and the operation that answers it, because the whole failure was the model not knowing
+#: there was something left to try.
+_UNTRIED = (
+    "{form} is a claim about every defect in this region, and {count} of them has had no "
+    "operation aimed at it yet - {items}. aim at each one at least once; a declined attempt is "
+    "an answer and costs only the turn, and then this conclusion stands")
+
+
+def _code_name(value: object) -> str:
+    """A defect code as the edit log spells it. Both an enum and its value reach this, and a
+    comparison that silently never matches would gate every region forever."""
+    name = getattr(value, "value", value)
+    text = str(name)
+    return text.rsplit(".", 1)[-1] if text.startswith("DefectCode.") else text
+
+
+def _answering_ops(code: object) -> list[str]:
+    """The names of the clone's operations that answer `code`, in catalogue order."""
+    return [op.name for op in ma.PackageGuards._catalogue(True)
+            if code in getattr(op, "answers", frozenset())]
+
+
+def _untried(defects: tuple, inv: _Investigation, scratch) -> list[str]:
+    """`"face:abc123 small_face -> fix_small_faces"` for every LOCATED KERNEL defect of this
+    region that no edit has been aimed at.
+
+    WHY ONLY THESE. A mesh-located defect is gmsh's own complaint and has no operation of its
+    own; a defect no catalogue operation answers cannot be tried at all. Requiring either would
+    be a gate nothing can pass, and a region that cannot end honestly is worse than one that ends
+    too easily - it spends its whole budget and records `budget_spent`.
+    """
+    aimed = set(inv.aimed)
+    for edit in (getattr(scratch, "edits", ()) or ()):
+        mark = (edit.get("fingerprint") if isinstance(edit, dict)
+                else getattr(edit, "fingerprint", ""))
+        if mark:
+            aimed.add(str(mark))
+    out: list[str] = []
+    for defect in defects:
+        code = getattr(defect, "code", None)
+        mark = str(getattr(defect, "fingerprint", "") or "")
+        if not mark or mark in aimed or code in mesh_probe.MESH_CODES:
+            continue
+        names = _answering_ops(code)
+        if names:
+            out.append(f"{mark} {_code_name(code)} -> {' or '.join(names)}")
+    return out
+
+
+def _refuse_untried(form: str, defects: tuple, inv: _Investigation, scratch) -> None:
+    """Refuse `form` while a located kernel defect of this region has had nothing aimed at it."""
+    items = _untried(defects, inv, scratch)
+    if items:
+        raise ma.Refusal(_UNTRIED.format(form=form, count=len(items), items="; ".join(items)))
+
+
 def _stated(body: object) -> bool:
     """True when a conclusion form carries anything at all: a non-empty string, a non-empty list,
     a number. `{"reason": ""}` and `{"mesher_problem": []}` say nothing."""
@@ -1330,6 +1398,10 @@ def _answer(inv: _Investigation, ask: _Ask, result, *, reply) -> None:
     provider that requires a result per call rejects a history that is missing one, so a call the
     driver declines to run is answered with a refusal rather than left hanging.
     """
+    if str(ask.tool) == "edit" and isinstance(ask.args, dict):
+        aim = str(ask.args.get("fingerprint") or "").strip()
+        if aim:
+            inv.aimed.add(aim)
     payload = investigator_tools.envelope(len(inv.turns) + 1, result)
     inv.record(tool=ask.tool, args=ask.args, ok=bool(result.ok),
                error=str(result.error or ""), payload=payload,
@@ -1379,6 +1451,7 @@ def _conclude(args: object, inv: _Investigation, *, ctx, scratch, region: Region
             raise ma.Refusal("attempted_none_held gives no reason")
         if tried < 1:
             raise ma.Refusal(_NOTHING_TRIED.format(form="attempted_none_held"))
+        _refuse_untried("attempted_none_held", defects, inv, scratch)
         reason = observe.clip_text(body["reason"], ma.INTENT_MAX)
         # THE COUNT IS THE CLONE'S, not the model's word for it.
         inv.conclusion = {"form": form, "outcome": form, "reason": reason, "attempts": int(tried)}
@@ -1390,6 +1463,13 @@ def _conclude(args: object, inv: _Investigation, *, ctx, scratch, region: Region
         # waves had repaired - so it is refused until the copy has actually been worked, exactly
         # as `escalate` is.
         raise ma.Refusal(_NOTHING_TRIED.format(form="mesher_side"))
+
+    if form == "mesher_side" and demands_attempts:
+        # AND NOT OVER A DEFECT NOBODY AIMED AT. Wave 5's 0060_00608290: one merged region
+        # holding a clash and a small face, the model chased the clash until both ops declined,
+        # measured the gap, and blamed the mesher - with `fix_small_faces` never tried on the
+        # small face. One edit had been tried, so the count-based gate above let it through.
+        _refuse_untried("mesher_side", defects, inv, scratch)
 
     if form == "escalate":
         # A SHADOW HAS NO CLONE, so "keep working on the copy" is advice it cannot take and
