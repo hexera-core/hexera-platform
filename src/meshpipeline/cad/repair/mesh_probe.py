@@ -744,16 +744,21 @@ def _mesh_defects(shape, *, diagonal_mm: float, budget_s: float,
         # - that names this face, never the run's first pair, so a face whose pair really meets is
         # not read as another pair's sizing gap. One gap per pair, measured once.
         tags_of = {face: tag for tag, face in (mapping or {}).items()}
-        gaps: dict[tuple[int, int], float | None] = {}
+        owns = {}
         for defect in defects:
             tag = tags_of.get(int(defect.entity_index))
-            own = next((c for c in result.clashes if tag in c.surfaces), result.clashes[0])
-            if own.surfaces not in gaps:
-                gaps[own.surfaces] = _clash_gap(faces, mapping or {}, own, deadline=deadline)
+            owns[defect.entity_index] = next((c for c in result.clashes if tag in c.surfaces),
+                                             result.clashes[0])
+        gaps, evidence = _clash_gaps(faces, mapping or {}, list(owns.values()),
+                                     budget_s=min(CLASH_EVIDENCE_S, deadline - time.monotonic()))
+        for defect in defects:
+            own = owns[defect.entity_index]
+            if evidence:
+                defect.measurements["clash_evidence"] = evidence
             defect.measurements["located_by"] = LOCATED_BY_CLASH
             defect.measurements["clash_pairs"] = [list(c.surfaces) for c in result.clashes]
             defect.measurements["clash_pair"] = list(own.surfaces)
-            defect.measurements["clash_gap_mm"] = gaps[own.surfaces]
+            defect.measurements["clash_gap_mm"] = gaps.get(own.surfaces)
             defect.measurements["clash_kind"] = own.kind
             defect.measurements["clash_point"] = list(own.point)
     if by_contact and contact is not None:
@@ -767,6 +772,35 @@ def _mesh_defects(shape, *, diagonal_mm: float, budget_s: float,
         # defect would make it read as in-region (unplaceable is admitted), so it is dropped.
         defects = [d for d in defects if in_region(d, within, diagonal_mm=diagonal_mm)]
     return tuple(defects)
+
+
+#: The wall, in seconds, for measuring every located clash pair's B-rep gap. MEASURED, wave 4:
+#: one BRepExtrema_DistShapeShape between two BSpline faces of abc/0054_00540003 ran 150+ s in the
+#: parent - uninterruptible kernel code that no deadline check between calls could stop - and the
+#: file took 53 min with one core pinned. So the gaps are measured in ONE bounded child
+#: (`localize._bounded`: forked, SIGKILLed at the wall) and are evidence, never worth the run.
+CLASH_EVIDENCE_S = 10.0
+
+
+def _clash_gaps(faces, mapping: dict[int, int], clashes: list[Clash], *,
+                budget_s: float) -> tuple[dict[tuple[int, int], float | None], str]:
+    """Every distinct pair's gap, measured in one bounded child: (gaps by pair, "") or, when the
+    child ran out of `budget_s` or died, ({}, "budget_spent") - every gap then reads None
+    (unmeasured), never a guess. NEVER RAISES, NEVER BLOCKS PAST `budget_s` (plus the reap)."""
+    from meshpipeline.cad.repair.localize import _bounded
+
+    pairs = list(dict.fromkeys(c.surfaces for c in clashes))
+    by_pair = {c.surfaces: c for c in clashes}
+
+    def measure() -> dict[tuple[int, int], float | None]:
+        # In the child: no deadline needed, the parent's SIGKILL is the deadline.
+        return {pair: _clash_gap(faces, mapping, by_pair[pair], deadline=float("inf"))
+                for pair in pairs}
+
+    found = _bounded(measure, budget_s=max(0.0, float(budget_s)))
+    if found is None:
+        return {}, "budget_spent"
+    return found, ""
 
 
 def _clash_gap(faces, mapping: dict[int, int], clash: Clash, *,
