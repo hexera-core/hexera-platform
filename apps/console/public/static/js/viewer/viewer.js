@@ -26,8 +26,8 @@ import { bindThermalResults, sliceColour, thermalDownloads, thermalResultsHtml }
 import { bindFeaResults, feaDownloads, feaResultsHtml } from "./fea_results.js";
 // the reading instruments on the mesh: the inspect window's controls, the size legend, and the
 // plain words for what is on screen (viewer/inspect.js)
-import { cutText, dialRadius, drawingOf, EXACT_HELP_ROW, fmtLen, inspectorHtml,
-         odometerText, radiusDial, scaleBar } from "./inspect.js";
+import { cutText, dialRadius, drawingOf, exactHelpRow, fmtLen, inspectorHtml,
+         odometerText, polygonSpanWords, radiusDial, scaleBar } from "./inspect.js";
 
 let _vtkP=null;
 function loadVtk(){if(window.vtk)return Promise.resolve();
@@ -66,14 +66,52 @@ const _EDGE=[0.27,0.25,0.22];          /* hairline edges at rest */
    the tab was replaced. WebGL exposes no way to ask how much video memory is left, so this cannot
    be detected and has to be bounded instead.
 
-   WHERE THE CAP IS SET, AND WHAT IS AND IS NOT KNOWN. The largest actor the viewer draws today is
-   bl3's fluid_to_solid at 590,990 polygons, and every page in the roster works, so everything at
-   or below that is empirically fine. The only measured failure is at 1,904,636. The true boundary
-   is somewhere in between and has not been measured, so the cap sits just above what ships rather
-   than pretending to know: it changes nothing today and it bounds the case that actually broke,
-   a patch streamed at 1:1.
+   RAISED FROM 750,000 TO 900,000 ON 2026-11-19, BECAUSE THE CAP HAD STARTED HIDING THE MESH.
+   DRAWN_MAX_TRIANGLES went to 3,000,000 the same day, so the delivered cold plate (job 6dd6703c,
+   283,429,764 cells) is served losslessly: 1,059,668 polygons for all 17,070,364 boundary faces,
+   nothing approximated. Its one big surface, fluid/fluid_to_solid, is 851,763 polygons in a
+   single actor, 13.6% past the old cap, so `setEdges` silently took its edges off. That surface
+   is 99.15% of every polygon the page opens with, so the plate arrived with no cell edges
+   anywhere a reader could see: it looked like CAD, not like a mesh, and nothing on the page said
+   it was a decision rather than a property of the mesh.
+
+   WHAT 851,763 POLYGONS OF EDGES ACTUALLY COSTS. Measured 2026-11-19 against that job's own
+   served payload, driven in headless Chrome on the SAME GPU as the record above (Intel UHD via
+   ANGLE/D3D11, WebGL2), 491x754 canvas, each row the median of three 2 s runs that render once
+   per requestAnimationFrame. VBO is the live sum of every gl.bufferData, counted on the page:
+
+                                      edged polys  line segs      VBO    ms/frame   fps  context
+     as the page opens, cap 750,000         7,289     29,350   169.8 MB      17.7   56.5   fine
+     as the page opens, cap 900,000       859,052  3,477,238   252.6 MB     115.2    8.7   fine
+     every overlay on too, cap 750,000    631,007  2,541,165   169.8 MB      49.0   20.4   fine
+     every overlay on too, cap 900,000  1,482,770  5,989,053   252.6 MB     145.5    6.9   fine
+
+   gl.getError() 0, gl.isContextLost() false, no webglcontextlost event and no page or console
+   errors at any rung. The last row is the MOST this payload can ever put on screen, and it is
+   78.6% of the line segments and 72.4% of the VBO that took the context away in 2026-11-08. So
+   the failure this cap exists to prevent does not happen here. What binds is the frame: the edge
+   pass costs 97.2 B of VBO per polygon it is switched on for, and 6.5x the frame time.
+
+   AND THE FRAME COST IS PAID WHERE THE EDGES SHOW NOTHING. Same payload, cap 900,000, zooming in:
+
+     1 px = 274 um   a cell is 0.73 px   115.2 ms/frame    8.7 fps   no cells resolvable
+     1 px = 106 um   a cell is 1.90 px    64.4 ms/frame   15.5 fps   channels and fins read
+     1 px =  49 um   a cell is 4.08 px    24.6 ms/frame   40.6 fps   cell rows read
+
+   Edges are fragment work, so they get CHEAPER the further a reader goes in, and they only start
+   meaning anything at about 2 px per cell. At the opening framing they cost 6.5x the frame to
+   draw a lattice too fine to resolve. A cap counted in polygons cannot know that; a gate on the
+   on-screen cell size (`gridPx`, which this file already computes) could, and that gate is
+   `_EDGE_MIN_CELL_PX` below. The cap stayed: the two bound different failures and neither
+   replaces the other.
+
+   WHERE THE CAP IS SET. Just above the largest actor that ships, by the same rule the 2026-11-08
+   note used: bound the case that actually broke rather than pretend to know where the true
+   boundary is. The table says this payload's own worst case, 1,482,770 edged polygons, survives
+   on this GPU; the cap is not set there because nothing ships there.
 
    Measured per-patch polygon counts behind that choice, counted the way _countPolys does:
+     plate, exact route            fluid_to_solid   851,763
      bl3 / cbox2b / cbox2 / plate  fluid_to_solid   590,990 / 518,038 / 478,388 / 459,608
      chip                          zMax, zMin       287,448 / 252,222
      slabw                         oldInternalFaces 174,086
@@ -82,17 +120,130 @@ const _EDGE=[0.27,0.25,0.22];          /* hairline edges at rest */
    Note it is not purely a memory limit: 15.2M triangles at 1,396 MB rendered fine with edges off,
    while 3.8M triangles plus 7.6M LINE SEGMENTS at 349 MB did not. Line rendering is the expensive
    part, and a quad contributes four segments, so segments run about 4x the face count. */
-const _EDGE_MAX_POLYS=750000;
+const _EDGE_MAX_POLYS=900000;
+
+/* AND THE GATE THAT ACTUALLY BINDS ON THIS PAYLOAD: HOW BIG A DELIVERED CELL IS ON SCREEN.
+
+   The cap above bounds a failure counted in polygons - the context going - and the record beside
+   it says that on the delivered plate that failure does not happen: the worst this payload can
+   put on screen is 78.6% of the line segments and 72.4% of the VBO that took the context away.
+   What the cap was buying instead was 6.5x the frame at the one framing where the edges draw
+   nothing a human can resolve. That is not a memory question, it is a legibility one, and the
+   quantity it turns on is the SIZE OF A CELL ON SCREEN, which this file already computes three
+   times (`_vdbg.gridPx`, `cellPx`, `realCellPx`).
+
+   MEASURED 2026-11-19 ON THE DELIVERED COLD PLATE'S OWN SERVED PAYLOAD (job 6dd6703c,
+   283,429,764 cells, 1,059,668 drawn polygons), headless Chrome 157 on the real GPU - renderer
+   "ANGLE (Intel, Intel(R) UHD Graphics (0x0000A788) Direct3D11 vs_5_0 ps_5_0, D3D11)", WebGL2,
+   canvas 502x754, camera aimed at the surface so the mesh fills the view at every rung. Frames
+   timed by WALL CLOCK between requestAnimationFrame callbacks, each callback issuing one render:
+   gl.finish() does NOT block on this host and reports a 100 ms frame as 25 ms.
+
+     a cell is   1 px is   edges off   edges on   gain   surface brightness left
+      0.73 px     274 um     16.7 ms    115.4 ms  0.59x          44%
+      1.01 px     199 um     16.7 ms    161.8 ms  0.75x          45%
+      1.27 px     159 um     16.7 ms    101.5 ms  1.17x          47%
+      1.52 px     133 um     16.7 ms     94.6 ms  1.73x          49%
+      1.78 px     113 um     16.7 ms     89.4 ms  2.28x          50%
+      2.03 px      99 um     16.7 ms     87.9 ms  2.95x          52%
+      2.46 px      82 um     16.7 ms     69.0 ms  3.45x          54%
+      2.97 px      68 um     16.7 ms     70.7 ms  3.38x          54%
+      4.14 px      49 um     16.7 ms     54.1 ms  3.59x          54%
+      6.06 px      33 um     16.7 ms     28.3 ms 10.07x          59%
+     10.73 px      19 um     16.7 ms     19.7 ms 12.14x          72%
+
+   GAIN IS THE MEASUREMENT THAT CHOSE THE NUMBER, and it is not a matter of taste. The edge colour
+   is fixed, so the contrast between one line and the face beside it never changes with zoom; what
+   changes is whether any face survives between the lines. Two screenshots at one camera, edges
+   off and edges on, each blurred by one pixel - finer than that is below what a reader resolves
+   on a screen, and it is also where sub-pixel edge aliasing lives - and then the mean gradient
+   over DRAWN-SURFACE pixels. Gain is that number with the edges on over the same number without.
+
+   Below 1 the edge pass is covering the mesh up rather than drawing it, and at the framing the
+   page opens at it is 0.59: the lines take away 41% of the detail that was there without them
+   and 56% of the surface's brightness, for 6.9x the frame. That is not a weak feature, it is a
+   picture made worse at a cost. Gain crosses 1 at 1.18 px per cell, interpolated between the two
+   rungs that bracket it.
+
+   THE GATE IS SET AT 1.5 PX PER CELL, for three reasons and none of them is the frame time:
+     * it is clear of the 1.18 px break-even rather than sitting on it - at the gate the edge
+       pass is adding 1.73x the resolvable detail, not trading one kind of ink for another;
+     * it is inside the bracket the observation above leaves open: nothing resolves at 0.73 px
+       and the lattice reads at 1.90 px, so the answer is between them;
+     * THIS FILE ALREADY GATES TWO OTHER THINGS ON THE SAME QUANTITY AT THE SAME NUMBER.
+       `FOLLOW_MIN_PX` and `STREAM_MIN_PX` are both 1.5, both with the note that below about
+       1.5 px a real cell is smaller than the pixel that would draw it. Three gates on one
+       physical question should be one number, and a reader who zooms until the cells appear
+       gets the real cells handed to them at the same moment the drawn ones become worth
+       drawing.
+
+   WHAT IT IS MEASURED ON. `cell_stats.typ` - the mesh's own area-weighted median cell - which is
+   per MESH and not per patch, because the payload carries no per-patch cell size. On a conjugate
+   job the metal's cells are coarser than the coolant's, so the gate is conservative for the
+   metal. A payload with NO cell_stats (the STL fallback) has nothing to ask, and is left exactly
+   where it was: the cap alone decides, as it did before this existed.
+
+   AND IT IS THE DELIVERED CELL, NOT THE DRAWN POLYGON, which on the lossless route is the same
+   thing for 90.34% of the polygons on screen (see `mergeSpread`). Gating on the merge's MEAN of
+   16.1 faces per polygon would have claimed the drawn lattice is 4x coarser than it is - the
+   mean is carried by a thousand enormous rectangles and describes almost nothing a reader is
+   pointing at. */
+const _EDGE_MIN_CELL_PX=1.5;
+/* THE THREE ANSWERS, AS WORDS. Two of them are "no edges" for reasons that are not the same
+   fact - one is this framing and goes away when the reader zooms, the other is this surface and
+   never does - and the status line has to be able to say which. A boolean could not. */
+const EDGE_NONE='none',EDGE_ON='on',EDGE_TOO_BIG='too-big',EDGE_TOO_SMALL='too-small';
+/* `cellPx` omitted or 0 means "nothing to ask": no camera yet, or a payload with no cell_stats.
+   The hard ceiling is tested FIRST and ignores the zoom entirely, which is the whole point of
+   it - a surface past it never gets edges however far a reader goes in. */
+function edgeVerdict(nPolys,cellPx){
+  if(!(nPolys>0))return EDGE_NONE;
+  if(nPolys>_EDGE_MAX_POLYS)return EDGE_TOO_BIG;
+  if(cellPx>0&&cellPx<_EDGE_MIN_CELL_PX)return EDGE_TOO_SMALL;
+  return EDGE_ON;}
 /* Count the polygons actually in a VTK connectivity array, [n, i0..in-1] repeated - the same walk
    the surface builder does, because a patch's face_count is its count in the MESH and a decimated
    surface does not ship one polygon per delivered face. */
 function _countPolys(polys){let n=0;for(let q=0;q<polys.length;q+=polys[q]+1)n++;return n;}
-/* Edge visibility from the polygon count. Returns whether they went on. */
-function setEdges(pr,nPolys,col){
-  const on=nPolys>0&&nPolys<=_EDGE_MAX_POLYS;
+/* WHAT ONE DRAWN POLYGON ACTUALLY STANDS FOR, off the payload's own per-polygon counts.
+
+   THE ODOMETER AND THE STATUS LINE USED TO CONTRADICT EACH OTHER and a reviewer was right to
+   flag it. The status line said a line is one drawn polygon, which here is one delivered face
+   except where a flat run tiles a rectangle. The odometer said one polygon spans about 16 cells.
+   Both described this same payload, and the status line was the one telling the truth.
+
+   16.1 is `delivered_faces / drawn_polygons`, an arithmetic mean over a distribution that has no
+   middle. Counted off `faces_per_polygon` for all 1,059,668 polygons the plate serves:
+
+     one delivered face     90.3449% of polygons      median 1      p90 1
+     p99                    140 faces                 p99.9 3,360   largest 32,867
+     the top 1,000 polygons (0.094% of them) carry 43.66% of all 17,070,364 delivered faces
+
+   So nine polygons in ten ARE one cell, and the mean belongs to a tail of flat runs. A reader
+   counting boxes is right nine times in ten; "about 16 cells" is true of almost no polygon they
+   can point at. This returns the share and the largest, and both the odometer and the status
+   line are built from it, so the two cannot disagree again.
+
+   A payload that does not carry the distribution gets no claim about a typical polygon - it gets
+   the mean, SAID to be a mean. */
+function mergeSpread(surf){
+  const qp=((surf||{}).quality_fields||{}).patches||{};
+  let n=0,ones=0,max=0;
+  Object.keys(qp).forEach(k=>{
+    const b=qp[k]&&qp[k].faces_per_polygon_b64;if(!b)return;
+    const a=b64u32(b);
+    for(let i=0;i<a.length;i++){n++;if(a[i]===1)ones++;if(a[i]>max)max=a[i];}});
+  return n?{single:ones/n,maxMerged:max,polys:n}:{single:null,maxMerged:0,polys:0};}
+/* Edge visibility. Returns the VERDICT rather than a boolean, so a caller can keep WHY.
+   A detail cut passes no `cellPx` on purpose: a cut is the real cells at 1:1 and its own modes
+   already refuse to engage below 1.5 px per cell (`FOLLOW_MIN_PX`, `STREAM_MIN_PX`), so gating
+   it again here would take the edges off the one surface a reader zoomed in to see. */
+function setEdges(pr,nPolys,col,cellPx){
+  const v=edgeVerdict(nPolys,cellPx);
+  const on=v===EDGE_ON;
   if(pr.setEdgeVisibility)pr.setEdgeVisibility(on);
   if(on){const c=col||_EDGE;pr.setEdgeColor(c[0],c[1],c[2]);pr.setLineWidth(1);}
-  return on;}
+  return v;}
 /* How much of the merged surface is left showing behind an inspect window, so a cut has a part
    around it instead of black. Low enough that it cannot be mistaken for the cells. */
 const GHOST_OPACITY=0.10;
@@ -121,6 +272,10 @@ function reasonDetails(text){
   const t=String(text||'').trim();
   return t?`<details class="oc-more"><summary>Why the reviewer said this</summary><p>${esc(t)}</p></details>`:'';
 }
+
+/* THE RULE ITSELF, EXPORTED. Every other way to reach it needs a payload, a GPU and a camera;
+   the rule is three comparisons and a test should be able to state them. */
+export { edgeVerdict, mergeSpread, _EDGE_MAX_POLYS, _EDGE_MIN_CELL_PX };
 
 export async function openViewer(job,anchorEl,opts){
   opts=opts||{};
@@ -312,7 +467,9 @@ function initViewer(job,surf,uiCfg){
       try{grw.resize();rw.render();if(s)s.textContent='';}
       catch(err){if(s)s.textContent='The 3D view could not redraw after losing video memory.';
                  console.warn('viewer: redraw after restore failed',err);}},false);}
-  const ro=new ResizeObserver(()=>{setRenderScale();rw.render();});ro.observe(host);
+  // the gate is on cell size in PIXELS, and a resize changes the pixels as surely as a zoom
+  const ro=new ResizeObserver(()=>{setRenderScale();rw.render();
+                                   if(edgeGateSoon)edgeGateSoon();});ro.observe(host);
   host.addEventListener('contextmenu',e=>e.preventDefault());
   bindMouse(grw);                     // left-drag turns, right-drag pans, the wheel zooms
 
@@ -380,7 +537,12 @@ function initViewer(job,surf,uiCfg){
     const base=poor?_POOR_COL:_PATCH_COLS[i%_PATCH_COLS.length];
     const pr=actor.getProperty();
     pr.setColor(base[0],base[1],base[2]);
-    setEdges(pr,nCells);
+    /* WHETHER THE EDGES WENT ON IS KEPT, not just applied. `setEdges` silently takes them off
+       above _EDGE_MAX_POLYS, which is correct and was invisible: a reader looking at a surface
+       with no cell edges on it has no way to tell a mesh that was drawn without them from one
+       whose polygons are too big to have any. The status line says so, and it can only say so
+       if the answer is written down here. */
+    const edgeState=setEdges(pr,nCells);
     // lit flat and hot rather than shaded, so a set of a few hundred cells inside a mesh of
     // millions reads as a mark on it and not as another surface
     pr.setAmbient(poor?0.75:0.30);pr.setDiffuse(poor?0.35:0.78);
@@ -391,11 +553,118 @@ function initViewer(job,surf,uiCfg){
     if(pr.setBackfaceCulling)pr.setBackfaceCulling(false);
     ren.addActor(actor);
     const b=pd.getBounds();
-    entries.push({actor,pd,patch:p.name,polys,pts,nCells,nTris,offsets:null,
+    entries.push({actor,pd,patch:p.name,polys,pts,nCells,nTris,poor,
+      edgeState,edgesOn:edgeState===EDGE_ON,offsets:null,
       diag:Math.hypot(b[1]-b[0],b[3]-b[2],b[5]-b[4])});
     totalFaces+=nCells;});
 
+  /* WHEN A HIGHLIGHT IS BIGGER THAN THE THING IT HIGHLIGHTS.
+     The poor-cell sets are checkMesh's own, drawn at full resolution over the mesh in their own
+     red, and render/mesh_facts opens every one of them VISIBLE on the reasoning that "a set of a
+     few hundred cells inside a mesh of millions reads as a mark on it and not as another
+     surface". That reasoning is right and it has a size in it. Measured on the delivered cold
+     plate (job 6dd6703c), where it stopped being true: the page drew 13 sets totalling 859,079
+     triangles over a mesh drawn as 526,914, so the overlays were 62% of every triangle on screen
+     and outnumbered the mesh 1.63 to 1. The first thing a reader saw of their mesh was mostly not
+     their mesh. Two sets did almost all of it - fluid/underdeterminedCells at 212,284 faces and
+     fluid/lowWeightFaces at 149,984.
+
+     THE INFORMATION DOES NOT GO. Every set stays in the payload, stays in the roster under
+     Poor-quality cells with its own face count beside it, and is one click from being on. What
+     changes is only which of them the page OPENS with, and the rule is the one the comment above
+     already states: a mark, yes; a second surface, no.
+
+     TWO TESTS, BOTH NEEDED. The fraction is the principle - a highlight has to be small against
+     what it marks. The floor is there so a small mesh is never touched: on a four-cell test case
+     four bad faces are a large fraction of everything, and hiding them would be hiding the whole
+     point of that case. Measured on this plate, the two agree whichever drawing route is taken,
+     which is why the numbers below are not tuned to one of them:
+                                     share of the drawn mesh    share, lossy route
+       fluid/underdeterminedCells   426,832 tris      19.7%                  81.0%
+       fluid/lowWeightFaces         310,369 tris      14.3%                  58.9%
+       solid/underdeterminedCells   112,386 tris       5.2%                  21.3%
+       ----------------------------------------- 2% ---------------------------------
+       solid/concaveCells             8,612 tris       0.40%                  1.6%
+       the other nine sets           <=574 tris      <=0.027%               <=0.11%
+     The gap the bar sits in is 13x wide on either route, so no set is near it. */
+  const POOR_OPEN_MAX_FRAC=0.02;
+  //: ...and below this a set opens shown however big a share of the mesh it is. 20,000 triangles
+  //: is about 10,000 quad faces: orders of magnitude above the "few hundred cells" the rule was
+  //: written for, and far below anything that could cover a mesh worth delivering.
+  const POOR_OPEN_MAX_TRIS=20000;
+  const _meshTris=entries.reduce((n,en)=>n+(en.poor?0:en.nTris),0);
+  const _poorTris=entries.reduce((n,en)=>n+(en.poor?en.nTris:0),0);
+  /* Whether this surface is a highlight big enough to be the view. Both tests, in that order -
+     and NOTHING opens off when there is no mesh for it to be a highlight on. A payload that
+     draws only poor-cell sets is not a page whose overlays are covering the view, it is a page
+     whose overlays ARE the view, and hiding them leaves an empty viewport with the information
+     one click away and no sign that it is there. The share test alone would do exactly that:
+     anything is more than 2% of nothing. */
+  const opensOff=en=>!!(en&&en.poor&&_meshTris>0&&en.nTris>POOR_OPEN_MAX_TRIS
+                        &&en.nTris>POOR_OPEN_MAX_FRAC*_meshTris);
+  const _poorOff=entries.filter(opensOff);
+
   let edgeCol=_EDGE;             // what paint() draws edges with; the heatmap darkens it
+
+  /* THE GATE, RE-ASKED WHENEVER THE CAMERA MOVES.
+
+     HOW BIG A DELIVERED CELL IS ON SCREEN. The same arithmetic as `_vdbg.gridPx` and the inspect
+     window's `cellPx`, at this scope because the edge gate needs it before either of those
+     closures exists. Zero when the payload carries no cell_stats, which `edgeVerdict` reads as
+     "nothing to ask" and leaves the cap alone in charge. */
+  function deliveredCellPx(){
+    if(!stats||!(stats.typ>0))return 0;
+    const f=cam.getFocalPoint(),q=cam.getPosition();
+    const d=Math.hypot(q[0]-f[0],q[1]-f[1],q[2]-f[2])||1e-12;
+    return stats.typ*(apiRW.getSize()[1]/(2*Math.tan(cam.getViewAngle()*Math.PI/360)))/d;}
+  let _edgeCellPx=0;
+  //: what the status line is currently SAYING about edges, and whether it is safe to rewrite it
+  //: yet - the gate can be scheduled by the resize observer before the line exists
+  let _edgeNoteWas=null,_statusLive=false;
+  /* ONLY WHAT CHANGED. Flipping edge visibility is not free: vtk.js rebuilds and re-uploads that
+     actor's edge buffer, measured at 126 MB for the plate's fluid_to_solid, so a gate that
+     re-applied its answer every time it ran would pay that on every wheel tick for no change on
+     screen. It compares the verdict against the one the surface already has and touches nothing
+     else - which is also why AN ORBIT TOGGLES NOTHING: a trackball rotation and a pan both keep
+     the camera's distance to its focal point, so `deliveredCellPx` does not move and no verdict
+     changes. Only a dolly can cross the gate.
+
+     Colour is left to whoever owns it. `paint()` in the parts panel sets the edge colour on
+     every repaint (the selection's, or the heatmap's darkened one), so a surface switched on
+     here is handed back to it rather than painted twice. */
+  function applyEdgeGate(){
+    _edgeCellPx=deliveredCellPx();
+    let changed=false;
+    entries.forEach(en=>{
+      const v=edgeVerdict(en.nCells,_edgeCellPx);
+      if(v===en.edgeState)return;
+      en.edgeState=v;en.edgesOn=(v===EDGE_ON);
+      const pr=en.actor.getProperty();
+      if(pr.setEdgeVisibility)pr.setEdgeVisibility(en.edgesOn);
+      if(en.edgesOn){pr.setEdgeColor(edgeCol[0],edgeCol[1],edgeCol[2]);
+                     if(pr.setLineWidth)pr.setLineWidth(1);}
+      changed=true;});
+    /* THE LINE GOES STALE WITHOUT ANY VERDICT CHANGING, because it quotes the cell size and a
+       reader can move that a long way without crossing the gate. Measured while building this:
+       the first gate ran on a 502x502 canvas at 0.49 px, the canvas then grew to 502x754, the
+       gate re-ran, nothing flipped - and the line went on saying 0.49 px while a cell was
+       0.73 px. So what is COMPARED is the sentence, not just the verdicts. */
+    const note=edgeNote();
+    if(_statusLive&&(changed||note!==_edgeNoteWas)){_edgeNoteWas=note;setStatus();}
+    if(changed){if(repaintParts)repaintParts();else rw.render();}
+    return changed;}
+  /* THROTTLED THE WAY THE INSPECT WINDOW THROTTLES THE SAME QUESTION, and with the same number:
+     260 ms after the reader stops moving (`FOLLOW_SETTLE_MS`). A camera fires modified on every
+     mouse move of an orbit and on every wheel tick of a zoom, and the work this defers is a
+     buffer rebuild, not a frame - so a trailing debounce is the right shape and a leading one is
+     not. WHAT IT COSTS: edges appear or vanish up to 260 ms after the last tick of a zoom, never
+     during it. The alternative was a stutter on every tick of a thirty-tick zoom, and the
+     measured price of one tick's worth of that stutter is the 126 MB re-upload above. */
+  const EDGE_SETTLE_MS=260;
+  let _edgeTimer=null;
+  function edgeGateSoon(){
+    if(_edgeTimer)clearTimeout(_edgeTimer);
+    _edgeTimer=setTimeout(()=>{_edgeTimer=null;applyEdgeGate();},EDGE_SETTLE_MS);}
   // A DELIVERED THERMAL MODEL: its parts table shows one part alone through the parts panel
   // (partsApi), and a ready-made slice replaces the surfaces while it is on (sliceOn)
   const thermal=surf.thermal||null;
@@ -448,13 +717,20 @@ function initViewer(job,surf,uiCfg){
      `exact` means nothing was approximated, so the badge says so - "drawn of" would read as a
      shortfall on a surface that has none. */
   const _draw=drawingOf(surf),_red=_draw.block;
+  //: what one drawn polygon stands for, counted once off the payload - read by the odometer and
+  //: by the status line, which is how the two are kept from contradicting each other
+  const _spread=mergeSpread(surf);
   /* THE HELP'S FIRST ROW IS THE ONE CLAIM THAT DEPENDS ON THE PAYLOAD, and the inspector's HTML is
      written into the shell before the surface has been fetched - so it cannot know then. It is
      swapped here instead of being left to say "a stand-in" about a surface that is the mesh, which
      would send a reader to Inspect to check a shape that is already exact. */
+  /* ...AND IT IS WRITTEN FROM THIS PAYLOAD'S OWN BLOCK, not from a constant. See
+     inspect.exactHelpRow: the constant it replaced quoted the figures of the plate it was written
+     on, so the first other mesh to take this route would have been handed them as its own. */
   if(_draw.exact){
     const _hrow=document.querySelector('#v-insp-helpbox-'+job+' .v-insp-hrow');
-    if(_hrow)_hrow.innerHTML=`<b>${EXACT_HELP_ROW[0]}</b><p>${EXACT_HELP_ROW[1]}</p>`;}
+    const _hx=exactHelpRow(_draw.block);
+    if(_hrow)_hrow.innerHTML=`<b>${esc(_hx[0])}</b><p>${esc(_hx[1])}</p>`;}
   document.getElementById('v-count-'+job).textContent=
     surf.cell_count?surf.cell_count.toLocaleString()+' cells'
     :_red&&_red.delivered_faces
@@ -638,7 +914,13 @@ function initViewer(job,surf,uiCfg){
        the other side and two coincident sheets speckle - and at 18% the channel walls carved into
        the metal would be a ghost of the one thing in the metal worth looking at. So it comes back
        solid. */
-    const dflt=p=>({hidden:!!(p.renderable&&p.hiddenByDefault),
+    /* ...AND THE THIRD REASON, which is a size and not a role: a poor-cell set big enough to be
+       the view rather than a mark on it (see `opensOff` above). It opens hidden and comes back
+       SOLID, like the far side of an interface and unlike an enclosing wall - it is not a shell
+       to see through, it is the answer to "where are the bad cells", and at 18% it would be a
+       ghost of the one thing the reader turned it on for. "Restore full mesh" returns here, so
+       the page a reader can always get back to is the one that opens. */
+    const dflt=p=>({hidden:!!(p.renderable&&(p.hiddenByDefault||opensOff(actorOf[p.entity]))),
                     opacity:p.hiddenByDefault&&!p.coincident?0.18:1});
     const st={};parts.forEach(p=>{
       const en=actorOf[p.entity],d=dflt(p);
@@ -1408,17 +1690,83 @@ function initViewer(job,surf,uiCfg){
      plate on 2026-11-17, with 524,190 of its 17,070,364 boundary faces on screen at the time.
      The same test is written twice more in this codebase, in api/v1/simulation.get_surface_vtk and
      in vtkExport below, which is why it is one name here and not three expressions. */
+  /* TWO THINGS THE PAGE DECIDED FOR ITSELF, SAID OUT LOUD. Both were already happening and
+     neither was stated, which is the failure mode this line exists to prevent: a reader cannot
+     tell a choice from a property of their mesh unless the page says which it was.
+       * overlays - which poor-cell sets opened off, and how much of the page they are. The count
+         is of TRIANGLES, because that is what is on screen and what made this worth doing.
+       * edges - which surfaces are drawn without cell edges, and that it is their size and not
+         their mesh. Measured 2026-11-08: edges on a 1,904,636-polygon actor did not slow the
+         frame, they took the WebGL context away, and the loss outlived the page. `setEdges` has
+         bounded it per actor ever since and said nothing. */
+  const _plural=(n,s)=>n+' '+s+(n===1?'':'s');
+  const overlayNote=!_poorOff.length?''
+    :` · ${_plural(_poorOff.length,'poor-cell overlay')} opened off`
+      +` (${_poorOff.reduce((n,en)=>n+en.nTris,0).toLocaleString()} of this page's`
+      +` ${(_meshTris+_poorTris).toLocaleString()} triangles) - a highlight that size is the view,`
+      +` not a mark on it; switch them on under Poor-quality cells`;
+  /* TWO REASONS FOR NO EDGES, AND THEY ARE NOT THE SAME FACT.
+
+       * TOO BIG - this surface, past the polygon ceiling, and no amount of zooming changes it.
+       * TOO SMALL - this FRAMING, where a cell is under 1.5 px and the lines cover the mesh
+         instead of drawing it. It goes away when the reader zooms in, and the line says so.
+
+     A reader must never be unable to tell a mesh drawn without edges from one whose cells are
+     too small to have any, which means the line cannot just say "no edges" and it cannot say the
+     same thing in both cases. It also cannot be written once: the second reason changes under
+     the reader's own hand, so this is a function and `setStatus` re-runs it. */
+  const _patchList=list=>list.map(en=>en.patch).join(', ');
+  function edgeNote(){
+    const drawn=entries.filter(en=>en.nCells>0);
+    const big=drawn.filter(en=>en.edgeState===EDGE_TOO_BIG);
+    const small=drawn.filter(en=>en.edgeState===EDGE_TOO_SMALL);
+    let out='';
+    if(big.length)
+      out+=` · cell edges off on ${_patchList(big)}`
+        +` - past ${_EDGE_MAX_POLYS.toLocaleString()} polygons in one surface they are not drawn,`
+        +` because at 1.9 M the second draw call took the WebGL context away rather than slowing`
+        +` the frame; Inspect still draws the real cells there`;
+    if(small.length)
+      out+=` · cell edges off${big.length?` on ${_patchList(small)}`:''}`
+        +` because a cell is ${_edgeCellPx>0?_edgeCellPx.toFixed(2):'under 1'} px at this framing`
+        +` - under ${_EDGE_MIN_CELL_PX} px the lines cover the mesh instead of drawing it`
+        +` (measured on this mesh: they remove 41% of what a reader could resolve, and cost 6.9x`
+        +` the frame). Zoom in and they come back; the cells are there either way`;
+    return out;}
+  /* ...AND WHAT A LINE IS WHEN THEY ARE ON, which only the lossless route has to answer. It
+     merges coplanar faces into the rectangles they already tile, so an edge is the border of a
+     DRAWN POLYGON and not always the border of a cell. Measured on the delivered plate
+     (job 6dd6703c) off its own faces_per_polygon: 90.34% of the 1,059,668 polygons are a single
+     delivered face, 89.18% on fluid_to_solid alone, and the merge is concentrated in the flat
+     runs, the largest of them 32,867 faces in one rectangle. A reader counting boxes is right
+     nine times in ten, and this is where the page says where they are not. */
+  //: Built from `_spread`, which is the same source the odometer reads, so the two statements
+  //: about what a polygon is cannot drift apart again.
+  function edgeOnNote(){
+    const drawn=entries.filter(en=>en.nCells>0);
+    if(!_draw.exact||drawn.some(en=>en.edgeState!==EDGE_ON)||!drawn.length)return '';
+    return ` · cell edges on every surface - a line is one drawn polygon, and `
+      +polygonSpanWords({single:_spread.single,maxMerged:_spread.maxMerged,
+                         merged:_draw.factor});}
   const isDeliveredMesh=surf.kind==='polymesh'||(surf.kind==='stl'&&surf.is_mesh===true);
   const statusEl=document.getElementById('v-status-'+job);
-  statusEl.textContent=thermal&&isDeliveredMesh
+  function statusText(){return thermal&&isDeliveredMesh
     // a thermal model says what it is in its own words: its parts, its cells, its power
     ?'your delivered thermal mesh · '+(thermal.summary||'')
     // so does an FEA mesh: its elements, its level and its named faces
     :surf.fea&&isDeliveredMesh?'your delivered FEA mesh · '+(surf.fea.summary||'')
     :(isDeliveredMesh?'your delivered mesh · '
                 :'input surface - the mesh itself could not be rendered · ')
-    +(surf.patches||[]).map(facesOf).join(' · ')+drawnNote;
-  statusEl.title=statusEl.textContent;   // one line on screen; the whole of it on hover
+    +(surf.patches||[]).map(facesOf).join(' · ')+drawnNote+overlayNote+edgeNote()+edgeOnNote();}
+  function setStatus(){
+    statusEl.textContent=statusText();
+    statusEl.title=statusEl.textContent;}  // one line on screen; the whole of it on hover
+  setStatus();
+  /* AND NOW THE GATE RUNS FOR THE FIRST TIME, here rather than where it is defined: the camera
+     has been framed by this point and the status line exists for it to rewrite. */
+  _statusLive=true;
+  applyEdgeGate();
+  if(cam.onModified)cam.onModified(edgeGateSoon);
 
   /* A DELIVERED THERMAL MODEL - its parts table, its quality in words, its ready-made slices
      and its own files (viewer/thermal_results.js). A slice is the delivered mesh cut by a plane,
@@ -1530,6 +1878,35 @@ function initViewer(job,surf,uiCfg){
               triangles:on.reduce((a,e)=>a+e.nTris,0),
               payloadPolygons:entries.reduce((a,e)=>a+e.nCells,0),
               payloadTriangles:entries.reduce((a,e)=>a+e.nTris,0)};},
+    /* THE SAME QUESTION PER SURFACE, because two of this page's decisions are made per surface
+       and neither one is visible in a total: whether a poor-cell overlay was opened off for
+       being bigger than the mesh it marks, and whether an actor is drawn without cell edges
+       because a second draw call that size has taken the WebGL context away before. A test that
+       can only read totals can only assert that something changed, not that the right surface
+       changed - which is how `_EDGE_MAX_POLYS` went three releases without one. */
+    surfaces:()=>entries.map(e=>({patch:e.patch,polygons:e.nCells,triangles:e.nTris,
+                                  poor:!!e.poor,edges:!!e.edgesOn,edgeState:e.edgeState,
+                                  openedOff:opensOff(e),
+                                  visible:!!e.actor.getVisibility()})),
+    /* THE EDGE GATE, so a test can read the rule rather than infer it from pixels: how big a
+       cell is on screen right now, the two limits it is judged against, and what each surface
+       was told. `edgesAgain` re-asks immediately and answers whether anything FLIPPED, which is
+       the assertion an orbit needs - it must be false - and the one a zoom across the gate
+       needs, where it must be true. */
+    edges:()=>({cellPx:deliveredCellPx(),minCellPx:_EDGE_MIN_CELL_PX,maxPolys:_EDGE_MAX_POLYS,
+                settleMs:EDGE_SETTLE_MS,
+                state:Object.fromEntries(entries.map(e=>[e.patch,e.edgeState]))}),
+    edgesAgain:()=>applyEdgeGate(),
+    /* A ZOOM AND AN ORBIT WITHOUT A MOUSE. The gate turns on a camera DISTANCE, so a test that
+       could only re-frame could not reach either side of it; and the claim that an orbit toggles
+       nothing is only worth making if an orbit can be driven. Both take the camera's own path,
+       `clampCam` included, so neither can reach a framing a reader could not. */
+    dolly:f=>{const fp=cam.getFocalPoint(),q=cam.getPosition();
+      cam.setPosition(fp[0]+(q[0]-fp[0])*f,fp[1]+(q[1]-fp[1])*f,fp[2]+(q[2]-fp[2])*f);
+      clampCam();ren.resetCameraClippingRange();rw.render();return deliveredCellPx();},
+    orbit:deg=>{if(cam.azimuth)cam.azimuth(deg);
+      if(cam.orthogonalizeViewUp)cam.orthogonalizeViewUp();
+      clampCam();ren.resetCameraClippingRange();rw.render();return deliveredCellPx();},
     fitDist:()=>_fitDist,stats:stats,diag:diag,size:()=>apiRW.getSize(),
     markers:()=>flags.length,up:()=>cam.getViewUp().slice(),
     upAxis:()=>upSel?upSel.value:'+z',setUp:axis=>setUp(axis),
@@ -2979,7 +3356,8 @@ function initViewer(job,surf,uiCfg){
       if(sBar)sBar.style.width=Math.max(6,Math.min(220,sb.px))+'px';
       if(sLbl)sLbl.textContent=sb.label;
       if(sOdo)sOdo.textContent=odometerText({mPerPx:m,merged:MERGE,real:!!shown.length,
-                                             exact:EXACT});}
+                                             exact:EXACT,single:_spread.single,
+                                             maxMerged:_spread.maxMerged});}
     function legendSoon(){
       if(legendQ)return;
       legendQ=requestAnimationFrame(()=>{legendQ=0;legend();});}

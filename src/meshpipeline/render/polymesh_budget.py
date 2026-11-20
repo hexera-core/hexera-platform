@@ -25,13 +25,20 @@ logger = logging.getLogger(__name__)
 #: raw and 555.8 MB base64 - past the 512 MiB cap `sandbox.safe_extract` puts on a workspace
 #: archive before any browser is asked to parse it. At this budget the same mesh packs to about
 #: 24 MB.
-#: OVERRIDABLE PER BUILD, because 800,000 is a transport figure and the transport changed.
+#: AND IT IS 3,000,000 NOW, NOT THE 800,000 THE PARAGRAPH ABOVE WAS WRITTEN AGAINST.
 #: Measured 2026-11-07, one actor at 1:1: 1,904,636 faces / 3,810,902 triangles drew in 0.30 ms of
 #: CPU per frame at 55.2 fps on Intel UHD via ANGLE/D3D11, and the binary path carried the same
-#: payload in 574 ms against base64's 1,379 ms. What actually binds is VRAM, about 92 B per
-#: delivered face, so a whole 36 M-face boundary would be ~3.3 GB and is out of reach - but several
-#: million faces is not. The default is unchanged so no existing page moves; a build that has been
-#: measured sets HEXERA_DRAWN_MAX_TRIANGLES.
+#: payload in 574 ms against base64's 1,379 ms. What actually binds is VRAM, about 92 B per drawn
+#: POLYGON, so a whole 36 M-face boundary would be ~3.3 GB and is out of reach - but several
+#: million triangles is not.
+#:
+#: This comment used to end "the default is unchanged so no existing page moves; a build that has
+#: been measured sets HEXERA_DRAWN_MAX_TRIANGLES", and for twelve days nobody did - so the
+#: delivered cold plate was clustered to 524,274 triangles at 567.2 um, which is 5.8x coarser than
+#: its own 98.2422 um channels. It was raised on 2026-11-19 to admit that plate's lossless surface
+#: (1,059,668 polygons, 2,164,434 triangles). THE ARITHMETIC LIVES BESIDE THE CONSTANT, in
+#: settings/viewer_limits.py, because that is where the value is and a measurement that lives
+#: somewhere else is a measurement nobody rereads before changing it.
 DRAWN_MAX_TRIANGLES = VL.DRAWN_MAX_TRIANGLES
 
 #: A patch is never reduced below this. A six-face block side would otherwise vanish entirely at a

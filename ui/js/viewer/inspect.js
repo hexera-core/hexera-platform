@@ -121,7 +121,31 @@ export function drawingOf(surf) {
  *  SAID, NOT IMPLIED - the same rule the cut's own label follows. A merged surface that does not
  *  announce itself reads as the mesh, and then every judgement a reader makes about cell size,
  *  channel width or wall thickness is a judgement about an average they were never shown. */
-export function odometerText({ mPerPx, merged = 1, real = false, exact = false }) {
+/** WHAT ONE DRAWN POLYGON STANDS FOR, in one phrase, from the payload's own distribution.
+ *
+ *  THIS EXISTS BECAUSE TWO PLACES SAID DIFFERENT THINGS ABOUT THE SAME PAYLOAD. The status line
+ *  said a line is one drawn polygon, which is usually one delivered face; the odometer said one
+ *  polygon spans about 16 cells. The status line was right. 16.1 is delivered / drawn, an
+ *  arithmetic mean over a distribution with no middle: counted off the delivered plate's own
+ *  `faces_per_polygon`, 90.3449% of its 1,059,668 polygons are exactly ONE delivered face, the
+ *  median is 1, the 90th percentile is 1, and the top thousand polygons carry 43.66% of all
+ *  17,070,364 faces. The mean describes the tail, not the polygon under anybody's cursor.
+ *
+ *  So when the distribution is there, this states the typical polygon and names the tail. When it
+ *  is not, it states the mean AND SAYS IT IS ONE - the old wording claimed a typical polygon from
+ *  a number that was never about one. Both the odometer and the status line are built from this,
+ *  so they cannot drift apart again. */
+export function polygonSpanWords({ single = null, maxMerged = 0, merged = 1 }) {
+  if (single !== null && single >= 0.5) {
+    return Math.round(single * 10) + " polygons in 10 are one delivered cell"
+      + (maxMerged > 1 ? ", the largest " + maxMerged.toLocaleString() : "");
+  }
+  if (merged > 1.5) return "one polygon spans " + Math.round(merged) + " cells on average";
+  return "one polygon per cell";
+}
+
+export function odometerText({ mPerPx, merged = 1, real = false, exact = false,
+                               single = null, maxMerged = 0 }) {
   const px = (mPerPx > 0 && isFinite(mPerPx)) ? "1 px = " + fmtLen(mPerPx) : "";
   // AN EXACT SURFACE MUST NOT SAY "STAND-IN", because it is not one: the shape under the cursor
   // is the mesh's own to the last nanometre. What it does not show is the subdivision inside a
@@ -129,8 +153,8 @@ export function odometerText({ mPerPx, merged = 1, real = false, exact = false }
   const what = real
     ? "real cells"
     : exact
-      ? (merged > 1.5
-          ? "the mesh exactly · one polygon spans about " + Math.round(merged) + " cells"
+      ? (merged > 1.5 || single !== null
+          ? "the mesh exactly · " + polygonSpanWords({ single, maxMerged, merged })
           : "the mesh exactly, one polygon per cell")
       : (merged > 1.5
           ? "merged surface, about " + Math.round(merged) + " faces to one drawn"
@@ -161,15 +185,49 @@ export function cutText(got) {
  *  rectangle they became, so nothing moved - and the only thing a reader cannot see is where one
  *  polygon is subdivided into cells. Saying "stand-in" would send them to Inspect to check a
  *  shape that is already exact. */
-export const EXACT_HELP_ROW = [
-  "What the mesh on screen is",
-  "The mesh itself. Faces that lay flat in the same plane were merged into the larger rectangles "
-  + "they already tiled, which moves nothing - the whole part is 19,599,615 delivered faces drawn "
-  + "as 1,297,428 polygons covering the same area to eleven decimal places. So every shape here "
-  + "is real: channel widths, wall thicknesses and corners are the mesher's own. What a polygon "
-  + "does not show is the cell boundaries inside it, and the legend at the bottom left says how "
-  + "many cells that is. Inspect and Follow are how you see those.",
-];
+/** The same row, in THIS payload's own numbers, from its `exact` block.
+ *
+ *  IT WAS A CONSTANT, AND THE CONSTANT CARRIED ANOTHER MESH'S FIGURES - "19,599,615 delivered
+ *  faces drawn as 1,297,428 polygons", true of the plate it was written on and of nothing else.
+ *  The first other mesh to take this route would have been told its own surface was that one, in
+ *  the one paragraph on the page whose whole job is to say that what is on screen is real. The
+ *  status line already has a test against exactly this leak
+ *  (tests/ui/test_an_exact_view_says_it_is_exact asserts 1,297,428 is not in it); the help row
+ *  sat outside it and said it anyway.
+ *
+ *  A PAYLOAD THAT CANNOT SAY GETS THE SENTENCE WITHOUT THE FIGURES, never somebody else's.
+ *
+ *  And the claim made FROM those figures is the one the merge actually supports. "Covering the
+ *  same area to eleven decimal places" was an area ratio, and exact_surface's own comment records
+ *  that an area book is blind to twist - it cancels, and 99,295 faces of one plate passed the
+ *  area test without lying in a plane. The figure that is not blind to it is the displacement,
+ *  which the payload carries as max_vertex_shift_m, so that is what is quoted when it is there. */
+export function exactHelpRow(block) {
+  const b = block || {};
+  const faces = Number(b.delivered_faces) || 0;
+  const polys = Number(b.drawn_polygons) || 0;
+  const shift = Number(b.max_vertex_shift_m);
+  const moved = Number.isFinite(shift)
+    ? (shift > 0
+        ? ", with no vertex moved further than " + fmtLen(shift)
+        : ", with no vertex moved at all")
+    : "";
+  const counted = faces > 0 && polys > 0
+    ? " - this part is " + faces.toLocaleString() + " delivered faces drawn as "
+      + polys.toLocaleString() + " polygons" + moved
+    : "";
+  return [
+    "What the mesh on screen is",
+    "The mesh itself. Faces that lay flat in the same plane were merged into the larger rectangles "
+    + "they already tiled, which moves nothing" + counted + ". So every shape here "
+    + "is real: channel widths, wall thicknesses and corners are the mesher's own. What a polygon "
+    + "does not show is the cell boundaries inside it, and the legend at the bottom left says how "
+    + "many cells that is. Inspect and Follow are how you see those.",
+  ];
+}
+
+/** The figureless form, for a caller with no payload in hand. */
+export const EXACT_HELP_ROW = exactHelpRow(null);
 
 export const INSPECT_HELP = [
   ["What the mesh on screen is",
@@ -289,4 +347,5 @@ export function inspectorHtml(job, { xray = false, clip = false, fly = false, wo
 }
 
 export default { fmtLen, scaleBar, dialRadius, radiusDial, mergeFactor, drawingOf, odometerText,
+                 exactHelpRow, polygonSpanWords,
                  cutText, inspectorHtml, INSPECT_HELP, EXACT_HELP_ROW };

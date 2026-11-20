@@ -447,14 +447,27 @@ def test_the_old_shape_merged_those_channels_away_and_this_one_does_not():
     (1,533,627, 160.43 um) already keeps 40 too - so the BUDGET RAISE is the fix and this share is
     8.6% of margin against the comb's 162 um instead of 1.0%. Both operating points are put
     through the reducer on the same comb.
+
+    THE 800,000 IS A HISTORICAL FIGURE AND IS WRITTEN AS ONE. This control used to read it from
+    the live `polymesh_budget.DRAWN_MAX_TRIANGLES`, which was the same number at the time and is
+    not any more: the viewer's ceiling was raised to 3,000,000 on 2026-11-19 so a delivered plate
+    could be drawn losslessly. That made `old_allow` 2,300,655 and `h_old` 131.0 um, the control
+    stopped merging anything away, and this test failed - reporting the viewer's new ceiling as a
+    defect in the review surface. What the paragraph above describes is what the OLD SHAPE did,
+    once, at the budget it had then; reconstructing it from a setting anyone may tune is the one
+    thing a control must not do. The sibling test below says the same thing from the other side -
+    moving the viewer's number must not move this module's budget.
     """
     import math
 
-    from meshpipeline.render.polymesh_budget import DRAWN_MAX_TRIANGLES, reduce_patch
+    from meshpipeline.render.polymesh_budget import reduce_patch
+
+    #: the viewer's whole triangle budget on the day the old shape was measured
+    VIEWER_BUDGET_THEN = 800_000
 
     comb = _comb()
     area = _area(comb)
-    old_allow = int(DRAWN_MAX_TRIANGLES * INTERFACE_FACES / (INTERFACE_FACES + SIDE_FACES))
+    old_allow = int(VIEWER_BUDGET_THEN * INTERFACE_FACES / (INTERFACE_FACES + SIDE_FACES))
     new_allow = int(RS._budget() * RS.INTERFACE_SHARE_OF_BUDGET)
     h_old = math.sqrt(2.0 * INTERFACE_AREA_M2 / old_allow)
     h_new = math.sqrt(2.0 * INTERFACE_AREA_M2 / new_allow)
