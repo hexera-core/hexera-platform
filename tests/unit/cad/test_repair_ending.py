@@ -147,3 +147,22 @@ def test_a_mesh_failure_does_not_outrank_the_harder_endings():
     # Nothing kept: the existing honest "we tried and nothing held" is not renamed.
     assert E.ending_for(kept=0, attempted=2, stopped_because="stalled",
                         mesh_failed=True) == "attempted_none_held"
+
+
+# THE OTHER DIRECTION (eval wave 6): kept operations over a part whose DELIVERED file newly
+# meshes is `repaired`, even when the loop stopped `unmeshable` (a stale in-session scan) or
+# `escalated` (another region went to a person). The stop reason stays in `stopped_because`.
+
+def test_kept_operations_over_a_newly_meshing_part_end_repaired():
+    for stop in ("unmeshable", "escalated", "regions_exhausted", "resolved", "stalled"):
+        assert E.ending_for(kept=1, attempted=1, stopped_because=stop,
+                            newly_meshes=True) == "repaired"
+
+
+def test_newly_meshing_does_not_outrank_a_gate_an_unseen_part_or_nothing_kept():
+    assert E.ending_for(kept=1, attempted=1, stopped_because="resolved", newly_meshes=True,
+                        gate_refusal=True) == "refused"
+    assert E.ending_for(kept=1, attempted=1, stopped_because="scan_incomplete",
+                        newly_meshes=True) == "scan_incomplete"
+    assert E.ending_for(kept=0, attempted=2, stopped_because="stalled",
+                        newly_meshes=True) == "attempted_none_held"
