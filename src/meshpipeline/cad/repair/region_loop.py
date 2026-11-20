@@ -23,6 +23,7 @@ from dataclasses import dataclass, field, replace
 import meshpipeline.settings.cad_repair as rcfg
 from meshpipeline.cad.repair import grind, oracle
 from meshpipeline.cad.repair.contracts import DefectSeverity
+from meshpipeline.cad.repair.identity import EntityRef
 from meshpipeline.cad.repair.localize import analyzer_only
 
 # THE STOP-REASON VOCABULARY IS SHARED WITH THE OPERATION-AT-A-TIME LOOP, imported rather than
@@ -500,7 +501,7 @@ def replay_record(package: TargetPackage, verdict: PackageVerdict, *,
     """
     return {
         "region_fingerprints": sorted(package.region.fingerprints),
-        "plan": [dict(item) for item in package.plan],
+        "plan": [_plain_item(item) for item in package.plan],
         "predicate": {"cleared": sorted(package.predicate.cleared),
                       "reclassified": sorted(package.predicate.reclassified),
                       "unchanged": sorted(package.predicate.unchanged),
@@ -510,6 +511,24 @@ def replay_record(package: TargetPackage, verdict: PackageVerdict, *,
         "review_tier": verdict.review_tier,
         "reviewed": verdict.reviewed,
     }
+
+
+def _plain_item(item: dict) -> dict:
+    """One plan item as PLAIN DATA, so the record survives the JSON report it is delivered in.
+
+    The live item holds a `RepairOp` and `EntityRef`s, which the report's `default=str` flattens
+    into strings nothing can apply. So the operation travels by NAME, each target as its fields
+    and the code as its value; `replay._package_of` resolves them back against the catalogue
+    (PR #494 review, region_loop.py:503).
+    """
+    op, code = item.get("op"), item.get("defect_code")
+    return {**item,
+            "op": op if isinstance(op, str) else getattr(op, "name", str(op)),
+            "targets": [{"entity_type": t.entity_type, "fingerprint": t.fingerprint,
+                         "entity_index": int(t.entity_index), "ambiguous": bool(t.ambiguous)}
+                        if isinstance(t, EntityRef) else t
+                        for t in item.get("targets") or ()],
+            "defect_code": getattr(code, "value", code)}
 
 
 def _observe_shape(author: Author, shape) -> None:

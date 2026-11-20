@@ -9,7 +9,15 @@ from __future__ import annotations
 import pytest
 
 import meshpipeline.settings.cad_repair as rcfg
-from meshpipeline.cad.repair import brep, caps, conservative, grind, package_review, replay
+from meshpipeline.cad.repair import (
+    brep,
+    caps,
+    conservative,
+    grind,
+    operations,
+    package_review,
+    replay,
+)
 from meshpipeline.cad.repair import region_loop as RL
 from meshpipeline.cad.repair.caps import Measure
 from meshpipeline.cad.repair.contracts import DefectCode, DefectSeverity
@@ -285,6 +293,8 @@ def _no_kernel(monkeypatch):
                              clock=part.clock)
 
     monkeypatch.setattr(replay, "RepairSession", _Session)
+    # A record names its operations; these doubles are the catalogue they are named from.
+    monkeypatch.setattr(operations, "OPERATIONS", tuple(part.ops.values()))
     part.written = written  # type: ignore[attr-defined]
     return part
 
@@ -383,3 +393,17 @@ def test_an_empty_record_list_is_an_honest_no_op(monkeypatch, tmp_path, _no_kern
     report = replay.replay_packages(tmp_path / "in.step", tmp_path / "out.step", [])
     assert report.diagnostics["replay"] == []
     assert {m.name: m.value for m in report.measurements}["replay_committed"] == 0.0
+
+
+def test_a_record_survives_the_json_report_and_still_replays(monkeypatch, tmp_path, _no_kernel):
+    """PR #494 review (region_loop.py:503). The record reaches a caller through the delivered
+    JSON report, so it must be plain data: an operation by NAME and its targets as fields, not a
+    live op and `EntityRef`s that `default=str` flattens into strings nobody can apply."""
+    import json
+
+    part = _Part()
+    records = json.loads(json.dumps(_records(part, monkeypatch), default=str))
+    report = replay.replay_packages(tmp_path / "in.step", tmp_path / "out.step", records)
+
+    assert [o["outcome"] for o in report.diagnostics["replay"]] == [
+        replay.REPLAY_COMMITTED, replay.REPLAY_COMMITTED]

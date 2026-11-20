@@ -79,7 +79,7 @@ def _package_of(record: dict, region: Region) -> TargetPackage:
     replay is bounded by the caller, not by a per-package deadline it would have to make up.
     """
     predicate = record.get("predicate") or {}
-    plan = tuple(dict(item) for item in record.get("plan") or ())
+    plan = tuple(_live_item(item) for item in record.get("plan") or ())
     return TargetPackage(
         region=region,
         intent="replay",
@@ -93,6 +93,30 @@ def _package_of(record: dict, region: Region) -> TargetPackage:
         budget=PackageBudget(max_ops=max(1, len(plan)), timeout_s=float("inf"),
                              model_calls=0, deviation_mm=0.0),
         rationale=f"replay of a recorded {record.get('review_tier') or 'reviewer'} acceptance")
+
+
+def _live_item(item: dict) -> dict:
+    """One recorded plan item, resolved back into what `try_package` applies.
+
+    The record is plain data (`region_loop._plain_item`): the operation by name, looked up in the
+    shipped catalogue (read at call time, so a test may patch it), the targets as `EntityRef` fields and
+    the code as its value. AN UNKNOWN OPERATION RESOLVES TO NOTHING, so the package is refused as
+    malformed rather than applied as something nobody recorded.
+    """
+    from meshpipeline.cad.repair.contracts import DefectCode
+    from meshpipeline.cad.repair.identity import EntityRef
+    from meshpipeline.cad.repair.operations import OPERATIONS as ops
+    out = dict(item)
+    op = out.get("op")
+    if isinstance(op, str):
+        out["op"] = next((o for o in ops if getattr(o, "name", None) == op), None)
+    out["targets"] = tuple(EntityRef(**t) if isinstance(t, dict) else t
+                           for t in out.get("targets") or ())
+    code = out.get("defect_code")
+    if isinstance(code, str):
+        with contextlib.suppress(ValueError):
+            out["defect_code"] = DefectCode(code)
+    return out
 
 
 def _match(regions: tuple[Region, ...], wanted: list[str]) -> Region | None:
