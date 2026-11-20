@@ -325,6 +325,22 @@ def detail_at(workspace, *, centre, radius: float, skip_names: tuple[str, ...] =
             raise DetailError(
                 f"the {region or 'mesh'} boundary is {total:,} faces and this reads at most "
                 f"{MAX_SOURCE_FACES:,} at once, so its detail is not available")
+        # THE FALL-THROUGH NEEDS A MESH TO FALL THROUGH TO, and since the chain stopped
+        # reconstructing there are regions where there is none. `conjugate` writes
+        # `constant/<region>/polyMesh/boundary` from the per-rank meshes so the regions and their
+        # patches can be named without a merged mesh being made; it deliberately synthesizes no
+        # `faces` and no `points`, because describing a mesh is not the same as having one.
+        #
+        # Parsing that directory finds nothing and `_parsed` returns None, and the `continue`
+        # below then skipped the region in silence - so a reader who asked to look closely at
+        # the coolant got an empty window and no reason. Said out loud instead, naming the one
+        # thing that would fix it. `detail_box` already refuses rather than falls through, for
+        # its own reason, a hundred lines down.
+        if not ((polymesh / "faces").is_file() and (polymesh / "points").is_file()):
+            raise DetailError(
+                f"the {region or 'mesh'} boundary is described but not stored here: its patch "
+                f"table is beside it and its faces are not, so a window needs the index that is "
+                f"built from the per-rank meshes")
         owner = polymesh / "owner"
         stat = owner.stat() if owner.is_file() else (polymesh / "boundary").stat()
         parsed = _parsed(str(polymesh), (stat.st_size, int(stat.st_mtime_ns)))

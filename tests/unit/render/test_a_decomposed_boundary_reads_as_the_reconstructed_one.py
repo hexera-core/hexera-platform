@@ -137,3 +137,36 @@ def test_ranks_are_walked_in_rank_order_not_lexical_order(tmp_path):
         (tmp_path / f"processor{n}").mkdir()
     assert [d.name for d in processor_dirs(tmp_path)] == [
         "processor0", "processor1", "processor2", "processor10", "processor11"]
+
+
+# -- and a window over a region that was described but never stored ---------------------------
+
+def test_a_window_over_a_described_only_region_says_why_it_cannot_be_drawn(tmp_path):
+    """The silent version of this is the bug: an empty window and no reason.
+
+    `conjugate._publish_decomposed_boundaries` writes a region's patch table without writing its
+    faces or points, on purpose - describing a mesh is not the same as having one. `detail_at`
+    then found no index, fell through to its mesh parse exactly as it does for a pre-index mesh,
+    parsed a directory with no mesh in it, and skipped the region with `continue`. A reader who
+    asked to look closely at the coolant got nothing back and nothing to act on.
+    """
+    from meshpipeline.engines.cfmesh_conjugate.conjugate import _publish_decomposed_boundaries
+    from meshpipeline.render.detail_window import DetailError, detail_at
+
+    write_decomposed_row_of_hexes(tmp_path, ranks=3, n_cells=6, region="fluid")
+    assert _publish_decomposed_boundaries(tmp_path) == ["fluid"]
+
+    with pytest.raises(DetailError, match="described but not stored"):
+        detail_at(tmp_path, centre=(3.0, 0.5, 0.5), radius=1.0)
+
+
+def test_a_stored_region_is_still_drawn_from_its_own_mesh(tmp_path):
+    """The fall-through it replaces is deliberate and must survive: a mesh with faces and points
+    beside its boundary and no index is read by parsing it, as it was before indexes existed."""
+    from meshpipeline.render.detail_window import detail_at
+    from tests.foam_fixtures import write_row_of_hexes
+
+    polymesh = tmp_path / "constant" / "polyMesh"
+    write_row_of_hexes(polymesh)
+    out = detail_at(tmp_path, centre=(1.5, 0.5, 0.5), radius=5.0)
+    assert out["faces_in_range"] > 0, out
