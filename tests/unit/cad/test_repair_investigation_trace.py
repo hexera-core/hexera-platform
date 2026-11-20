@@ -338,3 +338,92 @@ def test_with_reviews_attaches_each_regions_packages_to_its_outcome_row():
     assert out["outcomes"][0]["packages"][0]["objection"]["field"] == "deviation_mm"
     assert out["outcomes"][1]["packages"] == []
     assert "PROSE" not in json.dumps(out)
+
+
+# --- the MEASURED evidence a verdict was made on, in the row -----------------------------------
+# Two gate runs at one commit judged the SAME operation on the SAME target - fix_small_faces on
+# face:c678dc263c3ceafd - and reached opposite verdicts, one reject naming
+# mesh_after=["mesh_edge_through_face"] and one accept. Nobody could say whether the reviewer saw
+# different evidence or behaved differently, because `review_of` kept the verdict and dropped what
+# it was made on. The measured half now travels with it; the prose still does not.
+
+def _evidence() -> dict:
+    """An evidence block shaped as `package_review.evidence_of` builds one, prose included so the
+    exclusion is actually tested."""
+    return {
+        "ops": [{"op": "fix_small_faces", "status": "kept",
+                 "reason": "PROSE: the sliver was debris"}],
+        "area_mm2": {"declared": 0.0, "measured": 0.342214},
+        "volume_mm3": {"declared": 0.0, "measured": 0.0},
+        "faces": {"before": 89, "after": 86},
+        "solids": {"before": 2, "after": 2},
+        "diagonal_mm": 176.4,
+        "area_mm2_before": 31293.4,
+        "volume_mm3_before": 8000.0,
+        "deviation_status": "measured",
+        "deviation_basis": "whole_part",
+        "deviation_mm": 0.0012,
+        "deviation_samples": 240,
+        "deviation_faces": 86,
+        "deviation_faces_skipped": 0,
+        "removed": {"faces": 3, "area_mm2": 0.342214},
+        "mesh_before": ["edge_through_face"],
+        "mesh_after": [],
+        "defects_cleared": ["small_face"],
+        "defects_revealed": [],
+        "defects_remaining": ["small_edge"],
+        "review_rejects": {"count": 1, "reasons": ["PROSE: an earlier reject's words"]},
+        "author_claim": "PROSE: remove the two sliver faces",
+    }
+
+
+def _package(evidence: dict | None) -> dict:
+    return {"region_index": 0, "status": "committed", "reason": "", "reviewed": "accept",
+            "review_tier": "reviewer", "review_objection": None, "review_evidence": evidence}
+
+
+def test_the_measured_evidence_travels_with_the_verdict():
+    row = it.review_of(_package(_evidence()))
+    measured = row["evidence"]
+
+    assert measured["mesh_after"] == [] and measured["mesh_before"] == ["edge_through_face"]
+    assert measured["deviation_mm"] == 0.0012
+    assert measured["deviation_basis"] == "whole_part"
+    assert measured["deviation_samples"] == 240
+    assert measured["deviation_status"] == "measured"
+    assert measured["removed"] == {"faces": 3, "area_mm2": 0.342214}
+    assert measured["defects_cleared"] == ["small_face"]
+    assert measured["defects_revealed"] == []
+    assert measured["area_mm2"] == {"declared": 0.0, "measured": 0.342214}
+    assert measured["faces"] == {"before": 89, "after": 86}
+    # The operation list keeps WHAT ran and how it ended, never why.
+    assert measured["ops"] == [{"op": "fix_small_faces", "status": "kept"}]
+    # An earlier reject is a COUNT here, not its words.
+    assert measured["review_rejects"] == {"count": 1}
+    assert row["review_tier"] == "reviewer"
+
+
+def test_no_prose_reaches_the_row():
+    """THE RULE THIS PROJECTION MUST NOT BREAK: the row carries measurements, never the reviewer's
+    or the author's words. Every prose value in the fixture is marked, so one assertion catches
+    any of them arriving by any route - including a key added later."""
+    import json
+
+    row = it.review_of(_package(_evidence()))
+
+    assert "PROSE" not in json.dumps(row, sort_keys=True, default=str)
+    assert "author_claim" not in row["evidence"]
+    assert "reasons" not in row["evidence"]["review_rejects"]
+
+
+def test_a_package_with_no_evidence_gains_no_key():
+    assert "evidence" not in it.review_of(_package(None))
+    assert "evidence" not in it.review_of({"region_index": 0, "status": "reverted"})
+
+
+def test_clipped_evidence_is_reported_as_clipped():
+    """`clip_evidence` replaces an over-long block with a stated marker. The row says so rather
+    than inventing an empty measurement."""
+    row = it.review_of(_package({"clipped": "evidence clipped to 4096 of 9001 bytes"}))
+
+    assert row["evidence"] == {"clipped": "evidence clipped to 4096 of 9001 bytes"}

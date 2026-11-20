@@ -336,14 +336,59 @@ def finish(collector: Collector | None, *, job_id: str = "") -> dict | None:
 # (`review_reason`) is not copied: it is the reviewer's, and a report a customer or an author can
 # read must not carry it. Nothing here reaches an author's attempt log.
 
+#: The measured blocks of `package_review.evidence_of` that may travel into a row, each named so
+#: nothing arrives by being copied through. Scalars and small dicts of numbers or code names.
+_EVIDENCE_MEASURED = (
+    "area_mm2", "volume_mm3", "faces", "solids", "diagonal_mm", "area_mm2_before",
+    "volume_mm3_before", "deviation_status", "deviation_basis", "deviation_mm",
+    "deviation_samples", "deviation_faces", "deviation_faces_skipped", "removed",
+    "mesh_before", "mesh_after", "defects_cleared", "defects_revealed", "defects_remaining",
+)
+#: Evidence keys that are PROSE and never travel: the author's own words for what it meant to do,
+#: and the words of this region's earlier review rejects.
+_EVIDENCE_PROSE = ("author_claim",)
+
+
+def measured_evidence(evidence: object) -> dict:
+    """The MEASURED half of the evidence a review verdict was made on. PROSE-FREE, BY NAMING.
+
+    WHY A ROW NEEDS IT. Two gate runs at one commit judged the same operation on the same target
+    and reached opposite verdicts - one reject naming `mesh_after` as still failing, one accept -
+    and neither could be explained, because the row kept the verdict and dropped what it was made
+    on. Without this, "the reviewer is inconsistent" and "the probe gave a different answer" look
+    identical in the data, and they are very different problems.
+
+    BUILT BY NAMING EVERY KEY, like `evidence_of` itself: an operation's own evidence dict, a raw
+    reply, or any field a future caller leaves in the block cannot reach a row by default. The
+    operation list keeps WHAT ran and how it ended, never why; an earlier reject is a COUNT, never
+    its words. A clipped block is reported as clipped rather than as an empty measurement.
+    """
+    if not isinstance(evidence, dict) or not evidence:
+        return {}
+    if "clipped" in evidence and len(evidence) == 1:
+        return {"clipped": str(evidence["clipped"])}
+    out: dict = {key: evidence[key] for key in _EVIDENCE_MEASURED if key in evidence}
+    if isinstance(evidence.get("ops"), list):
+        out["ops"] = [{"op": str(op.get("op", "")), "status": str(op.get("status", ""))}
+                      for op in evidence["ops"] if isinstance(op, dict)]
+    rejects = evidence.get("review_rejects")
+    if isinstance(rejects, dict):
+        out["review_rejects"] = {"count": int(rejects.get("count") or 0)}
+    for prose in _EVIDENCE_PROSE:
+        out.pop(prose, None)
+    return out
+
+
 def review_of(package: dict) -> dict:
-    """One judged package's review, prose-free."""
+    """One judged package's review, prose-free: the verdict, and the measurements it was made on."""
     objection = package.get("review_objection")
-    return {"region": package.get("region_index"), "status": str(package.get("status") or ""),
-            "reason": str(package.get("reason") or ""),
-            "reviewed": str(package.get("reviewed") or ""),
-            "review_tier": str(package.get("review_tier") or ""),
-            "objection": dict(objection) if isinstance(objection, dict) else None}
+    row = {"region": package.get("region_index"), "status": str(package.get("status") or ""),
+           "reason": str(package.get("reason") or ""),
+           "reviewed": str(package.get("reviewed") or ""),
+           "review_tier": str(package.get("review_tier") or ""),
+           "objection": dict(objection) if isinstance(objection, dict) else None}
+    measured = measured_evidence(package.get("review_evidence"))
+    return {**row, "evidence": measured} if measured else row
 
 
 def with_reviews(traced: dict, packages: list) -> dict:
