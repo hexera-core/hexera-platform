@@ -641,6 +641,19 @@ class RepairSession:
                    reserved=reserved, clock=clock, original=original, defects=tuple(defects),
                    is_scratch=True, standing_mesh=standing_mesh)
 
+    def _caps_police_this_edit(self) -> bool:
+        """Do the sanity and cumulative caps judge THIS session's edits?
+
+        Always, except on a scratch clone under `CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS`: the caps
+        exist to keep a DELIVERY within what was declared, and a clone delivers nothing. With the
+        posture off this is True everywhere, so a flag-off run is capped exactly as before.
+        """
+        if not self.is_scratch:
+            return True
+        import meshpipeline.settings.cad_repair as rcfg
+
+        return getattr(rcfg, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "off") != "live"
+
     def _default_scan(self, shape, *, face_scan: bool = True, within: Region | None = None,
                       final: bool = False):
         """`localize_scan`, with a face-level scan only when the self-intersection heal is on.
@@ -1056,14 +1069,24 @@ class RepairSession:
 
         # The face-count twin of the area/volume declarations: only the sliver sweep sets
         # `faces_removed`, and only a removal of exactly that many is excused (caps.sanity_refusal).
-        refusal = sanity_refusal(before, after, declared_faces_removed=int(
-            outcome.evidence.get("faces_removed", 0) or 0))
-        if not refusal:
-            projected = self.accounting.plus(outcome.evidence)
-            refusal = cumulative_refusal(
-                self.original, after,
-                declared_area_mm2=projected.declared_area_mm2,
-                declared_volume_mm3=projected.declared_volume_mm3)
+        if self._caps_police_this_edit():
+            refusal = sanity_refusal(before, after, declared_faces_removed=int(
+                outcome.evidence.get("faces_removed", 0) or 0))
+            if not refusal:
+                projected = self.accounting.plus(outcome.evidence)
+                refusal = cumulative_refusal(
+                    self.original, after,
+                    declared_area_mm2=projected.declared_area_mm2,
+                    declared_volume_mm3=projected.declared_volume_mm3)
+        else:
+            # A REHEARSAL IS NOT A DELIVERY. This session is a scratch clone, and a clone cannot
+            # commit at all (`try_package` refuses it before the predicate is read), so a cap that
+            # rolled one of its edits back was not protecting a part - it was arguing the
+            # investigation out of trying something on a copy (55 clone edits on wave 1: 33 on
+            # the tolerance cap, 17 on valid -> invalid, 5 on the bbox move). The caps run
+            # unchanged on the real session, which is the only shape a customer ever receives.
+            refusal = ""
+            delta["caps_not_applied"] = "scratch"
         if refusal:
             # REFUSED BEFORE THE RE-INSPECTION IS PAID FOR. That saving is the reason the caps run
             # in this order.

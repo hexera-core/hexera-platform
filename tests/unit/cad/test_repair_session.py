@@ -612,3 +612,75 @@ def test_a_persisting_warning_whose_box_moved_by_kernel_rounding_is_not_a_new_de
     verdict = session.try_op(op, op.targets_for(target), target.code, tolerance_mm=0.01)
 
     assert verdict.status == KEPT, verdict.reason
+
+
+# --- the caps police a DELIVERY, not a rehearsal (CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS) --------
+# A scratch session cannot commit at all (`try_package` refuses it before the predicate is read),
+# so a cap that rolls one of its edits back is not protecting a customer's part - it is arguing
+# the investigation out of trying something on a copy. 55 clone edits died this way on wave 1:
+# 33 on the tolerance cap, 17 on valid->invalid, 5 on the bbox move. ALL THREE FAMILIES ARE PINNED
+# HERE, in both directions, because "the caps still run at delivery" is the whole safety claim.
+
+def _damaged(**over) -> Measure:
+    return Measure(**{**_SOUND.to_dict(), **over})
+
+
+#: (name, the `after` measurement, the words the refusal must carry). One per cap family.
+_CAP_CASES = (
+    ("solid lost", _damaged(solids=0), "solid"),
+    ("valid to invalid", _damaged(valid=False), "invalid"),
+    ("tolerance", _damaged(max_tolerance_mm=9.0), "tolerance"),
+    ("bbox moved", _damaged(diagonal_mm=_SOUND.diagonal_mm * 2.0), "diagonal"),
+    ("area moved", _damaged(surface_area_mm2=_SOUND.surface_area_mm2 * 3.0), "surface area"),
+)
+
+
+def _session_for(after: Measure, *, is_scratch: bool):
+    """A session whose edit lands on `after`. A scratch session is HANDED its original, so it does
+    not measure one at construction and its script is one entry shorter."""
+    def scanner(_shape, valid=None):
+        return (_defect(),), True
+
+    measures = [_SOUND, after] if is_scratch else [_SOUND, _SOUND, after]
+
+    def measurer(_shape):
+        return measures.pop(0) if len(measures) > 1 else measures[0]
+
+    if is_scratch:
+        return RepairSession.scratch("original", measurer=measurer, scanner=scanner,
+                                     original=_SOUND, defects=(_defect(),))
+    return RepairSession("original", measurer=measurer, scanner=scanner)
+
+
+def _tried(session):
+    defect = session.defects()[0]
+    op = _Op(outcome=OpOutcome(shape="fixed"))
+    return session.try_op(op, op.targets_for(defect), defect.code, tolerance_mm=0.01)
+
+
+@pytest.mark.parametrize("name, after, words", _CAP_CASES, ids=[c[0] for c in _CAP_CASES])
+@pytest.mark.parametrize("posture", ["off", "live"])
+def test_a_real_session_is_still_capped_whatever_the_posture(monkeypatch, name, after, words,
+                                                             posture):
+    """THE GATE THAT MATTERS, and it is the one a customer's geometry passes through."""
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", posture, raising=False)
+
+    verdict = _tried(_session_for(after, is_scratch=False))
+
+    assert verdict.status == ROLLED_BACK, (name, posture)
+    assert verdict.reason.startswith("cap:"), (name, posture, verdict.reason)
+    assert words in verdict.reason, (name, posture, verdict.reason)
+    assert "caps_not_applied" not in verdict.delta
+
+
+@pytest.mark.parametrize("name, after, words", _CAP_CASES, ids=[c[0] for c in _CAP_CASES])
+def test_a_scratch_edit_is_capped_only_while_the_posture_is_off(monkeypatch, name, after, words):
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "off", raising=False)
+    off = _tried(_session_for(after, is_scratch=True))
+    assert off.reason.startswith("cap:") and words in off.reason, (name, off.reason)
+
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "live", raising=False)
+    live = _tried(_session_for(after, is_scratch=True))
+    assert not live.reason.startswith("cap:"), (name, live.reason)
+    # SAID OUT LOUD on the verdict, so a transcript never implies the caps passed.
+    assert live.delta.get("caps_not_applied") == "scratch", name

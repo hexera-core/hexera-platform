@@ -262,7 +262,7 @@ def _conclude_schema(shadow: bool = False):
     from meshpipeline.contracts.model_inference import ToolSchema
 
     properties = {**_CONCLUDE_PROPERTIES}
-    if clone_freedom():
+    if clone_freedom() and not shadow:
         # NOT OFFERED, STILL HANDLED. The owner's policy: escalation is what happens when the
         # whole job fails, never a per-region exit - and a form that needs only a sentence, while
         # `package` needs a kept edit, is the exit every region took (538 of 623 on wave 1). A
@@ -335,7 +335,15 @@ def system_prompt(*, prose: str = "", shadow: bool = False) -> str:
     the posture does not declare cannot be built.
     """
     template = SHADOW_SYSTEM if shadow else INVESTIGATOR_SYSTEM
-    text = template.format(catalogue=catalogue_text(), roster=_roster(shadow))
+    # THE CATALOGUE THE CLONE WILL ACTUALLY ACCEPT. Under the live posture the clone's validator
+    # admits every operation (`model_author.PackageGuards._catalogue`), so a roster built from the
+    # deployment's consent flags would name fewer than the model may use - and an operation it is
+    # never told about is one it can only reach by guessing the name. A SHADOW has no clone, so it
+    # keeps the deployment's own catalogue.
+    free = clone_freedom() and not shadow
+    catalogue = (catalogue_text(split_closed_faces=True, fragment_bodies=True, rebuild_face=True,
+                                close_wire_gaps=True) if free else catalogue_text())
+    text = template.format(catalogue=catalogue, roster=_roster(shadow))
     if not shadow and clone_freedom():
         text = f"{text}\n{AGGRESSIVE_RULE}"
     return f"{text}\n{prose}" if prose else text
@@ -1090,8 +1098,13 @@ def investigator(shape, *, original: Measure, reserved: frozenset = frozenset(),
                 key = f"{ask.tool}:{_args_text(ask.args)}"
                 inv.calls_seen[key] = inv.calls_seen.get(key, 0) + 1
                 if inv.calls_seen[key] >= REPEAT_MAX:
-                    runaway = (f"the same call was asked {REPEAT_MAX} times: identical "
-                               f"{ask.tool} arguments cannot give a new answer")
+                    # NAMED AS A REPEAT, with what would make it a new question. Two wave-3
+                    # runaways were a model re-sending identical edit arguments, which reads to it
+                    # as an unexplained ending unless the words say what happened.
+                    runaway = (f"this is the same {ask.tool} call for the {REPEAT_MAX}th time, "
+                               f"with identical arguments ({_args_text(ask.args)}): an identical "
+                               "call measures the same thing and cannot give a new answer. aim at "
+                               "a different fingerprint, use a different operation, or conclude")
                 inv.tool_calls += 1
                 if shadow and ask.tool not in _read_only_names():
                     # REFUSED BEFORE THE REGISTRY IS REACHED, in the registry's own words for an
@@ -1228,6 +1241,20 @@ def _conclude(args: object, inv: _Investigation, *, ctx, scratch, region: Region
     form, body = forms[0], args[forms[0]]
 
     if form == "escalate":
+        # A SHADOW HAS NO CLONE, so "keep working on the copy" is advice it cannot take and
+        # `escalate` is one of its two honest answers. The live posture is about what an
+        # investigation with a disposable copy may do, and it must not reach in here.
+        if clone_freedom() and not shadow:
+            # NOT A CONCLUSION AT ALL under the owner's policy: escalation is what happens when
+            # the whole JOB fails, and a region cannot choose it. Taking it out of the schema was
+            # not enough - on wave 3, 379 regions sent the form from memory and the driver
+            # accepted every one. Refused like any invalid conclusion: it costs the turn, the
+            # refusal guard counts it, and the region goes on working.
+            raise ma.Refusal(
+                "escalate is not a conclusion this region may reach: escalation is for a whole "
+                "job that cannot be repaired, never one region. keep working - try an operation "
+                "on the copy, or conclude with `mesher_side` if the geometry is sound and the "
+                "mesher is at fault")
         if not isinstance(body, dict) or not str(body.get("reason") or "").strip():
             raise ma.Refusal("escalate gives no reason")
         reason = observe.clip_text(body["reason"], ma.INTENT_MAX)
