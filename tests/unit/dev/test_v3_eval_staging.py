@@ -325,3 +325,37 @@ def test_results_json_has_the_evidence_lane_shape(tmp_path):
     # nothing measured reads null, never 0
     assert out["arms"]["t6_rules_only_local"]["newly_meshed"] is None
     json.dumps(out, allow_nan=False)
+
+
+# ------------------------------------------------------------------ review fixes (PR #494)
+
+def _all_units_but(tmp_path: Path, *skip: tuple[str, str]) -> None:
+    for arm_name, kind in spec.UNITS:
+        if (arm_name, kind) not in skip:
+            _shard(tmp_path, arm_name, kind, 1, 1)
+
+
+def test_collector_refuses_when_a_whole_planned_unit_is_missing(tmp_path, capsys):
+    collect = _load("v3_collect_under_test_missing_unit", V3 / "collect.py")
+    _all_units_but(tmp_path, ("t29_deterministic", "clean"))
+    assert collect.missing_units(collect.load_runs(tmp_path)["arms"]) == \
+        ["t29_deterministic/clean"]
+    assert collect.main(["--commit", COMMIT, "--from", str(tmp_path), "--dry-run"]) == 2
+    err = capsys.readouterr().err
+    assert "REFUSED" in err and "t29_deterministic/clean" in err
+
+
+def test_t29_is_not_accepted_without_the_deterministic_clean_control(tmp_path):
+    collect = _load("v3_collect_under_test_t29_clean", V3 / "collect.py")
+    _all_units_but(tmp_path, ("t29_deterministic", "clean"))
+    runs = collect.load_runs(tmp_path)
+    reports = {}
+    for key, entry in runs["arms"].items():
+        rep = collect.arm_report(entry)
+        if key[1] == "clean":
+            rep["clean"] = collect.clean_untouched(entry["rows"], rep["summary"])
+        reports[key] = rep
+    # force the v3 arm to "win" so only the missing control can block acceptance
+    reports[("v3_full", "failing")]["summary"]["meshing"]["newly_meshed"] = 5
+    reports[("v3_full", "failing")]["cost_per_fixed_part_usd"] = 0.1
+    assert collect.build_verdicts(reports)["T29"]["accepted"] is False
