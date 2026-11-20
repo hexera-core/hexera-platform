@@ -72,9 +72,10 @@ def catalogue_text(*, split_closed_faces: bool | None = None,
                      "2D-stage open-loop failure or a wire gap on a located face")
     if resolve_sub_mesh_gap:
         lines.append(f"- {RESOLVE_GAP}: when two faces of one solid do NOT touch but sit closer "
-                     "than the mesh size (a clash with clash_gap_mm above 0, usually a thin "
-                     "wall), split them along their own iso-curves so the default mesh follows "
-                     "the curvature; moves no surface and never closes the gap; for an "
-                     "edge-through-face or overlapping-facets failure on a located face, not "
-                     "for a clash measured at 0 mm (that is a real intersection)")
+                     "than the mesh size (a clash whose clash_kind is \"gap\", i.e. measured "
+                     "apart beyond the touching margin; usually a thin wall), split them along "
+                     "their own iso-curves so the default mesh follows the curvature; moves no "
+                     "surface and never closes the gap; for an edge-through-face or "
+                     "overlapping-facets failure on a located face, not for a clash whose faces "
+                     "touch or cross (that is a real intersection)")
     return "\n".join(lines)
