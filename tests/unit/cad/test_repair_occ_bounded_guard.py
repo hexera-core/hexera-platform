@@ -51,8 +51,6 @@ KNOWN_UNBOUNDED = {
     # The clash gap. Reported as dead after #503; it is still CALLED on main at mesh_probe.py:752,
     # which is why it is listed rather than deleted.
     ("mesh_probe.py", "_clash_gap", "BRepExtrema_DistShapeShape"),
-    # One call per deviation sample, inside every tournament rehearsal (the K-fold cost).
-    ("deviation.py", "distance", "BRepExtrema_DistShapeShape"),
     # --- rows 4-6: inside fragment_bodies.apply ------------------------------------------------
     # On expiry the OPERATION must DECLINE, which is a different contract from reporting an
     # unmeasured value, so these are their own change.

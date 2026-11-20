@@ -12,6 +12,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from meshpipeline.cad.repair import occ_distance
 from meshpipeline.cad.repair.identity import fingerprint_of, quantum_for
 
 #: WHICH FACES A DEVIATION WAS SAMPLED ON (`DeviationResult.basis`), so a reader can weigh it:
@@ -180,19 +181,35 @@ def _sample_points(selected: list, samples: int) -> tuple[list, int, int]:
     return points, measured, skipped
 
 
-def _distance_to(before_shape) -> Callable[[tuple[float, float, float]], float]:
+def _vertex(point: tuple[float, float, float]):
     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
-    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
     from OCP.gp import gp_Pnt
 
-    def distance(point: tuple[float, float, float]) -> float:
-        vertex = BRepBuilderAPI_MakeVertex(gp_Pnt(*point)).Vertex()
-        measure = BRepExtrema_DistShapeShape(vertex, before_shape)
-        if not measure.IsDone():
-            raise RuntimeError("distance not computed")
-        return float(measure.Value())
+    return BRepBuilderAPI_MakeVertex(gp_Pnt(*point)).Vertex()
 
-    return distance
+
+def _worst_distance(before_shape, points: list, *, budget_s: float) -> float | None:
+    """The furthest of `points` from `before_shape`, or None when they were not all measured.
+
+    MEASURED IN ONE BOUNDED CHILD. `BRepExtrema_DistShapeShape` ran here, once per sample, with
+    the budget checked only BETWEEN samples - so one slow sample hung the rehearsal, and the
+    deviation runs inside every tournament fold. The samples go to one fresh interpreter, which
+    is killed as a group when the budget runs out.
+
+    ALL OF THEM OR NONE. A partial batch is worth keeping where the answer is per pair, but this
+    answer is the WORST sample and an unmeasured one may be it: a maximum over part of the points
+    is a lower bound, not the deviation. So an incomplete batch means not measured, exactly as a
+    spent budget did, and the reviewer sees no number rather than a flattering one.
+    """
+    answers = occ_distance.distances([before_shape, *(_vertex(p) for p in points)],
+                                      [(0, n + 1) for n in range(len(points))],
+                                      budget_s=budget_s)
+    worst = 0.0
+    for answer in answers:
+        if answer.get("distance_status") != "measured" or answer["min_distance_mm"] is None:
+            return None
+        worst = max(worst, float(answer["min_distance_mm"]))
+    return worst
 
 
 @dataclass(frozen=True, slots=True)
@@ -248,12 +265,17 @@ def measure_deviation(before_shape, after_shape, faces: tuple[str, ...] = (), *,
         if not points:
             # Measured-empty when the selection was real but empty; a failure raises above.
             return DeviationResult(None, 0, measured, skipped, clock() - started, basis)
-        measure = distance or _distance_to(before_shape)
-        worst = 0.0
-        for point in points:
-            if clock() > deadline:
+        if distance is None:
+            measured_worst = _worst_distance(before_shape, points, budget_s=deadline - clock())
+            if measured_worst is None:
                 return DeviationResult(None, 0, None, 0, clock() - started)
-            worst = max(worst, float(measure(point)))
+            worst = measured_worst
+        else:
+            worst = 0.0
+            for point in points:
+                if clock() > deadline:
+                    return DeviationResult(None, 0, None, 0, clock() - started)
+                worst = max(worst, float(distance(point)))
         if not math.isfinite(worst):
             return DeviationResult(None, 0, None, 0, clock() - started)
         return DeviationResult(worst, len(points), measured, skipped, clock() - started, basis)
