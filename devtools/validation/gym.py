@@ -222,6 +222,25 @@ def _pair(arm: dict, baseline: dict, key: str) -> dict:
     return {"arm": a, "baseline": b, "delta": a - b}
 
 
+def _by_sha256(rows: list[dict], which: str) -> dict[str, dict]:
+    """The arm's rows keyed by the input's sha256. REFUSES a row with no hash or a hash seen
+    twice: keyed on "" (or overwritten), a whole arm silently collapses to its last row and the
+    comparison reports one file while hiding every other part's regression."""
+    keyed: dict[str, dict] = {}
+    for row in rows:
+        sha = str(row.get("sha256") or "")
+        if not sha:
+            raise ValueError(
+                f"a {which} row ({row.get('file') or row.get('name') or '?'}) carries no sha256: "
+                f"it was written before repair_corpus stamped each row with its input's hash, so "
+                f"the rows cannot be matched across arms. Re-run the arm on this build.")
+        if sha in keyed:
+            raise ValueError(f"the {which} arm holds input {sha[:12]} more than once; one part "
+                             f"cannot be scored twice")
+        keyed[sha] = row
+    return keyed
+
+
 def compare(arm: list[dict], baseline: list[dict]) -> dict:
     """The two arms' numbers over the files BOTH ran, headline and per stratum. Pure.
 
@@ -229,8 +248,8 @@ def compare(arm: list[dict], baseline: list[dict]) -> dict:
     evidence about the policy, and silently averaging over different file sets is the classic way
     a gym reports a win that is really a missing row.
     """
-    arm_by_sha = {str(r.get("sha256", "")): r for r in arm}
-    base_by_sha = {str(r.get("sha256", "")): r for r in baseline}
+    arm_by_sha = _by_sha256(arm, "arm")
+    base_by_sha = _by_sha256(baseline, "baseline")
     shared = sorted(set(arm_by_sha) & set(base_by_sha))
     arm_rows = [arm_by_sha[s] for s in shared]
     base_rows = [base_by_sha[s] for s in shared]

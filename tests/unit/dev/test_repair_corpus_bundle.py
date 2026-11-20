@@ -385,3 +385,22 @@ def test_rebundling_a_shadow_planner_run_seals_a_bundle_that_verifies(tmp_path, 
 
     monkeypatch.setattr(sys, "argv", ["repair_corpus.py", "--verify", str(bundle)])
     assert rc.main() == 0, capsys.readouterr().err
+
+
+# ---------------------------------------------------------------- the row's own key, for the gym
+
+def test_every_row_carries_its_inputs_hash_and_its_stratum(kernel, tmp_path, capsys):
+    # The gym (devtools/validation/gym.py) keys arms by sha256 and stratifies on gmsh_error and
+    # solids; a row with none of them collapses an arm to one compared file.
+    import hashlib
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    digest = hashlib.sha256(kernel.part.read_bytes()).hexdigest()
+    entry = {"name": "anything.step", "sha256": digest,
+             "gmsh_error": "PLC Error:  A facet of boundary (overlapping facets)", "solids": 2}
+    rows = rc.run_files([kernel.part], scratch, mode="off", entries=[entry])
+    assert rows[0]["sha256"] == digest
+    assert rows[0]["gmsh_error"] == entry["gmsh_error"] and rows[0]["solids"] == 2
+    # a directory run, with no manifest, still names its input by hash
+    plain = rc.run_files([kernel.part], scratch, mode="off")
+    assert plain[0]["sha256"] == digest and "solids" not in plain[0]

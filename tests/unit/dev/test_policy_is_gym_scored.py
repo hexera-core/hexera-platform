@@ -171,6 +171,32 @@ def test_score_counts_the_fixes_the_regressions_and_the_clean_control(tmp_path):
     assert stratum["files"] == 4 and stratum["newly_meshed"]["arm"] == 2
 
 
+def _unkeyed(row: dict) -> dict:
+    """A row as repair_corpus wrote one before it stamped the input's hash: no sha256."""
+    return {k: v for k, v in row.items() if k != "sha256"}
+
+
+def test_rows_with_no_hash_are_refused_not_collapsed_into_one(tmp_path):
+    # Every real row before the fix had no sha256: keyed on "", each arm became ONE row and a
+    # large sample reported one compared file, hiding every earlier regression.
+    shas = [entry["sha256"] for entry in SAMPLE]
+    arm = _bundle(tmp_path / "arm", [_unkeyed(_row(s, before=True, after=False)) for s in shas],
+                  sample=SAMPLE)
+    baseline = _bundle(tmp_path / "baseline",
+                       [_unkeyed(_row(s, before=True, after=True)) for s in shas], sample=SAMPLE)
+    with pytest.raises(ValueError, match="sha256"):
+        gym.score(arm, baseline)
+
+
+def test_a_duplicated_hash_is_refused(tmp_path):
+    rows = [_row(SAMPLE[0]["sha256"], before=False, after=True),
+            _row(SAMPLE[0]["sha256"], before=True, after=False)]
+    arm = _bundle(tmp_path / "arm", rows, sample=SAMPLE)
+    baseline = _bundle(tmp_path / "baseline", rows[:1], sample=SAMPLE)
+    with pytest.raises(ValueError, match="more than once"):
+        gym.score(arm, baseline)
+
+
 def test_score_refuses_a_bundle_with_no_sample(tmp_path):
     """A corpus run that did not record its sample cannot be scored: provenance or nothing."""
     directory = tmp_path / "arm"

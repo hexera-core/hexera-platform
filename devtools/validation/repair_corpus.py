@@ -1526,14 +1526,40 @@ def _repair_row(path: Path, scratch: Path, *, mode: str = "off", force: bool = F
     return row
 
 
+#: The manifest fields a row carries so its stratum can be re-derived (`stratum_of` reads these).
+_STRATUM_FIELDS = ("gmsh_error", "solids")
+
+
+def _input_stamp(path: Path, by_sha: dict) -> dict:
+    """`{"sha256": ...}` for the input as read, plus its manifest stratum fields when the run
+    selected it from a manifest. {} for a file that cannot be read - its row says why."""
+    try:
+        digest = hashlib.sha256()
+        with Path(path).open("rb") as handle:
+            for block in iter(lambda: handle.read(1 << 20), b""):
+                digest.update(block)
+    except OSError:
+        return {}
+    sha = digest.hexdigest()
+    entry = by_sha.get(sha) or {}
+    return {"sha256": sha, **{k: entry[k] for k in _STRATUM_FIELDS if k in entry}}
+
+
 def run_files(files: list[Path], scratch: Path, *, mode: str = "off", loop: bool = False,
               bundle=None, mesh_probe: bool = False, force_repair: bool = False,
-              goal=None, sink=None) -> list[dict]:
+              goal=None, sink=None, entries=None) -> list[dict]:
     """Run the repair loop over `files`, printing a line per file; returns the rows. When `bundle`
     is a BundleWriter every row is streamed into it AS IT IS PRODUCED, so a run that dies half way
-    leaves its evidence-so-far on disk rather than in a list that was never written."""
+    leaves its evidence-so-far on disk rather than in a list that was never written.
+
+    EVERY ROW NAMES ITS INPUT BY sha256, and a manifest run (`entries`, the selected manifest
+    entries) also carries the two fields its stratum is drawn on (`gmsh_error`, `solids`): the
+    gym keys arms by that hash and stratifies on those fields, and a row without them cannot be
+    matched to the same part in another arm."""
+    by_sha = {str(e.get("sha256")): e for e in (entries or []) if isinstance(e, dict)}
     rows: list[dict] = []
     for path in files:
+        stamp = _input_stamp(path, by_sha)
         if mode == "live":
             # The SAME surface run twice, deterministic-only first and into its own directory so
             # the second pass cannot overwrite it. Two passes to attribute a difference to the
@@ -1547,6 +1573,7 @@ def run_files(files: list[Path], scratch: Path, *, mode: str = "off", loop: bool
         else:
             row = _one(path, scratch, mode=mode, mesh_probe=mesh_probe,
                        force_repair=force_repair, goal=goal, sink=sink)
+        row.update(stamp)
         rows.append(row)
         if bundle is not None:
             bundle.write_row(row)
@@ -1818,7 +1845,7 @@ def main() -> int:
     writer = benchmark_bundle.BundleWriter(Path(args.bundle)) if args.bundle else None
     rows = run_files(files, scratch, mode=args.planner, loop=args.loop, bundle=writer,
                      mesh_probe=args.mesh_probe, force_repair=args.force_repair,
-                     goal=goal, sink=sink)
+                     goal=goal, sink=sink, entries=sample_entries)
     if sink is not None:
         sink.close()
 
