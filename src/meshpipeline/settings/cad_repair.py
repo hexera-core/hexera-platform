@@ -457,6 +457,15 @@ def _package_review_posture() -> str:
     return "live" if raw == "live" else "off"
 
 
+def _whole_shape_aim_posture() -> str:
+    """The whole-shape aim posture, FAILING CLOSED: only `live` turns it on."""
+    raw = optional_env("CAD_REPAIR_WHOLE_SHAPE_AIM", "off")
+    if raw not in ("live", "off"):
+        logger.warning("CAD_REPAIR_WHOLE_SHAPE_AIM=%r is neither 'live' nor 'off'; reading it as "
+                       "off", raw)
+    return "live" if raw == "live" else "off"
+
+
 def _clone_freedom_posture() -> str:
     """The scratch-clone freedom posture, FAILING CLOSED: only `live` turns it on."""
     raw = optional_env("CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "off")
@@ -483,6 +492,25 @@ def _clone_freedom_posture() -> str:
 #: STEP keep rule and package review all judge a package exactly as they do today - a clone is a
 #: copy, and nothing reaches a customer's geometry without passing them.
 CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS: str = _clone_freedom_posture()
+
+
+#: Whether a mesh failure gmsh located NOWHERE may be repaired at all, by an operation aimed at the
+#: whole shape (`regions.decompose`'s trailing region, `located=False`, no bounding box).
+#:
+#: A DELIBERATE, FLAG-GATED REVERSAL. Four layers refuse that region today, each for the same
+#: sound reason: a scan scoped to it IS the whole-shape scan, so nothing about a package proved
+#: there is scoped and the claim cannot be locally verified. "off" leaves all four refusals exactly
+#: as they are. "live" replaces the scoped proof rather than waiving it - the package is always
+#: reviewed and never auto-accepted, its deviation is measured on the WHOLE PART with samples
+#: (missing is a reject, not a pass), every cap, validity, solid-count, paired-rim and
+#: held-for-review gate applies unchanged, and SUCCESS IS ONLY THAT THE DELIVERED STEP NEWLY
+#: MESHES.
+#:
+#: Never "the named defect disappeared": the synthetic name is coarse (`shape:<code>@<stage>`), and
+#: a whole-shape fix can change the failure's KIND - edge-through-face becoming overlapping
+#: facets - so the old name vanishes while the part still does not mesh. That is a rollback, never
+#: a cure.
+CAD_REPAIR_WHOLE_SHAPE_AIM: str = _whole_shape_aim_posture()
 
 
 #: Whether a separate model reviews every package that passed its predicate BEFORE the commit

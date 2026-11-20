@@ -411,3 +411,50 @@ def test_each_face_carries_its_own_clash_measurements(monkeypatch):
         assert by_face[face]["clash_kind"] == "coplanar"
         assert by_face[face]["clash_point"] == [10.0, 0.0, 5.0]
         assert by_face[face]["clash_pair"] == [2, 9]
+
+
+# --- a failure gmsh located nowhere gets a NAME, under its own posture --------------------------
+
+def _unlocated_defect(monkeypatch, posture: str, *, stage="3d", message="PLC Error: ..."):
+    import meshpipeline.settings.cad_repair as rcfg
+    from meshpipeline.cad.repair import mesh_probe as mp
+
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_WHOLE_SHAPE_AIM", posture, raising=False)
+    return mp._unlocated(mp.MeshFailure(EDGE_THROUGH_FACE, (), None, message, stage=stage))
+
+
+def test_an_unlocated_failure_has_no_name_while_the_posture_is_off(monkeypatch):
+    """OFF IS THE PRIOR BEHAVIOUR, BYTE FOR BYTE. The four layers that refuse the unlocated
+    region are unchanged, and a nameless defect is what they refuse."""
+    assert _unlocated_defect(monkeypatch, "off").fingerprint == ""
+
+
+def test_an_unlocated_failure_is_named_by_its_kind_and_stage(monkeypatch):
+    """The name has to be addressable - every aiming path works by fingerprint - and STABLE
+    across scans of the same failure, because the keep check compares defect sets by name."""
+    defect = _unlocated_defect(monkeypatch, "live")
+
+    assert defect.fingerprint == "shape:mesh_edge_through_face@3d"
+    assert defect.entity_type == "shape" and defect.entity_index == 0, (
+        "it still names no geometry, so anything that tries to resolve it gets not_resolved")
+
+
+def test_the_name_ignores_what_gmsh_said(monkeypatch):
+    """THE FALSE-SUCCESS PATH THIS AVOIDS. gmsh's message carries coordinates, surface numbers and
+    counts that move between runs on the same geometry. A name built from it would change while
+    the failure stayed - and the old name's absence from the after scan reads as "the claimed
+    defect disappeared", with no scoped proof to catch it."""
+    first = _unlocated_defect(monkeypatch, "live",
+                              message="PLC Error: segment and facet intersect at (1.5,2,-3)")
+    second = _unlocated_defect(monkeypatch, "live",
+                               message="PLC Error: segment and facet intersect at (9,9,9)")
+
+    assert first.fingerprint == second.fingerprint
+    # The words are still EVIDENCE, just not identity.
+    assert first.message != second.message
+
+
+def test_a_failure_with_no_stage_is_named_unknown_not_blank(monkeypatch):
+    """A blank would read as a name and collide with anything else blank; `unknown` says which
+    fact is missing."""
+    assert _unlocated_defect(monkeypatch, "live", stage=None).fingerprint.endswith("@unknown")

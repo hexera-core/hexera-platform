@@ -418,11 +418,41 @@ def _face_defect(code: DefectCode, faces, index: int, failure: MeshFailure) -> E
                         location=_centroid_and_box(faces.FindKey(index)))
 
 
+#: What a failure gmsh located NOWHERE is CALLED, under `CAD_REPAIR_WHOLE_SHAPE_AIM`. Every
+#: aiming path addresses defects by fingerprint - including the target-less whole-shape heal in
+#: `directives.py`, which names "every current defect carrying its code" - so without a name this
+#: defect cannot be claimed, judged, or counted. In the rows it is the `{'unknown': N}` bucket.
+#:
+#: DERIVED FROM THE CLASSIFIED KIND AND THE STAGE, AND NOTHING ELSE. gmsh's message carries
+#: coordinates, surface numbers and counts that move between runs on the same geometry, so a name
+#: built from it would change while the failure stayed - and the old name's absence from the after
+#: scan would read as "the claimed defect disappeared". That is the false-success direction, and a
+#: whole-shape claim has no scoped proof to catch it.
+WHOLE_SHAPE_UNKNOWN_STAGE = "unknown"
+
+
+def whole_shape_name(code: object, stage: object) -> str:
+    """`shape:<code>@<stage>`, the addressable name of an unlocated failure."""
+    return (f"shape:{getattr(code, 'value', code)}"
+            f"@{str(stage or WHOLE_SHAPE_UNKNOWN_STAGE)}")
+
+
 def _unlocated(failure: MeshFailure) -> EntityDefect:
-    """The failure as a defect on no face: index 0, no location, and so no fingerprint."""
-    return EntityDefect(code=CODE_FOR_KIND.get(failure.kind, DefectCode.mesh_other),
+    """The failure as a defect on no face: index 0 and no location.
+
+    IT CARRIES A NAME ONLY UNDER THE WHOLE-SHAPE POSTURE. With the posture off it has no
+    fingerprint, exactly as before, and the four layers that refuse the unlocated region keep
+    refusing it; the name is what makes a claim about it possible, so it arrives with the posture
+    that allows one.
+    """
+    import meshpipeline.settings.cad_repair as rcfg
+
+    code = CODE_FOR_KIND.get(failure.kind, DefectCode.mesh_other)
+    named = getattr(rcfg, "CAD_REPAIR_WHOLE_SHAPE_AIM", "off") == "live"
+    return EntityDefect(code=code,
                         severity=DefectSeverity.error, entity_type="shape", entity_index=0,
                         message=failure.message,
+                        fingerprint=whole_shape_name(code, failure.stage) if named else "",
                         measurements={"mesh_kind": failure.kind,
                                       "gmsh_surfaces": list(failure.surfaces),
                                       "stage": failure.stage})
