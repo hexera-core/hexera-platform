@@ -185,6 +185,32 @@ def _gcloud_json(cmd: list[str]):
     return json.loads(out.stdout or "null")
 
 
+#: Roles that let the compute SA create result objects (rows.json, DONE, ...). Unconditional only.
+WRITE_ROLES = frozenset({
+    "roles/storage.objectAdmin", "roles/storage.objectCreator", "roles/storage.objectUser",
+    "roles/storage.admin", "roles/storage.legacyBucketWriter", "roles/storage.legacyBucketOwner",
+    "roles/editor", "roles/owner",
+})
+
+
+def sa_write_problem(bucket_policy: dict, project_policy: dict,
+                     bucket: str = BUCKET) -> str | None:
+    """None if SERVICE_ACCOUNT holds an unconditional write role on the bucket or the project.
+
+    A launch whose VMs can read the staged inputs but cannot upload results burns every shard and
+    leaves nothing to collect (the lost launch: the SA had only objectViewer). Group membership is
+    not resolved; grant the role to the SA directly."""
+    member = f"serviceAccount:{SERVICE_ACCOUNT}"
+    for policy in (bucket_policy, project_policy):
+        for b in (policy or {}).get("bindings", []):
+            if b.get("role") in WRITE_ROLES and member in b.get("members", []) \
+                    and not b.get("condition"):
+                return None
+    return (f"{SERVICE_ACCOUNT} cannot write results to the bucket (no unconditional write role "
+            f"on the bucket or project). Grant it: gcloud storage buckets add-iam-policy-binding "
+            f"{bucket} --member={member} --role=roles/storage.objectAdmin")
+
+
 def live_checks(args, vcpus: int) -> tuple[list[str], list[str]]:
     """Read-only state checks before anything is created. Returns (problems, warnings)."""
     problems, warnings = [], []
@@ -204,6 +230,15 @@ def live_checks(args, vcpus: int) -> tuple[list[str], list[str]]:
         if subprocess.run(["gcloud", "storage", "ls", f"{args.prefix}/inputs/{kind}/"],
                           capture_output=True).returncode:
             problems.append(f"no {kind} inputs staged under {args.prefix}/inputs/{kind}/")
+    bucket = "gs://" + args.prefix.removeprefix("gs://").split("/", 1)[0]
+    try:
+        problem = sa_write_problem(
+            _gcloud_json(["gcloud", "storage", "buckets", "get-iam-policy", bucket]),
+            _gcloud_json(["gcloud", "projects", "get-iam-policy", PROJECT]), bucket)
+        if problem:
+            problems.append(problem)
+    except RuntimeError as exc:
+        problems.append(f"cannot read the IAM policy that decides whether results upload: {exc}")
     family = args.machine_type.split("-")[0]
     try:
         region = _gcloud_json(["gcloud", "compute", "regions", "describe", REGION,

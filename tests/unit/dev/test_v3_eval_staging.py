@@ -430,3 +430,39 @@ def test_vm_startup_a_failed_upload_leaves_the_shard_retry_eligible(tmp_path, fa
     assert status == 1 and not _wrote(calls, "DONE"), calls
     assert _wrote(calls, "FAILED")
     assert sum(fail_on in c for c in calls) >= 3   # retried, not given up on the first error
+
+
+# ------------------------------------------------------------------ the compute SA can write results
+
+def _policy(*bindings):
+    return {"bindings": [{"role": r, "members": list(m)} for r, m in bindings]}
+
+
+def test_a_compute_sa_that_can_only_read_the_bucket_is_refused():
+    # The lost launch: the VMs could read the staged inputs but every shard's upload failed.
+    launch = _load("v3_launch_under_test_sa_read", V3 / "launch_fleet.py")
+    sa = f"serviceAccount:{launch.SERVICE_ACCOUNT}"
+    bucket = _policy(("roles/storage.objectViewer", [sa]))
+    problem = launch.sa_write_problem(bucket, _policy())
+    assert problem and launch.SERVICE_ACCOUNT in problem and "objectAdmin" in problem
+
+
+@pytest.mark.parametrize("where,role", [
+    ("bucket", "roles/storage.objectAdmin"), ("bucket", "roles/storage.objectCreator"),
+    ("bucket", "roles/storage.objectUser"), ("bucket", "roles/storage.legacyBucketWriter"),
+    ("project", "roles/editor"), ("project", "roles/storage.admin"),
+])
+def test_a_compute_sa_with_a_write_role_on_bucket_or_project_passes(where, role):
+    launch = _load(f"v3_launch_under_test_sa_{where}", V3 / "launch_fleet.py")
+    granted = _policy((role, [f"serviceAccount:{launch.SERVICE_ACCOUNT}"]))
+    bucket, project = (granted, _policy()) if where == "bucket" else (_policy(), granted)
+    assert launch.sa_write_problem(bucket, project) is None
+
+
+def test_a_conditional_or_someone_elses_write_grant_does_not_count():
+    launch = _load("v3_launch_under_test_sa_cond", V3 / "launch_fleet.py")
+    sa = f"serviceAccount:{launch.SERVICE_ACCOUNT}"
+    conditional = {"bindings": [{"role": "roles/storage.objectAdmin", "members": [sa],
+                                 "condition": {"expression": "resource.name.startsWith('x')"}}]}
+    other = _policy(("roles/storage.objectAdmin", ["serviceAccount:other@x.iam.gserviceaccount.com"]))
+    assert launch.sa_write_problem(conditional, other)
