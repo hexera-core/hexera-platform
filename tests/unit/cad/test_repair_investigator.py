@@ -1114,3 +1114,52 @@ def test_the_clean_terminal_is_offered_only_under_the_live_posture(monkeypatch):
     assert "attempted_none_held" not in inv._conclude_schema().parameters["properties"]
     _live(monkeypatch)
     assert "attempted_none_held" in inv._conclude_schema().parameters["properties"]
+
+
+def test_a_forced_turn_with_nothing_tried_ends_as_budget_spent(wired, monkeypatch):
+    """THE CLOCK, NOT A CLAIM. Wave 4: with escalate refused, 232 of 263 regions that made ZERO
+    tool calls concluded `mesher_side` instead - the clock had forced a conclusion and the model
+    reached for the only form left. A region that never had time to try anything must say so:
+    `budget_spent`, not a verdict about the mesher, and not a loop of refusals either."""
+    _live(monkeypatch)
+    clock = Clock(step=1.0)
+    author, model, _, _ = wired(repeat=native("conclude",
+                                              mesher_side={"mesher_problem": ["fp1"],
+                                                           "reason": "no time to look"}),
+                                clock=clock,
+                                budget=Budget(tool_calls=99, model_calls=99, wall_s=4.0),
+                                proof_reserve_s=3.0)
+
+    assert author(REGION, DEFECTS, ()) is None
+    record = author.investigations[-1]
+    assert record["end"] == "budget_spent", record["end"]
+    assert record["conclusion"].get("form") != "mesher_side"
+    assert author.verdicts == [], "no mesher verdict without a single attempt"
+    # AND IT DID NOT LOOP: the forced turn ends the region, it does not spend the model budget on
+    # refusals until the runaway guard trips.
+    assert model.calls <= 2, model.calls
+
+
+def test_a_forced_turn_ends_the_region_rather_than_looping_on_refusals(wired, monkeypatch):
+    """ISOLATES THE RULE, not the clock. Here the wall is long and the region is forced only by
+    the proof reserve, so nothing else would stop it: without an explicit ending, the refused
+    mesher_side would be re-sent until the runaway guard tripped, spending the model budget to
+    learn nothing. A forced region with nothing tried ends at once."""
+    _live(monkeypatch)
+    # The TOOL and MODEL budgets are far from binding and the run has no deadline, so the only
+    # thing that can end this region is the proof reserve eating its wall - which is exactly the
+    # forced turn. (A region's wall is its looking time PLUS the reserve, so the reserve has to
+    # outweigh the looking time for the force to arrive early.)
+    clock = Clock(step=1.0)
+    author, model, _, _ = wired(repeat=native("conclude",
+                                              mesher_side={"mesher_problem": ["fp1"],
+                                                           "reason": "no time to look"}),
+                                clock=clock,
+                                budget=Budget(tool_calls=99, model_calls=99, wall_s=1.0),
+                                proof_reserve_s=5.0)
+
+    assert author(REGION, DEFECTS, ()) is None
+    record = author.investigations[-1]
+    assert record["end"] == "budget_spent", record["end"]
+    assert record["end"] != "runaway"
+    assert model.calls <= 2, model.calls

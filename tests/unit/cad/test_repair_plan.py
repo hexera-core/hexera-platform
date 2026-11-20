@@ -639,16 +639,19 @@ def test_the_kernel_cure_is_still_reached_when_a_clash_shares_the_region(monkeyp
         assert ("fix_small_faces", "face:sliver") in proposed, (posture, proposed)
 
 
-@pytest.mark.parametrize("kind, first", [
+@pytest.mark.parametrize("kind, adjacent, first", [
     # A GAP clash is what 0060 actually had: 1.46 mm apart, which no operation closes. It goes
-    # after the cheap cure, which is the regression this pins.
-    ("gap", "fix_small_faces"),
-    # No clash evidence at all is also not a known intersection, so the same rule applies.
-    (None, "fix_small_faces"),
+    # after the cheap cure - the regression this pins.
+    ("gap", False, "fix_small_faces"),
+    # A FOLD - two faces sharing an edge - is a sizing problem, not geometry to heal.
+    ("crossing", True, "fix_small_faces"),
     # A measured CROSSING is geometry to repair and keeps its severity position.
-    ("crossing", "heal_self_intersections"),
+    ("crossing", False, "heal_self_intersections"),
+    # A clash with no kind yet is not known to be unrepairable, so it keeps its place: demoting
+    # every unclassified mesh finding would also demote mapped failures that DO repair parts.
+    (None, False, "heal_self_intersections"),
 ])
-def test_what_goes_first_depends_on_the_measured_clash_kind(monkeypatch, kind, first):
+def test_what_goes_first_depends_on_the_measured_clash_kind(monkeypatch, kind, adjacent, first):
     """ORDER MATTERS WHEN THE BUDGET BINDS. fix_small_faces has repaired real files on this
     corpus; a gap clash has repaired none of it. `clash_kind` is lane G's classification and the
     authority, because the triangle test alone called a 1.46 mm gap a crossing."""
@@ -657,6 +660,7 @@ def test_what_goes_first_depends_on_the_measured_clash_kind(monkeypatch, kind, f
     monkeypatch.setattr(settings, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "live", raising=False)
     clash, sliver = _clash_and_sliver()
     measurements = dict(clash.measurements)
+    measurements["clash_adjacent"] = adjacent
     if kind is None:
         measurements.pop("clash_kind", None)
     else:
@@ -669,3 +673,29 @@ def test_what_goes_first_depends_on_the_measured_clash_kind(monkeypatch, kind, f
     candidate = planner.propose((clash, sliver), RunHistory(), shape=None)
 
     assert candidate is not None and candidate.op.name == first
+
+
+@pytest.mark.parametrize("measurements, outranks", [
+    ({}, True),                                                     # not a clash: aim at it
+    ({"located_by": "surface-mesh-clash", "clash_kind": "crossing"}, True),
+    ({"located_by": "surface-mesh-clash", "clash_kind": "gap"}, False),
+    ({"located_by": "surface-mesh-clash", "clash_kind": "crossing",
+      "clash_adjacent": True}, False),
+])
+def test_both_layers_ask_the_same_question(measurements, outranks):
+    """ONE RULE, ONE HELPER, TWO CALLERS. `rules_author`'s severity promotion and
+    `RulesPlanner.propose`'s ordering each had their own test for this, written for different
+    reasons; two half-demotions could have pushed a genuine crossing out of reach, which is the
+    opposite of the bug each was fixing. They now ask the same function, so they cannot drift."""
+    from meshpipeline.cad.repair import rules_author
+    from meshpipeline.cad.repair.plan import mesh_finding_outranks_kernel
+
+    defect = _defect(DefectCode.mesh_overlapping_facets, fingerprint="face:c", kind="face",
+                     index=3, measurements=measurements)
+
+    assert mesh_finding_outranks_kernel(defect) is outranks
+    # The author reaches the rule through its import, not a copy of the test.
+    assert rules_author.mesh_finding_outranks_kernel is mesh_finding_outranks_kernel
+    # And a kernel defect is never a mesh finding, whichever layer asks.
+    assert mesh_finding_outranks_kernel(
+        _defect(DefectCode.small_face, fingerprint="face:s", kind="face", index=4)) is False
