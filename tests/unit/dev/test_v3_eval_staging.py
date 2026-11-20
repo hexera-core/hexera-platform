@@ -367,3 +367,18 @@ def test_vm_cost_charges_each_shard_its_vcpu_share_not_the_whole_vm():
     provs = [{"machine_type": "c2d-standard-8", "wall_seconds": 3600.0} for _ in range(8)]
     hourly = 8 * 0.029563 + 8 * 4 * 0.003959
     assert collect.vm_cost(provs)["container_cost_usd"] == pytest.approx(hourly, abs=1e-4)
+
+
+def test_a_running_vm_of_another_commit_does_not_block_this_launch(monkeypatch):
+    launch = _load("v3_launch_under_test_running", V3 / "launch_fleet.py")
+    unit = "v3_full:failing:1/30"
+
+    def vm(name, commit):
+        return {"name": name, "metadata": {"items": [
+            {"key": "v3-commit", "value": commit}, {"key": "v3-units", "value": unit}]}}
+
+    monkeypatch.setattr(launch, "_gcloud_json", lambda cmd: [vm("old", "a" * 40)])
+    claimed, live = launch.running_units(COMMIT)
+    assert unit not in claimed and live == ["old"]
+    monkeypatch.setattr(launch, "_gcloud_json", lambda cmd: [vm("same", COMMIT)])
+    assert unit in launch.running_units(COMMIT)[0]

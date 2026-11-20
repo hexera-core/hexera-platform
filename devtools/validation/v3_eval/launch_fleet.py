@@ -231,15 +231,20 @@ def done_units(commit: str) -> set[str]:
     return done
 
 
-def running_units() -> tuple[set[str], list[str]]:
-    """Unit ids claimed by eval VMs that still exist, read off their v3-units metadata."""
+def running_units(commit: str) -> tuple[set[str], list[str]]:
+    """Unit ids claimed by eval VMs that still exist AND run `commit`, read off their v3-units and
+    v3-commit metadata. Unit ids (arm:kind:I/N) carry no commit, so a VM still running an older
+    commit's shards must not mark this commit's same-named shards as claimed. Every live eval VM
+    is still returned by name, for the operator."""
     vms = _gcloud_json(["gcloud", "compute", "instances", "list", f"--project={PROJECT}",
                         "--filter=labels.purpose=v3-eval"]) or []
     claimed: set[str] = set()
     for vm in vms:
-        for item in (vm.get("metadata") or {}).get("items") or []:
-            if item.get("key") == "v3-units":
-                claimed.update(u for u in item.get("value", "").split(",") if u)
+        meta = {item.get("key"): item.get("value", "")
+                for item in (vm.get("metadata") or {}).get("items") or []}
+        if meta.get("v3-commit") != commit:
+            continue
+        claimed.update(u for u in (meta.get("v3-units") or "").split(",") if u)
     return claimed, [vm["name"] for vm in vms]
 
 
@@ -303,7 +308,7 @@ def main(argv: list[str] | None = None) -> int:
     if not args.dry_run:
         try:
             done = done_units(args.commit)
-            claimed, live_vms = running_units()
+            claimed, live_vms = running_units(args.commit)
         except RuntimeError as exc:
             problems.append(str(exc))
             done, claimed, live_vms = set(), set(), []
