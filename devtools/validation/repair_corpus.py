@@ -241,6 +241,25 @@ def install_planner_router(cache_path: str = "") -> tuple[CachingRouter | None, 
     return cache, note
 
 
+def ai_posture_without_router(rcfg) -> str:
+    """A non-empty warning when an AI posture is LIVE but no model router is installed.
+
+    `select_author` falls back to the rules author when the investigator is live with no router
+    (and a live tournament gathers only its rules source), silently: no model call, no transcript,
+    nothing in the row. Such a run would pass for an AI measurement. The harness installs a router
+    only for `--planner`; run_arm.py installs its own, so it never hits this."""
+    from meshpipeline.contracts import model_inference
+
+    live = [name for name in ("CAD_REPAIR_INVESTIGATOR", "CAD_REPAIR_TOURNAMENT")
+            if getattr(rcfg, name, "off") == "live"]
+    if not live or getattr(model_inference, "_router", None) is not None:
+        return ""
+    return (f"{' and '.join(live)}=live but no model router is installed: the repair runs the "
+            f"RULES author only (no model calls, no transcripts). This is not an AI measurement; "
+            f"every row is marked investigator_status=no_router. Install a router (run_arm.py "
+            f"does) or pass --planner with a provider key.")
+
+
 def plan_for(entities: list[dict], *, job_id: str = "corpus"):
     """The LLM planner's plan for one file's located defects (the async edge lives here)."""
     from meshpipeline.agents.repair_review import _wire
@@ -1747,7 +1766,7 @@ def _isolated(path: Path, body, *, mesh_probe: bool) -> dict:
 def run_files(files: list[Path], scratch: Path, *, mode: str = "off", loop: bool = False,
               bundle=None, mesh_probe: bool = False, force_repair: bool = False,
               goal=None, sink=None, entries=None, isolate: bool = False,
-              tolerant_delivery: bool = False) -> list[dict]:
+              tolerant_delivery: bool = False, row_marks: dict | None = None) -> list[dict]:
     """Run the repair loop over `files`, printing a line per file; returns the rows. When `bundle`
     is a BundleWriter every row is streamed into it AS IT IS PRODUCED, so a run that dies half way
     leaves its evidence-so-far on disk rather than in a list that was never written.
@@ -1782,6 +1801,9 @@ def run_files(files: list[Path], scratch: Path, *, mode: str = "off", loop: bool
         if tolerant_delivery:
             _tolerant_delivery(row, path, scratch)
         row.update(stamp)
+        # RUN-WIDE MARKS (e.g. investigator_status=no_router) go on every row BEFORE it streams,
+        # so a run that dies half way is marked as honestly as one that finishes.
+        row.update(row_marks or {})
         rows.append(row)
         if bundle is not None:
             bundle.write_row(row)
@@ -2062,11 +2084,19 @@ def main() -> int:
 
     # ROWS STREAM INTO THE BUNDLE AS THEY ARE PRODUCED; the seal at the end adds the manifest,
     # settings and the recomputed summary (see public-benchmarks.md, First Implementation Slice).
+    # AN AI POSTURE WITH NO MODEL is the rules author under another name: say so loudly, and mark
+    # every row, so the run cannot be read as an AI measurement.
+    row_marks: dict = {}
+    gap = ai_posture_without_router(rcfg)
+    if gap:
+        bar = "!" * 78
+        print(f"{bar}\nWARNING: {gap}\n{bar}", file=sys.stderr)
+        row_marks["investigator_status"] = "no_router"
     writer = benchmark_bundle.BundleWriter(Path(args.bundle)) if args.bundle else None
     rows = run_files(files, scratch, mode=args.planner, loop=args.loop, bundle=writer,
                      mesh_probe=args.mesh_probe, force_repair=args.force_repair,
                      goal=goal, sink=sink, entries=sample_entries, isolate=args.isolate,
-                     tolerant_delivery=args.tolerant_delivery)
+                     tolerant_delivery=args.tolerant_delivery, row_marks=row_marks)
     if sink is not None:
         sink.close()
 
