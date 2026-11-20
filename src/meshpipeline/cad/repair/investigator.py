@@ -968,6 +968,19 @@ def investigator(shape, *, original: Measure, reserved: frozenset = frozenset(),
             skip(region, defects, "skipped",
                  "none of the run's time is left for this region above the final reserve")
             return None
+        if clone_freedom() and not shadow and timing.must_conclude(clock(), wall):
+            # NEVER ENTERED, BECAUSE IT COULD NOT ACT. The region starts with less than its proof
+            # reserve left, so its first turn would be a forced conclusion and every form a
+            # conclusion can take is refused without an edit. Measured on wave 5's t19 arm: 417
+            # of 732 regions ended `budget_spent` with ZERO tool calls and ONE model call - a call
+            # bought to be told there was no time - which is 57% of that arm's region calls. Only
+            # 8 of those 417 (2%) held a gmsh-located defect, so almost nothing is lost by not
+            # asking. And `budget_spent` was the wrong word: it says a region spent a budget it
+            # was never given.
+            skip(region, defects, "not_reached",
+                 "the run had less than this region's proof reserve left when its turn came, so "
+                 "no question was asked")
+            return None
         if shadow and not timing.fits_shadow(wall):
             skip(region, defects, "skipped",
                  "too little of the run's time is left for a shadow investigation")
