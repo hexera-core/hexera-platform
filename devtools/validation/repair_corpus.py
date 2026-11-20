@@ -354,7 +354,13 @@ def _operation_rows(operations) -> list[dict]:
              "reason": op.get("reason", ""), "basis": op.get("basis", ""),
              "defect_code": op.get("defect_code", ""),
              "targets": op.get("targets", []),
-             **({"source": op["source"]} if op.get("source") else {})}
+             **({"source": op["source"]} if op.get("source") else {}),
+             # WHAT THE SESSION SAID BEFORE THE RESTAMP, for an operation discarded with a
+             # package that did not commit. Without it a wave cannot tell an operation that
+             # DECLINED on the session from one that applied and was rolled back by a delivery
+             # gate, which is the first question asked of every keep-check revert.
+             **({"replay_status": op["replay_status"]} if op.get("replay_status") else {}),
+             **({"replay_reason": op["replay_reason"]} if op.get("replay_reason") else {})}
             for op in operations if isinstance(op, dict)]
 
 

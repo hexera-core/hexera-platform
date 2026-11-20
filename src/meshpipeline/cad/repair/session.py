@@ -326,6 +326,14 @@ class OpVerdict:
     apply_s: float = 0.0
     scan_s: float = 0.0
     measure_s: float = 0.0
+    #: THE SESSION'S OWN VERDICT, kept when the loop restamps this operation as discarded with a
+    #: package that did not commit (`region_loop.as_repair_run`). The restamp is necessary - a
+    #: declaration from discarded geometry must not be credited to the result - but it destroyed
+    #: the one fact that says whether the operation DECLINED on the session or applied and was
+    #: rolled back by a delivery gate. Wave 8 could not answer that for its keep-check reverts.
+    #: Empty on an operation that was never restamped, so nothing duplicates its own status.
+    replay_status: str = ""
+    replay_reason: str = ""
 
     @property
     def kept(self) -> bool:
@@ -340,7 +348,11 @@ class OpVerdict:
                 **({"source": self.source} if self.source else {}),
                 **({"directive_id": self.directive_id} if self.directive_id else {}),
                 **({"planner_confidence": self.planner_confidence}
-                   if self.planner_confidence is not None else {})}
+                   if self.planner_confidence is not None else {}),
+                # ONLY WHEN THERE IS ONE, so an operation that was never restamped carries no
+                # empty pair into every row of every wave.
+                **({"replay_status": self.replay_status} if self.replay_status else {}),
+                **({"replay_reason": self.replay_reason} if self.replay_reason else {})}
 
 
 COMMITTED = "committed"
@@ -1099,6 +1111,22 @@ class RepairSession:
             # unchanged on the real session, which is the only shape a customer ever receives.
             refusal = ""
             delta["caps_not_applied"] = "scratch"
+            # AN ADVISORY, NOT A GATE. The caps are the same functions, run on the same two
+            # measurements the clone already took, and their answer is RECORDED rather than
+            # acted on. Wave 8's two investigator keep-check reverts were edits that kept here
+            # and were refused at delivery - `fix_small_faces` sweeping six faces for one target
+            # at a working precision of about 0.2 mm against a 0.1 mm cap - and the author had no
+            # way to know before it spent the package on them. The clone stays free, which is the
+            # owner's policy: the model is told what delivery would say and may steer or ignore it.
+            advisory = sanity_refusal(before, after, declared_faces_removed=int(
+                outcome.evidence.get("faces_removed", 0) or 0)) or cumulative_refusal(
+                self.original, after,
+                declared_area_mm2=self.accounting.plus(outcome.evidence).declared_area_mm2,
+                declared_volume_mm3=self.accounting.plus(
+                    outcome.evidence).declared_volume_mm3)
+            if advisory:
+                # ONLY WHEN THERE IS ONE, so its presence always means something.
+                delta["would_be_refused_at_delivery"] = advisory
         if refusal:
             # REFUSED BEFORE THE RE-INSPECTION IS PAID FOR. That saving is the reason the caps run
             # in this order.

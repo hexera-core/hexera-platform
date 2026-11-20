@@ -1101,6 +1101,11 @@ def _edit(ws: Workspace, args: dict, *, budget_s: float) -> dict:
             "cleared": [fp for fp in before if fp not in set(after)],
             "remaining": [fp for fp in after if fp in set(before)],
             "new": [fp for fp in after if fp not in set(before)],
+            # WHAT DELIVERY WOULD SAY, when the clone's own caps were not applied. An advisory,
+            # never a refusal: the edit above was kept either way. Absent when the edit is within
+            # the caps, so its presence always means something.
+            **({"would_be_refused_at_delivery": str(advice)}
+               if (advice := verdict.delta.get("would_be_refused_at_delivery")) else {}),
             "counts": scratch.counts(),
             "kept_edits": len(scratch.kept()), "edits": len(scratch.edits),
             "kept_edits_max": cap}

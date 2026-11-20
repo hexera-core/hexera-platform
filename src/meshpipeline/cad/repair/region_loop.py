@@ -1034,7 +1034,9 @@ def as_repair_run(run: RegionRun, *, original: dict, final: dict,
             verdicts.append(replace(
                 op, status=ROLLED_BACK,
                 reason=(f"discarded_with_package: region {verdict.region_index} "
-                        f"{verdict.status} ({verdict.reason})")))
+                        f"{verdict.status} ({verdict.reason})"),
+                # WHAT THE SESSION ITSELF SAID, before this restamp hid it.
+                replay_status=op.status, replay_reason=op.reason))
     # EVERY ESCALATION REACHES THE REPORT, in the key that already means "deliberately not
     # finished, and why" - a region queued for a person must not be a silence.
     # THE AUTHOR'S OWN REFUSALS TRAVEL FIRST, unchanged, because they are the records the

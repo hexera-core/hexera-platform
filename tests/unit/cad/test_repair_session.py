@@ -684,3 +684,22 @@ def test_a_scratch_edit_is_capped_only_while_the_posture_is_off(monkeypatch, nam
     assert not live.reason.startswith("cap:"), (name, live.reason)
     # SAID OUT LOUD on the verdict, so a transcript never implies the caps passed.
     assert live.delta.get("caps_not_applied") == "scratch", name
+    # AND WHAT THE CAP WOULD HAVE SAID, as an ADVISORY. Wave 8's two investigator keep-check
+    # reverts were edits that kept on the cap-free clone and were refused at delivery; the author
+    # had no way to know. The clone stays free - the edit is kept either way - and the number it
+    # would be judged on travels with it.
+    assert words in live.delta.get("would_be_refused_at_delivery", ""), (name, live.delta)
+    # The advisory never puts `cap:` on the reason, which the assertion above already holds: a
+    # rollback here is the operation's OWN outcome (these doubles report `target_remains`), and
+    # that is the difference between advising and gating.
+
+
+def test_a_clone_edit_within_the_caps_carries_no_advisory(monkeypatch):
+    """The advisory is a finding, not a field: an edit that would pass at delivery says nothing,
+    so its presence always means something."""
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "live", raising=False)
+
+    verdict = _tried(_session_for(_SOUND, is_scratch=True))
+
+    assert verdict.delta.get("caps_not_applied") == "scratch"
+    assert "would_be_refused_at_delivery" not in verdict.delta

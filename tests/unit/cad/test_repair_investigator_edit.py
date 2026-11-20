@@ -98,7 +98,9 @@ def _hermetic(monkeypatch):
 
 
 def _catalogue(monkeypatch, *ops) -> None:
-    monkeypatch.setattr(model_author, "op_catalogue", lambda: tuple(ops))
+    # `**_consent`: under the live posture a clone asks for the WHOLE catalogue by name
+    # (`PackageGuards._catalogue`), so a stub that takes no arguments raises instead of answering.
+    monkeypatch.setattr(model_author, "op_catalogue", lambda **_consent: tuple(ops))
 
 
 def _scratch(*, defects, scans=((), True), source=None, reserved=frozenset(), measures=None):
@@ -728,3 +730,47 @@ def test_the_measured_delta_is_rounded_up_so_claiming_it_passes(monkeypatch):
     assert pkg.evaluate(predicate, before=before, after=after,
                         defects_before=("edge:aaaa",), defects_after=(),
                         declared_area_mm2=0.0, declared_volume_mm3=0.0) == ""
+
+
+# --- the author is told what delivery would say, before it spends a package finding out ---------
+
+def test_an_edit_carries_the_delivery_advisory_to_the_author(monkeypatch):
+    """WAVE 8'S TWO INVESTIGATOR KEEP-CHECK REVERTS. `fix_small_faces` kept on the cap-free clone
+    - six faces removed for one target, a working precision around 0.2 mm against a 0.1 mm cap -
+    and was refused at delivery. The clone stays free, which is the owner's policy, so the author
+    is TOLD rather than stopped: the advisory travels on the edit result it is about.
+
+    THE LIVE POSTURE IS THE WHOLE POINT. With it off the clone is capped like any session and the
+    edit is REFUSED - there is no advisory because there is nothing advisory about it.
+    """
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "live", raising=False)
+    defect = _defect()
+    before = ORIGINAL
+    after = replace(before, max_tolerance_mm=0.2)
+    _catalogue(monkeypatch, _Op(outcomes=[_cleared_outcome()]))
+    scratch, _ = _scratch(defects=(defect,), scans=[((), True)], measures=[before, after])
+    ws = _workspace(scratch, defects=(defect,))
+
+    out = it.run_tool(ws, "edit", {"op": "fix_small_edges", "fingerprint": "edge:aaaa"},
+                      budget_s=1.0)
+
+    assert out.ok is True, out.error
+    assert "tolerance" in out.data["would_be_refused_at_delivery"]
+    # NEVER A REFUSAL: whatever became of the edit, it was not the cap that decided. A `cap:`
+    # reason is what the clone does NOT do under this posture.
+    assert not out.data["reason"].startswith("cap:"), out.data["reason"]
+
+
+def test_an_edit_within_the_caps_carries_no_advisory(monkeypatch):
+    """A finding, not a field: its presence always means something."""
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "live", raising=False)
+    defect = _defect()
+    _catalogue(monkeypatch, _Op(outcomes=[_cleared_outcome()]))
+    scratch, _ = _scratch(defects=(defect,), scans=[((), True)],
+                          measures=[ORIGINAL, ORIGINAL])
+    ws = _workspace(scratch, defects=(defect,))
+
+    out = it.run_tool(ws, "edit", {"op": "fix_small_edges", "fingerprint": "edge:aaaa"},
+                      budget_s=1.0)
+
+    assert "would_be_refused_at_delivery" not in out.data

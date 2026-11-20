@@ -525,6 +525,16 @@ def test_an_operation_discarded_with_its_package_is_not_reported_as_kept():
     assert [p.status for p in run.packages] == ["committed", "reverted"]
     assert [v.kept for v in bridged.verdicts] == [True, False]
     assert "discarded_with_package" in bridged.verdicts[1].reason
+    # AND THE SESSION'S OWN VERDICT SURVIVES IT. Wave 8 could not answer whether a reverted
+    # package's operations DECLINED on the session or applied and were rolled back by a delivery
+    # gate, because this restamp overwrote both the status and the reason. The restamp still has
+    # to happen - a discarded declaration must not be credited - so the original travels beside
+    # it instead.
+    assert bridged.verdicts[1].replay_status == run.packages[1].verdicts[0].status
+    assert bridged.verdicts[1].replay_reason == run.packages[1].verdicts[0].reason
+    # A COMMITTED package's operations are not restamped, so there is nothing to preserve and the
+    # fields stay empty rather than duplicating the status next to itself.
+    assert bridged.verdicts[0].replay_status == "" and bridged.verdicts[0].replay_reason == ""
     assert bridged.stopped_because == run.stopped_because
     assert bridged.defects == run.defects_after
     assert bridged.scan_count == run.timings["scan_count"]
