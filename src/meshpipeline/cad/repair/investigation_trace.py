@@ -72,19 +72,56 @@ def _edits(record: dict) -> list[dict]:
             for v in [_edit_verdict(r)] if v is not None]
 
 
+#: The rollback bucket for edits that ran but whose result the conversation no longer shows.
+ELIDED = "unknown (result elided)"
+
+
+def _is_reset(args: object) -> bool:
+    """True when an edit call's (clipped) argument text asked for a reset of the clone."""
+    text = str(args or "")
+    try:
+        body = json.loads(text)
+    except (TypeError, ValueError):
+        return '"reset": true' in text
+    return isinstance(body, dict) and body.get("reset") is True
+
+
+def _elided(message: dict) -> dict | None:
+    content = message.get("content")
+    if not isinstance(content, str) or '"elided"' not in content:
+        return None
+    try:
+        body = json.loads(content)
+    except (TypeError, ValueError):
+        return None
+    return body if isinstance(body, dict) and body.get("elided") is True else None
+
+
 def outcome(record: dict) -> dict:
     """One region's row: how it ended, what it spent, what its edits did, and WHY NO PACKAGE."""
     conclusion = record.get("conclusion") or {}
     form = str(conclusion.get("form") or "")
     end = str(record.get("end") or "")
     reason = str(conclusion.get("reason") or record.get("reason") or "")
+    # THE CONVERSATION IS NOT THE LEDGER. Past CONVERSATION_BYTES_MAX the driver replaces old tool
+    # results with `elided` stubs, so the visible edit verdicts undercount. `turns` (one per call,
+    # never elided) says how many edits RAN; `edits` (the kept-edit log) says how many were kept;
+    # the visible verdicts give the reasons they can, and the rest are counted as elided.
     edits = _edits(record)
-    kept = sum(1 for e in edits if e.get("kept"))
+    turns = record.get("turns")
+    log = record.get("edits")
+    ran = sum(1 for t in (turns if isinstance(turns, list) else ()) if isinstance(t, dict)
+              and t.get("tool") == "edit" and t.get("ok") and not _is_reset(t.get("args")))
+    tried = max(len(edits), ran)
+    kept = max(sum(1 for e in edits if e.get("kept")), len(log) if isinstance(log, list) else 0)
     rolled: dict[str, int] = {}
     for e in edits:
         if not e.get("kept"):
             key = str(e.get("reason") or e.get("status") or "unknown")
             rolled[key] = rolled.get(key, 0) + 1
+    unseen = tried - kept - sum(rolled.values())
+    if unseen > 0:
+        rolled[ELIDED] = unseen
     spent = record.get("spent") or {}
     why = ""
     if form != "package":
@@ -93,7 +130,7 @@ def outcome(record: dict) -> dict:
             parts.append(reason)
         if form and form != "package":
             parts.append(f"concluded {form}")
-        if not edits:
+        if not tried:
             parts.append("no edit tried")
         elif not kept:
             parts.append("no edit kept (" + ", ".join(
@@ -104,7 +141,7 @@ def outcome(record: dict) -> dict:
             "tool_calls": int(spent.get("tool_calls") or 0),
             "model_calls": int(spent.get("model_calls") or 0),
             "seconds": float(spent.get("seconds") or 0.0),
-            "edits": {"tried": len(edits), "kept": kept,
+            "edits": {"tried": tried, "kept": kept,
                       "rolled_back": dict(sorted(rolled.items()))},
             "why_no_package": redact(why)}
 
@@ -129,6 +166,13 @@ def trace(record: dict, *, job_id: str = "", bytes_max: int = TRACE_BYTES_MAX) -
             continue
         role = message.get("role")
         if role == "system":
+            continue
+        stub = _elided(message)
+        if stub is not None:
+            name, args = pending.pop(str(message.get("tool_call_id")),
+                                     (str(stub.get("tool") or ""), ""))
+            lines.append({**base, "kind": "call", "n": stub.get("call"), "tool": name,
+                          "args": args, "elided": True})
             continue
         result = _tool_result(message)
         if result is not None:
@@ -230,7 +274,7 @@ def start() -> Collector:
     with _lock:
         if inv.sink is not dispatch:
             _state["previous"] = inv.sink
-            inv.sink = dispatch
+            setattr(inv, "sink", dispatch)  # noqa: B010 - typed None in the product
         _state["active"] += 1
     return collector
 
@@ -245,7 +289,7 @@ def stop(collector: Collector) -> None:
     with _lock:
         _state["active"] = max(0, _state["active"] - 1)
         if _state["active"] == 0 and inv.sink is dispatch:
-            inv.sink = _state["previous"]
+            setattr(inv, "sink", _state["previous"])  # noqa: B010
             _state["previous"] = None
 
 

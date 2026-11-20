@@ -525,6 +525,38 @@ def test_collector_gathers_each_shards_transcripts_and_a_per_file_outcome_table(
     assert [(ln["file"], ln["shard"]) for ln in lines] == [("a.step", "1/2"), ("a.step", "1/2")]
     table = json.loads((out / "outcomes-v3_full-failing.json").read_text())
     by_file = {r["file"]: r for r in table}
-    assert by_file["a.step"]["regions"] == [why]
+    # REBUILT FROM THE TRANSCRIPT (one entry per region it names), not the row's baked outcomes.
+    assert [r["end"] for r in by_file["a.step"]["regions"]] == ["runaway", "budget_spent"]
     assert by_file["a.step"]["meshes_after"] is False
     assert by_file["v3_full-failing-2.step"]["regions"] == []
+
+
+def test_collector_recomputes_outcomes_from_transcripts_so_elided_edits_still_count(tmp_path):
+    """Greptile: rows.json outcomes made at b04befe8 undercount edits whose results were elided.
+    The transcript's `turns` are never elided, so the table is rebuilt from it."""
+    collect = _load("v3_collect_under_test_elided", V3 / "collect.py")
+    src, out = tmp_path / "src", tmp_path / "out"
+    stale = {"region": 0, "end": "runaway", "edits": {"tried": 0, "kept": 0, "rolled_back": {}},
+             "why_no_package": "runaway; no edit tried",
+             "package": {"status": "reverted", "reason": "r"}}
+    d = _shard(src, "v3_full", "failing", 1, 1, rows=[
+        {"file": "a.step", "outcome": "repair_refused", "meshes_before": False,
+         "meshes_after": False, "investigator": {"ends": {"runaway": 1}, "outcomes": [stale]}}])
+    turn = {"tool": "edit", "args": "{\"op\": \"fragment_bodies\"}", "ok": True}
+    stub = {"role": "tool", "tool_call_id": "c", "content": json.dumps(
+        {"elided": True, "call": 1, "tool": "edit", "sha256": "x"})}
+    early = {"file": "a.step", "region": 0, "end": "budget_spent", "turns": [], "edits": [],
+             "conclusion": {}, "messages": []}
+    late = {"file": "a.step", "region": 0, "end": "runaway", "turns": [turn, turn],
+            "edits": [], "conclusion": {"form": "", "reason": "runaway"},
+            "messages": [stub, stub]}
+    (d / "transcripts.jsonl").write_text(json.dumps(early) + "\n" + json.dumps(late) + "\n")
+    runs = collect.load_runs(src)
+    out.mkdir()
+    collect.gather_transcripts(runs["arms"][("v3_full", "failing")], "v3_full", "failing", out)
+    [row] = json.loads((out / "outcomes-v3_full-failing.json").read_text())
+    [region] = row["regions"]
+    assert region["end"] == "runaway"
+    assert region["edits"]["tried"] == 2
+    assert "no edit tried" not in region["why_no_package"]
+    assert region["package"] == {"status": "reverted", "reason": "r"}

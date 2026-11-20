@@ -255,3 +255,52 @@ def test_finish_with_no_investigation_says_so(monkeypatch):
     monkeypatch.setattr(inv, "sink", None)
     monkeypatch.setattr(rcfg, "CAD_REPAIR_INVESTIGATION_TRACE", True, raising=False)
     assert it.finish(it.begin_if_enabled()) == {"outcomes": [], "lines": [], "truncated": False}
+
+
+# ---------------------------------------------------------------- elided conversations (Greptile)
+
+def _elide(message, call):
+    """What `_Investigation.elide` does to an old tool result past CONVERSATION_BYTES_MAX."""
+    return {**message, "content": json.dumps({"elided": True, "call": call, "tool": "edit",
+                                              "sha256": "x"}, sort_keys=True)}
+
+
+def _edit_turn(n, ok=True, args='{"op": "fragment_bodies"}'):
+    return {"n": n, "tool": "edit", "args": args, "ok": ok, "error": "", "result_bytes": 9,
+            "result_sha256": "x", "seconds": 1.0}
+
+
+def test_outcome_counts_edits_whose_results_were_elided():
+    rec = _record()
+    rec["messages"][5] = _elide(rec["messages"][5], 2)   # the target_remains edit
+    rec["messages"][7] = _elide(rec["messages"][7], 3)   # the declined edit
+    rec["turns"] = [rec["turns"][0], _edit_turn(2), _edit_turn(3)]
+    row = it.outcome(rec)
+    assert row["edits"]["tried"] == 2
+    assert row["edits"]["kept"] == 0
+    assert row["edits"]["rolled_back"] == {"unknown (result elided)": 2}
+    assert "no edit tried" not in row["why_no_package"]
+
+
+def test_outcome_mixes_visible_and_elided_rollbacks_and_reads_kept_from_the_log():
+    rec = _record(edits=[{"op": "sew_faces", "kept": True}])
+    rec["messages"][5] = _elide(rec["messages"][5], 2)
+    rec["turns"] = [rec["turns"][0], _edit_turn(2), _edit_turn(3), _edit_turn(4)]
+    row = it.outcome(rec)
+    assert row["edits"]["tried"] == 3
+    assert row["edits"]["kept"] == 1
+    assert row["edits"]["rolled_back"] == {"declined": 1, "unknown (result elided)": 1}
+
+
+def test_outcome_does_not_count_refused_edits_or_resets_as_tried():
+    rec = _record(messages=[])
+    rec["turns"] = [_edit_turn(1, ok=False), _edit_turn(2, args='{"reset": true}')]
+    assert it.outcome(rec)["edits"]["tried"] == 0
+
+
+def test_trace_marks_an_elided_result_rather_than_dropping_the_call():
+    rec = _record()
+    rec["messages"][5] = _elide(rec["messages"][5], 2)
+    calls = [ln for ln in it.trace(rec) if ln["kind"] == "call"]
+    assert [c["tool"] for c in calls] == ["look", "edit", "edit"]
+    assert calls[1]["elided"] is True and "edit" not in calls[1]

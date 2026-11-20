@@ -242,6 +242,8 @@ def gather_transcripts(entry: dict, arm: str, kind: str, out: Path) -> dict:
     meshed and, per region, how the investigation ended and why no package. A shard with no
     transcript (a rules-only arm, or a file nothing investigated) contributes no lines."""
     records = with_transcripts = 0
+    # THE LATEST RECORD PER (file, region): a re-call continues the same investigation.
+    latest: dict[str, dict] = {}
     with (out / f"transcripts-{arm}-{kind}.jsonl").open("w", encoding="utf-8") as sink:
         for prov in entry["provenances"]:
             path = Path(prov["_dir"]) / "transcripts.jsonl"
@@ -256,17 +258,40 @@ def gather_transcripts(entry: dict, arm: str, kind: str, out: Path) -> dict:
                 except ValueError:
                     continue  # a line cut off when a shard died mid-write
                 record["shard"] = prov.get("shard", "")
+                if record.get("file") is not None:
+                    latest.setdefault(str(record["file"]), {})[repr(record.get("region"))] = record
                 sink.write(json.dumps(record, sort_keys=True, default=str) + "\n")
                 records += 1
     table = [{"file": r.get("file"), "outcome": r.get("outcome"),
               "meshes_before": r.get("meshes_before"), "meshes_after": r.get("meshes_after"),
               "ends": (r.get("investigator") or {}).get("ends", {}),
-              "regions": list((r.get("investigator") or {}).get("outcomes") or [])}
+              "regions": _regions(r, latest.get(str(r.get("file")), {}))}
              for r in entry["rows"]]
     (out / f"outcomes-{arm}-{kind}.json").write_text(
         json.dumps(table, indent=1, sort_keys=True, default=str) + "\n")
     return {"records": records, "shards_with_transcripts": with_transcripts,
             "files": len(table)}
+
+
+def _regions(row: dict, transcripts: dict) -> list[dict]:
+    """A file's per-region outcomes, REBUILT FROM ITS TRANSCRIPT when it has one. The row's own
+    outcomes were computed in the shard (at b04befe8, from the elided conversation, undercounting
+    edits); the transcript's `turns` and kept-edit log are never elided. The row keeps what only it
+    knows - the package verdict - joined back by region."""
+    baked = list((row.get("investigator") or {}).get("outcomes") or [])
+    if not transcripts:
+        return baked
+    from meshpipeline.cad.repair import investigation_trace
+
+    verdicts = {repr(o.get("region")): o["package"] for o in baked
+                if isinstance(o, dict) and o.get("package")}
+    out = []
+    for key, record in transcripts.items():
+        region = investigation_trace.outcome(record)
+        if key in verdicts:
+            region["package"] = verdicts[key]
+        out.append(region)
+    return out
 
 
 def _fmt(value) -> str:
