@@ -801,7 +801,8 @@ def test_the_conclude_schema_says_exactly_one_form():
     every one was refused. The schema itself has to say that the forms are exclusive."""
     schema = inv._conclude_schema()
     branches = schema.parameters["oneOf"]
-    assert [set(b["required"]) for b in branches] == [{f} for f in inv._CONCLUSIONS]
+    offered = [f for f in inv._CONCLUSIONS if f in schema.parameters["properties"]]
+    assert [set(b["required"]) for b in branches] == [{f} for f in offered]
     for branch in branches:
         assert branch["additionalProperties"] is False
         assert set(branch["properties"]) == set(branch["required"])
@@ -881,12 +882,14 @@ def test_escalate_is_not_offered_under_the_live_posture(monkeypatch):
 
     monkeypatch.setattr(settings, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "off", raising=False)
     off = inv._conclude_schema()
-    assert set(off.parameters["properties"]) == set(inv._CONCLUSIONS)
-    assert [set(b["required"]) for b in off.parameters["oneOf"]] == [{f} for f in inv._CONCLUSIONS]
+    # With the posture off: the three original forms, and no clean terminal to let anyone out.
+    assert set(off.parameters["properties"]) == {"package", "mesher_side", "escalate"}
+    assert all("attempted_none_held" not in b["required"] for b in off.parameters["oneOf"])
 
     monkeypatch.setattr(settings, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "live", raising=False)
     live = inv._conclude_schema()
-    assert set(live.parameters["properties"]) == {"package", "mesher_side"}
+    assert set(live.parameters["properties"]) == {"package", "mesher_side",
+                                                  "attempted_none_held"}
     assert all("escalate" not in b["required"] for b in live.parameters["oneOf"])
 
 
@@ -1163,3 +1166,84 @@ def test_a_not_reached_region_is_counted_under_its_own_name(wired, monkeypatch):
     # And it cost nothing: no tool calls, no model calls, no seconds worth reporting.
     spent = author.investigations[-1]["spent"]
     assert spent["tool_calls"] == 0 and spent["model_calls"] == 0
+
+
+# --- a region may not give up before it has tried anything -------------------------------------
+def _live(monkeypatch):
+    import meshpipeline.settings.cad_repair as settings
+
+    monkeypatch.setattr(settings, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "live", raising=False)
+
+
+def test_mesher_side_is_refused_until_an_edit_has_been_tried(wired, monkeypatch):
+    """Wave 4: the AI arms concluded `mesher_side` with NO edit attempted, on files earlier waves
+    repaired. Blaming the mesher is a measurement, not a guess, and it costs nothing to make -
+    so like `escalate` it is refused until the copy has actually been worked."""
+    _live(monkeypatch)
+    clone = FakeScratch()
+    author, _, _, _ = wired(native("conclude", mesher_side={"mesher_problem": ["fp1"],
+                                                            "reason": "the faces are clean"}),
+                            native("look"),
+                            native("conclude", mesher_side={"mesher_problem": ["fp1"],
+                                                            "reason": "the faces are clean"}),
+                            scratch=clone, budget=Budget(tool_calls=9, model_calls=9))
+
+    author(REGION, DEFECTS, ())
+    record = author.investigations[-1]
+    refused = [t for t in record["turns"] if t["tool"] == "conclude" and t["ok"] is False]
+    assert refused and "tried" in refused[0]["error"], record["turns"]
+    assert author.verdicts == [], "no mesher verdict may be recorded without an attempt"
+
+
+def test_mesher_side_stands_once_an_edit_was_tried(wired, monkeypatch):
+    _live(monkeypatch)
+    clone = FakeScratch()
+    clone.edits.append({"op": "fix_small_faces", "fingerprint": "fp1", "status": "rolled_back"})
+    author, _, _, _ = wired(native("conclude", mesher_side={"mesher_problem": ["fp1"],
+                                                            "reason": "the faces are clean"}),
+                            scratch=clone, budget=Budget(tool_calls=9, model_calls=9))
+
+    assert author(REGION, DEFECTS, ()) is None
+    assert author.investigations[-1]["conclusion"]["form"] == "mesher_side"
+    assert author.verdicts and author.verdicts[0]["mesher_problem"] == ["fp1"]
+
+
+def test_a_region_that_tried_and_failed_has_a_clean_terminal(wired, monkeypatch):
+    """THE WAY OUT THAT IS NOT A LOOP. Runaways rose to ~6% because every refused conclusion sent
+    the model round again. `attempted_none_held` ends a region honestly - after real attempts,
+    carrying the clone's own edit log - and is never a fix."""
+    _live(monkeypatch)
+    clone = FakeScratch()
+    clone.edits.append({"op": "fix_small_faces", "fingerprint": "fp1", "status": "rolled_back"})
+    author, _, _, _ = wired(native("conclude",
+                                   attempted_none_held={"reason": "every op rolled back"}),
+                            scratch=clone, budget=Budget(tool_calls=9, model_calls=9))
+
+    assert author(REGION, DEFECTS, ()) is None
+    record = author.investigations[-1]
+    assert record["end"] == "concluded"
+    assert record["conclusion"]["form"] == "attempted_none_held"
+    assert record["conclusion"]["outcome"] == "attempted_none_held"
+    assert record["conclusion"]["attempts"] == 1
+    assert author.verdicts == [] and author.escalations == []
+
+
+def test_the_clean_terminal_is_refused_before_any_attempt(wired, monkeypatch):
+    _live(monkeypatch)
+    author, _, _, _ = wired(native("conclude",
+                                   attempted_none_held={"reason": "nothing worked"}),
+                            native("look"),
+                            budget=Budget(tool_calls=9, model_calls=9))
+    author(REGION, DEFECTS, ())
+    turns = author.investigations[-1]["turns"]
+    assert any(t["tool"] == "conclude" and t["ok"] is False and "tried" in t["error"]
+               for t in turns), turns
+
+
+def test_the_clean_terminal_is_offered_only_under_the_live_posture(monkeypatch):
+    import meshpipeline.settings.cad_repair as settings
+
+    monkeypatch.setattr(settings, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "off", raising=False)
+    assert "attempted_none_held" not in inv._conclude_schema().parameters["properties"]
+    _live(monkeypatch)
+    assert "attempted_none_held" in inv._conclude_schema().parameters["properties"]
