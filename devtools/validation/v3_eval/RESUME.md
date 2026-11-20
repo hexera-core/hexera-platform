@@ -119,6 +119,12 @@
 
 ## Product follow-ups (not for this PR)
 
+- **The admin repair-job page can never show a pipeline run.** `/admin/repair/jobs/{id}` (and the admin console's repair queue) read `CadRepairAttempt` rows. No `src/` code writes them: `RepairJobRepository.record_attempt` has test callers only, and nothing creates `CadRepairJob` rows. So every mesh/crsv3 job's repair is invisible there. Lane D put the investigation view on the run page (`/admin/ops/jobs/{id}/repair-trace`, `/jobs/<id>/why`) instead. Either wire pipeline repairs into `CadRepairAttempt` or retire the page.
+- **The gate part wedges after repair: 0 attempts, cancelled at the 40-min cap.** crsv3 job 843249ef-f8b4-4071-983a-d9e550761341 (`abc/00504025_5896ef7054620e0fdd79f59d_step_085.step`, ecf6d72d).
+  - The repair ran and its trace was uploaded (region 1 concluded), but the job never reached a mesh attempt and no repair_report was delivered.
+  - The same part also ended `cancelled` in the 5d496416 smoke (job 0070038e).
+  - Needs a look at what holds a job between repair and the first mesh attempt.
+
 - **A ShapeFix segfault kills the process.** `abc/0059_00597937_2e928f752b8806de5a85c14b_step_000.step` (sha256 fc4e4a440ffd...) segfaults (exit 139) right after OCC "FixShape failed with exception Geom_RectangularTrimmedSurface::U parameters out of range", on both attempts.
   - The eval harness now isolates it, but a production worker running the same repair would die with it.
   - The repair session needs the same out-of-process guard the mesher has (`engines/` native-crash isolation) before CRS repair runs on untrusted uploads.
@@ -264,3 +270,27 @@ RUNBOOK. Four rules, now stated the same way everywhere:
    diagnostic table labelled "tolerant-mesher meshable (not counted as CAD repair)".
 
 `results.json` is now **schema_version 2**.
+
+## Lane D, crsv3 proof of the investigation trace (deploy at ecf6d72d, 2026-11-20)
+- **(1) The trace lands: PROVED.** Two jobs wrote JSONL to the artifacts bucket:
+  - Job 843249ef-f8b4-4071-983a-d9e550761341 wrote `gs://dev-crsv3-artifacts-224734058693/jobs/843249ef-…/investigation-trace-bbf80ccfa77fbe69.jsonl`: 9 lines, region 1 concluded.
+  - Job a713057e-18af-4ba3-9e1a-ec0ce41d5ebb wrote `…/jobs/a713057e-…/investigation-trace-f68dc31f63417ba0.jsonl`: 5 lines.
+  - Both were checked for keys, tokens and STEP/BREP content and contained none.
+- **(2) The report carries the table: PROVED.** Job a713057e succeeded. Its `repair_report-00bcae166619758f.json` has `repair_attempt.measurements.investigation_trace`:
+  - `outcomes`: region 15, ended `concluded`, form `escalate`, 0 edits tried, with its why-no-package sentence.
+  - `transcript`: object_key, 5 lines, sha256.
+  - No `lines` copied into the report, and no reviewer prose.
+  - `packages` (the review verdicts) is absent because ecf6d72d predates df7e1d7a.
+- **(3) Admin endpoint and page: NOT provable on crsv3.** crsv3 sets no `ADMIN_API_KEY`, so every `/admin/*` route returns a deliberate 404 (checked).
+  - The handler was run locally against the exact crsv3 report and trace bytes: it returned region 15 and all 5 lines.
+  - LEAD ruling: verify on shared dev after merge (checklist below). No admin secret goes on crsv3.
+
+### Post-merge shared-dev checklist (lane D)
+1. After a human runs the shared-dev deploy at the merge sha, submit one corpus part (e.g. `abc/00502475_5895e91efca3da0f6b68639a_step_003.step`) through the product. Wait for a terminal status.
+2. `curl -H "X-Admin-Key: $ADMIN_API_KEY" "$API/api/v1/admin/ops/jobs/<job_id>/repair-trace"`. Expect 200 with:
+   - `outcomes[]`: region, end, form, edits and `why_no_package`, plus `packages[]` with `reviewed` / `review_tier` / `objection` and no `review_reason`;
+   - `transcript.object_key` under `jobs/<job_id>/`;
+   - `lines[]`;
+   - `handback` too, if the mesher handed back.
+3. Open the admin console at `/jobs/<job_id>/why`. Expect the "Repair investigation" panel: an outcome table, plus a "Per-turn trace (N lines…)" expander. If a handback ran, also expect the "Repair investigation after the mesh failed" panel.
+4. Check the model-call telemetry for the job: calls carry `purpose`, one of investigator, reviewer, author or `tournament:<source>`.
