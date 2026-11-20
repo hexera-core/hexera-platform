@@ -105,12 +105,16 @@ LEGACY_OUTCOME = {
 
 
 def ending_for(*, kept: int, attempted: int, stopped_because: str,
-               gate_refusal: bool = False, mesh_failed: bool = False) -> str:
+               gate_refusal: bool = False, mesh_failed: bool = False,
+               newly_meshes: bool = False) -> str:
     """The one word for how a run ended. ONE place, so no caller can disagree with another.
 
     `mesh_failed` is True only when the run's FINAL whole-part mesh probe ran, answered, and
     still refused the part (`loop.definitive_mesh_failure`). A skipped or timed-out probe, or the
     probe being off, is False - and then nothing here changes.
+
+    `newly_meshes` is True only when the DELIVERED file was probed and meshed, and the input was
+    probed and did not. A timed-out or dead probe is not a mesh, so it is never True on one.
 
     THE PRECEDENCE IS NOT ARBITRARY and mirrors `region_loop._terminal`:
 
@@ -130,11 +134,22 @@ def ending_for(*, kept: int, attempted: int, stopped_because: str,
        (`NOT_REPAIRED`, the legacy map); a word starting `repaired` would invite exactly the
        prefix-match misreading this ruling exists to stop.
     5. Only then does "something was kept" mean `repaired`.
+
+    THE EXCEPTION TO 3 AND 4: kept operations over a part whose DELIVERED file newly meshes is
+    `repaired`, whatever the loop stopped for (eval wave 6, bfa7c9a3: every newly meshing part
+    ended `no_change`, `unmeshable` or `escalated`). The loop's `unmeshable` is read off its
+    in-session scan, which can still hold a mesh finding the delivered STEP no longer has; its
+    `escalated` is about another region. The delivered file is the thing the customer meshes, so
+    its answer is the truth on "does it mesh now". The stop reason stays in `stopped_because`.
+    A gate refusal and an incomplete scan still win: the first means no file, the second that we
+    could not see the part.
     """
     if gate_refusal:
         return REFUSED
     if stopped_because == SCAN_INCOMPLETE:
         return SCAN_INCOMPLETE
+    if int(kept) > 0 and newly_meshes:
+        return REPAIRED
     if stopped_because == ESCALATED:
         return ESCALATED
     if stopped_because == UNMESHABLE:
