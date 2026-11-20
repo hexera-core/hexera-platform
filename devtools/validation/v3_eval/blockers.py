@@ -81,8 +81,10 @@ def bucket(collect: Path, clash_path: Path) -> tuple[dict, dict, dict, list]:
     gaps: list = []
     for r in rows:
         f = r["file"]
+        # Investigator packages live in the outcomes; tournament and rules-author packages only in
+        # row.packages (rows from 043101eb on). Read both.
         pkgs = [o["package"] for o in (r.get("investigator") or {}).get("outcomes", [])
-                if o.get("package")]
+                if o.get("package")] + list(r.get("packages") or [])
         kind = r.get("mesh_kind_before") or ""
         if r.get("meshes_after") is True and r.get("meshes_before") is False:
             b = "0 FIXED"
