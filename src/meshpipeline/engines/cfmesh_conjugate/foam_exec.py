@@ -33,6 +33,10 @@ def _foam_env() -> dict:
 # #
 # checkMesh  (native - quality report + fatal-only verdict)
 # #
+#: HOW MANY PROCESSES WROTE THIS LOG, and it changes what three of the numbers below MEAN.
+#: checkMesh prints its header on every run, serial or not, so this is always answerable.
+_NPROCS = re.compile(r"nProcs\s*:\s*(\d+)")
+
 _CM = {
     "cells": re.compile(r"cells:\s+(\d+)"),
     "faces": re.compile(r"faces:\s+(\d+)"),
@@ -479,7 +483,45 @@ def parse_check_mesh(out: str) -> dict:
     # a few skewed faces at the wing-body junction (a known limit of octree-hex+prism meshers) and
     # is fully solvable; this fraction - not the single worst value - is the honest quality signal.
     q.setdefault("skew_faces", 0)
+    # A PARALLEL RUN'S faces, points AND internal faces ARE SUMS OVER RANKS, NOT TOTALS, and
+    # nothing downstream could tell. Each face on a processor boundary was ONE internal face in
+    # the whole mesh and becomes a BOUNDARY face on each of the two ranks that share it, so the
+    # summed counts move by exactly the processor-face count P in opposite directions:
+    # faces = true + P, internal faces = true - P. Measured on one 504,715,948-cell mesh checked
+    # both ways, same binary, same mesh:
+    #
+    #                    serial         8 ranks        difference
+    #     fluid faces    263,003,681    263,310,321    +306,640
+    #     internal       237,313,600    237,006,960    -306,640
+    #     points          98,268,345     98,598,852    +330,507
+    #     cells           82,529,515     82,529,515    IDENTICAL
+    #
+    # `cells` is the one count with no duplication, which is why it is left alone. The three that
+    # move are REMOVED rather than corrected, because recovering the true totals needs P, and P is
+    # only in the patch table this does not parse - and `read_region` ships `faces` and `points`
+    # straight into the customer's quality report, so a number that is wrong by an unknown amount
+    # is worse than a number that is absent. A reader that needs them gets a missing key, loudly,
+    # instead of a plausible wrong one. The rank-summed values are kept under their own names so
+    # nothing is thrown away.
+    #
+    # UNREACHABLE TODAY, ON PURPOSE. Every checkMesh this engine runs is one process
+    # (`check_mesh` builds a bare command, and conjugate.build deletes the per-rank copies before
+    # it), so this costs today's runs nothing and is here so the first parallel check cannot
+    # quietly publish eight ranks' arithmetic as a mesh measurement.
+    # THE FRACTION IS TAKEN FIRST, AND THE ORDER IS THE WHOLE POINT. Computed after the rename
+    # below, `q.get("faces")` is gone and every parallel check reports skew_fraction 0.0 - which
+    # is not "unknown", it is a customer-facing quality figure saying the mesh has no skew
+    # faces. Against the rank sum the denominator is too large by the processor-face count P,
+    # which on the measured plate is 306,640 of 263,310,321: the fraction reads 0.12% low. A
+    # figure that is 0.12% optimistic is a measurement; 0.0 on a mesh with skew faces is a false
+    # claim of a clean mesh.
     q["skew_fraction"] = (q["skew_faces"] / q["faces"]) if q.get("faces") else 0.0
+    _np = _NPROCS.search(out)
+    q["nprocs"] = int(_np.group(1)) if _np else 1
+    if q["nprocs"] > 1:
+        for _rk in ("faces", "points", "internal_faces"):
+            if _rk in q:
+                q[f"{_rk}_rank_summed"] = q.pop(_rk)
     q.setdefault("small_determinant_cells", 0)
     for _k in ("concave_cells", "low_weight_faces", "low_vol_ratio_faces",
                "low_quality_tet_faces"):
