@@ -233,3 +233,55 @@ def test_auto_accept_without_a_review_warns(caplog):
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+# A REMOVED SURFACE NEVER AUTO-ACCEPTS (Greptile PRRT_kwDOUFq_Ps657Mi2). The deviation samples
+# the result, so a removal measures ~0 on the faces that survived it: no number can clear it.
+
+
+@dataclass(frozen=True)
+class _E:
+    op: str = "fix_small_faces"
+    kept: bool = True
+    evidence: dict | None = None
+
+
+_SWEEP = {"faces_removed": 4, "area_removed_mm2": 0.48, "removed_fingerprints": ["face:a"]}
+#: RebuildFace's REAL declaration (operations.RebuildFace.apply): one face out, one face in.
+_SWAP = {"faces_removed": 1, "faces_added": 1}
+
+
+def test_a_package_that_removed_surface_goes_to_the_reviewer_at_any_deviation(monkeypatch):
+    tier, reason = _decide(monkeypatch, verdicts=(_E(evidence=_SWEEP),), deviation_mm=0.0)
+    assert tier == "reviewer" and "removed surface" in reason, reason
+    # by the fingerprints alone, too
+    tier, _ = _decide(monkeypatch, verdicts=(_E(evidence={"removed_fingerprints": ["f"]}),),
+                      deviation_mm=0.0)
+    assert tier == "reviewer"
+
+
+def test_a_rolled_back_removal_or_a_face_swap_is_not_a_removal(monkeypatch):
+    tier, reason = _decide(monkeypatch, verdicts=(_E(kept=False, evidence=_SWEEP),))
+    assert tier == "auto", reason
+    tier, reason = _decide(monkeypatch, verdicts=(_E(op="sew_faces", evidence=_SWAP),))
+    assert tier == "auto", reason
+
+
+@pytest.mark.parametrize("basis", ["adjacent_to_removed", "whole_part", "anything_new"])
+def test_a_fallback_basis_never_buys_an_auto_accept(monkeypatch, basis):
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_AUTO_ACCEPT", "live", raising=False)
+    tier, reason = rt.decide(verdicts=[_V()], reclassified=frozenset(), revealed=frozenset(),
+                             declared_matches=True,
+                             deviation={**_measured(0.0), "deviation_basis": basis},
+                             deviation_status=pr.DEVIATION_MEASURED, threshold_mm=0.05)
+    assert tier == "reviewer" and basis in reason
+
+
+@pytest.mark.parametrize("basis", ["edited_faces", "changed_faces"])
+def test_a_measured_basis_still_auto_accepts(monkeypatch, basis):
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_AUTO_ACCEPT", "live", raising=False)
+    tier, reason = rt.decide(verdicts=[_V()], reclassified=frozenset(), revealed=frozenset(),
+                             declared_matches=True,
+                             deviation={**_measured(0.01), "deviation_basis": basis},
+                             deviation_status=pr.DEVIATION_MEASURED, threshold_mm=0.05)
+    assert tier == "auto", reason

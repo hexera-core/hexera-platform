@@ -274,6 +274,22 @@ _DEVIATION_KEYS = ("deviation_mm", "deviation_samples", "deviation_faces",
                    "deviation_faces_skipped")
 
 
+def net_faces_removed(evidence) -> int:
+    """Faces an operation's declarations say it REMOVED and did not replace: `faces_removed` less
+    `faces_added`, never below 0. A swap (`RebuildFace`: one out, one in) removes no surface; the
+    sliver sweep (`FixSmallFaces`) declares removals with nothing added. 0 for anything unreadable
+    - a removal is never INVENTED here; the tier's veto reads `removed_fingerprints` as well."""
+    def count(key: str) -> int:
+        value = (evidence or {}).get(key, 0)
+        return int(value) if isinstance(value, int) and not isinstance(value, bool) else 0
+    return max(0, count("faces_removed") - count("faces_added"))
+
+
+def removes_surface(evidence) -> bool:
+    """Did this operation take surface away (not merely replace it)? The tier's removal veto."""
+    return net_faces_removed(evidence) > 0 or bool((evidence or {}).get("removed_fingerprints"))
+
+
 def _removed(verdicts, area_before) -> dict:
     """What the KEPT operations declared they removed - face count, declared area, and that area
     as a fraction of the upload's - so a reviewer can tell sliver DEBRIS from real geometry.
@@ -285,8 +301,10 @@ def _removed(verdicts, area_before) -> dict:
         if verdict.get("status") != "kept":
             continue
         declared = verdict.get("evidence") or {}
-        count = declared.get("faces_removed")
-        if isinstance(count, int) and not isinstance(count, bool) and count > 0:
+        # NET OF WHAT WAS ADDED: a face replaced (RebuildFace's one-out-one-in) is not debris, and
+        # its missing area must not turn a known sliver total into "unmeasured".
+        count = net_faces_removed(declared)
+        if count > 0:
             faces += count
             value = _number(declared.get("area_removed_mm2"))
             # One undeclared area makes the total a hole, never a smaller number.

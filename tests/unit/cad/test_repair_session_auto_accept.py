@@ -247,3 +247,58 @@ def test_the_whole_observation_carries_no_reviewer_prose(monkeypatch):
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+# A PACKAGE WITH REMOVED SURFACE CANNOT REACH DELIVERY WITHOUT A REVIEW VERDICT
+# (Greptile PRRT_kwDOUFq_Ps657Mi2): with auto-accept live, a customer threshold set and the
+# deviation reading a perfect 0.0 on the adjacent faces, it still goes to the reviewer - and with
+# no reviewer answer it does not commit at all.
+
+
+def _removing(part):
+    from dataclasses import replace
+
+    for op in part.ops.values():
+        apply = op.apply
+
+        def removing(shape, targets, *, tolerance_mm, _apply=apply):
+            out = _apply(shape, targets, tolerance_mm=tolerance_mm)
+            return replace(out, evidence={**dict(out.evidence), "faces_removed": 1,
+                                          "area_removed_mm2": 0.01,
+                                          "removed_fingerprints": ["face:sliver"]})
+        op.apply = removing
+
+
+def _removal_run(monkeypatch, *replies, configured: bool = True):
+    from tests.unit.cad.test_repair_region_loop import _TOLERANCE_MM, _author, _budget, _Part
+
+    from meshpipeline.cad.repair.region_loop import run_regions
+
+    fake = FakeAsk(*replies)
+    monkeypatch.setattr(pr, "_ask", fake)
+    monkeypatch.setattr(pr, "_configured", lambda: configured)
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_PACKAGE_REVIEW", "live")
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_AUTO_ACCEPT", "live", raising=False)
+    monkeypatch.setattr(RepairSession, "_deviation_evidence", lambda self, *, cap_s: (
+        {"deviation_mm": 0.0, "deviation_basis": "adjacent_to_removed"},
+        pr.DEVIATION_MEASURED))
+    part = _Part()
+    _removing(part)
+    session = RepairSession("original", measurer=part.measurer, scanner=part.scanner,
+                            clock=part.clock, auto_accept_mm=0.05)
+    run = run_regions("original", author=_author(part), tolerance_mm=_TOLERANCE_MM,
+                      budget=_budget(), session=session, clock=part.clock, attempts=3)
+    return run, fake
+
+
+def test_a_removal_goes_to_the_reviewer_even_at_zero_deviation(monkeypatch):
+    run, fake = _removal_run(monkeypatch, *({"verdict": "accept", "reason": "debris"},) * 3)
+    assert run.packages and all(p.review_tier == "reviewer" for p in run.packages)
+    assert len(fake.calls) == len(run.packages)
+    assert all(p.reviewed == pr.ACCEPT for p in run.packages if p.committed)
+
+
+def test_a_removal_with_no_reviewer_answer_never_commits(monkeypatch):
+    run, fake = _removal_run(monkeypatch, configured=False)
+    assert run.packages and not any(p.committed for p in run.packages)
+    assert all(p.review_tier == "reviewer" for p in run.packages)

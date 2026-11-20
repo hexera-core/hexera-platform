@@ -77,6 +77,19 @@ def _kept_op_names(verdicts: Iterable[Any]) -> list[str]:
     return [str(getattr(v, "op", "")) for v in verdicts if bool(getattr(v, "kept", False))]
 
 
+#: The deviation bases a threshold may be judged on: the faces the operations named, or every face
+#: the upload lacks. The REMOVAL FALLBACKS (`deviation.BASIS_ADJACENT`, `deviation.BASIS_WHOLE`)
+#: sample surviving surface and never the surface that went, so a number on them says nothing
+#: about what was removed and may not buy an auto-accept. An absent basis is a session that
+#: predates the field, which only ever measured edited or changed faces.
+_TIER_BASES = frozenset({"", "edited_faces", "changed_faces"})
+
+
+def _kept_removals(verdicts: Iterable[Any]) -> list[str]:
+    return [str(getattr(v, "op", "")) for v in verdicts if bool(getattr(v, "kept", False))
+            and package_review.removes_surface(getattr(v, "evidence", None) or {})]
+
+
 def decide(*, verdicts: Iterable[Any], reclassified: frozenset, revealed: frozenset,
            declared_matches: bool, deviation: dict, deviation_status: str,
            threshold_mm: float | None) -> tuple[str, str]:
@@ -88,15 +101,20 @@ def decide(*, verdicts: Iterable[Any], reclassified: frozenset, revealed: frozen
     - the posture is live;
     - the deployment carries a customer threshold above zero;
     - no kept operation moves vertices (`VERTEX_MOVING_OPS`);
+    - no kept operation REMOVED surface (`package_review.removes_surface`): the deviation samples
+      the result, never the surface that went, so no number can show a removal stayed in bounds;
     - nothing was discharged by relabelling (`reclassified`) and nothing new appeared
       (`revealed`) - either is a judgement call, which is what the reviewer's seat is for;
     - the kept operations' declarations cover what was measured (`declared_matches`);
     - the deviation was MEASURED - not off, not out of time, not failed - and is at or under the
       threshold.
 
+    - and the deviation's basis is one a threshold can be judged on (`_TIER_BASES`).
+
     NEVER RAISES. Anything unexpected is `reviewer`.
     """
     try:
+        verdicts = list(verdicts)
         if posture() != "live":
             return REVIEWER, "the auto-accept posture is off"
         if threshold_mm is None:
@@ -107,6 +125,10 @@ def decide(*, verdicts: Iterable[Any], reclassified: frozenset, revealed: frozen
         moving = sorted(set(_kept_op_names(verdicts)) & VERTEX_MOVING_OPS)
         if moving:
             return REVIEWER, f"the package moves vertices ({', '.join(moving)})"
+        removing = sorted(set(_kept_removals(verdicts)))
+        if removing:
+            return REVIEWER, (f"the package removed surface ({', '.join(removing)}); a removed "
+                              "surface is never sampled, so no deviation can clear it")
         if reclassified:
             return REVIEWER, (f"{len(reclassified)} defect(s) were discharged by relabelling "
                               "rather than by repair")
@@ -116,6 +138,10 @@ def decide(*, verdicts: Iterable[Any], reclassified: frozenset, revealed: frozen
             return REVIEWER, "the measured change is not covered by what the operations declared"
         if str(deviation_status) != package_review.DEVIATION_MEASURED:
             return REVIEWER, f"the deviation was not measured ({deviation_status or 'absent'})"
+        basis = str(deviation.get("deviation_basis") or "")
+        if basis not in _TIER_BASES:
+            return REVIEWER, (f"the deviation was sampled on {basis}, which never measures the "
+                              "surface a removal took away")
         measured = deviation.get("deviation_mm")
         if measured is None:
             return REVIEWER, "the deviation reads measured but carries no value"

@@ -429,3 +429,44 @@ def test_an_undeclared_area_or_scale_reads_unmeasured_never_zero():
                                    "area_fraction": "unmeasured"}
     no_scale = pr.evidence_of(_package(), _removing_delta(), _DEVIATION, before, after)
     assert no_scale["removed"]["area_fraction"] == "unmeasured"
+
+
+# A FACE SWAP IS NOT DEBRIS (Greptile PRRT_kwDOUFq_Ps657Wye): RebuildFace declares
+# faces_removed=1 AND faces_added=1, with no area - one face out, one in.
+
+
+def _rebuild_delta():
+    delta = _delta()
+    delta["verdicts"].append(
+        {"op": "rebuild_face", "targets": ["f3"], "defect_code": "mesh_overlapping_facets",
+         "status": "kept", "reason": "", "basis": "kernel",
+         # THE REAL DECLARATION, read off operations.RebuildFace.apply
+         "evidence": {"faces_removed": 1, "faces_added": 1},
+         "delta": {}, "apply_s": 0.1, "scan_s": 0.1, "measure_s": 0.1})
+    return delta
+
+
+def test_a_rebuild_alone_is_not_shown_as_removed():
+    before, after = _probes()
+    assert "removed" not in pr.evidence_of(_package(), _rebuild_delta(), _DEVIATION, before,
+                                           after, original=_ORIGINAL)
+
+
+def test_a_rebuild_beside_a_sweep_does_not_hide_the_sweeps_known_area():
+    before, after = _probes()
+    delta = _rebuild_delta()
+    delta["verdicts"] += _removing_delta()["verdicts"][-1:]
+    evidence = pr.evidence_of(_package(), delta, _DEVIATION, before, after, original=_ORIGINAL)
+    assert evidence["removed"] == {"faces": 4, "area_mm2": pytest.approx(0.48387),
+                                   "area_fraction": pytest.approx(0.48387 / 1000.0)}
+
+
+def test_the_real_rebuild_declaration_is_a_swap():
+    import inspect
+
+    from meshpipeline.cad.repair.operations import RebuildFace
+
+    source = inspect.getsource(RebuildFace.apply)
+    assert '"faces_removed": 1, "faces_added": 1' in source
+    assert pr.net_faces_removed({"faces_removed": 1, "faces_added": 1}) == 0
+    assert not pr.removes_surface({"faces_removed": 1, "faces_added": 1})
