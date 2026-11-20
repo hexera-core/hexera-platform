@@ -666,3 +666,43 @@ def test_the_module_is_listed_in_v3_modules():
         pytest.skip(f"SEAM FOR THE CONTROLLER: append {rel!r} to V3_MODULES in "
                     "tests/unit/cad/test_repair_oracle_invariants.py")
     assert rel in V3_MODULES
+
+
+# --- the run's reserves (PR #494 review: investigations spent reserved verification time) ------
+
+class _Wide:
+    """A budget whose own wall never binds, so the region's wall is the clock's share alone."""
+
+    tier = "cheap"
+    tool_calls = 6
+    model_calls = 8
+    wall_s = 10_000.0
+
+
+@pytest.mark.parametrize("probe, reserve", [("live", 30.0 + 10.0), ("off", 0.0)])
+def test_an_unstated_clock_keeps_the_final_reserve_and_the_configured_share(
+        monkeypatch, probe, reserve):
+    """`select_author` states no reserves. The clock it gets must still keep the final
+    verification's reserve (`region_loop.final_reserve_s`) and take only
+    `CAD_REPAIR_INVESTIGATOR_REGION_SHARE` of what is above it - or one slow region eats the
+    final whole-part mesh check and every later region's time."""
+    from meshpipeline.cad.repair import investigator_budget as ib
+
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", probe)
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE_TIMEOUT_S", 30.0)
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_INVESTIGATOR_REGION_SHARE", 0.25)
+    author = inv.investigator(None, original=ORIGINAL, deadline_s=1100.0,
+                              clock=lambda: 1000.0)
+    timing = author.clock
+    assert timing.reserve_s == reserve
+    assert timing.share == 0.25
+    assert timing.proof_reserve_s == ib.proof_reserve_s(100.0 - reserve)
+    assert timing.region_wall(_Wide()) == pytest.approx(0.25 * (100.0 - reserve))
+
+
+def test_stated_reserves_still_win(monkeypatch):
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
+    author = inv.investigator(None, original=ORIGINAL, deadline_s=1100.0, clock=lambda: 1000.0,
+                              reserve_s=5.0, proof_reserve_s=2.0, share=1.0)
+    assert (author.clock.reserve_s, author.clock.proof_reserve_s, author.clock.share) == (
+        5.0, 2.0, 1.0)

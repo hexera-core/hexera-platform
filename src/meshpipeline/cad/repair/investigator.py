@@ -324,6 +324,35 @@ class _Clock:
         return self.left(0.0) >= wall + ma._GRACE_S
 
 
+def configured_reserves(deadline_s: float | None, clock: Callable[[], float], *,
+                        reserve_s: float | None, proof_reserve_s: float | None,
+                        share: float | None) -> tuple[float, float, float]:
+    """`(reserve_s, proof_reserve_s, share)` for an investigation clock, each the CONFIGURED value
+    unless the caller stated one.
+
+    The real callers (`select_author`) state none, and a clock built on zeros and a share of 1 let
+    one slow region spend the final whole-part verification's reserve and every later region's
+    time - the outer loop checks its reserve only BEFORE calling the author. So an unstated
+    reserve is the walk's own (`region_loop.final_reserve_s`), an unstated share is
+    `CAD_REPAIR_INVESTIGATOR_REGION_SHARE`, and an unstated proof reserve is
+    `investigator_budget.proof_reserve_s` over what the run has left above that reserve.
+    Imported lazily: `region_loop` sits above this module.
+    """
+    if reserve_s is None:
+        from meshpipeline.cad.repair.region_loop import final_reserve_s
+
+        reserve_s = final_reserve_s()
+    if share is None:
+        share = float(getattr(rcfg, "CAD_REPAIR_INVESTIGATOR_REGION_SHARE", 1.0))
+    if proof_reserve_s is None:
+        from meshpipeline.cad.repair.investigator_budget import proof_reserve_s as _proof
+
+        left = (float("inf") if deadline_s is None
+                else max(0.0, float(deadline_s) - clock() - float(reserve_s)))
+        proof_reserve_s = _proof(left)
+    return float(reserve_s), float(proof_reserve_s), float(share)
+
+
 def _budget_of(tier: str) -> Budget:
     """Task 8's budget for `tier`, or the local fallback. Reported as a seam, never reimplemented:
     the numbers are the gym's to tune, and they live in `investigator_budget`."""
@@ -551,8 +580,8 @@ def investigator(shape, *, original: Measure, reserved: frozenset = frozenset(),
                  sink: Callable[[dict], None] | None = None,
                  budget: Budget | None = None, policy: Policy | None = None,
                  scratch_factory: Callable[..., object] | None = None,
-                 reserve_s: float = 0.0, proof_reserve_s: float = 0.0,
-                 share: float = 1.0) -> ma.Author:
+                 reserve_s: float | None = None, proof_reserve_s: float | None = None,
+                 share: float | None = None) -> ma.Author:
     """Build the investigating `author` the region loop calls: `(region, defects, attempts) -> package`.
 
     THE LOOP, per author call:
@@ -578,7 +607,8 @@ def investigator(shape, *, original: Measure, reserved: frozenset = frozenset(),
 
     `budget` and `policy` are Task 8's `InvestigationBudget` and `InvestigationClock`. Given, they
     are used as they are; absent, a fail-closed local fallback is built from `deadline_s`,
-    `reserve_s`, `proof_reserve_s` and `share`, so this driver never reimplements the policy.
+    `reserve_s`, `proof_reserve_s` and `share`, so this driver never reimplements the policy. Each
+    of those three left unstated is the CONFIGURED value (`configured_reserves`), never 0 or 1.
     `scratch_factory` is Task 10's `Scratch.of`; absent, the investigation is read-only.
     """
     investigations: list[dict] = []
@@ -588,9 +618,13 @@ def investigator(shape, *, original: Measure, reserved: frozenset = frozenset(),
     live: dict[int, _Investigation] = {}
     state: dict = {"part_rims": frozenset(), "shape": shape, "calls": 0}
     held_codes = frozenset(reserved)
-    timing: Policy = policy if policy is not None else _Clock(
-        deadline_s, reserve_s=reserve_s, proof_reserve_s=proof_reserve_s, share=share,
-        clock=clock)
+    if policy is not None:
+        timing: Policy = policy
+    else:
+        held_s, proof_s, part = configured_reserves(deadline_s, clock, reserve_s=reserve_s,
+                                                    proof_reserve_s=proof_reserve_s, share=share)
+        timing = _Clock(deadline_s, reserve_s=held_s, proof_reserve_s=proof_s, share=part,
+                        clock=clock)
 
     def observe_part(part_defects: tuple) -> None:
         state["part_rims"] = (ma.paired_rim_fingerprints(shape, tuple(part_defects))
@@ -897,6 +931,7 @@ def investigator(shape, *, original: Measure, reserved: frozenset = frozenset(),
     author.observe_shape = observe_shape  # type: ignore[attr-defined]
     author.report = report  # type: ignore[attr-defined]
     author.label = LABEL  # type: ignore[attr-defined]
+    author.clock = timing  # type: ignore[attr-defined]
     return author
 
 

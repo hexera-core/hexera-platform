@@ -348,7 +348,7 @@ def test_one_clock_is_built_and_shared_by_every_region():
     (None, True),
 ])
 def test_a_region_out_of_time_rehearses_nothing(deadline_s, runs):
-    author, _, plays = build(k=3, deadline_s=deadline_s)
+    author, _, plays = build(k=3, deadline_s=deadline_s, share=1.0)
     author(REGION, DEFECTS)
     entry = author.tournaments[-1]
     assert (len(plays.calls) == 1) is runs
@@ -389,7 +389,7 @@ def test_shadow_with_no_winner_still_returns_the_rules_package():
     (1000.0, False), (1050.0, False), (1064.9, False), (1065.0, True), (1200.0, True),
 ])
 def test_shadow_is_skipped_when_the_whole_wall_does_not_fit(deadline_s, ran):
-    author, srcs, plays = build(k=3, shadow=True, deadline_s=deadline_s)
+    author, srcs, plays = build(k=3, shadow=True, deadline_s=deadline_s, share=1.0)
     driven = author(REGION, DEFECTS)
     # The rules package is returned WHETHER OR NOT the shadow ran: a skipped shadow is still the
     # rules run, unchanged.
@@ -660,3 +660,18 @@ def test_changed_defects_are_authored_for_again_not_served_from_the_cache():
     author(REGION, DEFECTS)
     author(REGION, (defect("f2"),), (types.SimpleNamespace(region_index=0, status=COMMITTED),))
     assert srcs[T.RULES].asked == 2
+
+
+def test_an_unstated_tournament_clock_keeps_the_final_reserve_and_the_share(monkeypatch):
+    """The tournament's ONE clock is built from the same configured reserves as the
+    investigator's, because `select_author` states none."""
+    from meshpipeline.cad.repair import investigator_budget as ib
+
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE_TIMEOUT_S", 30.0)
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_INVESTIGATOR_REGION_SHARE", 0.25)
+    author = T.tournament_author("upload", original=ORIGINAL, deadline_s=1100.0,
+                                 clock=lambda: 1000.0, rules=Source("sew"), one_shot=None,
+                                 investigate=None)
+    assert (author.clock.reserve_s, author.clock.share) == (40.0, 0.25)
+    assert author.clock.proof_reserve_s == ib.proof_reserve_s(60.0)

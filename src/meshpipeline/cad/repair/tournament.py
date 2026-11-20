@@ -566,17 +566,23 @@ def tournament_summary(tournaments, packages=()) -> dict:
     }
 
 
-def _clock_of(deadline_s, *, reserve_s: float, proof_reserve_s: float, share: float, clock):
+def _clock_of(deadline_s, *, reserve_s: float | None, proof_reserve_s: float | None,
+              share: float | None, clock):
     """THE RUN'S ONE CLOCK, built ONCE per author and shared by every region and every rehearsal.
 
     Two clocks over one deadline is how a region starves its successors: each would think it had
     the whole remainder to itself. `InvestigationClock` is Task 8's and states the policy; this
-    author states none of its own. Imported lazily so the pure half's import stays cheap.
+    author states none of its own. An UNSTATED reserve or share is the configured one
+    (`investigator.configured_reserves`) - the final verification's reserve and the region share -
+    never 0 and 1. Imported lazily so the pure half's import stays cheap.
     """
+    from meshpipeline.cad.repair.investigator import configured_reserves
     from meshpipeline.cad.repair.investigator_budget import InvestigationClock
 
-    return InvestigationClock(deadline_s, reserve_s=reserve_s, proof_reserve_s=proof_reserve_s,
-                              share=share, clock=clock)
+    held_s, proof_s, part = configured_reserves(deadline_s, clock, reserve_s=reserve_s,
+                                                proof_reserve_s=proof_reserve_s, share=share)
+    return InvestigationClock(deadline_s, reserve_s=held_s, proof_reserve_s=proof_s,
+                              share=part, clock=clock)
 
 
 def _budget_of(defects, original):
@@ -610,8 +616,9 @@ def _record(cand: Candidate, r: Rehearsal) -> dict:
 def tournament_author(shape, *, original, reserved: frozenset = frozenset(), job_id: str = "",
                       tolerance_mm: float = 0.0, deadline_s: float | None = None,
                       clock=None, k: int | None = None, shadow: bool = False, sink=None,
-                      face_reader=None, reserve_s: float = 0.0, proof_reserve_s: float = 0.0,
-                      share: float = 1.0, policy=None, rules=_DEFAULT, one_shot=_DEFAULT,
+                      face_reader=None, reserve_s: float | None = None,
+                      proof_reserve_s: float | None = None, share: float | None = None,
+                      policy=None, rules=_DEFAULT, one_shot=_DEFAULT,
                       investigate=_DEFAULT, rehearse_with=None):
     """Build the tournament `author` the region loop calls: `(region, defects, attempts) -> package`.
 
