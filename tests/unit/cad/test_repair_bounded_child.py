@@ -12,7 +12,14 @@ import time
 import pytest
 
 from meshpipeline.cad.repair import bounded_child
-from meshpipeline.cad.repair.bounded_child import _probe_die, _probe_echo, _probe_raise, _probe_sleep
+from meshpipeline.cad.repair.bounded_child import (
+    _probe_die,
+    _probe_echo,
+    _probe_raise,
+    _probe_sleep,
+    _probe_slow_shape,
+    _probe_wrap,
+)
 from meshpipeline.cad.repair.localize import _bounded
 
 
@@ -165,3 +172,75 @@ def test_the_heal_analysis_maps_the_childs_pairs_back_onto_the_part(no_fork):
     faces = _indexed(shape, TopAbs_FACE)
     every = [faces.FindKey(i) for i in range(1, faces.Extent() + 1)]
     assert _analyze_faces(shape, every) == _kernel_face_pairs(shape)
+
+
+# --- an answer may carry SHAPES, not only JSON (audit row 6) ----------------------------------
+
+
+def _box(dx=10.0, dy=20.0, dz=3.0):
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+
+    return BRepPrimAPI_MakeBox(dx, dy, dz).Shape()
+
+
+def _volume(shape) -> float:
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
+
+    props = GProp_GProps()
+    BRepGProp.VolumeProperties_s(shape, props)
+    return abs(float(props.Mass()))
+
+
+def test_a_shape_comes_back_from_the_child(no_fork):
+    """ROW 6 NEEDS THIS AND NOTHING ELSE DID. `_general_fuse` answers with the bodies' PIECES, and
+    until now the wire was JSON only - `_encode` refused a shape, so no kernel that builds
+    geometry could run in a child at all. Operands already cross as a BREP compound; answers now
+    come back the same way, written beside the JSON."""
+    box = _box()
+
+    (back,) = bounded_child.run(_probe_echo, (box,), budget_s=60.0)
+
+    assert _volume(back) == pytest.approx(_volume(box))
+
+
+def test_a_shape_nested_in_the_answer_comes_back_too(no_fork):
+    """The fuse's answer is `((pieces, pieces), history)` - shapes inside tuples inside a tuple -
+    so a shape has to be found wherever it sits, not only at the top."""
+    box = _box()
+
+    answer = bounded_child.run(_probe_wrap, (box,), budget_s=60.0)
+
+    assert answer["faces"] == 6
+    assert _volume(answer["piece"]) == pytest.approx(_volume(box))
+    assert [_volume(s) for s in answer["both"]] == [pytest.approx(_volume(box))] * 2
+
+
+def test_a_shape_answer_is_still_silence_when_the_budget_runs_out(no_fork, monkeypatch):
+    """THE CONTRACT THAT MATTERS FOR AN OPERATION. A child killed mid-answer gives None, so
+    `fragment_bodies` declines rather than committing a half-built fuse. The BREP is written
+    BEFORE the result JSON, and the JSON is renamed into place, so there is no window in which a
+    reader sees an answer whose shapes are not all there."""
+    started = time.monotonic()
+
+    assert bounded_child.run(_probe_slow_shape, (0.5,), budget_s=1.0) is None
+    assert time.monotonic() - started < 20.0
+
+
+def test_an_answer_naming_a_shape_it_did_not_carry_is_refused(no_fork, monkeypatch):
+    """A corrupt or truncated answer is not something to guess at. A reference with no shape
+    behind it must read as NO ANSWER, never as some other index's geometry - which is the
+    difference between an operation declining and an operation committing the wrong solid."""
+    monkeypatch.setattr(bounded_child, "_read_operands", lambda path: [])
+
+    assert bounded_child.run(_probe_wrap, (_box(),), budget_s=60.0) is None
+
+
+def test_the_shape_reference_is_resolved_against_what_the_answer_carried():
+    """The decode rule on its own: in range it resolves, out of range it raises rather than
+    returning something plausible."""
+    assert bounded_child._decode({"a": {"__shape__": 1}}, ["first", "second"]) == {"a": "second"}
+    with pytest.raises(bounded_child._NotEncodable):
+        bounded_child._decode({"__shape__": 0}, [])
+    with pytest.raises(bounded_child._NotEncodable):
+        bounded_child._decode({"__shape__": 0}, None)
