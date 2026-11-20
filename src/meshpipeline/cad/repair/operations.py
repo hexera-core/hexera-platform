@@ -248,6 +248,63 @@ def mapping_from_context(context, targets: tuple[EntityRef, ...], *,
     return EntityMapping(moved=moved, gone=frozenset(gone), basis="kernel")
 
 
+# THE OPERATIONS THAT ARE WHOLE-SHAPE, SAID OUT LOUD
+#
+# `fix_small_edges` (`ShapeFix_Wireframe`), `fix_shape_global` (`ShapeFix_Shape`) and `sew_faces`
+# (`BRepBuilderAPI_Sewing`) are thin wrappers over a kernel call that processes the ENTIRE part,
+# while the catalogue presents each as targeted: it names a target fingerprint and declares a
+# bound. Only `fix_face_boundary` (`ShapeFix_Face`), `rebuild_face` and `close_wire_gaps` are
+# genuinely per-entity. Measured over a 90-part run of the real-failure corpus, the gap cost:
+#   - 17 of the 99 non-kept operations were a whole-shape pass re-proposed on a shape it had
+#     already processed, each guaranteed to roll back;
+#   - a FOCUSED repair changed both plates of a two-plate part, because a focus scopes the WALK
+#     and not the REACH;
+#   - and the two declarations the session's guards read came back EMPTY from all three, so
+#     `session.try_op`'s held-for-review check (which reads `evidence["removed_fingerprints"]`)
+#     protected nothing against them, and `session._revealed` (which reads `OpOutcome.rebuilt`)
+#     had no way to tell damage one of them caused from a defect it merely exposed.
+#
+# WHY THEY ARE NOT NARROWED HERE, measured rather than assumed. A `ShapeBuild_ReShape` is a FLAT
+# TABLE of old -> new with no dependency graph, and a fixer's replacements are interdependent: a
+# small-edge merge removes an edge AND replaces both neighbouring edges, the shared vertex, and
+# every wire and face containing them; `ShapeFix_Shape`'s same-parameter mode rewrites an edge's
+# pcurve on BOTH faces that share it. Accept some records and revert others and the wire does not
+# close. Measured on the sliver-plate fixture of `tests/cad_fixtures.write_small_edge_step`:
+# applying any ONE of the five face records the merging fixer produced took the solid from 18
+# edges to 20 or 21 and from valid to INVALID, and on an open shell the same tear measured 18 ->
+# 21 edges while `BRepCheck` still said VALID - so validity is a backstop and never a gate. The
+# sound unit is therefore a connected COMPONENT of the record set, not "the target's records";
+# whether splitting a pass into its components is worth building is a question about how many
+# disjoint places a fixer touches per part, measured separately and not answered here.
+#
+# The narrow form is separately and firmly ruled out: handed only the sliver's owner faces,
+# `ShapeFix_Wireframe` extrapolated the diagonal from 141.77 mm to 270.00 mm and the max
+# tolerance from 1e-7 mm to 80 mm, bounded by neither `LimitTolerance` nor `SetMaxTolerance`. A
+# sub-shape has no surrounding topology to hold it still; the whole shape does.
+#
+# SO THE HONEST MOVE IS THE DECLARATION. Each of the three now reads its OWN history - pure
+# read-only bookkeeping off the context or the sewing it already builds - and declares every face
+# it rebuilt and every face it removed. That re-arms both guards immediately and is true
+# regardless of whether targeting is ever built.
+
+#: Operations whose kernel call processes the WHOLE PART however narrowly they are aimed, declared
+#: here so the author, the accounting and the reviewer know it without reading the kernel. Each
+#: one must populate `OpOutcome.rebuilt` and `evidence["removed_fingerprints"]` from its own
+#: history - the contract `tests/unit/cad/test_repair_whole_shape_declares.py` holds.
+#:
+#: `sew_faces` is the one that cannot be narrowed even in principle: sewing has no
+#: `ShapeBuild_ReShape` and no applicable record set - `IsModified`/`Modified` answer questions
+#: about a shell it has already built from scratch - and "sew this rim and not that one" is not a
+#: request the API can be given. Its reach is bounded the only way sewing's can be, PER BODY
+#: (`conservative._sew_loose_bodies`' rule): a compound's children are sewn one at a time and a
+#: child that already has a solid is left alone.
+#:
+#: `split_closed_faces` is NOT here: it is whole-BODY, not whole-shape, it already declares
+#: `faces_added`, `added` and `rebuilt`, and its docstring already states that every other closed
+#: face of the target's body is split with it.
+WHOLE_SHAPE_OPS: frozenset[str] = frozenset({"fix_small_edges", "fix_shape_global", "sew_faces"})
+
+
 # THE OPERATIONS
 
 
@@ -329,11 +386,28 @@ class FixSmallEdges:
 
         context = fixer.Context()
         result = context.Apply(shape)
+        diagonal = _diagonal(shape)
         mapping = mapping_from_context(context, targets, shape_before=shape,
-                                       diagonal_mm=_diagonal(shape))
-        return OpOutcome(shape=result, mapping=mapping,
+                                       diagonal_mm=diagonal)
+        # WHAT IT ACTUALLY TOUCHED, read from its own history rather than left silent. The pass is
+        # whole-shape, so these are faces nobody aimed at as well as the target's own: `rebuilt`
+        # is what `session._revealed` needs to tell damage this pass caused from a defect it
+        # exposed, and `removed_fingerprints` is what the held-for-review guard checks against the
+        # entities an engineer is still being asked about. Both were EMPTY before, which the
+        # guards could only read as "this operation touched nothing".
+        gone, rebuilt = _face_fates(context, shape, result)
+        rebuilt_names = _named_faces(rebuilt, diagonal_mm=diagonal)
+        return OpOutcome(shape=result, mapping=mapping, rebuilt=rebuilt_names,
                          evidence={"edges_targeted": len(targets),
-                                   "precision_mm": float(tolerance_mm)})
+                                   "precision_mm": float(tolerance_mm),
+                                   "faces_rebuilt": len(rebuilt_names),
+                                   # NOT `faces_removed`: that key is the sliver sweep's licence
+                                   # to remove exactly that many (caps.sanity_refusal), and this
+                                   # operation has no such licence. It reports the NAMES so the
+                                   # held guard can see them, and the face-count cap still
+                                   # refuses the removal itself.
+                                   "removed_fingerprints": sorted(
+                                       _named_faces(gone, diagonal_mm=diagonal))})
 
 
 def _closed_directions(face) -> tuple[bool, bool]:
@@ -426,6 +500,23 @@ def _split_fingerprints(owner, divided, *, diagonal_mm: float) -> tuple[str, ...
     return tuple(added)
 
 
+def _named_faces(faces, *, diagonal_mm: float) -> tuple[str, ...]:
+    """Name a LIST of faces at the WHOLE PART's quantum, in order, each once.
+
+    AT THE PART'S QUANTUM, NOT THE BODY'S, for the reason `_split_fingerprints` gives: a name
+    computed at a sub-body's own diagonal denotes nothing the session's next scan can find.
+    AN UNMEASURABLE FACE IS DROPPED rather than named: `fingerprint_of` answers "" for a face with
+    no extent, and a declaration carrying "" would claim every other unmeasurable face too.
+    """
+    quantum = quantum_for(diagonal_mm)
+    names: list[str] = []
+    for face in faces:
+        name = fingerprint_of("face", box_of(face), quantum=quantum)
+        if name and name not in names:
+            names.append(name)
+    return tuple(names)
+
+
 def _face_names(body, *, diagonal_mm: float) -> tuple[str, ...]:
     """Every face of `body`, named at the WHOLE PART's quantum (as `_split_fingerprints` names),
     each once - what `OpOutcome.rebuilt` carries."""
@@ -433,14 +524,9 @@ def _face_names(body, *, diagonal_mm: float) -> tuple[str, ...]:
 
     from meshpipeline.cad.repair.localize import _indexed
 
-    quantum = quantum_for(diagonal_mm)
     faces = _indexed(body, TopAbs_FACE)
-    names: list[str] = []
-    for i in range(1, faces.Extent() + 1):
-        name = fingerprint_of("face", box_of(faces.FindKey(i)), quantum=quantum)
-        if name and name not in names:
-            names.append(name)
-    return tuple(names)
+    return _named_faces([faces.FindKey(i) for i in range(1, faces.Extent() + 1)],
+                        diagonal_mm=diagonal_mm)
 
 
 class SplitClosedFaces:
@@ -668,8 +754,14 @@ def _sliver_owner_faces(shape, edge) -> list:
     return [TopoDS.Face_s(owner) for owner in ancestors.FindFromKey(edge)]
 
 
-def _swept_away(context, shape, result) -> list:
-    """The faces of `shape` that do not survive into `result`, read from the fixer's history.
+def _face_fates(context, shape, result) -> tuple[list, list]:
+    """What a `ShapeBuild_ReShape`'s history did to every face: `(gone, rebuilt)`.
+
+    `gone` is the faces OF `shape` that do not survive into `result`. `rebuilt` is the faces OF
+    `result` that a recorded substitution produced - the result side deliberately, because
+    `OpOutcome.rebuilt` is read against the names the NEXT SCAN will compute, and that scan sees
+    the new geometry. A face the history recorded but replaced by itself is in neither list: it
+    was consulted and left alone.
 
     RESOLVED TRANSITIVELY, because one step is not the answer: a strip merged into its neighbour
     is recorded as replaced by a FACE, and that replacement is itself consumed by the next merge -
@@ -677,6 +769,9 @@ def _swept_away(context, shape, result) -> list:
     when its replacement chain ends at a face the RESULT actually contains; anything else - a null,
     a non-face, a face the result does not hold - is gone, and its area is measured from the
     ORIGINAL, which is the thing that was removed.
+
+    ONE WALK, TWO ANSWERS, because the two questions are the same chain read to the same end and
+    two walks would be two chances to disagree about a face.
     """
     from OCP.TopAbs import TopAbs_FACE
 
@@ -684,17 +779,18 @@ def _swept_away(context, shape, result) -> list:
 
     survivors = _indexed(result, TopAbs_FACE)
     originals = _indexed(shape, TopAbs_FACE)
-    gone = []
+    gone: list = []
+    rebuilt: list = []
     for i in range(1, originals.Extent() + 1):
         face = originals.FindKey(i)
-        current, dead = face, False
+        current, dead, moved = face, False, False
         for _ in range(originals.Extent() + 1):   # a chain longer than the face count is a cycle
             try:
                 if not context.IsRecorded(current):
                     break
                 value = context.Value(current)
             except Exception as exc:  # noqa: BLE001 - an unreadable record is not a survival
-                logger.debug("fix_small_faces: unreadable history for a face (%s)", exc)
+                logger.debug("operations: unreadable history for a face (%s)", exc)
                 dead = True
                 break
             if value is None or (hasattr(value, "IsNull") and value.IsNull()):
@@ -703,11 +799,19 @@ def _swept_away(context, shape, result) -> list:
             if value.IsSame(current):
                 break
             current = value
+            moved = True
         if not dead and (current.ShapeType() != TopAbs_FACE or not survivors.Contains(current)):
             dead = True
         if dead:
             gone.append(face)
-    return gone
+        elif moved:
+            rebuilt.append(current)
+    return gone, rebuilt
+
+
+def _swept_away(context, shape, result) -> list:
+    """The faces of `shape` that do not survive into `result` - `_face_fates`' first answer."""
+    return _face_fates(context, shape, result)[0]
 
 
 class FixSmallFaces:
@@ -918,6 +1022,56 @@ class FixSmallFaces:
                                    "tolerance_mm": float(tolerance_mm)})
 
 
+def _sewing_deleted(sewing, *, diagonal_mm: float) -> tuple[str, ...]:
+    """The faces `BRepBuilderAPI_Sewing` DROPPED, by fingerprint. Sewing's own account.
+
+    ONE READER for two callers - `mapping_from_sewing`, which turns these into a `gone` set for
+    the targets, and `SewFaces.apply`, which declares them as `removed_fingerprints` for the
+    held-for-review guard. Two readings of the same list would be two chances to disagree about
+    which face left the part.
+
+    INDEXED, `DeletedFace(i)` for `i` in `1..NbDeletedFaces()`. The binding has no zero-argument
+    `DeletedFace()`: the reader this replaced called one, the TypeError was swallowed by its
+    broad except, and so sewing's deleted faces were never read at all - every sewing reported
+    "dropped nothing" whatever it dropped (measured: a sub-`MinTolerance` face, deleted and
+    counted by `NbDeletedFaces() == 1`, came back as an empty list).
+
+    NO DELETED FACES IS THE COMMON CASE, and a sewing that declines the question is not a failure:
+    both come back empty, which is what the callers treat as "it dropped nothing".
+    """
+    from OCP.Standard import Standard_Failure
+
+    faces: list = []
+    try:
+        for i in range(1, int(sewing.NbDeletedFaces()) + 1):
+            face = sewing.DeletedFace(i)
+            if face is not None and not face.IsNull():
+                faces.append(face)
+    except (RuntimeError, Standard_Failure) as exc:   # the kernel declining; our own bugs surface
+        logger.debug("operations: sewing reported no deleted faces (%s)", exc)
+    return _named_faces(faces, diagonal_mm=diagonal_mm)
+
+
+def _sewn_anew(before, after, *, diagonal_mm: float) -> tuple[str, ...]:
+    """The faces of `after` that are not faces of `before` BY KERNEL IDENTITY, by fingerprint.
+
+    Sewing's `rebuilt` declaration. It has no `ShapeBuild_ReShape` to read a face's fate from, so
+    the question is asked the only way the API leaves open: a face sewing replaced is a different
+    `TopoDS_Face` from the one that went in, and `TopTools_IndexedMapOfShape.Contains` is the
+    kernel's own identity test. A face sewing left alone is the SAME object and is excluded, which
+    is what makes the declaration a bound rather than a restatement of the face list.
+    """
+    from OCP.TopAbs import TopAbs_FACE
+
+    from meshpipeline.cad.repair.localize import _indexed
+
+    known = _indexed(before, TopAbs_FACE)
+    found = _indexed(after, TopAbs_FACE)
+    return _named_faces([face for i in range(1, found.Extent() + 1)
+                         if not known.Contains(face := found.FindKey(i))],
+                        diagonal_mm=diagonal_mm)
+
+
 def mapping_from_sewing(sewing, targets: tuple[EntityRef, ...], *,
                         shape_before, diagonal_mm: float) -> EntityMapping:
     """Read `BRepBuilderAPI_Sewing`'s own history into a fingerprint mapping.
@@ -926,23 +1080,10 @@ def mapping_from_sewing(sewing, targets: tuple[EntityRef, ...], *,
     calls: `IsModified`/`Modified` for a sub-shape that was replaced, `IsModifiedSubShape` for one
     that survived inside a modified parent, and the deleted-face list for faces it dropped.
     """
-    from OCP.TopAbs import TopAbs_FACE
-    from OCP.TopExp import TopExp_Explorer
-
     moved: dict[str, str] = {}
     gone: set[str] = set()
     quantum = quantum_for(diagonal_mm)
-
-    deleted_boxes: list[dict] = []
-    try:
-        explorer = TopExp_Explorer(sewing.DeletedFace(), TopAbs_FACE)
-        while explorer.More():
-            deleted_boxes.append(box_of(explorer.Current()))
-            explorer.Next()
-    except Exception as exc:  # noqa: BLE001 - no deleted faces is the common case
-        logger.debug("operations: sewing reported no deleted faces (%s)", exc)
-
-    deleted = {fingerprint_of("face", box, quantum=quantum) for box in deleted_boxes}
+    deleted = set(_sewing_deleted(sewing, diagonal_mm=diagonal_mm))
 
     for ref in targets:
         if not ref.targetable:
@@ -1102,8 +1243,15 @@ class SewFaces:
                 return OpOutcome(shape=shape, evidence={"declined": "sewing produced nothing"})
             mapping = mapping_from_sewing(sewing, targets, shape_before=shape,
                                           diagonal_mm=diagonal)
-            return OpOutcome(shape=sewn, mapping=mapping,
-                             evidence={"bodies_sewn": 1, "tolerance_mm": float(tolerance_mm)})
+            # WHAT IT REBUILT AND WHAT IT DROPPED, from sewing's own account. Both were silent
+            # before, and this operation is whole-shape by construction (see WHOLE_SHAPE_OPS):
+            # it joins every coincident boundary on the body, not only the rim it was aimed at.
+            rebuilt_names = _sewn_anew(shape, sewn, diagonal_mm=diagonal)
+            return OpOutcome(shape=sewn, mapping=mapping, rebuilt=rebuilt_names,
+                             evidence={"bodies_sewn": 1, "tolerance_mm": float(tolerance_mm),
+                                       "faces_rebuilt": len(rebuilt_names),
+                                       "removed_fingerprints": sorted(
+                                           _sewing_deleted(sewing, diagonal_mm=diagonal))})
 
         if shape.ShapeType() != TopAbs_COMPOUND:
             return OpOutcome(shape=shape,
@@ -1122,6 +1270,11 @@ class SewFaces:
         builder.MakeCompound(rebuilt)
         sewn_count = 0
         last_sewing = None
+        # EVERY BODY'S DELETIONS, not the last body's. The mapping below still reads
+        # `last_sewing` - it speaks only for the targets, and a target lives in one body - but a
+        # DECLARATION that named only the last sewn body's dropped faces would leave the
+        # held-for-review guard blind to every body before it on an assembly.
+        dropped: list[str] = []
         for child in children:
             if measure(child).solids > 0:
                 builder.Add(rebuilt, child)
@@ -1133,6 +1286,7 @@ class SewFaces:
             builder.Add(rebuilt, joined)
             sewn_count += 1
             last_sewing = sewing
+            dropped.extend(_sewing_deleted(sewing, diagonal_mm=diagonal))
 
         if not sewn_count:
             # UNCHANGED MEANS UNCHANGED. Returning the original rather than a re-wrapped copy, so
@@ -1143,9 +1297,12 @@ class SewFaces:
         mapping = (mapping_from_sewing(last_sewing, targets, shape_before=shape,
                                        diagonal_mm=diagonal)
                    if last_sewing is not None else EntityMapping.empty())
-        return OpOutcome(shape=rebuilt, mapping=mapping,
+        rebuilt_names = _sewn_anew(shape, rebuilt, diagonal_mm=diagonal)
+        return OpOutcome(shape=rebuilt, mapping=mapping, rebuilt=rebuilt_names,
                          evidence={"bodies_sewn": sewn_count,
-                                   "tolerance_mm": float(tolerance_mm)})
+                                   "tolerance_mm": float(tolerance_mm),
+                                   "faces_rebuilt": len(rebuilt_names),
+                                   "removed_fingerprints": sorted(set(dropped))})
 
 
 class FillPlanarHole:
@@ -3136,18 +3293,33 @@ class FixShapeGlobal:
         fixer.Perform()
         fixed = fixer.Shape()
 
+        diagonal = _diagonal(shape)
         mapping = EntityMapping.empty()
+        # SAME READING, SAME HISTORY, SO THEY CANNOT DISAGREE: the mapping and the two
+        # declarations all come off `fixer.Context()`, inside one try - a context the kernel
+        # declines to hand over leaves all three empty rather than two of them invented.
+        rebuilt_names: tuple[str, ...] = ()
+        removed_names: list[str] = []
         try:
-            mapping = mapping_from_context(fixer.Context(), targets, shape_before=shape,
-                                           diagonal_mm=_diagonal(shape))
+            context = fixer.Context()
+            mapping = mapping_from_context(context, targets, shape_before=shape,
+                                           diagonal_mm=diagonal)
+            gone, rebuilt = _face_fates(context, shape, fixed)
+            rebuilt_names = _named_faces(rebuilt, diagonal_mm=diagonal)
+            removed_names = sorted(_named_faces(gone, diagonal_mm=diagonal))
         except (RuntimeError, Standard_Failure) as exc:   # the kernel declining; our own TypeError/AttributeError surface
             logger.warning("fix_shape_global: no usable context (%s: %s)", type(exc).__name__, exc)
-        # DECLARES NOTHING. A ShapeFix pass repairs how the geometry was written down, not what it
-        # is, so any area or volume it moves is unaccounted for by design - and the cumulative cap
-        # is then the thing that catches it.
-        return OpOutcome(shape=fixed, mapping=mapping,
+        # DECLARES NO AREA OR VOLUME. A ShapeFix pass repairs how the geometry was written down,
+        # not what it is, so any area or volume it moves is unaccounted for by design - and the
+        # cumulative cap is then the thing that catches it. What it DOES declare is which faces it
+        # rebuilt and which it removed: this pass is whole-shape, and measured over the corpus it
+        # records no replacement at all on most parts, so an EMPTY declaration here is a fact READ
+        # from the history rather than the silence it used to be.
+        return OpOutcome(shape=fixed, mapping=mapping, rebuilt=rebuilt_names,
                          evidence={"precision_mm": float(tolerance_mm),
-                                   "modes": "solid,free_shell,free_face,same_parameter"})
+                                   "modes": "solid,free_shell,free_face,same_parameter",
+                                   "faces_rebuilt": len(rebuilt_names),
+                                   "removed_fingerprints": removed_names})
 
 
 def catalogue(*, split_closed_faces: bool | None = None,

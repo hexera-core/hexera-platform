@@ -265,8 +265,9 @@ def test_sewing_also_declines_a_ref_its_own_geometry_does_not_name(monkeypatch):
     monkeypatch.setattr(ops, "box_of", lambda sub: boxes[sub])
 
     class _Sewing:
-        def DeletedFace(self):  # noqa: N802
-            raise RuntimeError("none")
+        # The real binding's shape: an indexed `DeletedFace(i)` over `NbDeletedFaces()`.
+        def NbDeletedFaces(self):  # noqa: N802
+            return 0
 
         def IsModified(self, _sub):  # noqa: N802
             return True
