@@ -46,6 +46,10 @@ EVERYTHING_ON: dict[str, str] = {
     "CAD_REPAIR_AUTO_ACCEPT": "live",
     "CAD_REPAIR_MEMORY": "live",
     "CAD_REPAIR_BUDGET_ATTEMPTS": "live",
+    # Shared dev states REVIEW_OBJECTION=live whenever crs_v3=live (deploy.yml); without it the
+    # wave measured the reviewer with no reject -> measured-objection feedback to the author, a
+    # posture no deployment runs (found by lane A, 2026-11-20).
+    "CAD_REPAIR_REVIEW_OBJECTION": "live",
     "CAD_REPAIR_REBUILD_FACE": "true",
     "CAD_REPAIR_FIX_SMALL_FACES": "true",
     "CAD_REPAIR_FRAGMENT_BODIES": "true",

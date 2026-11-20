@@ -560,3 +560,12 @@ def test_collector_recomputes_outcomes_from_transcripts_so_elided_edits_still_co
     assert region["edits"]["tried"] == 2
     assert "no edit tried" not in region["why_no_package"]
     assert region["package"] == {"status": "reverted", "reason": "r"}
+
+
+def test_every_arm_runs_the_shared_dev_review_posture():
+    """Every arm must run what shared dev runs with crs_v3=live: the measured-objection feedback
+    included, or the wave measures a reviewer posture no deployment ships."""
+    from devtools.validation.v3_eval import evalspec
+
+    assert evalspec.EVERYTHING_ON["CAD_REPAIR_REVIEW_OBJECTION"] == "live"
+    assert evalspec.EVERYTHING_ON["CAD_REPAIR_PACKAGE_REVIEW"] == "live"
