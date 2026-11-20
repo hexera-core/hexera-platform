@@ -1,0 +1,4196 @@
+[
+ {
+  "ends": {},
+  "file": "00515821_589bdec38006660f7f91d8e2_step_025.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {
+   "budget_spent": 2,
+   "concluded": 14
+  },
+  "file": "00519643_b62c66c7f979f85edfa76371_step_000.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "refused",
+  "regions": [
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "cap:the operation turned a valid shape into an invalid one": 1,
+      "new_defect": 1,
+      "target_remains": 1
+     },
+     "tried": 3
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 8,
+    "reason": "The region is kernel-valid and passes the scoped surface probe, but it contains multiple located open-shell boundaries. The attempted planar fill introduced a new defect and was rolled back; boundary...",
+    "region": 10,
+    "seconds": 33.81,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The region is kernel-valid and passes the scoped surface probe, but it contains multiple located open-shell boundaries. The attempted planar fill introduced a new defect and was rolled back; boundary...; concluded escalate; no edit kept (cap:the operation turned a valid shape into an invalid one x1, new_defect x1, target_remains x1)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "cap:the operation turned a valid shape into an invalid one": 1,
+      "declined:swept_too_many (32 faces removed, the widest 0.174629 mm, over the 20 one sweep may)": 1
+     },
+     "tried": 2
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 7,
+    "reason": "The region and whole part pass kernel, scoped surface, and whole-part mesh probes with no defects. Both located entities are valid planar faces; attempted bounded repairs either swept too many faces o...",
+    "region": 0,
+    "seconds": 24.031,
+    "tier": "cheap",
+    "tool_calls": 9,
+    "why_no_package": "concluded; The region and whole part pass kernel, scoped surface, and whole-part mesh probes with no defects. Both located entities are valid planar faces; attempted bounded repairs either swept too many faces o...; concluded mesher_side; no edit kept (cap:the operation turned a valid shape into an invalid one x1, declined:swept_too_many (32 faces removed, the widest 0.174629 mm, over the 20 one s...(+13 chars)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "cap:the operation turned a valid shape into an invalid one": 1,
+      "declined:swept_too_many (32 faces removed, the widest 0.174629 mm, over the 20 one sweep may)": 1,
+      "target_remains": 1
+     },
+     "tried": 3
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 8,
+    "reason": "The located defect is a sliver planar face (face:618eaf1f524a88a6), but the kernel and scoped surface checks passed and the whole-part mesh probe passed. The targeted small-face repair was declined fo...",
+    "region": 1,
+    "seconds": 32.258,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The located defect is a sliver planar face (face:618eaf1f524a88a6), but the kernel and scoped surface checks passed and the whole-part mesh probe passed. The targeted small-face repair was declined fo...; concluded escalate; no edit kept (cap:the operation turned a valid shape into an invalid one x1, declined:swept_too_many (32 faces removed, the widest 0.174629 mm, over the 20 one swee...(+29 chars)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "declined:swept_too_many (32 faces removed, the widest 0.174629 mm, over the 20 one sweep may)": 1
+     },
+     "tried": 1
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 4,
+    "reason": "The region passes kernel validation (tier 0) and the scoped surface probe (tier 1), with both planar faces having tight 1e-7 mm tolerances and valid non-closed boundaries. The only findings are sliver...",
+    "region": 2,
+    "seconds": 14.006,
+    "tier": "cheap",
+    "tool_calls": 5,
+    "why_no_package": "concluded; The region passes kernel validation (tier 0) and the scoped surface probe (tier 1), with both planar faces having tight 1e-7 mm tolerances and valid non-closed boundaries. The only findings are sliver...; concluded mesher_side; no edit kept (declined:swept_too_many (32 faces removed, the widest 0.174629 mm, over the 20 one sweep may) x1)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "No investigation evidence is available: the region has not been inspected, measured, probed, or edited, so I cannot support a bounded repair or a mesher-side claim.",
+    "region": 3,
+    "seconds": 1.684,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; No investigation evidence is available: the region has not been inspected, measured, probed, or edited, so I cannot support a bounded repair or a mesher-side claim.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "No inspection, measurement, verification, or scratch-copy edit has been performed, so there is no evidence to support a bounded repair or a mesher-side conclusion.",
+    "region": 4,
+    "seconds": 2.194,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; No inspection, measurement, verification, or scratch-copy edit has been performed, so there is no evidence to support a bounded repair or a mesher-side conclusion.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "I cannot honestly conclude without first inspecting, measuring, probing, and testing a bounded scratch repair for face:fffb869cac894ccb.",
+    "region": 5,
+    "seconds": 1.759,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; I cannot honestly conclude without first inspecting, measuring, probing, and testing a bounded scratch repair for face:fffb869cac894ccb.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "No inspection, measurements, verification probe, or scratch-copy edit has been performed, so I cannot support a bounded repair or a mesher-side claim for the two investigated face fingerprints.",
+    "region": 6,
+    "seconds": 1.911,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; No inspection, measurements, verification probe, or scratch-copy edit has been performed, so I cannot support a bounded repair or a mesher-side claim for the two investigated face fingerprints.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "No inspection, measurement, verification probe, or scratch-copy edit has been performed for face:b4f1ccd068f3395d, so I cannot support a bounded repair or a mesher-side claim.",
+    "region": 7,
+    "seconds": 2.028,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; No inspection, measurement, verification probe, or scratch-copy edit has been performed for face:b4f1ccd068f3395d, so I cannot support a bounded repair or a mesher-side claim.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "No inspection, measurement, verification probe, or scratch-copy edit has been performed, so I cannot support a bounded repair or a mesher-side claim for face:dcb360da59453423.",
+    "region": 8,
+    "seconds": 2.324,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; No inspection, measurement, verification probe, or scratch-copy edit has been performed, so I cannot support a bounded repair or a mesher-side claim for face:dcb360da59453423.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "No region inspection, measurements, verification probe, or scratch-copy edit has been performed, so I cannot support a bounded repair claim.",
+    "region": 9,
+    "seconds": 2.142,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; No region inspection, measurements, verification probe, or scratch-copy edit has been performed, so I cannot support a bounded repair claim.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "budget_spent",
+    "form": "",
+    "model_calls": 1,
+    "reason": "the model did not conclude when there was only proof time left",
+    "region": 11,
+    "seconds": 7.283,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "budget_spent; the model did not conclude when there was only proof time left; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "No inspection, measurements, verification probes, or scratch-copy edits were performed, so I cannot support a bounded repair or a mesher-side claim.",
+    "region": 12,
+    "seconds": 1.764,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; No inspection, measurements, verification probes, or scratch-copy edits were performed, so I cannot support a bounded repair or a mesher-side claim.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "No inspection, measurements, verification probe, or scratch-copy edit has been performed, so I cannot support a bounded repair or a mesher-side claim for the four supplied face fingerprints.",
+    "region": 13,
+    "seconds": 1.958,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; No inspection, measurements, verification probe, or scratch-copy edit has been performed, so I cannot support a bounded repair or a mesher-side claim for the four supplied face fingerprints.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "budget_spent",
+    "form": "",
+    "model_calls": 1,
+    "reason": "the model did not conclude when there was only proof time left",
+    "region": 14,
+    "seconds": 15.241,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "budget_spent; the model did not conclude when there was only proof time left; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "No inspection, measurement, verification, or scratch-copy edit was performed, so I cannot support a bounded repair or a mesher-side claim for face:959f1e103e715744.",
+    "region": 15,
+    "seconds": 1.911,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; No inspection, measurement, verification, or scratch-copy edit was performed, so I cannot support a bounded repair or a mesher-side claim for face:959f1e103e715744.; concluded escalate; no edit tried"
+   }
+  ]
+ },
+ {
+  "ends": {},
+  "file": "00522328_c5b8a41d835248fcc384b8ed_step_005.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {},
+  "file": "00529552_053f6effb2ee7c0e5a6baee0_step_000.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {
+   "concluded": 4
+  },
+  "file": "00542627_58a873eb87ec1710328cbe0e_step_000.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "refused",
+  "regions": [
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "declined:not_small (a targeted edge is not, and is beside no face under, the 0.0645138 mm2 sliver threshold)": 1,
+      "target_remains": 2
+     },
+     "tried": 3
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 8,
+    "reason": "The part passes kernel validation and the scoped surface probe with unchanged topology, while the located zero-length edge remains after fix_small_edges and fix_shape_global both target it but roll ba...",
+    "region": 0,
+    "seconds": 38.587,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The part passes kernel validation and the scoped surface probe with unchanged topology, while the located zero-length edge remains after fix_small_edges and fix_shape_global both target it but roll ba...; concluded mesher_side; no edit kept (declined:not_small (a targeted edge is not, and is beside no face under, the 0.0645138 mm2 sliver threshold) x1, target_remains x2)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "declined:not_isolated (no target face resolves in this shape)": 1,
+      "declined:not_small (a targeted edge is not, and is beside no face under, the 0.0645138 mm2 sliver threshold)": 1,
+      "declined:the targeted body already has a solid to lose": 1,
+      "target_remains": 3
+     },
+     "tried": 6
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 7,
+    "reason": "The located zero-length edge remains after all six attempted catalogue repairs; every edit rolled back or was declined, and no bounded repair was kept. Kernel and scoped surface checks pass, but the d...",
+    "region": 1,
+    "seconds": 26.921,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The located zero-length edge remains after all six attempted catalogue repairs; every edit rolled back or was declined, and no bounded repair was kept. Kernel and scoped surface checks pass, but the d...; concluded escalate; no edit kept (declined:not_isolated (no target face resolves in this shape) x1, declined:not_small (a targeted edge is not, and is beside no face under, the 0.06451...(+106 chars)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "declined:not_isolated (no target face resolves in this shape)": 1,
+      "declined:not_small (a targeted edge is not, and is beside no face under, the 0.0645138 mm2 sliver threshold)": 1,
+      "target_remains": 3
+     },
+     "tried": 5
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 8,
+    "reason": "The part is kernel-valid and the region-scoped surface probe passed. The located zero-length edge remains a warning, but five scratch-copy repair attempts either left it unchanged or were inapplicable...",
+    "region": 2,
+    "seconds": 21.057,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The part is kernel-valid and the region-scoped surface probe passed. The located zero-length edge remains a warning, but five scratch-copy repair attempts either left it unchanged or were inapplicable...; concluded mesher_side; no edit kept (declined:not_isolated (no target face resolves in this shape) x1, declined:not_small (a targeted edge is not, and is beside no face under, the 0.06...(+50 chars)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "declined:not_isolated (no target face resolves in this shape)": 1,
+      "declined:not_small (a targeted edge is not, and is beside no face under, the 0.0645138 mm2 sliver threshold)": 1,
+      "target_remains": 3
+     },
+     "tried": 5
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 9,
+    "reason": "The part passes kernel validity and the region-scoped surface probe with no defects. The reported zero-length edge is a warning only, and five attempted geometry repairs all rolled back because the ta...",
+    "region": 3,
+    "seconds": 21.445,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The part passes kernel validity and the region-scoped surface probe with no defects. The reported zero-length edge is a warning only, and five attempted geometry repairs all rolled back because the ta...; concluded mesher_side; no edit kept (declined:not_isolated (no target face resolves in this shape) x1, declined:not_small (a targeted edge is not, and is beside no face under, the 0.06...(+50 chars)"
+   }
+  ]
+ },
+ {
+  "ends": {
+   "concluded": 5
+  },
+  "file": "00552853_c115c22509ef9b6f4e8b50e2_step_000.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "refused",
+  "regions": [
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "declined:not_isolated (the analysis shows no crossing among the targets)": 1,
+      "target_remains": 2
+     },
+     "tried": 3
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 7,
+    "reason": "The region is kernel-valid and passes both tier-0 whole-part and tier-1 region surface probes. Both reported faces are coincident planar faces with identical measured area and bounds, and the targeted...",
+    "region": 0,
+    "seconds": 42.599,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The region is kernel-valid and passes both tier-0 whole-part and tier-1 region surface probes. Both reported faces are coincident planar faces with identical measured area and bounds, and the targeted...; concluded mesher_side; no edit kept (declined:not_isolated (the analysis shows no crossing among the targets) x1, target_remains x2)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "declined:not_isolated (the analysis shows no crossing among the targets)": 1
+     },
+     "tried": 1
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 5,
+    "reason": "The located pair consists of coincident planar faces with zero measured separation, but kernel validation, scoped surface probing, whole-part meshing, and tolerant-mesh routing all pass. The only appl...",
+    "region": 2,
+    "seconds": 19.59,
+    "tier": "cheap",
+    "tool_calls": 8,
+    "why_no_package": "concluded; The located pair consists of coincident planar faces with zero measured separation, but kernel validation, scoped surface probing, whole-part meshing, and tolerant-mesh routing all pass. The only appl...; concluded mesher_side; no edit kept (declined:not_isolated (the analysis shows no crossing among the targets) x1)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "declined:not_isolated (the analysis shows no crossing among the targets)": 1,
+      "target_remains": 1
+     },
+     "tried": 2
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 8,
+    "reason": "The region's kernel validity check (tier 0) and scoped surface probe (tier 1) both passed with no defects. Both reported planar faces have matching area and bounds, and the only targeted healing opera...",
+    "region": 4,
+    "seconds": 41.428,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The region's kernel validity check (tier 0) and scoped surface probe (tier 1) both passed with no defects. Both reported planar faces have matching area and bounds, and the only targeted healing opera...; concluded mesher_side; no edit kept (declined:not_isolated (the analysis shows no crossing among the targets) x1, target_remains x1)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "target_remains": 2
+     },
+     "tried": 2
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 7,
+    "reason": "The region geometry passes kernel validation, the scoped tier-1 surface probe, and the whole-part tier-2 mesh probe. Both zero-length warning edges remain after targeted scratch repairs, which were ro...",
+    "region": 1,
+    "seconds": 14.821,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The region geometry passes kernel validation, the scoped tier-1 surface probe, and the whole-part tier-2 mesh probe. Both zero-length warning edges remain after targeted scratch repairs, which were ro...; concluded mesher_side; no edit kept (target_remains x2)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "target_remains": 3
+     },
+     "tried": 3
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 6,
+    "reason": "The located zero-length edges are coincident, but kernel validity and the region-scoped surface probe both pass with no defects. Two targeted fix_small_edges attempts and a global healing attempt left...",
+    "region": 3,
+    "seconds": 35.933,
+    "tier": "cheap",
+    "tool_calls": 8,
+    "why_no_package": "concluded; The located zero-length edges are coincident, but kernel validity and the region-scoped surface probe both pass with no defects. Two targeted fix_small_edges attempts and a global healing attempt left...; concluded mesher_side; no edit kept (target_remains x3)"
+   }
+  ]
+ },
+ {
+  "ends": {},
+  "file": "00554944_3c96465a5cafc90d307b8bf1_step_000.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {},
+  "file": "00560549_a2c779afc5e258a955a67f92_step_000.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {},
+  "file": "00565192_58b2a57a41e3250fe21ee0ba_step_000.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {
+   "concluded": 1
+  },
+  "file": "00591591_fea9cf6e8da1b878be43a67f_step_000.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "refused",
+  "regions": [
+   {
+    "edits": {
+     "kept": 1,
+     "rolled_back": {
+      "declined:too_large (span ratio 0.8935)": 1
+     },
+     "tried": 2
+    },
+    "end": "concluded",
+    "form": "package",
+    "model_calls": 6,
+    "reason": "",
+    "region": 0,
+    "seconds": 19.459,
+    "tier": "cheap",
+    "tool_calls": 9,
+    "why_no_package": ""
+   }
+  ]
+ },
+ {
+  "ends": {},
+  "file": "00594705_58bf00860e77410f785c00a9_step_057.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {},
+  "file": "00597851_54911a92f479626781c654b3_step_000.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {},
+  "file": "00602867_58c1a27caad5b80f7bffe02d_step_027.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {},
+  "file": "00608297_640a22e0f2c2dcf0f46692c7_step_000.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {},
+  "file": "00614313_760137e15b9b924e8339e428_step_003.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {},
+  "file": "00511871_d127f73e60f0b1d1a1f0553d_step_008.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {},
+  "file": "00513166_589af7a315a8541030f8f61d_step_012.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {},
+  "file": "00519119_589d778bdd79ff0fc4119481_step_005.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {
+   "concluded": 6,
+   "skipped": 2
+  },
+  "file": "00525151_58a0c532f0a1c50ff6ec6890_step_069.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "refused",
+  "regions": [
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "cap:the run moved the part's overall size by 0.00101 of its original diagonal, over the 0.001 cap": 1,
+      "declined:not_isolated (the analysis shows no crossing among the targets)": 1,
+      "declined:the targeted body already has a solid to lose": 1,
+      "target_remains": 3
+     },
+     "tried": 6
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 9,
+    "reason": "The located planar face is geometrically valid: kernel validation and the region-scoped surface probe both passed, with normal tolerance 1e-7 mm. All six attempted scratch repairs either left the sliv...",
+    "region": 0,
+    "seconds": 25.923,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The located planar face is geometrically valid: kernel validation and the region-scoped surface probe both passed, with normal tolerance 1e-7 mm. All six attempted scratch repairs either left the sliv...; concluded mesher_side; no edit kept (cap:the run moved the part's overall size by 0.00101 of its original diagonal, over the 0.001 cap x1, declined:not_isolated (the analysis shows no ...(+109 chars)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "cap:the run moved the part's overall size by 0.00101 of its original diagonal, over the 0.001 cap": 2,
+      "target_remains": 1
+     },
+     "tried": 3
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 8,
+    "reason": "The region and whole part pass kernel, scoped surface, and whole-part mesh probes with zero reported defects. All four located faces are valid, nonperiodic, single-solid faces with tolerances of 1e-7...",
+    "region": 1,
+    "seconds": 20.593,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The region and whole part pass kernel, scoped surface, and whole-part mesh probes with zero reported defects. All four located faces are valid, nonperiodic, single-solid faces with tolerances of 1e-7...; concluded mesher_side; no edit kept (cap:the run moved the part's overall size by 0.00101 of its original diagonal, over the 0.001 cap x2, target_remains x1)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "cap:the run moved the part's overall size by 0.00101 of its original diagonal, over the 0.001 cap": 4,
+      "target_remains": 2
+     },
+     "tried": 6
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 11,
+    "reason": "The region-scoped surface probe passed with no defects. All attempted repairs either had no effect or were rolled back because they exceeded the movement cap; therefore no bounded geometry repair is s...",
+    "region": 2,
+    "seconds": 25.508,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The region-scoped surface probe passed with no defects. All attempted repairs either had no effect or were rolled back because they exceeded the movement cap; therefore no bounded geometry repair is s...; concluded mesher_side; no edit kept (cap:the run moved the part's overall size by 0.00101 of its original diagonal, over the 0.001 cap x4, target_remains x2)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "cap:the run moved the part's overall size by 0.00101 of its original diagonal, over the 0.001 cap": 1,
+      "declined:not_isolated (the analysis shows no crossing among the targets)": 1,
+      "target_remains": 2
+     },
+     "tried": 4
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 9,
+    "reason": "The located face is a small sliver (0.137637 mm2), while kernel validity and the scoped surface probe both pass. The attempted small-face repair exceeded the movement cap (measured area delta 1.532844...",
+    "region": 3,
+    "seconds": 24.582,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The located face is a small sliver (0.137637 mm2), while kernel validity and the scoped surface probe both pass. The attempted small-face repair exceeded the movement cap (measured area delta 1.532844...; concluded escalate; no edit kept (cap:the run moved the part's overall size by 0.00101 of its original diagonal, over the 0.001 cap x1, declined:not_isolated (the analysis shows no cro...(+47 chars)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "cap:the run moved the part's overall size by 0.00101 of its original diagonal, over the 0.001 cap": 2,
+      "target_remains": 2
+     },
+     "tried": 4
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 7,
+    "reason": "The region and whole part pass kernel validity (tier 0) and the scoped surface probe (tier 1), with valid topology and tolerances. The three located items are only small-face warnings; attempted repai...",
+    "region": 4,
+    "seconds": 20.96,
+    "tier": "cheap",
+    "tool_calls": 8,
+    "why_no_package": "concluded; The region and whole part pass kernel validity (tier 0) and the scoped surface probe (tier 1), with valid topology and tolerances. The three located items are only small-face warnings; attempted repai...; concluded mesher_side; no edit kept (cap:the run moved the part's overall size by 0.00101 of its original diagonal, over the 0.001 cap x2, target_remains x2)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 4,
+    "reason": "Kernel validity and region surface probes both pass, and all four located faces are valid bounded faces with normal tolerances; only analyzer sliver warnings remain, with no demonstrated geometric def...",
+    "region": 5,
+    "seconds": 10.566,
+    "tier": "cheap",
+    "tool_calls": 4,
+    "why_no_package": "concluded; Kernel validity and region surface probes both pass, and all four located faces are valid bounded faces with normal tolerances; only analyzer sliver warnings remain, with no demonstrated geometric def...; concluded mesher_side; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "skipped",
+    "form": "",
+    "model_calls": 0,
+    "reason": "the run's model calls are spent (CAD_REPAIR_INVESTIGATOR_MODEL_CALLS_MAX)",
+    "region": 6,
+    "seconds": 0.0,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "skipped; the run's model calls are spent (CAD_REPAIR_INVESTIGATOR_MODEL_CALLS_MAX); no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "skipped",
+    "form": "",
+    "model_calls": 0,
+    "reason": "the run's model calls are spent (CAD_REPAIR_INVESTIGATOR_MODEL_CALLS_MAX)",
+    "region": 7,
+    "seconds": 0.0,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "skipped; the run's model calls are spent (CAD_REPAIR_INVESTIGATOR_MODEL_CALLS_MAX); no edit tried"
+   }
+  ]
+ },
+ {
+  "ends": {},
+  "file": "00529063_58a2b165f9c56c0fcc313b3b_step_011.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {},
+  "file": "00530136_1f63a3aece016ac820b072bc_step_010.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {
+   "concluded": 1
+  },
+  "file": "00544361_513e1fdb07fba9604818e0f8_step_000.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "refused",
+  "regions": [
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "declined:not_resolved (the target face is not in this shape)": 1,
+      "declined:too_large (span ratio 0.8581)": 2,
+      "new_defect": 1,
+      "target_remains": 2
+     },
+     "tried": 6
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 9,
+    "reason": "The kernel validity check passed with valid=true and the scoped surface probe also passed with no defects. All six permitted scratch-copy repairs either declined, had no effect, left the target, or in...",
+    "region": 0,
+    "seconds": 19.538,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The kernel validity check passed with valid=true and the scoped surface probe also passed with no defects. All six permitted scratch-copy repairs either declined, had no effect, left the target, or in...; concluded mesher_side; no edit kept (declined:not_resolved (the target face is not in this shape) x1, declined:too_large (span ratio 0.8581) x2, new_defect x1, target_remains x2)"
+   }
+  ]
+ },
+ {
+  "ends": {
+   "concluded": 16,
+   "runaway": 1,
+   "skipped": 7
+  },
+  "file": "00547816_58ab1f7d7d8acd0fec43631a_step_036.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "refused",
+  "regions": [
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "declined:not_isolated (no target face resolves in this shape)": 1,
+      "declined:not_small (a targeted edge is not, and is beside no face under, the 0.553549 mm2 sliver threshold)": 1,
+      "target_remains": 2
+     },
+     "tried": 4
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 9,
+    "reason": "Kernel validity and the scoped surface probe both passed, with no other geometric defects found. All attempted geometric repairs were rolled back because the zero-length target edge remained unchanged...",
+    "region": 0,
+    "seconds": 31.279,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; Kernel validity and the scoped surface probe both passed, with no other geometric defects found. All attempted geometric repairs were rolled back because the zero-length target edge remained unchanged...; concluded mesher_side; no edit kept (declined:not_isolated (no target face resolves in this shape) x1, declined:not_small (a targeted edge is not, and is beside no face under, the 0.55...(+49 chars)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "declined:not_isolated (no target face resolves in this shape)": 1,
+      "declined:not_small (a targeted edge is not, and is beside no face under, the 0.553549 mm2 sliver threshold)": 1,
+      "target_remains": 3
+     },
+     "tried": 5
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 8,
+    "reason": "The region passes kernel validity (tier 0) and the scoped surface probe (tier 1), with a valid single solid and no detected geometric defects beyond the zero-length warning edge. All five attempted re...",
+    "region": 1,
+    "seconds": 31.908,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The region passes kernel validity (tier 0) and the scoped surface probe (tier 1), with a valid single solid and no detected geometric defects beyond the zero-length warning edge. All five attempted re...; concluded mesher_side; no edit kept (declined:not_isolated (no target face resolves in this shape) x1, declined:not_small (a targeted edge is not, and is beside no face under, the 0.55...(+49 chars)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "cap:the operation turned a valid shape into an invalid one": 1,
+      "target_remains": 3
+     },
+     "tried": 4
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 9,
+    "reason": "The located cylindrical face is valid: kernel tier 0 and region surface tier 1 both passed, with 1e-7 mm tolerance and no reported geometric defects. Rebuild, global healing, and small-edge repair lef...",
+    "region": 2,
+    "seconds": 31.129,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The located cylindrical face is valid: kernel tier 0 and region surface tier 1 both passed, with 1e-7 mm tolerance and no reported geometric defects. Rebuild, global healing, and small-edge repair lef...; concluded mesher_side; no edit kept (cap:the operation turned a valid shape into an invalid one x1, target_remains x3)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "cap:the operation turned a valid shape into an invalid one": 1
+     },
+     "tried": 1
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 6,
+    "reason": "The located cylindrical sliver is geometrically valid: kernel validation and the region-scoped surface probe both passed. The only defect is a small-face warning, and the available fix_small_faces att...",
+    "region": 3,
+    "seconds": 14.735,
+    "tier": "cheap",
+    "tool_calls": 7,
+    "why_no_package": "concluded; The located cylindrical sliver is geometrically valid: kernel validation and the region-scoped surface probe both passed. The only defect is a small-face warning, and the available fix_small_faces att...; concluded mesher_side; no edit kept (cap:the operation turned a valid shape into an invalid one x1)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "runaway",
+    "form": "",
+    "model_calls": 4,
+    "reason": "3 replies in a row were refused",
+    "region": 4,
+    "seconds": 7.435,
+    "tier": "cheap",
+    "tool_calls": 1,
+    "why_no_package": "runaway; 3 replies in a row were refused; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "No inspection, measurements, verification probes, or scratch-copy edit results are available for region 5, so I cannot support a bounded repair or a mesher-side claim.",
+    "region": 5,
+    "seconds": 1.755,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; No inspection, measurements, verification probes, or scratch-copy edit results are available for region 5, so I cannot support a bounded repair or a mesher-side claim.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "I cannot support a bounded repair or mesher-side conclusion without inspecting, measuring, probing, and testing the located defect edge:c8be00e094412d73.",
+    "region": 6,
+    "seconds": 1.97,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; I cannot support a bounded repair or mesher-side conclusion without inspecting, measuring, probing, and testing the located defect edge:c8be00e094412d73.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "No inspection, measurements, verification probes, or scratch-copy repair attempt were performed, so I cannot support a bounded repair claim for edge:5cd3e1310eef7f14.",
+    "region": 7,
+    "seconds": 1.885,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; No inspection, measurements, verification probes, or scratch-copy repair attempt were performed, so I cannot support a bounded repair claim for edge:5cd3e1310eef7f14.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "No region inspection, measurements, verification probe, or scratch-copy repair attempt has been performed, so I cannot support a bounded repair or a mesher-side claim for edge:479b587f10239a09.",
+    "region": 8,
+    "seconds": 2.107,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; No region inspection, measurements, verification probe, or scratch-copy repair attempt has been performed, so I cannot support a bounded repair or a mesher-side claim for edge:479b587f10239a09.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "The region has not been inspected, measured, or tested, so I cannot support a bounded repair claim.",
+    "region": 9,
+    "seconds": 1.808,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; The region has not been inspected, measured, or tested, so I cannot support a bounded repair claim.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "No inspection, measurement, verification probe, or scratch-copy edit has been performed, so I cannot support a bounded repair claim for edge:206f1be852462f3f.",
+    "region": 10,
+    "seconds": 1.58,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; No inspection, measurement, verification probe, or scratch-copy edit has been performed, so I cannot support a bounded repair claim for edge:206f1be852462f3f.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "No region inspection, measurements, verification probe, or scratch-copy edit has been performed, so I cannot support a bounded repair or a mesher-side claim.",
+    "region": 11,
+    "seconds": 1.297,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; No region inspection, measurements, verification probe, or scratch-copy edit has been performed, so I cannot support a bounded repair or a mesher-side claim.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "No inspection, measurement, verification probe, or scratch-copy edit has been performed, so I cannot support a bounded repair or honestly classify this region as a mesher-side problem.",
+    "region": 12,
+    "seconds": 1.938,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; No inspection, measurement, verification probe, or scratch-copy edit has been performed, so I cannot support a bounded repair or honestly classify this region as a mesher-side problem.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "No inspection, measurements, verification probes, or scratch-copy edit results are available for region 13, so I cannot support a bounded repair or a mesher-side claim.",
+    "region": 13,
+    "seconds": 1.587,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; No inspection, measurements, verification probes, or scratch-copy edit results are available for region 13, so I cannot support a bounded repair or a mesher-side claim.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "No inspection, measurement, verification probe, or scratch-copy edit has been performed, so I cannot support a bounded repair or a mesher-side claim for edge:c977fadc33fc55a6.",
+    "region": 14,
+    "seconds": 2.328,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; No inspection, measurement, verification probe, or scratch-copy edit has been performed, so I cannot support a bounded repair or a mesher-side claim for edge:c977fadc33fc55a6.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "No region inspection, measurements, verification probe, or scratch-copy edit has been performed, so I cannot support a bounded repair or a mesher-side claim.",
+    "region": 15,
+    "seconds": 1.711,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; No region inspection, measurements, verification probe, or scratch-copy edit has been performed, so I cannot support a bounded repair or a mesher-side claim.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "No inspection, measurements, verification probe, or scratch-copy edit was performed, so I cannot support a bounded repair or a mesher-side claim for edge:e9eca40dd7c3e0eb.",
+    "region": 16,
+    "seconds": 1.829,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; No inspection, measurements, verification probe, or scratch-copy edit was performed, so I cannot support a bounded repair or a mesher-side claim for edge:e9eca40dd7c3e0eb.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "skipped",
+    "form": "",
+    "model_calls": 0,
+    "reason": "the run's model calls are spent (CAD_REPAIR_INVESTIGATOR_MODEL_CALLS_MAX)",
+    "region": 17,
+    "seconds": 0.0,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "skipped; the run's model calls are spent (CAD_REPAIR_INVESTIGATOR_MODEL_CALLS_MAX); no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "skipped",
+    "form": "",
+    "model_calls": 0,
+    "reason": "the run's model calls are spent (CAD_REPAIR_INVESTIGATOR_MODEL_CALLS_MAX)",
+    "region": 18,
+    "seconds": 0.0,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "skipped; the run's model calls are spent (CAD_REPAIR_INVESTIGATOR_MODEL_CALLS_MAX); no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "skipped",
+    "form": "",
+    "model_calls": 0,
+    "reason": "the run's model calls are spent (CAD_REPAIR_INVESTIGATOR_MODEL_CALLS_MAX)",
+    "region": 19,
+    "seconds": 0.0,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "skipped; the run's model calls are spent (CAD_REPAIR_INVESTIGATOR_MODEL_CALLS_MAX); no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "skipped",
+    "form": "",
+    "model_calls": 0,
+    "reason": "the run's model calls are spent (CAD_REPAIR_INVESTIGATOR_MODEL_CALLS_MAX)",
+    "region": 20,
+    "seconds": 0.0,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "skipped; the run's model calls are spent (CAD_REPAIR_INVESTIGATOR_MODEL_CALLS_MAX); no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "skipped",
+    "form": "",
+    "model_calls": 0,
+    "reason": "the run's model calls are spent (CAD_REPAIR_INVESTIGATOR_MODEL_CALLS_MAX)",
+    "region": 21,
+    "seconds": 0.0,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "skipped; the run's model calls are spent (CAD_REPAIR_INVESTIGATOR_MODEL_CALLS_MAX); no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "skipped",
+    "form": "",
+    "model_calls": 0,
+    "reason": "the run's model calls are spent (CAD_REPAIR_INVESTIGATOR_MODEL_CALLS_MAX)",
+    "region": 22,
+    "seconds": 0.0,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "skipped; the run's model calls are spent (CAD_REPAIR_INVESTIGATOR_MODEL_CALLS_MAX); no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "skipped",
+    "form": "",
+    "model_calls": 0,
+    "reason": "the run's model calls are spent (CAD_REPAIR_INVESTIGATOR_MODEL_CALLS_MAX)",
+    "region": 23,
+    "seconds": 0.0,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "skipped; the run's model calls are spent (CAD_REPAIR_INVESTIGATOR_MODEL_CALLS_MAX); no edit tried"
+   }
+  ]
+ },
+ {
+  "ends": {
+   "concluded": 3
+  },
+  "file": "00549815_58abf22eb689510fc5a8a42e_step_057.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "refused",
+  "regions": [
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "cap:the operation turned a valid shape into an invalid one": 1,
+      "declined:the targeted body already has a solid to lose": 1,
+      "target_remains": 3
+     },
+     "tried": 5
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 9,
+    "reason": "The located face is a small planar sliver (0.0373263889 mm2), but kernel validation and the scoped surface probe both pass. Multiple bounded repair attempts either left the fingerprint unchanged or ro...",
+    "region": 0,
+    "seconds": 28.648,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The located face is a small planar sliver (0.0373263889 mm2), but kernel validation and the scoped surface probe both pass. Multiple bounded repair attempts either left the fingerprint unchanged or ro...; concluded mesher_side; no edit kept (cap:the operation turned a valid shape into an invalid one x1, declined:the targeted body already has a solid to lose x1, target_remains x3)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "cap:the operation turned a valid shape into an invalid one": 1,
+      "declined:the targeted body already has a solid to lose": 1,
+      "target_remains": 3
+     },
+     "tried": 5
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 8,
+    "reason": "The located defect is a 0.027296 mm\u00b2 planar sliver face, but kernel, region surface, and whole-part mesh probes all pass. Five scratch repair attempts were tried; none cleared the fingerprint, and the...",
+    "region": 1,
+    "seconds": 29.686,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The located defect is a 0.027296 mm\u00b2 planar sliver face, but kernel, region surface, and whole-part mesh probes all pass. Five scratch repair attempts were tried; none cleared the fingerprint, and the...; concluded escalate; no edit kept (cap:the operation turned a valid shape into an invalid one x1, declined:the targeted body already has a solid to lose x1, target_remains x3)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "cap:the operation turned a valid shape into an invalid one": 1,
+      "target_remains": 2
+     },
+     "tried": 3
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 8,
+    "reason": "The located face is a planar 0.015625 mm2 sliver warning, but the kernel check, region surface probe, and whole-part mesh probe all passed. All attempted repairs were rolled back: fix_small_faces made...",
+    "region": 2,
+    "seconds": 23.915,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The located face is a planar 0.015625 mm2 sliver warning, but the kernel check, region surface probe, and whole-part mesh probe all passed. All attempted repairs were rolled back: fix_small_faces made...; concluded mesher_side; no edit kept (cap:the operation turned a valid shape into an invalid one x1, target_remains x2)"
+   }
+  ]
+ },
+ {
+  "ends": {},
+  "file": "00555322_58ade3be95b047102fdbb8e2_step_000.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {},
+  "file": "00564237_58b1ef5c3099da0f80a712a7_step_017.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {},
+  "file": "00571784_58b597aedbdd800f7e6e9657_step_001.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {},
+  "file": "00594260_5901718fb4525d2cdec5fe58_step_000.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {},
+  "file": "00615026_be9146a702e912689d887c73_step_002.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {},
+  "file": "00619340_74014a204cdbb135e807b75d_step_001.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {
+   "concluded": 1
+  },
+  "file": "00511809_8dd40abaa1cd649cca2577c2_step_013.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "refused",
+  "regions": [
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "declined:not_isolated (no target face resolves in this shape)": 1,
+      "declined:not_small (a targeted edge is not, and is beside no face under, the 0.00619908 mm2 sliver threshold)": 1,
+      "target_remains": 3
+     },
+     "tried": 5
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 9,
+    "reason": "The located zero-length edge remains after all applicable scratch-copy repair attempts (fix_small_edges, fix_shape_global, fix_small_faces, fix_face_boundary, and heal_self_intersections). Kernel and...",
+    "region": 0,
+    "seconds": 23.615,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The located zero-length edge remains after all applicable scratch-copy repair attempts (fix_small_edges, fix_shape_global, fix_small_faces, fix_face_boundary, and heal_self_intersections). Kernel and...; concluded escalate; no edit kept (declined:not_isolated (no target face resolves in this shape) x1, declined:not_small (a targeted edge is not, and is beside no face under, the 0.006199...(+47 chars)"
+   }
+  ]
+ },
+ {
+  "ends": {},
+  "file": "00517572_589cd3e3e1c77e0ffe31292e_step_000.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {
+   "concluded": 4
+  },
+  "file": "00527231_ee33de0ecdc97ca03cee35f4_step_001.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "refused",
+  "regions": [
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "target_remains": 4
+     },
+     "tried": 4
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 9,
+    "reason": "The located toroidal sliver face (face 63, area 0.00543904896 mm2) is only an analyzer warning: the region-scoped surface probe passed and the whole-part kernel validity probe passed. Four attempted r...",
+    "region": 0,
+    "seconds": 28.373,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The located toroidal sliver face (face 63, area 0.00543904896 mm2) is only an analyzer warning: the region-scoped surface probe passed and the whole-part kernel validity probe passed. Four attempted r...; concluded mesher_side; no edit kept (target_remains x4)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "target_remains": 1
+     },
+     "tried": 1
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 6,
+    "reason": "The geometry is kernel-valid and the scoped surface probe passes; both the whole-part mesh probe and tolerant-mesh routing pass. The only reported issue is a tiny toroidal sliver-face warning, and the...",
+    "region": 1,
+    "seconds": 36.252,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The geometry is kernel-valid and the scoped surface probe passes; both the whole-part mesh probe and tolerant-mesh routing pass. The only reported issue is a tiny toroidal sliver-face warning, and the...; concluded mesher_side; no edit kept (target_remains x1)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "target_remains": 3
+     },
+     "tried": 3
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 8,
+    "reason": "The region's sliver face is geometrically valid: kernel, scoped surface, and whole-part mesh probes all passed. Repair attempts did not clear the face; rebuild made zero measured movement, and small-f...",
+    "region": 2,
+    "seconds": 25.268,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The region's sliver face is geometrically valid: kernel, scoped surface, and whole-part mesh probes all passed. Repair attempts did not clear the face; rebuild made zero measured movement, and small-f...; concluded mesher_side; no edit kept (target_remains x3)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 3,
+    "reason": "The located face is a small toroidal sliver, but the geometry passes kernel validity, region surface probing, and whole-part mesh probing; no mesh failure is reproduced, so no bounded geometry repair...",
+    "region": 3,
+    "seconds": 8.478,
+    "tier": "cheap",
+    "tool_calls": 5,
+    "why_no_package": "concluded; The located face is a small toroidal sliver, but the geometry passes kernel validity, region surface probing, and whole-part mesh probing; no mesh failure is reproduced, so no bounded geometry repair...; concluded mesher_side; no edit tried"
+   }
+  ]
+ },
+ {
+  "ends": {},
+  "file": "00531428_775a82304a1c28eff4462339_step_000.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {},
+  "file": "00533277_5977d4d0500f387dcc0c2fee_step_000.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {},
+  "file": "00539108_71d733e39ea6799d6bcbd42c_step_000.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {},
+  "file": "00542208_5b06b45eb193301cb5387b94_step_003.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {},
+  "file": "00544510_c9147b8a70f4e3cb2fa45bed_step_000.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {},
+  "file": "00549776_58abf22eb689510fc5a8a42e_step_018.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {
+   "concluded": 1
+  },
+  "file": "00551954_58aca80c95b047102fd9a209_step_066.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "refused",
+  "regions": [
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "declined:not_small (a targeted edge is not, and is beside no face under, the 0.0053749 mm2 sliver threshold)": 1,
+      "declined:the targeted body already has a solid to lose": 1,
+      "target_remains": 3
+     },
+     "tried": 5
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 9,
+    "reason": "The part passes kernel validation (tier 0) and the scoped surface probe (tier 1), with one valid solid and no reported region defects beyond the zero-length warning edge. Five attempted repairs were e...",
+    "region": 0,
+    "seconds": 17.704,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The part passes kernel validation (tier 0) and the scoped surface probe (tier 1), with one valid solid and no reported region defects beyond the zero-length warning edge. Five attempted repairs were e...; concluded mesher_side; no edit kept (declined:not_small (a targeted edge is not, and is beside no face under, the 0.0053749 mm2 sliver threshold) x1, declined:the targeted body already...(+43 chars)"
+   }
+  ]
+ },
+ {
+  "ends": {},
+  "file": "00553421_58ad5b9e3d31d10fcab45654_step_047.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {},
+  "file": "00564817_43880a30ef145f7c4a96d979_step_000.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {},
+  "file": "00571001_58b542f6ee901110802a9533_step_000.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {
+   "concluded": 7,
+   "skipped": 5
+  },
+  "file": "00614204_19a2c877657141b8642cd25a_step_000.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "refused",
+  "regions": [
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "declined:swept_a_real_face (6 removed face(s) at or over the 0.0562463 mm2 sliver threshold)": 1,
+      "target_remains": 2
+     },
+     "tried": 3
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 9,
+    "reason": "The located region is kernel-valid and the scoped surface probe passes. Whole-part standard meshing passes, and the tolerant-mesh routing pass also passes. Repairs were not kept because fix_small_face...",
+    "region": 0,
+    "seconds": 33.52,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The located region is kernel-valid and the scoped surface probe passes. Whole-part standard meshing passes, and the tolerant-mesh routing pass also passes. Repairs were not kept because fix_small_face...; concluded mesher_side; no edit kept (declined:swept_a_real_face (6 removed face(s) at or over the 0.0562463 mm2 sliver threshold) x1, target_remains x2)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "declined:not_isolated (the analysis shows no crossing among the targets)": 1,
+      "declined:swept_a_real_face (6 removed face(s) at or over the 0.0562463 mm2 sliver threshold)": 1,
+      "target_remains": 2
+     },
+     "tried": 4
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 8,
+    "reason": "Kernel validity and the region-scoped surface probe both passed; the located issues are only a zero-length edge and a very small spherical face, with no boundary break or self-intersection found. All...",
+    "region": 1,
+    "seconds": 18.73,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; Kernel validity and the region-scoped surface probe both passed; the located issues are only a zero-length edge and a very small spherical face, with no boundary break or self-intersection found. All...; concluded mesher_side; no edit kept (declined:not_isolated (the analysis shows no crossing among the targets) x1, declined:swept_a_real_face (6 removed face(s) at or over the 0.0562463 ...(+44 chars)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "declined:not_isolated (the analysis shows no crossing among the targets)": 1,
+      "declined:swept_a_real_face (6 removed face(s) at or over the 0.0562463 mm2 sliver threshold)": 1,
+      "target_remains": 2
+     },
+     "tried": 4
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 9,
+    "reason": "The region and whole part pass kernel validity (tier 0) and the scoped surface probe (tier 1). The located defects are only a zero-length-edge and a tiny spherical sliver warning, with no open, crossi...",
+    "region": 2,
+    "seconds": 22.983,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The region and whole part pass kernel validity (tier 0) and the scoped surface probe (tier 1). The located defects are only a zero-length-edge and a tiny spherical sliver warning, with no open, crossi...; concluded mesher_side; no edit kept (declined:not_isolated (the analysis shows no crossing among the targets) x1, declined:swept_a_real_face (6 removed face(s) at or over the 0.0562463...(+45 chars)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "declined:swept_a_real_face (6 removed face(s) at or over the 0.0562463 mm2 sliver threshold)": 1,
+      "target_remains": 2
+     },
+     "tried": 3
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 8,
+    "reason": "The geometry is kernel-valid and both the region surface probe (tier 1) and whole-part mesh probe (tier 2) passed. The located zero-length edge and 0.0343 mm2 spherical sliver remain analyzer warnings...",
+    "region": 3,
+    "seconds": 19.669,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The geometry is kernel-valid and both the region surface probe (tier 1) and whole-part mesh probe (tier 2) passed. The located zero-length edge and 0.0343 mm2 spherical sliver remain analyzer warnings...; concluded mesher_side; no edit kept (declined:swept_a_real_face (6 removed face(s) at or over the 0.0562463 mm2 sliver threshold) x1, target_remains x2)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "declined:swept_a_real_face (6 removed face(s) at or over the 0.0562463 mm2 sliver threshold)": 1,
+      "target_remains": 2
+     },
+     "tried": 3
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 7,
+    "reason": "The current geometry passes kernel validation, the scoped surface probe, and the whole-part mesh probe. The located edge and face are only analyzer warnings; attempted small-edge repair was rolled bac...",
+    "region": 4,
+    "seconds": 17.512,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The current geometry passes kernel validation, the scoped surface probe, and the whole-part mesh probe. The located edge and face are only analyzer warnings; attempted small-edge repair was rolled bac...; concluded mesher_side; no edit kept (declined:swept_a_real_face (6 removed face(s) at or over the 0.0562463 mm2 sliver threshold) x1, target_remains x2)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "target_remains": 1
+     },
+     "tried": 1
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 4,
+    "reason": "The whole-part kernel check and region surface probe both passed with a valid single-solid shape, zero reported kernel defects, and unchanged topology. The only located issues are a zero-length edge a...",
+    "region": 5,
+    "seconds": 10.675,
+    "tier": "cheap",
+    "tool_calls": 6,
+    "why_no_package": "concluded; The whole-part kernel check and region surface probe both passed with a valid single-solid shape, zero reported kernel defects, and unchanged topology. The only located issues are a zero-length edge a...; concluded mesher_side; no edit kept (target_remains x1)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 3,
+    "reason": "Kernel validity and the region-scoped surface probe both pass with no defects; the located edge and face are analyzer warnings rather than confirmed geometry failures. No repair was kept, and a whole-...",
+    "region": 6,
+    "seconds": 7.318,
+    "tier": "cheap",
+    "tool_calls": 4,
+    "why_no_package": "concluded; Kernel validity and the region-scoped surface probe both pass with no defects; the located edge and face are analyzer warnings rather than confirmed geometry failures. No repair was kept, and a whole-...; concluded mesher_side; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "skipped",
+    "form": "",
+    "model_calls": 0,
+    "reason": "the run's model calls are spent (CAD_REPAIR_INVESTIGATOR_MODEL_CALLS_MAX)",
+    "region": 7,
+    "seconds": 0.0,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "skipped; the run's model calls are spent (CAD_REPAIR_INVESTIGATOR_MODEL_CALLS_MAX); no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "skipped",
+    "form": "",
+    "model_calls": 0,
+    "reason": "the run's model calls are spent (CAD_REPAIR_INVESTIGATOR_MODEL_CALLS_MAX)",
+    "region": 8,
+    "seconds": 0.0,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "skipped; the run's model calls are spent (CAD_REPAIR_INVESTIGATOR_MODEL_CALLS_MAX); no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "skipped",
+    "form": "",
+    "model_calls": 0,
+    "reason": "the run's model calls are spent (CAD_REPAIR_INVESTIGATOR_MODEL_CALLS_MAX)",
+    "region": 9,
+    "seconds": 0.0,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "skipped; the run's model calls are spent (CAD_REPAIR_INVESTIGATOR_MODEL_CALLS_MAX); no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "skipped",
+    "form": "",
+    "model_calls": 0,
+    "reason": "the run's model calls are spent (CAD_REPAIR_INVESTIGATOR_MODEL_CALLS_MAX)",
+    "region": 10,
+    "seconds": 0.0,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "skipped; the run's model calls are spent (CAD_REPAIR_INVESTIGATOR_MODEL_CALLS_MAX); no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "skipped",
+    "form": "",
+    "model_calls": 0,
+    "reason": "the run's model calls are spent (CAD_REPAIR_INVESTIGATOR_MODEL_CALLS_MAX)",
+    "region": 11,
+    "seconds": 0.0,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "skipped; the run's model calls are spent (CAD_REPAIR_INVESTIGATOR_MODEL_CALLS_MAX); no edit tried"
+   }
+  ]
+ },
+ {
+  "ends": {},
+  "file": "00512669_10140cd12f34df2bc69a73dc_step_003.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {},
+  "file": "00517694_15f8a0316623d4bd011db0c9_step_000.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {
+   "concluded": 1
+  },
+  "file": "00521046_589e2cfbdd79ff0fc41309a8_step_018.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "refused",
+  "regions": [
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "declined:not_isolated (no target face resolves in this shape)": 1,
+      "declined:not_small (a targeted edge is not, and is beside no face under, the 0.165355 mm2 sliver threshold)": 1,
+      "target_remains": 3
+     },
+     "tried": 5
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 9,
+    "reason": "The kernel validity check and region-scoped surface probe both passed, with one solid, one shell, and no geometric defects beyond the two zero-length warning edges. Multiple scratch repair attempts co...",
+    "region": 0,
+    "seconds": 23.394,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The kernel validity check and region-scoped surface probe both passed, with one solid, one shell, and no geometric defects beyond the two zero-length warning edges. Multiple scratch repair attempts co...; concluded mesher_side; no edit kept (declined:not_isolated (no target face resolves in this shape) x1, declined:not_small (a targeted edge is not, and is beside no face under, the 0.16...(+49 chars)"
+   }
+  ]
+ },
+ {
+  "ends": {},
+  "file": "00525940_dbd425c517afeb55a5ed1483_step_000.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {},
+  "file": "00528536_58a25c0cfb62730f86f38084_step_004.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {},
+  "file": "00537942_5601daef23ff229373d0de76_step_000.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {},
+  "file": "00565402_34507edc229bab03aa897698_step_010.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {},
+  "file": "00566501_3daa0f06888b329e557a6a76_step_000.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {},
+  "file": "00577110_2631e8e2604a8e6e1e7afe8e_step_004.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {
+   "concluded": 9,
+   "runaway": 1
+  },
+  "file": "00593948_6548393e7f8f92f6dbc79b3a_step_011.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "refused",
+  "regions": [
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "declined:not_isolated (the analysis shows no crossing among the targets)": 1,
+      "target_remains": 1
+     },
+     "tried": 2
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 6,
+    "reason": "The geometry passes kernel validation (tier 0) and the scoped surface probe (tier 1); both targeted planar faces have valid closed boundaries and identical coincident extents, while heal_self_intersec...",
+    "region": 0,
+    "seconds": 16.127,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The geometry passes kernel validation (tier 0) and the scoped surface probe (tier 1); both targeted planar faces have valid closed boundaries and identical coincident extents, while heal_self_intersec...; concluded mesher_side; no edit kept (declined:not_isolated (the analysis shows no crossing among the targets) x1, target_remains x1)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "declined:not_isolated (the analysis shows no crossing among the targets)": 1
+     },
+     "tried": 1
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 5,
+    "reason": "The kernel validity check, scoped surface probe, whole-part mesh probe, and tolerant-mesh routing pass all pass. The two reported planar faces have matching bounds and only a zero-distance coincidence...",
+    "region": 1,
+    "seconds": 34.535,
+    "tier": "cheap",
+    "tool_calls": 9,
+    "why_no_package": "concluded; The kernel validity check, scoped surface probe, whole-part mesh probe, and tolerant-mesh routing pass all pass. The two reported planar faces have matching bounds and only a zero-distance coincidence...; concluded mesher_side; no edit kept (declined:not_isolated (the analysis shows no crossing among the targets) x1)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "declined:not_isolated (no target face resolves in this shape)": 1,
+      "declined:not_small (a targeted edge is not, and is beside no face under, the 0.35036 mm2 sliver threshold)": 1,
+      "target_remains": 3
+     },
+     "tried": 5
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 7,
+    "reason": "The located zero-length small edge remains after all applicable attempted repairs (fix_small_edges, fix_shape_global, fix_face_boundary, heal_self_intersections, and fix_small_faces); each edit rolled...",
+    "region": 2,
+    "seconds": 18.651,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The located zero-length small edge remains after all applicable attempted repairs (fix_small_edges, fix_shape_global, fix_face_boundary, heal_self_intersections, and fix_small_faces); each edit rolled...; concluded escalate; no edit kept (declined:not_isolated (no target face resolves in this shape) x1, declined:not_small (a targeted edge is not, and is beside no face under, the 0.35036...(+45 chars)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "target_remains": 2
+     },
+     "tried": 2
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 6,
+    "reason": "The located zero-length edge remains after attempted fix_small_edges and fix_shape_global repairs, both rolled back because the target remained. Kernel and scoped surface probes passed, but no edit wa...",
+    "region": 3,
+    "seconds": 18.053,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The located zero-length edge remains after attempted fix_small_edges and fix_shape_global repairs, both rolled back because the target remained. Kernel and scoped surface probes passed, but no edit wa...; concluded escalate; no edit kept (target_remains x2)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "target_remains": 1
+     },
+     "tried": 1
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 5,
+    "reason": "Kernel validity and the region-scoped surface probe both passed with no defects. The only located issue is a zero-length warning edge; the prescribed fix_small_edges operation was attempted but rolled...",
+    "region": 4,
+    "seconds": 35.073,
+    "tier": "cheap",
+    "tool_calls": 7,
+    "why_no_package": "concluded; Kernel validity and the region-scoped surface probe both passed with no defects. The only located issue is a zero-length warning edge; the prescribed fix_small_edges operation was attempted but rolled...; concluded mesher_side; no edit kept (target_remains x1)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "target_remains": 1
+     },
+     "tried": 1
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 4,
+    "reason": "Kernel validity and the region-scoped surface probe both pass with no defects; the only finding is a zero-length warning edge, and the targeted fix_small_edges operation did not clear it and was rolle...",
+    "region": 5,
+    "seconds": 11.906,
+    "tier": "cheap",
+    "tool_calls": 6,
+    "why_no_package": "concluded; Kernel validity and the region-scoped surface probe both pass with no defects; the only finding is a zero-length warning edge, and the targeted fix_small_edges operation did not clear it and was rolle...; concluded mesher_side; no edit kept (target_remains x1)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "runaway",
+    "form": "",
+    "model_calls": 5,
+    "reason": "3 replies in a row were refused",
+    "region": 6,
+    "seconds": 9.199,
+    "tier": "cheap",
+    "tool_calls": 4,
+    "why_no_package": "runaway; 3 replies in a row were refused; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "No inspection, measurement, verification probe, or scratch-copy edit has been performed, so I cannot support a bounded repair claim for edge:ab2beff9f45cd31f.",
+    "region": 7,
+    "seconds": 1.635,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; No inspection, measurement, verification probe, or scratch-copy edit has been performed, so I cannot support a bounded repair claim for edge:ab2beff9f45cd31f.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "No inspection, measurement, verification, or scratch-copy edit has been performed, so I cannot support a bounded repair claim for edge:97e6ba25fd4204cf.",
+    "region": 8,
+    "seconds": 1.825,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; No inspection, measurement, verification, or scratch-copy edit has been performed, so I cannot support a bounded repair claim for edge:97e6ba25fd4204cf.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "The region has only been identified by fingerprint edge:9befb68bf9c32d05; no inspection, measurement, verification probe, or scratch-copy repair was performed, so I cannot support a bounded repair or...",
+    "region": 9,
+    "seconds": 2.326,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; The region has only been identified by fingerprint edge:9befb68bf9c32d05; no inspection, measurement, verification probe, or scratch-copy repair was performed, so I cannot support a bounded repair or...; concluded escalate; no edit tried"
+   }
+  ]
+ },
+ {
+  "ends": {},
+  "file": "00596045_67f2a8a93c425c312cf7c34a_step_005.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {},
+  "file": "00610472_01e224e3d4c8532fdd0da3bd_step_000.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {},
+  "file": "00619222_db55ffbacfc15b89a79bd201_step_000.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {},
+  "file": "00619642_9cc36429ef1714fc2f03bc77_step_000.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {
+   "budget_spent": 1,
+   "concluded": 6,
+   "skipped": 1
+  },
+  "file": "00519527_cdc574e675d693d545b04586_step_000.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "refused",
+  "regions": [
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "declined:not_small (a targeted edge is not, and is beside no face under, the 1.27417 mm2 sliver threshold)": 1,
+      "target_remains": 2
+     },
+     "tried": 3
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 8,
+    "reason": "The region passes kernel validation (tier 0) and the scoped surface probe (tier 1), with no defects reported by either. Two attempted repairs, fix_small_edges and fix_shape_global, both rolled back be...",
+    "region": 0,
+    "seconds": 17.128,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The region passes kernel validation (tier 0) and the scoped surface probe (tier 1), with no defects reported by either. Two attempted repairs, fix_small_edges and fix_shape_global, both rolled back be...; concluded mesher_side; no edit kept (declined:not_small (a targeted edge is not, and is beside no face under, the 1.27417 mm2 sliver threshold) x1, target_remains x2)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "declined:not_isolated (no target face resolves in this shape)": 1,
+      "declined:not_resolved (the target face is not in this shape)": 1,
+      "declined:not_small (a targeted edge is not, and is beside no face under, the 1.27417 mm2 sliver threshold)": 1,
+      "target_remains": 2
+     },
+     "tried": 5
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 8,
+    "reason": "Kernel validity and the region-scoped surface probe both pass; the only reported issue is a zero-length small-edge warning, and five applicable repair attempts were rolled back because the target rema...",
+    "region": 1,
+    "seconds": 19.875,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; Kernel validity and the region-scoped surface probe both pass; the only reported issue is a zero-length small-edge warning, and five applicable repair attempts were rolled back because the target rema...; concluded mesher_side; no edit kept (declined:not_isolated (no target face resolves in this shape) x1, declined:not_resolved (the target face is not in this shape) x1, declined:not_sma...(+113 chars)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "declined:not_isolated (no target face resolves in this shape)": 1,
+      "declined:not_resolved (the target face is not in this shape)": 1,
+      "declined:not_small (a targeted edge is not, and is beside no face under, the 1.27417 mm2 sliver threshold)": 1,
+      "target_remains": 2
+     },
+     "tried": 5
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 8,
+    "reason": "The region passes kernel validity (tier 0) and the scoped surface probe (tier 1), with no geometric defects reported beyond the zero-length warning edge. Multiple applicable scratch-copy repairs were...",
+    "region": 2,
+    "seconds": 18.108,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The region passes kernel validity (tier 0) and the scoped surface probe (tier 1), with no geometric defects reported beyond the zero-length warning edge. Multiple applicable scratch-copy repairs were...; concluded mesher_side; no edit kept (declined:not_isolated (no target face resolves in this shape) x1, declined:not_resolved (the target face is not in this shape) x1, declined:not_smal...(+112 chars)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "declined:not_isolated (no target face resolves in this shape)": 1,
+      "declined:not_small (a targeted edge is not, and is beside no face under, the 1.27417 mm2 sliver threshold)": 1,
+      "target_remains": 2
+     },
+     "tried": 4
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 7,
+    "reason": "The region is kernel-valid and passes the scoped surface probe, but the located zero-length edge remains after the only applicable repair attempt (fix_small_edges) and global healing; other attempted...",
+    "region": 3,
+    "seconds": 18.286,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The region is kernel-valid and passes the scoped surface probe, but the located zero-length edge remains after the only applicable repair attempt (fix_small_edges) and global healing; other attempted...; concluded escalate; no edit kept (declined:not_isolated (no target face resolves in this shape) x1, declined:not_small (a targeted edge is not, and is beside no face under, the 1.27417 ...(+44 chars)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "declined:not_isolated (no target face resolves in this shape)": 1,
+      "declined:not_small (a targeted edge is not, and is beside no face under, the 1.27417 mm2 sliver threshold)": 1,
+      "declined:the targeted body already has a solid to lose": 1,
+      "target_remains": 2
+     },
+     "tried": 5
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 8,
+    "reason": "The located zero-length edge edge:a82d80b31083133e persists after all applicable scratch-copy attempts; fix_small_edges and global healing both rolled back because the target remained, while small-fac...",
+    "region": 4,
+    "seconds": 20.342,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The located zero-length edge edge:a82d80b31083133e persists after all applicable scratch-copy attempts; fix_small_edges and global healing both rolled back because the target remained, while small-fac...; concluded escalate; no edit kept (declined:not_isolated (no target face resolves in this shape) x1, declined:not_small (a targeted edge is not, and is beside no face under, the 1.27417...(+104 chars)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "declined:not_small (a targeted edge is not, and is beside no face under, the 1.27417 mm2 sliver threshold)": 1,
+      "declined:the targeted body already has a solid to lose": 1,
+      "target_remains": 2
+     },
+     "tried": 4
+    },
+    "end": "budget_spent",
+    "form": "",
+    "model_calls": 8,
+    "reason": "the model did not conclude when there was only proof time left",
+    "region": 5,
+    "seconds": 44.012,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "budget_spent; the model did not conclude when there was only proof time left; no edit kept (declined:not_small (a targeted edge is not, and is beside no face under, the 1.27417 mm2 sliver threshold) x1, declined:the targeted body already has a solid to lose x1, target_remains x2)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "The region has not yet been inspected or measured, and no scratch-copy repair has been tested; I cannot support a bounded repair or a mesher-side claim.",
+    "region": 6,
+    "seconds": 2.327,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; The region has not yet been inspected or measured, and no scratch-copy repair has been tested; I cannot support a bounded repair or a mesher-side claim.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "skipped",
+    "form": "",
+    "model_calls": 0,
+    "reason": "the run's model calls are spent (CAD_REPAIR_INVESTIGATOR_MODEL_CALLS_MAX)",
+    "region": 7,
+    "seconds": 0.0,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "skipped; the run's model calls are spent (CAD_REPAIR_INVESTIGATOR_MODEL_CALLS_MAX); no edit tried"
+   }
+  ]
+ },
+ {
+  "ends": {},
+  "file": "00522985_b495b5916bf054cb88a74cf3_step_000.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {},
+  "file": "00533204_a6853c37cfed037925b1eb55_step_000.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {},
+  "file": "00539873_a5cf0b5ed57fc44ddd41df29_step_000.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {
+   "concluded": 30,
+   "skipped": 2
+  },
+  "file": "00553772_58ad871057e62e0fc3a203a3_step_031.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "refused",
+  "regions": [
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "target_remains": 1
+     },
+     "tried": 1
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 5,
+    "reason": "The kernel validity probe, scoped surface probe, whole-part mesh probe, and tolerant-mesh routing pass all passed. The only located issue is a 0.0025685 mm warning edge; the targeted fix_small_edges o...",
+    "region": 0,
+    "seconds": 45.573,
+    "tier": "cheap",
+    "tool_calls": 8,
+    "why_no_package": "concluded; The kernel validity probe, scoped surface probe, whole-part mesh probe, and tolerant-mesh routing pass all passed. The only located issue is a 0.0025685 mm warning edge; the targeted fix_small_edges o...; concluded mesher_side; no edit kept (target_remains x1)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "declined:not_isolated (no target face resolves in this shape)": 1,
+      "declined:not_small (a targeted edge is not, and is beside no face under, the 0.0133461 mm2 sliver threshold)": 1,
+      "target_remains": 3
+     },
+     "tried": 5
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 8,
+    "reason": "The region's only reported issue is a 0.002568504 mm small-edge warning, while kernel validity, scoped surface probing, and whole-part mesh probing all passed. Five attempted repairs were rolled back...",
+    "region": 1,
+    "seconds": 38.2,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The region's only reported issue is a 0.002568504 mm small-edge warning, while kernel validity, scoped surface probing, and whole-part mesh probing all passed. Five attempted repairs were rolled back...; concluded mesher_side; no edit kept (declined:not_isolated (no target face resolves in this shape) x1, declined:not_small (a targeted edge is not, and is beside no face under, the 0.013...(+49 chars)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "declined:not_small (a targeted edge is not, and is beside no face under, the 0.0133461 mm2 sliver threshold)": 1,
+      "target_remains": 2
+     },
+     "tried": 3
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 6,
+    "reason": "The located edge is a genuine 0.0025685 mm small-edge warning, but the available repairs (fix_small_edges and global healing) left it unchanged and rolled back; small-face repair was not applicable. K...",
+    "region": 2,
+    "seconds": 25.896,
+    "tier": "cheap",
+    "tool_calls": 8,
+    "why_no_package": "concluded; The located edge is a genuine 0.0025685 mm small-edge warning, but the available repairs (fix_small_edges and global healing) left it unchanged and rolled back; small-face repair was not applicable. K...; concluded escalate; no edit kept (declined:not_small (a targeted edge is not, and is beside no face under, the 0.0133461 mm2 sliver threshold) x1, target_remains x2)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 3,
+    "reason": "Kernel validation and the region-scoped surface probe both pass with no defects; the only finding is a 0.0025685 mm small-edge warning, so there is no measured geometry failure to repair.",
+    "region": 3,
+    "seconds": 8.804,
+    "tier": "cheap",
+    "tool_calls": 5,
+    "why_no_package": "concluded; Kernel validation and the region-scoped surface probe both pass with no defects; the only finding is a 0.0025685 mm small-edge warning, so there is no measured geometry failure to repair.; concluded mesher_side; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "No inspection, measurement, verification, or scratch-copy edit has been performed, so I cannot support a bounded repair or a mesher-side claim for edge:44d7baea0a0ecee6.",
+    "region": 4,
+    "seconds": 1.777,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; No inspection, measurement, verification, or scratch-copy edit has been performed, so I cannot support a bounded repair or a mesher-side claim for edge:44d7baea0a0ecee6.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "No region inspection, measurements, verification probe, or scratch-copy edit was performed, so I cannot support a bounded repair or a mesher-side claim for edge:403873496ffe817f.",
+    "region": 5,
+    "seconds": 2.347,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; No region inspection, measurements, verification probe, or scratch-copy edit was performed, so I cannot support a bounded repair or a mesher-side claim for edge:403873496ffe817f.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "No measurements or edit results are available for region 6, so I cannot support a bounded repair or a mesher-side claim.",
+    "region": 6,
+    "seconds": 2.156,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; No measurements or edit results are available for region 6, so I cannot support a bounded repair or a mesher-side claim.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "I cannot support a bounded repair or a mesher-side claim without first examining and measuring the identified region.",
+    "region": 7,
+    "seconds": 1.817,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; I cannot support a bounded repair or a mesher-side claim without first examining and measuring the identified region.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "No inspection, measurements, verification probe, or scratch-copy edit has been performed, so I cannot support a bounded repair or a mesher-side claim for edge:cea810c642d2d0d7.",
+    "region": 8,
+    "seconds": 2.252,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; No inspection, measurements, verification probe, or scratch-copy edit has been performed, so I cannot support a bounded repair or a mesher-side claim for edge:cea810c642d2d0d7.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "No inspection, measurement, verification probe, or scratch-copy edit has been performed, so I cannot support a bounded repair claim for edge:3d939ce5f329ee69.",
+    "region": 9,
+    "seconds": 1.946,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; No inspection, measurement, verification probe, or scratch-copy edit has been performed, so I cannot support a bounded repair claim for edge:3d939ce5f329ee69.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "No inspection, measurements, verification probe, or scratch-copy edit was performed, so I cannot support a bounded repair or a mesher-side claim for fingerprint edge:0851cbe28fd5c1e6.",
+    "region": 10,
+    "seconds": 2.369,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; No inspection, measurements, verification probe, or scratch-copy edit was performed, so I cannot support a bounded repair or a mesher-side claim for fingerprint edge:0851cbe28fd5c1e6.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "No inspection, measurements, verification probe, or scratch-copy edit has been performed, so I cannot support a bounded repair claim for edge:e2ba6dc8ddcac8fe.",
+    "region": 11,
+    "seconds": 2.582,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; No inspection, measurements, verification probe, or scratch-copy edit has been performed, so I cannot support a bounded repair claim for edge:e2ba6dc8ddcac8fe.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "No inspection, measurements, verification probe, or scratch-copy edit has been performed for region 12, so I cannot support a bounded repair or a mesher-side claim.",
+    "region": 12,
+    "seconds": 2.3,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; No inspection, measurements, verification probe, or scratch-copy edit has been performed for region 12, so I cannot support a bounded repair or a mesher-side claim.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "I cannot support a repair conclusion without first inspecting and measuring the specified region and testing the scratch copy.",
+    "region": 13,
+    "seconds": 1.971,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; I cannot support a repair conclusion without first inspecting and measuring the specified region and testing the scratch copy.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 1,
+    "reason": "No inspection, measurement, verification probe, or scratch-copy edit was performed, so I cannot support a geometry repair claim or establish that the mesher is at fault.",
+    "region": 14,
+    "seconds": 4.804,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; No inspection, measurement, verification probe, or scratch-copy edit was performed, so I cannot support a geometry repair claim or establish that the mesher is at fault.; concluded mesher_side; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "No inspection, measurement, verification probe, or scratch-copy edit has been performed, so I cannot support a bounded repair claim for edge:c102cff7e1f520fe.",
+    "region": 15,
+    "seconds": 1.767,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; No inspection, measurement, verification probe, or scratch-copy edit has been performed, so I cannot support a bounded repair claim for edge:c102cff7e1f520fe.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "No inspection, measurement, edit, or verification evidence is available for region 16, so I cannot support a bounded repair or an honest mesher-side claim.",
+    "region": 16,
+    "seconds": 1.815,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; No inspection, measurement, edit, or verification evidence is available for region 16, so I cannot support a bounded repair or an honest mesher-side claim.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "No inspection, measurements, verification probe, or scratch-copy edit was performed, so I cannot support a bounded repair or an honest mesher-side claim for edge:86434b62c2a332a6 in region 17.",
+    "region": 17,
+    "seconds": 1.796,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; No inspection, measurements, verification probe, or scratch-copy edit was performed, so I cannot support a bounded repair or an honest mesher-side claim for edge:86434b62c2a332a6 in region 17.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "I cannot support a bounded repair without first inspecting and measuring the located defect and probing the verification ladder.",
+    "region": 18,
+    "seconds": 1.471,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; I cannot support a bounded repair without first inspecting and measuring the located defect and probing the verification ladder.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "I cannot support a bounded repair or a geometry/mesher determination without inspecting, measuring, probing, and testing the reported defect.",
+    "region": 19,
+    "seconds": 1.559,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; I cannot support a bounded repair or a geometry/mesher determination without inspecting, measuring, probing, and testing the reported defect.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "No inspection, measurements, verification probe, or scratch-copy repair has been performed, so I cannot support a bounded repair or a mesher-side claim for edge:feda6139fe2d0ca0.",
+    "region": 20,
+    "seconds": 1.837,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; No inspection, measurements, verification probe, or scratch-copy repair has been performed, so I cannot support a bounded repair or a mesher-side claim for edge:feda6139fe2d0ca0.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "The region has not been inspected, measured, probed, or edited, so I cannot support a bounded repair or a mesher-side claim.",
+    "region": 21,
+    "seconds": 1.64,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; The region has not been inspected, measured, probed, or edited, so I cannot support a bounded repair or a mesher-side claim.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "I cannot support a bounded repair or a mesher-side finding without first inspecting and measuring the specified region and its defect.",
+    "region": 22,
+    "seconds": 1.692,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; I cannot support a bounded repair or a mesher-side finding without first inspecting and measuring the specified region and its defect.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "No inspection, measurement, verification, or scratch-copy edit has been performed for fingerprint edge:24e4b1a7079e6f7d, so I cannot support a bounded repair or a mesher-side claim.",
+    "region": 23,
+    "seconds": 1.649,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; No inspection, measurement, verification, or scratch-copy edit has been performed for fingerprint edge:24e4b1a7079e6f7d, so I cannot support a bounded repair or a mesher-side claim.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "No inspection, measurements, verification probe, or scratch-copy edit has been performed, so I cannot support a bounded repair or a mesher-side claim for edge:6f66fe456183a1af.",
+    "region": 24,
+    "seconds": 2.311,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; No inspection, measurements, verification probe, or scratch-copy edit has been performed, so I cannot support a bounded repair or a mesher-side claim for edge:6f66fe456183a1af.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "No inspection, measurement, verification, or scratch-copy repair was performed, so I cannot support a bounded repair or mesher-side claim.",
+    "region": 25,
+    "seconds": 2.034,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; No inspection, measurement, verification, or scratch-copy repair was performed, so I cannot support a bounded repair or mesher-side claim.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "No region inspection, measurements, verification probe, or scratch-copy edit was performed, so I cannot support a bounded repair claim for edge:ac4cf62f02f0ecba.",
+    "region": 26,
+    "seconds": 2.351,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; No region inspection, measurements, verification probe, or scratch-copy edit was performed, so I cannot support a bounded repair claim for edge:ac4cf62f02f0ecba.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "No region inspection, measurements, verification probes, or scratch-copy edit results are available, so I cannot support a bounded repair or a mesher-side claim.",
+    "region": 27,
+    "seconds": 1.819,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; No region inspection, measurements, verification probes, or scratch-copy edit results are available, so I cannot support a bounded repair or a mesher-side claim.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "No inspection, measurement, verification probe, or scratch-copy edit was performed, so I cannot support a bounded repair claim for edge:cd8dbe0533b2e491.",
+    "region": 28,
+    "seconds": 2.43,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; No inspection, measurement, verification probe, or scratch-copy edit was performed, so I cannot support a bounded repair claim for edge:cd8dbe0533b2e491.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "No inspection, measurements, verification probe, or scratch-copy edit has been performed, so I cannot support a bounded repair or a mesher-side claim for edge:651cb91c8c64ea69.",
+    "region": 29,
+    "seconds": 2.142,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; No inspection, measurements, verification probe, or scratch-copy edit has been performed, so I cannot support a bounded repair or a mesher-side claim for edge:651cb91c8c64ea69.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "skipped",
+    "form": "",
+    "model_calls": 0,
+    "reason": "the run's model calls are spent (CAD_REPAIR_INVESTIGATOR_MODEL_CALLS_MAX)",
+    "region": 30,
+    "seconds": 0.0,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "skipped; the run's model calls are spent (CAD_REPAIR_INVESTIGATOR_MODEL_CALLS_MAX); no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "skipped",
+    "form": "",
+    "model_calls": 0,
+    "reason": "the run's model calls are spent (CAD_REPAIR_INVESTIGATOR_MODEL_CALLS_MAX)",
+    "region": 31,
+    "seconds": 0.0,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "skipped; the run's model calls are spent (CAD_REPAIR_INVESTIGATOR_MODEL_CALLS_MAX); no edit tried"
+   }
+  ]
+ },
+ {
+  "ends": {},
+  "file": "00561762_d57ee458c0d4048df6622d6b_step_000.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {
+   "concluded": 4
+  },
+  "file": "00567636_eb62f1414fbae54532431861_step_000.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "refused",
+  "regions": [
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "declined:not_small (a targeted edge is not, and is beside no face under, the 0.303956 mm2 sliver threshold)": 1,
+      "target_remains": 2
+     },
+     "tried": 3
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 8,
+    "reason": "The kernel validity check and scoped surface probe both passed with no defects, while the only located issue is a zero-length warning edge. The targeted small-edge repair and global healing both left...",
+    "region": 0,
+    "seconds": 16.502,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The kernel validity check and scoped surface probe both passed with no defects, while the only located issue is a zero-length warning edge. The targeted small-edge repair and global healing both left...; concluded mesher_side; no edit kept (declined:not_small (a targeted edge is not, and is beside no face under, the 0.303956 mm2 sliver threshold) x1, target_remains x2)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "declined:not_isolated (no target face resolves in this shape)": 1,
+      "declined:not_resolved (the target face is not in this shape)": 1,
+      "target_remains": 3
+     },
+     "tried": 5
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 8,
+    "reason": "The region's kernel validity check, scoped surface probe, and whole-part mesh probe all passed. The reported zero-length small edge remains only as a warning; every attempted repair rolled back becaus...",
+    "region": 1,
+    "seconds": 19.577,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The region's kernel validity check, scoped surface probe, and whole-part mesh probe all passed. The reported zero-length small edge remains only as a warning; every attempted repair rolled back becaus...; concluded mesher_side; no edit kept (declined:not_isolated (no target face resolves in this shape) x1, declined:not_resolved (the target face is not in this shape) x1, target_remains x...(+2 chars)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "target_remains": 2
+     },
+     "tried": 2
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 7,
+    "reason": "The kernel validity check, region surface probe, whole-part mesh probe, and tolerant-mesh routing pass all passed. The reported zero-length edge remains after fix_small_edges and fix_shape_global both...",
+    "region": 2,
+    "seconds": 20.568,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The kernel validity check, region surface probe, whole-part mesh probe, and tolerant-mesh routing pass all passed. The reported zero-length edge remains after fix_small_edges and fix_shape_global both...; concluded mesher_side; no edit kept (target_remains x2)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "declined:not_isolated (no target face resolves in this shape)": 1,
+      "declined:not_small (a targeted edge is not, and is beside no face under, the 0.303956 mm2 sliver threshold)": 1,
+      "target_remains": 2
+     },
+     "tried": 4
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 8,
+    "reason": "The kernel validity check and region-scoped surface probe both passed with no defects, while the only reported issue is a zero-length small-edge warning. Multiple scratch-copy repairs (fix_small_edges...",
+    "region": 3,
+    "seconds": 15.299,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The kernel validity check and region-scoped surface probe both passed with no defects, while the only reported issue is a zero-length small-edge warning. Multiple scratch-copy repairs (fix_small_edges...; concluded mesher_side; no edit kept (declined:not_isolated (no target face resolves in this shape) x1, declined:not_small (a targeted edge is not, and is beside no face under, the 0.30...(+49 chars)"
+   }
+  ]
+ },
+ {
+  "ends": {},
+  "file": "00574926_30a8ce52329868badc4fd335_step_025.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {},
+  "file": "00593037_58be7d97f97a1f0fd3bedb15_step_000.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {},
+  "file": "00593129_58be873d835d62101bdd150f_step_016.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {},
+  "file": "00600759_58c110b278c5f50fe8b60186_step_016.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {},
+  "file": "00609793_75769c3ffa26d4f0837d9919_step_000.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {},
+  "file": "00611023_58c5615af3b7fe0f7f184b9d_step_050.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {},
+  "file": "00619231_58c896a9b49e130fa380b053_step_008.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {
+   "concluded": 12
+  },
+  "file": "00512810_ed5002fa75d17bcb9a5ecf35_step_000.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "refused",
+  "regions": [
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "declined:not_isolated (no target face resolves in this shape)": 1,
+      "declined:not_small (a targeted edge is not, and is beside no face under, the 324.597 mm2 sliver threshold)": 1,
+      "target_remains": 2
+     },
+     "tried": 4
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 8,
+    "reason": "The region passes kernel validation, the scoped surface probe, and the whole-part mesh probe. The only reported issue is a zero-length small-edge warning; fix_small_edges and global healing both leave...",
+    "region": 0,
+    "seconds": 17.729,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The region passes kernel validation, the scoped surface probe, and the whole-part mesh probe. The only reported issue is a zero-length small-edge warning; fix_small_edges and global healing both leave...; concluded mesher_side; no edit kept (declined:not_isolated (no target face resolves in this shape) x1, declined:not_small (a targeted edge is not, and is beside no face under, the 324....(+48 chars)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "target_remains": 1
+     },
+     "tried": 1
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 5,
+    "reason": "The kernel validity check, scoped surface probe, whole-part mesh probe, and tolerant-mesh routing pass all pass. The located zero-length edge is a warning only; the attempted fix_small_edges operation...",
+    "region": 1,
+    "seconds": 27.323,
+    "tier": "cheap",
+    "tool_calls": 9,
+    "why_no_package": "concluded; The kernel validity check, scoped surface probe, whole-part mesh probe, and tolerant-mesh routing pass all pass. The located zero-length edge is a warning only; the attempted fix_small_edges operation...; concluded mesher_side; no edit kept (target_remains x1)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "declined:the targeted body already has a solid to lose": 1,
+      "target_remains": 3
+     },
+     "tried": 4
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 8,
+    "reason": "The kernel check, region-scoped surface probe, and whole-part mesh probe all passed on the unchanged geometry. The located zero-length edge is only a warning; attempted repairs either left it unchange...",
+    "region": 2,
+    "seconds": 18.449,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The kernel check, region-scoped surface probe, and whole-part mesh probe all passed on the unchanged geometry. The located zero-length edge is only a warning; attempted repairs either left it unchange...; concluded mesher_side; no edit kept (declined:the targeted body already has a solid to lose x1, target_remains x3)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "target_remains": 2
+     },
+     "tried": 2
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 8,
+    "reason": "The located zero-length edge is a warning, but kernel validity, scoped surface probing, whole-part mesh probing, and tolerant-mesh routing all passed. The only attempted edge repair was rolled back be...",
+    "region": 3,
+    "seconds": 33.262,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The located zero-length edge is a warning, but kernel validity, scoped surface probing, whole-part mesh probing, and tolerant-mesh routing all passed. The only attempted edge repair was rolled back be...; concluded mesher_side; no edit kept (target_remains x2)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "target_remains": 1
+     },
+     "tried": 1
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 5,
+    "reason": "The kernel validity and region surface probes both passed, and the part has one valid solid with normal tolerances. The only located issue is a zero-length warning edge; the prescribed small-edge repa...",
+    "region": 4,
+    "seconds": 28.538,
+    "tier": "cheap",
+    "tool_calls": 7,
+    "why_no_package": "concluded; The kernel validity and region surface probes both passed, and the part has one valid solid with normal tolerances. The only located issue is a zero-length warning edge; the prescribed small-edge repa...; concluded mesher_side; no edit kept (target_remains x1)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 3,
+    "reason": "The located zero-length edge is only an analyzer warning: kernel validity passed at tier 0 and the region surface probe passed at tier 1, with no defects reported. No geometry repair is supported; thi...",
+    "region": 5,
+    "seconds": 16.168,
+    "tier": "cheap",
+    "tool_calls": 4,
+    "why_no_package": "concluded; The located zero-length edge is only an analyzer warning: kernel validity passed at tier 0 and the region surface probe passed at tier 1, with no defects reported. No geometry repair is supported; thi...; concluded mesher_side; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "No geometry inspection, measurements, verification probes, or scratch-copy edit have been performed, so I cannot support a bounded repair or a mesher-side claim.",
+    "region": 6,
+    "seconds": 1.493,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; No geometry inspection, measurements, verification probes, or scratch-copy edit have been performed, so I cannot support a bounded repair or a mesher-side claim.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "No inspection, measurement, verification, or scratch-copy edit was performed, so I cannot support a bounded repair or a mesher-side claim for edge:d7b42799f13e9fdc.",
+    "region": 7,
+    "seconds": 1.817,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; No inspection, measurement, verification, or scratch-copy edit was performed, so I cannot support a bounded repair or a mesher-side claim for edge:d7b42799f13e9fdc.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "No inspection, measurement, verification probe, or scratch-copy edit was performed, so I cannot support a bounded repair or a mesher-side claim for edge:f579c3a6da6acffb in region 8.",
+    "region": 8,
+    "seconds": 1.728,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; No inspection, measurement, verification probe, or scratch-copy edit was performed, so I cannot support a bounded repair or a mesher-side claim for edge:f579c3a6da6acffb in region 8.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "The region has not been inspected, measured, or tested, so no bounded repair or mesher-side claim can be supported.",
+    "region": 9,
+    "seconds": 1.802,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; The region has not been inspected, measured, or tested, so no bounded repair or mesher-side claim can be supported.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "The region was not inspected, measured, probed, or edited, so there is no evidence to support a bounded repair or a mesher-side claim.",
+    "region": 10,
+    "seconds": 2.316,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; The region was not inspected, measured, probed, or edited, so there is no evidence to support a bounded repair or a mesher-side claim.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "No inspection, measurement, verification probe, or scratch-copy repair was performed, so I cannot support a bounded repair claim for fingerprint edge:1b61f5dc4776faf0.",
+    "region": 11,
+    "seconds": 5.237,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; No inspection, measurement, verification probe, or scratch-copy repair was performed, so I cannot support a bounded repair claim for fingerprint edge:1b61f5dc4776faf0.; concluded escalate; no edit tried"
+   }
+  ]
+ },
+ {
+  "ends": {},
+  "file": "00530132_1f63a3aece016ac820b072bc_step_006.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {},
+  "file": "00535437_58a50d023522310f74b372f1_step_000.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {},
+  "file": "00536843_58a5c31b3522310f74b497a5_step_016.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "not_attempted:manual_cleanup",
+  "regions": []
+ },
+ {
+  "ends": {},
+  "file": "00547083_58aaf7c222115e0f6fe69154_step_011.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {
+   "concluded": 1
+  },
+  "file": "00547299_76f5430bc125162354bb5cf7_step_037.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "refused",
+  "regions": [
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "declined:swept_a_real_face (2 removed face(s) at or over the 0.0711874 mm2 sliver threshold)": 1,
+      "target_remains": 4
+     },
+     "tried": 5
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 8,
+    "reason": "The region passes kernel validation (tier 0) and the scoped surface probe (tier 1). All attempted repairs were rolled back because the small-edge targets remained or the sliver-face operation was decl...",
+    "region": 0,
+    "seconds": 39.884,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The region passes kernel validation (tier 0) and the scoped surface probe (tier 1). All attempted repairs were rolled back because the small-edge targets remained or the sliver-face operation was decl...; concluded mesher_side; no edit kept (declined:swept_a_real_face (2 removed face(s) at or over the 0.0711874 mm2 sliver threshold) x1, target_remains x4)"
+   }
+  ]
+ },
+ {
+  "ends": {},
+  "file": "00556047_e8d5ceede7083fdf0169f7bc_step_000.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {},
+  "file": "00560308_e3e9fa508250473614039aa9_step_000.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {
+   "concluded": 11
+  },
+  "file": "00563222_58b17f83ddee890fd0072693_step_001.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "refused",
+  "regions": [
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "declined:not_isolated (the analysis shows no crossing among the targets)": 1,
+      "declined:swept_a_real_face (1 removed face(s) at or over the 0.191197 mm2 sliver threshold)": 1,
+      "declined:the targeted body already has a solid to lose": 1,
+      "target_remains": 3
+     },
+     "tried": 6
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 9,
+    "reason": "The located planar face is a tiny sliver warning, not a geometric validity failure: its measured tolerance is 1e-7 mm, the scoped surface probe passed, and whole-part kernel validation passed with a v...",
+    "region": 0,
+    "seconds": 28.529,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The located planar face is a tiny sliver warning, not a geometric validity failure: its measured tolerance is 1e-7 mm, the scoped surface probe passed, and whole-part kernel validation passed with a v...; concluded mesher_side; no edit kept (declined:not_isolated (the analysis shows no crossing among the targets) x1, declined:swept_a_real_face (1 removed face(s) at or over the 0.191197 ...(+103 chars)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "declined:not_isolated (the analysis shows no crossing among the targets)": 1,
+      "declined:swept_a_real_face (1 removed face(s) at or over the 0.191197 mm2 sliver threshold)": 1,
+      "target_remains": 3
+     },
+     "tried": 5
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 9,
+    "reason": "The located face is a 0.059526 mm2 planar sliver warning, but kernel validation (tier 0), scoped surface probing (tier 1), and the whole-part mesh probe (tier 2) all passed. All attempted repairs were...",
+    "region": 1,
+    "seconds": 34.566,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The located face is a 0.059526 mm2 planar sliver warning, but kernel validation (tier 0), scoped surface probing (tier 1), and the whole-part mesh probe (tier 2) all passed. All attempted repairs were...; concluded mesher_side; no edit kept (declined:not_isolated (the analysis shows no crossing among the targets) x1, declined:swept_a_real_face (1 removed face(s) at or over the 0.191197 ...(+44 chars)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "declined:swept_a_real_face (1 removed face(s) at or over the 0.191197 mm2 sliver threshold)": 1,
+      "target_remains": 4
+     },
+     "tried": 5
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 9,
+    "reason": "The located issue is a 0.113757 mm2 planar sliver face (face:3357525f784b9cc7). Kernel validity and the scoped surface probe both pass, but five attempted scratch repairs were rolled back because the...",
+    "region": 2,
+    "seconds": 30.734,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The located issue is a 0.113757 mm2 planar sliver face (face:3357525f784b9cc7). Kernel validity and the scoped surface probe both pass, but five attempted scratch repairs were rolled back because the...; concluded escalate; no edit kept (declined:swept_a_real_face (1 removed face(s) at or over the 0.191197 mm2 sliver threshold) x1, target_remains x4)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "declined:swept_a_real_face (1 removed face(s) at or over the 0.191197 mm2 sliver threshold)": 1,
+      "target_remains": 3
+     },
+     "tried": 4
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 7,
+    "reason": "The located planar face is kernel-valid and passes the scoped surface probe; whole-part kernel validation also passes. The available repairs either decline or leave the sliver unchanged, so no bounded...",
+    "region": 3,
+    "seconds": 27.094,
+    "tier": "cheap",
+    "tool_calls": 8,
+    "why_no_package": "concluded; The located planar face is kernel-valid and passes the scoped surface probe; whole-part kernel validation also passes. The available repairs either decline or leave the sliver unchanged, so no bounded...; concluded mesher_side; no edit kept (declined:swept_a_real_face (1 removed face(s) at or over the 0.191197 mm2 sliver threshold) x1, target_remains x3)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 3,
+    "reason": "The located face is a valid planar face with tight tolerance; kernel validation, the region surface probe, and the whole-part mesh probe all pass. The only finding is a secondary small-face warning, n...",
+    "region": 4,
+    "seconds": 11.202,
+    "tier": "cheap",
+    "tool_calls": 5,
+    "why_no_package": "concluded; The located face is a valid planar face with tight tolerance; kernel validation, the region surface probe, and the whole-part mesh probe all pass. The only finding is a secondary small-face warning, n...; concluded mesher_side; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "No inspection, measurement, verification probe, or scratch-copy edit has been performed, so I cannot support a bounded repair or a mesher-side claim for face:59257dc9685630f9.",
+    "region": 5,
+    "seconds": 1.989,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; No inspection, measurement, verification probe, or scratch-copy edit has been performed, so I cannot support a bounded repair or a mesher-side claim for face:59257dc9685630f9.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "No inspection, measurement, verification, or scratch-copy edit was performed, so I cannot support a bounded repair or a mesher-side claim.",
+    "region": 6,
+    "seconds": 1.994,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; No inspection, measurement, verification, or scratch-copy edit was performed, so I cannot support a bounded repair or a mesher-side claim.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "The region has not been inspected, measured, probed, or tested with a scratch-copy edit, so no bounded repair or mesher-side claim can be supported.",
+    "region": 7,
+    "seconds": 1.698,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; The region has not been inspected, measured, probed, or tested with a scratch-copy edit, so no bounded repair or mesher-side claim can be supported.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "Cannot responsibly conclude without inspecting, measuring, and verifying the identified region.",
+    "region": 8,
+    "seconds": 2.159,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; Cannot responsibly conclude without inspecting, measuring, and verifying the identified region.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "No inspection, measurement, verification, or scratch-copy edit was performed, so I cannot support a bounded repair claim for face:4df009011f456df6.",
+    "region": 9,
+    "seconds": 14.526,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; No inspection, measurement, verification, or scratch-copy edit was performed, so I cannot support a bounded repair claim for face:4df009011f456df6.; concluded escalate; no edit tried"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 1,
+    "reason": "No inspection, measurement, verification, or scratch-copy edit has been performed, so I cannot support a bounded repair claim for face:b2be2cf9d4f715b6.",
+    "region": 10,
+    "seconds": 9.269,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "concluded; No inspection, measurement, verification, or scratch-copy edit has been performed, so I cannot support a bounded repair claim for face:b2be2cf9d4f715b6.; concluded escalate; no edit tried"
+   }
+  ]
+ },
+ {
+  "ends": {
+   "concluded": 2
+  },
+  "file": "00593603_7bac14fdc729cf9588a02401_step_000.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "refused",
+  "regions": [
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "cap:the run's volume ended 0.0339 of the original away from what the operations accounted for (140830.759 + 0.000 declared = 140830.759, measured 145598.021), over the 0.02 residual - something moved that no operation claimed": 1,
+      "declined:planar (fill_planar_hole's loop)": 1,
+      "target_remains": 2
+     },
+     "tried": 4
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 9,
+    "reason": "The located defect is a large closed free boundary (edge:9bc3929a3a6b4d5a, length 144.513262 mm) forming an opening. Kernel and scoped surface probes pass, but the defect remains. The planar-hole fill...",
+    "region": 0,
+    "seconds": 16.889,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The located defect is a large closed free boundary (edge:9bc3929a3a6b4d5a, length 144.513262 mm) forming an opening. Kernel and scoped surface probes pass, but the defect remains. The planar-hole fill...; concluded escalate; no edit kept (cap:the run's volume ended 0.0339 of the original away from what the operations accounted for (140830.759 + 0.000 declared = 140830.759, measured 1455...(+144 chars)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "cap:the run's volume ended 0.0822 of the original away from what the operations accounted for (140830.759 + 0.000 declared = 140830.759, measured 152400.842), over the 0.02 residual - something moved that no operation claimed": 1,
+      "declined:planar (fill_planar_hole's loop)": 1,
+      "target_remains": 1
+     },
+     "tried": 3
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 8,
+    "reason": "The region has a measured open-shell defect (edge:51f6fc5a9460ef0b) with a 144.513 mm closed free boundary. Tier 0 and tier 1 probes pass, but fill_planar_hole exceeded the allowed measured movement a...",
+    "region": 1,
+    "seconds": 16.911,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The region has a measured open-shell defect (edge:51f6fc5a9460ef0b) with a 144.513 mm closed free boundary. Tier 0 and tier 1 probes pass, but fill_planar_hole exceeded the allowed measured movement a...; concluded escalate; no edit kept (cap:the run's volume ended 0.0822 of the original away from what the operations accounted for (140830.759 + 0.000 declared = 140830.759, measured 1524...(+144 chars)"
+   }
+  ]
+ },
+ {
+  "ends": {},
+  "file": "00597878_58c02929910b980f78d960ed_step_000.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {},
+  "file": "00606468_58c2cd0d85eca50f9755927c_step_144.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {},
+  "file": "00608974_58c430c96e72160f7fe4e49c_step_009.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {
+   "budget_spent": 1,
+   "concluded": 6,
+   "skipped": 1
+  },
+  "file": "00611365_a3fda13cb8d85e130613221d_step_000.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "refused",
+  "regions": [
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "declined:not_small (a targeted edge is not, and is beside no face under, the 0.203575 mm2 sliver threshold)": 1,
+      "target_remains": 2
+     },
+     "tried": 3
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 7,
+    "reason": "The geometry is kernel-valid and the scoped surface probe and whole-part mesh probe both pass; the zero-length edge remains after the applicable repair attempts, so no bounded geometry repair is suppo...",
+    "region": 0,
+    "seconds": 16.904,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The geometry is kernel-valid and the scoped surface probe and whole-part mesh probe both pass; the zero-length edge remains after the applicable repair attempts, so no bounded geometry repair is suppo...; concluded mesher_side; no edit kept (declined:not_small (a targeted edge is not, and is beside no face under, the 0.203575 mm2 sliver threshold) x1, target_remains x2)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "target_remains": 2
+     },
+     "tried": 2
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 6,
+    "reason": "The kernel validity check, scoped surface probe, whole-part mesh probe, and tolerant-mesh routing pass all passed. The reported zero-length edge remains after attempted small-edge and global healing e...",
+    "region": 1,
+    "seconds": 25.159,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The kernel validity check, scoped surface probe, whole-part mesh probe, and tolerant-mesh routing pass all passed. The reported zero-length edge remains after attempted small-edge and global healing e...; concluded mesher_side; no edit kept (target_remains x2)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "target_remains": 2
+     },
+     "tried": 2
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 7,
+    "reason": "The located defect is a zero-length small edge (edge:cd5b45a731059fc9). Kernel and scoped surface probes both pass, but both fix_small_edges and fix_shape_global leave the edge unchanged and roll back...",
+    "region": 2,
+    "seconds": 16.391,
+    "tier": "cheap",
+    "tool_calls": 9,
+    "why_no_package": "concluded; The located defect is a zero-length small edge (edge:cd5b45a731059fc9). Kernel and scoped surface probes both pass, but both fix_small_edges and fix_shape_global leave the edge unchanged and roll back...; concluded escalate; no edit kept (target_remains x2)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "declined:not_isolated (no target face resolves in this shape)": 1,
+      "declined:not_small (a targeted edge is not, and is beside no face under, the 0.203575 mm2 sliver threshold)": 1,
+      "target_remains": 3
+     },
+     "tried": 5
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 8,
+    "reason": "Kernel validity and the scoped surface probe both pass with no defects. The located edge has zero measured length and is a warning-level tiny-edge condition; all five attempted geometry repairs were r...",
+    "region": 3,
+    "seconds": 18.773,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; Kernel validity and the scoped surface probe both pass with no defects. The located edge has zero measured length and is a warning-level tiny-edge condition; all five attempted geometry repairs were r...; concluded mesher_side; no edit kept (declined:not_isolated (no target face resolves in this shape) x1, declined:not_small (a targeted edge is not, and is beside no face under, the 0.20...(+49 chars)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "declined:not_isolated (no target face resolves in this shape)": 1,
+      "declined:not_small (a targeted edge is not, and is beside no face under, the 0.203575 mm2 sliver threshold)": 1,
+      "target_remains": 3
+     },
+     "tried": 5
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 8,
+    "reason": "The kernel validity check and region-scoped surface probe both passed with no defects, while the located zero-length edge warning remained unchanged through all applicable repair attempts. Each attemp...",
+    "region": 4,
+    "seconds": 16.309,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The kernel validity check and region-scoped surface probe both passed with no defects, while the located zero-length edge warning remained unchanged through all applicable repair attempts. Each attemp...; concluded mesher_side; no edit kept (declined:not_isolated (no target face resolves in this shape) x1, declined:not_small (a targeted edge is not, and is beside no face under, the 0.20...(+49 chars)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "declined:not_isolated (no target face resolves in this shape)": 1,
+      "declined:not_small (a targeted edge is not, and is beside no face under, the 0.203575 mm2 sliver threshold)": 1,
+      "target_remains": 2
+     },
+     "tried": 4
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 8,
+    "reason": "The region and whole part pass kernel validation (tier 0), and the scoped surface probe passes (tier 1). The only finding is a zero-length small-edge warning; fix_small_edges and fix_shape_global both...",
+    "region": 5,
+    "seconds": 16.847,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The region and whole part pass kernel validation (tier 0), and the scoped surface probe passes (tier 1). The only finding is a zero-length small-edge warning; fix_small_edges and fix_shape_global both...; concluded mesher_side; no edit kept (declined:not_isolated (no target face resolves in this shape) x1, declined:not_small (a targeted edge is not, and is beside no face under, the 0.20...(+49 chars)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "target_remains": 1
+     },
+     "tried": 1
+    },
+    "end": "budget_spent",
+    "form": "",
+    "model_calls": 4,
+    "reason": "the run's model calls are spent (CAD_REPAIR_INVESTIGATOR_MODEL_CALLS_MAX)",
+    "region": 6,
+    "seconds": 7.723,
+    "tier": "cheap",
+    "tool_calls": 7,
+    "why_no_package": "budget_spent; the run's model calls are spent (CAD_REPAIR_INVESTIGATOR_MODEL_CALLS_MAX); no edit kept (target_remains x1)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "skipped",
+    "form": "",
+    "model_calls": 0,
+    "reason": "the run's model calls are spent (CAD_REPAIR_INVESTIGATOR_MODEL_CALLS_MAX)",
+    "region": 7,
+    "seconds": 0.0,
+    "tier": "cheap",
+    "tool_calls": 0,
+    "why_no_package": "skipped; the run's model calls are spent (CAD_REPAIR_INVESTIGATOR_MODEL_CALLS_MAX); no edit tried"
+   }
+  ]
+ },
+ {
+  "ends": {},
+  "file": "00511957_186fd4c2d6822cf98d3b3460_step_000.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {
+   "budget_spent": 1,
+   "concluded": 4
+  },
+  "file": "00514684_7f0805030eb57e4abb36a15f_step_000.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "refused",
+  "regions": [
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "declined:not_isolated (no target face resolves in this shape)": 1,
+      "declined:not_resolved (the target face is not in this shape)": 1,
+      "declined:not_small (a targeted face is not, and is beside no face under, the 0.137287 mm2 sliver threshold)": 1,
+      "declined:rebuilt_invalid (the re-trimmed face is not BRepCheck-valid)": 1,
+      "target_remains": 2
+     },
+     "tried": 6
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 9,
+    "reason": "The located region has an UnorientableShape on face:aa8f78684cfcad19 and a SelfIntersectingWire on wire:fc5bd06a69fb58b7. Six permitted scratch attempts were made, but every operation was declined or...",
+    "region": 0,
+    "seconds": 19.529,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The located region has an UnorientableShape on face:aa8f78684cfcad19 and a SelfIntersectingWire on wire:fc5bd06a69fb58b7. Six permitted scratch attempts were made, but every operation was declined or...; concluded escalate; no edit kept (declined:not_isolated (no target face resolves in this shape) x1, declined:not_resolved (the target face is not in this shape) x1, declined:not_small (...(+184 chars)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "declined:not_isolated (no target face resolves in this shape)": 1,
+      "target_remains": 2
+     },
+     "tried": 3
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 8,
+    "reason": "The region is not geometrically sound: tier-0 kernel validation fails, with four open-shell openings, an unorientable planar face, and a self-intersecting wire. The attempted boundary repair and globa...",
+    "region": 1,
+    "seconds": 16.118,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The region is not geometrically sound: tier-0 kernel validation fails, with four open-shell openings, an unorientable planar face, and a self-intersecting wire. The attempted boundary repair and globa...; concluded escalate; no edit kept (declined:not_isolated (no target face resolves in this shape) x1, target_remains x2)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "declined:not_planar": 1,
+      "declined:planar (fill_planar_hole's loop)": 1,
+      "new_defect": 3
+     },
+     "tried": 5
+    },
+    "end": "budget_spent",
+    "form": "",
+    "model_calls": 9,
+    "reason": "the region's tool calls are spent",
+    "region": 2,
+    "seconds": 22.232,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "budget_spent; the region's tool calls are spent; no edit kept (declined:not_planar x1, declined:planar (fill_planar_hole's loop) x1, new_defect x3)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "declined:planar (fill_planar_hole's loop)": 1,
+      "new_defect": 2
+     },
+     "tried": 3
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 9,
+    "reason": "The region contains four measured closed free-boundary openings (open_shell fingerprints edge:039d800dd72fbbf0, edge:2fcdb3115210d22e, edge:653b5c0d5dd74d10, and edge:787c1c4a14771c0f). Planar-hole fi...",
+    "region": 4,
+    "seconds": 17.004,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The region contains four measured closed free-boundary openings (open_shell fingerprints edge:039d800dd72fbbf0, edge:2fcdb3115210d22e, edge:653b5c0d5dd74d10, and edge:787c1c4a14771c0f). Planar-hole fi...; concluded escalate; no edit kept (declined:planar (fill_planar_hole's loop) x1, new_defect x2)"
+   },
+   {
+    "edits": {
+     "kept": 1,
+     "rolled_back": {},
+     "tried": 1
+    },
+    "end": "concluded",
+    "form": "package",
+    "model_calls": 5,
+    "reason": "",
+    "region": 3,
+    "seconds": 14.231,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": ""
+   }
+  ]
+ },
+ {
+  "ends": {
+   "concluded": 8
+  },
+  "file": "00521027_9b9f0da95e0e55c1eb291dbc_step_001.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "refused",
+  "regions": [
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "cap:the run moved the part's overall size by 0.00111 of its original diagonal, over the 0.001 cap": 1,
+      "declined:not_small (a targeted edge is not, and is beside no face under, the 0.269142 mm2 sliver threshold)": 1,
+      "target_remains": 1
+     },
+     "tried": 3
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 7,
+    "reason": "The geometry passes kernel validation, the scoped surface probe, and the whole-part mesh probe. The tolerant-mesh routing pass also passes and explicitly reports that it eats the tiny edge. Attempts t...",
+    "region": 0,
+    "seconds": 26.328,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The geometry passes kernel validation, the scoped surface probe, and the whole-part mesh probe. The tolerant-mesh routing pass also passes and explicitly reports that it eats the tiny edge. Attempts t...; concluded mesher_side; no edit kept (cap:the run moved the part's overall size by 0.00111 of its original diagonal, over the 0.001 cap x1, declined:not_small (a targeted edge is not, a...(+85 chars)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "cap:the run moved the part's overall size by 0.00111 of its original diagonal, over the 0.001 cap": 1
+     },
+     "tried": 1
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 5,
+    "reason": "The kernel validity check, scoped surface probe, whole-part mesh probe, and tolerant-mesh routing pass all pass with no defects. The only located issue is a zero-length warning edge; its attempted fix...",
+    "region": 1,
+    "seconds": 20.07,
+    "tier": "cheap",
+    "tool_calls": 9,
+    "why_no_package": "concluded; The kernel validity check, scoped surface probe, whole-part mesh probe, and tolerant-mesh routing pass all pass with no defects. The only located issue is a zero-length warning edge; its attempted fix...; concluded mesher_side; no edit kept (cap:the run moved the part's overall size by 0.00111 of its original diagonal, over the 0.001 cap x1)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "cap:the run moved the part's overall size by 0.00111 of its original diagonal, over the 0.001 cap": 1,
+      "declined:not_isolated (no target face resolves in this shape)": 1,
+      "declined:not_small (a targeted edge is not, and is beside no face under, the 0.269142 mm2 sliver threshold)": 1,
+      "target_remains": 1
+     },
+     "tried": 4
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 9,
+    "reason": "The region and whole part pass kernel validation, scoped surface probing, and the whole-part mesh probe. The only finding is a zero-length small-edge warning; attempted small-edge repair was rolled ba...",
+    "region": 2,
+    "seconds": 18.656,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The region and whole part pass kernel validation, scoped surface probing, and the whole-part mesh probe. The only finding is a zero-length small-edge warning; attempted small-edge repair was rolled ba...; concluded mesher_side; no edit kept (cap:the run moved the part's overall size by 0.00111 of its original diagonal, over the 0.001 cap x1, declined:not_isolated (no target face resolve...(+151 chars)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "cap:the run moved the part's overall size by 0.00111 of its original diagonal, over the 0.001 cap": 1,
+      "declined:not_isolated (no target face resolves in this shape)": 1,
+      "declined:not_small (a targeted edge is not, and is beside no face under, the 0.269142 mm2 sliver threshold)": 1,
+      "target_remains": 1
+     },
+     "tried": 4
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 7,
+    "reason": "The part is kernel-valid (tier 0 passed) and the region surface probe passed. The only located issue is a zero-length small-edge warning; the dedicated small-edge repair moved the surface by 0.356649...",
+    "region": 3,
+    "seconds": 15.849,
+    "tier": "cheap",
+    "tool_calls": 9,
+    "why_no_package": "concluded; The part is kernel-valid (tier 0 passed) and the region surface probe passed. The only located issue is a zero-length small-edge warning; the dedicated small-edge repair moved the surface by 0.356649...; concluded mesher_side; no edit kept (cap:the run moved the part's overall size by 0.00111 of its original diagonal, over the 0.001 cap x1, declined:not_isolated (no target face resolves...(+150 chars)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "cap:the run moved the part's overall size by 0.00111 of its original diagonal, over the 0.001 cap": 1,
+      "target_remains": 1
+     },
+     "tried": 2
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 6,
+    "reason": "Kernel, scoped surface, whole-part mesh, and tolerant-mesh probes all pass. The defect is only a zero-length warning edge; the targeted small-edge repair exceeded the 0.001 diagonal movement cap and r...",
+    "region": 4,
+    "seconds": 25.408,
+    "tier": "cheap",
+    "tool_calls": 9,
+    "why_no_package": "concluded; Kernel, scoped surface, whole-part mesh, and tolerant-mesh probes all pass. The defect is only a zero-length warning edge; the targeted small-edge repair exceeded the 0.001 diagonal movement cap and r...; concluded mesher_side; no edit kept (cap:the run moved the part's overall size by 0.00111 of its original diagonal, over the 0.001 cap x1, target_remains x1)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "cap:the run moved the part's overall size by 0.00111 of its original diagonal, over the 0.001 cap": 1,
+      "target_remains": 1
+     },
+     "tried": 2
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 6,
+    "reason": "The geometry is kernel-valid and the scoped surface probe passes; whole-part mesh probes at tiers 2 and 2b also pass, with the tolerant routing pass explicitly absorbing the zero-length edge. The atte...",
+    "region": 5,
+    "seconds": 24.211,
+    "tier": "cheap",
+    "tool_calls": 9,
+    "why_no_package": "concluded; The geometry is kernel-valid and the scoped surface probe passes; whole-part mesh probes at tiers 2 and 2b also pass, with the tolerant routing pass explicitly absorbing the zero-length edge. The atte...; concluded mesher_side; no edit kept (cap:the run moved the part's overall size by 0.00111 of its original diagonal, over the 0.001 cap x1, target_remains x1)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "cap:the run moved the part's overall size by 0.00111 of its original diagonal, over the 0.001 cap": 1
+     },
+     "tried": 1
+    },
+    "end": "concluded",
+    "form": "escalate",
+    "model_calls": 5,
+    "reason": "The located zero-length edge is a genuine small-edge defect. Kernel validation passes, but the only applicable repair (fix_small_edges) was rolled back because its measured overall movement exceeded t...",
+    "region": 6,
+    "seconds": 12.662,
+    "tier": "cheap",
+    "tool_calls": 4,
+    "why_no_package": "concluded; The located zero-length edge is a genuine small-edge defect. Kernel validation passes, but the only applicable repair (fix_small_edges) was rolled back because its measured overall movement exceeded t...; concluded escalate; no edit kept (cap:the run moved the part's overall size by 0.00111 of its original diagonal, over the 0.001 cap x1)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {},
+     "tried": 0
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 3,
+    "reason": "The located zero-length edge is only a meshing warning: kernel validity and the region-scoped surface probe both pass, with no actual geometry defect reported. No bounded repair is supported by the ve...",
+    "region": 7,
+    "seconds": 6.18,
+    "tier": "cheap",
+    "tool_calls": 5,
+    "why_no_package": "concluded; The located zero-length edge is only a meshing warning: kernel validity and the region-scoped surface probe both pass, with no actual geometry defect reported. No bounded repair is supported by the ve...; concluded mesher_side; no edit tried"
+   }
+  ]
+ },
+ {
+  "ends": {},
+  "file": "00529052_58a2b165f9c56c0fcc313b3b_step_000.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {},
+  "file": "00541494_2b0ce66bc0fd810fd8d71535_step_000.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {},
+  "file": "00543296_58a8de6b3522310f74b93968_step_016.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {
+   "concluded": 1
+  },
+  "file": "00552206_58acbbeb0c5c6a0f76db00bb_step_018.step",
+  "meshes_after": true,
+  "meshes_before": true,
+  "outcome": "repaired",
+  "regions": [
+   {
+    "edits": {
+     "kept": 1,
+     "rolled_back": {
+      "cap:the run moved the part's overall size by 0.00282 of its original diagonal, over the 0.001 cap": 1
+     },
+     "tried": 2
+    },
+    "end": "concluded",
+    "form": "package",
+    "model_calls": 8,
+    "package": {
+     "objection": null,
+     "reason": "",
+     "review_tier": "reviewer",
+     "reviewed": "accept",
+     "status": "committed"
+    },
+    "reason": "",
+    "region": 0,
+    "seconds": 16.301,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": ""
+   }
+  ]
+ },
+ {
+  "ends": {},
+  "file": "00560831_63da625081182bf05f9235b1_step_000.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {},
+  "file": "00571436_58b57b9b7a0d0a0fd1b563f1_step_000.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {},
+  "file": "00572003_bc988155b8829c83a3e7f16f_step_000.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {
+   "concluded": 1
+  },
+  "file": "00576314_dcbfa35d4dc3738460d1b34e_step_002.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "refused",
+  "regions": [
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "declined:not_small (a targeted edge is not, and is beside no face under, the 0.00794057 mm2 sliver threshold)": 1,
+      "target_remains": 3
+     },
+     "tried": 4
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 8,
+    "reason": "The located zero-length edge is a warning that all attempted geometric repairs left unchanged, while kernel validation, scoped surface probing, whole-part meshing, and tolerant-mesh routing all pass....",
+    "region": 0,
+    "seconds": 32.448,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The located zero-length edge is a warning that all attempted geometric repairs left unchanged, while kernel validation, scoped surface probing, whole-part meshing, and tolerant-mesh routing all pass....; concluded mesher_side; no edit kept (declined:not_small (a targeted edge is not, and is beside no face under, the 0.00794057 mm2 sliver threshold) x1, target_remains x3)"
+   }
+  ]
+ },
+ {
+  "ends": {
+   "concluded": 3
+  },
+  "file": "00576720_c89f6e67fe4a73823a34cf49_step_003.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "refused",
+  "regions": [
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "cap:the run moved the part's overall size by 0.00256 of its original diagonal, over the 0.001 cap": 1,
+      "target_remains": 1
+     },
+     "tried": 2
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 7,
+    "reason": "The kernel check, scoped surface probe, and whole-part mesh probe all passed on the unchanged geometry. The only located issue is a zero-length small-edge warning; the attempted small-edge repair was...",
+    "region": 0,
+    "seconds": 37.984,
+    "tier": "cheap",
+    "tool_calls": 10,
+    "why_no_package": "concluded; The kernel check, scoped surface probe, and whole-part mesh probe all passed on the unchanged geometry. The only located issue is a zero-length small-edge warning; the attempted small-edge repair was...; concluded mesher_side; no edit kept (cap:the run moved the part's overall size by 0.00256 of its original diagonal, over the 0.001 cap x1, target_remains x1)"
+   },
+   {
+    "edits": {
+     "kept": 0,
+     "rolled_back": {
+      "cap:the run moved the part's overall size by 0.00256 of its original diagonal, over the 0.001 cap": 1,
+      "declined:not_small (a targeted edge is not, and is beside no face under, the 0.022276 mm2 sliver threshold)": 1,
+      "target_remains": 2
+     },
+     "tried": 4
+    },
+    "end": "concluded",
+    "form": "mesher_side",
+    "model_calls": 8,
+    "reason": "The region passes kernel validation (tier 0) and the scoped surface probe (tier 1). The only reported issue is a zero-length small-edge warning; attempted repairs either exceeded the movement cap or l...",
+    "region": 1,
+    "seconds": 47.214,
+    "tier": "cheap",
+    "tool_calls": 9,
+    "why_no_package": "concluded; The region passes kernel validation (tier 0) and the scoped surface probe (tier 1). The only reported issue is a zero-length small-edge warning; attempted repairs either exceeded the movement cap or l...; concluded mesher_side; no edit kept (cap:the run moved the part's overall size by 0.00256 of its original diagonal, over the 0.001 cap x1, declined:not_small (a targeted edge is not, a...(+85 chars)"
+   },
+   {
+    "edits": {
+     "kept": 1,
+     "rolled_back": {},
+     "tried": 1
+    },
+    "end": "concluded",
+    "form": "package",
+    "model_calls": 4,
+    "reason": "",
+    "region": 2,
+    "seconds": 19.397,
+    "tier": "cheap",
+    "tool_calls": 5,
+    "why_no_package": ""
+   }
+  ]
+ },
+ {
+  "ends": {},
+  "file": "00608138_edbec566296152364c37ed13_step_000.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ },
+ {
+  "ends": {},
+  "file": "00619337_58c89b7d37e1351054364cae_step_005.step",
+  "meshes_after": null,
+  "meshes_before": true,
+  "outcome": "nothing_to_repair",
+  "regions": []
+ }
+]

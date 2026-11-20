@@ -1,5 +1,30 @@
 # CRS v3 ship: RESUME (single source of truth; every lane appends its status below)
 
+## SUMMARY OF RECORD: three AI waves (owner rules, 2026-11-20)
+
+The headline is CAD-repaired files that newly mesh (gmsh, from the exported STEP), plus files newly broken. Tolerant/fTetWild is never counted. The clean rule is "still meshes AND no new defects"; "changed" is information only. Sample: 120 failing files and 100 clean parts. Each wave has exactly one isolated native crash per arm, on 0059_00597937.
+
+| wave (code) | arm | files fixed | newly broken | clean: still meshes, no new defects | clean changed (info) | cost, failing arm |
+|---|---|---|---|---|---|---|
+| 1 (b04befe8), PRELIMINARY | det | 1 | 0 | 100/100 | 3 | $0.30 |
+| | v3_full | 1 | 0 | 100/100 | 1 | $1.05 |
+| | t19_off | 0 | 0 | — | — | $0.84 |
+| 2 (df7e1d7a) | det | 1 | 0 | 100/100 | 3 | $0.38 |
+| | v3_full | 0 | 0 | 100/100 | 1 | $1.18 |
+| | t19_off | 0 | 0 | — | — | $0.91 |
+| 3 (17d5f55e, aggressive clone) | det | 1 | 0 | 100/100 | 4 | $0.34 |
+| | v3_full | 1 | 0 | 100/100 | 1 | $1.31 |
+| | t19_off | 0 | 0 | — | — | $1.10 |
+
+Notes:
+- **The one fixed file is always `0060_00608290`, via `fix_small_faces`.**
+- **v3 missed it in wave 2.** Region 0 was reverted by the area check, a rounding artefact fixed in 354c7d56 (post-merge). Region 1 was rejected by the reviewer; wave 3's reviewer accepted it (non-determinism, routed to lane E).
+- **Regions concluded / asked (v3 failing):** w1 96%, w2 96%, w3 91%. Wave 3 is lower because regions ran out of tool calls under aggressive clone.
+- **Runaways** stay at or under about 2%, and they are refused conclusions.
+- **Model errors:** wave 1 had 14 invalid_request calls (the 97a9e216 defect, preliminary). Waves 2 and 3 had 0.
+- **Appendix only:** the tolerant estimate is 61-68 failing files per arm per wave.
+- **Sealed summaries** are in `devtools/validation/v3_eval/supporting/{wave1-b04befe8,wave2-df7e1d7a,wave3-17d5f55e}/`. Transcripts are under `gs://dev-crsv3-transfer-224734058693/eval/supporting/`.
+
 ## OWNERS (since 2026-11-19 ~22:45 PT)
 - **LEAD** (the original chat): integrates, owns this file, launches the AI arms on lane A's GO, resolves conflicts.
 - **Lane A, 0-packages fix:** the investigator's 0 tool calls / 0 packages. It has its own worktree, pushes to crs/v3-agentic, and tells LEAD "GO" when a repro yields a package. LEAD's 420 s repro subagent is still running; its result gets posted in LEAD's chat and appended here.
