@@ -438,6 +438,9 @@ class PackageVerdict:
     deviation_faces: int | None = None
     deviation_faces_skipped: int | None = None
     deviation_s: float | None = None
+    #: WHICH FACES `deviation_mm` WAS SAMPLED ON (`deviation.BASIS_*`): edited, changed, the faces
+    #: now covering a removed face, or a whole-part sample after a removal. None when unmeasured.
+    deviation_basis: str | None = None
     #: THE SEMANTIC REVIEW (CAD_REPAIR_PACKAGE_REVIEW, cad/repair/package_review.py): "accept" or
     #: "reject", the reviewer's reason (or the named no-answer that made it a reject), and the
     #: seconds the review took on the run's clock. All None - and absent from `to_dict` - when the
@@ -476,6 +479,7 @@ class PackageVerdict:
                     ("deviation_faces", self.deviation_faces),
                     ("deviation_faces_skipped", self.deviation_faces_skipped),
                     ("deviation_s", self.deviation_s),
+                    ("deviation_basis", self.deviation_basis),
                     ("reviewed", self.reviewed),
                     ("review_reason", self.review_reason),
                     ("review_s", self.review_s),
@@ -589,6 +593,9 @@ class RepairSession:
         #: package never sees another's. Appended only on a keep.
         self._kept_faces: list[str] = []
         self._kept_inputs: list = []
+        #: (shape it was removed from, removed face fingerprints) per kept REMOVING operation,
+        #: for the deviation measurement (`deviation.measure_deviation(removed=...)`).
+        self._kept_removals: list[tuple] = []
         #: THE CUSTOMER'S DEVIATION THRESHOLD, or None when the run declared none. The auto-accept
         #: tier is INERT WITHOUT IT (`review_tier.decide`): a deployment that turned the posture on
         #: but states no threshold still sends every package to the reviewer, which is the
@@ -1170,6 +1177,9 @@ class RepairSession:
         self.accounting = self.accounting.plus(outcome.evidence)
         self._kept_faces.extend((*outcome.added, *outcome.rebuilt))
         self._kept_inputs.append(snapshot[0])
+        removed_fingerprints = outcome.evidence.get("removed_fingerprints")
+        if removed_fingerprints:
+            self._kept_removals.append((snapshot[0], tuple(removed_fingerprints)))
         return self._record(OpVerdict(
             op=op.name, targets=fingerprints, defect_code=code, status=KEPT, basis=basis,
             reason=MESHES_AFTER_TARGET_REMAINS if cured else "",
@@ -1309,6 +1319,7 @@ class RepairSession:
         scope = None if whole else region
         self._kept_faces = []
         self._kept_inputs = []
+        self._kept_removals = []
 
         for item in package.plan:
             spent = self.clock() - started
@@ -1574,11 +1585,13 @@ class RepairSession:
         with run_grid(self.original.diagonal_mm):
             result = deviation.measure_deviation(
                 self._upload, self.shape, tuple(dict.fromkeys(self._kept_faces)),
-                budget_s=budget, diagonals=diagonals)
+                budget_s=budget, diagonals=diagonals, removed=tuple(self._kept_removals))
         out: dict = {"deviation_s": result.seconds}
         if result.faces is not None:
             out.update(deviation_samples=result.samples, deviation_faces=result.faces,
                        deviation_faces_skipped=result.faces_skipped)
+            if getattr(result, "basis", ""):
+                out["deviation_basis"] = result.basis
         if result.mm is not None:
             out["deviation_mm"] = result.mm
             return out, package_review.DEVIATION_MEASURED

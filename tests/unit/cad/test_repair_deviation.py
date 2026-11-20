@@ -201,3 +201,84 @@ def test_a_later_package_is_measured_against_the_upload_not_its_own_start(monkey
     second = session.try_package(pkg._package(session, unchanged={pkg._FACE}))
     assert second.committed, second.reason
     assert calls == ["original", "original"]
+
+
+# A FACE-REMOVING PACKAGE IS MEASURED (lane A's 0053_00531146 objection run: fix_small_faces
+# removes faces and declares none added or rebuilt, so the deviation selected nothing, read
+# "not measured: no faces", and the reviewer rejected on a field no author could ever satisfy).
+
+
+def _box(x=10.0, y=10.0, z=10.0, at=(0.0, 0.0, 0.0)):
+    pytest.importorskip("OCP")
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCP.gp import gp_Pnt
+
+    return BRepPrimAPI_MakeBox(gp_Pnt(*at), x, y, z).Shape()
+
+
+def _top_fingerprint(shape):
+    from meshpipeline.cad.repair.identity import quantum_for
+    from meshpipeline.cad.repair.operations import _diagonal_of, box_of
+
+    named = deviation._named_faces(shape, quantum=quantum_for(_diagonal_of(shape)))
+    for name, face in named:
+        box = box_of(face)
+        if box["bbox_min"][2] > 9.0:
+            return name
+    raise AssertionError("no top face")
+
+
+def test_a_removal_is_measured_on_the_faces_that_took_over_its_region():
+    before = after = _box()
+    result = deviation.measure_deviation(before, after,
+                                         removed=((before, (_top_fingerprint(before),)),))
+    assert result.basis == deviation.BASIS_ADJACENT
+    assert result.mm is not None and result.mm == pytest.approx(0.0, abs=1e-6)
+    assert result.samples > 0 and result.faces >= 4
+
+
+def test_a_removal_with_no_neighbour_left_falls_back_to_a_whole_part_sample():
+    after = _box()
+    elsewhere = _box(at=(100.0, 100.0, 100.0))
+    result = deviation.measure_deviation(after, after,
+                                         removed=((elsewhere, (_top_fingerprint(elsewhere),)),))
+    assert result.basis == deviation.BASIS_WHOLE
+    assert result.mm is not None and result.faces == 6 and result.samples > 0
+
+
+def test_no_removal_and_no_changed_face_still_reads_no_faces():
+    # Missing still reads missing: only a REMOVAL reaches the fallbacks.
+    shape = _box()
+    result = deviation.measure_deviation(shape, shape)
+    assert result.mm is None and result.faces == 0
+    assert result.basis == deviation.BASIS_CHANGED
+
+
+def test_a_kept_removal_is_handed_to_the_measurement_and_its_basis_reported(monkeypatch,
+                                                                         _no_probe_scan):
+    def removing(self, shape, targets, *, tolerance_mm):
+        self._clock.now += pkg._APPLY_S
+        return pkg.OpOutcome(shape="repaired",
+                             evidence={"area_delta_mm2": 0.0, "faces_removed": 1,
+                                       "removed_fingerprints": ["face:sliver"]})
+
+    monkeypatch.setattr(pkg._Op, "apply", removing)
+    result = deviation.DeviationResult(0.004, 32, 3, 0, 0.2, deviation.BASIS_ADJACENT)
+    verdict, calls = _commit(monkeypatch, probe="live", result=result)
+    assert calls[0][3]["removed"] == (("original", ("face:sliver",)),)
+    shown = verdict.to_dict()
+    assert shown["deviation_mm"] == 0.004
+    assert shown["deviation_basis"] == deviation.BASIS_ADJACENT
+
+
+def test_the_reviewer_is_shown_the_basis_and_a_measured_status():
+    from meshpipeline.cad.repair import package_review
+
+    evidence = package_review.evidence_of(
+        None, {"verdicts": [], "before": {}, "after": {}},
+        {"deviation_mm": 0.004, "deviation_samples": 32, "deviation_faces": 3,
+         "deviation_faces_skipped": 0, "deviation_basis": deviation.BASIS_ADJACENT,
+         "deviation_status": package_review.DEVIATION_MEASURED}, {}, {})
+    assert evidence["deviation_status"] == package_review.DEVIATION_MEASURED
+    assert evidence["deviation_basis"] == deviation.BASIS_ADJACENT
+    assert evidence["deviation_mm"] == 0.004

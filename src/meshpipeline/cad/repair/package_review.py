@@ -71,7 +71,10 @@ REVIEW_SYSTEM = (
     "rolled back, declared vs measured area and volume change, face and solid counts before and "
     "after, the part's scale (diagonal_mm, area_mm2_before, volume_mm3_before), the sampled "
     "largest distance of the changed faces from the upload as repair received it (with how many "
-    "samples and faces it rests on, and deviation_status saying whether and why not it was "
+    "samples and faces it rests on, deviation_basis saying which faces were sampled - edited_faces, "
+    "changed_faces, adjacent_to_removed (the faces now covering a face a removal took away) or "
+    "whole_part (a sparse sample of the whole part, when a removal left no neighbour) - and "
+    "deviation_status saying whether and why not it was "
     "measured), the mesh test's failure kinds before and after where the probe ran, the defect "
     "codes cleared, revealed and remaining in the region, and review_rejects: how many earlier "
     "repairs of this region were rejected by review, and why. a value \"unmeasured\" is a "
@@ -303,6 +306,8 @@ def evidence_of(package, verdict_delta: dict, deviation: dict, probe_before: dic
         "area_mm2_before": _number(upload.get("surface_area_mm2")),
         "volume_mm3_before": _number(upload.get("volume_mm3")),
         "deviation_status": _deviation_status(deviation),
+        **({"deviation_basis": str(deviation["deviation_basis"])}
+           if deviation.get("deviation_basis") else {}),
         "review_rejects": {"count": len(review_rejects),
                            "reasons": [str(r) for r in review_rejects]},
     }
