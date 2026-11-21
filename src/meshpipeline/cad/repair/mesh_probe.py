@@ -744,19 +744,24 @@ def _mesh_defects(shape, *, diagonal_mm: float, budget_s: float,
         # - that names this face, never the run's first pair, so a face whose pair really meets is
         # not read as another pair's sizing gap. One gap per pair, measured once.
         tags_of = {face: tag for tag, face in (mapping or {}).items()}
-        gaps: dict[tuple[int, int], float | None] = {}
+        owns = {}
         for defect in defects:
             tag = tags_of.get(int(defect.entity_index))
-            own = next((c for c in result.clashes if tag in c.surfaces), result.clashes[0])
-            if own.surfaces not in gaps:
-                gaps[own.surfaces] = _clash_gap(faces, mapping or {}, own, deadline=deadline)
+            owns[defect.entity_index] = next((c for c in result.clashes if tag in c.surfaces),
+                                             result.clashes[0])
+        gaps, evidence = _clash_gaps(faces, mapping or {}, list(owns.values()),
+                                     budget_s=min(CLASH_EVIDENCE_S, deadline - time.monotonic()))
+        for defect in defects:
+            own = owns[defect.entity_index]
+            if evidence:
+                defect.measurements["clash_evidence"] = evidence
             defect.measurements["located_by"] = LOCATED_BY_CLASH
             defect.measurements["clash_pairs"] = [list(c.surfaces) for c in result.clashes]
             defect.measurements["clash_pair"] = list(own.surfaces)
-            defect.measurements["clash_gap_mm"] = gaps[own.surfaces]
+            defect.measurements["clash_gap_mm"] = gaps.get(own.surfaces)
             # THE KIND AGREES WITH THE GAP: triangles that crossed between faces the kernel
             # measures apart are a GAP, and the triangle test's own word is kept beside it.
-            defect.measurements["clash_kind"] = reported_kind(own.kind, gaps[own.surfaces],
+            defect.measurements["clash_kind"] = reported_kind(own.kind, gaps.get(own.surfaces),
                                                               diagonal_mm)
             defect.measurements["clash_mesh_kind"] = own.kind
             defect.measurements["clash_point"] = list(own.point)
@@ -771,6 +776,106 @@ def _mesh_defects(shape, *, diagonal_mm: float, budget_s: float,
         # defect would make it read as in-region (unplaceable is admitted), so it is dropped.
         defects = [d for d in defects if in_region(d, within, diagonal_mm=diagonal_mm)]
     return tuple(defects)
+
+
+#: The wall, in seconds, for measuring every located clash pair's B-rep gap. MEASURED, wave 4:
+#: one BRepExtrema_DistShapeShape between two BSpline faces of abc/0054_00540003 ran 150+ s in the
+#: parent - uninterruptible kernel code that no deadline check between calls could stop - and the
+#: file took 53 min with one core pinned. So the gaps are measured in ONE fresh interpreter, killed
+#: at the wall, and are evidence, never worth the run.
+CLASH_EVIDENCE_S = 10.0
+
+
+def _gap_child_argv(path: str, pairs: list[list[int]]) -> list[str]:
+    """The gap child's command: a FRESH interpreter, exactly as the mesh child is - never a fork.
+    The worker that calls this is threaded, and a forked child inherits every lock another thread
+    held (the allocator's among them, which the kernel takes on its first allocation). A seam for
+    the tests."""
+    return [sys.executable, "-W", "ignore", "-m", "meshpipeline.cad.repair.mesh_probe",
+            "--gaps", path, json.dumps(pairs)]
+
+
+def _gaps_main(argv: Sequence[str]) -> int:
+    """`python -m meshpipeline.cad.repair.mesh_probe --gaps PATH PAIRS`: one JSON line, the B-rep
+    distance between faces I and J (1-based in PATH's face map) for each [I, J] of PAIRS."""
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+    from OCP.BRepTools import BRepTools
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopoDS import TopoDS_Shape
+
+    path, pairs = argv[0], json.loads(argv[1])
+    shape = TopoDS_Shape()
+    BRepTools.Read_s(shape, path, BRep_Builder())
+    faces = _indexed(shape, TopAbs_FACE)
+    gaps: list[float | None] = []
+    for a, b in pairs:
+        try:
+            extrema = BRepExtrema_DistShapeShape(faces.FindKey(int(a)), faces.FindKey(int(b)))
+            gaps.append(float(extrema.Value()) if extrema.IsDone() else None)
+        except Exception:  # noqa: BLE001 - an unmeasurable pair is unknown, never guessed
+            gaps.append(None)
+    sys.stdout.write("\n" + json.dumps({"gaps": gaps}) + "\n")
+    sys.stdout.flush()
+    return 0
+
+
+def _clash_gaps(faces, mapping: dict[int, int], clashes: list[Clash], *,
+                budget_s: float) -> tuple[dict[tuple[int, int], float | None], str]:
+    """Every distinct pair's gap, measured in one bounded FRESH interpreter: (gaps by pair, "") or,
+    when it ran out of `budget_s` or died, ({}, "budget_spent") - every gap then reads None
+    (unmeasured), never a guess. A pair with an unmapped face is None without asking. NEVER
+    RAISES, NEVER BLOCKS PAST `budget_s` (plus a few seconds to reap the process group)."""
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepTools import BRepTools
+    from OCP.TopoDS import TopoDS_Compound
+
+    pairs = list(dict.fromkeys(c.surfaces for c in clashes))
+    known = {pair: (mapping.get(pair[0]), mapping.get(pair[1])) for pair in pairs}
+    asked = [pair for pair, (a, b) in known.items() if a and b]
+    out: dict[tuple[int, int], float | None] = dict.fromkeys(pairs)
+    if not asked:
+        return out, ""
+    if budget_s <= 0:
+        return {}, "budget_spent"
+    try:
+        # ONLY THE FACES ASKED ABOUT go to the child, in a compound whose face map is their order.
+        order = list(dict.fromkeys(i for pair in asked for i in known[pair]))
+        builder, compound = BRep_Builder(), TopoDS_Compound()
+        builder.MakeCompound(compound)
+        for index in order:
+            builder.Add(compound, faces.FindKey(index))
+        position = {index: n + 1 for n, index in enumerate(order)}
+        with tempfile.TemporaryDirectory(prefix="mesh-gaps-") as tmp:
+            path = Path(tmp) / "faces.brep"
+            if not BRepTools.Write_s(compound, str(path)):
+                return {}, "budget_spent"
+            argv = _gap_child_argv(str(path), [[position[known[p][0]], position[known[p][1]]]
+                                               for p in asked])
+            proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                    stderr=subprocess.DEVNULL, start_new_session=True, text=True)
+            try:
+                text, _ = proc.communicate(timeout=float(budget_s))
+            except subprocess.TimeoutExpired:
+                _kill_group(proc)
+                try:
+                    proc.communicate(timeout=5)
+                except Exception:  # noqa: BLE001
+                    pass
+                return {}, "budget_spent"
+            finally:
+                if proc.poll() is None:
+                    _kill_group(proc)
+        lines = [ln for ln in (text or "").splitlines() if ln.strip()]
+        gaps = json.loads(lines[-1])["gaps"] if proc.returncode == 0 and lines else None
+        if not isinstance(gaps, list) or len(gaps) != len(asked):
+            return {}, "budget_spent"
+        for pair, gap in zip(asked, gaps, strict=True):
+            out[pair] = None if gap is None else float(gap)
+        return out, ""
+    except Exception as exc:  # noqa: BLE001 - evidence: a failure is "unmeasured", never a raise
+        logger.info("mesh_probe: clash gaps: %s: %s", type(exc).__name__, exc)
+        return {}, "budget_spent"
 
 
 def _clash_gap(faces, mapping: dict[int, int], clash: Clash, *,
@@ -809,4 +914,6 @@ def _tag_in_region(tag: int, box: Box, mapping: dict[int, int], faces, within: R
 
 
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["--gaps"]:
+        raise SystemExit(_gaps_main(sys.argv[2:]))
     raise SystemExit(_child_main(sys.argv[1:]))

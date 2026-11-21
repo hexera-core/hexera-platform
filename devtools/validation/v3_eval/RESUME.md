@@ -149,6 +149,10 @@ Notes:
   - The repair ran and its trace was uploaded (region 1 concluded), but the job never reached a mesh attempt and no repair_report was delivered.
   - The same part also ended `cancelled` in the 5d496416 smoke (job 0070038e).
   - Needs a look at what holds a job between repair and the first mesh attempt.
+- **Parent-process `BRepExtrema_DistShapeShape` in `mesh_probe` (lane G, after #503).** #503 moves the clash gap into a bounded child (`localize._bounded`). Wave 4 lost 53-60 min on `abc/0054_00540003` to one uninterruptible face-pair distance in the parent.
+  - Two older call sites still run the same kernel call in the parent, with the deadline checked only BETWEEN calls: `_contact_support_faces` (solid pairs, up to `CONTACT_PAIR_CAP`) and `_nearest_faces` (a PLC point to faces).
+  - Both are rarely reached now: gmsh 4.15 gives no PLC point, and clash locating runs before the contact inference. But one pathological pair can still pin a core past `CAD_REPAIR_TIMEOUT_S`.
+  - Fix: the #503 treatment (one bounded child per call, imports in the parent, `None` on expiry).
 
 - **A ShapeFix segfault kills the process.** `abc/0059_00597937_2e928f752b8806de5a85c14b_step_000.step` (sha256 fc4e4a440ffd...) segfaults (exit 139) right after OCC "FixShape failed with exception Geom_RectangularTrimmedSurface::U parameters out of range", on both attempts.
   - The eval harness now isolates it, but a production worker running the same repair would die with it.
