@@ -545,6 +545,17 @@ def status(bucket: str, commit: str) -> int:
     return 0
 
 
+#: Shard paths the collector never downloads: the delivered per-file artefacts (repaired STEPs,
+#: mesh-hints sidecars) stay in the bucket. Anchored so it reads the same whether the matcher
+#: searches or matches the path relative to the arm's root.
+PULL_EXCLUDE = r"^(.*/)?artefacts/.*$"
+
+
+def pull_command(root: str, dest: Path) -> list[str]:
+    """The argv that copies one arm's results to `dest`, without the artefacts (PULL_EXCLUDE)."""
+    return ["gcloud", "storage", "rsync", "-r", "-x", PULL_EXCLUDE, root, str(dest)]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -571,7 +582,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.pull:
         for arm in evalspec.ARMS:
             root = f"{bucket}/eval/{arm}-{args.commit[:12]}"
-            cmd = ["gcloud", "storage", "cp", "-r", f"{root}/*", str(source / arm)]
+            cmd = pull_command(root, source / arm)
             print(("DRY-RUN  " if args.dry_run else "") + " ".join(shlex.quote(c) for c in cmd))
             if args.dry_run:
                 continue

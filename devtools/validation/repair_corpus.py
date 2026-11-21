@@ -1875,6 +1875,20 @@ def _print_planner(summary: dict, cache: CachingRouter | None) -> None:
             print("  no model-directed operation was attempted")
 
 
+#: Where the run writes each `-repaired.step` (and anything written beside it, such as a mesh-hints
+#: sidecar). Unset, it is the same directory as always; the v3 eval points it inside the shard's
+#: output directory, because only that directory leaves the VM and a file left in the container's
+#: /tmp is gone when the container exits.
+SCRATCH_ENV = "REPAIR_CORPUS_OUT"
+
+
+def scratch_dir() -> Path:
+    """The directory repaired files go to: `$REPAIR_CORPUS_OUT` when set, else the system temp
+    directory's `repair_corpus_out` (unchanged behaviour)."""
+    override = os.environ.get(SCRATCH_ENV, "").strip()
+    return Path(override) if override else Path(tempfile.gettempdir()) / "repair_corpus_out"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("directories", nargs="*", help="directories holding .step/.stp files")
@@ -2093,7 +2107,7 @@ def main() -> int:
 
     # A real directory rather than a per-run temp one: the repaired files ARE the evidence, and
     # a reviewer wants to open them after the run rather than watch them be deleted.
-    scratch = Path(tempfile.gettempdir()) / "repair_corpus_out"
+    scratch = scratch_dir()
     scratch.mkdir(parents=True, exist_ok=True)
     print(f"repaired files are written to {scratch}")
 

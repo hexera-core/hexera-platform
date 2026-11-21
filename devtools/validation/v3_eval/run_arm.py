@@ -138,6 +138,15 @@ def clean_shard_dir(code_root: Path, inputs: Path, shard: str, into: Path) -> li
     return mine
 
 
+#: The shard's subdirectory for delivered per-file artefacts (`-repaired.step`, mesh-hints sidecars).
+ARTEFACTS_SUBDIR = "artefacts"
+
+
+def artefacts_dir(out: Path) -> Path:
+    """Where this shard's repaired files go: inside `out`, so the VM's sync carries them."""
+    return Path(out) / ARTEFACTS_SUBDIR
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -243,6 +252,11 @@ def main(argv: list[str] | None = None) -> int:
         prov["repair_corpus_argv"] = argv_rc
         prov["settings_seen"] = {k: str(v) for k, v in sorted(settings.items())
                                  if k.startswith(("CAD_REPAIR_", "CAD_INSPECT_"))}
+        # THE DELIVERED FILES LEAVE THE VM: repaired STEPs (and their sidecars) are written under
+        # the shard's output directory, which the VM syncs to the bucket; never committed.
+        artefacts = artefacts_dir(out)
+        os.environ[rc.SCRATCH_ENV] = str(artefacts)
+        prov["artefacts_dir"] = str(artefacts)
         sys.argv = ["repair_corpus.py", *argv_rc]
         code = int(rc.main() or 0)
         # Counted from the FILE, not the in-process counter: with --isolate-files each part runs in
