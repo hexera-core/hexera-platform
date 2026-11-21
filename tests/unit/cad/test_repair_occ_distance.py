@@ -117,3 +117,129 @@ def test_writes_that_spend_the_whole_budget_start_no_child(monkeypatch):
     assert popens == []
     assert out["min_distance_mm"] is None
     assert out["distance_status"] == "unmeasured: budget_spent"
+
+
+# --- many pairs in ONE child, with partial progress kept --------------------------------------
+# `_nearest_faces` measures a vertex against every candidate face, `_contact_support_faces` up to
+# eight solid pairs, and `deviation._distance_to` one sample at a time inside every rehearsal.
+# Each had a deadline checked only BETWEEN calls, so one slow call could not be interrupted. A
+# child per call would cost more in process starts than it saves, so a call measures its whole
+# batch in one child - and what the child finished before the budget ran out is kept, because
+# these callers already act on partial answers.
+
+def test_a_batch_is_measured_in_one_child(monkeypatch):
+    # The child prints JSON; the stub has to print the SAME JSON, so the dicts go in as Python
+    # literals via repr. (Embedding `json.dumps` output in a `-c` script plants a bare `null`,
+    # which is not Python - my first version of this test failed on exactly that.)
+    answers = [{"min_distance_mm": 1.0, "point_a": None, "point_b": None},
+               {"min_distance_mm": 2.0, "point_a": None, "point_b": None}]
+    script = "; ".join(["import json",
+                        f"print(json.dumps({answers[0]!r}))",
+                        f"print(json.dumps({answers[1]!r}))"])
+    starts = {"n": 0}
+    real = subprocess.Popen
+
+    def counting(*a, **k):
+        starts["n"] += 1
+        return real(*a, **k)
+
+    monkeypatch.setattr(subprocess, "Popen", counting)
+    monkeypatch.setattr(od, "_CHILD_CMD", [sys.executable, "-c", script])
+
+    out = od.distances([_Shape(), _Shape(), _Shape()], [(0, 1), (0, 2)], budget_s=5.0)
+
+    assert [o["min_distance_mm"] for o in out] == [1.0, 2.0]
+    assert starts["n"] == 1, "one child for the whole batch"
+
+
+def test_what_the_child_finished_before_the_budget_is_kept(monkeypatch):
+    """PARTIAL PROGRESS IS THE POINT. One slow pair must not discard the pairs already measured -
+    the old code's deadline between calls at least kept those."""
+    first = {"min_distance_mm": 7.0, "point_a": None, "point_b": None}
+    script = ("import json,sys,time; "
+              f"print(json.dumps({first!r})); sys.stdout.flush(); time.sleep(30)")
+    monkeypatch.setattr(od, "_CHILD_CMD", [sys.executable, "-c", script])
+
+    started = time.monotonic()
+    out = od.distances([_Shape(), _Shape(), _Shape()], [(0, 1), (0, 2)], budget_s=1.0)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 10.0, f"the bound did not hold: {elapsed:.1f}s"
+    assert out[0]["min_distance_mm"] == 7.0, "the finished pair survives"
+    assert out[1]["min_distance_mm"] is None, "the unfinished one is unmeasured, not 0"
+    assert "unmeasured" in out[1]["distance_status"]
+
+
+def test_an_empty_batch_starts_no_child(monkeypatch):
+    def _no_popen(*_a, **_k):
+        raise AssertionError("no child for an empty batch")
+
+    monkeypatch.setattr(subprocess, "Popen", _no_popen)
+    assert od.distances([_Shape()], [], budget_s=5.0) == []
+
+
+def test_a_batch_with_no_budget_is_all_unmeasured(monkeypatch):
+    def _no_popen(*_a, **_k):
+        raise AssertionError("no child without budget")
+
+    monkeypatch.setattr(subprocess, "Popen", _no_popen)
+
+    out = od.distances([_Shape(), _Shape()], [(0, 1)], budget_s=0.0)
+
+    assert len(out) == 1 and out[0]["min_distance_mm"] is None
+
+
+def test_batch_writes_are_taken_from_the_childs_allowance(monkeypatch):
+    """The batch budget covers preparing every shape and the manifest, not just the child."""
+    def _slow_write(shape, path):
+        time.sleep(0.3)
+        path.write_text("brep")
+
+    seen: list[float] = []
+    monkeypatch.setattr(od, "_write_brep", _slow_write)
+    monkeypatch.setattr(od, "_run_batch",
+                        lambda root, manifest, count, budget: seen.append(budget) or [])
+
+    od.distances([_Shape(), _Shape()], [(0, 1)], budget_s=2.0)
+
+    assert len(seen) == 1 and seen[0] <= 2.0 - 0.6 + 0.05, seen
+
+
+def test_batch_writes_that_spend_the_budget_start_no_child(monkeypatch):
+    def _slow_write(shape, path):
+        time.sleep(0.4)
+        path.write_text("brep")
+
+    popens: list[object] = []
+    monkeypatch.setattr(od, "_write_brep", _slow_write)
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: popens.append(a))
+
+    out = od.distances([_Shape(), _Shape(), _Shape()], [(0, 1), (1, 2)], budget_s=0.5)
+
+    assert popens == []
+    assert [o["distance_status"] for o in out] == ["unmeasured: budget_spent"] * 2
+
+
+def test_the_batch_child_answers_in_order_reuses_shapes_and_survives_a_failed_pair(
+        monkeypatch, tmp_path, capsys):
+    reads: list[str] = []
+
+    def _read(path):
+        reads.append(path.name)
+        return path.stem
+
+    def _measure(a, b):
+        if (a, b) == ("1", "2"):
+            raise RuntimeError("kernel refused")
+        return {"min_distance_mm": float(int(a) * 10 + int(b)), "point_a": None, "point_b": None}
+
+    monkeypatch.setattr(od, "_read_brep", _read)
+    monkeypatch.setattr(od, "_measure_here", _measure)
+    manifest = tmp_path / "pairs.json"
+    manifest.write_text(json.dumps([[0, 1], [1, 2], [0, 2]]))
+
+    assert od._child_main(["--batch", str(tmp_path), str(manifest)]) == 0
+
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert [line["min_distance_mm"] for line in lines] == [1.0, None, 2.0]
+    assert sorted(reads) == ["0.brep", "1.brep", "2.brep"], "each shape is read once"
