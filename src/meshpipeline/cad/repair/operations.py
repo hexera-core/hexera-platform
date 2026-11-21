@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
+from meshpipeline.cad.repair import bounded_child
 from meshpipeline.cad.repair.contracts import DefectCode
 from meshpipeline.cad.repair.identity import EntityMapping, EntityRef, fingerprint_of, quantum_for
 
@@ -83,6 +84,19 @@ class RepairOp(Protocol):
     #: operation that claims a defect, because a narrow fix that fails costs one entity's worth of
     #: rollback rather than the whole part's.
     scope: int
+    #: TRUE WHEN `apply` DOES THE SAME THING WHATEVER IT IS AIMED AT. Not a statement about how
+    #: much of the part the result touches - that is `scope` - but about whether the TARGETS are
+    #: an input to the kernel call at all. `ShapeFix_Wireframe`, `ShapeFix_Shape` and
+    #: `BRepBuilderAPI_Sewing` are handed the whole shape and no entity, so the targets only name
+    #: what was AIMED at, for the progress rule to judge against; `ShapeFix_Face` and the fills
+    #: are handed one resolved sub-shape and do different work for different ones.
+    #:
+    #: WHAT THE PLANNER DOES WITH IT: refuses to re-propose a true one on a shape it has already
+    #: run on, because that is the identical call and the identical answer (RunHistory
+    #: `tried_whole_shape`; 17 of the corpus run's 81 `target_remains` were exactly that).
+    #: Declaring it TRUE when the targets really do matter would throw repairs away, so it is
+    #: declared per operation and read with a default of False.
+    whole_shape: bool
 
     def targets_for(self, defect) -> tuple[EntityRef, ...]:
         """The entities this operation would aim at for one defect, or () if it cannot."""
@@ -235,6 +249,63 @@ def mapping_from_context(context, targets: tuple[EntityRef, ...], *,
     return EntityMapping(moved=moved, gone=frozenset(gone), basis="kernel")
 
 
+# THE OPERATIONS THAT ARE WHOLE-SHAPE, SAID OUT LOUD
+#
+# `fix_small_edges` (`ShapeFix_Wireframe`), `fix_shape_global` (`ShapeFix_Shape`) and `sew_faces`
+# (`BRepBuilderAPI_Sewing`) are thin wrappers over a kernel call that processes the ENTIRE part,
+# while the catalogue presents each as targeted: it names a target fingerprint and declares a
+# bound. Only `fix_face_boundary` (`ShapeFix_Face`), `rebuild_face` and `close_wire_gaps` are
+# genuinely per-entity. Measured over a 90-part run of the real-failure corpus, the gap cost:
+#   - 17 of the 99 non-kept operations were a whole-shape pass re-proposed on a shape it had
+#     already processed, each guaranteed to roll back;
+#   - a FOCUSED repair changed both plates of a two-plate part, because a focus scopes the WALK
+#     and not the REACH;
+#   - and the two declarations the session's guards read came back EMPTY from all three, so
+#     `session.try_op`'s held-for-review check (which reads `evidence["removed_fingerprints"]`)
+#     protected nothing against them, and `session._revealed` (which reads `OpOutcome.rebuilt`)
+#     had no way to tell damage one of them caused from a defect it merely exposed.
+#
+# WHY THEY ARE NOT NARROWED HERE, measured rather than assumed. A `ShapeBuild_ReShape` is a FLAT
+# TABLE of old -> new with no dependency graph, and a fixer's replacements are interdependent: a
+# small-edge merge removes an edge AND replaces both neighbouring edges, the shared vertex, and
+# every wire and face containing them; `ShapeFix_Shape`'s same-parameter mode rewrites an edge's
+# pcurve on BOTH faces that share it. Accept some records and revert others and the wire does not
+# close. Measured on the sliver-plate fixture of `tests/cad_fixtures.write_small_edge_step`:
+# applying any ONE of the five face records the merging fixer produced took the solid from 18
+# edges to 20 or 21 and from valid to INVALID, and on an open shell the same tear measured 18 ->
+# 21 edges while `BRepCheck` still said VALID - so validity is a backstop and never a gate. The
+# sound unit is therefore a connected COMPONENT of the record set, not "the target's records";
+# whether splitting a pass into its components is worth building is a question about how many
+# disjoint places a fixer touches per part, measured separately and not answered here.
+#
+# The narrow form is separately and firmly ruled out: handed only the sliver's owner faces,
+# `ShapeFix_Wireframe` extrapolated the diagonal from 141.77 mm to 270.00 mm and the max
+# tolerance from 1e-7 mm to 80 mm, bounded by neither `LimitTolerance` nor `SetMaxTolerance`. A
+# sub-shape has no surrounding topology to hold it still; the whole shape does.
+#
+# SO THE HONEST MOVE IS THE DECLARATION. Each of the three now reads its OWN history - pure
+# read-only bookkeeping off the context or the sewing it already builds - and declares every face
+# it rebuilt and every face it removed. That re-arms both guards immediately and is true
+# regardless of whether targeting is ever built.
+
+#: Operations whose kernel call processes the WHOLE PART however narrowly they are aimed, declared
+#: here so the author, the accounting and the reviewer know it without reading the kernel. Each
+#: one must populate `OpOutcome.rebuilt` and `evidence["removed_fingerprints"]` from its own
+#: history - the contract `tests/unit/cad/test_repair_whole_shape_declares.py` holds.
+#:
+#: `sew_faces` is the one that cannot be narrowed even in principle: sewing has no
+#: `ShapeBuild_ReShape` and no applicable record set - `IsModified`/`Modified` answer questions
+#: about a shell it has already built from scratch - and "sew this rim and not that one" is not a
+#: request the API can be given. Its reach is bounded the only way sewing's can be, PER BODY
+#: (`conservative._sew_loose_bodies`' rule): a compound's children are sewn one at a time and a
+#: child that already has a solid is left alone.
+#:
+#: `split_closed_faces` is NOT here: it is whole-BODY, not whole-shape, it already declares
+#: `faces_added`, `added` and `rebuilt`, and its docstring already states that every other closed
+#: face of the target's body is split with it.
+WHOLE_SHAPE_OPS: frozenset[str] = frozenset({"fix_small_edges", "fix_shape_global", "sew_faces"})
+
+
 # THE OPERATIONS
 
 
@@ -257,6 +328,19 @@ class FixSmallEdges:
     So the targets state what we AIMED at, the session's progress rule judges whether we ACHIEVED
     it, and the caps bound the damage. An honest outcome on a solid is often "no progress".
 
+    AND BECAUSE IT IS WHOLE-SHAPE, A SECOND AIM IS THE SAME CALL. One invocation merges every
+    small edge `ShapeFix_Wireframe` is willing to merge on the part, so once it has run, every
+    small edge still on the list is one the fixer has already declined - and re-aiming the
+    operation at another of them repeats that identical call with an identical result. Measured
+    over 90 parts of the real-failure corpus: of the 19 attempts kept, every single one was the
+    FIRST attempt on its file, and all 17 second-and-later attempts were rolled back
+    (docs/superpowers/specs/2026-11-19-target-remains-diagnosis.md). Suppressing the retry is the
+    planner's business, not this operation's - `targets_for` is handed one defect and knows
+    nothing of the run's history - and it is now suppressed there: this class declares
+    `whole_shape = True` and the planner will not re-propose it on a shape it has already run on
+    (`plan.RunHistory.tried_whole_shape`). It becomes proposable again as soon as the shape
+    changes, because the kernel may then have something to do.
+
     `ModeDropSmallEdges = False` DELIBERATELY: dropping an edge rather than merging it removes
     geometry, and removing geometry is an operator's decision.
 
@@ -267,6 +351,9 @@ class FixSmallEdges:
     name = "fix_small_edges"
     answers = frozenset({DefectCode.small_edge, DefectCode.degenerate_edge})
     scope = 1
+    #: ShapeFix_Wireframe is handed the WHOLE SHAPE and no entity: one call merges every small
+    #: edge it will merge, so a second aim is the same call (see the class note above).
+    whole_shape = True
 
     def targets_for(self, defect) -> tuple[EntityRef, ...]:
         if getattr(defect, "code", None) not in self.answers:
@@ -300,11 +387,28 @@ class FixSmallEdges:
 
         context = fixer.Context()
         result = context.Apply(shape)
+        diagonal = _diagonal(shape)
         mapping = mapping_from_context(context, targets, shape_before=shape,
-                                       diagonal_mm=_diagonal(shape))
-        return OpOutcome(shape=result, mapping=mapping,
+                                       diagonal_mm=diagonal)
+        # WHAT IT ACTUALLY TOUCHED, read from its own history rather than left silent. The pass is
+        # whole-shape, so these are faces nobody aimed at as well as the target's own: `rebuilt`
+        # is what `session._revealed` needs to tell damage this pass caused from a defect it
+        # exposed, and `removed_fingerprints` is what the held-for-review guard checks against the
+        # entities an engineer is still being asked about. Both were EMPTY before, which the
+        # guards could only read as "this operation touched nothing".
+        gone, rebuilt = _face_fates(context, shape, result)
+        rebuilt_names = _named_faces(rebuilt, diagonal_mm=diagonal)
+        return OpOutcome(shape=result, mapping=mapping, rebuilt=rebuilt_names,
                          evidence={"edges_targeted": len(targets),
-                                   "precision_mm": float(tolerance_mm)})
+                                   "precision_mm": float(tolerance_mm),
+                                   "faces_rebuilt": len(rebuilt_names),
+                                   # NOT `faces_removed`: that key is the sliver sweep's licence
+                                   # to remove exactly that many (caps.sanity_refusal), and this
+                                   # operation has no such licence. It reports the NAMES so the
+                                   # held guard can see them, and the face-count cap still
+                                   # refuses the removal itself.
+                                   "removed_fingerprints": sorted(
+                                       _named_faces(gone, diagonal_mm=diagonal))})
 
 
 def _closed_directions(face) -> tuple[bool, bool]:
@@ -397,6 +501,23 @@ def _split_fingerprints(owner, divided, *, diagonal_mm: float) -> tuple[str, ...
     return tuple(added)
 
 
+def _named_faces(faces, *, diagonal_mm: float) -> tuple[str, ...]:
+    """Name a LIST of faces at the WHOLE PART's quantum, in order, each once.
+
+    AT THE PART'S QUANTUM, NOT THE BODY'S, for the reason `_split_fingerprints` gives: a name
+    computed at a sub-body's own diagonal denotes nothing the session's next scan can find.
+    AN UNMEASURABLE FACE IS DROPPED rather than named: `fingerprint_of` answers "" for a face with
+    no extent, and a declaration carrying "" would claim every other unmeasurable face too.
+    """
+    quantum = quantum_for(diagonal_mm)
+    names: list[str] = []
+    for face in faces:
+        name = fingerprint_of("face", box_of(face), quantum=quantum)
+        if name and name not in names:
+            names.append(name)
+    return tuple(names)
+
+
 def _face_names(body, *, diagonal_mm: float) -> tuple[str, ...]:
     """Every face of `body`, named at the WHOLE PART's quantum (as `_split_fingerprints` names),
     each once - what `OpOutcome.rebuilt` carries."""
@@ -404,14 +525,9 @@ def _face_names(body, *, diagonal_mm: float) -> tuple[str, ...]:
 
     from meshpipeline.cad.repair.localize import _indexed
 
-    quantum = quantum_for(diagonal_mm)
     faces = _indexed(body, TopAbs_FACE)
-    names: list[str] = []
-    for i in range(1, faces.Extent() + 1):
-        name = fingerprint_of("face", box_of(faces.FindKey(i)), quantum=quantum)
-        if name and name not in names:
-            names.append(name)
-    return tuple(names)
+    return _named_faces([faces.FindKey(i) for i in range(1, faces.Extent() + 1)],
+                        diagonal_mm=diagonal_mm)
 
 
 class SplitClosedFaces:
@@ -454,6 +570,8 @@ class SplitClosedFaces:
     name = "split_closed_faces"
     answers = frozenset({DefectCode.mesh_periodic_surface})
     scope = 1
+    #: ShapeUpgrade_ShapeDivideClosed runs on the ONE owner body of the ONE named face.
+    whole_shape = False
 
     def targets_for(self, defect) -> tuple[EntityRef, ...]:
         import meshpipeline.settings.cad_repair as rcfg
@@ -538,6 +656,8 @@ class FixFaceBoundary:
     answers = frozenset({DefectCode.curve_inconsistency, DefectCode.wire_gap,
                          DefectCode.duplicate_surface_data})
     scope = 2
+    #: ShapeFix_Face is the narrowest call in the catalogue: one resolved face, spliced back.
+    whole_shape = False
 
     def targets_for(self, defect) -> tuple[EntityRef, ...]:
         if getattr(defect, "code", None) not in self.answers:
@@ -635,8 +755,14 @@ def _sliver_owner_faces(shape, edge) -> list:
     return [TopoDS.Face_s(owner) for owner in ancestors.FindFromKey(edge)]
 
 
-def _swept_away(context, shape, result) -> list:
-    """The faces of `shape` that do not survive into `result`, read from the fixer's history.
+def _face_fates(context, shape, result) -> tuple[list, list]:
+    """What a `ShapeBuild_ReShape`'s history did to every face: `(gone, rebuilt)`.
+
+    `gone` is the faces OF `shape` that do not survive into `result`. `rebuilt` is the faces OF
+    `result` that a recorded substitution produced - the result side deliberately, because
+    `OpOutcome.rebuilt` is read against the names the NEXT SCAN will compute, and that scan sees
+    the new geometry. A face the history recorded but replaced by itself is in neither list: it
+    was consulted and left alone.
 
     RESOLVED TRANSITIVELY, because one step is not the answer: a strip merged into its neighbour
     is recorded as replaced by a FACE, and that replacement is itself consumed by the next merge -
@@ -644,6 +770,9 @@ def _swept_away(context, shape, result) -> list:
     when its replacement chain ends at a face the RESULT actually contains; anything else - a null,
     a non-face, a face the result does not hold - is gone, and its area is measured from the
     ORIGINAL, which is the thing that was removed.
+
+    ONE WALK, TWO ANSWERS, because the two questions are the same chain read to the same end and
+    two walks would be two chances to disagree about a face.
     """
     from OCP.TopAbs import TopAbs_FACE
 
@@ -651,17 +780,18 @@ def _swept_away(context, shape, result) -> list:
 
     survivors = _indexed(result, TopAbs_FACE)
     originals = _indexed(shape, TopAbs_FACE)
-    gone = []
+    gone: list = []
+    rebuilt: list = []
     for i in range(1, originals.Extent() + 1):
         face = originals.FindKey(i)
-        current, dead = face, False
+        current, dead, moved = face, False, False
         for _ in range(originals.Extent() + 1):   # a chain longer than the face count is a cycle
             try:
                 if not context.IsRecorded(current):
                     break
                 value = context.Value(current)
             except Exception as exc:  # noqa: BLE001 - an unreadable record is not a survival
-                logger.debug("fix_small_faces: unreadable history for a face (%s)", exc)
+                logger.debug("operations: unreadable history for a face (%s)", exc)
                 dead = True
                 break
             if value is None or (hasattr(value, "IsNull") and value.IsNull()):
@@ -670,11 +800,19 @@ def _swept_away(context, shape, result) -> list:
             if value.IsSame(current):
                 break
             current = value
+            moved = True
         if not dead and (current.ShapeType() != TopAbs_FACE or not survivors.Contains(current)):
             dead = True
         if dead:
             gone.append(face)
-    return gone
+        elif moved:
+            rebuilt.append(current)
+    return gone, rebuilt
+
+
+def _swept_away(context, shape, result) -> list:
+    """The faces of `shape` that do not survive into `result` - `_face_fates`' first answer."""
+    return _face_fates(context, shape, result)[0]
 
 
 class FixSmallFaces:
@@ -738,6 +876,15 @@ class FixSmallFaces:
     name = "fix_small_faces"
     answers = frozenset({DefectCode.small_face, DefectCode.small_edge})
     scope = 3
+    #: FALSE DESPITE THE KERNEL CALL BEING WHOLE-SHAPE, and the reason is not a technicality.
+    #: `ShapeFix_FixSmallFace.Init(shape)` does sweep the part - but this operation DECLINES
+    #: BEFORE THE KERNEL on a per-target test (`not_small`), so two aims at two different entities
+    #: are two different questions, and one declined aim says nothing about the next. The
+    #: planner's rule is recorded at PROPOSAL, so declaring this true would let a `not_small`
+    #: decline on one sliver suppress a sweep that would have carried off another. That is a lost
+    #: repair, which the rule may never cost. The per-aim `declined` ledger already handles the
+    #: repeat this operation actually produces.
+    whole_shape = False
 
     def targets_for(self, defect) -> tuple[EntityRef, ...]:
         import meshpipeline.settings.cad_repair as rcfg
@@ -876,6 +1023,56 @@ class FixSmallFaces:
                                    "tolerance_mm": float(tolerance_mm)})
 
 
+def _sewing_deleted(sewing, *, diagonal_mm: float) -> tuple[str, ...]:
+    """The faces `BRepBuilderAPI_Sewing` DROPPED, by fingerprint. Sewing's own account.
+
+    ONE READER for two callers - `mapping_from_sewing`, which turns these into a `gone` set for
+    the targets, and `SewFaces.apply`, which declares them as `removed_fingerprints` for the
+    held-for-review guard. Two readings of the same list would be two chances to disagree about
+    which face left the part.
+
+    INDEXED, `DeletedFace(i)` for `i` in `1..NbDeletedFaces()`. The binding has no zero-argument
+    `DeletedFace()`: the reader this replaced called one, the TypeError was swallowed by its
+    broad except, and so sewing's deleted faces were never read at all - every sewing reported
+    "dropped nothing" whatever it dropped (measured: a sub-`MinTolerance` face, deleted and
+    counted by `NbDeletedFaces() == 1`, came back as an empty list).
+
+    NO DELETED FACES IS THE COMMON CASE, and a sewing that declines the question is not a failure:
+    both come back empty, which is what the callers treat as "it dropped nothing".
+    """
+    from OCP.Standard import Standard_Failure
+
+    faces: list = []
+    try:
+        for i in range(1, int(sewing.NbDeletedFaces()) + 1):
+            face = sewing.DeletedFace(i)
+            if face is not None and not face.IsNull():
+                faces.append(face)
+    except (RuntimeError, Standard_Failure) as exc:   # the kernel declining; our own bugs surface
+        logger.debug("operations: sewing reported no deleted faces (%s)", exc)
+    return _named_faces(faces, diagonal_mm=diagonal_mm)
+
+
+def _sewn_anew(before, after, *, diagonal_mm: float) -> tuple[str, ...]:
+    """The faces of `after` that are not faces of `before` BY KERNEL IDENTITY, by fingerprint.
+
+    Sewing's `rebuilt` declaration. It has no `ShapeBuild_ReShape` to read a face's fate from, so
+    the question is asked the only way the API leaves open: a face sewing replaced is a different
+    `TopoDS_Face` from the one that went in, and `TopTools_IndexedMapOfShape.Contains` is the
+    kernel's own identity test. A face sewing left alone is the SAME object and is excluded, which
+    is what makes the declaration a bound rather than a restatement of the face list.
+    """
+    from OCP.TopAbs import TopAbs_FACE
+
+    from meshpipeline.cad.repair.localize import _indexed
+
+    known = _indexed(before, TopAbs_FACE)
+    found = _indexed(after, TopAbs_FACE)
+    return _named_faces([face for i in range(1, found.Extent() + 1)
+                         if not known.Contains(face := found.FindKey(i))],
+                        diagonal_mm=diagonal_mm)
+
+
 def mapping_from_sewing(sewing, targets: tuple[EntityRef, ...], *,
                         shape_before, diagonal_mm: float) -> EntityMapping:
     """Read `BRepBuilderAPI_Sewing`'s own history into a fingerprint mapping.
@@ -884,23 +1081,10 @@ def mapping_from_sewing(sewing, targets: tuple[EntityRef, ...], *,
     calls: `IsModified`/`Modified` for a sub-shape that was replaced, `IsModifiedSubShape` for one
     that survived inside a modified parent, and the deleted-face list for faces it dropped.
     """
-    from OCP.TopAbs import TopAbs_FACE
-    from OCP.TopExp import TopExp_Explorer
-
     moved: dict[str, str] = {}
     gone: set[str] = set()
     quantum = quantum_for(diagonal_mm)
-
-    deleted_boxes: list[dict] = []
-    try:
-        explorer = TopExp_Explorer(sewing.DeletedFace(), TopAbs_FACE)
-        while explorer.More():
-            deleted_boxes.append(box_of(explorer.Current()))
-            explorer.Next()
-    except Exception as exc:  # noqa: BLE001 - no deleted faces is the common case
-        logger.debug("operations: sewing reported no deleted faces (%s)", exc)
-
-    deleted = {fingerprint_of("face", box, quantum=quantum) for box in deleted_boxes}
+    deleted = set(_sewing_deleted(sewing, diagonal_mm=diagonal_mm))
 
     for ref in targets:
         if not ref.targetable:
@@ -1000,11 +1184,25 @@ class SewFaces:
     The judgement is PER BODY, as `conservative._sew_loose_bodies` established: a STEP assembly is
     a compound of independent bodies, and a loose body beside a solid must be repairable without
     costing the solid.
+
+    WHAT IT CANNOT DO, MEASURED. Sewing joins boundaries that ALREADY COINCIDE; it invents no
+    surface. So for the commonest `open_shell` on the real-failure corpus - a shell missing a
+    face, whose free boundary is a closed loop with nothing on the other side of it - this
+    operation changes the topology and leaves the opening exactly where it was. On
+    0052_00523121_d60ba5a2d4967a56c0268417_step_002.step (a 22.5 mm tube, both ends open) it sewed
+    both bodies, took shells from 2 to 1, and left both circular rims free, to the micrometre.
+    That is an honest `target_remains`: the tool for a missing cap is `fill_planar_hole`, which
+    runs next. 14 of the corpus run's 81 `target_remains` are this
+    (docs/superpowers/specs/2026-11-19-target-remains-diagnosis.md), and they are not recoverable
+    by any change here - they are an argument about CAD_REPAIR_FILL_PLANAR_HOLES.
     """
 
     name = "sew_faces"
     answers = frozenset({DefectCode.open_shell})
     scope = 4
+    #: BRepBuilderAPI_Sewing is handed a BODY, never an entity: the targets name the rim that
+    #: prompted it and change nothing about the call (see WHAT IT CANNOT DO, MEASURED).
+    whole_shape = True
 
     def targets_for(self, defect) -> tuple[EntityRef, ...]:
         if getattr(defect, "code", None) not in self.answers:
@@ -1046,8 +1244,15 @@ class SewFaces:
                 return OpOutcome(shape=shape, evidence={"declined": "sewing produced nothing"})
             mapping = mapping_from_sewing(sewing, targets, shape_before=shape,
                                           diagonal_mm=diagonal)
-            return OpOutcome(shape=sewn, mapping=mapping,
-                             evidence={"bodies_sewn": 1, "tolerance_mm": float(tolerance_mm)})
+            # WHAT IT REBUILT AND WHAT IT DROPPED, from sewing's own account. Both were silent
+            # before, and this operation is whole-shape by construction (see WHOLE_SHAPE_OPS):
+            # it joins every coincident boundary on the body, not only the rim it was aimed at.
+            rebuilt_names = _sewn_anew(shape, sewn, diagonal_mm=diagonal)
+            return OpOutcome(shape=sewn, mapping=mapping, rebuilt=rebuilt_names,
+                             evidence={"bodies_sewn": 1, "tolerance_mm": float(tolerance_mm),
+                                       "faces_rebuilt": len(rebuilt_names),
+                                       "removed_fingerprints": sorted(
+                                           _sewing_deleted(sewing, diagonal_mm=diagonal))})
 
         if shape.ShapeType() != TopAbs_COMPOUND:
             return OpOutcome(shape=shape,
@@ -1066,6 +1271,11 @@ class SewFaces:
         builder.MakeCompound(rebuilt)
         sewn_count = 0
         last_sewing = None
+        # EVERY BODY'S DELETIONS, not the last body's. The mapping below still reads
+        # `last_sewing` - it speaks only for the targets, and a target lives in one body - but a
+        # DECLARATION that named only the last sewn body's dropped faces would leave the
+        # held-for-review guard blind to every body before it on an assembly.
+        dropped: list[str] = []
         for child in children:
             if measure(child).solids > 0:
                 builder.Add(rebuilt, child)
@@ -1077,6 +1287,7 @@ class SewFaces:
             builder.Add(rebuilt, joined)
             sewn_count += 1
             last_sewing = sewing
+            dropped.extend(_sewing_deleted(sewing, diagonal_mm=diagonal))
 
         if not sewn_count:
             # UNCHANGED MEANS UNCHANGED. Returning the original rather than a re-wrapped copy, so
@@ -1087,9 +1298,12 @@ class SewFaces:
         mapping = (mapping_from_sewing(last_sewing, targets, shape_before=shape,
                                        diagonal_mm=diagonal)
                    if last_sewing is not None else EntityMapping.empty())
-        return OpOutcome(shape=rebuilt, mapping=mapping,
+        rebuilt_names = _sewn_anew(shape, rebuilt, diagonal_mm=diagonal)
+        return OpOutcome(shape=rebuilt, mapping=mapping, rebuilt=rebuilt_names,
                          evidence={"bodies_sewn": sewn_count,
-                                   "tolerance_mm": float(tolerance_mm)})
+                                   "tolerance_mm": float(tolerance_mm),
+                                   "faces_rebuilt": len(rebuilt_names),
+                                   "removed_fingerprints": sorted(set(dropped))})
 
 
 class FillPlanarHole:
@@ -1126,6 +1340,8 @@ class FillPlanarHole:
     name = "fill_planar_hole"
     answers = frozenset({DefectCode.open_shell})
     scope = 5
+    #: The patch is built on the free wire containing the ONE named edge.
+    whole_shape = False
 
     def targets_for(self, defect) -> tuple[EntityRef, ...]:
         if getattr(defect, "code", None) not in self.answers:
@@ -1513,6 +1729,8 @@ class FillNonplanarHole:
     name = "fill_nonplanar_hole"
     answers = frozenset({DefectCode.open_shell})
     scope = 6
+    #: As fill_planar_hole: the one named rim's wire is what gets surfaced.
+    whole_shape = False
 
     def targets_for(self, defect) -> tuple[EntityRef, ...]:
         import meshpipeline.settings.cad_repair as rcfg
@@ -1614,8 +1832,9 @@ def _analyze_faces(shape, faces) -> list[tuple[int, int]] | None:
 
     NONE MEANS NO ANSWER - the bounded analysis timed out, crashed, or could not run - and is
     never read as "no crossing". Before the fix it proves no crossing worth healing; after it, it
-    proves nothing healed. In a forked child (`localize._bounded`), like the face scan, so a
-    kernel that runs away or writes into the faces it analyses does it to the child's copy.
+    proves nothing healed. In a bounded child (`localize._bounded`: a fresh interpreter, never a
+    fork), like the face scan, so a kernel that runs away or writes into the faces it analyses
+    does it to the child's copy, read back from BREP.
     """
     from OCP.BRep import BRep_Builder
     from OCP.TopAbs import TopAbs_FACE
@@ -1842,6 +2061,8 @@ class HealSelfIntersections:
     name = "heal_self_intersections"
     answers = frozenset({DefectCode.self_intersection})
     scope = 7
+    #: The heal rebuilds the named face and its partners, and nothing else.
+    whole_shape = False
 
     def targets_for(self, defect) -> tuple[EntityRef, ...]:
         import meshpipeline.settings.cad_repair as rcfg
@@ -2007,7 +2228,55 @@ def _centre(box) -> tuple[float, float, float] | None:
     return ((x0 + x1) / 2.0, (y0 + y1) / 2.0, (z0 + z1) / 2.0)
 
 
-def _meeting_partner(shape, body, face):
+#: What `fragment_bodies`' two kernel questions get. The pair is rebuilt on the strength of their
+#: answers, so an answer that does not arrive DECLINES the operation - it is not worth guessing.
+#: The face scan's own ceiling is the precedent (`HEAL_ANALYSIS_BUDGET_S`): a fragment never waits
+#: longer than a scan would.
+FRAGMENT_KERNEL_BUDGET_S = 30.0
+
+#: `_meeting_partner` could not finish asking. DISTINCT FROM None, which means the boxes say there
+#: is no candidate at all: one is geometry, the other is ignorance, and only the second is a
+#: reason to stop rather than to report `no_partner`.
+PARTNER_UNMEASURED = object()
+
+
+def _distances_to(face, *bodies) -> list[float | None]:
+    """How far `face` is from each of `bodies`, None for one the kernel could not measure.
+
+    ONLY EVER RUN IN THE CHILD (registered with `bounded_child` as `operations.face_distances`).
+    `BRepExtrema_DistShapeShape` cannot be interrupted, so this ran once per candidate in the
+    parent with nothing able to stop it - row 4 of the audit.
+
+    THE BODIES CROSS AS SHAPES, NOT AS INDICES. The dispatcher writes the operands as a compound
+    and reads them back in order, so the answers line up with the candidates positionally; asking
+    the child to re-walk a round-tripped shape and trust that its `_indexed` order matches the
+    parent's would be an assumption nothing here proves.
+    """
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+
+    out: list[float | None] = []
+    for body in bodies:
+        try:
+            extrema = BRepExtrema_DistShapeShape(face, body)
+            out.append(float(extrema.Value()) if extrema.IsDone() else None)
+        except Exception as exc:  # noqa: BLE001 - an unmeasurable pair is merely not nearest
+            logger.debug("fragment_bodies: no distance to a candidate body (%s)", exc)
+            out.append(None)
+    return out
+
+
+def _bounded_common_volume(a, b) -> float | None:
+    """`_common_volume` in a bounded child, or None - which the caller declines on, exactly as it
+    declines on a kernel that could not compute it.
+
+    Row 5. The function was already registered with the dispatcher and `investigator_tools`
+    already took that route; `apply` called it straight, so on the fragment path the Boolean was
+    as unbounded as it ever was. REGISTERING A KERNEL IS NOT BOUNDING IT: the call site is.
+    """
+    return bounded_child.run(_common_volume, (a, b), budget_s=FRAGMENT_KERNEL_BUDGET_S)
+
+
+def _meeting_partner(shape, body, face, *, budget_s: float = FRAGMENT_KERNEL_BUDGET_S):
     """The solid other than `body` whose bounding box meets `body`'s, nearest the failing `face`,
     or None when no other solid's box meets it.
 
@@ -2021,7 +2290,6 @@ def _meeting_partner(shape, body, face):
     there is nothing to compare, and the LOWEST-INDEX candidate (TopExp's order) wins: arbitrary,
     but deterministic.
     """
-    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
     from OCP.TopAbs import TopAbs_SOLID
 
     from meshpipeline.cad.repair.localize import _indexed
@@ -2029,7 +2297,7 @@ def _meeting_partner(shape, body, face):
     solids = _indexed(shape, TopAbs_SOLID)
     own = _bnd(body)
     aim = _centre(_bnd(face))
-    best, best_key = None, None
+    candidates: list[tuple[int, object, object]] = []
     for index in range(1, solids.Extent() + 1):
         other = solids.FindKey(index)
         if other.IsSame(body):
@@ -2037,17 +2305,23 @@ def _meeting_partner(shape, body, face):
         box = _bnd(other)
         if own.IsOut(box):
             continue
-        try:
-            extrema = BRepExtrema_DistShapeShape(face, other)
-            distance = float(extrema.Value()) if extrema.IsDone() else float("inf")
-        except Exception as exc:  # noqa: BLE001 - an unmeasurable pair is merely not nearest
-            logger.debug("fragment_bodies: no distance to solid %d (%s)", index, exc)
-            distance = float("inf")
+        candidates.append((index, other, box))
+    if not candidates:
+        return None                      # the boxes say so: `no_partner`, and no child is started
+    measured = bounded_child.run(_distances_to, (face, *(other for _i, other, _b in candidates)),
+                                 budget_s=budget_s)
+    if measured is None or len(measured) != len(candidates):
+        # The child was killed, failed, or answered about something else. Which body the failing
+        # face belongs to is then undetermined, and the operation declines rather than rebuild a
+        # pair chosen from a partial answer.
+        return PARTNER_UNMEASURED
+    best, best_key = None, None
+    for (index, other, box), distance in zip(candidates, measured, strict=True):
         centre = _centre(box)
         offset = (0.0 if aim is None or centre is None
                   else sum((a - c) ** 2 for a, c in zip(aim, centre)) ** 0.5)
         # Distances are rounded so kernel noise in the last digits does not decide a tie.
-        key = (round(distance, 9), offset, index)
+        key = (round(float("inf") if distance is None else float(distance), 9), offset, index)
         if best_key is None or key < best_key:
             best, best_key = other, key
     return best
@@ -2111,7 +2385,7 @@ def _common_volume(a, b) -> float | None:
         return None
 
 
-def _general_fuse(a, b, faces) -> tuple[tuple[tuple, tuple], object]:
+def _general_fuse(a, b, faces) -> tuple[tuple[tuple, tuple], Any]:
     """Run the general fuse (`BOPAlgo_Builder`) over the TWO bodies only.
 
     Returns `((pieces of a, pieces of b), history)`: each body's images (empty when the fuse left
@@ -2154,6 +2428,92 @@ def _general_fuse(a, b, faces) -> tuple[tuple[tuple, tuple], object]:
             assembler.Add(compound, image)
         history.Replace(face, compound)
     return (pieces(a), pieces(b)), history
+
+
+#: What the child reports about one targeted face, in the three answers
+#: `operations.mapping_from_context` actually reads off a history: it was replaced by an image, it
+#: is gone (recorded, null value), or it was never recorded at all.
+_FUSE_IMAGE = "image"
+_FUSE_GONE = "gone"
+_FUSE_ABSENT = "absent"
+
+
+def _fuse_kernel(a, b, *faces) -> dict:
+    """`_general_fuse`, with its history flattened into facts a wire can carry.
+
+    ONLY EVER RUN IN THE CHILD (registered as `operations.general_fuse`). Row 6 of the audit, and
+    the blocker was never the Boolean: `BOPAlgo_Builder` is uninterruptible, but the ANSWER is a
+    `ShapeBuild_ReShape`, and no JSON and no BREP file can carry a kernel object. So the child
+    QUERIES the history it built - exactly the three questions `mapping_from_context` asks - and
+    sends the answers, with the image shapes riding the dispatcher's BREP answer file.
+    """
+    (a_pieces, b_pieces), history = _general_fuse(a, b, faces)
+    fate: list[dict] = []
+    # BOTH BODIES COME BACK, MODIFIED OR NOT, AND THIS IS THE WHOLE POINT OF THE ANSWER'S SHAPE.
+    # The fuse's images share the new contact face WITH THE OTHER BODY - and when the kernel
+    # leaves one body alone (a small box pressed into a big box's side is not cut), the shared
+    # face is an object of THAT UNTOUCHED BODY. In-process that identity is what makes the
+    # interface conformal. It cannot cross a process boundary: the parent's untouched body is a
+    # different object from the child's. So the child sends ITS copy of each body - both from the
+    # one builder, so they share with each other - and the parent splices both. Sending only the
+    # modified body gave a result with ZERO shared faces, which is the opposite of what
+    # `fragment_bodies` exists to produce (native: two touching boxes).
+    for face in faces:
+        if not history.IsRecorded(face):
+            fate.append({"state": _FUSE_ABSENT})
+            continue
+        value = history.Value(face)
+        if value is None or value.IsNull():
+            fate.append({"state": _FUSE_GONE})
+            continue
+        fate.append({"state": _FUSE_IMAGE, "image": value})
+    return {"a": list(a_pieces) or [a], "b": list(b_pieces) or [b],
+            # WHAT THE KERNEL ACTUALLY DID, kept apart from what to splice: `nothing_fragmented`
+            # and `body_split` are judgements about the fuse, and a body sent back untouched must
+            # not read as a body the fuse rebuilt.
+            "a_pieces": len(a_pieces), "b_pieces": len(b_pieces), "fate": fate}
+
+
+def _fuse_in_child(a, b, faces, *, budget_s: float = FRAGMENT_KERNEL_BUDGET_S):
+    """`((a's shape, b's shape), (a's piece count, b's piece count), history)`, or None.
+
+    EACH BODY'S SHAPE IS ALWAYS THERE and the COUNTS say what the fuse did: a count of 0 is a
+    body the kernel left alone, whose shape is the child's own copy rather than an image. The
+    caller splices both - see `_fuse_kernel` for why identity makes that necessary - and judges
+    `nothing_fragmented` and `body_split` on the counts.
+
+    The history is REBUILT HERE from the child's facts, so `mapping_from_context` reads it like
+    any operation's own context and nothing downstream learns that the Boolean happened
+    elsewhere. Rebuilding is bookkeeping - `ShapeBuild_ReShape` records what it is told - and not
+    a second Boolean.
+
+    None when the child was killed, failed, or answered about a different number of faces: the
+    operation declines rather than splice a fuse it cannot account for.
+    """
+    from OCP.ShapeBuild import ShapeBuild_ReShape
+
+    answer = bounded_child.run(_fuse_kernel, (a, b, *faces), budget_s=budget_s)
+    if not isinstance(answer, dict):
+        return None
+    fate = answer.get("fate")
+    if not isinstance(fate, list) or len(fate) != len(faces):
+        return None
+    counts = (answer.get("a_pieces"), answer.get("b_pieces"))
+    if not all(isinstance(n, int) for n in counts):
+        return None
+    history = ShapeBuild_ReShape()
+    for face, recorded in zip(faces, fate, strict=True):
+        state = str((recorded or {}).get("state", _FUSE_ABSENT))
+        if state == _FUSE_GONE:
+            # RECORDED WITH A NULL VALUE is how the kernel says "gone", and how
+            # `mapping_from_context` reads it. `Remove` is what produces that pair.
+            history.Remove(face)
+        elif state == _FUSE_IMAGE:
+            image = (recorded or {}).get("image")
+            if image is None:
+                return None
+            history.Replace(face, image)
+    return (tuple(answer.get("a") or ()), tuple(answer.get("b") or ())), counts, history
 
 
 def _tally(shape) -> tuple[int, int, float]:
@@ -2224,6 +2584,8 @@ class FragmentBodies:
     answers = frozenset({DefectCode.mesh_edge_through_face})
     #: Two whole bodies: wider than any face fix, narrower than the whole-shape pass.
     scope = 8
+    #: Fragmentation runs on the bodies the ONE named face belongs to.
+    whole_shape = False
 
     def targets_for(self, defect) -> tuple[EntityRef, ...]:
         import meshpipeline.settings.cad_repair as rcfg
@@ -2276,13 +2638,17 @@ class FragmentBodies:
             return declined(f"already_shared ({len(owners)} solids already own the face)")
         owner = owners[0]
         partner = _meeting_partner(shape, owner, face)
+        if partner is PARTNER_UNMEASURED:
+            return declined("unmeasured (the distances from the failing face to the candidate "
+                            "bodies did not finish in their budget; which body the face belongs "
+                            "to is then a guess, and this operation rebuilds the pair it picks)")
         if partner is None:
             return declined("no_partner (no other solid's bounding box meets the owner's)")
         if _shares_with_third_body((owner, partner), _face_owner_sets(shape)):
             return declined("shared_with_third_body (a body of the pair already shares a face "
                             "with a body outside it; rebuilding the pair would break that "
                             "interface)")
-        common = _common_volume(owner, partner)
+        common = _bounded_common_volume(owner, partner)
         if common is None:
             return declined("unmeasured (the kernel could not measure the bodies' common "
                             "volume; an unmeasured pair is never read as touching)")
@@ -2290,15 +2656,27 @@ class FragmentBodies:
             return declined(f"interpenetrating (common volume {common:.6g} mm3): "
                             f"{INTERPENETRATION_REASON}", common_volume_mm3=float(common))
 
-        (owner_pieces, partner_pieces), history = _general_fuse(owner, partner, (face,))
-        if not owner_pieces and not partner_pieces:
+        fused = _fuse_in_child(owner, partner, (face,))
+        if fused is None:
+            return declined("unmeasured (the general fuse did not finish in its budget, so what "
+                            "it did to the pair cannot be accounted for)",
+                            common_volume_mm3=float(common))
+        (owner_images, partner_images), (owner_cut, partner_cut), history = fused
+        if not owner_cut and not partner_cut:
             return declined("nothing_fragmented (the fuse modified neither body: there is no "
                             "contact to share)", common_volume_mm3=float(common))
-        if len(owner_pieces) > 1 or len(partner_pieces) > 1:
-            return declined(f"body_split (the fuse cut the bodies into {len(owner_pieces)} and "
-                            f"{len(partner_pieces)} pieces)", common_volume_mm3=float(common))
-        replacements = [(body, pieces[0]) for body, pieces in
-                        ((owner, owner_pieces), (partner, partner_pieces)) if pieces]
+        if owner_cut > 1 or partner_cut > 1:
+            return declined(f"body_split (the fuse cut the bodies into {owner_cut} and "
+                            f"{partner_cut} pieces)", common_volume_mm3=float(common))
+        if not owner_images or not partner_images:
+            return declined("unmeasured (the fuse did not account for both bodies)",
+                            common_volume_mm3=float(common))
+        # BOTH BODIES ARE REPLACED, so the pair's shared face is ONE object (`_fuse_kernel`).
+        replacements = [(owner, owner_images[0]), (partner, partner_images[0])]
+        # ONLY WHAT THE FUSE ACTUALLY CUT IS "rebuilt". A body it left alone comes back as the
+        # child's identical copy, with the same fingerprints, and calling its faces rebuilt would
+        # hand the revealed and new-defect rules a part they would read as all-new geometry.
+        rebuilt_pairs = [pair for pair, cut in zip(replacements, (owner_cut, partner_cut)) if cut]
         spliced, _ = splice(shape, replacements)
 
         solids_before, faces_before, area_before = _tally(shape)
@@ -2314,7 +2692,7 @@ class FragmentBodies:
         return OpOutcome(shape=spliced, mapping=mapping,
                          added=_split_fingerprints(shape, spliced, diagonal_mm=diagonal),
                          rebuilt=tuple(dict.fromkeys(
-                             name for _body, image in replacements
+                             name for _body, image in rebuilt_pairs
                              for name in _face_names(image, diagonal_mm=diagonal))),
                          evidence={"solids_delta": int(solids_delta),
                                    "faces_added": int(faces_after - faces_before),
@@ -2463,6 +2841,8 @@ class RebuildFace:
     answers = frozenset({DefectCode.mesh_overlapping_facets})
     #: One face (re-stitched into its owner): as narrow as the face fixer.
     scope = 2
+    #: One named face is rebuilt and re-stitched into its owner.
+    whole_shape = False
 
     def targets_for(self, defect) -> tuple[EntityRef, ...]:
         import meshpipeline.settings.cad_repair as rcfg
@@ -2546,6 +2926,455 @@ class RebuildFace:
                       "faces_targeted": 1, "precision_mm": float(tolerance_mm)})
 
 
+#: What `close_wire_gaps` says, in its evidence, about the curve ends FixGaps3d reshapes.
+CURVE_ENDS_UNMEASURED = ("curve-end displacement is bounded by SetMaxTolerance(tolerance_mm) "
+                         "but NOT measured")
+
+
+@dataclass(frozen=True, slots=True)
+class WireClosure:
+    """What `_close_gaps` did to one owning body: everything `CloseWireGaps` judges and declares."""
+
+    #: The owning body with the face's wires closed and its neighbours re-stitched.
+    owner: object
+    #: The target face as it stands in `owner`.
+    face: object
+    #: Did any pass report a fix? False is the kernel saying there was nothing to close.
+    fixed: bool
+    #: Is a gap still measurable in the target's wires afterwards (`_wire_gap_mm` > 0)?
+    still_open: bool
+    #: The displacement, in mm, of every vertex of the body that moved - measured, not predicted.
+    moves: tuple[float, ...]
+    #: Every face of `owner` the closure rewrote, found STRUCTURALLY (a face of `owner` that is
+    #: not a face of the body handed in): the target first, then every neighbour either pass
+    #: changed - a moved vertex or a reshaped shared curve alike.
+    touched: tuple
+    #: The largest vertex or edge tolerance on the touched faces afterwards, mm. Reported because
+    #: the merge raises it (measured: 0.025 on a 0.05 mm gap, kept after the curves were brought
+    #: in) - the session's CAD_REPAIR_MAX_TOLERANCE_MM cap judges it, the reviewer reads it.
+    max_tolerance_mm: float = 0.0
+
+
+def _wires_of(face) -> list:
+    from OCP.TopAbs import TopAbs_WIRE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    wires, explorer = [], TopExp_Explorer(face, TopAbs_WIRE)
+    while explorer.More():
+        wires.append(TopoDS.Wire_s(explorer.Current()))
+        explorer.Next()
+    return wires
+
+
+def _vertices_of(shape) -> list:
+    from OCP.TopAbs import TopAbs_VERTEX
+
+    from meshpipeline.cad.repair.localize import _indexed
+
+    found = _indexed(shape, TopAbs_VERTEX)
+    return [found.FindKey(i) for i in range(1, found.Extent() + 1)]
+
+
+def _joint_precision(wire) -> float:
+    """The precision below which a gap in `wire` is NOT a gap: its largest vertex tolerance.
+
+    WHY NOT `Precision::Confusion`. FixGaps3d closes every curve-end gap wider than the precision
+    it is handed, and a valid face carries such gaps by construction - its vertex tolerances cover
+    them. Measured on the open-loop corpus face (00508775 face 29, valid, tolerance <= 1.5e-4):
+    at 1e-7 FixGaps3d "fixed" a 1.3e-6 mm gap and returned True; at 1e-5 and above it returned
+    False. A gap the kernel's own tolerance already closes is not an open loop, and "fixing" it
+    would turn a not_closed into a kept no-op.
+    """
+    from OCP.BRep import BRep_Tool
+    from OCP.Precision import Precision
+    from OCP.TopoDS import TopoDS
+
+    tolerances = [BRep_Tool.Tolerance_s(TopoDS.Vertex_s(v)) for v in _vertices_of(wire)]
+    return max([float(Precision.Confusion_s()), *tolerances])
+
+
+def _edge_ends(wire) -> list[tuple[object, object | None]]:
+    """Every edge END of `wire` as `(vertex, the 3D curve's point at that end)` - two per edge, the
+    point None for an edge with no 3D curve (a degenerate one). Taken from each edge FORWARD, so
+    the first vertex is the curve's first parameter whatever the edge's use in the wire."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FORWARD
+    from OCP.TopExp import TopExp, TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    ends: list[tuple[object, object | None]] = []
+    explorer = TopExp_Explorer(wire, TopAbs_EDGE)
+    while explorer.More():
+        edge = TopoDS.Edge_s(explorer.Current().Oriented(TopAbs_FORWARD))
+        first, last = TopExp.FirstVertex_s(edge), TopExp.LastVertex_s(edge)
+        points: tuple = (None, None)
+        if not BRep_Tool.Degenerated_s(edge) and BRep_Tool.IsGeometric_s(edge):
+            curve = BRepAdaptor_Curve(edge)
+            points = (curve.Value(curve.FirstParameter()), curve.Value(curve.LastParameter()))
+        ends.extend(((first, points[0]), (last, points[1])))
+        explorer.Next()
+    return ends
+
+
+def _wire_gap_mm(face, *, precision: float | None = None) -> float:
+    """The widest gap, in mm, in any of `face`'s wires; 0.0 when every wire is closed.
+
+    Two kinds, both read from the edges' INCIDENCE, never from the order the wire stores them in
+    (measured: BRepPrimAPI_MakeBox stores each face's edges in reverse walking order, so "edge i's
+    end meets edge i+1's start" called every box face 36 mm open):
+      a DISCONNECTION - a LOOSE vertex, the end of only one edge (a closed wire uses every vertex
+        twice). Its gap is the distance to the nearest other loose vertex; a lone loose vertex
+        has nothing to close against and reads as infinite.
+      a CURVE GAP - at a vertex two or more edges share, the widest distance between their 3D
+        curve ends, counted only above `precision` (the wire's own `_joint_precision` when not
+        told): below it the vertex tolerance already closes the joint.
+
+    AFTER A CLOSURE THE CALLER PASSES THE PRECISION MEASURED BEFORE IT: merging two vertices raises
+    the merged vertex's tolerance to cover both old ends (measured: 1e-7 -> 0.025 on a 0.05 mm
+    gap), so the wire's own precision afterwards would call an unclosed curve gap closed.
+    """
+    from OCP.BRep import BRep_Tool
+    from OCP.TopoDS import TopoDS
+
+    widest = 0.0
+    for wire in _wires_of(face):
+        allowed = _joint_precision(wire) if precision is None else float(precision)
+        groups: list = []
+        for vertex, point in _edge_ends(wire):
+            for seen, points in groups:
+                if seen.IsSame(vertex):
+                    points.append(point)
+                    break
+            else:
+                groups.append((vertex, [point]))
+        loose = [BRep_Tool.Pnt_s(TopoDS.Vertex_s(v)) for v, points in groups if len(points) == 1]
+        if len(loose) == 1:
+            return float("inf")
+        for i, here in enumerate(loose):
+            nearest = min(here.Distance(there) for j, there in enumerate(loose) if j != i)
+            widest = max(widest, nearest)
+        for _, points in groups:
+            known = [p for p in points if p is not None]
+            for i, a in enumerate(known):
+                for b in known[i + 1:]:
+                    distance = a.Distance(b)
+                    if distance > allowed:
+                        widest = max(widest, distance)
+    return float(widest)
+
+
+def _close_gaps(owner, face, *, tolerance_mm: float) -> WireClosure:
+    """Close `face`'s wire gaps inside `owner` (which must be the caller's own COPY).
+
+    TWO PASSES, measured necessary on a synthetic open square sharing an edge with a neighbour:
+      1. FixConnected(tolerance_mm) on the face's wires: disconnected vertices within the run's
+         tolerance are merged into one - the step that MOVES VERTICES (to their midpoint). Its
+         history is applied to the whole owner, so every neighbour holding a merged vertex holds
+         the new one.
+      2. FixGaps3d on the target AND every face carrying a moved vertex, EACH AT ITS OWN
+         precision measured before the merge (`_joint_precision` over the vertices the merge did
+         not create): the curves are brought to the moved vertex. Left out, the neighbour kept a
+         curve ending 0.025 mm from its vertex and the owner was BRepCheck-invalid. The target's
+         precision is never a neighbour's: a joint the neighbour's own tolerance closes is not a
+         gap (the face-29 lesson in `_joint_precision`).
+    Then `ShapeFix_Edge` same-parameter and vertex-tolerance fixes on the touched faces' edges
+    (the curves changed under their pcurves). Nothing is removed and nothing reordered.
+
+    TOUCHED IS STRUCTURAL: every face of the result that is not a face of the owner handed in -
+    anything either pass rewrote, including a neighbour that only shares an edge whose CURVE was
+    reshaped (no vertex of it moved). Measured: a pure curve gap on a shared edge renamed the
+    neighbour, which a moved-vertex test never saw.
+
+    THE MOVES ARE MEASURED THROUGH THE HISTORY: each original vertex is followed through both
+    passes' contexts to what it became, and the distance between the two points is its move.
+    CURVE ENDS ARE NOT MEASURED: FixGaps3d's displacement of a curve end is bounded by
+    `SetMaxTolerance(tolerance_mm)`, and that bound is all that is known of it.
+    """
+    from OCP.BRep import BRep_Tool
+    from OCP.Precision import Precision
+    from OCP.ShapeBuild import ShapeBuild_ReShape
+    from OCP.ShapeFix import ShapeFix_Edge, ShapeFix_Wire
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_VERTEX
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    from meshpipeline.cad.repair.localize import _indexed
+
+    face = TopoDS.Face_s(face)
+    # ONE PRECISION FOR THE WHOLE CLOSURE, measured BEFORE it (see `_wire_gap_mm`): the merge
+    # raises the merged vertex's tolerance, and a precision read afterwards would excuse the gap.
+    precision = max(_joint_precision(wire) for wire in _wires_of(face))
+    merge = ShapeBuild_ReShape()
+    merged = False
+    for wire in _wires_of(face):
+        fixer = ShapeFix_Wire(wire, face, precision)
+        fixer.SetContext(merge)
+        fixer.SetMaxTolerance(tolerance_mm)
+        if fixer.FixConnected(tolerance_mm):
+            merged = True
+            merge.Replace(wire, fixer.Wire())
+    merged_owner = merge.Apply(owner) if merged else owner
+    target = TopoDS.Face_s(merge.Apply(face)) if merged else face
+
+    before = _vertices_of(owner)
+    # A MAP, not a scan: an assembly body carries thousands of vertices (00509950: 2885 faces).
+    known = _indexed(owner, TopAbs_VERTEX)
+    new_vertices = [v for v in _vertices_of(merged_owner) if not known.Contains(v)]
+    gaps = ShapeBuild_ReShape()
+    closed = False
+    for candidate in _faces_of(merged_owner):
+        is_target = candidate.IsSame(target)
+        carries = [v for v in _vertices_of(candidate) if any(v.IsSame(n) for n in new_vertices)]
+        if not (is_target or carries):
+            continue
+        # THE NEIGHBOUR'S OWN PRECISION: its vertices' tolerances, those the merge created (and
+        # inflated) left out - what its joints were closed at before this operation.
+        own = precision if is_target else max(
+            [float(Precision.Confusion_s()),
+             *(BRep_Tool.Tolerance_s(TopoDS.Vertex_s(v)) for v in _vertices_of(candidate)
+               if not any(v.IsSame(n) for n in new_vertices))])
+        for original in _wires_of(candidate):
+            # A shared edge the previous face's pass already rewrote is picked up here - but the
+            # replacement is recorded against the ORIGINAL wire, the one the faces still hold.
+            wire = TopoDS.Wire_s(gaps.Apply(original))
+            fixer = ShapeFix_Wire(wire, candidate, own)
+            fixer.SetContext(gaps)
+            fixer.SetMaxTolerance(tolerance_mm)
+            if fixer.FixGaps3d():
+                closed = True
+                gaps.Replace(original, fixer.Wire())
+    result = gaps.Apply(merged_owner)
+    target = TopoDS.Face_s(gaps.Apply(target))
+    untouched = _indexed(owner, TopAbs_FACE)
+    touched = [f for f in _faces_of(result) if not untouched.Contains(f)]
+
+    finisher = ShapeFix_Edge()
+    for touched_face in touched:
+        explorer = TopExp_Explorer(touched_face, TopAbs_EDGE)
+        while explorer.More():
+            edge = TopoDS.Edge_s(explorer.Current())
+            finisher.FixSameParameter(edge)
+            finisher.FixVertexTolerance(edge, touched_face)
+            explorer.Next()
+
+    moves: list[float] = []
+    for vertex in before:
+        became = gaps.Apply(merge.Apply(vertex))
+        if became.IsNull():
+            continue
+        distance = BRep_Tool.Pnt_s(TopoDS.Vertex_s(vertex)).Distance(
+            BRep_Tool.Pnt_s(TopoDS.Vertex_s(became)))
+        if distance > Precision.Confusion_s():
+            moves.append(float(distance))
+    ordered = [target, *(f for f in touched if not f.IsSame(target))]
+    tolerances = [BRep_Tool.Tolerance_s(TopoDS.Vertex_s(v))
+                  for f in ordered for v in _vertices_of(f)]
+    for touched_face in ordered:
+        explorer = TopExp_Explorer(touched_face, TopAbs_EDGE)
+        while explorer.More():
+            tolerances.append(BRep_Tool.Tolerance_s(TopoDS.Edge_s(explorer.Current())))
+            explorer.Next()
+    return WireClosure(owner=result, face=target, fixed=merged or closed,
+                       still_open=_wire_gap_mm(target, precision=precision) > 0.0,
+                       moves=tuple(moves), touched=tuple(ordered),
+                       max_tolerance_mm=float(max(tolerances, default=0.0)))
+
+
+def _faces_of(shape) -> list:
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopoDS import TopoDS
+
+    from meshpipeline.cad.repair.localize import _indexed
+
+    found = _indexed(shape, TopAbs_FACE)
+    return [TopoDS.Face_s(found.FindKey(i)) for i in range(1, found.Extent() + 1)]
+
+
+def _recorded(old, new):
+    """A ShapeBuild_ReShape that records `old -> new` and nothing else: the face-level history
+    `mapping_from_context` reads, for an operation whose own fixers' histories are split across
+    passes."""
+    from OCP.ShapeBuild import ShapeBuild_ReShape
+
+    context = ShapeBuild_ReShape()
+    context.Replace(old, new)
+    return context
+
+
+class CloseWireGaps:
+    """Close the gaps in ONE face's wires - the first operation licensed to MOVE VERTICES.
+
+    THE GATE: NOT TO BE SET LIVE ON CUSTOMER JOBS UNTIL THE SEMANTIC PACKAGE REVIEWER
+    (CAD_REPAIR_PACKAGE_REVIEW=live) IS LIVE. Merging two disconnected vertices moves both; the
+    move is bounded by the run's tolerance and measured, but a moved vertex is a changed part, and
+    the reviewer is what replaces a numeric gate for an operation like that. Code does not enforce
+    the coupling (the deployment posture owns it); settings/cad_repair.py warns when
+    CAD_REPAIR_CLOSE_WIRE_GAPS is on while the reviewer is off. `deviation.py` already measures
+    every committed package; nothing more is needed there.
+
+    WHY IT EXISTS, AND WHY IT IS GATED. `mesh_open_loop` (gmsh: "The 1D mesh seems not to be
+    forming a closed loop") was measured on the real corpus (devtools/validation/evidence/
+    2026-11-15-open-loop-reach): every ShapeFix pass that moves no vertex returned False on the
+    targeted faces, so `fix_face_boundary` cannot reach them. The only pass that bit was gap
+    fixing that moves vertices - deliberately reviewer-gated territory, and this is its home.
+    Measured just as honestly: on 00508775 face 29 the face is closed at its own tolerance, and
+    this operation declines `not_closed` there too. It reaches a face whose loop is REALLY open.
+
+    WHAT IT ANSWERS: `mesh_open_loop` recorded in the 2D stage (the SplitClosedFaces rule - gmsh
+    closes a face's 1D loop while meshing surfaces) and the kernel's `wire_gap` on a face (no
+    stage: it is BRepCheck's code). For a wire gap the narrower `fix_face_boundary`, which moves
+    nothing, goes first (`scope`).
+
+    WHAT IT MAY TOUCH: the target face's wires and the OWNING BODY around them - every neighbour
+    holding a moved vertex is re-stitched with it (`_close_gaps`), and the body replaces its
+    original whole in a `_copied` part. Every other body is untouched.
+
+    WHAT IT DECLARES, ALL MEASURED: `vertices_moved` (count) and `max_vertex_move_mm` (the largest
+    actual displacement, followed through the kernel's history - not the gap it predicted),
+    `gap_mm` (the widest gap measured before), `max_tolerance_mm` (the largest tolerance left on
+    the touched faces - the merge raises it), `curve_ends` (the plain statement that curve-end
+    displacement is bounded by SetMaxTolerance but NOT measured), and AREA_DELTA as the owner's
+    area after minus
+    before; no volume declaration (the cumulative cap's residual judges it). `rebuilt` names the
+    closed face and every neighbour the closure rewrote (structurally: any face the passes
+    replaced); `added` is empty - no face is created.
+
+    CONSERVATIVE BY DESIGN: a gap at or below the face's OWN vertex tolerance is not a gap, and
+    the operation declines it `not_closed`. That can miss a repair gmsh would have wanted (its
+    1D loop is built at its own precision, not the kernel's tolerance); it never moves a vertex
+    the kernel already calls connected. A missed repair is preferred to damage.
+
+    WHY EACH DECLINE EXISTS, in the order checked:
+      closing_disabled  - CAD_REPAIR_CLOSE_WIRE_GAPS, the consent, is absent.
+      no face was named / one_face_only / not_resolved - nothing (or too much) to aim at.
+      no_owner          - the face belongs to no solid or shell: there is no body to re-stitch.
+      non_manifold      - more than one body owns the face: closing it in one would leave the other
+                          holding the unmoved vertices (SplitClosedFaces' reason).
+      gaps_exceed_tolerance - the widest gap measured BEFORE, or the largest move measured AFTER,
+                          is wider than the run's `tolerance_mm`: closing it would move the part
+                          further than the run licenses.
+      not_closed        - no gap is measurable to begin with (the fixer is then never run), the
+                          fixer reported nothing fixed, or a gap is still measurable after: a
+                          no-op is a decline, never a kept operation.
+      closed_invalid    - the closed face is not `BRepCheck`-valid.
+      owner_invalidated - a rewritten NEIGHBOUR face is not `BRepCheck`-valid (no waiver), or the
+                          owner was valid (measured on the copy BEFORE the closure, which
+                          writes into shared edges) and is not after. An owner already invalid -
+                          the usual case, an open wire is invalid - is not blamed on the closure.
+    """
+
+    name = "close_wire_gaps"
+    answers = frozenset({DefectCode.mesh_open_loop, DefectCode.wire_gap})
+    #: One face and the neighbours sharing what moved: wider than the face fixer, which moves
+    #: nothing and so must meet a wire gap first; far narrower than the whole-shape pass.
+    scope = 3
+    #: The gaps closed are those of the ONE named face's wires.
+    whole_shape = False
+
+    def targets_for(self, defect) -> tuple[EntityRef, ...]:
+        import meshpipeline.settings.cad_repair as rcfg
+        from meshpipeline.cad.repair.mesh_probe import STAGE_2D
+
+        if not rcfg.CAD_REPAIR_CLOSE_WIRE_GAPS:
+            return ()
+        code = getattr(defect, "code", None)
+        if code not in self.answers:
+            return ()
+        if defect.entity_type != "face" or not getattr(defect, "fingerprint", ""):
+            return ()
+        # AN OPEN LOOP ONLY FROM THE 2D STAGE (ruling P2-R3, here so every path obeys it). A wire
+        # gap is a kernel code and carries no stage.
+        if (code is DefectCode.mesh_open_loop
+                and (getattr(defect, "measurements", None) or {}).get("stage") != STAGE_2D):
+            return ()
+        return (EntityRef(entity_type="face", fingerprint=defect.fingerprint,
+                          entity_index=int(defect.entity_index),
+                          ambiguous=bool(getattr(defect, "ambiguous", False))),)
+
+    def apply(self, shape, targets: tuple[EntityRef, ...], *,
+              tolerance_mm: float) -> OpOutcome:
+        import meshpipeline.settings.cad_repair as rcfg
+
+        def declined(reason: str, **measured) -> OpOutcome:
+            # NO DECLARATION ON A DECLINE, for SplitClosedFaces' reason: the shape is unchanged.
+            # What was measured on the way is still reported - as evidence, never as AREA_DELTA.
+            return OpOutcome(shape=shape, evidence={"declined": reason,
+                                                    "faces_targeted": len(targets), **measured})
+
+        if not rcfg.CAD_REPAIR_CLOSE_WIRE_GAPS:
+            return declined("closing_disabled (CAD_REPAIR_CLOSE_WIRE_GAPS)")
+        if not targets:
+            return declined("no face was named")
+        if len(targets) > 1:
+            return declined(f"one_face_only ({len(targets)} targets named)")
+        ref = targets[0]
+        face = sub_shape(shape, "face", ref.entity_index) if ref.entity_type == "face" else None
+        if face is None:
+            return declined("not_resolved (the target face is not in this shape)")
+        owners = _owners_of(shape, face)
+        if not owners:
+            return declined("no_owner (the face belongs to no solid or shell)")
+        if len(owners) > 1:
+            return declined(f"non_manifold ({len(owners)} bodies share the face)")
+
+        # EVERYTHING FROM HERE ON IS DONE TO A COPY, whose indices are the input's.
+        work = _copied(shape)
+        face = sub_shape(work, "face", ref.entity_index)
+        owner = _owners_of(work, face)[0]
+        gap = _wire_gap_mm(face)
+        tolerance = float(tolerance_mm)
+        if gap <= 0.0:
+            # NOTHING TO CLOSE, so the fixer is never run: at a fine precision ShapeFix "fixes"
+            # sub-tolerance noise on a closed wire (measured on a plain box face), and that would
+            # be a vertex-moving op kept for doing nothing.
+            return declined("not_closed (no gap is measurable in the face's wires)", gap_mm=0.0)
+        if gap > tolerance:
+            return declined(f"gaps_exceed_tolerance (the widest gap, {gap:.6g} mm, is wider than "
+                            f"the run's {tolerance:g} mm)", gap_mm=gap)
+        # THE OWNER'S VALIDITY BEFORE THE CLOSURE writes into the edges it shares (RebuildFace's
+        # reason: measured after, damage the fixer did would read "already invalid").
+        owner_was_valid = _is_valid(owner)
+        closure = _close_gaps(owner, face, tolerance_mm=tolerance)
+        moved = max(closure.moves, default=0.0)
+        measured = {"gap_mm": gap, "vertices_moved": len(closure.moves),
+                    "max_vertex_move_mm": float(moved),
+                    "max_tolerance_mm": float(closure.max_tolerance_mm),
+                    "curve_ends": CURVE_ENDS_UNMEASURED}
+        if not closure.fixed or closure.still_open:
+            return declined("not_closed (the fixer closed no gap)" if not closure.fixed else
+                            "not_closed (a gap is still measurable after the fix)", **measured)
+        if moved > tolerance:
+            return declined(f"gaps_exceed_tolerance (a vertex moved {moved:.6g} mm, more than "
+                            f"the run's {tolerance:g} mm)", **measured)
+        if not _is_valid(closure.face):
+            return declined("closed_invalid (the closed face is not BRepCheck-valid)", **measured)
+        # EVERY NEIGHBOUR IT REWROTE MUST BE VALID. The pre-fix-invalid waiver below is for the
+        # target's own open wire only: a neighbour this operation reshaped and left invalid is
+        # damage whatever the owner was.
+        broken = sum(1 for f in closure.touched if f is not closure.face and not _is_valid(f))
+        if broken:
+            return declined(f"owner_invalidated ({broken} rewritten neighbour face(s) are not "
+                            "BRepCheck-valid)", **measured)
+        if owner_was_valid and not _is_valid(closure.owner):
+            return declined("owner_invalidated (the owning body was valid and is not with the "
+                            "closed wires)", **measured)
+        spliced, _ = splice(work, [(owner, closure.owner)])
+
+        diagonal = _diagonal_of(work)
+        delta = _total_face_area(closure.owner) - _total_face_area(owner)
+        mapping = mapping_from_context(_recorded(face, closure.face), targets,
+                                       shape_before=work, diagonal_mm=diagonal)
+        names = (_face_name(f, diagonal_mm=diagonal) for f in closure.touched)
+        return OpOutcome(
+            shape=spliced, mapping=mapping,
+            rebuilt=tuple(dict.fromkeys(n for n in names if n)),
+            evidence={**measured, AREA_DELTA: round(float(delta), 6),
+                      "faces_touched": len(closure.touched), "faces_targeted": 1,
+                      "precision_mm": tolerance})
+
+
 class FixShapeGlobal:
     """Today's whole-shape `ShapeFix_Shape`, kept as the LAST RESORT.
 
@@ -2564,15 +3393,30 @@ class FixShapeGlobal:
     `curve_inconsistency` / `duplicate_surface_data` / `wire_gap` / `degenerate_edge` the status
     walk attributed to an edge, wire or shell) got zero attempts. Those are the files the
     whole-shape pass used to repair, which is exactly what this operation exists to preserve.
+
+    WHAT IT NO LONGER CLAIMS, AND WHY (`small_edge`; see
+    docs/superpowers/specs/2026-11-19-target-remains-diagnosis.md). Over a 90-part run of the
+    real-failure corpus this operation was attempted 40 times and kept NOTHING, and 34 of those
+    attempts answered a `small_edge`. Probed on three of the named parts, the call below returns a
+    shape whose `IsSame` is TRUE and whose `ShapeBuild_ReShape` context records not one
+    replacement - at the run's precision, and at ten and at a hundred times it. `ShapeFix_Shape`
+    is not the kernel's tool for a short edge; `ShapeFix_Wireframe` is, `fix_small_edges` runs it,
+    and at scope 1 it has always run first and already failed on that very edge. So the claim
+    bought 34 wasted re-inspections and 34 stall-limit slots and could never have bought a
+    repair. It is also why those 34 are NOT evidence against the progress rule: an operation that
+    changes nothing is correctly reported as having changed nothing.
     """
 
     name = "fix_shape_global"
     answers = frozenset({
         DefectCode.invalid_brep, DefectCode.curve_inconsistency,
-        DefectCode.degenerate_edge, DefectCode.small_edge, DefectCode.wire_gap,
+        DefectCode.degenerate_edge, DefectCode.wire_gap,
         DefectCode.duplicate_surface_data,
     })
     scope = 99
+    #: ShapeFix_Shape is handed the WHOLE SHAPE and no entity, and was measured a no-op on the
+    #: corpus parts probed: IsSame TRUE, zero recorded replacements.
+    whole_shape = True
 
     def targets_for(self, defect) -> tuple[EntityRef, ...]:
         # ANY ENTITY TYPE, because the fixer runs over the whole shape regardless; the ref records
@@ -2606,28 +3450,47 @@ class FixShapeGlobal:
         fixer.Perform()
         fixed = fixer.Shape()
 
+        diagonal = _diagonal(shape)
         mapping = EntityMapping.empty()
+        # SAME READING, SAME HISTORY, SO THEY CANNOT DISAGREE: the mapping and the two
+        # declarations all come off `fixer.Context()`, inside one try - a context the kernel
+        # declines to hand over leaves all three empty rather than two of them invented.
+        rebuilt_names: tuple[str, ...] = ()
+        removed_names: list[str] = []
         try:
-            mapping = mapping_from_context(fixer.Context(), targets, shape_before=shape,
-                                           diagonal_mm=_diagonal(shape))
+            context = fixer.Context()
+            mapping = mapping_from_context(context, targets, shape_before=shape,
+                                           diagonal_mm=diagonal)
+            gone, rebuilt = _face_fates(context, shape, fixed)
+            rebuilt_names = _named_faces(rebuilt, diagonal_mm=diagonal)
+            removed_names = sorted(_named_faces(gone, diagonal_mm=diagonal))
         except (RuntimeError, Standard_Failure) as exc:   # the kernel declining; our own TypeError/AttributeError surface
             logger.warning("fix_shape_global: no usable context (%s: %s)", type(exc).__name__, exc)
-        # DECLARES NOTHING. A ShapeFix pass repairs how the geometry was written down, not what it
-        # is, so any area or volume it moves is unaccounted for by design - and the cumulative cap
-        # is then the thing that catches it.
-        return OpOutcome(shape=fixed, mapping=mapping,
+        # DECLARES NO AREA OR VOLUME. A ShapeFix pass repairs how the geometry was written down,
+        # not what it is, so any area or volume it moves is unaccounted for by design - and the
+        # cumulative cap is then the thing that catches it. What it DOES declare is which faces it
+        # rebuilt and which it removed: this pass is whole-shape, and measured over the corpus it
+        # records no replacement at all on most parts, so an EMPTY declaration here is a fact READ
+        # from the history rather than the silence it used to be.
+        return OpOutcome(shape=fixed, mapping=mapping, rebuilt=rebuilt_names,
                          evidence={"precision_mm": float(tolerance_mm),
-                                   "modes": "solid,free_shell,free_face,same_parameter"})
+                                   "modes": "solid,free_shell,free_face,same_parameter",
+                                   "faces_rebuilt": len(rebuilt_names),
+                                   "removed_fingerprints": removed_names})
 
 
 def catalogue(*, split_closed_faces: bool | None = None,
               fragment_bodies: bool | None = None,
-              rebuild_face: bool | None = None) -> tuple[RepairOp, ...]:
+              rebuild_face: bool | None = None,
+              close_wire_gaps: bool | None = None,
+              resolve_sub_mesh_gap: bool | None = None) -> tuple[RepairOp, ...]:
     """Every operation the loop may run, narrowest first.
 
-    `split_closed_faces`, `fragment_bodies` and `rebuild_face` ENTER ONLY WITH THEIR CONSENT
-    (CAD_REPAIR_SPLIT_CLOSED_FACES, CAD_REPAIR_FRAGMENT_BODIES, CAD_REPAIR_REBUILD_FACE, each read
-    when not told): flags off, the catalogue is today's, byte for byte. The ORDER here is
+    `split_closed_faces`, `fragment_bodies`, `rebuild_face`, `close_wire_gaps` and
+    `resolve_sub_mesh_gap` ENTER ONLY WITH THEIR CONSENT (CAD_REPAIR_SPLIT_CLOSED_FACES,
+    CAD_REPAIR_FRAGMENT_BODIES, CAD_REPAIR_REBUILD_FACE, CAD_REPAIR_CLOSE_WIRE_GAPS,
+    CAD_REPAIR_RESOLVE_SUB_MESH_GAP, each read when not told): flags off, the
+    catalogue is today's, byte for byte. The ORDER here is
     documentation - the planner sorts on `scope`, so adding one in the wrong place changes nothing
     but a reader's expectations.
     """
@@ -2639,16 +3502,24 @@ def catalogue(*, split_closed_faces: bool | None = None,
         fragment_bodies = bool(rcfg.CAD_REPAIR_FRAGMENT_BODIES)
     if rebuild_face is None:
         rebuild_face = bool(rcfg.CAD_REPAIR_REBUILD_FACE)
+    if close_wire_gaps is None:
+        close_wire_gaps = bool(rcfg.CAD_REPAIR_CLOSE_WIRE_GAPS)
+    if resolve_sub_mesh_gap is None:
+        resolve_sub_mesh_gap = bool(getattr(rcfg, "CAD_REPAIR_RESOLVE_SUB_MESH_GAP", False))
+    from meshpipeline.cad.repair.gap_split import ResolveSubMeshGap
+
     return (
         FixSmallEdges(),
         *((SplitClosedFaces(),) if split_closed_faces else ()),
         FixFaceBoundary(),
         *((RebuildFace(),) if rebuild_face else ()),
+        *((CloseWireGaps(),) if close_wire_gaps else ()),
         FixSmallFaces(),
         SewFaces(),
         FillPlanarHole(),
         FillNonplanarHole(),
         HealSelfIntersections(),
+        *((ResolveSubMeshGap(),) if resolve_sub_mesh_gap else ()),
         *((FragmentBodies(),) if fragment_bodies else ()),
         FixShapeGlobal(),
     )

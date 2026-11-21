@@ -11,6 +11,7 @@ from __future__ import annotations
 import bisect
 import json
 import logging
+import math
 import os
 import re
 import signal
@@ -23,6 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+from meshpipeline.cad.repair import bounded_child
 from meshpipeline.cad.repair.contracts import DefectCode, DefectSeverity
 from meshpipeline.cad.repair.localize import (
     EntityDefect,
@@ -32,6 +34,7 @@ from meshpipeline.cad.repair.localize import (
     _stamped,
     in_region,
 )
+from meshpipeline.cad.repair.mesh_clash import Clash, reported_kind
 
 if TYPE_CHECKING:
     from meshpipeline.cad.repair.regions import Region
@@ -81,6 +84,65 @@ class ProbeResult:
     volume_elements: int
     failure: MeshFailure | None
     tag_boxes: dict[int, Box] = field(default_factory=dict)
+    #: Surface pairs whose 2D triangles cross or coincide, found on the surface mesh after the
+    #: VOLUME stage refused it (`mesh_clash`). Empty when it meshed or failed earlier.
+    clashes: tuple[Clash, ...] = ()
+    #: With mesh-size hints (`mesh_hints`): how many were applied to a gmsh surface, and the
+    #: delivered-STEP face of each that matched no surface. Both empty when no hints were given.
+    hints_applied: int = 0
+    hints_unmapped: tuple[int, ...] = ()
+    #: `{tag: (area_mm2, cx, cy, cz)}` for every surface a failure or clash names, so a caller can
+    #: name those surfaces as delivered-STEP faces without trusting gmsh's tag order. Hinted only.
+    named_props: dict[int, tuple[float, float, float, float]] = field(default_factory=dict)
+    #: Volume-mesh quality when asked for (`quality=True`) and it meshed: element count aside,
+    #: min/mean gamma, min SICN and the shortest element edge in mm. Empty otherwise.
+    quality: dict[str, float] = field(default_factory=dict)
+
+
+#: The clash search's own wall in the probe child, in seconds. Bounded so it can never spend the
+#: probe's budget and cost the parent the gmsh failure the child already holds (Greptile #495):
+#: past it the search answers with what it found, which may be nothing (an unlocated failure).
+CLASH_SEARCH_S = 20.0
+
+#: Volume-stage failures whose cause is the surface mesh crossing itself: worth searching the
+#: surface mesh for the clashing triangles. Kinds about the whole part (no volume, a timeout) are not.
+_CLASH_KINDS = frozenset({OVERLAPPING_FACETS, EDGE_THROUGH_FACE, OTHER})
+
+
+def _surface_clashes(gmsh) -> tuple[Clash, ...]:
+    """The clashing surface pairs of the 2D mesh gmsh holds now. Never raises."""
+    try:
+        import numpy as np
+
+        from meshpipeline.cad.repair.mesh_clash import clashing_surfaces, surface_components
+
+        node_tags, xyz, _param = gmsh.model.mesh.getNodes()
+        index = {int(t): i for i, t in enumerate(node_tags)}
+        coords = np.asarray(xyz, dtype=float).reshape(-1, 3)
+        component = surface_components({
+            int(t): [int(v) for v in gmsh.model.getAdjacencies(2, t)[0]]
+            for _dim, t in gmsh.model.getEntities(2)})
+        tris: list = []
+        tags: list = []
+        groups: list = []
+        for _dim, surface in gmsh.model.getEntities(2):
+            types, _elements, nodes = gmsh.model.mesh.getElements(2, surface)
+            for kind, flat in zip(types, nodes, strict=True):
+                if int(kind) != 2:          # linear triangles; the probe meshes order 1
+                    continue
+                rows = np.array([index[int(n)] for n in flat], dtype=np.int64).reshape(-1, 3)
+                tris.append(rows)
+                tags.append(np.full(len(rows), int(surface), dtype=np.int64))
+                groups.append(np.full(len(rows), component.get(int(surface), -1),
+                                      dtype=np.int64))
+        if not tris:
+            return ()
+        return clashing_surfaces(coords, np.vstack(tris), np.concatenate(tags),
+                                 groups=np.concatenate(groups),
+                                 deadline=time.monotonic() + CLASH_SEARCH_S)
+    except Exception as exc:  # noqa: BLE001 - a failed search is "no clash found", not an error
+        logger.info("mesh_probe: clash search: %s: %s", type(exc).__name__, exc)
+        return ()
 
 
 _NUM = r"[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?"
@@ -148,11 +210,17 @@ def locating_surfaces(failure: MeshFailure) -> tuple[int, ...]:
 
 
 def _probe_child(path: str, diagonal_mm: float, surfaces: tuple[int, ...] | None,
-                 volume: bool) -> tuple[int, MeshFailure | None, dict[int, Box]]:
-    """Runs in the forked child. Returns (volume_elements, failure, tag_boxes); picklable."""
+                 volume: bool, options: dict | None = None,
+                 ) -> tuple[int, MeshFailure | None, dict[int, Box], tuple[Clash, ...]]:
+    """Runs in the child. Returns (volume_elements, failure, tag_boxes, clashes).
+
+    `options` (`mesh_hints`) may carry `hints`, applied as size fields after import, and
+    `quality`; what they produce is written into `options["out"]`. None: the plain probe."""
     import gmsh
 
     boxes: dict[int, Box] = {}
+    options = options if options is not None else {}
+    out: dict = options.setdefault("out", {})
     gmsh.initialize()
     try:
         gmsh.option.setNumber("General.Terminal", 0)
@@ -167,8 +235,13 @@ def _probe_child(path: str, diagonal_mm: float, surfaces: tuple[int, ...] | None
                 x0, y0, z0, x1, y1, z1 = gmsh.model.getBoundingBox(2, tag)
                 boxes[int(tag)] = (float(x0), float(y0), float(z0),
                                    float(x1), float(y1), float(z1))
+            if options.get("hints"):
+                from meshpipeline.cad.repair.mesh_hints import apply_in_gmsh
+
+                out["applied"], out["unmapped"] = apply_in_gmsh(
+                    gmsh, options["hints"], diagonal_mm=diagonal_mm)
             if surfaces is not None and not surfaces:
-                return 0, None, boxes
+                return 0, None, boxes, ()
             if surfaces is not None:
                 keep = set(surfaces)
                 gmsh.model.removeEntities(
@@ -176,17 +249,30 @@ def _probe_child(path: str, diagonal_mm: float, surfaces: tuple[int, ...] | None
             stage = STAGE_2D
             gmsh.model.mesh.generate(2)
             if surfaces is not None or not volume:
-                return 0, None, boxes
+                return 0, None, boxes, ()
             stage = STAGE_3D
             gmsh.model.mesh.generate(3)
             _types, tags, _nodes = gmsh.model.mesh.getElements(3)
             count = sum(len(t) for t in tags)
             if count == 0:
                 return 0, MeshFailure(NO_VOLUME, (), None,
-                                      "gmsh produced no volume elements", stage=STAGE_3D), boxes
-            return count, None, boxes
+                                      "gmsh produced no volume elements", stage=STAGE_3D), boxes, ()
+            if options.get("quality"):
+                from meshpipeline.cad.repair.mesh_hints import volume_quality
+
+                out["quality"] = volume_quality(gmsh)
+            return count, None, boxes, ()
         except Exception as exc:  # noqa: BLE001 - a gmsh failure is the answer, not an error
-            return 0, classify(str(exc), gmsh.logger.get(), stage=stage), boxes
+            failure = classify(str(exc), gmsh.logger.get(), stage=stage)
+            clashes: tuple[Clash, ...] = ()
+            if stage == STAGE_3D and failure.kind in _CLASH_KINDS:
+                clashes = _surface_clashes(gmsh)
+            if "hints" in options:
+                from meshpipeline.cad.repair.mesh_hints import surface_props
+
+                out["named"] = surface_props(
+                    gmsh, {*failure.surfaces, *(t for c in clashes for t in c.surfaces)})
+            return 0, failure, boxes, clashes
     finally:
         try:
             gmsh.finalize()
@@ -195,19 +281,24 @@ def _probe_child(path: str, diagonal_mm: float, surfaces: tuple[int, ...] | None
 
 
 def _child_main(argv: Sequence[str]) -> int:
-    """`python -m meshpipeline.cad.repair.mesh_probe PATH DIAGONAL SURFACES VOLUME`: one JSON line."""
-    path, diagonal, surfaces, volume = argv
+    """`python -m meshpipeline.cad.repair.mesh_probe PATH DIAGONAL SURFACES VOLUME [OPTIONS]`: one
+    JSON line. OPTIONS, when given, is the path of a JSON file of `_probe_child` options."""
+    path, diagonal, surfaces, volume = argv[:4]
+    options = json.loads(Path(argv[4]).read_text()) if len(argv) > 4 else None
     wanted = json.loads(surfaces)
-    count, failure, boxes = _probe_child(
-        path, float(diagonal), None if wanted is None else tuple(wanted), volume == "1")
+    count, failure, boxes, clashes = _probe_child(
+        path, float(diagonal), None if wanted is None else tuple(wanted), volume == "1", options)
     sys.stdout.write("\n" + json.dumps({
+        "options_out": (options or {}).get("out", {}),
         "volume_elements": count,
         "failure": None if failure is None else {
             "kind": failure.kind, "surfaces": list(failure.surfaces),
             "point": None if failure.point is None else list(failure.point),
             "message": failure.message, "stage": failure.stage,
             "surfaces_from_log": failure.surfaces_from_log},
-        "tag_boxes": {str(k): list(v) for k, v in boxes.items()}}) + "\n")
+        "tag_boxes": {str(k): list(v) for k, v in boxes.items()},
+        "clashes": [{"surfaces": list(c.surfaces), "hits": c.hits, "point": list(c.point),
+                     "kind": c.kind} for c in clashes]}) + "\n")
     sys.stdout.flush()
     return 0
 
@@ -220,11 +311,14 @@ def _kill_group(proc: subprocess.Popen) -> None:
 
 
 def _run_child(path: str, diagonal_mm: float, surfaces: tuple[int, ...] | None, volume: bool,
-               budget_s: float) -> dict[str, Any] | None | Literal["error"]:
+               budget_s: float, *, options_path: str | None = None,
+               ) -> dict[str, Any] | None | Literal["error"]:
     """The child's JSON answer; None when it ran out of budget; "error" when it died unanswering."""
     cmd = [sys.executable, "-W", "ignore", "-m", "meshpipeline.cad.repair.mesh_probe", path,
            repr(float(diagonal_mm)), json.dumps(None if surfaces is None else list(surfaces)),
            "1" if volume else "0"]
+    if options_path is not None:
+        cmd.append(options_path)
     proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                             stderr=subprocess.DEVNULL, start_new_session=True, text=True)
     try:
@@ -250,17 +344,32 @@ def _run_child(path: str, diagonal_mm: float, surfaces: tuple[int, ...] | None, 
 
 
 def probe_file(path: Path, *, diagonal_mm: float, surfaces: Sequence[int] | None = None,
-               volume: bool = True, budget_s: float = 120.0) -> ProbeResult:
+               volume: bool = True, budget_s: float = 120.0,
+               hints: Sequence[dict] | None = None, quality: bool = False) -> ProbeResult:
     """Mesh `path` in a bounded fresh interpreter and report. NEVER raises, never blocks past
     `budget_s` (plus a few seconds to reap the child).
 
     `surfaces=None` meshes everything; an empty sequence meshes nothing and only fills `tag_boxes`.
     A child that ran out of budget is a TIMEOUT failure; one that died without answering is a
     PROBE_ERROR failure.
+
+    `hints` are `mesh_hints` face entries (a sidecar's `faces`), applied as local size fields on
+    the gmsh surfaces they match; None (the default) is the plain probe, unchanged. `quality` adds
+    the volume mesh's quality figures when it meshes.
     """
     wanted = None if surfaces is None else tuple(int(s) for s in surfaces)
     try:
-        answer = _run_child(str(path), float(diagonal_mm), wanted, bool(volume), budget_s)
+        if hints is None and not quality:
+            answer = _run_child(str(path), float(diagonal_mm), wanted, bool(volume), budget_s)
+        else:
+            with tempfile.TemporaryDirectory(prefix="mesh-probe-opts-") as tmp:
+                options = Path(tmp) / "options.json"
+                payload: dict[str, Any] = {"quality": bool(quality)}
+                if hints is not None:
+                    payload["hints"] = list(hints)
+                options.write_text(json.dumps(payload))
+                answer = _run_child(str(path), float(diagonal_mm), wanted, bool(volume),
+                                    budget_s, options_path=str(options))
     except Exception as exc:  # noqa: BLE001 - the probe never raises
         logger.info("mesh_probe: %s: %s", type(exc).__name__, exc)
         answer = "error"
@@ -281,12 +390,25 @@ def probe_file(path: Path, *, diagonal_mm: float, surfaces: Sequence[int] | None
         boxes = {int(k): (float(v[0]), float(v[1]), float(v[2]), float(v[3]), float(v[4]),
                           float(v[5])) for k, v in answer["tag_boxes"].items()}
         count = int(answer["volume_elements"])
-    except (KeyError, TypeError, ValueError):
+        clashes = tuple(Clash(surfaces=(int(c["surfaces"][0]), int(c["surfaces"][1])),
+                              hits=int(c["hits"]),
+                              point=(float(c["point"][0]), float(c["point"][1]),
+                                     float(c["point"][2])),
+                              kind=str(c["kind"])) for c in answer.get("clashes") or ())
+        extra = answer.get("options_out") or {}
+        applied = int(extra.get("applied", 0))
+        unmapped = tuple(int(f) for f in extra.get("unmapped") or ())
+        named = {int(k): (float(v[0]), float(v[1]), float(v[2]), float(v[3]))
+                 for k, v in (extra.get("named") or {}).items()}
+        quality_out = {str(k): float(v) for k, v in (extra.get("quality") or {}).items()}
+    except (KeyError, TypeError, ValueError, IndexError):
         return ProbeResult(False, 0, MeshFailure(
             PROBE_ERROR, (), None, "the mesh probe answered in a form that could not be read"), {})
     if failure is not None:
-        return ProbeResult(False, 0, failure, boxes)
-    return ProbeResult(True, count, None, boxes)
+        return ProbeResult(False, 0, failure, boxes, clashes, hints_applied=applied,
+                           hints_unmapped=unmapped, named_props=named)
+    return ProbeResult(True, count, None, boxes, hints_applied=applied, hints_unmapped=unmapped,
+                       quality=quality_out)
 
 
 #: One defect code per kind the probe names, one-to-one.
@@ -443,6 +565,10 @@ CONTACT_PAIR_CAP = 8
 #: point and no surface, so WE inferred the faces from the geometry. Never gmsh's own word.
 LOCATED_BY_CONTACT = "contact-pair"
 
+#: `measurements["located_by"]` on a defect placed by the surface-mesh clash search: gmsh's own
+#: triangles of these faces cross (or coincide) - measured on the mesh it refused, not inferred.
+LOCATED_BY_CLASH = "surface-mesh-clash"
+
 
 @dataclass(frozen=True, slots=True)
 class Contact:
@@ -474,6 +600,142 @@ def _shared_pairs(shape, solids) -> set[tuple[int, int]]:
     return out
 
 
+def _in_face(kind, support) -> bool:
+    """Whether an extrema support is INSIDE a face, which is the only case that names a face
+    exactly. A vertex or edge support names no single face - two touching planar faces usually
+    report those - and the caller infers from the point instead."""
+    from OCP.TopAbs import TopAbs_FACE
+
+    return bool(kind.name.endswith("IsInFace") and support.ShapeType() == TopAbs_FACE)
+
+
+def _contact_extrema(pairs, *solids) -> list[dict]:
+    """Per candidate pair: its distance and, per extrema solution, the two points and whether
+    each support lies inside a face. NUMBERS AND FLAGS ONLY.
+
+    ONLY EVER RUN IN THE CHILD (registered as `probe.contact_extrema`). Row 1 of the audit:
+    `BRepExtrema_DistShapeShape` ran once per pair in the parent, uninterruptible, with the
+    deadline checked only BETWEEN pairs.
+
+    THE SUPPORT FACE ITSELF CANNOT COME BACK, and this is the whole design. A face is identified
+    in the parent by `faces.FindIndex(support)`, which is identity against the PARENT'S map - and
+    a shape that crossed a process boundary is a different object. Sending the face would mean
+    asking the child to re-walk a round-tripped shape and trusting that its `_indexed` order
+    matches the parent's, which nothing here proves. So the child reports WHERE the support is and
+    whether it is in a face, and a second child (`_nearest_face_positions`) resolves that point
+    among THE OWNING BODY'S faces, sent as shapes and answered as positions. For a support inside
+    a face that is the same face, uniquely.
+
+    `pairs` indexes `solids` BY POSITION: the dispatcher writes the operands as one compound and
+    reads them back in order, so a position means the same body on both sides.
+    """
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+
+    out: list[dict] = []
+    for pair in pairs:
+        a, b = int(pair[0]), int(pair[1])
+        try:
+            extrema = BRepExtrema_DistShapeShape(solids[a], solids[b])
+            done = extrema.IsDone() and extrema.NbSolution() >= 1
+        except Exception:  # noqa: BLE001 - an unmeasurable pair is merely not nearest
+            out.append({"distance": None, "solutions": []})
+            continue
+        if not done:
+            out.append({"distance": None, "solutions": []})
+            continue
+        solutions: list[dict] = []
+        for n in range(1, extrema.NbSolution() + 1):
+            first, second = extrema.PointOnShape1(n), extrema.PointOnShape2(n)
+            solutions.append({
+                "in_face": [_in_face(extrema.SupportTypeShape1(n), extrema.SupportOnShape1(n)),
+                            _in_face(extrema.SupportTypeShape2(n), extrema.SupportOnShape2(n))],
+                "p1": [float(first.X()), float(first.Y()), float(first.Z())],
+                "p2": [float(second.X()), float(second.Y()), float(second.Z())],
+                "gap": float(first.Distance(second))})
+        out.append({"distance": float(extrema.Value()), "solutions": solutions})
+    return out
+
+
+def _nearest_face_positions(queries, tol, primary, *faces) -> list[list[int]]:
+    """Per query `[lo, hi, point]`: the positions in `faces` of the face(s) nearest `point`, among
+    `faces[lo:hi]` ONLY - one body's faces, so another body's coincident face is never named.
+
+    The first `primary` queries are the in-face supports; the rest are the centre fallback, which
+    is ANSWERED EMPTY, NOT SEARCHED, once any support resolved. The fallback is used only when no
+    support resolves, and a search nobody will use must not spend the child's budget: a child
+    killed on it would discard the supports already found and leave the failure unlocated.
+
+    ONLY EVER RUN IN THE CHILD (registered as `probe.nearest_face_positions`): the point-to-face
+    distances are as uninterruptible as the pair extrema. The faces cross as shapes and come back
+    as POSITIONS, so no index walk of a round-tripped shape has to agree with the parent's map.
+    """
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+
+    out: list[list[int]] = []
+    for k, (lo, hi, point) in enumerate(queries):
+        if k >= int(primary) and any(out[:int(primary)]):
+            out.append([])
+            continue
+        local = TopTools_IndexedMapOfShape()
+        for face in faces[int(lo):int(hi)]:
+            local.Add(face)
+        x, y, z = (float(v) for v in point)
+        near = _nearest_faces(local, (x, y, z), tol=float(tol), deadline=math.inf)
+        out.append([int(lo) + int(n) - 1 for n in near or ()])
+    return out
+
+
+def _bounded_nearest_faces(bodies, queries, *, primary: int, tol: float,
+                           deadline: float) -> list[list] | None:
+    """Per `(side, point)` query, the faces of `bodies[side]` nearest `point` - the PARENT'S own
+    face objects - or None when the child did not finish. Every query goes to ONE child; queries
+    after the first `primary` are fallbacks the child skips once a primary one resolved."""
+    from OCP.TopAbs import TopAbs_FACE
+
+    from meshpipeline.cad.repair.localize import _indexed
+
+    operands: list = []
+    spans: list[tuple[int, int]] = []
+    for body in bodies:
+        local = _indexed(body, TopAbs_FACE)
+        lo = len(operands)
+        operands += [local.FindKey(k) for k in range(1, local.Extent() + 1)]
+        spans.append((lo, len(operands)))
+    budget = deadline - time.monotonic()
+    if budget <= 0.0:
+        return None
+    answer = bounded_child.run(
+        _nearest_face_positions,
+        ([[*spans[side], list(point)] for side, point in queries], float(tol), int(primary),
+         *operands),
+        budget_s=budget)
+    if not isinstance(answer, list) or len(answer) != len(queries):
+        return None
+    out: list[list] = []
+    for (side, _point), positions in zip(queries, answer, strict=True):
+        lo, hi = spans[side]
+        if not isinstance(positions, list) or not all(
+                isinstance(n, int) and lo <= n < hi for n in positions):
+            return None            # an answer naming another body's face is no answer
+        out.append([operands[n] for n in positions])
+    return out
+
+
+def _bounded_point_faces(shape, faces, point, *, tol: float, deadline: float) -> list[int] | None:
+    """The indices in `faces` of the face(s) nearest `point`, or None when the child did not finish.
+
+    AUDIT ROW 2. This was `_nearest_faces` IN THE PARENT: one uninterruptible
+    `BRepExtrema_DistShapeShape` per candidate face, the deadline checked only between faces. It
+    is now one query to the contact search's child, which runs the same pruning search - so no
+    more faces are measured than before, and a slow face is killed with the group.
+    """
+    near = _bounded_nearest_faces([shape], [(0, tuple(point))], primary=1, tol=tol,
+                                  deadline=deadline)
+    if near is None:
+        return None
+    return sorted({int(faces.FindIndex(face)) for face in near[0]} - {0})
+
+
 def _contact_support_faces(shape, faces, *, tol: float, deadline: float) -> Contact | None:
     """The contact of the nearest pair of touching solids that share no face yet, or None when
     there is no such pair or the deadline passed first. SEAM: tests replace it.
@@ -486,11 +748,11 @@ def _contact_support_faces(shape, faces, *, tol: float, deadline: float) -> Cont
     least distance wins (ties by the same ranking) and its support faces are the answer. A support
     the kernel reports IN a face is that face. When it reports only vertices or edges (touching
     planar faces usually do), the faces nearest the centroid of the minimal-distance points are
-    used instead, on each body. Every kernel failure is "no pair": this never raises.
+    used instead, on each body. Both searches run in a bounded child and see only their own
+    body's faces. Every kernel failure is "no pair": this never raises.
     """
     try:
-        from OCP.BRepExtrema import BRepExtrema_DistShapeShape
-        from OCP.TopAbs import TopAbs_FACE, TopAbs_SOLID
+        from OCP.TopAbs import TopAbs_SOLID
 
         from meshpipeline.cad.repair.localize import _indexed
 
@@ -514,65 +776,75 @@ def _contact_support_faces(shape, faces, *, tol: float, deadline: float) -> Cont
                  and all(boxes[i][0][k] <= boxes[j][1][k] + tol
                          and boxes[j][0][k] <= boxes[i][1][k] + tol for k in range(3))]
         pairs.sort(key=lambda ij: (-overlap(*ij), ij))
-        best = None
+        considered = pairs[:CONTACT_PAIR_CAP]
+        budget = deadline - time.monotonic()
+        if budget <= 0.0:
+            return None
+        # ONE CHILD FOR EVERY CANDIDATE PAIR. The bodies cross as shapes, so a position means the
+        # same body on both sides and no index walk has to agree.
+        order = sorted({index for pair in considered for index in pair})
+        where = {index: at for at, index in enumerate(order)}
+        measured = bounded_child.run(
+            _contact_extrema,
+            ([[where[i], where[j]] for i, j in considered],
+             *(solids.FindKey(index) for index in order)),
+            budget_s=budget)
+        if measured is None or len(measured) != len(considered):
+            # The search did not finish, so which pair is nearest is undetermined - exactly what
+            # a passed deadline used to mean here.
+            return None
         best_key = None
-        for rank, (i, j) in enumerate(pairs[:CONTACT_PAIR_CAP]):
-            # One DistShapeShape call is uninterruptible, so a slow pair can overshoot the
-            # deadline by its own duration; the check is only BETWEEN pairs.
-            if time.monotonic() >= deadline:
-                return None
-            try:
-                extrema = BRepExtrema_DistShapeShape(solids.FindKey(i), solids.FindKey(j))
-                if not extrema.IsDone() or extrema.NbSolution() < 1:
-                    continue
-                key = (round(float(extrema.Value()), 9), rank)
-            except Exception as exc:  # noqa: BLE001 - an unmeasurable pair is merely not nearest
-                logger.debug("mesh_probe: pair %d/%d unmeasurable: %s", i, j, exc)
-                continue
+        best: tuple[int, int, dict] | None = None
+        for rank, ((i, j), answer) in enumerate(zip(considered, measured, strict=True)):
+            if not isinstance(answer, dict) or answer.get("distance") is None:
+                continue                       # unmeasurable geometry is merely not nearest
+            key = (round(float(answer["distance"]), 9), rank)
             if best_key is None or key < best_key:
-                best, best_key = (i, j, extrema), key
+                best, best_key = (i, j, answer), key
         if best is None:
             return None
-        i, j, extrema = best
-        distance = float(extrema.Value())
-        found: set[int] = set()
+        i, j, answer = best
+        distance = float(answer["distance"])
+        # Each side's queries search ONLY THAT BODY'S faces: a support of solid i is a face of
+        # solid i, and a third body's face coincident with its point must never be named.
+        queries: list[tuple[int, tuple[float, float, float]]] = []   # (side, point)
         points: list[tuple[float, float, float]] = []
-        for n in range(1, extrema.NbSolution() + 1):
-            for support, kind in ((extrema.SupportOnShape1(n), extrema.SupportTypeShape1(n)),
-                                  (extrema.SupportOnShape2(n), extrema.SupportTypeShape2(n))):
-                if kind.name.endswith("IsInFace") and support.ShapeType() == TopAbs_FACE:
-                    index = faces.FindIndex(support)
-                    if index:
-                        found.add(int(index))
-            gap = extrema.PointOnShape1(n).Distance(extrema.PointOnShape2(n))
-            if gap <= distance + tol:
-                p1 = extrema.PointOnShape1(n)
-                points.append((p1.X(), p1.Y(), p1.Z()))
-
-        def contact() -> Contact | None:
-            if not found:
-                return None
-            return Contact(faces=tuple(sorted(found)), pair=f"solids:{i}+{j}",
-                           pairs_total=len(pairs), pairs_considered=min(len(pairs),
-                                                                         CONTACT_PAIR_CAP))
-
-        if found or not points:
-            return contact()
-        # FALLBACK CENTRE: the average of body i's minimal-distance points. For a contact that is
-        # not convex (an L-shaped patch) that average can lie OFF the contact, and the nearest
-        # faces to it are then a guess - `located_by` already says this is an inference.
-        count = len(points)
-        centre = (sum(p[0] for p in points) / count, sum(p[1] for p in points) / count,
-                  sum(p[2] for p in points) / count)
-        for index in (i, j):
-            body_faces = _indexed(solids.FindKey(index), TopAbs_FACE)
-            near = _nearest_faces(body_faces, centre, tol=tol, deadline=deadline)
-            if near is None:
-                return None
-            for local in near:
-                found.add(int(faces.FindIndex(body_faces.FindKey(local))))
+        for solution in answer.get("solutions") or ():
+            for side, point_key in ((0, "p1"), (1, "p2")):
+                if (solution.get("in_face") or (False, False))[side]:
+                    x, y, z = (float(v) for v in solution[point_key])
+                    queries.append((side, (x, y, z)))
+            if float(solution.get("gap", 0.0)) <= distance + tol:
+                x, y, z = (float(v) for v in solution["p1"])
+                points.append((x, y, z))
+        in_face = len(queries)
+        if points:
+            # FALLBACK CENTRE, asked in the same child and used only when no in-face support
+            # resolves: the average of body i's minimal-distance points. For a contact that is
+            # not convex (an L-shaped patch) that average can lie OFF the contact, and the
+            # nearest faces to it are then a guess - `located_by` already says this is an
+            # inference.
+            count = len(points)
+            centre = (sum(p[0] for p in points) / count, sum(p[1] for p in points) / count,
+                      sum(p[2] for p in points) / count)
+            queries += [(0, centre), (1, centre)]
+        if not queries:
+            return None
+        near = _bounded_nearest_faces([solids.FindKey(i), solids.FindKey(j)], queries,
+                                      primary=in_face, tol=tol, deadline=deadline)
+        if near is None:
+            return None
+        found: set[int] = set()
+        for resolved in near[:in_face]:
+            found.update(int(faces.FindIndex(face)) for face in resolved)
+        if not found:
+            for resolved in near[in_face:]:
+                found.update(int(faces.FindIndex(face)) for face in resolved)
         found.discard(0)
-        return contact()
+        if not found:
+            return None
+        return Contact(faces=tuple(sorted(found)), pair=f"solids:{i}+{j}",
+                       pairs_total=len(pairs), pairs_considered=min(len(pairs), CONTACT_PAIR_CAP))
     except Exception as exc:  # noqa: BLE001 - the probe never raises
         logger.info("mesh_probe: contact search: %s: %s", type(exc).__name__, exc)
         return None
@@ -649,11 +921,20 @@ def _mesh_defects(shape, *, diagonal_mm: float, budget_s: float,
     code = CODE_FOR_KIND.get(failure.kind, DefectCode.mesh_other)
     located: list[int] | None = []
     if failure.point is not None:
-        located = _nearest_faces(faces, failure.point, tol=tol, deadline=deadline)
+        located = _bounded_point_faces(shape, faces, failure.point, tol=tol, deadline=deadline)
     elif trusted := locating_surfaces(failure):
         if mapping is None:
             mapping = faces_for_tags(_face_boxes(faces), result.tag_boxes, tol=tol)
         located = list(dict.fromkeys(mapping[t] for t in trusted if t in mapping))
+    by_clash = False
+    if not located and result.clashes:
+        # gmsh named no point and no surface that maps to one face (its PLC error names nothing
+        # at all in 4.15): the surface pairs whose triangles actually cross are the place.
+        if mapping is None:
+            mapping = faces_for_tags(_face_boxes(faces), result.tag_boxes, tol=tol)
+        located = list(dict.fromkeys(mapping[t] for c in result.clashes for t in c.surfaces
+                                     if t in mapping))
+        by_clash = bool(located)
     by_contact = False
     contact: Contact | None = None
     if (not located and failure.kind == EDGE_THROUGH_FACE and failure.point is None
@@ -665,6 +946,32 @@ def _mesh_defects(shape, *, diagonal_mm: float, budget_s: float,
     if not located:
         return (_unlocated(failure),)
     defects = [_face_defect(code, faces, index, failure) for index in sorted(located)]
+    if by_clash:
+        # EACH FACE CARRIES ITS OWN PAIR'S EVIDENCE (Greptile #495): the leading clash - most hits
+        # - that names this face, never the run's first pair, so a face whose pair really meets is
+        # not read as another pair's sizing gap. One gap per pair, measured once.
+        tags_of = {face: tag for tag, face in (mapping or {}).items()}
+        owns = {}
+        for defect in defects:
+            tag = tags_of.get(int(defect.entity_index))
+            owns[defect.entity_index] = next((c for c in result.clashes if tag in c.surfaces),
+                                             result.clashes[0])
+        gaps, evidence = _clash_gaps(faces, mapping or {}, list(owns.values()),
+                                     budget_s=min(CLASH_EVIDENCE_S, deadline - time.monotonic()))
+        for defect in defects:
+            own = owns[defect.entity_index]
+            if evidence:
+                defect.measurements["clash_evidence"] = evidence
+            defect.measurements["located_by"] = LOCATED_BY_CLASH
+            defect.measurements["clash_pairs"] = [list(c.surfaces) for c in result.clashes]
+            defect.measurements["clash_pair"] = list(own.surfaces)
+            defect.measurements["clash_gap_mm"] = gaps.get(own.surfaces)
+            # THE KIND AGREES WITH THE GAP: triangles that crossed between faces the kernel
+            # measures apart are a GAP, and the triangle test's own word is kept beside it.
+            defect.measurements["clash_kind"] = reported_kind(own.kind, gaps.get(own.surfaces),
+                                                              diagonal_mm)
+            defect.measurements["clash_mesh_kind"] = own.kind
+            defect.measurements["clash_point"] = list(own.point)
     if by_contact and contact is not None:
         for defect in defects:
             defect.measurements["located_by"] = LOCATED_BY_CONTACT
@@ -676,6 +983,106 @@ def _mesh_defects(shape, *, diagonal_mm: float, budget_s: float,
         # defect would make it read as in-region (unplaceable is admitted), so it is dropped.
         defects = [d for d in defects if in_region(d, within, diagonal_mm=diagonal_mm)]
     return tuple(defects)
+
+
+#: The wall, in seconds, for measuring every located clash pair's B-rep gap. MEASURED, wave 4:
+#: one BRepExtrema_DistShapeShape between two BSpline faces of abc/0054_00540003 ran 150+ s in the
+#: parent - uninterruptible kernel code that no deadline check between calls could stop - and the
+#: file took 53 min with one core pinned. So the gaps are measured in ONE fresh interpreter, killed
+#: at the wall, and are evidence, never worth the run.
+CLASH_EVIDENCE_S = 10.0
+
+
+def _gap_child_argv(path: str, pairs: list[list[int]]) -> list[str]:
+    """The gap child's command: a FRESH interpreter, exactly as the mesh child is - never a fork.
+    The worker that calls this is threaded, and a forked child inherits every lock another thread
+    held (the allocator's among them, which the kernel takes on its first allocation). A seam for
+    the tests."""
+    return [sys.executable, "-W", "ignore", "-m", "meshpipeline.cad.repair.mesh_probe",
+            "--gaps", path, json.dumps(pairs)]
+
+
+def _gaps_main(argv: Sequence[str]) -> int:
+    """`python -m meshpipeline.cad.repair.mesh_probe --gaps PATH PAIRS`: one JSON line, the B-rep
+    distance between faces I and J (1-based in PATH's face map) for each [I, J] of PAIRS."""
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+    from OCP.BRepTools import BRepTools
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopoDS import TopoDS_Shape
+
+    path, pairs = argv[0], json.loads(argv[1])
+    shape = TopoDS_Shape()
+    BRepTools.Read_s(shape, path, BRep_Builder())
+    faces = _indexed(shape, TopAbs_FACE)
+    gaps: list[float | None] = []
+    for a, b in pairs:
+        try:
+            extrema = BRepExtrema_DistShapeShape(faces.FindKey(int(a)), faces.FindKey(int(b)))
+            gaps.append(float(extrema.Value()) if extrema.IsDone() else None)
+        except Exception:  # noqa: BLE001 - an unmeasurable pair is unknown, never guessed
+            gaps.append(None)
+    sys.stdout.write("\n" + json.dumps({"gaps": gaps}) + "\n")
+    sys.stdout.flush()
+    return 0
+
+
+def _clash_gaps(faces, mapping: dict[int, int], clashes: list[Clash], *,
+                budget_s: float) -> tuple[dict[tuple[int, int], float | None], str]:
+    """Every distinct pair's gap, measured in one bounded FRESH interpreter: (gaps by pair, "") or,
+    when it ran out of `budget_s` or died, ({}, "budget_spent") - every gap then reads None
+    (unmeasured), never a guess. A pair with an unmapped face is None without asking. NEVER
+    RAISES, NEVER BLOCKS PAST `budget_s` (plus a few seconds to reap the process group)."""
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepTools import BRepTools
+    from OCP.TopoDS import TopoDS_Compound
+
+    pairs = list(dict.fromkeys(c.surfaces for c in clashes))
+    known = {pair: (mapping.get(pair[0]), mapping.get(pair[1])) for pair in pairs}
+    asked = [pair for pair, (a, b) in known.items() if a and b]
+    out: dict[tuple[int, int], float | None] = dict.fromkeys(pairs)
+    if not asked:
+        return out, ""
+    if budget_s <= 0:
+        return {}, "budget_spent"
+    try:
+        # ONLY THE FACES ASKED ABOUT go to the child, in a compound whose face map is their order.
+        order = list(dict.fromkeys(i for pair in asked for i in known[pair]))
+        builder, compound = BRep_Builder(), TopoDS_Compound()
+        builder.MakeCompound(compound)
+        for index in order:
+            builder.Add(compound, faces.FindKey(index))
+        position = {index: n + 1 for n, index in enumerate(order)}
+        with tempfile.TemporaryDirectory(prefix="mesh-gaps-") as tmp:
+            path = Path(tmp) / "faces.brep"
+            if not BRepTools.Write_s(compound, str(path)):
+                return {}, "budget_spent"
+            argv = _gap_child_argv(str(path), [[position[known[p][0]], position[known[p][1]]]
+                                               for p in asked])
+            proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                    stderr=subprocess.DEVNULL, start_new_session=True, text=True)
+            try:
+                text, _ = proc.communicate(timeout=float(budget_s))
+            except subprocess.TimeoutExpired:
+                _kill_group(proc)
+                try:
+                    proc.communicate(timeout=5)
+                except Exception:  # noqa: BLE001
+                    pass
+                return {}, "budget_spent"
+            finally:
+                if proc.poll() is None:
+                    _kill_group(proc)
+        lines = [ln for ln in (text or "").splitlines() if ln.strip()]
+        gaps = json.loads(lines[-1])["gaps"] if proc.returncode == 0 and lines else None
+        if not isinstance(gaps, list) or len(gaps) != len(asked):
+            return {}, "budget_spent"
+        for pair, gap in zip(asked, gaps, strict=True):
+            out[pair] = None if gap is None else float(gap)
+        return out, ""
+    except Exception as exc:  # noqa: BLE001 - evidence: a failure is "unmeasured", never a raise
+        logger.info("mesh_probe: clash gaps: %s: %s", type(exc).__name__, exc)
+        return {}, "budget_spent"
 
 
 def _tag_in_region(tag: int, box: Box, mapping: dict[int, int], faces, within: Region, *,
@@ -695,4 +1102,6 @@ def _tag_in_region(tag: int, box: Box, mapping: dict[int, int], faces, within: R
 
 
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["--gaps"]:
+        raise SystemExit(_gaps_main(sys.argv[2:]))
     raise SystemExit(_child_main(sys.argv[1:]))

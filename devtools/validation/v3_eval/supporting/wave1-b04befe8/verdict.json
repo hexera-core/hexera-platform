@@ -1,0 +1,194 @@
+{
+ "arms": {
+  "t19_tournament_off/failing": {
+   "cost_per_fixed_part_usd": null,
+   "files": 120,
+   "model": {
+    "by_purpose": {
+     "unlabelled": 1907
+    },
+    "by_role": {
+     "intake": 1907
+    },
+    "calls": 1907,
+    "cost_usd": 0.585,
+    "input_tokens": 7236020,
+    "output_tokens": 205082,
+    "statuses": {
+     "invalid_request": 5,
+     "ok": 1902
+    }
+   },
+   "shards": 29,
+   "total_cost_usd": 0.8382,
+   "vm": {
+    "container_cost_usd": 0.2532,
+    "longest_shard_s": 2304.6,
+    "note": "container wall only; VM boot, docker install and image pull add ~5-10 min/VM",
+    "shard_seconds": 20076.1
+   },
+   "wall_per_fixed_part_s": null
+  },
+  "t29_deterministic/clean": {
+   "clean": {
+    "files_with_kept_ops": [
+     "00514684_7f0805030eb57e4abb36a15f_step_000.step",
+     "00552206_58acbbeb0c5c6a0f76db00bb_step_018.step",
+     "00591591_fea9cf6e8da1b878be43a67f_step_000.step"
+    ],
+    "newly_broken": 0,
+    "untouched": false
+   },
+   "cost_per_fixed_part_usd": null,
+   "files": 100,
+   "model": {
+    "by_purpose": {
+     "unlabelled": 4
+    },
+    "by_role": {
+     "intake": 4
+    },
+    "calls": 4,
+    "cost_usd": 0.0015,
+    "input_tokens": 2663,
+    "output_tokens": 767,
+    "statuses": {
+     "ok": 4
+    }
+   },
+   "shards": 7,
+   "total_cost_usd": 0.0345,
+   "vm": {
+    "container_cost_usd": 0.033,
+    "longest_shard_s": 461.1,
+    "note": "container wall only; VM boot, docker install and image pull add ~5-10 min/VM",
+    "shard_seconds": 2613.0
+   },
+   "wall_per_fixed_part_s": null
+  },
+  "t29_deterministic/failing": {
+   "cost_per_fixed_part_usd": 0.298,
+   "files": 120,
+   "model": {
+    "by_purpose": {
+     "unlabelled": 18
+    },
+    "by_role": {
+     "intake": 18
+    },
+    "calls": 18,
+    "cost_usd": 0.0078,
+    "input_tokens": 12490,
+    "output_tokens": 4387,
+    "statuses": {
+     "ok": 18
+    }
+   },
+   "shards": 21,
+   "total_cost_usd": 0.298,
+   "vm": {
+    "container_cost_usd": 0.2902,
+    "longest_shard_s": 2648.1,
+    "note": "container wall only; VM boot, docker install and image pull add ~5-10 min/VM",
+    "shard_seconds": 23015.9
+   },
+   "wall_per_fixed_part_s": 23015.9
+  },
+  "v3_full/clean": {
+   "clean": {
+    "files_with_kept_ops": [
+     "00552206_58acbbeb0c5c6a0f76db00bb_step_018.step"
+    ],
+    "newly_broken": 0,
+    "untouched": false
+   },
+   "cost_per_fixed_part_usd": null,
+   "files": 100,
+   "model": {
+    "by_purpose": {
+     "unlabelled": 760
+    },
+    "by_role": {
+     "intake": 760
+    },
+    "calls": 760,
+    "cost_usd": 0.2217,
+    "input_tokens": 2123664,
+    "output_tokens": 87113,
+    "statuses": {
+     "invalid_request": 2,
+     "ok": 758
+    }
+   },
+   "shards": 7,
+   "total_cost_usd": 0.264,
+   "vm": {
+    "container_cost_usd": 0.0423,
+    "longest_shard_s": 711.9,
+    "note": "container wall only; VM boot, docker install and image pull add ~5-10 min/VM",
+    "shard_seconds": 3357.1
+   },
+   "wall_per_fixed_part_s": null
+  },
+  "v3_full/failing": {
+   "cost_per_fixed_part_usd": 1.053,
+   "files": 120,
+   "model": {
+    "by_purpose": {
+     "unlabelled": 1978
+    },
+    "by_role": {
+     "intake": 1978
+    },
+    "calls": 1978,
+    "cost_usd": 0.7556,
+    "input_tokens": 6651848,
+    "output_tokens": 294762,
+    "statuses": {
+     "invalid_request": 7,
+     "ok": 1971
+    }
+   },
+   "shards": 32,
+   "total_cost_usd": 1.053,
+   "vm": {
+    "container_cost_usd": 0.2974,
+    "longest_shard_s": 3731.7,
+    "note": "container wall only; VM boot, docker install and image pull add ~5-10 min/VM",
+    "shard_seconds": 23584.2
+   },
+   "wall_per_fixed_part_s": 23584.2
+  }
+ },
+ "checked": {
+  "commit": "b04befe82ae2fcf0b6b8a616f88d2eac92bc3be9",
+  "image": "us-central1-docker.pkg.dev/hexera-dev/mesh/app@sha256:00ce015614daaccebfb7169ac24b2766f0069eeb5570fb5d4bb4b5518a597832",
+  "image_commit": "5d496416e3433ce7df626a07bc441f2459d34e49",
+  "samples": {
+   "clean": "3954d6e301cc1c7f41f69e4a4f39163ff8bcdd7e419a6151f1e3809372043cc0",
+   "failing": "95787045f8a49b4001496afe319cf44abb522d303c097f1e3324fe67b830cfbc"
+  }
+ },
+ "verdicts": {
+  "T19": {
+   "off_newly_broken": 0,
+   "off_newly_meshed": 0,
+   "off_usd_per_fixed": null,
+   "on_newly_broken": 0,
+   "on_newly_meshed": 1,
+   "on_usd_per_fixed": 1.053
+  },
+  "T29": {
+   "accepted": false,
+   "clean_untouched": false,
+   "cost_per_fixed_part_usd": 1.053,
+   "cost_printed": true,
+   "deterministic_newly_meshed": 1,
+   "newly_broken_total": 0,
+   "ratio": 1.0,
+   "ratio_ok": false,
+   "ratio_rule": "v3 1 vs 4x deterministic 1 = 4",
+   "v3_newly_meshed": 1
+  }
+ }
+}

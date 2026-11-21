@@ -29,7 +29,10 @@ const USER_FACING: Record<string, { order: number; fallback: string }> = {
   mesh_bundle: { order: 0, fallback: "Everything" },
   mesh: { order: 1, fallback: "Mesh" },
   repaired_cad: { order: 2, fallback: "Repaired CAD" },
-  repair_report: { order: 3, fallback: "CAD inspection report" },
+  // the customer's own STEP handed back unchanged when a repair kept nothing - never "repaired"
+  returned_cad: { order: 3, fallback: "Your CAD, unchanged" },
+  mesh_hints: { order: 4, fallback: "Mesh-size hints" },
+  repair_report: { order: 5, fallback: "CAD inspection report" },
 };
 
 export function isLive(status: string | undefined): boolean {

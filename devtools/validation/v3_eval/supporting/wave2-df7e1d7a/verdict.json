@@ -1,0 +1,194 @@
+{
+ "arms": {
+  "t19_tournament_off/failing": {
+   "cost_per_fixed_part_usd": null,
+   "files": 120,
+   "model": {
+    "by_purpose": {
+     "investigator": 1833,
+     "reviewer": 2
+    },
+    "by_role": {
+     "intake": 1835
+    },
+    "calls": 1835,
+    "cost_usd": 0.5789,
+    "input_tokens": 7208545,
+    "output_tokens": 195440,
+    "statuses": {
+     "ok": 1835
+    }
+   },
+   "shards": 29,
+   "total_cost_usd": 0.9145,
+   "vm": {
+    "container_cost_usd": 0.3356,
+    "longest_shard_s": 3503.5,
+    "note": "container wall only; VM boot, docker install and image pull add ~5-10 min/VM",
+    "shard_seconds": 23152.8
+   },
+   "wall_per_fixed_part_s": null
+  },
+  "t29_deterministic/clean": {
+   "clean": {
+    "changed": 3,
+    "crashed_files": [],
+    "files_with_kept_ops": [
+     "00514684_7f0805030eb57e4abb36a15f_step_000.step",
+     "00552206_58acbbeb0c5c6a0f76db00bb_step_018.step",
+     "00591591_fea9cf6e8da1b878be43a67f_step_000.step"
+    ],
+    "files_with_new_defects": [],
+    "new_defects": {},
+    "newly_broken": 0,
+    "not_good": [],
+    "still_meshes_no_new_defects": 100
+   },
+   "cost_per_fixed_part_usd": null,
+   "files": 100,
+   "model": {
+    "by_purpose": {
+     "reviewer": 4
+    },
+    "by_role": {
+     "intake": 4
+    },
+    "calls": 4,
+    "cost_usd": 0.0016,
+    "input_tokens": 3191,
+    "output_tokens": 764,
+    "statuses": {
+     "ok": 4
+    }
+   },
+   "shards": 7,
+   "total_cost_usd": 0.0442,
+   "vm": {
+    "container_cost_usd": 0.0426,
+    "longest_shard_s": 513.6,
+    "note": "container wall only; VM boot, docker install and image pull add ~5-10 min/VM",
+    "shard_seconds": 2941.8
+   },
+   "wall_per_fixed_part_s": null
+  },
+  "t29_deterministic/failing": {
+   "cost_per_fixed_part_usd": 0.3833,
+   "files": 120,
+   "model": {
+    "by_purpose": {
+     "reviewer": 19
+    },
+    "by_role": {
+     "intake": 19
+    },
+    "calls": 19,
+    "cost_usd": 0.0093,
+    "input_tokens": 15645,
+    "output_tokens": 5183,
+    "statuses": {
+     "ok": 19
+    }
+   },
+   "shards": 21,
+   "total_cost_usd": 0.3833,
+   "vm": {
+    "container_cost_usd": 0.374,
+    "longest_shard_s": 3729.9,
+    "note": "container wall only; VM boot, docker install and image pull add ~5-10 min/VM",
+    "shard_seconds": 25801.0
+   },
+   "wall_per_fixed_part_s": 25801.0
+  },
+  "v3_full/clean": {
+   "clean": {
+    "changed": 1,
+    "crashed_files": [],
+    "files_with_kept_ops": [
+     "00552206_58acbbeb0c5c6a0f76db00bb_step_018.step"
+    ],
+    "files_with_new_defects": [],
+    "new_defects": {},
+    "newly_broken": 0,
+    "not_good": [],
+    "still_meshes_no_new_defects": 100
+   },
+   "cost_per_fixed_part_usd": null,
+   "files": 100,
+   "model": {
+    "by_purpose": {
+     "reviewer": 2,
+     "tournament:investigator": 647,
+     "tournament:one_shot": 104
+    },
+    "by_role": {
+     "intake": 753
+    },
+    "calls": 753,
+    "cost_usd": 0.2289,
+    "input_tokens": 2242260,
+    "output_tokens": 89513,
+    "statuses": {
+     "ok": 753
+    }
+   },
+   "shards": 7,
+   "total_cost_usd": 0.2805,
+   "vm": {
+    "container_cost_usd": 0.0516,
+    "longest_shard_s": 744.9,
+    "note": "container wall only; VM boot, docker install and image pull add ~5-10 min/VM",
+    "shard_seconds": 3560.1
+   },
+   "wall_per_fixed_part_s": null
+  },
+  "v3_full/failing": {
+   "cost_per_fixed_part_usd": null,
+   "files": 120,
+   "model": {
+    "by_purpose": {
+     "reviewer": 7,
+     "tournament:investigator": 1562,
+     "tournament:one_shot": 330
+    },
+    "by_role": {
+     "intake": 1899
+    },
+    "calls": 1899,
+    "cost_usd": 0.7584,
+    "input_tokens": 6672740,
+    "output_tokens": 299484,
+    "statuses": {
+     "ok": 1899
+    }
+   },
+   "shards": 32,
+   "total_cost_usd": 1.176,
+   "vm": {
+    "container_cost_usd": 0.4176,
+    "longest_shard_s": 6859.2,
+    "note": "container wall only; VM boot, docker install and image pull add ~5-10 min/VM",
+    "shard_seconds": 28810.9
+   },
+   "wall_per_fixed_part_s": null
+  }
+ },
+ "checked": {
+  "commit": "df7e1d7afd0eea770137eecd549d2b61e67e5cce",
+  "image": "us-central1-docker.pkg.dev/hexera-dev/mesh/app@sha256:00ce015614daaccebfb7169ac24b2766f0069eeb5570fb5d4bb4b5518a597832",
+  "image_commit": "5d496416e3433ce7df626a07bc441f2459d34e49",
+  "samples": {
+   "clean": "3954d6e301cc1c7f41f69e4a4f39163ff8bcdd7e419a6151f1e3809372043cc0",
+   "failing": "95787045f8a49b4001496afe319cf44abb522d303c097f1e3324fe67b830cfbc"
+  }
+ },
+ "comparisons": {
+  "T19": {
+   "off_newly_broken": 0,
+   "off_newly_meshed": 0,
+   "off_usd_per_fixed": null,
+   "on_newly_broken": 0,
+   "on_newly_meshed": 0,
+   "on_usd_per_fixed": null
+  }
+ }
+}

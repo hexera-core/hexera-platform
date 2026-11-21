@@ -69,8 +69,12 @@ def test_attempt_failures_are_carried():
     assert obs["attempts"][0]["ops"][0]["status"] == "reverted"
 
 
-def test_no_kernel_needed_for_located_fields():
-    sys.modules.pop("OCP", None)
+def test_no_kernel_needed_for_located_fields(monkeypatch):
+    # Through monkeypatch, so the real `OCP` package comes back afterwards. A bare pop leaves
+    # `OCP.ShapeFix` & co. in sys.modules while the next `import OCP` builds a NEW package whose
+    # `ShapeFix` attribute is the native `OCP.OCP.ShapeFix`, not that wrapper - so a later test
+    # patching `OCP.ShapeFix` patches a module `from OCP.ShapeFix import ...` no longer reads.
+    monkeypatch.delitem(sys.modules, "OCP", raising=False)
     calls = []
 
     def reader(shape, indices):

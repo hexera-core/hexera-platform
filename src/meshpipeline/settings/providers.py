@@ -15,7 +15,9 @@ from meshpipeline.settings.env import (
 # routing layer (adapters.model_inference.routes.missing_provider_credentials) because it reads the
 # routes, and settings/ must not import upward; runtime.startup.validate enforces it at boot. This
 # is what lets a single-provider profile skip the other provider's key, and local/test import none.
-DEEPSEEK_API_KEY: str  = optional_env("DEEPSEEK_API_KEY", "")
+# Keys are STRIPPED: a secret saved with a trailing newline is sent as `Bearer sk-...\n`, which the
+# HTTP client refuses before dialling and the OpenAI SDK reports as "Connection error", not a bad key.
+DEEPSEEK_API_KEY: str  = optional_env("DEEPSEEK_API_KEY", "").strip()
 DEEPSEEK_BASE_URL: str = optional_env("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
 # INTAKE's model, under a name from when intake could only be DeepSeek. It is read for capture
 # provenance (application/pipeline_run.py) and must therefore agree with INTAKE_MODEL, which is
@@ -23,9 +25,9 @@ DEEPSEEK_BASE_URL: str = optional_env("DEEPSEEK_BASE_URL", "https://api.deepseek
 # with a retirement path (inventory.REMOVED), not a line in a routing cutover; see the routing
 # design's open questions.
 DEEPSEEK_MODEL: str    = optional_env("DEEPSEEK_MODEL",    "gpt-5.6-luna")
-DEEPINFRA_API_KEY: str  = optional_env("DEEPINFRA_API_KEY", "")
+DEEPINFRA_API_KEY: str  = optional_env("DEEPINFRA_API_KEY", "").strip()
 DEEPINFRA_BASE_URL: str = optional_env("DEEPINFRA_BASE_URL", "https://api.deepinfra.com/v1/openai")
-OPENAI_API_KEY: str  = optional_env("OPENAI_API_KEY", "")
+OPENAI_API_KEY: str  = optional_env("OPENAI_API_KEY", "").strip()
 OPENAI_BASE_URL: str = optional_env("OPENAI_BASE_URL", "https://api.openai.com/v1")
 
 DEEPINFRA_CALL_TIMEOUT: int      = int(optional_env("DEEPINFRA_CALL_TIMEOUT",      "1800"))
@@ -44,7 +46,7 @@ WEB_SEARCH_PROVIDER: str    = optional_env("WEB_SEARCH_PROVIDER", "searxng")  # 
 WEB_SEARCH_BASE_URL: str    = optional_env("WEB_SEARCH_BASE_URL", "http://localhost:8080")
 WEB_SEARCH_MAX_RESULTS: int = int(optional_env("WEB_SEARCH_MAX_RESULTS", "5"))
 WEB_SEARCH_TIMEOUT: int     = int(optional_env("WEB_SEARCH_TIMEOUT", "20"))
-TAVILY_API_KEY: str         = optional_env("TAVILY_API_KEY", "")  # only if provider=tavily
+TAVILY_API_KEY: str         = optional_env("TAVILY_API_KEY", "").strip()  # only if provider=tavily
 if WEB_SEARCH_PROVIDER not in ("searxng", "tavily"):
     raise ConfigurationError(
         f"WEB_SEARCH_PROVIDER must be 'searxng' or 'tavily', got '{WEB_SEARCH_PROVIDER}'")

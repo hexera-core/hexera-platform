@@ -223,7 +223,7 @@ class JobRequest:
                  "approved_intent_fingerprint", "intake_events",
                  "requested_extents", "reference_length_m", "requirements_strict",
                  "flow_axis", "repair_directives", "review_continuation", "user_notes",
-                 "meshing_standard")
+                 "meshing_standard", "repair_goal")
 
     def __init__(self, job_id, owner_id="dev-user", geometry_source=None,
                  geometry_interpretation=None, session_id="",
@@ -237,7 +237,7 @@ class JobRequest:
                  requested_extents=None, reference_length_m=None,
                  requirements_strict=True, flow_axis=None,
                  repair_directives=None, review_continuation=False, user_notes=None,
-                 meshing_standard=None):
+                 meshing_standard=None, repair_goal=None):
         self.job_id           = job_id
         self.owner_id         = owner_id
         # Replayed only once the claim has bound the tenant these records file under. They are
@@ -307,6 +307,12 @@ class JobRequest:
         # purchase as the parked run (it was not admitted again and is charged once, at its end).
         self.repair_directives = [dict(d) for d in (repair_directives or [])]
         self.review_continuation = bool(review_continuation)
+        # WHAT THIS RUN IS FINISHING FOR (pipeline/repair_goal.py). VALIDATED HERE, at the one
+        # place every entry - Celery, Cloud Run, retry, resume - passes through: the threshold
+        # inside it is a customer-supplied number that can widen what commits without a reviewer,
+        # so a request that does not validate must not reach the graph at all. {} is no goal
+        # declared, which is byte-for-byte the run this field did not exist for.
+        self.repair_goal = self._goal_request(repair_goal)
         # THE USER'S OWN NOTES, word for word (contracts/user_notes): read by every route's AI
         # steps and answered per requirement on the result. Empty for a run with none.
         from meshpipeline.contracts.user_notes import clean as _clean_notes
@@ -334,6 +340,20 @@ class JobRequest:
         # the COMPLETE approved-intent fingerprint (engine/purpose/input_kind/dimensionality/
         # patches/engine_params). Re-verified at graph admission against the run's own fields.
         self.approved_intent_fingerprint = str(approved_intent_fingerprint or "")
+
+    @staticmethod
+    def _goal_request(value) -> dict:
+        """The repair goal this run was dispatched with, in its canonical dict form, or {}.
+
+        REFUSES RATHER THAN NORMALISES. The field carries a customer's auto-accept deviation
+        threshold, and the one thing a bad value must never do is reach a session as a wider
+        licence than the caller was entitled to - so an unparseable request raises here, before
+        the graph, exactly as a half-written geometry snapshot does above.
+        """
+        if not value:
+            return {}
+        from meshpipeline.pipeline.repair_goal import parse
+        return parse(value).to_state()
 
 
 class _JobAdapter(logging.LoggerAdapter):
@@ -443,6 +463,7 @@ def run_pipeline(
     requirements_strict:     bool       = True,
     flow_axis:               str | None = None,
     repair_directives:       list | None = None,
+    repair_goal:             dict | None = None,
     review_continuation:     bool       = False,
     user_notes:              list | None = None,
     meshing_standard:        dict | None = None,
@@ -490,6 +511,7 @@ def run_pipeline(
         engine_params=engine_params or {},
         user_dispute=user_dispute or {},
         repair_directives=repair_directives or [],
+        repair_goal=repair_goal or {},
         review_continuation=review_continuation,
         user_notes=user_notes or [],
         meshing_standard=meshing_standard,
@@ -604,7 +626,7 @@ async def _run_async(req: JobRequest) -> dict:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
     from meshpipeline.contracts.pipeline_state import STATE_SCHEMA_VERSION, PipelineState
-    from meshpipeline.persistence.models import JobStatus
+    from meshpipeline.persistence.models import FailedReason, JobStatus
     from meshpipeline.persistence.repositories.job_repository import JobRepository
     from meshpipeline.pipeline.graph import build_graph
 
@@ -854,6 +876,10 @@ async def _run_async(req: JobRequest) -> dict:
         initial_state["fea_shell_thickness_mm"] = await asyncio.to_thread(confirmed_thickness, str(session_id or ""))
 
         initial_state["repair_directives"] = list(req.repair_directives)
+        # THE GOAL, EXACTLY AS `repair_directives` TRAVELS. Validated at the request; re-read by
+        # `pipeline/repair_goal.from_state`, which is also where the posture is consulted - so a
+        # state carrying a goal on a deployment that has not turned the row on is today's run.
+        initial_state["repair_goal"] = dict(req.repair_goal)
 
         if req.user_dispute:
             # DISPUTE RUN - the user flagged issues on a delivered mesh. The parent resolution, the
@@ -1001,7 +1027,12 @@ async def _run_async(req: JobRequest) -> dict:
                 # (application/post_gate_rescue; lp_base and kart_chassis, dev-areen 25 Oct)
                 from meshpipeline.application.post_gate_rescue import run_to_end as _run_to_end
                 from meshpipeline.application.worker_handoff import run_unless_draining
-                with execution_ownership(ownership, session_factory=AsyncSessionLocal):
+
+                # THE MESHING RUN HOLDS ITS BIG-MACHINE VMS (RUN-4) for as long as it runs: one taken
+                # for a run stays up for the next remesh, never deleted for waiting on the builder
+                from meshpipeline.contracts.mesh_execution import hold_job_machines
+                with execution_ownership(ownership, session_factory=AsyncSessionLocal), \
+                        hold_job_machines(job_id):
                     return await run_unless_draining(
                         _run_to_end(graph, await _graph_input(graph), graph_config, jlog=jlog))
             finally:
@@ -1187,6 +1218,10 @@ async def _run_async(req: JobRequest) -> dict:
         # so it cannot change `final_status` and its own failures are swallowed (see
         # application/repair_report_delivery.py); only being FENCED stops this worker, for the
         # same reason it stops artifact registration.
+        _standalone_handed_back = ""   # the repaired-CAD delivery's outcome on a standalone run
+        _lineage_handed_back = ""      # ...and on a run that meshed a promoted repair
+        _standalone: dict = {}
+        _repaired = None
         if final_state.get("repair_report"):
             from meshpipeline.application.execution_fence import (
                 StaleWorkerFenced as _StaleFenced,
@@ -1209,10 +1244,29 @@ async def _run_async(req: JobRequest) -> dict:
                         report=dict(final_state.get("repair_report") or {}),
                         repair_status=str(final_state.get("repair_status", "") or ""),
                         repair_attempt=dict(final_state.get("repair_attempt") or {}),
+                        repair_handback=dict(final_state.get("repair_handback") or {}),
                         owner_id=owner_id,
                         delivery_attempt=int(final_state.get("retry_count", 0) or 0),
                         execution_generation=_generation,
                         fence_commit=_fence_report)
+                    # A STANDALONE REPAIR JOB'S DELIVERABLE IS THE REPAIRED FILE, and it never
+                    # promoted anything: the product mesher is not part of that goal's verdict
+                    # (spec amendment 1), so there is no `repair_lineage` below to carry it. The
+                    # ending named the bytes (pipeline/repair_deliver.py) and this is the only
+                    # place that holds the fence to hand them over.
+                    _standalone = dict(final_state.get("repair_delivery") or {})
+                    if _standalone.get("path"):
+                        from meshpipeline.application.repair_report_delivery import (
+                            deliver_repaired_cad as _deliver_cad,
+                        )
+                        _standalone_handed_back = await _deliver_cad(
+                            AsyncSessionLocal, job_id=job_id,
+                            local_path=_standalone["path"],
+                            suffix=str(_standalone.get("suffix") or ".step"),
+                            owner_id=owner_id,
+                            delivery_attempt=int(final_state.get("retry_count", 0) or 0),
+                            execution_generation=_generation,
+                            fence_commit=_fence_report)
                     # AND THE REPAIRED FILE ITSELF, when a repair was promoted: `geometry` names
                     # the repaired bytes from that moment on, and repair_lineage is the record
                     # that they ARE repaired rather than the upload. A customer whose CAD we fixed
@@ -1226,7 +1280,7 @@ async def _run_async(req: JobRequest) -> dict:
                         )
                         _repaired = _mat(final_state)
                         if _repaired is not None:
-                            await deliver_repaired_cad(
+                            _lineage_handed_back = await deliver_repaired_cad(
                                 AsyncSessionLocal, job_id=job_id,
                                 local_path=_repaired.path,
                                 suffix=_repaired.ref.suffix_hint or ".step",
@@ -1234,6 +1288,29 @@ async def _run_async(req: JobRequest) -> dict:
                                 delivery_attempt=int(final_state.get("retry_count", 0) or 0),
                                 execution_generation=_generation,
                                 fence_commit=_fence_report)
+                    # THE STEP IS RETURNED NO MATTER WHAT (CAD_REPAIR_MESHABILITY_PASS=live,
+                    # pipeline/repair_return.py): a refusal's passthrough - the upload's bytes,
+                    # delivered as `returned_cad`, never as repaired - and the mesh-hints sidecar
+                    # beside whichever STEP the customer receives. IN ADDITION to everything
+                    # above: the refusal, its escalation and the status are untouched.
+                    _returned = dict((final_state.get("repair_attempt") or {}).get("returned")
+                                     or {})
+                    if _returned:
+                        from meshpipeline.application.repair_report_delivery import (
+                            deliver_returned,
+                        )
+                        _rpath = str(_returned.get("path") or "")
+                        _step_delivered = bool(_rpath) and (
+                            (bool(_standalone_handed_back)
+                             and _rpath == str(_standalone.get("path") or ""))
+                            or (bool(_lineage_handed_back) and _repaired is not None
+                                and _rpath == str(_repaired.path)))
+                        await deliver_returned(
+                            AsyncSessionLocal, job_id=job_id, returned=_returned,
+                            step_delivered=_step_delivered, owner_id=owner_id,
+                            delivery_attempt=int(final_state.get("retry_count", 0) or 0),
+                            execution_generation=_generation,
+                            fence_commit=_fence_report)
             except _StaleFenced:
                 jlog.warning("Worker FENCED at repair report registration (the job was cancelled "
                              "or taken over) - producing no terminal side effects. job_id=%s",
@@ -1246,64 +1323,77 @@ async def _run_async(req: JobRequest) -> dict:
         # system failure, recorded by the single status commit below.
         _delivery = None   # the artifact delivery's outcome, when there was one to make
         if final_status == JobStatus.succeeded:
-            # Deliver FIRST, commit status ONCE afterwards: a client must never see `succeeded`
-            # before the mesh is fetchable. A run whose mesh cannot reach the user did not succeed,
-            # so the downgrade travels back with the delivery outcome rather than being re-derived
-            # here. The retry policy and the failure classification belong to the uploader.
-            from meshpipeline.application.artifact_uploader import deliver_succeeded_run
+            if _run_outcome.standalone_delivery is not None:
+                # A STANDALONE REPAIR JOB's deliverable is the repaired file handed back above -
+                # there is no mesh workspace to deliver. A repaired file that did not reach the
+                # store is no success: the customer would be told "repaired" with nothing to
+                # download. Decided HERE, in the delivery branch, never in the report block above:
+                # that block is evidence and cannot move the status.
+                if not _standalone_handed_back:
+                    jlog.error("standalone repair: the repaired file was not delivered - the run "
+                               "fails (job_id=%s)", job_id)
+                    from meshpipeline.application.final_result import StatusDecision
+                    _decision = StatusDecision(JobStatus.failed, FailedReason.api_failure)
+                    final_status, _failed_reason = _decision.status, _decision.failed_reason
+            else:
+                # Deliver FIRST, commit status ONCE afterwards: a client must never see `succeeded`
+                # before the mesh is fetchable. A run whose mesh cannot reach the user did not succeed,
+                # so the downgrade travels back with the delivery outcome rather than being re-derived
+                # here. The retry policy and the failure classification belong to the uploader.
+                from meshpipeline.application.artifact_uploader import deliver_succeeded_run
 
-            # BIND execution ownership for artifact delivery. The graph span closed above, so the
-            # uploader's own progress and failure events would otherwise be published by a worker
-            # that cannot say which execution it speaks for - a superseded one included.
-            #
-            # This is context PROPAGATION, not authorization: the authorization is the
-            # `is_current_owner` check above, which a stale worker fails before reaching here. The
-            # binding only carries the identity that check just confirmed into the delivery call.
-            #
-            # It covers the awaited delivery and nothing else. `apply_delivery`, the status commit
-            # and the terminal/outbox path stay outside it: terminal authority must be able to
-            # speak when the execution no longer owns the job, which is the whole point of it
-            # being a separate authority.
-            #
-            # KNOWN LIMIT, unchanged by this: a takeover that lands between the PostgreSQL check
-            # and a Redis event is still possible. Closing that needs the central atomic Redis
-            # fence, which is a later batch.
-            from meshpipeline.application.execution_fence import (
-                StaleWorkerFenced,
-                execution_ownership,
-                lock_ownership_for_commit,
-            )
+                # BIND execution ownership for artifact delivery. The graph span closed above, so the
+                # uploader's own progress and failure events would otherwise be published by a worker
+                # that cannot say which execution it speaks for - a superseded one included.
+                #
+                # This is context PROPAGATION, not authorization: the authorization is the
+                # `is_current_owner` check above, which a stale worker fails before reaching here. The
+                # binding only carries the identity that check just confirmed into the delivery call.
+                #
+                # It covers the awaited delivery and nothing else. `apply_delivery`, the status commit
+                # and the terminal/outbox path stay outside it: terminal authority must be able to
+                # speak when the execution no longer owns the job, which is the whole point of it
+                # being a separate authority.
+                #
+                # KNOWN LIMIT, unchanged by this: a takeover that lands between the PostgreSQL check
+                # and a Redis event is still possible. Closing that needs the central atomic Redis
+                # fence, which is a later batch.
+                from meshpipeline.application.execution_fence import (
+                    StaleWorkerFenced,
+                    execution_ownership,
+                    lock_ownership_for_commit,
+                )
 
-            async def _fence_registration(db):
-                await lock_ownership_for_commit(db, "artifact registration")
+                async def _fence_registration(db):
+                    await lock_ownership_for_commit(db, "artifact registration")
 
-            try:
-                with execution_ownership(ownership, session_factory=AsyncSessionLocal):
-                    _delivery = await deliver_succeeded_run(
-                        AsyncSessionLocal,
-                        job_id=job_id, owner_id=owner_id,
-                        workspace=final_state.get("openfoam_workspace", ""),
-                        engine=str(final_state.get("engine", "") or ""),
-                        delivery_attempt=int(final_state.get("retry_count", 0) or 0),
-                        execution_generation=_generation,
-                        jlog=jlog, publish=_pub, persist_orphans=_persist_orphans,
-                        fence_commit=_fence_registration)
-            except StaleWorkerFenced:
-                # The same ending as the ownership pre-check above, reached one step later: the
-                # owner cancelled (or a newer generation took over) while this worker uploaded,
-                # and the registration's own fence refused it. No rows, no terminal record, no
-                # charge, no announcement - the job's current authority has already spoken.
-                jlog.warning("Worker FENCED at artifact registration (the job was cancelled or "
-                             "taken over during delivery) - producing no terminal side effects. "
-                             "job_id=%s", job_id)
-                await _worker_engine.dispose()
-                return {"job_id": job_id, "status": "fenced", "skipped": "not_owner"}
-            _uploaded_artifacts = _delivery.delivered
-            # A run whose mesh could not be delivered did not succeed - the downgrade is a status
-            # rule owned by final_result, not two lines of orchestration.
-            from meshpipeline.application.final_result import apply_delivery
-            _decision = apply_delivery(_decision, _delivery)
-            final_status, _failed_reason = _decision.status, _decision.failed_reason
+                try:
+                    with execution_ownership(ownership, session_factory=AsyncSessionLocal):
+                        _delivery = await deliver_succeeded_run(
+                            AsyncSessionLocal,
+                            job_id=job_id, owner_id=owner_id,
+                            workspace=final_state.get("openfoam_workspace", ""),
+                            engine=str(final_state.get("engine", "") or ""),
+                            delivery_attempt=int(final_state.get("retry_count", 0) or 0),
+                            execution_generation=_generation,
+                            jlog=jlog, publish=_pub, persist_orphans=_persist_orphans,
+                            fence_commit=_fence_registration)
+                except StaleWorkerFenced:
+                    # The same ending as the ownership pre-check above, reached one step later: the
+                    # owner cancelled (or a newer generation took over) while this worker uploaded,
+                    # and the registration's own fence refused it. No rows, no terminal record, no
+                    # charge, no announcement - the job's current authority has already spoken.
+                    jlog.warning("Worker FENCED at artifact registration (the job was cancelled or "
+                                 "taken over during delivery) - producing no terminal side effects. "
+                                 "job_id=%s", job_id)
+                    await _worker_engine.dispose()
+                    return {"job_id": job_id, "status": "fenced", "skipped": "not_owner"}
+                _uploaded_artifacts = _delivery.delivered
+                # A run whose mesh could not be delivered did not succeed - the downgrade is a status
+                # rule owned by final_result, not two lines of orchestration.
+                from meshpipeline.application.final_result import apply_delivery
+                _decision = apply_delivery(_decision, _delivery)
+                final_status, _failed_reason = _decision.status, _decision.failed_reason
 
         # THE REPAIR REVIEW. A failed run whose repair left things for a person PARKS in
         # pending_review instead of failing; a delivered run only records its items. The decision
@@ -1403,6 +1493,12 @@ async def _run_async(req: JobRequest) -> dict:
         if _publication.fenced:
             await _worker_engine.dispose()
             return {"job_id": job_id, "status": "fenced", "skipped": "not_owner"}
+        # THE JOB'S MESHING IS OVER: the big-machine VMs held for it across its remeshes (RUN-4) are
+        # released now, not left until their hold goes stale. Only by the owner that finalized - a fenced
+        # worker's job may be meshing on them under its new owner. A crashed run's VMs end themselves
+        # once their hold is stale, and the VM sweep deletes one whose job has ended.
+        from meshpipeline.contracts.mesh_execution import release_job_machines
+        await asyncio.to_thread(release_job_machines, job_id)
         # Non-fenced publication always carries the rendered verdict (the fenced branch returned
         # above); binding it explicitly keeps that guarantee visible rather than implied.
         assert _publication.result is not None

@@ -1,0 +1,17 @@
+{
+  "benchmark": "cad-repair",
+  "corpus_name": "crs-v3-verdict clean",
+  "corpus_provenance": "devtools/validation/v3_eval, v3_full, 7 GCE shard(s)",
+  "created_at": "2026-11-20T11:29:14.021029+00:00",
+  "engine_commit": "df7e1d7afd0eea770137eecd549d2b61e67e5cce",
+  "hardware_class": "gce-c2-standard-8",
+  "image_digest": null,
+  "input_hashes": {},
+  "random_seed": 20261120,
+  "redistribution_status": "internal",
+  "release_artifact": null,
+  "schema_version": 1,
+  "settings_digest": "e8ea3468355923442e067c59cf460cabe17cf4329f93e5c7cde7ed86744fd702",
+  "timeout_seconds": null,
+  "track": "clean-control"
+}

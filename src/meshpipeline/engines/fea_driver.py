@@ -68,7 +68,10 @@ PAYLOAD = (*P.STAGED_SOLIDS, "cad_face_names.json", P.PLAN_FILE, "gmsh_spec.json
            # The mesh job's adapter reads them to measure each asked-for limit and to aim the MMG pass; without
            # this file in the payload neither happened on the cloud mesher (dev-areen 11 Nov, job a8cc1718:
            # no limit rows, MMG with no targets), though both did in a run on one machine
-           "mesh_requirements.json")
+           "mesh_requirements.json",
+           # a returned STEP's mesh-size hints, staged for these exact bytes (engines/gmsh/staged_hints.HINTS_FILE);
+           # absent on every run without them, so the payload is what it was
+           "mesh_hints.json")
 #: LAD-fea-11's files (engines/gmsh/fea_adapter.KEEP_MSH / KEEP_JSON)
 KEPT_FILES = ("fea_kept_parts.msh", "fea_kept_parts.json")
 #: Where each pass's deliverables are kept until the best one is chosen.

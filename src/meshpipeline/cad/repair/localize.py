@@ -356,6 +356,23 @@ def _face_area(face) -> float:
         return 0.0
 
 
+def _degenerated(edge) -> bool:
+    """Does the kernel call this edge DEGENERATE - a cone or sphere apex seam, zero-length by
+    construction? A FLAG READ, not an algorithm: nothing here can hang.
+
+    Fails CLOSED on anything unexpected: an edge we cannot ask about is treated as ordinary, so a
+    real short edge is never silently dropped from the inspection.
+    """
+    try:
+        from OCP.BRep import BRep_Tool
+        from OCP.TopoDS import TopoDS
+
+        return bool(BRep_Tool.Degenerated_s(TopoDS.Edge_s(edge)))
+    except Exception as exc:  # noqa: BLE001 - an unreadable flag is "not degenerate"
+        logger.debug("localize: degeneracy unreadable (%s)", exc)
+        return False
+
+
 def _edge_length(edge) -> float:
     from OCP.BRepGProp import BRepGProp
     from OCP.GProp import GProp_GProps
@@ -664,12 +681,26 @@ def _size_defects(shape, *, diagonal: float, total_area: float,
             continue
         length = _edge_length(edge)
         if diagonal > 0 and 0.0 <= length < diagonal * SMALL_EDGE_LENGTH_FRACTION:
+            if _degenerated(edge):
+                # ZERO BY CONSTRUCTION, NOT BY DAMAGE. OpenCASCADE represents a cone's or
+                # sphere's apex as an edge of no meaningful length and FLAGS it, and every such
+                # edge is under this threshold - 883 of them across 26 wave-9 failing files, all
+                # flagged, not one a defect. Reported here they inflated the small_edge count the
+                # wave reads, and they reached operations and size hints as TARGETS: an operation
+                # aimed at one can only decline, and a hint sized for one asks the mesher to
+                # resolve a point. The flag is the fact; the LENGTH cannot tell them apart,
+                # because `measurements["length"]` is rounded to nine places and an apex seam
+                # therefore reads as a flat 0.0.
+                continue
             out.append(EntityDefect(
                 code=DefectCode.small_edge, severity=DefectSeverity.warning,
                 entity_type="edge", entity_index=i,
                 message="This edge is far shorter than the part's scale; it will force tiny cells.",
                 measurements={"length": round(length, 9),
-                              "length_fraction": round(length / diagonal, 9)},
+                              "length_fraction": round(length / diagonal, 9),
+                              # Always False here - a degenerate edge is skipped above - and
+                              # recorded so a reader never has to infer it from the length.
+                              "degenerated": False},
                 location=_centroid_and_box(edge)))
     return out
 
@@ -743,6 +774,11 @@ def _stamped(found: tuple[EntityDefect, ...], *,
     Done HERE, in one place, after the whole scan: the fingerprint's grid is a fraction of the
     PART's diagonal, so it cannot be computed by each defect producer in isolation without each
     of them re-measuring the shape.
+
+    `diagonal_mm` IS THE RUN'S, NOT NECESSARILY THIS SHAPE'S. `localize_scan` passes its
+    `quantum_diagonal_mm` when it was given one, so every scan of one repair run names on the
+    upload's grid; it passes the scanned shape's own diagonal only for a caller with no run to
+    belong to. See `localize_scan` for what the difference bought.
     """
     from dataclasses import replace
 
@@ -777,114 +813,34 @@ def face_scan_budget_s(remaining_s: float) -> float:
 def _bounded(fn, *args, budget_s: float):
     """`fn(*args)`'s result, or None when it ran past `budget_s` or failed in any way.
 
-    IN A FORKED CHILD, NOT A DAEMON THREAD, and that is a measured decision. OCP's bindings HOLD
-    THE GIL through a kernel call: with `BOPAlgo_ArgumentAnalyzer.Perform` running in a daemon
-    thread, the caller's `join(0.2)` returned only when the 3-second analysis finished, and a
-    second Python thread ticked twice in that time. An abandoned thread would therefore be waited
-    for anyway - exactly what a budget exists to prevent. Nor can the kernel be asked to stop:
-    OCP exposes `Message_ProgressIndicator` without a constructor, so no Python user-break
-    indicator can be handed to `Perform`.
-    A child process is stopped for real: on expiry it is SIGKILLed and reaped, so the analysis
-    ends rather than being ignored while it burns a core. It also means a kernel crash on a
-    pathological part kills the child, not the worker - the pipe closes empty and the answer is
-    the same silence as a timeout.
+    IN A FRESH INTERPRETER, NEVER A FORK, and NOT A DAEMON THREAD - both measured decisions.
+    OCP's bindings HOLD THE GIL through a kernel call: with `BOPAlgo_ArgumentAnalyzer.Perform`
+    running in a daemon thread, the caller's `join(0.2)` returned only when the 3-second analysis
+    finished, so an abandoned thread would be waited for anyway. Nor can the kernel be asked to
+    stop: OCP exposes `Message_ProgressIndicator` without a constructor. And a FORK is unsafe here:
+    the repair worker is threaded (Celery, plus model-call threads), and a forked child inherits
+    their locks - the allocator's, which OCC takes at once - held by threads that do not exist in
+    it, so it can deadlock and the evidence is silently lost. `bounded_child` starts a new
+    `python -m` in its own session, hands it the shapes as BREP, and SIGKILLs the group at the wall.
+
+    `fn` MUST BE ON `bounded_child.KERNELS`, the allow-list the child dispatches by key; anything
+    else is refused (None) without starting a child. Shape arguments cross as one BREP, so shared
+    sub-shapes keep their identity and the face map its order; every other argument and the answer
+    cross as JSON (bytes as base64; a tuple comes back a list).
 
     NEVER RAISES, NEVER BLOCKS PAST BUDGET. Every failure - expiry, an exception in `fn`, a child
-    that died, a platform without `fork` - is logged at info and returned as None, because the
-    caller treats this as optional evidence (see `face_self_intersections`).
-    The result crosses the pipe pickled, so `fn` must return something picklable.
+    that died, an argument JSON cannot carry, a spawn that failed - is logged at info and returned
+    as None, because the caller treats this as optional evidence (see `face_self_intersections`).
     """
     if not budget_s or budget_s <= 0:
         return None
     try:
-        return _in_child(fn, args, float(budget_s))
+        from meshpipeline.cad.repair import bounded_child
+
+        return bounded_child.run(fn, args, float(budget_s))
     except Exception as exc:  # noqa: BLE001 - optional evidence; a failure here is silence
         logger.info("localize: bounded analysis gave no answer (%s: %s)", type(exc).__name__, exc)
         return None
-
-
-def _in_child(fn, args, budget_s: float):
-    import os
-    import pickle  # noqa: S403 - the only producer is our own forked child
-    import select
-    import signal
-    import time
-
-    if not hasattr(os, "fork"):
-        logger.info("localize: no fork on this platform - the bounded analysis is skipped")
-        return None
-
-    read_end, write_end = os.pipe()
-    try:
-        pid = os.fork()
-    except BaseException:
-        # EAGAIN or ENOMEM: no child, so neither end has an owner. Closed here or they leak once
-        # per failed call.
-        os.close(read_end)
-        os.close(write_end)
-        raise
-    if pid == 0:  # pragma: no cover - runs in the child, whose coverage nobody collects
-        # NO GARBAGE COLLECTION IN THE CHILD, first of all. A cyclic object inherited from the
-        # parent - a DB session, say - would have its `__del__` run here and write (a ROLLBACK)
-        # onto a socket the parent still owns.
-        import gc
-
-        gc.disable()
-        # THE CHILD TOUCHES NOTHING BUT `fn` AND THE PIPE, and always leaves through `_exit`: it
-        # holds a copy of the parent's every lock and handler (pytest's, Celery's, logging's), and
-        # running any of them here is how a forked child deadlocks or double-flushes.
-        try:
-            os.close(read_end)
-            try:
-                payload = pickle.dumps((True, fn(*args)))
-            except BaseException as exc:  # noqa: BLE001 - reported to the parent, never raised
-                payload = pickle.dumps((False, f"{type(exc).__name__}: {exc}"))
-            view = memoryview(payload)
-            while view:
-                view = view[os.write(write_end, view):]
-        finally:
-            os._exit(0)
-
-    os.close(write_end)
-    deadline = time.monotonic() + budget_s
-    chunks: list[bytes] = []
-    expired = False
-    finished = False
-    try:
-        while True:
-            left = deadline - time.monotonic()
-            if left <= 0 or not select.select([read_end], [], [], left)[0]:
-                expired = True
-                break
-            chunk = os.read(read_end, 1 << 16)
-            if not chunk:
-                finished = True
-                break
-            chunks.append(chunk)
-    finally:
-        os.close(read_end)
-        # KILLED UNLESS IT FINISHED, not only on expiry: a NaN or infinite budget makes `select`
-        # raise, and a KeyboardInterrupt can land mid-wait - either way the reap below would
-        # otherwise wait out the whole analysis.
-        if not finished:
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-        os.waitpid(pid, 0)
-
-    if expired:
-        logger.info("localize: bounded analysis passed its %.2fs budget and was stopped",
-                    budget_s)
-        return None
-    if not chunks:
-        logger.info("localize: bounded analysis ended without an answer (the child died)")
-        return None
-    ok, value = pickle.loads(b"".join(chunks))  # noqa: S301 - our own child's bytes
-    if not ok:
-        logger.info("localize: bounded analysis raised (%s)", value)
-        return None
-    return value
 
 
 def _kernel_face_pairs(shape) -> list[tuple[int, int]]:
@@ -902,7 +858,8 @@ def _kernel_face_pairs(shape) -> list[tuple[int, int]]:
     FACE-TYPED PAIRS ONLY. The checker also reports vertex, edge and solid participants (on two
     overlapping boxes, roughly half its records name a solid or an edge); a heal aims at faces,
     and an edge or solid record carries no face index to aim with.
-    Serial, never `RunParallel`: this runs in a forked child, where a thread pool is a liability.
+    Serial, never `RunParallel`: this runs in a bounded child (`_bounded`) that is killed at its
+    wall, and a thread pool there would only compete with the worker for cores.
     """
     from OCP.BOPAlgo import BOPAlgo_ArgumentAnalyzer, BOPAlgo_CheckStatus
     from OCP.TopAbs import TopAbs_FACE
@@ -1026,6 +983,7 @@ def _linked(found: tuple[EntityDefect, ...]) -> tuple[EntityDefect, ...]:
 def localize_scan(shape, *, valid: bool | None = None, face_scan_s: float = 0.0,
                   within: Region | None = None,
                   scope_diagonal_mm: float | None = None,
+                  quantum_diagonal_mm: float | None = None,
                   ) -> tuple[tuple[EntityDefect, ...], bool]:
     """Every located failure point this module can find, and whether the scan was exhaustive.
 
@@ -1062,6 +1020,24 @@ def localize_scan(shape, *, valid: bool | None = None, face_scan_s: float = 0.0,
     classification are all measured on the whole shape, because a name or a threshold that moved
     with the scope would make two scans of one shape incomparable - which is the one thing this
     function may never do.
+
+    `quantum_diagonal_mm` IS THE RUN'S NAMING GRID, AND IT IS NOT AN OPTIMISATION. Left `None`,
+    each scan names its entities on a grid scaled to the diagonal of the shape IT JUST SCANNED,
+    which is how a repair that moved the part's extent came to rename every entity on the part -
+    including entities nobody had touched - so the progress rule could not find the defect it had
+    just named and read that as the defect being gone. A FALSE KEEP; measured on
+    0059_00592781_58be5d61afe56e0fcdda08e3_step_000, where four zero-length edges sat at boxes
+    identical to the micrometre either side of an operation that removed nothing, and all four
+    were renamed (docs/superpowers/specs/2026-11-19-target-remains-diagnosis.md).
+    `identity.quantum_for` now snaps the diagonal up to a binary octave, which absorbs any extent
+    change short of a factor of two - but a part whose diagonal straddles a power of two still
+    moves the grid once, and the deeper point stands whatever the snap absorbs: AN ENTITY'S NAME
+    MUST BE A FACT ABOUT THE ENTITY, not about what else happened to the part. So a run hands the
+    UPLOAD's diagonal here, the same number it hands `scope_diagonal_mm`, and the grid becomes a
+    property of the run rather than of the scan.
+    `None` KEEPS THE SHAPE'S OWN DIAGONAL, which is right - and is all that is available - for a
+    caller with no run to belong to: `brep.inspect_brep_file` scans one shape once and has no
+    upload diagonal to offer. A caller that cannot supply it must not be handed a guess.
 
     `scope_diagonal_mm` IS THE DIAGONAL THAT GROWS THE REGION'S BOX, and it exists so that the
     two sides of a scope cannot disagree. A caller comparing its own records against a scoped
@@ -1135,7 +1111,11 @@ def localize_scan(shape, *, valid: bool | None = None, face_scan_s: float = 0.0,
     # STAMPED AFTER THE SORT, so the collision suffix a shared box gets is assigned in the same
     # stable order the report is read in - two scans of identical bytes must produce identical
     # names, or nothing can be compared across a repair.
-    stamped = _stamped(tuple(found), diagonal_mm=diagonal)
+    # NAMED ON THE RUN'S GRID WHEN THE CALLER HAS ONE, on this shape's own when it has not. Every
+    # OTHER use of `diagonal` above - the sliver thresholds, the free-bound tolerance, the grown
+    # scope box - is untouched by it: this parameter buys a stable NAME, not a stable threshold.
+    stamped = _stamped(tuple(found), diagonal_mm=(
+        diagonal if quantum_diagonal_mm is None else float(quantum_diagonal_mm)))
     return (_linked(stamped) if ran_face_scan else stamped), complete
 
 

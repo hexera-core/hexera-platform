@@ -1033,6 +1033,11 @@ def _mesh_cad_at_mm(gmsh, geom: Path, h: float, cb, k: float | None = None, fres
         gmsh.model.addPhysicalGroup(dim, tags, name=name)
     gmsh.option.setNumber("Mesh.MeshSizeMax", h * k)
     gmsh.option.setNumber("Mesh.MeshSizeMin", h / 20.0 * k)
+    # the returned STEP's hints again, on the model read again (engines/gmsh/staged_hints.py); none: nothing
+    from meshpipeline.engines.gmsh import staged_hints as HINTS
+    _hint_bg, _hinted = HINTS.apply(gmsh, geom.parent, scale=k)
+    if _hint_bg is not None:
+        gmsh.model.mesh.field.setAsBackgroundMesh(_hint_bg)
     if k == 1.0:
         if cb is not None:
             gmsh.model.mesh.setSizeCallback(cb)
@@ -1287,6 +1292,14 @@ def main(workspace: str) -> int:
             gmsh.model.addPhysicalGroup(2, leftover,
                                         name=str(spec.get("default_group", "free")))
 
+        # A RETURNED STEP'S MESH-SIZE HINTS on the CAD solid (engines/gmsh/staged_hints.py), when the run staged
+        # them for these exact bytes; none staged: nothing touched, the same mesh
+        _hinted = None
+        if not (staged or classified or external):
+            from meshpipeline.engines.gmsh import staged_hints as HINTS
+            _hint_bg, _hinted = HINTS.apply(gmsh, ws)
+            if _hint_bg is not None:
+                gmsh.model.mesh.field.setAsBackgroundMesh(_hint_bg)
         # PASSAGE SIZING (fluid domains): elements from the local radius, about
         # PASSAGE_CELLS_ACROSS across every passage, instead of one size for the whole part.
         try:
@@ -1505,6 +1518,8 @@ def main(workspace: str) -> int:
             "deck": _deck,
             # MESH-9: the tiny CAD faces meshed as part of a neighbour, and into which face each went
             **({"tiny_faces": _tiny_out} if _tiny_out else {}),
+            # the returned STEP's mesh-size hints applied (engines/gmsh/staged_hints.py); absent without them
+            **({"mesh_hints": _hinted} if _hinted is not None else {}),
             **({"surface_source": "input.stl, classified"} if classified else {}),
             **({"surface_source": "fluid_boundary.stl, staged"} if staged else {}),
             **_external,

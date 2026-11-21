@@ -126,6 +126,23 @@ def only_mesh_errors(defects) -> bool:
             and any(d.code not in mesh_probe.NO_ANSWER_CODES for d in errors))
 
 
+def definitive_mesh_failure(defects) -> bool:
+    """Did the run's FINAL whole-part mesh probe answer, and did it say the part will not mesh?
+
+    The final scan's list is what the ending is decided on, so a mesh error-severity defect on it
+    other than the two "no answer" codes is the mesher refusing - whatever geometry errors sit
+    beside it. A "no answer" code anywhere on the list (`mesh_timeout`, `mesh_probe_error`) means
+    the final probe was skipped, ran out of time or died, and the session then CARRIES FORWARD the
+    mesh findings it held from earlier probes (`session._with_mesh`): those are stale, not a
+    verdict on the shape being delivered, so such a list is never a definitive failure. With the
+    probe off no mesh code is ever on the list, so this is always False.
+    """
+    mesh = [d for d in defects if d.code in mesh_probe.MESH_CODES]
+    if any(d.code in mesh_probe.NO_ANSWER_CODES for d in mesh):
+        return False
+    return any(d.severity in _ERRORS for d in mesh)
+
+
 def _abandoned(session: RepairSession) -> bool:
     """Is a defect still present at a fingerprint that a rolled-back attempt targeted?
 
@@ -304,6 +321,10 @@ def run(shape, *, planner=None, budget: LoopBudget | None = None, tolerance_mm: 
         # and nothing in the run has learned anything. Consumed only within this run: model
         # guidance is prepared ahead of the loop and never sees this ledger fill.
         history.mark_ineffective(candidate.defect_fingerprint, candidate.op.name)
+        if getattr(candidate.op, "whole_shape", False) and verdict.reason == "target_remains":
+            # A rollback restores the very shape the planner keyed this attempt on.
+            history.mark_whole_shape_cleared(candidate.op.name, work.shape,
+                                             verdict.delta.get("cleared", ()))
         consecutive_misses += 1
         if consecutive_misses >= limits.stall_limit:
             stopped = _terminal(work, STALLED)

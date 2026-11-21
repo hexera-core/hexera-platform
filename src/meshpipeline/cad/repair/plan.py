@@ -39,8 +39,85 @@ logger = logging.getLogger(__name__)
 #
 # The rules below are the planner's deliberately plain fallback and benchmark reference.
 
+def _same_shape(left, right) -> bool:
+    """Is this the SAME shape, by the kernel's own notion of sameness?
+
+    `IsSame` IS THE SYSTEM'S ANSWER TO THIS QUESTION, not one invented here: it is what
+    `operations.splice` compares sub-shapes with, and it is what the diagnosis measured the
+    whole-shape no-op with (`ShapeFix_Shape(...).Shape().IsSame(shape)` was TRUE, with zero
+    recorded replacements). It compares the underlying TShape, so a repair that rewrote the part
+    is a different shape and a fixer that handed its input straight back is the same one.
+
+    A SHAPE THAT CANNOT ANSWER IT IS COMPARED BY HANDLE, which is right for the only other thing
+    that gets this far - a test double, and a session's rollback, which restores the very object
+    it snapshotted. Anything unanswerable reads as NOT the same, so the planner proposes as it
+    does today: the failure direction is a wasted attempt, never a skipped repair.
+    """
+    if left is right:
+        return True
+    if left is None or right is None:
+        return False
+    is_same = getattr(left, "IsSame", None)
+    if is_same is None:
+        return False
+    try:
+        return bool(is_same(right))
+    except Exception:  # noqa: BLE001 - an unanswerable comparison is simply "not the same"
+        return False
+
+
 #: Worse first. The loop exists to clear errors; warnings are worth attending to only once the
 #: errors are gone, because a sliver edge beside an open shell is not the part's problem.
+def _demote_mesh_findings() -> bool:
+    """Is `CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS` live? Only then is the order changed, so a
+    flag-off run proposes exactly what it proposed before."""
+    import meshpipeline.settings.cad_repair as rcfg
+
+    return getattr(rcfg, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "off") == "live"
+
+
+def _goes_after_the_cure(defect) -> bool:
+    """True for a mesh finding the kernel's own cure should be proposed before."""
+    from meshpipeline.cad.repair import mesh_probe
+
+    return (getattr(defect, "code", None) in mesh_probe.MESH_CODES
+            and not mesh_finding_outranks_kernel(defect))
+
+
+def mesh_finding_outranks_kernel(defect) -> bool:
+    """May this MESH finding be proposed before the kernel's own cure for the region?
+
+    ONE RULE, ONE PLACE, TWO CALLERS: `RulesPlanner.propose` orders a region's defects with it and
+    `rules_author` decides its severity promotion with it. There were two such tests before, one
+    per layer and written for different reasons, and two half-demotions could have pushed a
+    genuine crossing out of reach - the opposite of the bug each was fixing.
+
+    WHAT IS DEMOTED IS WHAT CANNOT BE REPAIRED, and only that: a clash-located finding whose
+    faces the kernel measured APART (`mesh_clash.GAP` - the mesher's own chord, which no heal or
+    fragment closes) or that merely SHARE AN EDGE (`clash_adjacent`, a fold). Those two were
+    jumping the queue on wave 4: the order replaced the `fix_small_faces` every earlier wave kept
+    with a clash operation that could not help, and every arm fixed nothing.
+
+    EVERY OTHER MESH FINDING STILL OUTRANKS THE CURE, and deliberately: a mapped failure like
+    `mesh_open_loop` with `fix_face_boundary` behind it IS why the part will not mesh, and a
+    sliver warning is not. Demoting those as well would trade one lost repair for another - the
+    reason this asks "is it a clash that cannot be repaired" rather than "is it a measured
+    crossing".
+
+    A non-mesh defect is not a mesh finding and gets False, so a caller may ask about any defect.
+    """
+    from meshpipeline.cad.repair import mesh_clash, mesh_probe
+
+    if getattr(defect, "code", None) not in mesh_probe.MESH_CODES:
+        return False
+    measurements = getattr(defect, "measurements", None) or {}
+    if measurements.get("located_by") != mesh_probe.LOCATED_BY_CLASH:
+        return True                      # not a clash at all: the mesher named it, aim at it
+    if measurements.get("clash_kind") == mesh_clash.GAP:
+        return False                     # measured apart: no operation closes it
+    return measurements.get("clash_adjacent") is not True
+
+
 _SEVERITY_RANK = {DefectSeverity.fatal: 0, DefectSeverity.error: 1,
                   DefectSeverity.warning: 2, DefectSeverity.info: 3}
 
@@ -105,6 +182,26 @@ class RunHistory:
     #: sat unproposed (hero.stp). Like `ineffective`, never cleared by a kept operation: a kept
     #: repair that changes the tangle changes its fingerprints, which makes a new key.
     declined: set[tuple[str, frozenset[str]]] = field(default_factory=set)
+    #: WHOLE-SHAPE OPERATIONS ALREADY RUN, AND THE SHAPE EACH RAN ON: `(op_name, shape)`.
+    #: A whole-shape operation ignores where its targets are - `ShapeFix_Wireframe` merges every
+    #: small edge it is willing to merge on the part in ONE call - so a second aim at another of
+    #: the survivors repeats the identical call for the identical result. Measured over 90 parts
+    #: of the real-failure corpus: all 19 keeps were FIRST attempts on their file and all 17
+    #: second-and-later attempts were rolled back, 17 of the run's 81 `target_remains`
+    #: (docs/superpowers/specs/2026-11-19-target-remains-diagnosis.md).
+    #:
+    #: KEYED ON THE SHAPE, AND THAT IS THE WHOLE SAFETY ARGUMENT. `ineffective` cannot catch this
+    #: because the retry arrives from a DIFFERENT defect, and a ban keyed on the operation alone
+    #: would throw repairs away: a whole-shape fixer that was KEPT has changed the part, so the
+    #: kernel may now have something to do and the operation must become proposable again. A list
+    #: rather than a set because a kernel shape is compared with `IsSame`, not hashed, and a run
+    #: holds at most `max_ops` entries.
+    tried_whole_shape: list[tuple[str, object]] = field(default_factory=list)
+    #: AIMS A WHOLE-SHAPE RUN PROVED IT CAN CLEAR: `(op_name, shape, fingerprints)`. A call that
+    #: changed the part but left its own target is rolled back `target_remains` - a verdict on the
+    #: AIM. The defects its result did clear are exactly the aims for which the identical call
+    #: would pass, so they stay proposable on the same shape (PR #494 review, plan.py:401).
+    whole_shape_cleared: list[tuple[str, object, frozenset[str]]] = field(default_factory=list)
     refusals: list[dict] = field(default_factory=list)
     #: Run-level policy, NOT a trial outcome: why planar filling is off for the rest of this run
     #: (empty when it is not). Kept apart from `ineffective` because that set means "tried and
@@ -129,6 +226,34 @@ class RunHistory:
         """Has this operation already declined EXACTLY this aim? A set, because the heal lists the
         proposing face first and two sibling findings name the same tangle in different orders."""
         return (op_name, frozenset(target_fingerprints)) in self.declined
+
+    def mark_whole_shape_tried(self, op_name: str, shape) -> None:
+        """Record that a whole-shape operation has now been run against THIS shape.
+
+        A SHAPE OF `None` IS NOT RECORDED. Without a shape there is no identity to key on, and a
+        ban that could not say which shape it applied to would outlive the shape it was about.
+        """
+        if shape is None or self.was_whole_shape_tried(op_name, shape):
+            return
+        self.tried_whole_shape.append((op_name, shape))
+
+    def mark_whole_shape_cleared(self, op_name: str, shape, fingerprints) -> None:
+        """Record which defects this whole-shape operation's rolled-back result cleared."""
+        cleared = frozenset(f for f in fingerprints if f)
+        if shape is None or not cleared:
+            return
+        self.whole_shape_cleared.append((op_name, shape, cleared))
+
+    def was_whole_shape_tried(self, op_name: str, shape, target: str = "") -> bool:
+        """Has this whole-shape operation already run on this exact shape - and, for `target`,
+        is there no evidence that the identical call would clear it?"""
+        if shape is None:
+            return False
+        if target and any(name == op_name and target in cleared and _same_shape(shape, tried)
+                          for name, tried, cleared in self.whole_shape_cleared):
+            return False
+        return any(name == op_name and _same_shape(shape, tried)
+                   for name, tried in self.tried_whole_shape)
 
     def refuse(self, defect_fingerprint: str, reason: str, detail: str = "") -> None:
         """Record that a defect was not aimed at, ONCE. The loop asks repeatedly, and a list that
@@ -299,9 +424,17 @@ class RulesPlanner:
         rims = paired_rim_fingerprints(shape, defects) if shape is not None else frozenset()
         refuse_paired_rims(history, rims)
 
+        # A MESH FINDING ADDS TO THE KERNEL'S, AND MUST NOT SPEND THE REGION'S BUDGET FIRST.
+        # A mesh code is an ERROR and a sliver a WARNING, so severity alone proposed the clash
+        # first and the kernel cure only after the clash operation had failed. On wave 4 that
+        # cost every arm its repairs, including the rules-only one, and lost a file
+        # fix_small_faces had cured in every earlier wave. The cheap cure that has actually
+        # repaired parts on this corpus goes first; the clash attempt still follows it.
+        mesh_last = _demote_mesh_findings()
         ordered = sorted(
             defects,
-            key=lambda d: (_SEVERITY_RANK.get(d.severity, 9),
+            key=lambda d: (1 if mesh_last and _goes_after_the_cure(d) else 0,
+                           _SEVERITY_RANK.get(d.severity, 9),
                            _CODE_RANK.get(d.code, 0),
                            _ENTITY_RANK.get(d.entity_type, 9), d.entity_index,
                            d.code.value))
@@ -338,6 +471,21 @@ class RulesPlanner:
                 if op.name in FILL_OPS and history.fill_refused_because:
                     claimed = True
                     continue
+                if (getattr(op, "whole_shape", False)
+                        and history.was_whole_shape_tried(op.name, shape,
+                                                          defect.fingerprint)):
+                    # THIS OPERATION HAS ALREADY RUN ON THIS SHAPE, and it is whole-shape: it does
+                    # not look at where its targets are, so a second aim is the SAME CALL and can
+                    # only get the same answer. Measured: 17 of the corpus run's 81
+                    # `target_remains` were `fix_small_edges` retries, every one guaranteed to roll
+                    # back, each costing a kernel call, a re-inspection and a stall slot.
+                    # Checked before `targets_for`, which is where the kernel can get involved.
+                    # NOT CLEARED BY A KEPT OPERATION, and it does not need to be: a keep changes
+                    # the shape, so the key changes with it and the operation is proposable again.
+                    # Still a CLAIM, like a decline: the operation has an answer about this defect,
+                    # so the defect must not be reported `no_operation_claims_it`.
+                    claimed = True
+                    continue
                 targets = op.targets_for(defect)
                 if not targets:
                     continue
@@ -358,6 +506,12 @@ class RulesPlanner:
                     # about. The defect is not refused outright - a later operation whose targets
                     # avoid the held entity may still claim it.
                     continue
+                if getattr(op, "whole_shape", False):
+                    # RECORDED AT PROPOSAL, because the loop runs what this returns - and what is
+                    # being recorded is "the kernel has been asked this question about this
+                    # shape", which is true whatever verdict comes back. A kept result changes the
+                    # shape and so retires the record by changing its key.
+                    history.mark_whole_shape_tried(op.name, shape)
                 return Candidate(op=op, targets=targets, defect_code=defect.code,
                                  defect_fingerprint=defect.fingerprint)
             if not claimed:

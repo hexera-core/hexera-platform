@@ -1,0 +1,618 @@
+{
+ "chunks": [
+  "0051",
+  "0052",
+  "0053",
+  "0054",
+  "0055",
+  "0056",
+  "0057",
+  "0059",
+  "0060",
+  "0061"
+ ],
+ "original_80": 80,
+ "harvested_failures": 9876,
+ "all": {
+  "total": 9956,
+  "families": {
+   "crash": {
+    "total": 45,
+    "stage": {
+     "2d": 33,
+     "3d": 12,
+     "unknown": 0
+    },
+    "solids": {
+     "single": 0,
+     "multi": 0,
+     "unknown": 45
+    },
+    "median_faces": null
+   },
+   "edge_through_face": {
+    "total": 2376,
+    "stage": {
+     "2d": 0,
+     "3d": 2349,
+     "unknown": 27
+    },
+    "solids": {
+     "single": 982,
+     "multi": 1394,
+     "unknown": 0
+    },
+    "median_faces": 173.0
+   },
+   "no_volume": {
+    "total": 168,
+    "stage": {
+     "2d": 0,
+     "3d": 167,
+     "unknown": 1
+    },
+    "solids": {
+     "single": 162,
+     "multi": 6,
+     "unknown": 0
+    },
+    "median_faces": 21.5
+   },
+   "open_loop": {
+    "total": 227,
+    "stage": {
+     "2d": 223,
+     "3d": 0,
+     "unknown": 4
+    },
+    "solids": {
+     "single": 94,
+     "multi": 133,
+     "unknown": 0
+    },
+    "median_faces": 138
+   },
+   "other": {
+    "total": 288,
+    "stage": {
+     "2d": 9,
+     "3d": 127,
+     "unknown": 152
+    },
+    "solids": {
+     "single": 51,
+     "multi": 90,
+     "unknown": 147
+    },
+    "median_faces": 150
+   },
+   "overlapping_facets": {
+    "total": 5871,
+    "stage": {
+     "2d": 0,
+     "3d": 5840,
+     "unknown": 31
+    },
+    "solids": {
+     "single": 2230,
+     "multi": 3641,
+     "unknown": 0
+    },
+    "median_faces": 139
+   },
+   "periodic_surface": {
+    "total": 394,
+    "stage": {
+     "2d": 390,
+     "3d": 1,
+     "unknown": 3
+    },
+    "solids": {
+     "single": 133,
+     "multi": 261,
+     "unknown": 0
+    },
+    "median_faces": 439.0
+   },
+   "timeout": {
+    "total": 587,
+    "stage": {
+     "2d": 386,
+     "3d": 86,
+     "unknown": 115
+    },
+    "solids": {
+     "single": 0,
+     "multi": 0,
+     "unknown": 587
+    },
+    "median_faces": null
+   }
+  }
+ },
+ "harvested_only": {
+  "total": 9876,
+  "families": {
+   "crash": {
+    "total": 45,
+    "stage": {
+     "2d": 33,
+     "3d": 12,
+     "unknown": 0
+    },
+    "solids": {
+     "single": 0,
+     "multi": 0,
+     "unknown": 45
+    },
+    "median_faces": null
+   },
+   "edge_through_face": {
+    "total": 2349,
+    "stage": {
+     "2d": 0,
+     "3d": 2349,
+     "unknown": 0
+    },
+    "solids": {
+     "single": 978,
+     "multi": 1371,
+     "unknown": 0
+    },
+    "median_faces": 173
+   },
+   "no_volume": {
+    "total": 167,
+    "stage": {
+     "2d": 0,
+     "3d": 167,
+     "unknown": 0
+    },
+    "solids": {
+     "single": 161,
+     "multi": 6,
+     "unknown": 0
+    },
+    "median_faces": 21
+   },
+   "open_loop": {
+    "total": 223,
+    "stage": {
+     "2d": 223,
+     "3d": 0,
+     "unknown": 0
+    },
+    "solids": {
+     "single": 92,
+     "multi": 131,
+     "unknown": 0
+    },
+    "median_faces": 141
+   },
+   "other": {
+    "total": 288,
+    "stage": {
+     "2d": 9,
+     "3d": 127,
+     "unknown": 152
+    },
+    "solids": {
+     "single": 51,
+     "multi": 90,
+     "unknown": 147
+    },
+    "median_faces": 150
+   },
+   "overlapping_facets": {
+    "total": 5840,
+    "stage": {
+     "2d": 0,
+     "3d": 5840,
+     "unknown": 0
+    },
+    "solids": {
+     "single": 2221,
+     "multi": 3619,
+     "unknown": 0
+    },
+    "median_faces": 139.0
+   },
+   "periodic_surface": {
+    "total": 391,
+    "stage": {
+     "2d": 390,
+     "3d": 1,
+     "unknown": 0
+    },
+    "solids": {
+     "single": 132,
+     "multi": 259,
+     "unknown": 0
+    },
+    "median_faces": 450
+   },
+   "timeout": {
+    "total": 573,
+    "stage": {
+     "2d": 386,
+     "3d": 86,
+     "unknown": 101
+    },
+    "solids": {
+     "single": 0,
+     "multi": 0,
+     "unknown": 573
+    },
+    "median_faces": null
+   }
+  }
+ },
+ "per_chunk": {
+  "0051": {
+   "total": 10000,
+   "passed": 8876,
+   "failed": 939,
+   "timeouts": 64,
+   "no_solids": 121,
+   "by_family": {
+    "overlapping_facets": 621,
+    "timeout": 64,
+    "edge_through_face": 210,
+    "no_volume": 16,
+    "periodic_surface": 32,
+    "other": 32,
+    "open_loop": 25,
+    "crash": 3
+   },
+   "by_stage": {
+    "3d": 875,
+    "2d": 105,
+    "import": 23
+   },
+   "family_by_stage": {
+    "overlapping_facets/3d": 621,
+    "timeout/2d": 44,
+    "edge_through_face/3d": 210,
+    "no_volume/3d": 16,
+    "periodic_surface/2d": 32,
+    "other/3d": 17,
+    "timeout/import": 9,
+    "other/2d": 1,
+    "timeout/3d": 11,
+    "open_loop/2d": 25,
+    "other/import": 14,
+    "crash/2d": 3
+   }
+  },
+  "0052": {
+   "total": 10000,
+   "passed": 8878,
+   "failed": 938,
+   "timeouts": 56,
+   "no_solids": 128,
+   "by_family": {
+    "overlapping_facets": 577,
+    "open_loop": 21,
+    "edge_through_face": 239,
+    "other": 43,
+    "no_volume": 20,
+    "timeout": 56,
+    "periodic_surface": 32,
+    "crash": 6
+   },
+   "by_stage": {
+    "3d": 862,
+    "2d": 97,
+    "import": 35
+   },
+   "family_by_stage": {
+    "overlapping_facets/3d": 577,
+    "open_loop/2d": 21,
+    "edge_through_face/3d": 239,
+    "other/import": 24,
+    "no_volume/3d": 20,
+    "timeout/2d": 39,
+    "periodic_surface/2d": 32,
+    "timeout/import": 11,
+    "other/3d": 17,
+    "crash/2d": 3,
+    "timeout/3d": 6,
+    "other/2d": 2,
+    "crash/3d": 3
+   }
+  },
+  "0053": {
+   "total": 10000,
+   "passed": 8899,
+   "failed": 924,
+   "timeouts": 49,
+   "no_solids": 128,
+   "by_family": {
+    "periodic_surface": 35,
+    "overlapping_facets": 584,
+    "edge_through_face": 235,
+    "other": 31,
+    "crash": 9,
+    "timeout": 49,
+    "open_loop": 21,
+    "no_volume": 9
+   },
+   "by_stage": {
+    "2d": 98,
+    "3d": 849,
+    "import": 26
+   },
+   "family_by_stage": {
+    "periodic_surface/2d": 35,
+    "overlapping_facets/3d": 584,
+    "edge_through_face/3d": 235,
+    "other/import": 15,
+    "crash/2d": 9,
+    "timeout/3d": 6,
+    "other/2d": 1,
+    "open_loop/2d": 21,
+    "timeout/2d": 32,
+    "other/3d": 15,
+    "timeout/import": 11,
+    "no_volume/3d": 9
+   }
+  },
+  "0054": {
+   "total": 10000,
+   "passed": 8888,
+   "failed": 925,
+   "timeouts": 58,
+   "no_solids": 129,
+   "by_family": {
+    "edge_through_face": 245,
+    "overlapping_facets": 578,
+    "other": 37,
+    "periodic_surface": 44,
+    "timeout": 58,
+    "open_loop": 11,
+    "no_volume": 9,
+    "crash": 1
+   },
+   "by_stage": {
+    "3d": 861,
+    "2d": 95,
+    "import": 27
+   },
+   "family_by_stage": {
+    "edge_through_face/3d": 245,
+    "overlapping_facets/3d": 578,
+    "other/3d": 18,
+    "periodic_surface/2d": 43,
+    "other/import": 18,
+    "timeout/3d": 10,
+    "timeout/import": 9,
+    "timeout/2d": 39,
+    "open_loop/2d": 11,
+    "periodic_surface/3d": 1,
+    "no_volume/3d": 9,
+    "crash/2d": 1,
+    "other/2d": 1
+   }
+  },
+  "0055": {
+   "total": 10000,
+   "passed": 8591,
+   "failed": 1192,
+   "timeouts": 67,
+   "no_solids": 150,
+   "by_family": {
+    "other": 25,
+    "overlapping_facets": 772,
+    "timeout": 67,
+    "edge_through_face": 295,
+    "no_volume": 12,
+    "open_loop": 25,
+    "periodic_surface": 60,
+    "crash": 3
+   },
+   "by_stage": {
+    "3d": 1096,
+    "import": 29,
+    "2d": 134
+   },
+   "family_by_stage": {
+    "other/3d": 11,
+    "overlapping_facets/3d": 772,
+    "timeout/import": 15,
+    "edge_through_face/3d": 295,
+    "timeout/2d": 47,
+    "no_volume/3d": 12,
+    "open_loop/2d": 25,
+    "periodic_surface/2d": 60,
+    "other/import": 14,
+    "timeout/3d": 5,
+    "crash/2d": 2,
+    "crash/3d": 1
+   }
+  },
+  "0056": {
+   "total": 10000,
+   "passed": 8878,
+   "failed": 939,
+   "timeouts": 68,
+   "no_solids": 115,
+   "by_family": {
+    "overlapping_facets": 550,
+    "timeout": 68,
+    "edge_through_face": 261,
+    "periodic_surface": 48,
+    "other": 31,
+    "no_volume": 12,
+    "crash": 10,
+    "open_loop": 27
+   },
+   "by_stage": {
+    "3d": 848,
+    "2d": 118,
+    "import": 41
+   },
+   "family_by_stage": {
+    "overlapping_facets/3d": 550,
+    "timeout/2d": 35,
+    "edge_through_face/3d": 261,
+    "periodic_surface/2d": 48,
+    "other/import": 22,
+    "no_volume/3d": 12,
+    "timeout/import": 19,
+    "crash/3d": 3,
+    "open_loop/2d": 27,
+    "timeout/3d": 14,
+    "crash/2d": 7,
+    "other/3d": 8,
+    "other/2d": 1
+   }
+  },
+  "0057": {
+   "total": 10000,
+   "passed": 8934,
+   "failed": 854,
+   "timeouts": 46,
+   "no_solids": 166,
+   "by_family": {
+    "overlapping_facets": 531,
+    "edge_through_face": 226,
+    "timeout": 46,
+    "open_loop": 25,
+    "periodic_surface": 32,
+    "crash": 2,
+    "other": 16,
+    "no_volume": 22
+   },
+   "by_stage": {
+    "3d": 792,
+    "2d": 88,
+    "import": 20
+   },
+   "family_by_stage": {
+    "overlapping_facets/3d": 531,
+    "edge_through_face/3d": 226,
+    "timeout/2d": 29,
+    "open_loop/2d": 25,
+    "periodic_surface/2d": 32,
+    "crash/2d": 1,
+    "timeout/import": 11,
+    "other/import": 9,
+    "no_volume/3d": 22,
+    "timeout/3d": 6,
+    "crash/3d": 1,
+    "other/2d": 1,
+    "other/3d": 6
+   }
+  },
+  "0059": {
+   "total": 10000,
+   "passed": 8837,
+   "failed": 926,
+   "timeouts": 60,
+   "no_solids": 177,
+   "by_family": {
+    "overlapping_facets": 570,
+    "edge_through_face": 246,
+    "open_loop": 19,
+    "timeout": 60,
+    "periodic_surface": 43,
+    "other": 23,
+    "no_volume": 23,
+    "crash": 2
+   },
+   "by_stage": {
+    "3d": 861,
+    "2d": 107,
+    "import": 18
+   },
+   "family_by_stage": {
+    "overlapping_facets/3d": 570,
+    "edge_through_face/3d": 246,
+    "open_loop/2d": 19,
+    "timeout/2d": 43,
+    "periodic_surface/2d": 43,
+    "timeout/import": 6,
+    "other/3d": 10,
+    "timeout/3d": 11,
+    "other/2d": 1,
+    "no_volume/3d": 23,
+    "other/import": 12,
+    "crash/3d": 1,
+    "crash/2d": 1
+   }
+  },
+  "0060": {
+   "total": 10000,
+   "passed": 8927,
+   "failed": 886,
+   "timeouts": 44,
+   "no_solids": 143,
+   "by_family": {
+    "overlapping_facets": 546,
+    "edge_through_face": 223,
+    "other": 24,
+    "timeout": 44,
+    "periodic_surface": 34,
+    "crash": 6,
+    "no_volume": 25,
+    "open_loop": 28
+   },
+   "by_stage": {
+    "3d": 815,
+    "import": 16,
+    "2d": 99
+   },
+   "family_by_stage": {
+    "overlapping_facets/3d": 546,
+    "edge_through_face/3d": 223,
+    "other/import": 10,
+    "other/3d": 13,
+    "timeout/2d": 32,
+    "periodic_surface/2d": 34,
+    "timeout/3d": 6,
+    "crash/2d": 4,
+    "other/2d": 1,
+    "no_volume/3d": 25,
+    "open_loop/2d": 28,
+    "timeout/import": 6,
+    "crash/3d": 2
+   }
+  },
+  "0061": {
+   "total": 10000,
+   "passed": 9015,
+   "failed": 780,
+   "timeouts": 61,
+   "no_solids": 144,
+   "by_family": {
+    "edge_through_face": 169,
+    "open_loop": 21,
+    "overlapping_facets": 511,
+    "periodic_surface": 31,
+    "other": 26,
+    "timeout": 61,
+    "no_volume": 19,
+    "crash": 3
+   },
+   "by_stage": {
+    "3d": 723,
+    "2d": 100,
+    "import": 18
+   },
+   "family_by_stage": {
+    "edge_through_face/3d": 169,
+    "open_loop/2d": 21,
+    "overlapping_facets/3d": 511,
+    "periodic_surface/2d": 31,
+    "other/3d": 12,
+    "timeout/2d": 46,
+    "timeout/3d": 11,
+    "other/import": 14,
+    "no_volume/3d": 19,
+    "crash/2d": 2,
+    "crash/3d": 1,
+    "timeout/import": 4
+   }
+  }
+ }
+}

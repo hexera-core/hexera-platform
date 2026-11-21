@@ -1,0 +1,228 @@
+{
+ "arms": {
+  "clean_control": {
+   "arm": "clean_control",
+   "arms_covered": [
+    "t29_deterministic",
+    "v3_full"
+   ],
+   "basis": "a clean part is good when it meshed before, still meshes after repair (a part repair did not rewrite keeps its before verdict), and repair introduced no new defect (no defect code's located count rose between the before and after inspections); a crashed part is never good. Minimum over the arms covered. `changed` (a kept operation or a crash; the most over the arms) is information, not a failure.",
+   "changed": 4,
+   "commit": "17d5f55e7dbf84f3a4ea0659f8a08ec31ad35d61",
+   "image_digest": "us-central1-docker.pkg.dev/hexera-dev/mesh/app@sha256:00ce015614daaccebfb7169ac24b2766f0069eeb5570fb5d4bb4b5518a597832",
+   "label": "100-part clean control",
+   "n_files": 100,
+   "newly_broken": 0,
+   "notes": null,
+   "sample_sha256": "3954d6e301cc1c7f41f69e4a4f39163ff8bcdd7e419a6151f1e3809372043cc0",
+   "still_meshes_no_new_defects": 100
+  },
+  "t19_tournament_off": {
+   "arm": "t19_tournament_off",
+   "commit": "17d5f55e7dbf84f3a4ea0659f8a08ec31ad35d61",
+   "cost_per_fixed_part": null,
+   "cost_usd": 1.1007,
+   "delivered_via_tolerant_mesher": 68,
+   "endings": {
+    "attempted_none_held": 19,
+    "crashed": 1,
+    "nothing_to_repair": 4,
+    "scan_incomplete": 7,
+    "unmeshable": 89
+   },
+   "image_digest": "us-central1-docker.pkg.dev/hexera-dev/mesh/app@sha256:00ce015614daaccebfb7169ac24b2766f0069eeb5570fb5d4bb4b5518a597832",
+   "label": "tournament off (investigator live)",
+   "meshes_after": 2,
+   "meshes_before": 2,
+   "model_calls": 2111,
+   "n_files": 120,
+   "newly_broken": 0,
+   "newly_meshed": 0,
+   "notes": "run t19_tournament_off; reviewer + investigator; 1 file(s) CRASHED (native; isolated, counted in newly_broken only if they meshed before); model $0.7758 + VM $0.3249; code 17d5f55e7dbf from the archive on an image built from 5d496416e343; memory flag inert: no consumer wired",
+   "ops_kept": {
+    "fill_planar_hole": 0,
+    "fix_small_edges": 0,
+    "fix_small_faces": 0
+   },
+   "ops_rolled_back": {
+    "fill_planar_hole": 2,
+    "fix_small_edges": 2,
+    "fix_small_faces": 1
+   },
+   "sample_sha256": "95787045f8a49b4001496afe319cf44abb522d303c097f1e3324fe67b830cfbc",
+   "wall_s": 25763.5
+  },
+  "t19_tournament_on": {
+   "arm": "t19_tournament_on",
+   "commit": "17d5f55e7dbf84f3a4ea0659f8a08ec31ad35d61",
+   "cost_per_fixed_part": 1.3109,
+   "cost_usd": 1.3109,
+   "delivered_via_tolerant_mesher": 65,
+   "endings": {
+    "attempted_none_held": 19,
+    "crashed": 1,
+    "escalated": 1,
+    "nothing_to_repair": 4,
+    "scan_incomplete": 7,
+    "unmeshable": 88
+   },
+   "image_digest": "us-central1-docker.pkg.dev/hexera-dev/mesh/app@sha256:00ce015614daaccebfb7169ac24b2766f0069eeb5570fb5d4bb4b5518a597832",
+   "label": "tournament on, K=3 (same run as t29_v3)",
+   "meshes_after": 3,
+   "meshes_before": 2,
+   "model_calls": 2198,
+   "n_files": 120,
+   "newly_broken": 0,
+   "newly_meshed": 1,
+   "notes": "run v3_full; reviewer + investigator + tournament sources; 1 file(s) CRASHED (native; isolated, counted in newly_broken only if they meshed before); model $0.9437 + VM $0.3672; code 17d5f55e7dbf from the archive on an image built from 5d496416e343; memory flag inert: no consumer wired",
+   "ops_kept": {
+    "fix_small_edges": 0,
+    "fix_small_faces": 2
+   },
+   "ops_rolled_back": {
+    "fix_small_edges": 4,
+    "fix_small_faces": 2
+   },
+   "same_run_as": "t29_v3",
+   "sample_sha256": "95787045f8a49b4001496afe319cf44abb522d303c097f1e3324fe67b830cfbc",
+   "wall_s": 29116.9
+  },
+  "t29_deterministic": {
+   "arm": "t29_deterministic",
+   "commit": "17d5f55e7dbf84f3a4ea0659f8a08ec31ad35d61",
+   "cost_per_fixed_part": 0.3389,
+   "cost_usd": 0.3389,
+   "delivered_via_tolerant_mesher": 67,
+   "endings": {
+    "attempted_none_held": 16,
+    "crashed": 1,
+    "escalated": 5,
+    "nothing_to_repair": 3,
+    "refused": 16,
+    "scan_incomplete": 7,
+    "unmeshable": 72
+   },
+   "image_digest": "us-central1-docker.pkg.dev/hexera-dev/mesh/app@sha256:00ce015614daaccebfb7169ac24b2766f0069eeb5570fb5d4bb4b5518a597832",
+   "label": "deterministic (everything-on, investigator/tournament off; reviewer live)",
+   "meshes_after": 3,
+   "meshes_before": 2,
+   "model_calls": 16,
+   "n_files": 120,
+   "newly_broken": 0,
+   "newly_meshed": 1,
+   "notes": "run t29_deterministic; reviewer calls only (PACKAGE_REVIEW=live); 1 file(s) CRASHED (native; isolated, counted in newly_broken only if they meshed before); model $0.0069 + VM $0.332; code 17d5f55e7dbf from the archive on an image built from 5d496416e343; memory flag inert: no consumer wired",
+   "ops_kept": {
+    "close_wire_gaps": 0,
+    "fill_nonplanar_hole": 0,
+    "fill_planar_hole": 0,
+    "fix_face_boundary": 0,
+    "fix_shape_global": 0,
+    "fix_small_edges": 3,
+    "fix_small_faces": 4,
+    "fragment_bodies": 0,
+    "heal_self_intersections": 0,
+    "sew_faces": 0,
+    "split_closed_faces": 0
+   },
+   "ops_rolled_back": {
+    "close_wire_gaps": 2,
+    "fill_nonplanar_hole": 3,
+    "fill_planar_hole": 5,
+    "fix_face_boundary": 1,
+    "fix_shape_global": 7,
+    "fix_small_edges": 94,
+    "fix_small_faces": 360,
+    "fragment_bodies": 18,
+    "heal_self_intersections": 179,
+    "sew_faces": 21,
+    "split_closed_faces": 2
+   },
+   "sample_sha256": "95787045f8a49b4001496afe319cf44abb522d303c097f1e3324fe67b830cfbc",
+   "wall_s": 26330.4
+  },
+  "t29_v3": {
+   "arm": "t29_v3",
+   "commit": "17d5f55e7dbf84f3a4ea0659f8a08ec31ad35d61",
+   "cost_per_fixed_part": 1.3109,
+   "cost_usd": 1.3109,
+   "delivered_via_tolerant_mesher": 65,
+   "endings": {
+    "attempted_none_held": 19,
+    "crashed": 1,
+    "escalated": 1,
+    "nothing_to_repair": 4,
+    "scan_incomplete": 7,
+    "unmeshable": 88
+   },
+   "image_digest": "us-central1-docker.pkg.dev/hexera-dev/mesh/app@sha256:00ce015614daaccebfb7169ac24b2766f0069eeb5570fb5d4bb4b5518a597832",
+   "label": "v3 full (investigator live, tournament live K=3)",
+   "meshes_after": 3,
+   "meshes_before": 2,
+   "model_calls": 2198,
+   "n_files": 120,
+   "newly_broken": 0,
+   "newly_meshed": 1,
+   "notes": "run v3_full; reviewer + investigator + tournament sources; 1 file(s) CRASHED (native; isolated, counted in newly_broken only if they meshed before); model $0.9437 + VM $0.3672; code 17d5f55e7dbf from the archive on an image built from 5d496416e343; memory flag inert: no consumer wired",
+   "ops_kept": {
+    "fix_small_edges": 0,
+    "fix_small_faces": 2
+   },
+   "ops_rolled_back": {
+    "fix_small_edges": 4,
+    "fix_small_faces": 2
+   },
+   "sample_sha256": "95787045f8a49b4001496afe319cf44abb522d303c097f1e3324fe67b830cfbc",
+   "wall_s": 29116.9
+  },
+  "t6_rules_only_local": {
+   "arm": "t6_rules_only_local",
+   "commit": "0bf78625",
+   "cost_per_fixed_part": "n/a",
+   "cost_usd": "n/a",
+   "endings": {
+    "attempted_none_held": 24,
+    "escalated": 1,
+    "nothing_to_repair": 3,
+    "refused": 2,
+    "scan_incomplete": 3,
+    "unmeshable": 57
+   },
+   "image_digest": "n/a",
+   "label": "rules-only baseline",
+   "meshes_after": 4,
+   "meshes_before": 4,
+   "model_calls": "n/a",
+   "n_files": 90,
+   "newly_broken": 0,
+   "newly_meshed": 0,
+   "notes": "gs://dev-crsv3-transfer-224734058693/eval/t6-rules-only-0bf78625: shards 1-3 of 4 (90 of the same 120-file sample; shard 4 never ran); macOS host, no model router (investigator and reviewer had no model); wall_s is summed per-file repair seconds",
+   "ops_kept": {
+    "close_wire_gaps": 0,
+    "fix_face_boundary": 0,
+    "fix_shape_global": 0,
+    "fix_small_edges": 0,
+    "fix_small_faces": 0,
+    "fragment_bodies": 0,
+    "heal_self_intersections": 0,
+    "sew_faces": 0,
+    "split_closed_faces": 0
+   },
+   "ops_rolled_back": {
+    "close_wire_gaps": 1,
+    "fix_face_boundary": 1,
+    "fix_shape_global": 1,
+    "fix_small_edges": 10,
+    "fix_small_faces": 14,
+    "fragment_bodies": 2,
+    "heal_self_intersections": 15,
+    "sew_faces": 2,
+    "split_closed_faces": 1
+   },
+   "sample_sha256": "95787045f8a49b4001496afe319cf44abb522d303c097f1e3324fe67b830cfbc",
+   "wall_s": 8748.2
+  }
+ },
+ "generated_at": "2026-11-20T11:18:48Z",
+ "schema_version": 2,
+ "source": "collect.py from /var/folders/g6/mq56z4xj1h950wltbq5bscjc0000gn/T/v3-eval-out-17d5f55e7dbf"
+}

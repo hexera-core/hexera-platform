@@ -10,6 +10,7 @@ import zipfile
 from pathlib import Path
 
 from meshpipeline.cad.ingest.collada import looks_like_collada
+from meshpipeline.cad.ingest.dxf import looks_like_dxf
 from meshpipeline.cad.ingest.ecxml import looks_like_ecxml
 
 #: How much of a file the signatures look at. Every text format names itself in its first lines.
@@ -122,6 +123,10 @@ def sniff_bytes(head: bytes, size: int, *, path: Path | None = None) -> str | No
         return "ecxml"
     if looks_like_collada(head):
         return "dae"
+    # DXF before the weakly marked text formats: its own head is exact, and a drawing's
+    # entity names would otherwise read as OBJ or Nastran keywords.
+    if looks_like_dxf(head):
+        return "dxf"
     if b"<VTKFile" in text[:2048]:
         tag = text[text.find(b"<VTKFile"):][:400]
         if b'type="PolyData"' in tag:

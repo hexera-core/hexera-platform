@@ -35,8 +35,9 @@ from meshpipeline.contracts.model_inference import (
     ReasoningSink,
     ToolChoice,
     ToolDefinition,
+    ToolsUnsupported,
 )
-from meshpipeline.contracts.model_routing import FailureCategory, ModelRoute, RouteTarget
+from meshpipeline.contracts.model_routing import Capability, FailureCategory, ModelRoute, RouteTarget
 
 logger = logging.getLogger(__name__)
 
@@ -204,7 +205,10 @@ async def _run_chat(route, label, messages: Conversation, job_id: str,
             on_reasoning=None, label=label,
             trace=langfuse_kwargs(session_id=job_id, user_id=user_id, name=label))
 
-    return await _run(route, _invoke, job_id=job_id)
+    from meshpipeline.contracts.inference_telemetry import calling
+
+    with calling(label):
+        return await _run(route, _invoke, job_id=job_id)
 
 
 async def call_intake_model(messages: Conversation, job_id: str = "", user_id: str = "",
@@ -213,11 +217,19 @@ async def call_intake_model(messages: Conversation, job_id: str = "", user_id: s
     return await _run_chat(icfg.INTAKE_ROUTE, name, messages, job_id, user_id, tools=tools)
 
 
-# repair review (non-streaming, no tools): the proposer and the redirect interpreter. It rides the
-# intake route - a short interactive JSON reply on the same chat model - under its own trace label.
+# repair review (non-streaming): the proposer and the redirect interpreter, and the investigator's
+# native tool mode. It rides the intake route - a short interactive reply on the same chat model -
+# under its own trace label. No tools is today's call exactly; tools need a route that declares them.
 async def call_repair_review_model(messages: Conversation, job_id: str = "",
-                                   name: str = "RepairReview") -> ModelRoundResult:
-    return await _run_chat(icfg.INTAKE_ROUTE, name, messages, job_id, "")
+                                   name: str = "RepairReview", *,
+                                   tools: list[ToolDefinition] | None = None,
+                                   user_id: str = "") -> ModelRoundResult:
+    route = icfg.INTAKE_ROUTE
+    if tools is None:
+        return await _run_chat(route, name, messages, job_id, user_id)
+    if Capability.TOOLS not in route.required_capabilities:
+        raise ToolsUnsupported(f"the {route.role} route declares no tool capability")
+    return await _run_chat(route, name, messages, job_id, user_id, tools=tools)
 
 
 # search summarizer (non-streaming; respond-or-RAISE)

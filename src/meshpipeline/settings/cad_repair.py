@@ -110,6 +110,30 @@ CAD_REPAIR_FRAGMENT_BODIES: bool = bool_env("CAD_REPAIR_FRAGMENT_BODIES", "false
 #: `_warn_unreviewed_rebuild` says it out loud when the two disagree.
 CAD_REPAIR_REBUILD_FACE: bool = bool_env("CAD_REPAIR_REBUILD_FACE", "false")
 
+#: Close the gaps in ONE FACE's wires (`operations.CloseWireGaps`: ShapeFix_Wire's FixConnected at
+#: the run's tolerance, then FixGaps3d on the face and on the neighbours sharing what moved), the
+#: answer to gmsh's "the 1D mesh seems not to be forming a closed loop" on a face whose boundary
+#: really is open, and to a kernel wire gap the narrower face fixer did not clear. Off keeps the
+#: operation out of the catalogue, and the rules baseline's MESH_OPS maps an open loop to
+#: `fix_face_boundary` exactly as before; on, `close_wire_gaps` is preferred for a 2D-stage open
+#: loop and `fix_face_boundary` is its fallback.
+#:
+#: THE GATE: NOT TO BE SET LIVE ON CUSTOMER JOBS UNTIL THE SEMANTIC PACKAGE REVIEWER
+#: (CAD_REPAIR_PACKAGE_REVIEW=live) IS LIVE. It is the first operation licensed to MOVE VERTICES:
+#: bounded by the run's tolerance and measured (`max_vertex_move_mm`), but a moved vertex is a
+#: changed part, and the reviewer is what replaces a numeric gate for it. Code does not enforce
+#: the coupling; deployment posture owns it, and `_warn_unreviewed_closure` says it out loud.
+CAD_REPAIR_CLOSE_WIRE_GAPS: bool = bool_env("CAD_REPAIR_CLOSE_WIRE_GAPS", "false")
+
+#: Resolve a SUB-MESH-SIZE GAP (`gap_split.ResolveSubMeshGap`): two faces of one solid that do not
+#: touch but sit closer than the default mesh's chord sag, so gmsh's triangles cross (edge through
+#: a face, overlapping facets). The faces are split along their own iso-curves until a chord across
+#: a patch sags less than half the gap; no surface moves, and the measured area/volume noise is
+#: declared. Off keeps the operation out of the catalogue and every mapping byte for byte; on, it is
+#: preferred for a clash-located gap and the code's previous choice is its fallback. It
+#: re-partitions the customer's faces, so it is never auto-accepted (review_tier.REVIEWER_ONLY_OPS).
+CAD_REPAIR_RESOLVE_SUB_MESH_GAP: bool = bool_env("CAD_REPAIR_RESOLVE_SUB_MESH_GAP", "false")
+
 #: Sweep away SLIVER FACES - the sub-tolerance strips and spots a Boolean that just missed leaves
 #: behind. Separate from CAD_REPAIR_ALLOW_FACE_REMOVAL on purpose: that knob waives the
 #: face-removal check for EVERY operation in a run, while this one consents to a single bounded
@@ -287,6 +311,23 @@ def _region_loop_posture() -> str:
 #: benchmark baseline an improvement is attributed against, and the corpus runner reaches it.
 CAD_REPAIR_REGION_LOOP: str = _region_loop_posture()
 
+
+def _meshability_pass_posture() -> str:
+    """The meshability-pass posture, FAILING CLOSED: anything but exactly live reads as off."""
+    raw = optional_env("CAD_REPAIR_MESHABILITY_PASS", "off").strip().lower()
+    return raw if raw == "live" else "off"
+
+
+#: THE MESHABILITY PASS (region_loop._meshability_pass, cad/repair/meshability.py): before any
+#: author runs, every mesh finding a registered meshability operation claims is offered that
+#: operation through the ordinary `try_package`, down its rungs; and the run ALWAYS returns a STEP -
+#: when nothing is kept (or the repair cannot run), the upload's bytes are written unchanged to the
+#: destination, labelled `delivery_source=passthrough`, with mesh-size hints beside it when a hints
+#: provider is installed. The refusal still raises, so every consumer's meaning (continue on the
+#: original, job-level escalation) is unchanged. "off" is byte-for-byte today: no pass, no file
+#: written on a refusal, no new measurement keys.
+CAD_REPAIR_MESHABILITY_PASS: str = _meshability_pass_posture()
+
 #: The confidence below which the model's plan is not acted on and the rule planner's choice stands.
 CAD_REPAIR_LLM_PLANNER_MIN_CONFIDENCE: float = float(
     optional_env("CAD_REPAIR_LLM_PLANNER_MIN_CONFIDENCE", "0.5"))
@@ -345,6 +386,63 @@ _warn_no_authoring_time(CAD_REPAIR_MESH_PROBE, CAD_REPAIR_MESH_PROBE_TIMEOUT_S,
                         CAD_REPAIR_TIMEOUT_S)
 
 
+def _tolerant_probe_posture() -> str:
+    """The tier-2b posture, FAILING CLOSED: only the exact string `live` turns it on.
+
+    `_mesh_probe_posture`'s rule, unforgiving of case and space for the same reason: this one puts
+    an fTetWild run on a customer's part at the end of a repair, so `Live ` is read as the typo it
+    probably is and the pass stays off.
+    """
+    raw = optional_env("CAD_REPAIR_TOLERANT_PROBE", "off")
+    if raw not in ("live", "off"):
+        # Still read as off - but said out loud, so a deployment that meant `live` finds out.
+        logger.warning(
+            "CAD_REPAIR_TOLERANT_PROBE=%r is neither 'live' nor 'off'; reading it as off", raw)
+    return "live" if raw == "live" else "off"
+
+
+#: Whether a repair run's finishing verdict also records WHETHER THE TOLERANT RUNG WOULD EAT THE
+#: PART (tier 2b, cad/repair/tolerant_probe.py). "off" is byte-for-byte the prior behaviour: no
+#: fTetWild process, and no `routing` key in the report at all. "live" adds one coarse,
+#: hard-time-capped fTetWild pass, and only for a part gmsh refused at the VOLUME stage with an
+#: overlap - the 59% majority the tolerant rung plausibly answers. The verdict is RECORDED ONLY:
+#: nothing in this plan routes or stops on it. A posture, so a typo reads as off.
+CAD_REPAIR_TOLERANT_PROBE: str = _tolerant_probe_posture()
+
+#: Seconds one tier-2b pass may take. The finishing verdict hands it the lesser of this and what
+#: is left past the final-probe slack (oracle's `routing` rule), and skips the pass outright when
+#: nothing is left. 30 by default: a ROUTING ANSWER, not a mesh deliverable - tier 2b exists to
+#: answer a question in seconds, and a longer cap would make it the run.
+CAD_REPAIR_TOLERANT_PROBE_TIMEOUT_S: float = float(
+    optional_env("CAD_REPAIR_TOLERANT_PROBE_TIMEOUT_S", "30.0"))
+
+
+def _warn_no_authoring_time_with_tolerant(posture: str, tolerant: str, probe_timeout_s: float,
+                                          tolerant_timeout_s: float,
+                                          run_timeout_s: float) -> None:
+    """Say out loud when the two live probes' reserve consumes the whole run.
+
+    `goal.reserve_s` holds back one tier-2 cap, the final-probe slack AND the tolerant timeout, so
+    a generous tolerant cap can leave the driver nothing to author with - silently, because the
+    reserve is subtracted before the first operation is tried.
+    """
+    if tolerant != "live":
+        return
+    reserve = probe_timeout_s + _AUTHORING_RESERVE_EXTRA_S + tolerant_timeout_s
+    if reserve >= run_timeout_s:
+        logger.warning(
+            "CAD_REPAIR_MESH_PROBE_TIMEOUT_S=%s plus the %ss final-probe reserve plus "
+            "CAD_REPAIR_TOLERANT_PROBE_TIMEOUT_S=%s is not below CAD_REPAIR_TIMEOUT_S=%s: the "
+            "repair will author nothing", probe_timeout_s, _AUTHORING_RESERVE_EXTRA_S,
+            tolerant_timeout_s, run_timeout_s)
+
+
+_warn_no_authoring_time_with_tolerant(CAD_REPAIR_MESH_PROBE, CAD_REPAIR_TOLERANT_PROBE,
+                                      CAD_REPAIR_MESH_PROBE_TIMEOUT_S,
+                                      CAD_REPAIR_TOLERANT_PROBE_TIMEOUT_S,
+                                      CAD_REPAIR_TIMEOUT_S)
+
+
 def _llm_author_posture() -> str:
     """The model-author posture, FAILING CLOSED: only the exact strings `shadow` and `live` turn it
     on, and anything else but `off` is read as off OUT LOUD - the mesh probe's rule, because this
@@ -383,6 +481,34 @@ def _package_review_posture() -> str:
         logger.warning("CAD_REPAIR_PACKAGE_REVIEW=%r is neither 'live' nor 'off'; reading it "
                        "as off", raw)
     return "live" if raw == "live" else "off"
+
+
+def _clone_freedom_posture() -> str:
+    """The scratch-clone freedom posture, FAILING CLOSED: only `live` turns it on."""
+    raw = optional_env("CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "off")
+    if raw not in ("live", "off"):
+        logger.warning("CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS=%r is neither 'live' nor 'off'; "
+                       "reading it as off", raw)
+    return "live" if raw == "live" else "off"
+
+
+#: Whether an investigation may TRY an operation on its scratch clone that the delivery path would
+#: refuse, and whether the walk puts the regions that actually stop the mesh first.
+#:
+#: Measured on wave 1: 538 of 623 regions escalated, 385 of those without a single tool call, and
+#: 73 of 153 stated escalation reasons said the scoped checks pass while the WHOLE PART still
+#: fails - the investigation was being stopped from trying things on a copy that cannot ship, and
+#: was spending its clock on regions that were never the reason the part failed.
+#:
+#: "off" is byte-for-byte the prior behaviour. "live" changes the CLONE and the WALK ORDER only:
+#: the clone's guards drop the review-reserved codes and the paired-rim fill refusal, and regions
+#: holding a mesh-located defect are walked first with that defect as their primary target.
+#:
+#: IT MOVES NO DELIVERY GATE. The real session's caps, validity and solid-count checks, the
+#: paired-rim guard, the held-for-review guard, the new-defect and revealed rules, the delivered
+#: STEP keep rule and package review all judge a package exactly as they do today - a clone is a
+#: copy, and nothing reaches a customer's geometry without passing them.
+CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS: str = _clone_freedom_posture()
 
 
 #: Whether a separate model reviews every package that passed its predicate BEFORE the commit
@@ -434,7 +560,189 @@ def _warn_unreviewed_rebuild(rebuild_face: bool, review: str) -> None:
 
 _warn_unreviewed_rebuild(CAD_REPAIR_REBUILD_FACE, CAD_REPAIR_PACKAGE_REVIEW)
 
+
+def _warn_unreviewed_closure(close_wire_gaps: bool, review: str) -> None:
+    """Say out loud when `close_wire_gaps` is admitted but the package reviewer is not live: the
+    reviewer is the gate this vertex-moving operation ships behind (see
+    CAD_REPAIR_CLOSE_WIRE_GAPS). A warning, not a refusal - `_warn_unreviewed_rebuild`'s rule."""
+    if close_wire_gaps and review != "live":
+        logger.warning("CAD_REPAIR_CLOSE_WIRE_GAPS is on but CAD_REPAIR_PACKAGE_REVIEW=%r: "
+                       "close_wire_gaps moves vertices and must not run on customer jobs until the "
+                       "package reviewer is live", review)
+
+
+_warn_unreviewed_closure(CAD_REPAIR_CLOSE_WIRE_GAPS, CAD_REPAIR_PACKAGE_REVIEW)
+
 #: Seconds one package-review call may take; cut further to what is left of the run's time. A
 #: call that does not answer in time is a reject.
 CAD_REPAIR_PACKAGE_REVIEW_TIMEOUT_S: float = float(
     optional_env("CAD_REPAIR_PACKAGE_REVIEW_TIMEOUT_S", "20.0"))
+
+def _investigator_posture() -> str:
+    """The investigator's posture, FAILING CLOSED: only the exact strings `shadow` and `live` turn
+    it on, and anything else but `off` is read as off OUT LOUD - `_llm_author_posture`'s rule,
+    because this one puts a model in a TOOL LOOP over a customer's geometry, with its own compute
+    budget, where the plain model author got one bounded call."""
+    raw = optional_env("CAD_REPAIR_INVESTIGATOR", "off")
+    if raw not in ("live", "shadow", "off"):
+        logger.warning("CAD_REPAIR_INVESTIGATOR=%r is not 'live', 'shadow' or 'off'; reading it "
+                       "as off", raw)
+    return raw if raw in ("live", "shadow") else "off"
+
+
+#: Whether the region loop's author is the bounded INVESTIGATOR (cad/repair/investigator.py) rather
+#: than the single-shot model author. "off" is byte-for-byte the prior behaviour: the investigator
+#: modules are never imported and `select_author` is called exactly as now. "shadow" runs an
+#: investigation beside the driving author and records it, executing nothing of it, and only when
+#: the whole investigation fits in the time left. "live" lets the investigation author the region's
+#: target package - still a claim the session proves under the same caps, and still reviewed.
+#: Read only by the region-scoped driver (CAD_REPAIR_REGION_LOOP=live).
+CAD_REPAIR_INVESTIGATOR: str = _investigator_posture()
+
+#: Persist each investigation's per-turn trace (tool calls, edit kept/rolled-back with reason,
+#: conclusion, budget) and a per-region outcome table ("why no package") into the repair report,
+#: and the trace as JSONL beside the job's artifacts. Dev diagnostics: off in production, on in
+#: shared dev and crsv3. Off is byte-for-byte the prior behaviour. Redacted and size-capped.
+CAD_REPAIR_INVESTIGATION_TRACE: bool = bool_env("CAD_REPAIR_INVESTIGATION_TRACE", "false")
+
+#: CRS v3 postures read RAW here and validated by their ONE consumer, which fails closed (anything
+#: but the exact strings it accepts reads as off, out loud). Each defaults to "off", byte-for-byte
+#: the prior behaviour. Before these rows existed every consumer's `getattr(rcfg, NAME, "off")`
+#: default answered, so the deploy path's exports were silently inert.
+#: The tournament (cad/repair/tournament.py): off, shadow or live.
+CAD_REPAIR_TOURNAMENT: str = optional_env("CAD_REPAIR_TOURNAMENT", "off")
+#: Candidates the tournament rehearses per region; tournament.py clamps it and falls back to K=1.
+CAD_REPAIR_TOURNAMENT_K: str = optional_env("CAD_REPAIR_TOURNAMENT_K", "1")
+#: Fingerprint-keyed outcome memory (cad/repair/memory.py): off or live.
+CAD_REPAIR_MEMORY: str = optional_env("CAD_REPAIR_MEMORY", "off")
+#: Whether a review rejection returns its measured objection (cad/repair/package_review.py).
+CAD_REPAIR_REVIEW_OBJECTION: str = optional_env("CAD_REPAIR_REVIEW_OBJECTION", "off")
+#: Whether a mesher failure hands its failing faces back to repair (pipeline/repair_handback.py).
+CAD_REPAIR_MESH_HANDBACK: str = optional_env("CAD_REPAIR_MESH_HANDBACK", "off")
+#: Whether an operator may run a job as standalone repair (pipeline/repair_goal.py).
+CAD_REPAIR_STANDALONE_JOBS: str = optional_env("CAD_REPAIR_STANDALONE_JOBS", "off")
+
+#: Seconds ONE investigator model call may take. Cut further to what is left of the region's wall
+#: and of the run (cad/repair/investigator_budget.InvestigationClock.left), so a generous value
+#: here cannot outlive the run.
+CAD_REPAIR_INVESTIGATOR_CALL_TIMEOUT_S: float = float(
+    optional_env("CAD_REPAIR_INVESTIGATOR_CALL_TIMEOUT_S", "20.0"))
+
+#: The most investigator model calls one repair RUN may make, across every region, shadow or live -
+#: a hard ceiling on spend above the per-region budgets, which bound one region each. A capability
+#: refusal that falls back to the JSON transport is not charged against it.
+CAD_REPAIR_INVESTIGATOR_MODEL_CALLS_MAX: int = int(
+    optional_env("CAD_REPAIR_INVESTIGATOR_MODEL_CALLS_MAX", "48"))
+
+#: The fraction of the time left above the final reserve that ONE region's investigation may take.
+#: At the 0.5 default the first region can never leave the second with nothing, and the budget's
+#: own wall still caps it.
+CAD_REPAIR_INVESTIGATOR_REGION_SHARE: float = float(
+    optional_env("CAD_REPAIR_INVESTIGATOR_REGION_SHARE", "0.5"))
+
+
+def _investigator_images_posture() -> str:
+    """The `look` tool's image posture, FAILING CLOSED: only the exact string `live` turns it on.
+
+    Parsed here so the inventory lists it once, and NOT plumbed through the deploy path: nothing
+    has ever sent an image on the repair-review route, so it stays off everywhere until Task 14's
+    measured router check passes.
+    """
+    raw = optional_env("CAD_REPAIR_INVESTIGATOR_IMAGES", "off")
+    if raw not in ("live", "off"):
+        logger.warning("CAD_REPAIR_INVESTIGATOR_IMAGES=%r is neither 'live' nor 'off'; reading it "
+                       "as off", raw)
+    return "live" if raw == "live" else "off"
+
+
+#: Whether the investigator's `look` tool may carry a RENDERED IMAGE as well as its text
+#: observation. "off" is text-first: an observation plus the review camera's numbers. "live" is
+#: Task 14's and needs a measured check that the repair-review route accepts images at all.
+CAD_REPAIR_INVESTIGATOR_IMAGES: str = _investigator_images_posture()
+
+
+def _warn_inert_investigator(investigator: str, region_loop: str) -> None:
+    """Say out loud when an investigator is asked for but the driver it lives in is not: the author
+    seam is read only by the region-scoped driver, so with CAD_REPAIR_REGION_LOOP off a shadow or
+    live CAD_REPAIR_INVESTIGATOR is silently inert (the `_warn_inert_author` rule)."""
+    if investigator != "off" and region_loop != "live":
+        logger.warning("CAD_REPAIR_INVESTIGATOR=%s but CAD_REPAIR_REGION_LOOP=%r: the "
+                       "investigator is never asked - only the region-scoped driver reads it",
+                       investigator, region_loop)
+
+
+_warn_inert_investigator(CAD_REPAIR_INVESTIGATOR, CAD_REPAIR_REGION_LOOP)
+
+
+def _auto_accept_posture() -> str:
+    """The auto-accept posture, FAILING CLOSED: only the exact string `live` turns it on.
+
+    `_tolerant_probe_posture`'s rule, and unforgiving for a stronger reason than any other
+    posture here: this one lets a package COMMIT WITHOUT A REVIEWER, so `Live ` is read as the
+    typo it probably is and every package keeps its seat in front of the model.
+    """
+    raw = optional_env("CAD_REPAIR_AUTO_ACCEPT", "off")
+    if raw not in ("live", "off"):
+        logger.warning("CAD_REPAIR_AUTO_ACCEPT=%r is neither 'live' nor 'off'; reading it as off",
+                       raw)
+    return "live" if raw == "live" else "off"
+
+
+#: Whether a SMALL, FULLY ACCOUNTED package may be accepted without a model reviewer, audited
+#: (cad/repair/review_tier.py). "off" is byte-for-byte the prior behaviour: every package that
+#: passed its predicate goes to the reviewer. "live" is still INERT without a customer deviation
+#: threshold on the run, and never applies to the vertex-moving operations (`rebuild_face`,
+#: `close_wire_gaps`) at any threshold - the reviewer's seat is spent on the large moves, which is
+#: the whole point of the tier. A posture, so a typo reads as off.
+CAD_REPAIR_AUTO_ACCEPT: str = _auto_accept_posture()
+
+
+def _warn_inert_auto_accept(auto_accept: str, review: str) -> None:
+    """Say out loud when auto-accept is live but the review it tiers is not: the tier decision is
+    read only inside the live review branch, so with CAD_REPAIR_PACKAGE_REVIEW off a live
+    CAD_REPAIR_AUTO_ACCEPT is silently inert (the `_warn_inert_investigator` rule)."""
+    if auto_accept == "live" and review != "live":
+        logger.warning("CAD_REPAIR_AUTO_ACCEPT=live but CAD_REPAIR_PACKAGE_REVIEW=%r: the tier "
+                       "is never consulted - it only tiers a review that is running", review)
+
+
+_warn_inert_auto_accept(CAD_REPAIR_AUTO_ACCEPT, CAD_REPAIR_PACKAGE_REVIEW)
+
+
+def _budget_attempts_posture() -> str:
+    """The budget-driven-attempts posture, FAILING CLOSED: only the exact string `live` turns it
+    on.
+
+    `_auto_accept_posture`'s rule. Off is byte-for-byte the committed behaviour - every region
+    gets CAD_REPAIR_REGION_ATTEMPTS, whatever the part costs - so a typo must not quietly hand a
+    heavy part ten attempts.
+    """
+    raw = optional_env("CAD_REPAIR_BUDGET_ATTEMPTS", "off")
+    if raw not in ("live", "off"):
+        logger.warning("CAD_REPAIR_BUDGET_ATTEMPTS=%r is neither 'live' nor 'off'; reading it as "
+                       "off", raw)
+    return "live" if raw == "live" else "off"
+
+
+#: Whether a region's PACKAGE ALLOWANCE comes from the part's expected mesh cost
+#: (`cad/repair/grind.ATTEMPTS`, keyed by `grind.tier_of`) instead of the one flat
+#: CAD_REPAIR_REGION_ATTEMPTS. "off" is byte-for-byte the prior behaviour, down to the report
+#: gaining no key. "live" reads the tier from the run's FIRST whole-shape scan and the upload's own
+#: face and solid counts; an unknown tier reads as the cheapest budget, and an `attempts` argument
+#: a caller states explicitly still wins. The run's CAD_REPAIR_MAX_OPS, its deadline, each
+#: package's own budget and the two-rejections escalation remain the outer bounds. A posture, so a
+#: typo reads as off.
+CAD_REPAIR_BUDGET_ATTEMPTS: str = _budget_attempts_posture()
+
+
+def _warn_inert_budget_attempts(budget_attempts: str, region_loop: str) -> None:
+    """Say out loud when the budget is live but the driver that reads it is not: the allowance is
+    read only by the region-scoped driver, so with CAD_REPAIR_REGION_LOOP off a live
+    CAD_REPAIR_BUDGET_ATTEMPTS is silently inert (the `_warn_inert_author` rule)."""
+    if budget_attempts == "live" and region_loop != "live":
+        logger.warning("CAD_REPAIR_BUDGET_ATTEMPTS=live but CAD_REPAIR_REGION_LOOP=%r: the "
+                       "per-region allowance is read only by the region-scoped driver, so it is "
+                       "never consulted", region_loop)
+
+
+_warn_inert_budget_attempts(CAD_REPAIR_BUDGET_ATTEMPTS, CAD_REPAIR_REGION_LOOP)

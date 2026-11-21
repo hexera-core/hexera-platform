@@ -49,6 +49,69 @@ deploy.
 `dev`, `prod`, `production`, `shared`, `main` and `staging` are refused. Shared dev is reached by
 leaving the slug **empty**; production only by a `v*` tag.
 
+### CRS v3 postures on your slug
+
+The CRS v3 repair postures reach a personal environment through one dispatch input, `crs_v3`
+(`off`, `shadow` or `live`, default `off`). The `target` job turns it into a single `crs_v3`
+output, and the provision job derives every posture from that one value:
+
+| Setting | `off` | `shadow` | `live` |
+| --- | --- | --- | --- |
+| `CAD_REPAIR_REGION_LOOP` | not stated | `live` | `live` |
+| `CAD_REPAIR_MESH_PROBE` | not stated | `live` | `live` |
+| `CAD_REPAIR_PACKAGE_REVIEW` | not stated | `live` | `live` |
+| `CAD_REPAIR_SPLIT_CLOSED_FACES` | not stated | not stated | `true` |
+| `CAD_REPAIR_FRAGMENT_BODIES` | not stated | not stated | `true` |
+| `CAD_REPAIR_REBUILD_FACE` | not stated | not stated | `true` |
+| `CAD_REPAIR_CLOSE_WIRE_GAPS` | not stated | not stated | `true` |
+| `CAD_REPAIR_RESOLVE_SUB_MESH_GAP` | not stated | not stated | `true` |
+| `CAD_REPAIR_MESHABILITY_PASS` | not stated | not stated | `live` |
+| `CAD_REPAIR_TOLERANT_PROBE` | not stated | not stated | `live` |
+| `CAD_REPAIR_INVESTIGATOR` | not stated | `shadow` | `live` |
+| `CAD_REPAIR_AUTO_ACCEPT` | not stated | `live` | `live` |
+| `CAD_REPAIR_BUDGET_ATTEMPTS` | not stated | `live` | `live` |
+| `CAD_REPAIR_TOURNAMENT` | not stated | `shadow` | `live` |
+| `CAD_REPAIR_MEMORY` | not stated | not stated | `live` |
+| `CAD_REPAIR_REVIEW_OBJECTION` | not stated | not stated | `live` |
+| `CAD_REPAIR_MESH_HANDBACK` | not stated | not stated | `live` |
+| `CAD_REPAIR_STANDALONE_JOBS` | not stated | not stated | `live` |
+| `CAD_REPAIR_INVESTIGATION_TRACE` | not stated | not stated | `true` |
+
+- **The package reviewer is on in both `shadow` and `live`.** A v3 run is never unreviewed.
+- **Postures with a real shadow carry it.** The investigator and the tournament read
+  `shadow`/`live`/`off`, so a `shadow` slug records what they would have done and changes nothing.
+  Every flag that reads only the exact `live` (memory, review objection, mesh handback, standalone
+  jobs, tier 2b) waits for `live`.
+- **The last five rows are plumbed ahead of their settings rows.** The code reads
+  `CAD_REPAIR_TOURNAMENT`, `_MEMORY`, `_REVIEW_OBJECTION`, `_MESH_HANDBACK` and `_STANDALONE_JOBS`
+  from `meshpipeline.settings.cad_repair` with a default of `off`, and that module does not declare
+  them yet, so they are exported to `worker.env` and the API but read as `off` until it does.
+  `CAD_REPAIR_TOURNAMENT_K` is not plumbed at all: it has no settings row, and its code default (1)
+  is today's behaviour.
+- **Not derived from `crs_v3`, on purpose:** `CAD_REPAIR_INVESTIGATOR_IMAGES` (the router's image
+  acceptance is unmeasured), and `CAD_REPAIR_LLM_AUTHOR` / `CAD_REPAIR_LLM_PLANNER`, which are older
+  postures with their own inputs.
+- **`REBUILD_FACE` and `CLOSE_WIRE_GAPS` are reviewer-gated.** They move vertices, so they turn
+  on only at `live`, and `live` always sets `CAD_REPAIR_PACKAGE_REVIEW=live` beside them.
+- **`RESOLVE_SUB_MESH_GAP` is reviewer-only too.** It moves no surface but re-partitions the
+  customer's faces, so it is never auto-accepted and turns on only at `live`, beside the reviewer.
+- **Not stated means the shipped default, which is off.** The API names every one of these
+  droppable, so a redeploy left at `off` removes them from an API that had them. The workers
+  take them as instance-template metadata, so tick `fleet` for a change to reach them.
+- **It needs `cad_repair=true`, in the same dispatch.** The postures shape a repair loop that
+  `cad_repair` turns on; on a personal slug `CAD_REPAIR_ENABLED` is stated only when you tick it.
+  `crs_v3=live` without `cad_repair=true` deploys every v3 flag and still refuses repair - a live
+  dev run did exactly that. `crs_v3` on its own is meaningless on a personal slug.
+- **Shared dev and production state it empty, whatever you choose.** Shared dev turns the set on
+  later, as committed config. Production stays empty.
+
+```bash
+gh workflow run deploy.yml --ref "$(git branch --show-current)" \
+  -f slug=<slug> -f fleet=true -f app=true -f cad_repair=true -f crs_v3=shadow
+# check one worker
+gcloud compute ssh <instance> --zone us-central1-a -- grep CAD_REPAIR_ /etc/hexera/worker.env
+```
+
 ## 3. What you share, and what that costs
 
 **Shared with shared dev and with every other personal environment:**
@@ -294,3 +357,34 @@ first deploy. Run the API first; see §4.
 
 **A deploy fails partway.** Every stage is idempotent and safe to rerun; the run continues from
 the state it finds rather than starting over.
+
+## The CRS v3 posture on shared dev
+
+Shared dev runs the CRS v3 flag set as **one unit**, as committed configuration: the `pick` step
+states `crs_v3=live` for the shared-dev target, and every v3 flag in the provision job derives from
+that single value. There is no half-on shared dev to reason about - the set turns on together or
+not at all. A flag whose plumbing row does not exist yet simply is not exported, and joins the set
+the moment its row lands, with no further change to the posture.
+
+Shared dev's posture does **not** depend on what a dispatch asked for: the repository states it, not
+the caller. A merge to `main` gets the same answer as a manual run.
+
+What `live` commands today: the region loop, the mesh probe, the package reviewer, tier 2b's
+tolerant routing probe, the repair investigator, the auto-accept tier, the per-part attempt
+allowance, the five opt-in operations, and - plumbed ahead of their settings rows, so inert until
+those land - the tournament, the repair memory, the reviewer's measured objection, the mesh
+handback and standalone repair jobs. The investigator's and the tournament's rows carry the posture
+rather than mapping it, so a `shadow` slug runs them in shadow and a `live` slug live.
+`CAD_REPAIR_REBUILD_FACE` and
+`CAD_REPAIR_CLOSE_WIRE_GAPS` **move vertices** and are reviewer-gated - they ride with
+`CAD_REPAIR_PACKAGE_REVIEW=live` and must never be exported without it. A test pins that property
+for every posture value.
+
+Tier 2b runs on the `pipeline` worker (`ladder._tolerant` -> `tolerant_probe` ->
+`fea_tetwild.binary()`), so the pipeline image carries the same fTetWild build as the mesh image,
+on `PATH` and at `/opt/ftetwild/bin/fTetWild`. A worker image built before that change has no
+fTetWild, and tier 2b there reads `unavailable` - an honest answer, not worked around.
+
+**Production stays off.** Its `pick` branch states `crs_v3=` permanently, so every v3 flag reads its
+in-code default of `off`. Ungating production is a separate owner decision. To turn shared dev off
+again, revert the one `crs_v3=live` line.

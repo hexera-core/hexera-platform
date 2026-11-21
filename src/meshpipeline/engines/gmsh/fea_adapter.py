@@ -124,6 +124,9 @@ _ALGO_3D: list[str | None] = [None]
 #: MESH-25: whether the last build's size fields hold a size through a volume, and the algorithm it filled with
 _VOLUME_SIZED = [False]
 _FILLED: list[str | None] = [None]
+#: what the last build applied of a returned STEP's mesh-size hints (engines/gmsh/staged_hints.py), or None:
+#: written into quality.json as `mesh_hints` beside MESH-25's record
+_HINTED: list[dict | None] = [None]
 #: gmsh's MeshAdapt 2D algorithm (Mesh.Algorithm 1): the other way to mesh a surface, for the
 #: surfaces a pass went wrong on (LAD-fea-6) - the default (Frontal-Delaunay) left them empty or bad
 MESH_ADAPT = 1
@@ -1583,6 +1586,13 @@ def _build(gmsh, ws: Path, plan: dict, geom: Path, asm: dict | None, sidecar: di
     note_stage(ws, "sizing", "setting the element sizes")
     _VOLUME_SIZED[0] = False
     bg = size_fields(gmsh, sized, surfaces, face_tags, part_volumes, whole=whole, short=short)
+    # A RETURNED STEP'S MESH-SIZE HINTS (engines/gmsh/staged_hints.py), when the run staged them for these exact
+    # bytes: under one Min with the plan's own field, so a hint only refines the faces it names. None staged:
+    # nothing here touches gmsh, the same mesh
+    from meshpipeline.engines.gmsh import staged_hints as HINTS
+    bg, hinted = HINTS.apply(gmsh, ws, scale=scale, background=bg, log_prefix="[GMSH-FEA]")
+    if hinted is not None:
+        _HINTED[0] = hinted
     if bg is not None:
         gmsh.model.mesh.field.setAsBackgroundMesh(bg)
     _FILLED[0] = algorithm_3d(run)
@@ -1785,6 +1795,7 @@ def mesh(workspace) -> int:
         run = {}
     first = algorithm_3d(run)
     _FILLED[0] = None
+    _HINTED[0] = None
     threads = mesh_threads(run)
     before = {f.name: f.stat().st_mtime_ns for f in ws.iterdir() if f.is_file()}
     # what an earlier pass kept (LAD-fea-11) is this pass's input: the second attempt reads it as the first did
@@ -1843,6 +1854,9 @@ def _note_algorithm(ws: Path, record: dict, took: str = "") -> None:
     q = _quality(ws)
     if q:
         q["fea_algorithm3d"] = record
+        if _HINTED[0] is not None:
+            # the returned STEP's hints this mesh applied (engines/gmsh/staged_hints.py); absent without them
+            q["mesh_hints"] = _HINTED[0]
         try:
             (ws / "quality.json").write_text(json.dumps(q, indent=1))
         except OSError:

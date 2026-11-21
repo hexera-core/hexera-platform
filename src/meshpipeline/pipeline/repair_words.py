@@ -16,6 +16,26 @@ AGENT = "repair"
 #: The tail every "we did not change your file" line ends on, so the user knows what is meshed.
 _ORIGINAL = "meshing your original file"
 
+#: WHAT TO SAY FOR EACH WAY A RUN ENDED WITH NO FILE (`cad/repair/ending.py`). The lane used to
+#: say "Nothing could be repaired safely" for all five, which is false for four of them and the
+#: reason the owner saw a corpus report of 66 refusals where one part had been refused.
+#:
+#: NONE OF THESE IS GOOD NEWS and none may read as one. The caller appends "meshing your original
+#: file" to every line, so each says plainly that the customer is getting what they uploaded. A
+#: gate refusal (`refused`) is the one that names a decision we made, and it keeps the harshest
+#: wording on purpose - it is a safety signal, not a status.
+#:
+#: `escalated` IS DELIBERATELY ABSENT: a run that queued a region still kept the rest and reaches
+#: the `attempted` branch above, which already says what was repaired and what needs a look.
+_ENDING_WORDS = {
+    "nothing_to_repair": "The repair check found nothing that needed fixing",
+    "no_operation_claims_it": "We have no automatic fix for what is in your part",
+    "attempted_none_held": "Nothing could be repaired safely",
+    "scan_incomplete": "The repair check could not see all of your part, so nothing was changed",
+    "unmeshable": "Your part's geometry checks out, but it still cannot be meshed",
+    "refused": "The repair was stopped by our safety checks",
+}
+
 #: What a kept operation did, by the operation and, where one operation answers several defects,
 #: by the defect it aimed at. (singular, plural) after the count. An operation this table does not
 #: know is still counted, as a fixed defect - never named by its internal label.
@@ -227,6 +247,13 @@ def repair_check_words(state: Mapping, out: Mapping) -> str | None:
         measured = (record.get("detail") or {}).get("measurements") or {}
         if measured.get("result_discarded"):
             return _with_review(f"Repair undone: it changed the shape too much; {_ORIGINAL}")
+        # FIVE DIFFERENT ANSWERS USED TO SHARE ONE SENTENCE. `cad/repair/ending.py` says which
+        # this was; the line follows it. Every branch still ends in "meshing your original file",
+        # so none of them can read as a delivery, and the fallback is the sentence this surface
+        # said before - a run whose ending we do not know is told the harshest true thing.
+        said = _ENDING_WORDS.get(str(measured.get("ending") or ""))
+        if said:
+            return _with_review(f"{said}; {_ORIGINAL}")
         return _with_review(f"Nothing could be repaired safely; {_ORIGINAL}")
     if outcome == "not_promoted":
         return _with_review(f"The repaired file failed our checks; {_ORIGINAL}")

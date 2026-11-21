@@ -16,7 +16,15 @@ from meshpipeline.contracts.geometry_source import GeometryState
 # (thread_id = "<job_id>:s<version>"), so a redelivery after a deploy that changed the
 # schema starts FRESH instead of resuming an incompatible checkpoint - the single biggest
 # production-incident source for agent systems (state management).
-STATE_SCHEMA_VERSION = 15  # v15: `repair_attempt` - whether the run repaired its own geometry,
+STATE_SCHEMA_VERSION = 16  # v16: `repair_handback` - the ONE scoped repair a MESH-2 refusal
+                           # bought (the faces the mesher named, what the repair did, whether it
+                           # committed, and the machine the failing attempt ran on), which is also
+                           # the latch that holds a job to one handback ever
+                           # (pipeline/repair_handback.py). Also, from the same unreleased
+                           # branch, `repair_goal` + `repair_delivery` - what a run is finishing
+                           # for and a standalone repair job's ending (pipeline/repair_goal.py,
+                           # pipeline/repair_deliver.py). Carries every v15 field.
+                           # v15: `repair_attempt` - whether the run repaired its own geometry,
                            # what it aimed at and what it did, or why it did not
                            # (pipeline/repair_attempt.py). Carries every v14 field.
                            # v14: `repair_lineage` - when repaired geometry REPLACED the approved
@@ -114,6 +122,16 @@ class PipelineState(TypedDict):
     # DIRECTIVES A PARKED RUN'S RE-RUN PLAYS FIRST (cad/repair/directives.py): the kept operations
     # replayed, then the engineer's decisions. Empty on every run that did not resume from a park.
     repair_directives: list[dict]
+    # WHAT THIS RUN IS FINISHING FOR, as the job was dispatched asking for it (pipeline/
+    # repair_goal.py): {"goal": "standalone"|"meshing", "auto_accept_deviation_mm": float|None}.
+    # Empty on every run that declared none - which is byte-for-byte today's run - and inert
+    # unless CAD_REPAIR_STANDALONE_JOBS is exactly `live`.
+    repair_goal: dict
+    # A STANDALONE REPAIR JOB'S ENDING (pipeline/repair_deliver.py): the outcome word, the goal's
+    # finishing verdict, and the repaired file the orchestrator's terminal path hands back. Must be
+    # declared, or the graph drops it between that node and the delivery it names. Empty on a
+    # meshing run.
+    repair_delivery: dict
     # WHAT BECAME OF EACH ENGINEER DIRECTIVE THIS RUN PLAYED ([{item_id, source, outcome, reason}],
     # only those with an item): the terminal path writes them back onto their items. Must be
     # declared, or the graph drops it between the node and the terminal path.
@@ -124,6 +142,14 @@ class PipelineState(TypedDict):
     # customer sent, which is most of them. `geometry` is always what IS being meshed - no reader
     # has to choose between two candidates - and this is the record of what it was before.
     repair_lineage: dict
+    # THE ONE HANDBACK THIS JOB GOT, and the latch that holds it to one (pipeline/
+    # repair_handback.py). The FEA ladder's MESH-2 refusal names the faces the mesh failed at that
+    # a geometry check had already flagged; this records those faces, the scoped repair's outcome,
+    # whether it committed, a reference to its report and THE MACHINE THE FAILING ATTEMPT RAN ON -
+    # copied, never chosen, so the handback's re-mesh cannot buy a bigger machine. Non-empty the
+    # moment the node runs, including when it refused, because an empty dict is what
+    # `route_after_executor` reads as "no handback yet". Empty on every job that never saw MESH-2.
+    repair_handback: dict
 
     domain:     str
     engine_params: dict   # engine-NATIVE declared params (ParamSpec answers; see data_contract)

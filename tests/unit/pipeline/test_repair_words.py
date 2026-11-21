@@ -203,3 +203,51 @@ def test_a_real_defect_is_still_said_as_one(tmp_path):
     off = {"repair_attempt": {"attempted": False, "outcome": "off", "route": ""}}
     assert W.repair_check_words(state, off) == \
         "Found 2 defects; repair is off here, so meshing your original file"
+
+
+def test_a_run_that_had_nothing_to_do_is_not_told_as_a_failed_repair(tmp_path):
+    # THE REPORTING DEFECT, at the customer surface. Five endings shared one sentence, and the
+    # sentence was the one that sounds worst. Each now says what actually happened - and every one
+    # of them still ends in "meshing your original file", so none reads as a delivery.
+    def line(ending: str) -> str:
+        out = {"repair_attempt": {"attempted": False, "outcome": "refused",
+                                  "detail": {"measurements": {"ending": ending,
+                                                              "operations_kept": 0}}}}
+        return W.repair_check_words(_state(tmp_path, _GAP), out)
+
+    assert line("nothing_to_repair") == \
+        "The repair check found nothing that needed fixing; meshing your original file"
+    assert line("no_operation_claims_it") == \
+        "We have no automatic fix for what is in your part; meshing your original file"
+    assert line("attempted_none_held") == \
+        "Nothing could be repaired safely; meshing your original file"
+    assert line("scan_incomplete") == ("The repair check could not see all of your part, so "
+                                       "nothing was changed; meshing your original file")
+    assert line("unmeshable") == ("Your part's geometry checks out, but it still cannot be "
+                                  "meshed; meshing your original file")
+    for ending in ("nothing_to_repair", "no_operation_claims_it", "attempted_none_held",
+                   "scan_incomplete", "unmeshable", "refused"):
+        assert line(ending).endswith("meshing your original file")
+
+
+def test_a_gate_refusal_is_still_told_as_a_refusal(tmp_path):
+    # The safety signal. A cap, a tolerance over the effective cap or the reviewer saying no must
+    # never be softened into one of the "we got this far" sentences.
+    assert "stopped by our safety checks" in W.repair_check_words(
+        _state(tmp_path, _GAP),
+        {"repair_attempt": {"attempted": False, "outcome": "refused",
+                            "detail": {"measurements": {"ending": "refused"}}}})
+    # A discarded result still gets the sharper sentence that names what it did.
+    assert W.repair_check_words(
+        _state(tmp_path, _GAP),
+        {"repair_attempt": {"attempted": False, "outcome": "refused",
+                            "detail": {"measurements": {"ending": "refused",
+                                                        "result_discarded": True}}}}) == \
+        "Repair undone: it changed the shape too much; meshing your original file"
+    # AND A RUN WHOSE ENDING WE DO NOT KNOW KEEPS THE OLD, HARSHER SENTENCE. An absent fact must
+    # not buy a part a kinder line than it earned.
+    assert W.repair_check_words(
+        _state(tmp_path, _GAP),
+        {"repair_attempt": {"attempted": False, "outcome": "refused",
+                            "detail": {"measurements": {}}}}) == \
+        "Nothing could be repaired safely; meshing your original file"

@@ -1,10 +1,12 @@
 # Responsibility: Declare the one way this product calls a language model, per agent role.
-# Owns: the round result, tool-call request and provider-attempt types, plus the per-role entry points.
+# Owns: the round result, tool-call request and provider-attempt types, the repair-review tool schema and
+#       its typed refusal (ToolsUnsupported), plus the per-role entry points.
 # Boundaries: it defines the call shape; routing, retries and provider wire formats live in adapters/model_inference/.
 # Collaborates with: contracts/model_routing.py and agents/loop/ which drives these calls.
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+import inspect
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol, runtime_checkable
 
@@ -113,6 +115,48 @@ class ModelRoundResult:
         return not self.failure_marker
 
 
+ModelReply = ModelRoundResult
+"""What a native-tool round answers: text (`assistant_text`), or a typed `tool_calls` list.
+The SAME type every route already returns - a tool conversation is not a second result shape,
+so the decision cache, telemetry and failure markers hold for it unchanged."""
+
+
+class ToolsUnsupported(ModelInferenceError):
+    """The installed router (or the route it would ask) cannot call tools natively. A caller
+    that offered tools treats this as "use the JSON-in-text protocol" - never as a failure."""
+
+
+@dataclass(frozen=True)
+class ToolSchema:
+    """One tool a repair-review round may call: its name, what it does, and a JSON Schema for its
+    arguments. Typed so a caller declares tools rather than hand-builds vendor dicts; the port
+    turns each into the neutral `ToolDefinition` every other route already speaks."""
+
+    name: str
+    description: str
+    parameters: dict[str, Any]
+
+    def definition(self) -> ToolDefinition:
+        return {"type": "function", "function": {"name": self.name, "description": self.description,
+                                                 "parameters": self.parameters}}
+
+
+def assistant_turn(reply: ModelReply) -> Message:
+    """The assistant turn a reply makes, for threading tool results back after it."""
+    turn: Message = {"role": "assistant", "content": reply.assistant_text or None}
+    if reply.tool_calls:
+        turn["tool_calls"] = [{"id": c.id, "type": "function",
+                               "function": {"name": c.name, "arguments": c.arguments}}
+                              for c in reply.tool_calls]
+    return turn
+
+
+def tool_result_turn(call: ToolCallRequest, content: str) -> Message:
+    """The `tool` turn answering one call. `content` is the tool's result as text (a caller's
+    JSON); it is the model's data, never its instructions."""
+    return {"role": "tool", "tool_call_id": call.id, "name": call.name, "content": content}
+
+
 @runtime_checkable
 class ModelRouter(Protocol):
 
@@ -135,8 +179,11 @@ class ModelRouter(Protocol):
         name: str = "Intake", tools: list[ToolDefinition] | None = None,
     ) -> ModelRoundResult: ...
 
+    # `tools`/`user_id` are optional for a router: one without them is asked only without them,
+    # and the port raises ToolsUnsupported for it when tools are offered.
     async def call_repair_review_model(
-        self, messages: Conversation, job_id: str = "", name: str = "RepairReview",
+        self, messages: Conversation, job_id: str = "", name: str = "RepairReview", *,
+        tools: list[ToolDefinition] | None = None, user_id: str = "",
     ) -> ModelRoundResult: ...
 
     async def call_reviewer_with_tools(
@@ -197,10 +244,33 @@ async def call_intake_model(
         messages=messages, job_id=job_id, user_id=user_id, name=name, tools=tools)
 
 
+def accepts_tools(call: Callable[..., Any]) -> bool:
+    """Whether a router's repair-review call takes native tools at all (a router written before
+    them does not, and is asked only the way it always was)."""
+    try:
+        return "tools" in inspect.signature(call).parameters
+    except (TypeError, ValueError):
+        return False
+
+
 async def call_repair_review_model(
-    messages: Conversation, job_id: str = "", name: str = "RepairReview",
-) -> ModelRoundResult:
-    return await _r().call_repair_review_model(messages=messages, job_id=job_id, name=name)
+    messages: Conversation, job_id: str = "", name: str = "RepairReview", *,
+    tools: Sequence[ToolSchema] | None = None, user_id: str = "",
+) -> ModelReply:
+    """One repair-review round. No tools is EXACTLY today's call - the router is asked with the
+    same three arguments it always was. With tools, the reply may be a typed `tool_calls` list,
+    answered by `tool` turns (`tool_result_turn`); a router that cannot raises ToolsUnsupported.
+    `user_id` is the round's owner: an ownerless round is asked and never kept (decision_cache)."""
+    router = _r()
+    if tools is None and not user_id:
+        return await router.call_repair_review_model(messages=messages, job_id=job_id, name=name)
+    if not accepts_tools(router.call_repair_review_model):
+        if tools is not None:
+            raise ToolsUnsupported("the installed router cannot call tools on the repair-review route")
+        return await router.call_repair_review_model(messages=messages, job_id=job_id, name=name)
+    definitions = None if tools is None else [t.definition() for t in tools]
+    return await router.call_repair_review_model(messages=messages, job_id=job_id, name=name,
+                                                 tools=definitions, user_id=user_id)
 
 
 async def call_reviewer_with_tools(

@@ -376,7 +376,9 @@ def _emit(route, target, reason, job_id, *, attempts, category, circuit_state,
             cost = cost_of(target, usage)
         except Exception:  # noqa: BLE001
             cost = 0.0
+    caller, purpose = telemetry.current()
     telemetry.record(InferenceCall(
+        caller=caller, purpose=purpose,
         job_id=job_id,
         role=route.role,
         route_id=f"{route.role}:{'standby' if failover and target is route.standby else 'primary'}",

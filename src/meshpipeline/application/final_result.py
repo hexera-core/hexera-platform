@@ -1032,6 +1032,9 @@ class RunOutcome:
     layers_planned: bool = False
     #: the wrap the delivered mesh was built on (pipeline/cfd_wrap.delivered), None for any other
     cfd_wrap: Any = None
+    #: A STANDALONE repair job's ending (pipeline/repair_deliver.py), None on every other run. That
+    #: branch never reaches the builder, executor or reviewer, so its status is read from here.
+    standalone_delivery: Any = None
 
     @classmethod
     def from_graph_state(cls, state: Mapping) -> RunOutcome:
@@ -1065,7 +1068,24 @@ class RunOutcome:
                    requirement_caveats=tuple(c for c in (state.get("requirement_caveats") or ())
                                              if isinstance(c, Mapping)),
                    layers_planned=_layers_planned(state),
-                   cfd_wrap=_delivered_wrap(state))
+                   cfd_wrap=_delivered_wrap(state),
+                   standalone_delivery=_standalone_delivery(state))
+
+
+def _standalone_delivery(state: Mapping) -> dict | None:
+    """The standalone ending, ONLY when this run's goal routed it there (the same reading the
+    graph's route made, pipeline/repair_goal.from_state). A stray record on any other run says
+    nothing about its status."""
+    try:
+        from meshpipeline.cad.repair.contracts import RepairGoal
+        from meshpipeline.pipeline.repair_goal import from_state
+        asked = from_state(state)
+        if asked is None or asked.goal is not RepairGoal.standalone:
+            return None
+        delivery = state.get("repair_delivery")
+        return dict(delivery) if isinstance(delivery, Mapping) else {}
+    except Exception:  # noqa: BLE001 - an unreadable goal is today's run
+        return None
 
 
 def _delivered_wrap(state: Mapping) -> dict | None:
@@ -1871,6 +1891,21 @@ class StatusDecision:
 
 def derive_terminal_status(outcome: RunOutcome, *, job_id: str, jlog) -> StatusDecision:
     from meshpipeline.persistence.models import FailedReason, JobStatus
+
+    if outcome.standalone_delivery is not None and not outcome.api_failure:
+        # A STANDALONE REPAIR JOB ends at node_repair_deliver, before the builder, executor and
+        # reviewer (spec amendment 1): its verdict is the repair's finishing verdict, so the
+        # mesher's fields below are never set and must not decide it. Succeeded only on a repaired
+        # ending that names a file to hand back. A system failure still goes the way it always has.
+        d = outcome.standalone_delivery
+        from meshpipeline.pipeline.repair_deliver import REPAIRED
+        if d.get("outcome") == REPAIRED and d.get("path"):
+            jlog.info("terminal status: standalone repair delivered (job_id=%s)", job_id)
+            return StatusDecision(JobStatus.succeeded, None)
+        jlog.info("terminal status: standalone repair ended %s - not delivered (job_id=%s)",
+                  d.get("outcome") or "with no ending", job_id)
+        # no repair-specific FailedReason exists (it is a DB enum); the run produced no deliverable
+        return StatusDecision(JobStatus.failed, FailedReason.mesh_generation)
 
     if limits_decide_for(outcome) and _limits_apply(outcome):
         # THE MEASURED LIMITS DECIDE (docs/RULES.md VER-1..4). Every gate passed on this mesh; the

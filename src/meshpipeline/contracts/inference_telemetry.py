@@ -2,6 +2,9 @@
 # Boundaries: a Protocol and its binding; it aggregates nothing and stores nothing itself.
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass
 from typing import Any, Protocol, runtime_checkable
 
@@ -45,6 +48,11 @@ class InferenceCall:
     cancelled: bool = False
     failover_occurred: bool = False
 
+    # WHO ASKED. `role` is the ROUTE that carried the call, and every repair call rides the intake
+    # route, so `role` alone reads `intake` for the investigator, the reviewer and the author alike.
+    caller: str = ""                # the caller's trace label, e.g. "RepairInvestigator"
+    purpose: str = ""               # investigator | reviewer | author | intake | tournament:<src>
+
     def as_record(self) -> dict[str, Any]:
         return asdict(self)
 
@@ -56,6 +64,39 @@ class InferenceTelemetry(Protocol):
 
 
 _sink: InferenceTelemetry | None = None
+
+#: A caller's trace label -> what the call was FOR. Anything else reads as its label, lowercased.
+PURPOSES = {"RepairInvestigator": "investigator", "RepairPackageReview": "reviewer",
+            "RepairReview": "author", "Intake": "intake"}
+_caller: ContextVar[str] = ContextVar("inference_caller", default="")
+_scope: ContextVar[str] = ContextVar("inference_scope", default="")
+
+
+@contextmanager
+def calling(label: str) -> Iterator[None]:
+    """The calls made inside are labelled with `label` (the router sets it from the trace name)."""
+    token = _caller.set(str(label or ""))
+    try:
+        yield
+    finally:
+        _caller.reset(token)
+
+
+@contextmanager
+def scope(name: str) -> Iterator[None]:
+    """The calls made inside are FOR `name` (e.g. `tournament:investigator`), whoever asks."""
+    token = _scope.set(str(name or ""))
+    try:
+        yield
+    finally:
+        _scope.reset(token)
+
+
+def current() -> tuple[str, str]:
+    """(caller label, purpose) of the call being made in this context; ("", "") outside one."""
+    label = _caller.get()
+    purpose = _scope.get() or (PURPOSES.get(label, label.lower()) if label else "")
+    return label, purpose
 
 
 def set_inference_telemetry(sink: InferenceTelemetry | None) -> None:

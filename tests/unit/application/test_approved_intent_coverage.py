@@ -66,6 +66,16 @@ DECLARED_EXCLUSIONS: dict[str, str] = {
         "approving caller's own organisation; it reaches the mesh only through the fields the notes "
         "already set (sizes, element kind, quality aims), inside their validated limits, so it cannot "
         "move the approved engine, purpose, patches or any fingerprinted value."),
+    "repair_goal": (
+        "What the run is FINISHING FOR (pipeline/repair_goal.py): a standalone repair job hands "
+        "clean CAD back and never reaches a mesher, where `meshing` is today's run. It changes no "
+        "mesh input - a standalone job builds no mesh at all - so it cannot move the approved "
+        "engine, purpose, patches or any fingerprinted value. MITIGATION: it is written only by "
+        "the admin-credentialled operator route (api/v1/admin_repair.run_standalone), it is inert "
+        "unless CAD_REPAIR_STANDALONE_JOBS is exactly `live`, and the one number inside it - the "
+        "customer's auto-accept deviation threshold - is validated finite, non-negative and under "
+        "a 1 mm bound at the request and re-validated out of the state, while a vertex-moving "
+        "operation is refused the auto tier at ANY threshold (cad/repair/review_tier)."),
     "review_continuation": (
         "Marks a dispatch as a parked run's own re-run, so the spend gate is not applied twice. "
         "MITIGATION: it changes no mesh input and nothing routes on it; it is set only by the "

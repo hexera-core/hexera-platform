@@ -1,0 +1,195 @@
+{
+  "cad_simplicity": {
+    "edge_delta": {
+      "count": 2,
+      "max": 52.0,
+      "mean": 21.0,
+      "median": 21.0,
+      "min": -10.0
+    },
+    "face_delta": {
+      "count": 2,
+      "max": 4.0,
+      "mean": 1.0,
+      "median": 1.0,
+      "min": -2.0
+    },
+    "files_measured": 2,
+    "files_with_fewer_faces": 1,
+    "files_with_more_faces": 1,
+    "operations_kept": {
+      "count": 2,
+      "max": 4.0,
+      "mean": 2.5,
+      "median": 2.5,
+      "min": 1.0
+    },
+    "solid_count_changed": 1,
+    "vertex_delta": {
+      "count": 2,
+      "max": 104.0,
+      "mean": 42.0,
+      "median": 42.0,
+      "min": -20.0
+    }
+  },
+  "catalogue": {
+    "never_exercised": [
+      "rebuild_face"
+    ],
+    "only_declined": [],
+    "tally": {
+      "close_wire_gaps": {
+        "declined": 0,
+        "failed": 0,
+        "kept": 0,
+        "rolled_back": 2
+      },
+      "fill_nonplanar_hole": {
+        "declined": 0,
+        "failed": 0,
+        "kept": 0,
+        "rolled_back": 1
+      },
+      "fill_planar_hole": {
+        "declined": 0,
+        "failed": 0,
+        "kept": 4,
+        "rolled_back": 2
+      },
+      "fix_face_boundary": {
+        "declined": 0,
+        "failed": 0,
+        "kept": 0,
+        "rolled_back": 1
+      },
+      "fix_shape_global": {
+        "declined": 0,
+        "failed": 0,
+        "kept": 0,
+        "rolled_back": 7
+      },
+      "fix_small_edges": {
+        "declined": 0,
+        "failed": 0,
+        "kept": 0,
+        "rolled_back": 94
+      },
+      "fix_small_faces": {
+        "declined": 0,
+        "failed": 0,
+        "kept": 1,
+        "rolled_back": 332
+      },
+      "fragment_bodies": {
+        "declined": 0,
+        "failed": 0,
+        "kept": 0,
+        "rolled_back": 16
+      },
+      "heal_self_intersections": {
+        "declined": 0,
+        "failed": 0,
+        "kept": 0,
+        "rolled_back": 173
+      },
+      "sew_faces": {
+        "declined": 0,
+        "failed": 0,
+        "kept": 0,
+        "rolled_back": 25
+      },
+      "split_closed_faces": {
+        "declined": 0,
+        "failed": 0,
+        "kept": 0,
+        "rolled_back": 2
+      }
+    }
+  },
+  "endings": {
+    "attempted_none_held": 16,
+    "crashed": 1,
+    "escalated": 6,
+    "nothing_to_repair": 3,
+    "refused": 16,
+    "scan_incomplete": 7,
+    "unmeshable": 71
+  },
+  "goal": {
+    "files": 119,
+    "grind_by_tier": {
+      "cheap": 12,
+      "heavy": 23,
+      "standard": 81,
+      "unknown": 1
+    },
+    "kernel_clean": 61,
+    "not_run": 2,
+    "profile": "benchmark",
+    "score_mean": 0.0183,
+    "tier2_meshes": 2,
+    "tier2_no_answer": 8,
+    "tier2_refuses": 107,
+    "tolerant_routing": {
+      "no_answer": 27,
+      "not_asked": 26,
+      "tolerant_rung_eats_it": 63,
+      "tolerant_rung_refuses": 1
+    }
+  },
+  "heals": {
+    "corroborated": 0,
+    "kept": 0,
+    "uncorroborated_files": [],
+    "unknown": 0,
+    "unknown_files": []
+  },
+  "meshing": {
+    "crashed": 1,
+    "files": 120,
+    "forced_repairs": 42,
+    "meshed_after": 3,
+    "meshed_before": 2,
+    "newly_broken": 0,
+    "newly_meshed": 1,
+    "still_failing_by_kind": {
+      "edge_through_face": 28,
+      "no_volume": 3,
+      "open_loop": 3,
+      "other": 4,
+      "overlapping_facets": 68,
+      "periodic_surface": 5,
+      "timeout": 6
+    }
+  },
+  "outcomes": {
+    "crashed": 1,
+    "nothing_to_repair": 2,
+    "refused": 115,
+    "repaired": 2
+  },
+  "refusals_by_reason": {
+    "no_operation_claims_it": 1,
+    "review: rejected by review twice": 1
+  },
+  "repaired_by_code": {
+    "open_shell": 4,
+    "small_edge": 2,
+    "small_face": 3
+  },
+  "routes": {
+    "conservative_repair": 75,
+    "manual_cleanup": 11,
+    "mesh_as_is": 33
+  },
+  "row_count": 120,
+  "stopped_because": {
+    "escalated": 6,
+    "regions_exhausted": 10,
+    "resolved": 2,
+    "scan_incomplete": 7,
+    "time_budget": 8,
+    "unmeshable": 84
+  }
+}

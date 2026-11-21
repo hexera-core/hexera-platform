@@ -33,6 +33,10 @@ test("builds dynamic product API routes with encoded path segments", () => {
     "/api/v1/admin/ops/jobs/job%2Fone/why",
   );
   assert.equal(
+    hexeraApiRoutes.adminOpsJobRepairTrace("job/one"),
+    "/api/v1/admin/ops/jobs/job%2Fone/repair-trace",
+  );
+  assert.equal(
     hexeraApiRoutes.adminOpsOrganizations(0),
     "/api/v1/admin/ops/organizations?limit=0",
   );

@@ -257,3 +257,47 @@ def test_a_collision_survives_stamping_and_reaches_every_operations_targets():
     aimed = [ref for op in OPERATIONS for ref in op.targets_for(stamped[0])]
     assert aimed, "some operation must claim a curve_inconsistency on a face"
     assert all(ref.ambiguous for ref in aimed)
+
+
+# THE GRID MUST NOT MOVE UNDER AN UNMOVED ENTITY
+#
+# MEASURED, NOT IMAGINED (docs/superpowers/specs/2026-11-19-target-remains-diagnosis.md). On
+# 0059_00592781_58be5d61afe56e0fcdda08e3_step_000.step, `fix_small_edges` left all four
+# zero-length edges at bounding boxes identical to the micrometre - and grew the PART's diagonal
+# by 0.0911 mm. The quantum was a fraction of that diagonal, so it moved by 5e-5 relative, which
+# at z = -877.5 mm is 24 grid cells: every fingerprint on the part changed, the progress rule
+# could not find any of the four defects it had just named, and an operation that repaired
+# nothing was KEPT. The grid is therefore snapped to a binary octave of the diagonal, so a
+# repair-sized change of extent leaves every name exactly where it was.
+
+#: The two diagonals that part really measured, before and after that operation.
+_DIAGONAL_BEFORE = 1822.8446848590597
+_DIAGONAL_AFTER = 1822.9358082694791
+
+
+def test_a_repair_sized_change_of_the_parts_extent_does_not_move_the_grid():
+    assert quantum_for(_DIAGONAL_BEFORE) == quantum_for(_DIAGONAL_AFTER)
+
+
+def test_an_entity_that_did_not_move_keeps_its_name_when_the_part_got_wider():
+    # The scan's own call shape: `localize._stamped` hands `refs_for` the part's diagonal, so this
+    # is exactly what the two scans either side of an operation compute.
+    box = _box(-75.0, -0.0, -877.5, -75.0, 0.0, -877.5)
+    before = refs_for([("edge", 2, box)], diagonal_mm=_DIAGONAL_BEFORE)
+    after = refs_for([("edge", 7, box)], diagonal_mm=_DIAGONAL_AFTER)
+    assert before[0].fingerprint == after[0].fingerprint, (
+        "the entity never moved; renaming it makes the progress rule read a non-repair as a repair")
+
+
+def test_the_snapped_grid_is_still_a_grid_fine_enough_to_tell_two_edges_apart():
+    # The snap costs resolution - up to a factor of two - and must not cost so much that two
+    # genuinely distinct entities collide. These two sit 13 mm apart on the same part.
+    q = quantum_for(_DIAGONAL_BEFORE)
+    assert fingerprint_of("edge", _box(-75.0, 0.0, -877.5, -75.0, 0.0, -877.5), quantum=q) != \
+           fingerprint_of("edge", _box(-75.0, 0.0, -890.5, -75.0, 0.0, -890.5), quantum=q)
+
+
+def test_a_part_of_a_different_scale_still_gets_a_different_grid():
+    # The snap must not flatten the scaling the quantum exists for: a 10 mm part and a 1000 mm one
+    # cannot share a grid, or the small part is named to a resolution it does not have.
+    assert quantum_for(10.0) < quantum_for(100.0) < quantum_for(10000.0)
