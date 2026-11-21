@@ -822,7 +822,8 @@ def claims_gap(defect) -> bool:
             and measurements.get("stage") == mesh_probe.STAGE_3D)
 
 
-def _register() -> None:
+def register_meshability() -> None:
+    """This module's meshability registry hook (`meshability.PROVIDERS`). Never called at import."""
     import meshpipeline.settings.cad_repair as rcfg
     from meshpipeline.cad.repair import meshability
 
@@ -831,9 +832,6 @@ def _register() -> None:
         build=lambda rung: ResolveSubMeshGap(sag_share=SAG_LADDER[rung]),
         enabled=lambda: bool(getattr(rcfg, "CAD_REPAIR_RESOLVE_SUB_MESH_GAP", False)),
         rungs=len(SAG_LADDER), priority=50, lane="H"))
-
-
-_register()
 
 
 if __name__ == "__main__":  # pragma: no cover - the child's own entry point

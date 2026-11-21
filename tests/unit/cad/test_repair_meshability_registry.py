@@ -14,7 +14,16 @@ from meshpipeline.cad.repair.localize import EntityDefect
 @pytest.fixture
 def clean(monkeypatch):
     monkeypatch.setattr(mb, "_REGISTRY", {})
+    monkeypatch.setattr(mb, "_FAILURES", [])
     monkeypatch.setattr(mb, "_loaded", True)
+
+
+@pytest.fixture
+def fresh(monkeypatch):
+    """An empty registry that WILL load its providers - and leaves the global one untouched."""
+    monkeypatch.setattr(mb, "_REGISTRY", {})
+    monkeypatch.setattr(mb, "_FAILURES", [])
+    monkeypatch.setattr(mb, "_loaded", False)
 
 
 def _defect(**measurements) -> EntityDefect:
@@ -45,6 +54,8 @@ def test_a_disabled_entry_is_invisible(clean):
 def test_registering_the_same_entry_twice_is_fine_but_a_different_one_raises(clean):
     entry = mb.register(_entry("x"))
     mb.register(entry)
+    # A REBUILT RECORD WITH NEW LAMBDAS is the same entry (a module executed twice).
+    assert mb.register(_entry("x")) is entry
     with pytest.raises(ValueError):
         mb.register(_entry("x", priority=5))
     with pytest.raises(ValueError):
@@ -70,7 +81,7 @@ def test_a_claim_that_raises_is_no_claim(clean):
     assert mb.claimant(_defect()) is None
 
 
-def test_the_gap_operation_is_registered_by_its_provider(monkeypatch):
+def test_the_gap_operation_is_registered_by_its_provider(fresh, monkeypatch):
     monkeypatch.setattr(rcfg, "CAD_REPAIR_RESOLVE_SUB_MESH_GAP", True)
     names = [e.name for e in mb.registered()]
     assert "resolve_sub_mesh_gap" in names
@@ -84,3 +95,21 @@ def test_the_gap_operation_is_registered_by_its_provider(monkeypatch):
                                     stage="3d"))
     monkeypatch.setattr(rcfg, "CAD_REPAIR_RESOLVE_SUB_MESH_GAP", False)
     assert "resolve_sub_mesh_gap" not in [e.name for e in mb.registered()]
+
+
+def test_registration_runs_the_hooks_once_and_twice_is_harmless(fresh):
+    from meshpipeline.cad.repair import gap_split
+
+    mb.registered(enabled_only=False)
+    gap_split.register_meshability()            # a second run of the hook: idempotent
+    assert [e.name for e in mb.registered(enabled_only=False)] == ["resolve_sub_mesh_gap"]
+    assert mb.load_failures() == ()
+
+
+def test_a_broken_provider_is_reported_not_only_logged(fresh, monkeypatch):
+    monkeypatch.setattr(mb, "PROVIDERS", ("meshpipeline.cad.repair.no_such_module:hook",
+                                          "meshpipeline.cad.repair.gap_split:register_meshability"))
+    names = [e.name for e in mb.registered(enabled_only=False)]
+    assert names == ["resolve_sub_mesh_gap"]
+    (failure,) = mb.load_failures()
+    assert failure[0].startswith("meshpipeline.cad.repair.no_such_module")

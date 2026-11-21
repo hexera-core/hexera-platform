@@ -9,8 +9,11 @@
 #                    each provider module in `PROVIDERS` (which registers its own entries).
 """The meshability pass's operation registry.
 
-THE CONTRACT, for a lane adding an operation. Register a `MeshabilityOp` from your own module and
-add that module to `PROVIDERS`. The entry promises:
+THE CONTRACT, for a lane adding an operation. Write a function in your own module that calls
+`register(MeshabilityOp(...))`, and add `"your.module:that_function"` to `PROVIDERS`. Do NOT call
+it at import: `_load()` is the only path, so registration never depends on import order and a
+module executed twice (`python -m` plus a normal import) never registers twice. The entry
+promises:
 
   - `claims(defect)` is PURE and CHEAP: it reads the defect's code, entity and `measurements`
     (e.g. `located_by`, `clash_kind`, `clash_gap_mm`, `stage`) and touches no kernel. True means
@@ -37,11 +40,11 @@ from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
-#: THE MODULES THAT REGISTER MESHABILITY OPERATIONS, imported (once, in this order) the first time
-#: the registry is read. A lane adds its module here; registration therefore never depends on who
-#: happened to import what first.
+#: THE REGISTRATION HOOKS, `"module:function"`, called once each, in this order, the first time
+#: the registry is read. The ONLY way an entry is registered: providers do not self-register at
+#: import, so who imported what first never matters.
 PROVIDERS: tuple[str, ...] = (
-    "meshpipeline.cad.repair.gap_split",
+    "meshpipeline.cad.repair.gap_split:register_meshability",
 )
 
 
@@ -67,30 +70,57 @@ class MeshabilityOp:
 
 _REGISTRY: dict[str, MeshabilityOp] = {}
 _loaded = False
+_loading = False
+#: `(provider, error)` for every hook that failed, so the pass can REPORT a smaller catalogue
+#: rather than let "nothing claims this defect" read like "no operation exists for it".
+_FAILURES: list[tuple[str, str]] = []
+
+
+def _identity(entry: MeshabilityOp) -> tuple:
+    # THE FIELDS THAT IDENTIFY AN ENTRY. Not the callables: a frozen record holding lambdas is
+    # never `==` a rebuilt one, so comparing whole records turned an idempotent re-registration
+    # into an error (lane A's review of #524).
+    return (entry.name, entry.rungs, entry.priority, entry.lane)
 
 
 def register(entry: MeshabilityOp) -> MeshabilityOp:
-    """Add `entry`. Re-registering the SAME entry is a no-op; a different one under a taken name
-    raises, because two operations answering to one ledger key would corrupt the run history."""
+    """Add `entry`, or return the held one if an entry with the same identity (name, rungs,
+    priority, lane) is already registered. A DIFFERENT entry under a taken name raises: two
+    operations answering to one ledger key would corrupt the run history."""
     if entry.rungs < 1:
         raise ValueError(f"{entry.name}: rungs must be at least 1")
     held = _REGISTRY.get(entry.name)
-    if held is not None and held != entry:
-        raise ValueError(f"meshability op {entry.name!r} is already registered differently")
+    if held is not None:
+        if _identity(held) != _identity(entry):
+            raise ValueError(f"meshability op {entry.name!r} is already registered differently")
+        return held
     _REGISTRY[entry.name] = entry
     return entry
 
 
 def _load() -> None:
-    global _loaded
-    if _loaded:
+    global _loaded, _loading
+    if _loaded or _loading:
         return
+    _loading = True
+    try:
+        for hook in PROVIDERS:
+            module, _, function = hook.partition(":")
+            try:
+                getattr(importlib.import_module(module), function)()
+            except Exception as exc:  # noqa: BLE001 - one broken provider must not hide the others
+                logger.warning("meshability: provider %s did not load (%s)", hook, exc)
+                _FAILURES.append((hook, f"{type(exc).__name__}: {exc}"))
+    finally:
+        _loading = False
+    # SET ONLY AFTER EVERY HOOK RAN, so a read during loading never caches a partial registry.
     _loaded = True
-    for module in PROVIDERS:
-        try:
-            importlib.import_module(module)
-        except Exception as exc:  # noqa: BLE001 - one broken provider must not hide the others
-            logger.warning("meshability: provider %s did not load (%s)", module, exc)
+
+
+def load_failures() -> tuple[tuple[str, str], ...]:
+    """Every registration hook that failed, as `(provider, error)` - for the pass's report."""
+    _load()
+    return tuple(_FAILURES)
 
 
 def registered(*, enabled_only: bool = True) -> tuple[MeshabilityOp, ...]:
