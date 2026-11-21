@@ -23,7 +23,6 @@ def _load(name: str, rel: str):
 
 
 rc = _load("repair_corpus_meshability_under_test", "devtools/validation/repair_corpus.py")
-mp = _load("meshability_probe_under_test", "devtools/validation/meshability_probe.py")
 
 
 def _setup(tmp_path: Path, *, returned: bytes | None, hints: dict | None = None,
@@ -39,28 +38,47 @@ def _setup(tmp_path: Path, *, returned: bytes | None, hints: dict | None = None,
             old = time.time() - 3600
             os.utime(written, (old, old))
         if hints is not None:
-            Path(f"{written}.mesh-hints.json").write_text(json.dumps(hints))
+            import hashlib
+            doc = {"step": {"sha256": hashlib.sha256(returned).hexdigest()},
+                   "diagonal_mm": 100.0, **hints}
+            Path(f"{written}.mesh-hints.json").write_text(json.dumps(doc))
     return upload, scratch
 
 
+class FakeHints:
+    """Stands in for lane G's cad/repair/mesh_hints (read_hints only)."""
+
+    @staticmethod
+    def read_hints(path):
+        doc = json.loads(Path(path).read_text())
+        if doc.get("schema") != "crs-mesh-hints/1":
+            raise ValueError("not a crs-mesh-hints/1 sidecar")
+        return doc
+
+
 def _score(row, upload, scratch, *, default=True, gmsh_default=False, hinted=True,
-           before_gd=False, monkeypatch=None):
+           before_gd=False, monkeypatch=None, hint_quality=None):
     calls = []
 
-    def extra(path, *, diagonal_mm, mode, hints=None, budget_s):
+    def extra(path, *, diagonal_mm, mode, budget_s):
         calls.append((Path(path).name, mode))
-        if mode == "gmsh_default":
-            return {"meshed": before_gd if Path(path).name == "part.step" else gmsh_default}
-        return {"meshed": hinted, "kind": "" if hinted else "overlapping_facets"}
+        return {"meshed": before_gd if Path(path).name == "part.step" else gmsh_default}
 
     def default_probe(path, *, diagonal_mm, budget_s):
         calls.append((Path(path).name, "default"))
         return SimpleNamespace(meshed=default, failure=None if default
                                else SimpleNamespace(kind="overlapping_facets"))
 
+    def hinted_probe(path, *, diagonal_mm, hints, quality, budget_s):
+        calls.append((Path(path).name, "hints"))
+        return SimpleNamespace(meshed=hinted, hints_applied=len(hints), hints_unmapped=(),
+                               quality=dict(hint_quality or {}),
+                               failure=None if hinted else SimpleNamespace(kind="overlapping_facets"))
+
     monkeypatch.setattr(rc, "_diagonal_of", lambda p: 100.0)
     rc._score_returned(row, upload, scratch, since=time.time() - 60, extra=extra,
-                       default_probe=default_probe, inspect=lambda p: {"valid": True})
+                       default_probe=default_probe, inspect=lambda p: {"valid": True},
+                       hints_mod=FakeHints, hinted_probe=hinted_probe)
     return calls
 
 
@@ -99,8 +117,10 @@ def test_pass_supplied_source_wins(tmp_path, monkeypatch):
 
 
 def test_three_verdicts_stay_apart_and_hints_add(tmp_path, monkeypatch):
-    hints = {"schema": "crs-mesh-hints/1", "units": "mm",
-             "faces": [{"face": 3, "fingerprint": "face:ab", "size_mm": 0.2, "why": "gap"}]}
+    hints = {"schema": "crs-mesh-hints/1", "units": "mm", "status": "verified", "attempts": 2,
+             "faces": [{"face": 3, "size_mm": 0.2, "why": "sub_mesh_gap",
+                        "fingerprint": {"surface": "Cylinder", "area_mm2": 4.0,
+                                        "centroid": [0, 0, 0], "bbox": [0, 0, 0, 1, 1, 1]}}]}
     upload, scratch = _setup(tmp_path, returned=b"REPAIRED", hints=hints)
     row = {"outcome": "refused", "meshes_before": False, "valid_before": True}
     _score(row, upload, scratch, default=False, gmsh_default=False, hinted=True,
@@ -180,39 +200,42 @@ def test_pass_rows_copied_only_when_present():
         "meshability_pass": [], "delivery_source": "passthrough"}
 
 
-def test_hints_schema_is_checked(tmp_path):
-    good = tmp_path / "a.json"
-    good.write_text(json.dumps({"schema": "crs-mesh-hints/1",
-                                "faces": [{"face": 2, "size_mm": 0.5}], "face_count": 9}))
-    assert mp.load_hints(good) == {"faces": [{"face": 2, "size_mm": 0.5}],
-                                   "global_max_mm": None, "face_count": 9}
-    for bad in ({"schema": "other", "faces": []},
-                {"schema": "crs-mesh-hints/1", "faces": [{"face": 0, "size_mm": 1}]},
-                {"schema": "crs-mesh-hints/1", "faces": [{"face": 1, "size_mm": -1}]},
-                {"schema": "crs-mesh-hints/1"}):
-        p = tmp_path / "b.json"
-        p.write_text(json.dumps(bad))
-        assert mp.load_hints(p) is None
-    assert mp.load_hints(tmp_path / "missing.json") is None
-    assert mp.hints_path(Path("/x/y.step")) == Path("/x/y.step.mesh-hints.json")
+def test_hints_need_lane_gs_module_and_matching_bytes(tmp_path, monkeypatch):
+    hints = {"schema": "crs-mesh-hints/1", "faces": [{"face": 1, "size_mm": 0.3,
+                                                      "fingerprint": {}}]}
+    upload, scratch = _setup(tmp_path, returned=b"REPAIRED", hints=hints)
+    row = {"outcome": "refused", "meshes_before": False}
+    monkeypatch.setattr(rc, "_diagonal_of", lambda p: 100.0)
+    rc._score_returned(row, upload, scratch, since=time.time() - 60,
+                       extra=lambda *a, **k: {"meshed": False},
+                       default_probe=lambda p, **k: SimpleNamespace(
+                           meshed=False, failure=SimpleNamespace(kind="x")),
+                       inspect=lambda p: {"valid": True}, hints_mod=None,
+                       hinted_probe=lambda *a, **k: 1 / 0)
+    # no lane G module in this build: reported, never applied by a second implementation
+    assert row["meshes_after_hints"] is None and row["returned_step"]["hints"] == "no_consumer"
+    # a sidecar for other bytes is stale
+    side = scratch / "part-repaired.step.mesh-hints.json"
+    doc = json.loads(side.read_text())
+    doc["step"]["sha256"] = "0" * 64
+    side.write_text(json.dumps(doc))
+    row2 = {"outcome": "refused", "meshes_before": False}
+    rc._score_returned(row2, upload, scratch, since=time.time() - 60,
+                       extra=lambda *a, **k: {"meshed": False},
+                       default_probe=lambda p, **k: SimpleNamespace(
+                           meshed=False, failure=SimpleNamespace(kind="x")),
+                       inspect=lambda p: {"valid": True}, hints_mod=FakeHints,
+                       hinted_probe=lambda *a, **k: 1 / 0)
+    assert row2["returned_step"]["hints"] == "stale" and row2["meshes_after_hints"] is None
 
 
 def _hinted_row(tmp_path, monkeypatch, quality, attempts=3):
-    hints = {"schema": "crs-mesh-hints/1", "attempts": attempts,
-             "faces": [{"face": 1, "size_mm": 0.3}]}
+    hints = {"schema": "crs-mesh-hints/1", "attempts": attempts, "status": "verified",
+             "faces": [{"face": 1, "size_mm": 0.3, "fingerprint": {}}]}
     upload, scratch = _setup(tmp_path, returned=b"REPAIRED", hints=hints)
     row = {"outcome": "refused", "meshes_before": False, "valid_before": True}
-
-    def extra(path, *, diagonal_mm, mode, hints=None, budget_s):
-        if mode == "hints":
-            return {"meshed": True, "kind": "", "quality": dict(quality)}
-        return {"meshed": False}
-
-    monkeypatch.setattr(rc, "_diagonal_of", lambda p: 100.0)
-    rc._score_returned(row, upload, scratch, since=time.time() - 60, extra=extra,
-                       default_probe=lambda p, **k: SimpleNamespace(
-                           meshed=False, failure=SimpleNamespace(kind="overlapping_facets")),
-                       inspect=lambda p: {"valid": True})
+    _score(row, upload, scratch, default=False, hinted=True, hint_quality=quality,
+           monkeypatch=monkeypatch)
     return row
 
 
@@ -221,6 +244,8 @@ def test_hinted_quality_is_recorded_with_attempts(tmp_path, monkeypatch):
                                                "min_gamma": 0.05, "min_edge_mm": 0.01})
     assert row["meshes_after_hints"] is True
     assert row["mesh_quality_after_hints"]["attempts"] == 3
+    assert row["mesh_quality_after_hints"]["hints_applied"] == 1
+    assert row["mesh_quality_after_hints"]["hint_status"] == "verified"
     s = rc.meshability_summary([row])
     assert s["hints_over_element_cap"] == 1 and s["hints_degenerate"] == 0
     assert s["hints_quality"] == {"files": 1, "worst_min_sicn": 0.12, "worst_min_gamma": 0.05,

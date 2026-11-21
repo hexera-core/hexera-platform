@@ -868,7 +868,10 @@ def _tolerant_delivery(row: dict, path: Path, scratch: Path, *, probe=None) -> N
 #                                the probe every wave since wave 1 was scored on;
 #   meshes_after_gmsh_default  - gmsh with no size setting at all (what a customer gets out of
 #                                the box), with its own before-verdict on the upload;
-#   meshes_after_hints         - the headline's base plus the repair's mesh-size hints sidecar.
+#   meshes_after_hints         - the repair's crs-mesh-hints/1 sidecar applied by LANE G'S code
+#                                (cad/repair/mesh_hints via mesh_probe.probe_file(hints=)), at the
+#                                sidecar's own diagonal/40 - the one implementation, so this verdict
+#                                is the one lane G measured.
 #                                Hints only ever ADD to a returned STEP; with no STEP there is no
 #                                hinted verdict.
 # A readable file with no returned STEP is a BUG, counted as `no_returned_step`.
@@ -924,17 +927,67 @@ def meshed_by(row: dict) -> dict | None:
     return {"by": "unattributed"}
 
 
+HINTS_SUFFIX = ".mesh-hints.json"
+
+
+def _mesh_hints():
+    """Lane G's hints module (cad/repair/mesh_hints.py: the ONE implementation of reading a
+    crs-mesh-hints/1 sidecar and applying it in gmsh), or None on a build without it."""
+    try:
+        from meshpipeline.cad.repair import mesh_hints
+    except ImportError:
+        return None
+    return mesh_hints
+
+
+def _hinted(written: Path, *, hints_mod, hinted_probe) -> dict:
+    """The hinted verdict on the returned STEP, read and applied by lane G's code only.
+    {"status": none|no_consumer|unreadable|stale|empty|probed, ...}."""
+    sidecar = Path(f"{written}{HINTS_SUFFIX}")
+    if not sidecar.is_file():
+        return {"status": "none"}
+    if hints_mod is None:
+        return {"status": "no_consumer"}
+    try:
+        doc = hints_mod.read_hints(sidecar)
+    except (OSError, ValueError) as exc:
+        return {"status": "unreadable", "note": str(exc)[:200]}
+    if (doc.get("step") or {}).get("sha256") != _sha256_file(written):
+        return {"status": "stale", "note": "sidecar is for different STEP bytes"}
+    faces = doc.get("faces") or []
+    meta = {"attempts": doc.get("attempts"), "hint_status": doc.get("status"),
+            "faces": len(faces), "unplaced_defects": len(doc.get("unplaced_defects") or [])}
+    if not faces:
+        return {"status": "empty", **meta}
+    diagonal = float(doc.get("diagonal_mm") or 0.0)
+    if diagonal <= 0.0:
+        return {"status": "unreadable", "note": "sidecar has no diagonal_mm", **meta}
+    result = hinted_probe(written, diagonal_mm=diagonal, hints=faces, quality=True,
+                          budget_s=MESH_PROBE_BUDGET_S)
+    meshed, kind = _verdict(result)
+    return {"status": "probed", "meshed": meshed, "kind": kind,
+            "quality": dict(getattr(result, "quality", None) or {}),
+            "applied": int(getattr(result, "hints_applied", 0) or 0),
+            "unmapped": len(getattr(result, "hints_unmapped", ()) or ()), **meta}
+
+
 def _score_returned(row: dict, path: Path, scratch: Path, *, since: float,
-                    extra=None, default_probe=None, inspect=None) -> None:
+                    extra=None, default_probe=None, inspect=None, hints_mod=None,
+                    hinted_probe=None) -> None:
     """Add the meshability keys to `row` (see the block comment above). `since` is the wall time
     the file's run started: a `-repaired.step` older than it is a stale file, not a return.
-    `extra`, `default_probe` and `inspect` are test seams (meshability_probe.probe,
-    mesh_probe.probe_file, _inspect)."""
+    `extra`, `default_probe`, `inspect`, `hints_mod` and `hinted_probe` are test seams
+    (meshability_probe.probe, mesh_probe.probe_file, _inspect, cad/repair/mesh_hints,
+    mesh_probe.probe_file with hints=)."""
     if row.get("outcome") in ("unreadable", CRASHED):
         return
     if extra is None:
         extra = _load_sibling("meshability_probe").probe
-    hints_mod = _load_sibling("meshability_probe")
+    if hints_mod is None:
+        hints_mod = _mesh_hints()
+    if hinted_probe is None:
+        from meshpipeline.cad.repair import mesh_probe as _mp
+        hinted_probe = _mp.probe_file
     if default_probe is None:
         from meshpipeline.cad.repair import mesh_probe
         default_probe = mesh_probe.probe_file
@@ -966,12 +1019,10 @@ def _score_returned(row: dict, path: Path, scratch: Path, *, since: float,
                  row["valid_after"] if "valid_after" in row else inspect(written)["valid"])
     except Exception:  # noqa: BLE001 - an unreadable return is invalid
         valid = False
-    hints_file = hints_mod.hints_path(written)
-    hints = hints_mod.load_hints(hints_file) if hints_file.is_file() else None
+    hinted = _hinted(written, hints_mod=hints_mod, hinted_probe=hinted_probe)
     row["returned_step"] = {"present": True, "source": source, "sha256": sha,
                             "valid": None if valid is None else bool(valid),
-                            "hints": ("ok" if hints is not None else
-                                      "unreadable" if hints_file.is_file() else "none")}
+                            "hints": "ok" if hinted["status"] == "probed" else hinted["status"]}
     if source == "untouched" and "meshes_before" in row:
         # The returned file IS the upload: its before-verdicts are its after-verdicts.
         ok, kind = bool(row["meshes_before"]), str(row.get("mesh_kind_before") or "")
@@ -984,21 +1035,21 @@ def _score_returned(row: dict, path: Path, scratch: Path, *, since: float,
     gd = (before_gd if source == "untouched" else
           extra(written, diagonal_mm=diagonal, mode="gmsh_default", budget_s=MESH_PROBE_BUDGET_S))
     row["meshes_after_gmsh_default"] = bool(gd.get("meshed"))
-    if hints is not None:
-        hv = extra(written, diagonal_mm=diagonal, mode="hints", hints=hints,
-                   budget_s=MESH_PROBE_BUDGET_S)
-        quality = dict(hv.get("quality") or {})
-        quality["attempts"] = hints.get("attempts")
+    if hinted["status"] == "probed":
+        quality = {**hinted["quality"], "attempts": hinted.get("attempts"),
+                   "hint_status": hinted.get("hint_status"), "hints_applied": hinted["applied"],
+                   "hints_unmapped": hinted["unmapped"], "hint_faces": hinted["faces"]}
         # AN INVERTED OR DEGENERATE MESH IS NOT A MESH: min SICN <= 0 fails the hinted verdict, and
         # the reason says so. Size is reported, never judged here (summary: over_element_cap).
-        degenerate = bool(hv.get("meshed")) and (quality.get("min_sicn") is not None
-                                                 and quality["min_sicn"] <= 0.0)
-        row["meshes_after_hints"] = bool(hv.get("meshed")) and not degenerate
-        row["mesh_kind_after_hints"] = ("degenerate" if degenerate
-                                        else str(hv.get("kind") or ""))
+        degenerate = hinted["meshed"] and (quality.get("min_sicn") is not None
+                                           and float(quality["min_sicn"]) <= 0.0)
+        row["meshes_after_hints"] = bool(hinted["meshed"]) and not degenerate
+        row["mesh_kind_after_hints"] = "degenerate" if degenerate else hinted["kind"]
         row["mesh_quality_after_hints"] = quality
     else:
         row["meshes_after_hints"] = None
+        if hinted["status"] != "none":
+            row["mesh_kind_after_hints"] = hinted["status"]
     row["valid_to_invalid"] = bool(row.get("valid_before") is True and valid is False)
     credit = meshed_by(row)
     if credit is not None:
