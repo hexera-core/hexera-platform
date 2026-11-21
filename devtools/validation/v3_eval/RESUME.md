@@ -360,3 +360,103 @@ Agents neither submit jobs to shared dev nor read its `admin-api-key`. Steps 1, 
    - a "Per-turn trace (N lines, jobs/$J/investigation-trace-….jsonl)" expander holding the JSONL.
 
    A second panel, "Repair investigation after the mesh failed", appears only if a handback ran. For comparison, on crsv3 this part gave one row: region 15, `concluded (escalate)`, 0 / 0 edits.
+
+## Lane A: every uninterruptible kernel call is bounded (2026-11-20)
+
+> **Status: pending, not in main at this revision.** The guard, `occ_distance`, `bounded_child`,
+> `PARTNER_UNMEASURED` and the per-body volumes described here land with the open lane A PRs
+> (#513, #516, #517, #521). Read this section as the design those PRs carry, not as protection
+> main already has.
+
+Three worker hangs in one night - the clash gap, the investigator's distance, lane H's
+`gap_split` - were one bug with three faces: an OCC call that cannot be interrupted, running in
+the parent. **A deadline checked BETWEEN calls does not bound the call.** The clock written around
+such a call is decoration; on a worker it hangs the job rather than one tool call.
+
+**The standing guard** (`tests/unit/cad/test_repair_occ_bounded_guard.py`) AST-scans
+`cad/repair/` for the uninterruptible families and fails on a new call site. Nothing is declared
+to it: a module says which function is a child interpreter in its `if __name__ == "__main__"`
+block, `bounded_child.KERNELS` is read from source, and child-side is the TRANSITIVE closure over
+module-local calls - because the kernel call is rarely in the entry point (lane H's chain is
+`_child_main` -> `_work` -> `partners` -> `_distance`). A lane that writes a new child or
+registers a new kernel needs no edit here.
+
+It earned its keep three times. Two sites the manual audit missed (`investigator_tools.
+_thickness_kernel`, bounded only by `localize._bounded`'s FORK, and `spotlight._normal_of_face`);
+and `operations.apply` calling `_common_volume` DIRECTLY while the registry said it was bounded -
+**registering a kernel is not bounding it, the call site is.** `KNOWN_UNBOUNDED` and
+`KNOWN_DIRECT_CALLS` may only SHRINK; bounding a call means deleting its entry.
+
+**Two rules for whoever bounds the next one.**
+
+1. *A measurement reports "unmeasured" and the caller carries on; an OPERATION must DECLINE.*
+   `fragment_bodies` rebuilds two solids on the strength of its answers, so a child that was
+   killed gives None and the operation declines - never the best of a partial measurement.
+   `PARTNER_UNMEASURED` is deliberately not `None`: no candidate is geometry (`no_partner`), an
+   unfinished search is ignorance, and only the second is a reason to stop.
+2. *An answer that is only correct by SHARING TOPOLOGY WITH SHAPES THAT STAYED IN THE PARENT
+   cannot be computed elsewhere and spliced back by identity.* When the fuse cuts one body and
+   leaves the other alone, the conformal face belongs to the UNTOUCHED body - free in-process,
+   impossible across a boundary, and splicing only the modified body left ZERO shared faces. Both
+   bodies now come back from the child's one builder. Either everything that must share returns
+   together, or the operation is not a candidate for bounding.
+
+**Two fixtures too simple to hold the bug.** The symmetric two-box fuse (both bodies cut, images
+interchangeable) hid the sharing loss completely, and a single-op equivalence test hid a defect
+that only appears across a SEQUENCE (the scan-guard revert, PR #512). A new test that passes
+immediately is wrong until it has been seen to fail.
+
+**Measured cost of bounding.** 32 deviation samples on a 2.7 MB part: 0.58 s in the parent
+against 2.09 s through a child, of which 0.74 s is interpreter start-up. Paid per tournament fold.
+A kept child would take most of it back, which is where `bounded_child`'s dispatcher points.
+
+**Per-body volumes, and why the aggregate lies.** `Measure.solid_volumes` plus `caps.solid_change`
+(appeared / disappeared / split, `known: False` when unmeasured), shown to the reviewer and
+counted per wave by `collect.body_changes`. It settled 0051_00513292, where a committed
+`sew_faces` took solids 7 -> 8 with the volume moving +0.942 mm3: all seven original bodies
+survive to four decimal places and a NEW 3601.17 mm3 body appeared. **The aggregate understated
+the event about 3800-fold**, because an open shell's faces already contribute a NUMBER to the
+volume integral rather than a volume - so the volume-comparison waiver on a solid gain is
+load-bearing, not tolerated. No refusal was added: a split has never been observed, and the wave
+count is the condition for adding one.
+
+**Done through row 6.** Every distance and Boolean call in the repair path runs in a child.
+`mesh_probe._clash_gap` was deleted rather than bounded: #503 replaced it with `_clash_gaps` and
+left the single-pair version behind, called by nothing, so the guard row had been reading as debt
+for a hang that could not happen.
+
+**PARKED, first post-merge infra item: a KEPT child.** Five call sites remain in the parent - the
+four `BRepCheck_Analyzer` ones (`caps.measure`, `localize_scan`, and each operation's validity
+check) and `spotlight._normal_of_face` (GeomAPI projection). Bounding the analyzer PER CALL is
+the wrong trade: a child costs 0.74 s of interpreter start-up before it measures anything, the
+analyzer runs several times per operation, and the deviation batch amortised that start-up over
+32 samples and still went 0.58 s -> 2.09 s. Against that, NONE of the three observed hangs was the
+analyzer - they were a distance, a Boolean and a gap. The fix that makes closing it cheap is
+`bounded_child` STARTED ONCE AND REUSED, which also takes back most of the deviation cost; it
+needs crash recovery and no state leaking between jobs, so it is infrastructure with its own
+lifecycle risks for an exposure never measured. Park it, with the spotlight site, until something
+observes an analyzer hang or the scan-cost budget needs the start-up back.
+
+**Open, unowned.** Better location of unplaced defects (`regions_before {'unknown': 628}`) is the
+scan-cost lever.
+
+**Follow-up: there is NO command to regenerate the settings roster.** Two tests fail when the
+generated block in `docs/reference/configuration.md` goes stale
+(`test_configuration_documentation`, `test_configuration_authority`), and
+`inventory.py --reference` only PRINTS to stdout. Adding a setting therefore reds CI with no
+documented way to fix it; the fix is to splice `render_reference()` between `REFERENCE_BEGIN` and
+`REFERENCE_END` (and the same for the removed and dev-environment blocks). A `make
+settings-roster` target would be five lines and would stop this catching the next person.
+
+**Parked: the whole-shape aim** (`laneA/whole-shape-aim`, `CAD_REPAIR_WHOLE_SHAPE_AIM`,
+default off). A failure gmsh located NOWHERE is addressable as `shape:<code>@<stage>` - from the
+classified kind and the stage, never from gmsh's message, whose coordinates and surface numbers
+move between runs on the same geometry and would let a reword read as a cure. The delivery
+conditions are built and tested, and each REPLACES the scoped proof that region cannot have: the
+delivered part must mesh (never "the named defect disappeared" - a whole-shape fix can change the
+failure's KIND, so the coarse name vanishes while the part is no better), the deviation must be
+MEASURED (a gate here, evidence everywhere else), and the reviewer must be live. That last one was
+a hole I had left: `review_tier` refusing to auto-accept is not the same as the package being
+reviewed, and with `CAD_REPAIR_PACKAGE_REVIEW` off an unscoped claim would have committed with no
+judgement at all. What remains unbuilt is the `whole_shape_aim` label and the authors proposing
+for that region.
