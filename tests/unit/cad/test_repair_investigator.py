@@ -894,7 +894,7 @@ def test_the_live_prompt_tells_the_model_to_try_things_and_aim_at_the_mesh_failu
     import meshpipeline.settings.cad_repair as settings
 
     def rule(touching: float) -> str:
-        return inv.AGGRESSIVE_RULE.format(touching=touching)
+        return inv.AGGRESSIVE_RULE.format(touching=touching, gap_advice=inv._gap_advice())
 
     from meshpipeline.cad.repair.region_loop import _touching_margin_mm
 
@@ -1030,3 +1030,50 @@ def test_the_investigation_is_told_this_part_s_threshold(wired, monkeypatch):
 
     system = model.rounds[0]["messages"][0]["content"]
     assert f"{_touching_margin_mm(ORIGINAL.diagonal_mm):g} mm" in system
+
+
+# --- a sub-element gap is ACTIONABLE once an op can split it -----------------------------------
+# My prompt told the model to prefer `mesher_side` on any gap above the touching margin. Lane H's
+# `resolve_sub_mesh_gap` exists to fix exactly those - it splits two faces of one solid that sit
+# closer than the mesh size along their own iso-curves - and locally repairs 4 of 16 gap files. A
+# prompt that says "give up on gaps" would stop the model reaching the one op that fixes them.
+def _gap_sentence(prompt: str) -> str:
+    return next(line for line in prompt.splitlines() if "clash_gap_mm` ABOVE" in line
+                or "ABOVE" in line and "clash_gap_mm" in line)
+
+
+def test_the_prompt_sends_a_gap_to_the_op_that_splits_it_when_there_is_one(monkeypatch):
+    import meshpipeline.settings.cad_repair as settings
+
+    monkeypatch.setattr(settings, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "live", raising=False)
+    monkeypatch.setattr(inv, "_gap_op_name", lambda: "resolve_sub_mesh_gap", raising=False)
+
+    prompt = inv.system_prompt()
+
+    assert "resolve_sub_mesh_gap" in prompt
+    # It must not ALSO tell the model to give up on the same reading.
+    assert "prefer `mesher_side` over spending turns" not in prompt
+
+
+def test_the_prompt_still_says_mesher_side_when_no_op_can_split_a_gap(monkeypatch):
+    """With the op absent - its flag off, or the deployment without it - a gap really is the
+    mesher's problem, and the advice has to go back to what it was."""
+    import meshpipeline.settings.cad_repair as settings
+
+    monkeypatch.setattr(settings, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "live", raising=False)
+    monkeypatch.setattr(inv, "_gap_op_name", lambda: None, raising=False)
+
+    prompt = inv.system_prompt()
+
+    assert "resolve_sub_mesh_gap" not in prompt
+    assert "mesher_side" in prompt
+
+
+def test_the_gap_op_is_named_from_the_active_catalogue():
+    """Read from the catalogue, never a literal: an op the deployment does not build must not be
+    advertised, and a rename must not leave the prompt pointing at a name nobody answers."""
+    from meshpipeline.cad.repair import operations
+
+    names = {op.name for op in operations.catalogue()}
+    found = inv._gap_op_name()
+    assert found is None or found in names
