@@ -24,6 +24,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -85,12 +86,16 @@ def distance_between(a, b, *, budget_s: float) -> dict:
         budget = 0.0
     if not budget > 0.0:
         return {**UNMEASURED, "distance_status": "unmeasured: no budget"}
+    deadline = time.monotonic() + budget      # the budget covers the writes too, not just the child
     try:
         with tempfile.TemporaryDirectory(prefix="occ-distance-") as tmp:
             first, second = Path(tmp) / "a.brep", Path(tmp) / "b.brep"
             _write_brep(a, first)
             _write_brep(b, second)
-            return _run_child(first, second, budget)
+            remaining = deadline - time.monotonic()
+            if not remaining > 0.0:
+                return {**UNMEASURED, "distance_status": "unmeasured: budget_spent"}
+            return _run_child(first, second, remaining)
     except Exception as exc:  # noqa: BLE001 - a measurement may never break the tool that asked
         return {**UNMEASURED, "distance_status": f"unmeasured: {type(exc).__name__}"}
 
