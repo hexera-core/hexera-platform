@@ -1065,8 +1065,12 @@ def test_the_prompt_still_says_mesher_side_when_no_op_can_split_a_gap(monkeypatc
 
     prompt = inv.system_prompt()
 
-    assert "resolve_sub_mesh_gap" not in prompt
-    assert "mesher_side" in prompt
+    # The GAP ADVICE stops naming the op. (The catalogue listing elsewhere in the prompt is built
+    # from the deployment's catalogue, which this test does not patch - since resolve_sub_mesh_gap
+    # landed (#509) it is listed there, and that is not the advice under test.)
+    advice = _gap_sentence(prompt)
+    assert "resolve_sub_mesh_gap" not in advice
+    assert "mesher_side" in advice
 
 
 def test_the_gap_op_is_named_from_the_active_catalogue():
