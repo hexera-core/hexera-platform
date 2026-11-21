@@ -907,8 +907,8 @@ def _disposition(regions_run) -> dict:
 
 
 def _delivering_in(source: Path):
-    """`gap_split.delivering_in` the unit `_write_step` will be handed for `source`."""
-    from meshpipeline.cad.repair.gap_split import delivering_in
+    """`delivery_check.delivering_in` the unit `_write_step` will be handed for `source`."""
+    from meshpipeline.cad.repair.delivery_check import delivering_in
     from meshpipeline.cad.unit_evidence import parser_applied_unit
 
     try:

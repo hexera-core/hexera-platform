@@ -47,6 +47,7 @@ V3_MODULES = [
     "cad/repair/ending.py",
     "cad/repair/gap_split.py",
     "cad/repair/meshability.py",
+    "cad/repair/delivery_check.py",
     "cad/repair/bounded_child.py",
 ]
 
