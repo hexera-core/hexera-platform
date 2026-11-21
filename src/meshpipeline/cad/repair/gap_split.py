@@ -19,6 +19,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -397,10 +398,15 @@ class ResolveSubMeshGap:
 
     name = NAME
 
-    def __init__(self, sag_share: float = SAG_SHARE) -> None:
+    def __init__(self, sag_share: float = SAG_SHARE, budget_s: float | None = None) -> None:
         #: The share of the gap a chord may sag (SAG_LADDER's rung). Same NAME at every rung: the
         #: ledger and the rows count one operation, and the evidence states the rung.
         self.sag_share = float(sag_share)
+        #: The wall clock ALL of this application's kernel children may spend together - the split
+        #: and the delivered-STEP check share it - never more than KERNEL_BUDGET_S. A caller with
+        #: less time than that (the gap pre-pass's clock share) narrows it.
+        self.budget_s = (KERNEL_BUDGET_S if budget_s is None
+                         else min(KERNEL_BUDGET_S, max(float(budget_s), 0.0)))
     answers = frozenset({DefectCode.mesh_edge_through_face, DefectCode.mesh_overlapping_facets})
     #: One solid, refined but not reshaped: wider than a one-face fix, narrower than a fuse.
     scope = 6
@@ -477,8 +483,9 @@ class ResolveSubMeshGap:
         # EVERY KERNEL ALGORITHM RUNS IN A BOUNDED FRESH INTERPRETER (`_bounded`): the distances,
         # the trims, the split and the guard. In the parent, BRepExtrema held the GIL for an hour
         # on wave 6 (0054_00540003) and no clock could interrupt it.
+        deadline = time.monotonic() + self.budget_s
         answer, divided = _bounded(owner, face, diagonal_mm=diagonal, part_area_mm2=part_area,
-                                   budget_s=KERNEL_BUDGET_S, sag_share=self.sag_share)
+                                   budget_s=self.budget_s, sag_share=self.sag_share)
         measured = {k: answer[k] for k in _MEASURED_KEYS if k in answer}
         measured["sag_share"] = self.sag_share
         if answer.get("declined") or divided is None:
@@ -493,7 +500,11 @@ class ResolveSubMeshGap:
         # on 0060_00600919 a split cone face read back UnorientableShape from the written part,
         # while the same solid alone - and the upload - survive the round trip valid. So the
         # check is the whole spliced part, written and read as STEP, in a bounded child.
-        verdict = _export_check(shape, spliced, budget_s=KERNEL_BUDGET_S)
+        left = deadline - time.monotonic()
+        if left <= 0.0:
+            return declined(f"kernel_timeout (the split spent the {self.budget_s:g} s budget "
+                            "before the delivered-STEP check)", **measured)
+        verdict = _export_check(shape, spliced, budget_s=left)
         if verdict:
             return declined(verdict, **measured)
         before = _area_and_volume(shape)

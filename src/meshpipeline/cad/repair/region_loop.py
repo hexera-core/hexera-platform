@@ -524,25 +524,42 @@ def _gap_prepass(work, regions, *, remaining: Callable[[], float], reserve: floa
     tried: list[PackageVerdict] = []
     charged = len(work.log)
     region_of = {fp: region for region in regions for fp in region.fingerprints}
+    floor = max(reserve, spend_until)
+    # AIMS AND REGIONS NOT TO OFFER AGAIN (Greptile PRRT_kwDOUFq_Ps66OjT1). A package that ran no
+    # operation - refused, or escalated unrun because the region's review allowance is spent -
+    # moves no rung of the ladder (`gap_tries` reads operations), so without this the same rung
+    # was offered again until the clock share ran out.
+    unrun: set[str] = set()
+    closed: set[int] = set()
     while True:
-        if remaining() <= max(reserve, spend_until) or charged >= max_ops:
+        if remaining() <= floor or charged >= max_ops:
             break
         tries = ra.gap_tries(tuple(tried))
         # EVERY FACE'S FIRST RUNG BEFORE ANY FACE'S SECOND: a finer retry of a face that already
         # failed is the last resort, not the next thing (0051_00519054: three rungs on one doomed
         # face spent the budget its neighbour's coarse split would have fixed the part with).
         open_aims = [d for d in ra.gap_defects(work.defects())
-                     if d.fingerprint in region_of and not tries.spent(d.fingerprint)]
+                     if d.fingerprint in region_of and not tries.spent(d.fingerprint)
+                     and d.fingerprint not in unrun
+                     and region_of[d.fingerprint].index not in closed]
         aim = min(open_aims, key=lambda d: tries.rung(d.fingerprint), default=None)
         if aim is None:
             break
         region = region_of[aim.fingerprint]
-        package = ra.gap_package(region, aim, tries, original=work.original)
+        # THE PACKAGE GETS ONLY WHAT THE SHARE HAS LEFT (Greptile PRRT_kwDOUFq_Ps66OjT4): its own
+        # timeout and the operation's kernel children are both capped by it, so an attempt
+        # started near the cutoff cannot spend the walk's time or the final reserve.
+        package = ra.gap_package(region, aim, tries, original=work.original,
+                                 budget_s=remaining() - floor)
         verdict = work.try_package(_with_tolerance(package, tolerance_mm))
         out.append((region.index, verdict))
         tried.append(verdict)
         if any(op.kept for op in verdict.verdicts):
             charged += len(verdict.verdicts)
+        if not verdict.verdicts:
+            unrun.add(aim.fingerprint)
+        if verdict.status == ESCALATED and verdict.reason.startswith(REVIEW_REJECTED):
+            closed.add(int(region.index))
     return out
 
 
@@ -856,7 +873,9 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
     # seed each region's `tried`, so the walk's author sees what the pre-pass already did.
     prior: dict[int, list[PackageVerdict]] = {}
     log_before_prepass = len(work.log)
-    gap_verdicts = _gap_prepass(work, regions, remaining=remaining, reserve=reserve,
+    # THE FOCUSED WALK, not every region (Greptile PRRT_kwDOUFq_Ps66OjTe): the pre-pass commits
+    # splits, and a region reported `not_in_focus` must be left exactly as it came.
+    gap_verdicts = _gap_prepass(work, walk, remaining=remaining, reserve=reserve,
                                 tolerance_mm=tolerance_mm, max_ops=limits.max_ops)
     for region_index, verdict in gap_verdicts:
         packages.append(verdict)

@@ -225,17 +225,28 @@ def gap_defects(defects) -> tuple:
                         key=lambda d: (d.entity_index, d.code.value, d.fingerprint)))
 
 
-def gap_package(region: Region, defect, tries: GapTries, *, original: Measure) -> TargetPackage:
+def gap_package(region: Region, defect, tries: GapTries, *, original: Measure,
+                budget_s: float | None = None) -> TargetPackage:
     """The gap operation's package for one defect, at that face's rung of the ladder - built
     exactly as `rules_author` builds every package (one operation, the deployment's residual caps
-    as the predicate's allowance), so the pre-pass's packages pass the same gates."""
-    candidate = Candidate(op=_gap_op(tries, defect.fingerprint),
+    as the predicate's allowance), so the pre-pass's packages pass the same gates.
+
+    `budget_s`, given, caps both the package's own timeout and the operation's kernel children:
+    the pre-pass's share of the clock is a bound on the whole attempt, not only on starting it."""
+    op = _gap_op(tries, defect.fingerprint)
+    budget = None
+    if budget_s is not None:
+        op.budget_s = min(op.budget_s, max(float(budget_s), 0.0))
+        budget = PackageBudget(max_ops=1, timeout_s=min(float(rcfg.CAD_REPAIR_TIMEOUT_S),
+                                                        float(budget_s)),
+                               model_calls=0, deviation_mm=0.0)
+    candidate = Candidate(op=op,
                           targets=(EntityRef(entity_type=str(defect.entity_type),
                                              fingerprint=defect.fingerprint,
                                              entity_index=int(defect.entity_index),
                                              ambiguous=bool(getattr(defect, "ambiguous", False))),),
                           defect_code=defect.code, defect_fingerprint=defect.fingerprint)
-    return _package(candidate, region, original=original,
+    return _package(candidate, region, original=original, budget=budget,
                     rationale=(f"{LABEL}: gap pre-pass - {GAP_OP} at sag share "
                                f"{getattr(candidate.op, 'sag_share', 0.0):g} on a {defect.code.value} the probe "
                                "measured apart"))

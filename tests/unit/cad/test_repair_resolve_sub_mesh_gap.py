@@ -320,3 +320,48 @@ def test_the_export_check_writes_in_the_delivery_unit(monkeypatch):
     assert seen == ["mm", "m"]
     monkeypatch.setattr(gs, "_run_child", lambda args, budget: (None, "kernel_timeout (x)"))
     assert gs._export_check(object(), object(), budget_s=1.0).startswith("kernel_timeout")
+
+
+def test_the_prepass_stops_aiming_where_no_operation_ran(baseline_on):
+    """Greptile PRRT_kwDOUFq_Ps66OjT1: a package escalated unrun (the region's review allowance is
+    spent) carries no operation, so the ladder never moved and the same rung was offered again
+    until the clock share ran out. An aim whose package ran nothing is not offered again."""
+    from meshpipeline.cad.repair.session import ESCALATED, REVIEW_SPENT_REASON
+
+    class _Spent(_Work):
+        def try_package(self, package):
+            self.offered.append(package.plan[0]["op"].sag_share)
+            assert len(self.offered) < 20, "the pre-pass kept re-offering an unrun package"
+            return PackageVerdict(region_index=package.region.index, status=ESCALATED,
+                                  reason=REVIEW_SPENT_REASON)
+
+    work = _Spent((_gap_clash(),))
+    out = _prepass(work)
+    assert len(out) == 1 and work.offered == [0.25]
+
+
+def test_the_prepass_hands_each_package_only_its_own_clock_share(baseline_on):
+    """Greptile PRRT_kwDOUFq_Ps66OjT4: the share was checked only BEFORE try_package, so a package
+    started near the cutoff still ran its full configured timeout and the 90 s kernel children.
+    The package's budget and the operation's kernel budget are capped by what the share has left."""
+    work = _Work((_gap_clash(),), commit_on=1)
+    seen: list = []
+    original = work.try_package
+
+    def capture(package):
+        seen.append((package.budget.timeout_s, package.plan[0]["op"].budget_s))
+        return original(package)
+
+    work.try_package = capture
+    # left 100, reserve 10: the share is 0.4 * 90 = 36 s.
+    _prepass(work, left=100.0)
+    (timeout_s, kernel_s), = seen
+    assert 0.0 < timeout_s <= 36.0 + 1e-9 and 0.0 < kernel_s <= 36.0 + 1e-9
+
+
+def test_the_gap_operation_caps_its_kernel_children_by_its_own_budget():
+    from meshpipeline.cad.repair.gap_split import KERNEL_BUDGET_S
+
+    assert ResolveSubMeshGap().budget_s == KERNEL_BUDGET_S
+    assert ResolveSubMeshGap(budget_s=5.0).budget_s == 5.0
+    assert ResolveSubMeshGap(budget_s=500.0).budget_s == KERNEL_BUDGET_S
