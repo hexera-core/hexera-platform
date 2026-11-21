@@ -752,6 +752,8 @@ WORKER_METADATA=(
   || WORKER_METADATA+=("cad-repair-rebuild-face=${CAD_REPAIR_REBUILD_FACE}")
 [ -z "${CAD_REPAIR_CLOSE_WIRE_GAPS:-}" ] \
   || WORKER_METADATA+=("cad-repair-close-wire-gaps=${CAD_REPAIR_CLOSE_WIRE_GAPS}")
+[ -z "${CAD_REPAIR_RESOLVE_SUB_MESH_GAP:-}" ] \
+  || WORKER_METADATA+=("cad-repair-resolve-sub-mesh-gap=${CAD_REPAIR_RESOLVE_SUB_MESH_GAP}")
 [ -z "${CAD_REPAIR_TOLERANT_PROBE:-}" ] \
   || WORKER_METADATA+=("cad-repair-tolerant-probe=${CAD_REPAIR_TOLERANT_PROBE}")
 [ -z "${CAD_REPAIR_INVESTIGATOR:-}" ] \

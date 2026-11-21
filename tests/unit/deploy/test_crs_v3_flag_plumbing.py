@@ -35,6 +35,7 @@ FLAGS: dict[str, tuple[str, str]] = {
     "CAD_REPAIR_FRAGMENT_BODIES": ("cad-repair-fragment-bodies", LIVE_ONLY),
     "CAD_REPAIR_REBUILD_FACE": ("cad-repair-rebuild-face", LIVE_ONLY),
     "CAD_REPAIR_CLOSE_WIRE_GAPS": ("cad-repair-close-wire-gaps", LIVE_ONLY),
+    "CAD_REPAIR_RESOLVE_SUB_MESH_GAP": ("cad-repair-resolve-sub-mesh-gap", LIVE_ONLY),
     "CAD_REPAIR_TOLERANT_PROBE": ("cad-repair-tolerant-probe", LIVE_POSTURE),
     "CAD_REPAIR_INVESTIGATOR": ("cad-repair-investigator", CARRIED),
     # A TIER OF the review, so it is on wherever the review is - and inert until a run carries a
@@ -88,6 +89,9 @@ _VALUE = {
 }
 
 VERTEX_MOVING = ("CAD_REPAIR_REBUILD_FACE", "CAD_REPAIR_CLOSE_WIRE_GAPS")
+#: Ops that move no vertex but are never auto-accepted (review_tier.REVIEWER_ONLY_OPS): they ride
+#: with the reviewer for the same reason.
+REVIEWER_ONLY = ("CAD_REPAIR_RESOLVE_SUB_MESH_GAP",)
 
 
 def _text(rel: str) -> str:
@@ -222,7 +226,7 @@ def test_parked_postures_are_not_derived_from_crs_v3():
 
 def test_vertex_moving_ops_ride_with_the_reviewer():
     review = FLAGS["CAD_REPAIR_PACKAGE_REVIEW"][1]
-    for env in VERTEX_MOVING:
+    for env in (*VERTEX_MOVING, *REVIEWER_ONLY):
         expr = FLAGS[env][1]
         # on only when crs_v3 is exactly live ...
         assert expr.startswith("needs.target.outputs.crs_v3 == 'live' &&"), env
