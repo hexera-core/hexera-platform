@@ -1382,9 +1382,9 @@ SMALL = _defect(2, code=DefectCode.small_face)
 MIXED = (_defect(1), SMALL)
 
 
-def _aimed(fingerprint: str, op: str = "fix_small_faces") -> dict:
-    return {"op": op, "fingerprint": fingerprint, "defect_code": "small_face",
-            "status": "rolled_back"}
+def _aimed(fingerprint: str, op: str = "fix_small_faces", code: str = "") -> dict:
+    """An edit-log entry. With no `code` the aim covers the code `op` answers on that entity."""
+    return {"op": op, "fingerprint": fingerprint, "defect_code": code, "status": "rolled_back"}
 
 
 def test_mesher_side_is_refused_while_a_located_defect_was_never_aimed_at(wired, monkeypatch):
@@ -1479,4 +1479,51 @@ def test_the_rule_is_off_while_the_posture_is(wired, monkeypatch):
                             scratch=FakeScratch(), budget=Budget(tool_calls=9, model_calls=9))
 
     assert author(REGION, MIXED, ()) is None
+    assert author.investigations[-1]["conclusion"]["form"] == "mesher_side"
+
+
+def _logging_runner(clone):
+    """A tool runner whose `edit` lands in the clone's log, as the real editor's does."""
+    def run(ws, name, args, *, budget_s):
+        if name == "edit":
+            clone.edits.append({**args, "status": "rolled_back"})
+        return ok_result(name)
+    return run
+
+
+def test_an_aim_at_one_code_does_not_cover_another_code_on_the_same_entity(wired, monkeypatch):
+    """One entity may carry several codes, and `edit` picks one with `defect_code`. An aim at
+    fp1's small face says nothing about fp1's curve inconsistency, so the region may not blame
+    the mesher until that code too has been aimed at."""
+    _live(monkeypatch)
+    both = (_defect(1, code=DefectCode.small_face), _defect(1))
+    clone = FakeScratch()
+    author, _, _, _ = wired(
+        native("edit", op="fix_small_faces", fingerprint="fp1", defect_code="small_face"),
+        native("conclude", mesher_side={"mesher_problem": ["fp1"], "reason": "clean"}),
+        native("look"),
+        native("conclude", mesher_side={"mesher_problem": ["fp1"], "reason": "clean"}),
+        scratch=clone, tool=_logging_runner(clone), budget=Budget(tool_calls=9, model_calls=9))
+
+    author(REGION, both, ())
+    refused = [t for t in author.investigations[-1]["turns"]
+               if t["tool"] == "conclude" and t["ok"] is False]
+    assert refused and "curve_inconsistency" in refused[0]["error"], \
+        author.investigations[-1]["turns"]
+    assert author.verdicts == []
+
+
+def test_an_aim_with_no_code_covers_the_code_its_op_answers(wired, monkeypatch):
+    """With no `defect_code` the author aims at the code the operation answers, so that is the
+    code the aim covers - and the other one still needs its own."""
+    _live(monkeypatch)
+    both = (_defect(1, code=DefectCode.small_face), _defect(1))
+    clone = FakeScratch()
+    author, _, _, _ = wired(
+        native("edit", op="fix_small_faces", fingerprint="fp1"),
+        native("edit", op="fix_face_boundary", fingerprint="fp1"),
+        native("conclude", mesher_side={"mesher_problem": ["fp1"], "reason": "clean"}),
+        scratch=clone, tool=_logging_runner(clone), budget=Budget(tool_calls=9, model_calls=9))
+
+    assert author(REGION, both, ()) is None
     assert author.investigations[-1]["conclusion"]["form"] == "mesher_side"

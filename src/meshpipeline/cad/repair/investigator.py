@@ -732,7 +732,10 @@ class _Investigation:
         #: or was refused before the kernel. The bar for "tried" (see `_UNTRIED`), and the reason
         #: it is collected here rather than read back off the clone: an aim the author refused at
         #: plan time leaves no edit record, and it is still an aim.
-        self.aimed: set[str] = set()
+        #: Each aim is `(fingerprint, defect_code, op)`: one entity can carry several codes and an
+        #: edit aims at ONE of them, so a fingerprint alone would cover codes nobody tried. An
+        #: empty code is resolved later the way the author resolves it (`_aim_code`).
+        self.aimed: set[tuple[str, str, str]] = set()
 
     # -- the conversation ----------------------------------------------------------------------
 
@@ -1334,6 +1337,22 @@ def _answering_ops(code: object) -> list[str]:
             if code in getattr(op, "answers", frozenset())]
 
 
+def _aim_code(mark: str, code: str, op_name: str, defects: tuple) -> str:
+    """The code an aim at `mark` covered. A named `defect_code` is the code; with none, the one
+    the author picks (`model_author.plan_entry`): of the entity's codes in code order, the first
+    the operation answers, else the first."""
+    if code:
+        return _code_name(code)
+    on = sorted((d for d in defects if str(getattr(d, "fingerprint", "") or "") == mark),
+                key=lambda d: _code_name(getattr(d, "code", "")))
+    if not on:
+        return ""
+    op = next((o for o in ma.PackageGuards._catalogue(True) if o.name == op_name), None)
+    answers: frozenset = getattr(op, "answers", frozenset()) if op is not None else frozenset()
+    answered = [d for d in on if getattr(d, "code", None) in answers]
+    return _code_name(getattr((answered or on)[0], "code", ""))
+
+
 def _untried(defects: tuple, inv: _Investigation, scratch) -> list[str]:
     """`"face:abc123 small_face -> fix_small_faces"` for every LOCATED KERNEL defect of this
     region that no edit has been aimed at.
@@ -1343,17 +1362,19 @@ def _untried(defects: tuple, inv: _Investigation, scratch) -> list[str]:
     be a gate nothing can pass, and a region that cannot end honestly is worse than one that ends
     too easily - it spends its whole budget and records `budget_spent`.
     """
-    aimed = set(inv.aimed)
+    aims = set(inv.aimed)
     for edit in (getattr(scratch, "edits", ()) or ()):
-        mark = (edit.get("fingerprint") if isinstance(edit, dict)
-                else getattr(edit, "fingerprint", ""))
-        if mark:
-            aimed.add(str(mark))
+        def field(key: str, edit=edit) -> str:
+            value = edit.get(key) if isinstance(edit, dict) else getattr(edit, key, "")
+            return str(value or "")
+        if field("fingerprint"):
+            aims.add((field("fingerprint"), field("defect_code"), field("op")))
+    covered = {(mark, _aim_code(mark, code, op, defects)) for mark, code, op in aims}
     out: list[str] = []
     for defect in defects:
         code = getattr(defect, "code", None)
         mark = str(getattr(defect, "fingerprint", "") or "")
-        if not mark or mark in aimed or code in mesh_probe.MESH_CODES:
+        if not mark or (mark, _code_name(code)) in covered or code in mesh_probe.MESH_CODES:
             continue
         names = _answering_ops(code)
         if names:
@@ -1401,7 +1422,8 @@ def _answer(inv: _Investigation, ask: _Ask, result, *, reply) -> None:
     if str(ask.tool) == "edit" and isinstance(ask.args, dict):
         aim = str(ask.args.get("fingerprint") or "").strip()
         if aim:
-            inv.aimed.add(aim)
+            inv.aimed.add((aim, str(ask.args.get("defect_code") or "").strip(),
+                           str(ask.args.get("op") or "").strip()))
     payload = investigator_tools.envelope(len(inv.turns) + 1, result)
     inv.record(tool=ask.tool, args=ask.args, ok=bool(result.ok),
                error=str(result.error or ""), payload=payload,
