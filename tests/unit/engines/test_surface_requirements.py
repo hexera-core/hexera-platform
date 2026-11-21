@@ -247,6 +247,28 @@ def test_limits_alone_keep_the_thin_sheet_sizing_and_reach_every_mesh_of_it(sour
     assert len(rec["requirements"]["rows"]) == 7
 
 
+#: WALL-CLOCK FIELDS, which differ between two identical runs: the top-level stage timings and
+#: the per-pass seconds the shell quality record carries (`quality.passes_s`, rounded to 0.1 s,
+#: so a pass near a rounding edge reads 0.0 on one run and 0.1 on the next).
+_TIMINGS = ("seconds", "extract_s", "mesh_s")
+
+
+def _untimed(record: dict) -> dict:
+    """The run record without its wall-clock fields: what "the same run" must reproduce."""
+    out = {k: v for k, v in record.items() if k not in _TIMINGS}
+    if isinstance(out.get("quality"), dict):
+        out["quality"] = {k: v for k, v in out["quality"].items() if k != "passes_s"}
+    return out
+
+
+def test_untimed_ignores_only_the_wall_clock():
+    base = {"seconds": 1.0, "elements": 401, "quality": {"passes_s": [0.0, 0.2], "elements": 401}}
+    assert _untimed(base) == _untimed({**base, "seconds": 9.0,
+                                       "quality": {"passes_s": [0.1, 0.2], "elements": 401}})
+    assert _untimed(base) != _untimed({**base, "quality": {"passes_s": [0.0], "elements": 400}})
+    assert _untimed(base) != _untimed({**base, "elements": 400})
+
+
 def test_nothing_asked_is_the_surface_run_as_it_was(plain, source, tmp_path):
     ws, rec = plain
     assert not ({"requirements", "sizing", "count_set_aside"} & set(rec))
@@ -256,8 +278,7 @@ def test_nothing_asked_is_the_surface_run_as_it_was(plain, source, tmp_path):
                             requirements=MR.requirements_of(MR.section("used", requirements=MR.empty())))
     for name in FILES:
         assert (tmp_path / name).read_bytes() == (ws / name).read_bytes(), name
-    assert {k: v for k, v in again.items() if k not in ("seconds", "extract_s", "mesh_s")} == \
-        {k: v for k, v in rec.items() if k not in ("seconds", "extract_s", "mesh_s")}
+    assert _untimed(again) == _untimed(rec)
 
 
 # ------------------------------------------------------------------------------------- through the driver
