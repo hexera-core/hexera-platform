@@ -125,6 +125,9 @@ class RegionRun:
     #: rules-only run is byte-identically replayable from its bytes and needs no package log,
     #: which is the contract the native determinism tests pin.
     packages_replay: tuple[dict, ...] = ()
+    #: THE MESHABILITY PASS'S APPLICATIONS (`_meshability_pass`), one record each, built from the
+    #: session's own verdict as it returned. Empty, and absent from `to_dict`, when no pass ran.
+    meshability: tuple[dict, ...] = ()
 
     @property
     def resolved(self) -> bool:
@@ -136,6 +139,8 @@ class RegionRun:
             extra["attempt_budget"] = dict(self.attempt_budget)
         if self.packages_replay:
             extra["packages_replay"] = [dict(r) for r in self.packages_replay]
+        if self.meshability:
+            extra["meshability_pass"] = [dict(r) for r in self.meshability]
         return {**extra,
                 "stopped_because": self.stopped_because, "resolved": self.resolved,
                 "refusals": [dict(r) for r in self.refusals],
@@ -502,76 +507,177 @@ def _observe_part(author: Author, defects) -> None:
 #: The share of the run clock left at the pre-pass's start that it may spend, so the region walk
 #: (kernel cures, the investigator, the tournament) still gets the rest.
 GAP_PREPASS_SHARE = 0.4
+#: The record label that tells a pass application from an author's (lane F's attribution).
+PASS_AUTHOR = "pass"  # noqa: S105 - an author label, not a credential
 
 
-def _gap_prepass(work, regions, *, remaining: Callable[[], float], reserve: float,
-                 tolerance_mm: float, max_ops: int, reserved: frozenset = frozenset(),
-                 ) -> list[tuple[int, TargetPackage, PackageVerdict]]:
-    """Offer `resolve_sub_mesh_gap` to every 3D-stage gap clash, down its sag ladder, before any
-    author runs. Nothing here is a new gate: each package goes through `try_package` (predicate,
-    caps, solids, validity, the reviewer, the delivered-STEP keep rule) exactly as an authored one.
+def meshability_pass_on() -> bool:
+    """CAD_REPAIR_MESHABILITY_PASS, failing closed: only the exact `live` turns it on."""
+    return str(getattr(rcfg, "CAD_REPAIR_MESHABILITY_PASS", "off") or "off") == "live"
 
-    Off unless CAD_REPAIR_RESOLVE_SUB_MESH_GAP is on. Bounded by GAP_PREPASS_SHARE of the clock,
-    the final reserve and the run's operation allowance. A face is retried at the next rung only
-    while its earlier tries neither committed nor declined (`rules_author.GapTries`).
 
-    A HELD FACE IS NEVER AIMED AT (`reserved`, the codes held for an engineer): the same rule
-    `rules_author._gap_lead` keeps, and the session cannot enforce it for this operation, which
-    removes no fingerprint. Each entry is `(region index, the package as offered, its verdict)`, so
-    the walk can record a committed one for replay.
+#: The delivered probe's own cap (`_probe_delivered`), before the run's deadline cuts it.
+PROBE_AFTER_CAP_S = 120.0
+#: `probe_after`'s kind when the run had no time left to probe: unprobed, said so, never guessed.
+PROBE_AFTER_NO_TIME = "unprobed: no time left"
+
+
+def _probe_delivered(shape, diagonal_mm: float, *,
+                     budget_s: float = PROBE_AFTER_CAP_S) -> dict:
+    """The eval's headline probe (gmsh at diagonal / 40, `mesh_probe.probe_file`) on the part AS IT
+    WOULD BE DELIVERED - written by `conservative._write_step` in the delivery unit. Never raises;
+    an unprobed part says so rather than reading as meshing or not.
+
+    `budget_s` is the pass's slice of the run's ONE deadline (`_probe_after_budget_s`), never a
+    fresh 120 s: with none left the probe does not start and says `PROBE_AFTER_NO_TIME`."""
+    import tempfile
+    from pathlib import Path
+
+    if not float(budget_s) > 0.0:
+        return {"meshes": None, "kind": PROBE_AFTER_NO_TIME}
+    try:
+        from meshpipeline.cad.repair import mesh_probe
+        from meshpipeline.cad.repair.conservative import _write_step
+        from meshpipeline.cad.repair.delivery_check import DELIVERY_UNIT
+
+        with tempfile.TemporaryDirectory(prefix="meshability-probe-") as tmp:
+            path = Path(tmp) / "part.step"
+            _write_step(shape, path, unit=DELIVERY_UNIT.get())
+            result = mesh_probe.probe_file(path, diagonal_mm=float(diagonal_mm),
+                                           budget_s=float(budget_s))
+        return {"meshes": bool(result.meshed),
+                "kind": "" if result.meshed else str(getattr(result.failure, "kind", "") or "")}
+    except Exception as exc:  # noqa: BLE001 - a probe that cannot run is reported, not guessed
+        return {"meshes": None, "kind": f"unprobed: {type(exc).__name__}"}
+
+
+def _probe_after_budget_s(remaining_s: float, reserve: float) -> float:
+    """Seconds the per-kept-op delivered probe may take (gap 3): `PROBE_AFTER_CAP_S`, cut to what
+    the run has left ABOVE the walk's final reserve, less `oracle.STAGE_MARGIN_S`. The probe is a
+    RECORD of a commit already made, so it may not spend the time the final whole-shape
+    verification was promised, and it is never a fresh budget on top of the attempt node's clock.
     """
+    return oracle.stage_budget_s(PROBE_AFTER_CAP_S, float(remaining_s) - float(reserve))
+
+
+def _pass_record(name: str, rung: int, fingerprint: str, verdict: PackageVerdict) -> dict:
+    """One application, read off the session's OWN verdict at the moment it returned - never off
+    the restamped list `as_repair_run` builds later (lane F: that restamp is why wave 8's per-op
+    reasons were unrecoverable)."""
+    mine = next((v for v in verdict.verdicts if v.op == name), None)
+    if verdict.committed:
+        status = "kept"
+    elif mine is not None and mine.evidence.get("declined"):
+        status = f"declined:{str(mine.evidence.get('declined'))[:160]}"
+    elif mine is not None and not mine.kept:
+        status = f"rolled_back:{str(mine.reason)[:160]}"
+    else:
+        status = f"rolled_back:package:{str(verdict.reason)[:160]}"
+    return {"op": name, "rung": int(rung), "fingerprint": fingerprint, "verdict": status,
+            "probe_after": None, "author": PASS_AUTHOR,
+            "evidence": {k: v for k, v in ((mine.evidence if mine else {}) or {}).items()
+                         if k in ("declined", "gap_mm", "partners", "faces_split", "iso_edges",
+                                  "faces_added", "sag_share")}}
+
+
+def _meshability_pass(work, regions, *, remaining: Callable[[], float], reserve: float,
+                      tolerance_mm: float, max_ops: int, reserved: frozenset = frozenset(),
+                      ) -> tuple[list[tuple[int, TargetPackage, PackageVerdict]], list[dict]]:
+    """Offer every registered meshability operation (cad/repair/meshability.py) to the mesh
+    findings it claims, down its rungs, before any author runs. Returns `(entries, records)`:
+    each entry is `(region index, the package as offered, its verdict)`, so the walk can record a
+    committed one for replay; each record is lane F's per-application row.
+
+    ONE GATE, NO DOUBLE RUN: with CAD_REPAIR_MESHABILITY_PASS=live this is the pass, over every
+    enabled entry. With it off and CAD_REPAIR_RESOLVE_SUB_MESH_GAP on, it is the gap pre-pass (#523)
+    - the gap entry alone. Never both. Nothing here is a new gate: each application is one package
+    through `try_package` (predicate, caps, solids, validity, the reviewer, the delivered-STEP
+    keep rule and the delivered-file re-read).
+
+    WHAT IT NEVER DOES: aim at a face held for an engineer (`reserved`, the rule
+    `rules_author._gap_lead` keeps; the session cannot enforce it for an op that removes no
+    fingerprint); re-offer an aim whose package ran nothing, or a region whose review allowance is
+    spent (Greptile PRRT_kwDOUFq_Ps66OjT1); start a package with more clock than the share has
+    left - its timeout and any `budget_s` the operation exposes are capped by it (PRRT_..OjT4).
+    Every claimed face's rung 0 is tried before any face's rung 1 (0051_00519054); a decline
+    spends the entry for that face. Bounded by GAP_PREPASS_SHARE of the clock, the final reserve
+    and the run's operation allowance (a package that kept nothing charges nothing).
+    """
+    from meshpipeline.cad.repair import meshability
     from meshpipeline.cad.repair import rules_author as ra
+    from meshpipeline.cad.repair.gap_split import NAME as GAP_NAME
     from meshpipeline.cad.repair.plan import held_fingerprints
 
-    if not getattr(rcfg, "CAD_REPAIR_RESOLVE_SUB_MESH_GAP", False):
-        return []
+    live = meshability_pass_on()
+    legacy = not live and bool(getattr(rcfg, "CAD_REPAIR_RESOLVE_SUB_MESH_GAP", False))
+    if not (live or legacy):
+        return [], []
+    allowed = None if live else {GAP_NAME}
     start = remaining()
     spend_until = start - GAP_PREPASS_SHARE * max(start - reserve, 0.0)
-    out: list[tuple[int, TargetPackage, PackageVerdict]] = []
-    tried: list[PackageVerdict] = []
-    charged = len(work.log)
-    region_of = {fp: region for region in regions for fp in region.fingerprints}
     floor = max(reserve, spend_until)
-    # AIMS AND REGIONS NOT TO OFFER AGAIN (Greptile PRRT_kwDOUFq_Ps66OjT1). A package that ran no
-    # operation - refused, or escalated unrun because the region's review allowance is spent -
-    # moves no rung of the ladder (`gap_tries` reads operations), so without this the same rung
-    # was offered again until the clock share ran out.
-    unrun: set[str] = set()
+    out: list[tuple[int, TargetPackage, PackageVerdict]] = []
+    records: list[dict] = []
+    failed: dict[tuple[str, str], int] = {}
+    declined: set[tuple[str, str]] = set()
+    unrun: set[tuple[str, str]] = set()
     closed: set[int] = set()
+    region_of = {fp: region for region in regions for fp in region.fingerprints}
+    charged = len(work.log)
     while True:
         if remaining() <= floor or charged >= max_ops:
             break
-        tries = ra.gap_tries(tuple(tried))
-        # EVERY FACE'S FIRST RUNG BEFORE ANY FACE'S SECOND: a finer retry of a face that already
-        # failed is the last resort, not the next thing (0051_00519054: three rungs on one doomed
-        # face spent the budget its neighbour's coarse split would have fixed the part with).
         now = work.defects()
         held = held_fingerprints(now, reserved)
-        open_aims = [d for d in ra.gap_defects(now)
-                     if d.fingerprint in region_of and d.fingerprint not in held
-                     and d.code not in reserved and not tries.spent(d.fingerprint)
-                     and d.fingerprint not in unrun
-                     and region_of[d.fingerprint].index not in closed]
-        aim = min(open_aims, key=lambda d: tries.rung(d.fingerprint), default=None)
-        if aim is None:
+        options = []
+        for defect in now:
+            fingerprint = str(getattr(defect, "fingerprint", "") or "")
+            if (not fingerprint or fingerprint not in region_of or fingerprint in held
+                    or getattr(defect, "code", None) in reserved
+                    or region_of[fingerprint].index in closed):
+                continue
+            hit = meshability.claimant(
+                defect,
+                rung_of={e.name: failed.get((e.name, fingerprint), 0)
+                         for e in meshability.registered()},
+                spent=lambda name, fp: ((name, fp) in declined or (name, fp) in unrun
+                                        or (allowed is not None and name not in allowed)))
+            if hit is not None:
+                entry, rung = hit
+                options.append((rung, int(getattr(defect, "entity_index", 0)), fingerprint,
+                                defect, entry))
+        if not options:
             break
-        region = region_of[aim.fingerprint]
-        # THE PACKAGE GETS ONLY WHAT THE SHARE HAS LEFT (Greptile PRRT_kwDOUFq_Ps66OjT4): its own
-        # timeout and the operation's kernel children are both capped by it, so an attempt
-        # started near the cutoff cannot spend the walk's time or the final reserve.
-        package = ra.gap_package(region, aim, tries, original=work.original,
-                                 budget_s=remaining() - floor)
+        # EVERY FACE'S FIRST RUNG BEFORE ANY FACE'S SECOND (0051_00519054).
+        rung, _, fingerprint, aim, entry = min(options, key=lambda o: o[:3])
+        region = region_of[fingerprint]
+        budget_s = remaining() - floor
+        op = entry.build(rung)
+        if hasattr(op, "budget_s"):
+            op.budget_s = min(float(op.budget_s), max(budget_s, 0.0))
+        package = ra.pass_package(region, aim, op, original=work.original, budget_s=budget_s,
+                                  rationale=(f"{ra.LABEL}: meshability pass - {entry.name} rung "
+                                             f"{rung} on a {aim.code.value}"))
         offered = _with_tolerance(package, tolerance_mm)
         verdict = work.try_package(offered)
         out.append((region.index, offered, verdict))
-        tried.append(verdict)
-        if any(op.kept for op in verdict.verdicts):
+        record = _pass_record(entry.name, rung, fingerprint, verdict)
+        if verdict.committed:
+            record["probe_after"] = _probe_delivered(
+                work.shape, work.original.diagonal_mm,
+                budget_s=_probe_after_budget_s(remaining(), reserve))
+        records.append(record)
+        if any(v.kept for v in verdict.verdicts):
             charged += len(verdict.verdicts)
         if not verdict.verdicts:
-            unrun.add(aim.fingerprint)
+            unrun.add((entry.name, fingerprint))
+        elif record["verdict"].startswith("declined:"):
+            declined.add((entry.name, fingerprint))
+        elif not verdict.committed:
+            failed[(entry.name, fingerprint)] = failed.get((entry.name, fingerprint), 0) + 1
         if verdict.status == ESCALATED and verdict.reason.startswith(REVIEW_REJECTED):
             closed.add(int(region.index))
-    return out
+    return out, records
 
 
 def _with_tolerance(package: TargetPackage, tolerance_mm: float) -> TargetPackage:
@@ -889,9 +995,9 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
     log_before_prepass = len(work.log)
     # THE FOCUSED WALK, not every region (Greptile PRRT_kwDOUFq_Ps66OjTe): the pre-pass commits
     # splits, and a region reported `not_in_focus` must be left exactly as it came.
-    gap_verdicts = _gap_prepass(work, walk, remaining=remaining, reserve=reserve,
-                                tolerance_mm=tolerance_mm, max_ops=limits.max_ops,
-                                reserved=reserved)
+    gap_verdicts, pass_records = _meshability_pass(
+        work, walk, remaining=remaining, reserve=reserve, tolerance_mm=tolerance_mm,
+        max_ops=limits.max_ops, reserved=reserved)
     for region_index, offered_gap, verdict in gap_verdicts:
         packages.append(verdict)
         if record_replay and verdict.committed:
@@ -1085,7 +1191,8 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
         # plus the regions a focus kept the author from being asked about at all - which a
         # customer owed an account of a partial repair has to be told, not have inferred.
         refusals=_refusals_of(author) + not_in_focus,
-        attempt_budget=budget_record, packages_replay=tuple(replays))
+        attempt_budget=budget_record, packages_replay=tuple(replays),
+        meshability=tuple(pass_records))
 
 
 def _timings(started: float, clock: Callable[[], float], session: RepairSession,

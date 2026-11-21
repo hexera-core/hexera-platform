@@ -95,6 +95,13 @@ class ArtifactType(str, PyEnum):
     # a fixed file as much as for the mesh, and a service that fixed their CAD without handing it
     # back has delivered half the work. Added by revision 0014.
     repaired_cad     = "repaired_cad"
+    # THE CUSTOMER'S OWN STEP, HANDED BACK UNCHANGED when a repair attempt kept nothing (the
+    # meshability pass's passthrough, pipeline/repair_return.py). Its own label so nothing - the
+    # download menu, the manifest - can call these bytes "repaired". Added by revision 0022.
+    returned_cad     = "returned_cad"
+    # THE MESH-SIZE HINTS SIDECAR beside a returned or repaired STEP (`crs-mesh-hints/1`,
+    # cad/repair/mesh_hints.py): an ADDITION to the STEP, never instead of it. Added by revision 0022.
+    mesh_hints       = "mesh_hints"
 
 
 

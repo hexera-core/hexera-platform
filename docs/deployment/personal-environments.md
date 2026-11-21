@@ -65,6 +65,7 @@ output, and the provision job derives every posture from that one value:
 | `CAD_REPAIR_REBUILD_FACE` | not stated | not stated | `true` |
 | `CAD_REPAIR_CLOSE_WIRE_GAPS` | not stated | not stated | `true` |
 | `CAD_REPAIR_RESOLVE_SUB_MESH_GAP` | not stated | not stated | `true` |
+| `CAD_REPAIR_MESHABILITY_PASS` | not stated | not stated | `live` |
 | `CAD_REPAIR_TOLERANT_PROBE` | not stated | not stated | `live` |
 | `CAD_REPAIR_INVESTIGATOR` | not stated | `shadow` | `live` |
 | `CAD_REPAIR_AUTO_ACCEPT` | not stated | `live` | `live` |

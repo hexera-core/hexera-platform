@@ -311,6 +311,23 @@ def _region_loop_posture() -> str:
 #: benchmark baseline an improvement is attributed against, and the corpus runner reaches it.
 CAD_REPAIR_REGION_LOOP: str = _region_loop_posture()
 
+
+def _meshability_pass_posture() -> str:
+    """The meshability-pass posture, FAILING CLOSED: anything but exactly live reads as off."""
+    raw = optional_env("CAD_REPAIR_MESHABILITY_PASS", "off").strip().lower()
+    return raw if raw == "live" else "off"
+
+
+#: THE MESHABILITY PASS (region_loop._meshability_pass, cad/repair/meshability.py): before any
+#: author runs, every mesh finding a registered meshability operation claims is offered that
+#: operation through the ordinary `try_package`, down its rungs; and the run ALWAYS returns a STEP -
+#: when nothing is kept (or the repair cannot run), the upload's bytes are written unchanged to the
+#: destination, labelled `delivery_source=passthrough`, with mesh-size hints beside it when a hints
+#: provider is installed. The refusal still raises, so every consumer's meaning (continue on the
+#: original, job-level escalation) is unchanged. "off" is byte-for-byte today: no pass, no file
+#: written on a refusal, no new measurement keys.
+CAD_REPAIR_MESHABILITY_PASS: str = _meshability_pass_posture()
+
 #: The confidence below which the model's plan is not acted on and the rule planner's choice stands.
 CAD_REPAIR_LLM_PLANNER_MIN_CONFIDENCE: float = float(
     optional_env("CAD_REPAIR_LLM_PLANNER_MIN_CONFIDENCE", "0.5"))

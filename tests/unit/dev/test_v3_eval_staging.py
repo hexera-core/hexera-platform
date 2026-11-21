@@ -179,27 +179,27 @@ def _shard(root: Path, arm: str, kind: str, i: int, n: int, *, commit=COMMIT, ro
 
 def test_collector_refuses_mixed_commits(tmp_path):
     collect = _load("v3_collect_under_test", V3 / "collect.py")
-    _shard(tmp_path, "t29_deterministic", "failing", 1, 1)
-    _shard(tmp_path, "v3_full", "failing", 1, 1, commit="f" * 40)
+    _shard(tmp_path, "meshability_pass", "failing", 1, 1)
+    _shard(tmp_path, "meshability_pass_ai", "failing", 1, 1, commit="f" * 40)
     with pytest.raises(ValueError, match="commit"):
         collect.load_runs(tmp_path)
 
 
 def test_collector_refuses_a_missing_shard(tmp_path):
     collect = _load("v3_collect_under_test2", V3 / "collect.py")
-    _shard(tmp_path, "t29_deterministic", "failing", 1, 2)
+    _shard(tmp_path, "meshability_pass", "failing", 1, 2)
     with pytest.raises(ValueError, match="2/2"):
         collect.load_runs(tmp_path)
 
 
 def test_collector_merges_shards_through_repair_corpus_aggregate(tmp_path):
     collect = _load("v3_collect_under_test3", V3 / "collect.py")
-    _shard(tmp_path, "t29_deterministic", "failing", 1, 2)
-    _shard(tmp_path, "t29_deterministic", "failing", 2, 2)
+    _shard(tmp_path, "meshability_pass", "failing", 1, 2)
+    _shard(tmp_path, "meshability_pass", "failing", 2, 2)
     runs = collect.load_runs(tmp_path)
     merged = runs["checked"]
     assert merged["commit"] == COMMIT
-    rows = runs["arms"][("t29_deterministic", "failing")]["rows"]
+    rows = runs["arms"][("meshability_pass", "failing")]["rows"]
     assert len(rows) == 2
     summary = collect.summarise(rows)
     assert summary["meshing"]["files"] == 2 and summary["meshing"]["newly_broken"] == 0
@@ -208,7 +208,7 @@ def test_collector_merges_shards_through_repair_corpus_aggregate(tmp_path):
 # ------------------------------------------------------------------ the posture and the verdict
 
 def test_preflight_catches_a_flag_the_build_does_not_read():
-    env = spec.ARMS["v3_full"]["env"]
+    env = spec.ARMS["meshability_pass_ai"]["env"]
     settings = {k: v for k, v in env.items() if k.startswith("CAD_REPAIR_")}
     settings["CAD_REPAIR_ENABLED"] = True
     assert spec.preflight(settings, env) == []
@@ -217,7 +217,7 @@ def test_preflight_catches_a_flag_the_build_does_not_read():
     problems = spec.preflight(missing, env)
     assert any("INERT CAD_REPAIR_TOURNAMENT=live" in p for p in problems)
     # asking for exactly what the code falls back to is harmless when the row is absent
-    det = spec.ARMS["t29_deterministic"]["env"]
+    det = spec.ARMS["meshability_pass"]["env"]
     det_settings = {k: v for k, v in det.items()
                     if k.startswith("CAD_REPAIR_") and k not in ("CAD_REPAIR_TOURNAMENT",
                                                                  "CAD_REPAIR_MEMORY")}
@@ -228,13 +228,13 @@ def test_preflight_catches_a_flag_the_build_does_not_read():
 
 
 def test_arms_differ_only_by_investigator_and_tournament():
-    base = {k: v for k, v in spec.ARMS["t29_deterministic"]["env"].items()
+    base = {k: v for k, v in spec.ARMS["meshability_pass"]["env"].items()
             if not k.startswith("CAD_REPAIR_TOURNAMENT") and k != "CAD_REPAIR_INVESTIGATOR"}
     for name, a in spec.ARMS.items():
         rest = {k: v for k, v in a["env"].items()
                 if not k.startswith("CAD_REPAIR_TOURNAMENT") and k != "CAD_REPAIR_INVESTIGATOR"}
         assert rest == base, name
-    assert spec.ARMS["v3_full"]["env"]["CAD_REPAIR_TOURNAMENT_K"] == "3"
+    assert spec.ARMS["meshability_pass_ai"]["env"]["CAD_REPAIR_TOURNAMENT_K"] == "3"
 
 
 def test_there_is_no_t29_acceptance_rule():
@@ -287,7 +287,7 @@ def test_results_json_has_the_evidence_lane_shape(tmp_path):
     collect = _load("v3_collect_under_test4", V3 / "collect.py")
     for arm in spec.ARMS:
         _shard(tmp_path, arm, "failing", 1, 1)
-    _shard(tmp_path, "v3_full", "clean", 1, 1)
+    _shard(tmp_path, "meshability_pass_ai", "clean", 1, 1)
     runs = collect.load_runs(tmp_path)
     reports = {}
     for key, entry in runs["arms"].items():
@@ -304,13 +304,14 @@ def test_results_json_has_the_evidence_lane_shape(tmp_path):
         assert arm["arm"] == name
         assert SCHEMA_ARM_KEYS <= set(arm) <= SCHEMA_ARM_KEYS | SCHEMA_ARM_OPTIONAL, name
     assert out["arms"]["t6_rules_only_local"]["label"] == "rules-only baseline"
-    assert out["arms"]["t19_tournament_on"]["same_run_as"] == "t29_v3"
-    assert out["arms"]["t19_tournament_on"]["newly_meshed"] == \
-        out["arms"]["t29_v3"]["newly_meshed"]
+    # The schema-v2 arm ids are the T19/T29 waves' (1-9). The meshability wave's arms fill none of
+    # them, so every one reads not-measured (null), never 0; its report is summary.meshability.
+    for name in ("t29_deterministic", "t29_v3", "t19_tournament_off", "t19_tournament_on"):
+        assert out["arms"][name]["newly_meshed"] is None
     clean = out["arms"]["clean_control"]
     assert SCHEMA_CLEAN_KEYS <= set(clean) <= SCHEMA_CLEAN_KEYS | SCHEMA_CLEAN_OPTIONAL
     # the one clean row did not mesh before, so it is NOT good; nothing changed it
-    assert clean["arms_covered"] == ["v3_full"]
+    assert clean["arms_covered"] == ["meshability_pass_ai"]
     assert clean["still_meshes_no_new_defects"] == 0 and clean["changed"] == 0
     # nothing measured reads null, never 0
     assert out["arms"]["t6_rules_only_local"]["newly_meshed"] is None
@@ -327,12 +328,12 @@ def _all_units_but(tmp_path: Path, *skip: tuple[str, str]) -> None:
 
 def test_collector_refuses_when_a_whole_planned_unit_is_missing(tmp_path, capsys):
     collect = _load("v3_collect_under_test_missing_unit", V3 / "collect.py")
-    _all_units_but(tmp_path, ("t29_deterministic", "clean"))
+    _all_units_but(tmp_path, ("meshability_pass", "clean"))
     assert collect.missing_units(collect.load_runs(tmp_path)["arms"]) == \
-        ["t29_deterministic/clean"]
+        ["meshability_pass/clean"]
     assert collect.main(["--commit", COMMIT, "--from", str(tmp_path), "--dry-run"]) == 2
     err = capsys.readouterr().err
-    assert "REFUSED" in err and "t29_deterministic/clean" in err
+    assert "REFUSED" in err and "meshability_pass/clean" in err
 
 
 def test_collect_writes_no_verdict_anywhere(tmp_path, capsys, monkeypatch):
@@ -344,7 +345,7 @@ def test_collect_writes_no_verdict_anywhere(tmp_path, capsys, monkeypatch):
     monkeypatch.setattr(collect.evalspec, "CLEAN_SIZE", 1)
     monkeypatch.setattr(collect, "seal", lambda entry, arm, kind, checked, o: o / "sealed")
     out.mkdir()
-    (out / "README.md").write_text("{{V3_FULL.CLEAN.STILL_GOOD}} {{V3_FULL.CLEAN.CHANGED}}\n")
+    (out / "README.md").write_text("{{MESHABILITY_PASS_AI.CLEAN.STILL_GOOD}} {{MESHABILITY_PASS_AI.CLEAN.CHANGED}}\n")
     assert collect.main(["--commit", COMMIT, "--from", str(src), "--out", str(out)]) == 0
     printed = capsys.readouterr().out
     assert '"verdicts"' not in printed and "accepted" not in printed and "ratio" not in printed
@@ -353,6 +354,8 @@ def test_collect_writes_no_verdict_anywhere(tmp_path, capsys, monkeypatch):
     assert "verdicts" not in json.loads((out / "verdict.json").read_text())
     # the shard's one clean row did not mesh before: not good, and nothing changed it
     assert (out / "README.md").read_text() == "0 0\n"
+    # rows not scored with --meshability get no meshability report
+    assert not (out / "meshability.json").exists()
 
 
 # ------------------------------------------------------------------ the clean-control rule
@@ -419,7 +422,7 @@ def test_vm_cost_charges_each_shard_its_vcpu_share_not_the_whole_vm():
 
 def test_a_running_vm_of_another_commit_does_not_block_this_launch(monkeypatch):
     launch = _load("v3_launch_under_test_running", V3 / "launch_fleet.py")
-    unit = "v3_full:failing:1/30"
+    unit = "meshability_pass_ai:failing:1/30"
 
     def vm(name, commit):
         return {"name": name, "metadata": {"items": [
@@ -556,27 +559,27 @@ def test_collector_gathers_each_shards_transcripts_and_a_per_file_outcome_table(
     collect = _load("v3_collect_under_test_transcripts", V3 / "collect.py")
     src, out = tmp_path / "src", tmp_path / "out"
     why = {"region": 0, "end": "runaway", "why_no_package": "runaway; no edit kept"}
-    d1 = _shard(src, "v3_full", "failing", 1, 2, rows=[
+    d1 = _shard(src, "meshability_pass_ai", "failing", 1, 2, rows=[
         {"file": "a.step", "outcome": "repair_refused", "meshes_before": False,
          "meshes_after": False, "investigator": {"ends": {"runaway": 1}, "outcomes": [why]}}])
-    _shard(src, "v3_full", "failing", 2, 2)  # no transcripts: an arm shard that never asked
+    _shard(src, "meshability_pass_ai", "failing", 2, 2)  # no transcripts: an arm shard that never asked
     (d1 / "transcripts.jsonl").write_text(
         json.dumps({"file": "a.step", "region": 0, "end": "runaway"}) + "\n"
         + json.dumps({"file": "a.step", "region": 1, "end": "budget_spent"}) + "\n")
     runs = collect.load_runs(src)
     out.mkdir()
-    got = collect.gather_transcripts(runs["arms"][("v3_full", "failing")], "v3_full",
+    got = collect.gather_transcripts(runs["arms"][("meshability_pass_ai", "failing")], "meshability_pass_ai",
                                      "failing", out)
     assert got == {"records": 2, "shards_with_transcripts": 1, "files": 2}
     lines = [json.loads(ln) for ln in
-             (out / "transcripts-v3_full-failing.jsonl").read_text().splitlines()]
+             (out / "transcripts-meshability_pass_ai-failing.jsonl").read_text().splitlines()]
     assert [(ln["file"], ln["shard"]) for ln in lines] == [("a.step", "1/2"), ("a.step", "1/2")]
-    table = json.loads((out / "outcomes-v3_full-failing.json").read_text())
+    table = json.loads((out / "outcomes-meshability_pass_ai-failing.json").read_text())
     by_file = {r["file"]: r for r in table}
     # REBUILT FROM THE TRANSCRIPT (one entry per region it names), not the row's baked outcomes.
     assert [r["end"] for r in by_file["a.step"]["regions"]] == ["runaway", "budget_spent"]
     assert by_file["a.step"]["meshes_after"] is False
-    assert by_file["v3_full-failing-2.step"]["regions"] == []
+    assert by_file["meshability_pass_ai-failing-2.step"]["regions"] == []
 
 
 def test_collector_recomputes_outcomes_from_transcripts_so_elided_edits_still_count(tmp_path):
@@ -587,7 +590,7 @@ def test_collector_recomputes_outcomes_from_transcripts_so_elided_edits_still_co
     stale = {"region": 0, "end": "runaway", "edits": {"tried": 0, "kept": 0, "rolled_back": {}},
              "why_no_package": "runaway; no edit tried",
              "package": {"status": "reverted", "reason": "r"}}
-    d = _shard(src, "v3_full", "failing", 1, 1, rows=[
+    d = _shard(src, "meshability_pass_ai", "failing", 1, 1, rows=[
         {"file": "a.step", "outcome": "repair_refused", "meshes_before": False,
          "meshes_after": False, "investigator": {"ends": {"runaway": 1}, "outcomes": [stale]}}])
     turn = {"tool": "edit", "args": "{\"op\": \"fragment_bodies\"}", "ok": True}
@@ -601,8 +604,8 @@ def test_collector_recomputes_outcomes_from_transcripts_so_elided_edits_still_co
     (d / "transcripts.jsonl").write_text(json.dumps(early) + "\n" + json.dumps(late) + "\n")
     runs = collect.load_runs(src)
     out.mkdir()
-    collect.gather_transcripts(runs["arms"][("v3_full", "failing")], "v3_full", "failing", out)
-    [row] = json.loads((out / "outcomes-v3_full-failing.json").read_text())
+    collect.gather_transcripts(runs["arms"][("meshability_pass_ai", "failing")], "meshability_pass_ai", "failing", out)
+    [row] = json.loads((out / "outcomes-meshability_pass_ai-failing.json").read_text())
     [region] = row["regions"]
     assert region["end"] == "runaway"
     assert region["edits"]["tried"] == 2
@@ -621,7 +624,7 @@ def test_every_arm_runs_the_shared_dev_review_posture():
 
 def test_model_usage_counts_calls_by_purpose_and_never_guesses_an_old_one(tmp_path):
     collect = _load("v3_collect_under_test_purpose", V3 / "collect.py")
-    d = _shard(tmp_path, "v3_full", "failing", 1, 1)
+    d = _shard(tmp_path, "meshability_pass_ai", "failing", 1, 1)
     (d / "model-calls.jsonl").write_text("\n".join(json.dumps(r) for r in [
         {"role": "intake", "purpose": "investigator"},
         {"role": "intake", "purpose": "reviewer"},
@@ -641,10 +644,10 @@ def test_the_tolerant_route_is_off_by_default_and_only_a_diagnostic():
             argv = spec.harness_argv(arm_name, kind, shard="1/4", inputs="/in", out="/out",
                                      code_root="/code")
             assert "--tolerant-delivery" not in argv, (arm_name, kind)
-    diag = spec.harness_argv("t29_deterministic", "failing", shard="1/4", inputs="/in",
+    diag = spec.harness_argv("meshability_pass", "failing", shard="1/4", inputs="/in",
                              out="/out", code_root="/code", tolerant_diagnostic=True)
     assert "--tolerant-delivery" in diag
-    clean = spec.harness_argv("t29_deterministic", "clean", shard="1/4", inputs="/in",
+    clean = spec.harness_argv("meshability_pass", "clean", shard="1/4", inputs="/in",
                               out="/out", code_root="/code", tolerant_diagnostic=True)
     assert "--tolerant-delivery" not in clean
 
@@ -668,9 +671,9 @@ def test_files_fixed_is_newly_meshed_from_the_repaired_steps_gmsh_probe_only(tmp
         {"file": "nothing_written.step", "outcome": "repair_refused", "meshes_before": False,
          "meshes_after": None, "mesh_kind_before": "x", "mesh_kind_after": ""},
     ]
-    d = _shard(tmp_path, "v3_full", "failing", 1, 1, rows=rows)
+    d = _shard(tmp_path, "meshability_pass_ai", "failing", 1, 1, rows=rows)
     runs = collect.load_runs(tmp_path)
-    rep = collect.arm_report(runs["arms"][("v3_full", "failing")])
+    rep = collect.arm_report(runs["arms"][("meshability_pass_ai", "failing")])
     arm = collect.result_arm("t29_v3", rep, runs["checked"], "s" * 64)
     assert arm["newly_meshed"] == 1
     assert arm["delivered_via_tolerant_mesher"] == 2  # its own diagnostic count, never summed

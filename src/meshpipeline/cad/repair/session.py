@@ -1510,6 +1510,26 @@ class RepairSession:
                 scan_s=scan_s, apply_s=apply_s,
                 measure_s=_measure_total(measure_s, verdicts)))
 
+        if not self.is_scratch:
+            # 7b. THE PART AS THE CUSTOMER RECEIVES IT. Written as delivery writes it (STEP, in
+            # the upload's unit) and read back in a bounded child: a package whose delivered file
+            # would read back BRepCheck-invalid - where the upload was valid - is reverted here,
+            # before the reviewer is paid for. The valid->invalid cap above judged the in-memory
+            # shape only (0060_00600919: valid in memory, UnorientableShape as a metre STEP).
+            # A scratch clone cannot commit, so it pays for no export.
+            from meshpipeline.cad.repair import delivery_check
+
+            delivered = delivery_check.export_check(
+                self._upload, self.shape, budget_s=self._export_budget_s())
+            if delivered:
+                (self.shape, self._defects, self.complete_scan, self.accounting,
+                 self._standing_mesh) = snapshot
+                return self._record_package(PackageVerdict(
+                    region_index=region.index, status=REVERTED,
+                    reason=f"delivered: {delivered}", verdicts=tuple(verdicts),
+                    reclassified=reclassified, scan_s=scan_s, apply_s=apply_s,
+                    measure_s=_measure_total(measure_s, verdicts)))
+
         deviation, deviation_status = self._deviation_evidence(
             cap_s=package.budget.timeout_s - (self.clock() - started))
         review: dict = {}
@@ -1769,6 +1789,21 @@ class RepairSession:
             if missing:
                 return f"malformed plan item {n}: missing {', '.join(missing)}"
         return ""
+
+    def _export_budget_s(self) -> float:
+        """Seconds the delivered-file read-back (`delivery_check.export_check`) may take: its own
+        `BUDGET_S`, cut to what is left of the RUN'S ONE DEADLINE less `oracle.STAGE_MARGIN_S`
+        (gap 3). `remaining_s` is the walk's clock - `region_loop.run_regions` bounds it by the
+        deadline `conservative.repair_step_file` took at entry - so this is a slice of the attempt
+        node's `wait_for`, never a fresh 120 s on top of it. 0 when nothing is left, which
+        `export_check` answers as could-not-verify, and the package is reverted rather than
+        committed unread. A session nobody gave a clock (a direct caller) keeps the full budget.
+        """
+        from meshpipeline.cad.repair import delivery_check
+
+        if self.remaining_s is None:
+            return float(delivery_check.BUDGET_S)
+        return oracle.stage_budget_s(delivery_check.BUDGET_S, float(self.remaining_s()))
 
     def _region_scan(self, region, *, whole_shape: bool = False,
                      cap_s: float | None = None) -> tuple[tuple, bool]:

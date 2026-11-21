@@ -7,6 +7,10 @@
 """Render docs/superpowers/pr-494-evidence-section.md from a results JSON.
 
     render_pr_section.py [--results R.json] [--out docs/superpowers/pr-494-evidence-section.md]
+    render_pr_section.py --meshability <collect out>/meshability.json --out <section>.md
+
+With --meshability the section is the meshability wave's (meshability_report.render): the two
+headlines, the clean control, which op made each file mesh, and the AI loop's marginal gain.
 """
 from __future__ import annotations
 
@@ -147,7 +151,21 @@ def main(argv: list[str] | None = None) -> int:
     rt = _rt()
     parser.add_argument("--results", default=str(rt.PENDING_JSON))
     parser.add_argument("--out", default=str(DEFAULT_OUT))
+    parser.add_argument("--meshability", default="",
+                        help="render the meshability wave's section from collect's "
+                             "meshability.json instead of the T19/T29 results")
     args = parser.parse_args(argv)
+    if args.meshability:
+        import json
+
+        spec = importlib.util.spec_from_file_location("meshability_report",
+                                                      HERE / "meshability_report.py")
+        mr = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mr)
+        Path(args.out).write_text(mr.render(json.loads(Path(args.meshability).read_text())),
+                                  encoding="utf-8")
+        print(f"wrote {args.out}")
+        return 0
     Path(args.out).write_text(render(rt.load(Path(args.results))), encoding="utf-8")
     print(f"wrote {args.out}")
     return 0

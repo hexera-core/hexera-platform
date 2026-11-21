@@ -1648,6 +1648,10 @@ jobs:
       CAD_REPAIR_CLOSE_WIRE_GAPS: ${{ needs.target.outputs.crs_v3 == 'live' && 'true' || '' }}
       # Re-partitions faces (moves no surface); never auto-accepted, so it rides with the reviewer.
       CAD_REPAIR_RESOLVE_SUB_MESH_GAP: ${{ needs.target.outputs.crs_v3 == 'live' && 'true' || '' }}
+      # THE MESHABILITY PASS (#530): live wherever CRS v3 is live (shared dev), unstated elsewhere,
+      # so production keeps the code default (off). With it live every repair exit returns a STEP
+      # (the upload's bytes when nothing holds) plus mesh-size hints where they exist.
+      CAD_REPAIR_MESHABILITY_PASS: ${{ needs.target.outputs.crs_v3 == 'live' && 'live' || '' }}
       # Tier 2b runs fTetWild on a customer's part, so it needs `live` and not merely a v3 run:
       # a shadow run records the ladder's questions, it does not start the tolerant mesher.
       CAD_REPAIR_TOLERANT_PROBE: ${{ needs.target.outputs.crs_v3 == 'live' && 'live' || '' }}

@@ -431,9 +431,9 @@ def test_a_committed_gap_prepass_package_is_recorded_first(monkeypatch):
         return [(region.index, package, PackageVerdict(region_index=region.index,
                                                         status="reverted", reason="x")),
                 (region.index, package, PackageVerdict(region_index=region.index,
-                                                        status="committed"))]
+                                                        status="committed"))], []
 
-    monkeypatch.setattr(RL, "_gap_prepass", prepass)
+    monkeypatch.setattr(RL, "_meshability_pass", prepass)
     run = _run(part, author)
     records = [dict(r) for r in run.packages_replay]
     assert records and records[0]["region_fingerprints"] == seen["region"]

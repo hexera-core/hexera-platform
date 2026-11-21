@@ -77,6 +77,35 @@ def _forwarded(measured: Mapping) -> dict:
     return {k: _copy(v) for k, v in measured.items() if k not in _RECORD_FIELDS}
 
 
+def _returned(measurements, destination: Path) -> dict:
+    """The STEP this attempt returns and its hints (pipeline/repair_return.py), or {}. {} on every
+    run with the meshability pass off: nothing records a `delivery_source` there."""
+    from meshpipeline.pipeline.repair_return import returned
+    return returned(measurements, destination)
+
+
+async def _returned_untouched(source: Path, job_id, *, name: str = "repaired") -> dict:
+    """A run that never got a STEP out of the repair - triage kept it away, or the repair ran past
+    its clock - still RETURNS A STEP with the meshability pass live: the upload's bytes unchanged,
+    and the hints sidecar when the part will not mesh at default
+    (pipeline/repair_return.passthrough_without_repair). Off - the default - {} and nothing runs.
+    `name` keeps a timed-out run's copy off the path its abandoned repair thread may still write.
+    Off the event loop and on the provider's own clock plus a margin; never raises."""
+    from meshpipeline.pipeline import repair_return
+    if not repair_return.pass_live():
+        return {}
+    from meshpipeline.cad.repair.mesh_hints import HINTS_WALL_S
+    destination = source.with_name(f"{source.stem}-{name}{source.suffix}")
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(repair_return.passthrough_without_repair, source, destination),
+            timeout=float(HINTS_WALL_S) + 60.0)
+    except Exception as exc:  # noqa: BLE001 - the STEP is advice beside the run, never its failure
+        logger.warning("node_repair_attempt: no passthrough for an untouched part (%s) - job_id=%s",
+                       type(exc).__name__, job_id)
+        return {}
+
+
 def _derived_source(original, repaired_path: Path):
     """A geometry handle for bytes WE produced, derived from the customer's upload.
 
@@ -114,7 +143,8 @@ def _derived_source(original, repaired_path: Path):
         local_path=repaired_path)
 
 
-def _declined(reason: str, *, outcome: str, route: str = "", detail: dict | None = None) -> dict:
+def _declined(reason: str, *, outcome: str, route: str = "", detail: dict | None = None,
+              returned: dict | None = None) -> dict:
     """Nothing was changed, and the run says why. Never an error: the gate judges the original.
 
     `outcome` is the same why as a closed word (no_report, off, not_autonomous, no_geometry,
@@ -123,6 +153,11 @@ def _declined(reason: str, *, outcome: str, route: str = "", detail: dict | None
     record = {"attempted": False, "reason": reason, "outcome": outcome, "route": route}
     if detail:
         record["detail"] = detail
+    if returned:
+        # THE STEP THE CUSTOMER STILL GETS BACK (pipeline/repair_return.py): with the meshability
+        # pass live, a refusal leaves the upload's bytes at the destination as a passthrough, and
+        # the terminal path delivers it labelled as unchanged. Absent on every other run.
+        record["returned"] = returned
     return {"repair_attempt": record}
 
 
@@ -440,7 +475,8 @@ async def _attempt(state: PipelineState) -> dict:
         # A DIRECTED RE-RUN STILL ANSWERS EVERY DIRECTIVE: none was tried, so each is not_reached.
         return {**_declined(f"triage routed this to {advice.route}", outcome="triage", route=advice.route,
                             detail={"reasons": list(advice.reasons),
-                                    "abstain_reason": advice.abstain_reason}),
+                                    "abstain_reason": advice.abstain_reason},
+                            returned=await _returned_untouched(source, job_id)),
                 **_not_reached(state, job_id, advice.route)}
 
     # THE REPAIRED FILE LIVES IN THE JOB'S OWN WORKSPACE, beside the materialised original, so it
@@ -504,13 +540,16 @@ async def _attempt(state: PipelineState) -> dict:
                         "is meshed", budget_s=float(rcfg.CAD_REPAIR_TIMEOUT_S))
         _shadow_row(job_id, shadow_plan, "not_executed")
         return {**_declined(f"the repair exceeded {rcfg.CAD_REPAIR_TIMEOUT_S:.0f}s",
-                            outcome="timeout", route=advice.route), **await _triage_only(report, source),
+                            outcome="timeout", route=advice.route,
+                            returned=await _returned_untouched(source, job_id, name="returned")),
+                **await _triage_only(report, source),
                 **_not_reached(state, job_id, advice.route, directives)}
     except RepairUnavailable as exc:
         # OUR limitation, never a verdict on the file.
         _shadow_row(job_id, shadow_plan, "not_executed")
         return {**_declined(f"the repair could not run here: {exc}", outcome="unavailable",
-                            route=advice.route),
+                            route=advice.route,
+                            returned=_returned(getattr(exc, "measurements", None), destination)),
                 **await _triage_only(report, source),
                 **_not_reached(state, job_id, advice.route, directives)}
     except RepairRefused as exc:
@@ -548,14 +587,16 @@ async def _attempt(state: PipelineState) -> dict:
             _mint, report=report, measured=dict(exc.measurements), source=source,
             survivors_path=None)
         return {**_declined(f"the repair was refused: {exc}", outcome="refused", route=advice.route,
-                            detail={"measurements": exc.measurements}),
+                            detail={"measurements": exc.measurements},
+                            returned=_returned(exc.measurements, destination)),
                 **minted, **_outcome_state(outcomes)}
     except Exception as exc:  # noqa: BLE001 - a repair that breaks is never the file's fault
         _shadow_row(job_id, shadow_plan, "not_executed")
         logger.warning("node_repair_attempt: the repair failed (%s) - continuing on the original "
                        "- job_id=%s", type(exc).__name__, job_id)
         return {**_declined(f"the repair failed: {type(exc).__name__}", outcome="failed",
-                            route=advice.route),
+                            route=advice.route,
+                            returned=_returned(getattr(exc, "measurements", None), destination)),
                 **await _triage_only(report, source),
                 **_not_reached(state, job_id, advice.route, directives)}
 
@@ -676,6 +717,11 @@ async def _attempt(state: PipelineState) -> dict:
         # THE DELIVERABLE. Nothing promoted it (see above), so the ending node is the only thing
         # that can name these bytes for the terminal path to hand back.
         goal_record["repaired_path"] = str(destination)
+    returned_step = _returned(measured, destination)
+    if returned_step:
+        # THE RETURNED STEP AND ITS HINTS SIDECAR (pipeline/repair_return.py), so the terminal
+        # path can upload the sidecar beside the repaired file and the mesh staging can apply it.
+        goal_record["returned"] = returned_step
 
     # `repair_status` IS NOT TOUCHED. It is the inspection's verdict on the file the customer
     # SENT, and `repair_report` beside it is that inspection - so overwriting it with the repair's

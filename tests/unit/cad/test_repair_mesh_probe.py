@@ -791,3 +791,46 @@ def test_the_fallback_runs_when_no_support_resolved(monkeypatch):
     answer = mp._nearest_face_positions(
         [[0, 6, [10.0, 5.0, 5.0]], [0, 6, [5.0, 5.0, 5.0]]], 1e-6, 1, *operands)
     assert answer == [[], [1]]
+
+
+def test_a_failure_point_is_located_in_one_bounded_child(monkeypatch):
+    """AUDIT ROW 2. `mesh_defects` placed gmsh's failure point with `_nearest_faces` IN THE PARENT:
+    one uninterruptible `BRepExtrema_DistShapeShape` per candidate face, the deadline checked only
+    between faces. The point goes to the same bounded child the contact search uses - one child,
+    one query - and the child runs the same pruning search; the parent measures nothing."""
+    from meshpipeline.cad.repair.mesh_probe import MeshFailure
+
+    failure = MeshFailure(EDGE_THROUGH_FACE, (), (2.0, 5.0, 10.0), "PLC Error", stage="3d")
+    mesh_probe, shape = _clash_probe(monkeypatch, failure=failure, clashes=(), contact_calls=[])
+    runs: list = []
+
+    def _run(fn, args, budget_s):
+        runs.append(fn)
+        queries, tol, primary, *operands = args
+        assert fn is mesh_probe._nearest_face_positions
+        assert primary == 1 and len(queries) == 1 and tuple(queries[0][2]) == (2.0, 5.0, 10.0)
+        assert 0.0 < budget_s <= 60.0
+        return [[queries[0][0] + 3]]              # the body's 4th face
+
+    def parent_distance(*_a, **_k):
+        raise AssertionError("a point-to-face distance ran in the parent")
+
+    monkeypatch.setattr(mesh_probe.bounded_child, "run", _run)
+    monkeypatch.setattr(mesh_probe, "_nearest_faces", parent_distance)
+
+    (defect,) = mesh_probe.mesh_defects(shape, diagonal_mm=20.6, budget_s=60.0)
+
+    assert runs == [mesh_probe._nearest_face_positions], "exactly one child for the point"
+    assert defect.entity_index == 4
+
+
+def test_a_point_search_the_child_did_not_finish_leaves_the_failure_unlocated(monkeypatch):
+    from meshpipeline.cad.repair.mesh_probe import MeshFailure
+
+    failure = MeshFailure(EDGE_THROUGH_FACE, (), (2.0, 5.0, 10.0), "PLC Error", stage="3d")
+    mesh_probe, shape = _clash_probe(monkeypatch, failure=failure, clashes=(), contact_calls=[])
+    monkeypatch.setattr(mesh_probe.bounded_child, "run", lambda fn, args, budget_s: None)
+
+    (defect,) = mesh_probe.mesh_defects(shape, diagonal_mm=20.6, budget_s=60.0)
+
+    assert defect.entity_index == 0

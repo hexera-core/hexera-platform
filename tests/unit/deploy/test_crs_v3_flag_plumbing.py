@@ -36,6 +36,8 @@ FLAGS: dict[str, tuple[str, str]] = {
     "CAD_REPAIR_REBUILD_FACE": ("cad-repair-rebuild-face", LIVE_ONLY),
     "CAD_REPAIR_CLOSE_WIRE_GAPS": ("cad-repair-close-wire-gaps", LIVE_ONLY),
     "CAD_REPAIR_RESOLVE_SUB_MESH_GAP": ("cad-repair-resolve-sub-mesh-gap", LIVE_ONLY),
+    # THE MESHABILITY PASS reads the exact `live`: live on shared dev, unstated elsewhere.
+    "CAD_REPAIR_MESHABILITY_PASS": ("cad-repair-meshability-pass", LIVE_POSTURE),
     "CAD_REPAIR_TOLERANT_PROBE": ("cad-repair-tolerant-probe", LIVE_POSTURE),
     "CAD_REPAIR_INVESTIGATOR": ("cad-repair-investigator", CARRIED),
     # A TIER OF the review, so it is on wherever the review is - and inert until a run carries a
@@ -284,7 +286,7 @@ def test_shared_dev_runs_the_tournament_the_eval_measured(tmp_path):
         "evalspec_under_test_k", ROOT / "devtools" / "validation" / "v3_eval" / "evalspec.py")
     evalspec = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(evalspec)
-    assert evalspec.arm("v3_full")["env"]["CAD_REPAIR_TOURNAMENT_K"] == TOURNAMENT_K_LIVE
+    assert evalspec.arm("meshability_pass_ai")["env"]["CAD_REPAIR_TOURNAMENT_K"] == TOURNAMENT_K_LIVE
 
     expr = FLAGS["CAD_REPAIR_TOURNAMENT_K"][1]
     dev = _pick(tmp_path, DISPATCH_SLUG="", DISPATCH_CRS_V3="off")["crs_v3"]

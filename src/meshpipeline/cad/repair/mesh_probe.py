@@ -87,6 +87,16 @@ class ProbeResult:
     #: Surface pairs whose 2D triangles cross or coincide, found on the surface mesh after the
     #: VOLUME stage refused it (`mesh_clash`). Empty when it meshed or failed earlier.
     clashes: tuple[Clash, ...] = ()
+    #: With mesh-size hints (`mesh_hints`): how many were applied to a gmsh surface, and the
+    #: delivered-STEP face of each that matched no surface. Both empty when no hints were given.
+    hints_applied: int = 0
+    hints_unmapped: tuple[int, ...] = ()
+    #: `{tag: (area_mm2, cx, cy, cz)}` for every surface a failure or clash names, so a caller can
+    #: name those surfaces as delivered-STEP faces without trusting gmsh's tag order. Hinted only.
+    named_props: dict[int, tuple[float, float, float, float]] = field(default_factory=dict)
+    #: Volume-mesh quality when asked for (`quality=True`) and it meshed: element count aside,
+    #: min/mean gamma, min SICN and the shortest element edge in mm. Empty otherwise.
+    quality: dict[str, float] = field(default_factory=dict)
 
 
 #: The clash search's own wall in the probe child, in seconds. Bounded so it can never spend the
@@ -200,11 +210,17 @@ def locating_surfaces(failure: MeshFailure) -> tuple[int, ...]:
 
 
 def _probe_child(path: str, diagonal_mm: float, surfaces: tuple[int, ...] | None,
-                 volume: bool) -> tuple[int, MeshFailure | None, dict[int, Box], tuple[Clash, ...]]:
-    """Runs in the child. Returns (volume_elements, failure, tag_boxes, clashes)."""
+                 volume: bool, options: dict | None = None,
+                 ) -> tuple[int, MeshFailure | None, dict[int, Box], tuple[Clash, ...]]:
+    """Runs in the child. Returns (volume_elements, failure, tag_boxes, clashes).
+
+    `options` (`mesh_hints`) may carry `hints`, applied as size fields after import, and
+    `quality`; what they produce is written into `options["out"]`. None: the plain probe."""
     import gmsh
 
     boxes: dict[int, Box] = {}
+    options = options if options is not None else {}
+    out: dict = options.setdefault("out", {})
     gmsh.initialize()
     try:
         gmsh.option.setNumber("General.Terminal", 0)
@@ -219,6 +235,11 @@ def _probe_child(path: str, diagonal_mm: float, surfaces: tuple[int, ...] | None
                 x0, y0, z0, x1, y1, z1 = gmsh.model.getBoundingBox(2, tag)
                 boxes[int(tag)] = (float(x0), float(y0), float(z0),
                                    float(x1), float(y1), float(z1))
+            if options.get("hints"):
+                from meshpipeline.cad.repair.mesh_hints import apply_in_gmsh
+
+                out["applied"], out["unmapped"] = apply_in_gmsh(
+                    gmsh, options["hints"], diagonal_mm=diagonal_mm)
             if surfaces is not None and not surfaces:
                 return 0, None, boxes, ()
             if surfaces is not None:
@@ -236,12 +257,21 @@ def _probe_child(path: str, diagonal_mm: float, surfaces: tuple[int, ...] | None
             if count == 0:
                 return 0, MeshFailure(NO_VOLUME, (), None,
                                       "gmsh produced no volume elements", stage=STAGE_3D), boxes, ()
+            if options.get("quality"):
+                from meshpipeline.cad.repair.mesh_hints import volume_quality
+
+                out["quality"] = volume_quality(gmsh)
             return count, None, boxes, ()
         except Exception as exc:  # noqa: BLE001 - a gmsh failure is the answer, not an error
             failure = classify(str(exc), gmsh.logger.get(), stage=stage)
             clashes: tuple[Clash, ...] = ()
             if stage == STAGE_3D and failure.kind in _CLASH_KINDS:
                 clashes = _surface_clashes(gmsh)
+            if "hints" in options:
+                from meshpipeline.cad.repair.mesh_hints import surface_props
+
+                out["named"] = surface_props(
+                    gmsh, {*failure.surfaces, *(t for c in clashes for t in c.surfaces)})
             return 0, failure, boxes, clashes
     finally:
         try:
@@ -251,12 +281,15 @@ def _probe_child(path: str, diagonal_mm: float, surfaces: tuple[int, ...] | None
 
 
 def _child_main(argv: Sequence[str]) -> int:
-    """`python -m meshpipeline.cad.repair.mesh_probe PATH DIAGONAL SURFACES VOLUME`: one JSON line."""
-    path, diagonal, surfaces, volume = argv
+    """`python -m meshpipeline.cad.repair.mesh_probe PATH DIAGONAL SURFACES VOLUME [OPTIONS]`: one
+    JSON line. OPTIONS, when given, is the path of a JSON file of `_probe_child` options."""
+    path, diagonal, surfaces, volume = argv[:4]
+    options = json.loads(Path(argv[4]).read_text()) if len(argv) > 4 else None
     wanted = json.loads(surfaces)
     count, failure, boxes, clashes = _probe_child(
-        path, float(diagonal), None if wanted is None else tuple(wanted), volume == "1")
+        path, float(diagonal), None if wanted is None else tuple(wanted), volume == "1", options)
     sys.stdout.write("\n" + json.dumps({
+        "options_out": (options or {}).get("out", {}),
         "volume_elements": count,
         "failure": None if failure is None else {
             "kind": failure.kind, "surfaces": list(failure.surfaces),
@@ -278,11 +311,14 @@ def _kill_group(proc: subprocess.Popen) -> None:
 
 
 def _run_child(path: str, diagonal_mm: float, surfaces: tuple[int, ...] | None, volume: bool,
-               budget_s: float) -> dict[str, Any] | None | Literal["error"]:
+               budget_s: float, *, options_path: str | None = None,
+               ) -> dict[str, Any] | None | Literal["error"]:
     """The child's JSON answer; None when it ran out of budget; "error" when it died unanswering."""
     cmd = [sys.executable, "-W", "ignore", "-m", "meshpipeline.cad.repair.mesh_probe", path,
            repr(float(diagonal_mm)), json.dumps(None if surfaces is None else list(surfaces)),
            "1" if volume else "0"]
+    if options_path is not None:
+        cmd.append(options_path)
     proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                             stderr=subprocess.DEVNULL, start_new_session=True, text=True)
     try:
@@ -308,17 +344,32 @@ def _run_child(path: str, diagonal_mm: float, surfaces: tuple[int, ...] | None, 
 
 
 def probe_file(path: Path, *, diagonal_mm: float, surfaces: Sequence[int] | None = None,
-               volume: bool = True, budget_s: float = 120.0) -> ProbeResult:
+               volume: bool = True, budget_s: float = 120.0,
+               hints: Sequence[dict] | None = None, quality: bool = False) -> ProbeResult:
     """Mesh `path` in a bounded fresh interpreter and report. NEVER raises, never blocks past
     `budget_s` (plus a few seconds to reap the child).
 
     `surfaces=None` meshes everything; an empty sequence meshes nothing and only fills `tag_boxes`.
     A child that ran out of budget is a TIMEOUT failure; one that died without answering is a
     PROBE_ERROR failure.
+
+    `hints` are `mesh_hints` face entries (a sidecar's `faces`), applied as local size fields on
+    the gmsh surfaces they match; None (the default) is the plain probe, unchanged. `quality` adds
+    the volume mesh's quality figures when it meshes.
     """
     wanted = None if surfaces is None else tuple(int(s) for s in surfaces)
     try:
-        answer = _run_child(str(path), float(diagonal_mm), wanted, bool(volume), budget_s)
+        if hints is None and not quality:
+            answer = _run_child(str(path), float(diagonal_mm), wanted, bool(volume), budget_s)
+        else:
+            with tempfile.TemporaryDirectory(prefix="mesh-probe-opts-") as tmp:
+                options = Path(tmp) / "options.json"
+                payload: dict[str, Any] = {"quality": bool(quality)}
+                if hints is not None:
+                    payload["hints"] = list(hints)
+                options.write_text(json.dumps(payload))
+                answer = _run_child(str(path), float(diagonal_mm), wanted, bool(volume),
+                                    budget_s, options_path=str(options))
     except Exception as exc:  # noqa: BLE001 - the probe never raises
         logger.info("mesh_probe: %s: %s", type(exc).__name__, exc)
         answer = "error"
@@ -344,12 +395,20 @@ def probe_file(path: Path, *, diagonal_mm: float, surfaces: Sequence[int] | None
                               point=(float(c["point"][0]), float(c["point"][1]),
                                      float(c["point"][2])),
                               kind=str(c["kind"])) for c in answer.get("clashes") or ())
+        extra = answer.get("options_out") or {}
+        applied = int(extra.get("applied", 0))
+        unmapped = tuple(int(f) for f in extra.get("unmapped") or ())
+        named = {int(k): (float(v[0]), float(v[1]), float(v[2]), float(v[3]))
+                 for k, v in (extra.get("named") or {}).items()}
+        quality_out = {str(k): float(v) for k, v in (extra.get("quality") or {}).items()}
     except (KeyError, TypeError, ValueError, IndexError):
         return ProbeResult(False, 0, MeshFailure(
             PROBE_ERROR, (), None, "the mesh probe answered in a form that could not be read"), {})
     if failure is not None:
-        return ProbeResult(False, 0, failure, boxes, clashes)
-    return ProbeResult(True, count, None, boxes)
+        return ProbeResult(False, 0, failure, boxes, clashes, hints_applied=applied,
+                           hints_unmapped=unmapped, named_props=named)
+    return ProbeResult(True, count, None, boxes, hints_applied=applied, hints_unmapped=unmapped,
+                       quality=quality_out)
 
 
 #: One defect code per kind the probe names, one-to-one.
@@ -662,6 +721,21 @@ def _bounded_nearest_faces(bodies, queries, *, primary: int, tol: float,
     return out
 
 
+def _bounded_point_faces(shape, faces, point, *, tol: float, deadline: float) -> list[int] | None:
+    """The indices in `faces` of the face(s) nearest `point`, or None when the child did not finish.
+
+    AUDIT ROW 2. This was `_nearest_faces` IN THE PARENT: one uninterruptible
+    `BRepExtrema_DistShapeShape` per candidate face, the deadline checked only between faces. It
+    is now one query to the contact search's child, which runs the same pruning search - so no
+    more faces are measured than before, and a slow face is killed with the group.
+    """
+    near = _bounded_nearest_faces([shape], [(0, tuple(point))], primary=1, tol=tol,
+                                  deadline=deadline)
+    if near is None:
+        return None
+    return sorted({int(faces.FindIndex(face)) for face in near[0]} - {0})
+
+
 def _contact_support_faces(shape, faces, *, tol: float, deadline: float) -> Contact | None:
     """The contact of the nearest pair of touching solids that share no face yet, or None when
     there is no such pair or the deadline passed first. SEAM: tests replace it.
@@ -847,7 +921,7 @@ def _mesh_defects(shape, *, diagonal_mm: float, budget_s: float,
     code = CODE_FOR_KIND.get(failure.kind, DefectCode.mesh_other)
     located: list[int] | None = []
     if failure.point is not None:
-        located = _nearest_faces(faces, failure.point, tol=tol, deadline=deadline)
+        located = _bounded_point_faces(shape, faces, failure.point, tol=tol, deadline=deadline)
     elif trusted := locating_surfaces(failure):
         if mapping is None:
             mapping = faces_for_tags(_face_boxes(faces), result.tag_boxes, tol=tol)
@@ -1009,25 +1083,6 @@ def _clash_gaps(faces, mapping: dict[int, int], clashes: list[Clash], *,
     except Exception as exc:  # noqa: BLE001 - evidence: a failure is "unmeasured", never a raise
         logger.info("mesh_probe: clash gaps: %s: %s", type(exc).__name__, exc)
         return {}, "budget_spent"
-
-
-def _clash_gap(faces, mapping: dict[int, int], clash: Clash, *,
-               deadline: float) -> float | None:
-    """The B-rep distance between the two faces of the leading clash, or None when either is
-    unmapped, the kernel cannot say, or the budget is spent. 0 means the faces really meet; more
-    than 0 means the faces are apart and only their triangles crossed - a gap narrower than the
-    surface mesh's chord, which is the mesher's resolution rather than the part's shape."""
-    a, b = (mapping.get(t) for t in clash.surfaces)
-    if not a or not b or time.monotonic() >= deadline:
-        return None
-    try:
-        from OCP.BRepExtrema import BRepExtrema_DistShapeShape
-
-        extrema = BRepExtrema_DistShapeShape(faces.FindKey(a), faces.FindKey(b))
-        return float(extrema.Value()) if extrema.IsDone() else None
-    except Exception as exc:  # noqa: BLE001 - an unmeasured gap is reported as unknown
-        logger.debug("mesh_probe: clash gap %d/%d: %s", a, b, exc)
-        return None
 
 
 def _tag_in_region(tag: int, box: Box, mapping: dict[int, int], faces, within: Region, *,

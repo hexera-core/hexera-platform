@@ -58,6 +58,7 @@ def _load(name: str, path: Path):
 
 
 evalspec = _load("evalspec", HERE / "evalspec.py")
+meshability_report = _load("meshability_report", HERE / "meshability_report.py")
 
 
 def _rc():
@@ -453,7 +454,8 @@ def result_arm(result_id: str, rep: dict, checked: dict, kind_sha: str) -> dict:
            "model_calls": rep["model"]["calls"], "cost_usd": rep["total_cost_usd"],
            "wall_s": rep["vm"]["shard_seconds"],
            "cost_per_fixed_part": rep["cost_per_fixed_part_usd"],
-           "notes": (f"run {run}; {evalspec.arm(run)['model_role']}; "
+           "notes": (f"run {run}; "
+                     f"{evalspec.ARMS.get(run, {}).get('model_role', 'historical arm')}; "
                      + (f"{meshing['crashed']} file(s) CRASHED (native; isolated, counted in "
                         f"newly_broken only if they meshed before); "
                         if meshing.get("crashed") else "")
@@ -545,6 +547,17 @@ def status(bucket: str, commit: str) -> int:
     return 0
 
 
+#: Shard paths the collector never downloads: the delivered per-file artefacts (repaired STEPs,
+#: mesh-hints sidecars) stay in the bucket. Anchored so it reads the same whether the matcher
+#: searches or matches the path relative to the arm's root.
+PULL_EXCLUDE = r"^(.*/)?artefacts/.*$"
+
+
+def pull_command(root: str, dest: Path) -> list[str]:
+    """The argv that copies one arm's results to `dest`, without the artefacts (PULL_EXCLUDE)."""
+    return ["gcloud", "storage", "rsync", "-r", "-x", PULL_EXCLUDE, root, str(dest)]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -571,7 +584,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.pull:
         for arm in evalspec.ARMS:
             root = f"{bucket}/eval/{arm}-{args.commit[:12]}"
-            cmd = ["gcloud", "storage", "cp", "-r", f"{root}/*", str(source / arm)]
+            cmd = pull_command(root, source / arm)
             print(("DRY-RUN  " if args.dry_run else "") + " ".join(shlex.quote(c) for c in cmd))
             if args.dry_run:
                 continue
@@ -598,6 +611,17 @@ def main(argv: list[str] | None = None) -> int:
     if checked["commit"] != args.commit:
         print(f"REFUSED: the shards ran {checked['commit']}, not {args.commit}", file=sys.stderr)
         return 2
+    # EVERY READABLE FILE OF A MESHABILITY RUN IS ACCOUNTED FOR: scored, or carrying
+    # meshability_score_error. A row with neither would drop out of every count while the row
+    # total still checks out. Checked before anything is sealed or written.
+    if any("returned_step" in r or "meshability_score_error" in r
+           for e in runs["arms"].values() for r in e["rows"]):
+        unscored = {f"{a}/{k}": files for (a, k), e in sorted(runs["arms"].items())
+                    if (files := _rc().unscored_rows(e["rows"]))}
+        if unscored:
+            print("REFUSED: readable row(s) with neither a meshability score nor a "
+                  f"meshability_score_error: {unscored}", file=sys.stderr)
+            return 2
     expected = {"failing": evalspec.SAMPLE_SIZE, "clean": evalspec.CLEAN_SIZE}
     reports = {}
     for (arm, kind), entry in sorted(runs["arms"].items()):
@@ -635,6 +659,17 @@ def main(argv: list[str] | None = None) -> int:
         "checked": checked, "comparisons": comparisons,
         "arms": {f"{a}/{k}": {key: val for key, val in rep.items() if key != "summary"}
                  for (a, k), rep in reports.items()}}, indent=1, sort_keys=True, default=str) + "\n")
+    # THE MESHABILITY REPORT, written whenever the rows were scored with --meshability (the one
+    # meshability wave); absent for the T19/T29 waves, whose rows carry no returned_step.
+    if any("returned_step" in r for e in runs["arms"].values() for r in e["rows"]):
+        report = meshability_report.build(
+            {key: entry["rows"] for key, entry in runs["arms"].items()},
+            summarise=_rc().meshability_summary,
+            comparison=evalspec.COMPARISONS["AI_MARGINAL"])
+        (out / "meshability.json").write_text(
+            json.dumps(report, indent=1, sort_keys=True, default=str) + "\n")
+        (out / "meshability.md").write_text(meshability_report.render(report))
+        print(f"meshability report: {out / 'meshability.json'}, {out / 'meshability.md'}")
     readme = out / "README.md"
     if readme.is_file():
         readme.write_text(fill(readme.read_text(encoding="utf-8"),

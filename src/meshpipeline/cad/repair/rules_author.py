@@ -214,14 +214,15 @@ def _gap_op(tries: GapTries, fingerprint: str):
 
 
 def gap_defects(defects) -> tuple:
-    """The defects the GAP PRE-PASS aims at (`region_loop._gap_prepass`): a 3D-stage clash the
+    """The defects the GAP PRE-PASS aims at (`region_loop._meshability_pass`): a 3D-stage clash the
     probe measured APART (`clash_kind` GAP) that the gap operation claims, in a stable order. Empty
     when the operation is not in the catalogue."""
     op = _OPS_BY_NAME.get(GAP_OP)
     if op is None:
         return ()
-    return tuple(sorted((d for d in defects if _sub_element_gap(d) and _volume_stage_recorded(d)
-                         and d.code in op.answers and d.fingerprint and op.targets_for(d)),
+    from meshpipeline.cad.repair.gap_split import claims_gap
+
+    return tuple(sorted((d for d in defects if claims_gap(d) and op.targets_for(d)),
                         key=lambda d: (d.entity_index, d.code.value, d.fingerprint)))
 
 
@@ -250,6 +251,26 @@ def gap_package(region: Region, defect, tries: GapTries, *, original: Measure,
                     rationale=(f"{LABEL}: gap pre-pass - {GAP_OP} at sag share "
                                f"{getattr(candidate.op, 'sag_share', 0.0):g} on a {defect.code.value} the probe "
                                "measured apart"))
+
+
+def pass_package(region: Region, defect, op, *, original: Measure, rationale: str,
+                 budget_s: float | None = None) -> TargetPackage:
+    """One meshability-pass application as a package (`region_loop._meshability_pass`): `op` - a
+    registered entry built at its rung - aimed at `defect`, built exactly as every rules package is,
+    so it passes the same gates. `budget_s`, given, caps the package's own timeout (the pass's
+    share of the clock bounds the whole attempt, as `gap_package`'s does)."""
+    budget = None
+    if budget_s is not None:
+        budget = PackageBudget(max_ops=1, timeout_s=min(float(rcfg.CAD_REPAIR_TIMEOUT_S),
+                                                        max(float(budget_s), 0.0)),
+                               model_calls=0, deviation_mm=0.0)
+    candidate = Candidate(op=op,
+                          targets=(EntityRef(entity_type=str(defect.entity_type),
+                                             fingerprint=defect.fingerprint,
+                                             entity_index=int(defect.entity_index),
+                                             ambiguous=bool(getattr(defect, "ambiguous", False))),),
+                          defect_code=defect.code, defect_fingerprint=defect.fingerprint)
+    return _package(candidate, region, original=original, rationale=rationale, budget=budget)
 
 
 def _package(candidate: Candidate, region: Region, *, original: Measure, rationale: str,
