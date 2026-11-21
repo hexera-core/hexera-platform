@@ -23,6 +23,42 @@ import numpy as np
 #: in one plane and overlap (coincident faces, typically two bodies sharing a wall unglued).
 CROSSING = "crossing"
 COPLANAR = "coplanar"
+#: The kind a clash is REPORTED as once the kernel has measured its two B-rep faces apart: the
+#: triangles crossed (or overlapped) but the faces themselves never touch, so the clash is the
+#: surface mesh's chord cutting across a gap narrower than an element - the mesher's resolution,
+#: not the part's shape. `clashing_surfaces` never returns it; `reported_kind` does.
+GAP = "gap"
+
+#: What counts as touching, as a FRACTION OF THE PART'S DIAGONAL, and the floor for a part with no
+#: usable diagonal. region_loop.REAL_INTERSECTION_GAP_FRACTION / _FLOOR_MM state the same rule for
+#: ordering; a test holds the two equal so they cannot disagree about the word.
+TOUCHING_GAP_FRACTION = 1e-6
+TOUCHING_GAP_FLOOR_MM = 1e-9
+
+
+def touching_margin_mm(diagonal_mm: float | None) -> float:
+    """The B-rep gap at or under which two faces count as meeting, for a part this big. Pure."""
+    try:
+        scaled = TOUCHING_GAP_FRACTION * float(diagonal_mm or 0.0)
+    except (TypeError, ValueError):
+        scaled = 0.0
+    if scaled != scaled:                         # NaN
+        scaled = 0.0
+    return max(TOUCHING_GAP_FLOOR_MM, scaled)
+
+
+def reported_kind(mesh_kind: str, gap_mm: float | None, diagonal_mm: float | None) -> str:
+    """The clash's kind as a defect states it: `mesh_kind` (what the TRIANGLES did) unless the
+    kernel measured the two faces apart by more than the touching margin, which is GAP.
+
+    WHY THE TWO MUST AGREE (wave 4, abc 0060_00608290): the triangle test said "crossing" while
+    the B-rep distance between the same two faces was 1.46 mm on a 341 mm part - the coarse
+    cylinder's chords cut through a plane the cylinder never reaches. Reported as a crossing, every
+    reader took it for real interference and aimed heal/fragment at it. An unmeasured gap (None)
+    is unknown, not zero, so the triangle kind stands."""
+    if isinstance(gap_mm, bool) or not isinstance(gap_mm, (int, float)):
+        return mesh_kind
+    return GAP if float(gap_mm) > touching_margin_mm(diagonal_mm) else mesh_kind
 
 #: Relative tolerances, as fractions of the mesh's diagonal (lengths) or plain numbers (barycentric
 #: and parametric). An edge that merely ENDS on another surface is not a crossing: tetgen accepts
