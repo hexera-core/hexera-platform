@@ -13,6 +13,25 @@ clock written around it could stop it. A deadline checked BETWEEN calls does not
 This test is the standing guard. It names every call site that exists today; a NEW one fails here
 instead of being discovered when a shard stops answering. Bounding a known site means DELETING its
 entry, so the list only ever shrinks.
+
+WHAT IT RESOLVES: direct calls and attribute calls by name; `import ... as` aliases; whole
+`BOPAlgo_*` / `BRepAlgoAPI_*` families; call counts per function; child-side reachability within a
+module (entry points and registered kernels, followed through local calls); and calls INTO a
+child-side helper from another repair module, through `import`, `from ... import` (absolute or
+relative) and their aliases.
+
+KNOWN LIMITS - deliberately out of scope, because this is a tripwire for the ordinary way a kernel
+call gets written, not a sound analysis. It does NOT see:
+  - a kernel bound to a variable or passed as a value (`D = BRepExtrema_DistShapeShape; D(a, b)`,
+    `getattr(mod, "BRepExtrema_...")`, a dict of constructors);
+  - an uninterruptible entry point that is neither in UNINTERRUPTIBLE nor one of the families;
+  - methods: a kernel reached through a class's method, or a call on an object returned by
+    another call;
+  - code outside `cad/repair` that calls into it, and a repair helper re-exported under another
+    module's name;
+  - whether a bounded child is ACTUALLY bounded at runtime - that is `occ_distance` and
+    `bounded_child`'s own tests.
+A finding in one of these shapes is a reason to extend the guard, not a sign it is broken.
 """
 from __future__ import annotations
 
@@ -162,10 +181,6 @@ KNOWN_UNBOUNDED = {
     ("operations.py", "_common_volume", "BRepAlgoAPI_Common"),
     ("operations.py", "_general_fuse", "BOPAlgo_Builder"),
     # --- found by THIS GUARD, not by the manual audit -----------------------------------------
-    # The investigator's thickness tool. Bounded today only by `localize._bounded`'s FORK, which
-    # is the biggest unowned process-safety item on the branch: a forked child inherits the
-    # parent's OCC state and its locks, so it can hang the same way.
-    ("investigator_tools.py", "_thickness_kernel", "BRepExtrema_DistShapeShape"),
     # A whole call family nobody had audited: GeomAPI projection, reached from the spotlight.
     ("spotlight.py", "_normal_of_face", "GeomAPI_ProjectPointOnSurf"),
     # --- BRepCheck_Analyzer: the validity check, uninterruptible and everywhere ----------------
@@ -206,6 +221,50 @@ def _enclosing(tree: ast.AST) -> dict[ast.AST, str]:
     return where
 
 
+#: The package the guard reads, as an import path, so a call into a sibling module can be resolved.
+PACKAGE = "meshpipeline.cad.repair"
+
+
+def _imports(tree: ast.AST) -> tuple[dict[str, str], dict[str, str], dict[str, tuple[str, str]]]:
+    """What a module's imports bind, read from EVERY import statement (the repair package imports
+    OCP inside functions). Returns three maps:
+
+    - `aliases`:  local name -> the imported name (`... import BRepExtrema_DistShapeShape as Dist`)
+    - `modules`:  local name -> sibling module file (`from meshpipeline.cad.repair import
+                  occ_distance as od`, `import meshpipeline.cad.repair.occ_distance as od`)
+    - `functions`: local name -> (sibling module file, function) (`from .occ_distance import f`)
+    """
+    aliases: dict[str, str] = {}
+    modules: dict[str, str] = {}
+    functions: dict[str, tuple[str, str]] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.asname and alias.name.startswith(PACKAGE + "."):
+                    modules[alias.asname] = alias.name.rsplit(".", 1)[-1] + ".py"
+        elif isinstance(node, ast.ImportFrom):
+            source = node.module or ""
+            if node.level:                                  # relative: `.x` or `from . import x`
+                source = f"{PACKAGE}.{source}" if source else PACKAGE
+            for alias in node.names:
+                local = alias.asname or alias.name
+                aliases[local] = alias.name
+                if source == PACKAGE:
+                    modules[local] = alias.name + ".py"
+                elif source.startswith(PACKAGE + "."):
+                    functions[local] = (source.rsplit(".", 1)[-1] + ".py", alias.name)
+    return aliases, modules, functions
+
+
+def _called_name(func: ast.expr, aliases: dict[str, str]) -> str:
+    """The name a call really invokes: an attribute's own name, or a bare name through its alias."""
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    if isinstance(func, ast.Name):
+        return aliases.get(func.id, func.id)
+    return ""
+
+
 def _is_kernel(name: str) -> bool:
     return name in UNINTERRUPTIBLE or name.startswith(UNINTERRUPTIBLE_FAMILIES)
 
@@ -213,14 +272,13 @@ def _is_kernel(name: str) -> bool:
 def _sites_in(module: str, tree: ast.AST, *, in_parent_only: bool = False) -> Counter:
     """How many times each function in one module calls each uninterruptible entry point."""
     where = _enclosing(tree)
+    aliases = _imports(tree)[0]
     bounded = _child_side(module, tree, where) if in_parent_only else set()
     found: Counter = Counter()
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
-        func = node.func
-        name = (func.attr if isinstance(func, ast.Attribute)
-                else func.id if isinstance(func, ast.Name) else "")
+        name = _called_name(node.func, aliases)
         enclosing = where.get(node, "<module>")
         if _is_kernel(name) and enclosing not in bounded:
             found[(module, enclosing, name)] += 1
@@ -305,15 +363,69 @@ def _ambiguous(module: str, tree: ast.AST) -> list[str]:
 def _holds_a_kernel_call(tree: ast.AST, where: dict[ast.AST, str], function: str) -> bool:
     """Whether `function` itself calls an uninterruptible entry point. Only those matter here: an
     exemption that covers no kernel call hides nothing."""
+    aliases = _imports(tree)[0]
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call) or where.get(node, "<module>") != function:
             continue
-        func = node.func
-        name = (func.attr if isinstance(func, ast.Attribute)
-                else func.id if isinstance(func, ast.Name) else "")
-        if _is_kernel(name):
+        if _is_kernel(_called_name(node.func, aliases)):
             return True
     return False
+
+
+def _cross_module_target(func: ast.expr, modules: dict[str, str],
+                         functions: dict[str, tuple[str, str]]) -> tuple[str, str] | None:
+    """The (sibling module, function) a call resolves to, or None for anything else."""
+    if isinstance(func, ast.Name):
+        return functions.get(func.id)
+    if isinstance(func, ast.Attribute):
+        owner = func.value
+        if isinstance(owner, ast.Name) and owner.id in modules:
+            return modules[owner.id], func.attr
+        if isinstance(owner, ast.Attribute):                # `mp.occ_distance.distances(...)`
+            return owner.attr + ".py", func.attr
+    return None
+
+
+def _cross_module_parent_calls(modules: dict[str, ast.AST]) -> list[str]:
+    """Parent-side calls, from ANOTHER module, into a function exempted as child-side that can
+    reach a kernel call. The per-module call graph cannot see these, so the exemption would hide
+    them. Registered kernels are left to the registry test, which already names their call sites."""
+    registered = {(m, f) for m, names in _registered_kernels().items() for f in names}
+    exempt: dict[tuple[str, str], bool] = {}
+    sides: dict[str, set[str]] = {}
+    for module, tree in modules.items():
+        where = _enclosing(tree)
+        graph = _calls_in(tree, where)
+        sides[module] = _child_side(module, tree, where)
+        for fn in sides[module]:
+            exempt[(module, fn)] = any(_holds_a_kernel_call(tree, where, inner)
+                                       for inner in _reachable({fn}, graph))
+    found: list[str] = []
+    for module, tree in modules.items():
+        where = _enclosing(tree)
+        _, mods, funcs = _imports(tree)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            target = _cross_module_target(node.func, mods, funcs)
+            caller = where.get(node, "<module>")
+            if (target is None or target[0] == module or caller in sides[module]
+                    or target in registered or not exempt.get(target, False)):
+                continue
+            found.append(f"{module}:{caller} calls {target[0]}:{target[1]}, which is exempted as "
+                         "child-side")
+    return sorted(set(found))
+
+
+def test_no_child_side_helper_is_called_from_another_modules_parent():
+    """THE EXEMPTION HOLDS ONLY IF NOTHING IN THE PARENT REACHES THE HELPER, from any module."""
+    modules = {path.name: ast.parse(path.read_text(), filename=str(path))
+               for path in sorted(REPAIR.glob("*.py"))}
+    found = _cross_module_parent_calls(modules)
+
+    assert not found, ("a function exempted as child-side is called from the parent in another "
+                       "module, so its kernel call is unbounded on that path:\n  "
+                       + "\n  ".join(found))
 
 
 def test_a_registered_kernel_is_never_called_straight_from_the_parent():
@@ -435,3 +547,53 @@ def test_a_parent_wrapper_around_a_child_side_chain_is_ambiguous():
     found = _ambiguous("chain.py", ast.parse(source))
 
     assert found == ["chain.py:_work is reached from the child entry AND called by in_the_parent"]
+
+
+def test_an_aliased_kernel_import_is_still_a_kernel_call():
+    """`from OCP.BRepExtrema import BRepExtrema_DistShapeShape as Dist; Dist(a, b)` is the same
+    uninterruptible call under another name, so the guard judges the imported name."""
+    source = ("def f(a, b):\n"
+              "    from OCP.BRepExtrema import BRepExtrema_DistShapeShape as Dist\n"
+              "    return Dist(a, b)\n")
+    sites = _sites_in("new.py", ast.parse(source))
+
+    assert _over_allowance(sites) == [("new.py", "f", "BRepExtrema_DistShapeShape")]
+
+
+_CHILD_MODULE = (
+    "def _measure_here(a, b):\n"
+    "    return BRepExtrema_DistShapeShape(a, b)\n"
+    "def _child_main(argv):\n"
+    "    return _measure_here(argv[0], argv[1])\n"
+    "if __name__ == '__main__':\n"
+    "    raise SystemExit(_child_main(sys.argv[1:]))\n")
+
+
+@pytest.mark.parametrize("caller", [
+    "from meshpipeline.cad.repair import occ_distance\n"
+    "def f(a, b):\n    return occ_distance._measure_here(a, b)\n",
+    "from meshpipeline.cad.repair import occ_distance as od\n"
+    "def f(a, b):\n    return od._measure_here(a, b)\n",
+    "def f(a, b):\n"
+    "    from meshpipeline.cad.repair.occ_distance import _measure_here as m\n"
+    "    return m(a, b)\n",
+    "def f(a, b):\n"
+    "    from .occ_distance import _measure_here\n"
+    "    return _measure_here(a, b)\n",
+])
+def test_a_child_side_helper_called_from_another_modules_parent_is_caught(caller):
+    """A helper is child-side only while nothing in the PARENT reaches it. A call from ANOTHER
+    module is as real as a local one, and the per-module call graph cannot see it."""
+    modules = {"occ_distance.py": ast.parse(_CHILD_MODULE), "caller.py": ast.parse(caller)}
+
+    assert _cross_module_parent_calls(modules) == [
+        "caller.py:f calls occ_distance.py:_measure_here, which is exempted as child-side"]
+
+
+def test_a_cross_module_call_from_a_child_side_caller_is_fine():
+    caller = ("from meshpipeline.cad.repair import occ_distance\n"
+              "def _child_main(argv):\n    return occ_distance._measure_here(argv, argv)\n"
+              "if __name__ == '__main__':\n    raise SystemExit(_child_main(sys.argv[1:]))\n")
+    modules = {"occ_distance.py": ast.parse(_CHILD_MODULE), "caller.py": ast.parse(caller)}
+
+    assert _cross_module_parent_calls(modules) == []
