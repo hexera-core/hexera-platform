@@ -233,7 +233,9 @@ def test_a_final_scan_with_no_time_left_keeps_the_mesh_error(monkeypatch):
     session = RepairSession("shape", measurer=lambda s: MEASURE, remaining_s=lambda: next(left))
     assert session.defects() == (_OVERLAP, _NOVOL)
     after = session._rescan(face_scan=True)
-    assert after == (_OVERLAP, _NOVOL) and session.defects() == after
+    # Kept, and marked as no answer: the skip is not a fresh verdict either way.
+    assert after[:2] == (_OVERLAP, _NOVOL) and session.defects() == after
+    assert [d.code for d in after[2:]] == [DefectCode.mesh_timeout]
     assert region_loop._terminal(session, after, escalated=[], packages=(),
                                  fallback="time_budget") != region_loop.RESOLVED
 
@@ -996,3 +998,22 @@ def test_the_rules_author_keeps_the_kernel_cure_beside_a_sub_element_gap(monkeyp
     # And with no kernel cure at all, the gap is still aimed at, exactly as before.
     package = rules_author(None, original=MEASURE)(region, (gap,), ())
     assert package is not None and package.plan[0]["op"].name == "fragment_bodies"
+
+
+def test_a_skipped_final_probe_is_never_read_as_a_definitive_mesh_failure(monkeypatch):
+    # Greptile P1 (#505/#520): a session that probed before and has no budget at the final scan
+    # carries its old mesh findings forward. Without a no-answer marker on that list, a stale
+    # refusal beside a remaining geometry error read as a fresh one and turned `repaired` into
+    # `unmeshable`. The skip is no answer: the carried finding stays, and so does the marker.
+    from meshpipeline.cad.repair.loop import definitive_mesh_failure
+
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
+    _scan(monkeypatch, ((_OPENING,), True))
+    _probe(monkeypatch, (_OVERLAP,))
+    left = iter([300.0, 0.0])
+    session = RepairSession("shape", measurer=lambda s: MEASURE, remaining_s=lambda: next(left))
+    assert definitive_mesh_failure(session.defects()) is True      # a real answer: it refused
+    after = session._rescan(face_scan=True, final=True)
+    assert _OPENING in after and _OVERLAP in after                 # nothing erased
+    assert [d.code for d in after].count(DefectCode.mesh_timeout) == 1
+    assert definitive_mesh_failure(after) is False

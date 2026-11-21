@@ -115,3 +115,35 @@ def test_the_backfill_does_not_reinterpret_a_row_that_states_its_ending():
     for outcome in ("repaired", "no_change", "nothing_to_repair", "not_attempted:manual_cleanup",
                     "unreadable", "unavailable", "repair_failed", "changed_without_fixing"):
         assert E.backfill_ending({"outcome": outcome}) == outcome
+
+
+# A PART THAT STILL WILL NOT MESH IS NOT "REPAIRED" (eval wave 4, abc/0051_00513292): a package
+# was committed and accepted, the run stopped `regions_exhausted` with geometry errors left beside
+# a mesh one, and `kept > 0` alone made the ending `repaired` while gmsh still refused the part.
+
+def test_kept_operations_over_a_definitive_mesh_failure_end_unmeshable():
+    assert E.ending_for(kept=1, attempted=1, stopped_because="regions_exhausted",
+                        mesh_failed=True) == "unmeshable"
+    assert E.ending_for(kept=3, attempted=4, stopped_because="stalled",
+                        mesh_failed=True) == "unmeshable"
+    # Still not a delivery, whatever it is called.
+    assert "unmeshable" in E.NOT_REPAIRED
+
+
+def test_kept_operations_with_no_mesh_failure_are_still_repaired():
+    # Mesh probe off, or a probe that passed: nothing changes.
+    assert E.ending_for(kept=1, attempted=1, stopped_because="regions_exhausted") == "repaired"
+    assert E.ending_for(kept=1, attempted=1, stopped_because="resolved",
+                        mesh_failed=False) == "repaired"
+
+
+def test_a_mesh_failure_does_not_outrank_the_harder_endings():
+    assert E.ending_for(kept=1, attempted=1, stopped_because="resolved", mesh_failed=True,
+                        gate_refusal=True) == "refused"
+    assert E.ending_for(kept=1, attempted=1, stopped_because="escalated",
+                        mesh_failed=True) == "escalated"
+    assert E.ending_for(kept=1, attempted=1, stopped_because="scan_incomplete",
+                        mesh_failed=True) == "scan_incomplete"
+    # Nothing kept: the existing honest "we tried and nothing held" is not renamed.
+    assert E.ending_for(kept=0, attempted=2, stopped_because="stalled",
+                        mesh_failed=True) == "attempted_none_held"
