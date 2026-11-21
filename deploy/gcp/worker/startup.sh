@@ -74,6 +74,10 @@ for pair in "deployment-id:DEPLOYMENT_ID" \
             "minio-secure:MINIO_SECURE" \
             "gcp-mesh-bucket:GCP_MESH_BUCKET" \
             "cloudrun-job:CLOUDRUN_JOB" \
+            "postgres-host:POSTGRES_HOST" \
+            "postgres-port:POSTGRES_PORT" \
+            "postgres-db:POSTGRES_DB" \
+            "postgres-user:POSTGRES_USER" \
             "cad-repair-enabled:CAD_REPAIR_ENABLED" \
             "cad-repair-review-enabled:CAD_REPAIR_REVIEW_ENABLED" \
             "cad-repair-fill-planar-holes:CAD_REPAIR_FILL_PLANAR_HOLES" \

@@ -707,6 +707,16 @@ WORKER_METADATA=(
   "minio-secure=${MINIO_SECURE:-${MINIO_ENDPOINT:+true}}"
   "gcp-mesh-bucket=${GCP_MESH_BUCKET:-}"
   "cloudrun-job=${CLOUDRUN_MESH_JOB:-}"
+  # THE DATABASE'S ADDRESS, by the same rule and from the same variables create-api-service.sh gives
+  # the API. `database-url` stays empty (above: a DSN carries the password), so the worker composes
+  # its connection from POSTGRES_* - and in a personal environment the env object's POSTGRES_HOST is
+  # .env.example's `localhost`. A dev-<slug> worker took each job off the queue, could not reach
+  # Postgres, could not record the failure either, and the job sat "pending" forever (dev-raymond,
+  # 2026-11-21). No credential here: the password still arrives by Secret Manager name.
+  "postgres-host=${MIGRATE_DB_HOST:-}"
+  "postgres-port=${MIGRATE_DB_HOST:+${MIGRATE_DB_PORT:-5432}}"
+  "postgres-db=${MIGRATE_DB_HOST:+${MIGRATE_DB_NAME:-meshpipeline}}"
+  "postgres-user=${MIGRATE_DB_HOST:+${MIGRATE_DB_USER:-meshpipeline}}"
   # Lets the VM's watchdog publish `hexera/*` guest attributes - the image each container runs and
   # its health - which is how step 7 knows a rolled VM really runs the new digest.
   "enable-guest-attributes=TRUE"
