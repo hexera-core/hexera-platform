@@ -278,3 +278,21 @@ def test_a_file_crs_never_touched_returns_the_upload(tmp_path, monkeypatch):
         assert row["valid_to_invalid"] is False
         s = rc.meshability_summary([row])
         assert s["no_returned_step"] == 0 and s["source_untouched"] == 1
+
+
+def test_sicn_floor_sensitivity_counts_hint_only_files_per_floor():
+    def r(before, default, hints, sicn=None):
+        return {"returned_step": {"present": True, "source": "repaired", "hints": "ok"},
+                "meshes_before": before, "meshes_after_default": default,
+                "meshes_after_hints": hints,
+                "mesh_quality_after_hints": {} if sicn is None else {"min_sicn": sicn}}
+    rows = [r(False, True, None),            # meshes at default: counts at every floor
+            r(False, False, True, 0.0005),   # hints-only, very poor
+            r(False, False, True, 0.02),     # hints-only, fair
+            r(False, False, True, None),     # hints-only, no reading: never counts by floor
+            r(True, True, None)]             # meshed before: not newly
+    s = rc.meshability_summary(rows)
+    assert s["meshes_with_hints_by_sicn_floor"] == {"0.0": 4, "0.001": 3, "0.01": 3, "0.05": 2}
+    assert s["newly_meshes_with_hints_by_sicn_floor"] == {
+        "0.0": 3, "0.001": 2, "0.01": 2, "0.05": 1}
+    assert s["meshes_with_hints"] == 5   # the headline applies no floor beyond SICN > 0
