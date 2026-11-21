@@ -1525,6 +1525,17 @@ def flat_hole_mouths(facts: dict) -> None:
     ports_now = [o for o in ops if o.get("role") in ("inlet", "outlet")]
     if len(ports_now) < 2 or facts.get("flow") != "internal":
         return
+    # INS-18: A HOLE THROUGH A BODY OF FLUID IS NO OPENING. A part read as the fluid itself (a fluid domain)
+    # whose map finds space through it no bigger than its own volume is fluid with something solid passing
+    # through it - a flange's bolt holes, a boss's bore - and those holes are where the fluid is not, never
+    # where it enters or leaves. Proposed beside its ends (a flange face proposed as one wide disc reaches
+    # every bolt hole's axis), they were declared ports no flat end of the fluid could meet ("declared 6
+    # ports but only 3 openings were detected", two batch-4 pipe fittings). A vessel read as fluid (its open
+    # space more than its volume, INS-15) keeps them.
+    inside = facts.get("inside") or {}
+    if str(facts.get("input_kind") or "") == "fluid-domain" and \
+            float(inside.get("open_mm3") or 0.0) <= float(inside.get("enclosed_mm3") or 0.0):
+        return
 
     def far_end(f: dict) -> bool:
         c, n = f["centroid_mm"], f["normal"]

@@ -214,7 +214,9 @@ class InsideMap:
                "mouths_per_passage": [len(p.mouths) for p in passages],
                "side_pockets": len([p for p in self.pockets if not p.passage]),
                "cell_mm": round(self.h * mm_per_unit, 4),
-               "enclosed_mm3": round(self.enclosed_volume * mm_per_unit ** 3, 3)}
+               "enclosed_mm3": round(self.enclosed_volume * mm_per_unit ** 3, 3),
+               # the space of its passages, which open to the outside (INS-18: set against enclosed_mm3)
+               "open_mm3": round(sum(p.volume for p in passages) * mm_per_unit ** 3, 3)}
         if passages:
             out["deepest_mm"] = r(passages[0].deepest)
             out["clearance_mm"] = round(passages[0].clearance * mm_per_unit, 3)
