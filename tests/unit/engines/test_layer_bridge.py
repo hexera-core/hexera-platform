@@ -187,10 +187,15 @@ def test_the_internal_case_bridges_from_the_cells_its_layers_grow_into(tmp_path)
     assert summary["near_band_level"] > summary["surface_level"][1] and cell < 0.006
     # bridged from the band's cells (half the wall level's), with the wall's own area for the room
     n = int(_num(text, "nSurfaceLayers"))
-    assert abs(n - CR.layer_bridge(FIRST_MM * 1e-3, cell, n_plan=5, growth=1.2, last_rel=0.3)[0]) <= 1 and n > 15
+    n_b, _f, stack = CR.layer_bridge(FIRST_MM * 1e-3, cell, n_plan=5, growth=1.2, last_rel=0.3)
+    # the bridged stack is thicker than the cells it grows into, so it is capped there from the asked first
+    # height (CFDREQ-9 on a curved wall, rulebook 75) - fewer layers than the bridge, still far more than 5
+    n_c, g_c, _s, _l = CR.capped_stack(FIRST_MM * 1e-3, cell, stack, cell, 1.2)
+    assert stack > cell and abs(n - n_c) <= 1 and 5 < n < n_b
+    assert abs(_num(text, "firstLayerThickness") - FIRST_MM * 1e-3) < 1e-12
     assert _num(text, "minDeterminant", inside="relaxed") < 0.001
     row = ask.rows[ask.rid("layers:first_height")]
-    assert f"{n} layers (not our usual 5)" in row["built"]
+    assert f"{n} layers, each" in row["built"] and "a thicker stack is not kept" in row["built"]
     # nothing asked: the case it always wrote
     ws2 = tmp_path / "bare"
     (ws2 / "system").mkdir(parents=True)

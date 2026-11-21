@@ -1769,6 +1769,40 @@ def layer_bridge(first_m: float, wall_cell_m: float, *, n_plan: int, growth: flo
     return n, max(first, fill), total
 
 
+#: CFDREQ-9, the stack's ceiling on a curved or tight wall: the share of the narrowest gap one wall's stack may fill
+#: (two walls face each other across it, and the core between them keeps some cells)
+STACK_GAP_SHARE = 0.25
+#: CFDREQ-9: the steepest growth a capped stack may take to close its step into the core cell
+MAX_CAPPED_GROWTH = 1.3
+#: CFDREQ-9: the last layer against the core cell a stack aims for (snappy's own relative finalLayerThickness)
+STACK_LAST_TO_CORE = 0.3
+
+
+def capped_stack(first_m: float, wall_cell_m: float, stack_m: float, cap_m: float,
+                 growth: float) -> tuple[int, float, float, float]:
+    """THE FIRST HEIGHT IS KEPT, THE STACK IS SHORTENED (CFDREQ-9 on a curved or tight wall): (layers, growth,
+    stack, last layer against the core cell) for a stack from `first_m` no thicker than `cap_m`; (0, growth,
+    stack, 0) when it fits already. snappyHexMesh cannot keep a stack thicker than the wall's own cells where the
+    surface curves or the gap is narrow: it cuts the count and spreads what is left over fewer, thicker layers,
+    so the first height asked is lost (a rotor: 19 planned, 5.4 kept, the first cell 0.36 mm against 0.029 mm).
+    The order is the user's: the first height, then layers on the wall, then the stack's shape, then its count.
+    So the stack is capped from the asked first height, and the growth rises - up to MAX_CAPPED_GROWTH - only as
+    far as the step into the core needs to reach STACK_LAST_TO_CORE; past that the step is left short."""
+    first, cell = float(first_m), float(wall_cell_m)
+    if stack_m <= cap_m or first <= 0 or cell <= 0 or cap_m <= first:
+        return 0, float(growth), float(stack_m), 0.0
+    g = max(1.05, float(growth))
+    best = (1, round(g, 2), first, first / cell)
+    while g <= MAX_CAPPED_GROWTH + 1e-9:
+        n = max(1, int(math.floor(math.log(1.0 + cap_m * (g - 1.0) / first) / math.log(g))))
+        last = first * g ** (n - 1)
+        best = (n, round(g, 2), first * (g ** n - 1.0) / (g - 1.0), last / cell)
+        if last / cell >= STACK_LAST_TO_CORE:
+            break
+        g += 0.05
+    return best
+
+
 def _snappy_layers(ask: Ask, text: str, wall_cell_m: float | None, bridge: Mapping | None = None) -> str:
     """The layer thicknesses in absolute sizes when the user gave one (first height, stack, or a y+ turned into a
     first height); the growth alone keeps our relative sizes. With `bridge` (CFDREQ-9), a first layer far thinner
@@ -1810,8 +1844,20 @@ def _snappy_layers(ask: Ask, text: str, wall_cell_m: float | None, bridge: Mappi
             out = re.sub(r"\bnSurfaceLayers\s+[1-9][0-9]*\s*;", f"nSurfaceLayers {n_new};", out)
             bridged = (n, n_new, first, first_new, stack)
             n, first = n_new, first_new
+    capped = None
+    cap = bridge.get("stack_cap") if bridge is not None else None
+    if bridged is not None and cap and bridged[4] > float(cap):
+        # CFDREQ-9 ON A CURVED OR TIGHT WALL: the ASKED first height kept (a bridge that ran out of layers had
+        # thickened it), the stack shortened to the cap
+        n_c, g_c, stack_c, last_c = capped_stack(bridged[2], float(wall_cell_m), bridged[4], float(cap), g)
+        if n_c and n_c <= MAX_BRIDGE_LAYERS:
+            first = bridged[2]
+            out = re.sub(r"\bnSurfaceLayers\s+[1-9][0-9]*\s*;", f"nSurfaceLayers {n_c};", out)
+            capped = (bridged[0], n_c, g_c, bridged[4], stack_c, last_c, float(cap))
+            bridged = None
+            n, g = n_c, g_c
     thick = None
-    if (bridged is None and first is not None and total is None and ask.n_layers is None and n > 0
+    if (bridged is None and capped is None and first is not None and total is None and ask.n_layers is None and n > 0
             and wall_cell_m and not (wf is not None and wf["treatment"] == "functions")):
         # CFDREQ-9, THE THICK SIDE: a first layer so thick that the plan's layers make a stack several wall cells
         # deep, which snappyHexMesh cannot shrink the mesh for (a y+ 50 layer, 1.35 mm under 1.72 mm cells: 5 layers
@@ -1859,7 +1905,7 @@ def _snappy_layers(ask: Ask, text: str, wall_cell_m: float | None, bridge: Mappi
             if new < ours:
                 out = _sub(out, "minVol", f"{new:.3g}", inside="meshQualityControls", count=1)
         out = _layer_determinant(ask, out, thinnest, float(wall_cell_m))
-        if bridged is None and first is not None and wall_cell_m / first > THIN_LAYER_RATIO:
+        if bridged is None and capped is None and first is not None and wall_cell_m / first > THIN_LAYER_RATIO:
             # a stack far thinner than the cells it grows into is hard for the mesher to keep (measured: a 0.011 mm
             # first layer under 2 mm wall cells kept layers on 1.8% of a wing): said where it is set and where the
             # layers are reported, with what keeps more of them
@@ -1870,6 +1916,8 @@ def _snappy_layers(ask: Ask, text: str, wall_cell_m: float | None, bridge: Mappi
                 ask.layer_note = thin
     if bridged is not None:
         _say_bridge(ask, bridged, g, float(wall_cell_m or 0.0))
+    if capped is not None:
+        _say_capped(ask, capped, float(wall_cell_m or 0.0))
     if thick is not None:
         _say_thick(ask, thick, g, float(wall_cell_m or 0.0))
     if wf is not None and first is not None:
@@ -2045,6 +2093,24 @@ def _layer_determinant(ask: Ask, text: str, thinnest: float, wall_cell_m: float)
     else:
         block = re.sub(r"relaxed\s*\{", f"relaxed {{ minDeterminant {want:.3g};", block, count=1)
     return text[:m.start()] + block + text[m.end():]
+
+
+def _say_capped(ask: Ask, capped: tuple, wall_cell_m: float) -> None:
+    """CFDREQ-9 on a curved or tight wall, in the rows' words: the first height kept, the stack shortened, and the
+    step into the core where the cap leaves it short."""
+    n0, n, g, stack, stack_c, last_c, cap = capped
+    how = (f"{n} layers, each {MR._g(g)} times the one under it, in a {_mm(stack_c)} stack (not the {_mm(stack)} "
+           f"that carries the layers out to the {_mm(wall_cell_m)} wall cells): a thicker stack is not kept where "
+           f"the surface curves or the gap is narrow, and the mesher would thicken the first layer to keep it")
+    if last_c < STACK_LAST_TO_CORE:
+        how += (f"; the last layer is {MR._g(round(last_c, 2))} of the wall cell, short of the "
+                f"{MR._g(STACK_LAST_TO_CORE)} we aim for - finer cells at the walls close that step")
+    field = "layers:y_plus" if ask.first_m is None and ask.y_plus is not None else "layers:first_height"
+    row = ask.rows.get(ask.rid(field) or "")
+    if row is not None:
+        row["built"] = f"{row['built']}; {how}"
+        row["layers"] = n
+    ask.layer_note = ask.layer_note or how
 
 
 def _say_bridge(ask: Ask, bridged: tuple, g: float, wall_cell_m: float) -> None:

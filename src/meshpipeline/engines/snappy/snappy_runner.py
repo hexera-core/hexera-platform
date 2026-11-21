@@ -1167,7 +1167,10 @@ mergeTolerance 1e-6; debug 0;
         _body_cell = base_actual / (2 ** smax)
         _shm = CR.snappy_dict(_ask, _shm, wall_cell_m=_body_cell,
                               bridge=_layer_bridge_room(ws / "constant" / "triSurface" / f"{surface_name}.stl",
-                                                        _body_cell, max_cells))
+                                                        _body_cell, max_cells,
+                                                        narrowest_gap_m=(_gap.record().get("narrowest_m")
+                                                                         if _gap is not None and _gap.spots
+                                                                         else None)))
         _ask.write(ws)
     (ws / "system" / "snappyHexMeshDict").write_text(_shm)
     # SYNTHETIC CLASS REGIONS ARE A MESHING DEVICE, NOT A DELIVERABLE. The layer policy splits
@@ -1543,12 +1546,15 @@ def _wetted_area(tri, cap_stls) -> float | None:
 class _LayerBridge(Mapping):
     """CFDREQ-9's {"faces", "room"}, the faces read only when a bridge is asked for (the wetted test casts rays)."""
 
-    def __init__(self, area_of, layer_cell: float, room: float):
+    def __init__(self, area_of, layer_cell: float, room: float, stack_cap: float | None = None):
         self._area_of, self._cell, self._room, self._faces = area_of, float(layer_cell), float(room), None
+        self._cap = stack_cap
 
     def __getitem__(self, key):
         if key == "room":
             return self._room
+        if key == "stack_cap":
+            return self._cap
         if key == "faces":
             if self._faces is None:
                 self._faces = self._area_of() / (self._cell * self._cell)
@@ -1556,14 +1562,33 @@ class _LayerBridge(Mapping):
         raise KeyError(key)
 
     def __iter__(self):
-        return iter(("faces", "room"))
+        return iter(("faces", "room", "stack_cap"))
 
     def __len__(self) -> int:
-        return 2
+        return 3
+
+
+def _narrowest_planned_gap(ws: Path) -> float | None:
+    """The narrowest gap the case's gap plan found (engines/gap_sizing's record beside the case), or None."""
+    from meshpipeline.engines.gap_sizing import read_record
+    rec = read_record(ws) or {}
+    v = rec.get("narrowest_m")
+    return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0 else None
+
+
+def stack_cap(layer_cell: float, narrowest_gap_m: float | None) -> float:
+    """CFDREQ-9, THE STACK'S CEILING (rulebook 75): a resolved wall's stack no thicker than the cells it grows into,
+    nor than STACK_GAP_SHARE of the narrowest gap the plan found - past either, snappyHexMesh cuts the stack where the
+    surface curves or the gap is narrow and thickens the first layer to keep what is left."""
+    from meshpipeline.engines.cfd_requirements import STACK_GAP_SHARE
+    cap = float(layer_cell)
+    if narrowest_gap_m and narrowest_gap_m > 0:
+        cap = min(cap, STACK_GAP_SHARE * float(narrowest_gap_m))
+    return cap
 
 
 def _layer_bridge_room(wall_stl: Path, layer_cell: float, max_cells: int,
-                       cap_stls: list[Path] | None = None) -> Mapping | None:
+                       cap_stls: list[Path] | None = None, narrowest_gap_m: float | None = None) -> Mapping | None:
     """CFDREQ-9: what a first layer far thinner than the wall cells may spend on more layers - the WETTED wall's
     faces at `layer_cell` (its area over the cell's: the outer skin of a hollow part gets no cell, s_duct_004's whole
     skin read 2.5 times the 101,205 faces snappy made and held a y+ 1 ask at 15 layers) and half the pass's budget as
@@ -1578,7 +1603,8 @@ def _layer_bridge_room(wall_stl: Path, layer_cell: float, max_cells: int,
         def area() -> float:
             wet = _wetted_area(tri, cap_stls or [])
             return min(whole, wet) if wet else whole
-        return _LayerBridge(area, layer_cell, LAYER_BRIDGE_ROOM * float(max_cells))
+        return _LayerBridge(area, layer_cell, LAYER_BRIDGE_ROOM * float(max_cells),
+                            stack_cap(layer_cell, narrowest_gap_m))
     except Exception:  # noqa: BLE001 - no bridge is the plan's own layer count, never a lost pass
         logger.warning("render_internal_case: the wall's area was not read - the plan's layer count stands",
                        exc_info=True)
@@ -1782,7 +1808,8 @@ mergeTolerance 1e-6; debug 0;
                               bridge=_layer_bridge_room(ws / "constant" / "triSurface" / f"{wall}.stl",
                                                         _layer_cell, max_cells,
                                                         [ws / "constant" / "triSurface" / f"{n}.stl"
-                                                         for k, n in names.items() if k != wall_key]))
+                                                         for k, n in names.items() if k != wall_key],
+                                                        narrowest_gap_m=_narrowest_planned_gap(ws)))
         _ask.write(ws)
     (ws / "system" / "snappyHexMeshDict").write_text(_shm)
     # WHERE THE CELLS WILL GO (engines/snappy/cell_record, rulebook 75): every refinement this dict

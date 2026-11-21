@@ -154,6 +154,9 @@ def coverage_words(quality: Mapping, measured: Any, limit: Any) -> str:
         return ""
     if got >= lim:
         return ""
+    cut = _cut_stacks(quality, got)
+    if cut:
+        return cut
     kind = wall_treatment(quality)
     if not kind:
         return ""
@@ -166,6 +169,29 @@ def coverage_words(quality: Mapping, measured: Any, limit: Any) -> str:
                 f"there is well above 1 (we aim for layers on at least {lim:.0f}%)")
     return (f"The wall-function layers are on {got:.0f}% of the wall{where}, where y+ is set by that cell "
             f"instead (we aim for layers on at least {lim:.0f}%)")
+
+
+#: Faces that kept an extrusion this many points past the layer cells kept read as stacks cut short, not as walls
+#: without layers
+CUT_STACK_GAP = 20.0
+
+
+def _cut_stacks(quality: Mapping, cells_pct: float) -> str:
+    """THE STACK CUT SHORT, SAID AS THAT (rulebook 75): snappyHexMesh kept an extrusion on most wall faces but
+    only a few of the layers asked - a rotor extruded on 88% of its faces kept 5.4 of 19 layers (28% of the layer
+    cells), so its first cell was about 12 times the planned height. "" when the faces and the cells agree."""
+    faces = _num(quality.get("layer_faces_extruded_pct"))
+    if faces is None or faces < cells_pct + CUT_STACK_GAP:
+        return ""
+    per = quality.get("per_patch_layers")
+    rows = [v for v in per.values() if isinstance(v, Mapping)] if isinstance(per, Mapping) else []
+    kept = [(_num(v.get("layers")), _num(v.get("target"))) for v in rows]
+    kept = [(k, t) for k, t in kept if k is not None and t]
+    count = (f", but only {min(k for k, _ in kept):.1f} of the {max(t for _, t in kept):.0f} layers asked on "
+             "average" if kept else ", but only part of the layers asked")
+    return (f"The layers grew on {faces:.0f}% of the wall faces{count} ({cells_pct:.0f}% of the layer cells): "
+            "the stacks were cut short, and the mesher thickened the layers it kept, so the first cell is thicker "
+            "than planned there")
 
 
 def _cad_fidelity_concerns(quality: Mapping) -> int | None:

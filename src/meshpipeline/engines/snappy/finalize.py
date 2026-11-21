@@ -185,6 +185,8 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
                     if _lc.get("cells_with_layers") is not None:
                         q["layer_cells_with"] = _lc["cells_with_layers"]
                         q["layer_cells_targeted"] = _lc["cells_targeted"]
+                    if _lc.get("faces_extruded_pct") is not None:
+                        q["layer_faces_extruded_pct"] = _lc["faces_extruded_pct"]
                 elif _walls:
                     q["layer_coverage_pct"] = min(v["coverage_pct"] for v in _walls.values())
                     q["layer_coverage_source"] = "per_patch_min"

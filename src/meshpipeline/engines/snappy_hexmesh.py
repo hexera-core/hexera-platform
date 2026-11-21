@@ -59,6 +59,8 @@ relaxationFactors { equations { U 0.9; ".*" 0.7; } }
 
 
 _ADDED = re.compile(r"Added (\d+) out of (\d+) cells \(([\d.]+)%\)")
+#: snappy's per-iteration "Extruding N out of M faces (X%)": the last one is the stack the mesh kept
+_EXTRUDED = re.compile(r"Extruding (\d+) out of (\d+) faces \(([\d.]+)%\)")
 # final layer summary row (OpenFOAM v2412):
 #   <patch>  <faces>  <layers target>  <layers mesh>  <thickness[m]>  <thickness[%]>
 # the "layers mesh" column is an AVERAGE (e.g. 2.36), so it is a float, not an int.
@@ -77,6 +79,12 @@ def parse_layer_coverage(snappy_log: str) -> dict:
         out["overall_pct"] = float(pct)
         out["cells_with_layers"] = int(n)
         out["cells_targeted"] = int(m)
+    # THE STACK CUT SHORT IS NOT A LAYER ON THE WALL (rulebook 75): the faces that kept any extrusion, beside the
+    # cells - a rotor extruded on 88% of its wall faces kept 5.4 of 19 layers, 28% of the layer cells
+    ext = _EXTRUDED.findall(snappy_log)
+    if ext:
+        n, m, pct = ext[-1]
+        out["faces_extruded"], out["faces_total"], out["faces_extruded_pct"] = int(n), int(m), float(pct)
     # per-patch summary table: between the 'faces ... layers ... thickness' header and the
     # 'Layer mesh' line. Sub-header / divider lines simply don't match the numeric row.
     in_table = False
