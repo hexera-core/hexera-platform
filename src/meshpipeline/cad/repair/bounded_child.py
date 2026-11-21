@@ -64,6 +64,7 @@ KERNELS: dict[str, tuple[str, str]] = {
     "operations.common_volume": ("meshpipeline.cad.repair.operations", "_common_volume"),
     "investigator.thickness": ("meshpipeline.cad.repair.investigator_tools", "_thickness_kernel"),
     "investigator.render": ("meshpipeline.cad.repair.investigator_tools", "_render_kernel"),
+    "mesh_hints.face_table": ("meshpipeline.cad.repair.mesh_hints", "_face_table"),
     "probe.echo": (_MODULE, "_probe_echo"),
     "probe.sleep": (_MODULE, "_probe_sleep"),
     "probe.raise": (_MODULE, "_probe_raise"),
