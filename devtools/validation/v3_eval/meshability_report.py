@@ -178,7 +178,9 @@ def render(report: dict) -> str:
                if f in ((arms.get(n, {}).get("files")) or {})]
     if flagged:
         lines += ["", "**Read diagnostics** (the STEP does not read cleanly before any repair; a "
-                  "\"does not mesh\" here is partly about the file, not only the repair):", ""]
+                  "\"does not mesh\" here is partly about the file, not only the repair. Every figure for "
+                  "these files is measured on the shape the reader produced, which for them is "
+                  "incomplete, so they are not comparable row-for-row with the rest):", ""]
         for f in READ_DIAGNOSTICS:
             cells = [f"{n}: default {_v(e.get('default'))}, hints {_v(e.get('hints'))}"
                      for ff, n, e in flagged if ff == f]
