@@ -356,6 +356,23 @@ def _face_area(face) -> float:
         return 0.0
 
 
+def _degenerated(edge) -> bool:
+    """Does the kernel call this edge DEGENERATE - a cone or sphere apex seam, zero-length by
+    construction? A FLAG READ, not an algorithm: nothing here can hang.
+
+    Fails CLOSED on anything unexpected: an edge we cannot ask about is treated as ordinary, so a
+    real short edge is never silently dropped from the inspection.
+    """
+    try:
+        from OCP.BRep import BRep_Tool
+        from OCP.TopoDS import TopoDS
+
+        return bool(BRep_Tool.Degenerated_s(TopoDS.Edge_s(edge)))
+    except Exception as exc:  # noqa: BLE001 - an unreadable flag is "not degenerate"
+        logger.debug("localize: degeneracy unreadable (%s)", exc)
+        return False
+
+
 def _edge_length(edge) -> float:
     from OCP.BRepGProp import BRepGProp
     from OCP.GProp import GProp_GProps
@@ -664,12 +681,26 @@ def _size_defects(shape, *, diagonal: float, total_area: float,
             continue
         length = _edge_length(edge)
         if diagonal > 0 and 0.0 <= length < diagonal * SMALL_EDGE_LENGTH_FRACTION:
+            if _degenerated(edge):
+                # ZERO BY CONSTRUCTION, NOT BY DAMAGE. OpenCASCADE represents a cone's or
+                # sphere's apex as an edge of no meaningful length and FLAGS it, and every such
+                # edge is under this threshold - 883 of them across 26 wave-9 failing files, all
+                # flagged, not one a defect. Reported here they inflated the small_edge count the
+                # wave reads, and they reached operations and size hints as TARGETS: an operation
+                # aimed at one can only decline, and a hint sized for one asks the mesher to
+                # resolve a point. The flag is the fact; the LENGTH cannot tell them apart,
+                # because `measurements["length"]` is rounded to nine places and an apex seam
+                # therefore reads as a flat 0.0.
+                continue
             out.append(EntityDefect(
                 code=DefectCode.small_edge, severity=DefectSeverity.warning,
                 entity_type="edge", entity_index=i,
                 message="This edge is far shorter than the part's scale; it will force tiny cells.",
                 measurements={"length": round(length, 9),
-                              "length_fraction": round(length / diagonal, 9)},
+                              "length_fraction": round(length / diagonal, 9),
+                              # Always False here - a degenerate edge is skipped above - and
+                              # recorded so a reader never has to infer it from the length.
+                              "degenerated": False},
                 location=_centroid_and_box(edge)))
     return out
 
