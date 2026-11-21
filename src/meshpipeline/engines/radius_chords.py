@@ -89,15 +89,19 @@ def _ring_arrays(ring) -> tuple[np.ndarray, np.ndarray]:
 
 
 def cast_all(points, faces, normals, face_normals, ring, fold, eps: float,
-             reach: float) -> tuple[np.ndarray, np.ndarray]:
-    """`cast` at every point, on workers_for(points) processes (see the module text)."""
+             reach: float, indices=None) -> tuple[np.ndarray, np.ndarray]:
+    """`cast` at every point - or at `indices` only, NaN elsewhere - on workers_for(points cast) processes
+    (see the module text)."""
     n = len(points)
-    k = workers_for(n)
-    if k <= 1:
-        return cast(points, faces, normals, face_normals, ring, fold, eps, reach, np.arange(n))
+    todo = np.arange(n) if indices is None else np.asarray(indices, dtype=np.int64)
+    k = workers_for(len(todo))
     first = np.full(n, np.nan)
     r = np.full(n, np.nan)
+    if k <= 1:
+        first[todo], r[todo] = cast(points, faces, normals, face_normals, ring, fold, eps, reach, todo)
+        return first, r
     done = np.zeros(n, dtype=bool)
+    done[np.setdiff1d(np.arange(n), todo)] = True          # not asked: left NaN, never cast
     with tempfile.TemporaryDirectory(prefix="chords_") as tmp:
         offsets, flat = _ring_arrays(ring)
         job = Path(tmp) / "job.npz"
@@ -105,7 +109,7 @@ def cast_all(points, faces, normals, face_normals, ring, fold, eps: float,
                  normals=np.asarray(normals, dtype=float),
                  face_normals=np.asarray(face_normals, dtype=float), ring_offsets=offsets,
                  ring_flat=flat, fold=np.asarray(fold, dtype=float), eps=float(eps),
-                 reach=float(reach))
+                 reach=float(reach), indices=todo)
         # the children get this process's environment through the one helper that hands it on
         # (no secrets), with one thread each: the split is across processes
         from meshpipeline.sandbox.safe_exec import scrubbed_subprocess_env
@@ -123,7 +127,7 @@ def cast_all(points, faces, normals, face_normals, ring, fold, eps: float,
                 _, err = proc.communicate()
                 if proc.returncode == 0 and out.is_file():
                     got = np.load(out)
-                    idx = np.arange(part, n, k)
+                    idx = todo[part::k]
                     first[idx], r[idx] = got["first"], got["r"]
                     done[idx] = True
                 else:
@@ -147,7 +151,7 @@ def _main(argv: list[str]) -> int:
     d = np.load(job)
     offsets, flat = d["ring_offsets"], d["ring_flat"]
     n = len(d["points"])
-    idx = np.arange(part, n, of)
+    idx = d["indices"][part::of] if "indices" in d.files else np.arange(part, n, of)
     ring: dict[int, frozenset] = {int(i): frozenset(flat[offsets[i]:offsets[i + 1]].tolist())
                                   for i in idx.tolist()}
     first, r = cast(d["points"], d["faces"], d["normals"], d["face_normals"], ring, d["fold"],
