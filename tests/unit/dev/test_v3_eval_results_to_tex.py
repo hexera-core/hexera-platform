@@ -275,9 +275,13 @@ def _collect_dir(tmp_path: Path) -> Path:
     return out
 
 
-def test_collect_arm_names_are_evalspecs():
+def test_collect_arm_names_are_the_t19_t29_waves():
+    # results_to_tex renders the schema-v2 results of the T19/T29 waves (1-9), whose run names are
+    # frozen here. The meshability wave's arms (evalspec.ARMS) are reported by summary.meshability,
+    # so the two sets are disjoint ON PURPOSE: a renamed arm must not be read as a T29 column.
     evalspec = _load("evalspec_under_test", V3 / "evalspec.py")
-    assert set(rt.COLLECT_ARMS) == set(evalspec.ARMS)
+    assert set(rt.COLLECT_ARMS) == {"t29_deterministic", "t19_tournament_off", "v3_full"}
+    assert not set(rt.COLLECT_ARMS) & set(evalspec.ARMS)
 
 
 def test_from_collect_maps_arms_and_clean(tmp_path):

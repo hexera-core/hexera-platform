@@ -453,7 +453,8 @@ def result_arm(result_id: str, rep: dict, checked: dict, kind_sha: str) -> dict:
            "model_calls": rep["model"]["calls"], "cost_usd": rep["total_cost_usd"],
            "wall_s": rep["vm"]["shard_seconds"],
            "cost_per_fixed_part": rep["cost_per_fixed_part_usd"],
-           "notes": (f"run {run}; {evalspec.arm(run)['model_role']}; "
+           "notes": (f"run {run}; "
+                     f"{evalspec.ARMS.get(run, {}).get('model_role', 'historical arm')}; "
                      + (f"{meshing['crashed']} file(s) CRASHED (native; isolated, counted in "
                         f"newly_broken only if they meshed before); "
                         if meshing.get("crashed") else "")

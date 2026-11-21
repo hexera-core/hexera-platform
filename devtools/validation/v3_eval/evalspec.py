@@ -88,64 +88,72 @@ MODEL_KEY_ENV = "OPENAI_API_KEY"
 #: --force-repair` is the coarse gmsh probe verdict (tier 2) T6 was scored on.
 #: --isolate-files: one part's native crash (a ShapeFix segfault on a real ABC part) must end that
 #: part's row as `crashed`, not the shard - a shard that can never finish blocks every arm's collect.
+#: --meshability: the owner's goal from 2026-11-21 - every file gets a returned STEP, judged at the
+#: headline probe (diag/40), at gmsh's own defaults and with the hints sidecar, and the op that made
+#: it mesh is credited (repair_corpus.meshability_summary).
 HARNESS_FLAGS: tuple[str, ...] = ("--mesh-probe", "--force-repair", "--goal", "benchmark",
-                                  "--isolate-files")
+                                  "--isolate-files", "--meshability")
+
+#: THE DETERMINISTIC MESHABILITY PASS (lane H's driver, PR #524 on): the registered meshability
+#: ops run before any AI loop. ON IN BOTH ARMS. Until the pass PR adds CAD_REPAIR_MESHABILITY_PASS
+#: to settings, preflight refuses this env as INERT - which is the point: the one wave must not
+#: launch on a build without the pass. Each registered op keeps its own consent flag.
+MESHABILITY_ENV: dict[str, str] = {
+    "CAD_REPAIR_MESHABILITY_PASS": "live",
+    "CAD_REPAIR_RESOLVE_SUB_MESH_GAP": "true",
+}
 
 
 def _arm(investigator: str, tournament: str, k: str | None = None) -> dict[str, str]:
-    env = {**EVERYTHING_ON, **MODEL_ENV, "CAD_REPAIR_INVESTIGATOR": investigator,
-           "CAD_REPAIR_TOURNAMENT": tournament}
+    env = {**EVERYTHING_ON, **MESHABILITY_ENV, **MODEL_ENV,
+           "CAD_REPAIR_INVESTIGATOR": investigator, "CAD_REPAIR_TOURNAMENT": tournament}
     if k is not None:
         env["CAD_REPAIR_TOURNAMENT_K"] = k
     return env
 
 
-#: THE ARMS - three on the 120-file sample, deduplicated: T19's "tournament on" arm and T29's v3
-#: arm are the SAME configuration (everything on, investigator live, tournament live, K=3), so
-#: `v3_full` runs once and both comparisons reference it.
+#: THE ARMS OF THE MESHABILITY WAVE (LEAD, 2026-11-21). Both run the deterministic meshability
+#: pass; they differ ONLY in whether the AI loop (investigator + tournament) runs after it. The AI
+#: stays on in the product only if `meshability_pass_ai` beats `meshability_pass` - the marginal
+#: is reported per file, both directions, and nothing passes or fails here.
 #:
-#: EVERY ARM MAKES MODEL CALLS. PACKAGE_REVIEW=live is the shipping posture and stays on in the
-#: deterministic arm, so `t29_deterministic` calls the model as a REVIEWER only - it never authors.
+#: BOTH ARMS MAKE MODEL CALLS: PACKAGE_REVIEW=live is the shipping posture, so the pass-only arm
+#: calls the model as a REVIEWER only - it never authors.
 ARMS: dict[str, dict] = {
-    "t29_deterministic": {
-        "short": "det", "env": _arm("off", "off"), "investigator": "off",
-        "used_by": ("T29",), "model_role": "reviewer calls only (PACKAGE_REVIEW=live)",
-        "about": "everything-on, investigator and tournament off; reviewer live (T6's posture)",
+    "meshability_pass": {
+        "short": "pass", "env": _arm("off", "off"), "investigator": "off", "ai": False,
+        "used_by": ("MESHABILITY",), "model_role": "reviewer calls only (PACKAGE_REVIEW=live)",
+        "about": "deterministic meshability pass on; investigator and tournament off",
     },
-    "v3_full": {
-        "short": "v3full", "env": _arm("live", "live", "3"), "investigator": "live",
-        "used_by": ("T19", "T29"), "model_role": "reviewer + investigator + tournament sources",
-        "about": "everything-on, investigator live, tournament live with K=3 (= T29 v3 = T19 on)",
-    },
-    "t19_tournament_off": {
-        "short": "v3nt", "env": _arm("live", "off"), "investigator": "live",
-        "used_by": ("T19",), "model_role": "reviewer + investigator",
-        "about": "v3_full with CAD_REPAIR_TOURNAMENT=off",
+    "meshability_pass_ai": {
+        "short": "passai", "env": _arm("live", "live", "3"), "investigator": "live", "ai": True,
+        "used_by": ("MESHABILITY",),
+        "model_role": "reviewer + investigator + tournament sources (AI ARM)",
+        "about": "meshability pass on, then the AI loop: investigator live, tournament K=3",
     },
 }
 
 #: Which arm pairs each comparison reports side by side: (baseline, treatment).
-COMPARISONS = {"T19": ("t19_tournament_off", "v3_full"), "T29": ("t29_deterministic", "v3_full")}
+COMPARISONS = {"AI_MARGINAL": ("meshability_pass", "meshability_pass_ai")}
 
 #: FLAGS THE BUILD READS BUT NOTHING CONSUMES: run as asked, recorded in every PROVENANCE and in
 #: the README, never refused. CAD_REPAIR_MEMORY has a settings row (5d496416) but no module under
 #: cad/repair/ imports memory.py.
 KNOWN_NOOPS = {"CAD_REPAIR_MEMORY": "memory flag inert: no consumer wired"}
 
-#: THE ONE WAVE: (arm, kind) units, all launched together. The clean control runs under v3_full
-#: (the arm that can break things) and under t29_deterministic (cheap: ~20 shard-minutes).
+#: THE ONE WAVE: (arm, kind) units, all launched together. The clean control runs under BOTH arms:
+#: the pass alone can change a clean part, and the AI loop after it can change more.
 UNITS: tuple[tuple[str, str], ...] = (
-    ("t29_deterministic", "failing"), ("v3_full", "failing"), ("t19_tournament_off", "failing"),
-    ("v3_full", "clean"), ("t29_deterministic", "clean"),
+    ("meshability_pass", "failing"), ("meshability_pass_ai", "failing"),
+    ("meshability_pass", "clean"), ("meshability_pass_ai", "clean"),
 )
 
 #: Minutes per file, for sizing only. Measured: ~3.5 min/file rules-only (T6 at 0bf78625 incl. the
 #: two probes, plus the goal verdict). The model arms add review/investigation time inside the same
 #: repair budget; the tournament's K=3 rehearsals add more. Clean parts mostly mesh before repair,
 #: so most never enter a session.
-MINUTES_PER_FILE = {("t29_deterministic", "failing"): 3.5, ("t19_tournament_off", "failing"): 5.0,
-                    ("v3_full", "failing"): 5.5, ("v3_full", "clean"): 1.5,
-                    ("t29_deterministic", "clean"): 1.5}
+MINUTES_PER_FILE = {("meshability_pass", "failing"): 4.0, ("meshability_pass_ai", "failing"): 6.0,
+                    ("meshability_pass", "clean"): 1.5, ("meshability_pass_ai", "clean"): 1.5}
 
 
 def files_of(kind: str) -> int:
