@@ -354,6 +354,8 @@ def test_collect_writes_no_verdict_anywhere(tmp_path, capsys, monkeypatch):
     assert "verdicts" not in json.loads((out / "verdict.json").read_text())
     # the shard's one clean row did not mesh before: not good, and nothing changed it
     assert (out / "README.md").read_text() == "0 0\n"
+    # rows not scored with --meshability get no meshability report
+    assert not (out / "meshability.json").exists()
 
 
 # ------------------------------------------------------------------ the clean-control rule

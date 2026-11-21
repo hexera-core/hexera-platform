@@ -58,6 +58,7 @@ def _load(name: str, path: Path):
 
 
 evalspec = _load("evalspec", HERE / "evalspec.py")
+meshability_report = _load("meshability_report", HERE / "meshability_report.py")
 
 
 def _rc():
@@ -636,6 +637,17 @@ def main(argv: list[str] | None = None) -> int:
         "checked": checked, "comparisons": comparisons,
         "arms": {f"{a}/{k}": {key: val for key, val in rep.items() if key != "summary"}
                  for (a, k), rep in reports.items()}}, indent=1, sort_keys=True, default=str) + "\n")
+    # THE MESHABILITY REPORT, written whenever the rows were scored with --meshability (the one
+    # meshability wave); absent for the T19/T29 waves, whose rows carry no returned_step.
+    if any("returned_step" in r for e in runs["arms"].values() for r in e["rows"]):
+        report = meshability_report.build(
+            {key: entry["rows"] for key, entry in runs["arms"].items()},
+            summarise=_rc().meshability_summary,
+            comparison=evalspec.COMPARISONS["AI_MARGINAL"])
+        (out / "meshability.json").write_text(
+            json.dumps(report, indent=1, sort_keys=True, default=str) + "\n")
+        (out / "meshability.md").write_text(meshability_report.render(report))
+        print(f"meshability report: {out / 'meshability.json'}, {out / 'meshability.md'}")
     readme = out / "README.md"
     if readme.is_file():
         readme.write_text(fill(readme.read_text(encoding="utf-8"),
