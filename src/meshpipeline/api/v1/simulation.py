@@ -161,6 +161,12 @@ def _artifact_label(artifact_type, engine: str, logical_key: str = "") -> str:
         # NAMED, not left to the fallback below, which rendered it "Repaired cad" - a download
         # button whose own label looked like a bug on the most consequential file we hand back.
         return "Repaired geometry (.step)"
+    if _t == "returned_cad":
+        # the customer's own file handed back as it arrived (a repair that kept nothing): the label
+        # must never let it pass for a repaired one
+        return "Your geometry, unchanged (.step)"
+    if _t == "mesh_hints":
+        return "Mesh-size hints (.json)"
     if _t == "mesh_bundle":
         try:
             from meshpipeline.engines.registry import get_spec

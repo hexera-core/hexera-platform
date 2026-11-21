@@ -207,21 +207,93 @@ async def deliver_repaired_cad(session_factory, *, job_id: str, local_path,
     Same posture as the report above: evidence, delivered best-effort, and no failure here ends a
     run - except being fenced, which stops this worker producing anything at all.
     """
-    from pathlib import Path as _Path
-
-    from meshpipeline.contracts.execution_guard import StaleWorkerFenced
+    from meshpipeline.artifact_keys import repaired_cad_key
     from meshpipeline.persistence.models import ArtifactType
+
+    safe = (suffix or _suffix_of(local_path) or ".step").lower()
+    return await _deliver_file(
+        session_factory, job_id=job_id, local_path=local_path,
+        key_for=lambda digest: repaired_cad_key(str(job_id), digest, safe),
+        logical_key=REPAIRED_CAD_LOGICAL_KEY, artifact_type=ArtifactType.repaired_cad,
+        content_type="application/octet-stream", what="repaired CAD", owner_id=owner_id,
+        delivery_attempt=delivery_attempt, execution_generation=execution_generation,
+        fence_commit=fence_commit)
+
+
+#: The per-job logical identity of the customer's STEP handed back UNCHANGED (a passthrough).
+RETURNED_CAD_LOGICAL_KEY = "returned_cad"
+#: The per-job logical identity of the mesh-size hints sidecar beside the returned STEP.
+MESH_HINTS_LOGICAL_KEY = "mesh_hints"
+
+
+async def deliver_returned(session_factory, *, job_id: str, returned: dict,
+                           step_delivered: bool = False,
+                           owner_id: str = "",
+                           delivery_attempt: int = 0,
+                           execution_generation: int = 0,
+                           fence_commit=None) -> dict:
+    """Hand back what a repair attempt RETURNS (pipeline/repair_return.py) beyond what is already
+    delivered: the passthrough STEP, and the mesh-hints sidecar for a repaired OR a passthrough
+    STEP. Returns `{"step": outcome-or-"", "hints": outcome-or-""}`.
+
+    LABELLED FOR WHAT IT IS. A passthrough is the customer's own bytes: it is delivered as
+    `returned_cad`, never `repaired_cad`, so neither the download menu nor the manifest can call it
+    repaired. A repaired STEP is delivered by `deliver_repaired_cad` (a promoted repair, a
+    standalone job) - `step_delivered` says so, and only its sidecar is added here.
+
+    The same posture as every delivery in this module: evidence, best-effort, never ends a run;
+    only being fenced (StaleWorkerFenced) propagates.
+    """
+    from meshpipeline.artifact_keys import mesh_hints_key, returned_cad_key
+    from meshpipeline.persistence.models import ArtifactType
+
+    record = dict(returned or {})
+    out = {"step": "", "hints": ""}
+    common = {"owner_id": owner_id, "delivery_attempt": delivery_attempt,
+              "execution_generation": execution_generation, "fence_commit": fence_commit}
+    step = str(record.get("path") or "")
+    if step and not step_delivered and record.get("source") == "passthrough":
+        safe = (_suffix_of(step) or ".step").lower()
+        out["step"] = await _deliver_file(
+            session_factory, job_id=job_id, local_path=step,
+            key_for=lambda digest: returned_cad_key(str(job_id), digest, safe),
+            logical_key=RETURNED_CAD_LOGICAL_KEY, artifact_type=ArtifactType.returned_cad,
+            content_type="application/octet-stream", what="returned (unchanged) CAD", **common)
+    hints = str(record.get("hints_path") or "")
+    # THE HINTS ARE AN ADDITION TO A STEP THE CUSTOMER HOLDS: never delivered without one
+    if hints and (step_delivered or out["step"]):
+        out["hints"] = await _deliver_file(
+            session_factory, job_id=job_id, local_path=hints,
+            key_for=lambda digest: mesh_hints_key(str(job_id), digest),
+            logical_key=MESH_HINTS_LOGICAL_KEY, artifact_type=ArtifactType.mesh_hints,
+            content_type="application/json", what="mesh hints", **common)
+    return out
+
+
+def _suffix_of(path) -> str:
+    try:
+        return Path(str(path or "")).suffix
+    except Exception:  # noqa: BLE001 - no suffix is the default's to fill
+        return ""
+
+
+async def _deliver_file(session_factory, *, job_id: str, local_path, key_for, logical_key: str,
+                        artifact_type, content_type: str, what: str,
+                        owner_id: str = "", delivery_attempt: int = 0,
+                        execution_generation: int = 0, fence_commit=None) -> str:
+    """Upload one local file under a content-addressed key and bind it to the job as one artifact
+    row. Returns the outcome's name, or "" when there was nothing to deliver or it failed.
+    Only StaleWorkerFenced propagates."""
+    from meshpipeline.contracts.execution_guard import StaleWorkerFenced
     from meshpipeline.persistence.repositories.artifact_repository import ArtifactRepository
 
-    src = _Path(str(local_path or ""))
+    src = Path(str(local_path or ""))
     if not src.is_file():
         # Nothing to hand back. Not an error: most runs mesh the upload as it arrived.
         return ""
 
-    from meshpipeline.artifact_keys import repaired_cad_key
     from meshpipeline.contracts.geometry_source import sha256_of
 
-    safe = (suffix or src.suffix or ".step").lower()
     object_key = ""
     stored = None
     try:
@@ -230,16 +302,16 @@ async def deliver_repaired_cad(session_factory, *, job_id: str, local_path,
         # delivery: the caller is finalising a terminal run and only expects to be fenced, so an
         # exception here would abandon a mesh the customer can otherwise download.
         digest, _ = sha256_of(src)
-        object_key = repaired_cad_key(str(job_id), digest, safe)
+        object_key = key_for(digest)
         from meshpipeline.contracts.object_storage import get_object_store
         stored = get_object_store().upload_file(
-            local_path=src, object_key=object_key, content_type="application/octet-stream")
+            local_path=src, object_key=object_key, content_type=content_type)
 
         async with session_factory() as db:
             outcome = await ArtifactRepository().deliver_artifact(
                 db, job_id=uuid.UUID(str(job_id)),
-                logical_key=REPAIRED_CAD_LOGICAL_KEY,
-                artifact_type=ArtifactType.repaired_cad,
+                logical_key=logical_key,
+                artifact_type=artifact_type,
                 storage_key=object_key,
                 size_bytes=int(stored.size_bytes or 0),
                 checksum=stored.checksum,
@@ -248,24 +320,22 @@ async def deliver_repaired_cad(session_factory, *, job_id: str, local_path,
             if fence_commit is not None:
                 await fence_commit(db)
             await db.commit()
-        logger.info("repair_report_delivery: repaired CAD %s key=%s - job_id=%s",
-                    outcome.value, object_key, job_id)
+        logger.info("repair_report_delivery: %s %s key=%s - job_id=%s",
+                    what, outcome.value, object_key, job_id)
         return outcome.value
     except StaleWorkerFenced:
-        logger.warning("repair_report_delivery: fenced before the repaired CAD row committed "
-                       "- job_id=%s", job_id)
+        logger.warning("repair_report_delivery: fenced before the %s row committed - job_id=%s",
+                       what, job_id)
         raise
     except Exception as exc:  # noqa: BLE001 - evidence is never load-bearing for a run
-        # NOT LOAD-BEARING FOR THE MESH, BUT NOT SILENT EITHER. A run that meshed repaired
-        # geometry and cannot hand that geometry back has delivered half of what the repair
-        # promised, so the caller is told - the delivery manifest's `evidence_gaps` is what turns
-        # this into a visible gap rather than a missing file nobody mentions.
-        logger.warning("repair_report_delivery: could not deliver the repaired CAD (%s) - the "
-                       "mesh is unaffected but the customer cannot download the repair "
-                       "- job_id=%s", exc, job_id)
+        # NOT LOAD-BEARING FOR THE MESH, BUT NOT SILENT EITHER. A run that cannot hand back the
+        # file it promised has delivered half of the work, so the caller is told - the delivery
+        # manifest's `evidence_gaps` is what turns a missing repaired file into a visible gap.
+        logger.warning("repair_report_delivery: could not deliver the %s (%s) - the mesh is "
+                       "unaffected but the customer cannot download it - job_id=%s",
+                       what, exc, job_id)
         if object_key:
             await _discard_orphan(session_factory, object_key, job_id=job_id, owner_id=owner_id,
-                                  logical_key=REPAIRED_CAD_LOGICAL_KEY,
-                                  artifact_type=ArtifactType.repaired_cad,
+                                  logical_key=logical_key, artifact_type=artifact_type,
                                   delivery_attempt=delivery_attempt, stored=stored)
         return ""

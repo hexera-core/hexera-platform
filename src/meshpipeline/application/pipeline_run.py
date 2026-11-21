@@ -1171,6 +1171,9 @@ async def _run_async(req: JobRequest) -> dict:
         # application/repair_report_delivery.py); only being FENCED stops this worker, for the
         # same reason it stops artifact registration.
         _standalone_handed_back = ""   # the repaired-CAD delivery's outcome on a standalone run
+        _lineage_handed_back = ""      # ...and on a run that meshed a promoted repair
+        _standalone: dict = {}
+        _repaired = None
         if final_state.get("repair_report"):
             from meshpipeline.application.execution_fence import (
                 StaleWorkerFenced as _StaleFenced,
@@ -1229,7 +1232,7 @@ async def _run_async(req: JobRequest) -> dict:
                         )
                         _repaired = _mat(final_state)
                         if _repaired is not None:
-                            await deliver_repaired_cad(
+                            _lineage_handed_back = await deliver_repaired_cad(
                                 AsyncSessionLocal, job_id=job_id,
                                 local_path=_repaired.path,
                                 suffix=_repaired.ref.suffix_hint or ".step",
@@ -1237,6 +1240,29 @@ async def _run_async(req: JobRequest) -> dict:
                                 delivery_attempt=int(final_state.get("retry_count", 0) or 0),
                                 execution_generation=_generation,
                                 fence_commit=_fence_report)
+                    # THE STEP IS RETURNED NO MATTER WHAT (CAD_REPAIR_MESHABILITY_PASS=live,
+                    # pipeline/repair_return.py): a refusal's passthrough - the upload's bytes,
+                    # delivered as `returned_cad`, never as repaired - and the mesh-hints sidecar
+                    # beside whichever STEP the customer receives. IN ADDITION to everything
+                    # above: the refusal, its escalation and the status are untouched.
+                    _returned = dict((final_state.get("repair_attempt") or {}).get("returned")
+                                     or {})
+                    if _returned:
+                        from meshpipeline.application.repair_report_delivery import (
+                            deliver_returned,
+                        )
+                        _rpath = str(_returned.get("path") or "")
+                        _step_delivered = bool(_rpath) and (
+                            (bool(_standalone_handed_back)
+                             and _rpath == str(_standalone.get("path") or ""))
+                            or (bool(_lineage_handed_back) and _repaired is not None
+                                and _rpath == str(_repaired.path)))
+                        await deliver_returned(
+                            AsyncSessionLocal, job_id=job_id, returned=_returned,
+                            step_delivered=_step_delivered, owner_id=owner_id,
+                            delivery_attempt=int(final_state.get("retry_count", 0) or 0),
+                            execution_generation=_generation,
+                            fence_commit=_fence_report)
             except _StaleFenced:
                 jlog.warning("Worker FENCED at repair report registration (the job was cancelled "
                              "or taken over) - producing no terminal side effects. job_id=%s",

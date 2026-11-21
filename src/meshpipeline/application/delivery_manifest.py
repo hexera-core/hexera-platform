@@ -17,7 +17,8 @@ DELIVERY_MANIFEST_VERSION = 1
 #: consumes, not a file anybody asked for, and listing it would put an internal JSON blob in the
 #: deliverables panel. This is the same judgement the job route makes when it lists artifacts, in
 #: one place so the two cannot drift.
-_CUSTOMER_VISIBLE = ("mesh_bundle", "mesh", "repaired_cad", "repair_report")
+_CUSTOMER_VISIBLE = ("mesh_bundle", "mesh", "repaired_cad", "returned_cad", "mesh_hints",
+                     "repair_report")
 
 
 def _mapping(value) -> dict:
