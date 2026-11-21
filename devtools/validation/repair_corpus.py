@@ -995,8 +995,12 @@ def _hinted(written: Path, *, hints_mod, hinted_probe) -> dict:
             "unmapped": len(getattr(result, "hints_unmapped", ()) or ()), **meta}
 
 
+#: "Use lane G's module if this build has it" - distinct from an explicit None ("no consumer").
+_BUILD_DEFAULT = object()
+
+
 def _score_returned(row: dict, path: Path, scratch: Path, *, since: float,
-                    extra=None, default_probe=None, inspect=None, hints_mod=None,
+                    extra=None, default_probe=None, inspect=None, hints_mod=_BUILD_DEFAULT,
                     hinted_probe=None) -> None:
     """Add the meshability keys to `row` (see the block comment above). `since` is the wall time
     the file's run started: a `-repaired.step` older than it is a stale file, not a return.
@@ -1007,7 +1011,7 @@ def _score_returned(row: dict, path: Path, scratch: Path, *, since: float,
         return
     if extra is None:
         extra = _load_sibling("meshability_probe").probe
-    if hints_mod is None:
+    if hints_mod is _BUILD_DEFAULT:
         hints_mod = _mesh_hints()
     if hinted_probe is None:
         from meshpipeline.cad.repair import mesh_probe as _mp
