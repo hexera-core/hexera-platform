@@ -636,6 +636,19 @@
   "roots": []
  },
  {
+  "context": "agents/builder/attempt.py::_stage_mesh_hints::stage#1|NotAPublisher|not-a-publisher|",
+  "path": "agents/builder/attempt.py",
+  "qualname": "_stage_mesh_hints",
+  "semantic": "stage",
+  "method": "stage",
+  "ordinal": 1,
+  "receiver": "staged_hints",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "agents/builder/executor.py::BuilderToolExecutor._publish_for::file#1|ExecutionEventPublisher|execution-owned|agents/builder/executor.py::BuilderToolExecutor._publish",
   "path": "agents/builder/executor.py",
   "qualname": "BuilderToolExecutor._publish_for",
