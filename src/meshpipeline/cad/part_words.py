@@ -195,7 +195,9 @@ only which part is which ("the long tube is the inlet duct"): "name". For each:
   single number is min = max. Never convert, never invent, never round. Any other ask: 0 and 0.
 - quote: the user's own words for this phrase, copied exactly from the notes (the numbers in it).
 - why: one short plain sentence - which parts you took and what told you ("Part_9 is the only long hollow beam").
-- confidence: 0 to 1. Below 0.6 when you cannot tell which parts are meant - say so in why; never guess.
+- confidence: 0 to 1. Below 0.6 when you cannot tell which parts are meant - say so in why; never guess. It is
+  about WHICH parts or areas only: whether the words mean all of a part or a piece of it is extent, never a reason
+  for a lower confidence (on a model of one part, the part is never in doubt).
 Some rows are AREAS INSIDE A PART (feature: true): a hole or a group of alike holes, a bore, a notch, fillets,
 bosses or shafts, thin walls (ribs, flanges), a large flat face - each with a plain name, how many, its size and the
 part it is in (in_part); in the pictures each area has its own colour and an F number (F3 is Feature_3), the rest of
@@ -367,6 +369,15 @@ def _check(arguments: str, table: list[dict], notes: str,
             e = {**e, "parts": holes, "everything_else": False}
             conf = max(float(conf or 0.0), MIN_CONFIDENCE)
             why = (f"{why} - " if why else "") + "tied to the part's holes as our own hole finding found them"
+        bodies = [str(i) for i, r in rows.items() if not r.get("feature")]
+        if ((conf is None or conf < MIN_CONFIDENCE) and len(bodies) == 1
+                and [str(p) for p in e.get("parts") or []] == bodies and not e.get("everything_else")):
+            # NOTE-4: ON A MODEL OF ONE BODY, WHICH PART IS MEANT IS NOT IN DOUBT. A reader unsure only whether the
+            # words mean all of it or a piece no area is ("the vertical leg" of an L plate that is one face: 0.45) is
+            # unsure of the extent - a portion, told as the nearest there is - never "not clear which parts you
+            # meant", which dropped the place from the shell (m483 round 13, 6b)
+            e = {**e, "extent": "whole" if _names_whole(e, quote) else "portion"}
+            conf = MIN_CONFIDENCE
         if conf is None or conf < MIN_CONFIDENCE:
             if unsure is not None:
                 unsure.append({"phrase": i, "quote": quote, "ask": ask, "why": why,

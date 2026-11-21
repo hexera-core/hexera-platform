@@ -14,6 +14,12 @@ from collections.abc import Mapping
 import numpy as np
 
 RULE = "NOTE-6"
+#: What the areas mean, for a check that kept them (application/geometry_reuse keys on it: a check of the same bytes
+#: answered from an earlier one reuses its areas only when they were read by these rules). Bumped whenever the
+#: areas change: 4 (round 12) - walls that lie apart are areas apart (round 9), a part that is one plate offers no
+#: flat face of itself (round 11), an area that is the whole of its part says so (round 12). m483 round 13: 6b and
+#: 6c were answered from checks of earlier sessions whose areas predate them.
+VERSION = 4
 #: the most features listed (the largest kept)
 MAX_FEATURES = 40
 #: alike: the same radius within this share
