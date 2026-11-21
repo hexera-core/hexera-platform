@@ -587,6 +587,9 @@ def corpus_summary(rows: list[dict], planner_mode: str = "off",
         out["planner"] = planner_summary(rows, planner_mode)
     if any("meshes_before" in r for r in rows):
         out["meshing"] = meshing_summary(rows)
+    # ABSENT unless a row was scored with --meshability, so every older bundle verifies unchanged.
+    if any("returned_step" in r for r in rows):
+        out["meshability"] = meshability_summary(rows)
     # Only a goal-scored run has this block, so a run without --goal keeps today's summary exactly
     # - which is also what --verify recomputes off the rows.
     if any(r.get("goal_profile") for r in rows):
@@ -880,6 +883,308 @@ def _tolerant_delivery(row: dict, path: Path, scratch: Path, *, probe=None) -> N
         "file": "repaired" if delivered == written else "upload",
         "settings": tp.DELIVERY_SETTINGS}
     row["delivered_via_tolerant_mesher"] = meshes
+
+
+# THE MESHABILITY REPORT (--meshability, owner goal 2026-11-21: CRS always returns a STEP, and it
+# should mesh). Scored on THE RETURNED STEP, whatever the repair's outcome word says: the file the
+# customer receives is the one judged. Three gmsh verdicts, labelled apart and never summed:
+#   meshes_after_default       - the headline: cad/repair/mesh_probe (MeshSizeMax = diagonal / 40),
+#                                the probe every wave since wave 1 was scored on;
+#   meshes_after_gmsh_default  - gmsh with no size setting at all (what a customer gets out of
+#                                the box), with its own before-verdict on the upload;
+#   meshes_after_hints         - the repair's crs-mesh-hints/1 sidecar applied by LANE G'S code
+#                                (cad/repair/mesh_hints via mesh_probe.probe_file(hints=)), at the
+#                                sidecar's own diagonal/40 - the one implementation, so this verdict
+#                                is the one lane G measured.
+#                                Hints only ever ADD to a returned STEP; with no STEP there is no
+#                                hinted verdict.
+# A readable file with no returned STEP is a BUG, counted as `no_returned_step`.
+PASS_KEYS = ("meshability_pass", "delivery_source")
+
+
+def _pass_rows(measured: dict) -> dict:
+    """The meshability pass's own records (lane H, PR #524 on), copied verbatim when present."""
+    return {k: measured[k] for k in PASS_KEYS if k in measured}
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _kept_key(op: dict) -> tuple:
+    targets = op.get("targets") or [op.get("fingerprint")]
+    return (op.get("op"), str(targets[0]) if targets else "")
+
+
+def _untouched(row: dict) -> bool:
+    """The harness never called the repair for this file (triage routed it on as uploaded)."""
+    outcome = str(row.get("outcome") or "")
+    return outcome == "nothing_to_repair" or outcome.startswith("not_attempted:")
+
+
+def meshed_by(row: dict) -> dict | None:
+    """WHICH OPERATION MADE THE RETURNED STEP MESH, for a file that did not mesh before and does
+    now at the headline settings. The pass is credited first: the first KEPT pass application
+    whose own after-probe meshes. Then the AI loop's kept operations (row.operations, minus the
+    pass's): one op is credited alone, several as an ordered combination. A file the pass flipped
+    with no single op's probe saying so is `pass_combo`. None when there is nothing to credit."""
+    if row.get("meshes_before") is not False or row.get("meshes_after_default") is not True:
+        return None
+    passed = [r for r in (row.get("meshability_pass") or []) if isinstance(r, dict)
+              and str(r.get("verdict", "")) == "kept"]
+    for rec in passed:
+        if (rec.get("probe_after") or {}).get("meshes") is True:
+            return {"by": "pass", "op": rec.get("op"), "rung": rec.get("rung")}
+    pass_keys = {(r.get("op"), str(r.get("fingerprint") or "")) for r in passed}
+    loop = [op for op in (row.get("operations") or []) if isinstance(op, dict)
+            and op.get("status") == "kept" and _kept_key(op) not in pass_keys]
+    if loop:
+        names = [str(op.get("op")) for op in loop]
+        return ({"by": "loop", "op": names[0]} if len(names) == 1
+                else {"by": "loop_combo", "ops": names})
+    if passed:
+        return {"by": "pass_combo", "ops": [str(r.get("op")) for r in passed]}
+    return {"by": "unattributed"}
+
+
+HINTS_SUFFIX = ".mesh-hints.json"
+
+
+def _mesh_hints():
+    """Lane G's hints module (cad/repair/mesh_hints.py: the ONE implementation of reading a
+    crs-mesh-hints/1 sidecar and applying it in gmsh), or None on a build without it."""
+    try:
+        from meshpipeline.cad.repair import mesh_hints
+    except ImportError:
+        return None
+    return mesh_hints
+
+
+def _hinted(written: Path, *, hints_mod, hinted_probe) -> dict:
+    """The hinted verdict on the returned STEP, read and applied by lane G's code only.
+    {"status": none|no_consumer|unreadable|stale|empty|probed, ...}."""
+    sidecar = Path(f"{written}{HINTS_SUFFIX}")
+    if not sidecar.is_file():
+        return {"status": "none"}
+    if hints_mod is None:
+        return {"status": "no_consumer"}
+    try:
+        doc = hints_mod.read_hints(sidecar)
+    except (OSError, ValueError) as exc:
+        return {"status": "unreadable", "note": str(exc)[:200]}
+    if (doc.get("step") or {}).get("sha256") != _sha256_file(written):
+        return {"status": "stale", "note": "sidecar is for different STEP bytes"}
+    faces = doc.get("faces") or []
+    meta = {"attempts": doc.get("attempts"), "hint_status": doc.get("status"),
+            "faces": len(faces), "unplaced_defects": len(doc.get("unplaced_defects") or [])}
+    if not faces:
+        return {"status": "empty", **meta}
+    diagonal = float(doc.get("diagonal_mm") or 0.0)
+    if diagonal <= 0.0:
+        return {"status": "unreadable", "note": "sidecar has no diagonal_mm", **meta}
+    result = hinted_probe(written, diagonal_mm=diagonal, hints=faces, quality=True,
+                          budget_s=MESH_PROBE_BUDGET_S)
+    meshed, kind = _verdict(result)
+    return {"status": "probed", "meshed": meshed, "kind": kind,
+            "quality": dict(getattr(result, "quality", None) or {}),
+            "applied": int(getattr(result, "hints_applied", 0) or 0),
+            "unmapped": len(getattr(result, "hints_unmapped", ()) or ()), **meta}
+
+
+def _score_returned(row: dict, path: Path, scratch: Path, *, since: float,
+                    extra=None, default_probe=None, inspect=None, hints_mod=None,
+                    hinted_probe=None) -> None:
+    """Add the meshability keys to `row` (see the block comment above). `since` is the wall time
+    the file's run started: a `-repaired.step` older than it is a stale file, not a return.
+    `extra`, `default_probe`, `inspect`, `hints_mod` and `hinted_probe` are test seams
+    (meshability_probe.probe, mesh_probe.probe_file, _inspect, cad/repair/mesh_hints,
+    mesh_probe.probe_file with hints=)."""
+    if row.get("outcome") in ("unreadable", CRASHED):
+        return
+    if extra is None:
+        extra = _load_sibling("meshability_probe").probe
+    if hints_mod is None:
+        hints_mod = _mesh_hints()
+    if hinted_probe is None:
+        from meshpipeline.cad.repair import mesh_probe as _mp
+        hinted_probe = _mp.probe_file
+    if default_probe is None:
+        from meshpipeline.cad.repair import mesh_probe
+        default_probe = mesh_probe.probe_file
+    inspect = inspect or _inspect
+    try:
+        diagonal = _diagonal_of(path)
+    except Exception:  # noqa: BLE001 - the before-probe already recorded it as unreadable
+        return
+    before_gd = extra(path, diagonal_mm=diagonal, mode="gmsh_default",
+                      budget_s=MESH_PROBE_BUDGET_S)
+    row["meshes_before_gmsh_default"] = bool(before_gd.get("meshed"))
+    written = scratch / f"{path.stem}-repaired.step"
+    present = written.is_file() and written.stat().st_mtime >= since - 1.0
+    if not present and _untouched(row):
+        # CRS WAS NEVER ASKED: the route sent the file on as uploaded (nothing to repair, or a
+        # mesh-as-is / manual route), so what the customer receives IS the upload. Judged as such,
+        # labelled `untouched` - not a missing return, and not a passthrough the repair chose.
+        written, present = path, True
+    if not present:
+        row.update(returned_step={"present": False}, meshes_after_default=None,
+                   mesh_kind_after_default="no_returned_step", meshes_after_gmsh_default=None,
+                   meshes_after_hints=None, valid_to_invalid=None)
+        return
+    sha = _sha256_file(written)
+    source = ("untouched" if written == path else row.get("delivery_source") or (
+        "passthrough" if sha == _sha256_file(path) else "repaired"))
+    try:
+        valid = (row.get("valid_before") if source == "untouched" else
+                 row["valid_after"] if "valid_after" in row else inspect(written)["valid"])
+    except Exception:  # noqa: BLE001 - an unreadable return is invalid
+        valid = False
+    hinted = _hinted(written, hints_mod=hints_mod, hinted_probe=hinted_probe)
+    row["returned_step"] = {"present": True, "source": source, "sha256": sha,
+                            "valid": None if valid is None else bool(valid),
+                            "hints": "ok" if hinted["status"] == "probed" else hinted["status"]}
+    if source == "untouched" and "meshes_before" in row:
+        # The returned file IS the upload: its before-verdicts are its after-verdicts.
+        ok, kind = bool(row["meshes_before"]), str(row.get("mesh_kind_before") or "")
+    elif row.get("meshes_after") is not None and row.get("outcome") in _REPAIRED_OUTCOMES:
+        ok, kind = bool(row["meshes_after"]), str(row.get("mesh_kind_after") or "")
+    else:
+        ok, kind = _verdict(default_probe(written, diagonal_mm=diagonal,
+                                          budget_s=MESH_PROBE_BUDGET_S))
+    row["meshes_after_default"], row["mesh_kind_after_default"] = ok, kind
+    gd = (before_gd if source == "untouched" else
+          extra(written, diagonal_mm=diagonal, mode="gmsh_default", budget_s=MESH_PROBE_BUDGET_S))
+    row["meshes_after_gmsh_default"] = bool(gd.get("meshed"))
+    if hinted["status"] == "probed":
+        quality = {**hinted["quality"], "attempts": hinted.get("attempts"),
+                   "hint_status": hinted.get("hint_status"), "hints_applied": hinted["applied"],
+                   "hints_unmapped": hinted["unmapped"], "hint_faces": hinted["faces"]}
+        # AN INVERTED OR DEGENERATE MESH IS NOT A MESH: min SICN <= 0 fails the hinted verdict, and
+        # the reason says so. Size is reported, never judged here (summary: over_element_cap).
+        degenerate = hinted["meshed"] and (quality.get("min_sicn") is not None
+                                           and float(quality["min_sicn"]) <= 0.0)
+        row["meshes_after_hints"] = bool(hinted["meshed"]) and not degenerate
+        row["mesh_kind_after_hints"] = "degenerate" if degenerate else hinted["kind"]
+        row["mesh_quality_after_hints"] = quality
+    else:
+        row["meshes_after_hints"] = None
+        if hinted["status"] != "none":
+            row["mesh_kind_after_hints"] = hinted["status"]
+    row["valid_to_invalid"] = bool(row.get("valid_before") is True and valid is False)
+    credit = meshed_by(row)
+    if credit is not None:
+        row["meshed_by"] = credit
+
+
+#: THE QUALITY-FLOOR SENSITIVITY (owner decision pending, LEAD 2026-11-21): for each min-SICN floor,
+#: how many files would still count as "meshes with the hints". Report-only - the headline
+#: `meshes_with_hints` applies no floor beyond SICN > 0 (no inverted element).
+SICN_FLOORS = (0.0, 0.001, 0.01, 0.05)
+
+
+def _with_hints_at_floor(scored: list[dict], floor: float, *, newly: bool) -> int:
+    """Files meshing at default settings, plus files meshing ONLY with the hints whose hinted
+    mesh's min SICN is above `floor` (a hinted mesh with no SICN reading does not count)."""
+    n = 0
+    for r in scored:
+        if newly and r.get("meshes_before"):
+            continue
+        if r.get("meshes_after_default") is True:
+            n += 1
+        elif r.get("meshes_after_hints") is True:
+            sicn = (r.get("mesh_quality_after_hints") or {}).get("min_sicn")
+            if sicn is not None and float(sicn) > floor:
+                n += 1
+    return n
+
+
+#: Above this many volume elements a hinted mesh is reported as enormous (`hints_over_element_cap`).
+#: The same ceiling the oracle puts on a tier-2 probe (cad/repair/oracle.TIER2_ELEMENT_CAP).
+HINTS_ELEMENT_CAP = 1_000_000
+
+
+def _hints_quality(scored: list[dict]) -> dict:
+    """Over the files that mesh ONLY with the hints: the worst min SICN, the smallest edge, the
+    largest element count and the most attempts - the numbers a reader needs before trusting it."""
+    q = [r.get("mesh_quality_after_hints") or {} for r in scored
+         if r.get("meshes_after_hints") is True and r.get("meshes_after_default") is not True]
+
+    def pick(key: str, fn):
+        values = [x[key] for x in q if x.get(key) is not None]
+        return fn(values) if values else None
+
+    return {"files": len(q), "worst_min_sicn": pick("min_sicn", min),
+            "worst_min_gamma": pick("min_gamma", min), "smallest_edge_mm": pick("min_edge_mm", min),
+            "most_elements": pick("elements", max), "most_attempts": pick("attempts", max)}
+
+
+def meshability_summary(rows: list[dict]) -> dict:
+    """The meshability report's counts. {} for rows scored without --meshability. Every count is
+    over the files whose row was scored (`files`), crashed and unreadable files reported apart."""
+    scored = [r for r in rows if "returned_step" in r]
+    if not scored:
+        return {}
+    got = [r for r in scored if r["returned_step"].get("present")]
+
+    def meshes(r: dict, key: str) -> bool:
+        return r.get(key) is True
+
+    def with_hints(r: dict) -> bool:
+        return meshes(r, "meshes_after_default") or meshes(r, "meshes_after_hints")
+
+    credit: dict[str, int] = {}
+    for r in scored:
+        c = r.get("meshed_by")
+        if c:
+            name = f"{c['by']}:{c.get('op') or '+'.join(c.get('ops') or [])}"
+            credit[name] = credit.get(name, 0) + 1
+    return {
+        "files": len(scored),
+        "crashed": sum(1 for r in rows if r.get("outcome") == CRASHED),
+        "unreadable": sum(1 for r in rows if r.get("outcome") == "unreadable"),
+        "steps_returned": len(got),
+        "no_returned_step": len(scored) - len(got),
+        "source_repaired": sum(1 for r in got if r["returned_step"].get("source") == "repaired"),
+        "source_passthrough": sum(1 for r in got
+                                  if r["returned_step"].get("source") == "passthrough"),
+        "source_untouched": sum(1 for r in got
+                                if r["returned_step"].get("source") == "untouched"),
+        "meshed_before": sum(1 for r in scored if r.get("meshes_before")),
+        "meshes_default": sum(1 for r in scored if meshes(r, "meshes_after_default")),
+        "newly_meshes_default": sum(1 for r in scored if meshes(r, "meshes_after_default")
+                                    and not r.get("meshes_before")),
+        "hints_present": sum(1 for r in got if r["returned_step"].get("hints") == "ok"),
+        "meshes_with_hints": sum(1 for r in scored if with_hints(r)),
+        "newly_meshes_with_hints": sum(1 for r in scored if with_hints(r)
+                                       and not r.get("meshes_before")),
+        "meshes_only_with_hints": sum(1 for r in scored if meshes(r, "meshes_after_hints")
+                                      and not meshes(r, "meshes_after_default")),
+        "hints_degenerate": sum(1 for r in scored
+                                if r.get("mesh_kind_after_hints") == "degenerate"),
+        "hints_over_element_cap": sum(
+            1 for r in scored if meshes(r, "meshes_after_hints")
+            and int((r.get("mesh_quality_after_hints") or {}).get("elements") or 0)
+            > HINTS_ELEMENT_CAP),
+        "hints_quality": _hints_quality(scored),
+        "meshes_with_hints_by_sicn_floor": {
+            str(f): _with_hints_at_floor(scored, f, newly=False) for f in SICN_FLOORS},
+        "newly_meshes_with_hints_by_sicn_floor": {
+            str(f): _with_hints_at_floor(scored, f, newly=True) for f in SICN_FLOORS},
+        "meshed_before_gmsh_default": sum(1 for r in scored
+                                          if r.get("meshes_before_gmsh_default")),
+        "meshes_gmsh_default": sum(1 for r in scored if meshes(r, "meshes_after_gmsh_default")),
+        "newly_meshes_gmsh_default": sum(1 for r in scored
+                                         if meshes(r, "meshes_after_gmsh_default")
+                                         and not r.get("meshes_before_gmsh_default")),
+        "newly_broken_default": sum(1 for r in scored if r.get("meshes_before")
+                                    and not meshes(r, "meshes_after_default")),
+        "valid_to_invalid": sum(1 for r in scored if r.get("valid_to_invalid")),
+        "meshed_by": dict(sorted(credit.items())),
+    }
 
 
 def meshing_summary(rows: list[dict]) -> dict:
@@ -1619,7 +1924,8 @@ def _repair_row(path: Path, scratch: Path, *, mode: str = "off", force: bool = F
                    seconds=round(time.monotonic() - started, 2),
                    # THE VERDICT SURVIVES THE REFUSAL: goal.py records it before the after-check
                    # refuses, so a refused repair still says what it would have finished as.
-                   **scored(measured.get("goal")), **investigated(measured), **review_rows(measured))
+                   **scored(measured.get("goal")), **investigated(measured), **review_rows(measured),
+                   **_pass_rows(measured))
         return row
     except Exception as exc:  # noqa: BLE001
         row.update(outcome="repair_failed", error=f"{type(exc).__name__}: {exc}", **scored(),
@@ -1652,7 +1958,7 @@ def _repair_row(path: Path, scratch: Path, *, mode: str = "off", force: bool = F
         mesh_located_remaining=_mesh_located(measured),
         timings=dict(measured.get("timings") or {}),
         **scored(measured.get("goal")),
-        **investigated(measured), **review_rows(measured),
+        **investigated(measured), **review_rows(measured), **_pass_rows(measured),
     )
 
     after = _inspect(destination)
@@ -1790,7 +2096,8 @@ def _isolated(path: Path, body, *, mesh_probe: bool) -> dict:
 def run_files(files: list[Path], scratch: Path, *, mode: str = "off", loop: bool = False,
               bundle=None, mesh_probe: bool = False, force_repair: bool = False,
               goal=None, sink=None, entries=None, isolate: bool = False,
-              tolerant_delivery: bool = False, row_marks: dict | None = None) -> list[dict]:
+              tolerant_delivery: bool = False, row_marks: dict | None = None,
+              meshability: bool = False) -> list[dict]:
     """Run the repair loop over `files`, printing a line per file; returns the rows. When `bundle`
     is a BundleWriter every row is streamed into it AS IT IS PRODUCED, so a run that dies half way
     leaves its evidence-so-far on disk rather than in a list that was never written.
@@ -1821,7 +2128,10 @@ def run_files(files: list[Path], scratch: Path, *, mode: str = "off", loop: bool
             return _one(path, scratch, mode=mode, mesh_probe=mesh_probe,
                         force_repair=force_repair, goal=goal, sink=sink, stage=stage)
 
+        since = time.time()
         row = _isolated(path, body, mesh_probe=mesh_probe) if isolate else body()
+        if meshability:
+            _score_returned(row, path, scratch, since=since)
         if tolerant_delivery:
             _tolerant_delivery(row, path, scratch)
         row.update(stamp)
@@ -1912,6 +2222,11 @@ def main() -> int:
                              "tolerant_rung_eats_it, mesh the delivered file with fTetWild at "
                              "production envelope/iterations (<= 300 s) and record it as its own "
                              "column - never as a repair")
+    parser.add_argument("--meshability", dest="meshability", action="store_true",
+                        help="with --mesh-probe: score THE RETURNED STEP (a missing one is a bug, "
+                             "no_returned_step) at the headline probe, at gmsh's own defaults, and "
+                             "with the repair's .mesh-hints.json sidecar; credit the op that "
+                             "made it mesh (meshed_by)")
     parser.add_argument("--isolate-files", dest="isolate", action="store_true",
                         help="repair each file in a forked child: a native crash becomes a "
                              "`crashed` row and the run continues (POSIX; benchmark harness)")
@@ -2027,6 +2342,8 @@ def main() -> int:
         parser.error("directories are required unless --rebundle or --manifest is given")
     if args.manifest and not args.roots:
         parser.error("--manifest needs --roots <dir>... to resolve the files under")
+    if args.meshability and not args.mesh_probe:
+        parser.error("--meshability needs --mesh-probe: the headline verdict is the mesh probe's")
 
     files: list[Path] = []
     sample_entries: list[dict] = []
@@ -2080,6 +2397,7 @@ def main() -> int:
     settings = {
         "directories": list(args.directories), "limit": args.limit, "planner": args.planner,
         "reply_cache": args.reply_cache, "mesh_probe": args.mesh_probe,
+        **({"meshability": True} if args.meshability else {}),
         "cad_repair": repair_settings,
         # THE CATALOGUE THIS RUN KNEW. summary.catalogue.never_exercised is the one aggregate
         # field the rows cannot re-derive on their own, so it is recorded here - under the
@@ -2134,7 +2452,8 @@ def main() -> int:
     rows = run_files(files, scratch, mode=args.planner, loop=args.loop, bundle=writer,
                      mesh_probe=args.mesh_probe, force_repair=args.force_repair,
                      goal=goal, sink=sink, entries=sample_entries, isolate=args.isolate,
-                     tolerant_delivery=args.tolerant_delivery, row_marks=row_marks)
+                     tolerant_delivery=args.tolerant_delivery, row_marks=row_marks,
+                     meshability=args.meshability)
     if sink is not None:
         sink.close()
 
