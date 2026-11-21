@@ -337,6 +337,332 @@ def write_quality(polymesh, *, region: str = "") -> dict:
     return meta
 
 
+#: checkMesh's own summary lines, which are what the field parse is checked against. Its printed
+#: maxima are produced by a walk this code has no part in, so they are the one independent number
+#: available - and the reduction is believed because it reproduces them, not because it looks right.
+_SAID_MAX = {
+    "non_ortho": re.compile(r"non-orthogonality Max:\s*([0-9.eE+-]+)"),
+    "aspect_ratio": re.compile(r"Max aspect ratio\s*=\s*([0-9.eE+-]+)"),
+    "skewness": re.compile(r"Max skewness\s*=\s*([0-9.eE+-]+)"),
+}
+
+#: How far a parsed cell maximum may sit from checkMesh's printed one. It prints six significant
+#: figures, so this is the print's own resolution and not a tolerance for disagreement.
+_MAX_REL_TOL = 1e-5
+_MAX_ABS_TOL = 1e-4
+
+#: A patch name as `read_boundary_patches` spells it. NARROWER WOULD BE WRONG: `\w+` drops a patch
+#: whose name carries a dot, a colon or a hyphen, and a dropped patch is a patch painted NaN.
+_PATCH_BLOCK_RE = re.compile(r"\n    ([A-Za-z_][\w.:-]*)\s*\n    \{(.*?)\n    \}", re.S)
+
+
+def _all_patch_values(path: Path) -> dict:
+    """Every patch's nonuniform boundaryField values, in ONE read of the file.
+
+    `_patch_values` re-reads the whole file per patch, which is right for the serial writer - it
+    asks for the patches the index names and there are a handful. Here the question is asked once
+    per rank per field, and on the customer plate's metal side `skewness` is 288 MB PER RANK, so
+    three patches would be three full reads of it where one does.
+
+    THE SAME RULE ABOUT WHAT COUNTS AS A VALUE. `calculated` with a nonuniform list is checkMesh
+    handing over a real per-face measurement. `uniform 0` and `zeroGradient` are not values, and
+    returning them as if they were is how a boundary ends up painted with a number nobody measured.
+    """
+    import numpy as np
+
+    txt = path.read_text(errors="replace")
+    i = txt.find("boundaryField")
+    if i < 0:
+        return {}
+    out: dict = {}
+    for m in _PATCH_BLOCK_RE.finditer(txt[i:]):
+        name, body = m.group(1), m.group(2)
+        if "nonuniform" not in body:
+            continue
+        j, k = body.find("("), body.rfind(")")
+        if j < 0 or k <= j:
+            continue
+        out[name] = np.fromstring(body[j + 1:k], dtype=np.float64, sep=" ").astype(np.float32)  # noqa: NPY201
+    return out
+
+
+def _rank_owner(polymesh: Path, first_face: int, n_faces: int):
+    """The owner cell of each face in [first_face, first_face + n_faces), either format.
+
+    BINARY IS TWO SEEKS; ASCII IS NOT SEEKABLE AT ALL. A binary labelList is fixed-width records,
+    so face `first_face` is an offset. An ascii one is variable width - "7" and "12884553" are not
+    the same number of bytes - so there is nothing to seek to and the list has to be walked.
+
+    THE TRAP THIS CARRIES A GATE FOR, measured rather than imagined. A reader that assumed binary
+    and met an ascii owner file read four packed digit bytes as one int32: 0x39393939, which is
+    "9999", which is 960,051,513 - the same handful of values on every rank, all of them about
+    seventy-five times the cell count. Nothing about the shape of that answer is wrong. What
+    caught it is the caller's cell-range check, and that is why the check is not optional.
+    """
+    import numpy as np
+
+    from meshpipeline.render.boundary_index import (
+        IndexUnavailable,
+        _binary_after_header,
+        _binary_list_at,
+        _binary_widths,
+        _foam_format,
+    )
+
+    path = Path(polymesh) / "owner"
+    try:
+        if _foam_format(path) != "binary":
+            return _owner_tail(Path(polymesh), first_face, n_faces)
+        label, _scalar = _binary_widths(path)
+    except IndexUnavailable as exc:
+        raise QualityUnavailable(f"{path}: {exc}") from exc
+    w = np.dtype(label).itemsize
+    with path.open("rb") as fh:
+        off, cnt = _binary_list_at(fh, _binary_after_header(fh))
+        if first_face + n_faces > cnt:
+            raise QualityUnavailable(
+                f"{path.name}: it holds {cnt:,} owners and faces {first_face:,}+{n_faces:,} were "
+                "asked for")
+        fh.seek(off + w * first_face)
+        return np.frombuffer(fh.read(w * n_faces), dtype=label).astype(np.int64)
+
+
+def _checkmesh_said(case: Path, region: str) -> dict:
+    """The maxima checkMesh printed for this region, from the log it wrote beside the mesh.
+
+    THE FILENAME IS NOT SPELLED HERE. `foam_exec.CHECKMESH_LOG` is its one producer and two
+    things already read it (`mesh_runner._output_mark` for progress and `mesher_stage.read_stage`
+    for the customer's live line); a third spelling in this file would be a third thing to drift.
+    Empty when there is no log, which is a measurement that was not taken rather than one that
+    disagreed, and the caller records the difference.
+    """
+    try:
+        from meshpipeline.engines.cfmesh_conjugate.foam_exec import CHECKMESH_LOG
+    except ImportError:               # pragma: no cover - the engine is always importable here
+        return {}
+    log = Path(case) / CHECKMESH_LOG.format(suffix=f"_{region}" if region else "")
+    if not log.is_file():
+        return {}
+    txt = log.read_text(errors="replace")
+    out = {}
+    for key, rx in _SAID_MAX.items():
+        hits = [float(m.group(1)) for m in rx.finditer(txt)]
+        if hits:
+            out[key] = max(hits)
+    return out
+
+
+def write_quality_decomposed(case, *, region: str = "") -> dict:
+    """Reduce checkMesh's per-rank fields to one value per boundary face of the assembled index.
+
+    THE COMPANION TO `write_index_decomposed`, and it must agree with it face for face. With
+    `CONJUGATE_MERGE_REGIONS=0` there is no serial mesh to reduce: checkMesh ran across the ranks
+    and wrote its fields into `processor*/constant/<region>/`, and the index was assembled from
+    the same ranks. This walks them in the same order, through the same
+    `decomposed_rank_spans`, and refuses unless every patch comes to exactly what the index's own
+    patch table says it is.
+
+    WHY ONE PRODUCER OF THE SPANS AND NOT TWO LOOPS. A quality array that walked the ranks in a
+    different order would be the right length, would sum to the right patch totals, and would pass
+    every gate there is to write - and it would paint the metal's numbers on the coolant. That is
+    not a hypothetical reading of the risk; it is the hand-run scripts' own docstring. There is no
+    cheap check for it, so the loop is written once (`polymesh_surface.decomposed_rank_spans`) and
+    read twice, and the failure is gone rather than guarded.
+
+    WHAT EACH METRIC IS, taken from this module's own rules rather than reinvented per path:
+      - `skewness`     the BOUNDARY FACE'S OWN value, from the nonuniform boundaryField checkMesh
+                       writes per patch, one entry per face of that patch.
+      - `non_ortho`    the OWNER CELL'S value. A boundary face has no non-orthogonality of its
+                       own, and checkMesh writes `uniform 0` on the patch, which is true and
+                       useless to paint.
+      - `aspect_ratio` the OWNER CELL'S value, because aspect ratio is a property of a cell and
+                       the patch is written zeroGradient, which means exactly that.
+
+    THE GATE THAT MAKES IT TRUSTWORTHY is checkMesh's own summary. For the two owner-cell metrics
+    the maximum over ALL cells of ALL ranks must be the maximum checkMesh printed - the same cells,
+    so the same number - and for skewness the boundary's maximum must not exceed the whole mesh's,
+    because the boundary is a subset of the faces. A disagreement RAISES: the colours are lost and
+    the caller reports why, which is a far better outcome than a plausible wrong number on a
+    picture a customer is looking at.
+    """
+    import numpy as np
+
+    from meshpipeline.engines.cfmesh_conjugate.polymesh_surface import (
+        DecomposedBoundaryError,
+        decomposed_rank_spans,
+    )
+    from meshpipeline.render.boundary_index import open_index
+
+    case = Path(case)
+    pm_out = (case / "constant" / region / "polyMesh") if region else (case / "constant" / "polyMesh")
+    # RAISES IndexUnavailable, which the caller treats as fatal for this region: a per-face array
+    # is numbered against an index, so without one there is nothing for it to be numbered against.
+    idx = open_index(pm_out)
+    n_faces = idx.n_faces
+    try:
+        spans = decomposed_rank_spans(case, region)
+    except DecomposedBoundaryError as exc:
+        raise QualityUnavailable(f"{case}: {exc}") from exc
+    if not spans:
+        raise QualityUnavailable(
+            f"{case}: no processor directory holds a real boundary for region {region!r}")
+
+    per_rank: list[dict] = []
+    cell_max: dict = {}
+    notes: dict = {}
+    reduced: set = set()
+    for pm, rows, first, n_span in spans:
+        rank = pm.parent.parent.parent.name
+        base = pm.parent
+        got: dict = {}
+        owner = None
+        for key, basis in FIELDS.items():
+            path = base / FIELD_FILES[key]
+            if not path.is_file():
+                notes.setdefault(key, f"checkMesh did not write {FIELD_FILES[key]}")
+                continue
+            if basis == "patch":
+                vals = _all_patch_values(path)
+                for p in rows:
+                    nm, n = str(p["name"]), int(p["n_faces"])
+                    seen = vals.get(nm)
+                    if seen is None or seen.size != n:
+                        # NAMED AND CARRIED AS NaN, not dropped. The array has to stay the index's
+                        # own length or the gates below cannot tell a short patch from a short
+                        # file, and the reader draws a NaN as no colour rather than as a number.
+                        notes[key] = (f"{rank}/{nm}: checkMesh wrote "
+                                      f"{'no values' if seen is None else format(seen.size, ',')}"
+                                      f" for {n:,} faces")
+                        got.setdefault(nm, {})[key] = np.full(n, np.nan, dtype=np.float32)
+                    else:
+                        got.setdefault(nm, {})[key] = seen
+                        reduced.add(key)
+            else:
+                uniform, cells = _internal_field(path)
+                if cells is None:
+                    cell_max[key] = max(cell_max.get(key, float("-inf")), float(uniform))
+                    per_face = np.full(n_span, float(uniform), dtype=np.float32)
+                else:
+                    cell_max[key] = max(cell_max.get(key, float("-inf")), float(cells.max()))
+                    if owner is None:
+                        owner = _rank_owner(pm, first, n_span)
+                    # THE CELL-RANGE CHECK IS NOT OPTIONAL - see `_rank_owner` for the misread it
+                    # is the only thing that caught.
+                    if owner.size and int(owner.max()) >= cells.size:
+                        raise QualityUnavailable(
+                            f"{rank}: {FIELD_FILES[key]} has {cells.size:,} cells and the "
+                            f"boundary names cell {int(owner.max()):,}, so they are not one mesh")
+                    per_face = cells[owner].astype(np.float32)
+                for p in rows:
+                    f0, n = int(p["start_face"]) - first, int(p["n_faces"])
+                    got.setdefault(str(p["name"]), {})[key] = per_face[f0:f0 + n]
+                reduced.add(key)
+        per_rank.append(got)
+
+    arrays: dict = {}
+    for key in FIELDS:
+        if key not in reduced:
+            notes.setdefault(key, f"{FIELD_FILES[key]} carries no per-face values on any rank")
+            continue
+        parts: list = []
+        total = 0
+        ok = True
+        for p in idx.patches:
+            nm, n_want, f0 = str(p["name"]), int(p["n_faces"]), int(p["first_face"])
+            # THE INDEX'S OWN LAYOUT, checked as it is walked rather than at the end: a patch that
+            # starts in the wrong place is a patch whose colours belong to another surface.
+            if total != f0:
+                notes[key] = f"{nm} assembles at {total:,} and the index puts it at {f0:,}"
+                ok = False
+                break
+            chunks = [r[nm][key] for r in per_rank if key in r.get(nm, {})]
+            a = np.concatenate(chunks) if chunks else np.empty(0, np.float32)
+            if a.size != n_want:
+                notes[key] = f"{nm}: assembled {a.size:,} values for {n_want:,} faces"
+                ok = False
+                break
+            parts.append(a)
+            total += int(a.size)
+        if not ok:
+            continue
+        arr = np.concatenate(parts) if parts else np.empty(0, np.float32)
+        if arr.size != n_faces:
+            notes[key] = f"assembled {arr.size:,} of the index's {n_faces:,} faces"
+            continue
+        if not np.isfinite(arr).any():
+            notes[key] = "checkMesh wrote no usable value on any patch of any rank"
+            continue
+        arrays[key] = arr
+
+    if not arrays:
+        raise QualityUnavailable(
+            f"{pm_out.parent}: none of checkMesh's fields could be reduced ({notes})")
+
+    said = _checkmesh_said(case, region)
+    gate: dict = {}
+    for key in ("non_ortho", "aspect_ratio"):
+        if key in cell_max and key in said:
+            mine, theirs = cell_max[key], said[key]
+            agree = abs(mine - theirs) <= max(_MAX_ABS_TOL, _MAX_REL_TOL * abs(theirs))
+            gate[key] = {"cells_max": mine, "checkMesh_said": theirs, "agree": bool(agree)}
+            if not agree:
+                raise QualityUnavailable(
+                    f"{region or 'the mesh'} {key}: the ranks' cells come to {mine:.6f} and "
+                    f"checkMesh printed {theirs:.6f}, so this parse is not its measurement")
+    if "skewness" in arrays and "skewness" in said:
+        bmax = float(np.nanmax(arrays["skewness"]))
+        gate["skewness"] = {"boundary_max": bmax, "checkMesh_said_all_faces": said["skewness"],
+                            "within": bool(bmax <= said["skewness"] + 1e-6)}
+        if bmax > said["skewness"] + 1e-6:
+            raise QualityUnavailable(
+                f"{region or 'the mesh'} skewness: the boundary's maximum {bmax:.6f} is above "
+                f"checkMesh's whole-mesh {said['skewness']:.6f}, which cannot be")
+    if not said:
+        # SAID RATHER THAN LEFT ABSENT. An empty gate dict reads the same as a gate that passed,
+        # and the difference between "checked and agreed" and "there was no log to check against"
+        # is the difference between a measurement and a hope.
+        gate["not_checked"] = "no checkMesh log beside the mesh, so nothing independent to compare"
+
+    out = quality_dir(pm_out)
+    out.mkdir(parents=True, exist_ok=True)
+    written = {}
+    for key, arr in arrays.items():
+        (out / f"{key}.f32").write_bytes(np.ascontiguousarray(arr).tobytes())
+        written[key] = int((out / f"{key}.f32").stat().st_size)
+
+    def _fig(a):
+        finite = a[np.isfinite(a)]
+        if not finite.size:
+            return None
+        return {"max": float(finite.max()), "mean": float(finite.mean()),
+                "measured": int(finite.size)}
+
+    meta = {
+        "version": QUALITY_VERSION,
+        "region": region,
+        "n_faces": int(n_faces),
+        "basis": {k: FIELDS[k] for k in arrays},
+        "source": "checkMesh -writeFields, reduced from the per-rank meshes with no reconstruct",
+        "fields": {k: FIELD_FILES[k] for k in arrays},
+        "bytes": written,
+        "figures": {k: _fig(v) for k, v in arrays.items()},
+        "notes": notes,
+        "index": {"n_faces": int(n_faces), "first_face": int(idx.meta["first_face"]),
+                  "patches": [{"name": str(p["name"]), "n_faces": int(p["n_faces"])}
+                              for p in idx.patches]},
+        # WHAT WAS CHECKED AND AGAINST WHAT, in the file, so the next reader does not have to take
+        # the alignment on trust - and so "not checked" is visible rather than indistinguishable
+        # from "checked and fine".
+        "checked_against_checkMesh": gate,
+        "ranks": len(spans),
+    }
+    (out / "meta.json").write_text(json.dumps(meta, indent=2))
+    logger.info("boundary quality written for %s from %d ranks: %s over %d faces, %.1f MB",
+                region or pm_out.parent.name, len(spans), sorted(arrays), n_faces,
+                sum(written.values()) / 1e6)
+    return meta
+
+
 class BoundaryQuality:
     """One region's per-face quality, mapped."""
 
@@ -577,4 +903,4 @@ __all__ = ["BoundaryQuality", "CHECKMESH_WRITE_FIELDS", "FIELDS", "FIELD_FILES",
            "MAX_HOTSPOTS_PER_METRIC", "attach_sidecar_quality",
            "quality_fields_from_sidecar",
            "QUALITY_DIRNAME", "QUALITY_VERSION", "QualityUnavailable", "has_quality",
-           "open_quality", "quality_dir", "write_quality"]
+           "open_quality", "quality_dir", "write_quality", "write_quality_decomposed"]

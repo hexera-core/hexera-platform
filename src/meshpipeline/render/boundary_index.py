@@ -586,11 +586,10 @@ def write_index_decomposed(case, *, region: str = "") -> dict:
     import numpy as np
 
     from meshpipeline.engines.cfmesh_conjugate.polymesh_surface import (
-        PROCESSOR_PATCH_TYPE,
         DecomposedBoundaryError,
+        decomposed_rank_spans,
         decomposed_region_boundary,
         processor_dirs,
-        read_boundary_patches,
     )
 
     case = Path(case)
@@ -600,6 +599,10 @@ def write_index_decomposed(case, *, region: str = "") -> dict:
         raise IndexUnavailable(f"{case}: no processor* directories to build an index from")
     try:
         rows = [r for r in decomposed_region_boundary(case, region) if int(r["n_faces"]) > 0]
+        # THE SAME SPANS THE QUALITY SIDECAR WILL READ, from the one function that produces them,
+        # so the two cannot walk the ranks in different orders or cut a patch in two places. See
+        # `decomposed_rank_spans` for why that is not a guard but the removal of the possibility.
+        spans = decomposed_rank_spans(case, region)
     except DecomposedBoundaryError as exc:
         raise IndexUnavailable(f"{case}: {exc}") from exc
     if not rows:
@@ -617,39 +620,19 @@ def write_index_decomposed(case, *, region: str = "") -> dict:
     # part files left in it are part files that get shipped.
     rank_points: list = []
     parts: dict[str, list] = {str(r["name"]): [] for r in rows}
-    for rank_i, d in enumerate(ranks):
-        pm = (d / "constant" / region / "polyMesh") if region else (d / "constant" / "polyMesh")
-        local = []
-        if (pm / "boundary").is_file():
-            local = [p for p in read_boundary_patches(pm)
-                     if str(p.get("type")) != PROCESSOR_PATCH_TYPE and int(p["n_faces"]) > 0]
-        if not local:
-            # A RANK WITH NO REAL BOUNDARY IS NORMAL, not an error: an interior rank of a big
-            # decomposition can hold cells whose every outside face is a cut to another rank.
-            rank_points.append(np.empty((0, 3), np.float32))
-            continue
+    for rank_i, (pm, local, first, n_span) in enumerate(spans):
         unknown = sorted({str(p["name"]) for p in local} - set(want))
         if unknown:
             raise IndexUnavailable(
-                f"{d.name}: patches {unknown} are on this rank and not in the region's own patch "
-                f"table, so these per-rank files are not one mesh")
-        first = min(int(p["start_face"]) for p in local)
-        last = max(int(p["start_face"]) + int(p["n_faces"]) for p in local)
-        # THE REAL PATCHES MUST BE CONTIGUOUS for one read to cover them and nothing else. In a
-        # decomposed mesh they are - `processor` patches are appended after the real ones - and it
-        # is checked rather than assumed, because a hole here takes faces on a cut between ranks
-        # into the delivered surface, where they draw as a wall that is not there.
-        if sum(int(p["n_faces"]) for p in local) != last - first:
-            raise IndexUnavailable(
-                f"{d.name}: the real patches are not contiguous, so one read of faces "
-                f"{first:,}..{last:,} would take in faces on a cut between ranks")
-        sizes, conn = _boundary_faces(pm / "faces", first, last - first)
+                f"{pm.parent.parent.parent.name}: patches {unknown} are on this rank and not in "
+                f"the region's own patch table, so these per-rank files are not one mesh")
+        sizes, conn = _boundary_faces(pm / "faces", first, n_span)
         used, local_ids = np.unique(conn, return_inverse=True)
         points = _mesh_points(pm / "points")
         if used.size and int(used.max()) >= int(points.shape[0]):
             raise IndexUnavailable(
-                f"{d.name}: a boundary face names point {int(used.max()):,} of "
-                f"{int(points.shape[0]):,}")
+                f"{pm.parent.parent.parent.name}: a boundary face names point "
+                f"{int(used.max()):,} of {int(points.shape[0]):,}")
         rank_points.append(np.asarray(points[used.astype(np.int64)], dtype=np.float32))
         del points
         lconn = np.asarray(local_ids).reshape(-1).astype(np.int64)
@@ -739,6 +722,7 @@ def write_index_decomposed(case, *, region: str = "") -> dict:
     source = dict(_source_stamp(pm_out))
     source["built_from"] = "decomposed"
     source["n_processors"] = len(ranks)
+    source["ranks_with_boundary"] = len(spans)
     source["ranks"] = [d.name for d in ranks]
     source["note"] = ("the union of the non-processor patches across the processor directories; "
                       "there is no serial volume mesh and this index is not a reconstruct")
@@ -765,9 +749,9 @@ def write_index_decomposed(case, *, region: str = "") -> dict:
         "source": source,
     }
     (out / "meta.json").write_text(json.dumps(meta, indent=2))
-    logger.info("boundary index written for %s from %d ranks: %d faces, %d points, %d buckets, "
-                "%.1f MB", region or "the mesh", len(ranks), n_faces, int(bpoints.shape[0]), nb,
-                sum(meta["bytes"].values()) / 1e6)
+    logger.info("boundary index written for %s from %d of %d ranks: %d faces, %d points, "
+                "%d buckets, %.1f MB", region or "the mesh", len(spans), len(ranks), n_faces,
+                int(bpoints.shape[0]), nb, sum(meta["bytes"].values()) / 1e6)
     return meta
 
 

@@ -167,6 +167,51 @@ def decomposed_region_boundary(case: Path, region: str = "") -> list[dict]:
     return out
 
 
+def decomposed_rank_spans(case: Path, region: str = "") -> list[tuple]:
+    """Each rank's real boundary patches and the span of faces that covers them, in rank order.
+
+    Returns [(polymesh, rows, first_face, n_faces), ...] - one entry per rank that holds any real
+    boundary face, with `rows` in the rank's own file order and `first_face`/`n_faces` the single
+    contiguous span of its `faces` file that those patches occupy.
+
+    WHY THIS IS ONE FUNCTION AND NOT TWO LOOPS. Both decomposed sidecars are assembled from these
+    spans: `write_index_decomposed` reads the geometry out of them, and `write_quality_decomposed`
+    reads checkMesh's numbers out of the same faces and is NUMBERED AGAINST THE INDEX. They have
+    to walk the ranks in the same order and cut each patch at the same place, and nothing about
+    the counts would catch it if they did not: two arrays of the same length in a different rank
+    order sum to the same patch totals and pass every gate there is to write. The hand-run scripts
+    this replaces had the loop twice, and said so in their own docstring - "THE ORDER IS THE THING
+    THAT CAN SILENTLY GO WRONG... A quality array off by one patch would paint the metal's numbers
+    on the coolant and look entirely plausible". So it is written once and read twice, and the
+    thing that could go wrong is gone rather than guarded.
+
+    A RANK WITH NO REAL BOUNDARY IS LEFT OUT, not reported as empty: an interior rank of a big
+    decomposition can hold cells whose every outside face is a cut to another rank.
+
+    THE SPAN IS CHECKED TO BE EXACTLY THE REAL PATCHES. In a decomposed mesh the `processor`
+    patches are appended after the real ones, so one read covers the real ones and nothing else -
+    but a hole in the middle would take faces on a cut into the delivered surface, where they draw
+    as a wall that is not there. Checked rather than assumed.
+    """
+    out: list[tuple] = []
+    for d in processor_dirs(Path(case)):
+        polymesh = (d / "constant" / region / "polyMesh") if region else (d / "constant" / "polyMesh")
+        if not (polymesh / "boundary").is_file():
+            continue
+        rows = [p for p in read_boundary_patches(polymesh)
+                if p["type"] != PROCESSOR_PATCH_TYPE and int(p["n_faces"]) > 0]
+        if not rows:
+            continue
+        first = min(int(p["start_face"]) for p in rows)
+        last = max(int(p["start_face"]) + int(p["n_faces"]) for p in rows)
+        if sum(int(p["n_faces"]) for p in rows) != last - first:
+            raise DecomposedBoundaryError(
+                f"{d.name}: the real patches are not contiguous, so one read of faces "
+                f"{first:,}..{last:,} would take in faces on a cut between ranks")
+        out.append((polymesh, rows, first, last - first))
+    return out
+
+
 def read_points(polymesh: Path):
     import numpy as np
     path = polymesh / "points"
