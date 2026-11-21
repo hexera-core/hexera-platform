@@ -807,5 +807,32 @@ def _is_solid(shape) -> bool:
     return shape.ShapeType() == TopAbs_SOLID
 
 
+def claims_gap(defect) -> bool:
+    """The meshability registry's claim: a 3D-stage edge-through-face or overlapping-facets
+    finding on a fingerprinted face whose clash the probe measured APART (`clash_kind` GAP)."""
+    from meshpipeline.cad.repair import mesh_probe
+    from meshpipeline.cad.repair.mesh_clash import GAP
+
+    measurements = getattr(defect, "measurements", None) or {}
+    return (getattr(defect, "code", None) in ResolveSubMeshGap.answers
+            and getattr(defect, "entity_type", "") == "face"
+            and bool(getattr(defect, "fingerprint", ""))
+            and measurements.get("located_by") == mesh_probe.LOCATED_BY_CLASH
+            and measurements.get("clash_kind") == GAP
+            and measurements.get("stage") == mesh_probe.STAGE_3D)
+
+
+def register_meshability() -> None:
+    """This module's meshability registry hook (`meshability.PROVIDERS`). Never called at import."""
+    import meshpipeline.settings.cad_repair as rcfg
+    from meshpipeline.cad.repair import meshability
+
+    meshability.register(meshability.MeshabilityOp(
+        name=NAME, claims=claims_gap,
+        build=lambda rung: ResolveSubMeshGap(sag_share=SAG_LADDER[rung]),
+        enabled=lambda: bool(getattr(rcfg, "CAD_REPAIR_RESOLVE_SUB_MESH_GAP", False)),
+        rungs=len(SAG_LADDER), priority=50, lane="H"))
+
+
 if __name__ == "__main__":  # pragma: no cover - the child's own entry point
     raise SystemExit(_child_main(sys.argv[1:]))

@@ -220,8 +220,9 @@ def gap_defects(defects) -> tuple:
     op = _OPS_BY_NAME.get(GAP_OP)
     if op is None:
         return ()
-    return tuple(sorted((d for d in defects if _sub_element_gap(d) and _volume_stage_recorded(d)
-                         and d.code in op.answers and d.fingerprint and op.targets_for(d)),
+    from meshpipeline.cad.repair.gap_split import claims_gap
+
+    return tuple(sorted((d for d in defects if claims_gap(d) and op.targets_for(d)),
                         key=lambda d: (d.entity_index, d.code.value, d.fingerprint)))
 
 
