@@ -382,9 +382,10 @@ def route_after_executor(
     from meshpipeline.pipeline.engine_fallback import refusal_without_lever, refused_as_wrong_region
     if refused_as_wrong_region(state) and not state.get("user_dispute"):
         # ...and a mesh of another region than the fluid is the staging's: no retry, no engine, no wrap
-        logger.warning("route_after_executor: the mesh filled the part's metal or the space outside it - "
-                       "every engine meshes the same staged region, so the run stops with the reason "
-                       "(LAD-cfd-8) - job_id=%s", state.get("job_id"))
+        logger.warning("route_after_executor: the refusal is the staging's (the mesh filled another region than "
+                       "the fluid, or its openings were bound to other faces than the ones confirmed) - every "
+                       "engine stages it the same way, so no other runs; the sound mesh, if any, is delivered with "
+                       "the refusal said (LAD-cfd-8) - job_id=%s", state.get("job_id"))
         return _sound_or_end(state)
     if refusal_without_lever(state) and not state.get("user_dispute"):
         if retry_count <= bcfg.MAX_BUILDER_RETRIES and another_engine_takes_over(state):

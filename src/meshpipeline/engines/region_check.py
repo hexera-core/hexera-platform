@@ -306,6 +306,31 @@ def measured_openings(manifest: Mapping) -> dict[str, float]:
     return _quality_map(manifest, "port_openings_m2")
 
 
+#: THE OPENING THE USER CONFIRMED (rulebook 75): a delivered port this far from the size the user gave for it, in
+#: area, is another opening than the one they confirmed - even when the staging's own measure agrees with the mesh
+#: (it bound the same other face). A typed "about 20 mm" on a 32 mm bore is 2.6 in area and stays the measure's
+DECLARED_FAR_BAND = (1.0 / 3.0, 3.0)
+
+
+def _far_from_declared(intake_patches, delivered: Mapping[str, float], already: set) -> list[dict]:
+    """The ports built far from the size the user confirmed (DECLARED_FAR_BAND), marked bound_elsewhere: the
+    staging bound them to another face than the opening confirmed (GL45: three 5.87 mm holes built as the 3.0 mm
+    holes at the bottom of their counterbores, 7.0 mm2 each against 27.1). Ports already missed are not repeated."""
+    out = []
+    for p in intake_patches or []:
+        if not (isinstance(p, Mapping) and str(p.get("type") or "") in ("inlet", "outlet") and p.get("name")):
+            continue
+        name = str(p["name"])
+        want, got = declared_port_area_m2(p), _num(delivered.get(name))
+        if name in already or want is None or got is None:
+            continue
+        ratio = got / want
+        if not DECLARED_FAR_BAND[0] <= ratio <= DECLARED_FAR_BAND[1]:
+            out.append({"name": name, "delivered_m2": got, "expected_m2": want, "ratio": round(ratio, 3),
+                        "expected_from": "declared", "bound_elsewhere": True})
+    return out
+
+
 def gate_port_areas(ctx) -> tuple[bool, str]:
     """The shared gate: every declared inlet/outlet delivered at about the size of its opening -
     the one measured on the geometry, else the one declared. A manifest without patch areas (an
@@ -318,13 +343,14 @@ def gate_port_areas(ctx) -> tuple[bool, str]:
         return True, ""
     expected = expected_port_areas(ctx.intake_patches, measured_openings(manifest))
     misses = port_area_misses(delivered, {k: a for k, (a, _) in expected.items()})
-    if not misses:
-        return True, ""
     for m in misses:
         m["expected_from"] = expected[m["name"]][1]
+    misses += _far_from_declared(ctx.intake_patches, delivered, {m["name"] for m in misses})
+    if not misses:
+        return True, ""
     said = "; ".join(
         f"'{m['name']}' is {m['ratio']:g} times the opening "
-        f"{'measured on the geometry' if m['expected_from'] == 'measured' else 'declared'} "
+        f"{'measured on the geometry' if m['expected_from'] == 'measured' else 'you confirmed' if m.get('bound_elsewhere') else 'declared'} "
         f"({m['delivered_m2'] * 1e6:,.0f} mm2 against {m['expected_m2'] * 1e6:,.0f} mm2)"
         for m in misses)
     detail = (f"the mesh's {said} - the patch is not that opening: it took in faces round it, or "
@@ -335,7 +361,7 @@ def gate_port_areas(ctx) -> tuple[bool, str]:
         FailureCause.PATCH_NOT_CAPTURED, detail=detail, misses=misses)
 
 
-__all__ = ["PORT_AREA_BAND", "PORT_OPENINGS_FILE", "SIZE_AGREES_BAND", "declared_port_area_m2",
+__all__ = ["DECLARED_FAR_BAND", "PORT_AREA_BAND", "PORT_OPENINGS_FILE", "SIZE_AGREES_BAND", "declared_port_area_m2",
            "delivered_areas", "expected_port_areas", "flow_area_m2", "gate_port_areas",
            "measured_openings", "trusted_declaration", "typed_port_areas",
            "measured_port_areas", "patch_areas_from_vtk", "port_area_misses",

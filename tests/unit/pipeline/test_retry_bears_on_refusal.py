@@ -300,3 +300,55 @@ def test_the_gate_refuses_a_wrong_region_with_its_reason_and_the_way_on(monkeypa
     assert not ok and "filled the part's metal or the space outside it" in fb
     assert "Check the openings on the geometry stage" in fb and "no other engine was tried" in fb
     assert facts_of(fb).get("wrong_region") is True
+
+
+# THE OPENING THE USER CONFIRMED: GL45's three 5.87 mm holes built as the 3.0 mm holes under their counterbores
+
+GL45_PORTS = [{"name": n, "type": t, "diameter_mm": d} for n, t, d in (
+    ("inlet", "inlet", 5.87), ("outlet_1", "outlet", 5.87), ("outlet_2", "outlet", 5.87),
+    ("outlet_3", "outlet", 2.99), ("outlet_4", "outlet", 2.99), ("outlet_5", "outlet", 2.99))]
+
+
+class _PortCtx:
+    def __init__(self, manifest, ports):
+        self._m, self.intake_patches = manifest, ports
+
+    def manifest_or_load(self):
+        return self._m
+
+
+def _gl45_manifest():
+    a = 7.0422e-6
+    names = [p["name"] for p in GL45_PORTS]
+    # the staging measured the same 3.0 mm holes it bound, so the measure agrees with the mesh
+    return {"quality": {"patch_areas_m2": dict.fromkeys(names, a), "port_openings_m2": dict.fromkeys(names, a)}}
+
+
+def test_a_port_built_far_from_the_confirmed_opening_is_refused_naming_both_areas():
+    from meshpipeline.engines.gates import facts_of
+    from meshpipeline.engines.region_check import gate_port_areas
+    ok, fb = gate_port_areas(_PortCtx(_gl45_manifest(), GL45_PORTS))
+    assert not ok
+    misses = facts_of(fb)["misses"]
+    assert sorted(m["name"] for m in misses) == ["inlet", "outlet_1", "outlet_2"]
+    assert all(m["bound_elsewhere"] for m in misses)
+    assert "'inlet' is 0.26 times the opening you confirmed (7 mm2 against 27 mm2)" in fb
+    # a typed size the bore rounds (about 20 mm on a 32 mm bore: 2.6 in area) stays the measure's
+    tee = [{"name": "inlet", "type": "inlet", "diameter_mm": 20.0}]
+    bore = 3.1416 * 0.016 ** 2
+    m = {"quality": {"patch_areas_m2": {"inlet": bore}, "port_openings_m2": {"inlet": bore}}}
+    assert gate_port_areas(_PortCtx(m, tee)) == (True, "")
+
+
+def test_a_port_bound_elsewhere_runs_no_other_engine_and_is_delivered_with_its_concern():
+    from meshpipeline.engines.gates import facts_of
+    from meshpipeline.engines.region_check import gate_port_areas
+    _ok, fb = gate_port_areas(_PortCtx(_gl45_manifest(), GL45_PORTS))
+    s = _external(engine="cfmesh", purpose="internal_cfd", executor_failed_gate="port_areas",
+                  executor_failure_facts=facts_of(fb))
+    f = lad.classify(s)
+    assert f is not None and f.kind == lad.NEVER and "bound to other faces" in f.reason
+    assert lad.refused_as_wrong_region(s)
+    c = lad.deliverable_refusal("port_areas", {}, facts_of(fb))
+    assert c is not None and "Opening 'inlet' was built at 7 mm2 against the 27 mm2 confirmed" in c["words"]
+    assert "another face than the one you confirmed" in c["words"]

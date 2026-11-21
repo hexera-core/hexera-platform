@@ -316,11 +316,19 @@ def lever_bears(gate: str, engine: str) -> bool:
 
 
 def refused_as_wrong_region(state: Mapping) -> bool:
-    """The attempt that just failed meshed another region than the fluid (engines/cad_fidelity.wrong_region):
-    no engine and no wrap rung runs on the same staging after it (LAD-cfd-8)."""
+    """The attempt that just failed meshed another region than the fluid (engines/cad_fidelity.wrong_region),
+    or bound its openings to other faces than the ones the user confirmed (region_check's bound_elsewhere): the
+    STAGING's reading, which every engine and the wrap rung share - no engine and no wrap rung runs on the same
+    staging after it (LAD-cfd-8)."""
     facts = state.get("executor_failure_facts")
-    return (not state.get("executor_success") and isinstance(facts, Mapping)
-            and bool(facts.get("wrong_region")))
+    if state.get("executor_success") or not isinstance(facts, Mapping):
+        return False
+    return bool(facts.get("wrong_region")) or _bound_elsewhere(facts)
+
+
+def _bound_elsewhere(facts: Mapping) -> bool:
+    misses = [m for m in facts.get("misses") or () if isinstance(m, Mapping)]
+    return bool(misses) and all(m.get("bound_elsewhere") for m in misses)
 
 
 def refusal_without_lever(state: Mapping) -> bool:
@@ -370,7 +378,10 @@ def deliverable_refusal(gate: str, quality: Mapping | None, facts: Mapping | Non
             return None
         said = "; ".join(f"opening '{m.get('name')}' was built at {_mm2(m.get('delivered_m2'))} against "
                          f"the {_mm2(m.get('expected_m2'))} confirmed" for m in misses)
-        return {"kind": GATE_CONCERN, "gate": gate, "words": said[0].upper() + said[1:],
+        elsewhere = all(m.get("bound_elsewhere") for m in misses)
+        return {"kind": GATE_CONCERN, "gate": gate, "words": said[0].upper() + said[1:] + (
+                    ": the mesh's opening is another face than the one you confirmed (a smaller hole inside it, "
+                    "or a face beside it)" if elsewhere else ""),
                 "way_on": "check the opening on the geometry stage - its outline, or the size you typed "
                           "for it - and run again"}
     if gate == "quality_floor":
@@ -860,6 +871,10 @@ def classify(state: Mapping) -> Failure | None:
         # no setting of this engine brings it inside one job, so the run moves to the next engine at
         # once - the same case again would only be estimated over again
         return Failure(ENGINE, cause.value, _REASON_BY_CAUSE[cause], stopped)
+    if gate == "port_areas" and _bound_elsewhere(facts):
+        # the staging bound the openings to other faces than the ones confirmed: every engine stages them the same
+        return Failure(NEVER, cause.value, "its openings were bound to other faces than the ones you confirmed - "
+                       "every engine stages them the same way", stopped)
     if facts.get("wrong_region"):
         # THE WRONG REGION (LAD-cfd-8 applied to the region): a mesh of the part's metal or the space outside it
         # is the staging's region, and every engine and the wrap rung mesh the same staging - another would mesh
