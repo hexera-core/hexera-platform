@@ -829,6 +829,34 @@ def record_into_manifest(workspace, rec: Mapping) -> None:
         logger.warning("fidelity: the record could not be written into the manifest", exc_info=True)
 
 
+#: A WRONG REGION, not a fidelity miss: more of the mesh's wall than this lies more than a cell off the fluid's own
+#: surface...
+WRONG_REGION_OFF_SHARE = 0.5
+#: ...and its median wall face lies this many cells off it: a mesh that misses a surface lies a cell or two off it;
+#: one of another region lies tens of cells off (the siphoned box's mesh of its metal: 81%, a median of 30 to 47)
+WRONG_REGION_MEDIAN_CELLS = 5.0
+
+
+def wrong_region(rec: Mapping) -> str:
+    """An internal mesh of another region than the fluid - the part's metal, or the space outside it - said in
+    plain words with its numbers; "" for any other record. Measured against the FLUID's own closed boundary
+    only: a reference that also bounds the metal cannot tell."""
+    if rec.get("flow") != "internal" or not str(rec.get("cad_source") or "").startswith(("staged fluid", "fluid boundary")):
+        return ""
+    surf = rec.get("surface") if isinstance(rec.get("surface"), Mapping) else {}
+    m2c = surf.get("mesh_to_cad") if isinstance(surf.get("mesh_to_cad"), Mapping) else {}
+    try:
+        off, p50 = float(m2c.get("wall_off_share")), float(m2c.get("p50_cells"))
+    except (TypeError, ValueError):
+        return ""
+    if off <= WRONG_REGION_OFF_SHARE or p50 <= WRONG_REGION_MEDIAN_CELLS:
+        return ""
+    far = m2c.get("max_m")
+    tail = f", up to {float(far) * 1e3:.0f} mm" if isinstance(far, (int, float)) else ""
+    return (f"the mesh filled the part's metal or the space outside it, not the fluid: {off * 100:.0f}% of its "
+            f"wall lies more than one cell off the fluid's surface, half of it more than {p50:.0f} cells away{tail}")
+
+
 def gate_cad_fidelity(ctx) -> tuple[bool, str]:
     """THE SHARED GATE, run last: measure, record the numbers in the manifest, and refuse only a
     mesh that is not the part (a REBUILD verdict) while CAD_FIDELITY_RETRY_ENABLED. A concern passes
@@ -845,10 +873,21 @@ def gate_cad_fidelity(ctx) -> tuple[bool, str]:
         if rec.get("verdict") != REBUILD or not polcfg.CAD_FIDELITY_RETRY_ENABLED:
             return True, ""
         said = " ".join(concerns(rec))
+        region = wrong_region(rec)
     except Exception:  # noqa: BLE001 - a measurement that broke is evidence missing, never a crash
         logger.warning("fidelity: the check could not run - the mesh is not judged by it",
                        exc_info=True)
         return True, ""
+    if region:
+        # THE WRONG REGION (LAD-cfd-8, rulebook 75): not a mesh that misses the fluid's surface here and
+        # there, but one of another region - the part's metal, or the space outside it
+        detail = region
+        return False, refuse(
+            f"[FIDELITY] {detail}. Check the openings on the geometry stage: the fluid is the space your "
+            "inlets and outlets open into. If the part itself is the fluid (a duct modelled as a solid), "
+            "say so in your notes. Every engine meshes the same staged region, so no other engine was tried.",
+            FailureCause.PATCH_NOT_CAPTURED, detail=detail, wrong_region=True,
+            fidelity={k: rec.get(k) for k in ("verdicts", "surface", "volume")})
     detail = f"the mesh does not follow your CAD: {said}"
     return False, refuse(
         f"[FIDELITY] {detail} The mesh is sound but it is not the part. Rebuild it so its "
@@ -861,6 +900,7 @@ def gate_cad_fidelity(ctx) -> tuple[bool, str]:
 __all__ = ["CAD_MISSED_CONCERN", "CAD_MISSED_REBUILD", "CONCERN", "OPENING_BAND", "PASS",
            "REBUILD", "RECORD_KEY", "UNMEASURED", "VOLUME_CONCERN_EXTERNAL",
            "VOLUME_CONCERN_INTERNAL", "VOLUME_REBUILD", "WALL_OFF_CONCERN", "WALL_OFF_REBUILD",
+           "WRONG_REGION_MEDIAN_CELLS", "WRONG_REGION_OFF_SHARE", "wrong_region",
            "Surface", "cad_reference", "concerns", "enclosed_volume", "gate_cad_fidelity", "join",
            "outer_skin",
            "measure", "mesh_patches", "outward_volume", "read_stl", "record_into_manifest",

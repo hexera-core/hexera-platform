@@ -315,6 +315,14 @@ def lever_bears(gate: str, engine: str) -> bool:
     return str(engine) in row
 
 
+def refused_as_wrong_region(state: Mapping) -> bool:
+    """The attempt that just failed meshed another region than the fluid (engines/cad_fidelity.wrong_region):
+    no engine and no wrap rung runs on the same staging after it (LAD-cfd-8)."""
+    facts = state.get("executor_failure_facts")
+    return (not state.get("executor_success") and isinstance(facts, Mapping)
+            and bool(facts.get("wrong_region")))
+
+
 def refusal_without_lever(state: Mapping) -> bool:
     """The attempt that just failed was refused by a gate this engine's next attempt cannot answer."""
     if state.get("executor_success"):
@@ -852,6 +860,12 @@ def classify(state: Mapping) -> Failure | None:
         # no setting of this engine brings it inside one job, so the run moves to the next engine at
         # once - the same case again would only be estimated over again
         return Failure(ENGINE, cause.value, _REASON_BY_CAUSE[cause], stopped)
+    if facts.get("wrong_region"):
+        # THE WRONG REGION (LAD-cfd-8 applied to the region): a mesh of the part's metal or the space outside it
+        # is the staging's region, and every engine and the wrap rung mesh the same staging - another would mesh
+        # the same wrong region (the siphoned box: four hours of it). The run stops with the reason and the way on
+        return Failure(NEVER, cause.value, "its mesh filled the part's metal or the space outside it, not the "
+                       "fluid - every engine meshes the same staged region", stopped)
     if kind == FIXABLE and gate and not lever_bears(gate, str(state.get("engine") or "")):
         # NOTHING THIS ENGINE CHANGES BEARS ON THE REFUSAL (LAD-cfd-8): its next attempt would rebuild
         # the same case, so the run moves to the next engine at once - or, with none, the sound mesh

@@ -247,3 +247,56 @@ def test_the_delivery_reads_the_concern_first_with_the_way_on():
     assert lines[1].startswith("  - Opening 'outlet' was built at 3,100 mm2")
     assert lines[2].startswith("    To get a better mesh: check the opening")
     assert "near-wall layer coverage" not in msg
+
+
+# LAD-cfd-8 applied to the region: a mesh of the part's metal or the space outside it
+
+def _siphon_rec(off=0.8106, p50=47.5, source="fluid boundary staged from your file", flow="internal"):
+    return {"flow": flow, "cad_source": source,
+            "surface": {"mesh_to_cad": {"wall_off_share": off, "p50_cells": p50, "max_m": 0.1106}}}
+
+
+def test_a_mesh_of_another_region_is_said_as_that():
+    from meshpipeline.engines.cad_fidelity import wrong_region
+    said = wrong_region(_siphon_rec())
+    assert said.startswith("the mesh filled the part's metal or the space outside it, not the fluid")
+    assert "81%" in said and "48 cells" in said and "111 mm" in said
+    # a fidelity miss lies a cell or two off; an external mesh and a reference that bounds the metal cannot tell
+    assert wrong_region(_siphon_rec(p50=1.4)) == ""
+    assert wrong_region(_siphon_rec(off=0.3)) == ""
+    assert wrong_region(_siphon_rec(flow="external")) == ""
+    assert wrong_region(_siphon_rec(source="staged part surface and lids")) == ""
+
+
+def test_a_wrong_region_runs_no_other_engine_and_no_wrap(monkeypatch):
+    import meshpipeline.pipeline.graph as graph
+    monkeypatch.setattr(graph._wrap, "wanted", lambda state: True)
+    s = _external(engine="cfmesh", purpose="internal_cfd",
+                  executor_failure_facts={"wrong_region": True, "detail": "the mesh filled the part's metal"})
+    f = lad.classify(s)
+    assert f is not None and f.kind == lad.NEVER and "every engine meshes the same staged region" in f.reason
+    assert not lad.decide(s, record={}).switch_to
+    assert lad.refused_as_wrong_region(s)
+    assert route_after_executor(s) == "__end__"
+    # and on a model-led engine too: no retry of the same region
+    assert route_after_executor({**s, "engine": "gmsh"}) == "__end__"
+
+
+def test_the_gate_refuses_a_wrong_region_with_its_reason_and_the_way_on(monkeypatch, tmp_path):
+    import meshpipeline.settings.policy as pol
+    from meshpipeline.engines import cad_fidelity as F
+    from meshpipeline.engines.gates import facts_of
+    monkeypatch.setattr(pol, "CAD_FIDELITY_RETRY_ENABLED", True)
+    monkeypatch.setattr(F, "measure", lambda ws, **k: {**_siphon_rec(), "verdict": F.REBUILD,
+                                                       "verdicts": {"mesh_to_cad": F.REBUILD}})
+    monkeypatch.setattr(F, "record_into_manifest", lambda ws, rec: None)
+
+    class _Ctx:
+        workspace, intake_patches, manifest = tmp_path, [], {}
+
+        def manifest_or_load(self):
+            return {}
+    ok, fb = F.gate_cad_fidelity(_Ctx())
+    assert not ok and "filled the part's metal or the space outside it" in fb
+    assert "Check the openings on the geometry stage" in fb and "no other engine was tried" in fb
+    assert facts_of(fb).get("wrong_region") is True
