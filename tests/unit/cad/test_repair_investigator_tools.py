@@ -125,7 +125,7 @@ def test_more_than_four_targets_refused():
 
 
 def test_distance_needs_exactly_two_targets(monkeypatch):
-    monkeypatch.setattr(it, "_distance_between", lambda a, b: {
+    monkeypatch.setattr(it, "_distance_between", lambda a, b, budget_s=0.0: {
         "min_distance_mm": 2.5, "point_a": [0.0, 0.0, 0.0], "point_b": [0.0, 0.0, 2.5]})
     ws = _workspace()
     assert it.run_tool(ws, "measure", {"what": "distance", "targets": ["face:1"]},
@@ -181,7 +181,7 @@ def test_deviation_measures_the_faces_the_kept_edits_touched(monkeypatch):
 
 
 def test_tool_that_raises_is_an_error_result(monkeypatch):
-    def boom(a, b):
+    def boom(a, b, **_kw):
         raise ValueError("the kernel gave up")
     monkeypatch.setattr(it, "_distance_between", boom)
     out = it.run_tool(_workspace(), "measure",
