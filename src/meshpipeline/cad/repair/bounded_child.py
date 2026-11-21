@@ -31,7 +31,10 @@ PNGs) ride as `{"__b64__": ...}` and tuples come back as lists. No pickle crosse
 
 THE COST. One child is a Python start plus `import OCP` - OCP is one monolithic extension, about
 1.1-1.5 s on a developer laptop - plus writing the operands. That is paid out of the caller's
-budget, so a budget shorter than the start-up is an honest None, never a wait past it.
+budget, so a budget shorter than the start-up is an honest None, never a wait past it. The operand
+write is the one step the wall cannot stop (no child exists yet, and OCP's progress indicator has
+no constructor to break it): it is linear serialisation, not a kernel search, so it is kept to the
+B-rep alone and a write that used the budget starts no child.
 """
 from __future__ import annotations
 
@@ -116,16 +119,22 @@ def _is_shape(value: Any) -> bool:
 
 
 def _write_operands(shapes: list, path: Path) -> None:
+    """The operands as ONE compound's BREP, WITHOUT TRIANGULATION. This write runs in the parent,
+    before any child exists, so the child's wall cannot stop it: it must carry only what a kernel
+    reads. A meshed part's triangles are most of its BREP (5x on a corpus hinge), and no kernel
+    reads the parent's mesh - the render kernel tessellates in the child for its own view."""
     from OCP.BRep import BRep_Builder
     from OCP.BRepTools import BRepTools
     from OCP.TopoDS import TopoDS_Compound
+    from OCP.TopTools import TopTools_FormatVersion
 
     builder = BRep_Builder()
     compound = TopoDS_Compound()
     builder.MakeCompound(compound)
     for shape in shapes:
         builder.Add(compound, shape)
-    if not BRepTools.Write_s(compound, str(path)):
+    if not BRepTools.Write_s(compound, str(path), False, False,
+                             TopTools_FormatVersion.TopTools_FormatVersion_VERSION_1):
         raise OSError(f"could not write the operands to {path}")
 
 

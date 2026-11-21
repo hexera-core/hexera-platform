@@ -101,7 +101,11 @@ def test_the_child_command_is_a_fresh_interpreter_running_the_dispatcher():
 
 # --- the real kernels, through the real child. The kernel is in the venv, so these are cheap. ---
 
-OCP = pytest.importorskip("OCP.BRepPrimAPI", reason="the CAD kernel")
+@pytest.fixture
+def ocp():
+    """The CAD kernel, skipped per test: the process tests above need no kernel and must still run
+    where OCP is missing."""
+    return pytest.importorskip("OCP.BRepPrimAPI", reason="the CAD kernel")
 
 
 def _overlapping_boxes():
@@ -118,7 +122,7 @@ def _overlapping_boxes():
     return both
 
 
-def test_the_face_pairs_are_the_same_in_the_child_as_in_process(no_fork):
+def test_the_face_pairs_are_the_same_in_the_child_as_in_process(ocp, no_fork):
     from meshpipeline.cad.repair.localize import _kernel_face_pairs
 
     shape = _overlapping_boxes()
@@ -128,7 +132,7 @@ def test_the_face_pairs_are_the_same_in_the_child_as_in_process(no_fork):
     assert [tuple(p) for p in there] == here
 
 
-def test_a_face_operand_keeps_its_identity_with_its_shape(no_fork):
+def test_a_face_operand_keeps_its_identity_with_its_shape(ocp, no_fork):
     """`_thickness_kernel` finds the face's owner and neighbours by IsSame, so the face must still
     BE a face of the shape in the child: both are written into one BREP, sharing topology."""
     from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
@@ -144,7 +148,7 @@ def test_a_face_operand_keeps_its_identity_with_its_shape(no_fork):
     assert _thickness_of(shape, face, budget_s=60.0) == here
 
 
-def test_the_common_volume_is_measured_in_the_child(no_fork):
+def test_the_common_volume_is_measured_in_the_child(ocp, no_fork):
     from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
     from OCP.gp import gp_Pnt
 
@@ -155,7 +159,7 @@ def test_the_common_volume_is_measured_in_the_child(no_fork):
     assert _common_volume_bounded(a, b, budget_s=60.0) == pytest.approx(125.0)
 
 
-def test_the_heal_analysis_maps_the_childs_pairs_back_onto_the_part(no_fork):
+def test_the_heal_analysis_maps_the_childs_pairs_back_onto_the_part(ocp, no_fork):
     from OCP.TopAbs import TopAbs_FACE
 
     from meshpipeline.cad.repair.localize import _indexed, _kernel_face_pairs
@@ -165,3 +169,41 @@ def test_the_heal_analysis_maps_the_childs_pairs_back_onto_the_part(no_fork):
     faces = _indexed(shape, TopAbs_FACE)
     every = [faces.FindKey(i) for i in range(1, faces.Extent() + 1)]
     assert _analyze_faces(shape, every) == _kernel_face_pairs(shape)
+
+
+def test_operands_cross_without_the_parents_triangulation(ocp, tmp_path):
+    """The operand write is the one part of a bounded call the child's wall cannot stop, so it
+    carries only what a kernel reads: the B-rep. A meshed part's triangulation is most of its BREP
+    (measured 5x on a corpus hinge) and no kernel uses the parent's mesh - render meshes its own."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepMesh import BRepMesh_IncrementalMesh
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopLoc import TopLoc_Location
+    from OCP.TopoDS import TopoDS
+
+    from meshpipeline.cad.repair.localize import _indexed
+
+    shape = BRepPrimAPI_MakeBox(10.0, 20.0, 3.0).Shape()
+    BRepMesh_IncrementalMesh(shape, 0.1, False, 0.2, False)
+    path = tmp_path / "operands.brep"
+    bounded_child._write_operands([shape], path)
+    (back,) = bounded_child._read_operands(path)
+    faces = _indexed(back, TopAbs_FACE)
+    for i in range(1, faces.Extent() + 1):
+        assert BRep_Tool.Triangulation_s(TopoDS.Face_s(faces.FindKey(i)), TopLoc_Location()) is None
+
+
+def test_slow_operand_preparation_never_starts_a_child(ocp, monkeypatch):
+    """A write that used the whole budget is an honest None, and no child is started after it."""
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+
+    def slow_write(_shapes, _path):
+        time.sleep(0.3)
+
+    def popen(*_a, **_k):
+        raise AssertionError("a child was started after the budget went on the operands")
+
+    monkeypatch.setattr(bounded_child, "_write_operands", slow_write)
+    monkeypatch.setattr(bounded_child.subprocess, "Popen", popen)
+    assert bounded_child.run(_probe_echo, (BRepPrimAPI_MakeBox(1.0, 1.0, 1.0).Shape(),), 0.1) is None
