@@ -62,6 +62,9 @@ EVERYTHING_ON: dict[str, str] = {
     # Lane H (wave 5): the sub-mesh gap bucket's operation. NOT in shared dev's posture yet (the
     # deploy plumbing is a follow-up), so with it on the eval measures one op more than shared dev runs.
     "CAD_REPAIR_RESOLVE_SUB_MESH_GAP": "true",
+    # The meshability pass and its always-return-a-STEP passthrough (lane H). Live in every arm, so
+    # the arms differ only in their authors; the AI investigator runs AFTER the pass.
+    "CAD_REPAIR_MESHABILITY_PASS": "live",
     # Shared dev's repair timeout (deploy.yml). At the settings default of 120 s the final
     # reserve (60 s probe + 10 s slack) and the proof reserve leave no time to look, so the
     # investigator concluded before its first tool call. EVERY arm runs it, so they stay comparable.

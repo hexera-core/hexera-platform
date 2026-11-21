@@ -919,8 +919,107 @@ def _delivering_in(source: Path):
     return delivering_in(unit)
 
 
+#: `measurements["delivery_source"]`, with CAD_REPAIR_MESHABILITY_PASS=live: the delivered STEP is
+#: the repair's own export, or the upload's bytes unchanged. Never "repaired" for a passthrough.
+REPAIRED_SOURCE = "repaired"
+PASSTHROUGH_SOURCE = "passthrough"
+#: Lane G's hints entry point, `hints_for(delivered_step_path, unresolved_defects) -> path | None`,
+#: imported only when called: absent, the run records `hints: "unavailable"` and writes no sidecar.
+HINTS_PROVIDER = "meshpipeline.cad.repair.mesh_hints:hints_for"
+
+
+def _pass_live() -> bool:
+    from meshpipeline.cad.repair.region_loop import meshability_pass_on
+
+    return meshability_pass_on()
+
+
+def _unresolved(exc: RepairRefused, defects) -> RepairRefused:
+    """Attach what the run left unresolved to a refusal, for the passthrough's hints. An attribute,
+    not a measurement: defects are objects, and `measurements` must stay serialisable."""
+    exc._unresolved = tuple(defects or ())  # type: ignore[attr-defined]
+    return exc
+
+
+def _write_hints(delivered: Path, unresolved) -> str:
+    """Hand the unresolved MESH findings to the hints provider. The path it wrote, "none" when it
+    had nothing to say (no sidecar is written), "unavailable" when no provider is installed, or
+    "failed: <why>". Never raises: hints are advice beside a delivery, never a reason to lose one."""
+    import importlib
+
+    from meshpipeline.cad.repair import mesh_probe
+
+    mesh = [d for d in (unresolved or ()) if getattr(d, "code", None) in mesh_probe.MESH_CODES]
+    if not mesh:
+        return "none"
+    module, _, function = HINTS_PROVIDER.partition(":")
+    try:
+        hints_for = getattr(importlib.import_module(module), function)
+    except Exception:  # noqa: BLE001 - the provider is optional; its absence is recorded
+        return "unavailable"
+    try:
+        written = hints_for(Path(delivered), tuple(mesh))
+    except Exception as exc:  # noqa: BLE001 - a failing provider never costs the delivery
+        logger.warning("conservative: hints provider failed (%s)", type(exc).__name__)
+        return f"failed: {type(exc).__name__}"
+    return str(written) if written else "none"
+
+
+def _passthrough(source: Path, destination: Path, exc: BaseException) -> None:
+    """THE RUN ALWAYS RETURNS A STEP: the upload's BYTES, unchanged, at `destination` - never a
+    re-export (a STEP round trip changes topology and declares a unit; see the nothing-kept note
+    below) - labelled `passthrough` on the exception's measurements, with hints beside it when the
+    provider has any. The exception itself is re-raised by the caller unchanged, so every consumer
+    keeps its meaning: continue on the original, and job-level escalation when it still won't mesh.
+    Never raises: a passthrough that cannot be written is recorded, and the original error stands."""
+    import shutil
+
+    measurements = getattr(exc, "measurements", None)
+    if not isinstance(measurements, dict):
+        measurements = {}
+        try:
+            exc.measurements = measurements  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001 - an exception that refuses attributes still re-raises
+            return
+    try:
+        Path(destination).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, destination)
+    except Exception as copy_error:  # noqa: BLE001
+        measurements["delivery_source"] = f"none: {type(copy_error).__name__}"
+        return
+    measurements["delivery_source"] = PASSTHROUGH_SOURCE
+    measurements["hints"] = _write_hints(Path(destination), getattr(exc, "_unresolved", ()))
+
+
 def repair_step_file(source: Path, destination: Path, *,
                      profile: RepairProfile = RepairProfile.conservative,
+                     directives: tuple[dict, ...] = (),
+                     goal: RepairGoal | None = None,
+                     focus_faces: tuple[int, ...] = (),
+                     auto_accept_mm: float | None = None) -> RepairReport:
+    """Repair `source` into `destination`, or refuse (`_repair_step_file` says how).
+
+    WITH CAD_REPAIR_MESHABILITY_PASS=live, EVERY EXIT LEAVES A STEP AT `destination`: a refusal,
+    an unavailable repair or an unexpected error first writes the upload's bytes there as a
+    passthrough (`_passthrough`), then raises exactly what it would have raised. Off, this is
+    `_repair_step_file` and nothing else - no file is written on a refusal, byte for byte today.
+    """
+    def run() -> RepairReport:
+        return _repair_step_file(source, destination, profile=profile, directives=directives,
+                                 goal=goal, focus_faces=focus_faces,
+                                 auto_accept_mm=auto_accept_mm)
+
+    if not _pass_live():
+        return run()
+    try:
+        return run()
+    except Exception as exc:
+        _passthrough(source, destination, exc)
+        raise
+
+
+def _repair_step_file(source: Path, destination: Path, *,
+                      profile: RepairProfile = RepairProfile.conservative,
                      directives: tuple[dict, ...] = (),
                      goal: RepairGoal | None = None,
                      focus_faces: tuple[int, ...] = (),
@@ -1129,6 +1228,15 @@ def repair_step_file(source: Path, destination: Path, *,
         # package, and a region queued for a person is the one thing in a partial repair a
         # customer must be told plainly (spec decision 7) - so both travel.
         measurements["regions"] = regions_run.to_dict()
+        if _pass_live():
+            # THE MESHABILITY PASS, per application, from the session's own verdicts (lane F's
+            # contract): on the result AND on every refusal below, because the dict is shared.
+            from meshpipeline.cad.repair import meshability
+
+            measurements["meshability_pass"] = [dict(r) for r in regions_run.meshability]
+            failures = meshability.load_failures()
+            if failures:
+                measurements["meshability_load_failures"] = [list(f) for f in failures]
         # DID THE REPAIR CAUSE WHAT SURVIVES? Inherent defects arrived with the upload (same
         # fingerprint, same measurement); introduced ones did not. Only a region run holds both
         # scans, so only it can say.
@@ -1230,7 +1338,7 @@ def repair_step_file(source: Path, destination: Path, *,
         measurements["ending"] = ending_for(
             kept=kept_count, attempted=attempted_count,
             stopped_because=result.stopped_because, gate_refusal=True)
-        raise RepairRefused(refusal, measurements=measurements)
+        raise _unresolved(RepairRefused(refusal, measurements=measurements), result.defects)
 
     if measurements["operations_kept"] == 0:
         # NOTHING KEPT MEANS NOTHING TO PROMOTE, and writing the file anyway was worse than doing
@@ -1256,11 +1364,11 @@ def repair_step_file(source: Path, destination: Path, *,
         measurements["ending"] = ending_for(
             kept=0, attempted=attempted_count,
             stopped_because=result.stopped_because)
-        raise RepairRefused(
+        raise _unresolved(RepairRefused(
             f"nothing was kept ({measurements['operations_attempted']} operation(s) attempted, "
             f"stopped because {result.stopped_because}), so there is nothing to promote - "
             "re-exporting the upload would change its topology without repairing it",
-            measurements=measurements)
+            measurements=measurements), result.defects)
 
     # HOW THIS RUN ENDED, in the vocabulary a report may print (cad/repair/ending.py). Set only
     # once both refusal paths above are past, so the word here can only ever be one that comes
@@ -1280,6 +1388,9 @@ def repair_step_file(source: Path, destination: Path, *,
     from meshpipeline.cad.unit_evidence import parser_applied_unit
 
     _write_step(result.shape, dest, unit=parser_applied_unit(src))
+    if _pass_live():
+        measurements["delivery_source"] = REPAIRED_SOURCE
+        measurements["hints"] = _write_hints(dest, result.defects)
 
     defects: tuple[RepairDefect, ...] = ()
     if not final.valid:

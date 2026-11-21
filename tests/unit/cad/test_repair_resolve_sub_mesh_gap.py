@@ -209,7 +209,7 @@ def test_a_measured_delta_is_rounded_away_from_zero(value, expected):
     assert _rounded_up(value) == pytest.approx(expected, abs=1e-12)
 
 
-# THE GAP PRE-PASS (region_loop._gap_prepass): before any author, every gap clash is offered the
+# THE GAP PRE-PASS (region_loop._meshability_pass, gap entry): before any author, every gap clash is offered the
 # operation through the ordinary try_package, down its ladder, inside its share of the clock.
 
 class _Work:
@@ -221,6 +221,7 @@ class _Work:
         self.original = MEASURE
         self.offered: list = []
         self.commit_on = commit_on
+        self.shape = None
 
     def defects(self):
         return tuple(self._defects)
@@ -245,8 +246,10 @@ class _Work:
 def _prepass(work, *, left: float = 1000.0, max_ops: int = 6):
     from meshpipeline.cad.repair import region_loop
 
-    return region_loop._gap_prepass(work, (_REGION,), remaining=lambda: left, reserve=10.0,
-                                    tolerance_mm=1e-4, max_ops=max_ops)
+    out, _records = region_loop._meshability_pass(work, (_REGION,), remaining=lambda: left,
+                                                  reserve=10.0, tolerance_mm=1e-4,
+                                                  max_ops=max_ops)
+    return out
 
 
 def test_the_prepass_walks_the_ladder_until_a_split_holds(baseline_on):
@@ -296,8 +299,8 @@ def test_every_faces_first_rung_comes_before_any_faces_second(baseline_on):
     from meshpipeline.cad.repair import region_loop
 
     work = _Two((_gap_clash(), other))
-    region_loop._gap_prepass(work, (region,), remaining=lambda: 1000.0, reserve=10.0,
-                             tolerance_mm=1e-4, max_ops=6)
+    region_loop._meshability_pass(work, (region,), remaining=lambda: 1000.0, reserve=10.0,
+                                  tolerance_mm=1e-4, max_ops=6)
     assert work.aimed[:2] == ["face:wall", "face:other"]
     assert work.offered[:2] == [0.25, 0.25] and work.offered[2] == 0.125
 
@@ -384,10 +387,10 @@ def test_the_prepass_never_splits_a_held_face(baseline_on):
                         entity_type="face", entity_index=1, message="sliver",
                         fingerprint="face:wall", location=dict(_BOX), measurements={})
     work = _Work((_gap_clash(), held), commit_on=1)
-    out = region_loop._gap_prepass(work, (_REGION,), remaining=lambda: 1000.0, reserve=10.0,
-                                   tolerance_mm=1e-4, max_ops=6,
-                                   reserved=frozenset({DefectCode.small_face}))
-    assert out == [] and work.offered == []
+    out, records = region_loop._meshability_pass(work, (_REGION,), remaining=lambda: 1000.0,
+                                                 reserve=10.0, tolerance_mm=1e-4, max_ops=6,
+                                                 reserved=frozenset({DefectCode.small_face}))
+    assert out == [] and records == [] and work.offered == []
 
 
 def test_a_recorded_gap_split_replays_at_its_own_rung(monkeypatch):

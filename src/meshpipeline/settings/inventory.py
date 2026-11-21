@@ -409,6 +409,8 @@ INVENTORY: list[Group] = [
                help="re-trim one face from its own boundary (same surface, MakeFace + ShapeFix_Face) when gmsh reports overlapping facets on it; NOT to be set live on customer jobs until CAD_REPAIR_PACKAGE_REVIEW is live - the reviewer replaces the numeric deviation gate for an op that can move a feature"),
         EnvVar("CAD_REPAIR_CLOSE_WIRE_GAPS", "false", kind="bool", exposure="internal",
                help="close the gaps in one face's wires (ShapeFix_Wire FixConnected at the run's tolerance + FixGaps3d) when gmsh reports an open 1D loop or the kernel a wire gap; MOVES VERTICES, bounded by the tolerance and measured; NOT to be set live on customer jobs until CAD_REPAIR_PACKAGE_REVIEW is live"),
+        EnvVar("CAD_REPAIR_MESHABILITY_PASS", "off", exposure="internal",
+               help="live: before any author, offer every registered meshability operation (cad/repair/meshability.py) to the mesh findings it claims, through the ordinary try_package; and always return a STEP - the upload's bytes unchanged, labelled passthrough, when nothing is kept. Fails closed: anything but live is off"),
         EnvVar("CAD_REPAIR_RESOLVE_SUB_MESH_GAP", "false", kind="bool", exposure="internal",
                help="split the two faces of a sub-mesh-size gap (faces that do not touch but sit closer than the default mesh's chord sag) along their own iso-curves so gmsh's default surface mesh resolves the wall; moves no surface, declares the measured area/volume noise; never auto-accepted"),
         EnvVar("CAD_REPAIR_FIX_SMALL_FACES", "false", kind="bool", exposure="internal",

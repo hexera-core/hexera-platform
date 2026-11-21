@@ -231,9 +231,9 @@ def test_the_gap_prepass_sees_only_the_focused_regions(monkeypatch):
 
     def prepass(work, regions, **kw):
         seen.extend(int(r.index) for r in regions)
-        return []
+        return [], []
 
-    monkeypatch.setattr(region_loop, "_gap_prepass", prepass)
+    monkeypatch.setattr(region_loop, "_meshability_pass", prepass)
     part = _Part()
     run = _run(part, focus_faces=(7,))
     in_focus = [r.index for r in run.regions if 7 in r.face_indices]
