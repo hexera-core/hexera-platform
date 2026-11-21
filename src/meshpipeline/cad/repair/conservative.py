@@ -923,9 +923,6 @@ def _delivering_in(source: Path):
 #: the repair's own export, or the upload's bytes unchanged. Never "repaired" for a passthrough.
 REPAIRED_SOURCE = "repaired"
 PASSTHROUGH_SOURCE = "passthrough"
-#: Lane G's hints entry point, `hints_for(delivered_step_path, unresolved_defects) -> path | None`,
-#: imported only when called: absent, the run records `hints: "unavailable"` and writes no sidecar.
-HINTS_PROVIDER = "meshpipeline.cad.repair.mesh_hints:hints_for"
 
 
 def _pass_live() -> bool:
@@ -942,25 +939,20 @@ def _unresolved(exc: RepairRefused, defects) -> RepairRefused:
 
 
 def _write_hints(delivered: Path, unresolved) -> str:
-    """Hand the unresolved MESH findings to the hints provider. The path it wrote, "none" when it
-    had nothing to say (no sidecar is written), "unavailable" when no provider is installed, or
-    "failed: <why>". Never raises: hints are advice beside a delivery, never a reason to lose one."""
-    import importlib
+    """Write lane G's mesh-size hints sidecar beside the delivered STEP (`mesh_hints.hints_for`,
+    `<step>.mesh-hints.json`) from the run's unresolved MESH findings. The provider probes the
+    delivered part itself, so it is asked even when no finding survived: it writes nothing when the
+    part meshes at default. Returns the sidecar's path, "none" when there was nothing to hint, or
+    "failed: <why>". Never raises: hints are advice beside a delivery, never a reason to lose one.
+    """
+    from meshpipeline.cad.repair import mesh_hints, mesh_probe
 
-    from meshpipeline.cad.repair import mesh_probe
-
-    mesh = [d for d in (unresolved or ()) if getattr(d, "code", None) in mesh_probe.MESH_CODES]
-    if not mesh:
-        return "none"
-    module, _, function = HINTS_PROVIDER.partition(":")
+    mesh = tuple(d for d in (unresolved or ())
+                 if getattr(d, "code", None) in mesh_probe.MESH_CODES)
     try:
-        hints_for = getattr(importlib.import_module(module), function)
-    except Exception:  # noqa: BLE001 - the provider is optional; its absence is recorded
-        return "unavailable"
-    try:
-        written = hints_for(Path(delivered), tuple(mesh))
+        written = mesh_hints.hints_for(Path(delivered), mesh)
     except Exception as exc:  # noqa: BLE001 - a failing provider never costs the delivery
-        logger.warning("conservative: hints provider failed (%s)", type(exc).__name__)
+        logger.warning("conservative: mesh hints failed (%s)", type(exc).__name__)
         return f"failed: {type(exc).__name__}"
     return str(written) if written else "none"
 

@@ -100,6 +100,10 @@ def upload(tmp_path) -> Path:
 ], ids=["refused", "unavailable", "unexpected"])
 def test_every_exit_leaves_the_uploads_bytes_and_re_raises(pass_live, upload, tmp_path,
                                                           monkeypatch, error):
+    from meshpipeline.cad.repair import mesh_hints
+
+    monkeypatch.setattr(mesh_hints, "hints_for", lambda path, defects: None)
+
     def boom(*args, **kwargs):
         raise error
 
@@ -110,7 +114,7 @@ def test_every_exit_leaves_the_uploads_bytes_and_re_raises(pass_live, upload, tm
     assert raised.value is error
     assert destination.read_bytes() == upload.read_bytes()
     assert raised.value.measurements["delivery_source"] == "passthrough"
-    assert raised.value.measurements["hints"] == "none"          # nothing unresolved to hint
+    assert raised.value.measurements["hints"] == "none"
 
 
 def test_with_the_flag_off_a_refusal_writes_nothing(upload, tmp_path, monkeypatch):
@@ -126,36 +130,51 @@ def test_with_the_flag_off_a_refusal_writes_nothing(upload, tmp_path, monkeypatc
     assert not destination.exists() and "delivery_source" not in raised.value.measurements
 
 
-def test_unresolved_mesh_findings_go_to_the_hints_provider(pass_live, upload, tmp_path,
-                                                          monkeypatch):
+def test_unresolved_mesh_findings_go_to_lane_gs_hints(pass_live, upload, tmp_path, monkeypatch):
+    from meshpipeline.cad.repair import mesh_hints
+
     finding = _gap_clash()
     seen: list = []
 
     def refuse(*args, **kwargs):
         raise conservative._unresolved(conservative.RepairRefused("x"), (finding,))
 
-    monkeypatch.setattr(conservative, "_repair_step_file", refuse)
-    destination = tmp_path / "part-repaired.step"
-    # NO PROVIDER INSTALLED: recorded, no sidecar, the delivery stands.
-    with pytest.raises(conservative.RepairRefused) as raised:
-        conservative.repair_step_file(upload, destination)
-    assert raised.value.measurements["hints"] == "unavailable"
-    assert destination.read_bytes() == upload.read_bytes()
-    # A PROVIDER: handed the delivered path and the unresolved mesh findings.
-    import sys
-    import types
-
-    module = types.ModuleType("meshpipeline.cad.repair.mesh_hints")
-
     def hints_for(path, defects):
-        seen.append((Path(path), defects))
+        seen.append((Path(path), tuple(defects)))
         sidecar = Path(f"{path}.mesh-hints.json")
         sidecar.write_text("{}")
         return sidecar
 
-    module.hints_for = hints_for  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "meshpipeline.cad.repair.mesh_hints", module)
+    monkeypatch.setattr(conservative, "_repair_step_file", refuse)
+    monkeypatch.setattr(mesh_hints, "hints_for", hints_for)
+    destination = tmp_path / "part-repaired.step"
     with pytest.raises(conservative.RepairRefused) as raised:
         conservative.repair_step_file(upload, destination)
-    assert raised.value.measurements["hints"].endswith(".mesh-hints.json")
+    # THE SIDECAR SITS BESIDE THE PASSTHROUGH, made from the upload's own bytes.
+    assert raised.value.measurements["hints"] == f"{destination}.mesh-hints.json"
     assert seen == [(destination, (finding,))]
+    assert destination.read_bytes() == upload.read_bytes()
+
+
+def test_no_hint_means_no_sidecar_and_a_failing_provider_keeps_the_delivery(
+        pass_live, upload, tmp_path, monkeypatch):
+    from meshpipeline.cad.repair import mesh_hints
+
+    def refuse(*args, **kwargs):
+        raise conservative.RepairRefused("x")
+
+    monkeypatch.setattr(conservative, "_repair_step_file", refuse)
+    monkeypatch.setattr(mesh_hints, "hints_for", lambda path, defects: None)
+    destination = tmp_path / "part-repaired.step"
+    with pytest.raises(conservative.RepairRefused) as raised:
+        conservative.repair_step_file(upload, destination)
+    assert raised.value.measurements["hints"] == "none"
+
+    def broken(path, defects):
+        raise RuntimeError("provider")
+
+    monkeypatch.setattr(mesh_hints, "hints_for", broken)
+    with pytest.raises(conservative.RepairRefused) as raised:
+        conservative.repair_step_file(upload, destination)
+    assert raised.value.measurements["hints"] == "failed: RuntimeError"
+    assert destination.read_bytes() == upload.read_bytes()
