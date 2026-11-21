@@ -597,9 +597,14 @@ def _contact_extrema(pairs, *solids) -> list[dict]:
     return out
 
 
-def _nearest_face_positions(queries, tol, *faces) -> list[list[int]]:
+def _nearest_face_positions(queries, tol, primary, *faces) -> list[list[int]]:
     """Per query `[lo, hi, point]`: the positions in `faces` of the face(s) nearest `point`, among
     `faces[lo:hi]` ONLY - one body's faces, so another body's coincident face is never named.
+
+    The first `primary` queries are the in-face supports; the rest are the centre fallback, which
+    is ANSWERED EMPTY, NOT SEARCHED, once any support resolved. The fallback is used only when no
+    support resolves, and a search nobody will use must not spend the child's budget: a child
+    killed on it would discard the supports already found and leave the failure unlocated.
 
     ONLY EVER RUN IN THE CHILD (registered as `probe.nearest_face_positions`): the point-to-face
     distances are as uninterruptible as the pair extrema. The faces cross as shapes and come back
@@ -608,7 +613,10 @@ def _nearest_face_positions(queries, tol, *faces) -> list[list[int]]:
     from OCP.TopTools import TopTools_IndexedMapOfShape
 
     out: list[list[int]] = []
-    for lo, hi, point in queries:
+    for k, (lo, hi, point) in enumerate(queries):
+        if k >= int(primary) and any(out[:int(primary)]):
+            out.append([])
+            continue
         local = TopTools_IndexedMapOfShape()
         for face in faces[int(lo):int(hi)]:
             local.Add(face)
@@ -618,9 +626,11 @@ def _nearest_face_positions(queries, tol, *faces) -> list[list[int]]:
     return out
 
 
-def _bounded_nearest_faces(bodies, queries, *, tol: float, deadline: float) -> list[list] | None:
+def _bounded_nearest_faces(bodies, queries, *, primary: int, tol: float,
+                           deadline: float) -> list[list] | None:
     """Per `(side, point)` query, the faces of `bodies[side]` nearest `point` - the PARENT'S own
-    face objects - or None when the child did not finish. Every query goes to ONE child."""
+    face objects - or None when the child did not finish. Every query goes to ONE child; queries
+    after the first `primary` are fallbacks the child skips once a primary one resolved."""
     from OCP.TopAbs import TopAbs_FACE
 
     from meshpipeline.cad.repair.localize import _indexed
@@ -637,7 +647,8 @@ def _bounded_nearest_faces(bodies, queries, *, tol: float, deadline: float) -> l
         return None
     answer = bounded_child.run(
         _nearest_face_positions,
-        ([[*spans[side], list(point)] for side, point in queries], float(tol), *operands),
+        ([[*spans[side], list(point)] for side, point in queries], float(tol), int(primary),
+         *operands),
         budget_s=budget)
     if not isinstance(answer, list) or len(answer) != len(queries):
         return None
@@ -746,7 +757,7 @@ def _contact_support_faces(shape, faces, *, tol: float, deadline: float) -> Cont
         if not queries:
             return None
         near = _bounded_nearest_faces([solids.FindKey(i), solids.FindKey(j)], queries,
-                                      tol=tol, deadline=deadline)
+                                      primary=in_face, tol=tol, deadline=deadline)
         if near is None:
             return None
         found: set[int] = set()

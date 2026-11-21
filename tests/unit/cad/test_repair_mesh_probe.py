@@ -571,8 +571,8 @@ def _contact(monkeypatch, answer, *, resolve=None):
             seen.update(args=args, budget_s=budget_s)
             return answer
         assert fn is mp._nearest_face_positions, fn
-        queries, _tol, *operands = args
-        seen["operands"] = operands
+        queries, _tol, primary, *operands = args
+        seen.update(operands=operands, primary=primary)
         seen["queries"] += [(lo, hi, tuple(point)) for lo, hi, point in queries]
         if resolve == "dead":
             return None
@@ -637,6 +637,7 @@ def test_a_support_inside_a_face_is_resolved_among_its_own_bodys_faces(monkeypat
                                 "face-2.1", "face-2.2", "face-2.3"]
     assert seen["queries"][:2] == [(0, 3, (1.0, 0.0, 0.0)), (3, 6, (2.0, 0.0, 0.0))]
     assert found is not None and found.faces == (2, 5)   # face-1.2 and face-2.2
+    assert seen["primary"] == 2, "the child is told which queries are supports, not fallback"
 
 
 def test_a_resolution_naming_another_bodys_face_is_no_answer(monkeypatch):
@@ -730,7 +731,7 @@ def test_the_nearest_face_kernel_never_names_a_coincident_face_of_another_body()
     operands = [m.FindKey(k) for body in (a, b)
                 for m in [_indexed(body, TopAbs_FACE)] for k in range(1, m.Extent() + 1)]
     ((only,), both) = _nearest_face_positions(
-        [[0, 6, [10.0, 5.0, 5.0]], [0, 12, [10.0, 5.0, 5.0]]], 1e-6, *operands)
+        [[0, 6, [10.0, 5.0, 5.0]], [0, 12, [10.0, 5.0, 5.0]]], 1e-6, 2, *operands)
     lo, hi = _bounds_of(operands[only])
     assert only < 6 and lo[0] == pytest.approx(10.0, abs=1e-4) == hi[0]
     assert len(both) == 2 and any(n >= 6 for n in both), "the whole-part search names B's face too"
@@ -744,3 +745,49 @@ class _Meets:
 
     def CornerMin(self):                                           # noqa: N802 - OCC's name
         raise AssertionError("the overlap ranking must not need corners in these fixtures")
+
+
+def test_a_fallback_search_never_runs_once_a_support_resolved(monkeypatch):
+    """The centre fallback is only for a contact with NO in-face support. Asked in the same child,
+    it must not run once a support resolved: a fallback that spends the child's budget would kill
+    the child and discard the supports it had already found, leaving the failure unlocated."""
+    pytest.importorskip("OCP.BRepPrimAPI", reason="the CAD kernel")
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCP.TopAbs import TopAbs_FACE
+
+    from meshpipeline.cad.repair import mesh_probe as mp
+    from meshpipeline.cad.repair.localize import _indexed
+
+    centre = (5.0, 5.0, 5.0)
+    asked: list = []
+
+    def nearest(faces, point, *, tol, deadline):
+        asked.append(point)
+        if point == centre:
+            raise AssertionError("the fallback ran although a support had resolved")
+        return [1]
+
+    monkeypatch.setattr(mp, "_nearest_faces", nearest)
+    box = _indexed(BRepPrimAPI_MakeBox(10.0, 10.0, 10.0).Shape(), TopAbs_FACE)
+    operands = [box.FindKey(k) for k in range(1, 7)]
+    answer = mp._nearest_face_positions(
+        [[0, 6, [10.0, 5.0, 5.0]], [0, 6, list(centre)], [0, 6, list(centre)]], 1e-6, 1, *operands)
+    assert answer == [[0], [], []]
+    assert asked == [(10.0, 5.0, 5.0)]
+
+
+def test_the_fallback_runs_when_no_support_resolved(monkeypatch):
+    pytest.importorskip("OCP.BRepPrimAPI", reason="the CAD kernel")
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCP.TopAbs import TopAbs_FACE
+
+    from meshpipeline.cad.repair import mesh_probe as mp
+    from meshpipeline.cad.repair.localize import _indexed
+
+    monkeypatch.setattr(mp, "_nearest_faces",
+                        lambda faces, point, *, tol, deadline: [] if point[0] == 10.0 else [2])
+    box = _indexed(BRepPrimAPI_MakeBox(10.0, 10.0, 10.0).Shape(), TopAbs_FACE)
+    operands = [box.FindKey(k) for k in range(1, 7)]
+    answer = mp._nearest_face_positions(
+        [[0, 6, [10.0, 5.0, 5.0]], [0, 6, [5.0, 5.0, 5.0]]], 1e-6, 1, *operands)
+    assert answer == [[], [1]]
