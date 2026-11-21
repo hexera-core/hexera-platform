@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 
 import meshpipeline.settings.runtime as rtcfg
+from meshpipeline.engines.checkmesh_validity import CHECKMESH_FATAL, fatal_defects
 from meshpipeline.sandbox.safe_exec import run_guarded
 
 logger = logging.getLogger(__name__)
@@ -43,13 +44,8 @@ _CM = {
     # worst value is not representative. Absent pattern ⇒ zero skewed faces.
     "skew_faces": re.compile(r"(\d+)\s+highly skew faces"),
 }
-_FATAL = (("negative volume", "negative-volume cells"),
-          ("open cell", "open cells"),
-          ("incorrectly oriented", "incorrectly oriented faces"),
-          # checkMesh: "Total number of faces on empty patches is not divisible by the number of
-          # cells in the mesh. Hence this mesh is not 1D or 2D." An `empty` patch on a 3D mesh
-          # (a background block's unnamed outside) makes every solver refuse the case.
-          ("not 1d or 2d", "empty patches on a 3D mesh"))
+# checkMesh's validity failures: ONE reading for every OpenFOAM engine (engines/checkmesh_validity)
+_FATAL = CHECKMESH_FATAL
 
 
 def check_mesh(workspace, *, bashrc: str = _DEFAULT_BASHRC, region: str = "") -> dict:
@@ -82,8 +78,7 @@ def check_mesh(workspace, *, bashrc: str = _DEFAULT_BASHRC, region: str = "") ->
         if m:
             v = m.group(1)
             q[k] = float(v) if any(c in v for c in ".eE") else int(v)
-    low = out.lower()
-    q["fatal"] = [lbl for mk, lbl in _FATAL if mk in low]
+    q["fatal"] = fatal_defects(out)
     # skewness LOCALIZATION: fraction of faces flagged skewed. A production external-aero mesh has
     # a few skewed faces at the wing-body junction (a known limit of octree-hex+prism meshers) and
     # is fully solvable; this fraction - not the single worst value - is the honest quality signal.

@@ -20,6 +20,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from meshpipeline.engines.checkmesh_validity import CHECKMESH_FATAL, fatal_defects
+
 logger = logging.getLogger(__name__)
 
 #: (command, log name). ORDER IS CONTRACT.
@@ -35,8 +37,8 @@ _CM = {
     "max_aspect_ratio": re.compile(r"Max aspect ratio\s*=\s*([\d.eE+-]+)"),
     "skew_faces": re.compile(r"(\d+)\s+highly skew faces"),
 }
-_FATAL = (("negative volume", "negative-volume cells"), ("open cell", "open cells"),
-          ("incorrectly oriented", "incorrectly oriented faces"))
+#: checkMesh's validity failures: ONE reading for every OpenFOAM engine (engines/checkmesh_validity)
+_FATAL = CHECKMESH_FATAL
 
 
 def default_bashrc() -> str:
@@ -152,7 +154,7 @@ def parse_check_mesh(out: str) -> dict:
         if m:
             v = m.group(1)
             q[k] = float(v) if any(c in v for c in ".eE") else int(v)
-    q["fatal"] = [label for mark, label in _FATAL if mark in out.lower()]
+    q["fatal"] = fatal_defects(out)
     q.setdefault("skew_faces", 0)
     return q
 
