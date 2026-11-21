@@ -30,6 +30,7 @@ from meshpipeline.cad.repair.plan import (
     RulesPlanner,
     RunHistory,
     held_fingerprints,
+    mesh_finding_outranks_kernel,
     paired_rim_fingerprints,
     refuse_paired_rims,
 )
@@ -180,7 +181,14 @@ def _is_mesh(defect) -> bool:
 
 
 def _sub_element_gap(defect) -> bool:
-    """A clash-located mesh failure whose two faces the kernel measured apart (mesh_clash.GAP)."""
+    """A clash-located mesh failure whose two faces the kernel measured apart (mesh_clash.GAP).
+
+    NARROWER THAN `plan.mesh_finding_outranks_kernel`, and for a different question. This one asks
+    "is this particular finding the mesher's own chord", and `_mesh_candidate` uses it to decide
+    what to AIM at. Whether a mesh finding may be proposed BEFORE the kernel's cure is the other
+    question, and both layers now ask the shared helper for that - a finding with no clash
+    evidence must still be aimable, while it must not jump the queue.
+    """
     measurements = getattr(defect, "measurements", None) or {}
     return (measurements.get("located_by") == mesh_probe.LOCATED_BY_CLASH
             and measurements.get("clash_kind") == GAP)
@@ -456,7 +464,7 @@ def rules_author(shape, *, original: Measure, reserved: frozenset = frozenset(),
         # heal or fragment closes, and promoting it over the kernel's warning replaced the
         # fix_small_faces every earlier wave kept with a fragment_bodies that could not help. It
         # is still aimed at once the kernel has nothing (the `elif` below), as before.
-        jumping = tuple(d for d in defects if _is_mesh(d) and not _sub_element_gap(d))
+        jumping = tuple(d for d in defects if mesh_finding_outranks_kernel(d))
         if candidate is not None and jumping:
             rank = min((_SEVERITY_RANK.get(d.severity, 9) for d in kernel
                         if d.fingerprint == candidate.defect_fingerprint), default=9)

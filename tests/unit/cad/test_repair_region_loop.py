@@ -1227,8 +1227,12 @@ _ABSENT = object()
 
 
 def _clash(fingerprint: str, gap, *, located_by="surface-mesh-clash",
-           adjacent=False) -> EntityDefect:
+           adjacent=False, kind="crossing") -> EntityDefect:
+    """A clash-located defect. `kind` defaults to lane G's "crossing" - the classification that
+    accounts for the measured B-rep distance - because that is what these tests are about."""
     measurements = {"located_by": located_by}
+    if kind is not None:
+        measurements["clash_kind"] = kind
     if gap is not _ABSENT:
         measurements["clash_gap_mm"] = gap
     if adjacent is not _ABSENT:
@@ -1319,3 +1323,47 @@ def test_touching_is_a_fraction_of_the_part_not_an_absolute_nanometre(monkeypatc
     assert [r.index for r in rl._walk_order(regions, defects, 200.0)] == [1, 0]
     # ...and with no diagonal to scale by, the floor applies and it is not.
     assert [r.index for r in rl._walk_order(regions, defects)] == [0, 1]
+
+
+# --- lane G's clash_kind is the authority on what is worth reaching first ----------------------
+def _kinded(fingerprint: str, kind, **extra) -> EntityDefect:
+    measurements = {"located_by": "surface-mesh-clash", **extra}
+    if kind is not None:
+        measurements["clash_kind"] = kind
+    return EntityDefect(code=DefectCode.mesh_overlapping_facets, severity=DefectSeverity.error,
+                        entity_type="face", entity_index=1, message="",
+                        fingerprint=fingerprint, measurements=measurements)
+
+
+def test_a_measured_crossing_is_promoted_and_a_gap_is_not(monkeypatch):
+    """0060 read "crossing" from the triangle test at a 1.46 mm gap, and promoting it cost every
+    arm its repairs. The kind now accounts for the measured distance, so it decides."""
+    regions = _mesh_regions("edge:warn", "face:clash")
+    warn = _any_defect("edge:warn", severity=DefectSeverity.warning)
+
+    crossing = (warn, _kinded("face:clash", "crossing", clash_gap_mm=0.0,
+                              clash_adjacent=False))
+    assert _order(regions, crossing, "live", monkeypatch) == [1, 0]
+
+    # A GAP is not promoted by either tier. It keeps its own severity - an error still outranks a
+    # warning, which is right - but it no longer jumps the queue for being mesh-located, so a
+    # region whose cure is a kernel one is not pushed behind it.
+    import meshpipeline.settings.cad_repair as settings
+    from meshpipeline.cad.repair import region_loop as rl
+    monkeypatch.setattr(settings, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "live", raising=False)
+    gap = (warn, _kinded("face:clash", "gap", clash_gap_mm=1.46))
+    assert rl._real_intersection_regions(regions, gap, 200.0) == frozenset()
+    assert rl._mesh_located_regions(regions, gap) == frozenset()
+
+
+def test_a_crossing_measured_apart_is_still_not_a_real_intersection(monkeypatch):
+    """Belt and braces across the two lanes: if a kind ever says crossing while the distance says
+    otherwise, the measurement wins."""
+    regions = _mesh_regions("face:plain", "face:odd")
+    defects = (_kinded("face:plain", None),
+               _kinded("face:odd", "crossing", clash_gap_mm=1.46))
+
+    import meshpipeline.settings.cad_repair as settings
+    from meshpipeline.cad.repair import region_loop as rl
+    monkeypatch.setattr(settings, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "live", raising=False)
+    assert rl._real_intersection_regions(regions, defects, 200.0) == frozenset()

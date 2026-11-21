@@ -248,6 +248,12 @@ _CONCLUDE_PROPERTIES: dict = {
             "description": "this region needs a person",
             "properties": {"reason": {"type": "string"}},
         },
+        "attempted_none_held": {
+            "type": "object",
+            "description": ("you tried operations on the copy and none of them held. only "
+                            "available once at least one edit has been tried"),
+            "properties": {"reason": {"type": "string"}},
+        },
 }
 
 
@@ -262,6 +268,10 @@ def _conclude_schema(shadow: bool = False):
     from meshpipeline.contracts.model_inference import ToolSchema
 
     properties = {**_CONCLUDE_PROPERTIES}
+    if not (clone_freedom() and not shadow):
+        # The clean terminal belongs to the posture that demands attempts: with the posture off
+        # there is nothing to be let out of, and a shadow has no copy to try on.
+        properties.pop("attempted_none_held", None)
     if clone_freedom() and not shadow:
         # NOT OFFERED, STILL HANDLED. The owner's policy: escalation is what happens when the
         # whole job fails, never a per-region exit - and a form that needs only a sentence, while
@@ -284,10 +294,11 @@ def _conclude_schema(shadow: bool = False):
         package["description"] = ("the repair you WOULD propose. nothing was edited in this "
                                   "posture, so the package must state the plan it proposes")
         properties["package"] = package
+    offered = [form for form in _CONCLUSIONS if form in properties]
     return ToolSchema(name="conclude",
-                      description=("finish this region with EXACTLY ONE of package, mesher_side "
-                                   "or escalate - never two. the only way to end an "
-                                   "investigation"),
+                      description=("finish this region with EXACTLY ONE of "
+                                   f"{', '.join(offered[:-1])} or {offered[-1]} - never two. "
+                                   "the only way to end an investigation"),
                       parameters={"type": "object",
                                   "properties": properties,
                                   "oneOf": _conclude_branches(properties)})
@@ -425,8 +436,12 @@ AGGRESSIVE_RULE = (
     "crossed them - usually a thin wall. {gap_advice} A fold, and a missing or null value, are "
     "different: a null means nobody measured it, which is unknown, not zero and not false.\n"
     "- SPEND THE BUDGET. a region that ends with turns left and nothing tried has told us "
-    "nothing. there is no 'escalate' to reach for: if you cannot support a package, say so with "
-    "`mesher_side` when the geometry is sound, and otherwise keep working until the budget ends.")
+    "nothing. there is no 'escalate' to reach for. once you have TRIED at least one edit on the "
+    "copy you have two honest endings besides a package: `mesher_side` when the geometry is "
+    "sound, or `attempted_none_held` when you tried operations and none of them held - e.g. "
+    '{{"tool": "conclude", "args": {{"attempted_none_held": {{"reason": "<what you tried and '
+    'why it did not hold>"}}}}}}. both are refused until an edit has been tried; otherwise keep '
+    "working until the budget ends.")
 
 
 # --- the budget and the clock (Task 8's surface, with a fail-closed local fallback) ------------
@@ -703,6 +718,10 @@ class _Investigation:
         self.reason = ""
         self.conclusion: dict = {}
         self.edits: list[dict] = []
+        #: EDITS TRIED IN THIS INVESTIGATION, across `reset` and across author calls. The clone's
+        #: own log forgets on either, so a region that worked the copy and then reset would read
+        #: as one that never tried anything.
+        self.attempted = 0
 
     # -- the conversation ----------------------------------------------------------------------
 
@@ -1128,6 +1147,19 @@ def investigator(shape, *, original: Measure, reserved: frozenset = frozenset(),
                 except ma.Refusal as exc:
                     inv.refused_in_a_row += 1
                     inv.record(tool="conclude", args=ask.args, ok=False, error=str(exc))
+                    if inv.told_to_conclude:
+                        # THE CLOCK, NOT A CLAIM, AND NOT A LOOP. A forced region whose conclusion
+                        # is refused has nothing left to try: re-asking spends the model budget to
+                        # learn nothing, and on wave 4 the forms it could still reach turned into
+                        # 232 `mesher_side` conclusions from regions that made ZERO tool calls.
+                        # What is true of such a region is that it ran out of time, so that is
+                        # what it records.
+                        inv.say({"role": "assistant",
+                                 "content": str(getattr(reply, "assistant_text", "") or "")})
+                        close(inv, "budget_spent",
+                              "the region had only proof time left and the conclusion it reached "
+                              f"for was refused: {exc}", started)
+                        break
                     inv.say({"role": "assistant",
                              "content": str(getattr(reply, "assistant_text", "") or "")})
                     inv.say({"role": "user",
@@ -1192,8 +1224,11 @@ def investigator(shape, *, original: Measure, reserved: frozenset = frozenset(),
                         f"unknown tool {str(ask.tool)!r}; the tools are "
                         f"{', '.join(_read_only_names())}")
                 else:
+                    before = _tried_on(scratch)
                     result = investigator_tools.run_tool(ws, ask.tool, ask.args,
                                                          budget_s=max(0.0, left()))
+                    # A reset shrinks the clone's log; only growth is a new attempt.
+                    inv.attempted += max(0, _tried_on(scratch) - before)
                 _answer(inv, ask, result, reply=reply)
             if scratch is not None:
                 inv.edits = [dict(e) for e in scratch.kept()]
@@ -1245,7 +1280,24 @@ def _tool_result_turn(call, content: str) -> dict:
     return dict(tool_result_turn(call, content))
 
 
-_CONCLUSIONS = ("package", "mesher_side", "escalate")
+#: `attempted_none_held` is the CLEAN WAY OUT for a region that worked and got nowhere. Runaways
+#: rose to about 6% of regions on wave 4 because every refused conclusion sent the model round
+#: again; a terminal it may actually reach ends the region honestly. It is NEVER a fix: nothing is
+#: offered, no verdict is recorded, and the record carries the clone's own count of attempts.
+_CONCLUSIONS = ("package", "mesher_side", "escalate", "attempted_none_held")
+
+
+#: Refused when a region tries to end before it has worked the copy. Names what to do instead,
+#: because a refusal the model cannot act on is how a region spends its turns looping.
+_NOTHING_TRIED = (
+    "{form} needs at least one edit tried on the copy first: it is a claim about what repairs "
+    "cannot do here, and nothing has been attempted yet. try an operation - a rolled-back edit "
+    "is evidence and costs only the turn - then conclude")
+
+
+def _tried_on(scratch) -> int:
+    """How many edits the clone's log holds now; 0 with no clone."""
+    return len(getattr(scratch, "edits", ()) or ()) if scratch is not None else 0
 
 
 def _stated(body: object) -> bool:
@@ -1315,6 +1367,29 @@ def _conclude(args: object, inv: _Investigation, *, ctx, scratch, region: Region
                          f"{', '.join(_CONCLUSIONS)}, and nothing beside it"
                          + (f"; this one carried {', '.join(sorted(args))}" if args else ""))
     form, body = forms[0], args[forms[0]]
+
+    tried = max(int(inv.attempted), _tried_on(scratch))
+    demands_attempts = clone_freedom() and not shadow
+
+    if form == "attempted_none_held":
+        if not demands_attempts:
+            raise ma.Refusal("attempted_none_held is not a conclusion this posture offers; send "
+                             "one of " + ", ".join(_CONCLUSIONS[:3]))
+        if not isinstance(body, dict) or not str(body.get("reason") or "").strip():
+            raise ma.Refusal("attempted_none_held gives no reason")
+        if tried < 1:
+            raise ma.Refusal(_NOTHING_TRIED.format(form="attempted_none_held"))
+        reason = observe.clip_text(body["reason"], ma.INTENT_MAX)
+        # THE COUNT IS THE CLONE'S, not the model's word for it.
+        inv.conclusion = {"form": form, "outcome": form, "reason": reason, "attempts": int(tried)}
+        return None, True
+
+    if form == "mesher_side" and demands_attempts and tried < 1:
+        # BLAMING THE MESHER IS A MEASUREMENT, NOT A GUESS, and it costs nothing to assert. On
+        # wave 4 the AI arms concluded `mesher_side` with no edit attempted, on files earlier
+        # waves had repaired - so it is refused until the copy has actually been worked, exactly
+        # as `escalate` is.
+        raise ma.Refusal(_NOTHING_TRIED.format(form="mesher_side"))
 
     if form == "escalate":
         # A SHADOW HAS NO CLONE, so "keep working on the copy" is advice it cannot take and
