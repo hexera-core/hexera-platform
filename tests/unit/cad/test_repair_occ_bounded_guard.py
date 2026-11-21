@@ -168,10 +168,6 @@ KNOWN_UNBOUNDED = {
     ("investigator_tools.py", "_thickness_kernel", "BRepExtrema_DistShapeShape"),
     # A whole call family nobody had audited: GeomAPI projection, reached from the spotlight.
     ("spotlight.py", "_normal_of_face", "GeomAPI_ProjectPointOnSurf"),
-    # The self-interference scan. Its `Perform` holds the GIL and is bounded only by
-    # `localize._bounded`'s FORK - the same unowned item as `_thickness_kernel` above, with the
-    # same follow-up: move it into a fresh-interpreter child.
-    ("localize.py", "_kernel_face_pairs", "BOPAlgo_ArgumentAnalyzer"),
     # --- BRepCheck_Analyzer: the validity check, uninterruptible and everywhere ----------------
     # Its own follow-up. Every repair path runs it, so bounding it is a larger change than any
     # single distance call.
