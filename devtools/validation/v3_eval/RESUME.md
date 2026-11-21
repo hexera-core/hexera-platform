@@ -359,6 +359,11 @@ Agents neither submit jobs to shared dev nor read its `admin-api-key`. Steps 1, 
 
 ## Lane A: every uninterruptible kernel call is bounded (2026-11-20)
 
+> **Status: pending, not in main at this revision.** The guard, `occ_distance`, `bounded_child`,
+> `PARTNER_UNMEASURED` and the per-body volumes described here land with the open lane A PRs
+> (#513, #516, #517, #521). Read this section as the design those PRs carry, not as protection
+> main already has.
+
 Three worker hangs in one night - the clash gap, the investigator's distance, lane H's
 `gap_split` - were one bug with three faces: an OCC call that cannot be interrupted, running in
 the parent. **A deadline checked BETWEEN calls does not bound the call.** The clock written around
