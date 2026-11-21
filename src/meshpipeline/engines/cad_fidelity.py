@@ -357,6 +357,49 @@ def _raster_count(c: np.ndarray, h: float) -> tuple[np.ndarray, int]:
     return k, int(((k + 1) * (k + 2) // 2).sum())
 
 
+def wetted_skin(cad: Surface, cell: float):
+    """Which points of the CAD the FAR FIELD WETS once gaps narrower than the mesh can carry flow
+    through are closed: a function points (n,3) -> bool (n,), or None when it cannot be told. The
+    reading is the sealed-cavities step's own (engines/sealed_cavities.read_cavities, at the mesh's
+    wall cell): the same faces the mesher was told it would reach. An assembly's parts that touch, or
+    stand a gap apart that no cell crosses, carry faces inside it that the flow never reaches; a CAD
+    whose parts do not quite close lets outer_skin's finer flood in there, and they were counted as
+    CAD surface the mesh missed - the RM3 wave absorber, two production-grade meshes refused at
+    "14.6% not reached" where the far field wets 12,303 of its 15,648 faces (rulebook 75)."""
+    if not cad.n or not cell > 0:
+        return None
+    try:
+        from scipy.spatial import cKDTree
+
+        from meshpipeline.engines.sealed_cavities import read_cavities
+        tris = cad.corners()
+        rd = read_cavities(tris, cell_m=float(cell))
+        if rd is None:
+            return None
+        wet = np.asarray(rd.wet_sides) != 0
+        if len(wet) != len(tris) or wet.all() or not wet.any():
+            return None
+        tree = cKDTree(tris.mean(axis=1))
+    except Exception:  # noqa: BLE001 - a reading we cannot make leaves outer_skin's alone
+        logger.warning("fidelity: the wetted faces were not read", exc_info=True)
+        return None
+
+    def wetted(points: np.ndarray) -> np.ndarray:
+        _d, j = tree.query(np.asarray(points, dtype=float))
+        return wet[np.asarray(j, dtype=np.int64)]
+    return wetted
+
+
+def both_skins(a, b):
+    """The CAD points both readings call skin (either one alone when the other could not be made)."""
+    if a is None or b is None:
+        return a if b is None else b
+
+    def both(points: np.ndarray) -> np.ndarray:
+        return np.asarray(a(points), dtype=bool) & np.asarray(b(points), dtype=bool)
+    return both
+
+
 def outer_skin(cad: Surface, cell: float):
     """Which points of the CAD the OUTSIDE AIR touches: a function points (n,3) -> bool (n,), or
     None when it cannot be told. The CAD is drawn into a voxel grid (cell <= SKIN_VOXEL_OF_CELL of
@@ -649,8 +692,10 @@ def measure(workspace, *, intake_patches, manifest: Mapping | None = None,
         # an internal mesh must reach the whole fluid boundary, so all of it is counted
         skin = None
         if flow == "external" and fluid_side and wall.n:
-            # the outside air's skin, on a grid finer than the mesh's own wall faces
-            skin = outer_skin(cad, float(np.median(wall.cell_size)))
+            # the outside air's skin, on a grid finer than the mesh's own wall faces - and only the
+            # faces the far field wets at the mesh's own scale (wetted_skin)
+            _cell = float(np.median(wall.cell_size))
+            skin = both_skins(outer_skin(cad, _cell), wetted_skin(cad, _cell))
         dist = surface_distance(wall, allb, cad if fluid_side else _empty(),
                                 box=(lo, hi) if flow == "external" else None, skin=skin)
         if not fluid_side:

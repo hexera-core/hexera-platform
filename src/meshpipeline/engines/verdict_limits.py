@@ -126,6 +126,48 @@ def _passage(quality: Mapping) -> tuple[float | None, float | None]:
     return v.cells_across, v.floor
 
 
+def wall_treatment(quality: Mapping) -> str:
+    """The wall treatment the delivered mesh was built for ("resolved", "functions", or ""), read off
+    the y+ row of its requirements record (CFDREQ-13's wording: "a resolved wall: ...", "wall
+    functions: ...")."""
+    req = quality.get("requirements")
+    rows = req.get("rows") if isinstance(req, Mapping) else None
+    for r in rows or ():
+        if not isinstance(r, Mapping) or r.get("field") != "layers:y_plus":
+            continue
+        text = f"{r.get('delivered') or ''} {r.get('asked') or ''}".lower()
+        if "resolved wall" in text or "y+ about 1" in text:
+            return "resolved"
+        if "wall functions" in text:
+            return "functions"
+    return ""
+
+
+def coverage_words(quality: Mapping, measured: Any, limit: Any) -> str:
+    """THE PARTIAL WALL TREATMENT, SAID PLAINLY (rulebook 75): when the layers do not cover the wall, the
+    line names the treatment the wall was built for, how much of the wall it reached, and what the first
+    cell is where the layers did not grow - the wall's own cell. "" when coverage meets the limit or the
+    treatment is not known (the generic row stands)."""
+    try:
+        got, lim = float(measured), float(limit)
+    except (TypeError, ValueError):
+        return ""
+    if got >= lim:
+        return ""
+    kind = wall_treatment(quality)
+    if not kind:
+        return ""
+    sd = quality.get("surface_deviation")
+    cell = _num(sd.get("cell_size_m")) if isinstance(sd, Mapping) else None
+    where = (f"; elsewhere the first cell is the wall's own cell, about {cell * 1e3:.3g} mm"
+             if cell else "; elsewhere the first cell is the wall's own cell")
+    if kind == "resolved":
+        return (f"The resolved wall (y+ about 1) has its layers on {got:.0f}% of the wall{where}, so y+ "
+                f"there is well above 1 (we aim for layers on at least {lim:.0f}%)")
+    return (f"The wall-function layers are on {got:.0f}% of the wall{where}, where y+ is set by that cell "
+            f"instead (we aim for layers on at least {lim:.0f}%)")
+
+
 def _cad_fidelity_concerns(quality: Mapping) -> int | None:
     """How many of the CAD fidelity measures missed their bar (engines/cad_fidelity.py); None when
     the check did not run or could not measure."""
@@ -217,8 +259,13 @@ def inputs_for(*, engine: str, topology: str, manifest: Mapping | None, valid: b
             limit: Any = floor
         else:
             measured, limit = _measured(lim.key, quality, facts), lim.limit
-        limits.append({"key": lim.key, "label": lim.label, "op": lim.op, "limit": limit,
-                       "measured": _plain(measured), "source": lim.source})
+        row = {"key": lim.key, "label": lim.label, "op": lim.op, "limit": limit,
+               "measured": _plain(measured), "source": lim.source}
+        if lim.key == "layer_coverage_pct":
+            said = coverage_words(quality, measured, limit)
+            if said:
+                row["said"] = said
+        limits.append(row)
     for row in _declared_advisory(engine):
         limits.append({**row, "measured": _plain(quality.get(row["key"]))})
     limits.extend(fea_limits(quality))
@@ -397,5 +444,5 @@ def words(row: Mapping) -> str:
     return f"{row.get('label')}: measured {measured}, limit {op}{limit_text}"
 
 
-__all__ = ["FEA_RULES_ROW", "PRODUCTION_LIMITS", "Limit", "fea_limits", "gating_rows", "inputs_for",
-           "limits_for", "words"]
+__all__ = ["FEA_RULES_ROW", "PRODUCTION_LIMITS", "Limit", "coverage_words", "fea_limits", "gating_rows",
+           "inputs_for", "limits_for", "wall_treatment", "words"]
