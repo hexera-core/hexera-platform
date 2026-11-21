@@ -294,10 +294,11 @@ def _conclude_schema(shadow: bool = False):
         package["description"] = ("the repair you WOULD propose. nothing was edited in this "
                                   "posture, so the package must state the plan it proposes")
         properties["package"] = package
+    offered = [form for form in _CONCLUSIONS if form in properties]
     return ToolSchema(name="conclude",
-                      description=("finish this region with EXACTLY ONE of package, mesher_side "
-                                   "or escalate - never two. the only way to end an "
-                                   "investigation"),
+                      description=("finish this region with EXACTLY ONE of "
+                                   f"{', '.join(offered[:-1])} or {offered[-1]} - never two. "
+                                   "the only way to end an investigation"),
                       parameters={"type": "object",
                                   "properties": properties,
                                   "oneOf": _conclude_branches(properties)})
@@ -435,8 +436,12 @@ AGGRESSIVE_RULE = (
     "crossed them - usually a thin wall. {gap_advice} A fold, and a missing or null value, are "
     "different: a null means nobody measured it, which is unknown, not zero and not false.\n"
     "- SPEND THE BUDGET. a region that ends with turns left and nothing tried has told us "
-    "nothing. there is no 'escalate' to reach for: if you cannot support a package, say so with "
-    "`mesher_side` when the geometry is sound, and otherwise keep working until the budget ends.")
+    "nothing. there is no 'escalate' to reach for. once you have TRIED at least one edit on the "
+    "copy you have two honest endings besides a package: `mesher_side` when the geometry is "
+    "sound, or `attempted_none_held` when you tried operations and none of them held - e.g. "
+    '{{"tool": "conclude", "args": {{"attempted_none_held": {{"reason": "<what you tried and '
+    'why it did not hold>"}}}}}}. both are refused until an edit has been tried; otherwise keep '
+    "working until the budget ends.")
 
 
 # --- the budget and the clock (Task 8's surface, with a fail-closed local fallback) ------------
@@ -713,6 +718,10 @@ class _Investigation:
         self.reason = ""
         self.conclusion: dict = {}
         self.edits: list[dict] = []
+        #: EDITS TRIED IN THIS INVESTIGATION, across `reset` and across author calls. The clone's
+        #: own log forgets on either, so a region that worked the copy and then reset would read
+        #: as one that never tried anything.
+        self.attempted = 0
 
     # -- the conversation ----------------------------------------------------------------------
 
@@ -1215,8 +1224,11 @@ def investigator(shape, *, original: Measure, reserved: frozenset = frozenset(),
                         f"unknown tool {str(ask.tool)!r}; the tools are "
                         f"{', '.join(_read_only_names())}")
                 else:
+                    before = _tried_on(scratch)
                     result = investigator_tools.run_tool(ws, ask.tool, ask.args,
                                                          budget_s=max(0.0, left()))
+                    # A reset shrinks the clone's log; only growth is a new attempt.
+                    inv.attempted += max(0, _tried_on(scratch) - before)
                 _answer(inv, ask, result, reply=reply)
             if scratch is not None:
                 inv.edits = [dict(e) for e in scratch.kept()]
@@ -1281,6 +1293,11 @@ _NOTHING_TRIED = (
     "{form} needs at least one edit tried on the copy first: it is a claim about what repairs "
     "cannot do here, and nothing has been attempted yet. try an operation - a rolled-back edit "
     "is evidence and costs only the turn - then conclude")
+
+
+def _tried_on(scratch) -> int:
+    """How many edits the clone's log holds now; 0 with no clone."""
+    return len(getattr(scratch, "edits", ()) or ()) if scratch is not None else 0
 
 
 def _stated(body: object) -> bool:
@@ -1351,7 +1368,7 @@ def _conclude(args: object, inv: _Investigation, *, ctx, scratch, region: Region
                          + (f"; this one carried {', '.join(sorted(args))}" if args else ""))
     form, body = forms[0], args[forms[0]]
 
-    tried = len(getattr(scratch, "edits", ()) or ()) if scratch is not None else 0
+    tried = max(int(inv.attempted), _tried_on(scratch))
     demands_attempts = clone_freedom() and not shadow
 
     if form == "attempted_none_held":

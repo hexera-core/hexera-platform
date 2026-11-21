@@ -1296,3 +1296,39 @@ def test_a_forced_turn_ends_the_region_rather_than_looping_on_refusals(wired, mo
     assert record["end"] == "budget_spent", record["end"]
     assert record["end"] != "runaway"
     assert model.calls <= 2, model.calls
+
+
+def test_a_reset_does_not_forget_the_edits_already_tried(wired, monkeypatch):
+    """`reset` empties the clone's edit log, and a re-author call opens a fresh clone. Neither
+    erases the attempts this investigation made, so the clean terminal stays reachable."""
+    _live(monkeypatch)
+    clone = FakeScratch()
+
+    def runner(ws, name, args, *, budget_s):
+        if name == "edit":
+            if args.get("reset"):
+                clone.edits.clear()
+            else:
+                clone.edits.append({"op": args.get("op"), "status": "rolled_back"})
+        return ok_result(name)
+
+    author, _, _, _ = wired(native("edit", op="fix_small_faces", fingerprint="fp1"),
+                            native("edit", reset=True),
+                            native("conclude",
+                                   attempted_none_held={"reason": "every op rolled back"}),
+                            tool=runner, scratch=clone,
+                            budget=Budget(tool_calls=9, model_calls=9))
+
+    assert author(REGION, DEFECTS, ()) is None
+    record = author.investigations[-1]
+    assert record["conclusion"].get("form") == "attempted_none_held", record["turns"]
+    assert record["conclusion"]["attempts"] == 1
+
+
+def test_the_live_prompt_names_the_clean_terminal(monkeypatch):
+    """The prose transport has no schema, so the live prompt itself must offer the ending, and
+    the conclude tool's description must name every form its schema declares."""
+    _live(monkeypatch)
+    assert "attempted_none_held" in inv.system_prompt()
+    assert "attempted_none_held" in inv._conclude_schema().description
+    assert "escalate" not in inv._conclude_schema().description
