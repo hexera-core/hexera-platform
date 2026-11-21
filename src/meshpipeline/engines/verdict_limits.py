@@ -185,8 +185,11 @@ def _cut_stacks(quality: Mapping, cells_pct: float) -> str:
         return ""
     per = quality.get("per_patch_layers")
     rows = [v for v in per.values() if isinstance(v, Mapping)] if isinstance(per, Mapping) else []
-    kept = [(_num(v.get("layers")), _num(v.get("target"))) for v in rows]
-    kept = [(k, t) for k, t in kept if k is not None and t]
+    kept: list[tuple[float, float]] = []
+    for v in rows:
+        k, t = _num(v.get("layers")), _num(v.get("target"))
+        if k is not None and t:
+            kept.append((k, t))
     count = (f", but only {min(k for k, _ in kept):.1f} of the {max(t for _, t in kept):.0f} layers asked on "
              "average" if kept else ", but only part of the layers asked")
     return (f"The layers grew on {faces:.0f}% of the wall faces{count} ({cells_pct:.0f}% of the layer cells): "

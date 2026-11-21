@@ -1849,7 +1849,7 @@ def _snappy_layers(ask: Ask, text: str, wall_cell_m: float | None, bridge: Mappi
     if bridged is not None and cap and bridged[4] > float(cap):
         # CFDREQ-9 ON A CURVED OR TIGHT WALL: the ASKED first height kept (a bridge that ran out of layers had
         # thickened it), the stack shortened to the cap
-        n_c, g_c, stack_c, last_c = capped_stack(bridged[2], float(wall_cell_m), bridged[4], float(cap), g)
+        n_c, g_c, stack_c, last_c = capped_stack(bridged[2], float(wall_cell_m or 0.0), bridged[4], float(cap), g)
         if n_c and n_c <= MAX_BRIDGE_LAYERS:
             first = bridged[2]
             out = re.sub(r"\bnSurfaceLayers\s+[1-9][0-9]*\s*;", f"nSurfaceLayers {n_c};", out)

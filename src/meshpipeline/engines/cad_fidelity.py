@@ -843,12 +843,14 @@ def wrong_region(rec: Mapping) -> str:
     only: a reference that also bounds the metal cannot tell."""
     if rec.get("flow") != "internal" or not str(rec.get("cad_source") or "").startswith(("staged fluid", "fluid boundary")):
         return ""
-    surf = rec.get("surface") if isinstance(rec.get("surface"), Mapping) else {}
-    m2c = surf.get("mesh_to_cad") if isinstance(surf.get("mesh_to_cad"), Mapping) else {}
-    try:
-        off, p50 = float(m2c.get("wall_off_share")), float(m2c.get("p50_cells"))
-    except (TypeError, ValueError):
+    raw = rec.get("surface")
+    surf: Mapping = raw if isinstance(raw, Mapping) else {}
+    raw = surf.get("mesh_to_cad")
+    m2c: Mapping = raw if isinstance(raw, Mapping) else {}
+    o, m = m2c.get("wall_off_share"), m2c.get("p50_cells")
+    if not isinstance(o, (int, float)) or not isinstance(m, (int, float)):
         return ""
+    off, p50 = float(o), float(m)
     if off <= WRONG_REGION_OFF_SHARE or p50 <= WRONG_REGION_MEDIAN_CELLS:
         return ""
     far = m2c.get("max_m")
