@@ -89,6 +89,11 @@ def test_no_lever_moves_the_run_to_the_open_engine_at_once():
     s = _external(engine="cfmesh")
     d = lad.decide(s, record={})
     assert d.switch_to == "snappy"
+    # SW-17, with true words: the mesh was built and a named check refused it
+    from meshpipeline.contracts import decision_record as dr
+    assert d.why.startswith("the mesh was built but a check refused it") and "cad_fidelity" in d.why
+    assert dr.switch_rule(d.why) == "SW-17"
+    assert dr.switch({"why": d.why, "kind": "engine", "from": "cfmesh", "to": "snappy"}) == ("snappy", "SW-17")
     assert lad.another_engine_takes_over(s)
     assert route_after_executor(s) == "node_classifier"
 

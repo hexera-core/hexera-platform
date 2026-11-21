@@ -65,6 +65,7 @@ review. The order the run moves in is ENG-5.
 | SW-14 | in force | **Stay: the fallback ladder is switched off** by a setting. |
 | SW-15 | in force | **No decision: the last attempt did not fail.** |
 | SW-16 | in force | **Move on, to another kind of mesh: the system's own pick made no mesh, or a broken one** (a time-out, a crash, a stop before meshing, broken cells), and no untried engine delivers the same kind. The next engine in the ranking takes the run when the only differences are the mesh's file format and cell type: never fewer layers, a worse wall fit, a lost requirement or a setting. The user is told what changes, as it happens and beside the delivered mesh. Never for an engine the user named (ENG-6). |
+| SW-17 | in force | **Move on: the mesh was built, a check refused it, and another pass on this engine could not change that** (LAD-cfd-8, `pipeline/engine_fallback.GATE_LEVERS`). The check is named in the record. An untried engine that delivers the same approved mesh takes the run; SW-2 stays for an engine that built nothing. |
 
 ## DEL: which valid mesh a run delivers
 

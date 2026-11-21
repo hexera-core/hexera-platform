@@ -1172,6 +1172,11 @@ def decide(state: Mapping, *, record: Mapping, now: float | None = None) -> Deci
                           if isinstance(state.get("executor_failure_facts"), Mapping) else None)
     return Decision(switch_to=target, why=(
         "this engine's mesh of this shape came out broken" if failure.kind == ENGINE and broken else
+        # SW-17 (LAD-cfd-8): it built a mesh; a check refused it and nothing its next pass changes
+        # bears on that check
+        (f"the mesh was built but a check refused it and another pass on this engine could not "
+         f"change that (the {state.get('executor_failed_gate')} check)")
+        if failure.kind == ENGINE and refusal_without_lever(state) else
         "this engine could not build a mesh" if failure.kind == ENGINE else
         "the same failure repeated here" if _repeats(record, engine, failure) else
         "the shared attempts go to the untried engine"), failure=failure)

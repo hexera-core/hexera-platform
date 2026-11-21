@@ -149,6 +149,7 @@ SWITCH_RULES: tuple[tuple[str, str], ...] = (
     ("the fallback ladder is switched off", "SW-14"),
     ("the last attempt did not fail", "SW-15"),
     ("the system's own pick made no usable mesh", "SW-16"),
+    ("the mesh was built but a check refused it", "SW-17"),
 )
 #: the switch rules a clock decides: none since D3 (SW-13 retired, docs/RULES.md TIME-1)
 _CLOCK_SWITCH_RULES: frozenset[str] = frozenset()
@@ -166,7 +167,7 @@ def switch_rule(why: str) -> str:
 #: the failure kinds (engine_fallback's classes) each moving rule can follow: no mesh or a broken
 #: one is an ENGINE failure; a repeated or shared-attempt move follows a FIXABLE one
 _MOVES_ON = {"SW-1": ("engine",), "SW-2": ("engine",), "SW-3": ("fixable",), "SW-4": ("fixable",),
-             "SW-16": ("engine", "fixable")}
+             "SW-16": ("engine", "fixable"), "SW-17": ("engine",)}
 
 
 def switch(inputs: Mapping[str, Any]) -> tuple[str, str]:
