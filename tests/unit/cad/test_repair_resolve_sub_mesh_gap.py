@@ -252,7 +252,7 @@ def _prepass(work, *, left: float = 1000.0, max_ops: int = 6):
 def test_the_prepass_walks_the_ladder_until_a_split_holds(baseline_on):
     work = _Work((_gap_clash(),), commit_on=2)
     out = _prepass(work)
-    assert [v.status for _, v in out] == ["reverted", "committed"]
+    assert [v.status for _, _, v in out] == ["reverted", "committed"]
     assert work.offered == [0.25, 0.125]
 
 
@@ -365,3 +365,40 @@ def test_the_gap_operation_caps_its_kernel_children_by_its_own_budget():
     assert ResolveSubMeshGap().budget_s == KERNEL_BUDGET_S
     assert ResolveSubMeshGap(budget_s=5.0).budget_s == 5.0
     assert ResolveSubMeshGap(budget_s=500.0).budget_s == KERNEL_BUDGET_S
+
+
+def test_the_prepass_never_splits_a_held_face(baseline_on):
+    """Greptile PRRT_kwDOUFq_Ps66QAIm: a gap face that also carries a defect held for an engineer
+    (CAD_REPAIR_REVIEW_ENABLED) must not be split before the engineer answers. `_gap_lead` skips
+    held fingerprints; the pre-pass must too, and the session does not block it for us
+    (ResolveSubMeshGap reports no removed fingerprints)."""
+    from meshpipeline.cad.repair import region_loop
+
+    held = EntityDefect(code=DefectCode.small_face, severity=DefectSeverity.error,
+                        entity_type="face", entity_index=1, message="sliver",
+                        fingerprint="face:wall", location=dict(_BOX), measurements={})
+    work = _Work((_gap_clash(), held), commit_on=1)
+    out = region_loop._gap_prepass(work, (_REGION,), remaining=lambda: 1000.0, reserve=10.0,
+                                   tolerance_mm=1e-4, max_ops=6,
+                                   reserved=frozenset({DefectCode.small_face}))
+    assert out == [] and work.offered == []
+
+
+def test_a_recorded_gap_split_replays_at_its_own_rung(monkeypatch):
+    """A committed pre-pass split is recorded at the rung that held; replay resolves the operation
+    by name from the catalogue, so the rung must travel with it or replay splits differently."""
+    from meshpipeline.cad.repair import operations
+    from meshpipeline.cad.repair.identity import EntityRef
+    from meshpipeline.cad.repair.region_loop import _plain_item
+    from meshpipeline.cad.repair.replay import _live_item
+
+    monkeypatch.setattr(operations, "OPERATIONS",
+                        catalogue(fragment_bodies=True, resolve_sub_mesh_gap=True))
+    item = {"op": ResolveSubMeshGap(sag_share=0.0625),
+            "targets": (EntityRef(entity_type="face", fingerprint="face:wall", entity_index=1),),
+            "defect_code": DefectCode.mesh_edge_through_face}
+    plain = _plain_item(item)
+    assert plain["op"] == NAME and plain["sag_share"] == 0.0625
+    live = _live_item(plain)
+    assert isinstance(live["op"], ResolveSubMeshGap) and live["op"].sag_share == 0.0625
+    assert "sag_share" not in live

@@ -110,6 +110,10 @@ def _live_item(item: dict) -> dict:
     op = out.get("op")
     if isinstance(op, str):
         out["op"] = next((o for o in ops if getattr(o, "name", None) == op), None)
+    # THE RECORDED RUNG of a laddered operation (`region_loop._plain_item`), rebuilt at that rung.
+    rung = out.pop("sag_share", None)
+    if rung is not None and out.get("op") is not None and hasattr(out["op"], "sag_share"):
+        out["op"] = type(out["op"])(sag_share=float(rung))
     out["targets"] = tuple(EntityRef(**t) if isinstance(t, dict) else t
                            for t in out.get("targets") or ())
     code = out.get("defect_code")
