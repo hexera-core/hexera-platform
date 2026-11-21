@@ -235,15 +235,31 @@ def vouched_by_ports(chord: dict, ports: dict, *, low: float = 0.3, high: float 
 def choose_passage_radius(chord: dict | None, ports: dict | None, *,
                           fluid_boundary: bool = False) -> dict | None:
     """The radius statistics the size caps use: the chord reading when the ports vouch for it,
-    the port figures otherwise, None without either (`fluid_boundary`: see plausible_radius)."""
+    the port figures otherwise, None without either (`fluid_boundary`: see plausible_radius).
+
+    THE PORTS VOUCH BY THEIR RANGE (vouched_by_ports, as the snappy driver reads them): a branching
+    vessel's narrowest 5% lies in its branches, between its smallest outlet and its inlet. Held to
+    the smallest port alone (plausible_radius), a coronary tree's true 0.39 mm reading was refused
+    beside a 0.16 mm outlet lid, and the whole wall was cut at that outlet's cell (below).
+
+    THE PORT FIGURES NEVER SPREAD THE SMALLEST OPENING OVER THE WHOLE WALL: without a trusted
+    reading the band is the TYPICAL port's (its median), and an opening narrower than that gets its
+    own finer cell at the opening (PLAN-cfd-2, the cfMesh writer's port cells). Banded at the
+    smallest outlet, the same coronary tree asked for 22 um cells over 4,900 mm2 of wall - about
+    85 M cells - and cartesianMesh ran out of memory on every machine the run stepped up to
+    (the CFD board's failure hunt, 21 Nov; rulebook 75)."""
     chord = chord or {}
     ports = ports or {}
-    if chord and ports and plausible_radius(chord, ports, fluid_boundary=fluid_boundary):
-        return {**chord, "source": "chord"}
+    if chord and ports:
+        rng = ({**ports, "min": ports.get("min", ports.get("p05")),
+                "max": ports.get("max", ports.get("p05"))})
+        if vouched_by_ports(chord, rng, low=FLUID_BOUNDARY_LOW if fluid_boundary else 0.3):
+            return {**chord, "source": "chord"}
     if chord and not ports:
         return {**chord, "source": "chord-unchecked"}
     if ports:
-        return ports
+        med = ports.get("median")
+        return {**ports, "band": med} if med else ports
     return None
 
 

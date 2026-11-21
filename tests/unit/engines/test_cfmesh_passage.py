@@ -130,10 +130,26 @@ def test_the_ports_vouch_for_the_chord_reading_or_replace_it():
     wall_gap = {"p05": 0.0043, "median": 0.0043}       # straight_reducer_006's first reading
     for bad in (outer_skin, wall_gap):
         assert not P.plausible_radius(bad, ports)
-        assert P.choose_passage_radius(bad, ports) == ports
+        # the port figures, banded at the TYPICAL port (never the smallest across the whole wall)
+        assert P.choose_passage_radius(bad, ports) == {**ports, "band": ports["median"]}
     assert P.choose_passage_radius(good, {})["source"] == "chord-unchecked"
     assert P.choose_passage_radius({}, {}) is None
     assert P.port_radius_stats({"x": {"area": "junk"}}) == {}
+
+
+def test_a_branching_vessel_s_reading_is_vouched_by_the_range_of_its_ports():
+    """The CFD board's coronary tree (vmr 0257): a 3.85 mm inlet, outlets down to a 0.33 mm lid; the
+    branches' narrowest 5% read 0.39 mm. Held to the smallest port alone it was refused, and the wall
+    was cut at that outlet's 22 um cell everywhere (about 85 M cells; out of memory on every machine)."""
+    ports = {"min": 0.000164, "p05": 0.000164, "median": 0.000479, "max": 0.00155, "points": 8,
+             "source": "ports"}
+    tree = {"min": 0.0001, "p05": 0.000392, "median": 0.001187, "max": 0.0022}
+    assert not P.plausible_radius(tree, ports, fluid_boundary=True)
+    assert P.choose_passage_radius(tree, ports, fluid_boundary=True)["source"] == "chord"
+    # with no trusted reading, the wall band is the typical port's, not the smallest one's
+    caps = P.size_caps(P.choose_passage_radius({}, ports), target=15.0)
+    assert abs(caps["wall_cell"] - 2 * 0.000479 / 15.0) < 1e-12
+    assert caps["wall_cell_floor"] == 2 * 0.000164 / P.PASSAGE_CEILING_CELLS
 
 
 def test_size_caps_put_thirteen_across_the_narrowest_and_typical_passage():
