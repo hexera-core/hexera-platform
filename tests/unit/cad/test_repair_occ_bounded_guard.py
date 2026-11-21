@@ -168,10 +168,6 @@ def _child_side(module: str, tree: ast.AST, where: dict[ast.AST, str]) -> set[st
 #: it survives reformatting and line moves. Each entry tolerates exactly ONE call, so a SECOND
 #: call in the same function is caught (`_over_allowance`).
 KNOWN_UNBOUNDED = {
-    # --- rows 1-3 of the audit: a deadline checked only BETWEEN calls -------------------------
-    # The clash gap. Reported as dead after #503; it is still CALLED on main at mesh_probe.py:752,
-    # which is why it is listed rather than deleted.
-    ("mesh_probe.py", "_clash_gap", "BRepExtrema_DistShapeShape"),
     # --- found by THIS GUARD, not by the manual audit -----------------------------------------
     # A whole call family nobody had audited: GeomAPI projection, reached from the spotlight.
     ("spotlight.py", "_normal_of_face", "GeomAPI_ProjectPointOnSurf"),
@@ -514,12 +510,14 @@ _CHAIN = (
 def test_a_second_call_in_a_known_function_is_caught():
     """A KNOWN_UNBOUNDED entry tolerates the one call it names, not every call that function makes:
     a second kernel call added next to a listed one is a new unbounded call."""
-    source = ("def _clash_gap(a, b):\n"
-              "    BRepExtrema_DistShapeShape(a, b)\n"
-              "    return BRepExtrema_DistShapeShape(b, a)\n")
-    sites = _sites_in("mesh_probe.py", ast.parse(source))
+    # A LISTED SITE IS THE EXAMPLE, so this test moves whenever the list shrinks - which it just
+    # did: `mesh_probe._clash_gap` was deleted as dead code, so the analyzer entry stands in.
+    source = ("def _status_defects(shape):\n"
+              "    BRepCheck_Analyzer(shape)\n"
+              "    return BRepCheck_Analyzer(shape)\n")
+    sites = _sites_in("localize.py", ast.parse(source))
 
-    assert _over_allowance(sites) == [("mesh_probe.py", "_clash_gap", "BRepExtrema_DistShapeShape")]
+    assert _over_allowance(sites) == [("localize.py", "_status_defects", "BRepCheck_Analyzer")]
 
 
 @pytest.mark.parametrize("symbol", ["BOPAlgo_ArgumentAnalyzer", "BOPAlgo_PaveFiller",

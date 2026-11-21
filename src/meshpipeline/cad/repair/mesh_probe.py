@@ -1085,25 +1085,6 @@ def _clash_gaps(faces, mapping: dict[int, int], clashes: list[Clash], *,
         return {}, "budget_spent"
 
 
-def _clash_gap(faces, mapping: dict[int, int], clash: Clash, *,
-               deadline: float) -> float | None:
-    """The B-rep distance between the two faces of the leading clash, or None when either is
-    unmapped, the kernel cannot say, or the budget is spent. 0 means the faces really meet; more
-    than 0 means the faces are apart and only their triangles crossed - a gap narrower than the
-    surface mesh's chord, which is the mesher's resolution rather than the part's shape."""
-    a, b = (mapping.get(t) for t in clash.surfaces)
-    if not a or not b or time.monotonic() >= deadline:
-        return None
-    try:
-        from OCP.BRepExtrema import BRepExtrema_DistShapeShape
-
-        extrema = BRepExtrema_DistShapeShape(faces.FindKey(a), faces.FindKey(b))
-        return float(extrema.Value()) if extrema.IsDone() else None
-    except Exception as exc:  # noqa: BLE001 - an unmeasured gap is reported as unknown
-        logger.debug("mesh_probe: clash gap %d/%d: %s", a, b, exc)
-        return None
-
-
 def _tag_in_region(tag: int, box: Box, mapping: dict[int, int], faces, within: Region, *,
                    diagonal_mm: float) -> bool:
     """Would the scan's region rule admit this gmsh surface? Judged on its OCC face when mapped,
