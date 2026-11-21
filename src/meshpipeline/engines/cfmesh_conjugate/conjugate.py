@@ -2189,7 +2189,10 @@ def build(workspace, *, block_stl: str = "constant/triSurface/block.stl",
     #
     # NEVER OVER A REAL ONE. While the reconstruct still runs, these files are the mesher's own
     # and are the truth; this only fills in what a decomposed-only run would otherwise lack.
-    _publish_decomposed_boundaries(ws)
+    # THE REGIONS THAT EXIST ONLY PER-RANK, named by the publisher itself rather than asked for
+    # a second time. Empty on every run that reconstructed, which is what keeps a merged
+    # delivery's chain byte for byte the one every corpus part was measured with.
+    published = _publish_decomposed_boundaries(ws)
 
     # Out of constant/ before anything scans it again. See CELL_TO_REGION.
     leftover = ws / "constant" / CELL_TO_REGION
@@ -2228,7 +2231,12 @@ def build(workspace, *, block_stl: str = "constant/triSurface/block.stl",
         # and foam_exec's own ceiling is 7,200 s EACH, which with the mesher's chain in front of
         # it added up to more than the machine was alive for. The smaller of the two is taken, so
         # a small run keeps exactly the ceiling it had.
+        # ACROSS THE RANKS WHEN THE CELLS ARE THERE AND NOWHERE ELSE. A serial checkMesh on a
+        # region that was never reconstructed finds a patch table and no mesh, and the run reaches
+        # the reviewer with no verdict, no mesh_ok and none of the three fields the viewer's
+        # colours come from - which reads as a bad mesh and is a measurement that never ran.
         quality = check_mesh(ws, bashrc=bashrc, region=name, write_fields=True,
+                             ranks=int(ranks) if name in published else 1,
                              timeout_s=float(min(CHECK_TIMEOUT_S,
                                                  _left(f"checkMesh on {name}"))))
         seconds[f"checkMesh:{name}"] = round(time.monotonic() - t0, 1)

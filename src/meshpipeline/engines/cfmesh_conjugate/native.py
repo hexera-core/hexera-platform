@@ -251,10 +251,34 @@ def _run_conjugate_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
     # reviewer to be shown.
     _no_mesh = not (int(report.fluid.cells) and int(report.solid.cells))
     _fatal = bool(report.fluid.fatal) or bool(report.solid.fatal)
-    body["review"] = _review_aids(ws, bashrc=bashrc, refused=_no_mesh or _fatal,
-                                  cells=int(report.fluid.cells + report.solid.cells),
-                                  budget_left_s=_left(), plan=plan)
-    _write_report(ws, body)
+    # WHICH OF THESE TWO PASSES RUNS FIRST depends on where the review surface's evidence lives,
+    # and on a decomposed delivery that is the boundary index.
+    #
+    # `_review_aids` builds the reviewer's surface from the .vtp tree foamToVTK writes, and falls
+    # back to the boundary index when there is no tree (`review_surface.build_region_msh`, added
+    # after job 57b613d7). A DECOMPOSED DELIVERY HAS NO TREE AND CAN HAVE NONE: foamToVTK reads
+    # `constant/<region>/polyMesh`, which on that path carries a patch table and no cells, and
+    # `foamToVTK -parallel` is not the way out because every consumer of its output is written for
+    # the serial layout. So the fallback is the only way in - and in the order this used to run,
+    # it would be reading a sidecar `_boundary_indexes` had not written yet, on every single run.
+    # `mesh_paths.surface` is required=True, so that is the whole review.
+    #
+    # A MERGED DELIVERY KEEPS THE ORDER IT WAS MEASURED IN. Its review surface comes from the
+    # export, which `build_region_msh` prefers whenever it is there and says why - so nothing
+    # about it reads the index. The two passes also share one budget, so swapping them swaps which
+    # of them a run that has run out of time loses, and that is a change nobody asked for on the
+    # path that works.
+    for _pass in _tail_passes(ws):
+        if _pass == TAIL_REVIEW:
+            body["review"] = _review_aids(ws, bashrc=bashrc, refused=_no_mesh or _fatal,
+                                          cells=int(report.fluid.cells + report.solid.cells),
+                                          budget_left_s=_left(), plan=plan)
+        else:
+            body["boundary_index"] = _boundary_indexes(ws, budget_left_s=_left())
+        # AFTER EACH, NOT AFTER BOTH. The report on disk is what a run that is killed between
+        # them leaves behind, and `_left()` is read fresh for the second so it is priced against
+        # what the first actually spent.
+        _write_report(ws, body)
     # THE BOUNDARY INDEX, for the same reason and with the same rule: built where the mesh is,
     # and never able to fail the run.
     #
@@ -267,8 +291,6 @@ def _run_conjugate_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
     # quality reduction beside it another 264 s. A run that had already spent its budget on the
     # mesh was then allowed to spend 15 unaccounted minutes here, on a machine whose life was
     # derived from the budget it had spent.
-    body["boundary_index"] = _boundary_indexes(ws, budget_left_s=_left())
-    _write_report(ws, body)
     tail = (f"fluid {report.fluid.cells:,} cells, solid {report.solid.cells:,}, interface "
             f"{report.interface_faces_fluid:,} faces both sides")
     if report.problems:
@@ -457,6 +479,60 @@ def _boundary_indexes(ws: Path, *, budget_left_s: float | None = None) -> dict:
     return out
 
 
+#: The two non-fatal passes that run after the mesh is built and the report is first written.
+TAIL_REVIEW = "review"
+TAIL_INDEX = "boundary_index"
+
+
+def _tail_passes(ws) -> tuple[str, ...]:
+    """The order those two run in, which is decided by where the review surface's evidence lives.
+
+    `_review_aids` builds the reviewer's surface from the .vtp tree foamToVTK writes, and falls
+    back to the boundary index when there is no tree (`review_surface.build_region_msh`, added
+    after job 57b613d7). A DECOMPOSED DELIVERY HAS NO TREE AND CAN HAVE NONE: foamToVTK reads
+    `constant/<region>/polyMesh`, which on that path carries a patch table and no cells, and
+    `foamToVTK -parallel` is not the way out because every consumer of its output is written for
+    the serial layout. So the fallback is the only way in - and in the other order it reads a
+    sidecar that has not been written yet, on every single run. `mesh_paths.surface` is
+    required=True, so that is the whole review.
+
+    A MERGED DELIVERY KEEPS THE ORDER IT WAS MEASURED IN. Its review surface comes from the
+    export, which `build_region_msh` prefers whenever it is there and says why, so nothing about
+    it reads the index. The two passes also share one budget, so swapping them swaps which of them
+    a run that has run out of time loses - a change nobody asked for on the path that works.
+
+    RETURNED RATHER THAN BRANCHED ON, so the order is a value a test can read off a real
+    workspace. It was an `if` first, and a mutation that pinned the condition to False left every
+    test passing: they could all see the branch and none of them could see the order.
+    """
+    return ((TAIL_INDEX, TAIL_REVIEW) if _delivered_decomposed(ws)
+            else (TAIL_REVIEW, TAIL_INDEX))
+
+
+def _delivered_decomposed(ws: Path) -> bool:
+    """Whether any delivered region's cells live in per-rank meshes rather than beside its
+    boundary file.
+
+    The same question `_index_regions` asks per region, asked once here for one reason only: to
+    decide which of two passes runs first. It is not the per-region decision - that one is taken
+    again where the builder is chosen, off the same predicate, so this cannot send a merged region
+    down a decomposed path or the other way round.
+
+    NEVER RAISES. Getting the ORDER of two non-fatal passes wrong is not worth failing a mesh
+    over, so an unreadable workspace keeps the order that has always been measured.
+    """
+    from meshpipeline.render.boundary_index import index_is_decomposed
+    from meshpipeline.render.detail_window import delivered_regions
+
+    try:
+        return any(index_is_decomposed(ws, pm) for _name, pm in delivered_regions(ws))
+    except Exception:                     # noqa: BLE001
+        logger.warning("conjugate: could not tell whether this delivery is decomposed, so the "
+                       "boundary index keeps its usual place after the review aids",
+                       exc_info=True)
+        return False
+
+
 #: The phase names the two quiet in-process passes are watched under (engines/dispatch.PHASE_LOG).
 INDEX_PHASE = "boundary_index"
 SURFACE_PHASE = "review_surface"
@@ -466,11 +542,29 @@ def _index_regions(ws: Path, regions, out: dict, *, deadline: float | None) -> N
     """One index per delivered region, inside the run's remaining budget. See `_boundary_indexes`,
     which is where the deadline and the watch come from; split out only so that function reads as
     the one decision it makes."""
-    from meshpipeline.render.boundary_index import write_index
+    from meshpipeline.render.boundary_index import (
+        index_is_decomposed,
+        write_index,
+        write_index_decomposed,
+    )
 
     for name, polymesh in regions:
         t0 = time.monotonic()
         try:
+            # WHICH MESH THIS REGION ACTUALLY IS, decided ONCE here and handed to both sidecars.
+            # They are numbered against each other face for face, so an index built from the
+            # ranks beside a quality array reduced from a serial mesh would paint one mesh's
+            # numbers on another's faces and look entirely plausible. One question, one answer,
+            # both callers.
+            #
+            # A DECOMPOSED REGION IS NOT A SPECIAL CASE OF A SMALL ONE. With
+            # CONJUGATE_MERGE_REGIONS=0 the region's polyMesh holds the patch table
+            # `_publish_decomposed_boundaries` wrote and no cells at all, so `write_index` would
+            # refuse it by name and the detail window would refuse every region of the delivery.
+            decomposed = index_is_decomposed(ws, polymesh)
+            # THE DECLARED COUNT IS RIGHT EITHER WAY, which is why the budget arithmetic below is
+            # untouched: the published boundary file carries the ranks' summed counts, so
+            # `_patch_rows` reads the same number for a decomposed region that a merged one has.
             declared = sum(int(p["n_faces"]) for p in _patch_rows(polymesh))
             if declared > INDEX_SKIP_ABOVE_FACES:
                 out["regions"][name or "mesh"] = {
@@ -496,7 +590,13 @@ def _index_regions(ws: Path, regions, out: dict, *, deadline: float | None) -> N
                 logger.error("conjugate: boundary index not started for %s - %s", name,
                              out["regions"][name or "mesh"]["why"])
                 continue
-            meta = write_index(polymesh, region=name)
+            # SAME PRICE PER FACE for the two paths, and that is measured rather than assumed
+            # equal: the ascii read is the cost, and a decomposed region's ranks between them
+            # scan exactly the internal faces a merged one scans in a single file. The binary
+            # form is strictly cheaper - two seeks instead of a walk - so INDEX_SECONDS_PER_FACE
+            # stays the ceiling for both and no second constant is invented for this path.
+            meta = (write_index_decomposed(ws, region=name) if decomposed
+                    else write_index(polymesh, region=name))
             out["regions"][name or "mesh"] = {
                 "ok": True,
                 "faces": int(meta["n_faces"]),
@@ -504,7 +604,12 @@ def _index_regions(ws: Path, regions, out: dict, *, deadline: float | None) -> N
                 "buckets": int(meta["grid"]["n_buckets"]),
                 "bytes": int(sum(meta["bytes"].values())),
                 "seconds": round(time.monotonic() - t0, 1),
-                "quality": _boundary_quality(polymesh, region=name),
+                # WHICH MESH IT WAS BUILT FROM, in the report. A reader comparing this run's
+                # figures against another's needs to know, and it is the one thing about the
+                # sidecar that cannot be read back off the arrays.
+                "decomposed": bool(decomposed),
+                "quality": _boundary_quality(polymesh, region=name,
+                                             case=ws if decomposed else None),
             }
         except Exception as exc:          # noqa: BLE001
             # NAMED, not absent. A region with no index is a region whose detail window will
@@ -515,7 +620,7 @@ def _index_regions(ws: Path, regions, out: dict, *, deadline: float | None) -> N
                                               "seconds": round(time.monotonic() - t0, 1)}
 
 
-def _boundary_quality(polymesh: Path, *, region: str) -> dict:
+def _boundary_quality(polymesh: Path, *, region: str, case: Path | None = None) -> dict:
     """Reduce checkMesh's fields to one value per boundary face, and clear the fields away.
 
     IT RUNS AFTER THE INDEX and is numbered against it, so it can only exist where one does.
@@ -540,28 +645,59 @@ def _boundary_quality(polymesh: Path, *, region: str) -> dict:
     (15.70 against 18.72, 15.54 against 22.36) and must: it is the owner cell's value over the
     cells that touch the boundary, which are a subset of the mesh.
     """
-    from meshpipeline.render.boundary_quality import FIELD_FILES, write_quality
+    from meshpipeline.render.boundary_quality import (
+        FIELD_FILES,
+        write_quality,
+        write_quality_decomposed,
+    )
 
     t0 = time.monotonic()
     try:
-        meta = write_quality(polymesh, region=region)
+        # `case` IS THE DECISION, not a second reading of it: `_index_regions` asked
+        # `index_is_decomposed` once and passed the workspace when the answer was yes, so this
+        # cannot disagree with the index it is numbered against.
+        meta = (write_quality_decomposed(case, region=region) if case is not None
+                else write_quality(polymesh, region=region))
     except Exception as exc:              # noqa: BLE001
         logger.warning("conjugate: no per-face quality for %s (non-fatal)", region, exc_info=True)
         return {"ok": False, "why": str(exc), "seconds": round(time.monotonic() - t0, 1)}
 
+    # WHERE THE RAW FIELDS ARE depends on which mesh this was: beside the region's polyMesh on a
+    # merged delivery, and ONE COPY PER RANK on a decomposed one. They are the big thing here -
+    # 4.25 GB across both regions of the customer plate, reduced to 319 MB - and on a decomposed
+    # run they are 4.25 GB spread over the ranks instead of gathered, which is the same bytes in
+    # more places and exactly as worth clearing.
     cleared = 0
-    for fname in FIELD_FILES.values():
-        p = Path(polymesh).parent / fname
-        try:
-            if p.is_file():
-                cleared += p.stat().st_size
-                p.unlink()
-        except OSError:
-            logger.warning("conjugate: could not clear %s after reducing it", p, exc_info=True)
+    for base in _field_dirs(polymesh, case=case, region=region):
+        for fname in FIELD_FILES.values():
+            p = base / fname
+            try:
+                if p.is_file():
+                    cleared += p.stat().st_size
+                    p.unlink()
+            except OSError:
+                logger.warning("conjugate: could not clear %s after reducing it", p,
+                               exc_info=True)
     return {"ok": True, "metrics": sorted(meta["basis"]), "basis": dict(meta["basis"]),
             "bytes": int(sum(meta["bytes"].values())), "fields_cleared_bytes": int(cleared),
             "notes": dict(meta.get("notes") or {}),
+            "checked_against_checkMesh": dict(meta.get("checked_against_checkMesh") or {}),
+            "ranks": int(meta.get("ranks") or 1),
             "seconds": round(time.monotonic() - t0, 1)}
+
+
+def _field_dirs(polymesh: Path, *, case: Path | None, region: str) -> list[Path]:
+    """Every directory checkMesh wrote this region's fields into, so none is left behind.
+
+    ON FAILURE THEY ARE LEFT, which is why this is only ever called after a reduction that
+    worked: they are then the evidence of what went wrong, and they are the only copy of it.
+    """
+    if case is None:
+        return [Path(polymesh).parent]
+    from meshpipeline.engines.cfmesh_conjugate.polymesh_surface import processor_dirs
+
+    return [(d / "constant" / region) if region else (d / "constant")
+            for d in processor_dirs(Path(case))]
 
 
 def _patch_rows(polymesh: Path) -> list[dict]:

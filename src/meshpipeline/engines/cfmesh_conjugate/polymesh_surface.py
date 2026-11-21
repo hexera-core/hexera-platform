@@ -167,6 +167,20 @@ def decomposed_region_boundary(case: Path, region: str = "") -> list[dict]:
     return out
 
 
+def rank_of(path: Path) -> str:
+    """The `processorN` component of `path`, or "" when it is not under one.
+
+    COUNTING `.parent`s IS HOW A RANK GETS NAMED WRONG. `processorN/constant/<region>/polyMesh` is
+    four levels up and `processorN/constant/polyMesh` is three, so an expression tuned to one of
+    them names the case directory on the other - in a refusal whose whole job is to say which
+    rank could not be read. The component is found by what it IS rather than by where it sits.
+    """
+    for part in Path(path).parts:
+        if part.startswith("processor") and part[9:].isdigit():
+            return part
+    return ""
+
+
 def decomposed_rank_spans(case: Path, region: str = "") -> list[tuple]:
     """Each rank's real boundary patches and the span of faces that covers them, in rank order.
 

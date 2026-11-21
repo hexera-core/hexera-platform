@@ -158,7 +158,13 @@ def collect_poor_sets(workspace, *, region: str = "") -> list[dict]:
             continue
         try:
             dest.mkdir(parents=True, exist_ok=True)
-            landed = dest / f.name
+            # THE RANK IS PART OF THE NAME when there is one. A parallel checkMesh writes
+            # `skewFaces.vtk` on EVERY rank that found one, and moving them all to `dest / f.name`
+            # keeps whichever happened to be moved last - so seven ranks' worth of poor cells
+            # would vanish into a filename collision and the highlight would show one eighth of
+            # the problem while reporting the whole count beside it.
+            rank = next((p for p in f.parts if p.startswith("processor") and p[9:].isdigit()), "")
+            landed = dest / (f"{rank}_{f.name}" if rank else f.name)
             f.replace(landed)
             out.append({"name": f.stem, "path": str(landed.relative_to(ws)),
                         "bytes": int(landed.stat().st_size)})
@@ -259,9 +265,37 @@ def as_plain_walls(text: str) -> tuple[str, tuple[str, ...]]:
     return "".join(out), tuple(retyped)
 
 
+def _boundaries_to_measure(ws: Path, *, region: str, ranks: int) -> list[Path]:
+    """Every `boundary` file the measurement about to run will open.
+
+    Serially that is the region's own, and with no region named it is nothing at all: `checkMesh`
+    without `-region` reads the pre-split mesh, which has no mapped patch on it to trip over.
+    Across ranks it is one per rank and NOT the root - see the call site for why the root is left.
+    """
+    if not region:
+        return []
+    if int(ranks) <= 1:
+        one = ws / "constant" / region / "polyMesh" / "boundary"
+        return [one] if one.is_file() else []
+    from meshpipeline.engines.cfmesh_conjugate.polymesh_surface import processor_dirs
+
+    return [p for p in ((d / "constant" / region / "polyMesh" / "boundary")
+                        for d in processor_dirs(ws)) if p.is_file()]
+
+
 def check_mesh(workspace, *, bashrc: str = _DEFAULT_BASHRC, region: str = "",
                timeout_s: float = CHECK_TIMEOUT_S, write_sets: bool = True,
-               write_fields: bool = False) -> dict:
+               write_fields: bool = False, ranks: int = 1) -> dict:
+    """Measure one region, and across the ranks when that is where the region's cells are.
+
+    `ranks` ABOVE ONE MEANS THERE IS NO SERIAL MESH TO MEASURE. With CONJUGATE_MERGE_REGIONS=0 the
+    chain never reconstructs, so `constant/<region>/polyMesh` carries the patch table
+    `_publish_decomposed_boundaries` wrote and no cells: a serial `checkMesh -region` there finds
+    no mesh at all, and the run would reach the reviewer with no verdict, no `mesh_ok` and none of
+    the three fields the viewer's colours are reduced from. The caller passes the rank count only
+    for the regions that publisher named, so a merged delivery keeps byte for byte the command it
+    was measured with.
+    """
     ws = Path(workspace)
     # A measurement taken WHERE THE MESH WAS BUILT wins, because here it may be impossible:
     # on the Cloud Run path the mesh is built in a container that has checkMesh and read back
@@ -339,8 +373,28 @@ def check_mesh(workspace, *, bashrc: str = _DEFAULT_BASHRC, region: str = "",
     # against 251 GiB. Its one answer worth having - the piece count per region - is already read
     # by `conjugate.read_region` from the summary line.
     geom = " -allGeometry"
-    cmd = (f"source {bashrc} >/dev/null 2>&1 && "
-           f"checkMesh -constant{_reg}{geom}{sets}{fields}")
+    tool = f"checkMesh -constant{_reg}{geom}{sets}{fields}"
+    if int(ranks) > 1:
+        # `-noZero` IS NOT DECORATION AND IT IS MEASURED. `preparePar` and
+        # `splitMeshRegions -parallel` both leave a `processorN/0`, and a `-parallel` utility given
+        # `-constant` walks `Time = constant` and then `Time = 0` - which is how
+        # `topoSet -parallel -constant` hung at rc=124 on a 300 s ceiling, twice, until the flag
+        # was added (see `conjugate._port_chain`). checkMesh would reach a time with no mesh in it
+        # after a measurement that had already succeeded, which is the worst place to fail.
+        #
+        # ONLY ON THE PARALLEL FORM. The serial command stays exactly the string every corpus
+        # measurement was taken with - "+15.1% with the fields and every verdict line
+        # byte-identical" is a claim about THAT string.
+        from meshpipeline.engines.cfmesh_conjugate.conjugate import mpi_command
+
+        # IMPORTED HERE AND NOT AT THE TOP, because `conjugate` imports this module: the chain
+        # knows how to launch ranks and this file knows how to measure a mesh, and the dependency
+        # runs that way round. A second spelling of the mpirun flags in this file is the thing
+        # that would drift (MPI_BUFFER_SIZE and OMP_NUM_THREADS have to reach every rank's own
+        # environment or the launch dies in cfMesh's load balancing).
+        cmd = f"source {bashrc} >/dev/null 2>&1 && {mpi_command(tool + ' -noZero', int(ranks))}"
+    else:
+        cmd = f"source {bashrc} >/dev/null 2>&1 && {tool}"
     # A MEASUREMENT THAT DID NOT FINISH IS NOT A BAD MESH. It used to raise out of here, which
     # discarded a mesh the mesher had already built - hours of work thrown away at the last step by
     # the step that was only ever supposed to describe it. Now it says so, and the manifest records
@@ -373,25 +427,35 @@ def check_mesh(workspace, *, bashrc: str = _DEFAULT_BASHRC, region: str = "",
     # THE INTERFACE IS MEASURED AS A WALL - see _MAPPED_ONLY_KEYS above for the fatal this avoids
     # and for why nothing geometric moves. Only when a region is named: `checkMesh` with no
     # -region reads the pre-split mesh, which has no mapped patch on it to trip over.
-    boundary = ws / "constant" / region / "polyMesh" / "boundary" if region else None
-    coupled = ""
+    # EVERY BOUNDARY FILE THAT WILL BE OPENED, which is not one file on a parallel run. Each
+    # rank loads its OWN `processorN/constant/<region>/polyMesh`, and `splitMeshRegions -parallel`
+    # wrote the mapped pair on to every one of them - so retyping only the root leaves every rank
+    # carrying `sampleRegion` and every rank taking the same fatal after its own summary. That was
+    # tried and it does not work.
+    #
+    # THE ROOT IS LEFT ALONE ON A PARALLEL RUN, deliberately. No rank reads it, and on a
+    # decomposed delivery it is the PUBLISHED patch table - the file `open_index` stamps and
+    # cross-checks the sidecar against. One fewer file rewritten is one fewer way to leave the
+    # deliverable's coupling broken if this process dies between the write and the restore.
+    restore: list[tuple[Path, str]] = []
     retyped: tuple[str, ...] = ()
-    if boundary is not None and boundary.is_file():
+    for target in _boundaries_to_measure(ws, region=region, ranks=int(ranks)):
         try:
-            coupled = boundary.read_text(encoding="utf-8")
-            plain, retyped = as_plain_walls(coupled)
-            if retyped:
-                boundary.write_text(plain, encoding="utf-8")
-                logger.info("checkMesh: %s measured with %s as a plain wall - the mapped "
-                            "coupling goes back as soon as it has finished", region,
-                            ", ".join(retyped))
-            else:
-                coupled = ""
+            coupled = target.read_text(encoding="utf-8")
+            plain, names = as_plain_walls(coupled)
+            if not names:
+                continue
+            target.write_text(plain, encoding="utf-8")
+            restore.append((target, coupled))
+            retyped = retyped or names
         except OSError:
             logger.warning("checkMesh: could not read %s, so the mesh is measured as it stands "
                            "and a mapped interface on it will take checkMesh down before its "
-                           "verdict", boundary, exc_info=True)
-            coupled = ""
+                           "verdict", target, exc_info=True)
+    if retyped:
+        logger.info("checkMesh: %s measured with %s as a plain wall across %d boundary file(s) - "
+                    "the mapped coupling goes back as soon as it has finished",
+                    region or "the mesh", ", ".join(retyped), len(restore))
     try:
         with log.open("w", encoding="utf-8") as fh:
             run_guarded(["bash", "-lc", cmd], cwd=str(ws), env=_foam_env(),
@@ -408,8 +472,16 @@ def check_mesh(workspace, *, bashrc: str = _DEFAULT_BASHRC, region: str = "",
         # THE COUPLING IS THE DELIVERABLE, so it goes back whatever happened above - a timeout, a
         # stall, a checkMesh that died. A mesh left behind with its interface retyped to a wall
         # is a mesh no conjugate solver can run, broken by the step that only measures.
-        if coupled and boundary is not None:
-            boundary.write_text(coupled, encoding="utf-8")
+        for target, coupled in restore:
+            try:
+                target.write_text(coupled, encoding="utf-8")
+            except OSError:
+                # SAID AS LOUDLY AS THERE IS ANYWHERE TO SAY IT. A mesh left with its interface
+                # retyped to a wall is a mesh no conjugate solver can run, broken by the step
+                # that only measures.
+                logger.error("checkMesh: COULD NOT PUT THE MAPPED COUPLING BACK on %s - this "
+                             "mesh's interface is a plain wall and it must not be delivered",
+                             target, exc_info=True)
     q = parse_check_mesh(_read_checkmesh_output(log))
     if retyped:
         # SAID IN THE REPORT, not only in the log: a reader comparing these numbers against a

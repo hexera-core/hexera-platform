@@ -590,6 +590,7 @@ def write_index_decomposed(case, *, region: str = "") -> dict:
         decomposed_rank_spans,
         decomposed_region_boundary,
         processor_dirs,
+        rank_of,
     )
 
     case = Path(case)
@@ -624,15 +625,15 @@ def write_index_decomposed(case, *, region: str = "") -> dict:
         unknown = sorted({str(p["name"]) for p in local} - set(want))
         if unknown:
             raise IndexUnavailable(
-                f"{pm.parent.parent.parent.name}: patches {unknown} are on this rank and not in "
-                f"the region's own patch table, so these per-rank files are not one mesh")
+                f"{rank_of(pm)}: patches {unknown} are on this rank and not in the region's own "
+                f"patch table, so these per-rank files are not one mesh")
         sizes, conn = _boundary_faces(pm / "faces", first, n_span)
         used, local_ids = np.unique(conn, return_inverse=True)
         points = _mesh_points(pm / "points")
         if used.size and int(used.max()) >= int(points.shape[0]):
             raise IndexUnavailable(
-                f"{pm.parent.parent.parent.name}: a boundary face names point "
-                f"{int(used.max()):,} of {int(points.shape[0]):,}")
+                f"{rank_of(pm)}: a boundary face names point {int(used.max()):,} of "
+                f"{int(points.shape[0]):,}")
         rank_points.append(np.asarray(points[used.astype(np.int64)], dtype=np.float32))
         del points
         lconn = np.asarray(local_ids).reshape(-1).astype(np.int64)

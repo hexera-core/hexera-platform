@@ -490,6 +490,7 @@ def write_quality_decomposed(case, *, region: str = "") -> dict:
     from meshpipeline.engines.cfmesh_conjugate.polymesh_surface import (
         DecomposedBoundaryError,
         decomposed_rank_spans,
+        rank_of,
     )
     from meshpipeline.render.boundary_index import open_index
 
@@ -512,7 +513,7 @@ def write_quality_decomposed(case, *, region: str = "") -> dict:
     notes: dict = {}
     reduced: set = set()
     for pm, rows, first, n_span in spans:
-        rank = pm.parent.parent.parent.name
+        rank = rank_of(pm)
         base = pm.parent
         got: dict = {}
         owner = None
