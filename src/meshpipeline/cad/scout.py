@@ -274,6 +274,92 @@ def count_solids(shape) -> int:
     return n
 
 
+#: INS-11: at most this many solids are joined into one body (the join is a boolean fuse; a scene of
+#: hundreds of parts is never one fluid body).
+MAX_JOINED_SOLIDS = 24
+#: ...and they join only where they TOUCH: the joined volume keeps the parts' own volume to this share
+#: (solids that overlap lose volume in the fuse: that is a CAD defect, never joined here), and faces
+#: they share go (at least this share of their skin: a face-to-face contact, not a point or an edge).
+JOIN_VOLUME_TOLERANCE = 1e-3
+JOIN_MIN_SHARED_SKIN = 1e-3
+
+
+def joined_solids(shape):
+    """INS-11, SOLIDS THAT TOUCH FACE TO FACE ARE ONE BODY. A fluid domain is often modelled in
+    regions - a turbomachine's inlet duct, rotor passage and outlet duct as three solids that meet at
+    flat interfaces - and each region's own flat face at an interface hides the part's far end from
+    the probes that read a mouth (nothing is 'clear ahead' of it, the depth behind the true end stops at
+    the interface). Joined, the regions are the one body they model, and its own flat ends are read as
+    any closed solid's are. Returns (the joined shape, facts) - (None, facts) when the file is not
+    2..MAX_JOINED_SOLIDS closed solids that touch into exactly one body without overlapping. The file
+    is never changed: this is a reading."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Fuse
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
+    from OCP.ShapeUpgrade import ShapeUpgrade_UnifySameDomain
+    from OCP.TopAbs import TopAbs_SOLID
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+    from OCP.TopTools import TopTools_ListOfShape
+
+    def solids_of(s) -> list:
+        out, e = [], TopExp_Explorer(s, TopAbs_SOLID)
+        while e.More():
+            out.append(TopoDS.Solid_s(e.Current()))
+            e.Next()
+        return out
+
+    def vol(s) -> float:
+        g = GProp_GProps()
+        BRepGProp.VolumeProperties_s(s, g)
+        return abs(float(g.Mass()))
+
+    def skin(s) -> float:
+        g = GProp_GProps()
+        BRepGProp.SurfaceProperties_s(s, g)
+        return abs(float(g.Mass()))
+
+    parts = solids_of(shape)
+    facts: dict = {"rule": "INS-11", "solids": len(parts), "joined": False}
+    if not 2 <= len(parts) <= MAX_JOINED_SOLIDS:
+        return None, facts
+    try:
+        volume, area = sum(vol(s) for s in parts), sum(skin(s) for s in parts)
+        args, tools = TopTools_ListOfShape(), TopTools_ListOfShape()
+        args.Append(parts[0])
+        for s in parts[1:]:
+            tools.Append(s)
+        fuse = BRepAlgoAPI_Fuse()
+        fuse.SetArguments(args)
+        fuse.SetTools(tools)
+        fuse.SetRunParallel(False)
+        fuse.Build()
+        if not fuse.IsDone():
+            facts["why"] = "the solids could not be joined"
+            return None, facts
+        unify = ShapeUpgrade_UnifySameDomain(fuse.Shape(), True, True, False)
+        unify.Build()
+        joined = unify.Shape()
+    except Exception as exc:  # noqa: BLE001 - a reading that fails reads the parts as they are
+        facts["why"] = f"the solids could not be joined ({type(exc).__name__})"
+        return None, facts
+    bodies = solids_of(joined)
+    v, a = (vol(joined), skin(joined)) if bodies else (0.0, 0.0)
+    facts.update(bodies=len(bodies), volume_ratio=round(v / volume, 6) if volume > 0 else 0.0,
+                 shared_skin=round(1.0 - a / area, 6) if area > 0 else 0.0)
+    if len(bodies) != 1:
+        facts["why"] = f"the solids make {len(bodies)} separate bodies, not one"
+        return None, facts
+    if volume <= 0 or abs(v / volume - 1.0) > JOIN_VOLUME_TOLERANCE:
+        facts["why"] = "the solids overlap (joined, they lose volume): that is for CAD repair, not joined here"
+        return None, facts
+    if area <= 0 or 1.0 - a / area < JOIN_MIN_SHARED_SKIN:
+        facts["why"] = "the solids meet at an edge or a point, not face to face"
+        return None, facts
+    facts["joined"] = True
+    return joined, facts
+
+
 def read_cad(path):
     """The part in a STEP or IGES file, as read - unscaled and unmeshed. scout_cad and
     write_view_stl both take it (shape=), so the geometry check reads a file once, not twice."""
@@ -344,6 +430,35 @@ def _dot(a, b) -> float:
     return sum(a[k] * b[k] for k in range(3))
 
 
+#: INS-12: how far a flat face's body runs back behind it is read at its centre and half way to its
+#: rim at this many points round it; the middle of those depths is the face's.
+DEPTH_SAMPLES = 8
+
+
+def _depth_across(face, o, first_hit, skip: float) -> float:
+    """INS-12, THE BODY BEHIND A FLAT FACE, read across the face, not at its centre alone: the middle
+    (median) of the depths at its centre and half way to its rim at DEPTH_SAMPLES points round it.
+    A flat on a thin skin is thin at every point; a fluid region round a hub (a rotor passage's end,
+    an annulus) has the hub's face just behind its centre and the whole passage behind the rest - the
+    centre alone read a turbomachine's inlet end as 0.246 of its size deep and no mouth. 0.0 when the
+    rim cannot be read."""
+    from OCP.BRepTools import BRepTools
+
+    try:
+        rim = _rim_polyline(face, BRepTools.OuterWire_s(face))
+    except Exception:  # noqa: BLE001 - the centre's reading stands
+        return 0.0
+    if len(rim) < 3:
+        return 0.0
+    step = max(1, len(rim) // DEPTH_SAMPLES)
+    back = _flip(o.normal)
+    depths = [first_hit(o.centroid, back, skip)]
+    for q in rim[::step][:DEPTH_SAMPLES]:
+        depths.append(first_hit(_add(o.centroid, _sub(q, o.centroid), 0.5), back, skip))
+    depths = sorted(d for d in depths if d > 0.0)
+    return depths[len(depths) // 2] if depths else 0.0
+
+
 def _rim_polyline(face, wire) -> list:
     """The wire's points on the face's own triangulation (the same construction the internal-flow
     tessellation uses), or [] when the triangulation does not carry it."""
@@ -405,7 +520,7 @@ def _measure_wires(face) -> tuple[dict | None, dict | None]:
 
 # --------------------------------------------------------------------------- the scout ----
 def scout_cad(path, *, prepared, angular_deflection: float = 0.3, shape=None,
-              declared_openings: bool = False) -> ScoutResult:
+              declared_openings: bool = False, joined_regions: bool = False) -> ScoutResult:
     """Everything the geometry can say about itself, in metres, as a proposal.
 
     `prepared` is the coordinate state the tessellation seam uses (contracts/coordinate_state),
@@ -416,7 +531,10 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3, shape=None,
     search for them - a classifier probe on both sides of every flat face, rays and rim checks on
     the largest - is not made: on an assembly of hundreds of solids it costs minutes and its
     answer is replaced by the file's. The flat faces are still measured (what the stage's "add an
-    opening" snaps to), their normals taken from the solids' own orientation."""
+    opening" snaps to), their normals taken from the solids' own orientation.
+
+    `joined_regions`: `shape` is several touching solids joined into the one body they make (INS-11,
+    joined_solids); a space they close off is read as what the fluid flows round, not a cavity."""
     from OCP.BRepAdaptor import BRepAdaptor_Surface
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
     from OCP.BRepGProp import BRepGProp
@@ -565,8 +683,11 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3, shape=None,
             o.clear_ahead = clear_ahead(_add(o.centroid, o.normal, 0.001 * diag), o.normal, 0.0)
             o.rim_free = rim_is_free(faces[o.face_index], o.centroid, o.normal)
             depth = first_hit(o.centroid, _flip(o.normal), 0.001 * diag)
+            size = max(math.sqrt(max(o.area, 0.0)), 1e-9)
+            if kind == "disc" and 0.0 < depth < MIN_MOUTH_DEPTH * size:
+                depth = max(depth, _depth_across(faces[o.face_index], o, first_hit, 0.001 * diag))
             o.depth = depth
-            o.depth_ratio = depth / max(math.sqrt(max(o.area, 0.0)), 1e-9)
+            o.depth_ratio = depth / size
             if kind == "disc" and rim_neighbours is not None:
                 o.runs_on = runs_on_share(faces[o.face_index], rim_neighbours)
             probed.append(o)
@@ -620,6 +741,14 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3, shape=None,
         body_kind, input_kind, flow = "pipe_wall", "body-surface", "internal"
         pool = mouth_rings
         confidence_kind = 0.9
+    elif hollow and joined_regions and discs:
+        # INS-11: regions of a fluid domain joined into one body (geometry_check.read_joined). A space
+        # they close off with no way out (a rotor's hub and blades between its inlet and outlet
+        # regions) is what the fluid flows round; the fluid is the body, its flat ends the mouths
+        body_kind, input_kind, flow = "single_solid", "fluid-domain", "internal"
+        pool = [o for o in discs if o.rim_free and not o.inward
+                and (o.depth <= 0.0 or o.depth_ratio >= MIN_MOUTH_DEPTH)]
+        confidence_kind = 0.65
     elif hollow:
         body_kind, input_kind, flow = "hollow_wall", "body-surface", "internal"
         pool = rings or discs

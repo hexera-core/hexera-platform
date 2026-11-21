@@ -1252,6 +1252,8 @@ def _scout_exact(local_path: Path, work: Path, interp_ref, ref, on_skin=None) ->
     # searched for them
     declared = {"declared_openings": True} if _thermal_sidecar(local_path) is not None else {}
     facts = scout_cad(local_path, prepared=prepared, shape=shape, **declared).as_dict()
+    if not declared:
+        facts = read_joined(facts, local_path, prepared, shape)
     # THE FLUID INSIDE THE PARTS, begun now beside the rest (cad/beside): the same child the reading
     # below waits for, so it works while the skin's holes are found
     early_fluid = None
@@ -1265,6 +1267,42 @@ def _scout_exact(local_path: Path, work: Path, interp_ref, ref, on_skin=None) ->
     finally:
         if early_fluid is not None:
             early_fluid.close()
+
+
+def read_joined(facts: dict, local_path: Path, prepared, shape) -> dict:
+    """INS-11: a file of several closed solids whose own reading finds no fluid body to flow through
+    (fewer than two openings, or a body in a flow) is read once more with the solids that touch face
+    to face joined into the one body they model (cad/scout.joined_solids). That reading is kept only
+    when it finds what the parts alone hid - the fluid's own volume, its flat ends the mouths - and it
+    says so; otherwise the parts' own reading stands, unchanged. The file is never changed."""
+    from meshpipeline.cad.scout import joined_solids, scout_cad
+
+    ports = [o for o in facts.get("openings") or [] if o.get("role") in ("inlet", "outlet")]
+    if int(facts.get("solids") or 0) < 2 or (facts.get("flow") == "internal" and len(ports) >= 2):
+        return facts
+    try:
+        joined, how = joined_solids(shape)
+        if joined is None:
+            facts["joined_solids"] = how
+            return facts
+        again = scout_cad(local_path, prepared=prepared, shape=joined, joined_regions=True).as_dict()
+    except Exception as exc:  # noqa: BLE001 - the parts' own reading stands
+        logger.warning("geometry check: the touching solids could not be read as one (%s: %s)",
+                       type(exc).__name__, str(exc)[:200])
+        return facts
+    found = [o for o in again.get("openings") or [] if o.get("role") in ("inlet", "outlet")]
+    # the fluid's own volume: its openings are its own flat ends
+    ends = len(found) >= 2 and all(o.get("kind") == "disc" for o in found)
+    if again.get("flow") != "internal" or again.get("input_kind") != "fluid-domain" or not ends:
+        facts["joined_solids"] = {**how, "kept": False, "why": "joined, they read as no fluid body either"}
+        return facts
+    n = int(facts.get("solids") or 0)
+    again["solids"] = n                # it IS that many solids; they are read as the one body they make
+    again["joined_solids"] = {**how, "kept": True}
+    again.setdefault("notes", []).append(
+        f"its {n} solids touch face to face and make one body, so they are read as one: the fluid's own "
+        f"volume, its {len(found)} flat ends the openings (INS-11)")
+    return again
 
 
 def _scout_exact_rest(facts: dict, skin: Path, local_path: Path, work: Path, interp_ref, prepared, unit_note,
@@ -1453,6 +1491,9 @@ def skin_holes(skin: Path, facts: dict | None = None) -> list[dict]:
                     # tessellation's faces meet unwelded, not gaps in the part
                     health["open_edges_not_openings"] = 0
                     health["from"] = "cad solids"
+                    if (facts.get("joined_solids") or {}).get("joined"):
+                        # INS-11: closed solids that touch face to face are one body, never loose pieces
+                        health["pieces"] = 1
                 facts["surface"] = health
             if imap is not None:
                 vet_by_map(facts, imap)
