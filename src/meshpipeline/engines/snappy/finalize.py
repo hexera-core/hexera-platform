@@ -126,7 +126,16 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
                            + ". snappyHexMesh did not finish writing the mesh (a killed, "
                              "timed-out or cancelled run leaves a partial polyMesh); "
                              "re-run the mesh.")}
+    # EACH STEP TIMED: the steps after the mesher are minutes a customer waits too (as in the cfMesh
+    # finalize)
+    import time as _time
+    _t0 = _time.monotonic()
+    _laps: dict = {}
+
+    def _lap(name: str) -> None:
+        _laps[name] = round(_time.monotonic() - _t0 - sum(_laps.values()), 1)
     q = R.check_mesh(ws)
+    _lap("check_mesh")
     if internal_flow:
         # WHICH under-resolved passages the flow can go round (engines/passage_flow.py): read here,
         # on the mesh that came home, only when the measure beside it put the narrowest wall under
@@ -282,11 +291,13 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
             patch_entities.setdefault(_pn, [])
     # export the VOLUME mesh (foamToVTK) so the reviewer can slice it to see boundary
     # layers / internal refinement; body bbox from the input STL for inspection regions.
+    _lap("layers_and_review_mesh")
     volume_path = None
     try:
         volume_path = R.export_volume_vtk(ws)
     except Exception:
         logger.exception("Executor: foamToVTK volume export failed (non-fatal)")
+    _lap("volume_vtk")
     # The DELIVERABLE surface: the faces this run actually produced, converted from the VTK
     # boundary the export above leaves beside the volume. Distinct from the review mesh built
     # earlier, which re-exports the CAD the mesher snapped TO - the right thing for the reviewer to
@@ -362,6 +373,9 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
                     q["surface_deviation"] = _sd
         except Exception:
             logger.exception("Executor: surface-deviation metric failed (non-fatal)")
+    _lap("surface_and_deviation")
+    q["finalize_s"] = dict(_laps)
+    logger.info("snappy finalize steps (s): %s", _laps)
     # The far-field box the builder PREPARED (recorded by prepare_surface) -
     # the A1 domain-extent gate measures this, not the octree-padded mesh bounds.
     requested_box = None

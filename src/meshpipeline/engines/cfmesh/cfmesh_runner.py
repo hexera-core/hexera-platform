@@ -342,6 +342,43 @@ def estimate_cells(*, volume: float, max_cell: float, wall_cell: float,
     return int(background + wall)
 
 
+#: Cells deep the wall's own cell reaches when no band thickness is set (cfMesh refines the cells the
+#: boundary cuts, then grades 2:1 to the background): the external model's shell depth.
+INTERNAL_SHELL_DEPTH = EXTERNAL_SHELL_DEPTH
+
+
+def internal_estimate(*, max_cell: float, wall_cell: float, thickness: float, n_layers: int,
+                      areas=None, radius=None, wall_area: float | None = None,
+                      typical_radius: float = 0.0) -> float:
+    """The cells an INTERNAL cfMesh case comes to before its narrow-passage boxes (rulebook 75): the
+    fluid at the background cell, the wall band at the wall cell, and the layers - on the measured
+    passage field (wall area and local half-width per point, gap_sizing.fill_cells: the fluid a wall
+    bounds, as a round tube holds it) when there is one, else on the staged wall's area round a tube
+    of the typical passage radius. The band is `thickness` deep (the passage caps' refinement
+    thickness), or INTERNAL_SHELL_DEPTH wall cells without one. Never the case's box volume: a vessel
+    tree's box is a hundred times its fluid."""
+    import numpy as np
+
+    from meshpipeline.engines.gap_sizing import fill_cells
+    if not (max_cell > 0.0 and wall_cell > 0.0):
+        return 0.0
+    depth = float(thickness) if thickness and thickness > 0.0 else INTERNAL_SHELL_DEPTH * float(wall_cell)
+    if areas is not None and radius is not None:
+        a = np.asarray(areas, dtype=float)
+        r = np.asarray(radius, dtype=float)
+        area = float(np.nansum(a))
+        cells = fill_cells(a, r, max_cell) + fill_cells(a, r, wall_cell, depth=depth)
+    else:
+        area = float(wall_area or 0.0)
+        r_t = float(typical_radius or 0.0)
+        if area <= 0.0:
+            return 0.0
+        fluid = area * r_t / 2.0 if r_t > 0.0 else 0.0
+        band = area * (min(depth, r_t) if r_t > 0.0 else depth)
+        cells = fluid / max_cell ** 3 + band / wall_cell ** 3
+    return float(cells + max(0, int(n_layers)) * area / wall_cell ** 2)
+
+
 def run_guard(estimated_cells: float | None):
     """The planned work and GUARD of a cfMesh run planned to make `estimated_cells` cells
     (contracts/work_limits.PlannedWork): GUARD_FACTOR times its planned time at the slow rate,
@@ -598,7 +635,8 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
                        wall_area: float | None = None, fit_run: bool = False,
                        wall_ceiling: float | None = None,
                        accept_fewer: bool = False,
-                       port_widths: dict | None = None) -> dict:
+                       port_widths: dict | None = None,
+                       internal_wall_area: float | None = None) -> dict:
     ws = Path(workspace)
     strategy = strategy or {}
     ext = [float(domain_max[i] - domain_min[i]) for i in range(3)]
@@ -832,6 +870,74 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
             _planned = int(_planned * (wall_cell / _w2) ** 2)
             wall_cell = _w2
 
+    # THE INTERNAL PLAN, PRICED BEFORE IT RUNS (rulebook 75): every flow through a part gets its cells
+    # estimated, and a plan over the run's cell budget is made coarser at the wall - one octree level
+    # at a time - before cartesianMesh starts, never found out of memory after it. A coronary tree
+    # banded at its smallest outlet asked for about 85 M cells and ran out of memory on seven machines
+    # in a row (the CFD board's failure hunt, 21 Nov). The user's own count is CFDREQ-3's, above.
+    _budget_note = ""
+    _field_areas = (passage_field[2] if passage_field is not None and len(passage_field) > 2 else None)
+    if plan is None and (bool(passage_radius) or bool(port_widths)) and (
+            internal_wall_area or _field_areas is not None):
+        import meshpipeline.settings.policy as _pol_b
+        from meshpipeline.engines.gap_sizing import box_cost
+        _user_count = _ask is not None and (_ask.user_budget() or _ask.floor is not None)
+        _thick_m = float(_caps.get("refinement_thickness") or 0.0) if _caps else 0.0
+        _n_lay = max(0, int(strategy.get("n_layers", 0)))
+        _limit = int(cell_budget) if cell_budget else int(_pol_b.CELL_HARD_LIMIT)
+        _field_r = passage_field[1] if (passage_field is not None and _field_areas is not None) else None
+
+        def _priced(w: float, m: float) -> float:
+            return (internal_estimate(max_cell=m, wall_cell=octree_cell(m, w),
+                                      thickness=_thick_m, n_layers=_n_lay,
+                                      areas=_field_areas, radius=_field_r,
+                                      wall_area=internal_wall_area,
+                                      typical_radius=float((passage_radius or {}).get("median") or 0.0))
+                    + box_cost(_narrow, w, whole_box=True))
+        _asked = max(float(_planned or 0.0), _priced(wall_cell, max_cell))
+        # a level coarser at a time: the wall first, then - once the wall is the background, as in a
+        # passage the band fills - the background with it
+        est, w, m, levels = _asked, wall_cell, max_cell, 0
+        while not _user_count and est > _limit and levels < 8:
+            w, levels = w * 2.0, levels + 1
+            m = max(m, w)
+            est = _priced(w, m)
+        if levels:
+            if m > max_cell:
+                dict_parts[2] = f"maxCellSize {m:.6g};\n"
+                max_cell = m
+            # every opening keeps its own cells across at the coarser wall (PLAN-cfd-2): a port the
+            # old wall cell carried may need its own cell now
+            for _pn, _pw in sorted((port_widths or {}).items()):
+                try:
+                    _c = float(_pw) / float(PORT_CELLS_ACROSS)
+                except (TypeError, ValueError):
+                    continue
+                if 0.0 < _c < w and _pn != wall_patch and str(_pn) not in _port_cells:
+                    _port_cells[str(_pn)] = max(_c, _floor, max_cell / float(2 ** 12))
+            _local = "".join(f"    {_pn} {{ cellSize {_c:.6g}; }}\n" for _pn, _c in _port_cells.items())
+            if _ask is not None:
+                _local += _ask_local
+            dict_parts[3] = f"localRefinement\n{{\n    {wall_patch} {{ cellSize {w:.6g};{_thick} }}\n{_local}}}\n"
+            _med = float((passage_radius or {}).get("median") or 0.0)
+            _budget_note = (
+                f"The wall cells were made {levels} level{'s' if levels != 1 else ''} coarser "
+                f"({wall_cell * 1e3:.3g} mm -> {w * 1e3:.3g} mm) so the mesh fits the {_limit / 1e6:.3g} M "
+                f"cells one job builds: as planned it came to about {_asked / 1e6:.3g} M cells"
+                + (f"; about {2.0 * _med / w:.0f} cells now cross the typical passage" if _med > 0 else "")
+                + (f", and it is still about {est / 1e6:.3g} M" if est > _limit else "")
+                + ". To keep the finer wall, ask for a cell count in your notes.")
+            logger.warning("cfMesh internal plan: %s", _budget_note)
+            wall_cell = w
+        _planned = est
+        seconds = est / CELLS_PER_SECOND
+        plan = {"estimated_cells": int(est), "cells_per_second": CELLS_PER_SECOND,
+                "estimated_seconds": round(seconds, 1), "run_cap_s": run_cap_for(seconds),
+                "fits": fits_one_run(seconds), "wall_cell": wall_cell, "guard": run_guard(est).as_dict(),
+                "priced": "internal",
+                **({"coarsened_levels": levels, "cells_before": int(_asked), "note": _budget_note}
+                   if levels else {})}
+
     n_layers = max(0, int(strategy.get("n_layers", 0)))
     if n_layers > 0:
         ratio = float(strategy.get("thickness_ratio", 1.2))
@@ -906,6 +1012,7 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
             "narrow_regions": [{"cell_size": round(b["cell_needed_m"], 6),
                                 "radius": round(b["radius_m"], 6)} for b in _narrow] or None,
             **({"narrow_note": _narrow_note} if _narrow_note else {}),
+            **({"budget_note": _budget_note} if _budget_note else {}),
             **({"port_cells": {k: round(v, 6) for k, v in _port_cells.items()}}
                if _port_cells else {}),
             **({"gap_plan": _gap.record()} if _gap is not None and _gap.spots else {})}
@@ -1195,8 +1302,9 @@ def _configure_internal(workspace, *, strategy: dict, wall_patch: str,
         domain_min=bb_min, domain_max=bb_max, strategy=strategy, cell_budget=cell_budget,
         passage_radius=passage_radius, passage_field=_field,
         accept_fewer=accepted_fewer(read_engine_params(workspace)),
-        port_widths=_port_widths)
+        port_widths=_port_widths, internal_wall_area=_wall_area_of(_staged["sizing"], _wall_key))
     _sizes = list((t.get("binding") or {}).get("size_notes") or [])
+    _budget = summary.get("budget_note")
     return {"success": True, "wrote": ["system/meshDict"], "topology": "internal",
             "openings": t.get("openings"), "passage_radius": passage_radius, **summary,
             **({"port_sizes": _sizes} if _sizes else {}),
@@ -1207,7 +1315,29 @@ def _configure_internal(workspace, *, strategy: dict, wall_patch: str,
                      + ("Tell the user, in these words, that a declared port size disagrees with "
                         "the geometry and the measured opening is used: " + " ".join(_sizes) + " "
                         if _sizes else "")
+                     + (f"Tell the user, in these words: {_budget} " if _budget else "")
                      + "Call run_mesh NOW. Reconfigure ONLY on a concrete run_mesh failure.")}
+
+
+def _wall_area_of(sizing: dict, wall_key: str) -> float | None:
+    """The staged wall's area (m2), every passage's wall included: what the internal plan prices its
+    wall band and layers on when no passage field reads. None when it cannot be read."""
+    try:
+        import numpy as np
+
+        from meshpipeline.cad.stl_io import read_stl_triangles
+        src = (sizing or {}).get(wall_key)
+        paths = src if isinstance(src, (list, tuple)) else [src]
+        total = 0.0
+        for p in paths:
+            if p and Path(str(p)).exists():
+                tri = np.asarray(read_stl_triangles(Path(str(p))), dtype=float).reshape(-1, 3, 3)
+                total += 0.5 * float(np.linalg.norm(np.cross(tri[:, 1] - tri[:, 0],
+                                                             tri[:, 2] - tri[:, 0]), axis=1).sum())
+        return total or None
+    except Exception:  # noqa: BLE001 - an estimate we cannot make leaves the case as planned
+        logger.warning("cfMesh internal: the staged wall's area was not read", exc_info=True)
+        return None
 
 
 def _clear_run_too_long(workspace) -> None:

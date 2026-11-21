@@ -82,7 +82,16 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
     incomplete = delivery_problem(ws)
     if incomplete:
         return {"success": False, "stdout": "", "stderr": "", "output": incomplete}
+    # EACH STEP TIMED: the steps after the mesher are minutes a customer waits too (7.1 between the
+    # mesher handing back and submit_mesh on a coronary tree, the CFD board, 21 Nov)
+    import time as _time
+    _t0 = _time.monotonic()
+    _laps: dict = {}
+
+    def _lap(name: str) -> None:
+        _laps[name] = round(_time.monotonic() - _t0 - sum(_laps.values()), 1)
     q = R.check_mesh(ws)
+    _lap("check_mesh")
     if internal_flow:
         # which under-resolved passages the flow can go round - read only when the measure put the
         # narrowest wall under the floor (engines/passage_flow.py, as in the snappy finalize)
@@ -91,6 +100,7 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
         # ...and the gap plan, for the delivery's note (as in the snappy finalize)
         from meshpipeline.engines.gap_sizing import quality_plan
         q.update(quality_plan(ws))
+        _lap("passage_flow")
     # NEAR-WALL PRISM LAYER COVERAGE - a MEASURED number, not a visual: a ~1e-4 m layer band
     # on a metre-scale body is invisible in any whole-body render, so the reviewer must judge
     # the layer axis from this figure (it otherwise mistook an unresolvable near-wall region
@@ -131,6 +141,7 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
             q.update(census_quality(ws, intake_patches))
     except Exception:
         logger.exception("finalize: layer census failed (non-fatal)")
+    _lap("layers")
     patch_entities, bbox = {}, (0.0,) * 6
     _review_tris: dict = {}   # per-patch triangles → precomputed reviewer camera views
     # The review surface the vision reviewer renders is built from the geometry THIS ENGINE
@@ -161,6 +172,7 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
             patch_entities, bbox = R.build_review_msh(ws, _solids)
         except Exception:
             logger.exception("Executor: review-mesh build failed (non-fatal)")
+    _lap("review_mesh")
     # When an engine's review surface covers only the BODY (snappy: the far-field / symmetry
     # patches live in the blockMesh boundary, not the triSurface), declare the mesh's real
     # patches so the manifest matches the mesh AND the contract (the added ones carry no
@@ -175,6 +187,7 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
         volume_path = R.export_volume_vtk(ws)
     except Exception:
         logger.exception("Executor: foamToVTK volume export failed (non-fatal)")
+    _lap("volume_vtk")
     # The DELIVERABLE surface: the faces this run actually produced, converted from the VTK
     # boundary the export above leaves beside the volume. Distinct from the review mesh built
     # earlier, which re-exports the CAD the mesher snapped TO - the right thing for the reviewer to
@@ -198,6 +211,7 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
             q["port_openings_m2"] = _openings
     except Exception:
         logger.exception("Executor: patch areas not measured (non-fatal)")
+    _lap("surface_and_areas")
     body_bbox = None
     try:
         _bi = R.inspect_stl(ws)
@@ -239,6 +253,9 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
                     q["surface_deviation"] = _sd
         except Exception:
             logger.exception("Executor: surface-deviation metric failed (non-fatal)")
+    _lap("surface_deviation")
+    q["finalize_s"] = dict(_laps)
+    logger.info("cfMesh finalize steps (s): %s", _laps)
     # The far-field box the builder PREPARED (recorded by prepare_surface) -
     # the domain-extent gate measures this, not the octree-padded mesh bounds.
     requested_box = None
