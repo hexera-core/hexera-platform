@@ -237,29 +237,34 @@ def choose_passage_radius(chord: dict | None, ports: dict | None, *,
     """The radius statistics the size caps use: the chord reading when the ports vouch for it,
     the port figures otherwise, None without either (`fluid_boundary`: see plausible_radius).
 
-    THE PORTS VOUCH BY THEIR RANGE (vouched_by_ports, as the snappy driver reads them): a branching
-    vessel's narrowest 5% lies in its branches, between its smallest outlet and its inlet. Held to
-    the smallest port alone (plausible_radius), a coronary tree's true 0.39 mm reading was refused
-    beside a 0.16 mm outlet lid, and the whole wall was cut at that outlet's cell (below).
+    ON THE FLUID'S OWN BOUNDARY THE PORTS VOUCH BY THEIR RANGE (vouched_by_ports, as the snappy
+    driver reads them). There is no outer skin to misread there, and a branching vessel's narrowest
+    5% lies in its branches, between its smallest outlet and its inlet: held to the smallest port
+    alone (plausible_radius), a coronary tree's true 0.39 mm reading was refused beside a 0.16 mm
+    outlet lid. A hollow part's metal skin keeps the smallest port's band - a reducer's outer skin
+    (210 mm) sits within 1.5 times its wider port (165 mm).
 
-    THE PORT FIGURES NEVER SPREAD THE SMALLEST OPENING OVER THE WHOLE WALL: without a trusted
-    reading the band is the TYPICAL port's (its median), and an opening narrower than that gets its
-    own finer cell at the opening (PLAN-cfd-2, the cfMesh writer's port cells). Banded at the
-    smallest outlet, the same coronary tree asked for 22 um cells over 4,900 mm2 of wall - about
-    85 M cells - and cartesianMesh ran out of memory on every machine the run stepped up to
-    (the CFD board's failure hunt, 21 Nov; rulebook 75)."""
+    ...AND THE PORT FIGURES NEVER SPREAD THE SMALLEST OPENING OVER IT: without a trusted reading a
+    fluid boundary is banded at the TYPICAL port (its median), and an opening narrower than that gets
+    its own finer cell at the opening (PLAN-cfd-2, the cfMesh writer's port cells). Banded at the
+    smallest outlet, the coronary tree asked for 22 um cells over 4,900 mm2 of wall - about 85 M
+    cells - and cartesianMesh ran out of memory on every machine the run stepped up to (the CFD
+    board's failure hunt, 21 Nov; rulebook 75)."""
     chord = chord or {}
     ports = ports or {}
     if chord and ports:
-        rng = ({**ports, "min": ports.get("min", ports.get("p05")),
-                "max": ports.get("max", ports.get("p05"))})
-        if vouched_by_ports(chord, rng, low=FLUID_BOUNDARY_LOW if fluid_boundary else 0.3):
+        if fluid_boundary:
+            rng = {**ports, "min": ports.get("min", ports.get("p05")),
+                   "max": ports.get("max", ports.get("p05"))}
+            if vouched_by_ports(chord, rng, low=FLUID_BOUNDARY_LOW):
+                return {**chord, "source": "chord"}
+        elif plausible_radius(chord, ports):
             return {**chord, "source": "chord"}
     if chord and not ports:
         return {**chord, "source": "chord-unchecked"}
     if ports:
         med = ports.get("median")
-        return {**ports, "band": med} if med else ports
+        return {**ports, "band": med} if (fluid_boundary and med) else ports
     return None
 
 

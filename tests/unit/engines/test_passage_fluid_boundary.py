@@ -100,7 +100,7 @@ def test_a_narrow_passage_on_a_fluid_boundary_is_not_vetoed_by_the_ports():
     assert not P.plausible_radius(tube_bank, ports)     # on a hollow wall: a wall-thickness misread
     assert P.plausible_radius(tube_bank, ports, fluid_boundary=True)
     assert P.choose_passage_radius(tube_bank, ports, fluid_boundary=True)["source"] == "chord"
-    assert P.choose_passage_radius(tube_bank, ports) == {**ports, "band": ports["median"]}
+    assert P.choose_passage_radius(tube_bank, ports) == ports
     too_wide = {"p05": 0.2, "median": 0.3}               # the upper bound still applies
     assert not P.plausible_radius(too_wide, ports, fluid_boundary=True)
     failed_read = {"p05": 6e-6, "median": 6e-6}          # the field's clip floor, not a passage
