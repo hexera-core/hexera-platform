@@ -44,6 +44,7 @@ V3_MODULES = [
     "cad/repair/memory.py",
     "cad/repair/replay.py",
     "cad/repair/ending.py",
+    "cad/repair/gap_split.py",
 ]
 
 #: The doorways to the big machines. A v3 module that imports any of these - at module level or

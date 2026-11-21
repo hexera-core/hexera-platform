@@ -3325,12 +3325,14 @@ class FixShapeGlobal:
 def catalogue(*, split_closed_faces: bool | None = None,
               fragment_bodies: bool | None = None,
               rebuild_face: bool | None = None,
-              close_wire_gaps: bool | None = None) -> tuple[RepairOp, ...]:
+              close_wire_gaps: bool | None = None,
+              resolve_sub_mesh_gap: bool | None = None) -> tuple[RepairOp, ...]:
     """Every operation the loop may run, narrowest first.
 
-    `split_closed_faces`, `fragment_bodies`, `rebuild_face` and `close_wire_gaps` ENTER ONLY WITH
-    THEIR CONSENT (CAD_REPAIR_SPLIT_CLOSED_FACES, CAD_REPAIR_FRAGMENT_BODIES,
-    CAD_REPAIR_REBUILD_FACE, CAD_REPAIR_CLOSE_WIRE_GAPS, each read when not told): flags off, the
+    `split_closed_faces`, `fragment_bodies`, `rebuild_face`, `close_wire_gaps` and
+    `resolve_sub_mesh_gap` ENTER ONLY WITH THEIR CONSENT (CAD_REPAIR_SPLIT_CLOSED_FACES,
+    CAD_REPAIR_FRAGMENT_BODIES, CAD_REPAIR_REBUILD_FACE, CAD_REPAIR_CLOSE_WIRE_GAPS,
+    CAD_REPAIR_RESOLVE_SUB_MESH_GAP, each read when not told): flags off, the
     catalogue is today's, byte for byte. The ORDER here is
     documentation - the planner sorts on `scope`, so adding one in the wrong place changes nothing
     but a reader's expectations.
@@ -3345,6 +3347,10 @@ def catalogue(*, split_closed_faces: bool | None = None,
         rebuild_face = bool(rcfg.CAD_REPAIR_REBUILD_FACE)
     if close_wire_gaps is None:
         close_wire_gaps = bool(rcfg.CAD_REPAIR_CLOSE_WIRE_GAPS)
+    if resolve_sub_mesh_gap is None:
+        resolve_sub_mesh_gap = bool(getattr(rcfg, "CAD_REPAIR_RESOLVE_SUB_MESH_GAP", False))
+    from meshpipeline.cad.repair.gap_split import ResolveSubMeshGap
+
     return (
         FixSmallEdges(),
         *((SplitClosedFaces(),) if split_closed_faces else ()),
@@ -3356,6 +3362,7 @@ def catalogue(*, split_closed_faces: bool | None = None,
         FillPlanarHole(),
         FillNonplanarHole(),
         HealSelfIntersections(),
+        *((ResolveSubMeshGap(),) if resolve_sub_mesh_gap else ()),
         *((FragmentBodies(),) if fragment_bodies else ()),
         FixShapeGlobal(),
     )

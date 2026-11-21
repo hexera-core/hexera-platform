@@ -357,7 +357,8 @@ def system_prompt(*, prose: str = "", shadow: bool = False,
 
         touching_mm = _touching_margin_mm(None)
     catalogue = (catalogue_text(split_closed_faces=True, fragment_bodies=True, rebuild_face=True,
-                                close_wire_gaps=True) if free else catalogue_text())
+                                close_wire_gaps=True, resolve_sub_mesh_gap=True)
+                 if free else catalogue_text())
     text = template.format(catalogue=catalogue, roster=_roster(shadow))
     if free:
         text = f"{text}\n{AGGRESSIVE_RULE.format(touching=float(touching_mm))}"
