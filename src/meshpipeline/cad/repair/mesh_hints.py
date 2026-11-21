@@ -67,9 +67,17 @@ REFINE_FACTOR = 0.5
 #: Measured: 1e-3 meshes 0060_00600919 (586 tiny faces); 1e-2 never does; with no floor a 2D
 #: attempt took 380 s and failed.
 FLOOR_FRACTION = 1e-3
+#: No hinted face is sized finer than area / size^2 = this (about twice as many triangles).
+#: MEASURED on the 111 wave-9 failures: every verified sidecar stays under 22,105. Above it, an
+#: attempt is mostly time: 0054_00540003 (a 24.8 m part) put a 58,000-cell field on one BSpline
+#: face, its next attempt ran 111 s and the one after hit the attempt wall.
+MAX_FACE_CELLS = 25_000
 #: The refinement loop's bounds: attempts, the whole producer's wall, and one attempt's wall.
+#: MEASURED on the 111 (6 files at a time on one laptop): the slowest verified success took 7
+#: attempts; time-to-verified was <=60 s for 32/41, <=180 s for 39/41, <=221 s for 41/41. 180 s
+#: keeps 95% of them and is what every passthrough or repaired delivery may spend on hints.
 MAX_ATTEMPTS = 8
-HINTS_WALL_S = 300.0
+HINTS_WALL_S = 180.0
 ATTEMPT_S = 120.0
 FACE_TABLE_S = 120.0
 #: An attempt is not started with less than this left: it could not finish.
@@ -322,8 +330,16 @@ def _attr(defect: Any, name: str, default: Any = None) -> Any:
     return getattr(defect, name, default)
 
 
+def _face_floor(row: dict, *, default_mm: float, floor_mm: float) -> float:
+    """The finest size a face may be given: the part's floor, or coarser where the face is so big
+    that the floor would cost more than MAX_FACE_CELLS; never above the default size."""
+    area = float(row.get("area_mm2") or 0.0)
+    return min(max(floor_mm, math.sqrt(max(area, 0.0) / MAX_FACE_CELLS)), default_mm)
+
+
 def _seed_size(row: dict, *, default_mm: float, floor_mm: float,
                gap_mm: float | None = None) -> tuple[float, str]:
+    floor_mm = _face_floor(row, default_mm=default_mm, floor_mm=floor_mm)
     shortest = row.get("shortest_edge_mm")
     base = float(shortest) if shortest else None
     if gap_mm is not None and gap_mm > floor_mm and (base is None or gap_mm < SEED_FRACTION * base):
@@ -496,8 +512,9 @@ def hints_for(delivered_step_path: Path | str, unresolved_defects: Iterable[Any]
                 size, why = _seed_size(rows[face], default_mm=default_mm, floor_mm=floor_mm)
                 hints[face] = _Hint(size, why, {"attempt": attempt, "mesh_kind": failure.kind})
                 changed = True
-            elif hint.size_mm > floor_mm:
-                hint.size_mm = max(hint.size_mm * REFINE_FACTOR, floor_mm)
+            elif hint.size_mm > (finest := _face_floor(rows[face], default_mm=default_mm,
+                                                        floor_mm=floor_mm)):
+                hint.size_mm = max(hint.size_mm * REFINE_FACTOR, finest)
                 hint.refinements += 1
                 changed = True
         if not changed:

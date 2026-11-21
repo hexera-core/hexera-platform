@@ -303,3 +303,14 @@ def test_importing_the_module_imports_no_kernel():
             "print(any(m.startswith(('OCP', 'gmsh')) for m in sys.modules))")
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
     assert out.stdout.strip() == "False"
+
+
+def test_a_big_face_is_never_sized_past_the_cell_cap():
+    """0054_00540003: a 24.8 m part's floor on a huge BSpline face cost an attempt its wall."""
+    floor = mesh_hints._face_floor({"area_mm2": 1e8}, default_mm=1000.0, floor_mm=0.1)
+    assert floor == pytest.approx((1e8 / mesh_hints.MAX_FACE_CELLS) ** 0.5)
+    assert mesh_hints._face_floor({"area_mm2": 1e12}, default_mm=1000.0, floor_mm=0.1) == 1000.0
+    assert mesh_hints._face_floor({"area_mm2": 1.0}, default_mm=1000.0, floor_mm=0.1) == 0.1
+    size, _why = mesh_hints._seed_size({"area_mm2": 1e8, "shortest_edge_mm": 0.5},
+                                       default_mm=1000.0, floor_mm=0.1)
+    assert size == pytest.approx(floor)
