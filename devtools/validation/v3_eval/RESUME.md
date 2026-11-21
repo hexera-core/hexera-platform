@@ -430,3 +430,24 @@ observes an analyzer hang or the scan-cost budget needs the start-up back.
 
 **Open, unowned.** Better location of unplaced defects (`regions_before {'unknown': 628}`) is the
 scan-cost lever.
+
+**Follow-up: there is NO command to regenerate the settings roster.** Two tests fail when the
+generated block in `docs/reference/configuration.md` goes stale
+(`test_configuration_documentation`, `test_configuration_authority`), and
+`inventory.py --reference` only PRINTS to stdout. Adding a setting therefore reds CI with no
+documented way to fix it; the fix is to splice `render_reference()` between `REFERENCE_BEGIN` and
+`REFERENCE_END` (and the same for the removed and dev-environment blocks). A `make
+settings-roster` target would be five lines and would stop this catching the next person.
+
+**Parked: the whole-shape aim** (`laneA/whole-shape-aim`, `CAD_REPAIR_WHOLE_SHAPE_AIM`,
+default off). A failure gmsh located NOWHERE is addressable as `shape:<code>@<stage>` - from the
+classified kind and the stage, never from gmsh's message, whose coordinates and surface numbers
+move between runs on the same geometry and would let a reword read as a cure. The delivery
+conditions are built and tested, and each REPLACES the scoped proof that region cannot have: the
+delivered part must mesh (never "the named defect disappeared" - a whole-shape fix can change the
+failure's KIND, so the coarse name vanishes while the part is no better), the deviation must be
+MEASURED (a gate here, evidence everywhere else), and the reviewer must be live. That last one was
+a hole I had left: `review_tier` refusing to auto-accept is not the same as the package being
+reviewed, and with `CAD_REPAIR_PACKAGE_REVIEW` off an unscoped claim would have committed with no
+judgement at all. What remains unbuilt is the `whole_shape_aim` label and the authors proposing
+for that region.
