@@ -55,6 +55,14 @@ PROLATE = 1.3
 THICK_ANNULUS = 0.4
 #: ...and the ring spans the part: its outer edge reaches this share of the part across it.
 SPANS_PART = 0.8
+#: INS-20: ...and the ring is round outside as well as in: round the hole, the part's outermost skin lies at
+#: one distance from the axis to this share (nearest over farthest). A blade-row passage's casing is a
+#: circle (1.00 on the corpus's three); a block drilled through, its square sides against its corners
+#: (0.71, less where a side port opens), and a valve body's arch over its feet (0.64) are not.
+ROUND_OUTSIDE = 0.85
+#: ...read only at depths where at least this share of the rays finds the hole's wall (a ring all round)
+RING_RAYS = 0.75
+ROUND_OUTSIDE_RULE = "INS-20"
 #: A CONE behind a mouth: the passage widens a little - by no more than CONE_STEP of the mouth's
 #: radius per quarter-diameter step, the corpus diffusers' 0.04 to 0.08 - at DIFFUSER_STEPS steps
 #: running, past WIDENS and short of OPENS (beyond that it has opened into a chamber). A NARROWING
@@ -672,15 +680,26 @@ def _wall_round(skin: Skin, o: dict) -> tuple[float, list[float]] | None:
     for depth in depths:
         p = c - n * depth
         widest, at = None, None
+        outer = []
         for d, h in zip(dirs, _hits(tris, p, dirs)):
             k = np.searchsorted(h, 0.9 * r0)
             if k + 1 >= len(h) or h[k] > 1.1 * r0:
                 continue                              # no bore wall at the hole's radius this way
             t = (h[k + 1] - h[k]) / r0
+            outer.append(float(h[-1]))
             if widest is None or t > widest:
                 widest, at = t, p + d * 0.5 * (h[k] + h[k + 1])
         if widest is None:
             continue
+        # INS-20: AN ANNULUS IS A RING ALL ROUND, AND ROUND OUTSIDE TOO. The fluid of an annular passage is a
+        # ring round the hub's axis: the hole's wall is found on (nearly) every ray, and the outermost skin
+        # (the casing) is a circle, whatever stands in the ring (blades). A depth where most rays find no
+        # wall at the hole's radius is no ring there and is not read; a bore drilled through a block, or a
+        # valve body's big bore under its arch, has its outside at the block's sides and corners: no annulus.
+        if len(outer) < RING_RAYS * RAYS:
+            continue
+        if min(outer) < ROUND_OUTSIDE * max(outer):
+            return None
         if best is None or widest < best:
             best, inside = widest, at
     if best is None or inside is None:
