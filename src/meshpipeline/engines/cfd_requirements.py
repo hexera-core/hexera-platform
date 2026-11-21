@@ -2273,13 +2273,69 @@ def _first_layer_row(workspace, req: Mapping, q: Mapping, p: Mapping) -> dict | 
     if written is None:
         return None
     as_asked = abs(written - float(planned)) <= 0.01 * float(planned)
+    # CFDREQ-14: the layers are counted at the height asked - the wall's first cell on the built mesh, every engine
+    tall = built_first_cells(workspace, q, written)
+    at_plan, first_cell = _num_or_none(tall.get("layer_area_at_plan_pct")), _num_or_none(tall.get("layer_first_cell_m"))
+    measured_height = at_plan is not None and bool(first_cell)
+    first_cell = first_cell or 0.0
+    if at_plan is not None and measured_height:
+        cover = at_plan
     grown = float(cover) >= 80.0
     said = (f"first layer {_mm(written)} high, as asked; layers on {MR._g(float(cover))}% of the wall" if as_asked
             else f"first layer {_mm(written)} high, not {_mm(float(planned))}; layers on "
                  f"{MR._g(float(cover))}% of the wall")
-    if as_asked and not grown:
+    if measured_height:
+        said = (f"first layer {_mm(written)} set{', as asked' if as_asked else f', not {_mm(float(planned))}'}; "
+                f"on the built mesh the wall's first cell is {_mm(float(first_cell))} (median)")
+        ratio = float(first_cell) / float(written)
+        from meshpipeline.engines.layer_census import PLAN_FIRST_TOL
+        if ratio > PLAN_FIRST_TOL:
+            said += f", {ratio:.3g} times that"
+        said += f", and layers of that height stand on {MR._g(float(cover))}% of the wall"
+        if not grown:
+            said += (" - elsewhere the first cell is thicker than asked, so y+ there is higher than planned"
+                     if float(cover) > 0 else " - the layers were not built at the height asked")
+    elif as_asked and not grown:
         said += " - the rest of the wall has none, so the first cell there is not this height"
-    return {"applied": True, "met": bool(as_asked and grown), "measured": float(f"{written:.4g}"), "delivered": said}
+    out = {"applied": True, "met": bool(as_asked and grown), "measured": float(f"{written:.4g}"), "delivered": said}
+    if measured_height:
+        out["first_cell_m"] = float(first_cell)
+    return out
+
+
+def _num_or_none(v) -> float | None:
+    """A plain number, or None (a bool is not one)."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    return float(v)
+
+
+def built_first_cells(workspace, q: Mapping, planned_m: float) -> dict:
+    """CFDREQ-14 on every engine: the wall's first cell against the planned first layer - the quality record's
+    figures when its census measured them at that height (cfMesh), else measured here on the delivered polyMesh
+    (engines/layer_census: any ascii OpenFOAM mesh up to its cell limit). {} when it cannot be measured."""
+    if q.get("layer_coverage_basis") == "height" and q.get("layer_first_planned_m"):
+        try:
+            if abs(float(q["layer_first_planned_m"]) - float(planned_m)) <= 0.01 * float(planned_m):
+                return {k: q.get(k) for k in ("layer_area_at_plan_pct", "layer_first_cell_m", "layer_first_vs_plan")}
+        except (TypeError, ValueError):
+            pass
+    from meshpipeline.engines import layer_census as LC
+    from meshpipeline.engines.workspace_facts import contract_patches
+    ws = Path(workspace)
+    try:
+        walls = [str(c.get("name")) for c in contract_patches(ws) or []
+                 if isinstance(c, Mapping) and str(c.get("type") or "") == "wall" and c.get("name")]
+    except Exception:  # noqa: BLE001 - evidence, not a verdict
+        walls = []
+    if not walls or not (ws / "constant" / "polyMesh" / "owner").exists():
+        return {}
+    try:
+        per, _why = LC.census(ws / "constant" / "polyMesh", 1, walls, planned_first_m=float(planned_m))
+    except Exception:  # noqa: BLE001 - evidence, not a verdict
+        logger.warning("first-cell census failed; the row reads the setting", exc_info=True)
+        return {}
+    return LC.height_quality(per) if per else {}
 
 
 _WALL_LEVEL = re.compile(r"refinementSurfaces\s*\{\s*[\w.]+\s*\{\s*level\s*\(\s*(\d+)\s+(\d+)\s*\)")

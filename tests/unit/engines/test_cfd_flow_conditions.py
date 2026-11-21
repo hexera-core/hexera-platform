@@ -318,3 +318,45 @@ def test_the_run_reads_the_conditions_with_no_notes(tmp_path):
     asyncio.run(CR.read_for_attempt(tmp_path, {"request_txt": INT_RESOLVED, "purpose": "internal_cfd"}))
     req = CR.requirements_for(tmp_path)
     assert req is not None and req["layers"]["y_plus"] == 1.0 and req["physics"]["velocity_ms"] == 1.0
+
+
+@pytest.mark.parametrize("heights, met, words", [
+    # the stack the plan asked: the first cell is the planned 0.02243 mm on the whole wall
+    ([2.243e-05, 2.7e-05, 1e-3, 1e-3], True, "the wall's first cell is 0.02243 mm (median), and layers of that height "
+                                            "stand on 100% of the wall"),
+    # cells shaped like layers, but 100 times too thick (cfMesh, resolved wall: mini_housing_002 1.8 mm, 0.02 mm asked)
+    ([2.243e-03, 2.7e-03, 1.0, 1.0], False, "the wall's first cell is 2.243 mm (median), 100 times that, and layers "
+                                           "of that height stand on 0% of the wall - the layers were not built at the "
+                                           "height asked"),
+])
+def test_the_first_layer_row_reads_the_first_cell_the_mesh_has(tmp_path, heights, met, words):
+    """CFDREQ-14: a coverage counted by shape said "layers on 100% of the wall" over a first cell 100 times the plan."""
+    from tests.unit.engines.test_layer_census import _write_column_mesh
+    req, _d, _na = _read("y+ of 1 at the wall",
+                         layers=[{"what": "y_plus", "value": 1, "unit": "none", "quote": "y+ of 1 at the wall"}])
+    got = MR.requirements_of(CR.with_conditions(MR.section("used", requirements=req), {"request_txt": INT_RESOLVED}))
+    rid = got["rows"][0]["id"]
+    ws = tmp_path / "case"
+    (ws / "system").mkdir(parents=True)
+    MR.write(ws, MR.section("used", requirements=got))
+    (ws / CR.PLAN_FILE).write_text(json.dumps({"engine": "cfmesh", "rows": {rid: {
+        "status": "applied", "built": "a resolved wall: first layer 0.02243 mm high", "first_m": 2.243e-05}}}))
+    (ws / "system" / "meshDict").write_text("wall { nLayers 2; thicknessRatio 1.2; maxFirstLayerThickness "
+                                            "2.243e-05; allowedDiscontinuity 0; }")
+    (ws / "patches_contract.txt").write_text("  • wall  →  type wall\n  • side  →  type patch\n")
+    _write_column_mesh(ws / "constant" / "polyMesh", list(heights), nx=3)
+    row = CR.report(ws, {"cells": 36, "layer_coverage_pct": 100.0}, "cfmesh")["rows"][0]
+    assert row["met"] is met
+    assert row["delivered"].startswith("first layer 0.02243 mm set, as asked; on the built mesh ")
+    assert words in row["delivered"]
+
+
+def test_the_coverage_line_says_the_height_the_layers_stand_at():
+    """CFDREQ-14: the coverage limit's own line, when the census counted by height."""
+    from meshpipeline.engines.verdict_limits import coverage_words
+    q = {"layer_coverage_basis": "height", "layer_first_planned_m": 2.1e-05, "layer_first_cell_m": 3.2e-03,
+         "layer_coverage_shape_pct": 54.0, "layer_area_at_plan_pct": 0.0}
+    said = coverage_words(q, 0.0, 80.0)
+    assert said.startswith("The wall's layers were planned with a first layer 0.021 mm high; layers that thin stand "
+                           "on 0% of the wall (cells shaped like layers line 54%, but thicker than planned)")
+    assert "the wall's first cell is 3.2 mm (median), 152 times the plan" in said

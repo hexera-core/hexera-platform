@@ -205,12 +205,44 @@ def near_edge(q: dict | None, limit: float | None = None) -> str:
 
 
 def rank(q: dict | None) -> tuple:
-    """The order candidates are kept in, lower first: no fatal defect, then the lowest worst
-    non-orthogonality, then the fewest highly skewed faces."""
+    """The order candidates are kept in, lower first: no fatal defect, then the wall's layers kept at the planned
+    height (CFDREQ-14: not `layers_lost`), then the lowest worst non-orthogonality, then the fewest highly skewed
+    faces."""
     q = q or {}
     no = _num(q.get("max_non_ortho"))
-    return (1 if q.get("fatal") else 0, 180.0 if no is None else no,
+    return (1 if q.get("fatal") else 0, 1 if q.get("layers_lost") else 0, 180.0 if no is None else no,
             int(_num(q.get("skew_faces")) or 0))
+
+
+#: CFDREQ-14: a candidate whose wall has its layers at the planned height on this many points less of the wall
+#: than the mesh as built has lost them
+LAYER_LOSS_PTS = 10.0
+
+
+def layers_at_plan(workspace) -> float | None:
+    """The share of the wall (percent) whose first cell stands at the first layer height the meshDict asked
+    (engines/layer_census, CFDREQ-14), on the polyMesh in `workspace`; None with no planned height or no
+    measure. cfMesh's optimiser smooths a 0.02 mm first layer into the cells round it: the rectangular duct
+    reduction (resolved wall, 0.0246 mm asked) read a first cell of 0.020 mm as built and 1.72 mm optimised
+    (median), its non-orthogonality going from 85.2 to 52.6 degrees - the layers traded for the angle."""
+    from meshpipeline.engines.ground_plane import is_ground
+    from meshpipeline.engines.layer_census import census, planned_first_of, wall_summary
+    from meshpipeline.engines.workspace_facts import contract_patches
+    ws = Path(workspace)
+    planned = planned_first_of(ws)
+    if not planned:
+        return None
+    walls = [str(c.get("name")) for c in contract_patches(ws) if str(c.get("type") or "") == "wall"
+             and c.get("name") and not is_ground(str(c.get("name")), "wall")]
+    if not walls:
+        return None
+    try:
+        per, _why = census(ws / _POLYMESH, 1, walls, planned_first_m=planned)
+    except Exception:  # noqa: BLE001 - evidence, not a verdict
+        logger.warning("rescue: the layer census failed", exc_info=True)
+        return None
+    got = wall_summary(per).get("area_at_plan_pct") if per else None
+    return float(got) if got is not None else None
 
 
 def measured(q: dict | None) -> bool:
@@ -230,7 +262,9 @@ def better(cand: dict | None, best: dict | None) -> bool:
     a, b = rank(cand), rank(best)
     if a[0] != b[0]:
         return a[0] < b[0]
-    return a[1] < b[1] - MIN_GAIN_DEG
+    if a[1] != b[1]:
+        return a[1] < b[1]
+    return a[2] < b[2] - MIN_GAIN_DEG
 
 
 def protective_meshdict(text: str) -> str | None:
@@ -268,7 +302,8 @@ def rescue(workspace, q: dict, *, bashrc: str, deadline: float, mesher_seconds: 
            check_seconds: float = 60.0,
            measure: Callable[..., dict] | None = None,
            runner: Callable[..., Any] | None = None, env: dict | None = None,
-           is_2d: bool = False, limit: float | None = None) -> dict:
+           is_2d: bool = False, limit: float | None = None,
+           layers: Callable[..., float | None] | None = None) -> dict:
     """The quality record of the mesh left in `workspace` after the rescue: `q` itself when the
     mesh is not near its edge (or it is past a rescue's cell limit), else the best measured
     candidate's record, with `rescue` saying what was tried and kept. Each step runs its PLANNED
@@ -304,6 +339,12 @@ def rescue(workspace, q: dict, *, bashrc: str, deadline: float, mesher_seconds: 
     except OSError:
         return q                       # nothing is moved before the case can be read back
     kept_dict = asked_dict
+    # CFDREQ-14: the wall's layers at the planned height, as built - a candidate that loses them ranks under one
+    # that keeps them (validity still first)
+    count_layers: Callable[..., float | None] = layers if layers is not None else layers_at_plan
+    base_layers = count_layers(ws)
+    if base_layers is not None:
+        q = {**q, "layer_area_at_plan_pct": base_layers}
     scratch = ws / SCRATCH
     shutil.rmtree(scratch, ignore_errors=True)
     scratch.mkdir(parents=True)
@@ -340,10 +381,15 @@ def rescue(workspace, q: dict, *, bashrc: str, deadline: float, mesher_seconds: 
     def _measure(name: str) -> dict | None:
         (ws / "mesh_quality.json").unlink(missing_ok=True)     # never a cached figure
         try:
-            return check(ws, bashrc=bashrc) or None
+            got = check(ws, bashrc=bashrc) or None
         except Exception:  # noqa: BLE001 - an unmeasured candidate is no candidate
             logger.warning("rescue: checkMesh of the %s mesh failed", name, exc_info=True)
             return None
+        if got and base_layers is not None:
+            now = count_layers(ws)
+            got = {**got, "layer_area_at_plan_pct": now,
+                   "layers_lost": now is None or now < base_layers - LAYER_LOSS_PTS}
+        return got
 
     def _consider(name: str, cand_q: dict | None, step: dict) -> None:
         nonlocal best_q, best_dir, best_name, kept_dict
@@ -493,8 +539,10 @@ def note(record: dict) -> str:
                 "infrastructure stop, not a result: this attempt is run again as it was.")
     tried = [s["step"] for s in record.get("tried") or [] if not s.get("skipped")]
     if record.get("kept") == "as built":
+        lost = [s["step"] for s in record.get("tried") or [] if s.get("layers_lost") and not s.get("fatal")]
+        why = (f" ({' and '.join(lost)} took the wall's layers away from the planned height)" if lost else "")
         return (f"{head} Tried {', then '.join(tried) or 'nothing'}; none measured "
-                "better, so the mesh as built is kept.")
+                f"better{why}, so the mesh as built is kept.")
     return (f"{head} Kept the {record.get('kept')} mesh: "
             f"{_words(before)} before, {_words(after)} after.")
 
@@ -503,12 +551,18 @@ def _words(b: dict) -> str:
     fatal = b.get("fatal") or []
     no = b.get("max_non_ortho")
     s = f"worst cell {no:.1f} degrees" if isinstance(no, (int, float)) else "no figure"
-    return s + (f" and {', '.join(fatal)}" if fatal else ", no fatal defect")
+    s += f" and {', '.join(fatal)}" if fatal else ", no fatal defect"
+    at = b.get("layer_area_at_plan_pct")
+    if isinstance(at, (int, float)):
+        s += f", the planned first layer on {at:.0f}% of the wall"
+    return s
 
 
 def _brief(q: dict | None) -> dict:
     q = q or {}
-    return {k: q.get(k) for k in ("cells", "max_non_ortho", "max_skewness", "skew_faces", "fatal")}
+    return {k: q.get(k) for k in ("cells", "max_non_ortho", "max_skewness", "skew_faces", "fatal",
+                                  "layer_area_at_plan_pct", "layers_lost") if k in q or k in
+            ("cells", "max_non_ortho", "max_skewness", "skew_faces", "fatal")}
 
 
 #: _run's return code for a run its `watch` stopped (StoppedByWatch): not a trip, a measured stop.
@@ -553,6 +607,6 @@ def _num(v) -> float | None:
         return None
 
 
-__all__ = ["MIN_GAIN_DEG", "NEAR_EDGE_NON_ORTHO", "PROTECTIVE_LAYER_OPTIMISATION",
+__all__ = ["LAYER_LOSS_PTS", "MIN_GAIN_DEG", "NEAR_EDGE_NON_ORTHO", "layers_at_plan", "PROTECTIVE_LAYER_OPTIMISATION",
            "REMESH_MAX_CELLS", "RESCUE_FILE", "RESCUE_MAX_CELLS", "better", "near_edge", "note",
            "protective_meshdict", "rank", "rescue"]

@@ -154,6 +154,9 @@ def coverage_words(quality: Mapping, measured: Any, limit: Any) -> str:
         return ""
     if got >= lim:
         return ""
+    tall = _by_height(quality, got, lim)
+    if tall:
+        return tall
     cut = _cut_stacks(quality, got)
     if cut:
         return cut
@@ -169,6 +172,29 @@ def coverage_words(quality: Mapping, measured: Any, limit: Any) -> str:
                 f"there is well above 1 (we aim for layers on at least {lim:.0f}%)")
     return (f"The wall-function layers are on {got:.0f}% of the wall{where}, where y+ is set by that cell "
             f"instead (we aim for layers on at least {lim:.0f}%)")
+
+
+def _by_height(quality: Mapping, got: float, lim: float) -> str:
+    """CFDREQ-14, SAID: the coverage counted at the planned first layer height (engines/layer_census), with the
+    wall's first cell as built. "" when the coverage was not counted by height."""
+    if quality.get("layer_coverage_basis") != "height":
+        return ""
+    plan, first = _num(quality.get("layer_first_planned_m")), _num(quality.get("layer_first_cell_m"))
+    if not plan:
+        return ""
+    kind = wall_treatment(quality)
+    what = ("The resolved wall (y+ about 1)" if kind == "resolved" else
+            "The wall-function layers" if kind else "The wall's layers")
+    said = f"{what} were planned with a first layer {plan * 1e3:.3g} mm high; layers that thin stand on {got:.0f}% " \
+           "of the wall"
+    shape = _num(quality.get("layer_coverage_shape_pct"))
+    if shape is not None and shape >= got + 10.0:
+        said += f" (cells shaped like layers line {shape:.0f}%, but thicker than planned)"
+    if first:
+        said += f", and the wall's first cell is {first * 1e3:.3g} mm (median)"
+        if first > 1.5 * plan:
+            said += f", {first / plan:.3g} times the plan, so y+ there is that many times higher"
+    return said + f" (we aim for layers on at least {lim:.0f}%)"
 
 
 #: Faces that kept an extrusion this many points past the layer cells kept read as stacks cut short, not as walls

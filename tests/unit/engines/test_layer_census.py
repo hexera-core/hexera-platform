@@ -155,3 +155,64 @@ def test_nothing_is_claimed_without_a_mesh_or_layers(tmp_path):
     (tmp_path / "meshDict").write_text("boundaryLayers { patchBoundaryLayers { body { nLayers 3; } } }")
     assert requested_layers(tmp_path / "meshDict") == 3
     assert requested_layers(tmp_path / "missing") == 0
+
+
+# CFDREQ-14: a layer is the one asked only at the height asked
+def test_layers_at_the_planned_height_count(tmp_path):
+    from meshpipeline.engines import layer_census as lc
+    pm = tmp_path / "polyMesh"
+    _write_column_mesh(pm, [0.02, 0.024, 1.0, 1.0])
+    out, _ = lc.census(pm, 2, ["wall"], planned_first_m=0.02)
+    w = out["wall"]
+    assert w["coverage_pct"] == 100.0 and w["coverage_at_plan_pct"] == 100.0 and w["area_at_plan"] == 1.0
+    assert abs(w["first_cell_m"] - 0.02) < 1e-9 and w["first_vs_plan"] == 1.0
+
+
+def test_a_stack_far_thicker_than_planned_is_not_the_layer_asked(tmp_path):
+    # the shape of two layers, but the first one 150 times the planned height (static_mixer_004, cfMesh, resolved)
+    from meshpipeline.engines import layer_census as lc
+    pm = tmp_path / "polyMesh"
+    _write_column_mesh(pm, [0.03, 0.036, 1.0, 1.0])
+    out, _ = lc.census(pm, 2, ["wall"], planned_first_m=0.0002)
+    w = out["wall"]
+    assert w["coverage_pct"] == 100.0                     # by shape
+    assert w["coverage_at_plan_pct"] == 0.0 and w["area_at_plan"] == 0.0
+    assert w["first_vs_plan"] == 150.0
+    q = lc.height_quality(out)
+    assert q["layer_coverage_basis"] == "height" and q["layer_area_at_plan_pct"] == 0.0
+    assert abs(q["layer_first_cell_m"] - 0.03) < 1e-9
+
+
+def test_the_first_cell_is_read_where_no_layer_grew(tmp_path):
+    from meshpipeline.engines import layer_census as lc
+    pm = tmp_path / "polyMesh"
+    _write_column_mesh(pm, [0.7, 1.0])
+    out, _ = lc.census(pm, 1, ["wall"], planned_first_m=0.01)
+    assert abs(out["wall"]["first_cell_m"] - 0.7) < 1e-9 and out["wall"]["area_at_plan"] == 0.0
+
+
+def test_a_neighbour_list_padded_for_boundary_faces_is_read_to_its_internal_faces(tmp_path):
+    # cfMesh writes -1 in neighbour for every boundary face: the walk must not step through a wall into cell -1
+    from meshpipeline.engines import layer_census as lc
+    pm = tmp_path / "polyMesh"
+    _write_column_mesh(pm, [0.05, 0.06, 0.072, 1.0])
+    plain, _ = lc.census(pm, 3, ["wall"])
+    nb = (pm / "neighbour").read_text()
+    head, _, body = nb.partition("\n(\n")
+    n_int = int(head.strip().split()[-1])
+    n_all = len((pm / "owner").read_text().partition("\n(\n")[2].split()) - 1
+    vals = body.rsplit(")", 1)[0].split() + ["-1"] * (n_all - n_int)
+    (pm / "neighbour").write_text(head.rsplit(str(n_int), 1)[0] + f"{n_all}\n(\n" + "\n".join(vals) + "\n)\n")
+    padded, _ = lc.census(pm, 3, ["wall"])
+    assert padded == plain
+
+
+def test_the_planned_first_layer_is_read_from_the_case(tmp_path):
+    from meshpipeline.engines.layer_census import planned_first_of
+    (tmp_path / "system").mkdir()
+    assert planned_first_of(tmp_path) is None
+    (tmp_path / "system" / "meshDict").write_text(
+        "wall { nLayers 2; thicknessRatio 1.2; maxFirstLayerThickness 2.09567e-05; allowedDiscontinuity 0; }")
+    assert planned_first_of(tmp_path) == 2.09567e-05
+    (tmp_path / "system" / "snappyHexMeshDict").write_text("relativeSizes true; firstLayerThickness 0.3;")
+    assert planned_first_of(tmp_path) is None

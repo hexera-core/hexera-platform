@@ -49,6 +49,9 @@ GROWTH_MAX = 2.0
 CENSUS_MAX_CELLS = 12_000_000
 #: the deepest stack walked, whatever was asked
 MAX_STACK = 30
+#: CFDREQ-14: a wall face has the layer asked when its first cell is at most this many times the first layer the
+#: mesher was given (the same 1.5 the resolved-wall target reads the first cell by)
+PLAN_FIRST_TOL = 1.5
 
 _ASCII = re.compile(rb"format\s+ascii\s*;")
 _PARENS = bytes.maketrans(b"()", b"  ")
@@ -157,12 +160,28 @@ def _median(values: np.ndarray, weights: np.ndarray) -> float | None:
     return float(values[order][int(np.searchsorted(c, 0.5 * c[-1]))])
 
 
-def census(polymesh, n_layers: int, patches) -> tuple[dict, str]:
+def _quantile(values: np.ndarray, weights: np.ndarray, q: float) -> float | None:
+    if not len(values):
+        return None
+    order = np.argsort(values)
+    c = np.cumsum(weights[order])
+    return float(values[order][min(len(values) - 1, int(np.searchsorted(c, q * c[-1])))])
+
+
+def census(polymesh, n_layers: int, patches, planned_first_m: float | None = None) -> tuple[dict, str]:
     """(per-patch figures, "") - or ({}, why) when the mesh cannot be measured. Figures per named
     wall patch: faces, area_m2, area_with_any_layer, area_with_full_layers, mean_layers (each face
     capped at `n_layers`), mean_layers_found (uncapped), coverage_pct, layers_by_area {count: area
     share}, first_layer_m and stack_m (area-weighted medians over the faces with a layer), growth
-    (median ratio of the second layer's height to the first's)."""
+    (median ratio of the second layer's height to the first's), and the wall's FIRST CELL on every
+    face, layer or not (first_cell_m; first_cell_p10_m and first_cell_p90_m).
+
+    BY HEIGHT (CFDREQ-14): with `planned_first_m` (the first layer the mesher was given) a layer counts only
+    where the wall's first cell is at most PLAN_FIRST_TOL times that height: area_at_plan (share of the wall
+    with such a layer), coverage_at_plan_pct (the layer cells asked that stand on such a first layer) and
+    first_vs_plan (the median first cell over the plan). Counted by shape alone, a cfMesh mesh asked a
+    0.021 mm first layer under 5.9 mm cells read "layers on 54% of the wall" where its first cell was
+    3.2 mm (static_mixer_004, resolved wall): a stack 150 times the height asked is not the layer asked."""
     pm = Path(polymesh)
     if n_layers <= 0:
         return {}, "no layers were asked for"
@@ -180,6 +199,11 @@ def census(polymesh, n_layers: int, patches) -> tuple[dict, str]:
     except (OSError, ValueError, IndexError) as exc:
         return {}, f"the polyMesh could not be read ({type(exc).__name__})"
     geo = _Geometry(P, offs, dat)
+    # cfMesh writes a neighbour entry (-1) for every boundary face too: the internal faces are the
+    # ones before the first patch, never the length of that list
+    starts = [s for s, n in bnd.values() if n > 0]
+    if starts and len(neigh) > min(starts):
+        neigh = neigh[:min(starts)]
     nF, nI = len(offs) - 1, len(neigh)
     n_cells = max(n_cells, int(neigh.max()) + 1 if nI else 0)
     cf_cell = np.concatenate([owner, neigh])
@@ -204,6 +228,7 @@ def census(polymesh, n_layers: int, patches) -> tuple[dict, str]:
         width = np.sqrt(A)
         count = np.zeros(nf, dtype=np.int64)
         heights = np.zeros((nf, depth))
+        first_cell = np.zeros(nf)                             # the wall's own first cell, layer or not
         cur_cell = owner[wall].copy()
         cur_c = wc.copy()                                     # centre of the face entered through
         prev_h = np.full(nf, np.inf)
@@ -226,6 +251,8 @@ def census(polymesh, n_layers: int, patches) -> tuple[dict, str]:
             j = np.argmax(d, axis=1)
             rows = np.arange(len(idx))
             best_f, h = faces[rows, j], d[rows, j]
+            if step == 0:
+                first_cell[idx] = np.maximum(h, 0.0)
             nj = ufa[inv[rows, j]]
             nj = nj / np.maximum(np.linalg.norm(nj, axis=1), 1e-300)[:, None]
             par = np.abs((nj * n0[idx]).sum(axis=1))
@@ -259,8 +286,93 @@ def census(polymesh, n_layers: int, patches) -> tuple[dict, str]:
             "first_layer_m": _median(heights[with_any, 0], A[with_any]),
             "stack_m": _median(heights[with_any].sum(axis=1), A[with_any]),
             "growth": _median(heights[two, 1] / np.maximum(heights[two, 0], 1e-300), A[two]),
+            "first_cell_m": _median(first_cell, A),
+            "first_cell_p10_m": _quantile(first_cell, A, 0.10),
+            "first_cell_p90_m": _quantile(first_cell, A, 0.90),
         }
+        if planned_first_m and planned_first_m > 0.0:
+            at_plan = with_any & (first_cell <= PLAN_FIRST_TOL * float(planned_first_m))
+            med = _median(first_cell, A)
+            res[name].update({
+                "planned_first_m": float(planned_first_m),
+                "area_at_plan": round(float(A[at_plan].sum() / total), 4),
+                "coverage_at_plan_pct": round(float(100.0 * capped[at_plan].sum() / (n_layers * nf)), 2),
+                "first_vs_plan": (round(float(med) / float(planned_first_m), 2) if med is not None else None),
+            })
     return res, ""
+
+
+#: where each mesher's case carries the first layer height it was given, and the key (CFDREQ-6's reading too)
+PLANNED_FIRST_IN = (("system/snappyHexMeshDict", "firstLayerThickness"), ("system/meshDict", "maxFirstLayerThickness"))
+
+
+def planned_first_of(workspace) -> float | None:
+    """The first layer height the mesher's dictionary was given (metres), or None when it was given none. A
+    snappyHexMesh case with relativeSizes on reads None (its height is a share of each cell, not a height)."""
+    ws = Path(workspace)
+    for rel, key in PLANNED_FIRST_IN:
+        try:
+            text = (ws / rel).read_text(errors="replace")
+        except OSError:
+            continue
+        if key == "firstLayerThickness" and re.search(r"relativeSizes\s+(true|on|yes)\s*;", text):
+            return None
+        m = re.search(rf"\b{key}\s+([-+\d.eE]+)\s*;", text)
+        if m:
+            try:
+                v = float(m.group(1))
+            except ValueError:
+                return None
+            return v if v > 0.0 else None
+    return None
+
+
+def height_quality(per: dict) -> dict:
+    """CFDREQ-14: the quality record's figures for the wall's first cell against the planned first layer, from
+    census() with a plan: the layer coverage counted at that height (layer_coverage_pct, with the count by shape
+    kept as layer_coverage_shape_pct), the first cell (median), the plan, their ratio and the share of the wall
+    at the plan. {} when the census had no plan."""
+    s = wall_summary(per)
+    if "planned_first_m" not in s:
+        return {k: v for k, v in (("layer_first_cell_m", s.get("first_cell_m")),) if v is not None}
+    out = {"layer_coverage_basis": "height", "layer_first_planned_m": s["planned_first_m"],
+           "layer_area_at_plan_pct": s["area_at_plan_pct"], "layer_coverage_at_plan_pct": s["coverage_at_plan_pct"]}
+    if s.get("first_cell_m") is not None:
+        out["layer_first_cell_m"] = s["first_cell_m"]
+        out["layer_first_vs_plan"] = s.get("first_vs_plan")
+    return out
+
+
+def wall_summary(per: dict) -> dict:
+    """The figures of census() over all its wall patches, weighted by area (faces for the coverage): the
+    first cell (median of the patches' medians by area), and, with a plan, the share of the wall at it,
+    the coverage there and the first cell over the plan. {} when nothing was measured."""
+    rows = [v for v in (per or {}).values() if isinstance(v, dict) and v.get("area_m2")]
+    if not rows:
+        return {}
+    area = sum(float(v["area_m2"]) for v in rows) or 1.0
+    faces = sum(int(v["faces"]) for v in rows) or 1
+    meds = [v for v in rows if v.get("first_cell_m") is not None]
+    out: dict = {}
+    if meds:
+        meds.sort(key=lambda v: float(v["first_cell_m"]))
+        c, half = 0.0, 0.5 * sum(float(v["area_m2"]) for v in meds)
+        for v in meds:
+            c += float(v["area_m2"])
+            if c >= half:
+                out["first_cell_m"] = float(v["first_cell_m"])
+                break
+    planned = [v for v in rows if v.get("planned_first_m")]
+    if planned:
+        p = float(planned[0]["planned_first_m"])
+        out["planned_first_m"] = p
+        out["area_at_plan_pct"] = round(100.0 * sum(float(v.get("area_at_plan") or 0.0) * float(v["area_m2"])
+                                                    for v in planned) / area, 2)
+        out["coverage_at_plan_pct"] = round(sum(float(v.get("coverage_at_plan_pct") or 0.0) * int(v["faces"])
+                                                for v in planned) / faces, 2)
+        if out.get("first_cell_m") is not None:
+            out["first_vs_plan"] = round(out["first_cell_m"] / p, 2)
+    return out
 
 
 def layer_census(polymesh, n_layers: int, patches) -> dict:
@@ -327,5 +439,6 @@ def requested_layers_for(workspace) -> tuple[int, int, int]:
     return (stated or in_dict), stated, in_dict
 
 
-__all__ = ["CENSUS_MAX_CELLS", "GROWTH_MAX", "census", "layer_census", "requested_layers",
-           "requested_layers_for", "stated_layers"]
+__all__ = ["CENSUS_MAX_CELLS", "GROWTH_MAX", "PLANNED_FIRST_IN", "PLAN_FIRST_TOL", "census", "height_quality",
+           "layer_census", "planned_first_of", "requested_layers", "requested_layers_for", "stated_layers",
+           "wall_summary"]

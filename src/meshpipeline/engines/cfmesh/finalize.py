@@ -33,7 +33,7 @@ def census_quality(ws: Path, intake_patches: list) -> dict:
     Willis) shipped with no figure at all. When layers were asked and the mesh cannot be
     measured, the record says why instead of saying nothing."""
     from meshpipeline.engines.ground_plane import is_ground
-    from meshpipeline.engines.layer_census import census, requested_layers_for
+    from meshpipeline.engines.layer_census import census, height_quality, planned_first_of, requested_layers_for
 
     target, stated, in_dict = requested_layers_for(ws)
     if target <= 0:
@@ -43,7 +43,7 @@ def census_quality(ws: Path, intake_patches: list) -> dict:
              and not is_ground(str(p.get("name")), "wall")]
     out: dict = {"layers_requested": target, "layers_stated": stated or None,
                  "layers_in_meshdict": in_dict}
-    per, why = census(ws / "constant" / "polyMesh", target, walls)
+    per, why = census(ws / "constant" / "polyMesh", target, walls, planned_first_m=planned_first_of(ws))
     if not per:
         out["layer_coverage_source"] = "unmeasured"
         out["layer_census_note"] = why or "no wall patch of the contract is in the mesh"
@@ -53,6 +53,13 @@ def census_quality(ws: Path, intake_patches: list) -> dict:
     out["layer_coverage_pct"] = round(sum(v["coverage_pct"] * v["faces"]
                                           for v in per.values()) / max(faces, 1), 2)
     out["layer_coverage_source"] = "census"
+    # CFDREQ-14: a layer is the one asked only at the height asked - the coverage is counted there, and the
+    # count by shape alone is kept beside it
+    tall = height_quality(per)
+    if tall.get("layer_coverage_basis") == "height":
+        out["layer_coverage_shape_pct"] = out["layer_coverage_pct"]
+        out["layer_coverage_pct"] = tall["layer_coverage_at_plan_pct"]
+    out.update(tall)
     out["layers_mean"] = round(sum(v["mean_layers"] * v["area_m2"] for v in per.values()) / area, 3)
     out["layer_area_full_pct"] = round(100.0 * sum(v["area_with_full_layers"] * v["area_m2"]
                                                    for v in per.values()) / area, 2)
@@ -63,7 +70,8 @@ def census_quality(ws: Path, intake_patches: list) -> dict:
             "area_with_full_layers": v["area_with_full_layers"],
             "area_with_any_layer": v["area_with_any_layer"],
             "layers_by_area": v["layers_by_area"], "first_layer_m": v["first_layer_m"],
-            "stack_m": v["stack_m"], "growth": v["growth"]}
+            "stack_m": v["stack_m"], "growth": v["growth"],
+            "first_cell_m": v.get("first_cell_m"), "area_at_plan": v.get("area_at_plan")}
         for n, v in per.items()}
     return out
 
@@ -136,7 +144,9 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
             for _k in ("layer_coverage_pct", "layer_coverage_source", "layer_census_note",
                        "per_patch_layers", "layers_mean", "layer_area_full_pct",
                        "layer_area_any_pct", "layers_requested", "layers_stated",
-                       "layers_in_meshdict"):
+                       "layers_in_meshdict", "layer_coverage_shape_pct", "layer_coverage_basis",
+                       "layer_first_planned_m", "layer_area_at_plan_pct", "layer_coverage_at_plan_pct",
+                       "layer_first_cell_m", "layer_first_vs_plan"):
                 q.pop(_k, None)
             q.update(census_quality(ws, intake_patches))
     except Exception:

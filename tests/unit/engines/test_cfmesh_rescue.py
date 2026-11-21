@@ -421,3 +421,38 @@ def test_the_native_run_rescues_only_a_near_edge_3d_mesh(tmp_path, monkeypatch, 
     assert seen[0]["deadline"] <= time.monotonic() + 1200 - (2 * 10.0 + N.POST_MESH_RESERVE_S) + 1
     assert N._rescued(tmp_path, {"max_non_ortho": 50.0}, bashrc="b", timing={}, t0=0.0,
                       timeout=1, is_2d=False) == {"max_non_ortho": 50.0}
+
+
+def test_a_candidate_that_loses_the_planned_layers_ranks_under_one_that_keeps_them(tmp_path):
+    """CFDREQ-14: cfMesh's optimiser smoothed the rectangular duct reduction's 0.020 mm first layer into a 1.72 mm
+    first cell (non-orthogonality 85.2 -> 52.6): a valid mesh with the layers asked is kept over it."""
+    ws = _ws(tmp_path)
+    calls: list = []
+    table = {"optimised(as built)": {"cells": 121_867, "max_non_ortho": 52.6, "fatal": []},
+             "remeshed": {"cells": 121_900, "max_non_ortho": 80.0, "fatal": []},
+             "optimised(remeshed)": {"cells": 121_900, "max_non_ortho": 50.0, "fatal": []}}
+    at_plan = {"as built": 96.0, "optimised(as built)": 0.0, "remeshed": 95.0, "optimised(remeshed)": 0.0}
+    out = RS.rescue(ws, {"cells": 121_867, "max_non_ortho": 85.2, "fatal": []}, bashrc="/dev/null",
+                    deadline=time.monotonic() + 3600.0, mesher_seconds=30.0, measure=_measure(table),
+                    runner=_runner(calls), env={},
+                    layers=lambda w: at_plan[(Path(w) / "constant" / "polyMesh" / "owner").read_text()])
+    assert out["rescue"]["kept"] == "re-meshed protecting the layers"
+    assert out["max_non_ortho"] == 80.0 and out["layer_area_at_plan_pct"] == 95.0
+    lost = [s for s in out["rescue"]["tried"] if s.get("layers_lost")]
+    assert [s["step"] for s in lost] == ["optimised", "re-meshed protecting the layers, then optimised"]
+
+
+def test_validity_still_comes_before_the_layers(tmp_path):
+    ws = _ws(tmp_path)
+    calls: list = []
+    table = {"optimised(as built)": {"cells": 979_224, "max_non_ortho": 70.2, "fatal": []}}
+    out = RS.rescue(ws, dict(_BROKEN), bashrc="/dev/null", deadline=time.monotonic() + 3600.0,
+                    mesher_seconds=30.0, measure=_measure(table), runner=_runner(calls), env={},
+                    layers=lambda w: {"as built": 90.0}.get(
+                        (Path(w) / "constant" / "polyMesh" / "owner").read_text(), 0.0))
+    assert out["rescue"]["kept"] == "optimised" and out["fatal"] == [] and out["layers_lost"] is True
+
+
+def test_with_no_planned_height_the_layers_are_not_read(tmp_path):
+    ws = _ws(tmp_path)
+    assert RS.layers_at_plan(ws) is None
