@@ -1,0 +1,5444 @@
+{
+ "files": {
+  "0051_00510245_d6a29ae5cc33fd205ca78797_step_006.step": {
+   "gclash": [],
+   "solids": 4
+  },
+  "0051_00512652_ed8fdd80f7f7326a74d8121a_step_000.step": {
+   "diag_mm": 2358.08,
+   "gclash": [
+    {
+     "faces": [
+      163,
+      484
+     ],
+     "hits": 750,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      138,
+      142
+     ],
+     "hits": 235,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      true,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      163,
+      165
+     ],
+     "hits": 194,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      165,
+      484
+     ],
+     "hits": 130,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      163,
+      485
+     ],
+     "hits": 66,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      138,
+      139
+     ],
+     "hits": 32,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      true,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      484,
+      485
+     ],
+     "hits": 30,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      139,
+      142
+     ],
+     "hits": 21,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      165,
+      485
+     ],
+     "hits": 19,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      624,
+      625
+     ],
+     "hits": 16,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      142,
+      149
+     ],
+     "hits": 12,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      138,
+      149
+     ],
+     "hits": 6,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      true,
+      false
+     ],
+     "kind": "crossing"
+    }
+   ],
+   "pairs": [
+    [
+     0.0789,
+     0
+    ],
+    [
+     0.0789,
+     0
+    ],
+    [
+     0.0,
+     1
+    ]
+   ],
+   "solids": 30
+  },
+  "0051_00513292_6e3672bfd0e7131c9cb91166_step_001.step": {
+   "gclash": [
+    {
+     "faces": [
+      64,
+      72
+     ],
+     "hits": 113,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      72,
+      76
+     ],
+     "hits": 112,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      64,
+      76
+     ],
+     "hits": 28,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      9,
+      17
+     ],
+     "hits": 11,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      18,
+      26
+     ],
+     "hits": 10,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      35,
+      45
+     ],
+     "hits": 2,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    }
+   ],
+   "solids": 7
+  },
+  "0051_00514530_5a0ae6a097e80d4ef8c19ccb_step_014.step": {
+   "gclash": [],
+   "solids": 1
+  },
+  "0051_00515603_589bb9e8e1c77e0ffe2fcb60_step_060.step": {
+   "gclash": [],
+   "solids": 8
+  },
+  "0051_00516262_7757cff43f3e94bff9abd7fc_step_000.step": {
+   "gclash": [],
+   "solids": 54
+  },
+  "0051_00517433_589cc43008d6170f75acb60a_step_003.step": {
+   "diag_mm": 3139.96,
+   "gclash": [
+    {
+     "faces": [
+      98,
+      99
+     ],
+     "hits": 88,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      28,
+      29
+     ],
+     "hits": 64,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      9,
+      10
+     ],
+     "hits": 61,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      121,
+      123
+     ],
+     "hits": 60,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      117,
+      118
+     ],
+     "hits": 55,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      122,
+      124
+     ],
+     "hits": 54,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      30,
+      31
+     ],
+     "hits": 51,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      271,
+      272
+     ],
+     "hits": 44,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      285,
+      286
+     ],
+     "hits": 44,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      299,
+      300
+     ],
+     "hits": 40,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      true
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      303,
+      304
+     ],
+     "hits": 38,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      291,
+      292
+     ],
+     "hits": 36,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    }
+   ],
+   "pairs": [
+    [
+     4.0,
+     0
+    ],
+    [
+     4.0,
+     0
+    ],
+    [
+     4.0,
+     0
+    ]
+   ],
+   "solids": 37
+  },
+  "0051_00518566_589d3c348d15660f8ee634aa_step_006.step": {
+   "gclash": [],
+   "solids": 1
+  },
+  "0051_00519054_aa655fcb4f653c388035aeb3_step_000.step": {
+   "diag_mm": 203.17,
+   "gclash": [
+    {
+     "faces": [
+      99,
+      113
+     ],
+     "hits": 2,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      99,
+      116
+     ],
+     "hits": 2,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      109,
+      114
+     ],
+     "hits": 2,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      109,
+      116
+     ],
+     "hits": 2,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    }
+   ],
+   "pairs": [
+    [
+     0.0102,
+     0
+    ],
+    [
+     0.0102,
+     0
+    ],
+    [
+     0.0103,
+     0
+    ]
+   ],
+   "solids": 1
+  },
+  "0051_00519732_589dc8aa5abe5e0fe4ada930_step_019.step": {
+   "diag_mm": 396.92,
+   "gclash": [
+    {
+     "faces": [
+      1126,
+      1341
+     ],
+     "hits": 11,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      1053,
+      1357
+     ],
+     "hits": 4,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    }
+   ],
+   "pairs": [
+    [
+     1.79,
+     0
+    ],
+    [
+     1.79,
+     0
+    ]
+   ],
+   "solids": 2
+  },
+  "0052_00520702_589e0c6497e5700f6ce179d1_step_000.step": {
+   "diag_mm": 5580.72,
+   "gclash": [
+    {
+     "faces": [
+      53,
+      56
+     ],
+     "hits": 16,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      947,
+      992
+     ],
+     "hits": 1,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    }
+   ],
+   "pairs": [
+    [
+     23.8,
+     0
+    ],
+    [
+     0.0,
+     1
+    ]
+   ],
+   "solids": 36
+  },
+  "0052_00520923_589e23522ec4e50f877ffd93_step_000.step": {
+   "gclash": [],
+   "solids": 7
+  },
+  "0052_00523121_d60ba5a2d4967a56c0268417_step_002.step": {
+   "diag_mm": 190.38,
+   "gclash": [
+    {
+     "faces": [
+      7,
+      10
+     ],
+     "hits": 102,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      7,
+      12
+     ],
+     "hits": 56,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    }
+   ],
+   "pairs": [
+    [
+     0.0,
+     1
+    ],
+    [
+     0.016,
+     0
+    ]
+   ],
+   "solids": 1
+  },
+  "0052_00523153_589f8ea68f96220f73d7cd3a_step_000.step": {
+   "diag_mm": 304.63,
+   "gclash": [
+    {
+     "faces": [
+      634,
+      663
+     ],
+     "hits": 40,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      940,
+      969
+     ],
+     "hits": 40,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      632,
+      663
+     ],
+     "hits": 23,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      938,
+      969
+     ],
+     "hits": 23,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      634,
+      664
+     ],
+     "hits": 16,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      940,
+      970
+     ],
+     "hits": 16,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      167,
+      173
+     ],
+     "hits": 2,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      206,
+      207
+     ],
+     "hits": 1,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      568,
+      573
+     ],
+     "hits": 1,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      573,
+      578
+     ],
+     "hits": 1,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      874,
+      879
+     ],
+     "hits": 1,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      1287,
+      1288
+     ],
+     "hits": 1,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    }
+   ],
+   "pairs": [
+    [
+     0.25,
+     0
+    ],
+    [
+     0.25,
+     0
+    ],
+    [
+     0.25,
+     0
+    ]
+   ],
+   "solids": 77
+  },
+  "0052_00523209_1519f83024d29ad8f5872d22_step_011.step": {
+   "diag_mm": 55.23,
+   "gclash": [
+    {
+     "faces": [
+      7,
+      20
+     ],
+     "hits": 318,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      true,
+      true
+     ],
+     "kind": "coplanar"
+    },
+    {
+     "faces": [
+      7,
+      19
+     ],
+     "hits": 51,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      true,
+      false
+     ],
+     "kind": "crossing"
+    }
+   ],
+   "pairs": [
+    [
+     0.0,
+     3
+    ],
+    [
+     0.0,
+     3
+    ]
+   ],
+   "solids": 1
+  },
+  "0052_00524237_6901150e0232e907a8a75413_step_000.step": {
+   "gclash": [],
+   "solids": 1
+  },
+  "0052_00524389_58a073408f0a0d0fd78a4df4_step_009.step": {
+   "diag_mm": 2070.72,
+   "gclash": [
+    {
+     "faces": [
+      42,
+      44
+     ],
+     "hits": 908,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      3,
+      24
+     ],
+     "hits": 252,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      58,
+      70
+     ],
+     "hits": 150,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      1,
+      5
+     ],
+     "hits": 136,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      19,
+      29
+     ],
+     "hits": 136,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      20,
+      28
+     ],
+     "hits": 120,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      43,
+      64
+     ],
+     "hits": 105,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      60,
+      68
+     ],
+     "hits": 103,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      51,
+      77
+     ],
+     "hits": 96,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      59,
+      69
+     ],
+     "hits": 94,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      14,
+      34
+     ],
+     "hits": 90,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      56,
+      72
+     ],
+     "hits": 90,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    }
+   ],
+   "pairs": [
+    [
+     1.59,
+     0
+    ],
+    [
+     1.59,
+     0
+    ],
+    [
+     1.59,
+     0
+    ]
+   ],
+   "solids": 2
+  },
+  "0052_00524418_58a073408f0a0d0fd78a4df4_step_038.step": {
+   "diag_mm": 800.13,
+   "gclash": [
+    {
+     "faces": [
+      null,
+      null
+     ],
+     "hits": 2240,
+     "in_kernel_region": [
+      null,
+      null
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      null,
+      null
+     ],
+     "hits": 2220,
+     "in_kernel_region": [
+      null,
+      null
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      null,
+      null
+     ],
+     "hits": 2049,
+     "in_kernel_region": [
+      null,
+      null
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      null,
+      null
+     ],
+     "hits": 2033,
+     "in_kernel_region": [
+      null,
+      null
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      null,
+      null
+     ],
+     "hits": 1836,
+     "in_kernel_region": [
+      null,
+      null
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      null,
+      null
+     ],
+     "hits": 1720,
+     "in_kernel_region": [
+      null,
+      null
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      null,
+      null
+     ],
+     "hits": 1674,
+     "in_kernel_region": [
+      null,
+      null
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      null,
+      null
+     ],
+     "hits": 1674,
+     "in_kernel_region": [
+      null,
+      null
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      null,
+      null
+     ],
+     "hits": 1655,
+     "in_kernel_region": [
+      null,
+      null
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      null,
+      null
+     ],
+     "hits": 1652,
+     "in_kernel_region": [
+      null,
+      null
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      null,
+      null
+     ],
+     "hits": 1604,
+     "in_kernel_region": [
+      null,
+      null
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      null,
+      null
+     ],
+     "hits": 1592,
+     "in_kernel_region": [
+      null,
+      null
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    }
+   ],
+   "pairs": [],
+   "solids": 1
+  },
+  "0052_00525049_34c0b0d64db2000d3c2dd391_step_001.step": {
+   "diag_mm": 864.07,
+   "gclash": [
+    {
+     "faces": [
+      2,
+      12
+     ],
+     "hits": 1,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      true,
+      true
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      2,
+      13
+     ],
+     "hits": 1,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      true,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      12,
+      15
+     ],
+     "hits": 1,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      true,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      13,
+      15
+     ],
+     "hits": 1,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    }
+   ],
+   "pairs": [
+    [
+     0.0,
+     1
+    ],
+    [
+     0.0,
+     1
+    ],
+    [
+     0.0,
+     1
+    ]
+   ],
+   "solids": 1
+  },
+  "0052_00528490_58a256af264a260f6f931a1c_step_009.step": {
+   "gclash": [],
+   "solids": 2
+  },
+  "0053_00531146_fb7c61decc1aac572dae28a5_step_000.step": {
+   "gclash": [],
+   "solids": 2
+  },
+  "0053_00534182_58a4a0d25aa7880fcd51d495_step_014.step": {
+   "diag_mm": 5529.88,
+   "gclash": [
+    {
+     "faces": [
+      123,
+      124
+     ],
+     "hits": 4,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      124,
+      125
+     ],
+     "hits": 2,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    }
+   ],
+   "pairs": [
+    [
+     1.02,
+     0
+    ],
+    [
+     0.0,
+     1
+    ]
+   ],
+   "solids": 9
+  },
+  "0053_00538211_d3d51222466b08c8cebde581_step_000.step": {
+   "gclash": [],
+   "solids": 1
+  },
+  "0054_00540003_58a70970ebf14d0f8e1ecbe7_step_001.step": {
+   "gclash": [
+    {
+     "faces": [
+      1,
+      16
+     ],
+     "hits": 1,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    }
+   ],
+   "solids": 1
+  },
+  "0054_00541511_58a7706b4c16e30fc59a4c0a_step_001.step": {
+   "gclash": [],
+   "solids": 1
+  },
+  "0054_00541681_58a7888ec04d5b0f8f5a4191_step_000.step": {
+   "diag_mm": 1523.26,
+   "gclash": [
+    {
+     "faces": [
+      377,
+      381
+     ],
+     "hits": 38,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      379,
+      381
+     ],
+     "hits": 30,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      249,
+      252
+     ],
+     "hits": 10,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      378,
+      381
+     ],
+     "hits": 4,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      26,
+      31
+     ],
+     "hits": 1,
+     "in_kernel_region": [
+      true,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    }
+   ],
+   "pairs": [
+    [
+     2.54,
+     0
+    ],
+    [
+     2.54,
+     0
+    ],
+    [
+     0.253,
+     0
+    ]
+   ],
+   "solids": 32
+  },
+  "0054_00541887_58a7bcd9ebf14d0f8e1fd397_step_000.step": {
+   "diag_mm": 367.83,
+   "gclash": [
+    {
+     "faces": [
+      null,
+      null
+     ],
+     "hits": 6,
+     "in_kernel_region": [
+      null,
+      null
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      null,
+      null
+     ],
+     "hits": 5,
+     "in_kernel_region": [
+      null,
+      null
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    }
+   ],
+   "pairs": [],
+   "solids": 3
+  },
+  "0054_00542291_bc85d19944ff20c72889635a_step_001.step": {
+   "gclash": [],
+   "solids": 2
+  },
+  "0054_00542558_58a86e32ebf14d0f8e204543_step_000.step": {
+   "gclash": [],
+   "solids": 62
+  },
+  "0054_00543832_58a91b37fe03b20f8dc22213_step_031.step": {
+   "gclash": [],
+   "solids": 1
+  },
+  "0054_00544687_3ad30c2bc6a6a25f0792746e_step_003.step": {
+   "diag_mm": 111.92,
+   "gclash": [
+    {
+     "faces": [
+      1,
+      7
+     ],
+     "hits": 4,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      1,
+      5
+     ],
+     "hits": 1,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    }
+   ],
+   "pairs": [
+    [
+     0.0,
+     1
+    ],
+    [
+     0.0,
+     2
+    ]
+   ],
+   "solids": 2
+  },
+  "0054_00544974_58a9cf917d8acd0fec4204df_step_075.step": {
+   "gclash": [],
+   "solids": 2
+  },
+  "0054_00546124_0c438639c0e1a181ff1b9165_step_000.step": {
+   "diag_mm": 682.69,
+   "gclash": [
+    {
+     "faces": [
+      491,
+      559
+     ],
+     "hits": 13,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      463,
+      762
+     ],
+     "hits": 10,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      464,
+      467
+     ],
+     "hits": 10,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      464,
+      763
+     ],
+     "hits": 10,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      467,
+      762
+     ],
+     "hits": 10,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      464,
+      466
+     ],
+     "hits": 2,
+     "in_kernel_region": [
+      true,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      466,
+      762
+     ],
+     "hits": 2,
+     "in_kernel_region": [
+      false,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      545,
+      557
+     ],
+     "hits": 2,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      545,
+      560
+     ],
+     "hits": 2,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      436,
+      491
+     ],
+     "hits": 1,
+     "in_kernel_region": [
+      true,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    }
+   ],
+   "pairs": [
+    [
+     0.0,
+     0
+    ],
+    [
+     0.0699,
+     0
+    ],
+    [
+     0.0699,
+     0
+    ]
+   ],
+   "solids": 19
+  },
+  "0054_00549281_58abb08adf34a20fd3e1ceea_step_005.step": {
+   "gclash": [],
+   "solids": 7
+  },
+  "0055_00552092_58acb08b0c5c6a0f76dae32b_step_000.step": {
+   "gclash": [],
+   "solids": 7
+  },
+  "0055_00552585_4f4e73c869b67fbace588c82_step_014.step": {
+   "gclash": [],
+   "solids": 3
+  },
+  "0055_00552769_58ad03c95d66201018a291a5_step_000.step": {
+   "gclash": [],
+   "solids": 1
+  },
+  "0055_00554074_58ad9b19b8d61e0f9751c2e5_step_018.step": {
+   "diag_mm": 800.13,
+   "gclash": [
+    {
+     "faces": [
+      null,
+      null
+     ],
+     "hits": 2067,
+     "in_kernel_region": [
+      null,
+      null
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      null,
+      null
+     ],
+     "hits": 2049,
+     "in_kernel_region": [
+      null,
+      null
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      null,
+      null
+     ],
+     "hits": 1996,
+     "in_kernel_region": [
+      null,
+      null
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      null,
+      null
+     ],
+     "hits": 1915,
+     "in_kernel_region": [
+      null,
+      null
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      null,
+      null
+     ],
+     "hits": 1801,
+     "in_kernel_region": [
+      null,
+      null
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      null,
+      null
+     ],
+     "hits": 1789,
+     "in_kernel_region": [
+      null,
+      null
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      null,
+      null
+     ],
+     "hits": 1651,
+     "in_kernel_region": [
+      null,
+      null
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      null,
+      null
+     ],
+     "hits": 1601,
+     "in_kernel_region": [
+      null,
+      null
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      null,
+      null
+     ],
+     "hits": 1547,
+     "in_kernel_region": [
+      null,
+      null
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      null,
+      null
+     ],
+     "hits": 1510,
+     "in_kernel_region": [
+      null,
+      null
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      null,
+      null
+     ],
+     "hits": 1494,
+     "in_kernel_region": [
+      null,
+      null
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      null,
+      null
+     ],
+     "hits": 1473,
+     "in_kernel_region": [
+      null,
+      null
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    }
+   ],
+   "pairs": [],
+   "solids": 1
+  },
+  "0055_00555293_58ade27b95b047102fdbb672_step_003.step": {
+   "gclash": [
+    {
+     "faces": [
+      118,
+      122
+     ],
+     "hits": 18,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      67,
+      71
+     ],
+     "hits": 16,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      84,
+      88
+     ],
+     "hits": 16,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      101,
+      105
+     ],
+     "hits": 16,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      135,
+      139
+     ],
+     "hits": 16,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      135,
+      141
+     ],
+     "hits": 16,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      150,
+      151
+     ],
+     "hits": 9,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      67,
+      73
+     ],
+     "hits": 2,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      84,
+      90
+     ],
+     "hits": 2,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      101,
+      107
+     ],
+     "hits": 2,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      118,
+      124
+     ],
+     "hits": 2,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      135,
+      138
+     ],
+     "hits": 2,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    }
+   ],
+   "solids": 42
+  },
+  "0055_00556136_4582f0631d4806b16300ab5d_step_029.step": {
+   "diag_mm": 401.61,
+   "gclash": [
+    {
+     "faces": [
+      60,
+      209
+     ],
+     "hits": 19,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      63,
+      209
+     ],
+     "hits": 19,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      67,
+      184
+     ],
+     "hits": 19,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      71,
+      184
+     ],
+     "hits": 19,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      266,
+      290
+     ],
+     "hits": 7,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      63,
+      64
+     ],
+     "hits": 4,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      273,
+      274
+     ],
+     "hits": 4,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      275,
+      276
+     ],
+     "hits": 4,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      231,
+      266
+     ],
+     "hits": 3,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      278,
+      279
+     ],
+     "hits": 3,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      13,
+      16
+     ],
+     "hits": 2,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      32,
+      205
+     ],
+     "hits": 2,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    }
+   ],
+   "pairs": [
+    [
+     3.47e-05,
+     0
+    ],
+    [
+     3.47e-05,
+     0
+    ],
+    [
+     3.47e-05,
+     0
+    ]
+   ],
+   "solids": 2
+  },
+  "0055_00556585_b7edb4698d5ebd4d0414ee58_step_000.step": {
+   "diag_mm": 355.14,
+   "gclash": [
+    {
+     "faces": [
+      3201,
+      3292
+     ],
+     "hits": 8,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      3222,
+      3271
+     ],
+     "hits": 6,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      3223,
+      3264
+     ],
+     "hits": 6,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    }
+   ],
+   "pairs": [
+    [
+     0.25,
+     0
+    ],
+    [
+     0.25,
+     0
+    ],
+    [
+     0.25,
+     0
+    ]
+   ],
+   "solids": 4
+  },
+  "0055_00558054_58af012822115e0f6fed324d_step_000.step": {
+   "gclash": [],
+   "solids": 2
+  },
+  "0055_00558065_58af018c22115e0f6fed338a_step_000.step": {
+   "gclash": [],
+   "solids": 2
+  },
+  "0055_00559057_fc74e77f65ed1bc5b615564b_step_002.step": {
+   "gclash": [],
+   "solids": 1
+  },
+  "0055_00559688_58af8b358115250f77535bca_step_000.step": {
+   "diag_mm": 148.27,
+   "gclash": [
+    {
+     "faces": [
+      35,
+      38
+     ],
+     "hits": 1,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      42,
+      96
+     ],
+     "hits": 1,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    }
+   ],
+   "pairs": [
+    [
+     0.0,
+     1
+    ],
+    [
+     0.0,
+     1
+    ]
+   ],
+   "solids": 2
+  },
+  "0056_00560158_e109691859269d825bcf07f3_step_000.step": {
+   "diag_mm": 575.06,
+   "gclash": [
+    {
+     "faces": [
+      16,
+      24
+     ],
+     "hits": 1,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    }
+   ],
+   "pairs": [
+    [
+     0.0,
+     1
+    ]
+   ],
+   "solids": 1
+  },
+  "0056_00562332_58b0dbdc2d323f0fe011cd29_step_000.step": {
+   "gclash": [],
+   "solids": 4
+  },
+  "0056_00563150_bfb0bbc21a3432efe402c01c_step_000.step": {
+   "diag_mm": 2380.57,
+   "gclash": [
+    {
+     "faces": [
+      11,
+      12
+     ],
+     "hits": 202,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      30,
+      31
+     ],
+     "hits": 171,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      7,
+      8
+     ],
+     "hits": 162,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      26,
+      27
+     ],
+     "hits": 144,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      34,
+      35
+     ],
+     "hits": 125,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      15,
+      16
+     ],
+     "hits": 106,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      true,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      3,
+      4
+     ],
+     "hits": 35,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      22,
+      23
+     ],
+     "hits": 35,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    }
+   ],
+   "pairs": [
+    [
+     2.5,
+     0
+    ],
+    [
+     2.5,
+     0
+    ],
+    [
+     2.5,
+     0
+    ]
+   ],
+   "solids": 12
+  },
+  "0056_00563775_58b1c04822f8670f75d960e4_step_000.step": {
+   "diag_mm": 129.53,
+   "gclash": [
+    {
+     "faces": [
+      75,
+      76
+     ],
+     "hits": 280,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      74,
+      76
+     ],
+     "hits": 114,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      74,
+      75
+     ],
+     "hits": 96,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      63,
+      65
+     ],
+     "hits": 79,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      63,
+      64
+     ],
+     "hits": 53,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      true
+     ],
+     "kind": "crossing"
+    }
+   ],
+   "pairs": [
+    [
+     0.0,
+     2
+    ],
+    [
+     0.0,
+     16
+    ],
+    [
+     3.55e-15,
+     10
+    ]
+   ],
+   "solids": 11
+  },
+  "0056_00564922_58b24ac13099da0f80a7a30d_step_023.step": {
+   "diag_mm": 82.48,
+   "gclash": [
+    {
+     "faces": [
+      2,
+      151
+     ],
+     "hits": 38,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      2,
+      150
+     ],
+     "hits": 12,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    }
+   ],
+   "pairs": [
+    [
+     4.78e-15,
+     1
+    ],
+    [
+     4.78e-15,
+     1
+    ]
+   ],
+   "solids": 1
+  },
+  "0056_00565056_7ac416400eb512cf32741fbb_step_000.step": {
+   "gclash": [],
+   "solids": 1
+  },
+  "0056_00565386_21196964b04a3b9381ec52d8_step_000.step": {
+   "diag_mm": 19276.75,
+   "gclash": [
+    {
+     "faces": [
+      100,
+      113
+     ],
+     "hits": 10,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      9,
+      100
+     ],
+     "hits": 2,
+     "in_kernel_region": [
+      false,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      19,
+      100
+     ],
+     "hits": 2,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      100,
+      116
+     ],
+     "hits": 2,
+     "in_kernel_region": [
+      true,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    }
+   ],
+   "pairs": [
+    [
+     25.4,
+     0
+    ],
+    [
+     25.4,
+     0
+    ],
+    [
+     25.4,
+     0
+    ]
+   ],
+   "solids": 1
+  },
+  "0056_00566285_b419f29b1306ad9db0e7b332_step_000.step": {
+   "diag_mm": 111.81,
+   "gclash": [
+    {
+     "faces": [
+      221,
+      387
+     ],
+     "hits": 70,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      true,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      169,
+      291
+     ],
+     "hits": 2,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      28,
+      100
+     ],
+     "hits": 1,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    }
+   ],
+   "pairs": [
+    [
+     0.022,
+     11
+    ],
+    [
+     0.0,
+     1
+    ],
+    [
+     0.0,
+     1
+    ]
+   ],
+   "solids": 2
+  },
+  "0056_00566662_58b365a28922001023aad325_step_000.step": {
+   "diag_mm": 348.95,
+   "gclash": [
+    {
+     "faces": [
+      3983,
+      3986
+     ],
+     "hits": 1,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      6067,
+      6198
+     ],
+     "hits": 1,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      6081,
+      6232
+     ],
+     "hits": 1,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    }
+   ],
+   "pairs": [
+    [
+     1.0,
+     0
+    ],
+    [
+     0.0,
+     1
+    ],
+    [
+     0.0,
+     7
+    ]
+   ],
+   "solids": 133
+  },
+  "0056_00566972_58b38ce056aab9102b0b9edf_step_018.step": {
+   "diag_mm": 306.99,
+   "gclash": [
+    {
+     "faces": [
+      138,
+      139
+     ],
+     "hits": 1,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    }
+   ],
+   "pairs": [
+    [
+     0.0,
+     1
+    ]
+   ],
+   "solids": 8
+  },
+  "0056_00569194_51c39c73f4130e8eeaf32fc9_step_000.step": {
+   "diag_mm": 5539.61,
+   "gclash": [
+    {
+     "faces": [
+      1,
+      24
+     ],
+     "hits": 15,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      true,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      24,
+      38
+     ],
+     "hits": 10,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      true
+     ],
+     "kind": "crossing"
+    }
+   ],
+   "pairs": [
+    [
+     0.0,
+     2
+    ],
+    [
+     0.0,
+     2
+    ]
+   ],
+   "solids": 1
+  },
+  "0057_00571046_439b9a6b6de2111ed087f9d5_step_000.step": {
+   "gclash": [],
+   "solids": 48
+  },
+  "0057_00571503_58b58780df48ba0f83581445_step_000.step": {
+   "diag_mm": 528.11,
+   "gclash": [
+    {
+     "faces": [
+      167,
+      182
+     ],
+     "hits": 2,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    }
+   ],
+   "pairs": [
+    [
+     0.0,
+     1
+    ]
+   ],
+   "solids": 8
+  },
+  "0057_00572171_c27bccd385a652d16525b869_step_000.step": {
+   "gclash": [],
+   "solids": 8
+  },
+  "0057_00573256_58b5ed6d217ef1105a9c93f2_step_001.step": {
+   "gclash": [],
+   "solids": 1
+  },
+  "0057_00573500_90145238c934a39e4c672ff5_step_000.step": {
+   "gclash": [],
+   "solids": 1
+  },
+  "0057_00574953_58b6aa80777c201050ea53f0_step_000.step": {
+   "gclash": [],
+   "solids": 6
+  },
+  "0057_00575402_45fad15cbdfec75d4fa7fb8c_step_003.step": {
+   "diag_mm": 1100.99,
+   "gclash": [
+    {
+     "faces": [
+      68,
+      69
+     ],
+     "hits": 18,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    }
+   ],
+   "pairs": [
+    [
+     1.0,
+     0
+    ]
+   ],
+   "solids": 7
+  },
+  "0057_00576325_58b708657a0d0a0fd1b73d82_step_000.step": {
+   "gclash": [],
+   "solids": 3
+  },
+  "0057_00578803_58b81a6ca3407110438e5a4d_step_000.step": {
+   "diag_mm": 257.82,
+   "gclash": [
+    {
+     "faces": [
+      980,
+      988
+     ],
+     "hits": 1,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    }
+   ],
+   "pairs": [
+    [
+     0.0,
+     1
+    ]
+   ],
+   "solids": 33
+  },
+  "0057_00578810_58b81b53777c201050ecf7b8_step_000.step": {
+   "diag_mm": 90955.35,
+   "gclash": [
+    {
+     "faces": [
+      40,
+      311
+     ],
+     "hits": 19,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      39,
+      311
+     ],
+     "hits": 14,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      412,
+      691
+     ],
+     "hits": 12,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      38,
+      311
+     ],
+     "hits": 3,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      214,
+      691
+     ],
+     "hits": 2,
+     "in_kernel_region": [
+      false,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      215,
+      691
+     ],
+     "hits": 2,
+     "in_kernel_region": [
+      false,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      436,
+      691
+     ],
+     "hits": 2,
+     "in_kernel_region": [
+      false,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    }
+   ],
+   "pairs": [
+    [
+     25.0,
+     0
+    ],
+    [
+     25.0,
+     0
+    ],
+    [
+     25.0,
+     0
+    ]
+   ],
+   "solids": 1
+  },
+  "0059_00590647_58bd9521be6d560f7d16dfe1_step_008.step": {
+   "diag_mm": 1037.79,
+   "gclash": [
+    {
+     "faces": [
+      9,
+      72
+     ],
+     "hits": 5,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      23,
+      554
+     ],
+     "hits": 5,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      71,
+      272
+     ],
+     "hits": 5,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      160,
+      561
+     ],
+     "hits": 5,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      189,
+      556
+     ],
+     "hits": 5,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      203,
+      558
+     ],
+     "hits": 5,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      224,
+      538
+     ],
+     "hits": 5,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      238,
+      539
+     ],
+     "hits": 5,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      254,
+      474
+     ],
+     "hits": 5,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      258,
+      475
+     ],
+     "hits": 5,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      262,
+      593
+     ],
+     "hits": 5,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      266,
+      468
+     ],
+     "hits": 5,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    }
+   ],
+   "pairs": [
+    [
+     0.0,
+     2
+    ],
+    [
+     0.0,
+     2
+    ],
+    [
+     0.0,
+     2
+    ]
+   ],
+   "solids": 1
+  },
+  "0059_00590755_f3b9e591c52447ac7441d9ad_step_034.step": {
+   "gclash": [],
+   "solids": 1
+  },
+  "0059_00591551_fe3784083f1e983830a7d134_step_000.step": {
+   "diag_mm": 474.66,
+   "gclash": [
+    {
+     "faces": [
+      871,
+      2056
+     ],
+     "hits": 15,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      157,
+      871
+     ],
+     "hits": 4,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    }
+   ],
+   "pairs": [
+    [
+     2.5,
+     0
+    ],
+    [
+     2.5,
+     0
+    ]
+   ],
+   "solids": 2
+  },
+  "0059_00591741_58bdcd238a110b0fc521ceac_step_003.step": {
+   "diag_mm": 3139.96,
+   "gclash": [
+    {
+     "faces": [
+      98,
+      99
+     ],
+     "hits": 88,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      9,
+      10
+     ],
+     "hits": 61,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      28,
+      29
+     ],
+     "hits": 60,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      117,
+      118
+     ],
+     "hits": 54,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      30,
+      31
+     ],
+     "hits": 52,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      121,
+      123
+     ],
+     "hits": 48,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      303,
+      304
+     ],
+     "hits": 43,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      299,
+      300
+     ],
+     "hits": 38,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      true
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      285,
+      286
+     ],
+     "hits": 36,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      33,
+      34
+     ],
+     "hits": 34,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      271,
+      272
+     ],
+     "hits": 34,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      276,
+      278
+     ],
+     "hits": 32,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    }
+   ],
+   "pairs": [
+    [
+     4.0,
+     0
+    ],
+    [
+     4.0,
+     0
+    ],
+    [
+     4.0,
+     0
+    ]
+   ],
+   "solids": 37
+  },
+  "0059_00592328_58be052560d0ea0f7c80053f_step_005.step": {
+   "gclash": [],
+   "solids": 1
+  },
+  "0059_00592781_58be5d61afe56e0fcdda08e3_step_000.step": {
+   "gclash": [],
+   "solids": 7
+  },
+  "0059_00592808_58be5f2c8ae1c71022dfbcab_step_018.step": {
+   "diag_mm": 56.98,
+   "gclash": [
+    {
+     "faces": [
+      9,
+      11
+     ],
+     "hits": 73,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      true,
+      false
+     ],
+     "kind": "crossing"
+    }
+   ],
+   "pairs": [
+    [
+     0.0508,
+     0
+    ]
+   ],
+   "solids": 1
+  },
+  "0059_00593840_171b4d6c6e9d741cc78ceb29_step_000.step": {
+   "gclash": [],
+   "solids": 1
+  },
+  "0059_00594517_58befc980e77410f785bf737_step_017.step": {
+   "diag_mm": 41.44,
+   "gclash": [
+    {
+     "faces": [
+      2,
+      31
+     ],
+     "hits": 274,
+     "in_kernel_region": [
+      false,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      3,
+      31
+     ],
+     "hits": 72,
+     "in_kernel_region": [
+      false,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      15,
+      31
+     ],
+     "hits": 66,
+     "in_kernel_region": [
+      false,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      14,
+      31
+     ],
+     "hits": 36,
+     "in_kernel_region": [
+      false,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    }
+   ],
+   "pairs": [
+    [
+     0.9,
+     1
+    ],
+    [
+     0.9,
+     1
+    ],
+    [
+     4.19e-15,
+     1
+    ]
+   ],
+   "solids": 1
+  },
+  "0059_00595955_58bf7c69acb579101e76c85f_step_000.step": {
+   "gclash": [],
+   "solids": 7
+  },
+  "0059_00596551_58bfee96878c091047181224_step_005.step": {
+   "gclash": [],
+   "solids": 1
+  },
+  "0060_00600919_cdc392391423974f704dd9d3_step_000.step": {
+   "diag_mm": 100.6,
+   "gclash": [
+    {
+     "faces": [
+      338,
+      894
+     ],
+     "hits": 85,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      337,
+      890
+     ],
+     "hits": 75,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      692,
+      894
+     ],
+     "hits": 29,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      693,
+      890
+     ],
+     "hits": 26,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      892,
+      894
+     ],
+     "hits": 23,
+     "in_kernel_region": [
+      false,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      359,
+      890
+     ],
+     "hits": 19,
+     "in_kernel_region": [
+      false,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    }
+   ],
+   "pairs": [
+    [
+     0.025,
+     0
+    ],
+    [
+     0.0249,
+     0
+    ],
+    [
+     0.024,
+     0
+    ]
+   ],
+   "solids": 8
+  },
+  "0060_00602382_58c1921b85eca50f97535179_step_000.step": {
+   "gclash": [],
+   "solids": 1
+  },
+  "0060_00602471_58c194c12ba3c10fd8da17b0_step_018.step": {
+   "diag_mm": 56.98,
+   "gclash": [
+    {
+     "faces": [
+      9,
+      11
+     ],
+     "hits": 284,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      true,
+      false
+     ],
+     "kind": "crossing"
+    }
+   ],
+   "pairs": [
+    [
+     0.0508,
+     0
+    ]
+   ],
+   "solids": 1
+  },
+  "0060_00602728_58c19cfaf072050f7b05ac46_step_006.step": {
+   "diag_mm": 934.18,
+   "gclash": [
+    {
+     "faces": [
+      107,
+      172
+     ],
+     "hits": 776,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      4,
+      5
+     ],
+     "hits": 614,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      59,
+      163
+     ],
+     "hits": 487,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      31,
+      161
+     ],
+     "hits": 259,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      76,
+      170
+     ],
+     "hits": 185,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      61,
+      171
+     ],
+     "hits": 153,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      32,
+      162
+     ],
+     "hits": 137,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      60,
+      117
+     ],
+     "hits": 31,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      4,
+      167
+     ],
+     "hits": 18,
+     "in_kernel_region": [
+      true,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      58,
+      112
+     ],
+     "hits": 16,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      4,
+      33
+     ],
+     "hits": 14,
+     "in_kernel_region": [
+      true,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      103,
+      114
+     ],
+     "hits": 14,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    }
+   ],
+   "pairs": [
+    [
+     1.0,
+     0
+    ],
+    [
+     1.05,
+     0
+    ],
+    [
+     1.0,
+     0
+    ]
+   ],
+   "solids": 1
+  },
+  "0060_00605837_58c2a84a9d8770102ad11aeb_step_000.step": {
+   "diag_mm": 56.92,
+   "gclash": [
+    {
+     "faces": [
+      315,
+      318
+     ],
+     "hits": 4,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    }
+   ],
+   "pairs": [
+    [
+     0.0151,
+     0
+    ]
+   ],
+   "solids": 13
+  },
+  "0060_00605911_61fb7466873d2658501e8adf_step_013.step": {
+   "diag_mm": 122.08,
+   "gclash": [
+    {
+     "faces": [
+      2,
+      751
+     ],
+     "hits": 25,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      196,
+      752
+     ],
+     "hits": 25,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      1,
+      744
+     ],
+     "hits": 24,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      195,
+      755
+     ],
+     "hits": 24,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      30,
+      744
+     ],
+     "hits": 5,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      30,
+      751
+     ],
+     "hits": 5,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      30,
+      752
+     ],
+     "hits": 5,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      30,
+      755
+     ],
+     "hits": 5,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    }
+   ],
+   "pairs": [
+    [
+     0.0,
+     1
+    ],
+    [
+     0.0,
+     1
+    ],
+    [
+     0.0,
+     1
+    ]
+   ],
+   "solids": 1
+  },
+  "0060_00607098_58c2e9fa96183b100cdedbc9_step_000.step": {
+   "diag_mm": 1120.0,
+   "gclash": [
+    {
+     "faces": [
+      556,
+      561
+     ],
+     "hits": 10,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    }
+   ],
+   "pairs": [
+    [
+     0.0,
+     3
+    ]
+   ],
+   "solids": 22
+  },
+  "0060_00608235_658edab916446ef507d4b745_step_000.step": {
+   "diag_mm": 155.86,
+   "gclash": [
+    {
+     "faces": [
+      7,
+      11
+     ],
+     "hits": 8,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      11,
+      178
+     ],
+     "hits": 5,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      26,
+      27
+     ],
+     "hits": 2,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      13,
+      30
+     ],
+     "hits": 1,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      13,
+      52
+     ],
+     "hits": 1,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    }
+   ],
+   "pairs": [
+    [
+     0.109,
+     0
+    ],
+    [
+     0.0,
+     1
+    ],
+    [
+     0.0,
+     1
+    ]
+   ],
+   "solids": 1
+  },
+  "0060_00608290_03bd4ca010ce5f1747b235cb_step_000.step": {
+   "diag_mm": 340.79,
+   "gclash": [
+    {
+     "faces": [
+      43,
+      57
+     ],
+     "hits": 2,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      43,
+      60
+     ],
+     "hits": 2,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      44,
+      58
+     ],
+     "hits": 2,
+     "in_kernel_region": [
+      false,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      44,
+      60
+     ],
+     "hits": 2,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    }
+   ],
+   "pairs": [
+    [
+     1.46,
+     0
+    ],
+    [
+     1.46,
+     0
+    ],
+    [
+     1.46,
+     0
+    ]
+   ],
+   "solids": 4
+  },
+  "0060_00608308_06e54a229dc6b5842907c559_step_000.step": {
+   "gclash": [],
+   "solids": 14
+  },
+  "0061_00610830_c8a8482ac7fc8d65e129f4b9_step_012.step": {
+   "diag_mm": 159.72,
+   "gclash": [
+    {
+     "faces": [
+      113,
+      null
+     ],
+     "hits": 8,
+     "in_kernel_region": [
+      true,
+      null
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      47,
+      113
+     ],
+     "hits": 5,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      92,
+      113
+     ],
+     "hits": 2,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      47,
+      122
+     ],
+     "hits": 1,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      93,
+      113
+     ],
+     "hits": 1,
+     "in_kernel_region": [
+      true,
+      true
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      122,
+      null
+     ],
+     "hits": 1,
+     "in_kernel_region": [
+      true,
+      null
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    }
+   ],
+   "pairs": [
+    [
+     0.0252,
+     0
+    ],
+    [
+     0.0,
+     1
+    ]
+   ],
+   "solids": 4
+  },
+  "0061_00613012_17de7149a219c6737b5ca7a4_step_005.step": {
+   "gclash": [],
+   "solids": 1
+  },
+  "0061_00613017_71cda8dae2c4f5aac28eee3d_step_000.step": {
+   "diag_mm": 1554.97,
+   "gclash": [
+    {
+     "faces": [
+      307,
+      null
+     ],
+     "hits": 225,
+     "in_kernel_region": [
+      false,
+      null
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      296,
+      null
+     ],
+     "hits": 207,
+     "in_kernel_region": [
+      false,
+      null
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      297,
+      null
+     ],
+     "hits": 191,
+     "in_kernel_region": [
+      false,
+      null
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      297,
+      null
+     ],
+     "hits": 187,
+     "in_kernel_region": [
+      false,
+      null
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      311,
+      null
+     ],
+     "hits": 178,
+     "in_kernel_region": [
+      false,
+      null
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      318,
+      null
+     ],
+     "hits": 166,
+     "in_kernel_region": [
+      false,
+      null
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      314,
+      null
+     ],
+     "hits": 164,
+     "in_kernel_region": [
+      false,
+      null
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      299,
+      null
+     ],
+     "hits": 161,
+     "in_kernel_region": [
+      false,
+      null
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      312,
+      null
+     ],
+     "hits": 160,
+     "in_kernel_region": [
+      false,
+      null
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      317,
+      null
+     ],
+     "hits": 159,
+     "in_kernel_region": [
+      false,
+      null
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      null,
+      315
+     ],
+     "hits": 156,
+     "in_kernel_region": [
+      null,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      310,
+      null
+     ],
+     "hits": 156,
+     "in_kernel_region": [
+      false,
+      null
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    }
+   ],
+   "pairs": [],
+   "solids": 5
+  },
+  "0061_00614360_58c6e8753db3a90f77d48d0d_step_022.step": {
+   "gclash": [],
+   "solids": 1
+  },
+  "0061_00614831_e9896ac18a39b505f6c42a0e_step_000.step": {
+   "diag_mm": 3052.09,
+   "gclash": [
+    {
+     "faces": [
+      182,
+      224
+     ],
+     "hits": 2,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      182,
+      233
+     ],
+     "hits": 2,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      182,
+      215
+     ],
+     "hits": 1,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      182,
+      217
+     ],
+     "hits": 1,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      182,
+      230
+     ],
+     "hits": 1,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      182,
+      239
+     ],
+     "hits": 1,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    },
+    {
+     "faces": [
+      182,
+      240
+     ],
+     "hits": 1,
+     "in_kernel_region": [
+      false,
+      false
+     ],
+     "in_probe_located": [
+      false,
+      false
+     ],
+     "kind": "crossing"
+    }
+   ],
+   "pairs": [
+    [
+     0.0,
+     1
+    ],
+    [
+     0.0,
+     1
+    ],
+    [
+     0.0,
+     1
+    ]
+   ],
+   "solids": 1
+  },
+  "0061_00615780_58c74e07349ddb0fd21fa54d_step_000.step": {
+   "gclash": [],
+   "solids": 7
+  }
+ },
+ "source": "lane G clash scan (PR #495 method), wave-1 overlap/PLC files; pairs = [brep_distance_mm, section_edges] for the top 3 clash pairs; probe mesh size = diag_mm/40"
+}
