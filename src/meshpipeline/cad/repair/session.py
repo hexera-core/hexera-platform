@@ -742,10 +742,19 @@ class RepairSession:
             budget = min(budget, float(cap_s))
         # `remaining` is checked as well as `budget`: `min` would pass a NaN over for the timeout.
         if not (remaining > 0.0 and budget > 0.0):
+            skipped = mesh_probe._unlocated(mesh_probe.MeshFailure(  # noqa: SLF001
+                mesh_probe.TIMEOUT, (), None,
+                "the mesh probe was skipped: no time was left to run it"))
             if not self._mesh_probed:
-                return (*found, mesh_probe._unlocated(mesh_probe.MeshFailure(  # noqa: SLF001
-                    mesh_probe.TIMEOUT, (), None,
-                    "the mesh probe was skipped: no time was left to run it")))
+                return (*found, skipped)
+            if within is None:
+                # A SKIPPED WHOLE-SHAPE PROBE IS NO ANSWER, and says so exactly as one that timed
+                # out does: the carried findings are stale, so the list carries the marker too,
+                # and `loop.definitive_mesh_failure` never reads them as a fresh refusal
+                # (Greptile P1, #505/#520).
+                carried = tuple(d for d in self._carried(None)
+                                if d.code not in mesh_probe.NO_ANSWER_CODES)
+                return (*found, *carried, skipped)
             return (*found, *self._carried(within))
         self._mesh_probed = True
         # Looked up on the module AT CALL TIME, so a test patching `mesh_probe.mesh_defects` is
