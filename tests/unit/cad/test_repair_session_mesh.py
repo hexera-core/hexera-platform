@@ -1045,7 +1045,8 @@ def test_the_keep_rule_is_the_delivered_probe_read_as_a_boolean(monkeypatch):
     assert len(calls) == 3
 
 
-def _review_with_slow_delivered_probe(monkeypatch, *, tier):
+def _review_with_slow_delivered_probe(monkeypatch, *, tier, delivered=(), region=None,
+                                      seen=None):
     """`_review` with a run of 40 s left and a delivered probe that spends 18 s of it. Returns
     the session's `_review` output and the deadline handed to the reviewer call."""
     from types import SimpleNamespace
@@ -1059,12 +1060,15 @@ def _review_with_slow_delivered_probe(monkeypatch, *, tier):
 
     def _slow_delivered(*, cap_s=None):
         now[0] += 18.0
-        return ()
+        return delivered
 
     monkeypatch.setattr(session, "_delivered_defects", _slow_delivered)
-    monkeypatch.setattr(package_review, "evidence_of", lambda *a, **k: {})
+    seen = {} if seen is None else seen
+    monkeypatch.setattr(package_review, "evidence_of",
+                        lambda *a, **k: seen.setdefault("evidence_kw", k) and {})
+    monkeypatch.setattr(package_review, "probe_of",
+                        lambda found, *, mesh_probed: {"found": tuple(found)})
     monkeypatch.setattr(package_review, "clip_evidence", lambda e: e)
-    seen: dict = {}
 
     def _objection(evidence, *, timeout_s, deadline_s, clock):
         seen["deadline_s"] = deadline_s
@@ -1073,7 +1077,8 @@ def _review_with_slow_delivered_probe(monkeypatch, *, tier):
     monkeypatch.setattr(package_review, "review_package_objection", _objection)
     side = SimpleNamespace(to_dict=lambda: {})
     out = session._review(
-        SimpleNamespace(region=SimpleNamespace(index=0)), [], (), (), whole=True,
+        SimpleNamespace(region=region or SimpleNamespace(index=0)), [], (), (),
+        whole=region is None,
         before=side, after=side,
         declared=SimpleNamespace(declared_area_mm2=0.0, declared_volume_mm3=0.0),
         deviation={}, tier=getattr(review_tier, tier))
@@ -1094,3 +1099,17 @@ def test_an_auto_accept_records_the_seconds_its_delivered_probe_spent(monkeypatc
     out, _ = _review_with_slow_delivered_probe(monkeypatch, tier="AUTO")
     assert out["reviewed"] == "accept"
     assert out["review_s"] == pytest.approx(18.0)
+
+
+def test_a_scoped_review_reads_the_delivered_probe_in_the_regions_scope(monkeypatch):
+    """`mesh_before` is the region's reading, so `mesh_after` must be too. Another region's
+    standing failure in the WHOLE-PART delivered probe would otherwise reach the reviewer as if
+    this package had caused it, and a valid repair would be undone for a defect it never touched."""
+    elsewhere = EntityDefect(
+        code=DefectCode.mesh_edge_through_face, severity=DefectSeverity.error,
+        entity_type="face", entity_index=17, message="far away", fingerprint="face:f17",
+        location={"centroid": [150.0] * 3, "bbox_min": [149.0] * 3, "bbox_max": [151.0] * 3})
+    seen: dict = {}
+    _review_with_slow_delivered_probe(monkeypatch, tier="REVIEWER", region=_REGION,
+                                      delivered=(_OVERLAP, elsewhere), seen=seen)
+    assert seen["evidence_kw"]["delivered"] == {"found": (_OVERLAP,)}

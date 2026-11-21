@@ -1613,6 +1613,12 @@ class RepairSession:
         delivered_probe = None
         if mesh_probed:
             found_delivered = self._delivered_defects()
+            if found_delivered is not None and not whole:
+                # ONE SCOPE ON BOTH SIDES. The delivered probe reads the whole part; `was` (the
+                # region's mesh_before) was cut to the region above, so this is cut by the same
+                # rule - or another region's standing failure reads as this package's doing.
+                found_delivered = tuple(scoped_to(found_delivered, package.region,
+                                                  diagonal_mm=self.original.diagonal_mm))
             if found_delivered is not None:
                 delivered_probe = package_review.probe_of(found_delivered,
                                                           mesh_probed=True)
