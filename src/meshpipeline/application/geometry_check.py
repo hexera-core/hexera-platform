@@ -1412,6 +1412,12 @@ def vet_by_map(facts: dict, imap) -> None:
     from meshpipeline.cad.inside_space import MIN_ACROSS
     if not imap.passages():
         return
+    # INS-15: a part read as a body (not as the fluid itself) whose map finds space inside it - or read as
+    # the fluid, while the space inside it that opens to the outside is more than its own volume: a vessel's
+    # wall round its contents, not a body of fluid with a hole in it
+    body = str(facts.get("input_kind") or "") != "fluid-domain" or \
+        sum(p.volume for p in imap.passages()) > imap.enclosed_volume
+    solid_ends = 0
     for o in facts.get("openings") or []:
         if o.get("role") not in ("inlet", "outlet"):
             continue
@@ -1426,6 +1432,19 @@ def vet_by_map(facts: dict, imap) -> None:
             facts.setdefault("notes", []).append(
                 f"opening {o.get('id')} ({o.get('name')}) is proposed as not an opening: it is a step inside the "
                 "passage, and the space beyond it is the part's own inside, not the outside")
+            continue
+        # INS-15: A FLAT END NO SPACE REACHES is no opening of the space inside a body: behind it is the
+        # part's own material all the way (a solid rod stub's end on a cup's side), so the fluid inside
+        # the part never gets there. The part's inside opens where its map's mouths are (map_openings).
+        if body and o.get("kind") == "disc" and all(
+                w == "shell" for w in imap.where([c - k * imap.h * n for k in (2.0, 3.0, 4.5)])):
+            o["role"] = "not_an_opening"
+            solid_ends += 1
+    if solid_ends:
+        facts.setdefault("notes", []).append(
+            f"{solid_ends} flat end(s) of solid material are proposed as not openings: no space inside the part "
+            "reaches them, so the fluid inside it could never get there; the space inside it opens where its "
+            "inside-space map finds mouths (INS-15)")
     kept = [o for o in facts.get("openings") or [] if o.get("role") in ("inlet", "outlet")]
     if kept and not any(o.get("role") == "inlet" for o in kept):
         max(kept, key=lambda o: float(o.get("area_mm2") or 0.0))["role"] = "inlet"

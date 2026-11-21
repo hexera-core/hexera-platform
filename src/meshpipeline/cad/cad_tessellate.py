@@ -728,6 +728,76 @@ def _fluid_union(shape, solids: list, declared_ports: list):
         return shape, solids, []
 
 
+def _facing(n) -> str:
+    """A direction in words: the axis it runs along ("+z"), or the vector when it runs along none."""
+    k = max(range(3), key=lambda i: abs(n[i]))
+    if abs(n[k]) >= 0.9:
+        return f"{'+' if n[k] > 0 else '-'}{'xyz'[k]}"
+    return "(" + ", ".join(f"{v:.2f}" for v in n) + ")"
+
+
+def _check_skin(geom_path, prepared):
+    """The part's skin exactly as the geometry check draws it (cad/scout.write_view_stl, metres, each face
+    wound outward), as triangles (n, 3, 3): the inside map read on it is the map the proposal was made from."""
+    import tempfile
+
+    import numpy as np
+
+    from meshpipeline.cad.scout import write_view_stl
+    from meshpipeline.cad.stl_io import read_stl_triangles
+    with tempfile.TemporaryDirectory() as tmp:
+        skin = write_view_stl(Path(geom_path), Path(tmp) / "skin.stl", prepared=prepared)
+        return np.asarray(read_stl_triangles(skin), dtype=float).reshape(-1, 3, 3)
+
+
+def mouths_the_ports_miss(tris, ports: list) -> list[dict] | None:
+    """INS-16: THE DECLARED DISC PORTS HELD TO THE INSIDE MAP. `tris` is the solid's skin (n, 3, 3) in
+    metres; `ports` one (centroid, outward normal, radius) per declared port, each a flat disc of the solid.
+    When the map finds space inside the part that opens to the outside (a passage with its mouths) and no
+    port is one of those mouths, the mouths are returned - each {centroid_mm, normal, diameter_mm} - for the
+    refusal to offer; else None (no passage: the solid may be the fluid itself, a rod the user called a body;
+    or a port is a mouth). A mouth is a port's when it faces the same way within the port's footprint."""
+    import numpy as np
+
+    from meshpipeline.cad.inside_space import read_inside_or_none
+    from meshpipeline.cad.open_ends import surface
+
+    mesh = surface(tris)
+    imap = read_inside_or_none(mesh) if mesh is not None else None
+    if imap is None:
+        return None
+    mouths = [m for m in imap.mouths if any(imap.pockets[p].passage for p in m.pockets)]
+    if not mouths:
+        return None
+    for c, n, r in ports:
+        c, n = np.asarray(c, dtype=float), np.asarray(n, dtype=float)
+        for m in mouths:
+            reach = max(float(r), 0.5 * m.diameter) + 2.0 * imap.h
+            rel = np.asarray(m.centroid, dtype=float) - c
+            along = float(rel @ n)
+            lateral = float(np.linalg.norm(rel - along * n))
+            if float(np.asarray(m.normal) @ n) >= 0.7 and lateral <= reach and abs(along) <= reach:
+                return None
+    mouths.sort(key=lambda m: -m.area)
+    return [{"centroid_mm": [round(float(v) * 1000.0, 1) + 0.0 for v in m.centroid],     # never a "-0"
+             "normal": [round(float(v), 3) for v in m.normal],
+             "diameter_mm": round(m.diameter * 1000.0, 1)} for m in mouths]
+
+
+def ports_miss_the_inside(names: list[str], mouths: list[dict]) -> str:
+    """INS-16: the refusal, in the user's words, with the map's mouths as the way on."""
+    where = "; ".join(f"a {m['diameter_mm']:g} mm opening at ({', '.join(f'{v:g}' for v in m['centroid_mm'])}) mm "
+                      f"facing {_facing(m['normal'])}" for m in mouths[:6])
+    more = f" and {len(mouths) - 6} more" if len(mouths) > 6 else ""
+    one = len(mouths) == 1
+    return (f"the declared openings ({', '.join(names)}) are flat ends of solid material: no space inside the part "
+            f"reaches them, so there is no fluid behind them to mesh. The space inside this part opens at "
+            f"{len(mouths)} place{'' if one else 's'}: {where}{more}. "
+            + ("With only one opening the fluid has no way through the part: if the flow goes around it, run it as "
+               "flow around the part; if it goes through, mark its real inlet and outlet on the picture."
+               if one else "Mark the inlet and outlets there on the picture, then run again."))
+
+
 def _tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection: float = 0.2,
                         linear_deflection: float | None = None,
                         opening_faces: list[int] | None = None,
@@ -1487,6 +1557,26 @@ def _tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflectio
         # point is its metal or the open air) and is seeded in the solid as before.
         interior = _capped_cavity()
         cavity_seeded = interior is not None
+    if interior is None and fluid_solid is not True and not port_bored and (
+            fluid_solid is False or _capped_cavity() is None):
+        # INS-16: DISC PORTS THE INSIDE NEVER REACHES. A body whose declared ports are all flat discs of its
+        # solid, with no cavity behind them, would be seeded in its own metal below - right for a rod the
+        # user called a body (no space inside it at all), wrong for a part with space inside that opens
+        # elsewhere: an open cup with solid rod stubs, its stubs' ends declared, was meshed as its metal for
+        # hours (the siphoned box). When the inside map finds such space and no declared port is one of its
+        # mouths, the declaration is refused with the mouths offered as the way on.
+        def _out_normal(f):
+            ax = BRepAdaptor_Surface(f).Plane().Axis().Direction()
+            n = [ax.X(), ax.Y(), ax.Z()]
+            return [-v for v in n] if f.Orientation() == TopAbs_REVERSED else n
+        frames = []
+        for pi in (inlet_i, *outlet_ids):
+            area, c = _face_props(faces[pi])
+            frames.append((c, _out_normal(faces[pi]), _m.sqrt(max(area, 0.0) / _m.pi)))
+        missed = mouths_the_ports_miss(_check_skin(geom_path, prepared), frames)
+        if missed:
+            from meshpipeline.engines.port_binding import BindError
+            raise BindError(ports_miss_the_inside(["inlet", *outlet_names], missed))
     if not hollow_wall and interior is None:
         # Candidates, cheapest-first: each solid's volume centroid, then each port centroid nudged
         # inward along its (oriented) normal.
