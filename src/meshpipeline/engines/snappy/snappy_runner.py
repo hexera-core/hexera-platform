@@ -1738,6 +1738,29 @@ mergeTolerance 1e-6; debug 0;
                                                          for k, n in names.items() if k != wall_key]))
         _ask.write(ws)
     (ws / "system" / "snappyHexMeshDict").write_text(_shm)
+    # WHERE THE CELLS WILL GO (engines/snappy/cell_record, rulebook 75): every refinement this dict
+    # asks for, with its level and the rule behind it; the mesher's log says what each level cost
+    from meshpipeline.engines.snappy import cell_record as CRec
+
+    def _cell(lv: int) -> float:
+        return base_actual / (2 ** lv)
+    _plan = [CRec.entry("wall", smin, "cells across the bore (the plan's cells_across_diameter)",
+                        cell_m=_cell(smin)),
+             CRec.entry("seed bubble", smin, "INS-4", cell_m=_cell(smin)),
+             CRec.entry("feature edges", flevel, "feature edges (includedAngle 30)", cell_m=_cell(flevel))]
+    if near_dist > 0.0:
+        _plan.append(CRec.entry("near-wall band", near_level, "near-wall band (8 wall cells deep)",
+                                cell_m=_cell(near_level)))
+    for p in names:
+        if p != wall_key:
+            _lv = port_lvls.get(p, port_level)
+            _plan.append(CRec.entry(f"opening {names[p]}", _lv, "PLAN-cfd-2", cell_m=_cell(_lv)))
+    for _r in [*_thin, *_dist]:
+        _lv = min(_HARD_MAX_LEVEL, smin + int(_r.get("level_bump", 1)))
+        _thin_plate = "thinnest_m" in _r
+        _plan.append(CRec.entry("thin plates" if _thin_plate else "narrow passages", _lv,
+                                "thin-feature probe" if _thin_plate else "PLAN-cfd-1", cell_m=_cell(_lv)))
+    CRec.write_plan(ws, _plan, base_cell_m=base_actual, n_layers=n_layers, max_cells=max_cells)
     return {"divisions": div, "surface_level": [smin, smax], "feature_level": flevel,
             "near_band_m": round(near_dist, 6), "near_band_level": near_level,
             "location_in_mesh": [round(x, 9) for x in location], "max_cells": max_cells,

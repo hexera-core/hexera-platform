@@ -138,6 +138,10 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
         # set aside names how many places, the narrowest and the cells that would resolve them
         from meshpipeline.engines.gap_sizing import quality_plan
         q.update(quality_plan(ws))
+        # ...and where its cells went, by the refinement and the rule that asked for them
+        # (engines/snappy/cell_record): how a mesh shows it is not over-spent (rulebook 75)
+        from meshpipeline.engines.snappy.cell_record import of_workspace as _cells_of
+        q.update(_cells_of(ws))
     # NEAR-WALL PRISM LAYER COVERAGE - a MEASURED number, not a visual: a ~1e-4 m layer band
     # on a metre-scale body is invisible in any whole-body render, so the reviewer must judge
     # the layer axis from this figure (it otherwise mistook an unresolvable near-wall region

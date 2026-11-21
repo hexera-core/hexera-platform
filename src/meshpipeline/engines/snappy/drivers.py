@@ -1948,6 +1948,40 @@ def _near_band(gated: dict | None, R, *, wall_cell: float, budget_cells: float, 
     return (depth, note, True) if note else (default, "", False)
 
 
+#: The thickest wall-function first layer, as a share of the cell it grows into, that leaves the cell
+#: behind it no thinner than the layer itself. snappyHexMesh makes room for a layer by pushing the
+#: snapped wall into its first cell, so a layer of share s leaves that cell (1 - s): on the CFD board's
+#: tube bank a 1.48 mm layer in 2.47 mm band cells (0.6) left the next cell 0.96 mm at the median and
+#: 0.36 mm at the 5th percentile - thinner than the layer on 49% of the wall (20 Nov).
+WALL_FUNCTION_BAND_SHARE = 0.4
+
+
+def _wall_function_band_off(ask, *, wall_cell: float, bore_D: float) -> str:
+    """Why this pass has no near-wall band, or "" to keep it (rulebook 75). A wall-function first
+    layer (CFDREQ-13's, its height as that rule works it out - from the conditions' y+, or the
+    user's own) more than WALL_FUNCTION_BAND_SHARE of the band's cells (half the wall cell) grows
+    into the wall cell instead: the band is a cells-across tool, and the narrow passages that need
+    finer cells get them from the gap plan, sized at the cell the wall then has."""
+    if ask is None or getattr(ask, "treatment", None) != "functions" or wall_cell <= 0.0:
+        return ""
+    try:
+        h = ask.first_m
+        if h is None and ask.y_plus is not None:
+            from meshpipeline.engines.cfd_requirements import y_plus_height
+            h, _missing, how = y_plus_height(float(ask.y_plus), ask.req.get("physics"),
+                                             length_m=bore_D, length_from="the bore")
+            if how.get("laminar"):
+                return ""
+        if h is None or float(h) <= WALL_FUNCTION_BAND_SHARE * 0.5 * wall_cell:
+            return ""
+    except Exception:  # noqa: BLE001 - a band we cannot judge stays as planned
+        logger.warning("near-wall band: the wall-function first layer was not read", exc_info=True)
+        return ""
+    return (f"no near-wall band: a wall-function first layer about {_mm(float(h))} high would squash "
+            f"the {_mm(0.5 * wall_cell)} band cells it grows into, so it grows into the "
+            f"{_mm(wall_cell)} wall cells; narrow passages keep their own refinement")
+
+
 #: A mesh whose wall is under the floor on more than this share of its points is coarse as a
 #: whole: the retry refines the part, not boxes round most of it.
 LOCAL_RETRY_MAX_SHARE = 0.5
@@ -2517,6 +2551,13 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
             _gated_plan if _local is not None else None, R, wall_cell=_wall_cell,
             budget_cells=_budget, n_layers=n_layers, field=_passage_field, wall_stl=_wall_stl,
             bore_D=bore_D, t=t)
+        if _band_m > 0.0 and not (_local is not None and _gated_plan):
+            # ...unless a WALL-FUNCTION first layer would squash the band's cells (rulebook 75): it
+            # grows into the wall's own cells instead, and the narrow passages keep their cells
+            # across by their own refinement (the gap plan below is sized at that cell)
+            _off = _wall_function_band_off(_ask, wall_cell=_wall_cell, bore_D=float(bore_D))
+            if _off:
+                _band_m, _band_note, _band_set = 0.0, _off, True
         if _band_note:
             logger.info("internal pass %d: %s - job_id=%s", attempt, _band_note, job_id)
         _near_cell = _wall_cell / 2.0 if _band_m > 0.0 else _wall_cell
