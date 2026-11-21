@@ -177,8 +177,13 @@ def test_shadow_leaves_shape_bytes_identical(scripted, monkeypatch):
     assert "unknown tool 'edit'" in turns["edit"]["error"]
     # NO CLONE WAS EVER MADE, so there is no edit log and nothing to replay.
     assert record["edits"] == []
-    # AND THE ROSTER THE MODEL SAW WAS READ-ONLY.
-    assert script.handed[0] == inv._read_only_names()
+    # AND THE ROSTER THE MODEL SAW WAS READ-ONLY, plus `conclude`. `conclude` is the driver's own
+    # tool, not one of the registry's, and is declared on the native transport since bc88c9f9
+    # ("declare conclude as a tool", squashed into #494): an undeclared `conclude` left a native
+    # model no way to finish, and a live run made 16 tool calls over 3 regions without one
+    # conclusion. It edits nothing, so the roster is still read-only. The unit tier pins the same
+    # list (test_repair_investigator_shadow.py::test_the_shadow_hands_the_model_only_the_read_only_schemas).
+    assert script.handed[0] == (*inv._read_only_names(), "conclude")
 
     # THE BYTES. Read-only tools on the real kernel, and the part is untouched.
     assert _brep(session.shape) == before
