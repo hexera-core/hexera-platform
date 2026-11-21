@@ -126,7 +126,8 @@ def render(report: dict) -> str:
             ("gmsh defaults (secondary): newly meshing", "newly_meshes_gmsh_default"),
             ("newly broken (default settings)", "newly_broken_default"),
             ("valid -> invalid (delivered file)", "valid_to_invalid"),
-            ("returned unchanged (passthrough)", "source_passthrough"),
+            ("returned unchanged by repair (passthrough)", "source_passthrough"),
+            ("never sent to repair (upload returned as-is)", "source_untouched"),
             ("crashed", "crashed")]
     for label, key in rows:
         lines.append(f"| {label} | " + " | ".join(
