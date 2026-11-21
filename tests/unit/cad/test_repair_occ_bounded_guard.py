@@ -169,19 +169,9 @@ def _child_side(module: str, tree: ast.AST, where: dict[ast.AST, str]) -> set[st
 #: call in the same function is caught (`_over_allowance`).
 KNOWN_UNBOUNDED = {
     # --- rows 1-3 of the audit: a deadline checked only BETWEEN calls -------------------------
-    # Up to eight solid pairs.
-    ("mesh_probe.py", "_contact_support_faces", "BRepExtrema_DistShapeShape"),
-    # One call per deviation sample, inside every tournament rehearsal (the K-fold cost).
-    ("deviation.py", "distance", "BRepExtrema_DistShapeShape"),
     # The clash gap. Reported as dead after #503; it is still CALLED on main at mesh_probe.py:752,
     # which is why it is listed rather than deleted.
     ("mesh_probe.py", "_clash_gap", "BRepExtrema_DistShapeShape"),
-    # --- rows 4-6: inside fragment_bodies.apply ------------------------------------------------
-    # On expiry the OPERATION must DECLINE, which is a different contract from reporting an
-    # unmeasured value, so these are their own change.
-    ("operations.py", "_meeting_partner", "BRepExtrema_DistShapeShape"),
-    ("operations.py", "_common_volume", "BRepAlgoAPI_Common"),
-    ("operations.py", "_general_fuse", "BOPAlgo_Builder"),
     # --- found by THIS GUARD, not by the manual audit -----------------------------------------
     # A whole call family nobody had audited: GeomAPI projection, reached from the spotlight.
     ("spotlight.py", "_normal_of_face", "GeomAPI_ProjectPointOnSurf"),
@@ -198,13 +188,8 @@ KNOWN_UNBOUNDED = {
 #: Registered kernels that are STILL called straight from the parent at a named call site, with
 #: why. Registering a kernel says it MAY run in a child; these call sites do not, so on these
 #: paths the kernel is unbounded. SHRINK-ONLY, like KNOWN_UNBOUNDED.
-KNOWN_DIRECT_CALLS = {
-    # `fragment_bodies` - row 5 of the audit. #515 registered `_common_volume` so it CAN run in a
-    # child, and `investigator_tools` takes that route, but `apply` still calls it here. Bounding
-    # it is the row 4-6 change: on expiry the OPERATION must DECLINE, which is a different
-    # contract from reporting an unmeasured value, so it is its own PR rather than a swap.
-    ("operations.py", "apply", "_common_volume"),
-}
+KNOWN_DIRECT_CALLS: set[tuple[str, str, str]] = set()
+#   (empty since #521: `fragment_bodies.apply` reaches `_common_volume` only through the child.)
 
 
 def _enclosing(tree: ast.AST) -> dict[ast.AST, str]:
@@ -336,27 +321,33 @@ def test_no_function_runs_both_in_a_child_and_in_the_parent():
     in itself, so it fails here rather than quietly widening the exemption.
     """
     both: list[str] = []
-    # Only the `__main__`-entry route is judged here. A REGISTERED kernel called in the parent is
-    # the same fact from the other side, and `test_a_registered_kernel_is_never_called_straight_
-    # from_the_parent` names it with the call site - one fact, one failure.
+    # Helpers of `__main__` entries AND of registered kernels are judged here. A REGISTERED kernel
+    # itself called in the parent is the same fact from the other side, and `test_a_registered_
+    # kernel_is_never_called_straight_from_the_parent` names it with the call site - one fact,
+    # one failure.
     for path in sorted(REPAIR.glob("*.py")):
-        both.extend(_ambiguous(path.name, ast.parse(path.read_text(), filename=str(path))))
+        both.extend(_ambiguous(path.name, ast.parse(path.read_text(), filename=str(path)),
+                               _registered_kernels().get(path.name, ())))
 
     assert not both, "ambiguous dispatch - these are exempted as child-side but run in the parent "\
                      "too:\n  " + "\n  ".join(sorted(both))
 
 
-def _ambiguous(module: str, tree: ast.AST) -> list[str]:
+def _ambiguous(module: str, tree: ast.AST, registered: tuple[str, ...] = ()) -> list[str]:
     """Child-side functions that a parent-side function also calls, where that path can REACH a
-    kernel call - directly or through whatever it calls in turn."""
+    kernel call - directly or through whatever it calls in turn.
+
+    Child-side means reached from a `__main__` entry OR from a `registered` kernel. A registered
+    kernel itself called from the parent is left to the registry test, which names the call site
+    and honours KNOWN_DIRECT_CALLS."""
     where = _enclosing(tree)
     graph = _calls_in(tree, where)
-    bounded = _reachable(_entry_points(tree, where), graph)
+    bounded = _reachable(_entry_points(tree, where) | set(registered), graph)
     out: list[str] = []
     for caller, callees in graph.items():
         if caller in bounded or caller == "<module>":
             continue
-        for name in sorted(callees & bounded):
+        for name in sorted((callees & bounded) - set(registered)):
             if any(_holds_a_kernel_call(tree, where, fn) for fn in _reachable({name}, graph)):
                 out.append(f"{module}:{name} is reached from the child entry AND called by {caller}")
     return out
@@ -599,3 +590,23 @@ def test_a_cross_module_call_from_a_child_side_caller_is_fine():
     modules = {"occ_distance.py": ast.parse(_CHILD_MODULE), "caller.py": ast.parse(caller)}
 
     assert _cross_module_parent_calls(modules) == []
+
+
+def test_a_registered_kernels_helper_called_from_the_parent_is_ambiguous():
+    """A helper reached from a REGISTERED kernel is exempted as child-side exactly like one reached
+    from a `__main__` entry, so a parent call to it hides the same hang. This is the shape #521
+    left in `mesh_probe`: `_nearest_faces` ran in the child under `_nearest_face_positions` AND in
+    the parent from `mesh_defects`. The registered kernel itself, called from the parent, belongs
+    to the registry test - one fact, one failure."""
+    source = ("def _nearest_faces(x):\n"
+              "    return BRepExtrema_DistShapeShape(x, x)\n"
+              "def _nearest_face_positions(x):\n"
+              "    return _nearest_faces(x)\n"
+              "def mesh_defects(x):\n"
+              "    _nearest_face_positions(x)\n"
+              "    return _nearest_faces(x)\n")
+
+    found = _ambiguous("probe.py", ast.parse(source), registered=("_nearest_face_positions",))
+
+    assert found == ["probe.py:_nearest_faces is reached from the child entry AND called by "
+                     "mesh_defects"]
