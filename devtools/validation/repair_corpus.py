@@ -964,6 +964,16 @@ def _mesh_hints():
     return mesh_hints
 
 
+def _count(value) -> int:
+    """crs-mesh-hints/1 records `unplaced_defects` as a COUNT (an int); tolerate a list too, so a
+    scoring read never takes down the shard it runs in."""
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    return len(value) if isinstance(value, (list, tuple)) else 0
+
+
 def _hinted(written: Path, *, hints_mod, hinted_probe) -> dict:
     """The hinted verdict on the returned STEP, read and applied by lane G's code only.
     {"status": none|no_consumer|unreadable|stale|empty|probed, ...}."""
@@ -980,7 +990,7 @@ def _hinted(written: Path, *, hints_mod, hinted_probe) -> dict:
         return {"status": "stale", "note": "sidecar is for different STEP bytes"}
     faces = doc.get("faces") or []
     meta = {"attempts": doc.get("attempts"), "hint_status": doc.get("status"),
-            "faces": len(faces), "unplaced_defects": len(doc.get("unplaced_defects") or [])}
+            "faces": len(faces), "unplaced_defects": _count(doc.get("unplaced_defects"))}
     if not faces:
         return {"status": "empty", **meta}
     diagonal = float(doc.get("diagonal_mm") or 0.0)
@@ -2135,7 +2145,12 @@ def run_files(files: list[Path], scratch: Path, *, mode: str = "off", loop: bool
         since = time.time()
         row = _isolated(path, body, mesh_probe=mesh_probe) if isolate else body()
         if meshability:
-            _score_returned(row, path, scratch, since=since)
+            # A scoring failure is ONE row's problem: record it and keep the shard going. Wave
+            # 11210343 lost three whole shards to one sidecar field read as the wrong type.
+            try:
+                _score_returned(row, path, scratch, since=since)
+            except Exception as exc:  # noqa: BLE001 - scoring must never abort the shard
+                row["meshability_score_error"] = f"{type(exc).__name__}: {exc}"[:300]
         if tolerant_delivery:
             _tolerant_delivery(row, path, scratch)
         row.update(stamp)

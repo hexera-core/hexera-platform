@@ -296,3 +296,17 @@ def test_sicn_floor_sensitivity_counts_hint_only_files_per_floor():
     assert s["newly_meshes_with_hints_by_sicn_floor"] == {
         "0.0": 3, "0.001": 2, "0.01": 2, "0.05": 1}
     assert s["meshes_with_hints"] == 5   # the headline applies no floor beyond SICN > 0
+
+
+def test_unplaced_defects_is_read_as_the_count_lane_gs_schema_records():
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[3] / "devtools/validation/repair_corpus.py"
+    spec = importlib.util.spec_from_file_location("repair_corpus_count", path)
+    rc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(rc)
+    assert rc._count(3) == 3
+    assert rc._count(0) == 0
+    assert rc._count(None) == 0
+    assert rc._count([{"a": 1}, {"b": 2}]) == 2
