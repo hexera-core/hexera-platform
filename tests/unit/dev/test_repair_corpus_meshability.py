@@ -234,3 +234,22 @@ def test_a_degenerate_hinted_mesh_does_not_count(tmp_path, monkeypatch):
     assert row["mesh_kind_after_hints"] == "degenerate"
     s = rc.meshability_summary([row])
     assert s["meshes_with_hints"] == 0 and s["hints_degenerate"] == 1
+
+
+def test_a_file_crs_never_touched_returns_the_upload(tmp_path, monkeypatch):
+    # Clean-control parts mostly never reach the repair: the route sends them on as uploaded.
+    # That is a returned STEP (the upload), not a no_returned_step bug, and it is not re-probed.
+    for outcome in ("nothing_to_repair", "not_attempted:mesh_as_is"):
+        d = tmp_path / outcome.replace(":", "_")
+        d.mkdir()
+        upload, scratch = _setup(d, returned=None)
+        row = {"outcome": outcome, "meshes_before": True, "mesh_kind_before": "",
+               "valid_before": True}
+        calls = _score(row, upload, scratch, before_gd=True, monkeypatch=monkeypatch)
+        assert row["returned_step"]["present"] is True
+        assert row["returned_step"]["source"] == "untouched"
+        assert row["meshes_after_default"] is True and row["meshes_after_gmsh_default"] is True
+        assert ("part.step", "default") not in calls
+        assert row["valid_to_invalid"] is False
+        s = rc.meshability_summary([row])
+        assert s["no_returned_step"] == 0 and s["source_untouched"] == 1

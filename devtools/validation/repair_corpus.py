@@ -893,6 +893,12 @@ def _kept_key(op: dict) -> tuple:
     return (op.get("op"), str(targets[0]) if targets else "")
 
 
+def _untouched(row: dict) -> bool:
+    """The harness never called the repair for this file (triage routed it on as uploaded)."""
+    outcome = str(row.get("outcome") or "")
+    return outcome == "nothing_to_repair" or outcome.startswith("not_attempted:")
+
+
 def meshed_by(row: dict) -> dict | None:
     """WHICH OPERATION MADE THE RETURNED STEP MESH, for a file that did not mesh before and does
     now at the headline settings. The pass is credited first: the first KEPT pass application
@@ -942,16 +948,22 @@ def _score_returned(row: dict, path: Path, scratch: Path, *, since: float,
     row["meshes_before_gmsh_default"] = bool(before_gd.get("meshed"))
     written = scratch / f"{path.stem}-repaired.step"
     present = written.is_file() and written.stat().st_mtime >= since - 1.0
+    if not present and _untouched(row):
+        # CRS WAS NEVER ASKED: the route sent the file on as uploaded (nothing to repair, or a
+        # mesh-as-is / manual route), so what the customer receives IS the upload. Judged as such,
+        # labelled `untouched` - not a missing return, and not a passthrough the repair chose.
+        written, present = path, True
     if not present:
         row.update(returned_step={"present": False}, meshes_after_default=None,
                    mesh_kind_after_default="no_returned_step", meshes_after_gmsh_default=None,
                    meshes_after_hints=None, valid_to_invalid=None)
         return
     sha = _sha256_file(written)
-    source = row.get("delivery_source") or (
-        "passthrough" if sha == _sha256_file(path) else "repaired")
+    source = ("untouched" if written == path else row.get("delivery_source") or (
+        "passthrough" if sha == _sha256_file(path) else "repaired"))
     try:
-        valid = (row["valid_after"] if "valid_after" in row else inspect(written)["valid"])
+        valid = (row.get("valid_before") if source == "untouched" else
+                 row["valid_after"] if "valid_after" in row else inspect(written)["valid"])
     except Exception:  # noqa: BLE001 - an unreadable return is invalid
         valid = False
     hints_file = hints_mod.hints_path(written)
@@ -960,13 +972,17 @@ def _score_returned(row: dict, path: Path, scratch: Path, *, since: float,
                             "valid": None if valid is None else bool(valid),
                             "hints": ("ok" if hints is not None else
                                       "unreadable" if hints_file.is_file() else "none")}
-    if row.get("meshes_after") is not None and row.get("outcome") in _REPAIRED_OUTCOMES:
+    if source == "untouched" and "meshes_before" in row:
+        # The returned file IS the upload: its before-verdicts are its after-verdicts.
+        ok, kind = bool(row["meshes_before"]), str(row.get("mesh_kind_before") or "")
+    elif row.get("meshes_after") is not None and row.get("outcome") in _REPAIRED_OUTCOMES:
         ok, kind = bool(row["meshes_after"]), str(row.get("mesh_kind_after") or "")
     else:
         ok, kind = _verdict(default_probe(written, diagonal_mm=diagonal,
                                           budget_s=MESH_PROBE_BUDGET_S))
     row["meshes_after_default"], row["mesh_kind_after_default"] = ok, kind
-    gd = extra(written, diagonal_mm=diagonal, mode="gmsh_default", budget_s=MESH_PROBE_BUDGET_S)
+    gd = (before_gd if source == "untouched" else
+          extra(written, diagonal_mm=diagonal, mode="gmsh_default", budget_s=MESH_PROBE_BUDGET_S))
     row["meshes_after_gmsh_default"] = bool(gd.get("meshed"))
     if hints is not None:
         hv = extra(written, diagonal_mm=diagonal, mode="hints", hints=hints,
@@ -1038,6 +1054,8 @@ def meshability_summary(rows: list[dict]) -> dict:
         "source_repaired": sum(1 for r in got if r["returned_step"].get("source") == "repaired"),
         "source_passthrough": sum(1 for r in got
                                   if r["returned_step"].get("source") == "passthrough"),
+        "source_untouched": sum(1 for r in got
+                                if r["returned_step"].get("source") == "untouched"),
         "meshed_before": sum(1 for r in scored if r.get("meshes_before")),
         "meshes_default": sum(1 for r in scored if meshes(r, "meshes_after_default")),
         "newly_meshes_default": sum(1 for r in scored if meshes(r, "meshes_after_default")
