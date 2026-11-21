@@ -167,6 +167,23 @@ def _is_valid(shape) -> bool:
 #: margin the model author already kept on its own clock.
 DEADLINE_MARGIN_S = 5.0
 
+#: Seconds of what is left after the repaired STEP is written that the hints sidecar may NOT spend
+#: (`_write_hints`, gap 3). Hints get only the remainder of the run's ONE deadline, less this: one
+#: `oracle.STAGE_MARGIN_S` for the reap of a hints child killed at its wall, and one more for the
+#: sidecar write and the report's return - so with `DEADLINE_MARGIN_S` already kept off the
+#: deadline, `repair_step_file` is back at least 10 s before the attempt node's
+#: `wait_for(CAD_REPAIR_TIMEOUT_S)` fires, and no hint can cost a kept repair.
+HINTS_MARGIN_S = 10.0
+
+#: What `measurements["hints"]` says when the run had no time left for hints after the delivery.
+HINTS_NO_TIME = "failed: no time left"
+
+def _clock() -> float:
+    """THE RUN'S CLOCK, `time.monotonic` - the same clock every deadline below it reads
+    (`region_loop.run_regions`, `session`). Looked up at call time, and a module function only so
+    a unit test can drive the deadline with a fake clock; production never replaces it."""
+    return time.monotonic()
+
 _STEP_UNIT_NAMES = {"mm": "MM", "cm": "CM", "m": "M", "in": "INCH"}
 
 
@@ -938,26 +955,49 @@ def _unresolved(exc: RepairRefused, defects) -> RepairRefused:
     return exc
 
 
-def _write_hints(delivered: Path, unresolved) -> str:
+def _hints_budget_s(deadline_s: float | None) -> float:
+    """Seconds the hints sidecar may spend: `mesh_hints.HINTS_WALL_S`, cut to what is left of the
+    run's ONE deadline less `HINTS_MARGIN_S` (gap 3). None - a caller with no deadline - is the
+    full wall, as before."""
+    from meshpipeline.cad.repair import mesh_hints, oracle
+
+    if deadline_s is None:
+        return float(mesh_hints.HINTS_WALL_S)
+    return oracle.stage_budget_s(mesh_hints.HINTS_WALL_S, float(deadline_s) - _clock(),
+                                 margin_s=HINTS_MARGIN_S)
+
+
+def _write_hints(delivered: Path, unresolved, *, deadline_s: float | None = None) -> str:
     """Write lane G's mesh-size hints sidecar beside the delivered STEP (`mesh_hints.hints_for`,
     `<step>.mesh-hints.json`) from the run's unresolved MESH findings. The provider probes the
     delivered part itself, so it is asked even when no finding survived: it writes nothing when the
     part meshes at default. Returns the sidecar's path, "none" when there was nothing to hint, or
     "failed: <why>". Never raises: hints are advice beside a delivery, never a reason to lose one.
+
+    HINTS GET ONLY WHAT IS LEFT (gap 3). Called only once the delivered STEP is on disk, with the
+    run's `deadline_s`; the provider's wall - and so every attempt inside it, each capped by what
+    the wall has left - is `_hints_budget_s`. Too little for even one attempt and the provider is
+    not asked at all: `HINTS_NO_TIME` is recorded and the delivery stands as written.
     """
     from meshpipeline.cad.repair import mesh_hints, mesh_probe
 
+    budget_s = _hints_budget_s(deadline_s)
+    if budget_s < mesh_hints._MIN_ATTEMPT_S:
+        logger.info("conservative: no time left for mesh hints (%.1f s); the delivery stands",
+                    budget_s)
+        return HINTS_NO_TIME
     mesh = tuple(d for d in (unresolved or ())
                  if getattr(d, "code", None) in mesh_probe.MESH_CODES)
     try:
-        written = mesh_hints.hints_for(Path(delivered), mesh)
+        written = mesh_hints.hints_for(Path(delivered), mesh, budget_s=budget_s)
     except Exception as exc:  # noqa: BLE001 - a failing provider never costs the delivery
         logger.warning("conservative: mesh hints failed (%s)", type(exc).__name__)
         return f"failed: {type(exc).__name__}"
     return str(written) if written else "none"
 
 
-def _passthrough(source: Path, destination: Path, exc: BaseException) -> None:
+def _passthrough(source: Path, destination: Path, exc: BaseException, *,
+                 deadline_s: float | None = None) -> None:
     """THE RUN ALWAYS RETURNS A STEP: the upload's BYTES, unchanged, at `destination` - never a
     re-export (a STEP round trip changes topology and declares a unit; see the nothing-kept note
     below) - labelled `passthrough` on the exception's measurements, with hints beside it when the
@@ -980,7 +1020,8 @@ def _passthrough(source: Path, destination: Path, exc: BaseException) -> None:
         measurements["delivery_source"] = f"none: {type(copy_error).__name__}"
         return
     measurements["delivery_source"] = PASSTHROUGH_SOURCE
-    measurements["hints"] = _write_hints(Path(destination), getattr(exc, "_unresolved", ()))
+    measurements["hints"] = _write_hints(Path(destination), getattr(exc, "_unresolved", ()),
+                                         deadline_s=deadline_s)
 
 
 def repair_step_file(source: Path, destination: Path, *,
@@ -995,19 +1036,42 @@ def repair_step_file(source: Path, destination: Path, *,
     an unavailable repair or an unexpected error first writes the upload's bytes there as a
     passthrough (`_passthrough`), then raises exactly what it would have raised. Off, this is
     `_repair_step_file` and nothing else - no file is written on a refusal, byte for byte today.
+
+    THE RUN'S ONE DEADLINE IS TAKEN HERE, at entry (final review I2, gap 3), and every late stage
+    spends a slice of it: the delivered-file read-back and the per-kept-op probe through the
+    walk's clock, the hints - on the delivery and on the passthrough alike - out of whatever is
+    left once the STEP is written. Nothing below starts a fresh budget on top of the attempt
+    node's `wait_for(CAD_REPAIR_TIMEOUT_S)`.
     """
+    deadline = _clock() + float(rcfg.CAD_REPAIR_TIMEOUT_S) - DEADLINE_MARGIN_S
+
     def run() -> RepairReport:
         return _repair_step_file(source, destination, profile=profile, directives=directives,
                                  goal=goal, focus_faces=focus_faces,
-                                 auto_accept_mm=auto_accept_mm)
+                                 auto_accept_mm=auto_accept_mm, deadline_s=deadline)
 
     if not _pass_live():
         return run()
     try:
         return run()
     except Exception as exc:
-        _passthrough(source, destination, exc)
+        _passthrough(source, destination, exc, deadline_s=deadline)
         raise
+
+
+def _deliver(shape, destination: Path, *, unit, defects, measurements: dict,
+             deadline_s: float | None) -> None:
+    """Write the repaired STEP, and ONLY THEN - pass live - the hints beside it (gap 3).
+
+    THE ORDER IS THE GUARANTEE. The delivered file is on disk before a hint is started, and the
+    hints get only what is left of `deadline_s` (`_write_hints`), so however long a hint would
+    take, the repair it sits beside has already been kept and the run returns before the attempt
+    node's clock fires.
+    """
+    _write_step(shape, destination, unit=unit)
+    if _pass_live():
+        measurements["delivery_source"] = REPAIRED_SOURCE
+        measurements["hints"] = _write_hints(destination, defects, deadline_s=deadline_s)
 
 
 def _repair_step_file(source: Path, destination: Path, *,
@@ -1015,8 +1079,12 @@ def _repair_step_file(source: Path, destination: Path, *,
                      directives: tuple[dict, ...] = (),
                      goal: RepairGoal | None = None,
                      focus_faces: tuple[int, ...] = (),
-                     auto_accept_mm: float | None = None) -> RepairReport:
+                     auto_accept_mm: float | None = None,
+                     deadline_s: float | None = None) -> RepairReport:
     """Repair `source` into `destination`, or refuse. The input is never modified.
+
+    `deadline_s` is the run's one absolute deadline (a `_clock()` reading) as `repair_step_file`
+    took it at entry; None - a direct caller - takes it here, exactly as before.
 
     Raises RepairUnavailable when repair is switched off or the kernel is missing, and
     RepairRefused when the result exceeded its caps - the two are not the same answer and must not
@@ -1057,7 +1125,8 @@ def _repair_step_file(source: Path, destination: Path, *,
     # before this call, not after the read. Every driver, probe and model call below spends a
     # slice of THIS, and `DEADLINE_MARGIN_S` is left for the after-checks and the STEP write, so
     # the session no longer races the outer clock and loses the whole repair to it.
-    deadline = time.monotonic() + float(rcfg.CAD_REPAIR_TIMEOUT_S) - DEADLINE_MARGIN_S
+    deadline = (deadline_s if deadline_s is not None
+                else _clock() + float(rcfg.CAD_REPAIR_TIMEOUT_S) - DEADLINE_MARGIN_S)
     # WHAT THE GOAL'S FINISHING VERDICT COSTS COMES OUT OF THE DRIVER'S SHARE, not out of the
     # margin above. A verdict that spent `DEADLINE_MARGIN_S` would race the attempt node's outer
     # clock exactly as the driver used to; a driver that spent the whole deadline would leave its
@@ -1379,10 +1448,8 @@ def _repair_step_file(source: Path, destination: Path, *,
 
     from meshpipeline.cad.unit_evidence import parser_applied_unit
 
-    _write_step(result.shape, dest, unit=parser_applied_unit(src))
-    if _pass_live():
-        measurements["delivery_source"] = REPAIRED_SOURCE
-        measurements["hints"] = _write_hints(dest, result.defects)
+    _deliver(result.shape, dest, unit=parser_applied_unit(src), defects=result.defects,
+             measurements=measurements, deadline_s=deadline)
 
     defects: tuple[RepairDefect, ...] = ()
     if not final.valid:

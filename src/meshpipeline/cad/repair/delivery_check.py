@@ -92,10 +92,20 @@ def _read_back(path: Path, budget_s: float) -> tuple[bool | None, str]:
 def export_check(before, after, *, budget_s: float = BUDGET_S) -> str:
     """"" when `after`, written as the delivery writes it and read back, is BRepCheck-valid - or
     when `before` was not valid to begin with (a part that arrived invalid is not made worse by
-    this measure). Otherwise the refusal reason. Never raises."""
+    this measure). Otherwise the refusal reason. Never raises.
+
+    `budget_s` IS WHAT THE RUN HAS LEFT, not a fresh allowance: the session hands in
+    `oracle.stage_budget_s(BUDGET_S, remaining)` (gap 3), so a read-back late in the run cannot
+    outlive the attempt node's clock. With NO TIME LEFT (`budget_s <= 0`) nothing is written and no
+    child starts, and the answer is `export_unchecked (no time left ...)` - COULD NOT VERIFY, which
+    by this function's contract is a refusal: the caller reverts the package rather than commit a
+    delivery nobody read back. That is the safe choice on purpose, and it is taken before even the
+    upload's own validity is asked, because that too is kernel time the run no longer has."""
     from meshpipeline.cad.repair.conservative import _write_step
     from meshpipeline.cad.repair.operations import _is_valid
 
+    if not float(budget_s) > 0.0:
+        return "export_unchecked (no time left in the run to read the delivered file back)"
     try:
         if not _is_valid(before):
             return ""

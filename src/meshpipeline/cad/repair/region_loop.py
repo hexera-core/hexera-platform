@@ -516,13 +516,25 @@ def meshability_pass_on() -> bool:
     return str(getattr(rcfg, "CAD_REPAIR_MESHABILITY_PASS", "off") or "off") == "live"
 
 
-def _probe_delivered(shape, diagonal_mm: float) -> dict:
+#: The delivered probe's own cap (`_probe_delivered`), before the run's deadline cuts it.
+PROBE_AFTER_CAP_S = 120.0
+#: `probe_after`'s kind when the run had no time left to probe: unprobed, said so, never guessed.
+PROBE_AFTER_NO_TIME = "unprobed: no time left"
+
+
+def _probe_delivered(shape, diagonal_mm: float, *,
+                     budget_s: float = PROBE_AFTER_CAP_S) -> dict:
     """The eval's headline probe (gmsh at diagonal / 40, `mesh_probe.probe_file`) on the part AS IT
     WOULD BE DELIVERED - written by `conservative._write_step` in the delivery unit. Never raises;
-    an unprobed part says so rather than reading as meshing or not."""
+    an unprobed part says so rather than reading as meshing or not.
+
+    `budget_s` is the pass's slice of the run's ONE deadline (`_probe_after_budget_s`), never a
+    fresh 120 s: with none left the probe does not start and says `PROBE_AFTER_NO_TIME`."""
     import tempfile
     from pathlib import Path
 
+    if not float(budget_s) > 0.0:
+        return {"meshes": None, "kind": PROBE_AFTER_NO_TIME}
     try:
         from meshpipeline.cad.repair import mesh_probe
         from meshpipeline.cad.repair.conservative import _write_step
@@ -531,11 +543,21 @@ def _probe_delivered(shape, diagonal_mm: float) -> dict:
         with tempfile.TemporaryDirectory(prefix="meshability-probe-") as tmp:
             path = Path(tmp) / "part.step"
             _write_step(shape, path, unit=DELIVERY_UNIT.get())
-            result = mesh_probe.probe_file(path, diagonal_mm=float(diagonal_mm), budget_s=120.0)
+            result = mesh_probe.probe_file(path, diagonal_mm=float(diagonal_mm),
+                                           budget_s=float(budget_s))
         return {"meshes": bool(result.meshed),
                 "kind": "" if result.meshed else str(getattr(result.failure, "kind", "") or "")}
     except Exception as exc:  # noqa: BLE001 - a probe that cannot run is reported, not guessed
         return {"meshes": None, "kind": f"unprobed: {type(exc).__name__}"}
+
+
+def _probe_after_budget_s(remaining_s: float, reserve: float) -> float:
+    """Seconds the per-kept-op delivered probe may take (gap 3): `PROBE_AFTER_CAP_S`, cut to what
+    the run has left ABOVE the walk's final reserve, less `oracle.STAGE_MARGIN_S`. The probe is a
+    RECORD of a commit already made, so it may not spend the time the final whole-shape
+    verification was promised, and it is never a fresh budget on top of the attempt node's clock.
+    """
+    return oracle.stage_budget_s(PROBE_AFTER_CAP_S, float(remaining_s) - float(reserve))
 
 
 def _pass_record(name: str, rung: int, fingerprint: str, verdict: PackageVerdict) -> dict:
@@ -641,7 +663,9 @@ def _meshability_pass(work, regions, *, remaining: Callable[[], float], reserve:
         out.append((region.index, offered, verdict))
         record = _pass_record(entry.name, rung, fingerprint, verdict)
         if verdict.committed:
-            record["probe_after"] = _probe_delivered(work.shape, work.original.diagonal_mm)
+            record["probe_after"] = _probe_delivered(
+                work.shape, work.original.diagonal_mm,
+                budget_s=_probe_after_budget_s(remaining(), reserve))
         records.append(record)
         if any(v.kept for v in verdict.verdicts):
             charged += len(verdict.verdicts)

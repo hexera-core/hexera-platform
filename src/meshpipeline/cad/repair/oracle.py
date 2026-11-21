@@ -146,3 +146,24 @@ def final_reserve_s(*, mesh_probe_live: bool, timeout_s: float) -> float:
     if not mesh_probe_live:
         return 0.0
     return float(timeout_s) + FINAL_PROBE_SLACK_S
+
+
+#: Seconds a deadline-bound late stage keeps back from what is left of the run (`stage_budget_s`):
+#: a stage whose child runs to its budget is then SIGKILLed and reaped, and that reap is allowed 5 s
+#: (`bounded_child._REAP_S`, the read-back's and the probe's own `communicate(timeout=5)`), so a
+#: stage handed `remaining - STAGE_MARGIN_S` is back before the deadline even when it is killed.
+STAGE_MARGIN_S = 5.0
+
+
+def stage_budget_s(cap_s: float, remaining_s: float, *, margin_s: float = STAGE_MARGIN_S) -> float:
+    """Seconds a LATE STAGE of the run may take: the lesser of its own cap and what is left of the
+    run's ONE deadline less `margin_s` - never a fresh budget of its own (gap 3: the delivered-file
+    read-back, the per-kept-op delivered probe and the hints sidecar each used to take a full
+    120-180 s inside the attempt node's single `wait_for`, and the outer clock then threw away a
+    repair that had already been kept). 0 means "no time left": the stage declines by its own
+    contract and starts no child. A NaN or non-positive remainder reads as nothing left.
+    """
+    remaining = float(remaining_s)
+    if not remaining > 0.0:
+        return 0.0
+    return max(0.0, min(float(cap_s), remaining - float(margin_s)))

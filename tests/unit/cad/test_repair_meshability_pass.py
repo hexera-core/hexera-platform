@@ -48,7 +48,7 @@ def test_with_both_flags_on_each_face_gets_one_application_per_rung(gap_on, pass
 
 def test_a_kept_application_is_probed_as_delivered(gap_on, pass_live, monkeypatch):
     monkeypatch.setattr(region_loop, "_probe_delivered",
-                        lambda shape, diagonal: {"meshes": True, "kind": ""})
+                        lambda shape, diagonal, **_: {"meshes": True, "kind": ""})
     work = _Work((_gap_clash(),), commit_on=1)
     work.shape = object()
     _out, records = _run(work)
@@ -102,7 +102,7 @@ def test_every_exit_leaves_the_uploads_bytes_and_re_raises(pass_live, upload, tm
                                                           monkeypatch, error):
     from meshpipeline.cad.repair import mesh_hints
 
-    monkeypatch.setattr(mesh_hints, "hints_for", lambda path, defects: None)
+    monkeypatch.setattr(mesh_hints, "hints_for", lambda path, defects, **_: None)
 
     def boom(*args, **kwargs):
         raise error
@@ -139,7 +139,7 @@ def test_unresolved_mesh_findings_go_to_lane_gs_hints(pass_live, upload, tmp_pat
     def refuse(*args, **kwargs):
         raise conservative._unresolved(conservative.RepairRefused("x"), (finding,))
 
-    def hints_for(path, defects):
+    def hints_for(path, defects, **_):
         seen.append((Path(path), tuple(defects)))
         sidecar = Path(f"{path}.mesh-hints.json")
         sidecar.write_text("{}")
@@ -164,13 +164,13 @@ def test_no_hint_means_no_sidecar_and_a_failing_provider_keeps_the_delivery(
         raise conservative.RepairRefused("x")
 
     monkeypatch.setattr(conservative, "_repair_step_file", refuse)
-    monkeypatch.setattr(mesh_hints, "hints_for", lambda path, defects: None)
+    monkeypatch.setattr(mesh_hints, "hints_for", lambda path, defects, **_: None)
     destination = tmp_path / "part-repaired.step"
     with pytest.raises(conservative.RepairRefused) as raised:
         conservative.repair_step_file(upload, destination)
     assert raised.value.measurements["hints"] == "none"
 
-    def broken(path, defects):
+    def broken(path, defects, **_):
         raise RuntimeError("provider")
 
     monkeypatch.setattr(mesh_hints, "hints_for", broken)
