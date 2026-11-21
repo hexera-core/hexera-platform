@@ -1043,3 +1043,54 @@ def test_the_keep_rule_is_the_delivered_probe_read_as_a_boolean(monkeypatch):
     monkeypatch.setattr(session, "_delivered_defects", answer(None))
     assert session._meshes_now() is False, "an unmeasured delivered probe is not a pass"
     assert len(calls) == 3
+
+
+def _review_with_slow_delivered_probe(monkeypatch, *, tier):
+    """`_review` with a run of 40 s left and a delivered probe that spends 18 s of it. Returns
+    the session's `_review` output and the deadline handed to the reviewer call."""
+    from types import SimpleNamespace
+
+    from meshpipeline.cad.repair import package_review, review_tier
+
+    now = [0.0]
+    session = RepairSession("shape", measurer=lambda s: MEASURE, clock=lambda: now[0],
+                            remaining_s=lambda: 40.0 - now[0])
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
+
+    def _slow_delivered(*, cap_s=None):
+        now[0] += 18.0
+        return ()
+
+    monkeypatch.setattr(session, "_delivered_defects", _slow_delivered)
+    monkeypatch.setattr(package_review, "evidence_of", lambda *a, **k: {})
+    monkeypatch.setattr(package_review, "clip_evidence", lambda e: e)
+    seen: dict = {}
+
+    def _objection(evidence, *, timeout_s, deadline_s, clock):
+        seen["deadline_s"] = deadline_s
+        return package_review.ACCEPT, "ok", None
+
+    monkeypatch.setattr(package_review, "review_package_objection", _objection)
+    side = SimpleNamespace(to_dict=lambda: {})
+    out = session._review(
+        SimpleNamespace(region=SimpleNamespace(index=0)), [], (), (), whole=True,
+        before=side, after=side,
+        declared=SimpleNamespace(declared_area_mm2=0.0, declared_volume_mm3=0.0),
+        deviation={}, tier=getattr(review_tier, tier))
+    return out, seen.get("deadline_s")
+
+
+def test_the_delivered_probe_is_not_charged_twice_against_the_review_deadline(monkeypatch):
+    """The run's deadline is absolute: 40 s left at the start is t=40, less the margin, however
+    long the delivered probe took. Re-reading `remaining_s` after the probe and adding it to the
+    pre-probe clock would charge the probe's 18 s twice (deadline 17 instead of 35)."""
+    from meshpipeline.cad.repair import package_review
+
+    _, deadline = _review_with_slow_delivered_probe(monkeypatch, tier="REVIEWER")
+    assert deadline == pytest.approx(40.0 - package_review.DEADLINE_MARGIN_S)
+
+
+def test_an_auto_accept_records_the_seconds_its_delivered_probe_spent(monkeypatch):
+    out, _ = _review_with_slow_delivered_probe(monkeypatch, tier="AUTO")
+    assert out["reviewed"] == "accept"
+    assert out["review_s"] == pytest.approx(18.0)

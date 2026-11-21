@@ -1600,6 +1600,10 @@ class RepairSession:
                  "declared_area_mm2": declared.declared_area_mm2,
                  "declared_volume_mm3": declared.declared_volume_mm3}
         started = self.clock()
+        # The run's deadline is fixed BEFORE the delivered probe: `remaining_s` read after it has
+        # already paid the probe's seconds, and adding that to `started` would charge them twice.
+        deadline = (started + float(self.remaining_s()) - package_review.DEADLINE_MARGIN_S
+                    if self.remaining_s is not None else None)
         # THE ARTEFACT THE CUSTOMER RECEIVES. Measured in the pipeline image on abc 0060_00608290,
         # three probes each and every one identical: the repaired shape IN MEMORY fails with 5 x
         # mesh_edge_through_face and the same geometry written to STEP and read back MESHES. A
@@ -1619,8 +1623,6 @@ class RepairSession:
             original=self.original.to_dict(),
             review_rejects=tuple(self._review_rejects.get(package.region.index, ())),
             delivered=delivered_probe)
-        deadline = (started + float(self.remaining_s()) - package_review.DEADLINE_MARGIN_S
-                    if self.remaining_s is not None else None)
         if tier == review_tier.AUTO:
             # NO MODEL CALL, AND NOTHING LESS IN THE RECORD. The evidence is built and clipped
             # exactly as it is for the reviewer, because the audit of an auto-accept has to show
@@ -1628,7 +1630,7 @@ class RepairSession:
             # this tier unauditable, which is the one thing it may not be.
             return {"reviewed": package_review.ACCEPT,
                     "review_reason": f"auto-accept: {tier_reason}",
-                    "review_tier": review_tier.AUTO, "review_s": 0.0,
+                    "review_tier": review_tier.AUTO, "review_s": self.clock() - started,
                     "review_evidence": package_review.clip_evidence(evidence)}
         verdict, reason, objection = package_review.review_package_objection(
             evidence, timeout_s=float(rcfg.CAD_REPAIR_PACKAGE_REVIEW_TIMEOUT_S),
