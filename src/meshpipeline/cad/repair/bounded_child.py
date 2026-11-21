@@ -69,6 +69,7 @@ KERNELS: dict[str, tuple[str, str]] = {
                                      "_nearest_face_positions"),
     "investigator.thickness": ("meshpipeline.cad.repair.investigator_tools", "_thickness_kernel"),
     "investigator.render": ("meshpipeline.cad.repair.investigator_tools", "_render_kernel"),
+    "mesh_hints.face_table": ("meshpipeline.cad.repair.mesh_hints", "_face_table"),
     "probe.echo": (_MODULE, "_probe_echo"),
     "probe.wrap": (_MODULE, "_probe_wrap"),
     "probe.slow_shape": (_MODULE, "_probe_slow_shape"),
