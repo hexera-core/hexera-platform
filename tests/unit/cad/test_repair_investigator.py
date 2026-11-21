@@ -1195,10 +1195,15 @@ def test_mesher_side_is_refused_until_an_edit_has_been_tried(wired, monkeypatch)
     assert author.verdicts == [], "no mesher verdict may be recorded without an attempt"
 
 
-def test_mesher_side_stands_once_an_edit_was_tried(wired, monkeypatch):
+def test_mesher_side_stands_once_every_located_defect_was_aimed_at(wired, monkeypatch):
+    """ONE AIM PER LOCATED DEFECT, not one aim in the region: both of REGION's defects carry a
+    curve inconsistency an operation answers, so both have to have been aimed at. The old gate
+    counted attempts and this test only ever recorded one."""
     _live(monkeypatch)
     clone = FakeScratch()
-    clone.edits.append({"op": "fix_small_faces", "fingerprint": "fp1", "status": "rolled_back"})
+    for mark in ("fp1", "fp2"):
+        clone.edits.append({"op": "fix_face_boundary", "fingerprint": mark,
+                            "status": "rolled_back"})
     author, _, _, _ = wired(native("conclude", mesher_side={"mesher_problem": ["fp1"],
                                                             "reason": "the faces are clean"}),
                             scratch=clone, budget=Budget(tool_calls=9, model_calls=9))
@@ -1214,7 +1219,9 @@ def test_a_region_that_tried_and_failed_has_a_clean_terminal(wired, monkeypatch)
     carrying the clone's own edit log - and is never a fix."""
     _live(monkeypatch)
     clone = FakeScratch()
-    clone.edits.append({"op": "fix_small_faces", "fingerprint": "fp1", "status": "rolled_back"})
+    for mark in ("fp1", "fp2"):
+        clone.edits.append({"op": "fix_face_boundary", "fingerprint": mark,
+                            "status": "rolled_back"})
     author, _, _, _ = wired(native("conclude",
                                    attempted_none_held={"reason": "every op rolled back"}),
                             scratch=clone, budget=Budget(tool_calls=9, model_calls=9))
@@ -1224,7 +1231,7 @@ def test_a_region_that_tried_and_failed_has_a_clean_terminal(wired, monkeypatch)
     assert record["end"] == "concluded"
     assert record["conclusion"]["form"] == "attempted_none_held"
     assert record["conclusion"]["outcome"] == "attempted_none_held"
-    assert record["conclusion"]["attempts"] == 1
+    assert record["conclusion"]["attempts"] == 2
     assert author.verdicts == [] and author.escalations == []
 
 
@@ -1312,7 +1319,10 @@ def test_a_reset_does_not_forget_the_edits_already_tried(wired, monkeypatch):
                 clone.edits.append({"op": args.get("op"), "status": "rolled_back"})
         return ok_result(name)
 
-    author, _, _, _ = wired(native("edit", op="fix_small_faces", fingerprint="fp1"),
+    # Both of REGION's defects are aimed at before the reset, so the aim rule is met too: what
+    # is under test is that neither the count nor the aims are lost with the clone's log.
+    author, _, _, _ = wired(native("edit", op="fix_face_boundary", fingerprint="fp1"),
+                            native("edit", op="fix_face_boundary", fingerprint="fp2"),
                             native("edit", reset=True),
                             native("conclude",
                                    attempted_none_held={"reason": "every op rolled back"}),
@@ -1322,7 +1332,38 @@ def test_a_reset_does_not_forget_the_edits_already_tried(wired, monkeypatch):
     assert author(REGION, DEFECTS, ()) is None
     record = author.investigations[-1]
     assert record["conclusion"].get("form") == "attempted_none_held", record["turns"]
-    assert record["conclusion"]["attempts"] == 1
+    assert record["conclusion"]["attempts"] == 2
+
+
+def test_after_a_reset_an_unaimed_defect_still_blocks_the_ending(wired, monkeypatch):
+    """BOTH RULES AT ONCE. The reset keeps the attempt count, so the clean terminal is past the
+    "nothing tried" gate - but fp2 was never aimed at, so it is still refused, by name."""
+    _live(monkeypatch)
+    clone = FakeScratch()
+
+    def runner(ws, name, args, *, budget_s):
+        if name == "edit":
+            if args.get("reset"):
+                clone.edits.clear()
+            else:
+                clone.edits.append({"op": args.get("op"), "status": "rolled_back"})
+        return ok_result(name)
+
+    author, _, _, _ = wired(native("edit", op="fix_face_boundary", fingerprint="fp1"),
+                            native("edit", reset=True),
+                            native("conclude",
+                                   attempted_none_held={"reason": "every op rolled back"}),
+                            native("look"),
+                            native("conclude",
+                                   attempted_none_held={"reason": "every op rolled back"}),
+                            tool=runner, scratch=clone,
+                            budget=Budget(tool_calls=9, model_calls=9))
+
+    author(REGION, DEFECTS, ())
+    refused = [t for t in author.investigations[-1]["turns"]
+               if t["tool"] == "conclude" and t["ok"] is False]
+    assert refused and "fp2" in refused[0]["error"], author.investigations[-1]["turns"]
+    assert "aimed" in refused[0]["error"], "refused by the aim rule, not the nothing-tried gate"
 
 
 def test_the_live_prompt_names_the_clean_terminal(monkeypatch):
@@ -1332,3 +1373,157 @@ def test_the_live_prompt_names_the_clean_terminal(monkeypatch):
     assert "attempted_none_held" in inv.system_prompt()
     assert "attempted_none_held" in inv._conclude_schema().description
     assert "escalate" not in inv._conclude_schema().description
+
+
+# --- a region may not blame the mesher over a defect it never aimed at -------------------------
+
+SMALL = _defect(2, code=DefectCode.small_face)
+#: fp1 carries a curve inconsistency, fp2 a small face: two located kernel defects, two ops.
+MIXED = (_defect(1), SMALL)
+
+
+def _aimed(fingerprint: str, op: str = "fix_small_faces", code: str = "") -> dict:
+    """An edit-log entry. With no `code` the aim covers the code `op` answers on that entity."""
+    return {"op": op, "fingerprint": fingerprint, "defect_code": code, "status": "rolled_back"}
+
+
+def test_mesher_side_is_refused_while_a_located_defect_was_never_aimed_at(wired, monkeypatch):
+    """WAVE 5, FILE 0060_00608290, THE ONLY MEASURED +1 LEFT. The region became one merged group
+    holding a clash AND a small face. The model chased the clash - fragment_bodies declined
+    `target_remains`, heal declined `not_isolated` - measured the 1.46 mm gap, and concluded
+    `mesher_side` WITHOUT EVER AIMING AT THE SMALL FACE. One edit had been tried, so the old gate
+    let it through: the gate counted attempts, and what mattered was which defect they were
+    aimed at.
+    """
+    _live(monkeypatch)
+    clone = FakeScratch()
+    clone.edits.append(_aimed("fp1", op="fix_face_boundary"))
+    author, _, _, _ = wired(native("conclude", mesher_side={"mesher_problem": ["fp1"],
+                                                            "reason": "the faces are clean"}),
+                            native("look"),
+                            native("conclude", mesher_side={"mesher_problem": ["fp1"],
+                                                            "reason": "the faces are clean"}),
+                            scratch=clone, budget=Budget(tool_calls=9, model_calls=9))
+
+    author(REGION, MIXED, ())
+    refused = [t for t in author.investigations[-1]["turns"]
+               if t["tool"] == "conclude" and t["ok"] is False]
+    assert refused, author.investigations[-1]["turns"]
+    assert "fp2" in refused[0]["error"], "the refusal must name the defect nobody aimed at"
+    assert "fix_small_faces" in refused[0]["error"], "and the operation that answers it"
+    assert author.verdicts == []
+
+
+def test_an_aim_counts_even_when_it_was_refused(wired, monkeypatch):
+    """THE BAR IS AIMING, NOT SUCCEEDING, and it has to be: an operation that always declines on
+    this geometry - `not_small`, `target_remains` - would otherwise make the region unable to end
+    honestly at all, which is a worse failure than the one this rule fixes. A refused aim is
+    information the model acted on, so it counts."""
+    _live(monkeypatch)
+    clone = FakeScratch()
+    clone.edits.append(_aimed("fp1", op="fix_face_boundary"))
+    author, _, _, seen = wired(
+        native("edit", op="fix_small_faces", fingerprint="fp2"),
+        native("conclude", mesher_side={"mesher_problem": ["fp2"],
+                                        "reason": "the small face is designed"}),
+        scratch=clone, budget=Budget(tool_calls=9, model_calls=9),
+        tool=lambda ws, name, args, budget_s: it.ToolResult(
+            name, False, {}, 0.0, "not_small (the face is not under the sliver threshold)"))
+
+    assert author(REGION, MIXED, ()) is None
+    assert author.investigations[-1]["conclusion"]["form"] == "mesher_side"
+    assert [c["name"] for c in seen] == ["edit"], "the refused edit is the aim that counted"
+
+
+def test_the_rule_is_only_about_defects_an_operation_answers(wired, monkeypatch):
+    """A defect no catalogue operation answers cannot be "tried", so requiring it would be a gate
+    nothing can pass. Only the located KERNEL defects with an op of their own are asked for."""
+    _live(monkeypatch)
+    clone = FakeScratch()
+    clone.edits.append(_aimed("fp1", op="fix_face_boundary"))
+    nameless = _defect(2, code=DefectCode.mesh_edge_through_face)
+    author, _, _, _ = wired(native("conclude", mesher_side={"mesher_problem": ["fp2"],
+                                                            "reason": "gmsh's own failure"}),
+                            scratch=clone, budget=Budget(tool_calls=9, model_calls=9))
+
+    assert author(REGION, (_defect(1), nameless), ()) is None
+    assert author.investigations[-1]["conclusion"]["form"] == "mesher_side"
+
+
+def test_attempted_none_held_obeys_the_same_rule(wired, monkeypatch):
+    """`attempted_none_held` is the same claim in weaker words - repairs were tried and none held
+    - so it may not be reached over a defect nothing was aimed at either."""
+    _live(monkeypatch)
+    clone = FakeScratch()
+    clone.edits.append(_aimed("fp1", op="fix_face_boundary"))
+    author, _, _, _ = wired(native("conclude",
+                                   attempted_none_held={"reason": "nothing held"}),
+                            native("look"),
+                            native("conclude",
+                                   attempted_none_held={"reason": "nothing held"}),
+                            scratch=clone, budget=Budget(tool_calls=9, model_calls=9))
+
+    author(REGION, MIXED, ())
+    refused = [t for t in author.investigations[-1]["turns"]
+               if t["tool"] == "conclude" and t["ok"] is False]
+    assert refused and "fp2" in refused[0]["error"], author.investigations[-1]["turns"]
+
+
+def test_the_rule_is_off_while_the_posture_is(wired, monkeypatch):
+    """Flag-gated like the rest of the policy: with the posture off, the old behaviour stands."""
+    import meshpipeline.settings.cad_repair as settings
+
+    monkeypatch.setattr(settings, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "off", raising=False)
+    author, _, _, _ = wired(native("conclude", mesher_side={"mesher_problem": ["fp1"],
+                                                            "reason": "the faces are clean"}),
+                            scratch=FakeScratch(), budget=Budget(tool_calls=9, model_calls=9))
+
+    assert author(REGION, MIXED, ()) is None
+    assert author.investigations[-1]["conclusion"]["form"] == "mesher_side"
+
+
+def _logging_runner(clone):
+    """A tool runner whose `edit` lands in the clone's log, as the real editor's does."""
+    def run(ws, name, args, *, budget_s):
+        if name == "edit":
+            clone.edits.append({**args, "status": "rolled_back"})
+        return ok_result(name)
+    return run
+
+
+def test_an_aim_at_one_code_does_not_cover_another_code_on_the_same_entity(wired, monkeypatch):
+    """One entity may carry several codes, and `edit` picks one with `defect_code`. An aim at
+    fp1's small face says nothing about fp1's curve inconsistency, so the region may not blame
+    the mesher until that code too has been aimed at."""
+    _live(monkeypatch)
+    both = (_defect(1, code=DefectCode.small_face), _defect(1))
+    clone = FakeScratch()
+    author, _, _, _ = wired(
+        native("edit", op="fix_small_faces", fingerprint="fp1", defect_code="small_face"),
+        native("conclude", mesher_side={"mesher_problem": ["fp1"], "reason": "clean"}),
+        native("look"),
+        native("conclude", mesher_side={"mesher_problem": ["fp1"], "reason": "clean"}),
+        scratch=clone, tool=_logging_runner(clone), budget=Budget(tool_calls=9, model_calls=9))
+
+    author(REGION, both, ())
+    refused = [t for t in author.investigations[-1]["turns"]
+               if t["tool"] == "conclude" and t["ok"] is False]
+    assert refused and "curve_inconsistency" in refused[0]["error"], \
+        author.investigations[-1]["turns"]
+    assert author.verdicts == []
+
+
+def test_an_aim_with_no_code_covers_the_code_its_op_answers(wired, monkeypatch):
+    """With no `defect_code` the author aims at the code the operation answers, so that is the
+    code the aim covers - and the other one still needs its own."""
+    _live(monkeypatch)
+    both = (_defect(1, code=DefectCode.small_face), _defect(1))
+    clone = FakeScratch()
+    author, _, _, _ = wired(
+        native("edit", op="fix_small_faces", fingerprint="fp1"),
+        native("edit", op="fix_face_boundary", fingerprint="fp1"),
+        native("conclude", mesher_side={"mesher_problem": ["fp1"], "reason": "clean"}),
+        scratch=clone, tool=_logging_runner(clone), budget=Budget(tool_calls=9, model_calls=9))
+
+    assert author(REGION, both, ()) is None
+    assert author.investigations[-1]["conclusion"]["form"] == "mesher_side"
