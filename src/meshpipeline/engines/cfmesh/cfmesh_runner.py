@@ -1187,14 +1187,15 @@ def _configure_internal(workspace, *, strategy: dict, wall_patch: str,
     try:
         if solid.exists():
             try:
+                from meshpipeline.engines.workspace_facts import fluid_solid_of
                 from meshpipeline.engines.workspace_facts import read_input_kind as _kind
                 t = tessellate_internal(solid, ws / "_internal_stls", prepared=prepared_state,
                                         opening_faces=args.get("opening_faces") or None,
                                         declared_ports=declaration_targets(_decl),
                                         # a DECLARED fluid domain: its touching solids are one
-                                        # fluid (cad_tessellate._fluid_union)
-                                        fluid_solid=(True if _kind(workspace) == "fluid-domain"
-                                                     else None))
+                                        # fluid (cad_tessellate._fluid_union); anything else is a
+                                        # body, read as snappy reads it (workspace_facts.fluid_solid_of)
+                                        fluid_solid=fluid_solid_of(_kind(workspace)))
             except BindError:
                 raise
             except Exception as exc:  # noqa: BLE001 - the solid's own surface is tried next

@@ -57,6 +57,14 @@ def read_input_kind(workspace) -> str:
         return ""
 
 
+def fluid_solid_of(kind: str) -> bool:
+    """THE ONE READING of what the CAD's solid is, for the B-rep internal staging (cad/cad_tessellate's
+    fluid_solid): True when the user confirmed it is the fluid, False for anything else - a body, or nothing
+    confirmed. Every engine passes this value, so the declared-body rules (the hollow wall, the cavity seed) read
+    the same part the same way whichever engine meshes it."""
+    return str(kind or "").strip() == "fluid-domain"
+
+
 #: INS-8: the leak size the user confirmed on the stage, beside the run's surface (written by the
 #: builder's workspace, agents/builder/workspace.py).
 LEAK_CLOSING_FILE = "leak_closing.json"

@@ -2222,6 +2222,7 @@ async def _separate_fluid(R, workspace: Path, state, source_path: str, *, job_id
 
     from meshpipeline.cad.internal_surface import is_cad
     from meshpipeline.engines.port_binding import declaration_targets
+    from meshpipeline.engines.workspace_facts import fluid_solid_of
 
     patches = state.get("intake_patches") or []
     kind = str(state.get("input_kind") or "").strip()
@@ -2243,7 +2244,7 @@ async def _separate_fluid(R, workspace: Path, state, source_path: str, *, job_id
     try:
         return await _asyncio.to_thread(
             R.tessellate_internal, source_path, Path(workspace) / "_internal_stls",
-            fluid_solid=(kind == "fluid-domain"), prepared=_prepared,
+            fluid_solid=fluid_solid_of(kind), prepared=_prepared,
             declared_ports=declaration_targets(patches))
     except (_fence.StaleWorkerFenced, StaleExecutionPublish, _PortBindError):
         raise
