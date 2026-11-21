@@ -79,6 +79,7 @@ def test_render_names_both_headlines_and_the_bug_row():
     assert "NO STEP RETURNED (bug)" in md and "gmsh defaults (secondary)" in md
     assert "AI-only: `b`" in md and "net +1" in md
     assert "2/3 still mesh" in md
+    assert "min SICN floor" in md and "| > 0.0 |" in md
 
 
 def test_no_marginal_without_both_arms():

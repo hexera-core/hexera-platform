@@ -132,6 +132,21 @@ def render(report: dict) -> str:
     for label, key in rows:
         lines.append(f"| {label} | " + " | ".join(
             _v((arms.get(n, {}).get("failing") or {}).get(key)) for n in names) + " |")
+    lines += ["", "**Hinted-mesh quality floor** (owner decision; report-only). Files that would "
+              "still count as meshing with the hints if a hinted mesh needed min SICN above the "
+              "floor (default-settings meshes always count):", "",
+              "| min SICN floor | " + " | ".join(names) + " |", "|---|" + "---|" * len(names)]
+    floors = sorted({k for n in names for k in ((arms.get(n, {}).get("failing") or {})
+                                               .get("meshes_with_hints_by_sicn_floor") or {})},
+                    key=float)
+    for f in floors:
+        cells = []
+        for n in names:
+            fail = arms.get(n, {}).get("failing") or {}
+            total = (fail.get("meshes_with_hints_by_sicn_floor") or {}).get(f)
+            new = (fail.get("newly_meshes_with_hints_by_sicn_floor") or {}).get(f)
+            cells.append(f"{_v(total)} ({_v(new)} newly)")
+        lines.append(f"| > {f} | " + " | ".join(cells) + " |")
     lines += ["", "**Clean control** (still meshes at default settings, as returned):", ""]
     for n in names:
         c = arms.get(n, {}).get("clean")
