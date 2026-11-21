@@ -1017,3 +1017,99 @@ def test_a_skipped_final_probe_is_never_read_as_a_definitive_mesh_failure(monkey
     assert _OPENING in after and _OVERLAP in after                 # nothing erased
     assert [d.code for d in after].count(DefectCode.mesh_timeout) == 1
     assert definitive_mesh_failure(after) is False
+
+
+# --- review and the keep rule read ONE measurement of ONE artefact ----------------------------
+def test_the_keep_rule_is_the_delivered_probe_read_as_a_boolean(monkeypatch):
+    """`_meshes_now` and the reviewer's `mesh_after` must never judge different objects: the keep
+    rule is now the same `_delivered_defects` call read as a yes/no. A delivered probe that could
+    not be taken is False, because a cure may not rest on a reading nobody took."""
+    session = RepairSession("shape", measurer=lambda s: MEASURE,
+                            remaining_s=lambda: 300.0)
+    calls: list = []
+
+    def answer(found):
+        def _delivered(*, cap_s=None):
+            calls.append(cap_s)
+            return found
+        return _delivered
+
+    monkeypatch.setattr(session, "_delivered_defects", answer(()))
+    assert session._meshes_now() is True
+
+    monkeypatch.setattr(session, "_delivered_defects", answer((object(),)))
+    assert session._meshes_now() is False
+
+    monkeypatch.setattr(session, "_delivered_defects", answer(None))
+    assert session._meshes_now() is False, "an unmeasured delivered probe is not a pass"
+    assert len(calls) == 3
+
+
+def _review_with_slow_delivered_probe(monkeypatch, *, tier, delivered=(), region=None,
+                                      seen=None):
+    """`_review` with a run of 40 s left and a delivered probe that spends 18 s of it. Returns
+    the session's `_review` output and the deadline handed to the reviewer call."""
+    from types import SimpleNamespace
+
+    from meshpipeline.cad.repair import package_review, review_tier
+
+    now = [0.0]
+    session = RepairSession("shape", measurer=lambda s: MEASURE, clock=lambda: now[0],
+                            remaining_s=lambda: 40.0 - now[0])
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
+
+    def _slow_delivered(*, cap_s=None):
+        now[0] += 18.0
+        return delivered
+
+    monkeypatch.setattr(session, "_delivered_defects", _slow_delivered)
+    seen = {} if seen is None else seen
+    monkeypatch.setattr(package_review, "evidence_of",
+                        lambda *a, **k: seen.setdefault("evidence_kw", k) and {})
+    monkeypatch.setattr(package_review, "probe_of",
+                        lambda found, *, mesh_probed: {"found": tuple(found)})
+    monkeypatch.setattr(package_review, "clip_evidence", lambda e: e)
+
+    def _objection(evidence, *, timeout_s, deadline_s, clock):
+        seen["deadline_s"] = deadline_s
+        return package_review.ACCEPT, "ok", None
+
+    monkeypatch.setattr(package_review, "review_package_objection", _objection)
+    side = SimpleNamespace(to_dict=lambda: {})
+    out = session._review(
+        SimpleNamespace(region=region or SimpleNamespace(index=0)), [], (), (),
+        whole=region is None,
+        before=side, after=side,
+        declared=SimpleNamespace(declared_area_mm2=0.0, declared_volume_mm3=0.0),
+        deviation={}, tier=getattr(review_tier, tier))
+    return out, seen.get("deadline_s")
+
+
+def test_the_delivered_probe_is_not_charged_twice_against_the_review_deadline(monkeypatch):
+    """The run's deadline is absolute: 40 s left at the start is t=40, less the margin, however
+    long the delivered probe took. Re-reading `remaining_s` after the probe and adding it to the
+    pre-probe clock would charge the probe's 18 s twice (deadline 17 instead of 35)."""
+    from meshpipeline.cad.repair import package_review
+
+    _, deadline = _review_with_slow_delivered_probe(monkeypatch, tier="REVIEWER")
+    assert deadline == pytest.approx(40.0 - package_review.DEADLINE_MARGIN_S)
+
+
+def test_an_auto_accept_records_the_seconds_its_delivered_probe_spent(monkeypatch):
+    out, _ = _review_with_slow_delivered_probe(monkeypatch, tier="AUTO")
+    assert out["reviewed"] == "accept"
+    assert out["review_s"] == pytest.approx(18.0)
+
+
+def test_a_scoped_review_reads_the_delivered_probe_in_the_regions_scope(monkeypatch):
+    """`mesh_before` is the region's reading, so `mesh_after` must be too. Another region's
+    standing failure in the WHOLE-PART delivered probe would otherwise reach the reviewer as if
+    this package had caused it, and a valid repair would be undone for a defect it never touched."""
+    elsewhere = EntityDefect(
+        code=DefectCode.mesh_edge_through_face, severity=DefectSeverity.error,
+        entity_type="face", entity_index=17, message="far away", fingerprint="face:f17",
+        location={"centroid": [150.0] * 3, "bbox_min": [149.0] * 3, "bbox_max": [151.0] * 3})
+    seen: dict = {}
+    _review_with_slow_delivered_probe(monkeypatch, tier="REVIEWER", region=_REGION,
+                                      delivered=(_OVERLAP, elsewhere), seen=seen)
+    assert seen["evidence_kw"]["delivered"] == {"found": (_OVERLAP,)}
