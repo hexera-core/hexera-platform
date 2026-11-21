@@ -19,8 +19,12 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from meshpipeline.cad.repair.contracts import DefectCode
 from meshpipeline.cad.repair.identity import EntityRef
@@ -57,6 +61,10 @@ logger = logging.getLogger(__name__)
 #: own sag, for gmsh's freedom to place interior vertices, and for the neighbours' unsplit edges
 #: (measured on 0056_00565386: at a half, the clash moved onto the new patches).
 SAG_SHARE = 0.25
+#: THE RETRY LADDER (lead, wave 6): a split that left the clash in place is retried finer, each
+#: rung a quarter, an eighth, then a sixteenth of the gap, still within MAX_ISO_EDGES and the child
+#: budget. `rules_author` picks the rung from how many times the face's split was already tried.
+SAG_LADDER: tuple[float, ...] = (SAG_SHARE, 0.125, 0.06)
 #: No patch or new edge may be one the localiser would report (localize.SMALL_FACE_AREA_FRACTION,
 #: SMALL_EDGE_LENGTH_FRACTION): the session reads a new warning as a new defect and rolls the split
 #: back (measured on 0051_00519054). This margin keeps every patch and span above twice the bar.
@@ -85,6 +93,22 @@ MAX_VOLUME_NOISE_RATIO = 1e-3
 MAX_AREA_NOISE_RATIO = 1e-4
 
 NAME = "resolve_sub_mesh_gap"
+
+#: THE UNIT THE REPAIRED PART WILL BE DELIVERED IN - the upload's own (`conservative._write_step`
+#: is handed `parser_applied_unit(source)`). Set by `conservative.repair_step_file` around the
+#: drivers; millimetres when nobody said. The export check writes in it, because a split that reads
+#: back valid in millimetres can read back invalid in metres (0060_00600919, a metre upload).
+DELIVERY_UNIT: ContextVar[Any] = ContextVar("gap_split_delivery_unit", default="mm")
+
+
+@contextmanager
+def delivering_in(unit) -> Iterator[None]:
+    """Run the block with `unit` as the unit the repaired part will be written in."""
+    token = DELIVERY_UNIT.set(unit if unit is not None else "mm")
+    try:
+        yield
+    finally:
+        DELIVERY_UNIT.reset(token)
 
 
 def _mesh_size(diagonal_mm: float) -> float:
@@ -125,25 +149,27 @@ def _distance(a, b) -> float | None:
         return None
 
 
-def _touch_mm(a, b) -> float:
-    """How close two faces may be and still TOUCH: the larger of their own B-rep tolerances. NOT
-    the run's healing tolerance, which is far coarser (0.1 mm by default) and would read the
-    corpus's 0.0508 mm walls as faces that meet."""
-    from OCP.BRep import BRep_Tool
-    from OCP.TopoDS import TopoDS
+def _touch_mm(mesh_size: float) -> float:
+    """How close two faces may be and still TOUCH: the probe's own margin
+    (`mesh_clash.touching_margin_mm`, 1e-6 x the diagonal), so the operation and the clash
+    locator agree on what a gap is. Not the faces' B-rep tolerance, which on 0060_00605911 was
+    coarser than its real 0.005 mm gap, and not the run's healing tolerance (0.1 mm by default),
+    which would read the corpus's 0.0508 mm walls as faces that meet."""
+    from meshpipeline.cad.repair import mesh_probe
+    from meshpipeline.cad.repair.mesh_clash import touching_margin_mm
 
-    return max(float(BRep_Tool.Tolerance_s(TopoDS.Face_s(a))),
-               float(BRep_Tool.Tolerance_s(TopoDS.Face_s(b))))
+    return touching_margin_mm(float(mesh_size) * float(mesh_probe._SIZE_DIVISOR))
 
 
 def partners(owner, face, *, mesh_size: float) -> list[tuple[object, float]]:
-    """The faces of `owner` across a SUB-MESH GAP from `face`: B-rep distance above both faces' own
-    tolerance (they do not meet) and below the mesh size, nearest first, at most MAX_PARTNERS."""
+    """The faces of `owner` across a SUB-MESH GAP from `face`: B-rep distance above the probe's touching
+    margin (they do not meet) and below the mesh size, nearest first, at most MAX_PARTNERS."""
     from OCP.TopAbs import TopAbs_FACE
 
     from meshpipeline.cad.repair.localize import _indexed
 
     target_box = _bbox(face)
+    touch = _touch_mm(mesh_size)
     faces = _indexed(owner, TopAbs_FACE)
     near: list[tuple[float, object]] = []
     for index in range(1, faces.Extent() + 1):
@@ -157,7 +183,7 @@ def partners(owner, face, *, mesh_size: float) -> list[tuple[object, float]]:
     found: list[tuple[object, float]] = []
     for _box_gap, other in near[:MAX_CANDIDATES]:
         distance = _distance(face, other)
-        if distance is not None and _touch_mm(face, other) < distance < mesh_size:
+        if distance is not None and touch < distance < mesh_size:
             found.append((other, distance))
     found.sort(key=lambda item: item[1])
     if not found:
@@ -181,7 +207,7 @@ def _directional_curvature(props, which: str) -> tuple[float, float]:
 
 
 def split_plan(face, *, gap_mm: float, mesh_size: float, part_area_mm2: float = 0.0,
-               diagonal_mm: float = 0.0) -> dict[str, list[float]]:
+               diagonal_mm: float = 0.0, sag_share: float = SAG_SHARE) -> dict[str, list[float]]:
     """The parameter values to split `face` at, per direction.
 
     For each direction the largest normal curvature k and the longest iso-length L are sampled
@@ -225,7 +251,7 @@ def split_plan(face, *, gap_mm: float, mesh_size: float, part_area_mm2: float = 
             length = max(length, run)
         if kmax * mesh_size < 1e-6 or length <= 0:
             continue                      # flat in this direction: no sag to resolve
-        chord = min(mesh_size, math.sqrt(8.0 * SAG_SHARE * max(gap_mm, 1e-9) / kmax))
+        chord = min(mesh_size, math.sqrt(8.0 * sag_share * max(gap_mm, 1e-9) / kmax))
         segments = min(MAX_SEGMENTS, math.ceil(length / chord))
         if diagonal_mm > 0:
             shortest = SMALL_MARGIN * SMALL_EDGE_LENGTH_FRACTION * diagonal_mm
@@ -371,6 +397,16 @@ class ResolveSubMeshGap:
     """
 
     name = NAME
+
+    def __init__(self, sag_share: float = SAG_SHARE, budget_s: float | None = None) -> None:
+        #: The share of the gap a chord may sag (SAG_LADDER's rung). Same NAME at every rung: the
+        #: ledger and the rows count one operation, and the evidence states the rung.
+        self.sag_share = float(sag_share)
+        #: The wall clock ALL of this application's kernel children may spend together - the split
+        #: and the delivered-STEP check share it - never more than KERNEL_BUDGET_S. A caller with
+        #: less time than that (the gap pre-pass's clock share) narrows it.
+        self.budget_s = (KERNEL_BUDGET_S if budget_s is None
+                         else min(KERNEL_BUDGET_S, max(float(budget_s), 0.0)))
     answers = frozenset({DefectCode.mesh_edge_through_face, DefectCode.mesh_overlapping_facets})
     #: One solid, refined but not reshaped: wider than a one-face fix, narrower than a fuse.
     scope = 6
@@ -407,7 +443,6 @@ class ResolveSubMeshGap:
             OpOutcome,
             _diagonal_of,
             _face_count,
-            _face_names,
             _owners_of,
             _split_fingerprints,
             splice,
@@ -435,15 +470,24 @@ class ResolveSubMeshGap:
         if len(owners) > 1:
             return declined(f"non_manifold ({len(owners)} solids share the face)")
         owner = owners[0]
+        if _shares_topology(shape, owner):
+            # THE CHILD RETURNS THE OWNER REBUILT BY ONE BUILDER, so sharing INSIDE it holds; sharing
+            # WITH ANOTHER SOLID cannot survive the BREP hand-off (lane A's fragment_bodies lesson):
+            # the spliced solid would hold its own copy of the shared edge, and the part would
+            # come back with two unshared boundaries. Declined rather than delivered that way.
+            return declined("shares_topology (the owning solid shares edges with another "
+                            "solid; a split across the process boundary would unshare them)")
         diagonal = _diagonal_of(shape)
         part_area = float(_area_and_volume(shape)["surface_area_mm2"])
 
         # EVERY KERNEL ALGORITHM RUNS IN A BOUNDED FRESH INTERPRETER (`_bounded`): the distances,
         # the trims, the split and the guard. In the parent, BRepExtrema held the GIL for an hour
         # on wave 6 (0054_00540003) and no clock could interrupt it.
+        deadline = time.monotonic() + self.budget_s
         answer, divided = _bounded(owner, face, diagonal_mm=diagonal, part_area_mm2=part_area,
-                                   budget_s=KERNEL_BUDGET_S)
+                                   budget_s=self.budget_s, sag_share=self.sag_share)
         measured = {k: answer[k] for k in _MEASURED_KEYS if k in answer}
+        measured["sag_share"] = self.sag_share
         if answer.get("declined") or divided is None:
             return declined(str(answer.get("declined") or "split_failed (no result came back)"),
                             **measured)
@@ -452,15 +496,31 @@ class ResolveSubMeshGap:
             return declined("split_failed (no face was split)", **measured)
 
         spliced, _ = splice(shape, [(owner, divided)])
+        # VALID IN MEMORY IS NOT VALID DELIVERED. The customer receives a STEP of the WHOLE part:
+        # on 0060_00600919 a split cone face read back UnorientableShape from the written part,
+        # while the same solid alone - and the upload - survive the round trip valid. So the
+        # check is the whole spliced part, written and read as STEP, in a bounded child.
+        left = deadline - time.monotonic()
+        if left <= 0.0:
+            return declined(f"kernel_timeout (the split spent the {self.budget_s:g} s budget "
+                            "before the delivered-STEP check)", **measured)
+        verdict = _export_check(shape, spliced, budget_s=left)
+        if verdict:
+            return declined(verdict, **measured)
         before = _area_and_volume(shape)
         after = _area_and_volume(spliced)
         d_area = float(after["surface_area_mm2"]) - float(before["surface_area_mm2"])
         d_volume = float(after["volume_mm3"]) - float(before["volume_mm3"])
         # NO KERNEL HISTORY CROSSES THE PROCESS BOUNDARY, so the mapping is the session's
         # geometric one (box comparison), said as such rather than claimed as a kernel fact.
+        patches = _split_fingerprints(owner, divided, diagonal_mm=diagonal)
+        # `rebuilt` IS THE PATCHES, NOT THE WHOLE SOLID. The session samples the package's
+        # deviation on `added + rebuilt`; naming every face of a 600-face solid ran the 10 s
+        # deviation budget out, and the reviewer rejected "deviation not measured" a split whose
+        # delivered STEP meshed (wave 6/8: 0060_00608235). Only the patches have new geometry;
+        # a neighbour whose boundary edge was split keeps its surface and its box.
         return OpOutcome(shape=spliced, mapping=EntityMapping.empty(),
-                         added=_split_fingerprints(owner, divided, diagonal_mm=diagonal),
-                         rebuilt=_face_names(divided, diagonal_mm=diagonal),
+                         added=patches, rebuilt=patches,
                          evidence={**measured, "faces_added": int(added),
                                    AREA_DELTA: _rounded_up(d_area),
                                    VOLUME_DELTA: _rounded_up(d_volume),
@@ -518,8 +578,60 @@ def _kill_group(proc: subprocess.Popen) -> None:
         proc.kill()
 
 
+def _run_child(args: list[str], budget_s: float) -> tuple[dict | None, str]:
+    """Run the child with `args`; `(answer, "")`, or `(None, reason)` on a timeout or no answer."""
+    proc = subprocess.Popen([*_CHILD_CMD, *args], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL, start_new_session=True, text=True)
+    try:
+        out, _ = proc.communicate(timeout=max(float(budget_s), 0.0))
+    except subprocess.TimeoutExpired:
+        _kill_group(proc)
+        try:
+            proc.communicate(timeout=5)
+        except Exception:  # noqa: BLE001 - the group is already gone
+            pass
+        return None, f"kernel_timeout (the child did not finish in {float(budget_s):g} s)"
+    finally:
+        if proc.poll() is None:
+            _kill_group(proc)
+    lines = [line for line in (out or "").splitlines() if line.strip()]
+    if proc.returncode != 0 or not lines:
+        return None, f"split_failed (the kernel child exited {proc.returncode} without an answer)"
+    answer = json.loads(lines[-1])
+    return (answer, "") if isinstance(answer, dict) else (None, "split_failed (bad answer)")
+
+
+def _export_check(before, after, *, budget_s: float) -> str:
+    """"" when the delivered form of `after` (STEP, read back) is as valid as `before`'s; else the
+    decline reason. A part that arrived invalid cannot be made worse by this measure, so it is
+    only checked when `before` is valid. Bounded like every kernel call of this operation."""
+    from meshpipeline.cad.repair.operations import _is_valid
+
+    if not _is_valid(before):
+        return ""
+    from meshpipeline.cad.repair.conservative import _write_step
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="gap-split-export-") as tmp:
+            # WRITTEN HERE, FROM THE IN-MEMORY SHAPE, EXACTLY AS DELIVERY WRITES IT. A BREP hand-off
+            # first normalised away the very defect this check exists for (0060_00600919 passed
+            # through BREP and failed as delivered). Writing is linear; the READ and the BRepCheck
+            # are the kernel work, and they run in the bounded child.
+            source = Path(tmp) / "part.step"
+            _write_step(after, source, unit=DELIVERY_UNIT.get())
+            answer, failure = _run_child(["--export-check", str(source)], budget_s)
+    except Exception as exc:  # noqa: BLE001 - unmeasured is never read as valid
+        return f"export_unchecked ({type(exc).__name__})"
+    if answer is None:
+        return failure
+    if not answer.get("valid"):
+        return ("export_invalidates (the repaired part reads back from STEP BRepCheck-invalid; "
+                "the upload does not)")
+    return ""
+
+
 def _bounded(owner, face, *, diagonal_mm: float, part_area_mm2: float,
-             budget_s: float) -> tuple[dict, object | None]:
+             budget_s: float, sag_share: float = SAG_SHARE) -> tuple[dict, object | None]:
     """Run `_work` on `owner` in a FRESH INTERPRETER (never a fork: a forked child inherits the
     parent's OCC state and locks), in its own session, killed as a group past `budget_s`.
 
@@ -533,7 +645,7 @@ def _bounded(owner, face, *, diagonal_mm: float, part_area_mm2: float,
             source, result = Path(tmp) / "owner.brep", Path(tmp) / "divided.brep"
             write_brep(owner, source)
             request = json.dumps({"face": index, "box": _box_of(face), "diagonal_mm": diagonal_mm,
-                                  "part_area_mm2": part_area_mm2})
+                                  "part_area_mm2": part_area_mm2, "sag_share": sag_share})
             proc = subprocess.Popen([*_CHILD_CMD, str(source), request, str(result)],
                                     stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                     stderr=subprocess.DEVNULL, start_new_session=True, text=True)
@@ -564,7 +676,8 @@ def _bounded(owner, face, *, diagonal_mm: float, part_area_mm2: float,
         return {"declined": f"split_failed ({type(exc).__name__})"}, None
 
 
-def _work(owner, face, *, diagonal_mm: float, part_area_mm2: float) -> tuple[dict, object | None]:
+def _work(owner, face, *, diagonal_mm: float, part_area_mm2: float,
+          sag_share: float = SAG_SHARE) -> tuple[dict, object | None]:
     """The kernel half of the operation. ONLY EVER RUN IN THE CHILD (`_bounded`)."""
     size = _mesh_size(diagonal_mm)
     across = partners(owner, face, mesh_size=size)
@@ -579,7 +692,7 @@ def _work(owner, face, *, diagonal_mm: float, part_area_mm2: float) -> tuple[dic
     split: list = []
     for each in (face, *(other for other, _ in across)):
         plan = split_plan(each, gap_mm=gap, mesh_size=size, part_area_mm2=part_area_mm2,
-                          diagonal_mm=diagonal_mm)
+                          diagonal_mm=diagonal_mm, sag_share=sag_share)
         if not (plan["u"] or plan["v"]):
             continue
         pieces = iso_edges(each, plan)
@@ -622,7 +735,13 @@ def _work(owner, face, *, diagonal_mm: float, part_area_mm2: float) -> tuple[dic
 
 
 def _child_main(argv: list[str]) -> int:
-    """`python -m meshpipeline.cad.repair.gap_split <owner.brep> <request json> <out.brep>`."""
+    """`python -m meshpipeline.cad.repair.gap_split <owner.brep> <request json> <out.brep>`, or
+    `... --export-check <part.brep>`."""
+    if argv and argv[0] == "--export-check":
+        valid = _delivered_valid(Path(argv[1]))
+        sys.stdout.write(json.dumps({"valid": bool(valid)}) + "\n")
+        sys.stdout.flush()
+        return 0
     from OCP.TopAbs import TopAbs_FACE
 
     from meshpipeline.cad.repair.localize import _indexed
@@ -638,12 +757,22 @@ def _child_main(argv: list[str]) -> int:
         answer: dict = {"declined": "not_resolved (the target face did not survive the hand-off)"}
     else:
         answer, divided = _work(owner, face, diagonal_mm=float(request["diagonal_mm"]),
+                                sag_share=float(request.get("sag_share", SAG_SHARE)),
                                 part_area_mm2=float(request["part_area_mm2"]))
         if divided is not None:
             write_brep(divided, result)
     sys.stdout.write(json.dumps(answer) + "\n")
     sys.stdout.flush()
     return 0
+
+
+def _delivered_valid(path: Path) -> bool:
+    """Does the written STEP read back BRepCheck-valid through the pipeline's own reader
+    (`brep._read_shape`)? ONLY EVER RUN IN THE CHILD."""
+    from meshpipeline.cad.repair.brep import _read_shape
+    from meshpipeline.cad.repair.operations import _is_valid
+
+    return bool(_is_valid(_read_shape(path)))
 
 
 def _precise(shape) -> tuple[float, float]:
@@ -655,6 +784,21 @@ def _precise(shape) -> tuple[float, float]:
     BRepGProp.SurfaceProperties_s(shape, area, 1e-6)
     BRepGProp.VolumeProperties_s(shape, volume, 1e-6)
     return abs(float(area.Mass())), abs(float(volume.Mass()))
+
+
+def _shares_topology(shape, owner) -> bool:
+    """Does any edge of `owner` also belong to a different solid of `shape`? Topology only."""
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_SOLID
+    from OCP.TopExp import TopExp
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+
+    ancestors = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(shape, TopAbs_EDGE, TopAbs_SOLID, ancestors)
+    for index in range(1, ancestors.Extent() + 1):
+        solids = list(ancestors.FindFromIndex(index))
+        if any(s.IsSame(owner) for s in solids) and any(not s.IsSame(owner) for s in solids):
+            return True
+    return False
 
 
 def _is_solid(shape) -> bool:

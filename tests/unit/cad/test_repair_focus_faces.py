@@ -220,3 +220,21 @@ def test_a_focus_reaches_the_region_driver_and_nothing_else(monkeypatch):
         assert "region" in str(exc).lower()
     else:  # pragma: no cover - the refusal is the point
         raise AssertionError("a focused run on the operation-at-a-time driver must refuse")
+
+
+def test_the_gap_prepass_sees_only_the_focused_regions(monkeypatch):
+    """Greptile PRRT_kwDOUFq_Ps66OjTe: the pre-pass commits splits, so handing it every region would
+    let a focused run change a region it then reports `not_in_focus`."""
+    from meshpipeline.cad.repair import region_loop
+
+    seen: list = []
+
+    def prepass(work, regions, **kw):
+        seen.extend(int(r.index) for r in regions)
+        return []
+
+    monkeypatch.setattr(region_loop, "_gap_prepass", prepass)
+    part = _Part()
+    run = _run(part, focus_faces=(7,))
+    in_focus = [r.index for r in run.regions if 7 in r.face_indices]
+    assert seen == in_focus

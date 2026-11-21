@@ -499,6 +499,81 @@ def _observe_part(author: Author, defects) -> None:
         observe(tuple(defects))
 
 
+#: The share of the run clock left at the pre-pass's start that it may spend, so the region walk
+#: (kernel cures, the investigator, the tournament) still gets the rest.
+GAP_PREPASS_SHARE = 0.4
+
+
+def _gap_prepass(work, regions, *, remaining: Callable[[], float], reserve: float,
+                 tolerance_mm: float, max_ops: int, reserved: frozenset = frozenset(),
+                 ) -> list[tuple[int, TargetPackage, PackageVerdict]]:
+    """Offer `resolve_sub_mesh_gap` to every 3D-stage gap clash, down its sag ladder, before any
+    author runs. Nothing here is a new gate: each package goes through `try_package` (predicate,
+    caps, solids, validity, the reviewer, the delivered-STEP keep rule) exactly as an authored one.
+
+    Off unless CAD_REPAIR_RESOLVE_SUB_MESH_GAP is on. Bounded by GAP_PREPASS_SHARE of the clock,
+    the final reserve and the run's operation allowance. A face is retried at the next rung only
+    while its earlier tries neither committed nor declined (`rules_author.GapTries`).
+
+    A HELD FACE IS NEVER AIMED AT (`reserved`, the codes held for an engineer): the same rule
+    `rules_author._gap_lead` keeps, and the session cannot enforce it for this operation, which
+    removes no fingerprint. Each entry is `(region index, the package as offered, its verdict)`, so
+    the walk can record a committed one for replay.
+    """
+    from meshpipeline.cad.repair import rules_author as ra
+    from meshpipeline.cad.repair.plan import held_fingerprints
+
+    if not getattr(rcfg, "CAD_REPAIR_RESOLVE_SUB_MESH_GAP", False):
+        return []
+    start = remaining()
+    spend_until = start - GAP_PREPASS_SHARE * max(start - reserve, 0.0)
+    out: list[tuple[int, TargetPackage, PackageVerdict]] = []
+    tried: list[PackageVerdict] = []
+    charged = len(work.log)
+    region_of = {fp: region for region in regions for fp in region.fingerprints}
+    floor = max(reserve, spend_until)
+    # AIMS AND REGIONS NOT TO OFFER AGAIN (Greptile PRRT_kwDOUFq_Ps66OjT1). A package that ran no
+    # operation - refused, or escalated unrun because the region's review allowance is spent -
+    # moves no rung of the ladder (`gap_tries` reads operations), so without this the same rung
+    # was offered again until the clock share ran out.
+    unrun: set[str] = set()
+    closed: set[int] = set()
+    while True:
+        if remaining() <= floor or charged >= max_ops:
+            break
+        tries = ra.gap_tries(tuple(tried))
+        # EVERY FACE'S FIRST RUNG BEFORE ANY FACE'S SECOND: a finer retry of a face that already
+        # failed is the last resort, not the next thing (0051_00519054: three rungs on one doomed
+        # face spent the budget its neighbour's coarse split would have fixed the part with).
+        now = work.defects()
+        held = held_fingerprints(now, reserved)
+        open_aims = [d for d in ra.gap_defects(now)
+                     if d.fingerprint in region_of and d.fingerprint not in held
+                     and d.code not in reserved and not tries.spent(d.fingerprint)
+                     and d.fingerprint not in unrun
+                     and region_of[d.fingerprint].index not in closed]
+        aim = min(open_aims, key=lambda d: tries.rung(d.fingerprint), default=None)
+        if aim is None:
+            break
+        region = region_of[aim.fingerprint]
+        # THE PACKAGE GETS ONLY WHAT THE SHARE HAS LEFT (Greptile PRRT_kwDOUFq_Ps66OjT4): its own
+        # timeout and the operation's kernel children are both capped by it, so an attempt
+        # started near the cutoff cannot spend the walk's time or the final reserve.
+        package = ra.gap_package(region, aim, tries, original=work.original,
+                                 budget_s=remaining() - floor)
+        offered = _with_tolerance(package, tolerance_mm)
+        verdict = work.try_package(offered)
+        out.append((region.index, offered, verdict))
+        tried.append(verdict)
+        if any(op.kept for op in verdict.verdicts):
+            charged += len(verdict.verdicts)
+        if not verdict.verdicts:
+            unrun.add(aim.fingerprint)
+        if verdict.status == ESCALATED and verdict.reason.startswith(REVIEW_REJECTED):
+            closed.add(int(region.index))
+    return out
+
+
 def _with_tolerance(package: TargetPackage, tolerance_mm: float) -> TargetPackage:
     """The package as its author wrote it, with the RUN'S tolerance filled into any plan item
     that did not ask for one.
@@ -640,7 +715,10 @@ def _plain_item(item: dict) -> dict:
     (PR #494 review, region_loop.py:503).
     """
     op, code = item.get("op"), item.get("defect_code")
-    return {**item,
+    # A LADDERED OPERATION'S RUNG travels too (`ResolveSubMeshGap.sag_share`): replay resolves
+    # the operation by name, which alone would rebuild it at its default rung.
+    rung = getattr(op, "sag_share", None)
+    return {**item, **({"sag_share": float(rung)} if rung is not None else {}),
             "op": op if isinstance(op, str) else getattr(op, "name", str(op)),
             "targets": [{"entity_type": t.entity_type, "fingerprint": t.fingerprint,
                          "entity_index": int(t.entity_index), "ambiguous": bool(t.ambiguous)}
@@ -803,6 +881,26 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
     packages: list[PackageVerdict] = []
     escalated: list[int] = []
     committed = False
+    # THE GAP PRE-PASS (lane H, wave 8), BEFORE ANY AUTHOR: every 3D-stage clash the probe
+    # measured apart gets `resolve_sub_mesh_gap` through the ordinary `try_package`, whatever the
+    # arm and whether or not its region is ever reached. Its verdicts are the run's packages and
+    # seed each region's `tried`, so the walk's author sees what the pre-pass already did.
+    prior: dict[int, list[PackageVerdict]] = {}
+    log_before_prepass = len(work.log)
+    # THE FOCUSED WALK, not every region (Greptile PRRT_kwDOUFq_Ps66OjTe): the pre-pass commits
+    # splits, and a region reported `not_in_focus` must be left exactly as it came.
+    gap_verdicts = _gap_prepass(work, walk, remaining=remaining, reserve=reserve,
+                                tolerance_mm=tolerance_mm, max_ops=limits.max_ops,
+                                reserved=reserved)
+    for region_index, offered_gap, verdict in gap_verdicts:
+        packages.append(verdict)
+        if record_replay and verdict.committed:
+            # RECORDED LIKE THE WALK'S COMMITS, and first because they ran first (Greptile
+            # PRRT_kwDOUFq_Ps66QAIz): a replay that skipped them would rebuild a part without its
+            # splits.
+            replays.append(replay_record(offered_gap, verdict, tolerance_mm=tolerance_mm))
+        prior.setdefault(region_index, []).append(verdict)
+        committed = committed or verdict.committed
     # WHAT THE RUN'S OPERATION ALLOWANCE HAS BEEN SPENT ON, counted here rather than read off
     # `len(work.log)`, because the log counts every ATTEMPT and this budget bounds mutation work.
     # A PACKAGE THAT KEPT NOTHING DOES NOT CHARGE AGAINST IT. With per-operation proofs scoped,
@@ -812,7 +910,9 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
     # region that still has real defects. The run stays bounded regardless: `attempts` packages
     # per region, each package's own `PackageBudget` bounding the operations inside it, and this
     # allowance and the run's clock checked before every attempt.
-    charged = len(work.log)
+    # THE PRE-PASS IS CHARGED BY THE WALK'S OWN RULE: a package that kept nothing charges nothing.
+    charged = log_before_prepass + sum(len(v.verdicts) for _, _, v in gap_verdicts
+                                       if any(op.kept for op in v.verdicts))
     # WALKED EVERY REGION unless a budget says otherwise; the loop runs out of regions rather than
     # of ideas, because a region is offered packages until one of them holds.
     stopped = REGIONS_EXHAUSTED
@@ -826,7 +926,7 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
         # WHAT THIS REGION HAS ALREADY TRIED, which is the author's third argument. Per region and
         # not per run: a package that failed on this locus says nothing about the next one, and
         # regions are independent by construction (that is the point of them).
-        tried: list[PackageVerdict] = []
+        tried: list[PackageVerdict] = list(prior.get(region.index, ()))
         # WHAT THIS REGION'S OWN PROOF HAS ALREADY DISCHARGED. A committing package's predicate
         # was checked against the scoped re-inspection the commit rests on, so its `cleared` names
         # really are absent from the region - but that scoped list deliberately does NOT become

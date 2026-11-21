@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 
 import meshpipeline.settings.cad_repair as rcfg
 from meshpipeline.cad.repair import mesh_probe
@@ -159,6 +160,149 @@ def _gap_first(defect) -> tuple[str, ...]:
     return (GAP_OP,)
 
 
+@dataclass(frozen=True)
+class GapTries:
+    """What the region already did with the gap operation, read off its attempts.
+
+    `failed` counts, per target fingerprint, the tries that were neither declined nor kept in a
+    committed package - each one moves that face one rung down `gap_split.SAG_LADDER`. `declined`
+    holds the fingerprints the operation refused outright (no gap, flat, too fine, kernel
+    timeout): a finer rung asks the same question of the same geometry. `last_failed` is whether
+    the region's most recent gap attempt left nothing behind - the signal to stop putting the gap
+    first and let the kernel's cure have its turn.
+    """
+
+    failed: dict
+    declined: frozenset
+    last_failed: bool
+
+    def rung(self, fingerprint: str) -> int:
+        return int(self.failed.get(fingerprint, 0))
+
+    def spent(self, fingerprint: str) -> bool:
+        from meshpipeline.cad.repair.gap_split import SAG_LADDER
+
+        return fingerprint in self.declined or self.rung(fingerprint) >= len(SAG_LADDER)
+
+
+def gap_tries(attempts: tuple[PackageVerdict, ...]) -> GapTries:
+    failed: dict[str, int] = {}
+    declined: set[str] = set()
+    last_failed = False
+    for verdict in attempts:
+        for op in verdict.verdicts:
+            if op.op != GAP_OP:
+                continue
+            if op.kept and verdict.committed:
+                last_failed = False
+                continue
+            last_failed = True
+            if op.evidence.get("declined"):
+                declined.update(op.targets)
+                continue
+            for fingerprint in op.targets:
+                failed[fingerprint] = failed.get(fingerprint, 0) + 1
+    return GapTries(failed=failed, declined=frozenset(declined), last_failed=last_failed)
+
+
+def _gap_op(tries: GapTries, fingerprint: str):
+    """The gap operation at this face's rung of the ladder."""
+    from meshpipeline.cad.repair.gap_split import SAG_LADDER, ResolveSubMeshGap
+
+    return ResolveSubMeshGap(sag_share=SAG_LADDER[min(tries.rung(fingerprint),
+                                                      len(SAG_LADDER) - 1)])
+
+
+def gap_defects(defects) -> tuple:
+    """The defects the GAP PRE-PASS aims at (`region_loop._gap_prepass`): a 3D-stage clash the
+    probe measured APART (`clash_kind` GAP) that the gap operation claims, in a stable order. Empty
+    when the operation is not in the catalogue."""
+    op = _OPS_BY_NAME.get(GAP_OP)
+    if op is None:
+        return ()
+    return tuple(sorted((d for d in defects if _sub_element_gap(d) and _volume_stage_recorded(d)
+                         and d.code in op.answers and d.fingerprint and op.targets_for(d)),
+                        key=lambda d: (d.entity_index, d.code.value, d.fingerprint)))
+
+
+def gap_package(region: Region, defect, tries: GapTries, *, original: Measure,
+                budget_s: float | None = None) -> TargetPackage:
+    """The gap operation's package for one defect, at that face's rung of the ladder - built
+    exactly as `rules_author` builds every package (one operation, the deployment's residual caps
+    as the predicate's allowance), so the pre-pass's packages pass the same gates.
+
+    `budget_s`, given, caps both the package's own timeout and the operation's kernel children:
+    the pre-pass's share of the clock is a bound on the whole attempt, not only on starting it."""
+    op = _gap_op(tries, defect.fingerprint)
+    budget = None
+    if budget_s is not None:
+        op.budget_s = min(op.budget_s, max(float(budget_s), 0.0))
+        budget = PackageBudget(max_ops=1, timeout_s=min(float(rcfg.CAD_REPAIR_TIMEOUT_S),
+                                                        float(budget_s)),
+                               model_calls=0, deviation_mm=0.0)
+    candidate = Candidate(op=op,
+                          targets=(EntityRef(entity_type=str(defect.entity_type),
+                                             fingerprint=defect.fingerprint,
+                                             entity_index=int(defect.entity_index),
+                                             ambiguous=bool(getattr(defect, "ambiguous", False))),),
+                          defect_code=defect.code, defect_fingerprint=defect.fingerprint)
+    return _package(candidate, region, original=original, budget=budget,
+                    rationale=(f"{LABEL}: gap pre-pass - {GAP_OP} at sag share "
+                               f"{getattr(candidate.op, 'sag_share', 0.0):g} on a {defect.code.value} the probe "
+                               "measured apart"))
+
+
+def _package(candidate: Candidate, region: Region, *, original: Measure, rationale: str,
+             max_area_delta_mm2: float | None = None, max_volume_delta_mm3: float | None = None,
+             budget: PackageBudget | None = None) -> TargetPackage:
+    area = (max_area_delta_mm2 if max_area_delta_mm2 is not None
+            else float(rcfg.CAD_REPAIR_MAX_AREA_CHANGE_RATIO) * original.surface_area_mm2)
+    volume = (max_volume_delta_mm3 if max_volume_delta_mm3 is not None
+              else float(rcfg.CAD_REPAIR_MAX_VOLUME_CHANGE_RATIO) * original.volume_mm3)
+    allowance = budget if budget is not None else PackageBudget(
+        max_ops=1, timeout_s=float(rcfg.CAD_REPAIR_TIMEOUT_S), model_calls=0, deviation_mm=0.0)
+    predicate = Predicate(cleared=frozenset({candidate.defect_fingerprint}),
+                          reclassified=frozenset(), unchanged=frozenset(),
+                          max_area_delta_mm2=float(area), max_volume_delta_mm3=float(volume))
+    plan = ({"op": candidate.op, "targets": candidate.targets,
+             "defect_code": candidate.defect_code},)
+    return TargetPackage(
+        region=region, plan=plan, predicate=predicate, budget=allowance,
+        intent=(f"clear the {candidate.defect_code.value} on "
+                f"{candidate.defect_fingerprint} in region {region.index}"),
+        rationale=rationale)
+
+
+def _gap_lead(defects, tries: GapTries, region: Region, *,
+              reserved: frozenset) -> Candidate | None:
+    """THE GAP OPERATION FIRST (lead, wave 6: it ran on only 5 of 14 gap files because the kernel's
+    cures used the region's attempts first, against a 40% yield where it did run). For a 3D-stage
+    clash the probe measured APART (`clash_kind` GAP) the split is proposed before any kernel cure
+    - but only while the region's last gap attempt did not fail, so a part whose gap the split
+    cannot resolve still reaches the cure that fixed it before (0060_00608290's fix_small_faces).
+    """
+    op = _OPS_BY_NAME.get(GAP_OP)
+    if op is None or tries.last_failed:
+        return None
+    held = held_fingerprints(defects, reserved)
+    ordered = sorted((d for d in defects if _sub_element_gap(d) and _volume_stage_recorded(d)
+                      and d.code in op.answers and d.code not in reserved),
+                     key=lambda d: (tries.rung(d.fingerprint), d.entity_index, d.code.value,
+                                    d.fingerprint))
+    for defect in ordered:
+        if (not defect.fingerprint or defect.fingerprint in held
+                or defect.fingerprint not in region.fingerprints
+                or tries.spent(defect.fingerprint) or not op.targets_for(defect)):
+            continue
+        return Candidate(op=_gap_op(tries, defect.fingerprint),
+                         targets=(EntityRef(entity_type=str(defect.entity_type),
+                                            fingerprint=defect.fingerprint,
+                                            entity_index=int(defect.entity_index),
+                                            ambiguous=bool(getattr(defect, "ambiguous", False))),),
+                         defect_code=defect.code, defect_fingerprint=defect.fingerprint)
+    return None
+
+
 def _surface_stage(defect) -> bool:
     return (getattr(defect, "measurements", None) or {}).get("stage") == mesh_probe.STAGE_2D
 
@@ -194,9 +338,14 @@ def _sub_element_gap(defect) -> bool:
             and measurements.get("clash_kind") == GAP)
 
 
-def _spent(defect, name: str, ordered, history: RunHistory) -> bool:
+def _spent(defect, name: str, ordered, history: RunHistory,
+           tries: GapTries | None = None) -> bool:
     """Has the region already used up `name` on this defect - tried it, tried it on a sibling of
-    the same contact, or had the aim declined?"""
+    the same contact, or had the aim declined? The gap operation is spent only once its LADDER is
+    (`GapTries.spent`): a failed split is retried finer, not abandoned."""
+    if name == GAP_OP and tries is not None:
+        return tries.spent(defect.fingerprint) or history.was_declined(name,
+                                                                       (defect.fingerprint,))
     if history.was_ineffective(defect.fingerprint, name):
         return True
     # SIBLINGS OF ONE CONTACT: faces located from the same solid pair are one physical
@@ -210,7 +359,7 @@ def _spent(defect, name: str, ordered, history: RunHistory) -> bool:
 
 
 def _mesh_candidate(defects, history: RunHistory, *, reserved: frozenset,
-                    skip_gaps: bool = False) -> Candidate | None:
+                    skip_gaps: bool = False, tries: GapTries | None = None) -> Candidate | None:
     """The MESH_OPS proposal for a region's mesh failures, or None - with the RulesPlanner's own
     bookkeeping, so the two halves of the baseline cannot disagree about what a refusal is.
 
@@ -224,7 +373,8 @@ def _mesh_candidate(defects, history: RunHistory, *, reserved: frozenset,
     held = held_fingerprints(defects, reserved)
     ordered = sorted((d for d in defects if _is_mesh(d)
                       and not (skip_gaps and _sub_element_gap(d))),
-                     key=lambda d: (d.entity_index, d.code.value, d.fingerprint))
+                     key=lambda d: (tries.rung(d.fingerprint) if tries is not None else 0,
+                                    d.entity_index, d.code.value, d.fingerprint))
     for defect in ordered:
         if defect.code in reserved:
             continue
@@ -253,13 +403,15 @@ def _mesh_candidate(defects, history: RunHistory, *, reserved: frozenset,
             continue
         if defect.fingerprint in held:
             continue
-        name = next((n for n in chain if not _spent(defect, n, ordered, history)), None)
+        name = next((n for n in chain if not _spent(defect, n, ordered, history, tries)), None)
         if name is None:
             continue
+        chosen_op = (_gap_op(tries, defect.fingerprint) if name == GAP_OP and tries is not None
+                     else _OPS_BY_NAME[name])
         target = EntityRef(entity_type=str(defect.entity_type), fingerprint=defect.fingerprint,
                            entity_index=int(defect.entity_index),
                            ambiguous=bool(getattr(defect, "ambiguous", False)))
-        return Candidate(op=_OPS_BY_NAME[name], targets=(target,), defect_code=defect.code,
+        return Candidate(op=chosen_op, targets=(target,), defect_code=defect.code,
                          defect_fingerprint=defect.fingerprint)
     return None
 
@@ -449,12 +601,14 @@ def rules_author(shape, *, original: Measure, reserved: frozenset = frozenset(),
         # the guard whole-part again - without it a passage whose two rims decompose into two
         # regions is sealed (observe_part).
         refuse_paired_rims(history, part_rims)
+        tries = gap_tries(attempts)
+        leading = _gap_lead(tuple(defects), tries, region, reserved=frozenset(reserved))
         # KERNEL DEFECTS FIRST, MESH FAILURES AFTER. The rules are handed exactly the defects
         # they always were (with CAD_REPAIR_MESH_PROBE off there is no other kind, so this is
         # byte-for-byte the flag-off author); a mesh failure is aimed at only once they have
         # nothing, because a kernel defect is often what the mesher tripped on.
         kernel = tuple(d for d in defects if not _is_mesh(d))
-        candidate = chosen.propose(kernel, history, shape=shape)
+        candidate = leading or chosen.propose(kernel, history, shape=shape)
         # P2-R8: SEVERITY FIRST, as the region walk is (region_loop._SEVERITY_RANK). A mesh
         # failure is an ERROR; when the kernel's pick is only a warning or info sweep, the
         # failure is reached first. Kernel errors keep their place ahead of it. With no mesh
@@ -465,15 +619,17 @@ def rules_author(shape, *, original: Measure, reserved: frozenset = frozenset(),
         # fix_small_faces every earlier wave kept with a fragment_bodies that could not help. It
         # is still aimed at once the kernel has nothing (the `elif` below), as before.
         jumping = tuple(d for d in defects if mesh_finding_outranks_kernel(d))
-        if candidate is not None and jumping:
+        if leading is None and candidate is not None and jumping:
             rank = min((_SEVERITY_RANK.get(d.severity, 9) for d in kernel
                         if d.fingerprint == candidate.defect_fingerprint), default=9)
             if rank > _SEVERITY_RANK[DefectSeverity.error]:
                 candidate = (_mesh_candidate(tuple(defects), history,
-                                             reserved=frozenset(reserved), skip_gaps=True)
+                                             reserved=frozenset(reserved), skip_gaps=True,
+                                             tries=tries)
                              or candidate)
         elif candidate is None:
-            candidate = _mesh_candidate(tuple(defects), history, reserved=frozenset(reserved))
+            candidate = _mesh_candidate(tuple(defects), history, reserved=frozenset(reserved),
+                                        tries=tries)
         # WHAT THE RULES REFUSED TO AIM AT, KEPT INSTEAD OF DISCARDED WITH THE LEDGER. The
         # ledger above is rebuilt per call because the author is stateless, but a refusal is not
         # feedback for the next package - it is a thing the customer is owed in the report (the

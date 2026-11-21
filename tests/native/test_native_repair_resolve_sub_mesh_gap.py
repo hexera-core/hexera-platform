@@ -179,3 +179,98 @@ def test_the_real_child_runs_in_a_fresh_interpreter_without_forking(gap_on, monk
     outcome = ResolveSubMeshGap().apply(tube, (_ref(tube, 1),), tolerance_mm=1e-4)
     assert "declined" not in outcome.evidence, outcome.evidence
     assert _meshes(outcome.shape, tmp_path, diagonal) == (True, "")
+
+
+# SHARING ACROSS THE PROCESS BOUNDARY (lane A's fragment_bodies lesson): the split solid comes back
+# from a child and is spliced in, so the delivered part must still be watertight - one closed
+# shell, no free edge, every split-boundary edge held by exactly two faces (a seam by one face
+# twice) - on an ASYMMETRIC wall, where only one side is curved and split.
+
+def _watertight(solid) -> tuple[int, int, list[int]]:
+    """(shells, free edges, face counts of every non-seam edge)."""
+    from OCP.BRep import BRep_Tool
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_SHELL
+    from OCP.TopExp import TopExp
+    from OCP.TopoDS import TopoDS
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+
+    from meshpipeline.cad.repair.localize import _indexed
+
+    owners = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(solid, TopAbs_EDGE, TopAbs_FACE, owners)
+    counts, free = [], 0
+    for index in range(1, owners.Extent() + 1):
+        edge = TopoDS.Edge_s(owners.FindKey(index))
+        faces: list = []
+        for face in owners.FindFromIndex(index):
+            if not any(face.IsSame(f) for f in faces):
+                faces.append(face)
+        if len(faces) == 1 and BRep_Tool.IsClosed_s(edge, TopoDS.Face_s(faces[0])):
+            continue                                   # a seam: one face, twice
+        if len(faces) == 1:
+            free += 1
+        counts.append(len(faces))
+    return _indexed(solid, TopAbs_SHELL).Extent(), free, counts
+
+
+def _first_cylinder(faces) -> int:
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.GeomAbs import GeomAbs_Cylinder
+    from OCP.TopoDS import TopoDS
+
+    return next(i for i in range(1, faces.Extent() + 1)
+                if BRepAdaptor_Surface(TopoDS.Face_s(faces.FindKey(i))).GetType()
+                == GeomAbs_Cylinder)
+
+
+def _plate_with_bore():
+    """A 120 x 120 x 20 block with a R 59.98 bore: a 0.02 mm wall between a CYLINDER and two
+    PLANES - unequal faces, only the cylinder curved."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCylinder
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
+
+    block = BRepPrimAPI_MakeBox(gp_Pnt(-60.0, -60.0, 0.0), 120.0, 120.0, 20.0).Shape()
+    bore = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0, 0, -1), gp_Dir(0, 0, 1)), 59.98, 22.0).Shape()
+    return BRepAlgoAPI_Cut(block, bore).Shape()
+
+
+@pytest.mark.parametrize("build", [_tube, _plate_with_bore], ids=["tube", "plate_with_bore"])
+def test_the_delivered_solid_is_watertight_after_the_hand_off(gap_on, build, tmp_path):
+    from OCP.TopAbs import TopAbs_FACE
+
+    from meshpipeline.cad.repair.localize import _indexed
+
+    part = build()
+    faces = _indexed(part, TopAbs_FACE)
+    curved = _first_cylinder(faces)
+    outcome = ResolveSubMeshGap().apply(part, (_ref(part, curved),), tolerance_mm=1e-4)
+    assert "declined" not in outcome.evidence, outcome.evidence
+    shells, free, counts = _watertight(outcome.shape)
+    assert shells == 1 and free == 0, (shells, free)
+    assert counts and all(c == 2 for c in counts), sorted(set(counts))
+    assert caps.measure(outcome.shape).valid
+
+
+def test_a_solid_sharing_edges_with_another_is_declined(gap_on):
+    """Two solids glued by the general fuse share their contact: the owner's split could not keep
+    that sharing across the hand-off, so it is not attempted."""
+    from OCP.BOPAlgo import BOPAlgo_Builder
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCP.gp import gp_Pnt
+
+    tube = _tube()
+    lid = BRepPrimAPI_MakeBox(gp_Pnt(-60.0, -60.0, HEIGHT_MM), 120.0, 120.0, 5.0).Shape()
+    builder = BOPAlgo_Builder()
+    builder.AddArgument(tube)
+    builder.AddArgument(lid)
+    builder.Perform()
+    glued = builder.Shape()
+    from OCP.TopAbs import TopAbs_FACE
+
+    from meshpipeline.cad.repair.localize import _indexed
+
+    faces = _indexed(glued, TopAbs_FACE)
+    curved = _first_cylinder(faces)
+    outcome = ResolveSubMeshGap().apply(glued, (_ref(glued, curved),), tolerance_mm=1e-4)
+    assert outcome.evidence["declined"].startswith("shares_topology"), outcome.evidence

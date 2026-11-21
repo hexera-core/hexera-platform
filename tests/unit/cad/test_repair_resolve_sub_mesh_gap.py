@@ -125,11 +125,61 @@ def test_the_baseline_prefers_the_gap_operation_for_a_gap(baseline_on):
     assert "do not touch" in package.rationale
 
 
-@pytest.mark.parametrize("declined", [False, True], ids=["ineffective", "declined"])
-def test_once_spent_the_code_gets_its_own_choice_next(baseline_on, declined):
+def test_a_decline_spends_the_gap_operation_at_once(baseline_on):
     package = rules_author(None, original=MEASURE)(
-        _REGION, (_clash(),), (_tried(NAME, declined=declined),))
+        _REGION, (_clash(),), (_tried(NAME, declined=True),))
     assert package is not None and package.plan[0]["op"].name == "fragment_bodies"
+
+
+def test_a_failed_split_is_retried_finer_down_the_ladder(baseline_on):
+    from meshpipeline.cad.repair.gap_split import SAG_LADDER
+
+    author = rules_author(None, original=MEASURE)
+    tried: tuple = ()
+    for rung, share in enumerate(SAG_LADDER):
+        package = author(_REGION, (_clash(),), tried)
+        assert package is not None and package.plan[0]["op"].name == NAME, rung
+        assert package.plan[0]["op"].sag_share == share
+        tried = (*tried, _tried(NAME))
+    # THE LADDER SPENT, the code gets its own choice.
+    package = author(_REGION, (_clash(),), tried)
+    assert package is not None and package.plan[0]["op"].name == "fragment_bodies"
+
+
+def _gap_clash(**kwargs) -> EntityDefect:
+    defect = _clash(**kwargs)
+    defect.measurements["clash_kind"] = "gap"
+    return defect
+
+
+def _warning() -> EntityDefect:
+    return EntityDefect(code=DefectCode.small_face, severity=DefectSeverity.warning,
+                        entity_type="face", entity_index=2, message="sliver",
+                        fingerprint="face:sliver", location=dict(_BOX), measurements={})
+
+
+_REGION2 = Region(index=0, fingerprints=frozenset({"face:wall", "face:sliver"}),
+                  bbox_min=(0.0, 0.0, 0.0), bbox_max=(10.0, 10.0, 10.0),
+                  face_indices=frozenset({1, 2}))
+
+
+def test_a_measured_gap_goes_first_then_the_kernel_cure_gets_its_turn(baseline_on, monkeypatch):
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_FIX_SMALL_FACES", True)
+    author = rules_author(None, original=MEASURE)
+    first = author(_REGION2, (_gap_clash(), _warning()), ())
+    assert first is not None and first.plan[0]["op"].name == NAME
+    # THE GAP ATTEMPT FAILED: the kernel's cure is next (0060_00608290's fix_small_faces).
+    second = author(_REGION2, (_gap_clash(), _warning()), (_tried(NAME),))
+    assert second is not None and second.plan[0]["op"].name != NAME
+
+
+def test_gap_tries_counts_failures_declines_and_the_last_outcome():
+    from meshpipeline.cad.repair.rules_author import gap_tries
+
+    tries = gap_tries((_tried(NAME), _tried(NAME), _tried(NAME, declined=True)))
+    assert tries.rung("face:wall") == 2 and "face:wall" in tries.declined
+    assert tries.last_failed and tries.spent("face:wall")
+    assert not gap_tries(()).last_failed
 
 
 def test_a_volume_stage_overlap_on_a_gap_is_not_refused_for_its_stage(baseline_on):
@@ -157,3 +207,198 @@ def test_with_the_flag_off_the_baseline_is_unchanged(monkeypatch):
     (2.5, 2.5)])
 def test_a_measured_delta_is_rounded_away_from_zero(value, expected):
     assert _rounded_up(value) == pytest.approx(expected, abs=1e-12)
+
+
+# THE GAP PRE-PASS (region_loop._gap_prepass): before any author, every gap clash is offered the
+# operation through the ordinary try_package, down its ladder, inside its share of the clock.
+
+class _Work:
+    """Just enough of a RepairSession: a defect list, a log, the upload's measure, try_package."""
+
+    def __init__(self, defects, *, commit_on: int | None = None):
+        self._defects = list(defects)
+        self.log: list = []
+        self.original = MEASURE
+        self.offered: list = []
+        self.commit_on = commit_on
+
+    def defects(self):
+        return tuple(self._defects)
+
+    def try_package(self, package):
+        op = package.plan[0]["op"]
+        self.offered.append(op.sag_share)
+        commit = self.commit_on is not None and len(self.offered) == self.commit_on
+        self.log.append(op.name)
+        verdict = PackageVerdict(region_index=package.region.index,
+                                 status="committed" if commit else "reverted",
+                                 verdicts=(OpVerdict(op=op.name, targets=("face:wall",),
+                                                     defect_code="mesh_edge_through_face",
+                                                     status="kept" if commit else "rolled_back",
+                                                     reason="" if commit else "target_remains",
+                                                     evidence={}),))
+        if commit:
+            self._defects = []
+        return verdict
+
+
+def _prepass(work, *, left: float = 1000.0, max_ops: int = 6):
+    from meshpipeline.cad.repair import region_loop
+
+    return region_loop._gap_prepass(work, (_REGION,), remaining=lambda: left, reserve=10.0,
+                                    tolerance_mm=1e-4, max_ops=max_ops)
+
+
+def test_the_prepass_walks_the_ladder_until_a_split_holds(baseline_on):
+    work = _Work((_gap_clash(),), commit_on=2)
+    out = _prepass(work)
+    assert [v.status for _, _, v in out] == ["reverted", "committed"]
+    assert work.offered == [0.25, 0.125]
+
+
+def test_the_prepass_stops_when_the_ladder_is_spent(baseline_on):
+    from meshpipeline.cad.repair.gap_split import SAG_LADDER
+
+    work = _Work((_gap_clash(),))
+    out = _prepass(work)
+    assert len(out) == len(SAG_LADDER) and work.offered == list(SAG_LADDER)
+
+
+def test_the_prepass_ignores_what_is_not_a_measured_gap(baseline_on):
+    work = _Work((_clash(), _clash(gap=0.0), _warning()))
+    assert _prepass(work) == [] and work.offered == []
+
+
+def test_the_prepass_respects_its_clock_share_and_the_flag(baseline_on, monkeypatch):
+    work = _Work((_gap_clash(),))
+    assert _prepass(work, left=5.0) == []          # inside the final reserve
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_RESOLVE_SUB_MESH_GAP", False)
+    assert _prepass(_Work((_gap_clash(),))) == []
+
+
+def test_every_faces_first_rung_comes_before_any_faces_second(baseline_on):
+    """0051_00519054: three rungs on one doomed face spent what a neighbour's coarse split needed."""
+    import dataclasses
+
+    other = dataclasses.replace(_gap_clash(), entity_index=2, fingerprint="face:other")
+    region = Region(index=0, fingerprints=frozenset({"face:wall", "face:other"}),
+                    bbox_min=(0.0, 0.0, 0.0), bbox_max=(10.0, 10.0, 10.0),
+                    face_indices=frozenset({1, 2}))
+
+    class _Two(_Work):
+        def try_package(self, package):
+            self.aimed = [*getattr(self, "aimed", []), package.plan[0]["targets"][0].fingerprint]
+            verdict = super().try_package(package)
+            fp = package.plan[0]["targets"][0].fingerprint
+            return dataclasses.replace(verdict, verdicts=tuple(
+                dataclasses.replace(v, targets=(fp,)) for v in verdict.verdicts))
+
+    from meshpipeline.cad.repair import region_loop
+
+    work = _Two((_gap_clash(), other))
+    region_loop._gap_prepass(work, (region,), remaining=lambda: 1000.0, reserve=10.0,
+                             tolerance_mm=1e-4, max_ops=6)
+    assert work.aimed[:2] == ["face:wall", "face:other"]
+    assert work.offered[:2] == [0.25, 0.25] and work.offered[2] == 0.125
+
+
+def test_the_export_check_writes_in_the_delivery_unit(monkeypatch):
+    """0060_00600919 is a METRE upload: its split read back valid from a millimetre STEP and
+    invalid from the metre STEP the customer gets. The check writes what delivery writes."""
+    import meshpipeline.cad.repair.conservative as conservative
+    import meshpipeline.cad.repair.gap_split as gs
+    import meshpipeline.cad.repair.operations as operations
+
+    seen: list = []
+    monkeypatch.setattr(operations, "_is_valid", lambda shape: True)
+    monkeypatch.setattr(conservative, "_write_step",
+                        lambda shape, path, *, unit=None: seen.append(unit))
+    monkeypatch.setattr(gs, "_run_child", lambda args, budget: ({"valid": False}, ""))
+    assert gs._export_check(object(), object(), budget_s=1.0) .startswith("export_invalidates")
+    with gs.delivering_in("m"):
+        gs._export_check(object(), object(), budget_s=1.0)
+    assert seen == ["mm", "m"]
+    monkeypatch.setattr(gs, "_run_child", lambda args, budget: (None, "kernel_timeout (x)"))
+    assert gs._export_check(object(), object(), budget_s=1.0).startswith("kernel_timeout")
+
+
+def test_the_prepass_stops_aiming_where_no_operation_ran(baseline_on):
+    """Greptile PRRT_kwDOUFq_Ps66OjT1: a package escalated unrun (the region's review allowance is
+    spent) carries no operation, so the ladder never moved and the same rung was offered again
+    until the clock share ran out. An aim whose package ran nothing is not offered again."""
+    from meshpipeline.cad.repair.session import ESCALATED, REVIEW_SPENT_REASON
+
+    class _Spent(_Work):
+        def try_package(self, package):
+            self.offered.append(package.plan[0]["op"].sag_share)
+            assert len(self.offered) < 20, "the pre-pass kept re-offering an unrun package"
+            return PackageVerdict(region_index=package.region.index, status=ESCALATED,
+                                  reason=REVIEW_SPENT_REASON)
+
+    work = _Spent((_gap_clash(),))
+    out = _prepass(work)
+    assert len(out) == 1 and work.offered == [0.25]
+
+
+def test_the_prepass_hands_each_package_only_its_own_clock_share(baseline_on):
+    """Greptile PRRT_kwDOUFq_Ps66OjT4: the share was checked only BEFORE try_package, so a package
+    started near the cutoff still ran its full configured timeout and the 90 s kernel children.
+    The package's budget and the operation's kernel budget are capped by what the share has left."""
+    work = _Work((_gap_clash(),), commit_on=1)
+    seen: list = []
+    original = work.try_package
+
+    def capture(package):
+        seen.append((package.budget.timeout_s, package.plan[0]["op"].budget_s))
+        return original(package)
+
+    work.try_package = capture
+    # left 100, reserve 10: the share is 0.4 * 90 = 36 s.
+    _prepass(work, left=100.0)
+    (timeout_s, kernel_s), = seen
+    assert 0.0 < timeout_s <= 36.0 + 1e-9 and 0.0 < kernel_s <= 36.0 + 1e-9
+
+
+def test_the_gap_operation_caps_its_kernel_children_by_its_own_budget():
+    from meshpipeline.cad.repair.gap_split import KERNEL_BUDGET_S
+
+    assert ResolveSubMeshGap().budget_s == KERNEL_BUDGET_S
+    assert ResolveSubMeshGap(budget_s=5.0).budget_s == 5.0
+    assert ResolveSubMeshGap(budget_s=500.0).budget_s == KERNEL_BUDGET_S
+
+
+def test_the_prepass_never_splits_a_held_face(baseline_on):
+    """Greptile PRRT_kwDOUFq_Ps66QAIm: a gap face that also carries a defect held for an engineer
+    (CAD_REPAIR_REVIEW_ENABLED) must not be split before the engineer answers. `_gap_lead` skips
+    held fingerprints; the pre-pass must too, and the session does not block it for us
+    (ResolveSubMeshGap reports no removed fingerprints)."""
+    from meshpipeline.cad.repair import region_loop
+
+    held = EntityDefect(code=DefectCode.small_face, severity=DefectSeverity.error,
+                        entity_type="face", entity_index=1, message="sliver",
+                        fingerprint="face:wall", location=dict(_BOX), measurements={})
+    work = _Work((_gap_clash(), held), commit_on=1)
+    out = region_loop._gap_prepass(work, (_REGION,), remaining=lambda: 1000.0, reserve=10.0,
+                                   tolerance_mm=1e-4, max_ops=6,
+                                   reserved=frozenset({DefectCode.small_face}))
+    assert out == [] and work.offered == []
+
+
+def test_a_recorded_gap_split_replays_at_its_own_rung(monkeypatch):
+    """A committed pre-pass split is recorded at the rung that held; replay resolves the operation
+    by name from the catalogue, so the rung must travel with it or replay splits differently."""
+    from meshpipeline.cad.repair import operations
+    from meshpipeline.cad.repair.identity import EntityRef
+    from meshpipeline.cad.repair.region_loop import _plain_item
+    from meshpipeline.cad.repair.replay import _live_item
+
+    monkeypatch.setattr(operations, "OPERATIONS",
+                        catalogue(fragment_bodies=True, resolve_sub_mesh_gap=True))
+    item = {"op": ResolveSubMeshGap(sag_share=0.0625),
+            "targets": (EntityRef(entity_type="face", fingerprint="face:wall", entity_index=1),),
+            "defect_code": DefectCode.mesh_edge_through_face}
+    plain = _plain_item(item)
+    assert plain["op"] == NAME and plain["sag_share"] == 0.0625
+    live = _live_item(plain)
+    assert isinstance(live["op"], ResolveSubMeshGap) and live["op"].sag_share == 0.0625
+    assert "sag_share" not in live

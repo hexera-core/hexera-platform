@@ -407,3 +407,35 @@ def test_a_record_survives_the_json_report_and_still_replays(monkeypatch, tmp_pa
 
     assert [o["outcome"] for o in report.diagnostics["replay"]] == [
         replay.REPLAY_COMMITTED, replay.REPLAY_COMMITTED]
+
+
+def test_a_committed_gap_prepass_package_is_recorded_first(monkeypatch):
+    """Greptile PRRT_kwDOUFq_Ps66QAIz: pre-pass packages joined `packages` but never `replays`, so
+    every pre-pass split was lost on replay. A committed one is recorded, before the walk's."""
+    import dataclasses
+
+    from meshpipeline.cad.repair.session import PackageVerdict
+
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_REGION_LOOP", "live")
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_INVESTIGATOR", "live")
+    part = _Part()
+    author = _author(part)
+    seen: dict = {}
+
+    def prepass(work, regions, **kw):
+        region = regions[0]
+        package = author(region, [d for d in work.defects()
+                                  if d.fingerprint in region.fingerprints], ())
+        package = dataclasses.replace(package, intent="the pre-pass's split")
+        seen["region"] = sorted(region.fingerprints)
+        return [(region.index, package, PackageVerdict(region_index=region.index,
+                                                        status="reverted", reason="x")),
+                (region.index, package, PackageVerdict(region_index=region.index,
+                                                        status="committed"))]
+
+    monkeypatch.setattr(RL, "_gap_prepass", prepass)
+    run = _run(part, author)
+    records = [dict(r) for r in run.packages_replay]
+    assert records and records[0]["region_fingerprints"] == seen["region"]
+    assert sum(1 for r in records if r["region_fingerprints"] == seen["region"]) >= 1
+    assert len(records) == 1 + sum(1 for p in run.packages[2:] if p.committed)

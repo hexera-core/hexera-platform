@@ -66,6 +66,9 @@ EVERYTHING_ON: dict[str, str] = {
     # reserve (60 s probe + 10 s slack) and the proof reserve leave no time to look, so the
     # investigator concluded before its first tool call. EVERY arm runs it, so they stay comparable.
     "CAD_REPAIR_TIMEOUT_S": "420",
+    # Shared dev's per-run operation allowance (deploy.yml, dev / cad_repair). Unset, every arm ran
+    # the code default of 6, which halved how many walls one part could have split (lane H, wave 8).
+    "CAD_REPAIR_MAX_OPS": "12",
     # The owner's policy for wave 3: the scratch copy is disposable, so an investigation may try
     # what delivery would refuse, and the regions that actually stop the mesh are walked first.
     # Inert in the deterministic arm, which has no investigator.
