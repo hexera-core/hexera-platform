@@ -851,11 +851,23 @@ async def _run_snappy_on_its_machine(R, workspace, publish: ExecutionEventPublis
     the same case, on a VM, which has no such wall - nothing coarsened. What reaches the caller as
     timed out is then only a STUCK run (stalled) or one that met even a VM's wall, and only those
     pull the re-plan-smaller lever."""
+    import time as _time
+
     from meshpipeline.contracts import mesh_machine as MM
     from meshpipeline.contracts.native_time import wall_for
     while True:
+        _t0 = _time.monotonic()
         result = await _run_snappy_timed(R, workspace, wall_for(workspace), publish, engine, purpose,
                                          run=run, native_attempt=native_attempt)
+        # THE WAY HOME, TIMED: the pass's whole wait against what the mesher and its exports took
+        # where it ran (engines/dispatch post_mesh_s) - the rest is the workspace packed, sent and
+        # unpacked (5.3 of 13 minutes on a resolved-wall car on the CFD board, 21 Nov)
+        _stamps = result.get("post_mesh_s") if isinstance(result, dict) else None
+        if isinstance(_stamps, dict):
+            _whole = _time.monotonic() - _t0
+            _there = sum(float(v) for v in _stamps.values() if isinstance(v, (int, float)))
+            logger.info("snappy pass %d: %.0f s in all - %.0f s where it ran (%s), %.0f s on the way home",
+                        native_attempt, _whole, _there, _stamps, max(0.0, _whole - _there))
         if result.get("out_of_memory"):
             # RUN-3: stopped before the machine ran out of memory (sandbox/safe_exec.MemoryExpired) -
             # the same case one machine up that also holds what it used
