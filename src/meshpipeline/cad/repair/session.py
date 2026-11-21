@@ -1510,6 +1510,25 @@ class RepairSession:
                 scan_s=scan_s, apply_s=apply_s,
                 measure_s=_measure_total(measure_s, verdicts)))
 
+        if not self.is_scratch:
+            # 7b. THE PART AS THE CUSTOMER RECEIVES IT. Written as delivery writes it (STEP, in
+            # the upload's unit) and read back in a bounded child: a package whose delivered file
+            # would read back BRepCheck-invalid - where the upload was valid - is reverted here,
+            # before the reviewer is paid for. The valid->invalid cap above judged the in-memory
+            # shape only (0060_00600919: valid in memory, UnorientableShape as a metre STEP).
+            # A scratch clone cannot commit, so it pays for no export.
+            from meshpipeline.cad.repair import delivery_check
+
+            delivered = delivery_check.export_check(self._upload, self.shape)
+            if delivered:
+                (self.shape, self._defects, self.complete_scan, self.accounting,
+                 self._standing_mesh) = snapshot
+                return self._record_package(PackageVerdict(
+                    region_index=region.index, status=REVERTED,
+                    reason=f"delivered: {delivered}", verdicts=tuple(verdicts),
+                    reclassified=reclassified, scan_s=scan_s, apply_s=apply_s,
+                    measure_s=_measure_total(measure_s, verdicts)))
+
         deviation, deviation_status = self._deviation_evidence(
             cap_s=package.budget.timeout_s - (self.clock() - started))
         review: dict = {}

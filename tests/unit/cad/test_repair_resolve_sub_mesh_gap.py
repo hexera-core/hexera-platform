@@ -302,24 +302,30 @@ def test_every_faces_first_rung_comes_before_any_faces_second(baseline_on):
     assert work.offered[:2] == [0.25, 0.25] and work.offered[2] == 0.125
 
 
-def test_the_export_check_writes_in_the_delivery_unit(monkeypatch):
+def test_the_export_check_writes_in_the_delivery_unit(monkeypatch, real_export_check):
     """0060_00600919 is a METRE upload: its split read back valid from a millimetre STEP and
     invalid from the metre STEP the customer gets. The check writes what delivery writes."""
     import meshpipeline.cad.repair.conservative as conservative
-    import meshpipeline.cad.repair.gap_split as gs
+    import meshpipeline.cad.repair.delivery_check as dc
     import meshpipeline.cad.repair.operations as operations
 
     seen: list = []
     monkeypatch.setattr(operations, "_is_valid", lambda shape: True)
     monkeypatch.setattr(conservative, "_write_step",
                         lambda shape, path, *, unit=None: seen.append(unit))
-    monkeypatch.setattr(gs, "_run_child", lambda args, budget: ({"valid": False}, ""))
-    assert gs._export_check(object(), object(), budget_s=1.0) .startswith("export_invalidates")
-    with gs.delivering_in("m"):
-        gs._export_check(object(), object(), budget_s=1.0)
+    monkeypatch.setattr(dc, "_read_back", lambda path, budget: (False, ""))
+    assert dc.export_check(object(), object()).startswith("export_invalidates")
+    with dc.delivering_in("m"):
+        dc.export_check(object(), object())
     assert seen == ["mm", "m"]
-    monkeypatch.setattr(gs, "_run_child", lambda args, budget: (None, "kernel_timeout (x)"))
-    assert gs._export_check(object(), object(), budget_s=1.0).startswith("kernel_timeout")
+    monkeypatch.setattr(dc, "_read_back", lambda path, budget: (None, "kernel_timeout (x)"))
+    assert dc.export_check(object(), object()).startswith("kernel_timeout")
+    monkeypatch.setattr(dc, "_read_back", lambda path, budget: (True, ""))
+    assert dc.export_check(object(), object()) == ""
+    # A PART THAT ARRIVED INVALID is not made worse by this measure, so it is not judged by it.
+    monkeypatch.setattr(operations, "_is_valid", lambda shape: False)
+    monkeypatch.setattr(dc, "_read_back", lambda path, budget: (False, ""))
+    assert dc.export_check(object(), object()) == ""
 
 
 def test_the_prepass_stops_aiming_where_no_operation_ran(baseline_on):
