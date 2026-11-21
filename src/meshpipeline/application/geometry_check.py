@@ -1323,6 +1323,7 @@ def _scout_exact_rest(facts: dict, skin: Path, local_path: Path, work: Path, int
     facts["holes"] = skin_holes(skin, facts)
     if not declared:
         map_openings(facts)
+        flat_hole_mouths(facts)
         # AN ASSEMBLY'S FLUID is the space inside its parts, closed off where it meets the outside
         # (cad/fluid_volume_check): its openings are what the user confirms, not every flat face
         if wants_fluid_volume(facts):
@@ -1430,6 +1431,132 @@ def vet_by_map(facts: dict, imap) -> None:
         max(kept, key=lambda o: float(o.get("area_mm2") or 0.0))["role"] = "inlet"
 
 
+#: INS-13: a passage's mouth is moved out to the flat face's hole of the same bore when that hole lies
+#: no farther out than this many of its own widths, the mouth inside its footprint.
+FLAT_HOLE_REACH = 4.0
+#: ...and the mouth on that hole's axis, within this share of its width.
+FLAT_HOLE_AXIS = 0.15
+
+
+def flat_holes_by_map(facts: dict, holes: list[dict], imap) -> None:
+    """INS-13, A PASSAGE OPENS WHERE ITS BORE MEETS A FLAT FACE. The map reads a mouth where a bore's
+    loop is tightest: down a threaded port that is the thread's run-out, a 1 mm loop facing sideways
+    (GL45 cap: three 'outlets' no staging could find), while the port opens through a 5.9 mm hole in
+    the cap's top face. Each of the map's passage mouths (`holes`, marked passage) is given the flat
+    face hole of its own bore (the CAD's exact holes, every hole of every flat face: cad/scout
+    `flat_holes`) when that hole faces out to the open air and the mouth lies on its axis: the hole
+    the mouth is, in its own plane; else (a mouth no flat hole is) the outermost hole set back no more
+    than FLAT_HOLE_REACH of its widths, no narrower than the mouth, with only open air between them
+    (neither material nor the passage: the hole is out from the mouth, never its bore's other end). A hole that opens no passage - a bolt hole, a blind dimple -
+    is never one (its mouth is a side pocket's). Annotates each such hole with `flat_hole`."""
+    import numpy as np
+
+    flats = [h for h in facts.get("flat_holes") or [] if h.get("centroid_m") and h.get("normal")]
+    if not flats or not holes:
+        return
+    for h in holes:
+        if not h.get("passage", True) or not h.get("centroid_m"):
+            continue
+        m = np.asarray(h["centroid_m"], dtype=float)
+        mn = np.asarray(h.get("normal") or [0.0, 0.0, 0.0], dtype=float)
+        dm = float(h.get("diameter_mm") or 0.0) / 1000.0
+        same, out = None, None
+        for k, f in enumerate(flats):
+            c, n = np.asarray(f["centroid_m"], dtype=float), np.asarray(f["normal"], dtype=float)
+            d = float(f.get("diameter_mm") or 0.0) / 1000.0
+            if d <= 0 or dm > 1.1 * d or float(mn @ n) < -0.5:
+                continue                              # narrower than the mouth, or the bore's other end
+            rel = m - c
+            along = float(rel @ n)
+            lateral = float(np.linalg.norm(rel - along * n))
+            # ONE BORE: the mouth on the hole's own axis (a port opening off-axis into a wide recess's
+            # floor is that port, not the recess)
+            if lateral > FLAT_HOLE_AXIS * d or along > 0.05 * d or along < -FLAT_HOLE_REACH * d:
+                continue
+            if "out" not in imap.where([c + s * imap.h * n for s in (2.0, 3.0)]):
+                continue                              # the hole does not face the open air
+            if along >= -2.0 * imap.h:
+                if dm >= 0.7 * d:
+                    same = k                          # the mouth IS this hole, in its own plane
+                continue
+            path = imap.where([c + t * rel for t in (0.2, 0.4, 0.6, 0.8)])
+            if "shell" in path or "pocket" in path[:3]:
+                continue                              # material between (another bore), or the passage
+                #                                       itself: the hole is not OUT from the mouth (the
+                #                                       last sample sits at the mouth's own cap)
+            if out is None or along < out[0]:
+                out = (along, k)                      # the outermost flat hole of the bore
+        # the hole the mouth is, else - for a mouth no flat hole is (a thread's run-out) - the
+        # outermost flat hole of its bore
+        k = same if same is not None else (out[1] if out is not None else None)
+        if k is not None:
+            h["flat_hole"] = k
+
+
+def flat_hole_mouths(facts: dict) -> None:
+    """INS-13: a CAD part whose faces gave two openings or more keeps them, and every other passage
+    mouth of the map that is a flat face's hole (flat_holes_by_map) is proposed beside them: a cap's
+    three port holes in one top face are never read by the faces (its holes are a sliver of the face,
+    and only its largest is measured), while its three stubs below are - and the ports were staged
+    with their top ends sealed. Only the FAR END OF A PROPOSED OPENING'S BORE is added: a hole whose
+    axis runs back to a proposed opening facing the other way (the cap's top hole over its stub). A
+    hole into the side of a passage (a screw hole through a tube's wall) stays out, as before; so does
+    a mouth no exact hole explains, and everything on a part read as a body in a flow."""
+    ops = facts.get("openings") or []
+    ports_now = [o for o in ops if o.get("role") in ("inlet", "outlet")]
+    if len(ports_now) < 2 or facts.get("flow") != "internal":
+        return
+
+    def far_end(f: dict) -> bool:
+        c, n = f["centroid_mm"], f["normal"]
+        d = float(f.get("diameter_mm") or 0.0)
+        for o in ports_now:
+            oc, on = o.get("centroid_mm"), o.get("normal")
+            if not oc or not on or sum(a * b for a, b in zip(n, on)) > -0.9:
+                continue                                # not facing the other way on one axis
+            rel = [a - b for a, b in zip(oc, c)]
+            along = sum(a * b for a, b in zip(rel, n))
+            lateral = math.sqrt(max(sum(a * a for a in rel) - along * along, 0.0))
+            if along < 0 and lateral <= 0.5 * max(d, float(o.get("diameter_mm") or 0.0)):
+                return True
+        return False
+    from meshpipeline.cad.scout import MAX_OPENINGS
+
+    flats = facts.get("flat_holes") or []
+    new: list[dict] = []
+    for h in facts.get("holes") or []:
+        k = h.get("flat_hole")
+        if not h.get("passage", True) or k is None or not 0 <= int(k) < len(flats):
+            continue
+        f = flats[int(k)]
+        c, d = f["centroid_mm"], float(f.get("diameter_mm") or 0.0)
+        if any(o.get("centroid_mm") and math.dist(o["centroid_mm"], c) <= max(0.5 * d, 1e-9) for o in [*ops, *new]):
+            continue                                    # the faces read it already
+        if not far_end(f):
+            continue                                    # a hole into a passage's side, not a bore's end
+        new.append({"face": int(f.get("face", -1)), "role": "outlet", "kind": "ring", "shape": "circle",
+                    "confidence": 0.6, "centroid_m": f["centroid_m"], "centroid_mm": c, "normal": f["normal"],
+                    "area_m2": round(float(f["area_mm2"]) * 1e-6, 12), "area_mm2": f["area_mm2"],
+                    "diameter_mm": d, "on_extremity": True, "clear_ahead": True, "from_flat_hole": True})
+    ports = len([o for o in ops if o.get("role") in ("inlet", "outlet")])
+    if new and ports + len(new) > MAX_OPENINGS:
+        # a perforated face (a sieve, a heat-exchanger face) is not a part with ports to name: the
+        # scout's own rule (MAX_OPENINGS); its holes stay on the stage to click
+        facts.setdefault("notes", []).append(
+            f"{len(new)} more holes in its flat faces open its passages - a perforated face, more than "
+            f"{MAX_OPENINGS} openings - so they are not proposed one by one (INS-13)")
+        return
+    for o in new:
+        nid = max([int(q.get("id") or 0) for q in ops] or [0]) + 1
+        ops.append({"id": nid, "name": f"outlet_{nid}", **o})
+    added = len(new)
+    if added:
+        facts["openings"] = ops
+        facts.setdefault("notes", []).append(
+            f"{added} more opening(s): holes in a flat face that open the part's passages, as its inside-space map "
+            "reads them (INS-13)")
+
+
 def map_openings(facts: dict) -> None:
     """A CAD PART'S OPENINGS FROM ITS MAP (INS-2), when its faces gave fewer than two: the mouths
     the inside-space map read on its skin (`facts["holes"]`, marked `passage`), proposed as the
@@ -1440,7 +1567,29 @@ def map_openings(facts: dict) -> None:
     if len(ports) >= 2 or len(mouths) < 2 or not (facts.get("inside") or {}).get("has_inside"):
         return
     side = [h for h in facts.get("holes") or [] if not h.get("passage", True)]
-    mouths = sorted(mouths, key=lambda h: -float(h.get("area_mm2") or 0.0))
+    # INS-13: a mouth the map read down a bore is the flat face's hole of that bore, measured exactly
+    flats, used, moved = facts.get("flat_holes") or [], set(), 0
+    exact = []
+    for h in mouths:
+        k = h.get("flat_hole")
+        if k is None or not 0 <= int(k) < len(flats):
+            exact.append(h)
+            continue
+        if int(k) in used:
+            continue                      # two loops of one bore: one opening
+        used.add(int(k))
+        f = flats[int(k)]
+        round_hole = abs(float(f.get("width_mm") or 0) - float(f.get("height_mm") or 0)) <= 0.1 * float(
+            f.get("width_mm") or 1.0)
+        exact.append({**{key: h[key] for key in ("confidence",) if key in h},
+                      "kind": "ring", "shape": "circle" if round_hole else "other",
+                      "centroid_m": f["centroid_m"], "centroid_mm": f["centroid_mm"], "normal": f["normal"],
+                      "area_mm2": f["area_mm2"], "diameter_mm": f["diameter_mm"],
+                      **({} if round_hole else {"width_mm": f["width_mm"], "height_mm": f["height_mm"]})})
+        moved += int(any(abs(a - b) > 1e-6 for a, b in zip(h.get("centroid_mm") or [], f["centroid_mm"])))
+    mouths = sorted(exact, key=lambda h: -float(h.get("area_mm2") or 0.0))
+    if len(mouths) < 2:
+        return
     out: list[dict] = []
     for k, h in enumerate([*mouths, *side], start=1):
         is_side = k > len(mouths)
@@ -1461,6 +1610,9 @@ def map_openings(facts: dict) -> None:
     facts.setdefault("notes", []).append(
         f"the part's faces gave {len(ports)} opening(s); its inside-space map found {len(mouths)} mouth(s) of its "
         "passages, proposed as the openings (measured on the drawn skin: close, not exact)")
+    if moved:
+        facts["notes"].append(f"{moved} of them read down a bore (a thread's run-out, a counterbore) are the hole "
+                              "where that bore meets the part's flat face, measured exactly (INS-13)")
 
 
 def skin_holes(skin: Path, facts: dict | None = None) -> list[dict]:
@@ -1497,6 +1649,7 @@ def skin_holes(skin: Path, facts: dict | None = None) -> list[dict]:
                 facts["surface"] = health
             if imap is not None:
                 vet_by_map(facts, imap)
+                flat_holes_by_map(facts, holes, imap)
         return holes
     except Exception as exc:  # noqa: BLE001 - a click aid, never a reason to fail the check
         logger.warning("geometry check: the skin's holes could not be read (%s: %s)", type(exc).__name__, exc)

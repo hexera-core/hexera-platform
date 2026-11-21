@@ -189,6 +189,9 @@ class ScoutResult:
     #: every flat face the scout measured, proposed or not, so a user can add an opening on one
     #: and get its real size and position
     faces: list[dict] = field(default_factory=list)
+    #: INS-13: EVERY hole of every flat face, measured exactly (a face with several holes - a cap
+    #: with three ports - has one per hole), for the map to say which of them open a passage
+    flat_holes: list[dict] = field(default_factory=list)
 
     @property
     def size(self) -> tuple[float, float, float]:
@@ -210,6 +213,7 @@ class ScoutResult:
             "confidence": {k: round(float(v), 2) for k, v in self.confidence.items()},
             "notes": list(self.notes),
             "faces": list(self.faces),
+            "flat_holes": list(self.flat_holes),
         }
 
 
@@ -518,6 +522,47 @@ def _measure_wires(face) -> tuple[dict | None, dict | None]:
     return outer, inner
 
 
+#: INS-13: at most this many flat-face holes are kept for the map to read (the largest first).
+MAX_FLAT_HOLES = 400
+
+
+def _holes_of(face) -> list[dict]:
+    """INS-13: what EVERY inner wire of a planar face encloses, each {"area_m2", "centroid", "wh_m"} -
+    a cap's top face with three port holes has three, where _measure_wires keeps only the largest."""
+    from OCP.BRepTools import BRepTools
+    from OCP.TopAbs import TopAbs_WIRE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    from meshpipeline.cad.cad_tessellate import _rim_measure
+
+    outer_w = BRepTools.OuterWire_s(face)
+    out = []
+    we = TopExp_Explorer(face, TopAbs_WIRE)
+    while we.More():
+        wire = TopoDS.Wire_s(we.Current())
+        we.Next()
+        if wire.IsSame(outer_w):
+            continue
+        m = _rim_measure(_rim_polyline(face, wire))
+        if m is not None and m["area_m2"] > 0:
+            out.append(m)
+    return out
+
+
+def _flat_holes_dict(holes: list[dict], bbox_min, bbox_max) -> list[dict]:
+    d = length_decimals([b - a for a, b in zip(bbox_min, bbox_max)])
+    out = []
+    for h in sorted(holes, key=lambda h: -h["area_m2"])[:MAX_FLAT_HOLES]:
+        dia = 2.0 * math.sqrt(h["area_m2"] / math.pi)
+        out.append({"face": h["face"], "centroid_m": [round(v, d + 4) for v in h["centroid"]],
+                    "centroid_mm": [round(v * 1000.0, d) for v in h["centroid"]],
+                    "normal": [round(float(v), 5) for v in h["normal"]],
+                    "area_mm2": round(h["area_m2"] * 1e6, 4), "diameter_mm": round(dia * 1000.0, d),
+                    "width_mm": round(max(h["wh"]) * 1000.0, d), "height_mm": round(min(h["wh"]) * 1000.0, d)})
+    return out
+
+
 # --------------------------------------------------------------------------- the scout ----
 def scout_cad(path, *, prepared, angular_deflection: float = 0.3, shape=None,
               declared_openings: bool = False, joined_regions: bool = False) -> ScoutResult:
@@ -622,6 +667,7 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3, shape=None,
         fe.Next()
 
     candidates: list[Opening] = []
+    flat_holes: list[dict] = []       # INS-13: every hole of every flat face
     flats: list = []                  # (face index, its own area, centre, outer extent) of every flat
     planar = 0
     for i, f in enumerate(faces):
@@ -643,6 +689,9 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3, shape=None,
                 and not inside_any(_add(centroid, normal, -probe)):
             normal = _flip(normal)
         outer, inner = _measure_wires(f)
+        if not declared_openings:
+            flat_holes.extend({"area_m2": float(h["area_m2"]), "centroid": _xyz(h["centroid"]), "normal": normal,
+                               "wh": _wh(h["wh_m"]), "face": i} for h in _holes_of(f))
         kind: str
         o_area: float
         o_centroid: tuple[float, float, float]
@@ -865,7 +914,7 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3, shape=None,
         confidence={"input_kind": confidence_kind,
                     "openings": (sum(o.confidence for o in openings) / len(openings)) if openings else 0.0,
                     **decision},
-        notes=notes, faces=measured)
+        notes=notes, faces=measured, flat_holes=_flat_holes_dict(flat_holes, bbox_min, bbox_max))
 
 
 MAX_FACES = 200
