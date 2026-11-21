@@ -41,6 +41,10 @@ LIBRARY_CONTRACTS = {
     # Enumerates the WHOLE environment to build a redaction table - the values are what it
     # scrubs from captured text, not configuration it obeys.
     "capture/trace.py",
+    # Hands the PARENT'S OWN environment to the fresh child interpreter it starts (plus this
+    # checkout's package root on PYTHONPATH), so the child runs with exactly the settings the
+    # parent was given. It forwards the environment; it obeys no setting from it.
+    "cad/repair/bounded_child.py",
 }
 
 
