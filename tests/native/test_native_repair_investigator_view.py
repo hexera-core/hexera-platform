@@ -3,24 +3,14 @@
 # Boundaries: the native tier, because only here do the CAD kernel and an off-screen GL context
 #             exist. Nothing is written to the repository: every image stays in memory.
 #             `_render_kernel` is called DIRECTLY here, because it is the part under test; the
-#             forked-child wrapper (`render_region`) is exercised in the one test below that can
-#             run it, and skipped on darwin, where Cocoa refuses to initialise after `fork()`
-#             ("+[NSResponder initialize] may have been in progress ... Crashing instead"). The
-#             worker image is Linux, where the fork is the point: see `render_region`'s docstring.
+#             bounded-child wrapper (`render_region`, a fresh interpreter - never a fork) is
+#             exercised in the one test below, on every platform.
 from __future__ import annotations
-
-import sys
 
 import pytest
 
 pytest.importorskip("OCP.BRepPrimAPI", reason="the CAD kernel is a native-tier dependency")
 pytest.importorskip("pyvista", reason="off-screen rendering is a native-tier dependency")
-
-#: pyvista in a forked child aborts on darwin, in Cocoa, before any of our code runs.
-_FORK_RENDERS = pytest.mark.skipif(
-    sys.platform == "darwin",
-    reason="Cocoa cannot initialise after fork(); the fork path is exercised on Linux")
-
 
 def _box(dx: float = 10.0, dy: float = 20.0, dz: float = 30.0):
     from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
@@ -101,7 +91,6 @@ def test_an_empty_shape_gives_no_view():
     assert _render_kernel(empty, [camera], (64, 64)) == []
 
 
-@_FORK_RENDERS
 def test_render_region_draws_in_a_bounded_child():
     from meshpipeline.cad.repair.investigator_tools import render_region
 
