@@ -611,6 +611,17 @@ def main(argv: list[str] | None = None) -> int:
     if checked["commit"] != args.commit:
         print(f"REFUSED: the shards ran {checked['commit']}, not {args.commit}", file=sys.stderr)
         return 2
+    # EVERY READABLE FILE OF A MESHABILITY RUN IS ACCOUNTED FOR: scored, or carrying
+    # meshability_score_error. A row with neither would drop out of every count while the row
+    # total still checks out. Checked before anything is sealed or written.
+    if any("returned_step" in r or "meshability_score_error" in r
+           for e in runs["arms"].values() for r in e["rows"]):
+        unscored = {f"{a}/{k}": files for (a, k), e in sorted(runs["arms"].items())
+                    if (files := _rc().unscored_rows(e["rows"]))}
+        if unscored:
+            print("REFUSED: readable row(s) with neither a meshability score nor a "
+                  f"meshability_score_error: {unscored}", file=sys.stderr)
+            return 2
     expected = {"failing": evalspec.SAMPLE_SIZE, "clean": evalspec.CLEAN_SIZE}
     reports = {}
     for (arm, kind), entry in sorted(runs["arms"].items()):

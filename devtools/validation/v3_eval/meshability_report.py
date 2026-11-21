@@ -89,6 +89,7 @@ def clean_control(rows: list[dict]) -> dict:
             "no_returned_step": sum(1 for r in scored
                                     if not (r.get("returned_step") or {}).get("present")),
             "valid_to_invalid": sum(1 for r in scored if r.get("valid_to_invalid")),
+            "score_errors": sum(1 for r in rows if r.get("meshability_score_error")),
             "changed": sum(1 for r in scored
                            if (r.get("returned_step") or {}).get("source") == "repaired")}
 
@@ -142,7 +143,8 @@ def render(report: dict) -> str:
             ("valid -> invalid (delivered file)", "valid_to_invalid"),
             ("returned unchanged by repair (passthrough)", "source_passthrough"),
             ("never sent to repair (upload returned as-is)", "source_untouched"),
-            ("crashed", "crashed")]
+            ("crashed", "crashed"),
+            ("scoring failed (counted apart, not in the counts above)", "score_errors")]
     for label, key in rows:
         lines.append(f"| {label} | " + " | ".join(
             _v((arms.get(n, {}).get("failing") or {}).get(key)) for n in names) + " |")
@@ -168,7 +170,7 @@ def render(report: dict) -> str:
             lines.append(f"- {n}: {c['still_meshes_default']}/{c['files']} still mesh; "
                          f"{c['newly_broken_default']} newly broken; {c['no_returned_step']} "
                          f"without a returned STEP; {c['valid_to_invalid']} valid->invalid; "
-                         f"{c['changed']} changed")
+                         f"{c['changed']} changed; {c.get('score_errors', 0)} scoring failed")
     lines += ["", "**Which op made the file mesh** (default settings):", ""]
     for n in names:
         credit = (arms.get(n, {}).get("failing") or {}).get("meshed_by") or {}

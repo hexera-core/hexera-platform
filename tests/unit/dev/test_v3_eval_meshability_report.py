@@ -69,7 +69,7 @@ def test_headlines_and_files_per_arm():
     assert rep["arms"][AI]["files"]["b"]["meshed_by"] == {"by": "loop", "op": "fix_small_faces"}
     c = rep["arms"][PASS]["clean"]
     assert c == {"files": 3, "still_meshes_default": 2, "newly_broken_default": 1,
-                 "no_returned_step": 0, "valid_to_invalid": 0, "changed": 0}
+                 "no_returned_step": 0, "valid_to_invalid": 0, "score_errors": 0, "changed": 0}
 
 
 def test_render_names_both_headlines_and_the_bug_row():
@@ -131,3 +131,43 @@ def test_read_diagnostic_files_are_flagged_with_their_verdicts():
     assert "**Read diagnostics**" in md and f"`{bad}`" in md
     assert "**Read diagnostics**" not in mr.render(
         mr.build(_units(), summarise=rc.meshability_summary, comparison=(PASS, AI)))
+
+
+def test_collect_refuses_a_readable_row_with_neither_a_score_nor_an_error(tmp_path,
+                                                                          monkeypatch):
+    collect = _load("v3_collect_for_report_refusal", V3 / "collect.py")
+    spec = collect.evalspec
+    commit = "a" * 40
+    units = _units()
+    first = sorted(units)[0]
+    units[first] = units[first] + [{"file": "silent.step", "outcome": "refused"}]
+    for (arm, kind), rows in units.items():
+        d = tmp_path / "src" / arm / kind / "shard-1-of-1"
+        d.mkdir(parents=True)
+        prov = {"commit": commit, "image": "img@sha256:" + "b" * 64, "image_commit": "c" * 40,
+                "sample_sha256": ("s" if kind == "failing" else "c") * 64, "kind": kind,
+                "arm": arm, "shard": "1/1", "exit_code": 0, "machine_type": "c2d-highcpu-4",
+                "started_at": "2026-11-21T00:00:00Z", "ended_at": "2026-11-21T00:10:00Z",
+                "wall_seconds": 600.0, "operations_catalogue": [], "model_calls": []}
+        (d / "PROVENANCE.json").write_text(json.dumps(prov))
+        (d / "rows.json").write_text(json.dumps(rows))
+        (d / "DONE").write_text("0\n")
+    monkeypatch.setattr(spec, "SAMPLE_SIZE", 4)
+    monkeypatch.setattr(spec, "CLEAN_SIZE", 3)
+    monkeypatch.setattr(collect, "seal", lambda entry, arm, kind, checked, o: o / "sealed")
+    out = tmp_path / "out"
+    out.mkdir()
+    assert collect.main(["--commit", commit, "--from", str(tmp_path / "src"),
+                         "--out", str(out)]) == 2
+    assert not (out / "meshability.json").exists()
+
+
+def test_the_report_shows_scoring_failures_apart():
+    rows = [_row("a.step", default=True),
+            {"file": "b.step", "outcome": "refused", "meshability_score_error": "TypeError: x"}]
+    clean = mr.clean_control(rows)
+    assert clean["score_errors"] == 1
+    report = mr.build({(PASS, "failing"): rows, (PASS, "clean"): rows},
+                      summarise=rc.meshability_summary, comparison=(PASS, AI))
+    md = mr.render(report)
+    assert "scoring failed" in md

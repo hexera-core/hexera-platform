@@ -1136,6 +1136,39 @@ def _hints_quality(scored: list[dict]) -> dict:
             "most_elements": pick("elements", max), "most_attempts": pick("attempts", max)}
 
 
+
+#: The row key that says why a readable file carries no meshability score. A file is either scored
+#: (`returned_step` present) or says why not here; collect refuses a wave where neither holds.
+SCORE_ERROR = "meshability_score_error"
+
+
+def _scorable(row: dict) -> bool:
+    """A file the meshability report must account for: anything that was read and did not crash."""
+    return row.get("outcome") not in ("unreadable", CRASHED)
+
+
+def score_or_mark(row: dict, path: Path, scratch: Path, *, since: float,
+                  score=None) -> None:
+    """Score `row` (`_score_returned`; `score` is a test seam). A scoring exception, or a scoring
+    run that returns without a `returned_step` (an early exit such as an unreadable diagonal),
+    becomes an explicit SCORE_ERROR on the row instead of a file that silently drops out of every
+    count. Wave 11210343 lost three whole shards to one sidecar field read as the wrong type."""
+    score = score or _score_returned
+    try:
+        score(row, path, scratch, since=since)
+    except Exception as exc:  # noqa: BLE001 - scoring must never abort the shard
+        row[SCORE_ERROR] = f"{type(exc).__name__}: {exc}"[:300]
+        return
+    if _scorable(row) and "returned_step" not in row and SCORE_ERROR not in row:
+        row[SCORE_ERROR] = "not scored: scoring returned without a returned_step"
+
+
+def unscored_rows(rows: list[dict]) -> list[str]:
+    """Readable rows of a meshability run with NEITHER a score NOR a SCORE_ERROR: collect refuses
+    a wave that has any, because such a file would vanish from every count unnoticed."""
+    return [str(r.get("file")) for r in rows
+            if _scorable(r) and "returned_step" not in r and SCORE_ERROR not in r]
+
 def meshability_summary(rows: list[dict]) -> dict:
     """The meshability report's counts. {} for rows scored without --meshability. Every count is
     over the files whose row was scored (`files`), crashed and unreadable files reported apart."""
@@ -1159,6 +1192,8 @@ def meshability_summary(rows: list[dict]) -> dict:
     return {
         "files": len(scored),
         "crashed": sum(1 for r in rows if r.get("outcome") == CRASHED),
+        # COUNTED APART, never silently missing: a readable file whose scoring failed.
+        "score_errors": sum(1 for r in rows if SCORE_ERROR in r),
         "unreadable": sum(1 for r in rows if r.get("outcome") == "unreadable"),
         "steps_returned": len(got),
         "no_returned_step": len(scored) - len(got),
@@ -2143,14 +2178,19 @@ def run_files(files: list[Path], scratch: Path, *, mode: str = "off", loop: bool
                         force_repair=force_repair, goal=goal, sink=sink, stage=stage)
 
         since = time.time()
-        row = _isolated(path, body, mesh_probe=mesh_probe) if isolate else body()
-        if meshability:
-            # A scoring failure is ONE row's problem: record it and keep the shard going. Wave
-            # 11210343 lost three whole shards to one sidecar field read as the wrong type.
-            try:
-                _score_returned(row, path, scratch, since=since)
-            except Exception as exc:  # noqa: BLE001 - scoring must never abort the shard
-                row["meshability_score_error"] = f"{type(exc).__name__}: {exc}"[:300]
+
+        def scored(stage=None, path=path, since=since):
+            # SCORING RUNS WHERE THE REPAIR RAN: inside the per-file child under --isolate-files,
+            # because it reads CAD again (_diagonal_of, _inspect on a passthrough, the probes). In
+            # the parent, a native crash or a stuck read there would take the whole shard down.
+            row = body(stage=stage)
+            if meshability:
+                if stage:
+                    stage("meshability_score")
+                score_or_mark(row, path, scratch, since=since)
+            return row
+
+        row = _isolated(path, scored, mesh_probe=mesh_probe) if isolate else scored()
         if tolerant_delivery:
             _tolerant_delivery(row, path, scratch)
         row.update(stamp)

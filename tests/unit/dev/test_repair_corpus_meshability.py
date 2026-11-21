@@ -310,3 +310,88 @@ def test_unplaced_defects_is_read_as_the_count_lane_gs_schema_records():
     assert rc._count(0) == 0
     assert rc._count(None) == 0
     assert rc._count([{"a": 1}, {"b": 2}]) == 2
+
+
+# --------------------------------------------------------------- scoring isolation and accounting
+
+def _two_files(tmp_path: Path) -> tuple[list[Path], Path]:
+    files = []
+    for name in ("a.step", "b.step"):
+        p = tmp_path / name
+        p.write_bytes(name.encode())
+        files.append(p)
+    scratch = tmp_path / "out"
+    scratch.mkdir()
+    return files, scratch
+
+
+def test_scoring_runs_inside_the_isolated_child(tmp_path, monkeypatch):
+    files, scratch = _two_files(tmp_path)
+    parent = os.getpid()
+    monkeypatch.setattr(rc, "_one", lambda path, scratch, **k: {"file": path.name,
+                                                                "outcome": "refused"})
+
+    def fake_score(row, path, scratch, *, since):
+        row["returned_step"] = {"present": True}
+        row["scored_in_pid"] = os.getpid()
+
+    monkeypatch.setattr(rc, "_score_returned", fake_score)
+    rows = rc.run_files(files, scratch, isolate=True, meshability=True)
+    assert [r["file"] for r in rows] == ["a.step", "b.step"]
+    assert all(r["scored_in_pid"] != parent for r in rows)
+
+
+def test_a_native_crash_during_scoring_is_a_crashed_row_and_the_run_goes_on(tmp_path,
+                                                                             monkeypatch):
+    import signal
+
+    files, scratch = _two_files(tmp_path)
+    monkeypatch.setattr(rc, "_one", lambda path, scratch, **k: {"file": path.name,
+                                                                "outcome": "refused"})
+
+    def crash_on_a(row, path, scratch, *, since):
+        if path.name == "a.step":
+            os.kill(os.getpid(), signal.SIGSEGV)
+        row["returned_step"] = {"present": True}
+
+    monkeypatch.setattr(rc, "_score_returned", crash_on_a)
+    rows = rc.run_files(files, scratch, isolate=True, meshability=True)
+    assert rows[0]["outcome"] == rc.CRASHED
+    assert rows[0]["crash"]["stage"] == "meshability_score"
+    assert rows[1]["returned_step"] == {"present": True}
+
+
+def test_score_or_mark_records_an_exception(tmp_path):
+    def boom(row, path, scratch, *, since):
+        raise TypeError("object of type 'int' has no len()")
+
+    row = {"file": "x.step", "outcome": "refused"}
+    rc.score_or_mark(row, tmp_path / "x.step", tmp_path, since=0.0, score=boom)
+    assert row[rc.SCORE_ERROR].startswith("TypeError")
+
+
+def test_score_or_mark_marks_an_early_exit_without_a_returned_step(tmp_path):
+    row = {"file": "x.step", "outcome": "refused"}
+    rc.score_or_mark(row, tmp_path / "x.step", tmp_path, since=0.0,
+                     score=lambda row, path, scratch, *, since: None)
+    assert row[rc.SCORE_ERROR].startswith("not scored")
+
+
+def test_score_or_mark_leaves_crashed_and_unreadable_rows_alone(tmp_path):
+    for outcome in (rc.CRASHED, "unreadable"):
+        row = {"file": "x.step", "outcome": outcome}
+        rc.score_or_mark(row, tmp_path / "x.step", tmp_path, since=0.0,
+                         score=lambda row, path, scratch, *, since: None)
+        assert rc.SCORE_ERROR not in row
+
+
+def test_unscored_rows_and_the_summary_count_score_errors():
+    scored = {"file": "a", "outcome": "repaired", "returned_step": {"present": True},
+              "meshes_after_default": True}
+    errored = {"file": "b", "outcome": "refused", rc.SCORE_ERROR: "TypeError: boom"}
+    silent = {"file": "c", "outcome": "refused"}
+    crashed = {"file": "d", "outcome": rc.CRASHED}
+    assert rc.unscored_rows([scored, errored, silent, crashed]) == ["c"]
+    summary = rc.meshability_summary([scored, errored, crashed])
+    assert summary["score_errors"] == 1
+    assert summary["files"] == 1
