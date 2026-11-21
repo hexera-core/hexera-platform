@@ -570,7 +570,7 @@ def real_export_check():
 
 
 @_pytest.fixture(autouse=True)
-def _stub_export_check(request, monkeypatch):
+def _stub_export_check(request):
     """`session.try_package` re-reads every delivered file (delivery_check.export_check). On the
     stub shapes the cad tier uses that read can never succeed, and an unmeasured answer is - by
     design - a refusal, so every package would revert. Stubbed to "passes" for tests under
@@ -581,4 +581,9 @@ def _stub_export_check(request, monkeypatch):
         return
     from meshpipeline.cad.repair import delivery_check
 
+    # `monkeypatch` is fetched HERE, only for cad tests - never requested in the signature. An
+    # autouse fixture that requests it for EVERY test instantiates monkeypatch first, so it tears
+    # down LAST: a module's own reload-on-teardown fixture (tests/unit/agents/builder/
+    # test_builder_settings.py) then re-imported its settings with the bad env still set.
+    monkeypatch = request.getfixturevalue("monkeypatch")
     monkeypatch.setattr(delivery_check, "export_check", lambda *args, **kwargs: "")
