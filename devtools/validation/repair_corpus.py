@@ -1056,6 +1056,28 @@ def _score_returned(row: dict, path: Path, scratch: Path, *, since: float,
         row["meshed_by"] = credit
 
 
+#: THE QUALITY-FLOOR SENSITIVITY (owner decision pending, LEAD 2026-11-21): for each min-SICN floor,
+#: how many files would still count as "meshes with the hints". Report-only - the headline
+#: `meshes_with_hints` applies no floor beyond SICN > 0 (no inverted element).
+SICN_FLOORS = (0.0, 0.001, 0.01, 0.05)
+
+
+def _with_hints_at_floor(scored: list[dict], floor: float, *, newly: bool) -> int:
+    """Files meshing at default settings, plus files meshing ONLY with the hints whose hinted
+    mesh's min SICN is above `floor` (a hinted mesh with no SICN reading does not count)."""
+    n = 0
+    for r in scored:
+        if newly and r.get("meshes_before"):
+            continue
+        if r.get("meshes_after_default") is True:
+            n += 1
+        elif r.get("meshes_after_hints") is True:
+            sicn = (r.get("mesh_quality_after_hints") or {}).get("min_sicn")
+            if sicn is not None and float(sicn) > floor:
+                n += 1
+    return n
+
+
 #: Above this many volume elements a hinted mesh is reported as enormous (`hints_over_element_cap`).
 #: The same ceiling the oracle puts on a tier-2 probe (cad/repair/oracle.TIER2_ELEMENT_CAP).
 HINTS_ELEMENT_CAP = 1_000_000
@@ -1124,6 +1146,10 @@ def meshability_summary(rows: list[dict]) -> dict:
             and int((r.get("mesh_quality_after_hints") or {}).get("elements") or 0)
             > HINTS_ELEMENT_CAP),
         "hints_quality": _hints_quality(scored),
+        "meshes_with_hints_by_sicn_floor": {
+            str(f): _with_hints_at_floor(scored, f, newly=False) for f in SICN_FLOORS},
+        "newly_meshes_with_hints_by_sicn_floor": {
+            str(f): _with_hints_at_floor(scored, f, newly=True) for f in SICN_FLOORS},
         "meshed_before_gmsh_default": sum(1 for r in scored
                                           if r.get("meshes_before_gmsh_default")),
         "meshes_gmsh_default": sum(1 for r in scored if meshes(r, "meshes_after_gmsh_default")),
