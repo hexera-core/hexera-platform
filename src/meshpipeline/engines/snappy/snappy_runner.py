@@ -1062,13 +1062,44 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
     # the size brake's margin gets a castellation budget that leaves room for them - decided here,
     # before the mesher runs, instead of stopped by the brake after hours of it
     from meshpipeline.engines.size_brake import SIZE_BRAKE_MARGIN
+    _cast_est = castellated_estimate(
+        area=analysis.get("surface_area"), divisions=div, base_cell=base_actual,
+        surface_level=smax, near=(b0d, near_band_level), far=(b1d, max(1, smin - 1)))
+    _n_lay_est = max([n_layers, *layer_counts.values()]) if _any_layers else 0
     _final = final_estimate(
-        castellated=castellated_estimate(
-            area=analysis.get("surface_area"), divisions=div, base_cell=base_actual,
-            surface_level=smax, near=(b0d, near_band_level), far=(b1d, max(1, smin - 1))),
+        castellated=_cast_est,
         budget=max_cells, area=analysis.get("surface_area"), wall_cell=base_actual / (2 ** smax),
-        n_layers=max([n_layers, *layer_counts.values()]) if _any_layers else 0)
+        n_layers=_n_lay_est)
+    # THE BODY'S OWN MESH, PRICED BEFORE IT RUNS (rulebook 75). The wall sits at the coarsest level
+    # that seals the body (`floor`, above) unless the plan asked finer: no budget makes it coarser. A
+    # budget under what that mesh comes to with its layers only cut snappy's refinement short of
+    # sealing it, and the size brake then threw the pass away and re-planned a smaller budget that
+    # could not change the body either: the RM5 surge flap (8.1 M cells with its layers at the floor
+    # against a 4 M plan) ran four passes of 20-107 minutes to the 4-hour cap and delivered nothing
+    # (the CFD board's failure hunt, 21 Nov). So a body at its floor is planned at what it needs -
+    # within one job's limit, else at the limit with its castellation kept whole (a sound mesh over
+    # it is delivered as it is, LAD-cfd-4) - and the brake measures the run against that need.
+    _size_note = ""
+    _need = final_estimate(castellated=_cast_est, budget=10 ** 12, area=analysis.get("surface_area"),
+                           wall_cell=base_actual / (2 ** smax), n_layers=_n_lay_est)
+    _at_floor = smax <= floor
+    if _need is not None and _at_floor and _need > SIZE_BRAKE_MARGIN * max_cells and _ask is None:
+        import meshpipeline.settings.policy as _pol_e
+        _hard = int(_pol_e.CELL_HARD_LIMIT)
+        _was = max_cells
+        max_cells = int(min(max(float(max_cells), _need), float(_hard)))
+        _final = final_estimate(castellated=_cast_est, budget=max_cells, area=analysis.get("surface_area"),
+                                wall_cell=base_actual / (2 ** smax), n_layers=_n_lay_est)
+        _size_note = (f"the body meshed at the coarsest wall cells that seal it ({base_actual / 2 ** smax * 1e3:.3g} mm) "
+                      f"comes to about {_need / 1e6:.3g} M cells with its layers, more than the {_was / 1e6:.3g} M "
+                      f"planned: it is meshed at that"
+                      + (f" (over the {_hard / 1e6:.3g} M one job builds: delivered as it is)" if _need > _hard else ""))
+        logger.warning("render_snappy_case: %s", _size_note)
     cast_cells = castellation_budget(max_cells, _final, margin=SIZE_BRAKE_MARGIN)
+    if _size_note and _cast_est:
+        # never cut short of the body's own castellated mesh: a cut stopped short of sealing it leaves
+        # the run no wall at all (RM5: 211,680 cells, no wall faces)
+        cast_cells = max(cast_cells, int(min(float(_cast_est), float(max_cells))))
     # the PLAN's budget, beside the case: what the size brake measures the run against
     from meshpipeline.engines.size_brake import PLAN_CELLS_FILE
     (ws / PLAN_CELLS_FILE).parent.mkdir(parents=True, exist_ok=True)
@@ -1087,10 +1118,15 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
     if _ask is not None and (_ask.user_budget() or getattr(_ask, "raised", False)):
         # CFDREQ-3: the budget the user's count or sizes set is the plan the brake measures against
         _plan_rec["plan_cells"] = int(_planned_cells)
-    if max_cells > _planned_cells:
+    if max_cells > _planned_cells and not (_size_note and _gap is None):
         _gap_cells = int(max_cells - _planned_cells)
         _plan_rec = {"plan_cells": _plan_rec["plan_cells"] + _gap_cells,
                      "planned_cells": _plan_rec["plan_cells"], "gap_cells": _gap_cells}
+    if _size_note and _need:
+        # the brake measures the run against what the body at its floor needs: it stops a run that
+        # runs away from its own plan, never one doing what the plan priced
+        _plan_rec = {**_plan_rec, "plan_cells": max(int(_plan_rec["plan_cells"]), int(_need)),
+                     "body_needs": int(_need)}
     (ws / PLAN_CELLS_FILE).write_text(json.dumps(_plan_rec))
     if cast_cells != max_cells and _final:
         logger.info("render_snappy_case: the finished mesh is estimated at %.3g cells with its layers, "
@@ -1200,6 +1236,8 @@ mergeTolerance 1e-6; debug 0;
         out["gap_plan"] = _gap.record()
         out["gap_note"] = _gap.words(base_actual / (2 ** smax), auto=True)
         _gap.write(ws)
+    if _size_note:
+        out["size_note"] = _size_note[0].upper() + _size_note[1:]
     if _part_lv["regions"] or _part_lv["refine"] or _part_lv["words"]:
         # PLAN-cfd-4: the parts the notes sized, and how (the driver says it and records it)
         out["part_levels"] = {"regions": {k: list(v) for k, v in _part_lv["regions"].items()},

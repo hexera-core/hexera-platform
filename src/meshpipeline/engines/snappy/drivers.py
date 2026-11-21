@@ -1491,7 +1491,8 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                             + f"{summary['n_layers']} wall layers"
                             + _sealed_note(_cavities)
                             + (f"; {summary['wake_note']}" if summary.get("wake_note") else "")
-                            + (f"; {summary['gap_note']}" if summary.get("gap_note") else ""),
+                            + (f"; {summary['gap_note']}" if summary.get("gap_note") else "")
+                            + (f"; {summary['size_note']}" if summary.get("size_note") else ""),
                     op_id=f"snappy:carving:{attempt}")
             # THE PLAN, as the run's live line shows it: how big, how many wall layers, where finer
             await publish.aplan(cells=strategy.get("max_cells"), layers=summary.get("n_layers"),
