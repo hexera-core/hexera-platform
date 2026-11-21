@@ -166,3 +166,15 @@ def test_newly_meshing_does_not_outrank_a_gate_an_unseen_part_or_nothing_kept():
                         newly_meshes=True) == "scan_incomplete"
     assert E.ending_for(kept=0, attempted=2, stopped_because="stalled",
                         newly_meshes=True) == "attempted_none_held"
+
+
+def test_the_two_mesh_rules_hold_together():
+    # #505 and #520 side by side. The in-session final probe refusing (`mesh_failed`) keeps a
+    # kept run from reading `repaired`; the DELIVERED file newly meshing (`newly_meshes`) is the
+    # stronger evidence, because it is the artefact the customer meshes, so it wins when both hold.
+    assert E.ending_for(kept=1, attempted=1, stopped_because="regions_exhausted",
+                        mesh_failed=True) == "unmeshable"
+    assert E.ending_for(kept=1, attempted=1, stopped_because="regions_exhausted",
+                        mesh_failed=True, newly_meshes=True) == "repaired"
+    assert E.ending_for(kept=0, attempted=1, stopped_because="regions_exhausted",
+                        mesh_failed=True, newly_meshes=True) == "attempted_none_held"
