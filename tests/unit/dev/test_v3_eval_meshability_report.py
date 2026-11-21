@@ -117,3 +117,17 @@ def test_collect_writes_the_report_only_for_meshability_rows(tmp_path, monkeypat
     rep = json.loads((out / "meshability.json").read_text())
     assert rep["ai_marginal"]["default"]["net"] == 1
     assert "STEP meshes at default settings" in (out / "meshability.md").read_text()
+
+
+def test_read_diagnostic_files_are_flagged_with_their_verdicts():
+    bad = "0059_00597937_2e928f752b8806de5a85c14b_step_000.step"
+    units = _units()
+    units[(PASS, "failing")].append(_row(bad))
+    units[(AI, "failing")].append(_row(bad))
+    rep = mr.build(units, summarise=rc.meshability_summary, comparison=(PASS, AI))
+    assert "FixShape failed on read" in rep["arms"][PASS]["files"][bad]["read_diagnostic"]
+    assert "read_diagnostic" not in rep["arms"][PASS]["files"]["a"]
+    md = mr.render(rep)
+    assert "**Read diagnostics**" in md and f"`{bad}`" in md
+    assert "**Read diagnostics**" not in mr.render(
+        mr.build(_units(), summarise=rc.meshability_summary, comparison=(PASS, AI)))

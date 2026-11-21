@@ -22,6 +22,18 @@ from collections.abc import Callable, Mapping
 
 HEADLINE = "meshes_after_default"
 
+#: FILES WHOSE STEP DOES NOT READ CLEANLY, before any repair touches them (lane A, wave 9; re-read
+#: one file per process with stdout captured by lane F, 2026-11-21). On these a "does not mesh" is
+#: partly a statement about the file, so the report flags them rather than counting them silently.
+READ_DIAGNOSTICS: dict[str, str] = {
+    "0054_00542564_58a86fb23522310f74b8c61d_step_000.step":
+        "StepReaderData: Unresolved Reference (1): the reader did not build all the file describes",
+    "0054_00544366_4479b94025a78b522bce3ab2_step_000.step":
+        "FixShape failed on read (Geom_RectangularTrimmedSurface::U parameters out of range)",
+    "0059_00597937_2e928f752b8806de5a85c14b_step_000.step":
+        "FixShape failed on read (Geom_RectangularTrimmedSurface::U parameters out of range)",
+}
+
 
 def _meshes(row: dict, key: str = HEADLINE) -> bool:
     return row.get(key) is True
@@ -46,6 +58,8 @@ def per_file(rows: list[dict]) -> dict[str, dict]:
             "valid_to_invalid": r.get("valid_to_invalid"),
             "meshed_by": r.get("meshed_by"),
             "outcome": r.get("outcome"),
+            **({"read_diagnostic": READ_DIAGNOSTICS[str(r.get("file"))]}
+               if str(r.get("file")) in READ_DIAGNOSTICS else {}),
         }
     return out
 
@@ -159,6 +173,17 @@ def render(report: dict) -> str:
     for n in names:
         credit = (arms.get(n, {}).get("failing") or {}).get("meshed_by") or {}
         lines.append(f"- {n}: " + (", ".join(f"{k} {v}" for k, v in credit.items()) or "none"))
+    flagged = [(f, n, (arms.get(n, {}).get("files") or {}).get(f) or {})
+               for f in READ_DIAGNOSTICS for n in names
+               if f in ((arms.get(n, {}).get("files")) or {})]
+    if flagged:
+        lines += ["", "**Read diagnostics** (the STEP does not read cleanly before any repair; a "
+                  "\"does not mesh\" here is partly about the file, not only the repair):", ""]
+        for f in READ_DIAGNOSTICS:
+            cells = [f"{n}: default {_v(e.get('default'))}, hints {_v(e.get('hints'))}"
+                     for ff, n, e in flagged if ff == f]
+            if cells:
+                lines.append(f"- `{f}` - {READ_DIAGNOSTICS[f]}. " + "; ".join(cells))
     m = report.get("ai_marginal")
     if m:
         d, h = m["default"], m["with_hints"]
