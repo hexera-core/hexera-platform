@@ -437,6 +437,8 @@ def _dot(a, b) -> float:
 #: INS-12: how far a flat face's body runs back behind it is read at its centre and half way to its
 #: rim at this many points round it; the middle of those depths is the face's.
 DEPTH_SAMPLES = 8
+#: docs/RULES.md id of the depth read across a flat face
+DEPTH_ACROSS_RULE = "INS-12"
 
 
 def _depth_across(face, o, first_hit, skip: float) -> float:

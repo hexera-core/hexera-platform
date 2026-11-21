@@ -1403,6 +1403,8 @@ MOUTH_MATERIAL = 0.5
 #: cup with four stubs); a step in a venturi's bore, its cap a third bore and two thirds wall: 66 - a cap
 #: that still opens onto the bore, kept as before.
 MOUTH_FACES_MATERIAL = 0.9
+#: docs/RULES.md id of the reading that a mouth opens straight onto both its spaces, never through material
+THROUGH_MATERIAL_RULE = "INS-15"
 
 
 def _through_material(lp: _Loop, flat_lab: np.ndarray, grid: Grid, sgn: float, target: int,

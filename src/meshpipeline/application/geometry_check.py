@@ -1401,6 +1401,12 @@ def vet_openings(facts: dict, skin: Path) -> None:
         max(kept, key=lambda o: float(o.get("area_mm2") or 0.0))["role"] = "inlet"
 
 
+#: docs/RULES.md ids of the opening decisions made below
+SOLID_END_RULE = "INS-15"            # a flat end no space reaches is no opening
+FLAT_HOLE_RULE = "INS-13"            # a passage opens where its bore meets a flat face
+HOLE_THROUGH_FLUID_RULE = "INS-18"   # a hole through a body of fluid is no opening
+
+
 def vet_by_map(facts: dict, imap) -> None:
     """A CAD PART'S OPENINGS HELD TO ITS MAP (INS-2): an opening the faces read whose outside - a
     few cubes out along the way the fluid would leave by it - is the part's own inside, not the
@@ -1444,7 +1450,7 @@ def vet_by_map(facts: dict, imap) -> None:
         facts.setdefault("notes", []).append(
             f"{solid_ends} flat end(s) of solid material are proposed as not openings: no space inside the part "
             "reaches them, so the fluid inside it could never get there; the space inside it opens where its "
-            "inside-space map finds mouths (INS-15)")
+            f"inside-space map finds mouths ({SOLID_END_RULE})")
     kept = [o for o in facts.get("openings") or [] if o.get("role") in ("inlet", "outlet")]
     if kept and not any(o.get("role") == "inlet" for o in kept):
         max(kept, key=lambda o: float(o.get("area_mm2") or 0.0))["role"] = "inlet"
@@ -1535,6 +1541,7 @@ def flat_hole_mouths(facts: dict) -> None:
     inside = facts.get("inside") or {}
     if str(facts.get("input_kind") or "") == "fluid-domain" and \
             float(inside.get("open_mm3") or 0.0) <= float(inside.get("enclosed_mm3") or 0.0):
+        logger.debug("flat_hole_mouths (%s): a part read as fluid adds no hole of its own", HOLE_THROUGH_FLUID_RULE)
         return
 
     def far_end(f: dict) -> bool:
@@ -1574,7 +1581,7 @@ def flat_hole_mouths(facts: dict) -> None:
         # scout's own rule (MAX_OPENINGS); its holes stay on the stage to click
         facts.setdefault("notes", []).append(
             f"{len(new)} more holes in its flat faces open its passages - a perforated face, more than "
-            f"{MAX_OPENINGS} openings - so they are not proposed one by one (INS-13)")
+            f"{MAX_OPENINGS} openings - so they are not proposed one by one ({FLAT_HOLE_RULE})")
         return
     for o in new:
         nid = max([int(q.get("id") or 0) for q in ops] or [0]) + 1
@@ -1584,7 +1591,7 @@ def flat_hole_mouths(facts: dict) -> None:
         facts["openings"] = ops
         facts.setdefault("notes", []).append(
             f"{added} more opening(s): holes in a flat face that open the part's passages, as its inside-space map "
-            "reads them (INS-13)")
+            f"reads them ({FLAT_HOLE_RULE})")
 
 
 def map_openings(facts: dict) -> None:

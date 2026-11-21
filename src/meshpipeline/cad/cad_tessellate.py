@@ -728,6 +728,60 @@ def _fluid_union(shape, solids: list, declared_ports: list):
         return shape, solids, []
 
 
+#: docs/RULES.md ids of the staging decisions this module makes
+CAVITY_SEED_RULE = "INS-14"           # a body's flow is the cavity its disc ports open into
+PORTS_MISS_INSIDE_RULE = "INS-16"     # declared disc ports the inside never reaches are refused
+HELD_TO_DECLARATION_RULE = "INS-19"   # a port whose mouth is on no flat face is staged the surface way
+
+
+class FlatFacesMissPort(RuntimeError):
+    """INS-19: the B-rep staging's flat faces hold no opening where (and as big as) a declared port says;
+    not the user's to settle - the drivers stage the part's surface instead, which reads every loop."""
+
+
+def held_to_declaration(openings: dict, declared: list | None, bbox_min, bbox_max) -> None:
+    """INS-19: THE FLAT FACES HELD TO THE DECLARATION BEFORE ANY BINDING. B-rep staging takes only flat faces as
+    ports, so a port whose mouth is not on one (a nozzle's rounded lip, a tube's dome) was staged as some other
+    flat face, and the binding then refused the user's declaration after the staging: "the nearest detected
+    opening is 70 mm away", "points at an opening of 26 mm2 while the port declares 2978 mm2" (batch 4). The
+    binder's own location rule (engines/port_binding.bind_ports, rule 2) is run here on the staged openings, step
+    for step: located ports in name order, each taking the nearest opening not yet taken; that opening must lie
+    within HINT_MAX_BBOX_FRACTION of the part's diagonal and, when the port has a size, measure within
+    LOCATED_RATIO of it by one of its measures. A port that fails either raises FlatFacesMissPort - a staging
+    fault, not a declaration one - so the driver stages the surface instead. A port the binder would refuse for
+    another reason (two openings equally near) ends the check: the binder says it, unchanged. So no staging the
+    binder would bind is ever refused here."""
+    from meshpipeline.engines.port_binding import HINT_MARGIN, HINT_MAX_BBOX_FRACTION, _located_size_agrees
+
+    diag = math.dist(tuple(bbox_min), tuple(bbox_max))
+    pool = {k: (float(r["area"]), tuple(r["centroid"]), r.get("opening")) for k, r in sorted(openings.items())}
+    located = sorted((p for p in declared or [] if p.get("near_m")), key=lambda p: str(p.get("name")))
+    if len(pool) < len([p for p in declared or []]) or diag <= 0.0:
+        return                                    # the binder's own count refusal comes first (rule 1)
+    for p in located:
+        if not pool:
+            return
+        near = tuple(p["near_m"])
+        ranked = sorted(pool.items(), key=lambda kv: math.dist(near, kv[1][1]))
+        key, (area, cen, opening) = ranked[0]
+        d1 = math.dist(near, cen)
+        d2 = math.dist(near, ranked[1][1][1]) if len(ranked) > 1 else math.inf
+        if d1 > HINT_MAX_BBOX_FRACTION * diag:
+            raise FlatFacesMissPort(
+                f"{HELD_TO_DECLARATION_RULE}: declared port {p.get('name')!r} lies {d1 * 1000.0:.1f} mm from the "
+                f"nearest flat-face opening the B-rep staging found ({key}): its mouth is on no flat face, so the "
+                "part's surface is staged instead")
+        if d1 > HINT_MARGIN * d2:
+            return                                # not decisive: the binder's to say
+        want = p.get("area_m2")
+        if want and not _located_size_agrees(area, opening, float(want)):
+            raise FlatFacesMissPort(
+                f"{HELD_TO_DECLARATION_RULE}: declared port {p.get('name')!r} ({float(want) * 1e6:.0f} mm2) is nearest "
+                f"the flat face {key}, which measures {area * 1e6:.1f} mm2: its mouth is on no flat face, so the "
+                "part's surface is staged instead")
+        del pool[key]
+
+
 def _facing(n) -> str:
     """A direction in words: the axis it runs along ("+z"), or the vector when it runs along none."""
     k = max(range(3), key=lambda i: abs(n[i]))
@@ -1557,6 +1611,9 @@ def _tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflectio
         # point is its metal or the open air) and is seeded in the solid as before.
         interior = _capped_cavity()
         cavity_seeded = interior is not None
+        if cavity_seeded:
+            logger.info("tessellate_internal (%s): the body is seeded in the cavity its ports open into, at %s",
+                        CAVITY_SEED_RULE, interior)
     if interior is None and fluid_solid is not True and not port_bored and (
             fluid_solid is False or _capped_cavity() is None):
         # INS-16: DISC PORTS THE INSIDE NEVER REACHES. A body whose declared ports are all flat discs of its
@@ -1576,6 +1633,8 @@ def _tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflectio
         missed = mouths_the_ports_miss(_check_skin(geom_path, prepared), frames)
         if missed:
             from meshpipeline.engines.port_binding import BindError
+            logger.info("tessellate_internal (%s): no declared disc port is a mouth of the inside map",
+                        PORTS_MISS_INSIDE_RULE)
             raise BindError(ports_miss_the_inside(["inlet", *outlet_names], missed))
     if not hollow_wall and interior is None:
         # Candidates, cheapest-first: each solid's volume centroid, then each port centroid nudged
@@ -1696,14 +1755,16 @@ def _tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflectio
                 total += a
         return total
 
+    # INS-19: every located declared port must find its opening among the flat faces staged here
+    staged_openings = {"inlet": _opening_record(inlet_i),
+                       **{nm: _opening_record(oi) for nm, oi in zip(outlet_names, outlet_ids)}}
+    held_to_declaration(staged_openings, declared_ports, (x0, y0, z0), (x1, y1, z1))
     return {
         "stls": {k: str(v) for k, v in stls.items()},
         "interior_point": [round(v, 6) for v in interior],
         "bbox_min": [round(v, 6) for v in (x0, y0, z0)],
         "bbox_max": [round(v, 6) for v in (x1, y1, z1)],
-        "openings": {
-            "inlet": _opening_record(inlet_i),
-            **{nm: _opening_record(oi) for nm, oi in zip(outlet_names, outlet_ids)}},
+        "openings": staged_openings,
         "n_wall_faces": n_wall_faces,
         # WHAT THE WALL IS: the fluid's own boundary - a solid declared the fluid domain, or one
         # whose ports are plain discs, not rings round a bore - or (False) possibly the metal skin
