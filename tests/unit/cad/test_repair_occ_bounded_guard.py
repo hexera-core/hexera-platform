@@ -17,6 +17,7 @@ entry, so the list only ever shrinks.
 from __future__ import annotations
 
 import ast
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -34,6 +35,10 @@ UNINTERRUPTIBLE = (
     "GeomAPI_ExtremaCurveCurve", "GeomAPI_ExtremaCurveSurface", "GeomAPI_ExtremaSurfaceSurface",
     "GeomAPI_ProjectPointOnSurf", "GeomAPI_ProjectPointOnCurve",
 )
+
+#: Whole families guarded by prefix, so a member nobody listed (`BOPAlgo_ArgumentAnalyzer`, whose
+#: `Perform` holds the GIL - see `localize._bounded`) is not missed the way a fixed list missed it.
+UNINTERRUPTIBLE_FAMILIES = ("BOPAlgo_", "BRepAlgoAPI_")
 
 #: How a module says "this function IS a child interpreter": the `if __name__ == "__main__"` block
 #: that `python -m meshpipeline.cad.repair.<module>` runs. Nothing is declared to this guard - the
@@ -141,7 +146,8 @@ def _child_side(module: str, tree: ast.AST, where: dict[ast.AST, str]) -> set[st
 
 #: Call sites that exist today and are NOT yet bounded, each named with why it is tolerated and
 #: what would fix it. THIS LIST MAY ONLY SHRINK. Keyed by (module, enclosing function, symbol) so
-#: it survives reformatting and line moves, and so a SECOND call in the same function is caught.
+#: it survives reformatting and line moves. Each entry tolerates exactly ONE call, so a SECOND
+#: call in the same function is caught (`_over_allowance`).
 KNOWN_UNBOUNDED = {
     # --- rows 1-3 of the audit: a deadline checked only BETWEEN calls -------------------------
     # Up to eight solid pairs.
@@ -162,6 +168,10 @@ KNOWN_UNBOUNDED = {
     ("investigator_tools.py", "_thickness_kernel", "BRepExtrema_DistShapeShape"),
     # A whole call family nobody had audited: GeomAPI projection, reached from the spotlight.
     ("spotlight.py", "_normal_of_face", "GeomAPI_ProjectPointOnSurf"),
+    # The self-interference scan. Its `Perform` holds the GIL and is bounded only by
+    # `localize._bounded`'s FORK - the same unowned item as `_thickness_kernel` above, with the
+    # same follow-up: move it into a fresh-interpreter child.
+    ("localize.py", "_kernel_face_pairs", "BOPAlgo_ArgumentAnalyzer"),
     # --- BRepCheck_Analyzer: the validity check, uninterruptible and everywhere ----------------
     # Its own follow-up. Every repair path runs it, so bounding it is a larger change than any
     # single distance call.
@@ -200,33 +210,50 @@ def _enclosing(tree: ast.AST) -> dict[ast.AST, str]:
     return where
 
 
-def _sites(*, in_parent_only: bool = False) -> set[tuple[str, str, str]]:
-    """Every call of an uninterruptible kernel entry point in the repair package.
+def _is_kernel(name: str) -> bool:
+    return name in UNINTERRUPTIBLE or name.startswith(UNINTERRUPTIBLE_FAMILIES)
+
+
+def _sites_in(module: str, tree: ast.AST, *, in_parent_only: bool = False) -> Counter:
+    """How many times each function in one module calls each uninterruptible entry point."""
+    where = _enclosing(tree)
+    bounded = _child_side(module, tree, where) if in_parent_only else set()
+    found: Counter = Counter()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = (func.attr if isinstance(func, ast.Attribute)
+                else func.id if isinstance(func, ast.Name) else "")
+        enclosing = where.get(node, "<module>")
+        if _is_kernel(name) and enclosing not in bounded:
+            found[(module, enclosing, name)] += 1
+    return found
+
+
+def _sites(*, in_parent_only: bool = False) -> Counter:
+    """Every call of an uninterruptible kernel entry point in the repair package, COUNTED.
 
     With `in_parent_only`, the ones that run child-side are left out. The unfiltered set is what
     the shrink-only test compares against: a call that MOVED into a child still exists, and its
     KNOWN_UNBOUNDED entry stays true on a branch where the dispatcher has not landed.
     """
-    found: set[tuple[str, str, str]] = set()
+    found: Counter = Counter()
     for path in sorted(REPAIR.glob("*.py")):
         tree = ast.parse(path.read_text(), filename=str(path))
-        where = _enclosing(tree)
-        bounded = _child_side(path.name, tree, where) if in_parent_only else set()
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            func = node.func
-            name = (func.attr if isinstance(func, ast.Attribute)
-                    else func.id if isinstance(func, ast.Name) else "")
-            enclosing = where.get(node, "<module>")
-            if name in UNINTERRUPTIBLE and enclosing not in bounded:
-                found.add((path.name, enclosing, name))
+        found.update(_sites_in(path.name, tree, in_parent_only=in_parent_only))
     return found
+
+
+def _over_allowance(sites: Counter) -> list[tuple[str, str, str]]:
+    """Each KNOWN_UNBOUNDED entry allows ONE call; anything else allows none."""
+    return sorted(key for key, count in sites.items()
+                  if count > (1 if key in KNOWN_UNBOUNDED else 0))
 
 
 def test_no_new_uninterruptible_kernel_call_is_added():
     """THE GUARD. A new unbounded call fails here, with the name of the function that added it."""
-    added = sorted(_sites(in_parent_only=True) - KNOWN_UNBOUNDED)
+    added = _over_allowance(_sites(in_parent_only=True))
 
     assert not added, (
         "new uninterruptible OCC call(s) outside a bounded child:\n  "
@@ -239,7 +266,7 @@ def test_no_new_uninterruptible_kernel_call_is_added():
 def test_the_known_list_does_not_name_calls_that_are_already_gone():
     """THE LIST MAY ONLY SHRINK. An entry for a call that no longer exists is how a guard rots
     into decoration: the next reader cannot tell which entries are real."""
-    stale = sorted(KNOWN_UNBOUNDED - _sites())
+    stale = sorted(KNOWN_UNBOUNDED - set(_sites()))
 
     assert not stale, (
         "KNOWN_UNBOUNDED names call sites that no longer exist - delete them:\n  "
@@ -257,22 +284,26 @@ def test_no_function_runs_both_in_a_child_and_in_the_parent():
     # the same fact from the other side, and `test_a_registered_kernel_is_never_called_straight_
     # from_the_parent` names it with the call site - one fact, one failure.
     for path in sorted(REPAIR.glob("*.py")):
-        tree = ast.parse(path.read_text(), filename=str(path))
-        where = _enclosing(tree)
-        graph = _calls_in(tree, where)
-        bounded = _reachable(_entry_points(tree, where), graph)
-        if not bounded:
-            continue
-        for caller, callees in graph.items():
-            if caller in bounded or caller == "<module>":
-                continue
-            for name in sorted(callees & bounded):
-                if _holds_a_kernel_call(tree, where, name):
-                    both.append(f"{path.name}:{name} is reached from the child entry AND called "
-                                f"by {caller}")
+        both.extend(_ambiguous(path.name, ast.parse(path.read_text(), filename=str(path))))
 
     assert not both, "ambiguous dispatch - these are exempted as child-side but run in the parent "\
                      "too:\n  " + "\n  ".join(sorted(both))
+
+
+def _ambiguous(module: str, tree: ast.AST) -> list[str]:
+    """Child-side functions that a parent-side function also calls, where that path can REACH a
+    kernel call - directly or through whatever it calls in turn."""
+    where = _enclosing(tree)
+    graph = _calls_in(tree, where)
+    bounded = _reachable(_entry_points(tree, where), graph)
+    out: list[str] = []
+    for caller, callees in graph.items():
+        if caller in bounded or caller == "<module>":
+            continue
+        for name in sorted(callees & bounded):
+            if any(_holds_a_kernel_call(tree, where, fn) for fn in _reachable({name}, graph)):
+                out.append(f"{module}:{name} is reached from the child entry AND called by {caller}")
+    return out
 
 
 def _holds_a_kernel_call(tree: ast.AST, where: dict[ast.AST, str], function: str) -> bool:
@@ -284,7 +315,7 @@ def _holds_a_kernel_call(tree: ast.AST, where: dict[ast.AST, str], function: str
         func = node.func
         name = (func.attr if isinstance(func, ast.Attribute)
                 else func.id if isinstance(func, ast.Name) else "")
-        if name in UNINTERRUPTIBLE:
+        if _is_kernel(name):
             return True
     return False
 
@@ -366,3 +397,45 @@ def test_a_kernel_registered_by_the_dispatcher_is_child_side_where_it_lives():
         (module, name) for module, names in registered.items() for name in names}, (
         "the thickness kernel is the audit's own example of a call bounded only by a fork; if it "
         "is no longer registered, check what bounds it now")
+
+
+_CHAIN = (
+    "def _child_main(argv):\n"
+    "    return _work(argv)\n"
+    "def _work(x):\n"
+    "    return partners(x)\n"
+    "def partners(x):\n"
+    "    return BRepExtrema_DistShapeShape(x, x)\n"
+    "if __name__ == '__main__':\n"
+    "    raise SystemExit(_child_main(sys.argv[1:]))\n")
+
+
+def test_a_second_call_in_a_known_function_is_caught():
+    """A KNOWN_UNBOUNDED entry tolerates the one call it names, not every call that function makes:
+    a second kernel call added next to a listed one is a new unbounded call."""
+    source = ("def _clash_gap(a, b):\n"
+              "    BRepExtrema_DistShapeShape(a, b)\n"
+              "    return BRepExtrema_DistShapeShape(b, a)\n")
+    sites = _sites_in("mesh_probe.py", ast.parse(source))
+
+    assert _over_allowance(sites) == [("mesh_probe.py", "_clash_gap", "BRepExtrema_DistShapeShape")]
+
+
+@pytest.mark.parametrize("symbol", ["BOPAlgo_ArgumentAnalyzer", "BOPAlgo_PaveFiller",
+                                    "BRepAlgoAPI_Defeaturing"])
+def test_the_boolean_families_are_guarded_whole(symbol):
+    """`BOPAlgo_*` and `BRepAlgoAPI_*` are guarded as families: `BOPAlgo_ArgumentAnalyzer.Perform`
+    holds the GIL like the rest (see `localize._bounded`), and a fixed list is how it was missed."""
+    sites = _sites_in("new.py", ast.parse(f"def f(x):\n    return {symbol}()\n"))
+
+    assert _over_allowance(sites) == [("new.py", "f", symbol)]
+
+
+def test_a_parent_wrapper_around_a_child_side_chain_is_ambiguous():
+    """The kernel is rarely in the function the parent calls: `in_the_parent -> _work -> partners`
+    reaches it just as surely, so `_work` being exempted as child-side hides a parent-side hang."""
+    source = _CHAIN + "def in_the_parent(x):\n    return _work(x)\n"
+
+    found = _ambiguous("chain.py", ast.parse(source))
+
+    assert found == ["chain.py:_work is reached from the child entry AND called by in_the_parent"]
