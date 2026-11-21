@@ -1394,8 +1394,100 @@ def _tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflectio
         v = [n[1] * u[2] - n[2] * u[1], n[2] * u[0] - n[0] * u[2], n[0] * u[1] - n[1] * u[0]]
         return u, v
 
+    def _mouth_probe_rings():
+        # One ring of (point, the mouth point it is reached from, the mouth's radius) per port
+        # and depth, best first. Each port's mouth - the centre of the opening its ring rims,
+        # or of the disc itself - is stepped along the port axis at decreasing depth, on the
+        # axis and then off it, out to 0.95 of the radius: a centre body can fill the axis and
+        # most of the mouth (the annular corpus family's rods span 0.61-0.90 of the bore).
+        # BOTH ways along the axis: which side is in is for the verification to prove, never
+        # for a normal's sign to assume.
+        offsets = [(0.0, 0.0)] + [(f * a, f * b) for f in (0.5, 0.8, 0.9, 0.95)
+                                  for a, b in ((1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0))]
+        for pi in (inlet_i, *outlet_ids):
+            f = faces[pi]
+            prof = _inner_opening(f)
+            if prof is not None:
+                c, area = tuple(prof["centroid"]), float(prof["area_m2"])
+            else:
+                area, c = _face_props(f)
+            r = _m.sqrt(max(area, 0.0) / _m.pi)
+            ax = BRepAdaptor_Surface(f).Plane().Axis().Direction()
+            n = [ax.X(), ax.Y(), ax.Z()]
+            u, v = _plane_basis(n)
+            for depth in (0.5, 0.3, 0.15):
+                ring = []
+                for a, b in offsets:
+                    mouth = tuple(c[k] + r * (a * u[k] + b * v[k]) for k in range(3))
+                    for sign in (1.0, -1.0):
+                        ring.append((tuple(mouth[k] + sign * depth * r * n[k]
+                                           for k in range(3)), mouth, r))
+                yield ring
+
+    def _capped_cavity():
+        # THE CAPPED CAVITY. A real machined part - a rocket nozzle, a flanged elbow - is METAL
+        # with a channel through it, and the flow is the region its wall closes with the port
+        # caps. The old search stepped from the inlet toward the outlet and took the first
+        # point not in the metal. On a bent duct that line leaves the channel at once:
+        # bend_elbow_021 (a 162.64-degree elbow, the outlet almost beside the inlet) was seeded
+        # 0.5 mm upstream of its own inlet cap - not in the metal, but in the exterior - and
+        # the carve kept the exterior void. A point is taken here only when it is PROVEN in the
+        # cavity, against the surface the mesher reads: not in the metal, reached from a port's
+        # cap in a straight line that crosses nothing, and closed in - every ray from it stops
+        # on the staged surface, where from the exterior some ray reaches open space. The cap
+        # divides exactly those two regions, so a point that passes is in the flow. The metal
+        # is EVERY solid of the file: a centre rod modelled as a solid of its own (annular_004)
+        # is closed in by the staged surface too, and the first solid alone would not see it.
+        metal = []
+        se = TopExp_Explorer(shape, TopAbs_SOLID)
+        while se.More():
+            metal.append(BRepClass3d_SolidClassifier(TopoDS.Solid_s(se.Current())))
+            se.Next()
+
+        def _in_metal(p) -> bool:
+            for cls in metal:
+                cls.Perform(gp_Pnt(*p), 1e-9)
+                if cls.State() == TopAbs_IN:
+                    return True
+            return False
+
+        carve = CarveRays([t for p in stls.values() for t in read_stl_triangles(p)])
+        best: tuple | None = None
+        for ring in _mouth_probe_rings():
+            for cand, mouth, r_mouth in ring:
+                p = tuple(round(x, 6) for x in cand)        # judged as it is written
+                if _in_metal(p) or not carve.clear_between(mouth, p):
+                    continue
+                clearance = carve.enclosed_clearance(p)
+                if clearance is None or clearance < 0.02 * r_mouth:
+                    continue                                 # open space, or on a wall
+                if best is None or clearance > best[1]:
+                    best = (p, clearance)
+                if clearance >= 0.25 * r_mouth:
+                    break                                    # well clear of every wall
+            if best is not None:
+                break          # the clearest proven point of the first ring that holds one
+        if best is not None:
+            found = best[0]
+            logger.info(
+                "tessellate_internal: seed (%.6f, %.6f, %.6f) m proven in the capped cavity - "
+                "outside the metal, straight in from a port cap, closed in on every ray "
+                "(nearest surface %.1f mm)", *found, best[1] * 1000.0)
+            return found
+        return None
+
     interior: tuple | None = None
-    if not hollow_wall:
+    cavity_seeded = False
+    if not hollow_wall and fluid_solid is False:
+        # INS-14: A BODY'S FLOW IS THE CAVITY ITS PORTS OPEN INTO, WHEN ONE IS PROVEN. A solid declared a
+        # body whose ports are plain discs was taken for a rod the user called a body, and seeded in
+        # its metal - a box with a cavity behind its port lids was meshed as its walls (the siphoned
+        # box, c2_sib1: 81% of the mesh wall off the CAD). A point proven in a cavity the staged surface
+        # closes, straight in from a port cap, outside the metal, is the flow; a rod has none (every
+        # point is its metal or the open air) and is seeded in the solid as before.
+        interior = _capped_cavity()
+        cavity_seeded = interior is not None
+    if not hollow_wall and interior is None:
         # Candidates, cheapest-first: each solid's volume centroid, then each port centroid nudged
         # inward along its (oriented) normal.
         candidates = []
@@ -1468,85 +1560,8 @@ def _tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflectio
             "outside the solid (a hole through the part?); the mesh would have been of the "
             "void, not the flow")
 
-    def _mouth_probe_rings():
-        # One ring of (point, the mouth point it is reached from, the mouth's radius) per port
-        # and depth, best first. Each port's mouth - the centre of the opening its ring rims,
-        # or of the disc itself - is stepped along the port axis at decreasing depth, on the
-        # axis and then off it, out to 0.95 of the radius: a centre body can fill the axis and
-        # most of the mouth (the annular corpus family's rods span 0.61-0.90 of the bore).
-        # BOTH ways along the axis: which side is in is for the verification to prove, never
-        # for a normal's sign to assume.
-        offsets = [(0.0, 0.0)] + [(f * a, f * b) for f in (0.5, 0.8, 0.9, 0.95)
-                                  for a, b in ((1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0))]
-        for pi in (inlet_i, *outlet_ids):
-            f = faces[pi]
-            prof = _inner_opening(f)
-            if prof is not None:
-                c, area = tuple(prof["centroid"]), float(prof["area_m2"])
-            else:
-                area, c = _face_props(f)
-            r = _m.sqrt(max(area, 0.0) / _m.pi)
-            ax = BRepAdaptor_Surface(f).Plane().Axis().Direction()
-            n = [ax.X(), ax.Y(), ax.Z()]
-            u, v = _plane_basis(n)
-            for depth in (0.5, 0.3, 0.15):
-                ring = []
-                for a, b in offsets:
-                    mouth = tuple(c[k] + r * (a * u[k] + b * v[k]) for k in range(3))
-                    for sign in (1.0, -1.0):
-                        ring.append((tuple(mouth[k] + sign * depth * r * n[k]
-                                           for k in range(3)), mouth, r))
-                yield ring
-
-    if interior is None:
-        # THE CAPPED CAVITY. A real machined part - a rocket nozzle, a flanged elbow - is METAL
-        # with a channel through it, and the flow is the region its wall closes with the port
-        # caps. The old search stepped from the inlet toward the outlet and took the first
-        # point not in the metal. On a bent duct that line leaves the channel at once:
-        # bend_elbow_021 (a 162.64-degree elbow, the outlet almost beside the inlet) was seeded
-        # 0.5 mm upstream of its own inlet cap - not in the metal, but in the exterior - and
-        # the carve kept the exterior void. A point is taken here only when it is PROVEN in the
-        # cavity, against the surface the mesher reads: not in the metal, reached from a port's
-        # cap in a straight line that crosses nothing, and closed in - every ray from it stops
-        # on the staged surface, where from the exterior some ray reaches open space. The cap
-        # divides exactly those two regions, so a point that passes is in the flow. The metal
-        # is EVERY solid of the file: a centre rod modelled as a solid of its own (annular_004)
-        # is closed in by the staged surface too, and the first solid alone would not see it.
-        metal = []
-        se = TopExp_Explorer(shape, TopAbs_SOLID)
-        while se.More():
-            metal.append(BRepClass3d_SolidClassifier(TopoDS.Solid_s(se.Current())))
-            se.Next()
-
-        def _in_metal(p) -> bool:
-            for cls in metal:
-                cls.Perform(gp_Pnt(*p), 1e-9)
-                if cls.State() == TopAbs_IN:
-                    return True
-            return False
-
-        carve = CarveRays([t for p in stls.values() for t in read_stl_triangles(p)])
-        best: tuple | None = None
-        for ring in _mouth_probe_rings():
-            for cand, mouth, r_mouth in ring:
-                p = tuple(round(x, 6) for x in cand)        # judged as it is written
-                if _in_metal(p) or not carve.clear_between(mouth, p):
-                    continue
-                clearance = carve.enclosed_clearance(p)
-                if clearance is None or clearance < 0.02 * r_mouth:
-                    continue                                 # open space, or on a wall
-                if best is None or clearance > best[1]:
-                    best = (p, clearance)
-                if clearance >= 0.25 * r_mouth:
-                    break                                    # well clear of every wall
-            if best is not None:
-                break          # the clearest proven point of the first ring that holds one
-        if best is not None:
-            interior = best[0]
-            logger.info(
-                "tessellate_internal: seed (%.6f, %.6f, %.6f) m proven in the capped cavity - "
-                "outside the metal, straight in from a port cap, closed in on every ray "
-                "(nearest surface %.1f mm)", *interior, best[1] * 1000.0)
+    if interior is None and not (fluid_solid is False and not hollow_wall):
+        interior = _capped_cavity()           # (a body's cavity was searched first, above)
     if interior is None:
         raise RuntimeError(
             "could not locate a point in the flow for locationInMesh - every point tried is in "
@@ -1605,7 +1620,8 @@ def _tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflectio
         # of a hollow wall (bore, outer skin, flange faces). A reader of the wall's passages reads
         # the first whole and keeps only the cavity's skin of the second
         # (engines/passage.passage_field_of_stls).
-        "wall_bounds_fluid": bool(fluid_solid is True or (not hollow_wall and not port_bored)),
+        "wall_bounds_fluid": bool(fluid_solid is True or (not hollow_wall and not port_bored and not cavity_seeded)),
+        "cavity_seeded": bool(cavity_seeded),
         # what was sealed into the wall beyond the declared ports, for manifests and
         # user-facing evidence: undeclared shell openings (B-rep holes nothing fills)
         # and open rim rings (gaps the tessellator itself left in the staged surface)
