@@ -529,3 +529,74 @@ def test_the_summary_counts_the_tolerant_route_apart_and_only_when_read():
     assert summary["delivered_via_tolerant_mesher"] == 1
     assert summary["tolerant_delivery_attempted"] == 2
     assert summary["newly_meshed"] == 0 and summary["meshed_after"] == 0
+
+
+# THE FACE-SIZING DIAGNOSTIC, SCORED APART (--face-sizing): "CAD sound, meshes in gmsh with
+# per-face sizing". Never a repair, never a hidden failure.
+
+
+class _Sizing:
+    def __init__(self, **answer):
+        self.calls: list = []
+        self.answer = {"applicable": True, "reason": "meshes_with_face_sizing", "meshes": True,
+                       "size_mm": 0.5, "surfaces": [3, 7], "gaps_mm": [0.2],
+                       "attempts": [{"size_mm": 0.5, "meshes": True, "failure": ""}],
+                       "seconds": 9.0, **answer}
+
+    def __call__(self, path, *, diagonal_mm, budget_s):
+        self.calls.append({"path": path, "diagonal_mm": diagonal_mm, "budget_s": budget_s})
+        return dict(self.answer)
+
+
+def test_a_gap_only_part_that_meshes_with_face_sizing_is_its_own_column(kernel, tmp_path,
+                                                                        monkeypatch):
+    monkeypatch.setattr(rc, "_diagonal_of", lambda path: 100.0)
+    sizing = _Sizing()
+    row = _tolerant_row()
+    rc._face_sizing_delivery(row, kernel.part, tmp_path, sizing=sizing)
+    assert sizing.calls == [{"path": kernel.part, "diagonal_mm": 100.0,
+                             "budget_s": rc.FACE_SIZING_BUDGET_S}]
+    assert row["meshes_with_face_sizing"] is True
+    assert row["face_sizing"]["file"] == "upload" and row["face_sizing"]["size_mm"] == 0.5
+    # NEVER a repair: the repair columns are untouched.
+    assert row["outcome"] == "refused" and row["meshes_after"] is None
+
+
+def test_a_real_intersection_is_recorded_as_not_applicable_not_false(kernel, tmp_path,
+                                                                     monkeypatch):
+    monkeypatch.setattr(rc, "_diagonal_of", lambda path: 100.0)
+    row = _tolerant_row(outcome="repaired", meshes_after=False)
+    written = tmp_path / f"{kernel.part.stem}-repaired.step"
+    written.write_text("repaired")
+    sizing = _Sizing(applicable=False, reason="real_intersection", meshes=None, size_mm=None)
+    rc._face_sizing_delivery(row, kernel.part, tmp_path, sizing=sizing)
+    assert sizing.calls[0]["path"] == written
+    assert row["meshes_with_face_sizing"] is None
+    assert row["face_sizing"]["reason"] == "real_intersection"
+    assert row["face_sizing"]["file"] == "repaired"
+
+
+@pytest.mark.parametrize("over", [
+    {"outcome": "repaired", "meshes_after": True},        # gmsh meshes what is delivered
+    {"meshes_before": True},                              # it meshed all along
+])
+def test_face_sizing_is_not_run_where_gmsh_already_meshes(kernel, tmp_path, over):
+    sizing = _Sizing()
+    row = _tolerant_row(**over)
+    rc._face_sizing_delivery(row, kernel.part, tmp_path, sizing=sizing)
+    assert sizing.calls == [] and "face_sizing" not in row
+
+
+def test_the_summary_counts_face_sizing_apart_and_only_when_read():
+    plain = [{"meshes_before": False, "meshes_after": None}]
+    assert "meshes_with_face_sizing" not in rc.meshing_summary(plain)
+    rows = [{"meshes_before": False, "meshes_after": None,
+             "face_sizing": {"applicable": True}, "meshes_with_face_sizing": True},
+            {"meshes_before": False, "meshes_after": None,
+             "face_sizing": {"applicable": True}, "meshes_with_face_sizing": False},
+            {"meshes_before": False, "meshes_after": None,
+             "face_sizing": {"applicable": False}, "meshes_with_face_sizing": None}]
+    summary = rc.meshing_summary(rows)
+    assert summary["meshes_with_face_sizing"] == 1
+    assert summary["face_sizing_applicable"] == 2
+    assert summary["newly_meshed"] == 0

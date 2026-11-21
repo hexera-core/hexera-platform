@@ -302,6 +302,11 @@ def _clash_probe(monkeypatch, *, failure, clashes, contact_calls):
     from OCP.TopoDS import TopoDS_Compound
 
     from meshpipeline.cad.repair import mesh_probe
+
+    # A REAL gap is measured by a fresh interpreter; on a loaded host (load ~160 measured) its
+    # spawn can pass the 10 s production wall. Tests that read the gap get room; the hang test
+    # sets its own 1 s wall after this fixture, so the bound is still proven.
+    monkeypatch.setattr(mesh_probe, "CLASH_EVIDENCE_S", 120.0)
     from meshpipeline.cad.repair.localize import _indexed
     from meshpipeline.cad.repair.mesh_probe import ProbeResult
 
@@ -791,3 +796,170 @@ def test_the_fallback_runs_when_no_support_resolved(monkeypatch):
     answer = mp._nearest_face_positions(
         [[0, 6, [10.0, 5.0, 5.0]], [0, 6, [5.0, 5.0, 5.0]]], 1e-6, 1, *operands)
     assert answer == [[], [1]]
+
+
+def _sizing_probe(monkeypatch, *, clashes, sized_meshes):
+    """face_sizing over a real 2-box compound (box 1 x 0..10, box 2 x 5..15), gmsh faked: the
+    unsized probe fails with `clashes`; a sized one meshes per `sized_meshes` (one bool per call)."""
+    pytest.importorskip("OCP.BRepTools", reason="the CAD kernel is a native-tier dependency")
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCP.gp import gp_Pnt
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopoDS import TopoDS_Compound
+
+    from meshpipeline.cad.repair import mesh_probe
+
+    # A REAL gap is measured by a fresh interpreter; on a loaded host (load ~160 measured) its
+    # spawn can pass the 10 s production wall. Tests that read the gap get room; the hang test
+    # sets its own 1 s wall after this fixture, so the bound is still proven.
+    monkeypatch.setattr(mesh_probe, "CLASH_EVIDENCE_S", 120.0)
+    from meshpipeline.cad.repair.localize import _indexed
+    from meshpipeline.cad.repair.mesh_probe import MeshFailure, ProbeResult
+
+    builder, shape = BRep_Builder(), TopoDS_Compound()
+    builder.MakeCompound(shape)
+    for x in (0.0, 5.0):
+        builder.Add(shape, BRepPrimAPI_MakeBox(gp_Pnt(x, 0, 0), 10, 10, 10).Shape())
+    boxes = mesh_probe._face_boxes(_indexed(shape, TopAbs_FACE))
+    failure = MeshFailure(EDGE_THROUGH_FACE, (), None, _PLC_BARE, stage="3d")
+    calls: list = []
+    answers = iter(sized_meshes)
+
+    def fake(path, *, diagonal_mm, sizing=None, **kw):
+        calls.append(sizing)
+        if sizing is None:
+            return ProbeResult(False, 0, failure, boxes, clashes)
+        if next(answers):
+            return ProbeResult(True, 100, None, boxes)
+        return ProbeResult(False, 0, failure, boxes, clashes)
+
+    monkeypatch.setattr(mesh_probe, "probe_file", fake)
+    return mesh_probe, shape, calls
+
+
+def test_gap_only_clashes_are_retried_with_face_sizing(monkeypatch):
+    from meshpipeline.cad.repair.mesh_clash import Clash
+
+    # Face 1 (x=0) and face 8 (x=15) are 15 mm apart: a gap, not an intersection.
+    mesh_probe, shape, calls = _sizing_probe(
+        monkeypatch, clashes=(Clash((1, 8), 3, (5.0, 5.0, 5.0), "crossing"),),
+        sized_meshes=[True])
+
+    found = mesh_probe.face_sizing(shape, diagonal_mm=20.0, budget_s=60.0)
+
+    assert found["applicable"] is True and found["meshes"] is True
+    assert found["surfaces"] == [1, 8]
+    assert found["pairs"] == [{"surfaces": [1, 8], "gap_mm": pytest.approx(15.0),
+                               "adjacent": False}]
+    # The first size is the coarse one: diagonal / 200.
+    assert found["size_mm"] == pytest.approx(0.1)
+    assert calls[1] == {"surfaces": [1, 8], "size": pytest.approx(0.1)}
+
+
+def test_a_coarse_sizing_that_fails_falls_through_to_the_finer_one(monkeypatch):
+    from meshpipeline.cad.repair.mesh_clash import Clash
+
+    mesh_probe, shape, calls = _sizing_probe(
+        monkeypatch, clashes=(Clash((1, 8), 3, (5.0, 5.0, 5.0), "crossing"),),
+        sized_meshes=[False, True])
+
+    found = mesh_probe.face_sizing(shape, diagonal_mm=20.0, budget_s=60.0)
+
+    assert found["meshes"] is True
+    assert [a["meshes"] for a in found["attempts"]] == [False, True]
+    assert found["size_mm"] == pytest.approx(20.0 / 1000.0)
+
+
+def test_a_real_intersection_is_not_a_sizing_question(monkeypatch):
+    from meshpipeline.cad.repair.mesh_clash import Clash
+
+    # Face 2 (box 1's x=10 wall) crosses face 9 (box 2's y=0 floor): they meet, gap 0.
+    mesh_probe, shape, calls = _sizing_probe(
+        monkeypatch, clashes=(Clash((1, 8), 3, (5.0, 5.0, 5.0), "crossing"),
+                              Clash((2, 9), 2, (10.0, 0.0, 5.0), "crossing")),
+        sized_meshes=[])
+
+    found = mesh_probe.face_sizing(shape, diagonal_mm=20.0, budget_s=60.0)
+
+    assert found["applicable"] is False and found["reason"] == "real_intersection"
+    assert found["meshes"] is None
+    assert calls == [None]          # never re-meshed with sizing
+
+
+def test_no_clash_is_not_applicable(monkeypatch):
+    mesh_probe, shape, calls = _sizing_probe(monkeypatch, clashes=(), sized_meshes=[])
+    found = mesh_probe.face_sizing(shape, diagonal_mm=20.0, budget_s=60.0)
+    assert found["applicable"] is False and found["reason"] == "no_clash"
+    assert calls == [None]
+
+
+def test_faces_that_share_an_edge_are_adjacent_not_intersecting(monkeypatch):
+    from meshpipeline.cad.repair.mesh_clash import Clash
+
+    # Face 1 (x=0 wall) and face 3 (y=0 floor) of box 1 share an edge: distance 0, but that is
+    # their common boundary, not a crossing. Triangles of two adjacent faces crossing is a
+    # sliver-angle fold the mesher's sizing answers, so the diagnostic still applies.
+    mesh_probe, shape, calls = _sizing_probe(
+        monkeypatch, clashes=(Clash((1, 3), 2, (0.0, 0.0, 5.0), "crossing"),
+                              Clash((1, 8), 3, (5.0, 5.0, 5.0), "crossing")),
+        sized_meshes=[True])
+
+    found = mesh_probe.face_sizing(shape, diagonal_mm=20.0, budget_s=60.0)
+
+    assert found["applicable"] is True and found["meshes"] is True
+    assert found["pairs"][0] == {"surfaces": [1, 3], "gap_mm": pytest.approx(0.0, abs=1e-9),
+                                 "adjacent": True}
+
+
+def test_the_first_sizing_is_coarse_and_the_second_is_set_by_the_smallest_gap(monkeypatch):
+    from meshpipeline.cad.repair.mesh_clash import Clash
+
+    # MEASURED, abc/0051_00519054 (gaps 0.01 mm): diagonal / 200 meshed it, and a gap-driven size
+    # hit the floor and spent the budget. So the coarse size is tried first, the gap's second.
+    # Face 2 (x=10) / face 7 (x=5) are 5 mm apart, face 1/8 15 mm: a fifth of the smallest is 1.0,
+    # finer than diagonal / 1000 = 2 on a 2000 mm part, so the gap sets the second size.
+    mesh_probe, shape, calls = _sizing_probe(
+        monkeypatch, clashes=(Clash((1, 8), 3, (5.0, 5.0, 5.0), "crossing"),
+                              Clash((2, 7), 3, (7.0, 5.0, 5.0), "crossing")),
+        sized_meshes=[False, True])
+
+    found = mesh_probe.face_sizing(shape, diagonal_mm=2000.0, budget_s=60.0)
+
+    assert [a["size_mm"] for a in found["attempts"]] == [pytest.approx(10.0), pytest.approx(1.0)]
+    assert found["size_mm"] == pytest.approx(1.0)
+
+
+def test_a_clash_defect_says_whether_its_faces_are_adjacent(monkeypatch):
+    from meshpipeline.cad.repair.mesh_clash import Clash
+    from meshpipeline.cad.repair.mesh_probe import MeshFailure
+
+    failure = MeshFailure(EDGE_THROUGH_FACE, (), None, _PLC_BARE, stage="3d")
+    mesh_probe, shape = _clash_probe(monkeypatch, failure=failure, contact_calls=[],
+                                     clashes=(Clash((1, 3), 2, (0.0, 0.0, 5.0), "crossing"),))
+    found = mesh_probe.mesh_defects(shape, diagonal_mm=20.6, budget_s=60.0)
+    assert {d.measurements["clash_adjacent"] for d in found} == {True}
+
+
+def test_a_face_gmsh_named_still_carries_its_clash_evidence(monkeypatch):
+    # Lane F's "clash not located" bucket: gmsh names the overlapping surfaces itself, so the face
+    # was located - but without the clash evidence (kind, gap, adjacency) that says what kind of
+    # failure it is. A gmsh-named face that is in a clash pair carries that pair's evidence.
+    from meshpipeline.cad.repair.mesh_clash import Clash
+    from meshpipeline.cad.repair.mesh_probe import MeshFailure
+
+    failure = MeshFailure(OVERLAPPING_FACETS, (1, 3), None,
+                          "Invalid boundary mesh (overlapping facets) on surface 1 surface 3",
+                          stage="3d")
+    mesh_probe, shape = _clash_probe(monkeypatch, failure=failure, contact_calls=[],
+                                     clashes=(Clash((1, 3), 3, (0.0, 0.0, 5.0), "fold"),))
+    found = {d.entity_index: d.measurements
+             for d in mesh_probe.mesh_defects(shape, diagonal_mm=20.6, budget_s=60.0)}
+
+    assert set(found) == {1, 3}
+    for face in (1, 3):
+        assert "located_by" not in found[face]          # gmsh named it; the clash only explains
+        assert found[face]["clash_kind"] == "fold"
+        assert found[face]["clash_pair"] == [1, 3]
+        assert found[face]["clash_adjacent"] is True
+        assert found[face]["clash_gap_mm"] == pytest.approx(0.0, abs=1e-9)

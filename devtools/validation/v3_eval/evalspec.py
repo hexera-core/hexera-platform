@@ -233,6 +233,13 @@ def harness_argv(name: str, kind: str, *, shard: str, inputs: str, out: str,
     else:
         argv += [inputs]
     argv += list(HARNESS_FLAGS)
+    if kind == "failing":
+        # THE FACE-SIZING DIAGNOSTIC (owner decision, wave 4 on): for a file gmsh still refuses
+        # whose every remaining clash is a B-rep GAP thinner than the probe's mesh, re-mesh only
+        # those surfaces finer (gmsh, <= 300 s) and record `meshes_with_face_sizing` as its own
+        # category - "CAD sound, meshes in gmsh with per-face sizing". Never a fix, never in
+        # newly_meshed. Not on the clean kind: a clean part meshes, so it could never apply.
+        argv += ["--face-sizing"]
     if kind == "failing" and tolerant_diagnostic:
         # THE TOLERANT ROUTE IS A DIAGNOSTIC, OFF BY DEFAULT (owner decision): fTetWild meshing a
         # file is not a fix and not a product fallback, so no default run takes it. Asked for, a

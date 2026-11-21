@@ -681,3 +681,15 @@ def test_files_fixed_is_newly_meshed_from_the_repaired_steps_gmsh_probe_only(tmp
     assert d.is_dir()
 
 
+
+
+def test_the_face_sizing_diagnostic_runs_on_every_failing_unit_and_never_on_clean():
+    # Owner decision: gap-only clashes are their own reported category ("CAD sound, meshes in gmsh
+    # with per-face sizing"), measured in every wave - so on by default, failing kind only.
+    for arm_name in spec.ARMS:
+        failing = spec.harness_argv(arm_name, "failing", shard="1/4", inputs="/in", out="/out",
+                                    code_root="/code")
+        clean = spec.harness_argv(arm_name, "clean", shard="1/4", inputs="/in", out="/out",
+                                  code_root="/code")
+        assert "--face-sizing" in failing, arm_name
+        assert "--face-sizing" not in clean, arm_name
