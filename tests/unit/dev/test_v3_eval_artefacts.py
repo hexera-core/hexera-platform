@@ -77,7 +77,9 @@ def test_run_arm_points_repaired_files_inside_the_shard_output(monkeypatch, tmp_
     monkeypatch.setattr(run_arm, "_load", lambda name, path: rc_stub)
     monkeypatch.setattr(run_arm.evalspec, "harness_argv", lambda *a, **k: [])
 
-    code = run_arm.main(["--arm", "t29_deterministic", "--kind", "failing", "--shard", "1/21",
+    # Any arm the eval spec defines: the arms change between waves, the artefacts rule does not.
+    arm = next(iter(run_arm.evalspec.ARMS))
+    code = run_arm.main(["--arm", arm, "--kind", "failing", "--shard", "1/21",
                          "--inputs", str(tmp_path), "--out", str(out),
                          "--code-root", str(REPO)])
 
