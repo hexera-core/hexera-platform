@@ -11,6 +11,7 @@ from __future__ import annotations
 import bisect
 import json
 import logging
+import math
 import os
 import re
 import signal
@@ -562,8 +563,9 @@ def _contact_extrema(pairs, *solids) -> list[dict]:
     a shape that crossed a process boundary is a different object. Sending the face would mean
     asking the child to re-walk a round-tripped shape and trusting that its `_indexed` order
     matches the parent's, which nothing here proves. So the child reports WHERE the support is and
-    whether it is in a face, and the parent resolves that point with its own bounded nearest-face
-    search. For a support inside a face that is the same face, uniquely.
+    whether it is in a face, and a second child (`_nearest_face_positions`) resolves that point
+    among THE OWNING BODY'S faces, sent as shapes and answered as positions. For a support inside
+    a face that is the same face, uniquely.
 
     `pairs` indexes `solids` BY POSITION: the dispatcher writes the operands as one compound and
     reads them back in order, so a position means the same body on both sides.
@@ -595,6 +597,60 @@ def _contact_extrema(pairs, *solids) -> list[dict]:
     return out
 
 
+def _nearest_face_positions(queries, tol, *faces) -> list[list[int]]:
+    """Per query `[lo, hi, point]`: the positions in `faces` of the face(s) nearest `point`, among
+    `faces[lo:hi]` ONLY - one body's faces, so another body's coincident face is never named.
+
+    ONLY EVER RUN IN THE CHILD (registered as `probe.nearest_face_positions`): the point-to-face
+    distances are as uninterruptible as the pair extrema. The faces cross as shapes and come back
+    as POSITIONS, so no index walk of a round-tripped shape has to agree with the parent's map.
+    """
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+
+    out: list[list[int]] = []
+    for lo, hi, point in queries:
+        local = TopTools_IndexedMapOfShape()
+        for face in faces[int(lo):int(hi)]:
+            local.Add(face)
+        x, y, z = (float(v) for v in point)
+        near = _nearest_faces(local, (x, y, z), tol=float(tol), deadline=math.inf)
+        out.append([int(lo) + int(n) - 1 for n in near or ()])
+    return out
+
+
+def _bounded_nearest_faces(bodies, queries, *, tol: float, deadline: float) -> list[list] | None:
+    """Per `(side, point)` query, the faces of `bodies[side]` nearest `point` - the PARENT'S own
+    face objects - or None when the child did not finish. Every query goes to ONE child."""
+    from OCP.TopAbs import TopAbs_FACE
+
+    from meshpipeline.cad.repair.localize import _indexed
+
+    operands: list = []
+    spans: list[tuple[int, int]] = []
+    for body in bodies:
+        local = _indexed(body, TopAbs_FACE)
+        lo = len(operands)
+        operands += [local.FindKey(k) for k in range(1, local.Extent() + 1)]
+        spans.append((lo, len(operands)))
+    budget = deadline - time.monotonic()
+    if budget <= 0.0:
+        return None
+    answer = bounded_child.run(
+        _nearest_face_positions,
+        ([[*spans[side], list(point)] for side, point in queries], float(tol), *operands),
+        budget_s=budget)
+    if not isinstance(answer, list) or len(answer) != len(queries):
+        return None
+    out: list[list] = []
+    for (side, _point), positions in zip(queries, answer, strict=True):
+        lo, hi = spans[side]
+        if not isinstance(positions, list) or not all(
+                isinstance(n, int) and lo <= n < hi for n in positions):
+            return None            # an answer naming another body's face is no answer
+        out.append([operands[n] for n in positions])
+    return out
+
+
 def _contact_support_faces(shape, faces, *, tol: float, deadline: float) -> Contact | None:
     """The contact of the nearest pair of touching solids that share no face yet, or None when
     there is no such pair or the deadline passed first. SEAM: tests replace it.
@@ -607,10 +663,11 @@ def _contact_support_faces(shape, faces, *, tol: float, deadline: float) -> Cont
     least distance wins (ties by the same ranking) and its support faces are the answer. A support
     the kernel reports IN a face is that face. When it reports only vertices or edges (touching
     planar faces usually do), the faces nearest the centroid of the minimal-distance points are
-    used instead, on each body. Every kernel failure is "no pair": this never raises.
+    used instead, on each body. Both searches run in a bounded child and see only their own
+    body's faces. Every kernel failure is "no pair": this never raises.
     """
     try:
-        from OCP.TopAbs import TopAbs_FACE, TopAbs_SOLID
+        from OCP.TopAbs import TopAbs_SOLID
 
         from meshpipeline.cad.repair.localize import _indexed
 
@@ -663,47 +720,46 @@ def _contact_support_faces(shape, faces, *, tol: float, deadline: float) -> Cont
             return None
         i, j, answer = best
         distance = float(answer["distance"])
-        found: set[int] = set()
+        # Each side's queries search ONLY THAT BODY'S faces: a support of solid i is a face of
+        # solid i, and a third body's face coincident with its point must never be named.
+        queries: list[tuple[int, tuple[float, float, float]]] = []   # (side, point)
         points: list[tuple[float, float, float]] = []
         for solution in answer.get("solutions") or ():
             for side, point_key in ((0, "p1"), (1, "p2")):
-                if not (solution.get("in_face") or (False, False))[side]:
-                    continue
-                # THE SUPPORT IS INSIDE A FACE, so the nearest face to its point IS that face -
-                # resolved here, with the parent's own map, through the bounded search.
-                x, y, z = (float(v) for v in solution[point_key])
-                near = _nearest_faces(faces, (x, y, z), tol=tol, deadline=deadline)
-                if near is None:
-                    return None
-                found.update(int(index) for index in near)
+                if (solution.get("in_face") or (False, False))[side]:
+                    x, y, z = (float(v) for v in solution[point_key])
+                    queries.append((side, (x, y, z)))
             if float(solution.get("gap", 0.0)) <= distance + tol:
                 x, y, z = (float(v) for v in solution["p1"])
                 points.append((x, y, z))
-
-        def contact() -> Contact | None:
-            if not found:
-                return None
-            return Contact(faces=tuple(sorted(found)), pair=f"solids:{i}+{j}",
-                           pairs_total=len(pairs), pairs_considered=min(len(pairs),
-                                                                         CONTACT_PAIR_CAP))
-
-        if found or not points:
-            return contact()
-        # FALLBACK CENTRE: the average of body i's minimal-distance points. For a contact that is
-        # not convex (an L-shaped patch) that average can lie OFF the contact, and the nearest
-        # faces to it are then a guess - `located_by` already says this is an inference.
-        count = len(points)
-        centre = (sum(p[0] for p in points) / count, sum(p[1] for p in points) / count,
-                  sum(p[2] for p in points) / count)
-        for index in (i, j):
-            body_faces = _indexed(solids.FindKey(index), TopAbs_FACE)
-            near = _nearest_faces(body_faces, centre, tol=tol, deadline=deadline)
-            if near is None:
-                return None
-            for local in near:
-                found.add(int(faces.FindIndex(body_faces.FindKey(local))))
+        in_face = len(queries)
+        if points:
+            # FALLBACK CENTRE, asked in the same child and used only when no in-face support
+            # resolves: the average of body i's minimal-distance points. For a contact that is
+            # not convex (an L-shaped patch) that average can lie OFF the contact, and the
+            # nearest faces to it are then a guess - `located_by` already says this is an
+            # inference.
+            count = len(points)
+            centre = (sum(p[0] for p in points) / count, sum(p[1] for p in points) / count,
+                      sum(p[2] for p in points) / count)
+            queries += [(0, centre), (1, centre)]
+        if not queries:
+            return None
+        near = _bounded_nearest_faces([solids.FindKey(i), solids.FindKey(j)], queries,
+                                      tol=tol, deadline=deadline)
+        if near is None:
+            return None
+        found: set[int] = set()
+        for resolved in near[:in_face]:
+            found.update(int(faces.FindIndex(face)) for face in resolved)
+        if not found:
+            for resolved in near[in_face:]:
+                found.update(int(faces.FindIndex(face)) for face in resolved)
         found.discard(0)
-        return contact()
+        if not found:
+            return None
+        return Contact(faces=tuple(sorted(found)), pair=f"solids:{i}+{j}",
+                       pairs_total=len(pairs), pairs_considered=min(len(pairs), CONTACT_PAIR_CAP))
     except Exception as exc:  # noqa: BLE001 - the probe never raises
         logger.info("mesh_probe: contact search: %s: %s", type(exc).__name__, exc)
         return None
