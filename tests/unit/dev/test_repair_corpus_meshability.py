@@ -195,3 +195,42 @@ def test_hints_schema_is_checked(tmp_path):
         assert mp.load_hints(p) is None
     assert mp.load_hints(tmp_path / "missing.json") is None
     assert mp.hints_path(Path("/x/y.step")) == Path("/x/y.step.mesh-hints.json")
+
+
+def _hinted_row(tmp_path, monkeypatch, quality, attempts=3):
+    hints = {"schema": "crs-mesh-hints/1", "attempts": attempts,
+             "faces": [{"face": 1, "size_mm": 0.3}]}
+    upload, scratch = _setup(tmp_path, returned=b"REPAIRED", hints=hints)
+    row = {"outcome": "refused", "meshes_before": False, "valid_before": True}
+
+    def extra(path, *, diagonal_mm, mode, hints=None, budget_s):
+        if mode == "hints":
+            return {"meshed": True, "kind": "", "quality": dict(quality)}
+        return {"meshed": False}
+
+    monkeypatch.setattr(rc, "_diagonal_of", lambda p: 100.0)
+    rc._score_returned(row, upload, scratch, since=time.time() - 60, extra=extra,
+                       default_probe=lambda p, **k: SimpleNamespace(
+                           meshed=False, failure=SimpleNamespace(kind="overlapping_facets")),
+                       inspect=lambda p: {"valid": True})
+    return row
+
+
+def test_hinted_quality_is_recorded_with_attempts(tmp_path, monkeypatch):
+    row = _hinted_row(tmp_path, monkeypatch, {"elements": 2_000_000, "min_sicn": 0.12,
+                                               "min_gamma": 0.05, "min_edge_mm": 0.01})
+    assert row["meshes_after_hints"] is True
+    assert row["mesh_quality_after_hints"]["attempts"] == 3
+    s = rc.meshability_summary([row])
+    assert s["hints_over_element_cap"] == 1 and s["hints_degenerate"] == 0
+    assert s["hints_quality"] == {"files": 1, "worst_min_sicn": 0.12, "worst_min_gamma": 0.05,
+                                  "smallest_edge_mm": 0.01, "most_elements": 2_000_000,
+                                  "most_attempts": 3}
+
+
+def test_a_degenerate_hinted_mesh_does_not_count(tmp_path, monkeypatch):
+    row = _hinted_row(tmp_path, monkeypatch, {"elements": 500, "min_sicn": -0.2})
+    assert row["meshes_after_hints"] is False
+    assert row["mesh_kind_after_hints"] == "degenerate"
+    s = rc.meshability_summary([row])
+    assert s["meshes_with_hints"] == 0 and s["hints_degenerate"] == 1

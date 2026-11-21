@@ -971,14 +971,42 @@ def _score_returned(row: dict, path: Path, scratch: Path, *, since: float,
     if hints is not None:
         hv = extra(written, diagonal_mm=diagonal, mode="hints", hints=hints,
                    budget_s=MESH_PROBE_BUDGET_S)
-        row["meshes_after_hints"] = bool(hv.get("meshed"))
-        row["mesh_kind_after_hints"] = str(hv.get("kind") or "")
+        quality = dict(hv.get("quality") or {})
+        quality["attempts"] = hints.get("attempts")
+        # AN INVERTED OR DEGENERATE MESH IS NOT A MESH: min SICN <= 0 fails the hinted verdict, and
+        # the reason says so. Size is reported, never judged here (summary: over_element_cap).
+        degenerate = bool(hv.get("meshed")) and (quality.get("min_sicn") is not None
+                                                 and quality["min_sicn"] <= 0.0)
+        row["meshes_after_hints"] = bool(hv.get("meshed")) and not degenerate
+        row["mesh_kind_after_hints"] = ("degenerate" if degenerate
+                                        else str(hv.get("kind") or ""))
+        row["mesh_quality_after_hints"] = quality
     else:
         row["meshes_after_hints"] = None
     row["valid_to_invalid"] = bool(row.get("valid_before") is True and valid is False)
     credit = meshed_by(row)
     if credit is not None:
         row["meshed_by"] = credit
+
+
+#: Above this many volume elements a hinted mesh is reported as enormous (`hints_over_element_cap`).
+#: The same ceiling the oracle puts on a tier-2 probe (cad/repair/oracle.TIER2_ELEMENT_CAP).
+HINTS_ELEMENT_CAP = 1_000_000
+
+
+def _hints_quality(scored: list[dict]) -> dict:
+    """Over the files that mesh ONLY with the hints: the worst min SICN, the smallest edge, the
+    largest element count and the most attempts - the numbers a reader needs before trusting it."""
+    q = [r.get("mesh_quality_after_hints") or {} for r in scored
+         if r.get("meshes_after_hints") is True and r.get("meshes_after_default") is not True]
+
+    def pick(key: str, fn):
+        values = [x[key] for x in q if x.get(key) is not None]
+        return fn(values) if values else None
+
+    return {"files": len(q), "worst_min_sicn": pick("min_sicn", min),
+            "worst_min_gamma": pick("min_gamma", min), "smallest_edge_mm": pick("min_edge_mm", min),
+            "most_elements": pick("elements", max), "most_attempts": pick("attempts", max)}
 
 
 def meshability_summary(rows: list[dict]) -> dict:
@@ -1020,6 +1048,13 @@ def meshability_summary(rows: list[dict]) -> dict:
                                        and not r.get("meshes_before")),
         "meshes_only_with_hints": sum(1 for r in scored if meshes(r, "meshes_after_hints")
                                       and not meshes(r, "meshes_after_default")),
+        "hints_degenerate": sum(1 for r in scored
+                                if r.get("mesh_kind_after_hints") == "degenerate"),
+        "hints_over_element_cap": sum(
+            1 for r in scored if meshes(r, "meshes_after_hints")
+            and int((r.get("mesh_quality_after_hints") or {}).get("elements") or 0)
+            > HINTS_ELEMENT_CAP),
+        "hints_quality": _hints_quality(scored),
         "meshed_before_gmsh_default": sum(1 for r in scored
                                           if r.get("meshes_before_gmsh_default")),
         "meshes_gmsh_default": sum(1 for r in scored if meshes(r, "meshes_after_gmsh_default")),

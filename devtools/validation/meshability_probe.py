@@ -14,6 +14,7 @@
 THE HINTS SIDECAR is `<returned STEP>.mesh-hints.json`:
 
     {"schema": "crs-mesh-hints/1", "units": "mm", "global_max_mm": null | float,
+     "face_count": int (optional), "attempts": int (optional),
      "faces": [{"face": <1-based OCC face index in the RETURNED STEP>, "fingerprint": "...",
                 "size_mm": float, "why": "..."}]}
 
@@ -60,8 +61,26 @@ def load_hints(path: Path) -> dict | None:
         if clean[-1]["face"] < 1 or clean[-1]["size_mm"] <= 0:
             return None
     out = {"faces": clean, "global_max_mm": data.get("global_max_mm")}
+    # How many attempts lane G's hint search took to reach these sizes (information only).
+    if data.get("attempts") is not None:
+        out["attempts"] = int(data["attempts"])
     if data.get("face_count") is not None:
         out["face_count"] = int(data["face_count"])
+    return out
+
+
+def _quality(gmsh, elements: list[int]) -> dict:
+    """The volume mesh's quality, so "it meshed" cannot hide a degenerate or enormous mesh: element
+    count, min SICN (<= 0 means an inverted or degenerate element), min gamma, and the shortest
+    and longest element edge in mm."""
+    out: dict = {"elements": len(elements)}
+    for name, key, pick in (("minSICN", "min_sicn", min), ("gamma", "min_gamma", min),
+                            ("minEdge", "min_edge_mm", min), ("maxEdge", "max_edge_mm", max)):
+        try:
+            values = gmsh.model.mesh.getElementQualities(elements, name)
+            out[key] = round(float(pick(values)), 6) if len(values) else None
+        except Exception:  # noqa: BLE001 - a quality gmsh cannot compute is reported missing
+            out[key] = None
     return out
 
 
@@ -104,8 +123,12 @@ def _child(step: str, diagonal_mm: float, mode: str, hints: dict | None) -> dict
         gmsh.model.mesh.generate(3)
         _types, tags, _nodes = gmsh.model.mesh.getElements(3)
         count = sum(len(t) for t in tags)
-        return {"meshed": count > 0, "kind": "" if count > 0 else "no_volume", "stage": stage,
-                "elements": count, "applied": len((hints or {}).get("faces") or [])}
+        answer: dict = {"meshed": count > 0, "kind": "" if count > 0 else "no_volume",
+                        "stage": stage, "elements": count,
+                        "applied": len((hints or {}).get("faces") or [])}
+        if count > 0:
+            answer["quality"] = _quality(gmsh, [int(t) for block in tags for t in block])
+        return answer
     except Exception as exc:  # noqa: BLE001 - a gmsh failure is the answer
         kind = "other"
         try:
