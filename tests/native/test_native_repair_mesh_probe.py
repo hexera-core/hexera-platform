@@ -342,6 +342,31 @@ def test_nearest_face_search_measures_few_faces(monkeypatch):
     assert len(measured) < faces.Extent() == 12
 
 
+def test_a_failure_point_is_located_with_nothing_measured_in_the_parent(monkeypatch):
+    """THROUGH THE REAL KERNEL AND THE REAL CHILD. gmsh's failure point on the top of one box of a
+    far-apart pair is placed on that one face, and the parent constructs no DistShapeShape: a count
+    of zero is the only observation that proves the measurement left this process."""
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+
+    measured = []
+
+    class Counting(BRepExtrema_DistShapeShape):
+        def __init__(self, *args):
+            measured.append(1)
+            super().__init__(*args)
+
+    import OCP.BRepExtrema
+    monkeypatch.setattr(OCP.BRepExtrema, "BRepExtrema_DistShapeShape", Counting)
+    shape = _compound(_box(), _box(x=100.0))
+    _fake_probe(monkeypatch, mesh_probe.MeshFailure(
+        EDGE_THROUGH_FACE, (), (5.0, 5.0, 10.0), "PLC Error"))
+
+    (defect,) = mesh_probe.mesh_defects(shape, diagonal_mm=173.0, budget_s=60.0)
+
+    assert defect.entity_type == "face" and defect.entity_index >= 1
+    assert measured == [], "the kernel call must run in the child, never in this process"
+
+
 def test_scoped_defect_outside_the_region_is_dropped_not_unlocated(monkeypatch):
     from meshpipeline.cad.repair.localize import _diagonal
     from meshpipeline.cad.repair.regions import Region

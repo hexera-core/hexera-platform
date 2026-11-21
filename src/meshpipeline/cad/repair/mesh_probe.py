@@ -721,6 +721,21 @@ def _bounded_nearest_faces(bodies, queries, *, primary: int, tol: float,
     return out
 
 
+def _bounded_point_faces(shape, faces, point, *, tol: float, deadline: float) -> list[int] | None:
+    """The indices in `faces` of the face(s) nearest `point`, or None when the child did not finish.
+
+    AUDIT ROW 2. This was `_nearest_faces` IN THE PARENT: one uninterruptible
+    `BRepExtrema_DistShapeShape` per candidate face, the deadline checked only between faces. It
+    is now one query to the contact search's child, which runs the same pruning search - so no
+    more faces are measured than before, and a slow face is killed with the group.
+    """
+    near = _bounded_nearest_faces([shape], [(0, tuple(point))], primary=1, tol=tol,
+                                  deadline=deadline)
+    if near is None:
+        return None
+    return sorted({int(faces.FindIndex(face)) for face in near[0]} - {0})
+
+
 def _contact_support_faces(shape, faces, *, tol: float, deadline: float) -> Contact | None:
     """The contact of the nearest pair of touching solids that share no face yet, or None when
     there is no such pair or the deadline passed first. SEAM: tests replace it.
@@ -906,7 +921,7 @@ def _mesh_defects(shape, *, diagonal_mm: float, budget_s: float,
     code = CODE_FOR_KIND.get(failure.kind, DefectCode.mesh_other)
     located: list[int] | None = []
     if failure.point is not None:
-        located = _nearest_faces(faces, failure.point, tol=tol, deadline=deadline)
+        located = _bounded_point_faces(shape, faces, failure.point, tol=tol, deadline=deadline)
     elif trusted := locating_surfaces(failure):
         if mapping is None:
             mapping = faces_for_tags(_face_boxes(faces), result.tag_boxes, tol=tol)
