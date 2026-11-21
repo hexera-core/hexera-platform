@@ -228,6 +228,162 @@ def _stream_boundary_faces(path: Path, first_face: int, n_faces: int):
     return sizes, conn
 
 
+#: WHAT A BINARY FOAM FILE SAYS ABOUT ITS OWN WIDTHS. Read rather than assumed - the hand-run
+#: script this replaces hardcoded label=32 and scalar=64 off one mesh's line. They are per-file
+#: facts, and a mesh written by a label64 build packs 8-byte labels: read as int32 those come back
+#: as every other number interleaved with zeros, which is a face table that parses cleanly and
+#: describes nothing. So the line is read and a width this cannot size is refused by name.
+_ARCH_RE = re.compile(rb'arch\s+"([^"]*)"')
+_FOAM_FORMAT_RE = re.compile(rb"format\s+(\w+)\s*;")
+#: A foam list's own header in a binary file: the count on its own line, then the bracket. The
+#: data follows the bracket packed, with no separators and no record headers.
+_BINARY_LIST_RE = re.compile(rb"(\d+)\s*\n\(")
+#: The (label bits, scalar bits) pairs this can read, and what numpy calls each.
+_BINARY_WIDTHS = {(32, 64): ("<i4", "<f8"), (32, 32): ("<i4", "<f4"),
+                  (64, 64): ("<i8", "<f8"), (64, 32): ("<i8", "<f4")}
+
+
+def _foam_format(path: Path) -> str:
+    """"ascii" or "binary", from the file's own FoamFile block and nothing else.
+
+    NEITHER IS REFUSED HERE, which is the difference between this and `_data_start`. The mesh the
+    CHAIN writes is ascii at every stage that could write one (`layers.py`, `case_scaffold.py`),
+    because a binary polyMesh is unreadable to the viewer, to this index and to the quality
+    sidecar. A decomposed mesh is the one the product may not have written: measured on the real
+    four-rank case, its reconstructed copy is ascii and its processor directories are binary, from
+    the same run - `decomposePar` and the parallel utilities obey `system/controlDict`, and that
+    case's says binary. So the form is a question to ask the file, not a property of the product.
+    """
+    with path.open("rb") as fh:
+        head = fh.read(4096)
+    end = head.find(b"}")
+    if end < 0:
+        raise IndexUnavailable(f"{path.name}: no FoamFile block")
+    m = _FOAM_FORMAT_RE.search(head[:end])
+    if not m:
+        raise IndexUnavailable(f"{path.name}: its FoamFile block does not say which format it is")
+    said = m.group(1).decode("latin-1")
+    if said not in ("ascii", "binary"):
+        raise IndexUnavailable(f"{path.name}: format {said!r}, which this does not read")
+    return said
+
+
+def _binary_widths(path: Path) -> tuple[str, str]:
+    """(label dtype, scalar dtype) for this binary file, from its own `arch` line."""
+    with path.open("rb") as fh:
+        head = fh.read(4096)
+    m = _ARCH_RE.search(head[:max(head.find(b"}"), 0) or len(head)])
+    if not m:
+        # NOT A DEFAULT DRESSED AS A MEASUREMENT. Every polyMesh OpenFOAM writes carries this
+        # line; a file without one is refused rather than guessed at, because the guess that is
+        # wrong produces a face table rather than an error.
+        raise IndexUnavailable(
+            f"{path.name}: a binary mesh with no `arch` line, so its integer and float widths "
+            "are not stated and this will not assume them")
+    arch = m.group(1).decode("latin-1")
+    try:
+        label = int(re.search(r"label\s*=\s*(\d+)", arch).group(1))
+        scalar = int(re.search(r"scalar\s*=\s*(\d+)", arch).group(1))
+    except (AttributeError, ValueError) as exc:
+        raise IndexUnavailable(f"{path.name}: arch {arch!r} does not state its widths") from exc
+    if "LSB" not in arch.upper():
+        raise IndexUnavailable(
+            f"{path.name}: arch {arch!r} is not little-endian, which this does not read")
+    got = _BINARY_WIDTHS.get((label, scalar))
+    if got is None:
+        raise IndexUnavailable(f"{path.name}: arch {arch!r} is a width pair this cannot size")
+    return got
+
+
+def _binary_list_at(fh, start: int, window: int = 8192) -> tuple[int, int]:
+    """(byte offset of the first packed element, element count) of the list at or after `start`."""
+    fh.seek(start)
+    m = _BINARY_LIST_RE.search(fh.read(window))
+    if not m:
+        raise IndexUnavailable(f"no foam list found at offset {start}")
+    return start + m.end(), int(m.group(1))
+
+
+def _binary_after_header(fh) -> int:
+    """Just past the FoamFile block, so the header's own numbers are never taken for a count."""
+    fh.seek(0)
+    head = fh.read(8192)
+    i = head.find(b"}")
+    if i < 0:
+        raise IndexUnavailable("no FoamFile block")
+    return i + 1
+
+
+def _binary_points(path: Path):
+    """Every point, MAPPED rather than read: a flat list of 3N packed scalars after one header.
+
+    A memmap and not an array on purpose. Only the points a boundary face touches are ever
+    touched, and on a rank of a big region that is a small fraction of the volume's points - which
+    is the whole reason the binary form is the cheaper one to index.
+    """
+    import numpy as np
+
+    _label, scalar = _binary_widths(path)
+    with path.open("rb") as fh:
+        off, cnt = _binary_list_at(fh, _binary_after_header(fh))
+    want = off + cnt * 3 * np.dtype(scalar).itemsize
+    if want > path.stat().st_size:
+        raise IndexUnavailable(
+            f"{path.name}: declares {cnt:,} points, which needs {want:,} bytes of a "
+            f"{path.stat().st_size:,}-byte file")
+    return np.memmap(path, dtype=scalar, mode="r", offset=off, shape=(cnt, 3))
+
+
+def _binary_boundary_faces(path: Path, first_face: int, n_faces: int):
+    """Faces [first_face, first_face + n_faces) as (sizes uint8, conn), in two seeks.
+
+    A binary `faces` is a faceCompactList: an offsets list of nFaces+1 labels, then a second list
+    holding every face's vertex ids end to end - so face n's corners are found by arithmetic and
+    nothing before them is read. The ascii form has to be SCANNED, because its records are
+    variable length and there is nothing to seek to: `_stream_boundary_faces` walks every internal
+    face counting brackets. Binary is not the harder case here, it is the easier one.
+    """
+    import numpy as np
+
+    label, _scalar = _binary_widths(path)
+    w = np.dtype(label).itemsize
+    with path.open("rb") as fh:
+        off1, n1 = _binary_list_at(fh, _binary_after_header(fh))
+        if first_face + n_faces + 1 > n1:
+            raise IndexUnavailable(
+                f"{path.name}: faces {first_face:,}+{n_faces:,} is outside the {n1 - 1:,} this "
+                "file holds")
+        fh.seek(off1 + w * first_face)
+        offs = np.frombuffer(fh.read(w * (n_faces + 1)), dtype=label).astype(np.int64)
+        # The vertex list begins after the offsets list's own closing bracket.
+        off2, n2 = _binary_list_at(fh, off1 + w * n1, window=256)
+        if int(offs[-1]) > n2:
+            raise IndexUnavailable(
+                f"{path.name}: a face ends at vertex {int(offs[-1]):,} of {n2:,}")
+        fh.seek(off2 + w * int(offs[0]))
+        conn = np.frombuffer(fh.read(w * int(offs[-1] - offs[0])), dtype=label)
+    sizes = np.diff(offs)
+    if sizes.size and int(sizes.min()) < 0:
+        raise IndexUnavailable(f"{path.name}: its face offsets do not increase")
+    if sizes.size and int(sizes.max()) > 255:
+        raise IndexUnavailable(
+            f"{path.name}: a face with {int(sizes.max())} corners, which the sidecar's uint8 "
+            "sizes cannot hold")
+    return sizes.astype(np.uint8), conn.astype(np.uint32)
+
+
+def _mesh_points(path: Path):
+    """Every point of this mesh, whichever form it is written in."""
+    return _binary_points(path) if _foam_format(path) == "binary" else _stream_points(path)
+
+
+def _boundary_faces(path: Path, first_face: int, n_faces: int):
+    """A span of this mesh's faces as (sizes uint8, conn), whichever form it is written in."""
+    if _foam_format(path) == "binary":
+        return _binary_boundary_faces(path, first_face, n_faces)
+    return _stream_boundary_faces(path, first_face, n_faces)
+
+
 def _grid(centroids, n_faces: int):
     """A uniform bucket grid over the centroids: (origin, cell edge, dims)."""
     import numpy as np
@@ -357,6 +513,260 @@ def write_index(polymesh, *, region: str = "", skip_names: tuple[str, ...] = ())
     (out / "meta.json").write_text(json.dumps(meta, indent=2))
     logger.info("boundary index written for %s: %d faces, %d buckets, %.1f MB",
                 region or pm.parent.name, n_faces, nb,
+                sum(meta["bytes"].values()) / 1e6)
+    return meta
+
+
+def index_is_decomposed(case, polymesh) -> bool:
+    """Whether this region's cells live in per-rank meshes rather than beside its boundary file.
+
+    ONE PRODUCER OF THIS DECISION, read by the index and by the quality sidecar, because they are
+    numbered against each other: an index built from the ranks beside a quality array reduced from
+    a serial mesh - or the other way round - would paint one mesh's numbers on another's faces and
+    look entirely plausible.
+
+    IT ASKS ABOUT `faces`, not about `owner` or about the rank count. A decomposed-only delivery
+    has a `boundary` file written from the ranks (`conjugate._publish_decomposed_boundaries`) and
+    no cells at all beside it, and a MERGED delivery keeps its `processor*` directories until the
+    reconstruct has finished - so "are there ranks" is true in both and says nothing. The file the
+    index actually reads is the one worth asking about.
+    """
+    from meshpipeline.engines.cfmesh_conjugate.polymesh_surface import processor_dirs
+
+    if (Path(polymesh) / "faces").is_file():
+        return False
+    return bool(processor_dirs(Path(case)))
+
+
+def write_index_decomposed(case, *, region: str = "") -> dict:
+    """Build this region's boundary index from the PER-RANK meshes. Same sidecar, same reader.
+
+    WHY IT EXISTS. With `CONJUGATE_MERGE_REGIONS=0` the chain never reconstructs, so
+    `constant/<region>/polyMesh` holds the patch table `_publish_decomposed_boundaries` wrote from
+    the ranks and nothing else - no `faces`, no `points`, no cells - and `write_index` needs all
+    three. The cells are in `processor*/constant/<region>/polyMesh`, and a region's real boundary
+    is exactly the union of its non-`processor` patches across the ranks: every boundary face of
+    the whole mesh lives on exactly one rank, so the union neither drops a face nor counts one
+    twice. The faces on a cut BETWEEN ranks are a different thing and are excluded - each was an
+    internal face of the whole mesh and is a boundary face on both ranks that share it, so taking
+    them in would draw walls through the middle of the part.
+
+    IT RECONSTRUCTS NOTHING and must not be read as doing so. It reads each rank's `points`,
+    `faces` and `boundary`, keeps the boundary, and writes the sidecar. There is still no serial
+    volume mesh, and `meta["source"]` says that where a later reader will look for it.
+
+    THE PATCH TABLE IS NOT ITS OWN, and that is load-bearing. It comes from
+    `decomposed_region_boundary`, which is also what the `boundary` file beside the sidecar was
+    written from - and `open_index` cross-checks the index's patch table against that file on
+    every open. Two independent readings of the same ranks that disagreed about one patch would
+    make every detail request refuse, with nothing wrong with either the mesh or the index. One
+    producer, read twice.
+
+    WHAT THE HAND-RUN SCRIPT THIS REPLACES DID INSTEAD
+    (`devtools/semiconductor/viewer/par_boundary_index.py`), because both are corrected here:
+
+      - IT GATED ON THREE HARDCODED FACE COUNTS - the pitch-8 deliverable's own 16,622,416 /
+        18,104,116 / 1,763,676 - and skipped the gate entirely for any region not among those
+        three names. So the one check that made it trustworthy did not run at all on a new case,
+        which is the only case it would ever be pointed at again. Here the gate is the ranks' own
+        declaration, per patch, and every region has one.
+      - IT TOOK THE PATCH ORDER FROM processor0 ALONE, so a patch that rank 0 did not list was
+        dropped with no error. A rank is supposed to list every global patch at `nFaces 0`, and
+        does on the real 4-rank case this was measured against, but "supposed to" is what the
+        union in `decomposed_region_boundary` costs nothing to stop depending on.
+
+    EITHER FORMAT, and that is not generosity. The chain writes `writeFormat ascii` at every
+    stage that could write a mesh, because a binary polyMesh is unreadable to the viewer - but the
+    decomposed mesh is the one the product may not have written. Measured on the real four-rank
+    case: its reconstructed copy is ascii and its processor directories are binary, FROM THE SAME
+    RUN, because `decomposePar` and the parallel utilities obey `system/controlDict` and that
+    case's says binary. An ascii-only reader here would have refused the only real decomposed mesh
+    there is to check this against. See `_foam_format` and `_binary_boundary_faces`.
+    """
+    import numpy as np
+
+    from meshpipeline.engines.cfmesh_conjugate.polymesh_surface import (
+        PROCESSOR_PATCH_TYPE,
+        DecomposedBoundaryError,
+        decomposed_region_boundary,
+        processor_dirs,
+        read_boundary_patches,
+    )
+
+    case = Path(case)
+    pm_out = (case / "constant" / region / "polyMesh") if region else (case / "constant" / "polyMesh")
+    ranks = processor_dirs(case)
+    if not ranks:
+        raise IndexUnavailable(f"{case}: no processor* directories to build an index from")
+    try:
+        rows = [r for r in decomposed_region_boundary(case, region) if int(r["n_faces"]) > 0]
+    except DecomposedBoundaryError as exc:
+        raise IndexUnavailable(f"{case}: {exc}") from exc
+    if not rows:
+        raise IndexUnavailable(
+            f"{case}: the {len(ranks)} ranks declare no real boundary faces for region {region!r}")
+    if len(rows) >= NO_PATCH:
+        raise IndexUnavailable(f"{case}: {len(rows)} patches, more than this index can number")
+    want = {str(r["name"]): int(r["n_faces"]) for r in rows}
+
+    # PASS ONE, RANK BY RANK: each rank's own real boundary, compacted to the points its faces
+    # touch. Serial and in memory, where the hand-run script used a 24-process pool writing .npy
+    # part files under a scratch directory. The arrays here are the sidecar's own size - points
+    # and connectivity together came to under 4% of the mesh on disk on the customer plate - the
+    # read is I/O bound either way, and a mesh job's workspace is archived and returned whole, so
+    # part files left in it are part files that get shipped.
+    rank_points: list = []
+    parts: dict[str, list] = {str(r["name"]): [] for r in rows}
+    for rank_i, d in enumerate(ranks):
+        pm = (d / "constant" / region / "polyMesh") if region else (d / "constant" / "polyMesh")
+        local = []
+        if (pm / "boundary").is_file():
+            local = [p for p in read_boundary_patches(pm)
+                     if str(p.get("type")) != PROCESSOR_PATCH_TYPE and int(p["n_faces"]) > 0]
+        if not local:
+            # A RANK WITH NO REAL BOUNDARY IS NORMAL, not an error: an interior rank of a big
+            # decomposition can hold cells whose every outside face is a cut to another rank.
+            rank_points.append(np.empty((0, 3), np.float32))
+            continue
+        unknown = sorted({str(p["name"]) for p in local} - set(want))
+        if unknown:
+            raise IndexUnavailable(
+                f"{d.name}: patches {unknown} are on this rank and not in the region's own patch "
+                f"table, so these per-rank files are not one mesh")
+        first = min(int(p["start_face"]) for p in local)
+        last = max(int(p["start_face"]) + int(p["n_faces"]) for p in local)
+        # THE REAL PATCHES MUST BE CONTIGUOUS for one read to cover them and nothing else. In a
+        # decomposed mesh they are - `processor` patches are appended after the real ones - and it
+        # is checked rather than assumed, because a hole here takes faces on a cut between ranks
+        # into the delivered surface, where they draw as a wall that is not there.
+        if sum(int(p["n_faces"]) for p in local) != last - first:
+            raise IndexUnavailable(
+                f"{d.name}: the real patches are not contiguous, so one read of faces "
+                f"{first:,}..{last:,} would take in faces on a cut between ranks")
+        sizes, conn = _boundary_faces(pm / "faces", first, last - first)
+        used, local_ids = np.unique(conn, return_inverse=True)
+        points = _mesh_points(pm / "points")
+        if used.size and int(used.max()) >= int(points.shape[0]):
+            raise IndexUnavailable(
+                f"{d.name}: a boundary face names point {int(used.max()):,} of "
+                f"{int(points.shape[0]):,}")
+        rank_points.append(np.asarray(points[used.astype(np.int64)], dtype=np.float32))
+        del points
+        lconn = np.asarray(local_ids).reshape(-1).astype(np.int64)
+        offs = np.concatenate(([0], np.cumsum(sizes.astype(np.int64))))
+        for p in local:
+            f0 = int(p["start_face"]) - first
+            n = int(p["n_faces"])
+            parts[str(p["name"])].append(
+                (rank_i, sizes[f0:f0 + n], lconn[int(offs[f0]):int(offs[f0 + n])]))
+
+    # PASS TWO: the ranks' point blocks end to end, in RANK order rather than patch order, so a
+    # face from rank 3 can be renumbered against rank 3's block. Points are NOT welded across the
+    # ranks: a point on a cut appears once per rank that touches it, which costs a few per cent of
+    # vertices and changes no face, no centroid and no bucket. Welding would mean comparing tens of
+    # millions of float triples for equality, which is a worse trade than carrying them.
+    counts = [int(b.shape[0]) for b in rank_points]
+    offsets = np.concatenate(([0], np.cumsum(counts))).astype(np.int64)
+    bpoints = np.concatenate(rank_points) if rank_points else np.empty((0, 3), np.float32)
+    del rank_points
+
+    sizes_parts, conn_parts, patches, cursor = [], [], [], 0
+    for r in rows:
+        nm = str(r["name"])
+        n_here = 0
+        for rank_i, s, c in parts[nm]:
+            sizes_parts.append(s)
+            conn_parts.append(c + int(offsets[rank_i]))
+            n_here += int(s.shape[0])
+        # THE GATE, and it is the ranks' own declaration rather than three numbers from one case.
+        # Anything else means faces were dropped or doubled between the boundary files and this
+        # read of them, and an index like that is worse than none, because it answers.
+        if n_here != want[nm]:
+            raise IndexUnavailable(
+                f"{case}: assembled {n_here:,} faces for patch {nm!r} and the ranks' boundary "
+                f"files declare {want[nm]:,}")
+        patches.append({"name": nm, "type": str(r.get("type") or ""), "first_face": cursor,
+                        "n_faces": n_here})
+        cursor += n_here
+    del parts
+
+    sizes = np.concatenate(sizes_parts) if sizes_parts else np.empty(0, np.uint8)
+    conn64 = np.concatenate(conn_parts) if conn_parts else np.empty(0, np.int64)
+    del sizes_parts, conn_parts
+    n_faces = int(sizes.shape[0])
+    offs = np.concatenate(([0], np.cumsum(sizes.astype(np.int64))))
+    if int(offs[-1]) != int(conn64.shape[0]):
+        raise IndexUnavailable(
+            f"{case}: the connectivity is {int(conn64.shape[0]):,} long and the face sizes need "
+            f"{int(offs[-1]):,}")
+    if conn64.size and int(conn64.max()) >= int(bpoints.shape[0]):
+        raise IndexUnavailable(
+            f"{case}: a face names point {int(conn64.max()):,} of {int(bpoints.shape[0]):,}")
+    conn = conn64.astype(np.uint32)
+    del conn64
+
+    # A degenerate face (under three corners) would make reduceat divide by its own size. They are
+    # kept in the NUMBERING, so a face id here is the assembled boundary's own, and dropped from
+    # every answer by the reader - exactly as in `write_index`.
+    safe = np.maximum(sizes.astype(np.int64), 1)
+    centroids = (np.add.reduceat(bpoints[conn.astype(np.int64)], offs[:-1], axis=0)
+                 / safe[:, None]).astype(np.float32)
+
+    patch_of = np.full(n_faces, NO_PATCH, dtype=np.uint16)
+    for pid, p in enumerate(patches):
+        patch_of[p["first_face"]:p["first_face"] + p["n_faces"]] = pid
+
+    origin, edge, dims = _grid(centroids, n_faces)
+    bid = _bucket_of(centroids, origin, edge, dims)
+    nb = int(dims.prod())
+    order = np.argsort(bid, kind="stable").astype(np.uint32)
+    starts = np.concatenate(
+        ([0], np.cumsum(np.bincount(bid, minlength=nb).astype(np.int64)))).astype(np.int64)
+
+    out = index_dir(pm_out)
+    out.mkdir(parents=True, exist_ok=True)
+    for name, arr in (("points.f32", bpoints), ("sizes.u8", sizes), ("conn.u32", conn),
+                      ("centroids.f32", centroids), ("patch_of.u16", patch_of),
+                      ("bucket_face.u32", order), ("bucket_start.i64", starts)):
+        (out / name).write_bytes(np.ascontiguousarray(arr).tobytes())
+
+    # THE STAMP IS THE PUBLISHED `boundary` FILE'S OWN, which is the only file of the mesh that
+    # sits beside this sidecar - there is no serial `faces` or `points` to size. `_source_stamp`
+    # returns exactly that one entry here, so `open_index`'s check still runs and still runs on a
+    # real number: the patch table is what a reader is answered from, and a boundary file rewritten
+    # under a standing index is the one failure this must not have. The provenance keys beside it
+    # are not files and `open_index` skips them, which is what lets them be said here at all.
+    source = dict(_source_stamp(pm_out))
+    source["built_from"] = "decomposed"
+    source["n_processors"] = len(ranks)
+    source["ranks"] = [d.name for d in ranks]
+    source["note"] = ("the union of the non-processor patches across the processor directories; "
+                      "there is no serial volume mesh and this index is not a reconstruct")
+
+    meta = {
+        "version": INDEX_VERSION,
+        "region": region,
+        "n_faces": n_faces,
+        "n_points": int(bpoints.shape[0]),
+        # ZERO, AND NOT A GUESS. On the meta this key is the first boundary face's id in the
+        # mesh's own global face numbering, which a decomposed mesh does not have: each rank
+        # numbers from zero. The assembled boundary's first face is its own face 0, and every
+        # reader of the sidecar uses the patch-local `first_face` instead (see
+        # `index_surface`, which says so where it reads them).
+        "first_face": 0,
+        "patches": patches,
+        "grid": {"origin": [float(v) for v in origin], "edge": float(edge),
+                 "dims": [int(v) for v in dims], "n_buckets": nb},
+        "bbox": {"min": [float(v) for v in centroids.min(axis=0)],
+                 "max": [float(v) for v in centroids.max(axis=0)]},
+        "bytes": {name: int((out / name).stat().st_size) for name in
+                  ("points.f32", "sizes.u8", "conn.u32", "centroids.f32", "patch_of.u16",
+                   "bucket_face.u32", "bucket_start.i64")},
+        "source": source,
+    }
+    (out / "meta.json").write_text(json.dumps(meta, indent=2))
+    logger.info("boundary index written for %s from %d ranks: %d faces, %d points, %d buckets, "
+                "%.1f MB", region or "the mesh", len(ranks), n_faces, int(bpoints.shape[0]), nb,
                 sum(meta["bytes"].values()) / 1e6)
     return meta
 
@@ -728,4 +1138,5 @@ def has_index(polymesh) -> bool:
 
 
 __all__ = ["BoundaryIndex", "INDEX_DIRNAME", "INDEX_VERSION", "IndexUnavailable",
+           "index_is_decomposed", "write_index_decomposed",
            "has_index", "index_dir", "open_index", "write_index"]

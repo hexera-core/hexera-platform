@@ -25,6 +25,34 @@ def _foam(path: Path, cls: str, obj: str, count: int, records: list[str]) -> Non
         f"{count}\n(\n" + "\n".join(records) + "\n)\n")
 
 
+#: WHY THERE IS A BINARY WRITER AT ALL. Measured on the real four-rank case
+#: (`runs/unit_cell_100um-4across`): its RECONSTRUCTED mesh is ascii and its PROCESSOR
+#: DIRECTORIES are binary, from the same run - `decomposePar` and the parallel utilities obey
+#: `system/controlDict`, and that case's says binary. So the form a decomposed reader meets in the
+#: wild is binary, and a suite that only ever hands it ascii would leave that path covered by one
+#: directory on one laptop.
+#:
+#: THE LAYOUT IS THE REAL FILE'S, measured before this was written:
+#:   points  one list of N, then 3N packed float64
+#:   faces   a faceCompactList - one list of N+1 int32 offsets, then one list of the flat vertex
+#:           ids, whose declared count equals the last offset
+#:   owner   one list of N int32, one per face
+#: with the FoamFile block carrying `format binary;` and `arch "LSB;label=32;scalar=64"`.
+_BINARY_ARCH = "LSB;label=32;scalar=64"
+
+
+def _foam_binary(path: Path, cls: str, obj: str, blocks: list) -> None:
+    """A binary foam file: the FoamFile block, then each (count, packed bytes) as its own list."""
+    out = ("FoamFile\n{\n    version     2.0;\n    format      binary;\n"
+           f"    class       {cls};\n    arch        \"{_BINARY_ARCH}\";\n"
+           f"    object      {obj};\n}}\n"
+           "// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //\n"
+           "\n").encode()
+    for count, data in blocks:
+        out += f"{count}\n(".encode() + data + b")\n"
+    path.write_bytes(out)
+
+
 def write_row_of_hexes(polymesh: Path, *, shear_last_y: float = 0.0,
                        degenerate_wall_face: bool = False, last_cell_length: float = 1.0) -> dict:
     """Three unit hexes in a row along x, as an OpenFOAM polyMesh.
@@ -156,7 +184,7 @@ PROCESSOR_PATCH_TYPE = "processor"
 
 
 def write_decomposed_row_of_hexes(case, *, ranks: int = 2, n_cells: int = 6,
-                                  region: str | None = None) -> dict:
+                                  region: str | None = None, binary: bool = False) -> dict:
     """`n_cells` unit hexes in a row along x, split over `ranks` processor directories.
 
     The serial equivalent of this mesh is `write_row_of_hexes` generalised to n cells: the same
@@ -166,6 +194,11 @@ def write_decomposed_row_of_hexes(case, *, ranks: int = 2, n_cells: int = 6,
 
     Written under `case/processorN/constant/polyMesh`, or `.../constant/<region>/polyMesh` when
     `region` is given, which is where `splitMeshRegions -parallel` leaves a multi-region case.
+
+    `binary` writes `points`, `faces`, `owner` and `neighbour` the way a real decomposed case
+    has them - see `_foam_binary` for the measured layout and for why that is the realistic form.
+    The `boundary` file stays a dictionary either way, which is also what the real case does: its
+    header says binary and its contents are text.
 
     Returns what a reader should find: {"patches": {name: total real faces}, "processor_faces":
     n, "cells": n_cells} - the totals being what summing across ranks must reproduce.
@@ -180,13 +213,14 @@ def write_decomposed_row_of_hexes(case, *, ranks: int = 2, n_cells: int = 6,
 
     for r in range(int(ranks)):
         n_proc_faces += _write_one_rank(case, r, bounds[r], bounds[r + 1],
-                                        ranks=int(ranks), region=region)
+                                        ranks=int(ranks), region=region, binary=bool(binary))
 
     return {"patches": {"inlet": 1, "outlet": 1, "wall": 4 * int(n_cells)},
             "processor_faces": n_proc_faces, "cells": int(n_cells)}
 
 
-def _write_one_rank(case, r: int, c0: int, c1: int, *, ranks: int, region: str | None) -> int:
+def _write_one_rank(case, r: int, c0: int, c1: int, *, ranks: int, region: str | None,
+                    binary: bool = False) -> int:
     """One rank's polyMesh for cells [c0, c1) of the row. Returns its processor-face count.
 
     A function of its own rather than a loop body, so the little `face` helper closes over THIS
@@ -200,19 +234,22 @@ def _write_one_rank(case, r: int, c0: int, c1: int, *, ranks: int, region: str |
     polymesh = polymesh / "polyMesh"
     polymesh.mkdir(parents=True, exist_ok=True)
 
-    pts = [f"({c0 + ix} {iy} {iz})"
+    xyz = [(float(c0 + ix), float(iy), float(iz))
            for ix in range(nc + 1) for iy in range(2) for iz in range(2)]
+    pts = [f"({x:g} {y:g} {z:g})" for x, y, z in xyz]
 
     def lp(ix: int, iy: int, iz: int) -> int:
         return ix * 4 + iy * 2 + iz
 
     faces: list[str] = []
+    face_ids: list[list[int]] = []
     owner: list[int] = []
     neighbour: list[int] = []
     n_proc_faces = 0
 
     def face(ids, own, nei=None):
         faces.append(f"{len(ids)}(" + " ".join(str(i) for i in ids) + ")")
+        face_ids.append([int(i) for i in ids])
         owner.append(own)
         if nei is not None:
             neighbour.append(nei)
@@ -257,11 +294,29 @@ def _write_one_rank(case, r: int, c0: int, c1: int, *, ranks: int, region: str |
             patches.append((f"procBoundary{r}to{r + 1}", PROCESSOR_PATCH_TYPE, s, 1, r + 1))
             n_proc_faces += 1
 
-        _foam(polymesh / "points", "vectorField", "points", len(pts), pts)
-        _foam(polymesh / "faces", "faceList", "faces", len(faces), faces)
-        _foam(polymesh / "owner", "labelList", "owner", len(owner), [str(o) for o in owner])
-        _foam(polymesh / "neighbour", "labelList", "neighbour", len(neighbour),
-              [str(n) for n in neighbour])
+        if binary:
+            import numpy as np
+
+            offs = [0]
+            for ids in face_ids:
+                offs.append(offs[-1] + len(ids))
+            flat = [i for ids in face_ids for i in ids]
+            _foam_binary(polymesh / "points", "vectorField", "points",
+                         [(len(xyz), np.asarray(xyz, dtype="<f8").tobytes())])
+            # TWO LISTS, which is what a faceCompactList is: the offsets, then the flat vertices.
+            _foam_binary(polymesh / "faces", "faceCompactList", "faces",
+                         [(len(offs), np.asarray(offs, dtype="<i4").tobytes()),
+                          (len(flat), np.asarray(flat, dtype="<i4").tobytes())])
+            _foam_binary(polymesh / "owner", "labelList", "owner",
+                         [(len(owner), np.asarray(owner, dtype="<i4").tobytes())])
+            _foam_binary(polymesh / "neighbour", "labelList", "neighbour",
+                         [(len(neighbour), np.asarray(neighbour, dtype="<i4").tobytes())])
+        else:
+            _foam(polymesh / "points", "vectorField", "points", len(pts), pts)
+            _foam(polymesh / "faces", "faceList", "faces", len(faces), faces)
+            _foam(polymesh / "owner", "labelList", "owner", len(owner), [str(o) for o in owner])
+            _foam(polymesh / "neighbour", "labelList", "neighbour", len(neighbour),
+                  [str(n) for n in neighbour])
 
         body = []
         for name, ptype, start, n, nbr in patches:
