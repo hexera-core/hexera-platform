@@ -503,3 +503,291 @@ def test_the_gap_child_is_a_fresh_interpreter_not_a_fork(monkeypatch):
     monkeypatch.setattr(os, "fork", no_fork)
     argv = mesh_probe._gap_child_argv("/tmp/x.brep", [[1, 2]])
     assert argv[1:4] == ["-W", "ignore", "-m"] and "--gaps" in argv
+
+
+# --- row 1: the contact search measures its pairs in a bounded child ---------------------------
+
+
+class _Solids:
+    """The indexed solid map the contact search walks."""
+
+    def __init__(self, n: int) -> None:
+        self._n = n
+
+    def Extent(self) -> int:                                       # noqa: N802 - OCC's name
+        return self._n
+
+    def FindKey(self, index: int):                                 # noqa: N802 - OCC's name
+        return f"solid-{index}"
+
+
+_FACES_PER_BODY = 3
+
+
+class _BodyFaces:
+    """One body's own face map: `face-K.M` is face M of solid K."""
+
+    def __init__(self, body: str) -> None:
+        self._k = int(body.removeprefix("solid-"))
+
+    def Extent(self) -> int:                                       # noqa: N802 - OCC's name
+        return _FACES_PER_BODY
+
+    def FindKey(self, index: int):                                 # noqa: N802 - OCC's name
+        return f"face-{self._k}.{index}"
+
+
+class _FaceMap:
+    """The whole part's face map: face M of solid K is index (K-1)*3 + M."""
+
+    def FindIndex(self, face: str) -> int:                         # noqa: N802 - OCC's name
+        k, m = (int(v) for v in face.removeprefix("face-").split("."))
+        return (k - 1) * _FACES_PER_BODY + m
+
+
+def _geometry(monkeypatch, bodies: int = 2):
+    """Bodies whose boxes meet and share no face, so the prefilter keeps every pair."""
+    from meshpipeline.cad.repair import localize
+    from meshpipeline.cad.repair import mesh_probe as mp
+
+    def indexed(shape, kind):
+        return _Solids(bodies) if str(kind).endswith("SOLID") else _BodyFaces(shape)
+
+    monkeypatch.setattr(localize, "_indexed", indexed)
+    monkeypatch.setattr(mp, "_bounds_of", lambda shape: ((0.0, 0.0, 0.0), (1.0, 1.0, 1.0)))
+    monkeypatch.setattr(mp, "_shared_pairs", lambda shape, solids: set())
+
+
+def _contact(monkeypatch, answer, *, resolve=None):
+    """The dispatcher stubbed for both children. `answer` is the pair extrema's; `resolve(lo, hi,
+    point)` answers each nearest-face query (default: the first face of the queried body). The
+    parent's own `_nearest_faces` RAISES: no point-to-face distance may run in the parent."""
+    from meshpipeline.cad.repair import mesh_probe as mp
+
+    seen: dict = {"queries": []}
+
+    def _run(fn, args, budget_s):
+        if fn is mp._contact_extrema:
+            seen.update(args=args, budget_s=budget_s)
+            return answer
+        assert fn is mp._nearest_face_positions, fn
+        queries, _tol, primary, *operands = args
+        seen.update(operands=operands, primary=primary)
+        seen["queries"] += [(lo, hi, tuple(point)) for lo, hi, point in queries]
+        if resolve == "dead":
+            return None
+        return [list((resolve or (lambda lo, hi, point: [lo]))(lo, hi, tuple(point)))
+                for lo, hi, point in queries]
+
+    def parent_distance(*_a, **_k):
+        raise AssertionError("a point-to-face distance ran in the parent")
+
+    monkeypatch.setattr(mp.bounded_child, "run", _run)
+    monkeypatch.setattr(mp, "_nearest_faces", parent_distance)
+    return seen
+
+
+def _solution(in_face=(True, False), p1=(1.0, 2.0, 3.0), p2=(1.0, 2.0, 3.0), gap=0.0):
+    return {"in_face": list(in_face), "p1": list(p1), "p2": list(p2), "gap": gap}
+
+
+def test_every_candidate_pair_is_measured_in_one_child(monkeypatch):
+    """ROW 1. The loop made one uninterruptible `BRepExtrema_DistShapeShape` per pair in the
+    parent, with the deadline checked only BETWEEN pairs. The pairs go to one child, and the
+    bodies cross AS SHAPES so a position means the same body on both sides - no index walk of a
+    round-tripped shape has to agree with the parent's."""
+    import time
+
+    from meshpipeline.cad.repair import mesh_probe as mp
+
+    # THREE bodies, so three candidate pairs and three answers: the answer list must cover
+    # exactly the pairs that were asked about, or the parent cannot say which one won.
+    seen = _contact(monkeypatch, [{"distance": 5.0, "solutions": []},
+                                  {"distance": 0.0, "solutions": [_solution()]},
+                                  {"distance": 9.0, "solutions": []}])
+    _geometry(monkeypatch, bodies=3)
+
+    found = mp._contact_support_faces("shape", _FaceMap(), tol=1e-6,
+                                      deadline=time.monotonic() + 30.0)
+
+    assert seen["args"][0] == [[0, 1], [0, 2], [1, 2]], (
+        "the pairs index the operands BY POSITION, which is the same body on both sides")
+    assert found is not None and found.pair == "solids:1+3"
+    assert found.faces == (1,)                       # face-1.1: the first face of solid 1
+    assert found.pairs_considered == 3
+
+
+def test_a_support_inside_a_face_is_resolved_among_its_own_bodys_faces(monkeypatch):
+    """Each side's support is searched for ONLY among its own body's faces, in a child: the
+    operands are solid i's faces then solid j's, and each query spans one body. A third body's
+    face coincident with the point is never in the search, so it can never become a defect."""
+    import time
+
+    from meshpipeline.cad.repair import mesh_probe as mp
+
+    seen = _contact(monkeypatch, [{"distance": 0.0, "solutions": [
+        _solution(in_face=(True, True), p1=(1.0, 0.0, 0.0), p2=(2.0, 0.0, 0.0))]}],
+        resolve=lambda lo, hi, point: [lo + 1])
+    _geometry(monkeypatch)
+
+    found = mp._contact_support_faces("shape", _FaceMap(), tol=1e-6,
+                                      deadline=time.monotonic() + 30.0)
+
+    assert seen["operands"] == ["face-1.1", "face-1.2", "face-1.3",
+                                "face-2.1", "face-2.2", "face-2.3"]
+    assert seen["queries"][:2] == [(0, 3, (1.0, 0.0, 0.0)), (3, 6, (2.0, 0.0, 0.0))]
+    assert found is not None and found.faces == (2, 5)   # face-1.2 and face-2.2
+    assert seen["primary"] == 2, "the child is told which queries are supports, not fallback"
+
+
+def test_a_resolution_naming_another_bodys_face_is_no_answer(monkeypatch):
+    import time
+
+    from meshpipeline.cad.repair import mesh_probe as mp
+
+    _contact(monkeypatch, [{"distance": 0.0, "solutions": [_solution()]}],
+             resolve=lambda lo, hi, point: [hi])          # one past this body's faces
+    _geometry(monkeypatch)
+
+    assert mp._contact_support_faces("shape", _FaceMap(), tol=1e-6,
+                                     deadline=time.monotonic() + 30.0) is None
+
+
+def test_a_resolution_child_that_did_not_finish_is_not_a_contact(monkeypatch):
+    import time
+
+    from meshpipeline.cad.repair import mesh_probe as mp
+
+    _contact(monkeypatch, [{"distance": 0.0, "solutions": [_solution()]}], resolve="dead")
+    _geometry(monkeypatch)
+
+    assert mp._contact_support_faces("shape", _FaceMap(), tol=1e-6,
+                                     deadline=time.monotonic() + 30.0) is None
+
+
+def test_the_centre_fallback_is_used_only_when_no_in_face_support_resolves(monkeypatch):
+    """No support inside a face: the centre of the minimal-distance points is searched on EACH
+    body, in the same child."""
+    import time
+
+    from meshpipeline.cad.repair import mesh_probe as mp
+
+    seen = _contact(monkeypatch, [{"distance": 0.0, "solutions": [
+        _solution(in_face=(False, False), p1=(2.0, 0.0, 0.0))]}])
+    _geometry(monkeypatch)
+
+    found = mp._contact_support_faces("shape", _FaceMap(), tol=1e-6,
+                                      deadline=time.monotonic() + 30.0)
+
+    assert seen["queries"] == [(0, 3, (2.0, 0.0, 0.0)), (3, 6, (2.0, 0.0, 0.0))]
+    assert found is not None and found.faces == (1, 4)
+
+
+def test_a_child_that_did_not_finish_is_not_a_contact(monkeypatch):
+    """What a spent deadline used to mean here: which pair is nearest is undetermined, so the
+    search reports nothing rather than the best of what answered."""
+    import time
+
+    from meshpipeline.cad.repair import mesh_probe as mp
+
+    _contact(monkeypatch, None)
+    _geometry(monkeypatch)
+
+    assert mp._contact_support_faces("shape", _FaceMap(), tol=1e-6,
+                                     deadline=time.monotonic() + 30.0) is None
+
+
+def test_a_pair_the_kernel_could_not_measure_is_merely_not_nearest(monkeypatch):
+    """A null distance is geometry the kernel refused, not an unfinished search, so the next pair
+    still wins."""
+    import time
+
+    from meshpipeline.cad.repair import mesh_probe as mp
+
+    _contact(monkeypatch, [{"distance": None, "solutions": []},
+                           {"distance": 1.0, "solutions": [_solution()]},
+                           {"distance": 4.0, "solutions": []}])
+    _geometry(monkeypatch, bodies=3)
+
+    found = mp._contact_support_faces("shape", _FaceMap(), tol=1e-6,
+                                      deadline=time.monotonic() + 30.0)
+
+    assert found is not None and found.pair == "solids:1+3" and found.faces == (1,)
+
+
+def test_the_nearest_face_kernel_never_names_a_coincident_face_of_another_body():
+    """THE REAL KERNEL. Two boxes touch at x = 10, so each owns a face through (10, 5, 5). Asked
+    among box A's faces only, the answer is A's face alone - never B's coincident one."""
+    pytest.importorskip("OCP.BRepPrimAPI", reason="the CAD kernel")
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCP.gp import gp_Pnt
+    from OCP.TopAbs import TopAbs_FACE
+
+    from meshpipeline.cad.repair.localize import _bounds_of, _indexed
+    from meshpipeline.cad.repair.mesh_probe import _nearest_face_positions
+
+    a = BRepPrimAPI_MakeBox(10.0, 10.0, 10.0).Shape()
+    b = BRepPrimAPI_MakeBox(gp_Pnt(10.0, 0.0, 0.0), 10.0, 10.0, 10.0).Shape()
+    operands = [m.FindKey(k) for body in (a, b)
+                for m in [_indexed(body, TopAbs_FACE)] for k in range(1, m.Extent() + 1)]
+    ((only,), both) = _nearest_face_positions(
+        [[0, 6, [10.0, 5.0, 5.0]], [0, 12, [10.0, 5.0, 5.0]]], 1e-6, 2, *operands)
+    lo, hi = _bounds_of(operands[only])
+    assert only < 6 and lo[0] == pytest.approx(10.0, abs=1e-4) == hi[0]
+    assert len(both) == 2 and any(n >= 6 for n in both), "the whole-part search names B's face too"
+
+
+class _Meets:
+    """A bounding box that meets every other: the prefilter keeps every pair."""
+
+    def IsOut(self, other) -> bool:                                # noqa: N802 - OCC's name
+        return False
+
+    def CornerMin(self):                                           # noqa: N802 - OCC's name
+        raise AssertionError("the overlap ranking must not need corners in these fixtures")
+
+
+def test_a_fallback_search_never_runs_once_a_support_resolved(monkeypatch):
+    """The centre fallback is only for a contact with NO in-face support. Asked in the same child,
+    it must not run once a support resolved: a fallback that spends the child's budget would kill
+    the child and discard the supports it had already found, leaving the failure unlocated."""
+    pytest.importorskip("OCP.BRepPrimAPI", reason="the CAD kernel")
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCP.TopAbs import TopAbs_FACE
+
+    from meshpipeline.cad.repair import mesh_probe as mp
+    from meshpipeline.cad.repair.localize import _indexed
+
+    centre = (5.0, 5.0, 5.0)
+    asked: list = []
+
+    def nearest(faces, point, *, tol, deadline):
+        asked.append(point)
+        if point == centre:
+            raise AssertionError("the fallback ran although a support had resolved")
+        return [1]
+
+    monkeypatch.setattr(mp, "_nearest_faces", nearest)
+    box = _indexed(BRepPrimAPI_MakeBox(10.0, 10.0, 10.0).Shape(), TopAbs_FACE)
+    operands = [box.FindKey(k) for k in range(1, 7)]
+    answer = mp._nearest_face_positions(
+        [[0, 6, [10.0, 5.0, 5.0]], [0, 6, list(centre)], [0, 6, list(centre)]], 1e-6, 1, *operands)
+    assert answer == [[0], [], []]
+    assert asked == [(10.0, 5.0, 5.0)]
+
+
+def test_the_fallback_runs_when_no_support_resolved(monkeypatch):
+    pytest.importorskip("OCP.BRepPrimAPI", reason="the CAD kernel")
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCP.TopAbs import TopAbs_FACE
+
+    from meshpipeline.cad.repair import mesh_probe as mp
+    from meshpipeline.cad.repair.localize import _indexed
+
+    monkeypatch.setattr(mp, "_nearest_faces",
+                        lambda faces, point, *, tol, deadline: [] if point[0] == 10.0 else [2])
+    box = _indexed(BRepPrimAPI_MakeBox(10.0, 10.0, 10.0).Shape(), TopAbs_FACE)
+    operands = [box.FindKey(k) for k in range(1, 7)]
+    answer = mp._nearest_face_positions(
+        [[0, 6, [10.0, 5.0, 5.0]], [0, 6, [5.0, 5.0, 5.0]]], 1e-6, 1, *operands)
+    assert answer == [[], [1]]

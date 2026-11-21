@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
+from meshpipeline.cad.repair import bounded_child
 from meshpipeline.cad.repair.contracts import DefectCode
 from meshpipeline.cad.repair.identity import EntityMapping, EntityRef, fingerprint_of, quantum_for
 
@@ -2227,7 +2228,55 @@ def _centre(box) -> tuple[float, float, float] | None:
     return ((x0 + x1) / 2.0, (y0 + y1) / 2.0, (z0 + z1) / 2.0)
 
 
-def _meeting_partner(shape, body, face):
+#: What `fragment_bodies`' two kernel questions get. The pair is rebuilt on the strength of their
+#: answers, so an answer that does not arrive DECLINES the operation - it is not worth guessing.
+#: The face scan's own ceiling is the precedent (`HEAL_ANALYSIS_BUDGET_S`): a fragment never waits
+#: longer than a scan would.
+FRAGMENT_KERNEL_BUDGET_S = 30.0
+
+#: `_meeting_partner` could not finish asking. DISTINCT FROM None, which means the boxes say there
+#: is no candidate at all: one is geometry, the other is ignorance, and only the second is a
+#: reason to stop rather than to report `no_partner`.
+PARTNER_UNMEASURED = object()
+
+
+def _distances_to(face, *bodies) -> list[float | None]:
+    """How far `face` is from each of `bodies`, None for one the kernel could not measure.
+
+    ONLY EVER RUN IN THE CHILD (registered with `bounded_child` as `operations.face_distances`).
+    `BRepExtrema_DistShapeShape` cannot be interrupted, so this ran once per candidate in the
+    parent with nothing able to stop it - row 4 of the audit.
+
+    THE BODIES CROSS AS SHAPES, NOT AS INDICES. The dispatcher writes the operands as a compound
+    and reads them back in order, so the answers line up with the candidates positionally; asking
+    the child to re-walk a round-tripped shape and trust that its `_indexed` order matches the
+    parent's would be an assumption nothing here proves.
+    """
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+
+    out: list[float | None] = []
+    for body in bodies:
+        try:
+            extrema = BRepExtrema_DistShapeShape(face, body)
+            out.append(float(extrema.Value()) if extrema.IsDone() else None)
+        except Exception as exc:  # noqa: BLE001 - an unmeasurable pair is merely not nearest
+            logger.debug("fragment_bodies: no distance to a candidate body (%s)", exc)
+            out.append(None)
+    return out
+
+
+def _bounded_common_volume(a, b) -> float | None:
+    """`_common_volume` in a bounded child, or None - which the caller declines on, exactly as it
+    declines on a kernel that could not compute it.
+
+    Row 5. The function was already registered with the dispatcher and `investigator_tools`
+    already took that route; `apply` called it straight, so on the fragment path the Boolean was
+    as unbounded as it ever was. REGISTERING A KERNEL IS NOT BOUNDING IT: the call site is.
+    """
+    return bounded_child.run(_common_volume, (a, b), budget_s=FRAGMENT_KERNEL_BUDGET_S)
+
+
+def _meeting_partner(shape, body, face, *, budget_s: float = FRAGMENT_KERNEL_BUDGET_S):
     """The solid other than `body` whose bounding box meets `body`'s, nearest the failing `face`,
     or None when no other solid's box meets it.
 
@@ -2241,7 +2290,6 @@ def _meeting_partner(shape, body, face):
     there is nothing to compare, and the LOWEST-INDEX candidate (TopExp's order) wins: arbitrary,
     but deterministic.
     """
-    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
     from OCP.TopAbs import TopAbs_SOLID
 
     from meshpipeline.cad.repair.localize import _indexed
@@ -2249,7 +2297,7 @@ def _meeting_partner(shape, body, face):
     solids = _indexed(shape, TopAbs_SOLID)
     own = _bnd(body)
     aim = _centre(_bnd(face))
-    best, best_key = None, None
+    candidates: list[tuple[int, object, object]] = []
     for index in range(1, solids.Extent() + 1):
         other = solids.FindKey(index)
         if other.IsSame(body):
@@ -2257,17 +2305,23 @@ def _meeting_partner(shape, body, face):
         box = _bnd(other)
         if own.IsOut(box):
             continue
-        try:
-            extrema = BRepExtrema_DistShapeShape(face, other)
-            distance = float(extrema.Value()) if extrema.IsDone() else float("inf")
-        except Exception as exc:  # noqa: BLE001 - an unmeasurable pair is merely not nearest
-            logger.debug("fragment_bodies: no distance to solid %d (%s)", index, exc)
-            distance = float("inf")
+        candidates.append((index, other, box))
+    if not candidates:
+        return None                      # the boxes say so: `no_partner`, and no child is started
+    measured = bounded_child.run(_distances_to, (face, *(other for _i, other, _b in candidates)),
+                                 budget_s=budget_s)
+    if measured is None or len(measured) != len(candidates):
+        # The child was killed, failed, or answered about something else. Which body the failing
+        # face belongs to is then undetermined, and the operation declines rather than rebuild a
+        # pair chosen from a partial answer.
+        return PARTNER_UNMEASURED
+    best, best_key = None, None
+    for (index, other, box), distance in zip(candidates, measured, strict=True):
         centre = _centre(box)
         offset = (0.0 if aim is None or centre is None
                   else sum((a - c) ** 2 for a, c in zip(aim, centre)) ** 0.5)
         # Distances are rounded so kernel noise in the last digits does not decide a tie.
-        key = (round(distance, 9), offset, index)
+        key = (round(float("inf") if distance is None else float(distance), 9), offset, index)
         if best_key is None or key < best_key:
             best, best_key = other, key
     return best
@@ -2331,7 +2385,7 @@ def _common_volume(a, b) -> float | None:
         return None
 
 
-def _general_fuse(a, b, faces) -> tuple[tuple[tuple, tuple], object]:
+def _general_fuse(a, b, faces) -> tuple[tuple[tuple, tuple], Any]:
     """Run the general fuse (`BOPAlgo_Builder`) over the TWO bodies only.
 
     Returns `((pieces of a, pieces of b), history)`: each body's images (empty when the fuse left
@@ -2374,6 +2428,92 @@ def _general_fuse(a, b, faces) -> tuple[tuple[tuple, tuple], object]:
             assembler.Add(compound, image)
         history.Replace(face, compound)
     return (pieces(a), pieces(b)), history
+
+
+#: What the child reports about one targeted face, in the three answers
+#: `operations.mapping_from_context` actually reads off a history: it was replaced by an image, it
+#: is gone (recorded, null value), or it was never recorded at all.
+_FUSE_IMAGE = "image"
+_FUSE_GONE = "gone"
+_FUSE_ABSENT = "absent"
+
+
+def _fuse_kernel(a, b, *faces) -> dict:
+    """`_general_fuse`, with its history flattened into facts a wire can carry.
+
+    ONLY EVER RUN IN THE CHILD (registered as `operations.general_fuse`). Row 6 of the audit, and
+    the blocker was never the Boolean: `BOPAlgo_Builder` is uninterruptible, but the ANSWER is a
+    `ShapeBuild_ReShape`, and no JSON and no BREP file can carry a kernel object. So the child
+    QUERIES the history it built - exactly the three questions `mapping_from_context` asks - and
+    sends the answers, with the image shapes riding the dispatcher's BREP answer file.
+    """
+    (a_pieces, b_pieces), history = _general_fuse(a, b, faces)
+    fate: list[dict] = []
+    # BOTH BODIES COME BACK, MODIFIED OR NOT, AND THIS IS THE WHOLE POINT OF THE ANSWER'S SHAPE.
+    # The fuse's images share the new contact face WITH THE OTHER BODY - and when the kernel
+    # leaves one body alone (a small box pressed into a big box's side is not cut), the shared
+    # face is an object of THAT UNTOUCHED BODY. In-process that identity is what makes the
+    # interface conformal. It cannot cross a process boundary: the parent's untouched body is a
+    # different object from the child's. So the child sends ITS copy of each body - both from the
+    # one builder, so they share with each other - and the parent splices both. Sending only the
+    # modified body gave a result with ZERO shared faces, which is the opposite of what
+    # `fragment_bodies` exists to produce (native: two touching boxes).
+    for face in faces:
+        if not history.IsRecorded(face):
+            fate.append({"state": _FUSE_ABSENT})
+            continue
+        value = history.Value(face)
+        if value is None or value.IsNull():
+            fate.append({"state": _FUSE_GONE})
+            continue
+        fate.append({"state": _FUSE_IMAGE, "image": value})
+    return {"a": list(a_pieces) or [a], "b": list(b_pieces) or [b],
+            # WHAT THE KERNEL ACTUALLY DID, kept apart from what to splice: `nothing_fragmented`
+            # and `body_split` are judgements about the fuse, and a body sent back untouched must
+            # not read as a body the fuse rebuilt.
+            "a_pieces": len(a_pieces), "b_pieces": len(b_pieces), "fate": fate}
+
+
+def _fuse_in_child(a, b, faces, *, budget_s: float = FRAGMENT_KERNEL_BUDGET_S):
+    """`((a's shape, b's shape), (a's piece count, b's piece count), history)`, or None.
+
+    EACH BODY'S SHAPE IS ALWAYS THERE and the COUNTS say what the fuse did: a count of 0 is a
+    body the kernel left alone, whose shape is the child's own copy rather than an image. The
+    caller splices both - see `_fuse_kernel` for why identity makes that necessary - and judges
+    `nothing_fragmented` and `body_split` on the counts.
+
+    The history is REBUILT HERE from the child's facts, so `mapping_from_context` reads it like
+    any operation's own context and nothing downstream learns that the Boolean happened
+    elsewhere. Rebuilding is bookkeeping - `ShapeBuild_ReShape` records what it is told - and not
+    a second Boolean.
+
+    None when the child was killed, failed, or answered about a different number of faces: the
+    operation declines rather than splice a fuse it cannot account for.
+    """
+    from OCP.ShapeBuild import ShapeBuild_ReShape
+
+    answer = bounded_child.run(_fuse_kernel, (a, b, *faces), budget_s=budget_s)
+    if not isinstance(answer, dict):
+        return None
+    fate = answer.get("fate")
+    if not isinstance(fate, list) or len(fate) != len(faces):
+        return None
+    counts = (answer.get("a_pieces"), answer.get("b_pieces"))
+    if not all(isinstance(n, int) for n in counts):
+        return None
+    history = ShapeBuild_ReShape()
+    for face, recorded in zip(faces, fate, strict=True):
+        state = str((recorded or {}).get("state", _FUSE_ABSENT))
+        if state == _FUSE_GONE:
+            # RECORDED WITH A NULL VALUE is how the kernel says "gone", and how
+            # `mapping_from_context` reads it. `Remove` is what produces that pair.
+            history.Remove(face)
+        elif state == _FUSE_IMAGE:
+            image = (recorded or {}).get("image")
+            if image is None:
+                return None
+            history.Replace(face, image)
+    return (tuple(answer.get("a") or ()), tuple(answer.get("b") or ())), counts, history
 
 
 def _tally(shape) -> tuple[int, int, float]:
@@ -2498,13 +2638,17 @@ class FragmentBodies:
             return declined(f"already_shared ({len(owners)} solids already own the face)")
         owner = owners[0]
         partner = _meeting_partner(shape, owner, face)
+        if partner is PARTNER_UNMEASURED:
+            return declined("unmeasured (the distances from the failing face to the candidate "
+                            "bodies did not finish in their budget; which body the face belongs "
+                            "to is then a guess, and this operation rebuilds the pair it picks)")
         if partner is None:
             return declined("no_partner (no other solid's bounding box meets the owner's)")
         if _shares_with_third_body((owner, partner), _face_owner_sets(shape)):
             return declined("shared_with_third_body (a body of the pair already shares a face "
                             "with a body outside it; rebuilding the pair would break that "
                             "interface)")
-        common = _common_volume(owner, partner)
+        common = _bounded_common_volume(owner, partner)
         if common is None:
             return declined("unmeasured (the kernel could not measure the bodies' common "
                             "volume; an unmeasured pair is never read as touching)")
@@ -2512,15 +2656,27 @@ class FragmentBodies:
             return declined(f"interpenetrating (common volume {common:.6g} mm3): "
                             f"{INTERPENETRATION_REASON}", common_volume_mm3=float(common))
 
-        (owner_pieces, partner_pieces), history = _general_fuse(owner, partner, (face,))
-        if not owner_pieces and not partner_pieces:
+        fused = _fuse_in_child(owner, partner, (face,))
+        if fused is None:
+            return declined("unmeasured (the general fuse did not finish in its budget, so what "
+                            "it did to the pair cannot be accounted for)",
+                            common_volume_mm3=float(common))
+        (owner_images, partner_images), (owner_cut, partner_cut), history = fused
+        if not owner_cut and not partner_cut:
             return declined("nothing_fragmented (the fuse modified neither body: there is no "
                             "contact to share)", common_volume_mm3=float(common))
-        if len(owner_pieces) > 1 or len(partner_pieces) > 1:
-            return declined(f"body_split (the fuse cut the bodies into {len(owner_pieces)} and "
-                            f"{len(partner_pieces)} pieces)", common_volume_mm3=float(common))
-        replacements = [(body, pieces[0]) for body, pieces in
-                        ((owner, owner_pieces), (partner, partner_pieces)) if pieces]
+        if owner_cut > 1 or partner_cut > 1:
+            return declined(f"body_split (the fuse cut the bodies into {owner_cut} and "
+                            f"{partner_cut} pieces)", common_volume_mm3=float(common))
+        if not owner_images or not partner_images:
+            return declined("unmeasured (the fuse did not account for both bodies)",
+                            common_volume_mm3=float(common))
+        # BOTH BODIES ARE REPLACED, so the pair's shared face is ONE object (`_fuse_kernel`).
+        replacements = [(owner, owner_images[0]), (partner, partner_images[0])]
+        # ONLY WHAT THE FUSE ACTUALLY CUT IS "rebuilt". A body it left alone comes back as the
+        # child's identical copy, with the same fingerprints, and calling its faces rebuilt would
+        # hand the revealed and new-defect rules a part they would read as all-new geometry.
+        rebuilt_pairs = [pair for pair, cut in zip(replacements, (owner_cut, partner_cut)) if cut]
         spliced, _ = splice(shape, replacements)
 
         solids_before, faces_before, area_before = _tally(shape)
@@ -2536,7 +2692,7 @@ class FragmentBodies:
         return OpOutcome(shape=spliced, mapping=mapping,
                          added=_split_fingerprints(shape, spliced, diagonal_mm=diagonal),
                          rebuilt=tuple(dict.fromkeys(
-                             name for _body, image in replacements
+                             name for _body, image in rebuilt_pairs
                              for name in _face_names(image, diagonal_mm=diagonal))),
                          evidence={"solids_delta": int(solids_delta),
                                    "faces_added": int(faces_after - faces_before),
