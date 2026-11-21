@@ -204,3 +204,89 @@ def _execution_publisher(monkeypatch):
     made = install(monkeypatch, _ep)
     monkeypatch.setattr(_ex, "execution_publisher", _ep.execution_publisher)
     return made
+
+
+# LAD-cfd-8: a sound mesh a deliverable gate refused is kept, ranked under clean ones, with its
+# concern; the refused gate's facts stay beside the attempt for the next plan
+
+def _fidelity_q(missed):
+    return {"cad_fidelity": {"surface": {"cad_to_mesh": {"cad_missed_share": missed},
+                                         "mesh_to_cad": {"wall_off_share": 0.01}},
+                             "verdicts": {"cad_to_mesh": "rebuild"}}}
+
+
+def _refusing(key, cause, **facts):
+    from meshpipeline.engines.gates import GateSpec, refuse
+    return GateSpec(key=key, check=lambda ctx: (False, refuse(f"[{key.upper()}] no", cause, **facts)))
+
+
+def _with_quality(tmp_path, extra):
+    m = json.loads((tmp_path / "mesh_manifest.json").read_text())
+    (tmp_path / "mesh_manifest.json").write_text(json.dumps(
+        {**m, "quality": {**m["quality"], **extra}}))
+
+
+async def test_a_sound_mesh_refused_for_fidelity_is_kept_deliverable(quiet, monkeypatch, tmp_path):
+    from meshpipeline.engines.gates import GateSpec
+    _arm(monkeypatch, tmp_path)
+    _with_quality(tmp_path, _fidelity_q(0.146))
+    _with_gates(monkeypatch, (_refusing("cad_fidelity", "patch_not_captured"),
+                              GateSpec(key="after", check=lambda ctx: (True, ""))))
+    out = await ex.node_executor(_state(tmp_path))
+    assert out["executor_success"] is False and out["executor_failed_gate"] == "cad_fidelity"
+    (row,) = out["sound_attempts"]
+    assert row["refused"] == "cad_fidelity" and row["workspace"] == str(tmp_path)
+    assert json.loads((tmp_path / "gate_facts.json").read_text())["gate"] == "cad_fidelity"
+
+
+async def test_a_mesh_that_is_not_the_part_is_not_kept(quiet, monkeypatch, tmp_path):
+    _arm(monkeypatch, tmp_path)
+    _with_quality(tmp_path, _fidelity_q(0.6))
+    _with_gates(monkeypatch, (_refusing("cad_fidelity", "patch_not_captured"),))
+    out = await ex.node_executor(_state(tmp_path))
+    assert out["executor_success"] is False and not out.get("sound_attempts")
+
+
+async def test_a_refused_mesh_a_later_gate_also_refuses_is_not_kept(quiet, monkeypatch, tmp_path):
+    _arm(monkeypatch, tmp_path)
+    _with_gates(monkeypatch, (
+        _refusing("port_areas", "patch_not_captured",
+                  misses=[{"name": "outlet", "delivered_m2": 2e-3, "expected_m2": 1e-3}]),
+        _refusing("boundary_types", "boundary_type")))
+    out = await ex.node_executor(_state(tmp_path))
+    assert not out.get("sound_attempts")
+    # the port facts are still left for the next plan
+    rec = json.loads((tmp_path / "gate_facts.json").read_text())
+    assert rec["gate"] == "port_areas" and rec["facts"]["misses"][0]["name"] == "outlet"
+
+
+async def test_a_port_area_refusal_is_kept_with_its_concern(quiet, monkeypatch, tmp_path):
+    _arm(monkeypatch, tmp_path)
+    _with_gates(monkeypatch, (_refusing(
+        "port_areas", "patch_not_captured",
+        misses=[{"name": "outlet", "delivered_m2": 2e-3, "expected_m2": 1e-3}]),))
+    out = await ex.node_executor(_state(tmp_path))
+    (row,) = out["sound_attempts"]
+    (concern,) = row["requirement_caveats"]
+    assert concern["kind"] == "gate_concern" and "'outlet'" in concern["words"]
+
+
+async def test_broken_cells_are_refused_as_today(quiet, monkeypatch, tmp_path):
+    _arm(monkeypatch, tmp_path)
+    _with_gates(monkeypatch, (_refusing("quality_floor", "mesh_quality",
+                                        fatal=["negative volume cells"]),))
+    out = await ex.node_executor(_state(tmp_path))
+    assert out["executor_success"] is False and not out.get("sound_attempts")
+
+
+async def test_a_trial_solve_that_did_not_converge_on_a_valid_mesh_is_kept(quiet, monkeypatch, tmp_path):
+    def _slow(w, m):
+        if m is not None:
+            m.update({"residual": 0.2, "iters": 400})
+        return False, "[UNSOLVABLE] did not converge"
+    _arm(monkeypatch, tmp_path, on_solvability=_slow)
+    out = await ex.node_executor(_state(tmp_path))
+    assert out["solvability_failed"] is True
+    (row,) = out["sound_attempts"]
+    assert row["refused"] == "solvability"
+    assert "400 iterations" in row["requirement_caveats"][-1]["words"]

@@ -428,6 +428,9 @@ async def node_executor(state: PipelineState) -> dict:
     solvability_metrics: dict = {}  # residual/iters/n_cells/info
     # the note gates that said no on this mesh (filled by the gate run below)
     _noted: list[tuple[str, object]] = []
+    # LAD-cfd-8: the concern this attempt's sound mesh is delivered with if no retry can change its
+    # refusal (engine_fallback.deliverable_refusal); None when it is not deliverable
+    _refused_deliverable: dict | None = None
 
     if executor_success:
         # The ENGINE-DECLARED blocking gates (spec.gates): the executor iterates
@@ -500,6 +503,21 @@ async def node_executor(state: PipelineState) -> dict:
                     job_id, exc,
                 )
                 executor_output += "\n[MANIFEST_LOAD_ERROR] manifest validated but could not be loaded"
+
+        if not _gates_ok and mesh_manifest:
+            # LAD-cfd-8: a refusal a sound mesh may still be delivered on (engine_fallback.
+            # DELIVERABLE_GATES) is kept deliverable - when every later gate passes it too - in case no
+            # retry and no other engine can change it; the router decides
+            from meshpipeline.pipeline import engine_fallback as _lad
+            _concern = _lad.deliverable_refusal(_gate_key, mesh_manifest.get("quality"), failure_facts)
+            if _concern is not None:
+                _keys = [g.key for g in _spec.gates]
+                _rest = tuple(_spec.gates[_keys.index(_gate_key) + 1:]) if _gate_key in _keys else ()
+                _rest_ok, _, _ = await asyncio.to_thread(lambda: run_gates(_rest, _ctx))
+                if _rest_ok:
+                    _refused_deliverable = _concern
+            from meshpipeline.engines.gate_facts import write_gate_facts
+            write_gate_facts(workspace, _gate_key, failure_facts)
 
         if executor_success:
             # WHAT THE MEASUREMENT SAYS, on the run's live line: the executor's own record of the
@@ -669,6 +687,11 @@ async def node_executor(state: PipelineState) -> dict:
                         failure_facts = {}
                         solvability_failed = True
                         executor_output += f"\n{_result[1]}"
+                        # LAD-cfd-8: every gate passed; deliverable only on checkMesh's validity
+                        from meshpipeline.pipeline import engine_fallback as _lad
+                        _refused_deliverable = _lad.deliverable_refusal(
+                            "solvability", (mesh_manifest or {}).get("quality"),
+                            dict(solvability_metrics))
                         logger.warning(
                             "Executor: solvability gate REJECTED mesh - job_id=%s: %s",
                             job_id, _result[1][:200],
@@ -713,6 +736,19 @@ async def node_executor(state: PipelineState) -> dict:
         _sound = {_rp.SOUND_KEY: _rp.with_sound(state, _rp.sound_entry(
             state, workspace=str(workspace), manifest=mesh_manifest,
             caveats=requirement_caveats))}
+    elif _refused_deliverable is not None and workspace:
+        # LAD-cfd-8: a sound mesh a gate refused, kept - ranked under every mesh no gate refused -
+        # with the refusal as its concern. The CAD-fidelity record already says its own (the delivery's
+        # cad_fidelity caveat reads the manifest), so it adds no second line
+        _concern_caveats = [*requirement_caveats,
+                            *([] if _refused_deliverable.get("gate") == "cad_fidelity"
+                              else [dict(_refused_deliverable)])]
+        _sound = {_rp.SOUND_KEY: _rp.with_sound(state, {
+            **_rp.sound_entry(state, workspace=str(workspace), manifest=mesh_manifest,
+                              caveats=_concern_caveats),
+            "refused": str(_refused_deliverable.get("gate") or failed_gate)})}
+        logger.warning("Executor: the mesh %s refused is sound - kept deliverable with the refusal "
+                       "said, if no retry can change it (LAD-cfd-8) - job_id=%s", failed_gate, job_id)
 
     logger.info(
         "Executor: success=%s job_id=%s output_len=%d",

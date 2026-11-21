@@ -259,6 +259,168 @@ _REASON_GENERIC = "it did not produce a mesh that passed its checks"
 
 
 # #
+# LAD-cfd-8: a retry changes what was refused, or it does not run
+# #
+
+#: The rule (docs/RULES.md, rulebook 75).
+LAD_RETRY_BEARS = "LAD-cfd-8"
+
+#: WHAT THE NEXT ATTEMPT ON THE SAME ENGINE CHANGES, per blocking gate, for the engines whose plan is
+#: rules-made (the snappy driver, the cfMesh writer): {gate: {engine: the lever, in words}}. An engine
+#: missing from a gate's row has nothing to change for what that gate refused - its retry rebuilds
+#: the same case (the RM3 wave absorber: a production-grade 6.7 M-cell mesh refused by cad_fidelity,
+#: rebuilt for 87 minutes with only its cell budget moved and refused again). A gate not listed, and
+#: an engine whose builder is a model reading the gate's words, keeps the ladder as it was.
+GATE_LEVERS: dict[str, dict[str, str]] = {
+    # broken cells move to another engine at once (classify); folds are repaired where they were
+    # found, a broken pass is coarsened, and widespread skew turns the plan strict
+    "quality_floor": {"snappy": "the layer folds repaired where they were found, or a stricter plan",
+                      "cfmesh": "cfMesh's own rescue and optimiser"},
+    # the opening that came out the wrong size is refined one level finer at the opening, read from
+    # the gate's facts (GATE_FACTS_FILE) on the next attempt
+    "port_areas": {"snappy": "the missed opening refined one level finer",
+                   "cfmesh": "the missed opening given half its cell"},
+    # no rules-made plan has a lever for a mesh that does not follow the CAD, for a trial solve that
+    # did not converge, or for a boundary type the intake decides
+    "cad_fidelity": {},
+    "solvability": {},
+    "boundary_types": {},
+}
+#: A gate whose refusal its cause's words would misname (cad_fidelity shares PATCH_NOT_CAPTURED).
+_REASON_BY_GATE: dict[str, str] = {
+    "cad_fidelity": "its mesh did not follow your CAD closely enough",
+    "port_areas": "an opening came out a different size from the one you confirmed",
+}
+#: The engines whose next attempt is planned by rules alone (GATE_LEVERS speaks for them).
+RULES_PLANNED = frozenset({"snappy", "cfmesh"})
+#: THE REFUSALS A SOUND MESH MAY STILL BE DELIVERED ON, as a concern, when no retry can change them:
+#: the mesh is valid and solves, and misses a bar of ours - how closely it follows the CAD, an
+#: opening's built area, its cells' shape inside the solver's hard limits, a short trial solve.
+DELIVERABLE_GATES = frozenset({"cad_fidelity", "port_areas", "quality_floor", "solvability"})
+#: A mesh that misses more than this share of the wetted CAD - or whose wall lies off the CAD on
+#: more than it - is not the user's part any more: refused as it always was, never delivered.
+NOT_THE_PART_SHARE = 0.5
+#: Non-orthogonality a solver cannot take (OpenFOAM's practical bound, the board's CB-V3a).
+SOLVER_HARD_NON_ORTHO = 85.0
+#: The quality bars that measure plain cell shape (engines/*/criteria.py keys).
+SHAPE_CHECKS = frozenset({"skew_fraction", "max_skewness", "max_non_ortho"})
+
+
+def lever_bears(gate: str, engine: str) -> bool:
+    """Whether the next attempt on `engine` changes anything that bears on what `gate` refused
+    (GATE_LEVERS). True for a gate or an engine the table does not speak for."""
+    row = GATE_LEVERS.get(str(gate or ""))
+    if row is None or str(engine or "") not in RULES_PLANNED:
+        return True
+    return str(engine) in row
+
+
+def refusal_without_lever(state: Mapping) -> bool:
+    """The attempt that just failed was refused by a gate this engine's next attempt cannot answer."""
+    if state.get("executor_success"):
+        return False
+    gate = str(state.get("executor_failed_gate") or "")
+    return bool(gate) and not lever_bears(gate, str(state.get("engine") or ""))
+
+
+def deliverable_refusal(gate: str, quality: Mapping | None, facts: Mapping | None) -> dict | None:
+    """The concern a sound mesh refused by `gate` is delivered with when no retry can change the
+    refusal (LAD-cfd-8): {"kind", "gate", "words", "way_on"} - the finding first, in plain words with
+    its number, then what to change or type for the better mesh. None when the refusal is not one a
+    mesh may be delivered on: not in DELIVERABLE_GATES, broken cells, past the solver's hard limits,
+    or not the user's part any more."""
+    q = quality if isinstance(quality, Mapping) else {}
+    f = facts if isinstance(facts, Mapping) else {}
+    if gate not in DELIVERABLE_GATES or q.get("fatal") or f.get("fatal"):
+        return None
+    if gate == "cad_fidelity":
+        rec = _map(q.get("cad_fidelity"))
+        surf = _map(rec.get("surface"))
+        c2m, m2c = _map(surf.get("cad_to_mesh")), _map(surf.get("mesh_to_cad"))
+        vol = _map(rec.get("volume"))
+        missed = _share(c2m.get("cad_missed_share"))
+        off = _share(m2c.get("wall_off_share"))
+        verr = abs(_share(vol.get("error")))
+        if max(missed, off, verr) > NOT_THE_PART_SHARE or not (missed or off or verr):
+            return None
+        from meshpipeline.engines.cad_fidelity import REBUILD
+        verdict = _map(rec.get("verdicts"))
+        by_volume = verdict.get("volume") == REBUILD and REBUILD not in (verdict.get("cad_to_mesh"),
+                                                                          verdict.get("mesh_to_cad"))
+        words = (f"The mesh's {vol.get('what') or 'fluid'} volume is {verr * 100:.1f}% off your CAD's"
+                 if by_volume
+                 else f"About {missed * 100:.1f}% of your CAD surface the flow reaches is more than two "
+                      "cells from the mesh" if missed >= off else
+                 f"About {off * 100:.1f}% of the mesh's wall lies more than a cell off your CAD surface")
+        return {"kind": GATE_CONCERN, "gate": gate, "words": words + ": thin parts or small details "
+                "there may be missing from the mesh",
+                "way_on": "ask for finer cells at the walls in your notes (a size in mm), or mesh the "
+                          "part with its thin details removed"}
+    if gate == "port_areas":
+        misses = [m for m in f.get("misses") or () if isinstance(m, Mapping)]
+        if not misses:
+            return None
+        said = "; ".join(f"opening '{m.get('name')}' was built at {_mm2(m.get('delivered_m2'))} against "
+                         f"the {_mm2(m.get('expected_m2'))} confirmed" for m in misses)
+        return {"kind": GATE_CONCERN, "gate": gate, "words": said[0].upper() + said[1:],
+                "way_on": "check the opening on the geometry stage - its outline, or the size you typed "
+                          "for it - and run again"}
+    if gate == "quality_floor":
+        # only PLAIN cell shape: a missing wall, a crashed or timed-out build, missing layers, or an
+        # unmeasured bar is refused as it always was
+        failed = {str((c or {}).get("key")) for c in f.get("checks") or () if isinstance(c, Mapping)}
+        if not failed or not failed <= SHAPE_CHECKS or f.get("unmeasured"):
+            return None
+        nonortho = _num_of(q.get("max_non_ortho"))
+        if nonortho is None or nonortho > SOLVER_HARD_NON_ORTHO:
+            return None
+        skew = _num_of(q.get("skew_fraction")) or 0.0
+        return {"kind": GATE_CONCERN, "gate": gate,
+                "words": (f"Some cells are more skewed than we deliver as a clean mesh: worst "
+                          f"non-orthogonality {nonortho:.0f} degrees, {skew * 100:.2g}% of the faces past our "
+                          "skew bar"),
+                "way_on": "run the solver with non-orthogonal correctors (2 or more), or ask for finer "
+                          "cells at the walls in your notes"}
+    if gate == "solvability":
+        res, its = _num_of(f.get("residual")), _num_of(f.get("iters"))
+        how = (f" (its residual was {res:.2g} after {its:.0f} iterations)"
+               if res is not None and its is not None else "")
+        return {"kind": GATE_CONCERN, "gate": gate,
+                "words": (f"The short trial solve of the pressure equation on this mesh did not "
+                          f"converge{how}, although every cell check passed"),
+                "way_on": "start your solver with lower relaxation factors; if it still does not "
+                          "converge, ask for a finer mesh in your notes"}
+    return None
+
+
+#: The caveat kind a sound mesh delivered on a refusal no retry could change carries (LAD-cfd-8).
+GATE_CONCERN = "gate_concern"
+
+
+
+
+def _map(v: object) -> Mapping:
+    return v if isinstance(v, Mapping) else {}
+
+
+def _share(v: object) -> float:
+    n = _num_of(v)
+    return n if n is not None else 0.0
+
+
+def _num_of(v: object) -> float | None:
+    import math
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    return float(v) if math.isfinite(float(v)) else None
+
+
+def _mm2(m2: object) -> str:
+    n = _num_of(m2)
+    return f"{n * 1e6:,.0f} mm2" if n is not None else "an unmeasured area"
+
+
+# #
 # what the brief asked for
 # #
 
@@ -690,6 +852,13 @@ def classify(state: Mapping) -> Failure | None:
         # no setting of this engine brings it inside one job, so the run moves to the next engine at
         # once - the same case again would only be estimated over again
         return Failure(ENGINE, cause.value, _REASON_BY_CAUSE[cause], stopped)
+    if kind == FIXABLE and gate and not lever_bears(gate, str(state.get("engine") or "")):
+        # NOTHING THIS ENGINE CHANGES BEARS ON THE REFUSAL (LAD-cfd-8): its next attempt would rebuild
+        # the same case, so the run moves to the next engine at once - or, with none, the sound mesh
+        # is delivered with the refusal said (route_after_executor)
+        return Failure(ENGINE, cause.value,
+                       f"{_REASON_BY_GATE.get(gate, _REASON_BY_CAUSE[cause])}, and nothing its next "
+                       "attempt changes bears on that", stopped)
     broken = broken_cells(facts)
     if broken and kind != NEVER:
         # A BROKEN MESH (checkMesh's fatal defects: negative-volume cells, faces pointing the wrong
@@ -945,6 +1114,11 @@ def decide(state: Mapping, *, record: Mapping, now: float | None = None) -> Deci
     open_rungs = [r for r in ladder({**state, "engine_ladder": record})
                   if r.same_contract and r.engine not in tried
                   and not _measures_its_input(r.engine)]
+    if not open_rungs and refusal_without_lever(state):
+        # LAD-cfd-8: a sound mesh the gate refused is better than another KIND of mesh; with no
+        # same-contract engine left, the route delivers it with the refusal said
+        return Decision(why="no untried engine delivers the approved mesh, and nothing this engine "
+                            "changes bears on the refusal", failure=failure)
     if not open_rungs and (failure.kind == ENGINE or failure.cause in _NO_MESH_CAUSES):
         # SW-16: THE SYSTEM'S OWN PICK MADE NO MESH, OR A BROKEN ONE (may_switch_on_its_own,
         # above: never a user-named engine). The next engine in the same ranking (ENG-5) takes the

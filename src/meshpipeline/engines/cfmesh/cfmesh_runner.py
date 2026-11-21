@@ -745,11 +745,16 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
     # back with no faces (a hot-end nozzle's 5 outlets at 19 k cells, census bucket 1b)
     from meshpipeline.engines.resolution_policy import PORT_CELLS_ACROSS
     _port_cells: dict[str, float] = {}
+    # LAD-cfd-8: an opening the port-area gate refused on the attempt before gets half its cell
+    from meshpipeline.engines.gate_facts import missed_ports
+    _missed = missed_ports(ws)
     for _pn, _pw in sorted((port_widths or {}).items()):
         try:
             _c = float(_pw) / float(PORT_CELLS_ACROSS)
         except (TypeError, ValueError):
             continue
+        if str(_pn) in _missed:
+            _c = 0.5 * min(_c, wall_cell)
         if 0.0 < _c < wall_cell and _pn != wall_patch:
             _port_cells[str(_pn)] = max(_c, _floor, max_cell / float(2 ** 12))
     _local = "".join(f"    {_pn} {{ cellSize {_c:.6g}; }}\n" for _pn, _c in _port_cells.items())

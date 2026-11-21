@@ -35,6 +35,9 @@ CARRY_FILES = (
     # the CFD wrap rung (pipeline/cfd_wrap, cad/surface_wrap): the surface as drawn beside its
     # wrap, so a later attempt on the rung wraps the drawn surface again, never the wrap
     "input.unwrapped.stl", "cfd_wrap_report.json",
+    # LAD-cfd-8: the levers a refused attempt leaves its successor - the ports castellation sealed
+    # (engines/snappy/drivers) and the refused gate's facts (pipeline/engine_fallback.GATE_FACTS_FILE)
+    ".sealed_ports.json", "gate_facts.json",
 )
 
 

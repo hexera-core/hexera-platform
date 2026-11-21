@@ -768,6 +768,9 @@ def _render_outcome(fr: FinalResult) -> str:
                          if kinds == {WRAPPED_SURFACE}
                          else "Delivered with a note on how closely it follows your CAD:"
                          if kinds == {CAD_FIDELITY}
+                         else "Delivered with concerns - one of our checks did not pass, and no "
+                              "rebuild could change that:"
+                         if GATE_CONCERN in kinds
                          else "Delivered with stated deviations:")
             for c in shown:
                 kind = (c or {}).get("kind") or "domain_extent"
@@ -823,13 +826,19 @@ def _render_outcome(fr: FinalResult) -> str:
                     lines.extend(note_lines(c))
                 elif kind == CAD_FIDELITY:
                     lines.extend(_cad_fidelity_lines(c))
+                elif kind == GATE_CONCERN:
+                    # LAD-cfd-8: a sound mesh a check refused, delivered because no retry could
+                    # change the refusal - the finding first, then the way on
+                    lines.append(f"  - {str(c.get('words') or 'one of our checks refused this mesh')}.")
+                    if c.get("way_on"):
+                        lines.append(f"    To get a better mesh: {c.get('way_on')}.")
                 else:
                     lines.append("  - a stated deviation of an unrecognized kind "
                                  "(see the result record)")
             # the narrow-gap note says everything it needs in its own lines; the closing speaks
             # for the rest
             core = kinds - {NARROW_PASSAGES, PHYSICAL_SCALE, _RESOLUTION_SHORT, _OVER_CELL_LIMIT,
-                            WRAPPED_SURFACE, CAD_FIDELITY}
+                            WRAPPED_SURFACE, CAD_FIDELITY, GATE_CONCERN}
             if WRAPPED_SURFACE in kinds and not core:
                 from meshpipeline.pipeline.cfd_wrap import WRAPPED_SURFACE_CLOSING
                 lines.append(WRAPPED_SURFACE_CLOSING)
@@ -1661,6 +1670,10 @@ def cad_fidelity_record(outcome: RunOutcome, *, size_caveat: Mapping | None = No
 #: meshes the rest of the passage held 19 to 25 or more). Now such a mesh is delivered, and the
 #: delivery says which gaps fell short and by how much.
 NARROW_PASSAGES = "narrow_passages"
+
+#: The caveat kind of a sound mesh a check refused, delivered because no retry or other engine could
+#: change the refusal (pipeline/engine_fallback.GATE_CONCERN, LAD-cfd-8).
+GATE_CONCERN = "gate_concern"
 
 
 def narrow_passage_caveat(outcome: RunOutcome) -> dict | None:

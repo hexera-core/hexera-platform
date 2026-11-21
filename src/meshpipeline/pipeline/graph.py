@@ -368,6 +368,23 @@ def route_after_executor(
             _cause, retry_count, bcfg.BUILDER_MAX_TOTAL_ATTEMPTS, state.get("job_id"))
         return _sound_or_end(state)
 
+    # A RETRY CHANGES WHAT WAS REFUSED, OR IT DOES NOT RUN (LAD-cfd-8): a gate this engine's next
+    # attempt has nothing to answer with (engine_fallback.GATE_LEVERS) moves the run to the next engine
+    # at once when one delivers the approved mesh; with none, the run's best sound mesh - this one,
+    # delivered with the refusal said, unless an earlier one is better - is delivered, never rebuilt
+    from meshpipeline.pipeline.engine_fallback import refusal_without_lever
+    if refusal_without_lever(state) and not state.get("user_dispute"):
+        if retry_count <= bcfg.MAX_BUILDER_RETRIES and another_engine_takes_over(state):
+            logger.info("route_after_executor: %s refused the mesh and this engine has nothing to "
+                        "change for it - another engine takes over (LAD-cfd-8) → classifier - "
+                        "job_id=%s", state.get("executor_failed_gate"), state.get("job_id"))
+            return "node_classifier"
+        logger.warning("route_after_executor: %s refused the mesh, no retry can change that and no "
+                       "other engine delivers the approved mesh - the run's best sound mesh, if any, "
+                       "is delivered with the refusal said (LAD-cfd-8) - job_id=%s",
+                       state.get("executor_failed_gate"), state.get("job_id"))
+        return _sound_or_end(state)
+
     if retry_count <= bcfg.MAX_BUILDER_RETRIES:
         logger.info(
             "route_after_executor: executor FAIL attempt=%d/%d → classifier",
@@ -411,6 +428,8 @@ async def node_deliver_sound(state: PipelineState) -> dict:
         "rule": _rp.LAD_DELIVER_SOUND,
         "why": ((f"attempt {state.get('retry_count')} resolved the narrowest gap less well than "
                  f"attempt {best.get('attempt')}") if _last_sound else
+                (f"the {best.get('refused')} check refused attempt {best.get('attempt')}'s sound mesh, "
+                 "and no retry or other engine could change that (LAD-cfd-8)") if best.get("refused") else
                 (f"attempt {state.get('retry_count')} did not pass the automatic checks, and "
                  f"attempt {best.get('attempt')} built a sound mesh")),
         "short_of": [str(c.get("kind")) for c in best.get("requirement_caveats") or []]}

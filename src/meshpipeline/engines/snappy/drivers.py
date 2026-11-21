@@ -2689,6 +2689,11 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
                     (workspace / ".sealed_ports.json").read_text()))
             except Exception:  # noqa: BLE001 - absent on a clean first attempt
                 _sealed_before = set()
+            # LAD-cfd-8: an opening the port-area gate refused on the attempt before (its facts,
+            # carried) is refined one level finer, as a sealed one is - the lever its retry answers with
+            from meshpipeline.engines.gate_facts import missed_ports
+            _missed = missed_ports(workspace)
+            _sealed_before |= {k for k, n in prep["names"].items() if k in _missed or n in _missed}
             summary = R.render_internal_case(
                 workspace, names=prep["names"], features=prep["features"],
                 wall_key=_wall_key,

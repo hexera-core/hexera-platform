@@ -471,9 +471,15 @@ def deliverable_sound(state: Mapping) -> dict | None:
         q = manifest.get("quality") if isinstance(manifest, dict) else None
         if isinstance(q, dict) and q.get("fatal"):
             continue
-        if best is None or resolution_of(row) >= resolution_of(best):
+        # LAD-cfd-8: a mesh a gate refused (kept deliverable, `refused`) ranks under every mesh no gate
+        # refused, whatever its resolution - the best by the measured limits, never simply the last
+        if best is None or _rank(row) >= _rank(best):
             best = {**dict(row), "manifest": manifest}
     return best
+
+
+def _rank(entry: Mapping) -> tuple[int, float]:
+    return (0 if entry.get("refused") else 1, resolution_of(entry))
 
 
 def better_earlier_sound(state: Mapping) -> dict | None:

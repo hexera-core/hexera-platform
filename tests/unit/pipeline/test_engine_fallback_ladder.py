@@ -188,8 +188,10 @@ def test_an_engine_that_cannot_mesh_the_shape_moves_to_the_same_contract_engine(
 
 
 @pytest.mark.parametrize("gate,cause", [
+    # (a trial solve that did not converge is no longer here: no rules-made plan has a lever for it,
+    # so LAD-cfd-8 moves the run at once - tests/unit/pipeline/test_retry_bears_on_refusal.py)
     ("quality_floor", "mesh_quality"), ("resolution_floor", "under_resolved"),
-    ("solvability", "not_solvable"), ("manifest_valid", "cell_budget"),
+    ("manifest_valid", "cell_budget"),
     ("manifest_valid", "patch_not_captured"), ("", "")])
 def test_a_small_failure_never_switches(quiet, monkeypatch, gate, cause):
     # A SMALL FAILURE - one measured check missed on the first try, or nothing the gates measured
