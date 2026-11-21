@@ -151,15 +151,22 @@ def distances(shapes: list, pairs: list[tuple[int, int]], *, budget_s: float) ->
         budget = 0.0
     if not budget > 0.0:
         return [{**UNMEASURED, "distance_status": "unmeasured: no budget"} for _ in wanted]
+    deadline = time.monotonic() + budget      # the budget covers the writes too, not just the child
+    spent = [{**UNMEASURED, "distance_status": "unmeasured: budget_spent"} for _ in wanted]
     try:
         with tempfile.TemporaryDirectory(prefix="occ-distance-") as tmp:
             root = Path(tmp)
             needed = sorted({i for pair in wanted for i in pair})
             for i in needed:
+                if not deadline - time.monotonic() > 0.0:
+                    return spent
                 _write_brep(shapes[i], root / f"{i}.brep")
             manifest = root / "pairs.json"
             manifest.write_text(json.dumps([[int(a), int(b)] for a, b in wanted]))
-            return _run_batch(root, manifest, len(wanted), budget)
+            remaining = deadline - time.monotonic()
+            if not remaining > 0.0:
+                return spent
+            return _run_batch(root, manifest, len(wanted), remaining)
     except Exception as exc:  # noqa: BLE001 - a measurement may never break the tool that asked
         return [{**UNMEASURED, "distance_status": f"unmeasured: {type(exc).__name__}"}
                 for _ in wanted]
@@ -175,8 +182,9 @@ def _run_batch(root: Path, manifest: Path, count: int, budget: float) -> list[di
         out, _ = proc.communicate(timeout=max(budget, 0.0))
         lines = [line for line in (out or "").splitlines() if line.strip()]
     except subprocess.TimeoutExpired:
-        # READ WHAT IS THERE, THEN KILL. `communicate` discards the pipe on timeout, so the
-        # finished pairs are taken off the stream first - they are measurements already paid for.
+        # KILL THE GROUP FIRST, THEN `communicate` AGAIN to collect the output already buffered:
+        # the finished pairs are measurements already paid for, and reading a still-running
+        # child's pipe would wait on the very measurement that hung.
         _kill_group(proc)
         try:
             out, _ = proc.communicate(timeout=5)

@@ -187,3 +187,59 @@ def test_a_batch_with_no_budget_is_all_unmeasured(monkeypatch):
     out = od.distances([_Shape(), _Shape()], [(0, 1)], budget_s=0.0)
 
     assert len(out) == 1 and out[0]["min_distance_mm"] is None
+
+
+def test_batch_writes_are_taken_from_the_childs_allowance(monkeypatch):
+    """The batch budget covers preparing every shape and the manifest, not just the child."""
+    def _slow_write(shape, path):
+        time.sleep(0.3)
+        path.write_text("brep")
+
+    seen: list[float] = []
+    monkeypatch.setattr(od, "_write_brep", _slow_write)
+    monkeypatch.setattr(od, "_run_batch",
+                        lambda root, manifest, count, budget: seen.append(budget) or [])
+
+    od.distances([_Shape(), _Shape()], [(0, 1)], budget_s=2.0)
+
+    assert len(seen) == 1 and seen[0] <= 2.0 - 0.6 + 0.05, seen
+
+
+def test_batch_writes_that_spend_the_budget_start_no_child(monkeypatch):
+    def _slow_write(shape, path):
+        time.sleep(0.4)
+        path.write_text("brep")
+
+    popens: list[object] = []
+    monkeypatch.setattr(od, "_write_brep", _slow_write)
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: popens.append(a))
+
+    out = od.distances([_Shape(), _Shape(), _Shape()], [(0, 1), (1, 2)], budget_s=0.5)
+
+    assert popens == []
+    assert [o["distance_status"] for o in out] == ["unmeasured: budget_spent"] * 2
+
+
+def test_the_batch_child_answers_in_order_reuses_shapes_and_survives_a_failed_pair(
+        monkeypatch, tmp_path, capsys):
+    reads: list[str] = []
+
+    def _read(path):
+        reads.append(path.name)
+        return path.stem
+
+    def _measure(a, b):
+        if (a, b) == ("1", "2"):
+            raise RuntimeError("kernel refused")
+        return {"min_distance_mm": float(int(a) * 10 + int(b)), "point_a": None, "point_b": None}
+
+    monkeypatch.setattr(od, "_read_brep", _read)
+    monkeypatch.setattr(od, "_measure_here", _measure)
+    manifest = tmp_path / "pairs.json"
+    manifest.write_text(json.dumps([[0, 1], [1, 2], [0, 2]]))
+
+    assert od._child_main(["--batch", str(tmp_path), str(manifest)]) == 0
+
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert [line["min_distance_mm"] for line in lines] == [1.0, None, 2.0]
+    assert sorted(reads) == ["0.brep", "1.brep", "2.brep"], "each shape is read once"
