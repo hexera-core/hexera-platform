@@ -122,33 +122,69 @@ def test_the_session_writes_a_step_in_millimetres(tmp_path):
     assert "MILLI" in out.read_text(encoding="utf-8", errors="ignore").upper()
 
 
-def test_the_whole_shape_fallback_reaches_the_kernel_through_the_session(tmp_path):
+def _box_with_a_displaced_pcurve(shift_mm: float):
+    """A 100 x 100 x 10 box whose first face carries one edge's pcurve shifted `shift_mm` in the
+    face's parameter plane, in memory - no file is written.
+
+    WHAT IT IS: an edge whose 2D trace on its face no longer agrees with its 3D curve, the
+    "written down wrong, drawn right" damage a translator leaves behind. BRepCheck reports it on
+    the face as `UnorientableShape` (the face's wire no longer closes in its own parameter
+    plane), which `localize` maps to an `invalid_brep` because that status has no narrower code -
+    and `invalid_brep` is a defect ONLY `fix_shape_global` claims. `ShapeFix_Shape` rebuilds the
+    pcurve from the 3D edge, which is exactly the repair the whole-shape pass exists for.
+    """
+    from OCP.BRep import BRep_Builder, BRep_Tool
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCP.gp import gp_Vec2d
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    shape = BRepPrimAPI_MakeBox(100.0, 100.0, 10.0).Shape()
+    face = TopoDS.Face_s(TopExp_Explorer(shape, TopAbs_FACE).Current())
+    edge = TopoDS.Edge_s(TopExp_Explorer(face, TopAbs_EDGE).Current())
+    pcurve = BRep_Tool.CurveOnSurface_s(edge, face, 0.0, 0.0).Copy()
+    pcurve.Translate(gp_Vec2d(shift_mm, 0.0))
+    BRep_Builder().UpdateEdge(edge, pcurve, face, BRep_Tool.Tolerance_s(edge))
+    return shape
+
+
+def test_the_whole_shape_fallback_reaches_the_kernel_through_the_session():
     """The fallback is REACHABLE, proved through the session rather than from the planner alone.
 
     It was blocked twice over: `targets_for` returned `()`, which the planner skips, and the
     session's `_carries` check over an empty target tuple is False, which is `target_absent`. Now
     it names the defect's own entity, so the operation gets applied, measured and judged like any
-    other - and the honest outcome on this fixture is a ROLLBACK, because `ShapeFix_Shape` on a
-    solid cannot remove the sliver (the solid's own topology forbids it). What matters is that the
-    verdict comes from running the operation, not from refusing to aim it.
-    """
-    from tests.cad_fixtures import write_small_edge_step
+    other. What matters is that the verdict comes from running the operation, not from refusing
+    to aim it.
 
-    from meshpipeline.cad.repair.brep import _read_shape
+    WHY NOT THE SLIVER FIXTURE ANY MORE. This test used to aim the fallback at the
+    `write_small_edge_step` sliver's `small_edge`, and expect a `target_remains` rollback. Since
+    f0ac2c28 (squashed into #494) `fix_shape_global` deliberately does NOT answer `small_edge` -
+    on the real-failure corpus it was 0-for-40 on them, `ShapeFix_Shape` returning an IsSame
+    shape with no recorded replacement (see the operation's docstring, and
+    test_repair_operations_contract.py, which pins the exclusion) - so `targets_for` correctly
+    returns `()` for that defect and the old premise no longer holds. No existing fixture carries
+    a defect the fallback still answers, so this one builds the damage it does answer: an
+    `invalid_brep` from a displaced pcurve. And here the honest outcome is a KEPT repair, which is
+    a stronger proof of reachability than a rollback: the kernel ran, the defect is gone on
+    re-inspection, and nothing was added or removed.
+    """
     from meshpipeline.cad.repair.contracts import DefectCode
     from meshpipeline.cad.repair.operations import FixShapeGlobal
 
-    shape = _read_shape(write_small_edge_step(tmp_path / "sliver.step"))
-    session = RepairSession(shape)
-    sliver = next(d for d in session.defects() if d.code is DefectCode.small_edge)
-
+    session = RepairSession(_box_with_a_displaced_pcurve(0.01))
     op = FixShapeGlobal()
-    targets = op.targets_for(sliver)
+    damaged = next(d for d in session.defects() if d.code is DefectCode.invalid_brep)
+
+    targets = op.targets_for(damaged)
     assert targets, "the fallback could not aim at a located defect"
 
-    verdict = session.try_op(op, targets, sliver.code, tolerance_mm=0.02)
+    verdict = session.try_op(op, targets, damaged.code, tolerance_mm=0.02)
 
     assert verdict.reason != "target_absent", "the fallback never reached the kernel"
     assert verdict.op == "fix_shape_global"
-    assert verdict.reason == "target_remains", verdict.reason
+    assert verdict.status == KEPT, verdict.reason
     assert verdict.delta["after"]["faces"] == verdict.delta["before"]["faces"]
+    assert not [d for d in session.defects() if d.fingerprint == damaged.fingerprint], \
+        "kept, yet the damaged face is still reported"

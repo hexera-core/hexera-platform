@@ -12,7 +12,7 @@
 from __future__ import annotations
 
 import pytest
-from tests.cad_fixtures import write_missing_bore_wall_step
+from tests.cad_fixtures import write_loose_faces_step
 
 import meshpipeline.settings.cad_repair as rcfg
 
@@ -49,9 +49,20 @@ def _read(path):
 
 def test_replayed_packages_reproduce_the_commits(tmp_path):
     """THE PILLAR, against the kernel: the recorded packages, re-applied to the same upload
-    through a fresh session, commit the same number of times and leave the same part."""
+    through a fresh session, commit the same number of times and leave the same part.
+
+    THE LOOSE-FACES FIXTURE, NOT THE BORE. This test was written against
+    `write_missing_bore_wall_step`, which can never commit a package: its two open rims are the
+    two ends of one missing tube wall, so `plan.refuse_paired_rims` turns filling off for the
+    whole run (filling either rim would seal the customer's through-hole, which
+    test_native_repair_loop.py::test_the_loop_never_seals_a_missing_bore_wall pins) and `sew_faces`
+    has nothing to stitch a missing wall to. The run reverted both packages and the first
+    assertion below failed from the commit that introduced the file (4f171e56, squashed into
+    #494) onward - the native tier is not in PR CI. Six one-face shells are the fixture the rules
+    author really commits on (one `sew_faces` package), so the replay has something to reproduce.
+    """
     source = tmp_path / "part.step"
-    write_missing_bore_wall_step(source)
+    write_loose_faces_step(source)
 
     shape = _read(source)
     original = measure(shape)

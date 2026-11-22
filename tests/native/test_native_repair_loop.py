@@ -11,7 +11,7 @@ from tests.cad_fixtures import (
 )
 
 import meshpipeline.settings.cad_repair as rcfg
-from meshpipeline.cad.repair.loop import RESOLVED, run
+from meshpipeline.cad.repair.loop import NO_CANDIDATE, RESOLVED, run
 
 pytest.importorskip("OCP.ShapeFix", reason="the CAD kernel is a native-tier dependency")
 
@@ -71,8 +71,21 @@ def test_the_loop_leaves_the_sliver_fixture_undamaged_and_says_it_did_not_repair
     # AN HONEST NON-REPAIR, AND THE UNDAMAGED SHAPE IS THE POINT. The fixture carries only
     # WARNINGS (small_edge, small_face), so the planner still proposes `fix_small_edges` (an
     # earlier draft stopped as resolved with zero operations). But the solid's topology forbids
-    # removing the sliver, so the operation achieves nothing, the session rolls it back, and the
-    # run stops after two rolled-back attempts. The last assertion is the one that would have caught the defect where
+    # removing the sliver, so the operation achieves nothing, the session rolls it back - and then
+    # the planner has NOTHING LEFT TO PROPOSE, so the run stops `no_candidate` after ONE attempt.
+    #
+    # IT USED TO BE TWO ATTEMPTS AND `stalled`; two intended changes in #494 retired the second:
+    #  - f0ac2c28: `fix_shape_global` no longer answers `small_edge`. On the real-failure corpus it
+    #    was 0-for-40, `ShapeFix_Shape` returns an IsSame shape with zero recorded replacements for
+    #    a short edge, so that second attempt could only ever roll back
+    #    (test_repair_operations_contract.py pins the exclusion).
+    #  - 5d28389a: `fix_small_edges` is `whole_shape`, so the planner does not re-aim it at the
+    #    sliver's sibling edge on the same unchanged shape - it is the same kernel call and can
+    #    only get the same answer.
+    # So the second rolled-back attempt that used to spend the stall budget is never made, and
+    # `no_candidate` is the true reason the run stopped. The run is still NOT resolved: the
+    # rolled-back target is still reported (`loop._abandoned`).
+    # The last assertion is the one that would have caught the defect where
     # the fixer, run on bare faces, "removed" the sliver by blowing the part up to twice its size
     # (diagonal 141.77 -> 270.00 mm, tolerance 1e-7 -> 80 mm): the shape must come back identical.
     from meshpipeline.cad.repair.caps import measure
@@ -89,11 +102,12 @@ def test_the_loop_leaves_the_sliver_fixture_undamaged_and_says_it_did_not_repair
     assert [d for d in result.defects if d.code is DefectCode.small_edge], \
         "the sliver vanished without a kept operation being responsible"
     assert not any(v.kept for v in result.verdicts), _attempts(result)
-    assert len(result.verdicts) == 2, _attempts(result)
+    assert [(v.op, v.status) for v in result.verdicts] == [("fix_small_edges", "rolled_back")], \
+        _attempts(result)
     # WHY IT IS UNRESOLVED, not merely that it is: no error-severity defect remains (the fixture
-    # has only warnings), yet the loop ABANDONED the sliver after two rolled-back attempts and it
-    # is still in the final list. `resolved` means the loop succeeded, so this is `stalled`.
-    assert result.stopped_because == "stalled", f"{result.stopped_because} {_attempts(result)}"
+    # has only warnings), yet the loop ABANDONED the sliver after a rolled-back attempt and it is
+    # still in the final list. `resolved` means the loop succeeded, so this is `no_candidate`.
+    assert result.stopped_because == NO_CANDIDATE, f"{result.stopped_because} {_attempts(result)}"
     assert not result.resolved
     tried = {fp for v in result.verdicts for fp in v.targets}
     assert tried & {d.fingerprint for d in result.defects}, "no abandoned target is still reported"
