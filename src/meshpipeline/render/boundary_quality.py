@@ -744,23 +744,130 @@ def has_quality(polymesh) -> bool:
 #: list.
 MAX_HOTSPOTS_PER_METRIC = 60
 
+#: How many of the worst faces a metric is ranked over before the spacing rule picks from them.
+#: The worst faces on a mesh are neighbours - a bad corner is a few thousand faces, not one - so
+#: ranking by value alone returns sixty faces of the same corner and a reader who visits all of
+#: them has seen one place. Sixty places is the useful list, so the ranking is deep and the
+#: picking is spread. Five thousand is deep enough to find sixty places a diagonal/60 apart on
+#: every mesh measured here, and shallow enough that the greedy pass is one small numpy call per
+#: candidate rather than a scan of twenty-four million.
+HOTSPOT_CANDIDATES = 5_000
+
+#: How far apart two hotspots have to be, as a fraction of the boundary's bounding diagonal.
+#: 1/60th of the diagonal on this plate is 3.0 mm, against a 201 um channel pitch, so two hotspots
+#: are never the same feature and sixty of them still cover the part.
+HOTSPOT_SEPARATION = 1.0 / 60.0
+
+#: The bins a metric's distribution is reported in. Linear edges over the metric's own observed
+#: range, and the counts raw: on this mesh 99% of non-orthogonality lands in the first bin, which
+#: is the fact, and it is the CLIENT's business whether to draw that height on a log axis. Binning
+#: by percentile instead would give equal-height bars of unequal width and flatter a bad mesh.
+HISTOGRAM_BINS = 40
+
+#: Which percentiles a metric reports. p50 says what the mesh IS, p99.9 says how long the tail is,
+#: and `max / p99.9` says whether the worst face is a population or a stray.
+PERCENTILES = (50.0, 90.0, 99.0, 99.9)
+_PCT_KEYS = ("p50", "p90", "p99", "p999")
+
+
+def _distribution(finite) -> dict:
+    """Where a metric's values actually sit, off an array that has already been read.
+
+    `finite` is the caller's own copy - fancy indexing on the memmap - so the percentiles are taken
+    with `overwrite_input=True` and cost no second copy. They partially reorder it, which `max` and
+    `min` do not care about and nothing downstream reads.
+    """
+    import numpy as np
+
+    if not finite.size:
+        return {}
+    lo = float(finite.min())
+    hi = float(finite.max())
+    counts, edges = np.histogram(finite, bins=HISTOGRAM_BINS,
+                                 range=(lo, hi if hi > lo else lo + 1.0))
+    q = np.percentile(finite, PERCENTILES, overwrite_input=True)
+    out: dict = {"min": lo, "mean": float(finite.mean()),
+                 "histogram": {"edges": [float(e) for e in edges],
+                               "counts": [int(c) for c in counts],
+                               "max_count": int(counts.max()) if counts.size else 0}}
+    out.update({k: float(v) for k, v in zip(_PCT_KEYS, q)})
+    # A POPULATION OR A STRAY. 1.1 on the coolant's non-orthogonality is 16,600 faces standing
+    # where the worst one stands; 62.7 on the chip's is one face and nothing behind it. Undefined
+    # rather than infinite when the tail is zero, so a client prints nothing instead of a symbol.
+    out["tail_ratio"] = (hi / out["p999"]) if out["p999"] > 0 else None
+    return out
+
+
+def _spread(order, centroids, separation: float, want: int) -> list[int]:
+    """Take faces off a ranked list, skipping any that stands where one already taken stands.
+
+    The worst faces on a mesh are each other's neighbours, so a list ranked by value alone is sixty
+    faces of one corner. Greedy and in rank order, so the single worst face is always first and
+    nothing better is ever dropped for something worse.
+    """
+    import numpy as np
+
+    want = int(want)
+    if want <= 0:
+        return []
+    kept: list[int] = []
+    pts = np.empty((want, 3), dtype=np.float64)
+    n = 0
+    s2 = float(separation) ** 2
+    for f in order:
+        f = int(f)
+        c = np.asarray(centroids[f], dtype=np.float64)
+        # One vectorised distance test against what is already taken, not a Python loop over it:
+        # the candidate pool is thousands long and this runs once per metric per region.
+        if n and float(((pts[:n] - c) ** 2).sum(axis=1).min()) < s2:
+            continue
+        pts[n] = c
+        n += 1
+        kept.append(f)
+        if n >= want:
+            break
+    return kept
+
 
 def _sidecar_hotspots(metric: str, values, limit: float, centroids, patch_of, names: list[str],
-                      offset: int = 0) -> list[dict]:
-    """The worst faces over the bar, as places. Same shape as face_quality's, minus cell_faces."""
+                      offset: int = 0, separation: float = 0.0) -> list[dict]:
+    """The worst faces, as places, spread out. Same shape as face_quality's, minus cell_faces.
+
+    THE LIST IS NEVER EMPTY JUST BECAUSE THE MESH PASSED. It used to return nothing at all when no
+    face was over the bar, which is every metric on every mesh we have delivered - so the viewer's
+    "Worst" button, whose whole job is to fly a reader to the worst place, had nowhere to go on a
+    good mesh and the one on a bad mesh was never exercised. A face under the bar is still the
+    worst face there is, and `over_bar` says which kind of list this is so nothing reads a passing
+    mesh as a failing one.
+    """
     import numpy as np
 
     v = np.asarray(values)
     over = np.nonzero(v > float(limit))[0]
-    if not len(over):
-        return []
-    order = over[np.argsort(-(v[over]))][:MAX_HOTSPOTS_PER_METRIC]
+    over_bar = bool(len(over))
+    if over_bar:
+        pool = over[np.argsort(-(v[over]))][:HOTSPOT_CANDIDATES]
+    else:
+        # FINITE ONLY. `v > limit` is False for a NaN, so the branch above can never choose one;
+        # ranking by value has no such protection, and a region whose field checkMesh skipped
+        # would come back as sixty NaN places presented as the worst of the mesh.
+        ok = np.nonzero(np.isfinite(v))[0]
+        # `argpartition` rather than a full sort: the candidate list is thousands of up to
+        # twenty-four million, and only those thousands need ordering among themselves.
+        n = int(min(HOTSPOT_CANDIDATES, ok.size))
+        if n <= 0:
+            return []
+        vo = v[ok]
+        part = np.argpartition(-vo, n - 1)[:n]
+        pool = ok[part[np.argsort(-(vo[part]))]]
+    order = _spread(pool, centroids, separation, MAX_HOTSPOTS_PER_METRIC) if separation > 0 \
+        else [int(f) for f in pool[:MAX_HOTSPOTS_PER_METRIC]]
     out = []
     for f in order:
         f = int(f)
         pid = int(patch_of[f])
         c = centroids[f]
-        out.append({"metric": metric, "value": float(v[f]),
+        out.append({"metric": metric, "value": float(v[f]), "over_bar": over_bar,
                     "x": float(c[0]), "y": float(c[1]), "z": float(c[2]),
                     "patch": names[pid] if 0 <= pid < len(names) else None})
     return [dict(h, face=int(h.pop("_f", 0)) + offset) if "_f" in h else h for h in out]
@@ -824,7 +931,18 @@ def quality_fields_from_sidecar(polymesh, *, non_ortho_limit: float, skew_limit:
     if not per_patch:
         return None
 
+    # HOW FAR APART TWO HOTSPOTS HAVE TO BE, off the boundary's own bounding box. Taken from
+    # the index's grid metadata, which is already the centroids' bbox, so nothing is re-scanned.
+    import math as _math
+    _bb = idx.meta.get("bbox") or {}
+    try:
+        _span = [float(_bb["max"][i]) - float(_bb["min"][i]) for i in range(3)]
+        _sep = HOTSPOT_SEPARATION * _math.sqrt(sum(s * s for s in _span))
+    except Exception:                       # noqa: BLE001 - no bbox: rank by value alone
+        _sep = 0.0
+
     metrics: dict = {}
+    region_metrics: dict = {}
     hotspots: list[dict] = []
     for key in ("non_ortho", "skewness", "aspect_ratio"):
         if key not in q.metrics:
@@ -849,13 +967,47 @@ def quality_fields_from_sidecar(polymesh, *, non_ortho_limit: float, skew_limit:
         if key == "aspect_ratio":
             m["floor"] = 1.0
             m["scale_to"] = float(max(m["max"], 2.0))
+        else:
+            # WHERE THE COLOURS SHOULD SPAN. The viewer's ramp already does the right thing with
+            # a bar that sits far above everything the mesh has - it spans the mesh's own range
+            # and draws the bar as a tick - and it switches on `scale_to`, which only aspect
+            # ratio has ever carried. So the delivered plate's legend ran to 84.5 degrees against
+            # a worst face of 48.39, and skewness ran to 26 against 1.65: six per cent of the
+            # colours doing all the work, which is a mesh painted one flat blue.
+            #
+            # It turns itself off where it should. `open` is `scale_to > 0 and limit > scale_to`,
+            # so a mesh that actually reaches its bar goes back to the absolute scale with the
+            # past-the-bar colour, and a mesh with a problem is never drawn on a kind scale.
+            m["floor"] = 0.0
+            m["scale_to"] = float(m["max"])
+        # THE DISTRIBUTION RIDES ON THE PASS THAT IS ALREADY HAPPENING. `finite` is a copy made
+        # three lines up to take the max; the histogram and the percentiles read it again in
+        # memory and nothing touches the disk twice.
+        dist = _distribution(finite)
+        # `min` and `mean` are the two that merge honestly across regions, so they go in the
+        # top-level metric too; the rest cannot and stay beside it, per region.
+        for k in ("min", "mean"):
+            if k in dist:
+                m[k] = dist[k]
         metrics[key] = m
-        hotspots += _sidecar_hotspots(key, whole, bars[key], idx.centroids, idx.patch_of, names)
+        region_metrics[key] = dict(m, **dist)
+        hotspots += _sidecar_hotspots(key, whole, bars[key], idx.centroids, idx.patch_of, names,
+                                      separation=_sep)
+
+    # WHOSE NUMBERS THESE ARE. A conjugate response carries one `quality_fields` holding every
+    # region, and a histogram cannot be merged across two of them - different edges - nor can a
+    # percentile be averaged. So the distribution is published per region and the merge never has
+    # to invent anything. The name comes off the quality sidecar's own meta rather than off the
+    # directory, because that is what checkMesh wrote it as.
+    region = str(q.meta.get("region") or "")
+    regions = {region: {"n_faces": int(idx.n_faces), "metrics": region_metrics}} \
+        if region and region_metrics else {}
 
     logger.info("viewer quality fields from checkMesh's own fields: %d boundary faces over %d "
-                "patch(es), %d hotspot(s)", idx.n_faces, len(per_patch), len(hotspots))
+                "patch(es), %d hotspot(s), %d with a distribution", idx.n_faces, len(per_patch),
+                len(hotspots), len(region_metrics))
     return {"basis": "checkMesh_per_metric", "metrics": metrics, "patches": per_patch,
-            "hotspots": hotspots}
+            "hotspots": hotspots, "regions": regions}
 
 
 def attach_sidecar_quality(resp: dict, polymesh, *, non_ortho_limit: float,
@@ -901,7 +1053,8 @@ def attach_sidecar_quality(resp: dict, polymesh, *, non_ortho_limit: float,
 
 
 __all__ = ["BoundaryQuality", "CHECKMESH_WRITE_FIELDS", "FIELDS", "FIELD_FILES",
-           "MAX_HOTSPOTS_PER_METRIC", "attach_sidecar_quality",
+           "HISTOGRAM_BINS", "HOTSPOT_CANDIDATES", "HOTSPOT_SEPARATION",
+           "MAX_HOTSPOTS_PER_METRIC", "PERCENTILES", "attach_sidecar_quality",
            "quality_fields_from_sidecar",
            "QUALITY_DIRNAME", "QUALITY_VERSION", "QualityUnavailable", "has_quality",
            "open_quality", "quality_dir", "write_quality", "write_quality_decomposed"]

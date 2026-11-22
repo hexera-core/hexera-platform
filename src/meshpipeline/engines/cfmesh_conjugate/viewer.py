@@ -514,7 +514,19 @@ def _paint(resp: dict, ws: Path, *, colours: bool = True) -> None:
 #: it is taken as it comes; `floor` and `scale_to` span the viewer's colours and have to cover
 #: both.
 _WORSE = ("max", "scale_to")
+#: And the one that goes the other way. `min` under the `_WORSE` rule would report the BETTER of
+#: the two regions as the mesh's smallest value, which is the opposite of what the word says.
+_BETTER = ("min",)
 _SUMMED = ("n_over", "n_faces")
+#: Weighted by face count, because the regions differ in size - 16.6 M coolant faces against
+#: 18.1 M metal ones on the delivered plate - and the straight average of two means is a number no
+#: face in either region has. The weight has to be read BEFORE `_SUMMED` adds to it.
+_WEIGHTED = ("mean",)
+
+#: Keys that are carried from the first region and must not be, because every region writes one.
+#: `regions` is the per-region distribution block; merging it is a dict update, since a region
+#: name appears once.
+_PER_REGION = ("regions",)
 
 
 def _merge_quality(into: dict, one: dict | None) -> None:
@@ -522,14 +534,20 @@ def _merge_quality(into: dict, one: dict | None) -> None:
     if not isinstance(one, dict):
         return
     if not into:
-        into.update({k: v for k, v in one.items() if k not in ("patches", "hotspots", "metrics")})
+        into.update({k: v for k, v in one.items()
+                     if k not in ("patches", "hotspots", "metrics") + _PER_REGION})
         into["patches"] = dict(one.get("patches") or {})
         into["hotspots"] = list(one.get("hotspots") or [])
         into["metrics"] = {k: dict(v) for k, v in (one.get("metrics") or {}).items()
                            if isinstance(v, dict)}
+        into["regions"] = dict(one.get("regions") or {})
         return
     into["patches"].update(one.get("patches") or {})
     into["hotspots"].extend(one.get("hotspots") or [])
+    # EVERY REGION'S OWN BLOCK, not the first one's. The seed above used to take any key it did not
+    # know by name from region one and then never revisit it, so a distribution published per
+    # region would have shown the coolant's numbers under a heading naming all three.
+    into.setdefault("regions", {}).update(one.get("regions") or {})
     for name, m in (one.get("metrics") or {}).items():
         if not isinstance(m, dict):
             continue
@@ -540,6 +558,18 @@ def _merge_quality(into: dict, one: dict | None) -> None:
         for k in _WORSE:
             if k in m:
                 have[k] = max(float(have.get(k) or 0.0), float(m[k]))
+        for k in _BETTER:
+            if k in m:
+                here = have.get(k)
+                have[k] = float(m[k]) if here is None else min(float(here), float(m[k]))
+        for k in _WEIGHTED:
+            # Read the counts before `_SUMMED` folds this region's into the running total.
+            if k in m:
+                w_have = float(have.get("n_faces") or 0.0)
+                w_one = float(m.get("n_faces") or 0.0)
+                if w_have + w_one > 0:
+                    have[k] = ((float(have.get(k) or 0.0) * w_have
+                                + float(m[k]) * w_one) / (w_have + w_one))
         for k in _SUMMED:
             if k in m:
                 have[k] = int(have.get(k) or 0) + int(m[k])
