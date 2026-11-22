@@ -248,3 +248,24 @@ def test_a_resolved_wall_the_user_chose_is_built_on_a_laminar_flow_too():
     h = ask.first_layer()
     assert h is not None and not ask.laminar and ask.how["laminar"] is True
     assert h == pytest.approx(ask.how["visc_m"], rel=1e-9)                # y+ 1 at the top, by the turbulent estimate
+
+
+def test_a_resolved_cfmesh_wall_grows_its_stack_to_the_core_never_thinner_than_asked():
+    # CFDREQ-16: the plan's 2 layers kept the first layer and stepped from a 0.04 mm stack into 5 mm core cells (the
+    # five cfMesh resolve parts at 84.7-88.7 degrees); the stack now fills cfMesh's depth from the asked first layer
+    ask = _ask(RESOLVED_INTERNAL, "cfmesh")
+    s = CR.cfmesh_strategy(ask, {"n_layers": 2}, length_m=1.0)
+    h = s["first_layer_thickness"]
+    wall = 200 * h
+    out = CR.cfmesh_layer_fit(ask, s, wall)
+    n, g = out["n_layers"], out["thickness_ratio"]
+    assert g == pytest.approx(CR.CFMESH_RESOLVED_GROWTH) and 2 < n <= CR.MAX_BRIDGE_LAYERS
+    stack = CR.CFMESH_STACK_REL * wall
+    split = stack * (g - 1) / (g ** n - 1)            # the first layer cfMesh's split gives
+    assert split >= h * (1 - 1e-9), "never thinner than asked"
+    assert stack * (g - 1) / (g ** (n + 1) - 1) < h, "as many layers as the depth holds"
+    assert out["first_layer_thickness"] == pytest.approx(h)
+    # a first layer near the wall cell keeps the plan's count
+    s2 = CR.cfmesh_strategy(_ask(RESOLVED_INTERNAL, "cfmesh"), {"n_layers": 2}, length_m=1.0)
+    out2 = CR.cfmesh_layer_fit(_ask(RESOLVED_INTERNAL, "cfmesh"), s2, 3 * s2["first_layer_thickness"])
+    assert out2["n_layers"] == 2

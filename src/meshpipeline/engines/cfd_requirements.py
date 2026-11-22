@@ -1006,6 +1006,19 @@ def cfmesh_layer_fit(ask: Ask | None, strategy: Mapping, wall_cell_m: float) -> 
         else:
             n = int(stack // fit["first_m"])
         out["n_layers"] = max(1, min(MAX_WALL_FUNCTION_LAYERS, n))
+    elif ask.n_layers is None and fit["treatment"] == "resolved":
+        # CFDREQ-16: A RESOLVED WALL GROWS ITS STACK OUT TO THE CORE. cfMesh splits a stack about half the wall
+        # cell deep into nLayers; the plan's two layers kept the 0.02 mm first layer but stepped from a 0.04 mm
+        # stack straight into 5 mm core cells - those core cells read 84.7-88.7 degrees on the CFD board's five
+        # resolve parts. As many layers as the stack holds from the asked first layer at the growth
+        # CFMESH_RESOLVED_GROWTH, rounded DOWN, so the first layer the split gives is never thinner than asked (the
+        # round bend reduction: 12 layers at 1.4, valid, 65.7 degrees, first cell at plan; 20 at 1.25 thinned it to
+        # 0.37 of the plan). Never fewer than the plan's, never more than MAX_BRIDGE_LAYERS.
+        g = max(g, CFMESH_RESOLVED_GROWTH)
+        n_plan = int(out.get("n_layers") or 0)
+        need = math.log(1.0 + stack * (g - 1.0) / float(fit["first_m"])) / math.log(g)
+        out["n_layers"] = max(n_plan, min(MAX_BRIDGE_LAYERS, int(math.floor(need))))
+        out["thickness_ratio"] = g
     n = int(out.get("n_layers") or 0)
     out["first_layer_thickness"] = float(fit["first_m"])
     natural = stack * (g - 1.0) / (g ** max(n, 1) - 1.0) if g > 1.0001 else stack / max(n, 1)
@@ -1013,6 +1026,11 @@ def cfmesh_layer_fit(ask: Ask | None, strategy: Mapping, wall_cell_m: float) -> 
     yp = y_plus_of(built, ask.how, float(ask.y_plus or 1.0)) if ask.how else fit["y_plus"]
     _say_wall(ask, dict(fit, first_m=built, y_plus=yp), n, g)
     return out
+
+
+#: CFDREQ-16: the growth a resolved wall's cfMesh stack takes from its first layer (snappy's capped stack's steepest,
+#: MAX_CAPPED_GROWTH)
+CFMESH_RESOLVED_GROWTH = 1.3
 
 
 #: cfMesh's own edge (engines/cfmesh/rescue.NEAR_EDGE_NON_ORTHO): past it the engine's optimiser is tried
@@ -2291,6 +2309,10 @@ def _first_layer_row(workspace, req: Mapping, q: Mapping, p: Mapping) -> dict | 
         from meshpipeline.engines.layer_census import PLAN_FIRST_TOL
         if ratio > PLAN_FIRST_TOL:
             said += f", {ratio:.3g} times that"
+        elif ratio < 1.0 / PLAN_FIRST_TOL:
+            # thinner than asked is said too: the y+ there is under the one planned (cfMesh thins the first
+            # layer of a stack with more layers than its depth holds at that height)
+            said += f", {ratio:.2g} times that - thinner than asked, so y+ there is lower than planned"
         said += f", and layers of that height stand on {MR._g(float(cover))}% of the wall"
         if not grown:
             said += (" - elsewhere the first cell is thicker than asked, so y+ there is higher than planned"
