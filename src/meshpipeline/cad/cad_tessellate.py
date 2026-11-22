@@ -404,6 +404,85 @@ def stands_in_opening(opening: dict, normal, area: float, centroid, outer_wh=Non
     return True
 
 
+#: docs/RULES.md id: a hole that crosses a periodic face's seam is a hole of that face, as an inner wire is
+SEAM_HOLE_RULE = "INS-21"
+#: ...when its loop keeps off the face's own ends by this share of the face's span along the axis
+SEAM_HOLE_MARGIN = 0.01
+
+
+def seam_holes(face) -> list:
+    """INS-21: THE HOLES OF A PERIODIC FACE THAT CROSS ITS SEAM. A side hole drilled through a tube is an inner
+    wire of the tube's cylindrical face - unless it crosses the face's seam (the line where the cylinder's
+    parameter wraps round): then the seam is cut in two, the hole's rim joins the face's one boundary wire, and
+    no scan of inner wires sees it. The staging never sealed it, and the bore leaked to the outside through it
+    (batch 2, an inner tube of a tank). Here the face's boundary edges other than its seam are chained into
+    closed loops; a loop that keeps off the face's ends along the non-periodic parameter (its whole range inside
+    the face's own, by SEAM_HOLE_MARGIN of it) is a hole of the face, returned as a wire; the end circles of
+    the tube are not (they lie on its ends). [] for a face with no seam, or one that is periodic both ways."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepAdaptor import BRepAdaptor_Curve2d, BRepAdaptor_Surface
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeWire
+    from OCP.BRepTools import BRepTools
+    from OCP.TopAbs import TopAbs_EDGE
+    from OCP.TopExp import TopExp, TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    surf = BRepAdaptor_Surface(face)
+    up, vp = surf.IsUPeriodic(), surf.IsVPeriodic()
+    if up == vp:
+        return []                                 # no seam, or a torus-like face periodic both ways
+    edges, seams = [], 0
+    # the OUTER wire only: a hole clear of the seam is an inner wire of its own, sealed as such already
+    ex = TopExp_Explorer(BRepTools.OuterWire_s(face), TopAbs_EDGE)
+    while ex.More():
+        e = TopoDS.Edge_s(ex.Current())
+        ex.Next()
+        if any(e.IsSame(x) for x in edges):
+            continue
+        if BRep_Tool.IsClosed_s(e, face):
+            seams += 1
+            continue
+        edges.append(e)
+    if not seams or len(edges) < 2:
+        return []
+    umin, umax, vmin, vmax = BRepTools.UVBounds_s(face)
+    lo, hi = (vmin, vmax) if up else (umin, umax)
+    span = hi - lo
+    if span <= 0.0:
+        return []
+    out, left = [], list(edges)
+    while left:
+        loop = [left.pop(0)]
+        v0, v1 = TopExp.FirstVertex_s(loop[0]), TopExp.LastVertex_s(loop[0])
+        grown = True
+        while grown and not v1.IsSame(v0):
+            grown = False
+            for k, e in enumerate(left):
+                a, b = TopExp.FirstVertex_s(e), TopExp.LastVertex_s(e)
+                if a.IsSame(v1) or b.IsSame(v1):
+                    v1 = b if a.IsSame(v1) else a
+                    loop.append(left.pop(k))
+                    grown = True
+                    break
+        if not v1.IsSame(v0) or len(loop) < 2:
+            continue                              # an end circle (one closed edge), or no loop at all
+        ps = []
+        for e in loop:
+            c2 = BRepAdaptor_Curve2d(e, face)
+            f0, f1 = c2.FirstParameter(), c2.LastParameter()
+            for k in range(9):
+                p = c2.Value(f0 + (f1 - f0) * k / 8.0)
+                ps.append(p.Y() if up else p.X())
+        if min(ps) - lo <= SEAM_HOLE_MARGIN * span or hi - max(ps) <= SEAM_HOLE_MARGIN * span:
+            continue                              # it reaches the face's end: the face's own rim
+        mk = BRepBuilderAPI_MakeWire()
+        for e in loop:
+            mk.Add(e)
+        if mk.IsDone():
+            out.append(mk.Wire())
+    return out
+
+
 def _ring_membrane(ring: list) -> list:
     """Membrane triangles spanning one closed rim ring.
 
@@ -1383,12 +1462,17 @@ def _tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflectio
     for wi in wall_idx:
         wf = faces[wi]
         wires = _wires_of(wf)
-        if len(wires) < 2:
-            continue                  # no holes - the overwhelmingly common wall face
-        outer_w = BRepTools.OuterWire_s(wf)
         host = BRepAdaptor_Surface(wf)
         host_planar = host.GetType() == GeomAbs_Plane
-        for wire in wires:
+        # INS-21: a hole across a periodic face's seam is part of the face's outer wire, not an inner one
+        across_seam = [] if host_planar else seam_holes(wf)
+        if len(wires) < 2 and not across_seam:
+            continue                  # no holes - the overwhelmingly common wall face
+        if across_seam:
+            logger.info("tessellate_internal (%s): face %d holds %d hole(s) across its seam", SEAM_HOLE_RULE, wi,
+                        len(across_seam))
+        outer_w = BRepTools.OuterWire_s(wf)
+        for wire in [*wires, *across_seam]:
             if wire.IsSame(outer_w):
                 continue
             pts = _rim_polyline(wf, wire)
