@@ -9152,7 +9152,10 @@ def mesh_run(out_dir: Path | str, *, mm_per_unit: float = 1.0, target: dict | No
     if set_aside:
         applied["count_set_aside"] = set_aside
     t = applied.get("target")
-    if t and not t.get("kept_rules") and not plan_rules.count_met(mesh.n_elements, target):
+    if t and ((applied.get("quality") or {}).get("time_limit") or {}).get("reached"):
+        # SHMESH-21b: a mesh delivered at the time limit is not aimed again - that would be a whole shell mesh more
+        t["not_reaimed"] = "the shell mesh reached its time limit (SHMESH-21b)"
+    elif t and not t.get("kept_rules") and not plan_rules.count_met(mesh.n_elements, target):
         # SHMESH-23: the built count missed the user's: aimed again once on the built-over-planned it measured, and
         # the closer of the two kept
         corr = float(t.get("correction") or 1.0) * mesh.n_elements / max(float(t.get("planned") or 1), 1.0)

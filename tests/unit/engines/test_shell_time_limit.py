@@ -82,6 +82,25 @@ def test_a_run_stopped_before_any_valid_mesh_ends_with_none_as_before(monkeypatc
         sa.mesh_shell("x.brep", {}, requirements={})
 
 
+def test_a_mesh_delivered_at_the_limit_is_not_aimed_again_at_the_users_count(tmp_path, monkeypatch):
+    # SHMESH-21b: SHMESH-23's second aim is a whole shell mesh more - not after the run reached its limit
+    import json
+
+    (tmp_path / "shell.json").write_text(json.dumps({"surface_faces": []}))
+    calls = []
+
+    def shell(*_a, **_k):
+        calls.append(1)
+        applied = _applied()
+        applied["quality"]["time_limit"] = {"reached": True}
+        applied["target"] = {"asked": 1000, "planned": 1000, "correction": 1.0}
+        return _mesh(), applied
+
+    monkeypatch.setattr(sa, "mesh_shell", shell)
+    _m, applied = sa.mesh_run(tmp_path, target={"elements": 1000})
+    assert len(calls) == 1 and "SHMESH-21b" in applied["target"]["not_reaimed"]
+
+
 def test_the_best_so_far_is_ranked_as_the_mesher_ranks_its_candidates():
     # SHMESH-21b: valid first, then inside Nastran's limits, then the user's lines, then fewer triangles; a tie keeps
     # the mesh made first
