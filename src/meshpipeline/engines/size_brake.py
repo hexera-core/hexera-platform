@@ -160,6 +160,10 @@ class SizeBrake:
         self.counts = tuple(counts)
         self._offset, self._carry = 0, ""
         self.tripped: dict | None = None
+        #: every count read so far, by stage (the last of each): a stop on the with-layers count
+        #: carries the castellated count beside it, so the re-plan can tell the wall's layer cells
+        #: from the rest (learned_face_factor)
+        self.seen: dict[str, int] = {}
 
     def _new_text(self) -> str:
         try:
@@ -182,9 +186,12 @@ class SizeBrake:
             margin = max(self.margin, own) if own else self.margin
             for raw in rx.findall(text):
                 cells = int(float(raw))
+                self.seen[stage] = cells
                 if cells > margin * self.budget:
                     self.tripped = {"stage": stage, "cells": cells, "budget": self.budget,
-                                    "margin": margin, "ratio": round(cells / self.budget, 2)}
+                                    "margin": margin, "ratio": round(cells / self.budget, 2),
+                                    **({"castellated": self.seen["castellated"]}
+                                       if stage != "castellated" and "castellated" in self.seen else {})}
                     return (f"the mesh {stage} reads {cells:,} cells, {cells / self.budget:.1f} times its "
                             f"budget of {self.budget:,}")
         return None
@@ -199,6 +206,47 @@ class SizeBrake:
 SIZE_BRAKE_STEP = 0.5
 
 
+#: THE WALL'S LAYER CELLS, LEARNED FROM A STOPPED PASS (RUN-8). A plan prices its layers at one cell
+#: per wall face per layer, its wall faces about the wall area over the wall cell squared
+#: (snappy_runner.final_estimate). On an assembly of many parts with sharp edges, snappy's own wall
+#: holds several times that: the feature edges are refined two levels finer, sixteen faces to one.
+#: The RM5 surge flap's first pass read 3.12 M castellated cells and 11.65 M with its 17 layers -
+#: 0.50 M wall faces where its plan had priced at most 0.15 M - so its plan never knew it was over, and
+#: the floor pricing (rulebook 75) never fired. A pass stopped on its with-layers count has told the
+#: run what its wall really holds: (with layers - castellated) / layers. The re-plan's estimate
+#: multiplies the plan's wall faces by that over what the plan had priced, never less than 1 and
+#: never more than LEARNED_FACE_FACTOR_MAX.
+LEARNED_FACE_FACTOR_MAX = 25.0
+
+
+def learned_face_factor(tripped: dict | None, plan: dict | None) -> float | None:
+    """How many times the wall faces the stopped pass's plan priced its wall really held: from the
+    brake's stop on the with-layers count (its castellated count beside it) and the plan record's
+    priced wall faces and layer count (PLAN_CELLS_FILE: wall_faces_est, layers_est). None when the
+    stop was not on the with-layers count or either side is missing."""
+    try:
+        t, p = dict(tripped or {}), dict(plan or {})
+        if t.get("stage") != "with layers":
+            return None
+        ideal, cast = float(t.get("cells") or 0), float(t.get("castellated") or 0)
+        faces, n = float(p.get("wall_faces_est") or 0), int(p.get("layers_est") or 0)
+        if ideal <= cast or cast <= 0 or faces <= 0 or n <= 0:
+            return None
+        return float(min(LEARNED_FACE_FACTOR_MAX, max(1.0, (ideal - cast) / n / faces)))
+    except (TypeError, ValueError):
+        return None
+
+
+def plan_record(workspace) -> dict:
+    """The case's plan record (PLAN_CELLS_FILE), {} when it cannot be read."""
+    import json
+    try:
+        rec = json.loads((Path(workspace) / PLAN_CELLS_FILE).read_text())
+        return rec if isinstance(rec, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
 def scaled_budget_factor(tripped: dict) -> float:
     """The factor the next pass's castellation budget is cut by: SIZE_BRAKE_STEP (half), or less of
     a cut when the run was only a little over - never deeper than half in one pass."""
@@ -208,6 +256,7 @@ def scaled_budget_factor(tripped: dict) -> float:
     return max(SIZE_BRAKE_STEP, min(0.9, SIZE_BRAKE_TARGET * budget / cells))
 
 
-__all__ = ["BRAKE_RELEASED", "BRAKE_RULE", "SIZE_BRAKE_STEP", "PLAN_CELLS_FILE", "CFMESH_COUNTS",
+__all__ = ["BRAKE_RELEASED", "BRAKE_RULE", "LEARNED_FACE_FACTOR_MAX", "SIZE_BRAKE_STEP", "PLAN_CELLS_FILE",
+           "CFMESH_COUNTS", "learned_face_factor", "plan_record",
            "SIZE_BRAKE_MARGIN", "SIZE_BRAKE_LAYER_MARGIN", "SIZE_BRAKE_TARGET", "SNAPPY_COUNTS",
            "SizeBrake", "background_cells", "case_budget", "release_brake", "scaled_budget_factor"]

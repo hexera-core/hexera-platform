@@ -1327,6 +1327,10 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
         strategy, _coarsened = _coarsen_after_timeout(_timeout_ref, strategy, internal=False)
         if _plan_cells:
             strategy = {**strategy, "_plan_cells": _plan_cells}
+        _learned_k = (_timeout_ref or {}).get("_wall_face_factor")
+        if _learned_k:
+            # RUN-8: priced on the wall the stopped pass measured (size_brake.learned_face_factor)
+            strategy = {**strategy, "_wall_face_factor": float(_learned_k)}
         previous_plan = strategy                       # remember for the next repair
         _policy = None                                 # this pass's local layer policy, if any
         _repairable = False                            # may a repair split this pass's wall?
@@ -1375,6 +1379,12 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                 if _lim is not None:
                     strategy = {**strategy, "_cell_limit": int(_lim)}
             strategy = {**strategy, "max_cells": _budget}
+            if not strategy.get("_plan_cells"):
+                # RUN-8: THE PLAN'S BUDGET IS THE FIRST PASS'S. A plan that names no budget (the rules
+                # plan: max_cells None) left _plan_cells unset, so each re-plan's record carried the
+                # budget the last trip had just cut, and the brake measured every pass against a
+                # smaller one: RM5 read 2.9x of 4 M, then 5.2x of 2 M, 4.5x of 1 M - a spiral
+                strategy = {**strategy, "_plan_cells": int(_budget)}
             # RUN-9: a count past the standard machine runs on a bigger one, decided before it meshes
             _route_big(workspace, max(_budget, int(strategy.get("_cell_limit") or 0)), job_id=job_id,
                        attempt=attempt)
@@ -1560,6 +1570,17 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                                _over.get("budget"), job_id)
                 _timeout_ref = {**strategy, "_why": "oversize", "_oversize": _over,
                                 "_budget_factor": scaled_budget_factor(_over)}
+                # RUN-8: what the stopped pass's wall really held, against what its plan priced - the
+                # re-plan's estimate (and the body-at-its-floor pricing) works from that, never again
+                # from a count three times under what snappyHexMesh builds
+                from meshpipeline.engines.size_brake import learned_face_factor, plan_record
+                _k = learned_face_factor(_over, plan_record(workspace))
+                if _k is not None:
+                    _k = max(_k, float(strategy.get("_wall_face_factor") or 1.0))
+                    _timeout_ref["_wall_face_factor"] = _k
+                    logger.warning("snappy pass %d: the wall holds %.1f times the faces its plan priced "
+                                   "(%s castellated, %s with its layers) - the re-plan is priced on that "
+                                   "(job_id=%s)", attempt, _k, _over.get("castellated"), _over.get("cells"), job_id)
                 _timeout_case = _case_snapshot(workspace)
                 _write_timed_out_plan(workspace, _timeout_ref)
             # --- JUDGE (deterministic bar) --- past the post-native fence, so this generation

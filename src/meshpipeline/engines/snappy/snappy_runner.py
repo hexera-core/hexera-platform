@@ -696,9 +696,11 @@ def castellated_estimate(*, area: float | None, divisions, base_cell: float, sur
 #: times (1 + layers x the share of it that touches the wall), the share read from the plan's own
 #: numbers: wall faces about area / wall cell^2, against castellated_estimate.
 def final_estimate(*, castellated: float | None, budget: int, area: float | None, wall_cell: float,
-                   n_layers: int) -> float | None:
+                   n_layers: int, face_factor: float = 1.0) -> float | None:
     """The cells the finished mesh comes to: the castellated mesh (castellated_estimate, held to
-    the budget snappyHexMesh stops refining at) and its layers. None when it cannot be estimated."""
+    the budget snappyHexMesh stops refining at) and its layers. None when it cannot be estimated.
+    `face_factor`: how many times area / wall cell^2 the wall's faces really are, when a stopped pass
+    of this case has measured it (size_brake.learned_face_factor); 1 before any pass has."""
     try:
         a = float(area)  # type: ignore[arg-type]
     except (TypeError, ValueError):
@@ -706,7 +708,7 @@ def final_estimate(*, castellated: float | None, budget: int, area: float | None
     if castellated is None or castellated <= 0 or not (a > 0.0) or wall_cell <= 0.0:
         return None
     built = min(float(castellated), float(budget))
-    wall_share = min(1.0, (a / wall_cell ** 2) / float(castellated))
+    wall_share = min(1.0, max(1.0, float(face_factor or 1.0)) * (a / wall_cell ** 2) / float(castellated))
     return built * (1.0 + max(0, int(n_layers)) * wall_share)
 
 
@@ -1066,10 +1068,12 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
         area=analysis.get("surface_area"), divisions=div, base_cell=base_actual,
         surface_level=smax, near=(b0d, near_band_level), far=(b1d, max(1, smin - 1)))
     _n_lay_est = max([n_layers, *layer_counts.values()]) if _any_layers else 0
+    # the wall's faces as a stopped pass of this case measured them (RUN-8, size_brake.learned_face_factor)
+    _face_k = max(1.0, float(strategy.get("_wall_face_factor") or 1.0))
     _final = final_estimate(
         castellated=_cast_est,
         budget=max_cells, area=analysis.get("surface_area"), wall_cell=base_actual / (2 ** smax),
-        n_layers=_n_lay_est)
+        n_layers=_n_lay_est, face_factor=_face_k)
     # THE BODY'S OWN MESH, PRICED BEFORE IT RUNS (rulebook 75). The wall sits at the coarsest level
     # that seals the body (`floor`, above) unless the plan asked finer: no budget makes it coarser. A
     # budget under what that mesh comes to with its layers only cut snappy's refinement short of
@@ -1081,15 +1085,18 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
     # it is delivered as it is, LAD-cfd-4) - and the brake measures the run against that need.
     _size_note = ""
     _need = final_estimate(castellated=_cast_est, budget=10 ** 12, area=analysis.get("surface_area"),
-                           wall_cell=base_actual / (2 ** smax), n_layers=_n_lay_est)
+                           wall_cell=base_actual / (2 ** smax), n_layers=_n_lay_est, face_factor=_face_k)
     _at_floor = smax <= floor
-    if _need is not None and _at_floor and _need > SIZE_BRAKE_MARGIN * max_cells and _ask is None:
+    # ... whatever else the notes ask: only a COUNT the user set stands against it (CFDREQ-3). Held to
+    # "no requirements at all", a wall-function or y+ request (RM5's "OK" mode) turned the pricing off
+    _their_count = _ask is not None and bool(_ask.user_budget())
+    if _need is not None and _at_floor and _need > SIZE_BRAKE_MARGIN * max_cells and not _their_count:
         import meshpipeline.settings.policy as _pol_e
         _hard = int(_pol_e.CELL_HARD_LIMIT)
         _was = max_cells
         max_cells = int(min(max(float(max_cells), _need), float(_hard)))
         _final = final_estimate(castellated=_cast_est, budget=max_cells, area=analysis.get("surface_area"),
-                                wall_cell=base_actual / (2 ** smax), n_layers=_n_lay_est)
+                                wall_cell=base_actual / (2 ** smax), n_layers=_n_lay_est, face_factor=_face_k)
         _size_note = (f"the body meshed at the coarsest wall cells that seal it ({base_actual / 2 ** smax * 1e3:.3g} mm) "
                       f"comes to about {_need / 1e6:.3g} M cells with its layers, more than the {_was / 1e6:.3g} M "
                       f"planned: it is meshed at that"
@@ -1127,6 +1134,14 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
         # runs away from its own plan, never one doing what the plan priced
         _plan_rec = {**_plan_rec, "plan_cells": max(int(_plan_rec["plan_cells"]), int(_need)),
                      "body_needs": int(_need)}
+    # what the plan priced the wall's layers on, so a pass the brake stops can be read against it
+    try:
+        _wf = float(analysis.get("surface_area") or 0.0) / (base_actual / (2 ** smax)) ** 2
+    except (TypeError, ValueError, ZeroDivisionError):
+        _wf = 0.0
+    if _wf > 0 and _n_lay_est > 0:
+        _plan_rec = {**_plan_rec, "wall_faces_est": int(_wf), "layers_est": int(_n_lay_est),
+                     **({"wall_face_factor": round(_face_k, 3)} if _face_k > 1.0 else {})}
     (ws / PLAN_CELLS_FILE).write_text(json.dumps(_plan_rec))
     if cast_cells != max_cells and _final:
         logger.info("render_snappy_case: the finished mesh is estimated at %.3g cells with its layers, "
