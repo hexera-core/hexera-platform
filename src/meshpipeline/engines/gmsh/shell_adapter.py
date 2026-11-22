@@ -2624,7 +2624,8 @@ def _choose_reserve(applied: dict) -> float:
         return float(_CHOOSE.get("reserve") or 0.0) if _CHOOSE.get("first") else 0.0
     _CHOOSE["armed"] = False
     owed = _choose_owed(applied.get("quality") or {})
-    reserve = owed * float(_RUN.get("first_s") or 0.0) * (1.0 + PRICE_MARGIN)
+    # (SHMESH-76p2: and the plain mesh's, owed whenever this first mesh is past the solver's limits)
+    reserve = (owed + int(bool(_CHOOSE.get("plain")))) * float(_RUN.get("first_s") or 0.0) * (1.0 + PRICE_MARGIN)
     _CHOOSE.update(owed=owed, reserve=reserve)
     return reserve
 
@@ -2656,6 +2657,14 @@ SPOT_NOT_AGAIN = True
 #: the pool is the stamped candidates only, as before
 PLAIN_JOINS = True
 PLAIN_NAME = "the plain mesh (every stamped step off)"
+
+
+def _plain_applies(record: dict) -> bool:
+    """SHMESH-76p: whether a plain mesh can differ from this part's stamped one - the stamped steps are on for it (a
+    surface file, or STAMPED_ALL) and some STAMPED_SWITCHES member is on."""
+    g_ = globals()
+    return bool(PLAIN_JOINS and (STAMPED_ALL or (record or {}).get("source") == "surface") and not _STAMPED_OFF_NOW[0]
+                and any(g_[n_] for n_ in STAMPED_SWITCHES))
 #: SHMESH-31h: the longest spot pass this shell mesh measured, seconds (None: none yet); reset with the run's clock
 _SPOT_COST: dict[str, float | None] = {"s": None}
 
@@ -2969,7 +2978,8 @@ def _yield_both(brep, record, **kw):
     t_c = time.monotonic()
     # (SHMESH-21d: the first path's spot passes decide whether this run chooses first and repairs last)
     choose = bool(CHOOSE_FIRST and NO_WORSE and not _YIELD_OFF[0] and requirements and _RUN.get("end") is not None)
-    _CHOOSE.update(armed=choose, first=choose, reserve=0.0, tight=False, defer=False, price=None, owed=0, why="")
+    _CHOOSE.update(armed=choose, first=choose, reserve=0.0, tight=False, defer=False, price=None, owed=0, why="",
+                   plain=bool(choose and _plain_applies(record)))
     try:
         with _so_far_named("all on (the first path)"):
             mesh, applied, past_n = _narrow_kept_path(brep, record, **kw)
@@ -3024,6 +3034,33 @@ def _yield_rest(brep, record, kw: dict, mesh, applied, past_n, last_s: float, ti
     other: ShellMesh | None
     # (SHMESH-21c: each optional mesh below priced at the last whole mesh's seconds; those not started)
     skipped: list[dict] = []
+    plain_rec: dict | None = None
+    plain_got: tuple | None = None
+    if _plain_applies(record) and (_past(applied)[0] or past_n):
+        # SHMESH-76p2: the first stamped mesh is past the solver's limits - the plain mesh is the next thing made, before
+        # any optional mesh (its time was kept back by the first path, SHMESH-21d), as a first mesh; ranked below with
+        # the others in SHMESH-76's order
+        plain_rec = {"rule": "SHMESH-76p", "why": "the first stamped mesh is past the solver's limits",
+                     "price_s": round(last_first, 1)}
+        if not _priced_affords(last_first):
+            plain_rec["made"] = "not started: " + PRICED_WHY
+        else:
+            defer_was = _CHOOSE.get("defer")
+            _CHOOSE["defer"] = bool(can_choose) or bool(defer_was)
+            t_c = time.monotonic()
+            try:
+                plain_got = _yield_remake(brep, record, kw, ({}, False, None, None, True), PLAIN_NAME)
+            except (ValueError, _Periodic) as exc:
+                logger.info("shell mesh: no plain mesh to compare (%s)", exc)
+                plain_rec["made"] = f"failed ({type(exc).__name__})"
+            finally:
+                _CHOOSE["defer"] = defer_was
+            plain_s = time.monotonic() - t_c
+            if plain_got is not None:
+                plain_rec["made"] = round(plain_s, 1)
+                first_secs[PLAIN_NAME] = float(plain_s)
+                recipes[PLAIN_NAME] = ({}, False, None, None, True)
+                last_first = float(plain_s) if tight else last_first
 
     def may_start(name_: str) -> bool:
         """SHMESH-21c/21d: whether the next mesh starts - whole, when the time affords the last whole mesh's seconds
@@ -3204,41 +3241,18 @@ def _yield_rest(brep, record, kw: dict, mesh, applied, past_n, last_s: float, ti
                               "that": list(mine), "seconds": round(last_s, 1)})
                 if theirs < mine:
                     best = (name, other, applied_o, other_n)
-    plain_rec: dict | None = None
-    if (PLAIN_JOINS and (STAMPED_ALL or record.get("source") == "surface") and not _STAMPED_OFF_NOW[0]
-            and any(g_[n_] for n_ in STAMPED_SWITCHES) and all(_past(c_[2])[0] or c_[3] for c_ in pool)):
-        # SHMESH-76p: every stamped candidate stands past the solver's limits - the plain mesh joins the pool, made as
-        # a first mesh (its spot passes wait for it to be kept), ranked in SHMESH-76's order
-        plain_rec = {"rule": "SHMESH-76p", "why": f"all {len(pool)} stamped mesh(es) past the solver's limits",
-                     "price_s": round(last_first, 1)}
-        if not _priced_affords(last_first):
-            plain_rec["made"] = "not started: " + PRICED_WHY
-        else:
-            defer_was = _CHOOSE.get("defer")
-            _CHOOSE["defer"] = bool(can_choose) or bool(defer_was)
-            t_c = time.monotonic()
-            try:
-                other, applied_o, other_n = _yield_remake(brep, record, kw, ({}, False, None, None, True), PLAIN_NAME)
-            except (ValueError, _Periodic) as exc:
-                logger.info("shell mesh: no plain mesh to compare (%s)", exc)
-                plain_rec["made"] = f"failed ({type(exc).__name__})"
-                other = None
-            finally:
-                _CHOOSE["defer"] = defer_was
-                last_s = time.monotonic() - t_c
-            if other is not None:
-                _n, m_b, a_b, p_b = best
-                mine = (*_standing(a_b, p_b, applied_o, requirements), len(m_b.trias), int(m_b.n_elements))
-                theirs = (*_standing(applied_o, other_n, a_b, requirements), len(other.trias), int(other.n_elements))
-                pool.append((PLAIN_NAME, other, applied_o, other_n))
-                recipes[PLAIN_NAME] = ({}, False, None, None, True)
-                first_secs[PLAIN_NAME] = float(last_s)
-                plain_rec.update(made=round(last_s, 1), kept=theirs < mine, this=list(theirs), that=list(mine),
-                                 against=best[0])
-                tried.append({"mesh": PLAIN_NAME, "against": best[0], "kept": theirs < mine, "this": list(theirs),
-                              "that": list(mine), "seconds": round(last_s, 1)})
-                if theirs < mine:
-                    best = (PLAIN_NAME, other, applied_o, other_n)
+    if plain_got is not None and plain_rec is not None:
+        # SHMESH-76p: the plain mesh made first is ranked here, after the stamped candidates (their own order kept)
+        other, applied_o, other_n = plain_got
+        _n, m_b, a_b, p_b = best
+        mine = (*_standing(a_b, p_b, applied_o, requirements), len(m_b.trias), int(m_b.n_elements))
+        theirs = (*_standing(applied_o, other_n, a_b, requirements), len(other.trias), int(other.n_elements))
+        pool.append((PLAIN_NAME, other, applied_o, other_n))
+        plain_rec.update(kept=theirs < mine, this=list(theirs), that=list(mine), against=best[0])
+        tried.append({"mesh": PLAIN_NAME, "against": best[0], "kept": theirs < mine, "this": list(theirs),
+                      "that": list(mine), "seconds": plain_rec.get("made")})
+        if theirs < mine:
+            best = (PLAIN_NAME, other, applied_o, other_n)
     chose: dict | None = None
     if tight or (plain_rec is not None and best[0] == PLAIN_NAME):
         # SHMESH-21d: the candidates stood as first meshes; the one kept is made again with its spot passes, with the

@@ -277,15 +277,28 @@ def _plain_setup(monkeypatch, stamped_past: int):
 
 
 def test_where_every_stamped_mesh_is_past_the_solvers_limits_the_plain_mesh_joins_and_wins(monkeypatch):
-    # SHMESH-76p: all on and both stamped candidates 3 past the solver's limits; the plain mesh is made as a first
-    # mesh (1 past), kept in SHMESH-76's order, then repaired last (0 past) and told
+    # SHMESH-76p2: the first stamped mesh 3 past the solver's limits: the plain mesh is the next mesh made, as a first
+    # mesh (1 past), before the stamped candidates (3 past each); ranked after them in SHMESH-76's order, kept, then
+    # repaired last (0 past) and told
     calls = _plain_setup(monkeypatch, 3)
     mesh, applied, n = sa._yield_both("x.brep", {"source": "surface"}, requirements={"limits": []})
-    assert [c[1:] for c in calls] == [(False, False), (False, False), (False, False), (True, True), (True, False)]
+    assert [c[1:] for c in calls] == [(False, False), (True, True), (False, False), (False, False), (True, False)]
     assert calls[-1][0] == sa.PLAIN_NAME + ", repaired"
     assert n == 0 and applied["quality"]["plain_joined"]["kept"] is True
     assert applied["quality"]["chose_first"]["repaired"] == "kept"
     assert any("SHMESH-76p" in t for t in mesh.notes)
+
+
+def test_the_first_paths_spot_pass_keeps_back_the_plain_meshs_time(monkeypatch):
+    # SHMESH-76p2: on a stamped part the first path keeps back the plain mesh's first mesh too (2 meshes to compare
+    # and the plain one, each at the first mesh's 50 s, +10%)
+    monkeypatch.setitem(sa._RUN, "first_s", 50.0)
+    applied = _applied(past=3)
+    applied["quality"].update(strip_yield=True)
+    monkeypatch.setattr(sa, "_CHOOSE", {**sa._CHOOSE, "armed": True, "first": True, "plain": True})
+    assert abs(sa._choose_reserve(applied) - 3 * 50.0 * 1.1) < 1e-9
+    monkeypatch.setattr(sa, "_CHOOSE", {**sa._CHOOSE, "armed": True, "first": True, "plain": False})
+    assert abs(sa._choose_reserve(applied) - 2 * 50.0 * 1.1) < 1e-9
 
 
 def test_where_a_stamped_mesh_is_inside_the_solvers_limits_no_plain_mesh_is_made(monkeypatch):
