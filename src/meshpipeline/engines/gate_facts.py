@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 #: The record beside the attempt (carried to the next one by the builder).
 GATE_FACTS_FILE = "gate_facts.json"
 #: The facts kept: what a plan can act on, and what the delivery may say.
-_KEPT = ("misses", "fidelity", "detail", "checks")
+_KEPT = ("misses", "fidelity", "detail", "checks", "patches")
 
 
 def write_gate_facts(workspace, gate: str, facts: Mapping | None) -> None:
@@ -34,17 +34,25 @@ def write_gate_facts(workspace, gate: str, facts: Mapping | None) -> None:
         logger.debug("gate facts not written", exc_info=True)
 
 
+#: The gates whose refusal names openings the next attempt refines: an opening built at the wrong size (port_areas,
+#: its `misses`), and an opening the mesh came back with no faces on (manifest_valid, its `patches`: the mesher lost
+#: it - abc 00063401's 933 mm2 outlet_3, lost on two cfMesh attempts of the same plan, 24 and 23 minutes each).
+MISSED_PORT_GATES = ("port_areas", "manifest_valid")
+
+
 def missed_ports(workspace) -> set[str]:
-    """The openings the port-area gate refused on the previous attempt: their names, or an empty set."""
+    """The openings the previous attempt's refusal named (MISSED_PORT_GATES): their names, or an empty set."""
     try:
         rec = json.loads((Path(workspace) / GATE_FACTS_FILE).read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError):
         return set()
-    if not isinstance(rec, dict) or rec.get("gate") != "port_areas":
+    if not isinstance(rec, dict) or rec.get("gate") not in MISSED_PORT_GATES:
         return set()
     raw = rec.get("facts")
     facts: dict = raw if isinstance(raw, dict) else {}
+    if rec.get("gate") == "manifest_valid":
+        return {str(n) for n in facts.get("patches") or () if n}
     return {str(m.get("name")) for m in facts.get("misses") or () if isinstance(m, dict) and m.get("name")}
 
 
-__all__ = ["GATE_FACTS_FILE", "missed_ports", "write_gate_facts"]
+__all__ = ["GATE_FACTS_FILE", "MISSED_PORT_GATES", "missed_ports", "write_gate_facts"]

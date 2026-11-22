@@ -531,6 +531,11 @@ async def node_executor(state: PipelineState) -> dict:
                             "job_id=%s", _gate_key, job_id)
             from meshpipeline.engines.gate_facts import write_gate_facts
             write_gate_facts(workspace, _gate_key, failure_facts)
+        elif not _gates_ok and _gate_key == "manifest_valid":
+            # LAD-cfd-8: an opening the mesh came back with no faces on is refined on the next attempt
+            # (gate_facts.missed_ports) - the same plan only loses it again (abc 00063401: twice, 47 min)
+            from meshpipeline.engines.gate_facts import write_gate_facts
+            write_gate_facts(workspace, _gate_key, failure_facts)
 
         if executor_success:
             # WHAT THE MEASUREMENT SAYS, on the run's live line: the executor's own record of the

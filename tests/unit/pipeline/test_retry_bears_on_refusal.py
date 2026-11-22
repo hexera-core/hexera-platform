@@ -352,3 +352,11 @@ def test_a_port_bound_elsewhere_runs_no_other_engine_and_is_delivered_with_its_c
     c = lad.deliverable_refusal("port_areas", {}, facts_of(fb))
     assert c is not None and "Opening 'inlet' was built at 7 mm2 against the 27 mm2 confirmed" in c["words"]
     assert "another face than the one you confirmed" in c["words"]
+
+
+def test_an_opening_the_mesh_lost_reaches_the_next_plan(tmp_path):
+    # abc 00063401: two cfMesh attempts of the same plan lost the 933 mm2 outlet_3 (zero faces), 24 and 23 min each
+    write_gate_facts(tmp_path, "manifest_valid", {"patches": ["outlet_3"], "detail": "zero faces", "noise": 1})
+    assert missed_ports(tmp_path) == {"outlet_3"}
+    write_gate_facts(tmp_path, "manifest_valid", {"missing": ["car wall"], "renamed": {"car wall": "car_wall"}})
+    assert missed_ports(tmp_path) == set(), "a renamed patch is the contract's, not an opening the mesher lost"
