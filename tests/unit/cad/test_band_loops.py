@@ -113,3 +113,31 @@ def test_an_equal_tees_saddle_hole_stays_a_mouth(tmp_path):
     _facts, m = _map(_tee(), tmp_path)
     [p] = m.passages()
     assert len(p.mouths) == 3
+
+
+class _OpenAir:
+    """A stand-in map: every point asked about is open air, its cube 0.1 mm."""
+    h = 1e-4
+
+    @staticmethod
+    def where(points):
+        return ["out" for _ in points]
+
+
+def _flat(k: int, d_mm: float, z_mm: float) -> dict:
+    return {"face": k, "centroid_m": [0.0, 0.0, z_mm / 1000.0], "centroid_mm": [0.0, 0.0, z_mm],
+            "normal": [0.0, 0.0, 1.0], "diameter_mm": d_mm, "area_mm2": 3.14159 * d_mm * d_mm / 4.0,
+            "width_mm": d_mm, "height_mm": d_mm}
+
+
+@pytest.mark.parametrize(("outer_mm", "expected"), [(5.9, 1), (20.0, 0)])
+def test_a_mouth_at_a_counterbores_floor_opens_at_its_top(outer_mm, expected):
+    """A threaded counterbore's own rim is no clean loop, so the map's mouth is the bore's step at its floor (GL45
+    cap: 3 mm at z = 3, its port 5.9 mm at z = 9 with open air between): the counterbore's top hole is the opening.
+    A recess far wider than the hole in its floor is no counterbore: the mouth stays the hole it is."""
+    from meshpipeline.application.geometry_check import flat_holes_by_map
+
+    facts = {"flat_holes": [_flat(0, 3.0, 3.0), _flat(1, outer_mm, 9.0)]}
+    holes = [{"passage": True, "centroid_m": [0.0, 0.0, 0.003], "normal": [0.0, 0.0, 1.0], "diameter_mm": 3.0}]
+    flat_holes_by_map(facts, holes, _OpenAir())
+    assert holes[0]["flat_hole"] == expected

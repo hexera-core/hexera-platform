@@ -1554,6 +1554,10 @@ def vet_by_map(facts: dict, imap) -> None:
 FLAT_HOLE_REACH = 4.0
 #: ...and the mouth on that hole's axis, within this share of its width.
 FLAT_HOLE_AXIS = 0.15
+#: INS-24: a coaxial hole out in front of a mouth's own flat hole, open air between, is that bore's counterbore -
+#: the opening - when it is no wider than this many times the mouth's hole (the GL45 cap's 5.9 mm port over its
+#: 3 mm bore: 1.96).
+COUNTERBORE_WIDTH = 2.5
 
 
 def flat_holes_by_map(facts: dict, holes: list[dict], imap) -> None:
@@ -1607,6 +1611,14 @@ def flat_holes_by_map(facts: dict, holes: list[dict], imap) -> None:
         # the hole the mouth is, else - for a mouth no flat hole is (a thread's run-out) - the
         # outermost flat hole of its bore
         pick = same if same is not None else (out[1] if out is not None else None)
+        if same is not None and out is not None and float(flats[out[1]].get("diameter_mm") or 0.0) <= \
+                COUNTERBORE_WIDTH * float(flats[same].get("diameter_mm") or 0.0):
+            # INS-24: A MOUTH AT A COUNTERBORE'S FLOOR opens where the counterbore meets the face. A threaded
+            # counterbore's own rim is no clean loop, so the map's mouth is the bore's step at its floor - the hole
+            # it is, in its plane (GL45 cap: 3 mm at z = 3, its 5.9 mm port hole at z = 9 open air in front of it).
+            # The outermost coaxial hole, open air all the way out and no wider than COUNTERBORE_WIDTH of the step,
+            # is the opening; a recess far wider than the hole in its floor is not its counterbore.
+            pick = out[1]
         if pick is not None:
             h["flat_hole"] = pick
 

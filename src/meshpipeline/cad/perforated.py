@@ -16,8 +16,9 @@ logger = logging.getLogger(__name__)
 RULE = "INS-23"
 
 #: At least this many through-holes in one flat plane make a perforation: a flange's 4 to 8 bolt
-#: holes do not, a fan grille's 12 slots and a sieve's dozens do.
-MIN_HOLES = 8
+#: holes do not, nor a lid's 9 ports (lid_UNF, the most any ported part of the 222 checked has); a fan
+#: grille's 12 slots (the fewest any perforation checked has) and a sieve's dozens do.
+MIN_HOLES = 10
 #: A hole of the perforation is within this factor of the holes' median area (a flange's bolt holes
 #: beside a grille's slots are a fifth of their size and are not part of it).
 SIZE_SPREAD = 4.0
