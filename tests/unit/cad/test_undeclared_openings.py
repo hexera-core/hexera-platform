@@ -161,10 +161,10 @@ def test_undeclared_stub_bore_is_sealed_and_the_seal_is_wall(tmp_path):
         "a straight path from the channel through the undeclared stub leaves the part "
         "without crossing the wall - the opening is not sealed")
     # and no port patch was polluted with the stub's seal: the ports still measure as
-    # their own full mouths (annular ring + declared-port mouth cap), nothing more
-    full_mouth = math.pi * 0.030 ** 2
-    assert _stl_area(t["stls"]["inlet"]) == pytest.approx(full_mouth, rel=0.02)
-    assert _stl_area(t["stls"]["outlet"]) == pytest.approx(full_mouth, rel=0.02)
+    # their own mouths (the bore's cap; the end ring is wall since INS-26), nothing more
+    mouth = math.pi * 0.020 ** 2
+    assert _stl_area(t["stls"]["inlet"]) == pytest.approx(mouth, rel=0.02)
+    assert _stl_area(t["stls"]["outlet"]) == pytest.approx(mouth, rel=0.02)
 
 
 def test_plain_drilled_hole_is_sealed_via_rim_membranes(tmp_path):
