@@ -431,7 +431,8 @@ def seam_holes(face) -> list:
     up, vp = surf.IsUPeriodic(), surf.IsVPeriodic()
     if up == vp:
         return []                                 # no seam, or a torus-like face periodic both ways
-    edges, seams = [], 0
+    edges: list = []
+    seams = 0
     # the OUTER wire only: a hole clear of the seam is an inner wire of its own, sealed as such already
     ex = TopExp_Explorer(BRepTools.OuterWire_s(face), TopAbs_EDGE)
     while ex.More():
@@ -931,6 +932,34 @@ def ports_miss_the_inside(names: list[str], mouths: list[dict]) -> str:
                if one else "Mark the inlet and outlets there on the picture, then run again."))
 
 
+#: docs/RULES.md: a perforated plate's openings are its two sides; a grille's, one lid over it
+PERFORATION_RULE = "INS-23"
+
+
+def _with_perforation_sleeve(shape, declared_ports: list):
+    """INS-23: when the part is a perforated plate or a grille (cad/perforated.read_perforation) and the declared
+    ports sit at the ends of its sleeve - the user confirmed "flow goes through the holes" - the part is staged
+    with the sleeve fused to it: a tube of wall round the plate's outline (both sides) or the grille's lid circle
+    (out from its face), whose open far ends are the ports. Otherwise, the part as it is."""
+    from meshpipeline.cad.perforated import read_perforation, sleeve_ends_declared, with_sleeve
+
+    try:
+        perf = read_perforation(shape)
+        if perf is None or not sleeve_ends_declared(perf, declared_ports):
+            return shape
+        sleeved = with_sleeve(shape, perf)
+    except Exception as exc:  # noqa: BLE001 - the part as drawn; the binding says what it cannot match
+        logger.warning("tessellate_internal (%s): the sleeve could not be built (%s: %s)", PERFORATION_RULE,
+                       type(exc).__name__, str(exc)[:200])
+        return shape
+    if sleeved is None:
+        logger.warning("tessellate_internal (%s): the sleeve did not fuse to the part", PERFORATION_RULE)
+        return shape
+    logger.info("tessellate_internal (%s): %s of %d holes staged in a sleeve %.1f mm past it, its ends the ports",
+                PERFORATION_RULE, perf.kind, perf.holes, perf.sleeve * 1000.0)
+    return sleeved
+
+
 def _tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection: float = 0.2,
                         linear_deflection: float | None = None,
                         opening_faces: list[int] | None = None,
@@ -978,6 +1007,8 @@ def _tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflectio
     shape = reader.OneShape()
     trsf = _occ_to_metres(prepared)
     shape = BRepBuilderAPI_Transform(shape, trsf, True).Shape()
+    if declared_ports and fluid_solid is not True:
+        shape = _with_perforation_sleeve(shape, declared_ports)
 
     # EVERY SOLID OF THE FILE. A file can hold several: an annular passage's pipe and the centre
     # rod modelled as a body of its own (all ten annular corpus parts), an insert, a baffle, a

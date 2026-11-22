@@ -1263,7 +1263,7 @@ def _scout_exact(local_path: Path, work: Path, interp_ref, ref, on_skin=None) ->
                                          scale=occ_scale_transform(prepared).ScaleFactor())
     try:
         return _scout_exact_rest(facts, skin, local_path, work, interp_ref, prepared, unit_note, scale_to_m,
-                                 declared, early_fluid)
+                                 declared, early_fluid, shape=shape)
     finally:
         if early_fluid is not None:
             early_fluid.close()
@@ -1306,7 +1306,7 @@ def read_joined(facts: dict, local_path: Path, prepared, shape) -> dict:
 
 
 def _scout_exact_rest(facts: dict, skin: Path, local_path: Path, work: Path, interp_ref, prepared, unit_note,
-                      scale_to_m: float, declared: dict, early_fluid) -> tuple[dict, Path]:
+                      scale_to_m: float, declared: dict, early_fluid, shape=None) -> tuple[dict, Path]:
     from meshpipeline.application import geometry_progress as gp
     from meshpipeline.cad.fluid_volume_check import read_fluid_volume, wants_fluid_volume
     from meshpipeline.cad.normalise import occ_scale_transform
@@ -1330,8 +1330,100 @@ def _scout_exact_rest(facts: dict, skin: Path, local_path: Path, work: Path, int
             read_fluid_volume(facts, local_path, work=work, kind="cad",
                               scale=occ_scale_transform(prepared).ScaleFactor(), started=early_fluid)
         read_whole_shape(facts, skin)
+        if shape is not None and facts.get("openings_from") != "fluid_volume":
+            perforated_openings(facts, shape, prepared)
     settle_flow_kind(facts)
     return facts, skin
+
+
+#: docs/RULES.md: a perforated plate's openings are its two sides; a grille's, one lid over it
+PERFORATED_RULE = "INS-23"
+#: The stage's question and its three answers (INS-23), in these words
+PERFORATED_ANSWERS = ("Yes", "No, each hole is its own passage", "No, the flow goes around it")
+
+
+def perforated_statement(perf: dict) -> str:
+    """What INS-23 read, in plain words: "This looks like a perforated plate: 39 holes of 1.4 mm through a 5 mm
+    plate." - the holes' size as one number when they are one size, else their range."""
+    def mm(v) -> str:
+        return f"{float(v):.2g}" if float(v) < 10 else f"{float(v):.0f}"
+    lo, hi = float(perf.get("hole_min_mm") or perf["hole_mm"]), float(perf.get("hole_max_mm") or perf["hole_mm"])
+    size = mm(perf["hole_mm"]) if hi <= 1.1 * lo else f"{mm(lo)} to {mm(hi)}"
+    what = "a grille" if perf.get("kind") == "grille" else "a perforated plate"
+    return f"This looks like {what}: {int(perf['holes'])} holes of {size} mm through a {mm(perf['thickness_mm'])} mm plate."
+
+
+def perforated_question(perf: dict) -> str:
+    """INS-23's question, in these words: "This looks like a perforated plate: 39 holes of 1.4 mm through a 5 mm
+    plate. Flow goes through the holes?"."""
+    return f"{perforated_statement(perf)} Flow goes through the holes?"
+
+
+def perforated_openings(facts: dict, shape, prepared=None) -> None:
+    """INS-23, A PERFORATED PLATE'S OPENINGS ARE ITS TWO SIDES; A GRILLE'S, ONE LID OVER IT (cad/perforated).
+    Many short holes side by side through a thin plate were proposed hole by hole - a fan duct's 12 grille slots
+    as 12 outlets, which surface staging then leaked through - or not at all past 16 (INS-13), and a free sieve
+    as two holes on one face. Now, when the part's faces hold such a perforation, the proposal is the plate's two
+    sides (a free plate: a sleeve of the plate's outline runs a few pitches past each side, inlet at one end,
+    outlet at the other) or one lid over the grille's whole outline (a grille in a face of the part's inside: the
+    other openings stay, the holes become that one opening, the bars wall inside the fluid). The stage asks the
+    user to confirm it (perforated_question, PERFORATED_ANSWERS); the openings as proposed before are kept for
+    "No, each hole is its own passage". `shape` is the CAD part as read (`prepared` scales it to metres) or, with
+    `prepared` None, a triangle part's skin sewn into a solid, in metres already. Never fails the scout."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
+
+    from meshpipeline.cad.normalise import occ_scale_transform
+    from meshpipeline.cad.perforated import read_perforation
+
+    try:
+        if prepared is not None:
+            shape = BRepBuilderAPI_Transform(shape, occ_scale_transform(prepared), True).Shape()
+        perf = read_perforation(shape)
+    except Exception as exc:  # noqa: BLE001 - the reading as it stands
+        logger.warning("geometry check: the perforation could not be read (%s: %s)", type(exc).__name__, str(exc)[:200])
+        return
+    if perf is None:
+        return
+    rec = perf.as_dict()
+    widths = [2.0 * math.sqrt(a / math.pi) * 1000.0 for a in perf.hole_areas]
+    if widths:
+        rec["hole_min_mm"], rec["hole_max_mm"] = round(min(widths), 3), round(max(widths), 3)
+    before = [dict(o) for o in facts.get("openings") or []]
+    centres = rec.pop("hole_centres_mm")
+    half = 0.5 * float(rec["hole_mm"])
+    # a proposed opening that is one of the perforation's holes, in the plate's face
+    def is_hole(o: dict) -> bool:
+        c = [float(v) for v in o.get("centroid_mm") or []]
+        return len(c) == 3 and any(math.dist(c, h) <= max(half, 0.5 * float(o.get("diameter_mm") or 0.0))
+                                   for h in centres)
+
+    def opening(e: dict, role: str) -> dict:
+        round_outline = abs(perf.radius - math.sqrt(perf.area / math.pi)) <= 0.02 * perf.radius
+        return {"face": -1, "role": role, "kind": "ring", "shape": "circle" if round_outline else "other",
+                "confidence": 0.7, "centroid_m": [v / 1000.0 for v in e["centroid_mm"]],
+                "centroid_mm": e["centroid_mm"], "normal": e["normal"], "area_m2": round(e["area_mm2"] * 1e-6, 12),
+                "area_mm2": e["area_mm2"], "diameter_mm": e["diameter_mm"], "on_extremity": True,
+                "clear_ahead": True, "from_perforation": True}
+    if perf.kind == "plate":
+        front, back = rec["ends"]
+        new = [{**opening(front, "inlet"), "name": "inlet"}, {**opening(back, "outlet"), "name": "outlet"}]
+    else:
+        kept = [o for o in before if not (o.get("role") in ("inlet", "outlet") and is_hole(o))]
+        kept = [o for o in kept if not (o.get("role") == "not_an_opening" and is_hole(o))]
+        ports = [o for o in kept if o.get("role") in ("inlet", "outlet")]
+        new = [*kept, {**opening(rec["ends"][0], "outlet" if ports else "inlet"), "name": "grille"}]
+    for k, o in enumerate(new, start=1):
+        o["id"] = k
+    if not any(o.get("role") == "inlet" for o in new):
+        max((o for o in new if o.get("role") == "outlet"), key=lambda o: float(o.get("area_mm2") or 0.0))["role"] = "inlet"
+    rec.update(proposed=True, holes_openings=before)
+    facts["perforated"] = rec
+    facts["openings"] = new
+    facts["input_kind"] = "body-surface"
+    facts.setdefault("notes", []).append(
+        f"{perforated_statement(rec)} Its openings are proposed as "
+        + ("the plate's two sides" if perf.kind == "plate" else "one lid over the grille, the bars wall inside the flow")
+        + f" ({PERFORATED_RULE})")
 
 
 def read_whole_shape(facts: dict, skin: Path) -> None:
@@ -1514,9 +1606,9 @@ def flat_holes_by_map(facts: dict, holes: list[dict], imap) -> None:
                 out = (along, k)                      # the outermost flat hole of the bore
         # the hole the mouth is, else - for a mouth no flat hole is (a thread's run-out) - the
         # outermost flat hole of its bore
-        k = same if same is not None else (out[1] if out is not None else None)
-        if k is not None:
-            h["flat_hole"] = k
+        pick = same if same is not None else (out[1] if out is not None else None)
+        if pick is not None:
+            h["flat_hole"] = pick
 
 
 def flat_hole_mouths(facts: dict) -> None:
@@ -1750,6 +1842,18 @@ def _scout_triangles(local_path: Path, work: Path, interp_ref, ref,
             # the extracted openings bound the fluid by construction; the skin's own passages
             # (several parts' skins together) say nothing about them
             facts = hold_openings_to_the_staging(facts, local_path, skin, scale)
+            # INS-23: a triangle part's skin sewn into a solid is read for a perforated plate or a grille as a
+            # CAD part's faces are (after the vetting, which holds the hole-by-hole openings to the staging)
+            try:
+                from meshpipeline.cad.perforated import solid_from_triangles
+                from meshpipeline.cad.scout_mesh import read_triangles
+
+                sewn = solid_from_triangles(read_triangles(Path(skin)))
+            except Exception as exc:  # noqa: BLE001 - the reading as it stands
+                logger.warning("geometry check: the skin could not be sewn (%s: %s)", type(exc).__name__, str(exc)[:200])
+                sewn = None
+            if sewn is not None:
+                perforated_openings(facts, sewn)
     settle_flow_kind(facts)
     return facts, skin
 
@@ -3299,6 +3403,13 @@ def _proposal(facts: dict, vision: dict | None, words: str = "") -> dict:
         if isinstance(facts.get("surface"), dict):
             proposal["surface"] = dict(facts["surface"])
         proposal["flow_question"] = flow_question(facts["inside"], proposal["openings"], facts.get("surface"))
+    # A PERFORATED PLATE OR A GRILLE (INS-23): its sides (or one lid over it) are proposed as its openings, and the
+    # stage asks the user to confirm it - "No, each hole is its own passage" brings back the openings as read before
+    perf: dict = facts["perforated"] if isinstance(facts.get("perforated"), dict) else {}
+    if perf.get("proposed"):
+        proposal["perforated"] = {"rule": PERFORATED_RULE, "kind": perf.get("kind"),
+                                  "question": perforated_question(perf), "answers": list(PERFORATED_ANSWERS),
+                                  "holes_openings": [dict(o) for o in perf.get("holes_openings") or []]}
     # THE LEAKS (INS-8): the openings above assume them closed; the stage proposes closing every one
     # up to the size proposed here, a switch the user can turn off or a size they can change
     if isinstance(facts.get("leaks"), dict) and facts["leaks"].get("found"):
