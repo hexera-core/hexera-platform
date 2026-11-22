@@ -241,6 +241,39 @@ def test_the_floor_scales_with_the_stack_not_with_the_cell():
     assert a["min_thickness_m"] / stack_a == pytest.approx(L.MIN_THICKNESS_OF_STACK)
 
 
+def test_the_floor_is_half_of_the_stack_it_is_given_at_every_layer_count():
+    """IT WAS HALF OF A THREE-LAYER STACK WHATEVER IT WAS TOLD. `geometry_for` sized the
+    floor against N_SURFACE_LAYERS while the caller overwrote `n_layers` afterwards, so at
+    one layer the
+    floor came out at 7.5530 um against a 4.1500 um stack - 182% of it. Every face fails a bar it
+    cannot reach, snappyHexMesh unextrudes all of them, prints no errors and exits 0 with no
+    layers grown: the exact silent failure this module was written around, reintroduced by the fix
+    for a different one."""
+    for n in (1, 2, 3):
+        g = L.geometry_for(BL8_CELL_M, n_layers=n)
+        assert g["n_layers"] == n
+        stack = L.stack_thickness_m(first_layer_m=g["first_layer_m"],
+                                    expansion=g["expansion"], n_layers=n)
+        assert g["min_thickness_m"] == pytest.approx(L.MIN_THICKNESS_OF_STACK * stack)
+        assert g["min_thickness_m"] < stack
+        assert L.fit_complaint(interface_cell_m=BL8_CELL_M, **g) == ""
+
+
+def test_a_floor_the_stack_cannot_reach_is_refused():
+    """The bound in the opposite direction from the `minFaceWeight` one, and the one that fails
+    silently: above the stack, every face is unextruded and the run still exits 0."""
+    bad = L.fit_complaint(interface_cell_m=BL8_CELL_M,
+                          first_layer_m=BL8_CELL_M * L.FIRST_LAYER_FRACTION,
+                          expansion=L.EXPANSION_RATIO, n_layers=1,
+                          min_thickness_m=7.553e-06)
+    assert "at or above the whole" in bad and "exit 0" in bad
+
+
+def test_a_stack_with_no_layers_in_it_is_refused():
+    with pytest.raises(L.LayerError):
+        L.geometry_for(BL8_CELL_M, n_layers=0)
+
+
 # ------------------------------------------------------- where a layer stops, it stops gradually
 
 def test_a_layer_termination_is_spread_over_more_than_one_face():

@@ -1959,8 +1959,10 @@ def build(workspace, *, block_stl: str = "constant/triSurface/block.stl",
         for _s in (fine_surfaces or []):
             _lv = max(_lv, int((_s or {}).get("levels") or 0))
         _cell = LY.interface_cell_m(float(background_cell_m), _lv)
-        geom = LY.geometry_for(_cell)
-        geom["n_layers"] = layers
+        # THE LAYER COUNT GOES IN, it is not patched on afterwards: the thickness floor is
+        # half of the stack and the stack is the layer count's, so a geometry built for three
+        # layers and relabelled as one carries a floor 182% of what it is now describing.
+        geom = LY.geometry_for(_cell, n_layers=layers)
         bad = LY.fit_complaint(interface_cell_m=_cell, **geom)
         if bad:
             raise ConjugateError(bad, stage=LY.LAYER_STAGE)

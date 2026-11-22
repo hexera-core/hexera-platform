@@ -374,7 +374,7 @@ def interface_cell_m(background_cell_m: float, levels: int) -> float:
     return bg / (2 ** int(levels))
 
 
-def geometry_for(interface_cell_m: float) -> dict:
+def geometry_for(interface_cell_m: float, n_layers: int = N_SURFACE_LAYERS) -> dict:
     """The stack geometry for a mesh whose cells AT THE INTERFACE are this big.
 
     NOT THE BACKGROUND CELL. The layers grow on the conjugate interface and the three thicknesses
@@ -385,11 +385,16 @@ def geometry_for(interface_cell_m: float) -> dict:
     bg = float(interface_cell_m)
     if bg <= 0.0:
         raise LayerError(f"the interface cell must be positive, got {interface_cell_m}")
+    n = int(n_layers)
+    if n <= 0:
+        raise LayerError(f"a stack has to have at least one layer, got {n_layers}")
     first = bg * FIRST_LAYER_FRACTION
-    # The floor is half of THIS stack - see MIN_THICKNESS_OF_STACK.
-    stack = stack_thickness_m(first_layer_m=first, expansion=EXPANSION_RATIO,
-                              n_layers=N_SURFACE_LAYERS)
-    return {"n_layers": N_SURFACE_LAYERS,
+    # HALF OF THIS STACK, not half of a three-layer one. Sized against N_SURFACE_LAYERS while the
+    # caller overwrote n_layers afterwards, the floor at one layer came out at 182% of the stack:
+    # every face fails a bar it cannot reach, nothing extrudes, and the run exits 0 saying
+    # "Mesh OK". See MIN_THICKNESS_OF_STACK.
+    stack = stack_thickness_m(first_layer_m=first, expansion=EXPANSION_RATIO, n_layers=n)
+    return {"n_layers": n,
             "first_layer_m": first,
             "expansion": EXPANSION_RATIO,
             "min_thickness_m": MIN_THICKNESS_OF_STACK * stack}
@@ -488,6 +493,16 @@ def fit_complaint(*, first_layer_m: float, expansion: float, n_layers: int,
                 f"this engine allows. It does not fit, and snappyHexMesh's only repair is to thin "
                 f"it, which manufactures hairline cells: the delivered mesh asked for 109% of a "
                 f"cell and spent ten iterations dropping coverage from 99.77% to 90.71%")
+    # A FLOOR THE STACK CANNOT REACH IS A ZERO-LAYER RUN THAT EXITS 0. snappyHexMesh unextrudes
+    # every face whose stack comes in under `minThickness`, so a floor at or above the stack
+    # unextrudes all of them and still prints "Finished meshing without any errors". This is the
+    # bound in the opposite direction from the `minFaceWeight` one below, and it is the one that
+    # fails silently.
+    if float(min_thickness_m) >= stack:
+        return (f"minThickness {float(min_thickness_m) * 1e6:.4f} um is at or above the whole "
+                f"{n_layers}-layer stack of {stack * 1e6:.4f} um, so every face would fail a bar "
+                f"it cannot reach: snappyHexMesh would unextrude all of them, report no errors "
+                f"and exit 0 with no layers grown")
     weight_floor = 0.02 * bg
     if float(min_thickness_m) < weight_floor:
         return (f"minThickness {float(min_thickness_m) * 1e6:.4f} um permits a layer thinner than "
