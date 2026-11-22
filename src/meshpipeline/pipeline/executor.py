@@ -761,10 +761,15 @@ async def node_executor(state: PipelineState) -> dict:
         _concern_caveats = [*requirement_caveats,
                             *([] if _refused_deliverable.get("gate") == "cad_fidelity"
                               else [dict(_refused_deliverable)])]
+        # LAD-cfd-9: how far off the gate's bar it is, so two meshes the same gate refused are chosen by it
+        from meshpipeline.pipeline import engine_fallback as _lad
+        _refused_gate = str(_refused_deliverable.get("gate") or failed_gate)
         _sound = {_rp.SOUND_KEY: _rp.with_sound(state, {
             **_rp.sound_entry(state, workspace=str(workspace), manifest=mesh_manifest,
                               caveats=_concern_caveats),
-            "refused": str(_refused_deliverable.get("gate") or failed_gate)})}
+            "refused": _refused_gate,
+            "refused_distance": _lad.gate_distance(_refused_gate, (mesh_manifest or {}).get("quality"),
+                                                   failure_facts)})}
         logger.warning("Executor: the mesh %s refused is sound - kept deliverable with the refusal "
                        "said, if no retry can change it (LAD-cfd-8) - job_id=%s", failed_gate, job_id)
 

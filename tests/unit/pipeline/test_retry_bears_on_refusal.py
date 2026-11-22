@@ -197,6 +197,65 @@ def test_a_mesh_no_gate_refused_is_delivered_before_a_refused_one(tmp_path):
     assert rp.deliverable_sound(s)["workspace"] == clean
 
 
+# LAD-cfd-9: two meshes the same gate refused - nearest the bar, then quality and the wall ask, never ladder order
+
+def _refused(tmp_path, name, attempt, engine, *, ratio, coverage=None, non_ortho=60.0):
+    import math
+    q = {"max_non_ortho": non_ortho, **({} if coverage is None else {"layer_coverage_pct": coverage})}
+    # the distance the executor records (gate_distance, pinned on its own below): past the 0.6 edge
+    return {"attempt": attempt, "workspace": _sound_ws(tmp_path, name, q), "engine": engine,
+            "requirement_caveats": [], "refused": "port_areas",
+            "refused_distance": max(math.log(0.6 / ratio), math.log(ratio / 1.6), 0.0)}
+
+
+def test_the_distance_from_the_port_band_is_the_log_ratio_past_its_edge():
+    import math
+    near = lad.gate_distance("port_areas", {}, {"misses": [{"name": "a", "ratio": 0.55}]})
+    far = lad.gate_distance("port_areas", {}, {"misses": [{"name": "a", "ratio": 0.2},
+                                                          {"name": "b", "ratio": 1.0}]})
+    assert near == pytest.approx(math.log(0.6 / 0.55))
+    assert far == pytest.approx(math.log(0.6 / 0.2))
+    assert lad.gate_distance("port_areas", {}, {"misses": [{"name": "a", "ratio": 4.0}]}) == pytest.approx(
+        math.log(4.0 / 1.6))
+    # a port bound elsewhere is measured against the confirmed size's own band
+    assert lad.gate_distance("port_areas", {}, {"misses": [{"name": "a", "ratio": 0.3,
+                                                           "bound_elsewhere": True}]}) == pytest.approx(
+        math.log((1 / 3) / 0.3))
+    assert lad.gate_distance("port_areas", {}, {}) is None
+
+
+def test_of_two_port_refusals_the_one_nearer_the_bar_is_delivered_whatever_came_last(tmp_path):
+    near = _refused(tmp_path, "attempt_4", 4, "snappy", ratio=0.55)
+    far = _refused(tmp_path, "attempt_5", 5, "cfmesh", ratio=0.2)
+    assert rp.deliverable_sound({"sound_attempts": [near, far]})["workspace"] == near["workspace"]
+    assert rp.deliverable_sound({"sound_attempts": [far, near]})["workspace"] == near["workspace"]
+
+
+def test_as_far_off_as_each_other_the_wall_ask_decides_not_the_ladder(tmp_path):
+    # abc 00001167-like: the inlet at 0.447 and 0.438 of its opening on both - the same miss - one mesh
+    # keeps the layers asked on 89% of the wall, the other on 54%
+    layered = _refused(tmp_path, "attempt_4", 4, "cfmesh", ratio=0.438, coverage=89.0, non_ortho=68.2)
+    thin = _refused(tmp_path, "attempt_5", 5, "snappy", ratio=0.447, coverage=53.5, non_ortho=68.6)
+    assert rp.deliverable_sound({"sound_attempts": [layered, thin]})["workspace"] == layered["workspace"]
+    assert rp.deliverable_sound({"sound_attempts": [thin, layered]})["workspace"] == layered["workspace"]
+
+
+def test_as_far_off_and_as_layered_the_cell_shape_decides(tmp_path):
+    good = _refused(tmp_path, "attempt_2", 2, "snappy", ratio=0.5, coverage=90.0, non_ortho=62.0)
+    worse = _refused(tmp_path, "attempt_3", 3, "cfmesh", ratio=0.5, coverage=91.0, non_ortho=79.0)
+    past = _refused(tmp_path, "attempt_4", 4, "cfmesh", ratio=0.5, coverage=99.0, non_ortho=88.0)
+    assert rp.deliverable_sound({"sound_attempts": [good, worse]})["workspace"] == good["workspace"]
+    # past the solver's hard limit loses to one inside it, whatever its layers
+    assert rp.deliverable_sound({"sound_attempts": [worse, past]})["workspace"] == worse["workspace"]
+
+
+def test_a_mesh_no_gate_refused_still_beats_the_nearest_refused_one(tmp_path):
+    clean = {"attempt": 1, "workspace": _sound_ws(tmp_path, "attempt_1", {}), "engine": "snappy",
+             "requirement_caveats": []}
+    near = _refused(tmp_path, "attempt_2", 2, "cfmesh", ratio=0.59)
+    assert rp.deliverable_sound({"sound_attempts": [clean, near]})["workspace"] == clean["workspace"]
+
+
 # the facts the next attempt's plan reads
 
 def test_the_refused_openings_reach_the_next_plan(tmp_path):

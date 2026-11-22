@@ -415,6 +415,46 @@ def deliverable_refusal(gate: str, quality: Mapping | None, facts: Mapping | Non
 #: The caveat kind a sound mesh delivered on a refusal no retry could change carries (LAD-cfd-8).
 GATE_CONCERN = "gate_concern"
 
+#: The rule that chooses between sound meshes the same gate refused (docs/RULES.md).
+LAD_NEAREST_THE_BAR = "LAD-cfd-9"
+
+
+def gate_distance(gate: str, quality: Mapping | None, facts: Mapping | None) -> float | None:
+    """How far a sound mesh `gate` refused is from that gate's bar, in the gate's own unit (0 at the bar), so
+    two meshes the same gate refused are chosen by it, never by ladder order (LAD-cfd-9): port_areas - the
+    worst opening's log area ratio past PORT_AREA_BAND (or past DECLARED_FAR_BAND for a port bound
+    elsewhere); cad_fidelity - the largest of the missed share, the off share and the volume error past
+    NOT_THE_PART_SHARE's verdict (a plain share); quality_floor - degrees of worst non-orthogonality; the trial
+    solve - decades of residual. None when the gate's facts do not measure it."""
+    import math
+    q = quality if isinstance(quality, Mapping) else {}
+    f = facts if isinstance(facts, Mapping) else {}
+    if gate == "port_areas":
+        from meshpipeline.engines.region_check import DECLARED_FAR_BAND, PORT_AREA_BAND
+        worst: float | None = None
+        for m in f.get("misses") or ():
+            r = _num_of(m.get("ratio")) if isinstance(m, Mapping) else None
+            if r is None or r <= 0:
+                continue
+            lo, hi = DECLARED_FAR_BAND if m.get("bound_elsewhere") else PORT_AREA_BAND
+            d = max(math.log(lo / r), math.log(r / hi), 0.0)
+            worst = d if worst is None else max(worst, d)
+        return worst
+    if gate == "cad_fidelity":
+        rec = _map(q.get("cad_fidelity"))
+        surf = _map(rec.get("surface"))
+        vals = [_num_of(_map(surf.get("cad_to_mesh")).get("cad_missed_share")),
+                _num_of(_map(surf.get("mesh_to_cad")).get("wall_off_share")),
+                _num_of(_map(rec.get("volume")).get("error"))]
+        got = [abs(v) for v in vals if v is not None]
+        return max(got) if got else None
+    if gate == "quality_floor":
+        return _num_of(q.get("max_non_ortho"))
+    if gate == "solvability":
+        res = _num_of(f.get("residual"))
+        return math.log10(res) if res is not None and res > 0 else None
+    return None
+
 
 
 

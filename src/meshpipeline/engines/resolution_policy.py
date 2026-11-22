@@ -473,13 +473,63 @@ def deliverable_sound(state: Mapping) -> dict | None:
             continue
         # LAD-cfd-8: a mesh a gate refused (kept deliverable, `refused`) ranks under every mesh no gate
         # refused, whatever its resolution - the best by the measured limits, never simply the last
-        if best is None or _rank(row) >= _rank(best):
-            best = {**dict(row), "manifest": manifest}
+        cand = {**dict(row), "manifest": manifest}
+        if best is None or _beats(cand, best):
+            best = cand
     return best
 
 
-def _rank(entry: Mapping) -> tuple[int, float]:
-    return (0 if entry.get("refused") else 1, resolution_of(entry))
+#: LAD-cfd-9: two refusals by the same gate this close (engine_fallback.gate_distance, in the gate's own
+#: unit: log of the area ratio past the band, a share of the CAD, decades of residual) are as far off as
+#: each other - the choice goes on to quality and the wall ask. abc 00001167: 0.438 and 0.447 of the inlet
+#: are 0.021 apart past the 0.6 edge, noise of the staging, not a better mesh.
+GATE_DISTANCE_TIE = 0.05
+#: ...and two layer coverages this many points apart are the same answer to the wall ask.
+COVERAGE_TIE_PCT = 5.0
+#: Non-orthogonality a solver cannot take (the same bar as engine_fallback.SOLVER_HARD_NON_ORTHO).
+_HARD_NON_ORTHO = 85.0
+
+
+def _beats(a: Mapping, b: Mapping) -> bool:
+    """Whether sound mesh `a` (the newer) is delivered over `b`. A mesh no gate refused beats a refused one;
+    two unrefused ones go by resolution, the newer on a tie (LAD-cfd-3). TWO REFUSED ONES (LAD-cfd-9) never
+    go by ladder order: when the same gate refused both, the one nearer its bar first; then resolution;
+    then inside the solver's hard non-orthogonality; then the wall ask (layer coverage); then the lower
+    worst non-orthogonality; only then the newer."""
+    ra, rb = bool(a.get("refused")), bool(b.get("refused"))
+    if ra != rb:
+        return rb
+    if not ra:
+        return resolution_of(a) >= resolution_of(b)
+    for cmp in _refused_order(a, b):
+        if cmp:
+            return cmp > 0
+    return True
+
+
+def _refused_order(a: Mapping, b: Mapping):
+    """+1 where `a` is the better refused mesh on that count, -1 where `b` is, 0 where they tie."""
+    da, db = _num(a.get("refused_distance")), _num(b.get("refused_distance"))
+    if (str(a.get("refused")) == str(b.get("refused")) and da is not None and db is not None
+            and abs(da - db) > GATE_DISTANCE_TIE):
+        yield 1 if da < db else -1
+    res_a, res_b = resolution_of(a), resolution_of(b)
+    yield 0 if res_a == res_b else (1 if res_a > res_b else -1)
+    na, nb = _quality_num(a, "max_non_ortho"), _quality_num(b, "max_non_ortho")
+    ia = na is not None and na <= _HARD_NON_ORTHO
+    ib = nb is not None and nb <= _HARD_NON_ORTHO
+    yield 0 if ia == ib else (1 if ia else -1)
+    ca, cb = _quality_num(a, "layer_coverage_pct"), _quality_num(b, "layer_coverage_pct")
+    if ca is not None and cb is not None and abs(ca - cb) > COVERAGE_TIE_PCT:
+        yield 1 if ca > cb else -1
+    if na is not None and nb is not None and na != nb:
+        yield 1 if na < nb else -1
+
+
+def _quality_num(entry: Mapping, key: str) -> float | None:
+    manifest = entry.get("manifest")
+    q = manifest.get("quality") if isinstance(manifest, Mapping) else None
+    return _num(q.get(key)) if isinstance(q, Mapping) else None
 
 
 def better_earlier_sound(state: Mapping) -> dict | None:
