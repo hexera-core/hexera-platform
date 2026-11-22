@@ -513,9 +513,22 @@ async def node_executor(state: PipelineState) -> dict:
             if _concern is not None:
                 _keys = [g.key for g in _spec.gates]
                 _rest = tuple(_spec.gates[_keys.index(_gate_key) + 1:]) if _gate_key in _keys else ()
-                _rest_ok, _, _ = await asyncio.to_thread(lambda: run_gates(_rest, _ctx))
+                _rest_ok, _rest_key, _rest_why = await asyncio.to_thread(lambda: run_gates(_rest, _ctx))
                 if _rest_ok:
                     _refused_deliverable = _concern
+                else:
+                    # A SOUND MESH NEVER VANISHES UNSAID (LAD-cfd-8): the later gate that also refused it is
+                    # named - 63643's production-grade 8.57 M wrap mesh, refused at its port areas, was
+                    # dropped here without a line, and the run ended with no mesh after 236 minutes
+                    _dropped = getattr(_rest_why, "message", None) or str(_rest_why or "")
+                    logger.warning("Executor: the mesh %s refused is sound, but the later gate %s refuses it "
+                                   "too, so it is not kept deliverable - job_id=%s - %s", _gate_key, _rest_key,
+                                   job_id, str(_dropped)[:400])
+                    failure_facts = {**(failure_facts or {}), "not_deliverable": {
+                        "gate": str(_rest_key), "why": str(_dropped)[:400]}}
+            else:
+                logger.info("Executor: the mesh %s refused is not one a mesh is delivered on (LAD-cfd-8) - "
+                            "job_id=%s", _gate_key, job_id)
             from meshpipeline.engines.gate_facts import write_gate_facts
             write_gate_facts(workspace, _gate_key, failure_facts)
 
