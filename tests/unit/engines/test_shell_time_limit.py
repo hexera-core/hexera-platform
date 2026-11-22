@@ -228,6 +228,23 @@ def test_a_spot_pass_that_runs_into_the_meshes_to_compare_is_stopped_and_they_ar
     assert any("SHMESH-21d" in t for t in mesh.notes)
 
 
+def test_the_first_paths_bolt_ring_trial_waits_where_it_would_take_the_time_kept_back(monkeypatch):
+    # SHMESH-21d: on s33 the first path's spot pass finished, then its bolt-ring trial (a first mesh and a spot pass
+    # again) took the rest of the run; with 110 s kept back for two meshes to compare, a trial priced at 50 + 300 s
+    # does not start in 400 s left; it does where 500 s are left, or with no spot pass to price
+    monkeypatch.setitem(sa._RUN, "first_s", 50.0)
+    monkeypatch.setitem(sa._SPOT_COST, "s", 300.0)
+    monkeypatch.setattr(sa, "_CHOOSE", {**sa._CHOOSE, "first": True, "reserve": 110.0})
+    monkeypatch.setitem(sa._RUN, "end", time.monotonic() + 430.0)        # 400 s after the margin
+    assert sa._choose_trial_waits([("spot",)])
+    assert not sa._choose_trial_waits([])                              # no spot pass to price: 160 s fit
+    monkeypatch.setitem(sa._RUN, "end", time.monotonic() + 530.0)
+    assert not sa._choose_trial_waits([("spot",)])
+    sa._CHOOSE["first"] = False
+    monkeypatch.setitem(sa._RUN, "end", time.monotonic() + 40.0)
+    assert not sa._choose_trial_waits([("spot",)])                     # any other path: as before
+
+
 def test_with_time_for_everything_each_candidate_is_made_whole_as_before(monkeypatch):
     # SHMESH-21d: 900 s and spot passes of 50 s - nothing waits, nothing is chosen first, no repair pass
     calls = _choose_setup(monkeypatch, 900.0, 50.0)

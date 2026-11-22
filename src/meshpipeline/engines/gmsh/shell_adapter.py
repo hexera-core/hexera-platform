@@ -2588,18 +2588,22 @@ def _priced_affords(price: float | None) -> bool:
     return _affords(float(price or 0.0) * (1.0 + PRICE_MARGIN))
 
 
-#: SHMESH-21d: CHOOSE FIRST, REPAIR LAST - where the time left cannot hold the first path's spot pass (SHMESH-31,
-#: priced by its work: _spot_price) and the first mesh of each of SHMESH-76's meshes the first path's mesh sets going,
-#: the spot passes wait: each candidate is made as its first mesh only (priced at the last first mesh's seconds), they
-#: are ranked as they stand (SHMESH-76's order: SHMESH-36's standing, then triangles, then elements), and only the one
-#: kept is made again with its spot passes, with the time that is left (none when even that cannot fit: told). Where
-#: the time holds it all, nothing changes: the candidates are made whole, one after another, as before. On s33 the
-#: first path's spot pass took 610 s of 900 and was then dropped (it cleared nothing), and the two meshes it was to be
-#: set against were never made. False: every path makes its spot passes at once, as before
+#: SHMESH-21d: CHOOSE FIRST, REPAIR LAST - the first path keeps back the time of the first mesh of each of SHMESH-76's
+#: meshes its mesh sets going; its spot passes (SHMESH-31, priced at _spot_price) and its bolt-ring trial start only
+#: with that kept back, and a spot pass runs bounded to the time left less it. Where they do not fit (or a spot pass is
+#: stopped at that bound, or the next candidate fits only as a first mesh), the run chooses first: each candidate is
+#: made as its first mesh only (priced at the last first mesh's seconds), they are ranked as they stand (SHMESH-76's
+#: order: SHMESH-36's standing, then triangles, then elements), and only the one kept is made again with its spot
+#: passes, with the time that is left (none when even that cannot fit: told). Where the time holds it all, nothing
+#: changes: the candidates are made whole, one after another, as before. On s33 the first path's spot pass took 610 s
+#: of 900 and was then dropped (it cleared nothing), and the two meshes it was to be set against were never made.
+#: False: every path makes its spot passes at once, as before
 CHOOSE_FIRST = True
-#: (the first path to reach its spot passes decides (armed); tight: the run chooses first; defer: the spot passes of
-#: the paths made now wait; price: the first path's spot pass, seconds; owed: SHMESH-76's meshes it sets going)
-_CHOOSE: dict[str, Any] = {"armed": False, "tight": False, "defer": False, "price": None, "owed": 0, "why": ""}
+#: (armed: the first path's first spot pass decides; first: the first path is being made; reserve: the seconds it
+#: keeps back; tight: the run chooses first; defer: the spot passes of the paths made now wait; owed: SHMESH-76's
+#: meshes the first path's mesh sets going)
+_CHOOSE: dict[str, Any] = {"armed": False, "first": False, "reserve": 0.0, "tight": False, "defer": False,
+                           "price": None, "owed": 0, "why": ""}
 
 
 def _choose_owed(q: dict) -> int:
@@ -2612,13 +2616,27 @@ def _choose_owed(q: dict) -> int:
 def _choose_reserve(applied: dict) -> float:
     """SHMESH-21d: at the first path's spot passes (once a run, the path armed by _yield_both): the seconds kept back
     for the first mesh of each of SHMESH-76's meshes the first path's mesh sets going (each at the first mesh's own
-    time, with PRICE_MARGIN); 0 for any other path."""
-    if not (CHOOSE_FIRST and _CHOOSE.get("armed")):
+    time, with PRICE_MARGIN) - decided at its first spot pass, held for the rest of that path (its bolt-ring trial and
+    the trial's spot passes); 0 for any other path."""
+    if not CHOOSE_FIRST:
         return 0.0
+    if not _CHOOSE.get("armed"):
+        return float(_CHOOSE.get("reserve") or 0.0) if _CHOOSE.get("first") else 0.0
     _CHOOSE["armed"] = False
     owed = _choose_owed(applied.get("quality") or {})
-    _CHOOSE["owed"] = owed
-    return owed * float(_RUN.get("first_s") or 0.0) * (1.0 + PRICE_MARGIN)
+    reserve = owed * float(_RUN.get("first_s") or 0.0) * (1.0 + PRICE_MARGIN)
+    _CHOOSE.update(owed=owed, reserve=reserve)
+    return reserve
+
+
+def _choose_trial_waits(past: list) -> bool:
+    """SHMESH-21d: whether the first path's bolt-ring trial (SHMESH-51o: a first mesh again, and its spot pass where
+    elements are past the solver's limits) waits: it does not fit in the time left with the first meshes owed after
+    the path kept back."""
+    reserve = float(_CHOOSE.get("reserve") or 0.0) if (CHOOSE_FIRST and _CHOOSE.get("first")) else 0.0
+    if not reserve:
+        return False
+    return not _affords(float(_RUN.get("first_s") or 0.0) + (_spot_price() if past else 0.0) + reserve)
 
 
 def _choose_start(why: str) -> None:
@@ -2939,12 +2957,12 @@ def _yield_both(brep, record, **kw):
     t_c = time.monotonic()
     # (SHMESH-21d: the first path's spot passes decide whether this run chooses first and repairs last)
     choose = bool(CHOOSE_FIRST and NO_WORSE and not _YIELD_OFF[0] and requirements and _RUN.get("end") is not None)
-    _CHOOSE.update(armed=choose, tight=False, defer=False, price=None, owed=0, why="")
+    _CHOOSE.update(armed=choose, first=choose, reserve=0.0, tight=False, defer=False, price=None, owed=0, why="")
     try:
         with _so_far_named("all on (the first path)"):
             mesh, applied, past_n = _narrow_kept_path(brep, record, **kw)
     finally:
-        _CHOOSE["armed"] = False
+        _CHOOSE.update(armed=False, first=False, reserve=0.0)
     tight = bool(_CHOOSE.get("tight"))
     if _YIELD_OFF[0] or not NO_WORSE:
         _CHOOSE.update(tight=False, defer=False)
@@ -4364,9 +4382,14 @@ def _mesh_path_made(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0,
                     mesh.notes.append(f"One ring round the bolt holes of {len(guard_faces[-1])} face(s): with two "
                                       f"rings the mesh had {guard_log[-1]['triangles_two']} triangle(s), with one "
                                       f"{guard_log[-1]['triangles_one']} (SHMESH-51o).")
-            if (BOLT_TRIA_GUARD and ST.BOLTS and not resplined and len(guard_faces) < 2 and not deferred
-                    and (MESH_DEADLINE_S <= 0 or time.monotonic() - started < GUARD_START * MESH_DEADLINE_S)):
-                # (SHMESH-21d: not while the run chooses first - the trial waits with the spot passes, for the mesh kept)
+            trial_may = (BOLT_TRIA_GUARD and ST.BOLTS and not resplined and len(guard_faces) < 2
+                         and (MESH_DEADLINE_S <= 0 or time.monotonic() - started < GUARD_START * MESH_DEADLINE_S))
+            if trial_may and (deferred or _choose_trial_waits(past)):
+                # SHMESH-21d: not while the run chooses first, nor where it would take the time kept back for the
+                # meshes to compare - the trial waits with the spot passes, for the mesh kept
+                trial_may = False
+                applied["quality"].setdefault("structure", {})["bolt_trial_waited"] = "SHMESH-21d"
+            if trial_may:
                 # SHMESH-51o: two rings never cost triangles one ring a hole would not have. SHMESH-51o4: first the
                 # face with the most triangles of its own among those with two-ring holes, alone (another face's
                 # triangles may be its doing: a 12-hole plate's bands were made and its 12 triangles went when the
