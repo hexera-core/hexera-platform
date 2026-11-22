@@ -1502,6 +1502,68 @@ HOLE_THROUGH_FLUID_RULE = "INS-18"   # a hole through a body of fluid is no open
 TESSELLATION_GAP_RULE = "INS-22"     # a gap in a CAD solid's tessellation is no opening
 
 
+RECESS_RULE = "INS-28"            # a ring round a recess in the outside is no opening
+#: INS-28: how far back into the part a ring's hole is followed (in its own widths), and where across it (shares of its
+#: radius, the centre and four points round it at that share)
+RECESS_DEPTH, RECESS_ACROSS = 1.0, 0.8
+
+
+def recess_not_opening(o: dict, c, n, d: float, imap) -> bool:
+    """INS-28, A RING ROUND A RECESS IS NO OPENING. A flat ring face whose hole is a recess in the outside - a bottle's
+    pushed-up base inside its foot ring, a dimpled foot - is read by the faces as a ring opening, its hole the inner
+    wire, though the part's own wall closes it a few millimetres in (131561, a bottle: its 37 mm foot ring proposed as
+    the inlet, the map rightly finding its one way in at the neck). Read on the map: just behind the ring's plane the
+    hole holds the open air, and followed back into the part along its axis - at its centre and at RECESS_ACROSS of its
+    radius all round - every line meets the part's wall or material before any space of the part's inside, within
+    RECESS_DEPTH of its width. A pipe's end has the passage right behind it; a counterbore's top leads, at its centre,
+    into the bore below; a hole through a plate leads to the open air on the far side; none of these is touched."""
+    import numpy as np
+
+    behind = _recess_kinds(imap, [c - k * imap.h * n for k in (2.0, 3.0, 4.5)])
+    if any(w not in ("out", "blind") for w in behind):
+        return False
+    a = np.cross(n, [1.0, 0.0, 0.0] if abs(n[0]) < 0.9 else [0.0, 1.0, 0.0])
+    a /= np.linalg.norm(a)
+    b = np.cross(n, a)
+    r = 0.5 * d * RECESS_ACROSS
+    starts = [c] + [c + r * (np.cos(t) * a + np.sin(t) * b) for t in (0.0, 0.5 * np.pi, np.pi, 1.5 * np.pi)]
+    steps = np.arange(2.0, max(RECESS_DEPTH * d / imap.h, 2.0) + 0.5, 0.5)
+    for s in starts:
+        first = next((w for w in _recess_kinds(imap, [s - k * imap.h * n for k in steps]) if w not in ("out", "blind")),
+                     None)
+        if first != "wall":
+            return False                 # open air through it, or a way into the part's inside
+    return True
+
+
+def _recess_kinds(imap, points) -> list[str]:
+    """INS-28: what each point is in, for following a hole back: "out" (the open air), "blind" (a side pocket with one
+    mouth or none: a recess the map capped), "way" (a passage, or a side pocket with two mouths or more: space the
+    fluid could go on through), "wall" (the part's wall or material)."""
+    import numpy as np
+
+    P = np.atleast_2d(np.asarray(points, dtype=float))
+    words = imap.where(P)
+    if imap.labels is None:
+        return ["wall" if w in ("", "shell") else w for w in words]
+    pid_of = {g: pid for pid, gs in imap.pocket_labels.items() for g in gs}
+    shape = np.asarray(imap.shape)
+    ijk = np.floor((P - imap.origin) / imap.h).astype(np.int64)
+    out: list[str] = []
+    for w, q in zip(words, ijk):
+        if not bool(np.all((q >= 0) & (q < shape))):
+            out.append("out")            # past the grid: the open air round the part
+        elif w in ("", "shell"):
+            out.append("wall")
+        elif w != "pocket":
+            out.append(w)
+        else:
+            g = int(imap.labels[(q[0] * shape[1] + q[1]) * shape[2] + q[2]])
+            p = imap.pockets[pid_of[g]] if g in pid_of else None
+            out.append("way" if p is None or p.passage or len(p.mouths) >= 2 else "blind")
+    return out
+
+
 def vet_by_map(facts: dict, imap) -> None:
     """A CAD PART'S OPENINGS HELD TO ITS MAP (INS-2): an opening the faces read whose outside - a
     few cubes out along the way the fluid would leave by it - is the part's own inside, not the
@@ -1533,6 +1595,12 @@ def vet_by_map(facts: dict, imap) -> None:
             facts.setdefault("notes", []).append(
                 f"opening {o.get('id')} ({o.get('name')}) is proposed as not an opening: it is a step inside the "
                 "passage, and the space beyond it is the part's own inside, not the outside")
+            continue
+        if o.get("kind") != "disc" and not o.get("inner_diameter_mm") and recess_not_opening(o, c, n, d, imap):
+            o["role"] = "not_an_opening"
+            facts.setdefault("notes", []).append(
+                f"opening {o.get('id')} ({o.get('name')}) is proposed as not an opening: its hole is a recess in the "
+                f"outside, closed by the part's own wall a little way in, with no way into the part ({RECESS_RULE})")
             continue
         # INS-15: A FLAT END NO SPACE REACHES is no opening of the space inside a body: behind it is the
         # part's own material all the way (a solid rod stub's end on a cup's side), so the fluid inside
