@@ -32,15 +32,16 @@ resolve the thing it does resolve.
 from __future__ import annotations
 
 import inspect
-
 import json
-
-from meshpipeline.engines.cfmesh_conjugate import finalize as F
-from meshpipeline.engines.cfmesh_conjugate import native as N
-from meshpipeline.engines.cfmesh_conjugate.conjugate import FLUID_REGION, SOLID_REGION
 
 # the delivered two-region case and the run's own report, as the other conjugate tests build them
 from test_conjugate_row import REPORT, case  # noqa: F401
+
+from meshpipeline.engines.cfmesh_conjugate import conjugate as C
+from meshpipeline.engines.cfmesh_conjugate import finalize as F
+from meshpipeline.engines.cfmesh_conjugate import native as N
+from meshpipeline.engines.cfmesh_conjugate import plan as PL
+from meshpipeline.engines.cfmesh_conjugate.conjugate import FLUID_REGION, SOLID_REGION
 
 #: their plate's own numbers, from ws_fitted/conjugate_plan.json
 BG = 0.0003520562041666667
@@ -74,6 +75,46 @@ def test_the_plan_the_report_publishes_carries_the_fine_surfaces():
     assert '"fine_surfaces"' in block, (
         "the published plan block does not carry fine_surfaces, so the near-wall reading falls "
         "back to the coolant's coarser levels")
+
+
+def _plan(**kw):
+    """A ConjugatePlan with this part's own numbers; the four required ones are not the subject."""
+    base = {"background_cell_m": BG, "levels": 1, "expect_fluid_volume_m3": 1e-7,
+            "expect_fluid_pieces": 1, "volume_tol": 0.05, "narrowest_m": 9.8e-5}
+    base.update(kw)
+    return PL.ConjugatePlan(**base)
+
+
+def _report():
+    """The engine's own report, defaults everywhere: this is about the plan block beside it."""
+    return C.ConjugateReport(fluid=C.RegionReport(name=FLUID_REGION),
+                             solid=C.RegionReport(name=SOLID_REGION))
+
+
+def test_the_published_plan_says_whether_the_regions_were_merged():
+    """A delivery that was NOT merged is a different artefact: no serial volume mesh, the boundary
+    index built from processor*/, the reviewer's interior coming from that index instead of a VTK.
+    The key was absent from the published plan, and absent reads as False - which reads as "not
+    merged" for a run that was. Measured on the 155 M plate of 2026-11-21, whose report carried
+    background_cell_m, cells_across, expect_fluid_pieces, expect_fluid_volume_m3, fine_surfaces,
+    fine_zones, layers, levels, narrowest_m, ranks, stretch_zones and volume_tol, and no
+    merge_regions at all.
+
+    Read off `_as_dict` rather than off its source: the test beside this one greps the module text
+    for its key, which a dict that is never built would still satisfy.
+    """
+    for asked in (True, False):
+        body = N._as_dict(_report(), _plan(merge_regions=asked))
+        assert body["plan"]["merge_regions"] is asked, body["plan"].get("merge_regions")
+
+
+def test_a_plan_written_before_the_merge_flag_existed_reads_as_merged():
+    """Every mesh delivered before the setting existed was merged, so the default has to say so -
+    and it is the same default `ConjugatePlan.merge_regions` carries, not a second opinion."""
+    assert _plan().merge_regions is True
+    stale = _plan()
+    del stale.__dict__["merge_regions"]
+    assert N._as_dict(_report(), stale)["plan"]["merge_regions"] is True
 
 
 def test_the_poor_cell_sets_reach_the_rows_the_reading_is_built_from():

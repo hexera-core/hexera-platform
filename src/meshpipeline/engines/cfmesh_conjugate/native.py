@@ -1922,6 +1922,14 @@ def _as_dict(report, plan: PL.ConjugatePlan) -> dict:
                  "expect_fluid_volume_m3": plan.expect_fluid_volume_m3,
                  "expect_fluid_pieces": plan.expect_fluid_pieces,
                  "ranks": int(getattr(plan, "ranks", 1) or 1),
+                 # WHETHER THE REGIONS WERE MERGED, because a delivery that was not is a
+                 # different artefact: no serial volume mesh, the boundary index built
+                 # from processor*/ and the reviewer's interior coming from the index
+                 # rather than a VTK. It was absent, and absent reads as False, which
+                 # reads as "not merged" for a run that was. Default True to match
+                 # `ConjugatePlan.merge_regions`, so a plan written before the field
+                 # existed still echoes what it actually did.
+                 "merge_regions": bool(getattr(plan, "merge_regions", True)),
                  # THE LAYER ASK, for the same reason the fine surfaces below are here and with
                  # the same defect behind it: `finalize._near_wall` reads `near_wall_layers` off
                  # THIS dict, so without the key a three-layer mesh published "Boundary layers:
