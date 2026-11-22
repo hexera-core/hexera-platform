@@ -983,8 +983,9 @@ def cfmesh_strategy(ask: Ask, strategy: Mapping, *, length_m: float | None = Non
 CFMESH_STACK_REL = 0.5
 
 
-@guarded(lambda ask, strategy, wall_cell_m: dict(strategy))
-def cfmesh_layer_fit(ask: Ask | None, strategy: Mapping, wall_cell_m: float) -> dict:
+@guarded(lambda ask, strategy, wall_cell_m, **_kw: dict(strategy))
+def cfmesh_layer_fit(ask: Ask | None, strategy: Mapping, wall_cell_m: float, *,
+                     cells_across: float | None = None) -> dict:
     """CFDREQ-13 on cfMesh, once its wall cell is settled: the wall treatment's first layer fitted to it (wall_fit;
     its thickest first layer is the whole stack it splits, half the wall cell), and the layers counted so the stack
     starts at that height (maxFirstLayerThickness caps it; fewer layers make the first one thicker). Unchanged with no
@@ -1014,11 +1015,21 @@ def cfmesh_layer_fit(ask: Ask | None, strategy: Mapping, wall_cell_m: float) -> 
         # CFMESH_RESOLVED_GROWTH, rounded DOWN, so the first layer the split gives is never thinner than asked (the
         # round bend reduction: 12 layers at 1.4, valid, 65.7 degrees, first cell at plan; 20 at 1.25 thinned it to
         # 0.37 of the plan). Never fewer than the plan's, never more than MAX_BRIDGE_LAYERS.
-        g = max(g, CFMESH_RESOLVED_GROWTH)
         n_plan = int(out.get("n_layers") or 0)
-        need = math.log(1.0 + stack * (g - 1.0) / float(fit["first_m"])) / math.log(g)
-        out["n_layers"] = max(n_plan, min(MAX_BRIDGE_LAYERS, int(math.floor(need))))
-        out["thickness_ratio"] = g
+        if cells_across is not None and cells_across < GROW_MIN_CELLS_ACROSS:
+            # ...ONLY WHERE THE PASSAGE HAS ROOM FOR IT: under the resolution floor's cells across the narrowest 5%
+            # nearly every cell touches a wall, and a stack half a cell deep on each leaves no core (static_mixer_004:
+            # 4.0 cells across at p05, 14 layers, 81 minutes of cartesianMesh and 179 degrees, no mesh; its 2-layer
+            # mesh had delivered). The plan's own count stands, said on the row.
+            ask.layer_note = ask.layer_note or (
+                f"the passage is {cells_across:.1f} wall cells across at its narrowest, under the "
+                f"{GROW_MIN_CELLS_ACROSS} a deeper stack needs, so the plan's {n_plan} layers were kept; finer cells "
+                "in the passage would let the stack grow out to the core")
+        else:
+            g = max(g, CFMESH_RESOLVED_GROWTH)
+            need = math.log(1.0 + stack * (g - 1.0) / float(fit["first_m"])) / math.log(g)
+            out["n_layers"] = max(n_plan, min(MAX_BRIDGE_LAYERS, int(math.floor(need))))
+            out["thickness_ratio"] = g
     n = int(out.get("n_layers") or 0)
     out["first_layer_thickness"] = float(fit["first_m"])
     natural = stack * (g - 1.0) / (g ** max(n, 1) - 1.0) if g > 1.0001 else stack / max(n, 1)
@@ -1031,6 +1042,12 @@ def cfmesh_layer_fit(ask: Ask | None, strategy: Mapping, wall_cell_m: float) -> 
 #: CFDREQ-16: the growth a resolved wall's cfMesh stack takes from its first layer (snappy's capped stack's steepest,
 #: MAX_CAPPED_GROWTH)
 CFMESH_RESOLVED_GROWTH = 1.3
+#: CFDREQ-16: a built first cell under this share of the asked one is told as thinner than asked (the census still
+#: counts it as a layer at the height asked: finer is fine for the flow, but the number said is the built one)
+THINNER_THAN_ASKED = 0.85
+#: CFDREQ-16: the cells across the passage's narrowest 5% (2 x passage radius p05 / wall cell) a grown stack needs -
+#: the resolution floor's own number (engines/resolution_policy, LAD-cfd-1)
+GROW_MIN_CELLS_ACROSS = 12
 
 
 #: cfMesh's own edge (engines/cfmesh/rescue.NEAR_EDGE_NON_ORTHO): past it the engine's optimiser is tried
@@ -2344,9 +2361,10 @@ def _first_layer_row(workspace, req: Mapping, q: Mapping, p: Mapping) -> dict | 
         from meshpipeline.engines.layer_census import PLAN_FIRST_TOL
         if ratio > PLAN_FIRST_TOL:
             said += f", {ratio:.3g} times that"
-        elif ratio < 1.0 / PLAN_FIRST_TOL:
+        elif ratio < THINNER_THAN_ASKED:
             # thinner than asked is said too: the y+ there is under the one planned (cfMesh thins the first
-            # layer of a stack with more layers than its depth holds at that height)
+            # layer of a stack with more layers than its depth holds at that height; transition_005's rescue
+            # re-mesh: 0.78 of the plan, which the 1.5x band alone read as "at plan")
             said += f", {ratio:.2g} times that - thinner than asked, so y+ there is lower than planned"
         said += f", and layers of that height stand on {MR._g(float(cover))}% of the wall"
         if not grown:

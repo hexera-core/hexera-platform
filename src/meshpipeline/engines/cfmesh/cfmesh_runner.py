@@ -754,7 +754,34 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
         wall_cell = CR.cfmesh_fit_count(_ask, volume=vol, max_cell=max_cell, wall_cell=wall_cell,
                                         wall_area=wall_area, n_layers=max(0, int(strategy.get("n_layers", 0))))
         # CFDREQ-13: the wall treatment's first layer fitted to the wall cell cfMesh lands on
-        strategy = CR.cfmesh_layer_fit(_ask, strategy, wall_cell)
+        # CFDREQ-16: a grown stack only where the passage has room for it (its cells across the narrowest 5%) - the
+        # wall band refined to that first when the cell budget affords it, else the plan's short stack, said
+        _p05 = float((passage_radius or {}).get("p05") or 0.0)
+        _across = (2.0 * _p05 / wall_cell) if _p05 > 0 and wall_cell > 0 else None
+        if _across is not None and _ask.treatment == "resolved" and _ask.n_layers is None \
+                and _across < CR.GROW_MIN_CELLS_ACROSS:
+            _fine = 2.0 * _p05 / CR.GROW_MIN_CELLS_ACROSS
+            _wall_a = float(internal_wall_area or wall_area or 0.0)
+            _r_t = float((passage_radius or {}).get("median") or _p05)
+            _n_grow = CR.MAX_BRIDGE_LAYERS
+            _cost = internal_estimate(max_cell=max_cell, wall_cell=octree_cell(max_cell, _fine), thickness=0.0,
+                                      n_layers=_n_grow, wall_area=_wall_a, typical_radius=_r_t)
+            import meshpipeline.settings.policy as _polg
+            _lim = int(cell_budget) if cell_budget else int(_polg.CELL_HARD_LIMIT)
+            if _wall_a > 0.0 and 0.0 < _cost <= _lim:
+                strategy = dict(strategy, wall_cell=_fine)
+                _ask.layer_note = (f"the passage is {_across:.1f} wall cells across at its narrowest: 12 are needed "
+                                   f"for a full layer stack - the wall cells were refined to "
+                                   f"{_fine * 1e3:.3g} mm for it (about {int(_cost):,} cells)")
+                logger.info("cfMesh: CFDREQ-16 - the wall band refined from %.4g to %.4g m so the passage holds %d "
+                            "cells across for the grown stack (about %d cells)", wall_cell, _fine,
+                            CR.GROW_MIN_CELLS_ACROSS, int(_cost))
+                wall_cell, _across = _fine, float(CR.GROW_MIN_CELLS_ACROSS)
+            elif _wall_a > 0.0 and _cost > _lim:
+                _ask.layer_note = (f"the passage is {_across:.1f} wall cells across at its narrowest: 12 are needed "
+                                   f"for a full layer stack - the short stack is kept: a finer mesh would need about "
+                                   f"{int(_cost):,} cells, over the {_lim:,} this run may build")
+        strategy = CR.cfmesh_layer_fit(_ask, strategy, wall_cell, cells_across=_across)
         if _asked_across:
             # the cells across the passage the octree really builds (cfMesh lands on max / 2^n), against the ask
             CR.cfmesh_cells_built(_ask, _asked_across, passage_d=_passage_d,

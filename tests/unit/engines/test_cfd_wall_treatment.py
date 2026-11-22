@@ -269,3 +269,36 @@ def test_a_resolved_cfmesh_wall_grows_its_stack_to_the_core_never_thinner_than_a
     s2 = CR.cfmesh_strategy(_ask(RESOLVED_INTERNAL, "cfmesh"), {"n_layers": 2}, length_m=1.0)
     out2 = CR.cfmesh_layer_fit(_ask(RESOLVED_INTERNAL, "cfmesh"), s2, 3 * s2["first_layer_thickness"])
     assert out2["n_layers"] == 2
+
+
+def test_a_passage_under_twelve_cells_across_keeps_the_plans_stack_and_says_why():
+    # static_mixer_004: 4.0 wall cells across the narrowest 5%, 14 layers grown: 81 minutes of cartesianMesh, 179
+    # degrees, no mesh - where its 2-layer mesh had delivered
+    ask = _ask(RESOLVED_INTERNAL, "cfmesh")
+    s = CR.cfmesh_strategy(ask, {"n_layers": 2}, length_m=1.0)
+    wall = 200 * s["first_layer_thickness"]
+    out = CR.cfmesh_layer_fit(ask, s, wall, cells_across=4.0)
+    assert out["n_layers"] == 2
+    assert "4.0 wall cells across" in ask.layer_note and "plan's 2 layers were kept" in ask.layer_note
+    # at the floor and over it the stack grows as before
+    ask2 = _ask(RESOLVED_INTERNAL, "cfmesh")
+    s2 = CR.cfmesh_strategy(ask2, {"n_layers": 2}, length_m=1.0)
+    assert CR.cfmesh_layer_fit(ask2, s2, wall, cells_across=float(CR.GROW_MIN_CELLS_ACROSS))["n_layers"] > 2
+    ask3 = _ask(RESOLVED_INTERNAL, "cfmesh")
+    s3 = CR.cfmesh_strategy(ask3, {"n_layers": 2}, length_m=1.0)
+    assert CR.cfmesh_layer_fit(ask3, s3, wall, cells_across=None)["n_layers"] > 2
+
+
+def test_a_first_cell_thinner_than_asked_is_told_with_the_built_number(tmp_path):
+    # transition_005's rescue re-mesh: the first cell at 0.78 of the plan read as "at plan" inside the 1.5x band
+    (tmp_path / "system").mkdir()
+    (tmp_path / "system" / "meshDict").write_text(
+        "boundaryLayers { patchBoundaryLayers { wall { nLayers 15; thicknessRatio 1.3; "
+        "maxFirstLayerThickness 2.72113e-05; } } }\n")
+    q = {"layer_coverage_pct": 100.0, "layer_coverage_basis": "height", "layer_first_planned_m": 2.72113e-05,
+         "layer_area_at_plan_pct": 100.0, "layer_first_cell_m": 2.131e-05, "layer_first_vs_plan": 0.78}
+    row = CR._first_layer_row(tmp_path, {"layers": {}}, q, {"first_m": 2.72113e-05})
+    assert row is not None and "0.78 times that - thinner than asked" in row["delivered"]
+    # at 0.9 of the plan it is the height asked
+    q2 = dict(q, layer_first_cell_m=0.9 * 2.72113e-05, layer_first_vs_plan=0.9)
+    assert "thinner" not in CR._first_layer_row(tmp_path, {"layers": {}}, q2, {"first_m": 2.72113e-05})["delivered"]
