@@ -201,21 +201,22 @@ def test_the_rendered_dict_carries_the_scaled_floor_and_not_a_constant():
 
 # --------------------------------------------- a layer that cannot keep half its thickness goes
 
-def test_the_thickness_floor_is_half_the_stack_and_not_a_fifth():
+def test_the_thickness_floor_is_most_of_the_stack_and_not_a_fifth():
     """`minThickness` is the total stack thickness below which snappyHexMesh unextrudes the face
     instead of keeping what is left of it. It lives in `addLayersControls`, where no relaxed
     iteration can reach it, which is why it is the lever that worked when the dictionary was not.
 
-    Measured on two_scale_plate_ported at 2 across against the fifth that shipped: cells under
-    determinant 0.001 1,220 -> 101, faces under interpolation weight 0.05 1,306 -> 335, smallest
-    cell 2.05349e-15 -> 2.68e-15 m3, coverage 95.9350% -> 96.1120%, against 23 more illegal faces
-    and 23 more low-volume-ratio ones out of half a million.
+    Swept on two_scale_plate_ported at 2 across against the fifth that shipped: cells under
+    determinant 0.001 1,220 -> 28, faces under interpolation weight 0.05 1,306 -> 210, smallest
+    cell 2.05349e-15 -> 4.31474e-15 m3, coverage 95.9350% -> 96.3032%, layer pass 123 s -> 69 s,
+    and the mesher's own exit line goes from 2 illegal faces after ten iterations to "Finished
+    meshing without any errors" after four.
     """
-    assert L.MIN_THICKNESS_OF_STACK == 0.5
+    assert L.MIN_THICKNESS_OF_STACK == 0.7
     got = L.geometry_for(BL8_CELL_M)
     stack = L.stack_thickness_m(first_layer_m=got["first_layer_m"],
                                 expansion=got["expansion"], n_layers=got["n_layers"])
-    assert got["min_thickness_m"] == pytest.approx(0.5 * stack)
+    assert got["min_thickness_m"] == pytest.approx(L.MIN_THICKNESS_OF_STACK * stack)
     # the fifth of a stack it used to be, on this cell, was 3.0 um
     assert got["min_thickness_m"] > 3.0e-06
 

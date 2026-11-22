@@ -105,27 +105,41 @@ EXPANSION_RATIO = 1.2
 #: cell, and `displacementMedialAxis` reduces thickness at 177,132 nodes of this part at every
 #: iteration with nothing but this underneath it.
 #:
-#: Measured on two_scale_plate_ported at 2 across, 4 ranks, 3 layers, 506,298 interface faces,
-#: against the fifth that shipped:
+#: SEVEN TENTHS, AND AT SEVEN TENTHS THE MOVER FINISHES CLEAN. Swept on
+#: two_scale_plate_ported at 2 across, 4 ranks, 3 layers, 506,298 interface faces, buffer on:
 #:
-#:     coverage                            95.9350% -> 96.1120%
-#:     cells under determinant 0.001          1,220 -> 101
-#:     worst cell determinant           4.94893e-05 -> 7.95750e-05
-#:     faces under interpolation 0.05         1,306 -> 335
-#:     smallest cell                   2.05349e-15 -> 2.68000e-15 m3
-#:     concave cells                         38,597 -> 40,726
-#:     illegal faces at the end                   2 -> 25
-#:     faces under volume ratio 0.01              2 -> 25
-#:     layer pass                           123.0 s -> 122.0 s
+#:   floor  coverage  illegal  det<0.001  concave  wt<0.05  vr<0.01  smallest cell  pass
+#:   0.20   95.9350%        2      1,220   38,597    1,306        2    2.05349e-15   123s
+#:   0.30   96.1035%       24        166   36,370      327       24    1.64614e-15   125s
+#:   0.40   96.1341%       24         96   36,969      263       24    2.16820e-15   124s
+#:   0.50   96.1501%       26         78   36,264      181       26    2.72103e-15   122s
+#:   0.60   96.2431%       16         47   39,126      170       16    3.58330e-15   122s
+#:   0.70   96.3032%        0         28   38,280      210        0    4.31474e-15    69s
+#:   0.80   96.3006%        0         40   37,925      187        0    4.31474e-15    62s
 #:
-#: A 92% cut in under-determined cells and a 74% cut in faces under interpolation weight, against
-#: 23 more illegal faces and 23 more low-ratio ones out of half a million. COVERAGE GOES UP, which
-#: is the part worth noticing: removing a layer that was going to fail stops it taking its
-#: neighbours down with it.
+#: At 0.7 snappyHexMesh prints "Finished meshing without any errors" and its own report says
+#: `faces on cells with determinant < 0.001 : 0`. The illegal-face trace runs 137, 19, 2, 0 and the
+#: mover STOPS at iteration 4 of 10 with nothing left to repair. The fifth that shipped ran all ten
+#: and never got below 2:
+#:
+#:     0.20   1608  278  162  88  94  82  74  56   2   2
+#:     0.70    137   19    2   0
+#:
+#: That is where 44% off the layer pass comes from, and it is not a trade against quality but the
+#: same cause: a floor that refuses a layer the mover cannot hold means it never has to repair one.
+#: `Face volume ratio` also changes VERDICT, not just count - 0.0102547 against the 0.01 bar, 0
+#: faces under it, where every lower floor failed that check.
+#:
+#: 0.8 is not better: the determinant count goes back up, 28 -> 40, and coverage stops improving.
+#: 0.7 is a knee, not the edge of a trend.
+#:
+#: WHAT IT COSTS is 2,016 more concave cells, 36,264 -> 38,280. Thicker retained layers put more
+#: prisms on the staircase's corners, and concave-by-face-planes is the mildest thing checkMesh
+#: reports: no tolerance at all, so a prism on a stair corner is concave by construction.
 #:
 #: A FRACTION OF THE STACK AND NOT OF THE CELL, because the floor protects what is being grown and
 #: has to scale with it; as a cell fraction it would mean a different thing at every layer count.
-MIN_THICKNESS_OF_STACK = 0.5
+MIN_THICKNESS_OF_STACK = 0.7
 
 #: What fraction of a background cell the stack may occupy. 0.600444 on the measured run, which
 #: left a 10.052 um remnant and a 2.50x volume jump to the first full cell; the delivered run was

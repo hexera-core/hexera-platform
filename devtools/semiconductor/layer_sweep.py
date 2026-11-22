@@ -203,6 +203,19 @@ def v9(text: str, cell: float) -> str:
     return v7(text, cell)
 
 
+def _floor(frac):
+    """The product carries 0.5 of the stack; this asks what a different fraction would do."""
+    def go(text, cell):
+        import re as _re
+        m = _re.search(r"    minThickness            ([-0-9.e+]+);", text)
+        g = LY.geometry_for(cell, n_layers=int(a.layers))
+        stack = LY.stack_thickness_m(first_layer_m=g["first_layer_m"],
+                                     expansion=g["expansion"], n_layers=int(a.layers))
+        return _sub1(text, m.group(0),
+                     f"    minThickness            {frac * stack:.6g};", f"floor {frac}")
+    return go
+
+
 VARIANTS = {
     "v0_shipped": (v0, "as shipped: relaxed { maxNonOrtho 75; }, minVol 1e-20"),
     "v1_fullrelaxed": (v1, "relaxed repeats every floor; only angles/skew loosened"),
@@ -214,6 +227,11 @@ VARIANTS = {
     "v7_minthick": (v7, "minThickness = half the stack: thin layers removed, not kept"),
     "v8_dict_and_thick": (v8, "v2 + v7"),
     "v9_buffer_and_thick": (v9, "v3 + v7: the two that each worked"),
+    "f30": (_floor(0.30), "floor 0.30 of the stack"),
+    "f40": (_floor(0.40), "floor 0.40 of the stack"),
+    "f60": (_floor(0.60), "floor 0.60 of the stack"),
+    "f70": (_floor(0.70), "floor 0.70 of the stack"),
+    "f80": (_floor(0.80), "floor 0.80 of the stack"),
 }
 
 
