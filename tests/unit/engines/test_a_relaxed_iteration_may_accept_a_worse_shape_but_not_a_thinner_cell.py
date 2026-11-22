@@ -199,6 +199,48 @@ def test_the_rendered_dict_carries_the_scaled_floor_and_not_a_constant():
         ((ABLATION_CELL_M * 2) / BL8_CELL_M) ** 3, rel=1e-4)
 
 
+# --------------------------------------------- a layer that cannot keep half its thickness goes
+
+def test_the_thickness_floor_is_half_the_stack_and_not_a_fifth():
+    """`minThickness` is the total stack thickness below which snappyHexMesh unextrudes the face
+    instead of keeping what is left of it. It lives in `addLayersControls`, where no relaxed
+    iteration can reach it, which is why it is the lever that worked when the dictionary was not.
+
+    Measured on two_scale_plate_ported at 2 across against the fifth that shipped: cells under
+    determinant 0.001 1,220 -> 101, faces under interpolation weight 0.05 1,306 -> 335, smallest
+    cell 2.05349e-15 -> 2.68e-15 m3, coverage 95.9350% -> 96.1120%, against 23 more illegal faces
+    and 23 more low-volume-ratio ones out of half a million.
+    """
+    assert L.MIN_THICKNESS_OF_STACK == 0.5
+    got = L.geometry_for(BL8_CELL_M)
+    stack = L.stack_thickness_m(first_layer_m=got["first_layer_m"],
+                                expansion=got["expansion"], n_layers=got["n_layers"])
+    assert got["min_thickness_m"] == pytest.approx(0.5 * stack)
+    # the fifth of a stack it used to be, on this cell, was 3.0 um
+    assert got["min_thickness_m"] > 3.0e-06
+
+
+def test_the_floor_still_clears_what_minfaceweight_implies():
+    """`fit_complaint` refuses a floor that permits a layer thinner than `minFaceWeight 0.02`
+    allows against a full-sized neighbour - the mover would make illegal faces by construction,
+    which is what the delivered dict did at 0.400 um. Raising the floor can only move further
+    from that bound, but the bound is what the guard is for, so it is asserted and not assumed."""
+    got = L.geometry_for(BL8_CELL_M)
+    assert got["min_thickness_m"] > 0.02 * BL8_CELL_M
+    assert L.fit_complaint(interface_cell_m=BL8_CELL_M, **got) == ""
+
+
+def test_the_floor_scales_with_the_stack_not_with_the_cell():
+    """A floor that protects the stack has to be a fraction of the stack; as a fraction of the
+    cell it would mean a different thing at every layer count."""
+    a = L.geometry_for(BL8_CELL_M)
+    b = L.geometry_for(2 * BL8_CELL_M)
+    assert b["min_thickness_m"] == pytest.approx(2 * a["min_thickness_m"])
+    stack_a = L.stack_thickness_m(first_layer_m=a["first_layer_m"], expansion=a["expansion"],
+                                  n_layers=a["n_layers"])
+    assert a["min_thickness_m"] / stack_a == pytest.approx(L.MIN_THICKNESS_OF_STACK)
+
+
 # ------------------------------------------------------- where a layer stops, it stops gradually
 
 def test_a_layer_termination_is_spread_over_more_than_one_face():

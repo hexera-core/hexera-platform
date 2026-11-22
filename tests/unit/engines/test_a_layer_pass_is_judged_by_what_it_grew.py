@@ -98,7 +98,13 @@ def test_the_measured_stack_is_reproduced_exactly_from_the_interface_cell():
     assert got["n_layers"] == 3
     assert got["first_layer_m"] == pytest.approx(BL8_FIRST_M, rel=1e-9)
     assert got["expansion"] == pytest.approx(BL8_EXPANSION, rel=1e-9)
-    assert got["min_thickness_m"] == pytest.approx(BL8_MIN_THICKNESS_M, rel=1e-9)
+    # NOT the measured run's 3.0 um any more. That floor was a fifth of the stack, and a
+    # fifth is what let the mover thin one five times over - see MIN_THICKNESS_OF_STACK.
+    stack = L.stack_thickness_m(first_layer_m=BL8_FIRST_M, expansion=BL8_EXPANSION,
+                                n_layers=3)
+    assert got["min_thickness_m"] == pytest.approx(L.MIN_THICKNESS_OF_STACK * stack,
+                                                   rel=1e-9)
+    assert got["min_thickness_m"] > BL8_MIN_THICKNESS_M
 
 
 def test_the_measured_stack_takes_sixty_per_cent_of_one_cell_and_fits():

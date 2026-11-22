@@ -196,6 +196,13 @@ def v8(text: str, cell: float) -> str:
     return v7(v2(text, cell), cell)
 
 
+def v9(text: str, cell: float) -> str:
+    """The two levers that each worked, together: stop gradually AND remove rather than thin."""
+    # The committed product already writes nBufferCellsNoExtrude 1, so the only thing left to
+    # add on top of it is the thickness floor.
+    return v7(text, cell)
+
+
 VARIANTS = {
     "v0_shipped": (v0, "as shipped: relaxed { maxNonOrtho 75; }, minVol 1e-20"),
     "v1_fullrelaxed": (v1, "relaxed repeats every floor; only angles/skew loosened"),
@@ -206,6 +213,7 @@ VARIANTS = {
     "v6_both": (v6, "v2 + nLayerIter 3"),
     "v7_minthick": (v7, "minThickness = half the stack: thin layers removed, not kept"),
     "v8_dict_and_thick": (v8, "v2 + v7"),
+    "v9_buffer_and_thick": (v9, "v3 + v7: the two that each worked"),
 }
 
 
@@ -289,7 +297,7 @@ print(f"part          {part.name}")
 print(f"across        {a.across}  levels {a.levels}  ranks {a.ranks}  layers {a.layers}")
 print(f"background    {background * 1e6:.4f} um -> interface cell {cell * 1e6:.4f} um")
 print(f"estimate      {cells:,} cells before layers")
-print(f"scaled minVol {_scaled_min_vol(cell):g}   (shipped {LY.MIN_VOL:g})")
+print(f"product minVol {LY.min_vol_for(cell):g}   buffer {LY.BUFFER_CELLS_NO_EXTRUDE}")
 print()
 
 want = [w.strip() for w in a.only.split(",") if w.strip()] or list(VARIANTS)

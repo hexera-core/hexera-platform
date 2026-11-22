@@ -93,11 +93,39 @@ N_SURFACE_LAYERS = 3
 #: for that reason.
 FIRST_LAYER_FRACTION = 4.15e-06 / 25.1578e-06
 EXPANSION_RATIO = 1.2
-#: The floor under one layer's thickness, 0.119 of a cell. It must stay ABOVE what `minFaceWeight`
-#: implies against a background-sized neighbour or the mover makes illegal faces by construction:
-#: at `minFaceWeight 0.02` against 20.1263 um that is 0.4107 um, and the delivered dict permitted
-#: 0.400.
-MIN_THICKNESS_FRACTION = 3.0e-06 / 25.1578e-06
+#: THE FLOOR UNDER THE WHOLE STACK, as a fraction of the stack. Below it snappyHexMesh unextrudes
+#: the face instead of keeping what is left of it, so this is the one number standing between the
+#: mover's thinning and a hairline cell - and it is in `addLayersControls`, where no relaxed
+#: iteration can reach it.
+#:
+#: It used to be 3.0e-06 / 25.1578e-06 of a CELL - a fifth of the stack - chosen to sit just clear
+#: of what `minFaceWeight 0.02` implies against a full-sized neighbour, which `fit_complaint` still
+#: enforces as the lower bound. Only just legal turned out to be the problem: a fifth permits a
+#: stack thinned five times over, which at expansion 1.2 is a first layer of 0.82 um in a 25 um
+#: cell, and `displacementMedialAxis` reduces thickness at 177,132 nodes of this part at every
+#: iteration with nothing but this underneath it.
+#:
+#: Measured on two_scale_plate_ported at 2 across, 4 ranks, 3 layers, 506,298 interface faces,
+#: against the fifth that shipped:
+#:
+#:     coverage                            95.9350% -> 96.1120%
+#:     cells under determinant 0.001          1,220 -> 101
+#:     worst cell determinant           4.94893e-05 -> 7.95750e-05
+#:     faces under interpolation 0.05         1,306 -> 335
+#:     smallest cell                   2.05349e-15 -> 2.68000e-15 m3
+#:     concave cells                         38,597 -> 40,726
+#:     illegal faces at the end                   2 -> 25
+#:     faces under volume ratio 0.01              2 -> 25
+#:     layer pass                           123.0 s -> 122.0 s
+#:
+#: A 92% cut in under-determined cells and a 74% cut in faces under interpolation weight, against
+#: 23 more illegal faces and 23 more low-ratio ones out of half a million. COVERAGE GOES UP, which
+#: is the part worth noticing: removing a layer that was going to fail stops it taking its
+#: neighbours down with it.
+#:
+#: A FRACTION OF THE STACK AND NOT OF THE CELL, because the floor protects what is being grown and
+#: has to scale with it; as a cell fraction it would mean a different thing at every layer count.
+MIN_THICKNESS_OF_STACK = 0.5
 
 #: What fraction of a background cell the stack may occupy. 0.600444 on the measured run, which
 #: left a 10.052 um remnant and a 2.50x volume jump to the first full cell; the delivered run was
@@ -357,10 +385,14 @@ def geometry_for(interface_cell_m: float) -> dict:
     bg = float(interface_cell_m)
     if bg <= 0.0:
         raise LayerError(f"the interface cell must be positive, got {interface_cell_m}")
+    first = bg * FIRST_LAYER_FRACTION
+    # The floor is half of THIS stack - see MIN_THICKNESS_OF_STACK.
+    stack = stack_thickness_m(first_layer_m=first, expansion=EXPANSION_RATIO,
+                              n_layers=N_SURFACE_LAYERS)
     return {"n_layers": N_SURFACE_LAYERS,
-            "first_layer_m": bg * FIRST_LAYER_FRACTION,
+            "first_layer_m": first,
             "expansion": EXPANSION_RATIO,
-            "min_thickness_m": bg * MIN_THICKNESS_FRACTION}
+            "min_thickness_m": MIN_THICKNESS_OF_STACK * stack}
 
 
 def stack_thickness_m(*, first_layer_m: float, expansion: float, n_layers: int) -> float:
@@ -919,8 +951,9 @@ def measured(report: dict, *, interface_patch: str) -> dict:
 
 __all__ = ["LAYER_CASE", "LAYER_STAGE", "LayerError", "MAX_GLOBAL_CELLS", "MAX_LOCAL_CELLS",
            "MIN_VOL_FRACTION", "min_vol_for", "RELAXED_SHAPE", "MIN_TET_QUALITY",
+           "MIN_THICKNESS_OF_STACK",
            "BUFFER_CELLS_NO_EXTRUDE", "N_SURFACE_LAYERS", "EXPANSION_RATIO",
-           "FIRST_LAYER_FRACTION", "MIN_THICKNESS_FRACTION", "MAX_STACK_FRACTION",
+           "FIRST_LAYER_FRACTION", "MAX_STACK_FRACTION",
            "SMOOTH_SURFACE_NORMALS", "SMOOTH_THICKNESS", "SMOOTH_NORMALS", "COVERAGE_FLOOR_PCT",
            "THICKNESS_FLOOR_PCT", "LAYERS_FLOOR_FRACTION", "ILLEGAL_PER_MILLION_CEILING",
            "LAYER_FLOORS", "floors_unjudged",
