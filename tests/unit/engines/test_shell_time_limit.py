@@ -245,6 +245,56 @@ def test_the_first_paths_bolt_ring_trial_waits_where_it_would_take_the_time_kept
     assert not sa._choose_trial_waits([("spot",)])                     # any other path: as before
 
 
+def _plain_setup(monkeypatch, stamped_past: int):
+    """A stamped part (a surface file) whose stamped candidates stand `stamped_past` past the solver's limits whether
+    or not their spot passes are made; the plain mesh (every stamped step off) 1 past as a first mesh, 0 repaired."""
+    clock = _Clock()
+    monkeypatch.setattr(sa, "time", clock)
+    calls: list = []
+
+    def path(*_a, **_k):
+        plain, waited = bool(sa._STAMPED_OFF_NOW[0]), bool(sa._CHOOSE.get("defer"))
+        calls.append((sa._SO_FAR["label"], plain, waited))
+        clock.sleep(30.0 if not waited else 20.0)
+        if sa._RUN.get("first_s") is None:
+            sa._RUN["first_s"] = 20.0
+        past = (1 if waited else 0) if plain else stamped_past
+        applied = _applied(past=past)
+        if not plain:
+            applied["quality"].update(strip_yield=True)
+        if waited and past:
+            applied["quality"]["own_size_deferred"] = True
+        return _mesh(0 if plain else 2), applied, past
+
+    monkeypatch.setattr(sa, "_narrow_kept_path", path)
+    for flag in ("FACE_KEEP", "FIT_PER_FACE", "STEP_PER_STRIP"):
+        monkeypatch.setattr(sa, flag, False)
+    monkeypatch.setitem(sa._RUN, "end", clock.now + 900.0)
+    monkeypatch.setitem(sa._RUN, "first_s", None)
+    monkeypatch.setitem(sa._RUN, "cut", False)
+    monkeypatch.setitem(sa._SPOT_COST, "s", None)
+    return calls
+
+
+def test_where_every_stamped_mesh_is_past_the_solvers_limits_the_plain_mesh_joins_and_wins(monkeypatch):
+    # SHMESH-76p: all on and both stamped candidates 3 past the solver's limits; the plain mesh is made as a first
+    # mesh (1 past), kept in SHMESH-76's order, then repaired last (0 past) and told
+    calls = _plain_setup(monkeypatch, 3)
+    mesh, applied, n = sa._yield_both("x.brep", {"source": "surface"}, requirements={"limits": []})
+    assert [c[1:] for c in calls] == [(False, False), (False, False), (False, False), (True, True), (True, False)]
+    assert calls[-1][0] == sa.PLAIN_NAME + ", repaired"
+    assert n == 0 and applied["quality"]["plain_joined"]["kept"] is True
+    assert applied["quality"]["chose_first"]["repaired"] == "kept"
+    assert any("SHMESH-76p" in t for t in mesh.notes)
+
+
+def test_where_a_stamped_mesh_is_inside_the_solvers_limits_no_plain_mesh_is_made(monkeypatch):
+    # SHMESH-76p: a part whose stamped meshes stand inside the solver's limits is meshed exactly as before
+    calls = _plain_setup(monkeypatch, 0)
+    _m, applied, n = sa._yield_both("x.brep", {"source": "surface"}, requirements={"limits": []})
+    assert all(not c[1] for c in calls) and "plain_joined" not in applied["quality"] and n == 0
+
+
 def test_with_time_for_everything_each_candidate_is_made_whole_as_before(monkeypatch):
     # SHMESH-21d: 900 s and spot passes of 50 s - nothing waits, nothing is chosen first, no repair pass
     calls = _choose_setup(monkeypatch, 900.0, 50.0)
