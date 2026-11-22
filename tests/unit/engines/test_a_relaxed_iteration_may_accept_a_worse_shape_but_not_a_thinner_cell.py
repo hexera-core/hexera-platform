@@ -211,8 +211,14 @@ def test_the_thickness_floor_is_most_of_the_stack_and_not_a_fifth():
     cell 2.05349e-15 -> 4.31474e-15 m3, coverage 95.9350% -> 96.3032%, layer pass 123 s -> 69 s,
     and the mesher's own exit line goes from 2 illegal faces after ten iterations to "Finished
     meshing without any errors" after four.
+
+    RE-TUNED TO 0.80 ALONGSIDE THE FEATURE ANGLE AND THE SMOOTHING, not reversed. 0.70 and 0.80
+    were within noise of each other when the floor was the only thing moving - 0 illegal faces and
+    0 volume-ratio faces at both, coverage 96.3032 against 96.3006. With the other two in, 0.80 is
+    what clears the determinant cells: at 0.70 the mesh has 34 of them and fails 3 checks, at 0.80
+    it has none and fails 2, with interpolation-weight faces 43 -> 8 and max aspect 21.41 -> 16.96.
     """
-    assert L.MIN_THICKNESS_OF_STACK == 0.7
+    assert L.MIN_THICKNESS_OF_STACK == 0.8
     got = L.geometry_for(BL8_CELL_M)
     stack = L.stack_thickness_m(first_layer_m=got["first_layer_m"],
                                 expansion=got["expansion"], n_layers=got["n_layers"])

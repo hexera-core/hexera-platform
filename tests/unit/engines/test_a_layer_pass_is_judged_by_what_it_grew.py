@@ -254,35 +254,64 @@ def test_only_the_interface_is_named_and_the_ports_are_left_to_slide():
     assert "port_a" not in text and "port_b" not in text
 
 
-def test_the_normals_are_not_smoothed_because_the_interface_is_a_staircase():
-    """Both normal smoothers are OFF, and the thickness smoother is not.
+def test_the_surface_normals_are_smoothed_and_the_other_smoother_is_still_off():
+    """The two normal smoothers are not one knob, and only one of them does anything.
 
-    The conjugate interface is a staircase of axis-aligned faces. Smoothing its normals aims the
-    extrusion diagonally across the steps instead of along a face, which is why this module's own
-    rule is NEVER SMOOTH THE NORMALS ON A STAIRCASE. This used to pin (1, 10, 3), the values the
-    hand-built 65-minute run happened to use, under a name that claimed they were what a staircase
-    needs - they are the opposite.
+    This used to assert both were off, on the strength of a variant that turned
+    `nSmoothSurfaceNormals` AND `nSmoothNormals` off together and came back better on six figures.
+    All six still stand and none of them is the concave count, which is the largest thing the
+    layer pass makes. Swept one at a time on the two-across plate with the pinch repair in:
 
-    Measured, same part and same chain, V1 (1, 10, 3) against V2 (0, 10, 0): faces in error 2,936
-    to 2,724, interpolation weights under 0.02 405 to 298, max non-orthogonality 76.6676 to
-    76.0512, max aspect ratio 322.161 to 241.68, coverage 95.553% to 95.7253%, and the pass 7%
-    quicker. Better on every measure.
+        nSmoothNormals        0 -> 2    concave 37,677 -> 37,651     a tenth of a per cent
+        nSmoothSurfaceNormals 0 -> 5    concave 37,677 -> 20,046     weight faces 209 -> 66
+
+    So the knob the old rule was written about was never the one doing the damage. 5 is the
+    optimum of 0/2/3/5/8/10 and the curve turns back up past it.
 
     nSmoothThickness stays at 10: it smooths how THICK the stack is, not which way it points, so
-    the staircase argument does not reach it and the measurement left it alone.
+    the staircase argument never reached it and no measurement has moved it.
     """
-    assert (L.SMOOTH_SURFACE_NORMALS, L.SMOOTH_NORMALS) == (0, 0), (
-        "a normal smoother is back on; on a staircase that aims the extrusion across the steps")
+    assert L.SMOOTH_SURFACE_NORMALS == 5, (
+        "the surface-normal smoother is the one lever that moves the concave count")
+    assert L.SMOOTH_NORMALS == 0, (
+        "nSmoothNormals was measured to do nothing; turning it on buys nothing and is untested")
     assert L.SMOOTH_THICKNESS == 10
 
 
-def test_the_rendered_dict_carries_the_zeros_not_just_the_constants():
+def test_the_mover_may_stop_at_a_step_instead_of_carrying_a_layer_round_it():
+    """`featureAngle` 180 means never treat an edge as a feature, so the mover is required to
+    extrude around every 90-degree step of the staircase, including the steps where it cannot.
+
+    Measured on the two-across plate: 180 against 120 is 1,796 faces of 506,322 not extruded -
+    0.35% of the interface - and those faces were producing the mesh's worst cells. Max aspect
+    ratio 37.49 -> 19.30, max non-orthogonality 59.30 -> 47.43, interpolation-weight faces
+    209 -> 34. 90 excludes 5,480 more for nothing but a concave count that doubles.
+    """
+    assert L.FEATURE_ANGLE == 120
+    # not 180, which is the "never stop" the sweep was run against...
+    assert L.FEATURE_ANGLE < 180
+    # ...and not below the 90 degrees a staircase step actually makes, where the count doubles
+    assert L.FEATURE_ANGLE > 90
+
+
+def test_the_rendered_dict_carries_the_measured_values_not_just_the_constants():
     """The constants are only worth anything if they reach the dict snappyHexMesh reads."""
     text = L.render_layers_dict(interface_patch=INTERFACE, interface_cell_m=BL8_CELL_M,
                                 **_geom())
-    assert "nSmoothSurfaceNormals       0;" in text
+    assert "nSmoothSurfaceNormals       5;" in text
     assert "nSmoothNormals              0;" in text
     assert "nSmoothThickness           10;" in text
+    assert "featureAngle              120;" in text
+
+
+def test_the_feature_angle_in_the_dict_follows_the_constant():
+    """It was a literal in the renderer, so the sweep's answer could be written down in the module
+    and never reach the mesher."""
+    import re
+    text = L.render_layers_dict(interface_patch=INTERFACE, interface_cell_m=BL8_CELL_M,
+                                **_geom())
+    m = re.search(r"featureAngle\s+(\d+);", text)
+    assert m and int(m.group(1)) == L.FEATURE_ANGLE
 
 
 def test_the_decomposition_is_scotch_with_no_coefficients():

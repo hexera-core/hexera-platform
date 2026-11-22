@@ -203,6 +203,95 @@ def v9(text: str, cell: float) -> str:
     return v7(text, cell)
 
 
+def _one(line_now: str, line_new: str, what: str):
+    """One knob of `addLayersControls`, changed from what the product writes today."""
+    def go(text, cell):
+        return _sub1(text, line_now, line_new, what)
+    return go
+
+
+# THE EXTRUSION DIRECTION. On a staircase every neighbouring face is at 90 degrees, so with no
+# smoothing each prism is extruded along its own face normal and two prisms at a step point
+# straight into one another - which is a concave cell by the face-plane test. Smoothing aims the
+# extrusion diagonally across the step instead, which the module's own comment says is wrong, and
+# the measurement behind that comment did not count concave cells. Both are here.
+c_smoothsurf2 = _one("    nSmoothSurfaceNormals       0;",
+                     "    nSmoothSurfaceNormals       2;", "nSmoothSurfaceNormals 2")
+c_smoothsurf5 = _one("    nSmoothSurfaceNormals       0;",
+                     "    nSmoothSurfaceNormals       5;", "nSmoothSurfaceNormals 5")
+c_smoothnorm2 = _one("    nSmoothNormals              0;",
+                     "    nSmoothNormals              2;", "nSmoothNormals 2")
+
+# HOW THICK A LAYER MAY BE FOR THE ROOM IT IS IN. A folded prism at a step is a layer too thick
+# for its local geometry, so these two are the direct expression of the fault.
+c_medial40 = _one("    maxThicknessToMedialRatio 0.6;",
+                  "    maxThicknessToMedialRatio 0.4;", "maxThicknessToMedialRatio 0.4")
+c_medial30 = _one("    maxThicknessToMedialRatio 0.6;",
+                  "    maxThicknessToMedialRatio 0.3;", "maxThicknessToMedialRatio 0.3")
+c_facethick03 = _one("    maxFaceThicknessRatio     0.5;",
+                     "    maxFaceThicknessRatio     0.3;", "maxFaceThicknessRatio 0.3")
+
+# WHERE TO STOP EXTRUDING. `featureAngle 180` means never treat an edge as a feature, so the mover
+# is made to carry layers around every 90-degree step. Lowering it lets it stop there instead,
+# which should cost coverage - that is the trade this measures.
+c_feature120 = _one("    featureAngle              180;",
+                    "    featureAngle              120;", "featureAngle 120")
+c_feature90 = _one("    featureAngle              180;",
+                   "    featureAngle               90;", "featureAngle 90")
+
+# AND HOW ABRUPTLY. `nGrow` widens the unextruded zone around a face that was not extruded.
+c_grow1 = _one("    nGrow 0;", "    nGrow 1;", "nGrow 1")
+# `slipFeatureAngle` lets a layer point slide along a feature rather than being pinned to it.
+c_slip60 = _one("    slipFeatureAngle           30;",
+                "    slipFeatureAngle           60;", "slipFeatureAngle 60")
+# More inner relaxation per outer iteration: the mover's own repair, given more room to work.
+c_relax10 = _one("    nRelaxIter                  5;",
+                 "    nRelaxIter                 10;", "nRelaxIter 10")
+
+
+def _smooth(n: int):
+    """`nSmoothSurfaceNormals`, the one knob round one found."""
+    return _one("    nSmoothSurfaceNormals       0;",
+                f"    nSmoothSurfaceNormals       {int(n)};", f"nSmoothSurfaceNormals {n}")
+
+
+def _smooth_and_floor(n: int, frac: float):
+    """Smoothing with a thickness floor under it.
+
+    Smoothing cures the folded prisms and manufactures thin ones, which is what the volume-ratio
+    faces are; the floor is what removes a layer rather than keeping it as a hairline. They act on
+    different ends of the same cell, so this asks whether both can hold at once.
+    """
+    def go(text, cell):
+        return _floor(frac)(_smooth(n)(text, cell), cell)
+    return go
+
+
+def _smooth_and(n: int, line_now: str, line_new: str, what: str):
+    def go(text, cell):
+        return _one(line_now, line_new, what)(_smooth(n)(text, cell), cell)
+    return go
+
+
+def _fa120(text, cell):
+    """Let the mover stop at the sharpest steps instead of carrying a layer round them."""
+    return _one("    featureAngle              180;",
+                "    featureAngle              120;", "featureAngle 120")(text, cell)
+
+
+def _combo(n: int | None = None, fa: bool = False, frac: float | None = None):
+    """Smoothing, the feature angle and the thickness floor, in any combination."""
+    def go(text, cell):
+        if n is not None:
+            text = _smooth(n)(text, cell)
+        if fa:
+            text = _fa120(text, cell)
+        if frac is not None:
+            text = _floor(frac)(text, cell)
+        return text
+    return go
+
+
 def _floor(frac):
     """The product carries 0.5 of the stack; this asks what a different fraction would do."""
     def go(text, cell):
@@ -232,6 +321,40 @@ VARIANTS = {
     "f60": (_floor(0.60), "floor 0.60 of the stack"),
     "f70": (_floor(0.70), "floor 0.70 of the stack"),
     "f80": (_floor(0.80), "floor 0.80 of the stack"),
+    # aimed at the concave cells, which run 4 showed are the LAYER PASS and not the staircase
+    "c_smoothsurf2": (c_smoothsurf2, "nSmoothSurfaceNormals 2 (the module says never; measure it)"),
+    "c_smoothsurf5": (c_smoothsurf5, "nSmoothSurfaceNormals 5"),
+    "c_smoothnorm2": (c_smoothnorm2, "nSmoothNormals 2"),
+    "c_medial40": (c_medial40, "maxThicknessToMedialRatio 0.4"),
+    "c_medial30": (c_medial30, "maxThicknessToMedialRatio 0.3"),
+    "c_facethick03": (c_facethick03, "maxFaceThicknessRatio 0.3"),
+    "c_feature120": (c_feature120, "featureAngle 120: stop at the sharpest steps"),
+    "c_feature90": (c_feature90, "featureAngle 90: stop at every step"),
+    "c_grow1": (c_grow1, "nGrow 1: widen the unextruded zone"),
+    "c_slip60": (c_slip60, "slipFeatureAngle 60: let layer points slide along a feature"),
+    "c_relax10": (c_relax10, "nRelaxIter 10: more inner relaxation per outer iteration"),
+    # round two: where the smoothing curve stops paying, and what pays off its volume-ratio faces
+    "s3": (_smooth(3), "nSmoothSurfaceNormals 3"),
+    "s8": (_smooth(8), "nSmoothSurfaceNormals 8"),
+    "s10": (_smooth(10), "nSmoothSurfaceNormals 10"),
+    "s20": (_smooth(20), "nSmoothSurfaceNormals 20"),
+    "s5_f80": (_smooth_and_floor(5, 0.80), "nSmoothSurfaceNormals 5 + floor 0.80 of the stack"),
+    "s5_f90": (_smooth_and_floor(5, 0.90), "nSmoothSurfaceNormals 5 + floor 0.90 of the stack"),
+    "s10_f80": (_smooth_and_floor(10, 0.80), "nSmoothSurfaceNormals 10 + floor 0.80"),
+    "s5_norelax": (_smooth_and(5, "    nRelaxedIter                3;",
+                               "    nRelaxedIter               10;", "nRelaxedIter 10"),
+                   "nSmoothSurfaceNormals 5, and never swap in the relaxed dictionary"),
+    "s5_grow1": (_smooth_and(5, "    nGrow 0;", "    nGrow 1;", "nGrow 1"),
+                 "nSmoothSurfaceNormals 5 + nGrow 1"),
+    # the two levers together, and with the floor that cured volume-ratio faces once before
+    "fa120_s5": (_combo(n=5, fa=True), "featureAngle 120 + nSmoothSurfaceNormals 5"),
+    "fa120_s10": (_combo(n=10, fa=True), "featureAngle 120 + nSmoothSurfaceNormals 10"),
+    "fa120_s5_f80": (_combo(n=5, fa=True, frac=0.80),
+                     "featureAngle 120 + nSmoothSurfaceNormals 5 + floor 0.80"),
+    "fa120_f80": (_combo(fa=True, frac=0.80), "featureAngle 120 + floor 0.80"),
+    "fa150": (_one("    featureAngle              180;",
+                   "    featureAngle              150;", "featureAngle 150"),
+              "featureAngle 150: half way, for the coverage"),
 }
 
 

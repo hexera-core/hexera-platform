@@ -139,7 +139,20 @@ EXPANSION_RATIO = 1.2
 #:
 #: A FRACTION OF THE STACK AND NOT OF THE CELL, because the floor protects what is being grown and
 #: has to scale with it; as a cell fraction it would mean a different thing at every layer count.
-MIN_THICKNESS_OF_STACK = 0.7
+MIN_THICKNESS_OF_STACK = 0.8
+#: RE-TUNED WITH THE OTHER TWO, not reversed. The floor sweep above chose 0.70 over 0.80 when the
+#: floor was the only thing moving, and the two were within noise of each other there - 0 illegal
+#: faces and 0 volume-ratio faces at both, coverage 96.3032 against 96.3006. With FEATURE_ANGLE
+#: and SMOOTH_SURFACE_NORMALS in, 0.80 is what clears the determinant cells:
+#:
+#:     fa120 + s5, floor 0.70    concave 18,810   det 34   weight 43   FAILED 3   aspect 21.41
+#:     fa120 + s5, floor 0.80    concave 26,664   det  0   weight  8   FAILED 2   aspect 16.96
+#:
+#: 0.70 is the concave minimum of the whole sweep and 0.80 is the better mesh: two failure modes
+#: gone rather than one traded for another, interpolation-weight faces from 209 to 8, aspect ratio
+#: halved, and concave still down 29% on the shipped dictionary. Concave-by-face-planes is the
+#: mildest thing checkMesh reports - no tolerance at all, so a prism on a stair corner counts by
+#: construction - and a cell with a bad determinant is a solver's problem.
 
 #: What fraction of a background cell the stack may occupy. 0.600444 on the measured run, which
 #: left a 10.052 um remnant and a 2.50x volume jump to the first full cell; the delivered run was
@@ -238,33 +251,58 @@ BUFFER_CELLS_NO_EXTRUDE = 1
 
 #: The smoothing, and it is load-bearing at these values.
 #:
-#: NEVER SMOOTH THE NORMALS ON A STAIRCASE, now the default rather than a note. The conjugate
-#: interface is a staircase of axis-aligned faces, so smoothing its normals aims the extrusion
-#: diagonally across steps instead of along a face. Variant V2, same part, same chain,
-#: `nSmoothSurfaceNormals 0` and `nSmoothNormals 0` with `nSmoothThickness` left at 10, against the
-#: V1 values this used to carry:
+#: THE TWO SMOOTHING KNOBS ARE NOT ONE KNOB, and the experiment they were set by moved both at
+#: once. This block used to say "NEVER SMOOTH THE NORMALS ON A STAIRCASE" on the strength of a
+#: variant that turned `nSmoothSurfaceNormals` AND `nSmoothNormals` off together and came back
+#: better on six figures - faces in error 2,936 -> 2,724, interpolation weights < 0.02 405 -> 298,
+#: max non-orthogonality 76.6676 -> 76.0512, max aspect ratio 322.161 -> 241.68, coverage 95.553%
+#: -> 95.7253%, layer pass 2,522 s -> 2,353 s. Every one of those still stands. NONE OF THEM IS
+#: THE CONCAVE COUNT, which is the largest thing the layer pass produces.
 #:
-#:     faces in error                 2,936 -> 2,724
-#:     interpolation weights < 0.02     405 ->   298
-#:     max non-orthogonality        76.6676 -> 76.0512
-#:     max aspect ratio             322.161 -> 241.68
-#:     coverage                     95.553% -> 95.7253%
-#:     layer pass                   2,522 s -> 2,353 s
+#: Swept one knob at a time on the two-across plate, 2026-11-22, with the pinch repair in the
+#: chain. `nSmoothNormals` does NOTHING: 37,651 concave cells against the baseline's 37,677, a
+#: tenth of a per cent, so it was never the one doing the damage. `nSmoothSurfaceNormals` is the
+#: strongest single effect in the sweep and it has an optimum at 5:
 #:
-#: Better on every measure and 7% quicker. It was held back for one stated reason - "no run of the
-#: PRODUCT has grown a layer at all, so the first one should reproduce the result the 65-minute
-#: chain is measured against rather than a variant" - AND THAT REASON IS NOW SPENT. Job 0ff6f9e5
-#: (2026-11-16) grew layers through the product on all 16,582,198 faces of the conjugate interface.
+#:     nSmoothSurfaceNormals   0        2        3        5        8       10
+#:     concave cells      37,677   32,105   27,480   20,046   23,270   23,409
+#:     weight faces < 0.05   209      116       85       66       71       92
 #:
-#: What that run got with V1 is why this is not merely tidier. It finished at 88.5826% coverage and
-#: 71.9% of the asked thickness, 2.25 layers of 3 - UNDER this module's own COVERAGE_FLOOR_PCT of
-#: 92.0 and THICKNESS_FLOOR_PCT of 75.0, and worse than the 90.7146% of the run these thresholds
-#: were written to refuse. Its extrusion started at 97.2267% and the ten repair iterations took it
-#: DOWN every single time, which is thinning doing the only repair it has. V2 is the one measured
-#: change that moves all four of those numbers the right way at once.
-SMOOTH_SURFACE_NORMALS = 0
+#: WHY IT WORKS IS THE STAIRCASE. `surfaceToCell useSurfaceOrientation` classifies by cell centre,
+#: so every neighbouring interface face meets its neighbour at 90 degrees; with no smoothing each
+#: prism is extruded along its own face's normal and two prisms at a step are driven into one
+#: another, which is a concave cell by the face-plane test. The SOLID settles that these are the
+#: layer pass and not the voxel cut: it carries the same staircase, gets no layers at all (the
+#: dict below names `fluid_to_solid` only), and checkMesh says "Concave cell check OK" on it in
+#: every one of the fifteen configurations swept, while the coolant has 36,000 to 43,000 in all
+#: of them.
+#:
+#: WHAT IT COSTS ON ITS OWN is 8 to 12 faces with a small volume ratio, a failed check the
+#: baseline does not have. The thickness floor does not pay those off - `s5` with the floor at
+#: 0.80 still has 10 - and FEATURE_ANGLE does, which is why the two below are set together.
+SMOOTH_SURFACE_NORMALS = 5
 SMOOTH_THICKNESS = 10
 SMOOTH_NORMALS = 0
+
+#: WHERE THE MOVER IS ALLOWED TO STOP. `featureAngle` is the angle above which a surface is not
+#: extruded, and 180 - which every tutorial writes and this module carried - means never: the
+#: mover is required to carry a layer around every 90-degree step of the staircase, including the
+#: steps where it cannot. Declining to extrude 1,796 faces of 506,322, which is 0.35% of the
+#: interface, is the whole difference between 180 and 120, and those 1,796 faces were producing
+#: the mesh's worst cells:
+#:
+#:     featureAngle          180      150      120       90
+#:     max aspect ratio    37.49    19.30    19.30    19.30
+#:     max non-ortho       59.30    47.43    47.43    47.43
+#:     weight faces < 0.05   209       45       34       34
+#:     volume-ratio faces      0        8        0        0
+#:     concave cells      37,677   37,406   37,590   62,700
+#:
+#: 150 and 120 buy the same maxima and 150 brings volume-ratio faces with it; 90 excludes 5,480
+#: more faces for nothing but a concave count that doubles, because an unextruded face beside an
+#: extruded one is a step in the layer itself. The bound is not abstract: the delivered 155 M
+#: plate came back at 64.8123 degrees against this engine's bar of 65, which is 0.19 degrees.
+FEATURE_ANGLE = 120
 
 #: HOW MUCH OF THE INTERFACE HAS TO END UP LAYERED. The measured run finished at 95.553% after ten
 #: outer iterations; the DEFECTIVE delivered run finished at 90.7146%, so a floor under that would
@@ -651,7 +689,7 @@ def render_layers_dict(*, interface_patch: str, interface_cell_m: float, n_layer
         f"    firstLayerThickness     {float(first_layer_m):.6g};",
         f"    minThickness            {float(min_thickness_m):.6g};",
         "    nGrow 0;",
-        "    featureAngle              180;",
+        f"    featureAngle              {int(FEATURE_ANGLE)};",
         "    maxFaceThicknessRatio     0.5;",
         f"    nSmoothSurfaceNormals       {SMOOTH_SURFACE_NORMALS};",
         f"    nSmoothThickness           {SMOOTH_THICKNESS};",
@@ -981,7 +1019,7 @@ def measured(report: dict, *, interface_patch: str) -> dict:
 __all__ = ["LAYER_CASE", "LAYER_STAGE", "LayerError", "MAX_GLOBAL_CELLS", "MAX_LOCAL_CELLS",
            "MIN_VOL_FRACTION", "min_vol_for", "RELAXED_SHAPE", "MIN_TET_QUALITY",
            "MIN_THICKNESS_OF_STACK",
-           "BUFFER_CELLS_NO_EXTRUDE", "N_SURFACE_LAYERS", "EXPANSION_RATIO",
+           "BUFFER_CELLS_NO_EXTRUDE", "N_SURFACE_LAYERS", "EXPANSION_RATIO", "FEATURE_ANGLE",
            "FIRST_LAYER_FRACTION", "MAX_STACK_FRACTION",
            "SMOOTH_SURFACE_NORMALS", "SMOOTH_THICKNESS", "SMOOTH_NORMALS", "COVERAGE_FLOOR_PCT",
            "THICKNESS_FLOOR_PCT", "LAYERS_FLOOR_FRACTION", "ILLEGAL_PER_MILLION_CEILING",
