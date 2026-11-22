@@ -57,6 +57,13 @@ MAX_ROUNDS = 24
 #: A loop strays from its plane by more than this share of its size: its cap is the lid builder's
 #: own surface (cad/lids), not the flat disc of its plane.
 CURVED_LOOP = 0.03
+#: INS-24: a smooth patch's outline whose points stray from their own plane by more than this many of its own
+#: widths is the outline of a band - a cylinder wall cut by a notch, whose one loop runs round its foot, up the
+#: notch, back round its top and down - never the rim of one opening. An equal tee's saddle-shaped branch hole
+#: strays half its width; the notched ring adapter's band (batch 4) 1.24.
+BAND_LOOP = 1.0
+#: docs/RULES.md id of that reading
+BAND_LOOP_RULE = "INS-24"
 #: A pocket counts as a passage of the part when it holds at least this share of the largest
 #: pocket's space; a smaller one (a bolt hole beside a flange's bore, a blind dimple) is a side
 #: pocket: its mouths are kept, proposed as not an opening.
@@ -214,7 +221,9 @@ class InsideMap:
                "mouths_per_passage": [len(p.mouths) for p in passages],
                "side_pockets": len([p for p in self.pockets if not p.passage]),
                "cell_mm": round(self.h * mm_per_unit, 4),
-               "enclosed_mm3": round(self.enclosed_volume * mm_per_unit ** 3, 3)}
+               "enclosed_mm3": round(self.enclosed_volume * mm_per_unit ** 3, 3),
+               # the space of its passages, which open to the outside (INS-18: set against enclosed_mm3)
+               "open_mm3": round(sum(p.volume for p in passages) * mm_per_unit ** 3, 3)}
         if passages:
             out["deepest_mm"] = r(passages[0].deepest)
             out["clearance_mm"] = round(passages[0].clearance * mm_per_unit, 3)
@@ -537,6 +546,15 @@ def _loops(mesh, grid: Grid) -> tuple[list[_Loop], int]:
         if mesh.shape(found) is None and mesh.why.startswith("covered"):
             continue
         rim = bool(np.all(mesh.count[eidx] == 1))
+        if not rim and dev > BAND_LOOP * d:
+            # INS-24: THE OUTLINE OF A BAND IS NO OPENING'S RIM. A ring wall notched from its foot to its top is
+            # one smooth patch whose outline runs round its foot, up the notch, back round its top and down: one
+            # loop across the whole part, its flat projection a sliver. Capped "toward the smallest area" it
+            # spanned the ring's inside, cut that space off as a pocket of its own and was proposed as a second
+            # opening of the part's one open end (a ring adapter, batch 4: capped at its bore's top and again
+            # "beside the tab", staged as two separate passages). Its edges stay wall; the space it rings is
+            # whatever the other loops make of it.
+            continue
         lp = _Loop(vidx=np.asarray(vidx), eidx=np.asarray(eidx), P=P, c=c, n=n, area=area, dev=dev,
                    wh=wh, kind="rim" if rim else "bore")
         if d < MIN_ACROSS * grid.h:
@@ -609,6 +627,12 @@ def read_inside(mesh=None, *, tris=None, cells: int = GRID_CELLS, h_max: float |
         in_air = np.bincount(flat_lab, weights=oa, minlength=n_lab + 1)
         pocket_ids = {g for g in range(1, n_lab + 1) if g not in outside and sizes[g] >= MIN_POCKET_CELLS
                       and in_air[g] >= 0.5 * sizes[g]}
+        # a closed shell's inside, label by label: space the open air never reached (the part's material)
+        is_shell = in_air < 0.5 * sizes
+        is_shell[0] = False
+        if outside:
+            is_shell[np.fromiter(outside, dtype=np.int64)] = False
+        keep_arr = np.fromiter(outside | pocket_ids, dtype=np.int64)
         split = False
         sides = {}
         for k, lp in enumerate(loops):
@@ -618,6 +642,17 @@ def read_inside(mesh=None, *, tris=None, cells: int = GRID_CELLS, h_max: float |
             kind_a = "out" if a in outside else "pocket" if a in pocket_ids else ""
             kind_b = "out" if b in outside else "pocket" if b in pocket_ids else ""
             if {kind_a, kind_b} == {"out", "pocket"}:
+                # INS-15: A MOUTH OPENS STRAIGHT ONTO BOTH ITS SPACES, NEVER THROUGH THE PART'S MATERIAL. The
+                # side reads skip a closed shell's inside, so a cap reached its space through metal: the loop
+                # round a solid stub's root, capped inside a cup's wall, read the cup through the wall, and
+                # the outline of the cup's bottom face read it through the floor - an open cup with eight
+                # solid stubs was "a passage with 8 mouths". Such a cap opens nothing: taken away, the space
+                # flooded again.
+                if (_through_material(lp, flat_lab, grid, 1.0, a, keep_arr, is_shell, kind_a == "out")
+                        or _through_material(lp, flat_lab, grid, -1.0, b, keep_arr, is_shell, kind_b == "out")):
+                    lp.active = False
+                    split = True
+                    continue
                 # A MOUTH: open air on one side of the cap, a pocket on the other
                 pocket, out_plus = (b, True) if kind_a == "out" else (a, False)
                 sides[k] = (pocket, a if out_plus else b, out_plus)
@@ -1374,6 +1409,56 @@ def _side_labels(lp: _Loop, flat_lab: np.ndarray, grid: Grid, outside: set[int],
         u, c = np.unique(vals, return_counts=True)
         out.append(int(u[np.argmax(c)]))               # ties: the lowest label (np.unique sorts)
     return out[0], out[1]
+
+
+#: INS-15: a side of a cap is reached through the part's material when more than this share of the probes
+#: that reach its space there first passed through a closed shell's inside.
+MOUTH_MATERIAL = 0.5
+#: ...and a cap faces the material, not the open air, when more than this share of its probes toward the
+#: air land first in a closed shell's inside. A solid stub's root loop: 96-97 in 100 (the siphoned box, a
+#: cup with four stubs); a step in a venturi's bore, its cap a third bore and two thirds wall: 66 - a cap
+#: that still opens onto the bore, kept as before.
+MOUTH_FACES_MATERIAL = 0.9
+#: docs/RULES.md id of the reading that a mouth opens straight onto both its spaces, never through material
+THROUGH_MATERIAL_RULE = "INS-15"
+
+
+def _through_material(lp: _Loop, flat_lab: np.ndarray, grid: Grid, sgn: float, target: int,
+                      keep: np.ndarray, is_shell: np.ndarray, toward_air: bool) -> bool:
+    """INS-15: whether the space `target` a cap's `sgn` side reads (_side_labels: the first of SIDE_STEPS
+    that lands on open air or a pocket) is reached through the part's own material - most of the probes
+    that land in it first crossed a closed shell's inside (`is_shell[label]`) - rather than straight off
+    the cap; or, on the side `toward_air`, whether nearly all its probes (MOUTH_FACES_MATERIAL) land first in
+    that material at all.
+    The outline of a cup's bottom face reads the cup's space through its floor; a stub's root loop, capped
+    inside the cup's wall, faces the stub's metal and reads the cup through the wall: neither is where the
+    space opens."""
+    if lp.probe is None or lp.probe_n is None or not len(lp.probe) or target <= 0:
+        return False
+    shape = np.asarray(grid.shape)
+    first = np.zeros(len(lp.probe), dtype=np.int64)
+    got = np.zeros(len(lp.probe), dtype=np.int64)
+    for step in SIDE_STEPS:
+        todo = np.flatnonzero(got == 0)
+        if not len(todo):
+            break
+        q = lp.probe[todo] + sgn * step * grid.h * lp.probe_n[todo]
+        ijk = np.floor((q - grid.origin) / grid.h).astype(np.int64)
+        inside = np.all((ijk >= 0) & (ijk < shape), axis=1)
+        lab = np.zeros(len(q), dtype=np.int64)
+        lab[inside] = flat_lab[(ijk[inside, 0] * shape[1] + ijk[inside, 1]) * shape[2] + ijk[inside, 2]]
+        first[todo] = np.where(first[todo] == 0, lab, first[todo])
+        got[todo] = np.where(np.isin(lab, keep), lab, 0)
+    reached = got == target
+    if toward_air:
+        # TOWARD THE OPEN AIR: most of the probes land first in the part's material, and the few that
+        # reach the air slip past its edge - a stub's root loop capped inside the metal faces the stub
+        landed = first[first > 0]
+        if len(landed) and float(np.mean(is_shell[landed])) > MOUTH_FACES_MATERIAL:
+            return True
+    if not reached.any():
+        return False
+    return float(np.mean(is_shell[first[reached]])) > MOUTH_MATERIAL
 
 
 def _tightest(loops: list[_Loop], rows: list[tuple[int, list[int]]], outn: dict | None = None,

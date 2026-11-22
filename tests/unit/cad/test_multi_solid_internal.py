@@ -111,7 +111,7 @@ def test_a_rod_flush_with_the_pipe_ends_is_wall_and_the_lid_is_the_annulus(tmp_p
     assert r_rod < math.hypot(y, z) < R_BORE and 0.0 < x < L, f"seed ({x}, {y}, {z}) mm is not in the annulus"
     annulus = math.pi * (R_BORE ** 2 - r_rod ** 2)
     for port in ("inlet", "outlet"):
-        lid = _area_mm2(t["stls"][port]) - RING            # the port patch carries the pipe's end ring
+        lid = _area_mm2(t["stls"][port])                   # the lid alone: the end ring is wall (INS-26)
         assert lid == pytest.approx(annulus, rel=0.02), f"{port} lid {lid:.0f} mm2, the annulus is {annulus:.0f}"
     assert _open_edges(t["stls"].values()) == 0            # the lid meets the rod's side wall edge to edge
     # the rod's end discs are no boundary of the flow: left in, they closed the rod into a
@@ -130,7 +130,7 @@ def test_a_rod_running_through_the_port_plane_takes_its_section_off_the_lid(tmp_
     step = _write(tmp_path / "pipe_long_rod.step", pipe, rod)
     t = tessellate_internal(step, tmp_path / "stls", prepared=_prepared(), fluid_solid=False,
                             declared_ports=_declared())
-    lid = _area_mm2(t["stls"]["inlet"]) - RING
+    lid = _area_mm2(t["stls"]["inlet"])
     assert lid == pytest.approx(math.pi * (R_BORE ** 2 - r_rod ** 2), rel=0.02)
     x, y, z = (v * 1000.0 for v in t["interior_point"])
     assert r_rod < math.hypot(y, z) < R_BORE and 0.0 < x < L
@@ -145,7 +145,7 @@ def test_a_bundle_of_inserts_is_taken_off_the_lid_one_by_one(tmp_path):
     step = _write(tmp_path / "bundle.step", pipe, *tubes)
     t = tessellate_internal(step, tmp_path / "stls", prepared=_prepared(), fluid_solid=False,
                             declared_ports=_declared())
-    lid = _area_mm2(t["stls"]["outlet"]) - RING
+    lid = _area_mm2(t["stls"]["outlet"])
     assert lid == pytest.approx(math.pi * (R_BORE ** 2 - 3 * r_tube ** 2), rel=0.02)
     p = [v * 1000.0 for v in t["interior_point"]]
     assert not _in(pipe, p) and not any(_in(s, p) for s in tubes), f"seed {p} mm is in the metal"
@@ -173,5 +173,5 @@ def test_a_single_pipe_keeps_its_whole_bore_as_the_lid(tmp_path):
     step = _write(tmp_path / "pipe.step", _pipe())
     t = tessellate_internal(step, tmp_path / "stls", prepared=_prepared(), fluid_solid=False,
                             declared_ports=_declared())
-    lid = _area_mm2(t["stls"]["inlet"]) - RING
+    lid = _area_mm2(t["stls"]["inlet"])
     assert lid == pytest.approx(math.pi * R_BORE ** 2, rel=0.02)

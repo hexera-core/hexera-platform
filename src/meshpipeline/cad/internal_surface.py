@@ -226,6 +226,19 @@ def stage_internal_surface(surface_path, out_dir, *, intake_patches: list | None
         from meshpipeline.engines.workspace_facts import read_leak_closing
         close_leaks = read_leak_closing(Path(surface_path).parent) or None
     tris = read_triangles(Path(surface_path))
+    if str(input_kind or "").strip() != "fluid-domain" and intake_patches:
+        # INS-23: A PERFORATED PLATE OR A GRILLE whose declared ports sit at its sleeve's ends (the user said the
+        # flow goes through the holes) is staged with the sleeve fused on, as a CAD part is (cad/perforated)
+        from meshpipeline.cad.perforated import sleeved_triangles
+        from meshpipeline.engines.port_binding import declaration_targets
+        try:
+            sleeved = sleeved_triangles(tris, declaration_targets(intake_patches))
+        except Exception as exc:  # noqa: BLE001 - the part as drawn; the binding says what it cannot match
+            logger.warning("internal staging (INS-23): the sleeve could not be built (%s: %s)", type(exc).__name__,
+                           str(exc)[:200])
+            sleeved = None
+        if sleeved is not None:
+            tris = sleeved
     if str(input_kind or "").strip() != "fluid-domain":
         # AN ASSEMBLY IN ONE TRIANGLE FILE (several closed parts): the fluid is the space inside
         # them, closed off at the declared openings (cad/fluid_volume) - as for a CAD assembly
