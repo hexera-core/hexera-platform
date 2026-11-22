@@ -1492,9 +1492,30 @@ def _configure_external_3d(workspace, *, geometry_file: str, strategy: dict, wal
         dmin, dmax = args["domain_min"], args["domain_max"]
     else:
         from meshpipeline.engines.workspace_facts import read_far_field_request, read_request_txt
-        dmin, dmax = domain_from_strategy(body_bbox, analysis["L"], strategy,
-                                          request={**read_far_field_request(workspace),
-                                                   "request_txt": read_request_txt(workspace)})
+        _req = {**read_far_field_request(workspace), "request_txt": read_request_txt(workspace)}
+        dmin, dmax = domain_from_strategy(body_bbox, analysis["L"], strategy, request=_req)
+        from meshpipeline.engines.ground_plane import ground_patch_name
+        if not (ground_patch_name(contract_patches or []) or any(
+                str((p or {}).get("type") or "").lower() in ("symmetry", "symmetryplane")
+                for p in (contract_patches or []))):
+            # PLAN-cfd-6: the cross-section widened until the body blocks at most 3% of it (a free body only: a
+            # floor or a symmetry plane stays where it is declared, so such a box is left as planned)
+            from meshpipeline.engines.far_field import (
+                blockage_words,
+                flow_axis_of,
+                grow_for_blockage,
+                projected_areas_of,
+                ruler_of,
+            )
+            _areas = projected_areas_of(Path(workspace) / geometry_file)
+            _ax, _ = flow_axis_of(_req.get("flow_axis"))
+            if _areas:
+                dmin, dmax = list(dmin), list(dmax)
+                _rec = grow_for_blockage(dmin, dmax, _ax, _areas[_ax], ruler_m=ruler_of(
+                    body_bbox[0], body_bbox[1], _req.get("flow_axis"),
+                    strategy.get("reference_length_m") or _req.get("reference_length_m")))
+                if _rec is not None:
+                    logger.warning("far field: %s", blockage_words(_rec))
     from meshpipeline.engines.declared_boundary import body_walls, farfield_name
     _patches = list(contract_patches or [])
     _farfield = farfield_name(_patches)

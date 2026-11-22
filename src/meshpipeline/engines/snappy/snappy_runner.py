@@ -88,6 +88,8 @@ logger = logging.getLogger(__name__)
 
 #: The wake's refinement boxes are named <_WAKE_BOX><tier> in the dictionary's geometry.
 _WAKE_BOX = "wakeTier"
+#: PLAN-cfd-7: the refinement box round the body (engines/wake_region.plan_near_body)
+_NEAR_BOX = "nearBody"
 #: The workspace record of the wake a pass authored (read into the manifest by finalize).
 WAKE_FACT = "wake_refinement.json"
 
@@ -522,7 +524,36 @@ def domain_from_strategy(analysis: dict, strategy: dict | None = None,
                          ruler_m: float | None = None,
                          ground: bool = False,
                          contact: GroundContact | None = None,
-                         floor: tuple[int, str] = DEFAULT_FLOOR) -> tuple[list, list]:
+                         floor: tuple[int, str] = DEFAULT_FLOOR,
+                         frontal_m2=None, blockage: dict | None = None) -> tuple[list, list]:
+    """The far-field box. `frontal_m2`: the body's projected areas along x, y, z (far_field.projected_areas) - with
+    it the box's cross-section is widened until the body blocks at most 3% of it (PLAN-cfd-6), the planned margins
+    kept as the minimum, the record put in `blockage`; None: the box as the margins give it."""
+    dmin, dmax, i_s, ref = _domain_box(analysis, strategy, symmetry, flow_axis, ruler_m, ground, contact, floor)
+    if frontal_m2 is not None:
+        from meshpipeline.engines.far_field import grow_for_blockage
+        fixed: set = set()
+        if symmetry and symmetry.get("slab"):
+            fixed |= {(int(symmetry["axis"]), "min"), (int(symmetry["axis"]), "max")}
+        elif symmetry:
+            fixed.add((int(symmetry["axis"]), str(symmetry["side"])))
+        if ground:
+            fixed.add((int(floor[0]), str(floor[1])))
+        try:
+            rec = grow_for_blockage(dmin, dmax, i_s, float(frontal_m2[i_s]), fixed=fixed, ruler_m=ref)
+        except (TypeError, ValueError, IndexError):
+            rec = None
+        if rec is not None:
+            logger.info("far field: widened %.4g m on each open side for blockage %.3g -> %.3g",
+                        rec["grown_m"], rec["blockage_before"], rec["blockage"])
+            if blockage is not None:
+                blockage.update(rec)
+    return dmin, dmax
+
+
+def _domain_box(analysis: dict, strategy, symmetry, flow_axis, ruler_m, ground, contact,
+                floor) -> tuple[list, list, int, float]:
+    """(domain_min, domain_max, the streamwise axis, the ruler the margins multiply) - the box the margins give."""
     bmin, bmax, L = analysis["bbox_min"], analysis["bbox_max"], analysis["L"]
     if ground and flow_axis and flow_axis.strip().lower()[-1:] == "xyz"[int(floor[0])]:
         raise ValueError(f"a ground plane lies across {'xyz'[int(floor[0])]}, so the flow cannot "
@@ -570,9 +601,10 @@ def domain_from_strategy(analysis: dict, strategy: dict | None = None,
                 dmax[axx] = symmetry["pos"]
         if ground:
             _lay_floor(dmin, bmin, contact, dmax=dmax, bmax=bmax, floor=floor)
-        return dmin, dmax
+        return dmin, dmax, i_s, float(ref)
 
     roles = axis_roles(analysis, symmetry)
+    i_s, ref = 0, float(L)
     if roles is None:
         dmin = [bmin[0] - up * L, bmin[1] - side * L, bmin[2] - vert * L]
         dmax = [bmax[0] + dn * L, bmax[1] + side * L, bmax[2] + vert * L]
@@ -614,7 +646,7 @@ def domain_from_strategy(analysis: dict, strategy: dict | None = None,
             dmax[ax] = symmetry["pos"]
     if ground:
         _lay_floor(dmin, bmin, contact, dmax=dmax, bmax=bmax, floor=floor)
-    return dmin, dmax
+    return dmin, dmax, i_s, float(ref)
 
 
 #: The background box's budget: total cells before refinement, and a per-axis sanity bound.
@@ -850,6 +882,19 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
             _ask, base_actual, floor=floor, level=smax, flevel=flevel, regions=surface_regions or [],
             part_levels=bool(part_sizes and (part_sizes.get("reading") or {}).get("status") == "used"))
         wake = _user_wake(_ask, wake, wall_cell=base_actual / 2 ** smax)
+    _wake_level = smax
+    if _ask is not None:
+        # CFDREQ-17: in wall-function mode the wall's cells and the first layer are chosen together - the wall is
+        # coarsened (never past the sealing floor, nor under 100 cells along the body) until the y+ 50 first layer
+        # fits under its cells; the wake keeps the wall's planned level
+        from meshpipeline.engines import cfd_requirements as _CRw
+        _lv_wf = _CRw.wall_function_level(_ask, base_actual, level=smax, floor=floor)
+        if _lv_wf < smax:
+            logger.info("render_snappy_case: wall level %d -> %d so the wall-function first layer fits (%s)",
+                        smax, _lv_wf, _ask.wall_level_note)
+            smax = _lv_wf
+            smin = min(smin, smax)
+            flevel = max(flevel, smax)
     if deficit:
         logger.info("render_snappy_case: clamp deficit=%d → levels bumped (base_assumed=%.4g "
                     "base_actual=%.4g surf=%d feat=%d) to hold absolute wall resolution",
@@ -1012,7 +1057,7 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
     if wake is not None:
         _wake = plan_wake(body_min=analysis["bbox_min"], body_max=analysis["bbox_max"],
                           domain_min=domain_min, domain_max=domain_max,
-                          flow_axis=wake.flow_axis, base_cell=base_actual, surface_level=smax,
+                          flow_axis=wake.flow_axis, base_cell=base_actual, surface_level=_wake_level,
                           budget_cells=max_cells, knobs=wake.knobs, ruler_m=wake.ruler_m,
                           grounded=bool(ground), floor=ground_floor,
                           # what the body itself costs, so the wake never starves the wall's
@@ -1022,6 +1067,29 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
                               base_cell=base_actual, surface_level=smax,
                               near=(b0d, near_band_level), far=(b1d, max(1, smin - 1))))
         logger.info("render_snappy_case: %s", _wake.summary())
+    # PLAN-cfd-7: BESIDE THE BODY, a box at 50 cells per wake length; it and a protected near wake past the wake's
+    # share are paid for - the budget raised by what they cost, within one job's limit, never past a count of the user's
+    _near = None
+    _near_geom = _near_refine = ""
+    if _wake is not None and _wake.scale_m > 0:
+        from meshpipeline.engines.wake_region import plan_near_body
+        _near = plan_near_body(body_min=analysis["bbox_min"], body_max=analysis["bbox_max"], domain_min=domain_min,
+                               domain_max=domain_max, scale_m=_wake.scale_m, base_cell=base_actual,
+                               surface_level=_wake_level)
+        if _near is not None:
+            _near_geom = f" {_NEAR_BOX} {{ type searchableBox; min {vf(_near.box_min)}; max {vf(_near.box_max)}; }}"
+            _near_refine = f" {_NEAR_BOX} {{ mode inside; levels ((1e15 {_near.level})); }}"
+            logger.info("render_snappy_case: near-body box at level %d (cells %.3g mm, about %.2g M)",
+                        _near.level, _near.cell_m * 1e3, _near.cells / 1e6)
+        _extra = (_wake.raised if _wake.near else 0.0) + (_near.cells if _near is not None else 0.0)
+        if _extra > 0 and not (_ask is not None and _ask.user_budget()):
+            import meshpipeline.settings.policy as _pol_w
+            _lim = int(strategy.get("_cell_limit") or _pol_w.CELL_HARD_LIMIT)
+            _was_cells = max_cells
+            max_cells = int(min(float(_lim), float(max_cells) + _extra))
+            if max_cells > _was_cells:
+                logger.info("render_snappy_case: cell budget %d -> %d for the near wake and the near-body box",
+                            _was_cells, max_cells)
     _wake_tiers = list(_wake.tiers) if _wake is not None else []
     _wake_geom = "".join(
         f" {_WAKE_BOX}{k} {{ type searchableBox; min {vf(t.box_min)}; max {vf(t.box_max)}; }}"
@@ -1151,11 +1219,11 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
     _shm = (
         _HDR.format(cls="dictionary", obj="snappyHexMeshDict") + f"""
 castellatedMesh true; snap true; addLayers {'true' if _any_layers else 'false'};
-geometry {{ {surface_name}.stl {{ type triSurfaceMesh; name {surface_name};{_geo_regions} }}{_wake_geom}{_gap_geom}{_part_geom} }}
+geometry {{ {surface_name}.stl {{ type triSurfaceMesh; name {surface_name};{_geo_regions} }}{_wake_geom}{_near_geom}{_gap_geom}{_part_geom} }}
 castellatedMeshControls {{ maxLocalCells {cast_cells}; maxGlobalCells {cast_cells}; minRefinementCells 10;
   maxLoadUnbalance 0.10; nCellsBetweenLevels 3; features ( {{ file "{feature_file}"; level {flevel}; }}{_contact_feature} );
   refinementSurfaces {{ {surface_name} {{ level ({smin} {smax});{_ref_regions} }} }} resolveFeatureAngle {ang:.0f};
-  refinementRegions {{ {surface_name} {{ mode distance; levels (({b0d:.6g} {near_band_level}) ({b1d:.6g} {max(1, smin - 1)})); }}{_wake_refine}{_gap_refine}{_part_refine} }}
+  refinementRegions {{ {surface_name} {{ mode distance; levels (({b0d:.6g} {near_band_level}) ({b1d:.6g} {max(1, smin - 1)})); }}{_wake_refine}{_near_refine}{_gap_refine}{_part_refine} }}
   locationInMesh {vf(loc)}; allowFreeStandingZoneFaces true;{_outside} }}
 snapControls {{ nSmoothPatch 3; tolerance 2.0; nSolveIter 50; nRelaxIter 8; nFeatureSnapIter 15;
   implicitFeatureSnap false; explicitFeatureSnap true; multiRegionFeatureSnap false; }}
@@ -1245,7 +1313,10 @@ mergeTolerance 1e-6; debug 0;
     # manifest); a pass without one leaves no stale record behind
     _wr = ws / WAKE_FACT
     if _wake is not None:
-        out["wake"] = _wake.record()
+        _wrec = _wake.record()
+        if _near is not None:
+            _wrec["near_body"] = _near.record()
+        out["wake"] = _wrec
         out["wake_note"] = _wake.summary()
         _wr.write_text(json.dumps(out["wake"]))
     elif _wr.exists():

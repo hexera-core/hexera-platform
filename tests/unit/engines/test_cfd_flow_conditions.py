@@ -82,10 +82,10 @@ def test_cfmesh_and_netgen_take_it_and_the_engines_without_layers_say_so():
     assert out["first_layer_thickness"] > 0 and a.rows["c1"]["status"] == "applied"
     a = CR.Ask(req, "netgen")
     out = CR.netgen_inputs(a, layers=3, port_diameters=[0.05], soft_budget=1_000_000, cell_limit=8_000_000)
-    # CFDREQ-13: Netgen's length here is the 50 mm port - Re 3.3e4 round a body is laminar: no wall-function target,
-    # said on the row, and the layers keep Netgen's own sizing
-    assert "first_layer" not in out and a.rows["c1"]["status"] == "applied"
-    assert "laminar at these conditions" in a.rows["c1"]["built"]
+    # CFDREQ-17: Netgen's length here is the 50 mm port - Re 3.3e4 round a body is laminar: wall functions do not suit
+    # it, so the wall is resolved instead (a y+ 1 first layer), said on the row
+    assert out["first_layer"] == pytest.approx(a.how["visc_m"]) and a.fallback["why"] == "laminar"
+    assert "the wall is resolved instead" in a.rows["c1"]["built"]
     for engine, fn in (("gmsh", lambda x: CR.gmsh_sizes(x, 0.01, external=True)),
                        ("snapgrid", lambda x: CR.snapgrid_plan(x, {"max_cells": 1_000_000})),
                        ("vmtk", lambda x: CR.vmtk_spec(x, {"boundary_layers": 5}))):
