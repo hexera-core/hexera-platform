@@ -1496,7 +1496,16 @@ def check_mesh(workspace) -> dict:
     except OSError as exc:
         logger.warning("vmtk check_mesh: could not write layer_report.json: %s", exc)
     ok = (not fatal) and cells > 0 and (min_quality is None or min_quality > QUALITY_FLOOR)
+    # VER-2: THE SAME NON-ORTHOGONALITY EVERY ENGINE IS JUDGED BY - checkMesh's, measured on the tets (the
+    # board read 00160152 at 86.5 degrees where this record had no such number at all)
+    try:
+        non_ortho = tet_non_orthogonality(tets)
+    except Exception as exc:  # noqa: BLE001 - evidence; an unmeasured angle is said as unmeasured
+        logger.warning("vmtk check_mesh: non-orthogonality not measured: %s", exc)
+        non_ortho = {}
     return {"cells": cells, "fatal": fatal, "min_quality": min_quality,
+            "max_non_ortho": non_ortho.get("max"), "non_ortho_mean": non_ortho.get("mean"),
+            "non_ortho_faces_over_70": non_ortho.get("over_70"),
             "layer_coverage": layer_coverage, "mesh_ok": ok,
             # the reviewer's context reads the OpenFOAM engines' key for the same fact
             "layer_coverage_pct": layer_coverage,
@@ -1506,6 +1515,39 @@ def check_mesh(workspace) -> dict:
             "reoriented_tets": n_reoriented,
             "layer_tets": int(layer_mask.sum()) if layer_mask is not None else 0,
             "layer_min_quality": layer_min_quality}
+
+
+def tet_non_orthogonality(tets) -> dict:
+    """VER-2 on a tetrahedral mesh, as OpenFOAM's checkMesh reads it once the mesh is a polyMesh: on every face two
+    tets share, the angle between the face's normal and the line from one tet's centre to the other's (a tet's
+    centre is its vertex mean, as OpenFOAM's). {"max", "mean", "over_70", "faces"} in degrees; {} with no shared
+    face. Boundary faces have no neighbour and are not judged, as in checkMesh."""
+    import numpy as np
+    cells = tets.cells_dict.get(_VTK_TETRA) if hasattr(tets, "cells_dict") else None
+    if cells is None or not len(cells):
+        return {}
+    cells = np.asarray(cells, dtype=np.int64)
+    pts = np.asarray(tets.points, dtype=np.float64)
+    centre = pts[cells].mean(axis=1)
+    local = np.array([[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]])
+    faces = cells[:, local].reshape(-1, 3)
+    owner = np.repeat(np.arange(len(cells)), 4)
+    key = np.sort(faces, axis=1)
+    order = np.lexsort((key[:, 2], key[:, 1], key[:, 0]))
+    k = key[order]
+    same = np.all(k[1:] == k[:-1], axis=1)
+    i = np.nonzero(same)[0]
+    if not len(i):
+        return {}
+    a, b = order[i], order[i + 1]
+    f = faces[a]
+    n = np.cross(pts[f[:, 1]] - pts[f[:, 0]], pts[f[:, 2]] - pts[f[:, 0]])
+    d = centre[owner[b]] - centre[owner[a]]
+    cos = np.abs(np.einsum("ij,ij->i", n, d)) / np.maximum(np.linalg.norm(n, axis=1) * np.linalg.norm(d, axis=1),
+                                                            1e-300)
+    ang = np.degrees(np.arccos(np.clip(cos, 0.0, 1.0)))
+    return {"max": round(float(ang.max()), 4), "mean": round(float(ang.mean()), 4),
+            "over_70": int((ang > 70.0).sum()), "faces": int(len(ang))}
 
 
 _LAYER_ARRAY = "BoundaryLayer"   # cell data on mesh.vtu: 1 = a boundary-layer tet, 0 = anything else
