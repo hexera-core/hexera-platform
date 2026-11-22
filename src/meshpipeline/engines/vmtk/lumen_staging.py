@@ -221,8 +221,19 @@ def stage_lumen(workspace, geom_path, *, prepared, intake_patches: list,
     # pinches the rims of such input into zero-area non-manifold triangles and the generator
     # segfaults. The rims are cut to the remesh length, the interior only to the coarsest cell
     # the remesh may produce, and nothing needle-shaped is left anywhere (rims.py says why each).
-    pts, tri = bound_edges(np.asarray(wall.points), wall.faces.reshape(-1, 4)[:, 1:],
-                           h_wall=size["max_edge_length"], h_rim=size["edge_bound"])
+    # THE STAGING'S WORK IS PLANNED (staging_work, TIME-10): the bound counts what each of its
+    # rounds will make before it makes it, and the wall it hands on is priced before the radius
+    # field and vmtk's own remesh read it - past one run's share, it stops here, with the reason
+    from meshpipeline.engines.vmtk import staging_work
+    from meshpipeline.engines.vmtk.rims import TooManyTriangles
+    cad_tri = int(wall.n_cells)
+    try:
+        pts, tri = bound_edges(np.asarray(wall.points), wall.faces.reshape(-1, 4)[:, 1:],
+                               h_wall=size["max_edge_length"], h_rim=size["edge_bound"],
+                               max_triangles=staging_work.MAX_STAGED_TRIANGLES)
+    except TooManyTriangles as over:
+        raise staging_work.StagingOverWork(staging_work.refusal_words(cad_tri, over.planned)) from over
+    work = staging_work.check(cad_tri, len(tri))
     lumen: Any = pv.PolyData(pts, np.hstack([np.full((len(tri), 1), 3, dtype=np.int64),
                                              tri]).ravel()).clean()
     # sharp edges read along each side's own normal: a short orifice or a sharp throat has
@@ -260,7 +271,8 @@ def stage_lumen(workspace, geom_path, *, prepared, intake_patches: list,
               "n_open_loops": n_loops, "wall_triangles": int(lumen.n_cells),
               "input_kind": str(input_kind or ""), "angular_deflection": ANGULAR_DEFLECTION,
               "interior_point": res.get("interior_point"),
-              "capping_method": capping, "wall_pieces": pieces, "wall_oriented": oriented}
+              "capping_method": capping, "wall_pieces": pieces, "wall_oriented": oriented,
+              "staging_work": work.as_dict()}
     try:
         record["cost_model"] = lumen_cost_model(lumen, size, all_pieces=pieces > 1)
     except Exception:  # noqa: BLE001 - without a model the run is sized as before, not refused

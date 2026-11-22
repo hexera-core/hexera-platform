@@ -42,7 +42,8 @@ def _pieces(length: np.ndarray, h) -> np.ndarray:
 
 
 def bound_edges(points: np.ndarray, faces: np.ndarray, *, h_wall: float, h_rim: float,
-                aspect_max: float = 6.0) -> tuple[np.ndarray, np.ndarray]:
+                aspect_max: float = 6.0,
+                max_triangles: int | None = None) -> tuple[np.ndarray, np.ndarray]:
     """Cut a triangle sheet so that no edge is longer than `h_wall`, no open-rim edge longer than
     `h_rim`, and no thin triangle touching a rim - longest edge squared over twice its area
     above `aspect_max` - is fanned from farther than `aspect_max` pieces away. The sheet stays
@@ -91,13 +92,32 @@ def bound_edges(points: np.ndarray, faces: np.ndarray, *, h_wall: float, h_rim: 
         raise ValueError(f"aspect_max must be at least 1, got {aspect_max!r}")
     if len(tri) == 0:
         return pts, tri
-    pts, tri = _halve_long_edges(pts, tri, float(h_wall))
+    pts, tri = _halve_long_edges(pts, tri, float(h_wall), max_triangles=max_triangles)
     return _fan_rims_and_needles(pts, tri, h_rim=float(h_rim),
                                  h_floor=min(float(h_rim), float(h_wall)),
                                  h_wall=float(h_wall), aspect_max=float(aspect_max))
 
 
-def _halve_long_edges(pts: np.ndarray, tri: np.ndarray, h: float) -> tuple[np.ndarray, np.ndarray]:
+class TooManyTriangles(ValueError):
+    """Move 1 would make more triangles than the caller's planned work allows (`max_triangles`):
+    raised before the round that passes it is made."""
+
+    def __init__(self, planned: int, limit: int) -> None:
+        super().__init__(f"the edge bound would make at least {planned:,} triangles, past {limit:,}")
+        self.planned = int(planned)
+        self.limit = int(limit)
+
+
+def pieces_after_halving(length, h: float) -> np.ndarray:
+    """2^k: the pieces round-after-round halving cuts an edge of `length` into, k the rounds it
+    takes to come within h (the bound _halve_long_edges reads, 1 for an edge already within it)."""
+    lv = np.asarray(length, dtype=np.float64)
+    k = np.ceil(np.log2(np.maximum(lv / (h * (1.0 + 1e-9)), 1.0)) - 1e-12)
+    return np.power(2, np.maximum(k, 0).astype(np.int64))
+
+
+def _halve_long_edges(pts: np.ndarray, tri: np.ndarray, h: float, *,
+                      max_triangles: int | None = None) -> tuple[np.ndarray, np.ndarray]:
     """Move 1: midpoint halving until no edge is longer than h; conforming and shape-keeping -
     except for NEEDLES, which are laddered (NEEDLE_LADDER_RULE).
 
@@ -113,9 +133,13 @@ def _halve_long_edges(pts: np.ndarray, tri: np.ndarray, h: float) -> tuple[np.nd
     triangles, slivers 4 m long and 4.6 mm wide; nine rounds of halving made 2,868,474 triangles
     of it (an 11 mm wall needs about 14,000), their short edges down to microns, and the radius
     field and vmtk's own remesh then ran until the run's 250-minute wall (00160152, 00184527 the
-    same). Fat triangles keep the halving: its count is within four times area / h^2."""
+    same). Fat triangles keep the halving: its count is within four times area / h^2.
+    `max_triangles`: the planned work the caller allows - before a round passes it (the round's
+    own count, 1 to 4 per face, and every ladder already planned), TooManyTriangles is raised
+    and nothing more is made."""
     needles: list[np.ndarray] = []           # rotated so the whole edge is ca, the apex b
     halved: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []    # (lo, hi, midpoint id)
+    laddered = 0                             # the triangles the needles taken out will become
     rounds = 0
     while rounds < 64 and len(tri):    # every round halves the longest edge; 2**64 is past any real mesh
         nf = len(tri)
@@ -136,8 +160,17 @@ def _halve_long_edges(pts: np.ndarray, tri: np.ndarray, h: float) -> tuple[np.nd
                 whole = np.argmin(pf[needle], axis=1)        # the one edge not to halve
                 rot = np.array([[1, 2, 0], [2, 0, 1], [0, 1, 2]])[whole]
                 needles.append(np.take_along_axis(tri[needle], rot, axis=1))
+                # a ladder of n1 + n3 - 1, its long edges in 2^k pieces each
+                long_pieces = np.where(pf[needle], pieces_after_halving(lf[needle], h), 0)
+                laddered += int(long_pieces.sum()) - int(needle.sum())
                 tri = tri[~needle]
                 continue                                     # the same round, without them
+        if max_triangles is not None:
+            # the triangles this round makes, before it makes them: 1, 2, 3 or 4 per face by the
+            # number of its edges halved, and the ladders already planned
+            after = nf + int(pf.sum()) + laddered
+            if after > max_triangles:
+                raise TooManyTriangles(after, max_triangles)
         rounds += 1
         uniq = np.unique(inv[pick])
         mid_of = np.full(int(inv.max()) + 1, -1, dtype=np.int64)
@@ -173,6 +206,8 @@ def _halve_long_edges(pts: np.ndarray, tri: np.ndarray, h: float) -> tuple[np.nd
             out += [np.stack([a, m0, m1], 1)[short_am1], np.stack([a, m1, c], 1)[short_am1],
                     np.stack([a, m0, c], 1)[~short_am1], np.stack([m0, m1, c], 1)[~short_am1]]
         tri = np.concatenate([o for o in out if len(o)]).astype(np.int64)
+    if max_triangles is not None and len(tri) + laddered > max_triangles:
+        raise TooManyTriangles(len(tri) + laddered, max_triangles)     # the ladders, before they are made
     if not needles:
         return pts, tri
     return _ladder_needles(pts, tri, np.concatenate(needles), halved, h)
