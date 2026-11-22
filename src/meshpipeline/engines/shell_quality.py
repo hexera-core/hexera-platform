@@ -32,6 +32,17 @@ import numpy as np
 
 from meshpipeline.engines.shell_mesh import ShellMesh
 
+
+def _cross(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """np.cross for 3-vectors (any leading shape, broadcast), written out: the same multiplications and subtractions
+    in the same order as numpy's own, so the same floats, without its axis handling (np.cross took more time in the
+    clean-up than the products it makes: 64,000 calls, 4.3 s on fr008)."""
+    a = np.asarray(a)
+    b = np.asarray(b)
+    a0, a1, a2 = a[..., 0], a[..., 1], a[..., 2]
+    b0, b1, b2 = b[..., 0], b[..., 1], b[..., 2]
+    return np.stack(np.broadcast_arrays(a1 * b2 - a2 * b1, a2 * b0 - a0 * b2, a0 * b1 - a1 * b0), axis=-1)
+
 #: (figure, op, limit, source). Validity is checked apart: it blocks.
 LIMITS = (
     ("aspect", "<=", 5.0, "Femap / industry target"),
@@ -384,7 +395,7 @@ def line_matrix(xyz: np.ndarray, els: np.ndarray, limits: InForce, m: dict | Non
     if m is None or "min_edge" not in m:
         m = (quad_measures if shape == "quad" else tria_measures)(xyz, els, extra=True)
     p = xyz[els]
-    c = np.cross(p[:, 2] - p[:, 0], p[:, 3] - p[:, 1]) if shape == "quad" else np.cross(p[:, 1] - p[:, 0],
+    c = _cross(p[:, 2] - p[:, 0], p[:, 3] - p[:, 1]) if shape == "quad" else _cross(p[:, 1] - p[:, 0],
                                                                                          p[:, 2] - p[:, 0])
     cols.append((m["min_jacobian"] <= 0) | (np.linalg.norm(c, axis=1) <= 0))
     z = np.zeros(n, dtype=bool)
@@ -1073,8 +1084,8 @@ def flip_past_trias(xyz: np.ndarray, trias: np.ndarray, t_face: list[int], *, ro
             if TWIN_GUARD and (min(p, q), max(p, q)) in users:
                 continue                # SHMESH-80: the other diagonal is an edge already (its triangles would be twins)
             new = np.array([[a, q, p], [q, b, p]], dtype=np.int64)  # same turning sense as (a, b, p)
-            n_old = np.cross(xyz[b] - xyz[a], xyz[p] - xyz[a])
-            n_new = [np.cross(xyz[t[1]] - xyz[t[0]], xyz[t[2]] - xyz[t[0]]) for t in new]
+            n_old = _cross(xyz[b] - xyz[a], xyz[p] - xyz[a])
+            n_new = [_cross(xyz[t[1]] - xyz[t[0]], xyz[t[2]] - xyz[t[0]]) for t in new]
             if any(float(np.dot(n, n_old)) <= 0 for n in n_new):
                 continue
             if TWIN_GUARD and any(0.5 * float(np.linalg.norm(n)) <= tiny for n in n_new):
@@ -1171,14 +1182,14 @@ def _good_quad(xyz: np.ndarray, q: list[int], normal: np.ndarray, limits: InForc
     if bool(_quad_past(m, limits)[0]) or (limits.aims and int(aim_score(m, "quad", limits, 1)[0]) > 0):
         return None
     p = xyz[q]
-    if float(np.dot(np.cross(p[2] - p[0], p[3] - p[1]), normal)) <= 0:
+    if float(np.dot(_cross(p[2] - p[0], p[3] - p[1]), normal)) <= 0:
         return None
     return float(m["min_angle_quad"][0])
 
 
 def _turns_along(xyz: np.ndarray, t: list[int], normal: np.ndarray) -> bool:
     p = xyz[t]
-    return float(np.dot(np.cross(p[1] - p[0], p[2] - p[0]), normal)) > 0
+    return float(np.dot(_cross(p[1] - p[0], p[2] - p[0]), normal)) > 0
 
 
 #: SHMESH-18b: the walk holds the user's lines (per line, within their allowance). Without it a walk spent the bands
@@ -1247,7 +1258,7 @@ def walk_trias(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, q_face: li
 
     def _n(c: tuple[int, ...]) -> np.ndarray:
         p = xyz[list(c)]
-        return np.cross(p[2] - p[0], p[3] - p[1]) if len(c) == 4 else np.cross(p[1] - p[0], p[2] - p[0])
+        return _cross(p[2] - p[0], p[3] - p[1]) if len(c) == 4 else _cross(p[1] - p[0], p[2] - p[0])
 
     def simulate(tri: tuple[int, ...], path: list[int], goal: int):
         """The quads that replace the path and the two triangles, or None."""
@@ -1417,10 +1428,10 @@ def pair_trias(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, t_face: li
         pairs_aim = np.array([t_aim[i] + t_aim[j] for i, j in cand_t], dtype=np.int64)
         ok &= aim_score(m, "quad", limits, len(Q)) <= pairs_aim
     # the quad must turn the way both its triangles do
-    n_q = np.cross(xyz[Q[:, 2]] - xyz[Q[:, 0]], xyz[Q[:, 3]] - xyz[Q[:, 1]])
+    n_q = _cross(xyz[Q[:, 2]] - xyz[Q[:, 0]], xyz[Q[:, 3]] - xyz[Q[:, 1]])
     for col in (0, 1):
         t = trias[np.array([ct[col] for ct in cand_t])]
-        n_t = np.cross(xyz[t[:, 1]] - xyz[t[:, 0]], xyz[t[:, 2]] - xyz[t[:, 0]])
+        n_t = _cross(xyz[t[:, 1]] - xyz[t[:, 0]], xyz[t[:, 2]] - xyz[t[:, 0]])
         ok &= np.einsum("mi,mi->m", n_q, n_t) > 0
     order = sorted(np.flatnonzero(ok).tolist(), key=lambda r: (-round(float(m["min_angle_quad"][r]), 9), cand_t[r]))
     used: set[int] = set()
@@ -1473,8 +1484,8 @@ def _splits(poly: list[int]) -> list[list[list[int]]]:
 def _elem_normal(xyz: np.ndarray, c: list[int]) -> np.ndarray:
     p = xyz[c]
     if len(c) == 4:
-        return np.cross(p[2] - p[0], p[3] - p[1])
-    return np.cross(p[1] - p[0], p[2] - p[0])
+        return _cross(p[2] - p[0], p[3] - p[1])
+    return _cross(p[1] - p[0], p[2] - p[0])
 
 
 def _past_one(xyz: np.ndarray, c: list[int], limits: InForce = IN_FORCE) -> bool:
@@ -2191,7 +2202,7 @@ def _mend_round(xyz, Q, T, qf, tf, node_kind, node_edge, vertex_edges, limits, q
             span = float(np.linalg.norm(line))
             if span <= 0.0:
                 return False
-            off = float(np.linalg.norm(np.cross(xyz[x] - xyz[y], line))) / span
+            off = float(np.linalg.norm(_cross(xyz[x] - xyz[y], line))) / span
             if off > MEND_CHORD * span and (suppress is None or off >= suppress):
                 return False
         # the mesh stays a surface: every node next to both is a corner of an element that holds both
@@ -2326,8 +2337,8 @@ def _mend_round(xyz, Q, T, qf, tf, node_kind, node_edge, vertex_edges, limits, q
     # every new element's normal at once, as _elem_normal makes it (the same arithmetic, element by element)
     pq = xyz[np.array(new_q, dtype=np.int64).reshape(-1, 4)]
     pt = xyz[np.array(new_t, dtype=np.int64).reshape(-1, 3)]
-    nrm_new_q = np.cross(pq[:, 2] - pq[:, 0], pq[:, 3] - pq[:, 1]) if len(pq) else np.zeros((0, 3))
-    nrm_new_t = np.cross(pt[:, 1] - pt[:, 0], pt[:, 2] - pt[:, 0]) if len(pt) else np.zeros((0, 3))
+    nrm_new_q = _cross(pq[:, 2] - pq[:, 0], pq[:, 3] - pq[:, 1]) if len(pq) else np.zeros((0, 3))
+    nrm_new_t = _cross(pt[:, 1] - pt[:, 0], pt[:, 2] - pt[:, 0]) if len(pt) else np.zeros((0, 3))
     normal: dict[int, np.ndarray] = {}
 
     def turned_as(e: int, touched: tuple[int, ...]) -> np.ndarray:
@@ -2594,17 +2605,17 @@ def quad_measures(xyz: np.ndarray, quads: np.ndarray, *, extra: bool = False) ->
     "jacobian" (the smallest over the largest determinant of the Jacobian at the 2 x 2 Gauss points, in the
     element's mean plane), "min_edge" and "max_edge" (mm), and "skew_pre" (90 minus skew_deg: 0 is ideal)."""
     p = xyz[quads]                                         # (m, 4, 3)
-    n = _unit(np.cross(p[:, 2] - p[:, 0], p[:, 3] - p[:, 1]))
+    n = _unit(_cross(p[:, 2] - p[:, 0], p[:, 3] - p[:, 1]))
     e_next = p[:, [1, 2, 3, 0]] - p
     e_prev = p[:, [3, 0, 1, 2]] - p
-    cross = np.cross(e_next, e_prev)
+    cross = _cross(e_next, e_prev)
     jac = np.einsum("mki,mi->mk", cross, n) / np.maximum(
         np.linalg.norm(e_next, axis=2) * np.linalg.norm(e_prev, axis=2), 1e-300)
     lengths = np.linalg.norm(e_next, axis=2)
-    n1 = _unit(np.cross(p[:, 1] - p[:, 0], p[:, 2] - p[:, 0]))
-    n2 = _unit(np.cross(p[:, 2] - p[:, 0], p[:, 3] - p[:, 0]))
-    n3 = _unit(np.cross(p[:, 1] - p[:, 0], p[:, 3] - p[:, 0]))
-    n4 = _unit(np.cross(p[:, 2] - p[:, 1], p[:, 3] - p[:, 1]))
+    n1 = _unit(_cross(p[:, 1] - p[:, 0], p[:, 2] - p[:, 0]))
+    n2 = _unit(_cross(p[:, 2] - p[:, 0], p[:, 3] - p[:, 0]))
+    n3 = _unit(_cross(p[:, 1] - p[:, 0], p[:, 3] - p[:, 0]))
+    n4 = _unit(_cross(p[:, 2] - p[:, 1], p[:, 3] - p[:, 1]))
     warp = np.maximum(np.degrees(np.arccos(np.clip(np.einsum("mi,mi->m", n1, n2), -1, 1))),
                       np.degrees(np.arccos(np.clip(np.einsum("mi,mi->m", n3, n4), -1, 1))))
     d1 = np.linalg.norm(p[:, 2] - p[:, 0], axis=1)
@@ -2631,7 +2642,7 @@ def quad_measures(xyz: np.ndarray, quads: np.ndarray, *, extra: bool = False) ->
             for eta in (-_GAUSS, _GAUSS):
                 d_xi = 0.25 * ((1 - eta) * (p[:, 1] - p[:, 0]) + (1 + eta) * (p[:, 2] - p[:, 3]))
                 d_eta = 0.25 * ((1 - xi) * (p[:, 3] - p[:, 0]) + (1 + xi) * (p[:, 2] - p[:, 1]))
-                dets.append(np.einsum("mi,mi->m", np.cross(d_xi, d_eta), n))
+                dets.append(np.einsum("mi,mi->m", _cross(d_xi, d_eta), n))
         det = np.stack(dets, axis=1)
         dmax = det.max(axis=1)
         out.update(jacobian=det.min(axis=1) / np.where(dmax > 0, dmax, 1.0), min_edge=lengths.min(axis=1),
@@ -2644,7 +2655,7 @@ def tria_measures(xyz: np.ndarray, trias: np.ndarray, *, extra: bool = False) ->
     triangle has one Jacobian), "min_edge" and "max_edge" (mm), and "skew_pre" (90 minus skew_deg)."""
     p = xyz[trias]
     lengths = np.linalg.norm(p[:, [1, 2, 0]] - p, axis=2)
-    area2 = np.linalg.norm(np.cross(p[:, 1] - p[:, 0], p[:, 2] - p[:, 0]), axis=1)
+    area2 = np.linalg.norm(_cross(p[:, 1] - p[:, 0], p[:, 2] - p[:, 0]), axis=1)
     angles = _angles(p)
     # skew: the smallest angle between a median and the mid-line opposite it, over the three corners
     skews = []
@@ -2824,10 +2835,10 @@ def zero_area(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray) -> np.ndarr
     out = []
     if len(quads):
         pq = xyz[quads]
-        out.append(0.5 * np.linalg.norm(np.cross(pq[:, 2] - pq[:, 0], pq[:, 3] - pq[:, 1]), axis=1) <= tiny)
+        out.append(0.5 * np.linalg.norm(_cross(pq[:, 2] - pq[:, 0], pq[:, 3] - pq[:, 1]), axis=1) <= tiny)
     if len(trias):
         pt = xyz[trias]
-        out.append(0.5 * np.linalg.norm(np.cross(pt[:, 1] - pt[:, 0], pt[:, 2] - pt[:, 0]), axis=1) <= tiny)
+        out.append(0.5 * np.linalg.norm(_cross(pt[:, 1] - pt[:, 0], pt[:, 2] - pt[:, 0]), axis=1) <= tiny)
     return np.concatenate(out)
 
 

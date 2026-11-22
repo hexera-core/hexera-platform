@@ -11,6 +11,17 @@ from dataclasses import dataclass, field
 import numpy as np
 
 
+def _cross3(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """np.cross for 3-vectors (any leading shape, broadcast), written out: the same multiplications and subtractions
+    in the same order as numpy's own, so the same floats, without its axis handling (np.cross took more time in the
+    clean-up than the products it makes: 64,000 calls, 4.3 s on fr008)."""
+    a = np.asarray(a)
+    b = np.asarray(b)
+    a0, a1, a2 = a[..., 0], a[..., 1], a[..., 2]
+    b0, b1, b2 = b[..., 0], b[..., 1], b[..., 2]
+    return np.stack(np.broadcast_arrays(a1 * b2 - a2 * b1, a2 * b0 - a0 * b2, a0 * b1 - a1 * b0), axis=-1)
+
+
 @dataclass
 class ShellMesh:
     """A shell mesh, millimetres. Elements are numbered quads first, then triangles (1-based in the files)."""
@@ -44,9 +55,9 @@ class ShellMesh:
 def _normal(xyz: np.ndarray, conn: np.ndarray) -> np.ndarray:
     p = xyz[conn]
     if len(conn) == 4:
-        n = np.cross(p[2] - p[0], p[3] - p[1])
+        n = _cross3(p[2] - p[0], p[3] - p[1])
     else:
-        n = np.cross(p[1] - p[0], p[2] - p[0])
+        n = _cross3(p[1] - p[0], p[2] - p[0])
     return n / max(float(np.linalg.norm(n)), 1e-300)
 
 
@@ -132,7 +143,7 @@ def _corners_turn(xyz: np.ndarray, conn: list[int], normal: np.ndarray) -> bool:
     """Whether any corner of the element turns against `normal` (a corner Jacobian not positive)."""
     p = xyz[conn]
     k = len(conn)
-    return any(float(np.dot(np.cross(p[(j + 1) % k] - p[j], p[(j - 1) % k] - p[j]), normal)) <= 0.0 for j in range(k))
+    return any(float(np.dot(_cross3(p[(j + 1) % k] - p[j], p[(j - 1) % k] - p[j]), normal)) <= 0.0 for j in range(k))
 
 
 #: SHMESH-80: no clean-up step writes the same element twice (two elements on the same corners)
@@ -255,8 +266,9 @@ def _collapse_short(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, q_fac
             key = (a, b) if a < b else (b, a)
             lim[key] = min(lim.get(key, np.inf), max(SHORT_SHARE * float(limit[f]),
                                                       min(float(limit[f]), SHORT_SHARE * longest)))
-    short = sorted((float(np.linalg.norm(xyz[a] - xyz[b])), a, b) for (a, b), m in lim.items()
-                   if float(np.linalg.norm(xyz[a] - xyz[b])) < m)
+    # (each edge's length measured once: the same float the filter and the sort read)
+    short = sorted((d_, a, b) for (a, b), m in lim.items()
+                   for d_ in (float(np.linalg.norm(xyz[a] - xyz[b])),) if d_ < m)
     folded: dict[int, tuple[int, int]] = {}       # (SHMESH-12d: each folded pair's triangles -> its far corners)
     if FOLDED_PAIRS:
         pairs = _folded_pairs(xyz, trias, t_face, limit)
