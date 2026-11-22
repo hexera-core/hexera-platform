@@ -390,6 +390,28 @@ def wetted_skin(cad: Surface, cell: float):
     return wetted
 
 
+#: A far-field wetting reading that keeps less than this share of the outer skin is a failed reading, not an
+#: assembly: the outer skin is what the air touches, and the faces the far field wets at the mesh's scale are most of
+#: it on every assembly read (RM3: 12,303 of 15,648 faces). Below it the outer skin alone is held, and said.
+WETTED_MIN_OF_OUTER = 0.3
+
+
+def sane_skin(cad: Surface, outer, wetted):
+    """(skin, note): both_skins(outer, wetted), unless the wetted reading keeps under WETTED_MIN_OF_OUTER of the
+    outer skin's area - then the outer skin alone, with the note saying so ("" when nothing was set aside)."""
+    if outer is None or wetted is None or not cad.n:
+        return both_skins(outer, wetted), ""
+    c, a = cad.centroids(), cad.areas()
+    o = np.asarray(outer(c), dtype=bool)
+    if not o.any():
+        return both_skins(outer, wetted), ""
+    kept = float(a[o & np.asarray(wetted(c), dtype=bool)].sum() / max(a[o].sum(), 1e-300))
+    if kept < WETTED_MIN_OF_OUTER:
+        return outer, (f"the far-field wetting reading kept {kept * 100:.0f}% of the outer skin, under the "
+                       f"{WETTED_MIN_OF_OUTER * 100:.0f}% any assembly reads: held to the whole outer skin instead")
+    return both_skins(outer, wetted), ""
+
+
 def both_skins(a, b):
     """The CAD points both readings call skin (either one alone when the other could not be made)."""
     if a is None or b is None:
@@ -678,6 +700,19 @@ def measure(workspace, *, intake_patches, manifest: Mapping | None = None,
         body_names = [n for n, s in patches.items()
                       if roles.get(n, "wall") == "wall" and n.lower() not in _GROUND_NAMES
                       and _on_box_share(s, lo, hi) < 0.9]
+        # THE BODY'S BOUNDARY NOT READ IS A FAILED MEASUREMENT, NEVER A 100% MISS. RM5 (c2_rm5 attempt 2): a
+        # production-grade snappy mesh with 285,321 faces on its wall patch 'body' was measured with no body patch
+        # read (patches_compared []): the CAD was held to the far field and the ground alone and read "100.0% of
+        # your CAD surface is not reached", and the gate threw the mesh away.
+        faces = manifest.get("patch_face_counts") or {}
+        declared = sorted(str(n) for n, ty in roles.items() if ty == "wall" and str(n).lower() not in _GROUND_NAMES
+                          and int(faces.get(n) or 0) > 0)
+        if not body_names and declared:
+            logger.warning("fidelity: the wall patch(es) %s carry faces but were not read from the mesh on disk "
+                           "(read: %s) - not measured", declared, sorted(patches))
+            return {**rec, "verdict": UNMEASURED,
+                    "why": (f"the mesh's wall {', '.join(declared)} was not read from the mesh on disk (read: "
+                            f"{', '.join(sorted(patches)) or 'nothing'})")}
     else:
         # an internal fluid, a fluid domain, a solid: its whole boundary is the staged surface
         body_names = list(patches)
@@ -695,7 +730,10 @@ def measure(workspace, *, intake_patches, manifest: Mapping | None = None,
             # the outside air's skin, on a grid finer than the mesh's own wall faces - and only the
             # faces the far field wets at the mesh's own scale (wetted_skin)
             _cell = float(np.median(wall.cell_size))
-            skin = both_skins(outer_skin(cad, _cell), wetted_skin(cad, _cell))
+            skin, _skin_note = sane_skin(cad, outer_skin(cad, _cell), wetted_skin(cad, _cell))
+            if _skin_note:
+                logger.warning("fidelity: %s", _skin_note)
+                rec["skin_note"] = _skin_note
         dist = surface_distance(wall, allb, cad if fluid_side else _empty(),
                                 box=(lo, hi) if flow == "external" else None, skin=skin)
         if not fluid_side:
