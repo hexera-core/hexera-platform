@@ -1413,16 +1413,106 @@ function initViewer(job,surf,uiCfg){
       if(q.skew_faces===0)return 'No skewed faces';
       return [`${q.skew_faces.toLocaleString()} skewed face${q.skew_faces!==1?'s':''}`,ofFaces,frac]
         .filter(Boolean).join(' ');};
+    /* THE DISTRIBUTION BEHIND A MAX, which is the one thing a max cannot say. Every metric on a
+       delivered conjugate mesh clears its bar - non-orthogonality 48.4 against 65, skewness 1.65
+       against 20 - so three maxima say "fine" three times and a reader learns nothing about the
+       mesh they were sent. Measured on the delivered plate: the coolant's worst face is 1.1x its
+       own 99.9th percentile, so it stands in a population of sixteen thousand like it, while the
+       chip's is 62.7x its own and is one stray face. Same verdict, two different meshes.
+
+       PER REGION, because the backend publishes it per region and cannot honestly do otherwise:
+       two regions' histograms have different bin edges and two medians do not average, so a
+       merged distribution would be a number no face has. That is also how a mesher shows quality
+       - by zone - so the shape is the right one rather than a concession. */
+    const QF=surf.quality_fields||{},QM=QF.metrics||{},QR=QF.regions||{};
+    // metric key, the checkMesh summary key that outranks it, the label, the unit
+    const DIST=[['non_ortho','max_non_ortho','Non-orthogonality','°'],
+                ['skewness','max_skewness','Skewness',''],
+                ['aspect_ratio','max_aspect_ratio','Aspect ratio','']];
+    // these numbers span eleven decades on one mesh - 3e-13 to 48 - so neither a fixed decimal
+    // count nor an exponent suits all of them; significant figures do, and the trailing zeros
+    // stay so that a row of them lines up: dropping them read "median 3 - p99.9 3.499" where the
+    // first number is exactly as precise as the second and looked like a different quantity.
+    // Zero is the one value this gets wrong - "0.00" claims a measurement - so it is said plainly.
+    const qnum=v=>!isNum(v)?'':v===0?'0':v.toPrecision(3);
+    // A BAR IS NOT A MEASUREMENT. 65, 20 and 1000 are round numbers somebody chose, and three
+    // significant figures turned the last of them into "1.00e+3".
+    const lnum=v=>!isNum(v)?'':(Number.isInteger(v)&&Math.abs(v)<1e7)?v.toLocaleString():qnum(v);
+    /* LOG HEIGHTS, AND ONLY THE HEIGHTS. 99.0% of this mesh's non-orthogonality falls in the
+       first bin, so on a linear axis every other bar is under one pixel and the tail - the only
+       part of the picture worth looking at - is not drawn at all. The counts are the counts as
+       the backend measured them; the drawing is logarithmic, and the row's own numbers beside it
+       are the axis. */
+    const spark=h=>{
+      if(!h||!Array.isArray(h.counts)||!h.counts.length)return '';
+      const c=h.counts,n=c.length;
+      const mx=isNum(h.max_count)&&h.max_count>0?h.max_count:c.reduce((a,b)=>Math.max(a,b),0);
+      if(!(mx>0))return '';
+      const H=16,den=Math.log10(1+mx);
+      const bars=c.map((v,i)=>{
+        if(!isNum(v)||v<=0)return '';
+        const hh=Math.max(1,(den>0?Math.log10(1+v)/den:1)*H);
+        return `<rect x="${(i*100/n).toFixed(3)}" y="${(H-hh).toFixed(2)}"`
+          +` width="${(86/n).toFixed(3)}" height="${hh.toFixed(2)}"/>`;}).join('');
+      return bars?`<svg class="mx-hist" viewBox="0 0 100 ${H}" preserveAspectRatio="none"`
+        +` aria-hidden="true">${bars}</svg>`:'';};
+    // one line per region: the shape, then what the shape is of
+    const distRow=(rname,rm,unit)=>{
+      if(!rm)return '';
+      const bits=[];
+      if(isNum(rm.p50))bits.push(`median ${qnum(rm.p50)}${unit}`);
+      if(isNum(rm.p999))bits.push(`p99.9 ${qnum(rm.p999)}${unit}`);
+      if(isNum(rm.max))bits.push(`worst ${qnum(rm.max)}${unit}`
+        +(isNum(rm.tail_ratio)?` (${rm.tail_ratio.toFixed(1)}× p99.9)`:''));
+      if(!bits.length)return '';
+      return `<div class="mx-dist" data-region="${esc(rname)}"><b>${esc(rname)}</b>`
+        +spark(rm.histogram)+`<span class="mx-dn">${bits.join(' · ')}</span></div>`;};
+    const distFor=key=>Object.keys(QR).map(r=>{
+      const rm=QR[r]&&QR[r].metrics&&QR[r].metrics[key];
+      return rm?distRow(r,rm,(QM[key]&&QM[key].unit)||''):'';}).filter(Boolean).join('');
+    // WHAT THE BAR SAID, in the same words whether it passed or not. A panel that prints a figure
+    // and nothing else leaves a reader to remember what 65 degrees was for, and leaves a mesh
+    // that failed looking like one that passed.
+    const verdict=key=>{
+      const md=QM[key];
+      if(!md||!isNum(md.limit)||!isNum(md.n_faces)||!isNum(md.n_over))return '';
+      const u=md.unit||'',n=md.n_over;
+      // the scope is said, not implied: these counts are over boundary faces, and checkMesh's
+      // own summary above them is over the whole mesh
+      const scope=md.scope==='boundary'?'boundary faces':'faces';
+      const head=n>0?`${n.toLocaleString()} of ${md.n_faces.toLocaleString()} ${scope} over `
+                    :`none of ${md.n_faces.toLocaleString()} ${scope} over `;
+      return `<div class="mx-verdict${n>0?' over':''}">${head}${lnum(md.limit)}${u}</div>`;};
+    const subOf=(text,key)=>(text?`<div>${text}</div>`:'')+verdict(key)+distFor(key);
+
     const quality=[];
     if(has('max_non_ortho'))quality.push(row('max_non_ortho','Max non-orthogonality','°',
-      has('avg_non_ortho')?`Mean ${show(q.avg_non_ortho)}°`:''));
+      subOf(has('avg_non_ortho')?`Mean ${show(q.avg_non_ortho)}°`:'','non_ortho')));
     else if(has('avg_non_ortho'))quality.push(row('avg_non_ortho','Mean non-orthogonality','°'));
     // skewness: the max with the skewed faces under it; without a max, the count and its share
     // stand on their own - nothing the engine reported is dropped
-    if(has('max_skewness'))quality.push(row('max_skewness','Max skewness','',skewNote()));
+    if(has('max_skewness'))quality.push(row('max_skewness','Max skewness','',subOf(skewNote(),'skewness')));
     else if(has('skew_faces'))quality.push(row('skew_faces','Skewed faces','',[ofFaces,frac].filter(Boolean).join(' ')));
     else if(has('skew_fraction'))quality.push(row('skew_fraction','Skew fraction',''));
-    if(has('max_aspect_ratio'))quality.push(row('max_aspect_ratio','Max aspect ratio',''));
+    if(has('max_aspect_ratio'))quality.push(row('max_aspect_ratio','Max aspect ratio','',
+      subOf('','aspect_ratio')));
+    /* AND THE METRICS THE SUMMARY NEVER CARRIED. checkMesh's summary block is over the whole mesh
+       and so outranks these, and it is preferred wherever it exists - but on a mesh too big to
+       re-measure it does not exist, which is exactly the mesh whose quality a reader most needs.
+       The figure then comes off the per-face fields checkMesh wrote, which are the boundary's
+       only, and `verdict` says so rather than letting it pass as a whole-mesh number.
+
+       THE KEY IS THE SUMMARY'S KEY, not the metric's. The heatmap wires a figure into a colour
+       control by matching `.mx-c[data-key]` against META[m].fact (max_non_ortho and friends), so
+       a row keyed anything else would render as dead text with the colour it could drive sitting
+       one function away. */
+    DIST.forEach(([key,sumKey,label,unit])=>{
+      if(has(sumKey)||!QM[key]||!isNum(QM[key].max))return;
+      quality.push(`<div class="mx-c mx-row mx-q" data-key="${esc(sumKey)}">`
+        +`<div class="mx-k">${esc(label)}</div>`
+        +`<div class="mx-v">${show(Number(QM[key].max.toPrecision(4)))}`
+        +(unit?`<small>${unit}</small>`:'')+`</div>`
+        +`<div class="mx-sub">${subOf('',key)}</div></div>`);});
     // CELLS A SOLVER CANNOT INTEGRATE OVER. checkMesh names these only when it finds some, so
     // the zero case says so rather than leaving a reader to wonder whether it was looked for.
     /* THE TWO THE EXTENDED CHECKS FOUND. Both are shown as a share of the mesh as well as a
@@ -3294,8 +3384,14 @@ function initViewer(job,surf,uiCfg){
                        aspect_ratio:'aspect ratio'};
     const worstB=document.getElementById('v-insp-worst-'+job);
     if(worstB){
+      /* AN EMPTY LIST IS NOT THE SAME AS A PASSING MESH, and this used to say it was. The
+         refusal read "nothing measured over a bar", which was true only while the backend
+         published hotspots solely for faces that had cleared one: no list meant nothing over a
+         bar, and the two sentences were one sentence. The worst sixty faces are now published
+         whether they cleared the bar or not, so an empty list means the quality fields were
+         never written - and that is what the refusal has to say. */
       if(!HOTS.length){worstB.disabled=true;
-        worstB.title='this mesh shipped no hot spots - nothing measured over a bar';}
+        worstB.title='this mesh shipped no per-face quality, so there is no worst face to fly to';}
       worstB.onclick=async()=>{
         const pool=activeMetric?HOTS.filter(h=>h.metric===activeMetric):[];
         const list=(pool.length?pool:HOTS).slice().sort((p,q)=>(q.value||0)-(p.value||0));
@@ -3307,7 +3403,11 @@ function initViewer(job,surf,uiCfg){
         await recut(at);
         const nm=METRIC_NAME[h.metric]||h.metric;
         const v=Math.round((+h.value||0)*100)/100;
-        lbl.textContent=lbl.textContent+' · worst '+nm+' '+v+(h.patch?' on '+h.patch:'');};}
+        // AND WHETHER THE WORST IS A FAULT. On every mesh delivered so far the worst face is
+        // comfortably inside its bar, and a reader flown to it without being told that reads the
+        // flight itself as the panel pointing at a problem.
+        const ok=h.over_bar===false?' · inside the bar':'';
+        lbl.textContent=lbl.textContent+' · worst '+nm+' '+v+(h.patch?' on '+h.patch:'')+ok;};}
 
     /* FLY walks the focal point along the part's longest axis in even hops, so a channel network
        can be FOLLOWED instead of orbited - on a plate that is mostly one repeated pattern, an

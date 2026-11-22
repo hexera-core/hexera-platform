@@ -459,6 +459,22 @@ th,td{border-color:var(--border)}
 .mx-q .mx-v{grid-area:v;text-align:right}
 .mx-sub{grid-area:s;color:var(--text-faint);font:var(--fs-sm)/1.5 var(--sans)}
 .mx-sub:empty{display:none}
+/* THE DISTRIBUTION UNDER A FIGURE: the bar it was judged against, then one line per region -
+   the shape, then what the shape is of. The bars are drawn at a LOG height because 99% of a good
+   mesh's non-orthogonality lands in the first bin and on a linear axis the tail, which is the
+   only part worth looking at, would be under one pixel. */
+.mx-verdict{margin-top:2px;color:var(--text-faint);font:var(--fs-sm)/1.5 var(--sans)}
+.mx-verdict.over{color:var(--warn)}
+.mx-dist{display:flex;flex-wrap:wrap;align-items:center;gap:2px 8px;margin-top:3px}
+.mx-dist b{flex:0 0 auto;min-width:34px;color:var(--text-muted);
+  font:500 var(--fs-xs)/1.5 var(--sans);white-space:nowrap}
+.mx-hist{flex:0 0 auto;display:block;width:72px;height:16px}
+.mx-hist rect{fill:var(--steel-muted)}
+.mx-dist:hover .mx-hist rect{fill:var(--steel-bright)}
+/* WRAPS, NEVER TRUNCATES. The end of this line - how far the worst face stands above the
+   99.9th percentile - is the number the row is for, and an ellipsis ate exactly that. */
+.mx-dn{flex:1 1 150px;color:var(--text-faint);font:var(--fs-xs)/1.5 var(--sans);
+  font-variant-numeric:tabular-nums}
 /* a figure the mesh can be coloured by is a toggle: the row is the control, the swatch says so */
 .mx-c.live{margin:0 -10px;padding:8px 10px;border-radius:var(--r-md);cursor:pointer;
   transition:background .12s,box-shadow .12s}
