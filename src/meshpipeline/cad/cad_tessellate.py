@@ -812,6 +812,10 @@ def _fluid_union(shape, solids: list, declared_ports: list):
 CAVITY_SEED_RULE = "INS-14"           # a body's flow is the cavity its disc ports open into
 PORTS_MISS_INSIDE_RULE = "INS-16"     # declared disc ports the inside never reaches are refused
 HELD_TO_DECLARATION_RULE = "INS-19"   # a port whose mouth is on no flat face is staged the surface way
+NO_FACE_NEAR_RULE = "INS-25"          # a port no staged opening comes near is staged the surface way
+#: INS-25: a located port whose nearest staged flat-face opening lies more than this many of the port's own widths
+#: away, and is not decisively nearer than the next, has no flat face of its own (several ports through one face).
+NO_FACE_NEAR_WIDTHS = 2.0
 
 
 class FlatFacesMissPort(RuntimeError):
@@ -852,6 +856,20 @@ def held_to_declaration(openings: dict, declared: list | None, bbox_min, bbox_ma
                 f"nearest flat-face opening the B-rep staging found ({key}): its mouth is on no flat face, so the "
                 "part's surface is staged instead")
         if d1 > HINT_MARGIN * d2:
+            # INS-25: NOT DECISIVE BECAUSE NOTHING IS NEAR. Several ports through one flat face (a manifold's four
+            # top ports in its one top face, batch 4) are one staged opening at most: the B-rep staging takes one
+            # hole per face. The ports left over then stand 2.7 of their widths from the nearest staged opening, two
+            # openings about as far, and the binder refused "does not decisively pick one opening". A port no
+            # staged opening comes within NO_FACE_NEAR_WIDTHS of its own width has no flat face of its own: the
+            # part's surface is staged instead, which reads every hole. Two openings near the port are still
+            # the binder's to settle.
+            want = p.get("area_m2")
+            width = 2.0 * math.sqrt(float(want) / math.pi) if want else float(p.get("d_m") or 0.0)
+            if width > 0.0 and d1 > NO_FACE_NEAR_WIDTHS * width:
+                raise FlatFacesMissPort(
+                    f"{NO_FACE_NEAR_RULE}: declared port {p.get('name')!r} lies {d1 * 1000.0:.1f} mm from the nearest "
+                    f"flat-face opening the B-rep staging found ({key}), {d1 / width:.1f} of its widths, and as far "
+                    "from others: it has no flat face of its own, so the part's surface is staged instead")
             return                                # not decisive: the binder's to say
         want = p.get("area_m2")
         if want and not _located_size_agrees(area, opening, float(want)):
