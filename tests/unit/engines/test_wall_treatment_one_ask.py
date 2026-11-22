@@ -85,3 +85,39 @@ def test_a_true_extra_ask_beside_them_is_still_listed():
                    notes, {"engine": "snappy", "topology": "internal", "conditions": RESOLVED})
     assert _told(sec) == ['Not applied: "keep the cells cubic at the outlet" - no mesh setting of ours matches it yet.']
     assert _others(sec) == 1
+
+
+AIR = {"fluid": "air", "fluid_words": "air", "speed_words": "10 m/s", "velocity_ms": 10.0, "wall": "resolved",
+       "wall_said": True, "y_plus": 1.0}
+
+
+@pytest.mark.parametrize("notes,yq", [
+    ("air at 10 m/s with a resolved boundary layer (y+ of 1)", "y+ of 1"),
+    ("air at 10 m/s, wall-resolved, y+ about 1", "y+ about 1"),
+    ("resolved boundary layer with y+ of 1 in air at 10 m/s", "y+ of 1"),
+])
+def test_conditions_wall_treatment_and_y_plus_in_one_breath_are_no_extra_ask(notes, yq):
+    """m485w L6 (dev-areen 34689fa0): the reading set the whole sentence aside as one "other" thing; it is the
+    confirmed conditions, the y+ row and the treatment that row builds - nothing more."""
+    sec = _read(notes, y_plus=(1, yq), other=(notes,))
+    out = NA.apply(sec, notes, {"conditions": AIR})
+    assert _told(out) == [] and _others(out) == 0
+    assert ((out["requirements"].get("layers") or {}).get("y_plus")) == 1
+
+
+def test_one_breath_with_a_true_extra_ask_is_still_told():
+    notes = "air at 10 m/s with a resolved boundary layer (y+ of 1) and cubic cells at the outlet"
+    sec = _read(notes, y_plus=(1, "y+ of 1"), other=(notes,))
+    out = NA.apply(sec, notes, {"conditions": AIR})
+    assert _others(out) == 1
+
+
+def test_the_reading_as_it_came_on_the_website_set_the_sentence_aside():
+    notes = "air at 10 m/s with a resolved boundary layer (y+ of 1)"
+    assert _others(_read(notes, y_plus=(1, "y+ of 1"), other=(notes,))) == 1
+
+
+def test_one_breath_naming_the_other_treatment_is_not_taken_as_the_built_one():
+    notes = "air at 10 m/s with wall functions (y+ of 1)"
+    sec = _read(notes, y_plus=(1, "y+ of 1"), other=(notes,))
+    assert NA._acts_together(notes, sec, {"conditions": AIR}, NA._covered(sec)) is False

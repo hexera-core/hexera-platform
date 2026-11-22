@@ -291,6 +291,23 @@ def _wall_act(quote: str, sec: dict, facts: Mapping) -> bool:
     return True
 
 
+def _acts_together(quote: str, sec: Mapping, facts: Mapping, covered: list[str]) -> bool:
+    """NOTE-15: several acts said in one breath ("air at 10 m/s with a resolved boundary layer (y+ of 1)") are still
+    only those acts - the confirmed flow conditions, the words a row of the reading holds, and the wall treatment
+    that is built. Nothing is left of the quote once each is taken out, so it is no further ask "not applied".
+    The OTHER wall treatment than the one built, or any word beyond these, keeps the quote told."""
+    said = wall_said(quote)
+    if not said or wall_built(sec, facts) != said:
+        return False
+    c = facts.get("conditions") if isinstance(facts, Mapping) else None
+    fluid = str(c.get("fluid_words") or "").lower() if isinstance(c, Mapping) else ""
+    speed = str(c.get("speed_words") or "").lower() if isinstance(c, Mapping) else ""
+    own = {w for w in _TOKENS.findall(f"{fluid} {speed}") if w not in _FILLER}
+    rest = [w for w in _rest(quote, [fluid, speed], covered)
+            if w not in _FLOW_WORDS and w not in _WALL_WORDS and w not in own]
+    return not rest
+
+
 def _stem(word: str) -> str:
     return re.sub(r"(?:ing|ed|es|e|s)$", "", word) if len(word) > 4 else word
 
@@ -372,7 +389,8 @@ def _apply(sec: dict, notes: str, facts: Mapping) -> dict:
     gone_lines: list[str] = []
 
     def absorbed(q: str, *, engine_only: bool = False) -> bool:
-        if not engine_only and (_wall_act(q, sec, facts) or _covered_by_rows(q, sec)):
+        if not engine_only and (_wall_act(q, sec, facts) or _covered_by_rows(q, sec)
+                                or _acts_together(q, sec, facts, covered)):
             # the wall treatment the rows build, or words an applied row already holds the meaning of: one ask,
             # told by its row - never a second one "not applied"
             entries.append({"act": "covered", "quotes": [q], "line": ""})
