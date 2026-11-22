@@ -1941,7 +1941,10 @@ def _snappy_layers(ask: Ask, text: str, wall_cell_m: float | None, bridge: Mappi
     if wf is not None and first is not None:
         built = dict(wf, first_m=float(first), y_plus=y_plus_of(float(first), ask.how) if ask.how else wf["y_plus"])
         _say_wall(ask, built, n, g)
-    return out
+    # CFDREQ-15: decided on the dict's final layer count, after the bridge, the cap and the thick side
+    resolved = (wf["treatment"] == "resolved") if wf is not None else (
+        bridged is not None or capped is not None or ask.treatment == "resolved")
+    return _layer_twist(ask, out, resolved=resolved)
 
 
 #: ENG-asks: the engines that set an absolute first layer (a height, or a y+ turned into one) - snappyHexMesh and the
@@ -2088,6 +2091,38 @@ def layer_fit(first_m: float, wall_cell_m: float, *, n_plan: int, growth: float,
 FLAT_CELL_DETERMINANT = 27.0
 #: the lowest the layer stage's determinant bar goes for a thin first layer (cells still have positive volume)
 LAYER_DETERMINANT_FLOOR = 1e-6
+
+
+#: CFDREQ-15: past this many layers a resolved wall's stack is kept by the layer stage without the face-twist bar
+TWIST_FREE_MIN_LAYERS = 6
+#: ...the twist bar the layer stage's relaxed block then gets (snappyHexMesh: below 0 the check is off)
+LAYER_STAGE_TWIST = -1
+
+
+def _layer_twist(ask: Ask, text: str, *, resolved: bool) -> str:
+    """CFDREQ-15: A RESOLVED STACK IS NOT TAKEN BACK FOR FACE TWIST. snappyHexMesh steps the layer count down one
+    layer per cell ring round every face its layer stage refuses (nBufferCellsNoExtrude 0), and on a deep resolved
+    stack the first refusals are mostly face twist under 0.02 (the duct transition_005: 104 of 147 in pass 0; an
+    aircraft, abc 00049961: 87 of 172) - a few faces that cost a quarter to a third of the layer cells. The layer
+    stage's relaxed block (meshQualityControls/relaxed) gets minTwist -1 when the FINAL layer count in the dict is
+    over 5 on a resolved wall: snapping and the final check keep the main block's 0.02, the buffer stays 0 (-1, the
+    'terminate in one go', removed every layer and broke the duct and the rotor). Replays: the aircraft 76.5% ->
+    98.3% of the layer cells, wall at plan 79% -> 92%; the duct 64.2% -> 83.1%, 31% -> 59%, flat walls 4.45 ->
+    1.01 times the planned first cell. Never with a twist limit of the user's, never on wall functions."""
+    if not resolved or ask.limit("twist") is not None:
+        return text
+    counts = [int(x) for x in re.findall(r"\bnSurfaceLayers\s+(\d+)\s*;", text)]
+    if not counts or max(counts) < TWIST_FREE_MIN_LAYERS:
+        return text
+    m = re.search(r"relaxed\s*\{[^}]*\}", text)
+    if m is None:
+        return text
+    block = m.group(0)
+    if re.search(r"\bminTwist\s+", block):
+        block = _sub(block, "minTwist", str(LAYER_STAGE_TWIST))
+    else:
+        block = re.sub(r"relaxed\s*\{", f"relaxed {{ minTwist {LAYER_STAGE_TWIST};", block, count=1)
+    return text[:m.start()] + block + text[m.end():]
 
 
 def _layer_determinant(ask: Ask, text: str, thinnest: float, wall_cell_m: float) -> str:
