@@ -1405,6 +1405,7 @@ def vet_openings(facts: dict, skin: Path) -> None:
 SOLID_END_RULE = "INS-15"            # a flat end no space reaches is no opening
 FLAT_HOLE_RULE = "INS-13"            # a passage opens where its bore meets a flat face
 HOLE_THROUGH_FLUID_RULE = "INS-18"   # a hole through a body of fluid is no opening
+TESSELLATION_GAP_RULE = "INS-22"     # a gap in a CAD solid's tessellation is no opening
 
 
 def vet_by_map(facts: dict, imap) -> None:
@@ -1669,6 +1670,18 @@ def skin_holes(skin: Path, facts: dict | None = None) -> list[dict]:
         mesh = surface(tris)
         found = find_holes(mesh=mesh) if mesh is not None else []
         holes = [h.as_dict() for h in found]
+        if facts is not None and int(facts.get("solids") or 0) >= 1:
+            # INS-22: A GAP IN A CAD SOLID'S TESSELLATION IS NO OPENING. The B-rep closes the solid, so an open
+            # rim of its skin is where OpenCASCADE left a face bare (a sliver it gives "null triangulation")
+            # or faces meet unwelded - never a hole in the part. Read as a mouth it was proposed as an
+            # opening 0.34 mm across, its centre 60 mm off the part (a sliver loop's centroid), and no
+            # staging could match it (batch 4, a nozzle). A CAD part's openings are its faces' loops.
+            gaps = [h for h in holes if h.get("kind") == "rim"]
+            if gaps:
+                holes = [h for h in holes if h.get("kind") != "rim"]
+                facts.setdefault("notes", []).append(
+                    f"{len(gaps)} gap(s) in the drawn skin of this solid are where its tessellation left a face "
+                    f"bare, not holes in the part, and are not proposed as openings ({TESSELLATION_GAP_RULE})")
         if facts is not None:
             imap = inside_map(mesh) if mesh is not None else None
             facts["inside"] = imap.facts() if imap is not None else {"rule": "INS-1", "mapped": False}
