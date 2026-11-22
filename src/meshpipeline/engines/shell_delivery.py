@@ -243,7 +243,7 @@ def deliver(workspace, rec: Mapping, *, target: Mapping | None = None) -> bool:
 
     # NOTE-14: how strict the user said the limits are, in the plan's words as a solid's plan says it (A3, round 12:
     # Val4's three "guidelines" were read flexible and held so, and no line said it)
-    strict = MR.strictness_words((MR.read(ws).get("requirements") or {}))
+    strict = MR.strictness_words(MR.read(ws).get("requirements") or {})
     if strict:
         plan["words"] = [*list(plan["words"] or []), *strict]
     told = MR.told_words(MR.read(ws))
